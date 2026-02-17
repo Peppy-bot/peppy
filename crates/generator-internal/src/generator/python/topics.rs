@@ -1,0 +1,210 @@
+use super::PythonSchemaInfo;
+use super::code_builder::{PythonCodeBuilder, emit_nested_classes};
+use super::deserialization;
+use super::serialization;
+use super::type_mapping::{collect_fields_from_format, qos_profile_python, uses_optional};
+use crate::error::Result;
+use crate::generator::naming::sanitize_component;
+use config::node::{ExposedTopic, MessageFormat, SubscribedTopic};
+
+pub(super) fn capnp_loader_fn_name(schema_info: &PythonSchemaInfo) -> String {
+    format!("_{}_capnp", schema_info.file_stem)
+}
+
+/// Emits the shared `_PKG_DIR` constant and related imports needed by capnp schema loaders.
+/// Call this once before emitting any loaders via [`emit_capnp_loader_fn`].
+pub(super) fn emit_capnp_preamble(builder: &mut PythonCodeBuilder) {
+    builder.add_import("import capnp");
+    builder.add_import("import types");
+    builder.add_import("from functools import lru_cache");
+    builder.add_import("from pathlib import Path");
+    builder.blank_line();
+    builder.line("_PKG_DIR = Path(__file__).resolve().parent.parent");
+    builder.blank_line();
+}
+
+/// Emits a single `@lru_cache` loader function for a capnp schema.
+/// Requires [`emit_capnp_preamble`] to have been called first.
+pub(super) fn emit_capnp_loader_fn(
+    builder: &mut PythonCodeBuilder,
+    schema_info: &PythonSchemaInfo,
+) {
+    let loader_fn_name = capnp_loader_fn_name(schema_info);
+    builder.line("@lru_cache(maxsize=1)");
+    builder.line(&format!("def {loader_fn_name}() -> types.ModuleType:"));
+    builder.indent();
+    builder.line(&format!(
+        "return capnp.load(str(_PKG_DIR / \"capnp/{}.capnp\"))",
+        schema_info.file_stem
+    ));
+    builder.dedent();
+    builder.blank_line();
+}
+
+/// Convenience wrapper: emits preamble + a single loader function.
+/// Use this when there is only one schema to load.
+pub(super) fn emit_capnp_schema_loader(
+    builder: &mut PythonCodeBuilder,
+    schema_info: &PythonSchemaInfo,
+) {
+    emit_capnp_preamble(builder);
+    emit_capnp_loader_fn(builder, schema_info);
+}
+
+/// Generates Python code for an exposed (publishing) topic.
+pub fn build_exposed_topic(
+    topic: &ExposedTopic,
+    schema_info: Option<&PythonSchemaInfo>,
+) -> Result<String> {
+    let mut builder = PythonCodeBuilder::new();
+    let mut nested_classes = Vec::new();
+
+    // Collect fields from message format
+    let fields = topic
+        .message_format
+        .as_ref()
+        .map(|fmt| collect_fields_from_format(fmt, "Message", &mut nested_classes))
+        .transpose()?
+        .unwrap_or_default();
+
+    if uses_optional(&fields, &nested_classes) {
+        builder.add_import("from typing import Optional");
+    }
+
+    // Add capnp imports and a lazy, cached schema loader.
+    if let Some(info) = schema_info {
+        emit_capnp_schema_loader(&mut builder, info);
+    }
+
+    // Emit nested dataclasses (e.g., MessageHeader)
+    emit_nested_classes(&mut builder, &nested_classes);
+
+    // Build parameter list for emit function
+    builder.add_import("import peppylib");
+    let mut param_parts = vec![String::from("node_runner: peppylib.NodeRunner")];
+    for field in &fields {
+        param_parts.push(format!("{}: {}", field.name, field.type_str));
+    }
+    let params_str = param_parts.join(", ");
+
+    let qos = qos_profile_python(&topic.qos_profile);
+
+    // Generate the emit function
+    builder.line(&format!("async def emit({params_str}):"));
+    builder.indent();
+    builder.line(&format!("TOPIC_NAME = \"{}\"", topic.name));
+    builder.line(&format!("qos = {qos}"));
+
+    // Generate payload serialization
+    if let (Some(info), Some(fmt)) = (schema_info, topic.message_format.as_ref()) {
+        let loader_fn_name = capnp_loader_fn_name(info);
+        builder.line(&format!(
+            "capnp_msg = {loader_fn_name}().{}.new_message()",
+            info.struct_name
+        ));
+        let mut counter = 0u32;
+        serialization::emit_capnp_assignments(&mut builder, "capnp_msg", fmt, "", &mut counter);
+        builder.line("payload = capnp_msg.to_bytes()");
+    } else {
+        builder.line("payload = b\"\"");
+    }
+
+    builder.line("await peppylib.TopicMessenger.emit(");
+    builder.indent();
+    builder.line("node_runner.messenger(),");
+    builder.line("node_runner.bound_daemon_node(),");
+    builder.line("node_runner.bound_instance_id(),");
+    builder.line("node_runner.node_name(),");
+    builder.line("TOPIC_NAME,");
+    builder.line("qos,");
+    builder.line("payload,");
+    builder.dedent();
+    builder.line(")");
+    builder.dedent();
+
+    Ok(builder.build())
+}
+
+/// Generates Python code for a subscribed (receiving) topic.
+pub fn build_subscribed_topic(
+    topic: &SubscribedTopic,
+    arguments: &MessageFormat,
+    schema_info: &PythonSchemaInfo,
+) -> Result<String> {
+    let mut builder = PythonCodeBuilder::new();
+    let mut nested_classes = Vec::new();
+
+    // Collect fields from the message format
+    let fields = collect_fields_from_format(arguments, "Message", &mut nested_classes)?;
+
+    // Always need Optional for the function parameters (daemon_node_target, instance_id_target),
+    // plus any Optional fields in the dataclasses.
+    // Tuple is used for the return type of on_next_message_received.
+    builder.add_import("from typing import Optional, Tuple");
+
+    // Add capnp imports and a lazy, cached schema loader.
+    emit_capnp_schema_loader(&mut builder, schema_info);
+
+    // Emit nested dataclasses first (dependency order)
+    emit_nested_classes(&mut builder, &nested_classes);
+
+    // Emit the main Message dataclass
+    let field_refs: Vec<(&str, &str)> = fields
+        .iter()
+        .map(|f| (f.name.as_str(), f.type_str.as_str()))
+        .collect();
+    builder.dataclass("Message", &field_refs);
+
+    // Generate deserialize_payload helper function
+    let loader_fn_name = capnp_loader_fn_name(schema_info);
+    deserialization::build_deserialize_fn(
+        &mut builder,
+        schema_info,
+        arguments,
+        "Message",
+        &format!("{loader_fn_name}()"),
+        "_deserialize_payload",
+    );
+
+    // Generate on_next_message_received function
+    builder.add_import("import peppylib");
+    builder.blank_line();
+    builder.line("async def on_next_message_received(node_runner: peppylib.NodeRunner, daemon_node_target: Optional[str] = None, instance_id_target: Optional[str] = None) -> Tuple[str, Message]:");
+    builder.indent();
+    builder.line(&format!("node_name = \"{}\"", topic.node));
+    builder.line(&format!("topic_name = \"{}\"", topic.name));
+    builder.line("subscription = await peppylib.TopicMessenger.subscribe(");
+    builder.indent();
+    builder.line("node_runner.messenger(),");
+    builder.line("node_runner.bound_daemon_node(),");
+    builder.line("node_runner.bound_instance_id(),");
+    builder.line("node_name,");
+    builder.line("topic_name,");
+    builder.line("daemon_node_target,");
+    builder.line("instance_id_target,");
+    builder.line("peppylib.QoSProfile.Standard,");
+    builder.dedent();
+    builder.line(")");
+    builder.line("raw_message = await subscription.on_next_message()");
+    builder.line("payload = raw_message.payload");
+    builder.line("instance_id = raw_message.instance_id");
+    builder.line("message = _deserialize_payload(payload)");
+    builder.line("return instance_id, message");
+
+    builder.dedent();
+
+    Ok(builder.build())
+}
+
+/// Returns the module label for a subscribed topic artifact.
+pub fn subscribed_topic_module_label(topic: &SubscribedTopic) -> String {
+    let node_component = sanitize_component(&topic.node);
+    let topic_component = sanitize_component(&topic.name);
+
+    match (node_component.is_empty(), topic_component.is_empty()) {
+        (false, false) => format!("{node_component}_{topic_component}"),
+        (false, true) => node_component,
+        (true, false) => topic_component,
+        (true, true) => String::from("topic"),
+    }
+}

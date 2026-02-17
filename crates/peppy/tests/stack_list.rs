@@ -80,10 +80,10 @@ async fn node_list_command_succeeds() {
         .await
         .expect("failed to create serve emulation");
     let shared_messenger = serve.messenger();
-    let master_node_name = serve.master_node_name().to_string();
+    let daemon_node_name = serve.daemon_node_name().to_string();
     assert!(
-        !master_node_name.is_empty(),
-        "master_node_name should not be empty"
+        !daemon_node_name.is_empty(),
+        "daemon_node_name should not be empty"
     );
 
     // Create a temp directory for the nodes
@@ -93,7 +93,7 @@ async fn node_list_command_succeeds() {
 
     // Create AppContext pointing to the temp directory
     let node_ctx = Arc::new(
-        AppContext::with_messenger(node_dir.path(), shared_messenger.clone())
+        AppContext::with_messenger(node_dir.path(), Arc::clone(&shared_messenger))
             .with_daemon_state_file(serve.daemon_state_path()),
     );
 
@@ -224,10 +224,10 @@ async fn node_list_command_with_dot_representation_succeeds() {
         .await
         .expect("failed to create serve emulation");
     let shared_messenger = serve.messenger();
-    let master_node_name = serve.master_node_name().to_string();
+    let daemon_node_name = serve.daemon_node_name().to_string();
     assert!(
-        !master_node_name.is_empty(),
-        "master_node_name should not be empty"
+        !daemon_node_name.is_empty(),
+        "daemon_node_name should not be empty"
     );
 
     // Create a temp directory for the nodes
@@ -237,7 +237,7 @@ async fn node_list_command_with_dot_representation_succeeds() {
 
     // Create AppContext pointing to the temp directory
     let node_ctx = Arc::new(
-        AppContext::with_messenger(node_dir.path(), shared_messenger.clone())
+        AppContext::with_messenger(node_dir.path(), Arc::clone(&shared_messenger))
             .with_daemon_state_file(serve.daemon_state_path()),
     );
 

@@ -1,19 +1,45 @@
 #[cfg(test)]
 mod tests;
 
-use super::types::{InterfaceArtifact, InterfaceKind, LanguageGenerator, SubscribedActionMessage};
+mod actions;
+mod build;
+mod code_builder;
+mod deserialization;
+mod identifiers;
+mod parameters;
+mod ruff;
+pub(crate) mod serialization;
+mod services;
+mod topics;
+mod type_mapping;
+
+use super::naming::{module_name_from_components, sanitize_component, to_camel_case};
+use super::types::{
+    CapnpSchema, InterfaceArtifact, InterfaceKind, LanguageGenerator, SubscribedActionMessage,
+    cancel_action_response_format, non_empty_message_format, validate_fixed_length_array_items,
+    validate_message_format_field_names,
+};
 use crate::error::Result;
+use config::encoding::MessageFormatMapper;
 use config::node::{
-    ExposedAction, ExposedService, ExposedTopic, MessageFormat, SubscribedAction,
+    ExposedAction, ExposedService, ExposedTopic, MessageFormat, PeppygenLanguage, SubscribedAction,
     SubscribedService, SubscribedTopic,
 };
+use std::collections::HashMap;
 use std::path::Path;
+
+/// Schema metadata needed by code generation functions to emit capnp load/init code.
+pub(crate) struct PythonSchemaInfo {
+    pub file_stem: String,
+    pub struct_name: String,
+}
 
 /// Python-specific implementation of the interface generator.
 #[derive(Default)]
 pub struct PythonGenerator {
     sections: Vec<InterfaceArtifact>,
     parameters: config::NodeArguments,
+    schemas: HashMap<String, CapnpSchema>,
 }
 
 impl PythonGenerator {
@@ -32,8 +58,51 @@ impl PythonGenerator {
         }
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn into_artifacts(self) -> Vec<InterfaceArtifact> {
         self.sections
+    }
+
+    /// Registers a Cap'n Proto schema for the given message format and returns
+    /// metadata needed by code generation to emit `capnp.load()` / `.new_message()`.
+    fn register_schema(
+        &mut self,
+        schema_key: &str,
+        format: &MessageFormat,
+    ) -> Result<PythonSchemaInfo> {
+        validate_message_format_field_names(format, schema_key)?;
+        validate_fixed_length_array_items(format, PeppygenLanguage::Python)?;
+
+        let artifacts = MessageFormatMapper::new(schema_key, format.clone())
+            .map_message_format_to_capnpn()
+            .map_err(crate::error::Error::MessageEncoding)?;
+        let schema_source = artifacts.encoding_schema().to_string();
+
+        let key_component = sanitize_component(schema_key);
+        let base_name = if key_component.is_empty() {
+            "message".to_string()
+        } else {
+            key_component
+        };
+        let file_stem = if base_name.ends_with("_message") {
+            base_name.clone()
+        } else {
+            format!("{base_name}_message")
+        };
+
+        let struct_name = format!("{}Message", to_camel_case(&base_name));
+        let schema_text =
+            schema_source.replacen("struct Message", &format!("struct {struct_name}"), 1);
+
+        self.schemas.insert(
+            file_stem.clone(),
+            CapnpSchema::new(file_stem.clone(), schema_text),
+        );
+
+        Ok(PythonSchemaInfo {
+            file_stem,
+            struct_name,
+        })
     }
 }
 
@@ -43,35 +112,101 @@ impl LanguageGenerator for PythonGenerator {
     }
 
     fn add_exposed_topic(&mut self, topic: &ExposedTopic) -> Result<()> {
-        let name = prefixed_name("exposed_topic", non_empty_str(topic.name.as_str()), "topic");
+        let schema_info = topic
+            .message_format
+            .as_ref()
+            .map(|fmt| self.register_schema(&topic.name, fmt))
+            .transpose()?;
+
+        let code = topics::build_exposed_topic(topic, schema_info.as_ref())?;
         self.push_section(InterfaceArtifact::from_kind(
             &topic.name,
             InterfaceKind::ExposedTopic,
-            format!("def {name}():\n    raise NotImplementedError(\"publish PMI topic\")\n"),
+            code,
         ));
         Ok(())
     }
 
     fn add_exposed_service(&mut self, service: &ExposedService) -> Result<()> {
-        let name = prefixed_name(
-            "exposed_service",
-            non_empty_str(service.name.as_str()),
-            "service",
-        );
+        let request_schema_info = service
+            .request_message_format
+            .as_ref()
+            .filter(|fmt| !fmt.0.is_empty())
+            .map(|fmt| self.register_schema(&format!("{}_request", service.name), fmt))
+            .transpose()?;
+
+        let response_schema_info = service
+            .response_message_format
+            .as_ref()
+            .filter(|fmt| !fmt.0.is_empty())
+            .map(|fmt| self.register_schema(&format!("{}_response", service.name), fmt))
+            .transpose()?;
+
+        let code = services::build_exposed_service(
+            service,
+            request_schema_info.as_ref(),
+            response_schema_info.as_ref(),
+        )?;
         self.push_section(InterfaceArtifact::from_kind(
             &service.name,
             InterfaceKind::ExposedService,
-            format!("def {name}():\n    raise NotImplementedError(\"expose PMI service\")\n"),
+            code,
         ));
         Ok(())
     }
 
     fn add_exposed_action(&mut self, action: &ExposedAction) -> Result<()> {
-        let name = prefixed_name("exposed_action", non_empty_str(&action.name), "action");
+        let goal_request_schema_info = action
+            .goal_service
+            .as_ref()
+            .and_then(|gs| gs.request_message_format.as_ref())
+            .filter(|fmt| !fmt.0.is_empty())
+            .map(|fmt| self.register_schema(&format!("{}_goal_request", action.name), fmt))
+            .transpose()?;
+
+        let goal_response_schema_info = action
+            .goal_service
+            .as_ref()
+            .and_then(|gs| gs.response_message_format.as_ref())
+            .filter(|fmt| !fmt.0.is_empty())
+            .map(|fmt| self.register_schema(&format!("{}_goal_response", action.name), fmt))
+            .transpose()?;
+
+        let cancel_response_schema_info = if action.goal_service.is_some() {
+            let cancel_format = cancel_action_response_format();
+            Some(self.register_schema(&format!("{}_cancel_response", action.name), &cancel_format)?)
+        } else {
+            None
+        };
+
+        let result_response_schema_info = action
+            .result_service
+            .as_ref()
+            .and_then(|rs| rs.response_message_format.as_ref())
+            .filter(|fmt| !fmt.0.is_empty())
+            .map(|fmt| self.register_schema(&format!("{}_result_response", action.name), fmt))
+            .transpose()?;
+
+        let feedback_schema_info = action
+            .feedback_topic
+            .as_ref()
+            .and_then(|ft| ft.message_format.as_ref())
+            .filter(|fmt| !fmt.0.is_empty())
+            .map(|fmt| self.register_schema(&format!("{}_feedback", action.name), fmt))
+            .transpose()?;
+
+        let code = actions::build_exposed_action(
+            action,
+            goal_request_schema_info.as_ref(),
+            goal_response_schema_info.as_ref(),
+            cancel_response_schema_info.as_ref(),
+            result_response_schema_info.as_ref(),
+            feedback_schema_info.as_ref(),
+        )?;
         self.push_section(InterfaceArtifact::from_kind(
             &action.name,
             InterfaceKind::ExposedAction,
-            format!("def {name}():\n    raise NotImplementedError(\"expose PMI action\")\n"),
+            code,
         ));
         Ok(())
     }
@@ -79,13 +214,15 @@ impl LanguageGenerator for PythonGenerator {
     fn add_subscribed_topic(
         &mut self,
         topic: &SubscribedTopic,
-        _arguments: MessageFormat,
+        arguments: MessageFormat,
     ) -> Result<()> {
+        let schema_info = self.register_schema(&topic.name, &arguments)?;
+        let code = topics::build_subscribed_topic(topic, &arguments, &schema_info)?;
+        let module_label = topics::subscribed_topic_module_label(topic);
         self.push_section(InterfaceArtifact::from_kind(
-            &topic.name,
+            &module_label,
             InterfaceKind::SubscribedTopic,
-            "async def on_message():\n    raise NotImplementedError(\"await for message with PMI\")\n"
-                .to_string(),
+            code,
         ));
         Ok(())
     }
@@ -93,17 +230,29 @@ impl LanguageGenerator for PythonGenerator {
     fn add_subscribed_service(
         &mut self,
         service: &SubscribedService,
-        _request_arguments: &MessageFormat,
-        _response_arguments: &MessageFormat,
+        request_arguments: &MessageFormat,
+        response_arguments: &MessageFormat,
     ) -> Result<()> {
-        let fn_name = prefixed_name("on", non_empty_str(service.name.as_str()), "service");
+        let request_schema_info = non_empty_message_format(Some(request_arguments))
+            .map(|fmt| self.register_schema(&format!("{}_request", service.name), fmt))
+            .transpose()?;
+
+        let response_schema_info = non_empty_message_format(Some(response_arguments))
+            .map(|fmt| self.register_schema(&format!("{}_response", service.name), fmt))
+            .transpose()?;
+
+        let code = services::build_subscribed_service(
+            service,
+            request_arguments,
+            response_arguments,
+            request_schema_info.as_ref(),
+            response_schema_info.as_ref(),
+        )?;
+        let module_label = module_name_from_components(&service.node, &service.name);
         self.push_section(InterfaceArtifact::from_kind(
-            &service.name,
+            &module_label,
             InterfaceKind::SubscribedService,
-            format!(
-                "async def {}():\n    raise NotImplementedError(\"await for service response with PMI\")\n",
-                fn_name
-            ),
+            code,
         ));
         Ok(())
     }
@@ -111,97 +260,73 @@ impl LanguageGenerator for PythonGenerator {
     fn add_subscribed_action(
         &mut self,
         action: &SubscribedAction,
-        _messages: &SubscribedActionMessage,
+        messages: &SubscribedActionMessage,
     ) -> Result<()> {
-        let base_name = prefixed_name("on", non_empty_str(action.name.as_str()), "action");
-        let mut sections = Vec::new();
+        let goal_request_schema_info = messages
+            .goal_request
+            .as_ref()
+            .filter(|fmt| !fmt.0.is_empty())
+            .map(|fmt| self.register_schema(&format!("{}_goal_request", action.name), fmt))
+            .transpose()?;
 
-        sections.push(format!(
-            "async def {}_feedback():\n    raise NotImplementedError(\"await for action feedback with PMI\")\n",
-            base_name
-        ));
-        sections.push(format!(
-            "async def {}_result():\n    raise NotImplementedError(\"await for action result with PMI\")\n",
-            base_name
-        ));
+        let goal_response_schema_info = messages
+            .goal_response
+            .as_ref()
+            .filter(|fmt| !fmt.0.is_empty())
+            .map(|fmt| self.register_schema(&format!("{}_goal_response", action.name), fmt))
+            .transpose()?;
 
+        let cancel_format = cancel_action_response_format();
+        let cancel_response_schema_info = Some(
+            self.register_schema(&format!("{}_cancel_response", action.name), &cancel_format)?,
+        );
+
+        let feedback_schema_info = messages
+            .feedback
+            .as_ref()
+            .filter(|fmt| !fmt.0.is_empty())
+            .map(|fmt| self.register_schema(&format!("{}_feedback", action.name), fmt))
+            .transpose()?;
+
+        let result_response_schema_info = messages
+            .result_response
+            .as_ref()
+            .filter(|fmt| !fmt.0.is_empty())
+            .map(|fmt| self.register_schema(&format!("{}_result_response", action.name), fmt))
+            .transpose()?;
+
+        let code = actions::build_subscribed_action(
+            action,
+            messages,
+            goal_request_schema_info.as_ref(),
+            goal_response_schema_info.as_ref(),
+            cancel_response_schema_info.as_ref(),
+            feedback_schema_info.as_ref(),
+            result_response_schema_info.as_ref(),
+        )?;
+        let module_label = module_name_from_components(&action.node, &action.name);
         self.push_section(InterfaceArtifact::from_kind(
-            &action.name,
+            &module_label,
             InterfaceKind::SubscribedAction,
-            sections.join("\n"),
+            code,
         ));
         Ok(())
     }
+
     fn build(self, to_path: impl AsRef<Path>) -> Result<()> {
-        let _ = to_path;
-        let _artifacts = self.into_artifacts();
-        // TODO: implement Python project scaffold generation.
+        let to_path = to_path.as_ref();
+        std::fs::create_dir_all(to_path)?;
+
+        build::add_peppylib_dependencies(to_path)?;
+        build::add_capnp_schemas(&self.schemas, to_path)?;
+        build::add_artifacts_to_lib(to_path, self.sections)?;
+        build::add_parameters_to_lib(&self.parameters, to_path)?;
+
+        // Last step, lint the project
+        let ruff = ruff::RuffFacade::new()?;
+        ruff.check_and_fix(to_path)?;
+        ruff.format(to_path)?;
+
         Ok(())
     }
-}
-
-fn non_empty_str(value: &str) -> Option<&str> {
-    if value.trim().is_empty() {
-        None
-    } else {
-        Some(value)
-    }
-}
-
-fn prefixed_name(prefix: &str, candidate: Option<&str>, fallback: &str) -> String {
-    let fallback_component = match sanitize_component(fallback) {
-        component if component.is_empty() => "item".to_string(),
-        component => component,
-    };
-
-    let maybe_component = candidate.and_then(|value| {
-        let sanitized = sanitize_component(value);
-        if sanitized.is_empty() {
-            None
-        } else {
-            Some(sanitized)
-        }
-    });
-
-    let component = maybe_component
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| fallback_component.clone());
-
-    if prefix.is_empty() {
-        component
-    } else {
-        format!("{prefix}_{component}")
-    }
-}
-
-fn sanitize_component(raw: &str) -> String {
-    let mut out = String::new();
-    let mut last_was_underscore = false;
-
-    for ch in raw.chars() {
-        let lower = ch.to_ascii_lowercase();
-        if lower.is_ascii_alphanumeric() {
-            out.push(lower);
-            last_was_underscore = false;
-        } else if !out.is_empty() && !last_was_underscore {
-            out.push('_');
-            last_was_underscore = true;
-        } else if out.is_empty() {
-            last_was_underscore = true;
-        }
-    }
-
-    while out.ends_with('_') {
-        out.pop();
-    }
-
-    if out.is_empty() {
-        return String::new();
-    }
-
-    if matches!(out.chars().next(), Some(c) if c.is_ascii_digit()) {
-        out.insert(0, '_');
-    }
-
-    out
 }

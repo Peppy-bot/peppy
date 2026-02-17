@@ -61,16 +61,8 @@ impl TestRouterContext {
         (self.instance.host.clone(), self.instance.port)
     }
 
-    async fn topic_messenger(&self) -> MessengerHandle {
-        connect_topic_messenger(self.host(), self.port()).await
-    }
-
-    async fn service_messenger(&self) -> MessengerHandle {
-        connect_service_messenger(self.host(), self.port()).await
-    }
-
-    async fn action_messenger(&self) -> MessengerHandle {
-        connect_action_messenger(self.host(), self.port()).await
+    async fn messenger(&self) -> MessengerHandle {
+        connect_messenger(self.host(), self.port()).await
     }
 
     async fn shutdown(mut self) {
@@ -82,28 +74,27 @@ impl TestRouterContext {
     }
 }
 
-async fn connect_topic_messenger(host: &str, port: u16) -> MessengerHandle {
-    MessengerHandle::from_host_port(host, port)
-        .await
-        .unwrap_or_else(|error| {
-            panic!("failed to create topic messenger on {host}:{port}: {error:?}")
-        })
-}
+async fn connect_messenger(host: &str, port: u16) -> MessengerHandle {
+    const MAX_RETRIES: u32 = 5;
+    const RETRY_DELAY: Duration = Duration::from_millis(200);
 
-async fn connect_service_messenger(host: &str, port: u16) -> MessengerHandle {
-    MessengerHandle::from_host_port(host, port)
-        .await
-        .unwrap_or_else(|error| {
-            panic!("failed to create service messenger on {host}:{port}: {error:?}")
-        })
-}
+    let mut last_error = None;
+    for attempt in 0..MAX_RETRIES {
+        match MessengerHandle::from_host_port(host, port).await {
+            Ok(handle) => return handle,
+            Err(error) => {
+                last_error = Some(error);
+                if attempt + 1 < MAX_RETRIES {
+                    tokio::time::sleep(RETRY_DELAY).await;
+                }
+            }
+        }
+    }
 
-async fn connect_action_messenger(host: &str, port: u16) -> MessengerHandle {
-    MessengerHandle::from_host_port(host, port)
-        .await
-        .unwrap_or_else(|error| {
-            panic!("failed to create action messenger on {host}:{port}: {error:?}")
-        })
+    panic!(
+        "failed to connect messenger to {host}:{port} after {MAX_RETRIES} attempts: {:?}",
+        last_error.unwrap()
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
@@ -115,16 +106,16 @@ async fn topic_publish_subscribe_no_target_instance_id() {
     let topic = "video_stream";
     let payload = Bytes::from_static(b"A message");
 
-    let subscriber_master_node = "master_node_subscribe";
-    let subscriber_handle = router.topic_messenger().await;
+    let subscriber_daemon_node = "daemon_node_subscribe";
+    let subscriber_handle = router.messenger().await;
     let subscriber_instance_id = "subscriber_instance";
     let mut subscription = TopicMessenger::subscribe(
         &subscriber_handle,
-        subscriber_master_node,
+        subscriber_daemon_node,
         subscriber_instance_id,
         node_name,
         topic,
-        None, // Accepts any master node that emits
+        None, // Accepts any daemon node that emits
         None, // Accepts any instance id that emits
         qos.clone(),
     )
@@ -134,12 +125,12 @@ async fn topic_publish_subscribe_no_target_instance_id() {
     // Allow subscription to propagate before publishing
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    let emitter_master_node = "master_node_emit";
+    let emitter_daemon_node = "daemon_node_emit";
     let emitter_instance_id = "emitter_instance";
-    let emitter_handle = router.topic_messenger().await;
+    let emitter_handle = router.messenger().await;
     TopicMessenger::emit(
         &emitter_handle,
-        emitter_master_node,
+        emitter_daemon_node,
         emitter_instance_id,
         node_name,
         topic,
@@ -156,12 +147,12 @@ async fn topic_publish_subscribe_no_target_instance_id() {
 
     let expected_key_expr = format!(
         "*/{}/*/{}/topic/{}/{}",
-        emitter_master_node, emitter_instance_id, node_name, topic
+        emitter_daemon_node, emitter_instance_id, node_name, topic
     );
 
     assert_eq!(received.key_expr(), expected_key_expr);
     assert_eq!(received.instance_id(), emitter_instance_id);
-    assert_eq!(received.master_node(), emitter_master_node);
+    assert_eq!(received.daemon_node(), emitter_daemon_node);
     assert_eq!(received.payload(), &payload);
 
     router.shutdown().await;
@@ -175,8 +166,8 @@ async fn topic_publish_subscribe_with_target_instance_id() {
     let node_name = "uvc_camera";
     let topic = "video_stream";
 
-    // Use the same master_node for both emitters to isolate instance_id filtering
-    let emitter_master_node = "master_node_emit";
+    // Use the same daemon_node for both emitters to isolate instance_id filtering
+    let emitter_daemon_node = "daemon_node_emit";
 
     // The messages emitted from this instance_id will never be received by any subscriber
     let emitter_instance_id1 = "emitter_instance1";
@@ -186,17 +177,17 @@ async fn topic_publish_subscribe_with_target_instance_id() {
 
     let payload = Bytes::from_static(b"A message");
 
-    let subscriber_master_node = "master_node_subscribe";
-    let subscriber_handle = router.topic_messenger().await;
+    let subscriber_daemon_node = "daemon_node_subscribe";
+    let subscriber_handle = router.messenger().await;
 
     let subscriber_instance_id1 = "subscriber_instance1";
     let mut subscription1 = TopicMessenger::subscribe(
         &subscriber_handle,
-        subscriber_master_node,
+        subscriber_daemon_node,
         subscriber_instance_id1,
         node_name,
         topic,
-        Some(emitter_master_node),
+        Some(emitter_daemon_node),
         Some(emitter_instance_id1),
         qos.clone(),
     )
@@ -207,11 +198,11 @@ async fn topic_publish_subscribe_with_target_instance_id() {
     let subscriber_instance_id2 = "subscriber_instance2";
     let mut subscription2 = TopicMessenger::subscribe(
         &subscriber_handle,
-        subscriber_master_node,
+        subscriber_daemon_node,
         subscriber_instance_id2,
         node_name,
         topic,
-        Some(emitter_master_node),
+        Some(emitter_daemon_node),
         Some(emitter_instance_id2),
         qos.clone(),
     )
@@ -221,10 +212,10 @@ async fn topic_publish_subscribe_with_target_instance_id() {
     // Allow subscriptions to propagate before publishing
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    let emitter_handle1 = router.topic_messenger().await;
+    let emitter_handle1 = router.messenger().await;
     TopicMessenger::emit(
         &emitter_handle1,
-        emitter_master_node,
+        emitter_daemon_node,
         emitter_instance_id2,
         node_name,
         topic,
@@ -248,7 +239,7 @@ async fn topic_publish_subscribe_with_target_instance_id() {
     );
 
     // Only receive from emitter with instance_id2
-    assert_eq!(received.master_node(), emitter_master_node);
+    assert_eq!(received.daemon_node(), emitter_daemon_node);
     assert_eq!(received.instance_id(), emitter_instance_id2);
     assert_eq!(received.payload(), &payload);
 
@@ -256,7 +247,7 @@ async fn topic_publish_subscribe_with_target_instance_id() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn topic_publish_subscribe_with_target_master_node() {
+async fn topic_publish_subscribe_with_target_daemon_node() {
     let router = TestRouterContext::start().await;
 
     let qos = QoSProfile::Reliable;
@@ -264,26 +255,26 @@ async fn topic_publish_subscribe_with_target_master_node() {
     let topic = "video_stream";
 
     // The messages emitted from this one will never be received by any subscriber
-    let emitter_master_node1 = "master_node_emit1";
+    let emitter_daemon_node1 = "daemon_node_emit1";
     let emitter_instance_id = "emitter_instance";
 
     // The messages emitted from this one will be received by a subscriber
-    let emitter_master_node2 = "master_node_emit2";
+    let emitter_daemon_node2 = "daemon_node_emit2";
 
     let payload = Bytes::from_static(b"A message");
 
     // Same instance_id for every subscriber
     let subscriber_instance_id = "subscriber_instance";
-    let subscriber_handle = router.topic_messenger().await;
+    let subscriber_handle = router.messenger().await;
 
-    let subscriber_master_node1 = "master_node_subscribe1";
+    let subscriber_daemon_node1 = "daemon_node_subscribe1";
     let mut subscription1 = TopicMessenger::subscribe(
         &subscriber_handle,
-        subscriber_master_node1,
+        subscriber_daemon_node1,
         subscriber_instance_id,
         node_name,
         topic,
-        Some(emitter_master_node1),
+        Some(emitter_daemon_node1),
         Some(emitter_instance_id),
         qos.clone(),
     )
@@ -291,14 +282,14 @@ async fn topic_publish_subscribe_with_target_master_node() {
     .expect("Should subscribe to the topic");
 
     // Only this subscriber will receive a message
-    let subscriber_master_node2 = "master_node_subscribe2";
+    let subscriber_daemon_node2 = "daemon_node_subscribe2";
     let mut subscription2 = TopicMessenger::subscribe(
         &subscriber_handle,
-        subscriber_master_node2,
+        subscriber_daemon_node2,
         subscriber_instance_id,
         node_name,
         topic,
-        Some(emitter_master_node2),
+        Some(emitter_daemon_node2),
         Some(emitter_instance_id),
         qos.clone(),
     )
@@ -308,10 +299,10 @@ async fn topic_publish_subscribe_with_target_master_node() {
     // Allow subscriptions to propagate before publishing
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    let emitter_handle1 = router.topic_messenger().await;
+    let emitter_handle1 = router.messenger().await;
     TopicMessenger::emit(
         &emitter_handle1,
-        emitter_master_node2,
+        emitter_daemon_node2,
         emitter_instance_id,
         node_name,
         topic,
@@ -335,7 +326,7 @@ async fn topic_publish_subscribe_with_target_master_node() {
     );
 
     // Only receive from emitter 2
-    assert_eq!(received.master_node(), emitter_master_node2);
+    assert_eq!(received.daemon_node(), emitter_daemon_node2);
     assert_eq!(received.instance_id(), emitter_instance_id);
     assert_eq!(received.payload(), &payload);
 
@@ -350,14 +341,14 @@ async fn topic_publish_reliable_5000hz_messages() {
     let topic = "video_stream";
     let qos = QoSProfile::Reliable;
 
-    let sender_handle = router.topic_messenger().await;
-    let receiver_handle = router.topic_messenger().await;
+    let sender_handle = router.messenger().await;
+    let receiver_handle = router.messenger().await;
 
-    let subscriber_master_node = "master_node_subscribe";
+    let subscriber_daemon_node = "daemon_node_subscribe";
     let subscriber_instance_id = "subscriber_instance";
     let mut subscription = TopicMessenger::subscribe(
         &receiver_handle,
-        subscriber_master_node,
+        subscriber_daemon_node,
         subscriber_instance_id,
         node_name,
         topic,
@@ -372,7 +363,7 @@ async fn topic_publish_reliable_5000hz_messages() {
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     let message_count = 5000;
-    let emitter_master_node = "emitter_master_node";
+    let emitter_daemon_node = "emitter_daemon_node";
     let emitter_instance_id = "emitter_instance";
     let mut message_ids: Vec<u32> = (0..message_count as u32).collect();
     let mut rng = rand::rng();
@@ -382,7 +373,7 @@ async fn topic_publish_reliable_5000hz_messages() {
         let payload = Bytes::from(message_id.to_le_bytes().to_vec());
         TopicMessenger::emit(
             &sender_handle,
-            emitter_master_node,
+            emitter_daemon_node,
             emitter_instance_id,
             node_name,
             topic,
@@ -395,7 +386,7 @@ async fn topic_publish_reliable_5000hz_messages() {
 
     let expected_key_expr = format!(
         "*/{}/*/{}/topic/{}/{}",
-        emitter_master_node, emitter_instance_id, node_name, topic
+        emitter_daemon_node, emitter_instance_id, node_name, topic
     );
 
     let mut received_ids: Vec<u32> = Vec::with_capacity(message_count);
@@ -451,7 +442,7 @@ async fn service_communication_poll_no_instance_id_target() {
 
     // Caller instance
     const CALLER_INSTANCE_ID: &str = "caller_instance";
-    const CALLER_MASTER_NODE: &str = "caller_master_node";
+    const CALLER_DAEMON_NODE: &str = "caller_daemon_node";
 
     let request_payload = Bytes::from_static(b"enable=true");
     let response_payload = Bytes::from_static(b"ack");
@@ -463,14 +454,14 @@ async fn service_communication_poll_no_instance_id_target() {
     let service_task_timeout = service_wait_timeout + Duration::from_millis(500);
     let service_ready_timeout = Duration::from_secs(1);
 
-    let listener_master_node1 = "listener_master_node1";
+    let listener_daemon_node1 = "listener_daemon_node1";
     let listener_instance_id1 = "listener_instance1";
     // The exposed service has its own dedicated scope (emulates running on its own instance)
     let service_task1 = {
-        let service_expose_handle = router.service_messenger().await;
+        let service_expose_handle = router.messenger().await;
         let mut service = ServiceMessenger::listen(
             &service_expose_handle,
-            listener_master_node1,
+            listener_daemon_node1,
             listener_instance_id1,
             listener_node_name,
             listener_service_name,
@@ -486,7 +477,7 @@ async fn service_communication_poll_no_instance_id_target() {
             let handler = service.handle_next_request(|request| {
                 let response_payload = response_payload.clone();
                 async move {
-                    assert_eq!(request.message().master_node(), CALLER_MASTER_NODE);
+                    assert_eq!(request.message().daemon_node(), CALLER_DAEMON_NODE);
                     assert_eq!(request.message().instance_id(), CALLER_INSTANCE_ID);
                     assert_eq!(request.message().payload(), &request_payload);
                     call_count.fetch_add(1, Ordering::SeqCst);
@@ -510,13 +501,13 @@ async fn service_communication_poll_no_instance_id_target() {
     };
 
     // Creates a second listener (emulates a second instance) that is slower than the listener 1 to respond
-    let listener_master_node2 = "listener_master_node2";
+    let listener_daemon_node2 = "listener_daemon_node2";
     let listener_instance_id2 = "listener_instance2";
     let service_task2 = {
-        let service_expose_handle = router.service_messenger().await;
+        let service_expose_handle = router.messenger().await;
         let mut service = ServiceMessenger::listen(
             &service_expose_handle,
-            listener_master_node2,
+            listener_daemon_node2,
             listener_instance_id2,
             listener_node_name,
             listener_service_name,
@@ -533,7 +524,7 @@ async fn service_communication_poll_no_instance_id_target() {
                 let response_payload = response_payload.clone();
                 async move {
                     // This listener also receive the request, it just won't repond in time
-                    assert_eq!(request.message().master_node(), CALLER_MASTER_NODE);
+                    assert_eq!(request.message().daemon_node(), CALLER_DAEMON_NODE);
                     assert_eq!(request.message().instance_id(), CALLER_INSTANCE_ID);
                     assert_eq!(request.message().payload(), &request_payload);
                     call_count.fetch_add(1, Ordering::SeqCst);
@@ -573,10 +564,10 @@ async fn service_communication_poll_no_instance_id_target() {
 
     // The caller node has its own scope (emulates a separate node running on a different instance)
     {
-        let caller_handle = router.service_messenger().await;
+        let caller_handle = router.messenger().await;
         let response = ServiceMessenger::poll(
             &caller_handle,
-            CALLER_MASTER_NODE,
+            CALLER_DAEMON_NODE,
             CALLER_INSTANCE_ID,
             listener_node_name,
             listener_service_name,
@@ -590,7 +581,7 @@ async fn service_communication_poll_no_instance_id_target() {
 
         // Listener instance 1 is supposed to have responded more quickly here
         assert_eq!(response.instance_id(), listener_instance_id1);
-        assert_eq!(response.master_node(), listener_master_node1);
+        assert_eq!(response.daemon_node(), listener_daemon_node1);
         assert_eq!(response.payload().to_bytes(), response_payload);
     }
 
@@ -628,7 +619,7 @@ async fn service_communication_poll_specific_instance_id() {
 
     // Caller instance
     const CALLER_INSTANCE_ID: &str = "caller_instance";
-    const CALLER_MASTER_NODE: &str = "caller_master_node";
+    const CALLER_DAEMON_NODE: &str = "caller_daemon_node";
 
     let request_payload = Bytes::from_static(b"enable=true");
     let response_payload = Bytes::from_static(b"ack");
@@ -642,14 +633,14 @@ async fn service_communication_poll_specific_instance_id() {
 
     // The exposed service has its own dedicated scope (emulates running on its own instance)
     // This listener is not our target
-    let listener_master_node1 = "listener_master_node1";
+    let listener_daemon_node1 = "listener_daemon_node1";
     let listener_instance_id1 = "listener_instance1";
     let service_task1 = {
-        let service_expose_handle = router.service_messenger().await;
+        let service_expose_handle = router.messenger().await;
         // This listener is not supposed to receive any message
         let mut service = ServiceMessenger::listen(
             &service_expose_handle,
-            listener_master_node1,
+            listener_daemon_node1,
             listener_instance_id1,
             listener_node_name,
             listener_service_name,
@@ -678,13 +669,13 @@ async fn service_communication_poll_specific_instance_id() {
     };
 
     // Creates a second listener with a different ID (emulates a second instance). This is our target
-    let listener_master_node2 = "listener_master_node2";
+    let listener_daemon_node2 = "listener_daemon_node2";
     let listener_instance_id2 = "listener_instance2";
     let service_task2 = {
-        let service_expose_handle = router.service_messenger().await;
+        let service_expose_handle = router.messenger().await;
         let mut service = ServiceMessenger::listen(
             &service_expose_handle,
-            listener_master_node2,
+            listener_daemon_node2,
             listener_instance_id2,
             listener_node_name,
             listener_service_name,
@@ -700,7 +691,7 @@ async fn service_communication_poll_specific_instance_id() {
             let handler = service.handle_next_request(|request| {
                 let response_payload = response_payload.clone();
                 async move {
-                    assert_eq!(request.message().master_node(), CALLER_MASTER_NODE);
+                    assert_eq!(request.message().daemon_node(), CALLER_DAEMON_NODE);
                     assert_eq!(request.message().instance_id(), CALLER_INSTANCE_ID);
                     assert_eq!(request.message().payload(), &request_payload);
                     call_count.fetch_add(1, Ordering::SeqCst);
@@ -739,14 +730,14 @@ async fn service_communication_poll_specific_instance_id() {
 
     // The caller node has its own scope (emulates a separate node running on a different instance)
     {
-        let caller_handle = router.service_messenger().await;
+        let caller_handle = router.messenger().await;
         let response = ServiceMessenger::poll(
             &caller_handle,
-            CALLER_MASTER_NODE,
+            CALLER_DAEMON_NODE,
             CALLER_INSTANCE_ID,
             listener_node_name,
             listener_service_name,
-            None,                        // Here we don't specify any target master node
+            None,                        // Here we don't specify any target daemon node
             Some(listener_instance_id2), // We specify listener_instance_id2 as the target
             request_payload.clone(),
             Duration::from_secs(1),
@@ -756,7 +747,7 @@ async fn service_communication_poll_specific_instance_id() {
 
         // Listener instance 2 is supposed to have responded since it's the target
         assert_eq!(response.instance_id(), listener_instance_id2);
-        assert_eq!(response.master_node(), listener_master_node2);
+        assert_eq!(response.daemon_node(), listener_daemon_node2);
         assert_eq!(response.payload().to_bytes(), response_payload);
     }
 
@@ -792,11 +783,11 @@ async fn service_communication_poll_wrong_node() {
     let listener_node_name = "camera";
     let listener_service_name = "enable_camera";
     let listener_instance_id = "listener_instance";
-    let listener_master_node = "listener_master_node";
+    let listener_daemon_node = "listener_daemon_node";
 
     // Caller instance
     const CALLER_INSTANCE_ID: &str = "caller_instance";
-    const CALLER_MASTER_NODE: &str = "caller_master_node";
+    const CALLER_DAEMON_NODE: &str = "caller_daemon_node";
 
     let request_payload = Bytes::from_static(b"enable=true");
     let call_count = Arc::new(AtomicUsize::new(0));
@@ -808,10 +799,10 @@ async fn service_communication_poll_wrong_node() {
 
     // The exposed service has its own dedicated scope (emulates running on its own instance)
     let service_task = {
-        let service_expose_handle = router.service_messenger().await;
+        let service_expose_handle = router.messenger().await;
         let mut service = ServiceMessenger::listen(
             &service_expose_handle,
-            listener_master_node,
+            listener_daemon_node,
             listener_instance_id,
             listener_node_name,
             listener_service_name,
@@ -855,15 +846,15 @@ async fn service_communication_poll_wrong_node() {
 
     // The caller node has its own scope (emulates a separate node running on a different instance)
     {
-        let caller_handle = router.service_messenger().await;
+        let caller_handle = router.messenger().await;
         let err = {
             let result = ServiceMessenger::poll(
                 &caller_handle,
-                CALLER_MASTER_NODE,
+                CALLER_DAEMON_NODE,
                 CALLER_INSTANCE_ID,
                 listener_node_name,
                 listener_service_name,
-                None,               // target_master_node
+                None,               // target_daemon_node
                 Some("wrong_node"), // Use a wrong instance_id here
                 request_payload.clone(),
                 Duration::from_secs(1),
@@ -916,18 +907,18 @@ async fn service_communication_poll_wrong_node() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn service_communication_poll_wrong_master_node() {
+async fn service_communication_poll_wrong_daemon_node() {
     let router = TestRouterContext::start().await;
 
     // Listener instance
     let listener_node_name = "camera";
     let listener_service_name = "enable_camera";
     let listener_instance_id = "listener_instance";
-    let listener_master_node = "listener_master_node";
+    let listener_daemon_node = "listener_daemon_node";
 
     // Caller instance
     const CALLER_INSTANCE_ID: &str = "caller_instance";
-    const CALLER_MASTER_NODE: &str = "caller_master_node";
+    const CALLER_DAEMON_NODE: &str = "caller_daemon_node";
 
     let request_payload = Bytes::from_static(b"enable=true");
 
@@ -940,10 +931,10 @@ async fn service_communication_poll_wrong_master_node() {
 
     // The exposed service has its own dedicated scope (emulates running on its own instance)
     let service_task = {
-        let service_expose_handle = router.service_messenger().await;
+        let service_expose_handle = router.messenger().await;
         let mut service = ServiceMessenger::listen(
             &service_expose_handle,
-            listener_master_node,
+            listener_daemon_node,
             listener_instance_id,
             listener_node_name,
             listener_service_name,
@@ -987,14 +978,14 @@ async fn service_communication_poll_wrong_master_node() {
         // Allow the service to fully establish its listener
         tokio::time::sleep(Duration::from_millis(50)).await;
 
-        let caller_handle = router.service_messenger().await;
+        let caller_handle = router.messenger().await;
         let result = ServiceMessenger::poll(
             &caller_handle,
-            CALLER_MASTER_NODE,
+            CALLER_DAEMON_NODE,
             CALLER_INSTANCE_ID,
             listener_node_name,
             listener_service_name,
-            Some("wrong_master"), // target_master_node - wrong one!
+            Some("wrong_daemon"), // target_daemon_node - wrong one!
             None,                 // no specific target_instance_id
             request_payload.clone(),
             Duration::from_millis(200),
@@ -1002,7 +993,7 @@ async fn service_communication_poll_wrong_master_node() {
         .await;
 
         let Err(err) = result else {
-            panic!("service call should fail when targeting the wrong master node");
+            panic!("service call should fail when targeting the wrong daemon node");
         };
 
         err
@@ -1043,15 +1034,15 @@ async fn service_communication_fails_service_not_started() {
 
     // Caller instance
     const CALLER_INSTANCE_ID: &str = "caller_instance";
-    const CALLER_MASTER_NODE: &str = "caller_master_node";
+    const CALLER_DAEMON_NODE: &str = "caller_daemon_node";
 
     // The caller node has its own scope (emulates a separate node running on a different instance)
     let err = {
-        let caller_handle = router.service_messenger().await;
+        let caller_handle = router.messenger().await;
 
         let result = ServiceMessenger::poll(
             &caller_handle,
-            CALLER_MASTER_NODE,
+            CALLER_DAEMON_NODE,
             CALLER_INSTANCE_ID,
             listener_node_name,
             listener_service_name,
@@ -1094,11 +1085,11 @@ async fn service_communication_fails_service_timeouts() {
     let listener_node_name = "camera";
     let listener_service_name = "enable_camera";
     let listener_instance_id = "listener_instance";
-    let listener_master_node = "listener_master_node";
+    let listener_daemon_node = "listener_daemon_node";
 
     // Caller instance
     const CALLER_INSTANCE_ID: &str = "caller_instance";
-    const CALLER_MASTER_NODE: &str = "caller_master_node";
+    const CALLER_DAEMON_NODE: &str = "caller_daemon_node";
 
     let response_payload = Bytes::from_static(b"ack");
     let call_count = Arc::new(AtomicUsize::new(0));
@@ -1112,10 +1103,10 @@ async fn service_communication_fails_service_timeouts() {
     let service_task = {
         let response_delay = Duration::from_millis(200);
 
-        let service_expose_handle = router.service_messenger().await;
+        let service_expose_handle = router.messenger().await;
         let mut service = ServiceMessenger::listen(
             &service_expose_handle,
-            listener_master_node,
+            listener_daemon_node,
             listener_instance_id,
             listener_node_name,
             listener_service_name,
@@ -1137,7 +1128,7 @@ async fn service_communication_fails_service_timeouts() {
                 let handled = tokio::time::timeout(
                     service_wait_timeout,
                     service.handle_next_request(|request| async move {
-                        assert_eq!(request.message().master_node(), CALLER_MASTER_NODE);
+                        assert_eq!(request.message().daemon_node(), CALLER_DAEMON_NODE);
                         assert_eq!(request.message().instance_id(), CALLER_INSTANCE_ID);
                         call_count.fetch_add(1, Ordering::SeqCst);
                         tokio::time::sleep(response_delay).await;
@@ -1172,11 +1163,11 @@ async fn service_communication_fails_service_timeouts() {
         let caller_success_timeout = Duration::from_millis(500);
         let caller_failure_timeout = Duration::from_millis(50);
 
-        let caller_handle = router.service_messenger().await;
+        let caller_handle = router.messenger().await;
 
         let success_response = ServiceMessenger::poll(
             &caller_handle,
-            CALLER_MASTER_NODE,
+            CALLER_DAEMON_NODE,
             CALLER_INSTANCE_ID,
             listener_node_name,
             listener_service_name,
@@ -1196,7 +1187,7 @@ async fn service_communication_fails_service_timeouts() {
 
         let result = ServiceMessenger::poll(
             &caller_handle,
-            CALLER_MASTER_NODE,
+            CALLER_DAEMON_NODE,
             CALLER_INSTANCE_ID,
             listener_node_name,
             listener_service_name,
@@ -1258,11 +1249,11 @@ async fn service_handle_request_processes_multiple_messages() {
     let listener_node_name = "camera";
     let listener_service_name = "enable_camera";
     let listener_instance_id = "listener_instance";
-    let listener_master_node = "listener_master_node";
+    let listener_daemon_node = "listener_daemon_node";
 
     // Caller instance
     const CALLER_INSTANCE_ID: &str = "caller_instance";
-    const CALLER_MASTER_NODE: &str = "caller_master_node";
+    const CALLER_DAEMON_NODE: &str = "caller_daemon_node";
 
     let expected_requests = 500;
     let call_count = Arc::new(AtomicUsize::new(0));
@@ -1272,10 +1263,10 @@ async fn service_handle_request_processes_multiple_messages() {
     let host = host.clone();
 
     let service_task = {
-        let service_expose_handle = connect_service_messenger(&host, port).await;
+        let service_expose_handle = connect_messenger(&host, port).await;
         let mut service = ServiceMessenger::listen(
             &service_expose_handle,
-            listener_master_node,
+            listener_daemon_node,
             listener_instance_id,
             listener_node_name,
             listener_service_name,
@@ -1310,13 +1301,13 @@ async fn service_handle_request_processes_multiple_messages() {
 
     // The caller node has its own scope (emulates a separate node running on a different instance)
     {
-        let caller_handle = router.service_messenger().await;
+        let caller_handle = router.messenger().await;
 
         for i in 0..expected_requests {
             let request_payload = Bytes::from(format!("enable=true;request={i}").into_bytes());
             let response = ServiceMessenger::poll(
                 &caller_handle,
-                CALLER_MASTER_NODE,
+                CALLER_DAEMON_NODE,
                 CALLER_INSTANCE_ID,
                 listener_node_name,
                 listener_service_name,
@@ -1359,10 +1350,10 @@ async fn single_service_communication_multiple_polls_and_callers() {
     let listener_node_name = "camera";
     let listener_service_name = "enable_camera";
     let listener_instance_id = "listener_instance";
-    let listener_master_node = "listener_master_node";
+    let listener_daemon_node = "listener_daemon_node";
 
-    // Caller master node (shared by all callers)
-    const CALLER_MASTER_NODE: &str = "caller_master_node";
+    // Caller daemon node (shared by all callers)
+    const CALLER_DAEMON_NODE: &str = "caller_daemon_node";
 
     // TODO: 500 callers saturate Zenohd, it shouldn't
     let caller_count = 100;
@@ -1374,11 +1365,11 @@ async fn single_service_communication_multiple_polls_and_callers() {
 
     // The exposed service has its own dedicated scope (emulates running on its own instance)
     let service_task: tokio::task::JoinHandle<Result<(), Error>> = {
-        let service_expose_handle = router.service_messenger().await;
+        let service_expose_handle = router.messenger().await;
 
         let mut service = ServiceMessenger::listen(
             &service_expose_handle,
-            listener_master_node,
+            listener_daemon_node,
             listener_instance_id,
             listener_node_name,
             listener_service_name,
@@ -1398,7 +1389,7 @@ async fn single_service_communication_multiple_polls_and_callers() {
                 let handle = service
                     .spawn_next_request_handler(move |request| async move {
                         let payload = request.message().payload().to_bytes();
-                        assert_eq!(request.message().master_node(), CALLER_MASTER_NODE);
+                        assert_eq!(request.message().daemon_node(), CALLER_DAEMON_NODE);
                         call_count.fetch_add(1, Ordering::SeqCst);
                         Ok(payload)
                     })
@@ -1452,13 +1443,13 @@ async fn single_service_communication_multiple_polls_and_callers() {
             requests.shuffle(&mut rng);
             let host = host.clone();
             let poll_service = tokio::spawn(async move {
-                let caller_handle = connect_service_messenger(&host, port).await;
+                let caller_handle = connect_messenger(&host, port).await;
 
                 let mut caller_results = Vec::with_capacity(requests.len());
                 for (request_idx, request_payload) in requests {
                     let response = ServiceMessenger::poll(
                         &caller_handle,
-                        CALLER_MASTER_NODE,
+                        CALLER_DAEMON_NODE,
                         &caller_id,
                         listener_node_name,
                         listener_service_name,
@@ -1532,11 +1523,11 @@ async fn action_communication_no_instance_id_target() {
     // Listener instance
     let listener_node_name = "controller";
     let listener_action_name = "move_right_arm";
-    const LISTENER_MASTER_NODE: &str = "listener_master_node";
+    const LISTENER_DAEMON_NODE: &str = "listener_daemon_node";
     const LISTENER_INSTANCE_ID: &str = "listener_instance";
 
     // Caller instance
-    const CALLER_MASTER_NODE: &str = "caller_master_node";
+    const CALLER_DAEMON_NODE: &str = "caller_daemon_node";
     const CALLER_INSTANCE_ID: &str = "caller_instance";
 
     let goal_payload = Bytes::from_static(b"arm=right;pos=1,2,3");
@@ -1553,12 +1544,12 @@ async fn action_communication_no_instance_id_target() {
         let feedback_payload_server = feedback_payload.clone();
         let result_payload_server = result_payload.clone();
 
-        let action_handle = router.action_messenger().await;
+        let action_handle = router.messenger().await;
 
         tokio::spawn(async move {
             let mut action = ActionMessenger::expose(
                 &action_handle,
-                LISTENER_MASTER_NODE,
+                LISTENER_DAEMON_NODE,
                 LISTENER_INSTANCE_ID,
                 listener_node_name,
                 listener_action_name,
@@ -1570,7 +1561,7 @@ async fn action_communication_no_instance_id_target() {
             let goal_handler = action
                 .goal_service
                 .handle_next_request(move |request| async move {
-                    assert_eq!(request.message.master_node(), CALLER_MASTER_NODE);
+                    assert_eq!(request.message().daemon_node(), CALLER_DAEMON_NODE);
                     assert_eq!(request.message().instance_id(), CALLER_INSTANCE_ID);
                     assert_eq!(request.message().payload(), &expected_goal_payload);
 
@@ -1581,7 +1572,7 @@ async fn action_communication_no_instance_id_target() {
             let result_handler = action.result_service.handle_next_request(move |request| {
                 let response_payload = result_payload_server.clone();
                 async move {
-                    assert_eq!(request.message.master_node(), CALLER_MASTER_NODE);
+                    assert_eq!(request.message().daemon_node(), CALLER_DAEMON_NODE);
                     assert_eq!(request.message().instance_id(), CALLER_INSTANCE_ID);
                     assert!(request.message().payload().is_empty());
 
@@ -1633,16 +1624,16 @@ async fn action_communication_no_instance_id_target() {
 
     // The caller node has its own scope (emulates a separate node running on a different instance)
     {
-        let caller_handle = router.action_messenger().await;
+        let caller_handle = router.messenger().await;
 
         // Client sends the goal and obtains the handle carrying goal response + feedback sub.
         let mut goal_handle = ActionMessenger::send_goal(
             &caller_handle,
-            CALLER_MASTER_NODE,
+            CALLER_DAEMON_NODE,
             CALLER_INSTANCE_ID,
             listener_node_name,
             listener_action_name,
-            None, // No target master_id
+            None, // No target daemon_id
             None, // No target instance_id
             goal_payload,
             QoSProfile::Reliable,
@@ -1652,8 +1643,8 @@ async fn action_communication_no_instance_id_target() {
         .expect("caller should send goal");
 
         assert_eq!(
-            goal_handle.goal_response().master_node(),
-            LISTENER_MASTER_NODE
+            goal_handle.goal_response().daemon_node(),
+            LISTENER_DAEMON_NODE
         );
         assert_eq!(
             goal_handle.goal_response().instance_id(),
@@ -1671,7 +1662,7 @@ async fn action_communication_no_instance_id_target() {
             .expect("caller should receive feedback");
 
         assert_eq!(feedback_message.payload(), &feedback_payload);
-        assert_eq!(feedback_message.master_node(), LISTENER_MASTER_NODE);
+        assert_eq!(feedback_message.daemon_node(), LISTENER_DAEMON_NODE);
         assert_eq!(feedback_message.instance_id(), LISTENER_INSTANCE_ID);
 
         // Finally, request the result using the same handle and ensure the server replies.
@@ -1684,7 +1675,7 @@ async fn action_communication_no_instance_id_target() {
         .expect("caller should receive result");
 
         assert_eq!(result_response.payload().to_bytes(), result_payload);
-        assert_eq!(result_response.master_node(), LISTENER_MASTER_NODE);
+        assert_eq!(result_response.daemon_node(), LISTENER_DAEMON_NODE);
         assert_eq!(result_response.instance_id(), LISTENER_INSTANCE_ID);
     }
 
@@ -1704,14 +1695,14 @@ async fn action_communication_with_instance_id_target() {
     let listener_node_name = "controller";
     let listener_action_name = "move_right_arm";
 
-    const LISTENER_MASTER_NODE1: &str = "listener_master_node1";
+    const LISTENER_DAEMON_NODE1: &str = "listener_daemon_node1";
     const LISTENER_INSTANCE_ID1: &str = "listener_instance1";
 
-    const LISTENER_MASTER_NODE2: &str = "listener_master_node2";
+    const LISTENER_DAEMON_NODE2: &str = "listener_daemon_node2";
     const LISTENER_INSTANCE_ID2: &str = "listener_instance2";
 
     // Caller instance
-    const CALLER_MASTER_NODE: &str = "caller_master_node";
+    const CALLER_DAEMON_NODE: &str = "caller_daemon_node";
     const CALLER_INSTANCE_ID: &str = "caller_instance";
 
     let goal_payload = Bytes::from_static(b"arm=right;pos=1,2,3");
@@ -1728,12 +1719,12 @@ async fn action_communication_with_instance_id_target() {
     let server_task1 = {
         let expected_goal_response_payload = goal_response_payload.clone();
 
-        let action_handle = router.action_messenger().await;
+        let action_handle = router.messenger().await;
 
         tokio::spawn(async move {
             let mut action = ActionMessenger::expose(
                 &action_handle,
-                LISTENER_MASTER_NODE1,
+                LISTENER_DAEMON_NODE1,
                 LISTENER_INSTANCE_ID1,
                 listener_node_name,
                 listener_action_name,
@@ -1775,12 +1766,12 @@ async fn action_communication_with_instance_id_target() {
         let feedback_payload_server = feedback_payload.clone();
         let result_payload_server = result_payload.clone();
 
-        let action_handle = router.action_messenger().await;
+        let action_handle = router.messenger().await;
 
         tokio::spawn(async move {
             let mut action = ActionMessenger::expose(
                 &action_handle,
-                LISTENER_MASTER_NODE2,
+                LISTENER_DAEMON_NODE2,
                 LISTENER_INSTANCE_ID2,
                 listener_node_name,
                 listener_action_name,
@@ -1792,7 +1783,7 @@ async fn action_communication_with_instance_id_target() {
             let goal_handler = action
                 .goal_service
                 .handle_next_request(move |request| async move {
-                    assert_eq!(request.message.master_node(), CALLER_MASTER_NODE);
+                    assert_eq!(request.message().daemon_node(), CALLER_DAEMON_NODE);
                     assert_eq!(request.message().instance_id(), CALLER_INSTANCE_ID);
                     assert_eq!(request.message().payload(), &expected_goal_payload);
 
@@ -1803,7 +1794,7 @@ async fn action_communication_with_instance_id_target() {
             let result_handler = action.result_service.handle_next_request(move |request| {
                 let response_payload = result_payload_server.clone();
                 async move {
-                    assert_eq!(request.message.master_node(), CALLER_MASTER_NODE);
+                    assert_eq!(request.message().daemon_node(), CALLER_DAEMON_NODE);
                     assert_eq!(request.message().instance_id(), CALLER_INSTANCE_ID);
                     assert!(request.message().payload().is_empty());
 
@@ -1855,16 +1846,16 @@ async fn action_communication_with_instance_id_target() {
 
     // The caller node has its own scope (emulates a separate node running on a different instance)
     {
-        let caller_handle = router.action_messenger().await;
+        let caller_handle = router.messenger().await;
 
         // Client sends the goal and obtains the handle carrying goal response + feedback sub.
         let mut goal_handle = ActionMessenger::send_goal(
             &caller_handle,
-            CALLER_MASTER_NODE,
+            CALLER_DAEMON_NODE,
             CALLER_INSTANCE_ID,
             listener_node_name,
             listener_action_name,
-            Some(LISTENER_MASTER_NODE2),
+            Some(LISTENER_DAEMON_NODE2),
             Some(LISTENER_INSTANCE_ID2),
             goal_payload,
             QoSProfile::Reliable,
@@ -1874,8 +1865,8 @@ async fn action_communication_with_instance_id_target() {
         .expect("caller should send goal");
 
         assert_eq!(
-            goal_handle.goal_response().master_node(),
-            LISTENER_MASTER_NODE2
+            goal_handle.goal_response().daemon_node(),
+            LISTENER_DAEMON_NODE2
         );
         assert_eq!(
             goal_handle.goal_response().instance_id(),
@@ -1893,7 +1884,7 @@ async fn action_communication_with_instance_id_target() {
             .expect("caller should receive feedback");
 
         assert_eq!(feedback_message.payload(), &feedback_payload);
-        assert_eq!(feedback_message.master_node(), LISTENER_MASTER_NODE2);
+        assert_eq!(feedback_message.daemon_node(), LISTENER_DAEMON_NODE2);
         assert_eq!(feedback_message.instance_id(), LISTENER_INSTANCE_ID2);
 
         // Finally, request the result using the same handle and ensure the server replies.
@@ -1906,7 +1897,7 @@ async fn action_communication_with_instance_id_target() {
         .expect("caller should receive result");
 
         assert_eq!(result_response.payload().to_bytes(), result_payload);
-        assert_eq!(result_response.master_node(), LISTENER_MASTER_NODE2);
+        assert_eq!(result_response.daemon_node(), LISTENER_DAEMON_NODE2);
         assert_eq!(result_response.instance_id(), LISTENER_INSTANCE_ID2);
     }
 
@@ -1930,11 +1921,11 @@ async fn action_communication_goal_cancelled() {
     // Listener instance
     let listener_node_name = "camera";
     let listener_action_name = "enable_camera";
-    const LISTENER_MASTER_NODE: &str = "listener_master_node";
+    const LISTENER_DAEMON_NODE: &str = "listener_daemon_node";
     const LISTENER_INSTANCE_ID: &str = "listener_instance";
 
     // Caller instance
-    const CALLER_MASTER_NODE: &str = "caller_master_node";
+    const CALLER_DAEMON_NODE: &str = "caller_daemon_node";
     const CALLER_INSTANCE_ID: &str = "caller_instance";
 
     let goal_payload = Bytes::from_static(b"arm=right;pos=1,2,3");
@@ -1955,12 +1946,12 @@ async fn action_communication_goal_cancelled() {
         let goal_call_count = Arc::clone(&goal_call_count);
         let cancel_call_count = Arc::clone(&cancel_call_count);
 
-        let action_handle = router.action_messenger().await;
+        let action_handle = router.messenger().await;
 
         tokio::spawn(async move {
             let mut action = ActionMessenger::expose(
                 &action_handle,
-                LISTENER_MASTER_NODE,
+                LISTENER_DAEMON_NODE,
                 LISTENER_INSTANCE_ID,
                 listener_node_name,
                 listener_action_name,
@@ -1972,7 +1963,7 @@ async fn action_communication_goal_cancelled() {
             let goal_handler = action.goal_service.handle_next_request(move |request| {
                 let goal_call_count = Arc::clone(&goal_call_count);
                 async move {
-                    assert_eq!(request.message.master_node(), CALLER_MASTER_NODE);
+                    assert_eq!(request.message().daemon_node(), CALLER_DAEMON_NODE);
                     assert_eq!(request.message().instance_id(), CALLER_INSTANCE_ID);
                     assert_eq!(request.message().payload(), &expected_goal_payload);
 
@@ -2020,13 +2011,16 @@ async fn action_communication_goal_cancelled() {
                 })
             };
 
-            let (cancel_context, cancel_response_topic) =
-                tokio::time::timeout(Duration::from_secs(5), action.cancel_service.next_request())
-                    .await
-                    .expect("timed out waiting for cancel request")
-                    .expect("action should receive cancel request");
+            let (cancel_context, cancel_responder) = tokio::time::timeout(
+                Duration::from_secs(5),
+                action.cancel_service.recv_next_request(),
+            )
+            .await
+            .expect("timed out waiting for cancel request")
+            .expect("action should receive cancel request")
+            .expect("cancel subscription should not be closed");
 
-            assert_eq!(cancel_context.message().master_node(), CALLER_MASTER_NODE);
+            assert_eq!(cancel_context.message().daemon_node(), CALLER_DAEMON_NODE);
             assert_eq!(cancel_context.message().instance_id(), CALLER_INSTANCE_ID);
             assert!(
                 cancel_context.message().payload().is_empty(),
@@ -2040,9 +2034,8 @@ async fn action_communication_goal_cancelled() {
             stop_feedback.notify_waiters();
             feedback_task.await.expect("feedback loop task panicked")?;
 
-            action
-                .cancel_service
-                .publish_response(cancel_response_topic, cancel_response_payload_server)
+            cancel_responder
+                .respond(cancel_response_payload_server)
                 .await?;
 
             Ok::<(), Error>(())
@@ -2056,15 +2049,15 @@ async fn action_communication_goal_cancelled() {
     // Allow the action server to fully establish its listeners
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    let caller_handle = router.action_messenger().await;
+    let caller_handle = router.messenger().await;
 
     let mut goal_handle = ActionMessenger::send_goal(
         &caller_handle,
-        CALLER_MASTER_NODE,
+        CALLER_DAEMON_NODE,
         CALLER_INSTANCE_ID,
         listener_node_name,
         listener_action_name,
-        Some(LISTENER_MASTER_NODE),
+        Some(LISTENER_DAEMON_NODE),
         Some(LISTENER_INSTANCE_ID),
         goal_payload,
         QoSProfile::Reliable,
@@ -2074,8 +2067,8 @@ async fn action_communication_goal_cancelled() {
     .expect("caller should send goal");
 
     assert_eq!(
-        goal_handle.goal_response().master_node(),
-        LISTENER_MASTER_NODE
+        goal_handle.goal_response().daemon_node(),
+        LISTENER_DAEMON_NODE
     );
     assert_eq!(
         goal_handle.goal_response().instance_id(),
@@ -2092,7 +2085,7 @@ async fn action_communication_goal_cancelled() {
         .expect("caller should receive initial feedback");
 
     assert_eq!(first_feedback.payload(), &feedback_payload);
-    assert_eq!(first_feedback.master_node(), LISTENER_MASTER_NODE);
+    assert_eq!(first_feedback.daemon_node(), LISTENER_DAEMON_NODE);
     assert_eq!(first_feedback.instance_id(), LISTENER_INSTANCE_ID);
 
     let second_feedback =
@@ -2102,7 +2095,7 @@ async fn action_communication_goal_cancelled() {
             .expect("feedback stream closed unexpectedly before cancellation");
 
     assert_eq!(second_feedback.payload(), &feedback_payload);
-    assert_eq!(second_feedback.master_node(), LISTENER_MASTER_NODE);
+    assert_eq!(second_feedback.daemon_node(), LISTENER_DAEMON_NODE);
     assert_eq!(second_feedback.instance_id(), LISTENER_INSTANCE_ID);
 
     let cancel_response =
@@ -2114,7 +2107,7 @@ async fn action_communication_goal_cancelled() {
         cancel_response.payload().to_bytes(),
         cancel_response_payload
     );
-    assert_eq!(cancel_response.master_node(), LISTENER_MASTER_NODE);
+    assert_eq!(cancel_response.daemon_node(), LISTENER_DAEMON_NODE);
     assert_eq!(cancel_response.instance_id(), LISTENER_INSTANCE_ID);
 
     // Check that feedback eventually goes quiet after cancellation; allow a short window for
@@ -2177,11 +2170,11 @@ async fn single_action_communication_multiple_polls() {
     // Listener instance
     let listener_node_name = "camera";
     let listener_action_name = "enable_camera";
-    const LISTENER_MASTER_NODE: &str = "listener_master_node";
+    const LISTENER_DAEMON_NODE: &str = "listener_daemon_node";
     const LISTENER_INSTANCE_ID: &str = "listener_instance";
 
     // Caller instance
-    const CALLER_MASTER_NODE: &str = "caller_master_node";
+    const CALLER_DAEMON_NODE: &str = "caller_daemon_node";
     let caller_prefix = "the_brain";
 
     const CLIENT_COUNT: usize = 8;
@@ -2194,14 +2187,14 @@ async fn single_action_communication_multiple_polls() {
 
     // Launch a background task that plays the role of the action server.
     let server_task = {
-        let action_handle = router.action_messenger().await;
+        let action_handle = router.messenger().await;
         let action_ready_tx = Some(action_ready_tx);
         let cases = Arc::clone(&cases);
 
         tokio::spawn(async move {
             let action = ActionMessenger::expose(
                 &action_handle,
-                LISTENER_MASTER_NODE,
+                LISTENER_DAEMON_NODE,
                 LISTENER_INSTANCE_ID,
                 listener_node_name,
                 listener_action_name,
@@ -2322,11 +2315,11 @@ async fn single_action_communication_multiple_polls() {
         let feedback_search_limit = total_clients;
 
         let handle = tokio::spawn(async move {
-            let caller_handle = connect_action_messenger(&host, port).await;
+            let caller_handle = connect_messenger(&host, port).await;
 
             let mut goal_handle = ActionMessenger::send_goal(
                 &caller_handle,
-                CALLER_MASTER_NODE,
+                CALLER_DAEMON_NODE,
                 &case.client_id,
                 listener_node_name,
                 listener_action_name,

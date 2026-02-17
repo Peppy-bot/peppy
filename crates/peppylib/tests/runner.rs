@@ -5,13 +5,13 @@ use config::runtime::{NodeInstance, RuntimeConfig};
 use peppylib::encoding::health::{NodeHealthRequest, NodeHealthResponse};
 use peppylib::messaging::{NODE_HEALTH_SERVICE, NODE_READY_SERVICE, SHUTDOWN_SERVICE};
 use peppylib::runtime::NodeBuilder;
-use pmi::{MessengerBackend, ZenohAdapter, ZenohdInstance};
+use pmi::ZenohAdapter;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 
-const TEST_MASTER_NODE: &str = "test_master";
+const TEST_DAEMON_NODE: &str = "test_daemon";
 const TEST_NODE_NAME: &str = "test_node";
 const TEST_INSTANCE_ID: &str = "test_instance";
 const SHUTDOWN_SENDER_INSTANCE_ID: &str = "test_shutdown_sender";
@@ -94,27 +94,12 @@ impl Drop for EnvAndDirGuard {
     }
 }
 
-struct RouterGuard {
-    instance: Option<ZenohdInstance>,
-}
-
-impl RouterGuard {
-    async fn stop(&mut self) {
-        if let Some(mut instance) = self.instance.take() {
-            let _ = instance.messenger().stop_router().await;
-        }
-    }
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn daemon_runner_succeed() {
     let instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
         .await
         .expect("failed to start zenoh router for test");
     let (router_host, router_port) = (instance.host.clone(), instance.port);
-    let mut router_guard = RouterGuard {
-        instance: Some(instance),
-    };
 
     let temp_dir = tempfile::tempdir().expect("failed to create temp dir for test runner");
     let peppy_config_path = temp_dir.path().join(peppylib::config::NODE_CONFIG_FILE);
@@ -145,7 +130,7 @@ async fn daemon_runner_succeed() {
                 .expect("runtime args should parse"),
         },
         TEST_NODE_NAME,
-        TEST_MASTER_NODE,
+        TEST_DAEMON_NODE,
     )
     .expect("runtime config should build");
     let runtime_config_path = temp_dir.path().join("peppy_runtime.json5");
@@ -182,11 +167,11 @@ async fn daemon_runner_succeed() {
 
         if peppylib::ServiceMessenger::is_reachable(
             &messenger,
-            TEST_MASTER_NODE,
+            TEST_DAEMON_NODE,
             SHUTDOWN_SENDER_INSTANCE_ID,
             TEST_NODE_NAME,
             SHUTDOWN_SERVICE,
-            Some(TEST_MASTER_NODE),
+            Some(TEST_DAEMON_NODE),
             Some(TEST_INSTANCE_ID),
         )
         .await
@@ -207,11 +192,11 @@ async fn daemon_runner_succeed() {
         .expect("failed to encode health request");
     let health_response = peppylib::ServiceMessenger::poll(
         &messenger,
-        TEST_MASTER_NODE,
+        TEST_DAEMON_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
         TEST_NODE_NAME,
         NODE_HEALTH_SERVICE,
-        Some(TEST_MASTER_NODE),
+        Some(TEST_DAEMON_NODE),
         Some(TEST_INSTANCE_ID),
         health_request,
         Duration::from_secs(2),
@@ -224,11 +209,11 @@ async fn daemon_runner_succeed() {
     let shutdown_payload = Bytes::from_static(b"shutdown");
     let shutdown_response = peppylib::ServiceMessenger::poll(
         &messenger,
-        TEST_MASTER_NODE,
+        TEST_DAEMON_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
         TEST_NODE_NAME,
         SHUTDOWN_SERVICE,
-        Some(TEST_MASTER_NODE),
+        Some(TEST_DAEMON_NODE),
         Some(TEST_INSTANCE_ID),
         shutdown_payload.clone(),
         Duration::from_secs(2),
@@ -244,8 +229,6 @@ async fn daemon_runner_succeed() {
         .expect("runner should exit")
         .expect("runner task should not panic")
         .expect("runner should return Ok");
-
-    router_guard.stop().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -260,9 +243,6 @@ async fn standalone_runner_succeed() {
         .await
         .expect("failed to start zenoh router for test");
     let (router_host, router_port) = (instance.host.clone(), instance.port);
-    let mut router_guard = RouterGuard {
-        instance: Some(instance),
-    };
 
     let temp_dir = tempfile::tempdir().expect("failed to create temp dir for test runner");
     let peppy_config_path = temp_dir.path().join(peppylib::config::NODE_CONFIG_FILE);
@@ -312,8 +292,6 @@ async fn standalone_runner_succeed() {
         .expect("runner should exit")
         .expect("runner task should not panic")
         .expect("runner should return Ok");
-
-    router_guard.stop().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -322,9 +300,6 @@ async fn node_ready_but_not_healthy() {
         .await
         .expect("failed to start zenoh router for test");
     let (router_host, router_port) = (instance.host.clone(), instance.port);
-    let mut router_guard = RouterGuard {
-        instance: Some(instance),
-    };
 
     let temp_dir = tempfile::tempdir().expect("failed to create temp dir for test runner");
     let peppy_config_path = temp_dir.path().join(peppylib::config::NODE_CONFIG_FILE);
@@ -355,7 +330,7 @@ async fn node_ready_but_not_healthy() {
                 .expect("runtime args should parse"),
         },
         TEST_NODE_NAME,
-        TEST_MASTER_NODE,
+        TEST_DAEMON_NODE,
     )
     .expect("runtime config should build");
     let runtime_config_path = temp_dir.path().join("peppy_runtime.json5");
@@ -393,11 +368,11 @@ async fn node_ready_but_not_healthy() {
 
         if peppylib::ServiceMessenger::is_reachable(
             &messenger,
-            TEST_MASTER_NODE,
+            TEST_DAEMON_NODE,
             SHUTDOWN_SENDER_INSTANCE_ID,
             TEST_NODE_NAME,
             NODE_READY_SERVICE,
-            Some(TEST_MASTER_NODE),
+            Some(TEST_DAEMON_NODE),
             Some(TEST_INSTANCE_ID),
         )
         .await
@@ -416,11 +391,11 @@ async fn node_ready_but_not_healthy() {
     let ready_payload = Bytes::from_static(b"ready");
     let ready_response = peppylib::ServiceMessenger::poll(
         &messenger,
-        TEST_MASTER_NODE,
+        TEST_DAEMON_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
         TEST_NODE_NAME,
         NODE_READY_SERVICE,
-        Some(TEST_MASTER_NODE),
+        Some(TEST_DAEMON_NODE),
         Some(TEST_INSTANCE_ID),
         ready_payload.clone(),
         Duration::from_secs(2),
@@ -438,11 +413,11 @@ async fn node_ready_but_not_healthy() {
 
         if peppylib::ServiceMessenger::is_reachable(
             &messenger,
-            TEST_MASTER_NODE,
+            TEST_DAEMON_NODE,
             SHUTDOWN_SENDER_INSTANCE_ID,
             TEST_NODE_NAME,
             SHUTDOWN_SERVICE,
-            Some(TEST_MASTER_NODE),
+            Some(TEST_DAEMON_NODE),
             Some(TEST_INSTANCE_ID),
         )
         .await
@@ -461,11 +436,11 @@ async fn node_ready_but_not_healthy() {
     assert!(
         !peppylib::ServiceMessenger::is_reachable(
             &messenger,
-            TEST_MASTER_NODE,
+            TEST_DAEMON_NODE,
             SHUTDOWN_SENDER_INSTANCE_ID,
             TEST_NODE_NAME,
             NODE_HEALTH_SERVICE,
-            Some(TEST_MASTER_NODE),
+            Some(TEST_DAEMON_NODE),
             Some(TEST_INSTANCE_ID),
         )
         .await
@@ -478,11 +453,11 @@ async fn node_ready_but_not_healthy() {
         .expect("failed to encode health request");
     let health_err = peppylib::ServiceMessenger::poll(
         &messenger,
-        TEST_MASTER_NODE,
+        TEST_DAEMON_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
         TEST_NODE_NAME,
         NODE_HEALTH_SERVICE,
-        Some(TEST_MASTER_NODE),
+        Some(TEST_DAEMON_NODE),
         Some(TEST_INSTANCE_ID),
         health_request.clone(),
         Duration::from_millis(200),
@@ -510,11 +485,11 @@ async fn node_ready_but_not_healthy() {
 
         if peppylib::ServiceMessenger::is_reachable(
             &messenger,
-            TEST_MASTER_NODE,
+            TEST_DAEMON_NODE,
             SHUTDOWN_SENDER_INSTANCE_ID,
             TEST_NODE_NAME,
             NODE_HEALTH_SERVICE,
-            Some(TEST_MASTER_NODE),
+            Some(TEST_DAEMON_NODE),
             Some(TEST_INSTANCE_ID),
         )
         .await
@@ -532,11 +507,11 @@ async fn node_ready_but_not_healthy() {
 
     let health_response = peppylib::ServiceMessenger::poll(
         &messenger,
-        TEST_MASTER_NODE,
+        TEST_DAEMON_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
         TEST_NODE_NAME,
         NODE_HEALTH_SERVICE,
-        Some(TEST_MASTER_NODE),
+        Some(TEST_DAEMON_NODE),
         Some(TEST_INSTANCE_ID),
         health_request,
         Duration::from_secs(2),
@@ -549,11 +524,11 @@ async fn node_ready_but_not_healthy() {
     let shutdown_payload = Bytes::from_static(b"shutdown");
     let shutdown_response = peppylib::ServiceMessenger::poll(
         &messenger,
-        TEST_MASTER_NODE,
+        TEST_DAEMON_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
         TEST_NODE_NAME,
         SHUTDOWN_SERVICE,
-        Some(TEST_MASTER_NODE),
+        Some(TEST_DAEMON_NODE),
         Some(TEST_INSTANCE_ID),
         shutdown_payload.clone(),
         Duration::from_secs(2),
@@ -569,8 +544,6 @@ async fn node_ready_but_not_healthy() {
         .expect("runner should exit")
         .expect("runner task should not panic")
         .expect("runner should return Ok");
-
-    router_guard.stop().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -579,9 +552,6 @@ async fn daemon_cancellation_token_cancelled_on_shutdown() {
         .await
         .expect("failed to start zenoh router for test");
     let (router_host, router_port) = (instance.host.clone(), instance.port);
-    let mut router_guard = RouterGuard {
-        instance: Some(instance),
-    };
 
     let temp_dir = tempfile::tempdir().expect("failed to create temp dir for test runner");
     let peppy_config_path = temp_dir.path().join(peppylib::config::NODE_CONFIG_FILE);
@@ -612,7 +582,7 @@ async fn daemon_cancellation_token_cancelled_on_shutdown() {
                 .expect("runtime args should parse"),
         },
         TEST_NODE_NAME,
-        TEST_MASTER_NODE,
+        TEST_DAEMON_NODE,
     )
     .expect("runtime config should build");
     let runtime_config_path = temp_dir.path().join("peppy_runtime.json5");
@@ -656,11 +626,11 @@ async fn daemon_cancellation_token_cancelled_on_shutdown() {
 
         if peppylib::ServiceMessenger::is_reachable(
             &messenger,
-            TEST_MASTER_NODE,
+            TEST_DAEMON_NODE,
             SHUTDOWN_SENDER_INSTANCE_ID,
             TEST_NODE_NAME,
             SHUTDOWN_SERVICE,
-            Some(TEST_MASTER_NODE),
+            Some(TEST_DAEMON_NODE),
             Some(TEST_INSTANCE_ID),
         )
         .await
@@ -680,11 +650,11 @@ async fn daemon_cancellation_token_cancelled_on_shutdown() {
     let shutdown_payload = Bytes::from_static(b"shutdown");
     peppylib::ServiceMessenger::poll(
         &messenger,
-        TEST_MASTER_NODE,
+        TEST_DAEMON_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
         TEST_NODE_NAME,
         SHUTDOWN_SERVICE,
-        Some(TEST_MASTER_NODE),
+        Some(TEST_DAEMON_NODE),
         Some(TEST_INSTANCE_ID),
         shutdown_payload,
         Duration::from_secs(2),
@@ -704,6 +674,79 @@ async fn daemon_cancellation_token_cancelled_on_shutdown() {
         cancellation_token.is_cancelled(),
         "cancellation token should be cancelled after shutdown request"
     );
+}
 
-    router_guard.stop().await;
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn node_runner_exposes_messenger_and_metadata() {
+    let _env_guard = EnvAndDirGuard::new_standalone();
+
+    let instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
+        .await
+        .expect("failed to start zenoh router for test");
+    let (router_host, router_port) = (instance.host.clone(), instance.port);
+
+    let temp_dir = tempfile::tempdir().expect("failed to create temp dir for test runner");
+    let peppy_config_path = temp_dir.path().join(peppylib::config::NODE_CONFIG_FILE);
+    let peppy_config = r#"{
+      schema_version: 1,
+      manifest: {
+        name: "test_node",
+        tag: "0.1.0",
+        language: "rust",
+        start_cmd: ["cargo", "run"]
+      },
+      parameters: {
+        frequency_hz: "f64"
+      }
+    }"#;
+    std::fs::write(&peppy_config_path, peppy_config).expect("failed to write peppy config");
+
+    let standalone_config = peppylib::runtime::StandaloneConfig::new()
+        .with_parameters_json(serde_json::json!({ "frequency_hz": TEST_FREQUENCY_HZ }))
+        .with_messaging(&router_host, router_port)
+        .with_instance_id(TEST_INSTANCE_ID)
+        .with_node_name(TEST_NODE_NAME);
+
+    struct RunnerMetadata {
+        bound_daemon_node: String,
+        bound_instance_id: String,
+        node_name: String,
+        messaging_port: u16,
+        cancellation_token: CancellationToken,
+    }
+
+    let (setup_tx, setup_rx) = tokio::sync::oneshot::channel::<RunnerMetadata>();
+    let runner_task = tokio::task::spawn_blocking(move || {
+        NodeBuilder::new()
+            .with_config_path(&peppy_config_path)
+            .standalone(standalone_config)
+            .run(|_parameters: Parameters, node_runner| async move {
+                let _ = setup_tx.send(RunnerMetadata {
+                    bound_daemon_node: node_runner.processor().bound_daemon_node().to_string(),
+                    bound_instance_id: node_runner.processor().bound_instance_id().to_string(),
+                    node_name: node_runner.processor().node_name().to_string(),
+                    messaging_port: node_runner.messenger().messaging_port().await,
+                    cancellation_token: node_runner.cancellation_token().clone(),
+                });
+                Ok(())
+            })
+    });
+
+    let metadata = tokio::time::timeout(Duration::from_secs(5), setup_rx)
+        .await
+        .expect("runner setup should complete")
+        .expect("runner setup signal should be sent");
+
+    assert_eq!(metadata.bound_daemon_node, "standalone-daemon");
+    assert_eq!(metadata.bound_instance_id, TEST_INSTANCE_ID);
+    assert_eq!(metadata.node_name, TEST_NODE_NAME);
+    assert_eq!(metadata.messaging_port, router_port);
+
+    metadata.cancellation_token.cancel();
+
+    tokio::time::timeout(Duration::from_secs(10), runner_task)
+        .await
+        .expect("runner should exit")
+        .expect("runner task should not panic")
+        .expect("runner should return Ok");
 }

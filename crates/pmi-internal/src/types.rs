@@ -103,9 +103,6 @@ pub trait MessengerBackend {
         qos: SubscriberQoS,
     ) -> impl Future<Output = Result<Subscription>> + Send; // async equivalent for trait
 
-    /// Returns whether there are active subscribers matching the provided topic.
-    fn has_matching_subscribers(&self, topic: &str) -> impl Future<Output = Result<bool>> + Send;
-
     /// Starts the router in background and immediately return for engines that uses a router.
     /// The router should only be started if the lib is intended to connect nodes together
     fn start_router(&mut self) -> impl Future<Output = Result<()>> + Send;
@@ -305,18 +302,18 @@ impl PartialEq<Payload> for bytes::Bytes {
 pub struct TopicMessage {
     key_expr: String,
     instance_id: String,
-    master_node: String,
+    daemon_node: String,
     payload: Payload,
 }
 
 impl TopicMessage {
     pub fn new(key_expr: &str, payload: impl Into<Payload>) -> Result<Self> {
         let instance_id = TopicMessage::extract_instance_id(key_expr)?;
-        let master_node = TopicMessage::extract_master_node(key_expr)?;
+        let daemon_node = TopicMessage::extract_daemon_node(key_expr)?;
         Ok(Self {
             key_expr: key_expr.to_string(),
             instance_id,
-            master_node,
+            daemon_node,
             payload: payload.into(),
         })
     }
@@ -324,11 +321,11 @@ impl TopicMessage {
     #[cfg(feature = "zenoh")]
     pub fn from_zbytes(key_expr: &str, zbytes: ZBytes) -> Result<Self> {
         let instance_id = TopicMessage::extract_instance_id(key_expr)?;
-        let master_node = TopicMessage::extract_master_node(key_expr)?;
+        let daemon_node = TopicMessage::extract_daemon_node(key_expr)?;
         Ok(Self {
             key_expr: key_expr.to_string(),
             instance_id,
-            master_node,
+            daemon_node,
             payload: Payload::from_zbytes(zbytes),
         })
     }
@@ -341,20 +338,20 @@ impl TopicMessage {
             .ok_or_else(|| Error::InstanceIdNotFound(key_expr.to_string()))
     }
 
-    fn extract_master_node(key_expr: &str) -> Result<String> {
+    fn extract_daemon_node(key_expr: &str) -> Result<String> {
         let segments: Vec<&str> = key_expr.split('/').collect();
         segments
             .get(1)
             .map(|s| s.to_string())
-            .ok_or_else(|| Error::MasterNodeNotFound(key_expr.to_string()))
+            .ok_or_else(|| Error::DaemonNodeNotFound(key_expr.to_string()))
     }
 
     pub fn instance_id(&self) -> &str {
         &self.instance_id
     }
 
-    pub fn master_node(&self) -> &str {
-        &self.master_node
+    pub fn daemon_node(&self) -> &str {
+        &self.daemon_node
     }
 
     pub fn payload(&self) -> &Payload {
@@ -428,10 +425,6 @@ impl MessengerBackend for Messenger {
 
     async fn subscribe(&self, topic: &str, qos: SubscriberQoS) -> Result<Subscription> {
         dispatch!(&self.adapter, subscribe, topic, qos)
-    }
-
-    async fn has_matching_subscribers(&self, topic: &str) -> Result<bool> {
-        dispatch!(&self.adapter, has_matching_subscribers, topic)
     }
 
     async fn stop_session(self) -> Result<()> {

@@ -1,6 +1,6 @@
 use config::consts::PEPPY_OUTPUT_DIR;
 use config::node::Toolchain;
-use master_node::encoding::NodeListRequest;
+use daemon_node::encoding::NodeListRequest;
 use node_stack::SerializedNodeGraph;
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands, NodeName};
@@ -23,10 +23,10 @@ fn node_add_command_succeeds() {
         .block_on(ServeCommandEmulation::with_mock())
         .expect("failed to create serve emulation");
     let shared_messenger = serve.messenger();
-    let master_node_name = serve.master_node_name().to_string();
+    let daemon_node_name = serve.daemon_node_name().to_string();
     assert!(
-        !master_node_name.is_empty(),
-        "master_node_name should not be empty"
+        !daemon_node_name.is_empty(),
+        "daemon_node_name should not be empty"
     );
 
     // Create a temp directory for the node
@@ -35,7 +35,7 @@ fn node_add_command_succeeds() {
 
     // Create AppContext pointing to the temp directory
     let node_ctx = Arc::new(
-        AppContext::with_messenger(node_dir.path(), shared_messenger.clone())
+        AppContext::with_messenger(node_dir.path(), Arc::clone(&shared_messenger))
             .with_daemon_state_file(serve.daemon_state_path()),
     );
 
@@ -101,9 +101,9 @@ fn node_add_command_succeeds() {
     let response = rt
         .block_on(NodeListRequest::new(false).poll(
             messenger_handle,
-            &master_node_name,
+            &daemon_node_name,
             CALLER_INSTANCE_ID,
-            &master_node_name,
+            &daemon_node_name,
             Duration::from_secs(5),
         ))
         .expect("node_list request should complete");
@@ -143,10 +143,10 @@ fn node_add_command_with_run_arg_succeeds() {
         .block_on(ServeCommandEmulation::with_mock())
         .expect("failed to create serve emulation");
     let shared_messenger = serve.messenger();
-    let master_node_name = serve.master_node_name().to_string();
+    let daemon_node_name = serve.daemon_node_name().to_string();
     assert!(
-        !master_node_name.is_empty(),
-        "master_node_name should not be empty"
+        !daemon_node_name.is_empty(),
+        "daemon_node_name should not be empty"
     );
 
     // Create a temp directory for the node
@@ -156,7 +156,7 @@ fn node_add_command_with_run_arg_succeeds() {
 
     // Create AppContext pointing to the temp directory
     let node_ctx = Arc::new(
-        AppContext::with_messenger(node_dir.path(), shared_messenger.clone())
+        AppContext::with_messenger(node_dir.path(), Arc::clone(&shared_messenger))
             .with_daemon_state_file(serve.daemon_state_path()),
     );
 
@@ -192,11 +192,11 @@ fn node_add_command_with_run_arg_succeeds() {
     // Avoid spawning a real node binary; provide `node_ready` + `node_health` in-process.
     peppy::test_support::override_start_cmd(&peppy_json5_path);
 
-    let node_messenger = MessengerHandle::from_shared(shared_messenger.clone());
+    let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
     let _node_ready_handle = rt
         .block_on(listen_for_node_ready(
             &node_messenger,
-            &master_node_name,
+            &daemon_node_name,
             instance_id,
             node_name,
         ))
@@ -204,7 +204,7 @@ fn node_add_command_with_run_arg_succeeds() {
     let _node_health_handle = rt
         .block_on(listen_for_node_health(
             &node_messenger,
-            &master_node_name,
+            &daemon_node_name,
             instance_id,
             node_name,
         ))
@@ -246,9 +246,9 @@ fn node_add_command_with_run_arg_succeeds() {
     let response = rt
         .block_on(NodeListRequest::new(false).poll(
             messenger_handle,
-            &master_node_name,
+            &daemon_node_name,
             CALLER_INSTANCE_ID,
-            &master_node_name,
+            &daemon_node_name,
             Duration::from_secs(5),
         ))
         .expect("node_list request should complete");
@@ -288,10 +288,10 @@ fn node_add_after_failed_sync_succeeds() {
         .block_on(ServeCommandEmulation::with_mock())
         .expect("failed to create serve emulation");
     let shared_messenger = serve.messenger();
-    let master_node_name = serve.master_node_name().to_string();
+    let daemon_node_name = serve.daemon_node_name().to_string();
     assert!(
-        !master_node_name.is_empty(),
-        "master_node_name should not be empty"
+        !daemon_node_name.is_empty(),
+        "daemon_node_name should not be empty"
     );
 
     // Create a temp directory for the node
@@ -300,7 +300,7 @@ fn node_add_after_failed_sync_succeeds() {
 
     // Create AppContext pointing to the temp directory
     let node_ctx = Arc::new(
-        AppContext::with_messenger(node_dir.path(), shared_messenger.clone())
+        AppContext::with_messenger(node_dir.path(), Arc::clone(&shared_messenger))
             .with_daemon_state_file(serve.daemon_state_path()),
     );
 
@@ -369,7 +369,7 @@ fn node_add_after_failed_sync_succeeds() {
     // 4. Run `node sync` on that node to update the `.peppy/git.hash` of the node
     // Create a context for the node directory (sync runs from within the node dir)
     let sync_ctx = Arc::new(
-        AppContext::with_messenger(&node_path, shared_messenger.clone())
+        AppContext::with_messenger(&node_path, Arc::clone(&shared_messenger))
             .with_daemon_state_file(serve.daemon_state_path()),
     );
 
@@ -410,9 +410,9 @@ fn node_add_after_failed_sync_succeeds() {
     let response = rt
         .block_on(NodeListRequest::new(false).poll(
             messenger_handle,
-            &master_node_name,
+            &daemon_node_name,
             CALLER_INSTANCE_ID,
-            &master_node_name,
+            &daemon_node_name,
             Duration::from_secs(5),
         ))
         .expect("node_list request should complete");
@@ -439,7 +439,7 @@ fn node_add_after_failed_sync_succeeds() {
 }
 
 /// When adding a node that already exists with running instances:
-/// - With `force: true`: instances are automatically stopped by the master node and the node is overwritten
+/// - With `force: true`: instances are automatically stopped by the daemon node and the node is overwritten
 /// - Without `force`: user is prompted for confirmation (tested manually, not in this automated test)
 ///
 /// This test verifies the `force: true` path where existing instances are shut down automatically.
@@ -452,10 +452,10 @@ fn node_add_same_node_shutdown_existing_instances() {
         .block_on(ServeCommandEmulation::with_mock())
         .expect("failed to create serve emulation");
     let shared_messenger = serve.messenger();
-    let master_node_name = serve.master_node_name().to_string();
+    let daemon_node_name = serve.daemon_node_name().to_string();
     assert!(
-        !master_node_name.is_empty(),
-        "master_node_name should not be empty"
+        !daemon_node_name.is_empty(),
+        "daemon_node_name should not be empty"
     );
 
     // Create a temp directory for the node
@@ -465,7 +465,7 @@ fn node_add_same_node_shutdown_existing_instances() {
 
     // Create AppContext pointing to the temp directory
     let node_ctx = Arc::new(
-        AppContext::with_messenger(node_dir.path(), shared_messenger.clone())
+        AppContext::with_messenger(node_dir.path(), Arc::clone(&shared_messenger))
             .with_daemon_state_file(serve.daemon_state_path()),
     );
 
@@ -501,11 +501,11 @@ fn node_add_same_node_shutdown_existing_instances() {
     // Avoid spawning a real node binary; provide `node_ready` + `node_health` in-process.
     peppy::test_support::override_start_cmd(&peppy_json5_path);
 
-    let node_messenger = MessengerHandle::from_shared(shared_messenger.clone());
+    let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
     let _node_ready_handle = rt
         .block_on(listen_for_node_ready(
             &node_messenger,
-            &master_node_name,
+            &daemon_node_name,
             instance_id,
             node_name,
         ))
@@ -513,7 +513,7 @@ fn node_add_same_node_shutdown_existing_instances() {
     let _node_health_handle = rt
         .block_on(listen_for_node_health(
             &node_messenger,
-            &master_node_name,
+            &daemon_node_name,
             instance_id,
             node_name,
         ))
@@ -521,7 +521,7 @@ fn node_add_same_node_shutdown_existing_instances() {
     let (_node_shutdown_handle, _shutdown_rx) = rt
         .block_on(listen_for_shutdown(
             &node_messenger,
-            &master_node_name,
+            &daemon_node_name,
             instance_id,
             node_name,
         ))
@@ -550,9 +550,9 @@ fn node_add_same_node_shutdown_existing_instances() {
     let response = rt
         .block_on(NodeListRequest::new(false).poll(
             messenger_handle,
-            &master_node_name,
+            &daemon_node_name,
             CALLER_INSTANCE_ID,
-            &master_node_name,
+            &daemon_node_name,
             Duration::from_secs(5),
         ))
         .expect("node_list request should complete");
@@ -600,9 +600,9 @@ fn node_add_same_node_shutdown_existing_instances() {
     let response = rt
         .block_on(NodeListRequest::new(false).poll(
             messenger_handle,
-            &master_node_name,
+            &daemon_node_name,
             CALLER_INSTANCE_ID,
-            &master_node_name,
+            &daemon_node_name,
             Duration::from_secs(5),
         ))
         .expect("node_list request should complete after re-add");
@@ -640,7 +640,7 @@ fn node_add_same_node_shutdown_existing_instances() {
 ///
 /// NOTE: For git-sourced nodes, we cannot check for existing instances BEFORE the add operation
 /// because we don't know the node name/tag until after cloning. By the time we check (after add),
-/// the master node has already stopped the existing instances. This is different from local
+/// the daemon node has already stopped the existing instances. This is different from local
 /// filesystem sources where we can check and prompt before adding.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "Requires a call to `node info` on the existing node first"]

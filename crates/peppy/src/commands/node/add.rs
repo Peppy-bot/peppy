@@ -1,5 +1,5 @@
 use config::node::NodeConfigParser;
-use master_node::encoding::{
+use daemon_node::encoding::{
     NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAddResult, NodeInfoRequest,
     NodeInfoResponse, NodeSource,
 };
@@ -83,7 +83,7 @@ async fn add_node_async(
             e
         ))
     })?;
-    let master_node_name = daemon_state.master_node_name.clone();
+    let daemon_node_name = daemon_state.daemon_node_name.clone();
     let git_hash = daemon_state.git_hash.clone();
 
     // Validate git_ref and parse the source into a NodeSource
@@ -91,14 +91,14 @@ async fn add_node_async(
     let node_source = parse_node_source(&source, git_ref)?;
 
     info!(
-        "Running `add_cmd` for '{}' on master '{}'...",
-        source, master_node_name
+        "Running `add_cmd` for '{}' on daemon '{}'...",
+        source, daemon_node_name
     );
 
     // Use a separate connection to check for existing instances before connecting with the main handle.
     // This avoids interfering with the action messenger used for send_goal.
     let pre_add_node_info = if !force {
-        fetch_node_info(&daemon_state, &master_node_name, node_source.clone())
+        fetch_node_info(&daemon_state, &daemon_node_name, node_source.clone())
             .await
             .ok()
     } else {
@@ -130,9 +130,9 @@ async fn add_node_async(
     let mut action_handle = add_goal
         .send_goal(
             messenger_handle,
-            &master_node_name,
+            &daemon_node_name,
             CALLER_INSTANCE_ID,
-            Some(&master_node_name),
+            Some(&daemon_node_name),
             None,
             GOAL_TIMEOUT,
         )
@@ -276,7 +276,7 @@ async fn add_node_async(
 
     start_instance_async(
         messenger_handle,
-        &master_node_name,
+        &daemon_node_name,
         &node_name,
         &node_tag,
         &args,
@@ -292,7 +292,7 @@ async fn add_node_async(
 /// This includes the node config, whether it's in the node stack, and running instance names.
 async fn fetch_node_info(
     daemon_state: &crate::daemon_state::DaemonState,
-    master_node_name: &str,
+    daemon_node_name: &str,
     node_source: NodeSource,
 ) -> Result<NodeInfoResponse> {
     // Create a completely fresh connection for this check to avoid
@@ -313,9 +313,9 @@ async fn fetch_node_info(
     request
         .poll(
             &messenger,
-            master_node_name,
+            daemon_node_name,
             CALLER_INSTANCE_ID,
-            master_node_name,
+            daemon_node_name,
             INFO_REQUEST_TIMEOUT,
         )
         .await

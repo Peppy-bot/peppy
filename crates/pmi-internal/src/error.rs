@@ -20,13 +20,12 @@ pub enum Error {
     BackendError(String),
     MessagingSessionError(String),
     PublisherCreationError(String),
-    MatchingListenerError(String),
     UnsupportedEngine,
     ZenohdError(String),
     ZenohDConfigurationNotFound,
     InstanceIdNotFound(String),
     InstanceIdExtractionError(String),
-    MasterNodeNotFound(String),
+    DaemonNodeNotFound(String),
 
     // Encoding
     UnsupportedEncoding(String),

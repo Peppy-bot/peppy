@@ -111,6 +111,19 @@ const EXPOSED_ACTION_EXAMPLE2: &str = r#"
 }
 "#;
 
+const EXPOSED_ACTION_RESERVED_FEEDBACK_FIELD_EXAMPLE: &str = r#"
+{
+  name: "status_ping",
+  feedback_topic: {
+    qos_profile: "standard",
+    message_format: {
+      instance_id: "string",
+      progress: "u8"
+    }
+  }
+}
+"#;
+
 // --- Subscribes examples
 const SUBSCRIBED_ACTION_EXAMPLE1: &str = r#"
 {
@@ -199,7 +212,7 @@ fn exposed_action() {
 
     let mut generator = RustGenerator::new();
     generator.add_exposed_action(&action).unwrap();
-    let artifacts = render_artifacts(generator);
+    let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
         artifacts.len(),
         1,
@@ -225,7 +238,7 @@ fn exposed_action() {
         &[
             "pub struct GoalRequest",
             "pub instance_id: String",
-            "pub master_node: String",
+            "pub daemon_node: String",
             "pub data: GoalRequestData",
         ],
     );
@@ -326,12 +339,12 @@ fn expose_action_without_request_body() {
 
     let mut generator = RustGenerator::new();
     generator.add_exposed_action(&action).unwrap();
-    let rendered = render_artifacts(generator)
+    let rendered = render_artifacts(generator.into_artifacts())
         .into_iter()
         .next()
         .expect("artifact is present");
 
-    // GoalRequest still exists (with instance_id and master_node) even without data
+    // GoalRequest still exists (with instance_id and daemon_node) even without data
     assert_contains_all(
         &rendered,
         &[
@@ -368,6 +381,81 @@ fn expose_action_without_request_body() {
 
     // Feedback emitter
     assert_contains_all(&rendered, &["pub async fn emit_feedback"]);
+}
+
+#[test]
+fn exposed_action_rejects_reserved_message_field_name() {
+    use crate::error::Error;
+
+    let action: ExposedAction =
+        serde_json5::from_str(EXPOSED_ACTION_RESERVED_FEEDBACK_FIELD_EXAMPLE).unwrap();
+
+    let mut generator = RustGenerator::new();
+    let err = generator.add_exposed_action(&action).unwrap_err();
+
+    match err {
+        Error::UnauthorizedMessageFieldName {
+            field,
+            path,
+            context,
+        } => {
+            assert_eq!(field, "instance_id");
+            assert_eq!(path, "instance_id");
+            assert_eq!(context, "message_format");
+        }
+        other => panic!("expected UnauthorizedMessageFieldName, got: {other:?}"),
+    }
+}
+
+#[test]
+fn expose_action_with_feedback_only_initializes_existing_fields() {
+    let action: ExposedAction = serde_json5::from_str(
+        r#"
+        {
+          name: "blink_led",
+          feedback_topic: {
+            qos_profile: "standard",
+            message_format: {
+              progress: "u8"
+            }
+          }
+        }
+        "#,
+    )
+    .unwrap();
+
+    let mut generator = RustGenerator::new();
+    generator.add_exposed_action(&action).unwrap();
+    let rendered = render_artifacts(generator.into_artifacts())
+        .into_iter()
+        .next()
+        .expect("artifact is present");
+
+    assert_contains_all(
+        &rendered,
+        &[
+            "pub struct ActionHandle",
+            "feedback_publisher: peppylib::messaging::TopicPublisher",
+            "pub async fn expose(node_runner: &crate::NodeRunner) -> crate::Result<Self>",
+            "feedback_publisher: action.feedback_publisher",
+        ],
+    );
+
+    assert_rendered!(
+        !rendered.contains("goal_service: action.goal_service"),
+        rendered,
+        "expose method should not initialize goal_service when goal service is missing"
+    );
+    assert_rendered!(
+        !rendered.contains("cancel_service: action.cancel_service"),
+        rendered,
+        "expose method should not initialize cancel_service when goal service is missing"
+    );
+    assert_rendered!(
+        !rendered.contains("result_service: action.result_service"),
+        rendered,
+        "expose method should not initialize result_service when result service is missing"
+    );
 }
 
 #[test]
@@ -446,7 +534,7 @@ fn subscribed_to_action() {
 
     let mut generator = RustGenerator::new();
     generator.add_subscribed_action(&action, &format).unwrap();
-    let artifacts = render_artifacts(generator);
+    let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
         artifacts.len(),
         1,
@@ -474,15 +562,21 @@ fn subscribed_to_action() {
         ],
     );
 
-    // GoalResponseData and GoalResponse structs
+    // GoalResponseData struct
+    assert_contains_all(
+        &rendered,
+        &["pub struct GoalResponseData", "pub accepted: bool"],
+    );
+
+    // ActionHandle struct
     assert_contains_all(
         &rendered,
         &[
-            "pub struct GoalResponseData",
-            "pub accepted: bool",
-            "pub struct GoalResponse",
-            "pub action_handle: peppylib::messaging::ActionGoalHandle",
+            "pub struct ActionHandle",
+            "messenger: peppylib::MessengerHandle",
+            "inner: peppylib::messaging::ActionGoalHandle",
             "pub data: GoalResponseData",
+            "impl ActionHandle",
         ],
     );
 
@@ -503,7 +597,7 @@ fn subscribed_to_action() {
             "pub struct ResultResponseData",
             "pub final_position: [i32; 3]",
             "pub struct ResultResponse",
-            "pub master_node: String",
+            "pub daemon_node: String",
             "pub instance_id: String",
         ],
     );
@@ -514,15 +608,16 @@ fn subscribed_to_action() {
         &["pub struct FeedbackMessage", "pub new_position: [i32; 3]"],
     );
 
-    // fire_goal method
+    // fire_goal method (constructor)
     assert_contains_all(
         &rendered,
         &[
             "pub async fn fire_goal(",
             "request: GoalRequest",
             "feedback_qos: peppylib::config::QoSProfile",
-            "-> crate::Result<GoalResponse>",
+            "-> crate::Result<Self>",
             "peppylib::ActionMessenger::send_goal",
+            "node_runner.messenger().clone()",
         ],
     );
 
@@ -530,10 +625,12 @@ fn subscribed_to_action() {
     assert_contains_all(
         &rendered,
         &[
-            "pub async fn cancel_goal",
-            "action_handle: &peppylib::messaging::ActionGoalHandle",
+            "pub async fn cancel_goal(",
+            "&self,",
             "-> crate::Result<CancelResponse>",
             "peppylib::ActionMessenger::cancel_goal",
+            "&self.messenger",
+            "&self.inner",
         ],
     );
 
@@ -541,9 +638,8 @@ fn subscribed_to_action() {
     assert_contains_all(
         &rendered,
         &[
-            "pub async fn on_next_feedback_message",
-            "action_handle: &mut peppylib::messaging::ActionGoalHandle",
-            "action_handle.on_next_feedback()",
+            "pub async fn on_next_feedback_message(&mut self)",
+            "self.inner.on_next_feedback()",
             "fn deserialize_feedback_payload",
         ],
     );
@@ -552,9 +648,12 @@ fn subscribed_to_action() {
     assert_contains_all(
         &rendered,
         &[
-            "pub async fn get_result",
+            "pub async fn get_result(",
+            "&self,",
             "-> crate::Result<ResultResponse>",
             "peppylib::ActionMessenger::request_result",
+            "&self.messenger",
+            "&self.inner",
         ],
     );
 
@@ -628,8 +727,8 @@ fn subscribed_to_two_actions_same_node() {
         .map(|artifact| (artifact.node_name, artifact.code_output))
         .collect();
 
-    let move_arm_module = subscribed_action_module_name(&move_arm_action);
-    let rotate_module = subscribed_action_module_name(&rotate_action);
+    let move_arm_module = module_name_from_components(&move_arm_action.node, &move_arm_action.name);
+    let rotate_module = module_name_from_components(&rotate_action.node, &rotate_action.name);
 
     let move_arm = artifact_map
         .get(&move_arm_module)
@@ -649,8 +748,10 @@ fn subscribed_to_two_actions_same_node() {
             "const TARGET_ACTION_NAME: &str = \"move_arm\";",
             "pub struct GoalRequest",
             "pub struct GoalResponseData",
-            "pub struct GoalResponse",
-            "pub action_handle: peppylib::messaging::ActionGoalHandle",
+            "pub struct ActionHandle",
+            "inner: peppylib::messaging::ActionGoalHandle",
+            "messenger: peppylib::MessengerHandle",
+            "impl ActionHandle",
             "pub struct ResultResponse",
             "pub struct FeedbackMessage",
             "arm_id: u16",
@@ -686,12 +787,14 @@ fn subscribed_to_two_actions_same_node() {
             "const TARGET_NODE_NAME: &str = \"brain\";",
             "const TARGET_ACTION_NAME: &str = \"rotate_servo_clockwise\";",
             "pub struct GoalResponseData",
-            "pub struct GoalResponse",
-            "pub action_handle: peppylib::messaging::ActionGoalHandle",
+            "pub struct ActionHandle",
+            "inner: peppylib::messaging::ActionGoalHandle",
+            "messenger: peppylib::MessengerHandle",
+            "impl ActionHandle",
             "pub struct ResultResponse",
             "pub struct FeedbackMessage",
             "fn deserialize_feedback_payload",
-            "-> crate::Result<GoalResponse>",
+            "-> crate::Result<Self>",
         ],
     );
 
@@ -702,7 +805,7 @@ fn subscribed_to_two_actions_same_node() {
             "peppylib::ActionMessenger::send_goal",
             "peppylib::ActionMessenger::cancel_goal",
             "peppylib::ActionMessenger::request_result",
-            "action_handle.on_next_feedback",
+            "self.inner.on_next_feedback",
         ],
     );
 
@@ -737,7 +840,7 @@ fn subscribed_action_without_response_payload() {
     generator
         .add_subscribed_action(&action, &format)
         .expect("generator should allow subscribed actions with empty response payloads");
-    let artifacts = render_artifacts(generator);
+    let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
         artifacts.len(),
         1,
@@ -746,14 +849,24 @@ fn subscribed_action_without_response_payload() {
     );
     let rendered = artifacts.into_iter().next().expect("artifact is present");
 
+    // ActionHandle struct without GoalResponseData (no goal response format)
     assert_contains_all(
         &rendered,
         &[
+            "pub struct ActionHandle",
+            "messenger: peppylib::MessengerHandle",
+            "inner: peppylib::messaging::ActionGoalHandle",
+            "impl ActionHandle",
             "pub async fn fire_goal",
             "pub async fn get_result",
             "peppylib::ActionMessenger::send_goal",
             "peppylib::ActionMessenger::request_result",
         ],
+    );
+    assert_rendered!(
+        !rendered.contains("GoalResponseData"),
+        rendered,
+        "expected no GoalResponseData when goal response format is absent"
     );
 }
 
@@ -775,15 +888,19 @@ fn subscribed_action_without_feedback() {
     generator
         .add_subscribed_action(&action, &format)
         .expect("generator should allow subscribed actions without feedback payloads");
-    let artifacts = render_artifacts(generator);
+    let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(artifacts.len(), 1, "expected single generated artifact");
 
     let rendered = &artifacts[0];
 
-    // Should still emit goal and result helpers
+    // ActionHandle struct and methods
     assert_contains_all(
         rendered,
         &[
+            "pub struct ActionHandle",
+            "messenger: peppylib::MessengerHandle",
+            "inner: peppylib::messaging::ActionGoalHandle",
+            "impl ActionHandle",
             "pub async fn fire_goal",
             "pub async fn get_result",
             "peppylib::ActionMessenger::send_goal",
@@ -846,7 +963,7 @@ fn clippy_single_exposed_action_empty_goal_request() {
         result_response: Some(subscribed_action2_result_response),
     };
 
-    let (mut generator, output_dir, user_node, _) = init_test_env(&temp_dir);
+    let (mut generator, output_dir, user_node, _) = init_test_env::<RustGenerator>(&temp_dir);
     generator.add_exposed_action(&action).unwrap();
     generator
         .add_subscribed_action(&subscribed_action1, &subscribed_action1_messages)
@@ -944,7 +1061,7 @@ fn compile_lib_with_exposed_and_subscribed_actions() {
         result_response: Some(subscribed_action2_result_response),
     };
 
-    let (mut generator, output_dir, user_node, _) = init_test_env(&temp_dir);
+    let (mut generator, output_dir, user_node, _) = init_test_env::<RustGenerator>(&temp_dir);
     generator.add_exposed_action(&action1).unwrap();
     generator.add_exposed_action(&action2).unwrap();
     generator
@@ -1082,7 +1199,7 @@ fn clippy_subscribed_action_empty_goal_request() {
         result_response: None,
     };
 
-    let (mut generator, output_dir, user_node, _) = init_test_env(&temp_dir);
+    let (mut generator, output_dir, user_node, _) = init_test_env::<RustGenerator>(&temp_dir);
     generator
         .add_subscribed_action(&subscribed_action, &action_messages)
         .unwrap();

@@ -33,18 +33,23 @@ where
 
 /// This struct helps tuning a MessageFormat into a capnp proto and its associated Rust types
 pub struct MessageFormatMapper {
+    schema_name: String,
     message_format: MessageFormat,
 }
 
 impl MessageFormatMapper {
-    pub fn new(message_format: MessageFormat) -> Self {
-        Self { message_format }
+    pub fn new(schema_name: &str, message_format: MessageFormat) -> Self {
+        Self {
+            schema_name: schema_name.to_string(),
+            message_format,
+        }
     }
 
     pub fn map_message_format_to_capnpn(&self) -> Result<CapnpSchemaArtifacts> {
         let mut generator = CapnpSchemaGenerator::default();
         let mut schema = String::new();
-        let mut schema_id = MessageFormatMapper::compute_schema_id(&self.message_format.0);
+        let mut schema_id =
+            MessageFormatMapper::compute_schema_id(&self.schema_name, &self.message_format.0);
         if schema_id == 0 {
             schema_id = 1;
         }
@@ -141,7 +146,7 @@ impl MessageFormatMapper {
         Ok(mapping)
     }
 
-    fn compute_schema_id(fields: &IndexMap<String, SchemaType>) -> u64 {
+    fn compute_schema_id(schema_name: &str, fields: &IndexMap<String, SchemaType>) -> u64 {
         const FNV_OFFSET: u64 = 0xcbf29ce484222325;
         const FNV_PRIME: u64 = 0x100000001b3;
 
@@ -192,7 +197,8 @@ impl MessageFormatMapper {
             hash
         }
 
-        hash_fields(FNV_OFFSET, fields, FNV_PRIME)
+        let hash = update(FNV_OFFSET, schema_name.as_bytes(), FNV_PRIME);
+        hash_fields(hash, fields, FNV_PRIME)
     }
 }
 
@@ -650,7 +656,7 @@ mod tests {
         )
         .expect("valid format");
 
-        let format_mapper = MessageFormatMapper::new(msg_format.clone());
+        let format_mapper = MessageFormatMapper::new("test_image", msg_format.clone());
         let artifacts = format_mapper
             .map_message_format_to_capnpn()
             .expect("artifacts generation succeeds");
@@ -765,7 +771,7 @@ mod tests {
         )
         .expect("valid format");
 
-        let artifacts = MessageFormatMapper::new(msg_format)
+        let artifacts = MessageFormatMapper::new("test_variable_array", msg_format)
             .map_message_format_to_capnpn()
             .expect("artifacts generation succeeds");
         let params = artifacts
@@ -795,7 +801,7 @@ mod tests {
         )
         .expect("valid format");
 
-        let artifacts = MessageFormatMapper::new(msg_format)
+        let artifacts = MessageFormatMapper::new("test_string_array", msg_format)
             .map_message_format_to_capnpn()
             .expect("artifacts generation succeeds");
         let params = artifacts
@@ -807,6 +813,84 @@ mod tests {
             param_map.get("labels"),
             Some(&canonicalize_literal("[String; 3]")),
             "labels should map to a fixed-size array of Strings"
+        );
+    }
+
+    #[test]
+    fn different_schema_names_produce_different_ids() {
+        let format: MessageFormat = serde_json5::from_str(
+            r#"
+            {
+              arm_id: "u16",
+              desired_position: {
+                $type: "array",
+                $items: "i32"
+              }
+            }
+            "#,
+        )
+        .expect("valid format");
+
+        let schema_a = MessageFormatMapper::new("move_right_arm_goal_request", format.clone())
+            .map_message_format_to_capnpn()
+            .expect("schema a");
+        let schema_b = MessageFormatMapper::new("move_left_arm_goal_request", format)
+            .map_message_format_to_capnpn()
+            .expect("schema b");
+
+        let id_a = schema_a
+            .encoding_schema()
+            .lines()
+            .next()
+            .expect("first line");
+        let id_b = schema_b
+            .encoding_schema()
+            .lines()
+            .next()
+            .expect("first line");
+
+        assert_ne!(
+            id_a, id_b,
+            "identical field structures with different names must produce different schema IDs"
+        );
+    }
+
+    #[test]
+    fn same_name_and_fields_produce_same_id() {
+        let format: MessageFormat = serde_json5::from_str(
+            r#"
+            {
+              arm_id: "u16",
+              desired_position: {
+                $type: "array",
+                $items: "i32"
+              }
+            }
+            "#,
+        )
+        .expect("valid format");
+
+        let schema_a = MessageFormatMapper::new("move_arm_goal_request", format.clone())
+            .map_message_format_to_capnpn()
+            .expect("schema a");
+        let schema_b = MessageFormatMapper::new("move_arm_goal_request", format)
+            .map_message_format_to_capnpn()
+            .expect("schema b");
+
+        let id_a = schema_a
+            .encoding_schema()
+            .lines()
+            .next()
+            .expect("first line");
+        let id_b = schema_b
+            .encoding_schema()
+            .lines()
+            .next()
+            .expect("first line");
+
+        assert_eq!(
+            id_a, id_b,
+            "same name and fields must produce identical schema IDs"
         );
     }
 

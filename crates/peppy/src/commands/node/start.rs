@@ -1,7 +1,7 @@
 use config::peppy_config::Name;
 use config::runtime::{NodeInstance, RuntimeConfig};
 use config::{AnyType, NodeArguments};
-use master_node::encoding::{
+use daemon_node::encoding::{
     NodeStartFeedback, NodeStartGoal, NodeStartGoalResponse, NodeStartResult,
 };
 use names_generator2::get_random;
@@ -115,7 +115,7 @@ fn parse_value(value: &str) -> AnyType {
 /// Used by both `run_node` and `add_node` (when --run is set).
 pub async fn start_instance_async(
     messenger_handle: &MessengerHandle,
-    master_node_name: &str,
+    daemon_node_name: &str,
     node_name: &str,
     tag: &str,
     args: &[(String, String)],
@@ -154,7 +154,7 @@ pub async fn start_instance_async(
             arguments,
         },
         node_name,
-        master_node_name,
+        daemon_node_name,
     )
     .map_err(Error::PeppyConfig)?;
 
@@ -176,9 +176,9 @@ pub async fn start_instance_async(
     let mut action_handle = start_goal
         .send_goal(
             messenger_handle,
-            master_node_name,
+            daemon_node_name,
             CALLER_INSTANCE_ID,
-            Some(master_node_name),
+            Some(daemon_node_name),
             None,
             GOAL_TIMEOUT,
         )
@@ -325,7 +325,7 @@ async fn run_node_async(
             e
         ))
     })?;
-    let master_node_name = daemon_state.master_node_name;
+    let daemon_node_name = daemon_state.daemon_node_name;
 
     ctx.connect().await?;
     let messenger_handle = ctx
@@ -334,7 +334,7 @@ async fn run_node_async(
 
     start_instance_async(
         messenger_handle,
-        &master_node_name,
+        &daemon_node_name,
         &node_name,
         &tag,
         &args,

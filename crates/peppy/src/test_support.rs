@@ -1,7 +1,7 @@
 use crate::daemon_state::DaemonState;
 use config::consts::PEPPYGEN_OUTPUT_PATH;
 use config::node::NodeConfigParser;
-use master_node::{MasterNode, MasterNodeArguments};
+use daemon_node::{DaemonNode, DaemonNodeArguments};
 use pmi::{Messenger, MessengerBackend, MockAdapter, MockInstance, ZenohAdapter, ZenohdInstance};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -59,7 +59,7 @@ impl<'a> MakeWriter<'a> for LogCapture {
 
     fn make_writer(&'a self) -> Self::Writer {
         LogCaptureWriter {
-            buffer: self.buffer.clone(),
+            buffer: Arc::clone(&self.buffer),
         }
     }
 }
@@ -100,10 +100,10 @@ enum MessengerInstance {
 pub struct ServeCommandEmulation {
     _temp_dir: TempDir,
     _instance: MessengerInstance,
-    _master_node_task: JoinHandle<master_node::Result<()>>,
+    _daemon_node_task: JoinHandle<daemon_node::Result<()>>,
     shared_messenger: Arc<TokioMutex<Messenger>>,
     daemon_state_path: PathBuf,
-    master_node_name: String,
+    daemon_node_name: String,
     messaging_port: u16,
 }
 
@@ -133,39 +133,39 @@ impl ServeCommandEmulation {
         let daemon_state_path = DaemonState::state_file_in(temp_dir.path());
         let shared_messenger = Arc::new(TokioMutex::new(messenger));
 
-        let master_node = MasterNode::new(
+        let daemon_node = DaemonNode::new(
             Arc::clone(&shared_messenger),
-            Some("test-master"),
-            MasterNodeArguments {
+            Some("test-daemon"),
+            DaemonNodeArguments {
                 node_startup_timeout: Duration::from_secs(10),
                 node_start_health_timeout: Duration::from_secs(30),
             },
             temp_dir.path().to_path_buf(),
         );
-        let master_node_name = master_node.node_name().to_string();
+        let daemon_node_name = daemon_node.node_name().to_string();
 
         let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
-        let master_node_task =
-            tokio::spawn(async move { master_node.start_with_ready(Some(ready_tx)).await });
-        ready_rx.await.expect("master node ready signal failed");
+        let daemon_node_task =
+            tokio::spawn(async move { daemon_node.start_with_ready(Some(ready_tx)).await });
+        ready_rx.await.expect("daemon node ready signal failed");
 
-        let daemon_state = DaemonState::new(&master_node_name, port, "test-git-hash");
+        let daemon_state = DaemonState::new(&daemon_node_name, port, "test-git-hash");
         DaemonState::write_to(&daemon_state_path, &daemon_state)
             .expect("failed to write daemon state");
 
         Ok(Self {
             _temp_dir: temp_dir,
             _instance: instance,
-            _master_node_task: master_node_task,
+            _daemon_node_task: daemon_node_task,
             shared_messenger,
             daemon_state_path,
-            master_node_name,
+            daemon_node_name,
             messaging_port: port,
         })
     }
 
     pub fn messenger(&self) -> Arc<TokioMutex<Messenger>> {
-        self.shared_messenger.clone()
+        Arc::clone(&self.shared_messenger)
     }
 
     pub fn temp_dir(&self) -> &Path {
@@ -176,8 +176,8 @@ impl ServeCommandEmulation {
         &self.daemon_state_path
     }
 
-    pub fn master_node_name(&self) -> &str {
-        &self.master_node_name
+    pub fn daemon_node_name(&self) -> &str {
+        &self.daemon_node_name
     }
 
     pub fn messaging_port(&self) -> u16 {

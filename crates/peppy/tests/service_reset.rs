@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use config::consts::{NODE_CONFIG_FILE, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH};
-use master_node::encoding::NodeListRequest;
+use daemon_node::encoding::NodeListRequest;
 use node_stack::SerializedNodeGraph;
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands};
@@ -74,10 +74,10 @@ async fn service_reset_command_resets_node_stack() {
         .await
         .expect("failed to create serve emulation");
     let shared_messenger = serve.messenger();
-    let master_node_name = serve.master_node_name().to_string();
+    let daemon_node_name = serve.daemon_node_name().to_string();
     assert!(
-        !master_node_name.is_empty(),
-        "master_node_name should not be empty"
+        !daemon_node_name.is_empty(),
+        "daemon_node_name should not be empty"
     );
 
     let nodes_dir = tempfile::tempdir().expect("failed to create temp nodes directory");
@@ -93,7 +93,7 @@ async fn service_reset_command_resets_node_stack() {
     );
 
     let ctx = Arc::new(
-        AppContext::with_messenger(nodes_dir.path(), shared_messenger.clone())
+        AppContext::with_messenger(nodes_dir.path(), Arc::clone(&shared_messenger))
             .with_daemon_state_file(serve.daemon_state_path()),
     );
 
@@ -118,9 +118,9 @@ async fn service_reset_command_resets_node_stack() {
     let response = NodeListRequest::new(false)
         .poll(
             messenger_handle,
-            &master_node_name,
+            &daemon_node_name,
             CALLER_INSTANCE_ID,
-            &master_node_name,
+            &daemon_node_name,
             Duration::from_secs(5),
         )
         .await
@@ -147,9 +147,9 @@ async fn service_reset_command_resets_node_stack() {
     let response = NodeListRequest::new(false)
         .poll(
             messenger_handle,
-            &master_node_name,
+            &daemon_node_name,
             CALLER_INSTANCE_ID,
-            &master_node_name,
+            &daemon_node_name,
             Duration::from_secs(5),
         )
         .await
@@ -167,8 +167,8 @@ async fn service_reset_command_resets_node_stack() {
 
     assert_eq!(
         graph.nodes[0].name,
-        master_node_name,
-        "root node name should match master node name. Got: {:?}",
+        daemon_node_name,
+        "root node name should match daemon node name. Got: {:?}",
         graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
     );
 }

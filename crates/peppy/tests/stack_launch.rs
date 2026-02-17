@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use config::consts::{NODE_CONFIG_FILE, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH};
-use master_node::encoding::NodeListRequest;
+use daemon_node::encoding::NodeListRequest;
 use node_stack::SerializedNodeGraph;
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands};
@@ -79,10 +79,10 @@ async fn node_launch_command_succeed() {
         .await
         .expect("failed to create serve emulation");
     let shared_messenger = serve.messenger();
-    let master_node_name = serve.master_node_name().to_string();
+    let daemon_node_name = serve.daemon_node_name().to_string();
     assert!(
-        !master_node_name.is_empty(),
-        "master_node_name should not be empty"
+        !daemon_node_name.is_empty(),
+        "daemon_node_name should not be empty"
     );
 
     let nodes_dir = tempfile::tempdir().expect("failed to create temp nodes directory");
@@ -99,7 +99,7 @@ async fn node_launch_command_succeed() {
     );
 
     let ctx = Arc::new(
-        AppContext::with_messenger(nodes_dir.path(), shared_messenger.clone())
+        AppContext::with_messenger(nodes_dir.path(), Arc::clone(&shared_messenger))
             .with_daemon_state_file(serve.daemon_state_path()),
     );
 
@@ -146,9 +146,9 @@ async fn node_launch_command_succeed() {
     let response = NodeListRequest::new(false)
         .poll(
             messenger_handle,
-            &master_node_name,
+            &daemon_node_name,
             CALLER_INSTANCE_ID,
-            &master_node_name,
+            &daemon_node_name,
             Duration::from_secs(5),
         )
         .await
@@ -167,17 +167,17 @@ async fn node_launch_command_succeed() {
     );
 
     let instance_id = "node_b_instance";
-    let node_messenger = MessengerHandle::from_shared(shared_messenger.clone());
+    let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
     let _node_ready_handle =
-        listen_for_node_ready(&node_messenger, &master_node_name, instance_id, node_b_name)
+        listen_for_node_ready(&node_messenger, &daemon_node_name, instance_id, node_b_name)
             .await
             .expect("node ready service should start");
     let _node_health_handle =
-        listen_for_node_health(&node_messenger, &master_node_name, instance_id, node_b_name)
+        listen_for_node_health(&node_messenger, &daemon_node_name, instance_id, node_b_name)
             .await
             .expect("node health service should start");
     let (_node_shutdown_handle, _node_shutdown_rx) =
-        listen_for_shutdown(&node_messenger, &master_node_name, instance_id, node_b_name)
+        listen_for_shutdown(&node_messenger, &daemon_node_name, instance_id, node_b_name)
             .await
             .expect("node shutdown service should start");
 
@@ -209,9 +209,9 @@ async fn node_launch_command_succeed() {
     let response = NodeListRequest::new(false)
         .poll(
             messenger_handle,
-            &master_node_name,
+            &daemon_node_name,
             CALLER_INSTANCE_ID,
-            &master_node_name,
+            &daemon_node_name,
             Duration::from_secs(5),
         )
         .await
@@ -250,7 +250,7 @@ async fn node_launch_command_succeed() {
             .collect::<Vec<_>>()
     );
 
-    // TODO we shouldn't need to stop the instances manually. If the master node stops, all child instances pid should stop too
+    // TODO we shouldn't need to stop the instances manually. If the daemon node stops, all child instances pid should stop too
     NodeCommand {
         command: NodeCommands::Stop {
             instance_id: instance_id.to_string(),
@@ -262,9 +262,9 @@ async fn node_launch_command_succeed() {
     let response = NodeListRequest::new(false)
         .poll(
             messenger_handle,
-            &master_node_name,
+            &daemon_node_name,
             CALLER_INSTANCE_ID,
-            &master_node_name,
+            &daemon_node_name,
             Duration::from_secs(5),
         )
         .await
@@ -301,10 +301,10 @@ async fn node_launch_command_fails_when_node_never_becomes_healthy() {
         .await
         .expect("failed to create serve emulation");
     let shared_messenger = serve.messenger();
-    let master_node_name = serve.master_node_name().to_string();
+    let daemon_node_name = serve.daemon_node_name().to_string();
     assert!(
-        !master_node_name.is_empty(),
-        "master_node_name should not be empty"
+        !daemon_node_name.is_empty(),
+        "daemon_node_name should not be empty"
     );
 
     let nodes_dir = tempfile::tempdir().expect("failed to create temp nodes directory");
@@ -328,7 +328,7 @@ async fn node_launch_command_fails_when_node_never_becomes_healthy() {
     );
 
     let ctx = Arc::new(
-        AppContext::with_messenger(nodes_dir.path(), shared_messenger.clone())
+        AppContext::with_messenger(nodes_dir.path(), Arc::clone(&shared_messenger))
             .with_daemon_state_file(serve.daemon_state_path()),
     );
 
@@ -361,9 +361,9 @@ async fn node_launch_command_fails_when_node_never_becomes_healthy() {
     let response = NodeListRequest::new(false)
         .poll(
             messenger_handle,
-            &master_node_name,
+            &daemon_node_name,
             CALLER_INSTANCE_ID,
-            &master_node_name,
+            &daemon_node_name,
             Duration::from_secs(5),
         )
         .await
@@ -412,9 +412,9 @@ async fn node_launch_command_fails_when_node_never_becomes_healthy() {
     let response = NodeListRequest::new(false)
         .poll(
             messenger_handle,
-            &master_node_name,
+            &daemon_node_name,
             CALLER_INSTANCE_ID,
-            &master_node_name,
+            &daemon_node_name,
             Duration::from_secs(5),
         )
         .await

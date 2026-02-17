@@ -8,8 +8,19 @@ name = "_peppylib"
 crate-type = ["cdylib"]
 
 [dependencies]
+bytes = "1"
+config = { path = "../config-internal" }
 peppylib = { path = "../peppylib" }
-pyo3 = { version = "0.28", features = ["extension-module"] }
+pmi = { path = "../pmi-internal" }
+# TODO: switch to crates.io once pythonize 0.28 is released (pyo3 0.28.0 support)
+pythonize = { git = "https://github.com/reitermarkus/pythonize.git", branch = "update-pyo3" }
+pyo3 = { version = "0.28", features = ["extension-module", "abi3-py311"] }
+pyo3-async-runtimes = { version = "0.28", features = ["tokio-runtime"] }
+rand = "0.10"
+names-generator2 = "0.2.1"
+serde_json = "1"
+tokio = { version = "1.47", features = ["rt-multi-thread"] }
+tokio-util = "0.7"
 
 [build-dependencies]
 pyo3-build-config = "0.28"

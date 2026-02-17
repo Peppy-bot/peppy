@@ -5,8 +5,12 @@ sidebar:
   order: 5
 ---
 import { Code, Tabs, TabItem } from '@astrojs/starlight/components';
+
 import helloWorldParamRust from './snippets/rust/hello_world_param/src/main.rs?raw';
-import helloWorldParamConfig from './snippets/rust/hello_world_param/peppy.json5?raw';
+import helloWorldParamRustConfig from './snippets/rust/hello_world_param/peppy.json5?raw';
+
+import helloWorldParamPython from './snippets/python/hello_world_param/src/hello_world_param/__main__.py?raw';
+import helloWorldParamPythonConfig from './snippets/python/hello_world_param/peppy.json5?raw';
 
 Sometimes you may want to run multiple instances of the same node with different input parameters. For example, a camera node might point to `/dev/video0` on your system while another one points to `/dev/video1`.
 Parameters allow you to run multiple instances of the same node with different input settings.
@@ -15,7 +19,14 @@ Parameters allow you to run multiple instances of the same node with different i
 
 Modify the `peppy.json5` configuration of our hello_world node to look like this:
 
-<Code code={helloWorldParamConfig} lang="json5" title="peppy.json5" />
+<Tabs>
+  <TabItem label="Python">
+    <Code code={helloWorldParamPythonConfig} lang="json5" title="peppy.json5" />
+  </TabItem>
+  <TabItem label="Rust">
+    <Code code={helloWorldParamRustConfig} lang="json5" title="peppy.json5" />
+  </TabItem>
+</Tabs>
 
 With the new `parameter` key.
 
@@ -45,13 +56,11 @@ This ensures that `peppy node add .` will succeed on the next run. Before doing 
 Now that we've synchronized our project, the new parameter can be used in the main file by modifying it like this:
 
 <Tabs>
+  <TabItem label="Python">
+    <Code code={helloWorldParamPython} lang="python" title="src/hello_world_param/__main__.py" />
+  </TabItem>
   <TabItem label="Rust">
     <Code code={helloWorldParamRust} lang="rust" title="src/main.rs" />
-  </TabItem>
-  <TabItem label="Python">
-    :::caution
-    The Python toolchain is not yet available.
-    :::
   </TabItem>
 </Tabs>
 

@@ -1,0 +1,458 @@
+use super::{
+    MessengerHandle, PROBE_TIMEOUT, SERVICE_ACK_PAYLOAD, SERVICE_PROBE_PAYLOAD,
+    encode_service_error_payload, format_target_instance_segment, is_service_probe_payload,
+};
+use crate::error::{Error, Result};
+use bytes::Bytes;
+use pmi::{Message, Messenger, MessengerBackend, PublisherQoS, Subscription, TopicMessage};
+use std::{fmt, sync::Arc};
+use tokio::{sync::Mutex, task::JoinHandle, time::Duration};
+use tracing::error;
+
+pub struct ServiceMessenger;
+
+pub struct ServiceEndpoint {
+    messenger: Arc<Mutex<Messenger>>,
+    /// Subscriptions to service requests. Four patterns are needed to match:
+    /// - [0] Requests targeting this specific daemon node and instance
+    /// - [1] Requests targeting this specific daemon node with broadcast instance
+    /// - [2] Broadcast requests (any daemon) targeting this specific instance
+    /// - [3] Full broadcast requests (any daemon, any instance)
+    subscriptions: [Subscription; 4],
+    bound_daemon_node: String,
+    service_root: String,
+    instance_id: String,
+}
+
+impl ServiceEndpoint {
+    pub(super) fn new(
+        messenger: Arc<Mutex<Messenger>>,
+        subscriptions: [Subscription; 4],
+        bound_daemon_node: String,
+        service_root: String,
+        instance_id: String,
+    ) -> Self {
+        Self {
+            messenger,
+            subscriptions,
+            bound_daemon_node,
+            service_root,
+            instance_id,
+        }
+    }
+}
+
+/// Handle returned by [`ServiceEndpoint::recv_next_request`] that must be used to send the
+/// response back to the caller.
+pub struct ServiceResponder {
+    messenger: Arc<Mutex<Messenger>>,
+    response_topic: String,
+}
+
+impl ServiceResponder {
+    /// Send the response payload for this request.
+    pub async fn respond(self, payload: Bytes) -> Result<()> {
+        let message = Message::new(&self.response_topic, payload);
+        let mut messenger = self.messenger.lock().await;
+        messenger
+            .publish(message, PublisherQoS::Standard)
+            .await
+            .map_err(Error::PeppyMessagingInterface)
+    }
+}
+
+impl ServiceEndpoint {
+    /// Waits for the next service request, auto-handles probes, sends ACK, and returns the
+    /// request context together with a [`ServiceResponder`] that must be used to send the reply.
+    ///
+    /// Returns `Ok(None)` when the subscription stream has closed.
+    pub async fn recv_next_request(
+        &mut self,
+    ) -> Result<Option<(ServiceRequestContext, ServiceResponder)>> {
+        match self.next_request().await {
+            Ok((context, response_topic)) => {
+                self.publish_ack(&response_topic).await?;
+                Ok(Some((
+                    context,
+                    ServiceResponder {
+                        messenger: Arc::clone(&self.messenger),
+                        response_topic,
+                    },
+                )))
+            }
+            Err(Error::ServiceRequestStreamClosed) => Ok(None),
+            Err(err) => Err(err),
+        }
+    }
+
+    /// Handles a single incoming request using the provided callback.
+    ///
+    /// Returns `Ok(true)` after successfully processing a request, or `Ok(false)` when the
+    /// subscription stream has closed.
+    pub async fn handle_next_request<F, Fut>(&mut self, handler: F) -> Result<bool>
+    where
+        F: FnOnce(ServiceRequestContext) -> Fut,
+        Fut: std::future::Future<Output = Result<Bytes>>,
+    {
+        let Some((context, responder)) = self.recv_next_request().await? else {
+            return Ok(false);
+        };
+        let response_payload = match handler(context).await {
+            Ok(payload) => payload,
+            Err(err) => {
+                let reason = err.to_string();
+                error!(%reason, "service handler returned error");
+                encode_service_error_payload(&reason)
+            }
+        };
+        responder.respond(response_payload).await?;
+        Ok(true)
+    }
+
+    /// Handles requests until the subscription stream ends.
+    pub async fn handle_requests<F, Fut>(&mut self, mut handler: F) -> Result<()>
+    where
+        F: FnMut(ServiceRequestContext) -> Fut,
+        Fut: std::future::Future<Output = Result<Bytes>>,
+    {
+        while let Some((context, responder)) = self.recv_next_request().await? {
+            let response_payload = match handler(context).await {
+                Ok(payload) => payload,
+                Err(err) => {
+                    let reason = err.to_string();
+                    error!(%reason, "service handler returned error");
+                    encode_service_error_payload(&reason)
+                }
+            };
+            responder.respond(response_payload).await?;
+        }
+        Ok(())
+    }
+
+    /// Spawns the handler on its own task so multiple requests can progress concurrently.
+    /// Returns `Ok(None)` when the subscription closes before yielding a request.
+    pub async fn spawn_next_request_handler<F, Fut>(
+        &mut self,
+        handler: F,
+    ) -> Result<Option<JoinHandle<Result<()>>>>
+    where
+        F: FnOnce(ServiceRequestContext) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = Result<Bytes>> + Send + 'static,
+    {
+        let Some((context, responder)) = self.recv_next_request().await? else {
+            return Ok(None);
+        };
+        let task = tokio::spawn(async move {
+            let response_payload = match handler(context).await {
+                Ok(payload) => payload,
+                Err(err) => {
+                    let reason = err.to_string();
+                    error!(%reason, "service handler returned error");
+                    encode_service_error_payload(&reason)
+                }
+            };
+            responder.respond(response_payload).await
+        });
+        Ok(Some(task))
+    }
+
+    async fn next_request(&mut self) -> Result<(ServiceRequestContext, String)> {
+        loop {
+            // Destructure to get separate mutable references for tokio::select!
+            let [sub0, sub1, sub2, sub3] = &mut self.subscriptions;
+
+            // Use tokio::select! to receive from any of the 4 subscription patterns
+            let request = tokio::select! {
+                msg = sub0.rx.recv() => msg,
+                msg = sub1.rx.recv() => msg,
+                msg = sub2.rx.recv() => msg,
+                msg = sub3.rx.recv() => msg,
+            };
+
+            match request {
+                Some(request) => {
+                    match self.build_request_context(request) {
+                        Ok((context, response_topic)) => {
+                            // Auto-handle probes: respond immediately without invoking
+                            // the user handler, so is_reachable() checks are transparent.
+                            if is_service_probe_payload(&context.message().payload().as_bytes()) {
+                                let _ = self.publish_response(response_topic, Bytes::new()).await;
+                                continue;
+                            }
+                            return Ok((context, response_topic));
+                        }
+                        Err(Error::InvalidServiceRequest { .. }) => {
+                            // Skip messages that do not match this service endpoint.
+                            continue;
+                        }
+                        Err(err) => return Err(err),
+                    }
+                }
+                None => return Err(Error::ServiceRequestStreamClosed),
+            }
+        }
+    }
+
+    fn build_request_context(
+        &self,
+        request: TopicMessage,
+    ) -> Result<(ServiceRequestContext, String)> {
+        // Format: target_daemon/caller_daemon/target_instance/caller_instance/service_root/request/id
+        let identifier = request.key_expr().to_string();
+        let mut parts = identifier.split('/').filter(|segment| !segment.is_empty());
+
+        // Parse target_daemon (first segment)
+        let target_daemon_segment = parts.next().ok_or_else(|| Error::InvalidServiceRequest {
+            identifier: identifier.clone(),
+            reason: "missing target daemon node segment in request".to_string(),
+        })?;
+
+        // Parse caller_daemon (second segment)
+        let caller_daemon_segment = parts.next().ok_or_else(|| Error::InvalidServiceRequest {
+            identifier: identifier.clone(),
+            reason: "missing caller daemon node segment in request".to_string(),
+        })?;
+
+        // Parse target_instance (third segment)
+        let target_instance_segment = parts.next().ok_or_else(|| Error::InvalidServiceRequest {
+            identifier: identifier.clone(),
+            reason: "missing target instance segment in request".to_string(),
+        })?;
+
+        // Parse caller_instance (fourth segment)
+        let caller_instance_segment = parts.next().ok_or_else(|| Error::InvalidServiceRequest {
+            identifier: identifier.clone(),
+            reason: "missing caller instance segment in request".to_string(),
+        })?;
+        let response_target_instance_segment =
+            format_target_instance_segment(self.instance_id.as_str())
+                .unwrap_or_else(|| self.instance_id.clone());
+
+        // Parse and validate service root segments
+        let expected_root_segments: Vec<_> = self
+            .service_root
+            .split('/')
+            .filter(|segment| !segment.is_empty())
+            .collect();
+
+        for expected_segment in expected_root_segments {
+            let Some(segment) = parts.next() else {
+                let reason = "request is missing expected service path segments".to_string();
+                error!(%identifier, %reason, "service received invalid request");
+                return Err(Error::InvalidServiceRequest {
+                    identifier: identifier.clone(),
+                    reason,
+                });
+            };
+
+            if segment != expected_segment {
+                let reason = format!(
+                    "request path does not match service root; expected segment `{expected_segment}`, got `{segment}`"
+                );
+                error!(%identifier, %reason, "service received invalid request");
+                return Err(Error::InvalidServiceRequest {
+                    identifier: identifier.clone(),
+                    reason,
+                });
+            }
+        }
+
+        // Parse request marker
+        let request_marker = parts.next().unwrap_or_default();
+        if request_marker != "request" {
+            let reason = "missing request marker segment".to_string();
+            error!(%identifier, %reason, "service received invalid request");
+            return Err(Error::InvalidServiceRequest {
+                identifier: identifier.clone(),
+                reason,
+            });
+        }
+
+        // Parse request_id
+        let request_id = match parts.next().filter(|segment| !segment.is_empty()) {
+            Some(id) => id.to_string(),
+            None => {
+                error!(%identifier, "service received request without request id segment");
+                return Err(Error::InvalidServiceRequest {
+                    identifier,
+                    reason: "missing request id segment".to_string(),
+                });
+            }
+        };
+
+        if parts.next().is_some() {
+            let reason = "request contains unexpected trailing segments".to_string();
+            error!(%identifier, %reason, "service received invalid request");
+            return Err(Error::InvalidServiceRequest { identifier, reason });
+        }
+
+        // Construct message_identifier preserving the original target values from the request
+        // This ensures all listeners receiving a broadcast see the same key_expr
+        let message_identifier = format!(
+            "{}/{}/{}/{}/{}/request/{request_id}",
+            target_daemon_segment,
+            caller_daemon_segment,
+            target_instance_segment,
+            caller_instance_segment,
+            self.service_root
+        );
+
+        // Response topic format: caller_daemon/responder_daemon/caller_instance/responder_instance/service_root/response/request_id
+        // This ensures daemon_node() returns responder's daemon (position 1) and instance_id() returns responder's instance (position 3)
+        let response_topic = format!(
+            "{}/{}/{}/{}/{}/response/{request_id}",
+            caller_daemon_segment,
+            self.bound_daemon_node,
+            caller_instance_segment,
+            response_target_instance_segment,
+            self.service_root
+        );
+
+        let message = TopicMessage::new(&message_identifier, request.into_payload())?;
+        let context = ServiceRequestContext::new(message, request_id);
+
+        Ok((context, response_topic))
+    }
+
+    async fn publish_ack(&self, response_topic: &str) -> Result<()> {
+        Self::publish_response_with_messenger(
+            Arc::clone(&self.messenger),
+            response_topic.to_string(),
+            Bytes::from_static(SERVICE_ACK_PAYLOAD),
+        )
+        .await
+    }
+
+    async fn publish_response(&self, topic: String, payload: Bytes) -> Result<()> {
+        Self::publish_response_with_messenger(Arc::clone(&self.messenger), topic, payload).await
+    }
+
+    async fn publish_response_with_messenger(
+        messenger: Arc<Mutex<Messenger>>,
+        topic: String,
+        payload: Bytes,
+    ) -> Result<()> {
+        let response = Message::new(&topic, payload);
+        let mut messenger = messenger.lock().await;
+        messenger
+            .publish(response, PublisherQoS::Standard)
+            .await
+            .map_err(Error::PeppyMessagingInterface)
+    }
+}
+
+pub struct ServiceRequestContext {
+    message: TopicMessage,
+    request_id: String,
+}
+
+impl ServiceRequestContext {
+    pub fn new(message: TopicMessage, request_id: String) -> Self {
+        Self {
+            message,
+            request_id,
+        }
+    }
+
+    pub fn message(&self) -> &TopicMessage {
+        &self.message
+    }
+
+    pub fn request_id(&self) -> &str {
+        &self.request_id
+    }
+}
+
+impl fmt::Debug for ServiceRequestContext {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ServiceRequestContext")
+            .field("message_key", &self.message.key_expr())
+            .field("instance_id", &self.message.instance_id())
+            .field("request_id", &self.request_id)
+            .finish()
+    }
+}
+
+impl ServiceMessenger {
+    /// Listening as a service is a 2 way stream, so the process that exposes the service needs to provide its instance_id
+    pub async fn listen(
+        messenger: &MessengerHandle,
+        as_daemon_node: &str,
+        as_instance_id: &str,
+        as_node_name: &str,
+        as_service_name: &str,
+    ) -> Result<ServiceEndpoint> {
+        messenger
+            .expose_service(
+                as_daemon_node,
+                as_instance_id,
+                as_node_name,
+                as_service_name,
+            )
+            .await
+    }
+
+    /// If `target_instance_id` is `None`, this call returns with the first service instance that it hits
+    #[allow(clippy::too_many_arguments)]
+    pub async fn poll(
+        messenger: &MessengerHandle,
+        bound_daemon_node: &str,
+        as_instance_id: &str,
+        target_node_name: &str,
+        target_service_name: &str,
+        target_daemon_node: Option<&str>,
+        target_instance_id: Option<&str>,
+        request_payload: Bytes,
+        response_timeout: impl Into<Option<Duration>>,
+    ) -> Result<TopicMessage> {
+        messenger
+            .poll_service(
+                "service",
+                bound_daemon_node,
+                as_instance_id,
+                target_node_name,
+                target_service_name,
+                target_daemon_node,
+                target_instance_id,
+                request_payload,
+                response_timeout,
+            )
+            .await
+    }
+
+    /// Sends a lightweight probe to check whether a service is listening.
+    ///
+    /// The probe is handled transparently by the service's request loop — the user
+    /// handler is never invoked. Returns `true` if the service responds within
+    /// [`PROBE_TIMEOUT`], `false` if unreachable.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn is_reachable(
+        messenger: &MessengerHandle,
+        bound_daemon_node: &str,
+        as_instance_id: &str,
+        target_node_name: &str,
+        target_service_name: &str,
+        target_daemon_node: Option<&str>,
+        target_instance_id: Option<&str>,
+    ) -> Result<bool> {
+        match messenger
+            .poll_service(
+                "service",
+                bound_daemon_node,
+                as_instance_id,
+                target_node_name,
+                target_service_name,
+                target_daemon_node,
+                target_instance_id,
+                Bytes::from_static(SERVICE_PROBE_PAYLOAD),
+                PROBE_TIMEOUT,
+            )
+            .await
+        {
+            Ok(_) => Ok(true),
+            Err(Error::ServiceUnreachable { .. }) => Ok(false),
+            Err(Error::ServiceTimeout { .. }) => Ok(true),
+            Err(e) => Err(e),
+        }
+    }
+}

@@ -35,8 +35,8 @@ async fn node_sync_rust_command_succeeds() {
         .expect("failed to create serve emulation");
     let shared_messenger = serve.messenger();
     assert!(
-        !serve.master_node_name().is_empty(),
-        "master_node_name should not be empty"
+        !serve.daemon_node_name().is_empty(),
+        "daemon_node_name should not be empty"
     );
 
     // Create a temp directory for the node
@@ -45,7 +45,7 @@ async fn node_sync_rust_command_succeeds() {
 
     // Create AppContext pointing to the temp directory
     let node_ctx = Arc::new(
-        AppContext::with_messenger(node_dir.path(), shared_messenger.clone())
+        AppContext::with_messenger(node_dir.path(), Arc::clone(&shared_messenger))
             .with_daemon_state_file(serve.daemon_state_path()),
     );
 
@@ -101,7 +101,7 @@ async fn node_sync_rust_command_succeeds() {
 
     // Run sync from inside the node directory (ctx.root_dir must contain peppy.json5)
     let sync_ctx = Arc::new(
-        AppContext::with_messenger(&node_path, shared_messenger.clone())
+        AppContext::with_messenger(&node_path, Arc::clone(&shared_messenger))
             .with_daemon_state_file(serve.daemon_state_path()),
     );
     NodeCommand {
