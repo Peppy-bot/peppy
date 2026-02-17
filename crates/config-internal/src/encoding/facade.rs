@@ -135,14 +135,22 @@ impl CapnpFacade {
     }
 
     fn resolve_capnp_binary() -> Result<PathBuf> {
+        // 1. Runtime env var takes precedence (hard error if explicitly set but missing).
         if let Some(path) = env::var_os("CAPNP_BINARY_PATH") {
             return Self::validate_path(PathBuf::from(path));
         }
 
+        // 2. Compile-time path: only use if it still exists on disk.
+        //    When the binary was built on a different machine, this path is stale.
         if let Some(path) = option_env!("CAPNP_BINARY_PATH") {
-            return Self::validate_path(PathBuf::from(path));
+            let p = PathBuf::from(path);
+            if p.is_file() {
+                return Self::validate_path(p);
+            }
+            // Stale compile-time path — fall through to bundled binary.
         }
 
+        // 3. Embedded/bundled binary (the production path for distributed builds).
         Self::validate_path(Self::bundled_capnp_binary()?)
     }
 
