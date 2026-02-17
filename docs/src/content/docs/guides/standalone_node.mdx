@@ -4,7 +4,7 @@ description: Learn how to debug a node before it's added to the node stack
 sidebar:
   order: 8
 ---
-import { Code, Tabs, TabItem } from '@astrojs/starlight/components';
+import { Code, Steps, Tabs, TabItem } from '@astrojs/starlight/components';
 
 import standaloneRust from './snippets/rust/standalone/src/main.rs?raw';
 import standaloneRustConfig from './snippets/rust/standalone/peppy.json5?raw';
@@ -20,10 +20,19 @@ In that scenario, you want to be able to run your node as a regular Rust/Python 
 While debugging the nodes based on the logs can be quite helpful, nothing beats the ability to fire up the debugger to inspect the code that is supposed to run inside the peppy node stack.
 To support this, `peppy` can run a node in "standalone mode"—it communicates with other nodes in the stack but runs as a regular program outside of it, allowing you to use standard debugging tools.
 Let's create a new node:
-```sh
-❯ peppy node init standalone
-❯ cd standalone
-```
+
+<Steps>
+1. Initialize the node:
+   ```sh
+   peppy node init standalone
+   ```
+
+2. Navigate into the directory:
+   ```sh
+   cd standalone
+   ```
+</Steps>
+
 with the following configuration:
 <Tabs>
   <TabItem label="Python">
@@ -42,22 +51,31 @@ peppy node sync
 Now if you try to run the node:
 
 <Tabs>
+  <TabItem label="Python">
+    ```sh
+    uv run standalone
+    ```
+  </TabItem>
   <TabItem label="Rust">
     ```sh
     cargo run
     ```
   </TabItem>
-  <TabItem label="Python">
-    ```sh
-    uv run standalone_node
-    ```
-  </TabItem>
 </Tabs>
 
 You'll run into the following error:
+<Tabs>
+  <TabItem label="Python">
+```sh
+RuntimeError: missing required parameter(s) for standalone mode: device, video. Provide them via StandaloneConfig().with_parameters()
 ```
+  </TabItem>
+  <TabItem label="Rust">
+```sh
 Error: ParameterDeserialization(ParameterDeserializationError(["device", "video"]))
 ```
+  </TabItem>
+</Tabs>
 These parameters are usually provided during `peppy node start`, but since we want this node to run as a standalone program, we need to pass them outside of the peppy daemon environment.
 We can modify our source file like this:
 

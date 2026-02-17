@@ -5,7 +5,7 @@ sidebar:
   order: 2
 ---
 
-import { Tabs, TabItem } from '@astrojs/starlight/components';
+import { Steps, Tabs, TabItem } from '@astrojs/starlight/components';
 
 To install `peppy`, run the following command in your terminal:
 
@@ -72,10 +72,17 @@ You can verify the service is running with:
     ```
 
     Restart the service:
-    ```sh
-    launchctl unload ~/Library/LaunchAgents/bot.peppy.plist
-    launchctl load ~/Library/LaunchAgents/bot.peppy.plist
-    ```
+    <Steps>
+    1. Unload the service:
+       ```sh
+       launchctl unload ~/Library/LaunchAgents/bot.peppy.plist
+       ```
+
+    2. Reload the service:
+       ```sh
+       launchctl load ~/Library/LaunchAgents/bot.peppy.plist
+       ```
+    </Steps>
   </TabItem>
 </Tabs>
 
