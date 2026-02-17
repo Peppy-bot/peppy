@@ -23,9 +23,18 @@ Let's create a new node:
 
 <Steps>
 1. Initialize the node:
-   ```sh
-   peppy node init standalone
-   ```
+   <Tabs>
+     <TabItem label="Python">
+       ```sh
+       peppy node init --toolchain uv standalone
+       ```
+     </TabItem>
+     <TabItem label="Rust">
+       ```sh
+       peppy node init --toolchain cargo standalone
+       ```
+     </TabItem>
+   </Tabs>
 
 2. Navigate into the directory:
    ```sh

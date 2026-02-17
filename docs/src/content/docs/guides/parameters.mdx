@@ -21,9 +21,18 @@ In a new folder, initialize a new node:
 
 <Steps>
 1. Initialize the node:
-   ```sh
-   peppy node init hello_world_param
-   ```
+   <Tabs>
+     <TabItem label="Python">
+       ```sh
+       peppy node init --toolchain uv hello_world_param
+       ```
+     </TabItem>
+     <TabItem label="Rust">
+       ```sh
+       peppy node init --toolchain cargo hello_world_param
+       ```
+     </TabItem>
+   </Tabs>
 
 2. Navigate into the directory:
    ```sh
