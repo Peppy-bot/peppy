@@ -119,9 +119,6 @@ mod ruff_build {
             // Clean up build directory
             std::fs::remove_dir_all(&build_dir).ok();
         }
-
-        // Set environment variable for runtime to find the ruff binary
-        println!("cargo:rustc-env=RUFF_BINARY_PATH={}", ruff_binary_path);
     }
 }
 
@@ -537,8 +534,32 @@ mod precompile_deps {
     }
 }
 
+/// Generates `embedded_ruff.rs` in OUT_DIR that embeds the ruff binary via `include_bytes!`.
+/// This allows the binary to be extracted at runtime on any machine, rather than relying
+/// on a stale compile-time filesystem path.
+fn embed_ruff_binary() {
+    use std::io::Write;
+
+    let out_dir = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap());
+    let ruff_binary_path = out_dir.join("ruff");
+    let generated = out_dir.join("embedded_ruff.rs");
+
+    let mut file = std::fs::File::create(&generated).unwrap();
+    if ruff_binary_path.exists() {
+        writeln!(
+            file,
+            r#"pub const RUFF_BINARY: Option<&[u8]> = Some(include_bytes!("{}"));"#,
+            ruff_binary_path.display()
+        )
+        .unwrap();
+    } else {
+        writeln!(file, r#"pub const RUFF_BINARY: Option<&[u8]> = None;"#).unwrap();
+    }
+}
+
 fn main() {
     ruff_build::run();
+    embed_ruff_binary();
     peppylib_build::run();
     precompile_deps::run();
 }
