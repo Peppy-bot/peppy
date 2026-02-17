@@ -289,9 +289,24 @@ impl PyStandaloneConfig {
         }
     }
 
-    /// Set runtime parameters from a Python dict.
+    /// Set runtime parameters from a Python dict or dataclass instance.
     fn with_parameters(&self, py: Python<'_>, params: Py<PyAny>) -> PyResult<Self> {
-        let value: serde_json::Value = depythonize(params.bind(py))?;
+        let params = params.bind(py);
+
+        // If the input is a dataclass instance, convert it to a dict so
+        // that depythonize (which requires the mapping protocol) can handle it.
+        let dataclasses = py.import("dataclasses")?;
+        let params = if dataclasses
+            .call_method1("is_dataclass", (params,))?
+            .is_truthy()?
+            && !params.is_instance_of::<pyo3::types::PyType>()
+        {
+            dataclasses.call_method1("asdict", (params,))?
+        } else {
+            params.clone()
+        };
+
+        let value: serde_json::Value = depythonize(&params)?;
         Ok(Self {
             inner: self.inner.clone().with_parameters_json(value),
         })
