@@ -21,6 +21,7 @@ rust-embed = { version = "8", features = ["include-exclude"] }
 
 [dev-dependencies]
 bytes = "1"
+config = { path = "../config-internal", features = ["test_helpers"] }
 serde_json5 = "0.2.1"
 tempfile = "3.10"
 peppylib = { path = "../peppylib" }
