@@ -47,6 +47,19 @@ mod ruff_build {
             let build_dir = cache_dir.join("ruff-src");
             if build_dir.exists() {
                 std::fs::remove_dir_all(&build_dir).ok();
+                // Fall back to shell rm if std::fs removal failed (e.g. permission issues)
+                if build_dir.exists() {
+                    Command::new("rm")
+                        .args(["-rf", build_dir.to_str().unwrap()])
+                        .status()
+                        .ok();
+                }
+                if build_dir.exists() {
+                    panic!(
+                        "Cannot remove stale ruff-src directory at {:?}. Please remove it manually.",
+                        build_dir
+                    );
+                }
             }
 
             // Clone ruff repository
