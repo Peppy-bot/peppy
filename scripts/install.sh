@@ -16,6 +16,7 @@ set -eu
 #   PEPPY_REPOURL           Base URL for downloads (default: https://peppy.bot)
 #   PEPPY_DOWNLOAD_URL      Override full download URL
 #   PEPPY_NO_PATH_UPDATE    If set, do not update shell PATH config
+#   PEPPY_FORCE_REINSTALL   If set, skip confirmation when daemon is running (for non-interactive installs)
 
 __wrap__() {
     mask_credentials() {
@@ -54,6 +55,49 @@ __wrap__() {
     '~' | '~'/*) PEPPY_HOME="${HOME-}${PEPPY_HOME#\~}" ;; # expand tilde
     esac
     PEPPY_BIN_DIR="${PEPPY_BIN_DIR:-$PEPPY_HOME/bin}"
+
+    # Detect running daemon and warn before overwriting
+    DAEMON_RUNNING=false
+    if command -v pgrep >/dev/null 2>&1; then
+        if pgrep -x peppy >/dev/null 2>&1 || pgrep -x zenohd >/dev/null 2>&1; then
+            DAEMON_RUNNING=true
+        fi
+    elif command -v ps >/dev/null 2>&1; then
+        if ps -e -o comm= 2>/dev/null | grep -qxE 'peppy|zenohd'; then
+            DAEMON_RUNNING=true
+        fi
+    fi
+
+    if $DAEMON_RUNNING; then
+        echo ""
+        echo "warning: The peppy daemon is currently running."
+        echo "         Installing will stop the daemon and wipe '${PEPPY_HOME}' before proceeding."
+        echo ""
+
+        if [ -t 0 ]; then
+            printf "Do you want to continue? [y/N] "
+            read -r REPLY
+            case "$REPLY" in
+            [Yy] | [Yy][Ee][Ss]) ;;
+            *)
+                echo "Installation aborted."
+                exit 0
+                ;;
+            esac
+        elif [ -z "${PEPPY_FORCE_REINSTALL:-}" ]; then
+            echo "error: cannot prompt for confirmation (stdin is not a terminal)." >&2
+            echo "       Set PEPPY_FORCE_REINSTALL=1 to skip this check." >&2
+            exit 1
+        fi
+
+        echo "Stopping peppy daemon..."
+        if [ -x "$PEPPY_BIN_DIR/peppy" ]; then
+            "$PEPPY_BIN_DIR/peppy" service stop >/dev/null 2>&1 || true
+            "$PEPPY_BIN_DIR/peppy" service uninstall >/dev/null 2>&1 || true
+        fi
+        echo "Removing '${PEPPY_HOME}'..."
+        rm -rf "$PEPPY_HOME"
+    fi
 
     REPOURL="${PEPPY_REPOURL:-https://peppy.bot}"
     PLATFORM="$(uname -s)"
