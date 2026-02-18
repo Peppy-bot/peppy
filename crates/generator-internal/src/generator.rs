@@ -69,6 +69,8 @@ pub fn generate_peppygen_lib(
             generate_with_backend(rust_generator, &interfaces, &output_dir, node_dir)?;
             // Create or update the node's Cargo.toml with peppygen dependency
             ensure_node_cargo_toml(node_dir, node_config.manifest.name.as_str())?;
+            // Patch any user-declared deps that overlap with precompiled crates
+            sync_cargo_patches(node_dir)?;
             Ok(())
         }
         PeppygenLanguage::Python => {
@@ -131,6 +133,91 @@ where
         interface.register_with(&mut backend)?;
     }
     backend.build(output_dir, node_dir)
+}
+
+/// Synchronizes `[patch.crates-io]` entries in the node's Cargo.toml for any
+/// user-declared dependencies that match precompiled crates.
+///
+/// When a user adds a registry crate (e.g. `tokio = "1.47"`) that is part of the
+/// precompiled runtime, Cargo would normally download and compile it from scratch,
+/// producing types incompatible with the precompiled version. This function
+/// redirects those dependencies to thin stub crates that re-export from peppygen,
+/// preventing the "multiple versions of crate" type mismatch.
+///
+/// Only crates explicitly listed in `[dependencies]` are patched — the section
+/// stays proportional to what the user declared.
+fn sync_cargo_patches(node_dir: &Path) -> Result<()> {
+    use std::io::ErrorKind;
+    use toml_edit::{DocumentMut, InlineTable, Item, Table, value};
+
+    let cargo_toml_path = node_dir.join("Cargo.toml");
+    if !cargo_toml_path.exists() {
+        return Ok(());
+    }
+
+    let stubbable = rust::precompiled::stubbable_crates();
+    if stubbable.is_empty() {
+        return Ok(());
+    }
+
+    let contents = fs::read_to_string(&cargo_toml_path)?;
+    let mut doc: DocumentMut = contents.parse().map_err(|e| {
+        Error::Io(std::io::Error::new(
+            ErrorKind::InvalidData,
+            format!("failed to parse Cargo.toml: {}", e),
+        ))
+    })?;
+
+    // Build lookup from package_name → PrecompiledCrate
+    let stubbable_map: std::collections::HashMap<&str, &rust::precompiled::PrecompiledCrate> =
+        stubbable
+            .iter()
+            .map(|c| (c.package_name.as_str(), c))
+            .collect();
+
+    // Find user dependencies that match precompiled crates
+    let mut patches_needed: Vec<&rust::precompiled::PrecompiledCrate> = Vec::new();
+    if let Some(deps) = doc.get("dependencies").and_then(|d| d.as_table()) {
+        for (dep_name, _) in deps.iter() {
+            if dep_name == "peppygen" {
+                continue;
+            }
+            if let Some(krate) = stubbable_map.get(dep_name) {
+                patches_needed.push(krate);
+            }
+        }
+    }
+
+    // Remove existing [patch] section to regenerate cleanly
+    doc.remove("patch");
+
+    if !patches_needed.is_empty() {
+        patches_needed.sort_by(|a, b| a.package_name.cmp(&b.package_name));
+
+        let mut patch_table = Table::new();
+        patch_table.set_implicit(true);
+        let mut crates_io = Table::new();
+
+        for krate in &patches_needed {
+            let mut entry = InlineTable::new();
+            entry.insert(
+                "path",
+                format!(
+                    "{}/patches/{}",
+                    config::consts::PEPPY_OUTPUT_DIR,
+                    krate.package_name
+                )
+                .into(),
+            );
+            crates_io.insert(&krate.package_name, value(entry));
+        }
+
+        patch_table.insert("crates-io", Item::Table(crates_io));
+        doc.insert("patch", Item::Table(patch_table));
+    }
+
+    fs::write(&cargo_toml_path, doc.to_string())?;
+    Ok(())
 }
 
 /// Creates or updates the node's Cargo.toml with the peppygen dependency.
@@ -362,6 +449,168 @@ mod tests {
                 .and_then(|d| d.get("peppygen"))
                 .is_some(),
             "peppygen should be added"
+        );
+    }
+
+    /// Helper: returns a package name known to be stubbable, or None if the
+    /// precompiled manifest has no stubbable crates (shouldn't happen in CI).
+    fn any_stubbable_package() -> Option<String> {
+        rust::precompiled::stubbable_crates()
+            .first()
+            .map(|c| c.package_name.clone())
+    }
+
+    #[test]
+    fn sync_cargo_patches_adds_entries_for_matching_deps() {
+        let Some(pkg) = any_stubbable_package() else {
+            return; // skip if no stubbable crates
+        };
+
+        let temp_dir = TempDir::new().unwrap();
+        let node_dir = temp_dir.path();
+        let cargo_toml_path = node_dir.join("Cargo.toml");
+
+        let content = format!(
+            r#"[package]
+name = "test_node"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+peppygen = {{ path = ".peppy/libs/peppygen" }}
+{pkg} = "0.1"
+"#
+        );
+        fs::write(&cargo_toml_path, &content).unwrap();
+
+        sync_cargo_patches(node_dir).unwrap();
+
+        let result = fs::read_to_string(&cargo_toml_path).unwrap();
+        let doc: Value = toml::from_str(&result).unwrap();
+
+        let patch_path = doc
+            .get("patch")
+            .and_then(|p| p.get("crates-io"))
+            .and_then(|c| c.get(&pkg))
+            .and_then(|e| e.get("path"))
+            .and_then(|p| p.as_str())
+            .expect("should have patch entry for matching dep");
+        assert!(
+            patch_path.starts_with(".peppy/patches/"),
+            "patch path should point to .peppy/patches/"
+        );
+    }
+
+    #[test]
+    fn sync_cargo_patches_skips_non_precompiled_deps() {
+        let temp_dir = TempDir::new().unwrap();
+        let node_dir = temp_dir.path();
+        let cargo_toml_path = node_dir.join("Cargo.toml");
+
+        let content = r#"[package]
+name = "test_node"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+peppygen = { path = ".peppy/libs/peppygen" }
+some-unknown-crate = "1.0"
+"#;
+        fs::write(&cargo_toml_path, content).unwrap();
+
+        sync_cargo_patches(node_dir).unwrap();
+
+        let result = fs::read_to_string(&cargo_toml_path).unwrap();
+        let doc: Value = toml::from_str(&result).unwrap();
+
+        assert!(
+            doc.get("patch").is_none(),
+            "should not add [patch] for non-precompiled deps"
+        );
+    }
+
+    #[test]
+    fn sync_cargo_patches_is_idempotent() {
+        let Some(pkg) = any_stubbable_package() else {
+            return;
+        };
+
+        let temp_dir = TempDir::new().unwrap();
+        let node_dir = temp_dir.path();
+        let cargo_toml_path = node_dir.join("Cargo.toml");
+
+        let content = format!(
+            r#"[package]
+name = "test_node"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+peppygen = {{ path = ".peppy/libs/peppygen" }}
+{pkg} = "0.1"
+"#
+        );
+        fs::write(&cargo_toml_path, &content).unwrap();
+
+        sync_cargo_patches(node_dir).unwrap();
+        let after_first = fs::read_to_string(&cargo_toml_path).unwrap();
+
+        sync_cargo_patches(node_dir).unwrap();
+        let after_second = fs::read_to_string(&cargo_toml_path).unwrap();
+
+        assert_eq!(
+            after_first, after_second,
+            "second call should be idempotent"
+        );
+    }
+
+    #[test]
+    fn sync_cargo_patches_removes_stale_entries() {
+        let Some(pkg) = any_stubbable_package() else {
+            return;
+        };
+
+        let temp_dir = TempDir::new().unwrap();
+        let node_dir = temp_dir.path();
+        let cargo_toml_path = node_dir.join("Cargo.toml");
+
+        // First: Cargo.toml with a matching dep → gets patched
+        let content = format!(
+            r#"[package]
+name = "test_node"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+peppygen = {{ path = ".peppy/libs/peppygen" }}
+{pkg} = "0.1"
+"#
+        );
+        fs::write(&cargo_toml_path, &content).unwrap();
+        sync_cargo_patches(node_dir).unwrap();
+
+        let result: Value = toml::from_str(&fs::read_to_string(&cargo_toml_path).unwrap()).unwrap();
+        assert!(
+            result.get("patch").is_some(),
+            "should have patch section with dep present"
+        );
+
+        // Now remove the matching dep and re-sync
+        let content_no_dep = r#"[package]
+name = "test_node"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+peppygen = { path = ".peppy/libs/peppygen" }
+"#;
+        fs::write(&cargo_toml_path, content_no_dep).unwrap();
+        sync_cargo_patches(node_dir).unwrap();
+
+        let result: Value = toml::from_str(&fs::read_to_string(&cargo_toml_path).unwrap()).unwrap();
+        assert!(
+            result.get("patch").is_none(),
+            "patch section should be removed when no matching deps"
         );
     }
 }
