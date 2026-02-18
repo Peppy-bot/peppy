@@ -1,7 +1,7 @@
-use bytes::Bytes;
+use crate::runtime::TaskHandle;
+use crate::types::Payload;
 use std::sync::Arc;
 use tokio::sync::{Mutex, oneshot};
-use tokio::task::JoinHandle;
 use tracing::debug;
 
 use crate::messaging::ServiceRequestContext;
@@ -18,7 +18,7 @@ pub async fn listen_for_shutdown(
     daemon_node_node: &str,
     instance_id: &str,
     node_name: &str,
-) -> PeppyResult<(JoinHandle<PeppyResult<()>>, ShutdownReceiver)> {
+) -> PeppyResult<(TaskHandle<PeppyResult<()>>, ShutdownReceiver)> {
     let mut endpoint = ServiceMessenger::listen(
         messenger,
         daemon_node_node,
@@ -31,7 +31,7 @@ pub async fn listen_for_shutdown(
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
     let shutdown_tx = Arc::new(Mutex::new(Some(shutdown_tx)));
 
-    let handle = tokio::spawn(async move {
+    let handle = crate::runtime::spawn(async move {
         endpoint
             .handle_requests(|context| {
                 let shutdown_tx = Arc::clone(&shutdown_tx);
@@ -46,7 +46,7 @@ pub async fn listen_for_shutdown(
 async fn handle_shutdown_request(
     context: ServiceRequestContext,
     shutdown_tx: ShutdownSender,
-) -> PeppyResult<Bytes> {
+) -> PeppyResult<Payload> {
     let sender_instance_id = context.message().instance_id();
     handle_shutdown_request_inner(&context, shutdown_tx)
         .await
@@ -59,7 +59,7 @@ async fn handle_shutdown_request(
 async fn handle_shutdown_request_inner(
     context: &ServiceRequestContext,
     shutdown_tx: ShutdownSender,
-) -> PeppyResult<Bytes> {
+) -> PeppyResult<Payload> {
     let sender_instance_id = context.message().instance_id();
     let payload = context.message().payload();
 
@@ -70,5 +70,5 @@ async fn handle_shutdown_request_inner(
         let _ = tx.send(());
     }
 
-    Ok(payload.to_bytes())
+    Ok(Payload::from(payload.to_bytes()))
 }

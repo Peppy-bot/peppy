@@ -1,6 +1,6 @@
-use bytes::Bytes;
 use config::node::QoSProfile;
 use peppylib::messaging::{MessengerHandle, TopicMessenger};
+use peppylib::types::Payload;
 use pmi::ZenohAdapter;
 use std::time::Duration;
 
@@ -15,7 +15,7 @@ async fn topic_messenger_communication() {
     let instance_id = "test_instance";
     let node_name = "test_node";
     let topic_name = "test_topic";
-    let payload = Bytes::from_static(b"Hello world");
+    let payload = Payload::from_static(b"Hello world");
 
     let receiver_handle = MessengerHandle::from_host_port(&host, port)
         .await
@@ -55,12 +55,12 @@ async fn topic_messenger_communication() {
     .expect("emit should succeed");
 
     // Receive the message with a timeout
-    let message = tokio::time::timeout(Duration::from_secs(2), subscription.on_next_message())
+    let message = tokio::time::timeout(Duration::from_secs(2), subscription.recv())
         .await
         .expect("should receive message within timeout")
         .expect("message should not be None");
 
-    assert_eq!(message.payload().to_bytes(), payload);
+    assert_eq!(message.payload(), &payload);
     assert_eq!(message.instance_id(), instance_id);
     assert_eq!(message.daemon_node(), daemon_node);
 }

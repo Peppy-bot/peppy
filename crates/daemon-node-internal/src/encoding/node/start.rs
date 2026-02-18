@@ -3,10 +3,10 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use bytes::Bytes;
 use capnp::message::Builder;
 use config::node::QoSProfile;
 use peppylib::messaging::ActionGoalHandle;
+use peppylib::types::Payload;
 use peppylib::{ActionMessenger, MessengerHandle};
 
 use crate::Result;
@@ -46,7 +46,7 @@ impl NodeStartGoal {
         self
     }
 
-    pub fn encode(&self) -> Result<Bytes> {
+    pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
             let mut goal = builder.init_root::<node_capnp::node_start_goal::Builder>();
@@ -142,7 +142,7 @@ impl NodeStartGoalResponse {
         }
     }
 
-    pub fn encode(&self) -> Result<Bytes> {
+    pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
             let mut response = builder.init_root::<node_capnp::node_start_goal_response::Builder>();
@@ -205,7 +205,7 @@ impl NodeStartFeedback {
         self.stream == "stderr"
     }
 
-    pub fn encode(&self) -> Result<Bytes> {
+    pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
             let mut feedback = builder.init_root::<node_capnp::node_start_feedback::Builder>();
@@ -251,7 +251,7 @@ impl NodeStartResult {
         Self::new(false, Some(error_message.into()), None)
     }
 
-    pub fn encode(&self) -> Result<Bytes> {
+    pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
             let mut result = builder.init_root::<node_capnp::node_start_result::Builder>();

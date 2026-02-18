@@ -1771,7 +1771,7 @@ async fn node_add_same_node_shutdown_existing_instances() {
     )
     .await
     .expect("failed to expose shutdown service for instance 1");
-    let _shutdown_task_1 = AbortOnDrop(tokio::spawn({
+    let _shutdown_task_1 = AbortOnDrop(peppylib::runtime::spawn({
         let called_tx_1 = Arc::clone(&called_tx_1);
         async move {
             shutdown_endpoint_1
@@ -1784,7 +1784,7 @@ async fn node_add_same_node_shutdown_existing_instances() {
                             let _ = tx.send(());
                         }
                         allow_shutdown_1_clone.notified().await;
-                        Ok(payload.to_bytes())
+                        Ok(payload)
                     }
                 })
                 .await
@@ -1804,7 +1804,7 @@ async fn node_add_same_node_shutdown_existing_instances() {
     )
     .await
     .expect("failed to expose shutdown service for instance 2");
-    let _shutdown_task_2 = AbortOnDrop(tokio::spawn({
+    let _shutdown_task_2 = AbortOnDrop(peppylib::runtime::spawn({
         let called_tx_2 = Arc::clone(&called_tx_2);
         async move {
             shutdown_endpoint_2
@@ -1817,7 +1817,7 @@ async fn node_add_same_node_shutdown_existing_instances() {
                             let _ = tx.send(());
                         }
                         allow_shutdown_2_clone.notified().await;
-                        Ok(payload.to_bytes())
+                        Ok(payload)
                     }
                 })
                 .await

@@ -191,48 +191,12 @@ pub enum Error {
     #[error(transparent)]
     MissingStandaloneParameters(#[from] MissingStandaloneParameters),
 
-    // --- Capnp
-    #[error("capnp encoding error: {0}")]
-    Capnp(#[from] capnp::Error),
+    // --- Serialization
+    #[error("serialization error: {0}")]
+    Serialization(String),
 
-    #[error("capnp schema error: {0}")]
-    CapnpNotInSchema(#[from] capnp::NotInSchema),
-
-    #[error("failed to serialize Cap'n Proto message for `{context}`")]
-    CapnpSerialize {
-        context: String,
-        #[source]
-        source: capnp::Error,
-    },
-
-    #[error("failed to deserialize Cap'n Proto message for `{context}`")]
-    CapnpDeserialize {
-        context: String,
-        #[source]
-        source: capnp::Error,
-    },
-
-    #[error("failed to read Cap'n Proto field `{field}` for `{context}`")]
-    CapnpField {
-        field: String,
-        context: String,
-        #[source]
-        source: capnp::Error,
-    },
-
-    #[error("expected {expected} bytes for `{field}` but received {actual}")]
-    InvalidFixedBytes {
-        field: String,
-        expected: usize,
-        actual: usize,
-    },
-
-    #[error("expected {expected} elements for `{field}` but received {actual}")]
-    InvalidFixedListLength {
-        field: String,
-        expected: usize,
-        actual: usize,
-    },
+    #[error("deserialization error: {0}")]
+    Deserialization(String),
 
     // --- Runner
     #[error("failed to build blocking runtime for `{context}`")]

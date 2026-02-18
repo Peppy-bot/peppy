@@ -1,4 +1,4 @@
-use bytes::Bytes;
+use crate::types::Payload;
 use config::node::QoSProfile;
 use pmi::{MessengerBackend, ZenohAdapter, ZenohdInstance};
 use rand::seq::SliceRandom;
@@ -14,19 +14,19 @@ use crate::messaging::{ActionMessenger, MessengerHandle, ServiceMessenger, Topic
 #[derive(Clone)]
 struct ActionClientCase {
     client_id: String,
-    goal: Bytes,
-    goal_response: Bytes,
-    feedback: Bytes,
+    goal: Payload,
+    goal_response: Payload,
+    feedback: Payload,
 }
 
 impl ActionClientCase {
     fn new(prefix: &str, idx: usize) -> Self {
         let client_id = format!("{prefix}_{idx}");
-        let goal = Bytes::from(format!("client={client_id};goal_request={idx}").into_bytes());
+        let goal = Payload::from(format!("client={client_id};goal_request={idx}").into_bytes());
         let goal_response =
-            Bytes::from(format!("client={client_id};goal_response=accepted").into_bytes());
+            Payload::from(format!("client={client_id};goal_response=accepted").into_bytes());
         let feedback =
-            Bytes::from(format!("client={client_id};feedback=progress-{idx}").into_bytes());
+            Payload::from(format!("client={client_id};feedback=progress-{idx}").into_bytes());
 
         Self {
             client_id,
@@ -104,7 +104,7 @@ async fn topic_publish_subscribe_no_target_instance_id() {
     let qos = QoSProfile::Reliable;
     let node_name = "uvc_camera";
     let topic = "video_stream";
-    let payload = Bytes::from_static(b"A message");
+    let payload = Payload::from_static(b"A message");
 
     let subscriber_daemon_node = "daemon_node_subscribe";
     let subscriber_handle = router.messenger().await;
@@ -140,7 +140,7 @@ async fn topic_publish_subscribe_no_target_instance_id() {
     .await
     .expect("Should send the payload");
 
-    let received = tokio::time::timeout(Duration::from_secs(2), subscription.rx.recv())
+    let received = tokio::time::timeout(Duration::from_secs(2), subscription.recv())
         .await
         .expect("Timed out waiting for published message")
         .expect("Should receive the published message");
@@ -175,7 +175,7 @@ async fn topic_publish_subscribe_with_target_instance_id() {
     // The messages emitted from this instance_id will be received by a subscriber
     let emitter_instance_id2 = "emitter_instance2";
 
-    let payload = Bytes::from_static(b"A message");
+    let payload = Payload::from_static(b"A message");
 
     let subscriber_daemon_node = "daemon_node_subscribe";
     let subscriber_handle = router.messenger().await;
@@ -225,14 +225,13 @@ async fn topic_publish_subscribe_with_target_instance_id() {
     .await
     .expect("Should send the payload");
 
-    let received = tokio::time::timeout(Duration::from_secs(2), subscription2.rx.recv())
+    let received = tokio::time::timeout(Duration::from_secs(2), subscription2.recv())
         .await
         .expect("Timed out waiting for published message")
         .expect("Should receive the published message");
 
     // The first subscriber should never receive a message
-    let timeout_result =
-        tokio::time::timeout(Duration::from_secs(2), subscription1.rx.recv()).await;
+    let timeout_result = tokio::time::timeout(Duration::from_secs(2), subscription1.recv()).await;
     assert!(
         timeout_result.is_err(),
         "subscription1 should not receive any message"
@@ -261,7 +260,7 @@ async fn topic_publish_subscribe_with_target_daemon_node() {
     // The messages emitted from this one will be received by a subscriber
     let emitter_daemon_node2 = "daemon_node_emit2";
 
-    let payload = Bytes::from_static(b"A message");
+    let payload = Payload::from_static(b"A message");
 
     // Same instance_id for every subscriber
     let subscriber_instance_id = "subscriber_instance";
@@ -312,14 +311,13 @@ async fn topic_publish_subscribe_with_target_daemon_node() {
     .await
     .expect("Should send the payload");
 
-    let received = tokio::time::timeout(Duration::from_secs(2), subscription2.rx.recv())
+    let received = tokio::time::timeout(Duration::from_secs(2), subscription2.recv())
         .await
         .expect("Timed out waiting for published message")
         .expect("Should receive the published message");
 
     // The first subscriber should never receive a message
-    let timeout_result =
-        tokio::time::timeout(Duration::from_secs(2), subscription1.rx.recv()).await;
+    let timeout_result = tokio::time::timeout(Duration::from_secs(2), subscription1.recv()).await;
     assert!(
         timeout_result.is_err(),
         "subscription1 should not receive any message"
@@ -370,7 +368,7 @@ async fn topic_publish_reliable_5000hz_messages() {
     message_ids.shuffle(&mut rng);
 
     for &message_id in &message_ids {
-        let payload = Bytes::from(message_id.to_le_bytes().to_vec());
+        let payload = Payload::from(message_id.to_le_bytes().to_vec());
         TopicMessenger::emit(
             &sender_handle,
             emitter_daemon_node,
@@ -391,7 +389,7 @@ async fn topic_publish_reliable_5000hz_messages() {
 
     let mut received_ids: Vec<u32> = Vec::with_capacity(message_count);
     for _ in 0..message_count {
-        let message = tokio::time::timeout(Duration::from_secs(2), subscription.rx.recv())
+        let message = tokio::time::timeout(Duration::from_secs(2), subscription.recv())
             .await
             .expect("Timed out waiting for a message")
             .expect("Subscription closed before receiving all messages");
@@ -399,7 +397,7 @@ async fn topic_publish_reliable_5000hz_messages() {
         assert_eq!(message.key_expr(), expected_key_expr);
 
         let payload = message.payload();
-        let payload_bytes = payload.as_bytes();
+        let payload_bytes = payload.as_ref();
         assert_eq!(
             payload_bytes.len(),
             std::mem::size_of::<u32>(),
@@ -444,8 +442,8 @@ async fn service_communication_poll_no_instance_id_target() {
     const CALLER_INSTANCE_ID: &str = "caller_instance";
     const CALLER_DAEMON_NODE: &str = "caller_daemon_node";
 
-    let request_payload = Bytes::from_static(b"enable=true");
-    let response_payload = Bytes::from_static(b"ack");
+    let request_payload = Payload::from_static(b"enable=true");
+    let response_payload = Payload::from_static(b"ack");
     let call_count = Arc::new(AtomicUsize::new(0));
 
     let (service_ready_tx1, service_ready_rx1) = oneshot::channel();
@@ -582,7 +580,7 @@ async fn service_communication_poll_no_instance_id_target() {
         // Listener instance 1 is supposed to have responded more quickly here
         assert_eq!(response.instance_id(), listener_instance_id1);
         assert_eq!(response.daemon_node(), listener_daemon_node1);
-        assert_eq!(response.payload().to_bytes(), response_payload);
+        assert_eq!(response.payload(), &response_payload);
     }
 
     tokio::time::timeout(service_task_timeout, service_task1)
@@ -621,8 +619,8 @@ async fn service_communication_poll_specific_instance_id() {
     const CALLER_INSTANCE_ID: &str = "caller_instance";
     const CALLER_DAEMON_NODE: &str = "caller_daemon_node";
 
-    let request_payload = Bytes::from_static(b"enable=true");
-    let response_payload = Bytes::from_static(b"ack");
+    let request_payload = Payload::from_static(b"enable=true");
+    let response_payload = Payload::from_static(b"ack");
     let call_count = Arc::new(AtomicUsize::new(0));
 
     let (service_ready_tx1, service_ready_rx1) = oneshot::channel();
@@ -654,7 +652,7 @@ async fn service_communication_poll_specific_instance_id() {
             let outcome = tokio::time::timeout(
                 service_wait_timeout,
                 service.handle_next_request(|_request| async {
-                    Ok(Bytes::from_static(b"unexpected response"))
+                    Ok(Payload::from_static(b"unexpected response"))
                 }),
             )
             .await;
@@ -748,7 +746,7 @@ async fn service_communication_poll_specific_instance_id() {
         // Listener instance 2 is supposed to have responded since it's the target
         assert_eq!(response.instance_id(), listener_instance_id2);
         assert_eq!(response.daemon_node(), listener_daemon_node2);
-        assert_eq!(response.payload().to_bytes(), response_payload);
+        assert_eq!(response.payload(), &response_payload);
     }
 
     tokio::time::timeout(service_task_timeout, service_task1)
@@ -789,7 +787,7 @@ async fn service_communication_poll_wrong_node() {
     const CALLER_INSTANCE_ID: &str = "caller_instance";
     const CALLER_DAEMON_NODE: &str = "caller_daemon_node";
 
-    let request_payload = Bytes::from_static(b"enable=true");
+    let request_payload = Payload::from_static(b"enable=true");
     let call_count = Arc::new(AtomicUsize::new(0));
 
     let (service_ready_tx, service_ready_rx) = oneshot::channel();
@@ -814,7 +812,7 @@ async fn service_communication_poll_wrong_node() {
 
         tokio::spawn(async move {
             let handler = service.handle_next_request(|_request| {
-                let response_payload = Bytes::from_static(b"ack");
+                let response_payload = Payload::from_static(b"ack");
                 async move {
                     // This closure should never be called in this test since
                     // we're targeting the wrong node
@@ -920,7 +918,7 @@ async fn service_communication_poll_wrong_daemon_node() {
     const CALLER_INSTANCE_ID: &str = "caller_instance";
     const CALLER_DAEMON_NODE: &str = "caller_daemon_node";
 
-    let request_payload = Bytes::from_static(b"enable=true");
+    let request_payload = Payload::from_static(b"enable=true");
 
     let call_count = Arc::new(AtomicUsize::new(0));
 
@@ -946,7 +944,7 @@ async fn service_communication_poll_wrong_daemon_node() {
 
         tokio::spawn(async move {
             let handler = service.handle_next_request(|_request| {
-                let response_payload = Bytes::from_static(b"ack");
+                let response_payload = Payload::from_static(b"ack");
                 async move {
                     // This closure should never be called in this test since
                     // we're targeting the wrong node
@@ -1048,7 +1046,7 @@ async fn service_communication_fails_service_not_started() {
             listener_service_name,
             None,
             None,
-            Bytes::from_static(b"enable=true"),
+            Payload::from_static(b"enable=true"),
             Duration::from_secs(1),
         )
         .await;
@@ -1091,7 +1089,7 @@ async fn service_communication_fails_service_timeouts() {
     const CALLER_INSTANCE_ID: &str = "caller_instance";
     const CALLER_DAEMON_NODE: &str = "caller_daemon_node";
 
-    let response_payload = Bytes::from_static(b"ack");
+    let response_payload = Payload::from_static(b"ack");
     let call_count = Arc::new(AtomicUsize::new(0));
 
     let (service_ready_tx, service_ready_rx) = oneshot::channel();
@@ -1159,7 +1157,7 @@ async fn service_communication_fails_service_timeouts() {
 
     // The caller node has its own scope (emulates a separate node running on a different instance)
     let err = {
-        let request_payload = Bytes::from_static(b"enable=true");
+        let request_payload = Payload::from_static(b"enable=true");
         let caller_success_timeout = Duration::from_millis(500);
         let caller_failure_timeout = Duration::from_millis(50);
 
@@ -1284,7 +1282,7 @@ async fn service_handle_request_processes_multiple_messages() {
                     let call_count = Arc::clone(&call_count);
                     async move {
                         call_count.fetch_add(1, Ordering::SeqCst);
-                        Ok(request.message().payload().to_bytes())
+                        Ok(request.message().payload())
                     }
                 }) => result,
                 _ = shutdown_rx => Ok(()),
@@ -1304,7 +1302,7 @@ async fn service_handle_request_processes_multiple_messages() {
         let caller_handle = router.messenger().await;
 
         for i in 0..expected_requests {
-            let request_payload = Bytes::from(format!("enable=true;request={i}").into_bytes());
+            let request_payload = Payload::from(format!("enable=true;request={i}").into_bytes());
             let response = ServiceMessenger::poll(
                 &caller_handle,
                 CALLER_DAEMON_NODE,
@@ -1388,10 +1386,9 @@ async fn single_service_communication_multiple_polls_and_callers() {
 
                 let handle = service
                     .spawn_next_request_handler(move |request| async move {
-                        let payload = request.message().payload().to_bytes();
                         assert_eq!(request.message().daemon_node(), CALLER_DAEMON_NODE);
                         call_count.fetch_add(1, Ordering::SeqCst);
-                        Ok(payload)
+                        Ok(request.message().payload())
                     })
                     .await
                     .expect("service should receive expected number of requests")
@@ -1427,8 +1424,9 @@ async fn single_service_communication_multiple_polls_and_callers() {
             let caller_name = format!("vision_pipeline_{caller_idx}");
             let mut requests = Vec::with_capacity(requests_per_caller);
             for request_idx in 0..requests_per_caller {
-                let payload =
-                    Bytes::from(format!("caller={caller_name};request={request_idx}").into_bytes());
+                let payload = Payload::from(
+                    format!("caller={caller_name};request={request_idx}").into_bytes(),
+                );
                 expected_payloads.insert((caller_name.clone(), request_idx), payload.clone());
                 requests.push((request_idx, payload));
             }
@@ -1530,10 +1528,10 @@ async fn action_communication_no_instance_id_target() {
     const CALLER_DAEMON_NODE: &str = "caller_daemon_node";
     const CALLER_INSTANCE_ID: &str = "caller_instance";
 
-    let goal_payload = Bytes::from_static(b"arm=right;pos=1,2,3");
-    let goal_response_payload = Bytes::from_static(b"accepted");
-    let feedback_payload = Bytes::from_static(b"progress=50");
-    let result_payload = Bytes::from_static(b"done");
+    let goal_payload = Payload::from_static(b"arm=right;pos=1,2,3");
+    let goal_response_payload = Payload::from_static(b"accepted");
+    let feedback_payload = Payload::from_static(b"progress=50");
+    let result_payload = Payload::from_static(b"done");
 
     // Launch a background task that plays the role of the action server.
     let (action_ready_tx, action_ready_rx) = oneshot::channel();
@@ -1705,10 +1703,10 @@ async fn action_communication_with_instance_id_target() {
     const CALLER_DAEMON_NODE: &str = "caller_daemon_node";
     const CALLER_INSTANCE_ID: &str = "caller_instance";
 
-    let goal_payload = Bytes::from_static(b"arm=right;pos=1,2,3");
-    let goal_response_payload = Bytes::from_static(b"accepted");
-    let feedback_payload = Bytes::from_static(b"progress=50");
-    let result_payload = Bytes::from_static(b"done");
+    let goal_payload = Payload::from_static(b"arm=right;pos=1,2,3");
+    let goal_response_payload = Payload::from_static(b"accepted");
+    let feedback_payload = Payload::from_static(b"progress=50");
+    let result_payload = Payload::from_static(b"done");
 
     let call_count = Arc::new(AtomicUsize::new(0));
 
@@ -1928,10 +1926,10 @@ async fn action_communication_goal_cancelled() {
     const CALLER_DAEMON_NODE: &str = "caller_daemon_node";
     const CALLER_INSTANCE_ID: &str = "caller_instance";
 
-    let goal_payload = Bytes::from_static(b"arm=right;pos=1,2,3");
-    let goal_response_payload = Bytes::from_static(b"accepted");
-    let feedback_payload = Bytes::from_static(b"progress=50");
-    let cancel_response_payload = Bytes::from_static(b"cancelled");
+    let goal_payload = Payload::from_static(b"arm=right;pos=1,2,3");
+    let goal_response_payload = Payload::from_static(b"accepted");
+    let feedback_payload = Payload::from_static(b"progress=50");
+    let cancel_response_payload = Payload::from_static(b"cancelled");
 
     let goal_call_count = Arc::new(AtomicUsize::new(0));
     let cancel_call_count = Arc::new(AtomicUsize::new(0));
@@ -2228,7 +2226,7 @@ async fn single_action_communication_multiple_polls() {
 
                         async move {
                             let payload = request.message().payload();
-                            let payload_bytes = payload.as_bytes();
+                            let payload_bytes = payload.as_ref();
                             let payload_str = std::str::from_utf8(payload_bytes.as_ref())
                                 .expect("goal payload should be valid UTF-8");
 
@@ -2277,7 +2275,7 @@ async fn single_action_communication_multiple_polls() {
                     .spawn_next_request_handler(move |request| async move {
                         assert!(request.message().payload().is_empty());
 
-                        Ok(Bytes::from_static(b"result=done"))
+                        Ok(Payload::from_static(b"result=done"))
                     })
                     .await
                     .expect("action should spawn result handler")
@@ -2368,7 +2366,7 @@ async fn single_action_communication_multiple_polls() {
 
             assert_eq!(
                 result_response.payload().to_bytes(),
-                Bytes::from_static(b"result=done"),
+                Payload::from_static(b"result=done"),
                 "result response should match expected payload for `{}`",
                 case.client_id
             );

@@ -7,14 +7,15 @@ mod topics;
 
 pub use actions::{ActionCreation, ActionGoalHandle, ActionMessenger};
 pub use services::{ServiceEndpoint, ServiceMessenger, ServiceRequestContext, ServiceResponder};
-pub use topics::{TopicMessenger, TopicPublisher};
+pub use topics::{Subscription, TopicMessenger, TopicPublisher};
 
 use crate::error::{Error, Result};
-use bytes::Bytes;
+use crate::types::{Message, Payload};
 use config::node::QoSProfile;
 use pmi::{
-    Message, Messenger, MessengerAdapter, MessengerBackend, PeppyMessagingInterfaceError,
-    PublisherQoS, SubscriberQoS, Subscription, TopicMessage, ZenohAdapter, ZenohNetProtocol,
+    Message as PmiMessage, Messenger, MessengerAdapter, MessengerBackend,
+    PeppyMessagingInterfaceError, PublisherQoS, SubscriberQoS, Subscription as PmiSubscription,
+    ZenohAdapter, ZenohNetProtocol,
 };
 use sha2::{Digest, Sha256};
 use std::{
@@ -61,11 +62,11 @@ fn is_service_probe_payload(payload: &[u8]) -> bool {
     payload == SERVICE_PROBE_PAYLOAD
 }
 
-fn encode_service_error_payload(reason: &str) -> Bytes {
+fn encode_service_error_payload(reason: &str) -> Payload {
     let mut payload = Vec::with_capacity(SERVICE_ERROR_PREFIX.len() + reason.len());
     payload.extend_from_slice(SERVICE_ERROR_PREFIX);
     payload.extend_from_slice(reason.as_bytes());
-    Bytes::from(payload)
+    Payload::from(payload)
 }
 
 /// Encodes a service handler failure as a protocol-level error payload.
@@ -73,7 +74,7 @@ fn encode_service_error_payload(reason: &str) -> Bytes {
 /// External wrappers (for example Python bindings) can use this to ensure
 /// handler exceptions are reported to callers as `ServiceError` instead of
 /// surfacing as request timeouts.
-pub fn encode_service_handler_error(reason: &str) -> Bytes {
+pub fn encode_service_handler_error(reason: &str) -> Payload {
     encode_service_error_payload(reason)
 }
 
@@ -122,6 +123,7 @@ fn format_target_instance_segment(instance_id: &str) -> Option<String> {
 }
 
 impl MessengerHandle {
+    #[doc(hidden)]
     pub fn from_shared(messenger: Arc<Mutex<Messenger>>) -> Self {
         Self { messenger }
     }
@@ -171,7 +173,7 @@ impl MessengerHandle {
         to_daemon_node: Option<&str>,
         to_instance_id: Option<&str>,
         qos: QoSProfile,
-    ) -> Result<Subscription> {
+    ) -> Result<PmiSubscription> {
         let to_daemon_node = to_daemon_node.unwrap_or("*");
         let to_instance_id = to_instance_id.unwrap_or("*");
         let key_expr = format!(
@@ -193,13 +195,13 @@ impl MessengerHandle {
         as_node_name: &str,
         as_topic_name: &str,
         qos: QoSProfile,
-        payload: Bytes,
+        payload: Payload,
     ) -> Result<()> {
         let key_expr = format!(
             "*/{}/*/{}/topic/{}/{}",
             as_daemon_node, as_instance_id, as_node_name, as_topic_name
         );
-        let msg = Message::new(&key_expr, payload);
+        let msg = PmiMessage::new(&key_expr, payload.into_inner());
 
         let mut messenger = self.messenger.lock().await;
         messenger
@@ -280,9 +282,9 @@ impl MessengerHandle {
         target_service_name: &str,
         target_daemon_node: Option<&str>,
         target_instance_id: Option<&str>,
-        request_payload: Bytes,
+        request_payload: Payload,
         response_timeout: impl Into<Option<Duration>>,
-    ) -> Result<TopicMessage> {
+    ) -> Result<Message> {
         let response_timeout: Option<Duration> = response_timeout.into();
         let service_root = format!(
             "{}/{}/{}",
@@ -353,7 +355,7 @@ impl MessengerHandle {
             let mut messenger = self.messenger.lock().await;
             messenger
                 .publish(
-                    Message::new(&request_topic, request_payload),
+                    pmi::Message::new(&request_topic, request_payload.into_inner()),
                     PublisherQoS::Standard,
                 )
                 .await
@@ -431,6 +433,7 @@ impl MessengerHandle {
             },
         };
 
+        let response = Message::from(response);
         let response_payload = response.payload().to_bytes();
         if let Some(reason) = decode_service_error_payload(response_payload.as_ref()) {
             return Err(Error::ServiceError {

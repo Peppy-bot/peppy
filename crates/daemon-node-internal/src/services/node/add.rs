@@ -7,7 +7,6 @@ use crate::encoding::{
 };
 use crate::names;
 use crate::{DependencyInterfaceIntegrityError, DependencyInterfaceIntegrityErrors};
-use bytes::Bytes;
 use chrono::Local;
 use config::consts::{
     NODE_CONFIG_FILE, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH, logs_dir_add, peppy_data_dir,
@@ -18,6 +17,7 @@ use node_stack::{NodeStack, validate_dependency_specs};
 use peppylib::messaging::{
     ActionCreation, SHUTDOWN_SERVICE, ServiceMessenger, ServiceRequestContext, TopicPublisher,
 };
+use peppylib::types::Payload;
 use peppylib::{ActionMessenger, MessengerHandle, PeppyResult};
 use rand::RngExt;
 use std::fs::File;
@@ -1190,11 +1190,11 @@ async fn handle_goal_request(
     messenger: MessengerHandle,
     bound_daemon_node: String,
     daemon_instance_id: String,
-) -> PeppyResult<Bytes> {
+) -> PeppyResult<Payload> {
     let sender_instance_id = context.message().instance_id();
     let payload = context.message().payload();
 
-    let goal = match NodeAddGoal::decode(&payload.as_bytes()) {
+    let goal = match NodeAddGoal::decode(payload.as_ref()) {
         Ok(g) => g,
         Err(e) => {
             let response = NodeAddGoalResponse::rejected(format!("invalid payload: {}", e));
@@ -1393,7 +1393,7 @@ async fn shutdown_existing_instances(
             SHUTDOWN_SERVICE,
             Some(&ctx.bound_daemon_node),
             Some(&instance_id_str),
-            Bytes::from_static(b"shutdown"),
+            Payload::from_static(b"shutdown"),
             SHUTDOWN_TIMEOUT,
         )
         .await
@@ -1580,16 +1580,16 @@ async fn process_node_add(
 async fn handle_cancel_request(
     _context: ServiceRequestContext,
     state: Arc<Mutex<NodeAddActionState>>,
-) -> PeppyResult<Bytes> {
+) -> PeppyResult<Payload> {
     // For now, we don't support cancellation of the add operation
     // Just acknowledge the request
     let state_guard = state.lock().await;
     if matches!(*state_guard, NodeAddActionState::Running { .. }) {
-        Ok(Bytes::from_static(
+        Ok(Payload::from_static(
             b"cancel acknowledged (operation cannot be interrupted)",
         ))
     } else {
-        Ok(Bytes::from_static(
+        Ok(Payload::from_static(
             b"cancel acknowledged (no operation in progress)",
         ))
     }
@@ -1598,7 +1598,7 @@ async fn handle_cancel_request(
 async fn handle_result_request(
     _context: ServiceRequestContext,
     state: Arc<Mutex<NodeAddActionState>>,
-) -> PeppyResult<Bytes> {
+) -> PeppyResult<Payload> {
     let mut state_guard = state.lock().await;
 
     match std::mem::replace(&mut *state_guard, NodeAddActionState::Idle) {
@@ -1611,7 +1611,7 @@ async fn handle_result_request(
                 started_at,
                 timeout_secs,
             };
-            Ok(Bytes::from_static(
+            Ok(Payload::from_static(
                 b"result pending: operation still in progress",
             ))
         }
@@ -1639,7 +1639,7 @@ async fn handle_result_request(
             Ok(payload)
         }
         NodeAddActionState::Idle | NodeAddActionState::Rejected => {
-            Ok(Bytes::from_static(b"result pending: no result available"))
+            Ok(Payload::from_static(b"result pending: no result available"))
         }
     }
 }

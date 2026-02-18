@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use bytes::Bytes;
 use capnp::message::Builder;
+use peppylib::types::Payload;
 use peppylib::{MessengerHandle, ServiceMessenger};
 
 use crate::Result;
@@ -25,7 +25,7 @@ impl NodeSyncRequest {
         }
     }
 
-    pub fn encode(&self) -> Result<Bytes> {
+    pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
             let mut request = builder.init_root::<node_capnp::node_generate_request::Builder>();
@@ -92,7 +92,7 @@ impl NodeSyncResponse {
         Self::new(false, error_message)
     }
 
-    pub fn encode(&self) -> Result<Bytes> {
+    pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
             let mut response = builder.init_root::<node_capnp::node_sync_response::Builder>();

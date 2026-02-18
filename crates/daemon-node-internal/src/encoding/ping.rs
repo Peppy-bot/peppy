@@ -1,7 +1,7 @@
 //! Cap'n Proto encoding utilities for ping messages.
 
-use bytes::Bytes;
 use capnp::message::Builder;
+use peppylib::types::Payload;
 
 use crate::Result;
 use crate::ping_capnp;
@@ -18,7 +18,7 @@ impl PingRequest {
         Self { timestamp }
     }
 
-    pub fn encode(&self) -> Result<Bytes> {
+    pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
             let mut request = builder.init_root::<ping_capnp::ping_request::Builder>();
@@ -50,7 +50,7 @@ impl PingResponse {
         }
     }
 
-    pub fn encode(&self) -> Result<Bytes> {
+    pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
             let mut response = builder.init_root::<ping_capnp::ping_response::Builder>();

@@ -10,8 +10,16 @@ pub use error::{
 };
 pub use messaging::{ActionMessenger, MessengerHandle, ServiceMessenger, TopicMessenger};
 pub mod config;
+pub mod types;
+
+pub use types::Payload;
+
+// Re-export common serialization traits to avoid forcing users to depend on serde/schemars directly
+pub use schemars::JsonSchema;
+pub use serde::de::DeserializeOwned;
+pub use serde::{Deserialize, Serialize};
 
 #[allow(clippy::all)]
-pub mod health_capnp {
+mod health_capnp {
     include!(concat!(env!("OUT_DIR"), "/health_capnp.rs"));
 }
