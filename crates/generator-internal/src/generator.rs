@@ -172,10 +172,10 @@ fn ensure_node_cargo_toml(node_dir: &Path, node_name: &str) -> Result<()> {
     }
 
     // Ensure package.build points to .peppy/build.rs for precompiled dep injection
-    if let Some(package) = doc.get_mut("package").and_then(|p| p.as_table_mut()) {
-        if !package.contains_key("build") {
-            package.insert("build", value(".peppy/build.rs"));
-        }
+    if let Some(package) = doc.get_mut("package").and_then(|p| p.as_table_mut())
+        && !package.contains_key("build")
+    {
+        package.insert("build", value(".peppy/build.rs"));
     }
 
     if let Some(dependencies) = doc.get_mut("dependencies").and_then(|d| d.as_table_mut()) {
