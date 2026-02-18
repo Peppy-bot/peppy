@@ -911,7 +911,7 @@ mod tests {
 
         compile_capnp(&[schema_path], output_dir).expect("capnp compilation succeeds");
 
-        let expected_output = output_dir.join("capnp").join("frame_capnp.rs");
+        let expected_output = output_dir.join("proto").join("frame_capnp.rs");
         assert!(
             expected_output.exists(),
             "Compiled output file should exist at {:?}",
@@ -921,25 +921,25 @@ mod tests {
         let generated_content =
             std::fs::read_to_string(&expected_output).expect("Failed to read generated file");
 
-        // Check that crate::capnp::frame_capnp:: is used for nested types
+        // Check that crate::proto::frame_capnp:: is used for nested types
         assert!(
-            generated_content.contains("crate::capnp::frame_capnp::"),
-            "Generated code should use 'crate::capnp::frame_capnp::' for nested types"
+            generated_content.contains("crate::proto::frame_capnp::"),
+            "Generated code should use 'crate::proto::frame_capnp::' for nested types"
         );
 
-        let capnp_module_file = output_dir.join("capnp.rs");
+        let proto_module_file = output_dir.join("proto.rs");
         assert!(
-            capnp_module_file.exists(),
-            "capnp.rs module file should exist at {:?}",
-            capnp_module_file
+            proto_module_file.exists(),
+            "proto.rs module file should exist at {:?}",
+            proto_module_file
         );
 
-        let capnp_module_content =
-            std::fs::read_to_string(&capnp_module_file).expect("Failed to read capnp.rs file");
+        let proto_module_content =
+            std::fs::read_to_string(&proto_module_file).expect("Failed to read proto.rs file");
 
         assert!(
-            capnp_module_content.contains("pub mod frame_capnp;"),
-            "capnp.rs should contain 'pub mod frame_capnp;'"
+            proto_module_content.contains("pub mod frame_capnp;"),
+            "proto.rs should contain 'pub mod frame_capnp;'"
         );
     }
 }

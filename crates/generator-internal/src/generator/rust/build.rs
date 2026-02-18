@@ -22,7 +22,10 @@ pub fn add_peppylib_dependencies(to_path: impl AsRef<Path>, node_dir: &Path) -> 
     let to_path = to_path.as_ref();
     generate_lib_structure(to_path)?;
     let artifacts_dir = super::precompiled::deploy_precompiled_runtime()?;
-    super::precompiled::generate_cargo_config(node_dir, &artifacts_dir)?;
+    super::precompiled::write_precompiled_path(to_path, &artifacts_dir)?;
+    super::precompiled::generate_peppygen_build_rs(to_path)?;
+    super::precompiled::generate_node_build_rs(node_dir)?;
+    super::precompiled::remove_legacy_cargo_config(node_dir)?;
     Ok(())
 }
 
@@ -68,9 +71,9 @@ pub fn add_parameters_to_lib(
 pub fn add_capnp_schemas(schemas: &HashMap<String, CapnpSchema>, crate_root: &Path) -> Result<()> {
     let src_dir = crate_root.join("src");
     if schemas.is_empty() {
-        let capnp_rs = src_dir.join("capnp.rs");
-        if !capnp_rs.exists() {
-            fs::write(capnp_rs, "// No Cap'n Proto schemas generated.\n")?;
+        let proto_rs = src_dir.join("proto.rs");
+        if !proto_rs.exists() {
+            fs::write(proto_rs, "// No Cap'n Proto schemas generated.\n")?;
         }
         return Ok(());
     }
@@ -78,12 +81,12 @@ pub fn add_capnp_schemas(schemas: &HashMap<String, CapnpSchema>, crate_root: &Pa
     let mut entries: Vec<&CapnpSchema> = schemas.values().collect();
     entries.sort_by(|a, b| a.file_stem().cmp(b.file_stem()));
 
-    let capnp_dir = src_dir.join("capnp");
-    fs::create_dir_all(&capnp_dir)?;
+    let proto_dir = src_dir.join("proto");
+    fs::create_dir_all(&proto_dir)?;
 
     let mut schema_paths = Vec::with_capacity(entries.len());
     for schema in entries {
-        let file_path = capnp_dir.join(format!("{}.capnp", schema.file_stem()));
+        let file_path = proto_dir.join(format!("{}.capnp", schema.file_stem()));
         fs::write(&file_path, schema.schema())?;
         schema_paths.push(file_path);
     }

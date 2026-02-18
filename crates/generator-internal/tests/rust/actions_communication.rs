@@ -180,6 +180,7 @@ async fn actions_communication() {
 use peppygen::subscribed_actions::brain_move_arm;
 use peppygen::NodeBuilder;
 use peppygen::Result;
+use peppygen::tokio;
 use std::time::Duration;
 
 const TARGET_NODE_NAME: &str = "brain";
@@ -287,6 +288,7 @@ fn main() -> Result<()> {
 use peppygen::exposed_actions::move_arm;
 use peppygen::NodeBuilder;
 use peppygen::Result;
+use peppygen::tokio;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},

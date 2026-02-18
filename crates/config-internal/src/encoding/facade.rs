@@ -94,8 +94,8 @@ impl CapnpFacade {
         P: AsRef<Path>,
     {
         let output_dir = output_dir.to_path_buf();
-        let capnp_output_dir = output_dir.join("capnp");
-        std::fs::create_dir_all(&capnp_output_dir)?;
+        let proto_output_dir = output_dir.join("proto");
+        std::fs::create_dir_all(&proto_output_dir)?;
 
         let mut module_exports: Vec<String> = Vec::with_capacity(capnp_files.len());
         for capnp_file in capnp_files {
@@ -103,8 +103,8 @@ impl CapnpFacade {
 
             let mut command = CompilerCommand::new();
             command.capnp_executable(capnp_executable);
-            command.output_path(&capnp_output_dir);
-            command.default_parent_module(vec!["capnp".to_string()]);
+            command.output_path(&proto_output_dir);
+            command.default_parent_module(vec!["proto".to_string()]);
 
             if let Some(parent) = capnp_path.parent().filter(|p| !p.as_os_str().is_empty()) {
                 command.src_prefix(parent);
@@ -128,9 +128,9 @@ impl CapnpFacade {
         module_exports.sort();
         module_exports.dedup();
 
-        let capnp_rs_path = output_dir.join("capnp.rs");
-        let capnp_rs_content = module_exports.join("\n") + "\n";
-        std::fs::write(&capnp_rs_path, capnp_rs_content)?;
+        let proto_rs_path = output_dir.join("proto.rs");
+        let proto_rs_content = module_exports.join("\n") + "\n";
+        std::fs::write(&proto_rs_path, proto_rs_content)?;
         Ok(())
     }
 

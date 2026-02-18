@@ -171,6 +171,13 @@ fn ensure_node_cargo_toml(node_dir: &Path, node_name: &str) -> Result<()> {
         doc.insert("dependencies", Item::Table(Table::new()));
     }
 
+    // Ensure package.build points to .peppy/build.rs for precompiled dep injection
+    if let Some(package) = doc.get_mut("package").and_then(|p| p.as_table_mut()) {
+        if !package.contains_key("build") {
+            package.insert("build", value(".peppy/build.rs"));
+        }
+    }
+
     if let Some(dependencies) = doc.get_mut("dependencies").and_then(|d| d.as_table_mut()) {
         if !dependencies.contains_key("peppygen") {
             let mut peppygen_dep = InlineTable::new();
@@ -289,6 +296,7 @@ mod tests {
             name = "node_with_peppygen"
             version = "2.0.0"
             edition = "2021"
+            build = ".peppy/build.rs"
 
             [dependencies]
             my-custom-lib = "0.1"

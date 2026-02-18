@@ -189,7 +189,7 @@ fn expose_topic() {
         &rendered,
         &[
             "let mut capnp_msg = capnp::message::Builder::new_default();",
-            "crate::capnp::video_stream_message_capnp::video_stream_message::Builder",
+            "crate::proto::video_stream_message_capnp::video_stream_message::Builder",
         ],
     );
 

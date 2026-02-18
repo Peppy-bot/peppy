@@ -1,6 +1,13 @@
+extern crate peppylib;
+extern crate capnp;
+extern crate bytes;
+extern crate schemars;
+extern crate serde;
+pub extern crate tokio;
+
 pub mod parameters;
 
-pub mod capnp;
+pub mod proto;
 pub mod exposed_actions;
 pub mod exposed_services;
 pub mod exposed_topics;
@@ -14,5 +21,3 @@ pub use peppylib::runtime::{NodeBuilder, NodeRunner, StandaloneConfig};
 pub use peppylib::{
     MessengerHandle, PeppyError as Error, PeppyResult as Result, ServiceMessenger,
 };
-pub use peppylib::schemars;
-pub use peppylib::serde;

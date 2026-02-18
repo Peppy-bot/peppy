@@ -574,13 +574,13 @@ impl SchemaInfo {
     fn builder_type_tokens(&self) -> TokenStream {
         let module_ident = Ident::new(&format!("{}_capnp", self.file_stem), Span::call_site());
         let struct_module_ident = Ident::new(&self.struct_module, Span::call_site());
-        quote!(crate::capnp::#module_ident::#struct_module_ident::Builder)
+        quote!(crate::proto::#module_ident::#struct_module_ident::Builder)
     }
 
     fn reader_type_tokens(&self) -> TokenStream {
         let module_ident = Ident::new(&format!("{}_capnp", self.file_stem), Span::call_site());
         let struct_module_ident = Ident::new(&self.struct_module, Span::call_site());
-        quote!(crate::capnp::#module_ident::#struct_module_ident::Reader)
+        quote!(crate::proto::#module_ident::#struct_module_ident::Reader)
     }
 }
 

@@ -188,6 +188,7 @@ fn main() -> Result<()> {
 use peppygen::exposed_topics::video_stream;
 use peppygen::NodeBuilder;
 use peppygen::Result;
+use peppygen::tokio;
 use std::time::Duration;
 
 fn main() -> Result<()> {
