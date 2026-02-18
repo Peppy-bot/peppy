@@ -24,7 +24,6 @@ pub fn add_peppylib_dependencies(to_path: impl AsRef<Path>, node_dir: &Path) -> 
     let artifacts_dir = super::precompiled::deploy_precompiled_runtime()?;
     super::precompiled::write_precompiled_path(to_path, &artifacts_dir)?;
     super::precompiled::generate_peppygen_build_rs(to_path)?;
-    super::precompiled::generate_node_build_rs(node_dir)?;
     super::precompiled::remove_legacy_cargo_config(node_dir)?;
     Ok(())
 }
