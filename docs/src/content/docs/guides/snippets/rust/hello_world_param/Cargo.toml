@@ -5,5 +5,7 @@ edition = "2024"
 
 [dependencies]
 peppygen = { path = ".peppy/libs/peppygen" }
+tokio = { version = "1.47", features = ["full"] }
+tokio-util = "0.7"
 
 [workspace]

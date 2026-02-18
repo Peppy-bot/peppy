@@ -180,15 +180,33 @@ fn ensure_node_cargo_toml(node_dir: &Path, node_name: &str) -> Result<()> {
 
         // Strip peppylib — now provided by the precompiled runtime
         dependencies.remove("peppylib");
+    }
 
-        // Reject deps that overlap with the precompiled runtime
-        for name in rust::precompiled::precompiled_crate_names() {
-            if dependencies.contains_key(name) {
-                return Err(Error::PrecompiledDependencyConflict {
-                    name: name.to_string(),
-                });
-            }
+    // Inject [patch.crates-io] with stub crates for all precompiled registry deps
+    let stubbable = rust::precompiled::stubbable_crates();
+    if !stubbable.is_empty() {
+        // Remove existing [patch] section to regenerate cleanly
+        doc.remove("patch");
+
+        let mut patch_table = Table::new();
+        let mut crates_io = Table::new();
+
+        for krate in &stubbable {
+            let mut entry = InlineTable::new();
+            entry.insert(
+                "path",
+                format!(
+                    "{}/patches/{}",
+                    config::consts::PEPPY_OUTPUT_DIR,
+                    krate.package_name
+                )
+                .into(),
+            );
+            crates_io.insert(&krate.package_name, toml_edit::value(entry));
         }
+
+        patch_table.insert("crates-io", Item::Table(crates_io));
+        doc.insert("patch", Item::Table(patch_table));
     }
 
     fs::write(&cargo_toml_path, doc.to_string())?;
@@ -201,6 +219,38 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
     use toml::Value;
+
+    /// Helper: assert the [patch.crates-io] section exists and contains entries
+    /// for all stubbable precompiled crates.
+    fn assert_patch_crates_io(doc: &Value) {
+        let stubbable = rust::precompiled::stubbable_crates();
+        if stubbable.is_empty() {
+            return;
+        }
+
+        let crates_io = doc
+            .get("patch")
+            .and_then(|p| p.get("crates-io"))
+            .expect("should have [patch.crates-io] section");
+
+        for krate in &stubbable {
+            let entry = crates_io
+                .get(&krate.package_name)
+                .unwrap_or_else(|| panic!("patch.crates-io should contain {}", krate.package_name));
+            let path = entry
+                .get("path")
+                .and_then(|p| p.as_str())
+                .unwrap_or_else(|| {
+                    panic!("patch entry for {} should have path", krate.package_name)
+                });
+            let expected = format!(
+                "{}/patches/{}",
+                config::consts::PEPPY_OUTPUT_DIR,
+                krate.package_name
+            );
+            assert_eq!(path, expected);
+        }
+    }
 
     #[test]
     fn ensure_node_cargo_toml_creates_new_file_with_peppygen_dependency() {
@@ -231,6 +281,8 @@ mod tests {
             .and_then(|p| p.as_str())
             .expect("should have peppygen dependency with path");
         assert_eq!(peppygen_path, config::consts::PEPPYGEN_OUTPUT_PATH);
+
+        assert_patch_crates_io(&doc);
     }
 
     #[test]
@@ -276,6 +328,8 @@ mod tests {
             .and_then(|p| p.as_str())
             .expect("should have peppygen dependency with path");
         assert_eq!(peppygen_path, config::consts::PEPPYGEN_OUTPUT_PATH);
+
+        assert_patch_crates_io(&doc);
     }
 
     #[test]
@@ -284,6 +338,8 @@ mod tests {
         let node_dir = temp_dir.path();
         let cargo_toml_path = node_dir.join("Cargo.toml");
 
+        // Note: this test now expects [patch.crates-io] to be added even when
+        // peppygen dep already exists, since patches are always regenerated.
         let existing_content = r#"
             [package]
             name = "node_with_peppygen"
@@ -297,8 +353,6 @@ mod tests {
             path = ".peppy/libs/peppygen"
         "#;
         fs::write(&cargo_toml_path, existing_content).expect("failed to write existing Cargo.toml");
-
-        let content_before = fs::read_to_string(&cargo_toml_path).expect("failed to read");
 
         ensure_node_cargo_toml(node_dir, "node_with_peppygen").expect("should succeed");
 
@@ -334,8 +388,7 @@ mod tests {
             .expect("should have peppygen dependency with path");
         assert_eq!(peppygen_path, config::consts::PEPPYGEN_OUTPUT_PATH);
 
-        let doc_before: Value = toml::from_str(&content_before).expect("should be valid TOML");
-        assert_eq!(doc, doc_before, "logical content should be unchanged");
+        assert_patch_crates_io(&doc);
     }
 
     #[test]
@@ -372,30 +425,45 @@ mod tests {
                 .is_some(),
             "peppygen should be added"
         );
+
+        assert_patch_crates_io(&doc);
     }
 
     #[test]
-    fn ensure_node_cargo_toml_rejects_precompiled_dep_conflict() {
+    fn ensure_node_cargo_toml_regenerates_patch_section() {
         let temp_dir = TempDir::new().expect("failed to create temp directory");
         let node_dir = temp_dir.path();
         let cargo_toml_path = node_dir.join("Cargo.toml");
 
+        // Start with stale [patch.crates-io] containing a non-existent crate
         let existing_content = r#"
             [package]
-            name = "bad_node"
+            name = "test_node"
             version = "1.0.0"
             edition = "2024"
 
             [dependencies]
-            tokio = { version = "1", features = ["full"] }
+            peppygen = { path = ".peppy/libs/peppygen" }
+
+            [patch.crates-io]
+            stale-crate = { path = ".peppy/patches/stale-crate" }
         "#;
         fs::write(&cargo_toml_path, existing_content).expect("failed to write Cargo.toml");
 
-        let err = ensure_node_cargo_toml(node_dir, "bad_node").unwrap_err();
-        let msg = err.to_string();
-        assert!(
-            msg.contains("tokio") && msg.contains("precompiled"),
-            "expected precompiled conflict error for tokio, got: {msg}"
-        );
+        ensure_node_cargo_toml(node_dir, "test_node").expect("should succeed");
+
+        let contents = fs::read_to_string(&cargo_toml_path).expect("failed to read Cargo.toml");
+        let doc: Value = toml::from_str(&contents).expect("should be valid TOML");
+
+        // The stale entry should be gone
+        let crates_io = doc.get("patch").and_then(|p| p.get("crates-io"));
+        if let Some(crates_io) = crates_io {
+            assert!(
+                crates_io.get("stale-crate").is_none(),
+                "stale patch entries should be removed on regeneration"
+            );
+        }
+
+        assert_patch_crates_io(&doc);
     }
 }

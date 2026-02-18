@@ -1,4 +1,5 @@
 use crate::error::Result;
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -119,11 +120,168 @@ pub fn remove_legacy_cargo_config(node_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Returns the list of crate names provided by the precompiled runtime.
+/// Metadata for a precompiled crate that can be exposed as a stub patch.
+pub struct PrecompiledCrate {
+    /// Rust identifier name (underscored, e.g. `tokio_util`)
+    pub crate_name: String,
+    /// Cargo package name (hyphenated, e.g. `tokio-util`)
+    pub package_name: String,
+    /// Exact version string (e.g. `0.7.14`)
+    pub version: String,
+    /// All features enabled across all compilations of this crate
+    pub features: Vec<String>,
+}
+
+/// Crate names that conflict with the Rust sysroot (`rustc_private`).
 ///
-/// These crates must NOT appear in the user's Cargo.toml `[dependencies]`.
-pub fn precompiled_crate_names() -> impl Iterator<Item = &'static str> {
-    PRECOMPILED_MANIFEST
-        .iter()
-        .map(|&(crate_name, _, _)| crate_name)
+/// These are internal standard library dependencies shipped with rustc.
+/// `extern crate` for these resolves to the sysroot copy, not our precompiled
+/// rlib, producing an `E0658: use of unstable library feature` error.
+const SYSROOT_CRATES: &[&str] = &[
+    "adler2",
+    "cfg_if",
+    "hashbrown",
+    "libc",
+    "memchr",
+    "miniz_oxide",
+];
+
+/// Returns the list of precompiled crates that should get `[patch.crates-io]` stubs.
+///
+/// Filters to non-proc-macro, registry crates with exactly one rlib compilation.
+/// Crates with multiple rlibs are excluded because `extern crate` cannot
+/// disambiguate between candidates. Sysroot-conflicting crates are also excluded.
+pub fn stubbable_crates() -> Vec<PrecompiledCrate> {
+    // PRECOMPILED_MANIFEST: &[(&str, &str, &str, &str, &str, &str, &str)]
+    //   (crate_name, filename, kind, package_name, version, features_csv, source)
+
+    // First pass: count rlib files per crate_name to detect multi-compilation crates
+    let mut rlib_counts: BTreeMap<&str, usize> = BTreeMap::new();
+    for &(crate_name, _filename, kind, _pkg, _ver, _feat, source) in PRECOMPILED_MANIFEST {
+        if source == "registry" && kind != "proc-macro" {
+            *rlib_counts.entry(crate_name).or_default() += 1;
+        }
+    }
+
+    // Second pass: collect stubbable crates (single-rlib, non-sysroot)
+    let mut by_crate: BTreeMap<String, PrecompiledCrate> = BTreeMap::new();
+
+    for &(crate_name, _filename, kind, package_name, version, features_csv, source) in
+        PRECOMPILED_MANIFEST
+    {
+        if source != "registry" || kind == "proc-macro" {
+            continue;
+        }
+
+        // Skip crates with multiple rlib compilations (ambiguous extern crate)
+        if rlib_counts.get(crate_name).copied().unwrap_or(0) > 1 {
+            continue;
+        }
+
+        // Skip crates that conflict with the Rust sysroot
+        if SYSROOT_CRATES.contains(&crate_name) {
+            continue;
+        }
+
+        let entry = by_crate
+            .entry(crate_name.to_string())
+            .or_insert_with(|| PrecompiledCrate {
+                crate_name: crate_name.to_string(),
+                package_name: package_name.to_string(),
+                version: version.to_string(),
+                features: Vec::new(),
+            });
+
+        // Merge features from all compilations of this crate
+        for feat in features_csv.split(',').filter(|s| !s.is_empty()) {
+            if !entry.features.contains(&feat.to_string()) {
+                entry.features.push(feat.to_string());
+            }
+        }
+    }
+
+    // Sort features for deterministic output
+    let mut crates: Vec<PrecompiledCrate> = by_crate.into_values().collect();
+    for c in &mut crates {
+        c.features.sort();
+    }
+    crates
+}
+
+/// Generates thin stub crates under `.peppy/patches/<package_name>/` for each
+/// stubbable precompiled crate.
+///
+/// Each stub re-exports everything from peppygen's `pub extern crate` declaration,
+/// making `use <crate>::...` work in user code when combined with `[patch.crates-io]`.
+pub fn generate_patch_crates(node_dir: &Path) -> Result<()> {
+    let patches_dir = node_dir
+        .join(config::consts::PEPPY_OUTPUT_DIR)
+        .join("patches");
+
+    // Clean stale stubs
+    if patches_dir.exists() {
+        fs::remove_dir_all(&patches_dir)?;
+    }
+
+    let crates = stubbable_crates();
+    for krate in &crates {
+        let stub_dir = patches_dir.join(&krate.package_name);
+        let src_dir = stub_dir.join("src");
+        fs::create_dir_all(&src_dir)?;
+
+        // Generate Cargo.toml
+        let mut cargo_toml = format!(
+            "[package]\nname = \"{}\"\nversion = \"{}\"\nedition = \"2024\"\n",
+            krate.package_name, krate.version
+        );
+
+        // Add all precompiled features as no-op features
+        if !krate.features.is_empty() {
+            cargo_toml.push_str("\n[features]\n");
+            for feat in &krate.features {
+                cargo_toml.push_str(&format!("{feat} = []\n"));
+            }
+        }
+
+        // Depend on peppygen so that `pub extern crate` re-exports are available
+        cargo_toml.push_str("\n[dependencies]\npeppygen = { path = \"../../libs/peppygen\" }\n");
+
+        fs::write(stub_dir.join("Cargo.toml"), cargo_toml)?;
+
+        // Generate src/lib.rs — re-export everything from peppygen's extern crate
+        let lib_rs = format!("pub use peppygen::{}::*;\n", krate.crate_name);
+        fs::write(src_dir.join("lib.rs"), lib_rs)?;
+    }
+
+    Ok(())
+}
+
+/// Appends `pub extern crate` declarations to the peppygen lib.rs for all
+/// stubbable precompiled crates.
+///
+/// This must be called after the template lib.rs has been copied, since it
+/// appends to the existing file content.
+pub fn append_extern_crate_declarations(peppygen_lib_rs: &Path) -> Result<()> {
+    let crates = stubbable_crates();
+    if crates.is_empty() {
+        return Ok(());
+    }
+
+    let mut content = fs::read_to_string(peppygen_lib_rs)?;
+
+    // Insert extern crate declarations after `extern crate peppylib;`
+    let insert_pos = content
+        .find("extern crate peppylib;")
+        .and_then(|pos| content[pos..].find('\n').map(|nl| pos + nl + 1))
+        .unwrap_or(0);
+
+    let mut declarations = String::new();
+    for krate in &crates {
+        declarations.push_str(&format!("pub extern crate {};\n", krate.crate_name));
+    }
+
+    content.insert_str(insert_pos, &declarations);
+    fs::write(peppygen_lib_rs, content)?;
+
+    Ok(())
 }

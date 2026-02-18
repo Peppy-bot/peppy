@@ -342,12 +342,47 @@ mod precompile_deps {
         format!("{}-{profile}", &hex[..16])
     }
 
+    /// Manifest entry: (crate_name, filename, kind, package_name, version, features_csv, source)
+    type ManifestEntry = (String, String, String, String, String, String, String);
+
+    /// Parses a cargo `package_id` string to extract (package_name, version, source).
+    ///
+    /// Formats:
+    ///   registry: `"registry+https://github.com/rust-lang/crates.io-index#tokio-util@0.7.14"`
+    ///   path:     `"path+file:///home/user/project/crates/pmi#0.0.1"` or `"path+...#pmi@0.0.1"`
+    fn parse_package_id(package_id: &str) -> (String, String, String) {
+        let source = if package_id.starts_with("registry+") {
+            "registry"
+        } else if package_id.starts_with("path+") {
+            "path"
+        } else {
+            "unknown"
+        };
+
+        let (pkg_name, version) = if let Some(hash_pos) = package_id.rfind('#') {
+            let after_hash = &package_id[hash_pos + 1..];
+            if let Some(at_pos) = after_hash.rfind('@') {
+                (
+                    after_hash[..at_pos].to_string(),
+                    after_hash[at_pos + 1..].to_string(),
+                )
+            } else {
+                // path crates may omit the name: "path+...#0.0.1"
+                (String::new(), after_hash.to_string())
+            }
+        } else {
+            (String::new(), String::new())
+        };
+
+        (pkg_name, version, source.to_string())
+    }
+
     fn build_and_collect(
         workspace_root: &Path,
         target_dir: &Path,
         profile: &str,
         precompiled_dir: &Path,
-    ) -> Vec<(String, String, String)> {
+    ) -> Vec<ManifestEntry> {
         if precompiled_dir.exists() {
             fs::remove_dir_all(precompiled_dir).unwrap();
         }
@@ -398,8 +433,7 @@ mod precompile_deps {
         let target_prefix = target_dir.join(&host_triple);
         let target_prefix_str = target_prefix.to_string_lossy().to_string();
 
-        // (crate_name, filename, kind)
-        let mut manifest_entries: Vec<(String, String, String)> = Vec::new();
+        let mut manifest_entries: Vec<ManifestEntry> = Vec::new();
 
         for line in reader.lines() {
             let line = line.expect("failed to read cargo output");
@@ -424,6 +458,26 @@ mod precompile_deps {
                 .unwrap_or_default();
             let is_proc_macro = crate_types.iter().any(|t| t.as_str() == Some("proc-macro"));
             let kind = if is_proc_macro { "proc-macro" } else { "lib" };
+
+            // Extract package metadata from package_id
+            let package_id = json
+                .get("package_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let (package_name, version, source) = parse_package_id(package_id);
+
+            // Extract enabled features (sorted for deterministic output)
+            let mut features: Vec<String> = json
+                .get("features")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default();
+            features.sort();
+            let features_csv = features.join(",");
 
             let Some(filenames) = json.get("filenames").and_then(|v| v.as_array()) else {
                 continue;
@@ -451,7 +505,15 @@ mod precompile_deps {
                 fs::copy(&path, precompiled_dir.join(&file_name))
                     .unwrap_or_else(|e| panic!("failed to copy {path_str}: {e}"));
 
-                manifest_entries.push((crate_name.to_string(), file_name, kind.to_string()));
+                manifest_entries.push((
+                    crate_name.to_string(),
+                    file_name,
+                    kind.to_string(),
+                    package_name.clone(),
+                    version.clone(),
+                    features_csv.clone(),
+                    source.clone(),
+                ));
             }
         }
 
@@ -464,21 +526,25 @@ mod precompile_deps {
     }
 
     /// Generate a Rust file that embeds all precompiled artifacts via `include_bytes!`.
-    fn generate_embed_file(manifest_entries: &[(String, String, String)], out_dir: &Path) {
+    fn generate_embed_file(manifest_entries: &[ManifestEntry], out_dir: &Path) {
         let mut code = String::new();
 
-        // Manifest as a Rust array: (crate_name, filename, kind)
-        code.push_str("static PRECOMPILED_MANIFEST: &[(&str, &str, &str)] = &[\n");
-        for (crate_name, filename, kind) in manifest_entries {
+        // Manifest as a Rust array: (crate_name, filename, kind, package_name, version, features_csv, source)
+        code.push_str(
+            "static PRECOMPILED_MANIFEST: &[(&str, &str, &str, &str, &str, &str, &str)] = &[\n",
+        );
+        for (crate_name, filename, kind, package_name, version, features_csv, source) in
+            manifest_entries
+        {
             code.push_str(&format!(
-                "    (\"{crate_name}\", \"{filename}\", \"{kind}\"),\n"
+                "    (\"{crate_name}\", \"{filename}\", \"{kind}\", \"{package_name}\", \"{version}\", \"{features_csv}\", \"{source}\"),\n"
             ));
         }
         code.push_str("];\n\n");
 
         // Artifact bytes
         code.push_str("static PRECOMPILED_ARTIFACTS: &[(&str, &[u8])] = &[\n");
-        for (_crate_name, filename, _kind) in manifest_entries {
+        for (_crate_name, filename, _kind, _, _, _, _) in manifest_entries {
             code.push_str(&format!(
                 "    (\"{filename}\", include_bytes!(concat!(env!(\"OUT_DIR\"), \"/precompiled_rust/{filename}\"))),\n",
             ));
@@ -489,28 +555,34 @@ mod precompile_deps {
     }
 
     /// Write manifest entries as a tab-separated text file.
-    fn write_manifest_entries(entries: &[(String, String, String)], dir: &Path) {
+    fn write_manifest_entries(entries: &[ManifestEntry], dir: &Path) {
         let mut content = String::new();
-        for (crate_name, filename, kind) in entries {
-            content.push_str(&format!("{crate_name}\t{filename}\t{kind}\n"));
+        for (crate_name, filename, kind, package_name, version, features_csv, source) in entries {
+            content.push_str(&format!(
+                "{crate_name}\t{filename}\t{kind}\t{package_name}\t{version}\t{features_csv}\t{source}\n"
+            ));
         }
         fs::write(dir.join("manifest.txt"), content).unwrap();
     }
 
     /// Read manifest entries from a tab-separated text file.
-    fn read_manifest_entries(dir: &Path) -> Vec<(String, String, String)> {
+    fn read_manifest_entries(dir: &Path) -> Vec<ManifestEntry> {
         let content = fs::read_to_string(dir.join("manifest.txt"))
             .expect("failed to read manifest.txt from cached precompiled dir");
         content
             .lines()
             .filter(|line| !line.is_empty())
             .map(|line| {
-                let parts: Vec<&str> = line.splitn(3, '\t').collect();
-                assert_eq!(parts.len(), 3, "malformed manifest line: {line}");
+                let parts: Vec<&str> = line.splitn(7, '\t').collect();
+                assert_eq!(parts.len(), 7, "malformed manifest line: {line}");
                 (
                     parts[0].to_string(),
                     parts[1].to_string(),
                     parts[2].to_string(),
+                    parts[3].to_string(),
+                    parts[4].to_string(),
+                    parts[5].to_string(),
+                    parts[6].to_string(),
                 )
             })
             .collect()

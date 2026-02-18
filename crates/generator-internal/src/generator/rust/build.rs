@@ -25,6 +25,8 @@ pub fn add_peppylib_dependencies(to_path: impl AsRef<Path>, node_dir: &Path) -> 
     super::precompiled::write_precompiled_path(to_path, &artifacts_dir)?;
     super::precompiled::generate_peppygen_build_rs(to_path)?;
     super::precompiled::remove_legacy_cargo_config(node_dir)?;
+    super::precompiled::append_extern_crate_declarations(&to_path.join("src/lib.rs"))?;
+    super::precompiled::generate_patch_crates(node_dir)?;
     Ok(())
 }
 

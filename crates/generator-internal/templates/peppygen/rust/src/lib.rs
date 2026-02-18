@@ -1,9 +1,4 @@
 extern crate peppylib;
-extern crate capnp;
-extern crate bytes;
-extern crate schemars;
-extern crate serde;
-pub extern crate tokio;
 
 pub mod parameters;
 

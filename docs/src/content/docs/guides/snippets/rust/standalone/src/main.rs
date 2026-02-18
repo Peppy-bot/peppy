@@ -5,7 +5,7 @@ use peppygen::{
         video::{Video, VideoResolution},
     },
 };
-use peppylib::runtime::StandaloneConfig;
+use peppygen::StandaloneConfig;
 
 fn main() -> Result<()> {
     // Those arguments could eventually be parsed with clap
