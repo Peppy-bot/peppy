@@ -1,10 +1,30 @@
 use super::MessengerHandle;
 use crate::error::{Error, Result};
-use bytes::Bytes;
+use crate::types::{Message, Payload};
 use config::node::QoSProfile;
-use pmi::{Message, Messenger, MessengerBackend, PublisherQoS, Subscription};
+use pmi::{Message as PmiMessage, Messenger, MessengerBackend, PublisherQoS};
 use std::sync::Arc;
 use tokio::sync::Mutex;
+
+pub struct Subscription {
+    inner: pmi::Subscription,
+}
+
+impl Subscription {
+    pub(crate) fn new(inner: pmi::Subscription) -> Self {
+        Self { inner }
+    }
+
+    pub async fn recv(&mut self) -> Option<Message> {
+        self.inner.rx.recv().await.map(Message::from)
+    }
+
+    pub fn try_recv(
+        &mut self,
+    ) -> std::result::Result<Message, tokio::sync::mpsc::error::TryRecvError> {
+        self.inner.rx.try_recv().map(Message::from)
+    }
+}
 
 pub struct TopicMessenger;
 
@@ -20,7 +40,7 @@ impl TopicMessenger {
         to_instance_id: Option<&str>,
         qos: QoSProfile,
     ) -> Result<Subscription> {
-        messenger
+        let subscription = messenger
             .subscribe_to_topic(
                 as_daemon_node,
                 as_instance_id,
@@ -30,7 +50,8 @@ impl TopicMessenger {
                 to_instance_id,
                 qos,
             )
-            .await
+            .await?;
+        Ok(Subscription::new(subscription))
     }
 
     /// Publishes a payload to a topic on the specified daemon node.
@@ -41,7 +62,7 @@ impl TopicMessenger {
         as_node_name: &str,
         as_topic_name: &str,
         qos: QoSProfile,
-        payload: Bytes,
+        payload: Payload,
     ) -> Result<()> {
         messenger
             .emit_topic_message(
@@ -76,12 +97,12 @@ impl TopicPublisher {
         &self.topic
     }
 
-    pub async fn publish(&self, payload: Bytes) -> Result<()> {
+    pub async fn publish(&self, payload: Payload) -> Result<()> {
         self.publish_on(self.topic.clone(), payload).await
     }
 
-    async fn publish_on(&self, topic: String, payload: Bytes) -> Result<()> {
-        let message = Message::new(&topic, payload);
+    async fn publish_on(&self, topic: String, payload: Payload) -> Result<()> {
+        let message = PmiMessage::new(&topic, payload.into_inner());
         let mut messenger = self.messenger.lock().await;
         messenger
             .publish(message, self.qos)

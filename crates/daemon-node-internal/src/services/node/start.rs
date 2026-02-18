@@ -1,7 +1,6 @@
 use crate::Result;
 use crate::encoding::{NodeStartFeedback, NodeStartGoal, NodeStartGoalResponse, NodeStartResult};
 use crate::names;
-use bytes::Bytes;
 use chrono::Local;
 use config::consts::{RUNTIME_CONFIG_VAR_NAME, logs_dir_start, runtime_config_dir};
 use config::node::{Name, PeppygenLanguage};
@@ -13,6 +12,7 @@ use peppylib::encoding::ready::NodeReadyRequest;
 use peppylib::messaging::{
     ActionCreation, NODE_HEALTH_SERVICE, NODE_READY_SERVICE, ServiceRequestContext, TopicPublisher,
 };
+use peppylib::types::Payload;
 use peppylib::{ActionMessenger, MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
 use std::collections::VecDeque;
 use std::fs::File;
@@ -467,11 +467,11 @@ async fn handle_goal_request(
     node_startup_timeout: Duration,
     node_start_health_timeout: Duration,
     state: Arc<Mutex<NodeStartActionState>>,
-) -> PeppyResult<Bytes> {
+) -> PeppyResult<Payload> {
     let sender_instance_id = context.message().instance_id().to_string();
     let payload = context.message().payload();
 
-    let goal = match NodeStartGoal::decode(&payload.as_bytes()) {
+    let goal = match NodeStartGoal::decode(payload.as_ref()) {
         Ok(goal) => goal,
         Err(e) => {
             let response = NodeStartGoalResponse::rejected(format!("invalid payload: {}", e));
@@ -825,14 +825,14 @@ async fn process_node_start(
 async fn handle_cancel_request(
     _context: ServiceRequestContext,
     state: Arc<Mutex<NodeStartActionState>>,
-) -> PeppyResult<Bytes> {
+) -> PeppyResult<Payload> {
     let state_guard = state.lock().await;
     if matches!(*state_guard, NodeStartActionState::Running { .. }) {
-        Ok(Bytes::from_static(
+        Ok(Payload::from_static(
             b"cancel acknowledged (operation cannot be interrupted)",
         ))
     } else {
-        Ok(Bytes::from_static(
+        Ok(Payload::from_static(
             b"cancel acknowledged (no operation in progress)",
         ))
     }
@@ -841,7 +841,7 @@ async fn handle_cancel_request(
 async fn handle_result_request(
     _context: ServiceRequestContext,
     state: Arc<Mutex<NodeStartActionState>>,
-) -> PeppyResult<Bytes> {
+) -> PeppyResult<Payload> {
     let mut state_guard = state.lock().await;
 
     match std::mem::replace(&mut *state_guard, NodeStartActionState::Idle) {
@@ -853,7 +853,7 @@ async fn handle_result_request(
                 started_at,
                 timeout_secs,
             };
-            Ok(Bytes::from_static(
+            Ok(Payload::from_static(
                 b"result pending: operation still in progress",
             ))
         }
@@ -882,7 +882,7 @@ async fn handle_result_request(
         NodeStartActionState::Idle | NodeStartActionState::Rejected => {
             // Rejected state is normally reset to Idle before result polling,
             // but handle it the same way for robustness.
-            Ok(Bytes::from_static(b"result pending: no result available"))
+            Ok(Payload::from_static(b"result pending: no result available"))
         }
     }
 }

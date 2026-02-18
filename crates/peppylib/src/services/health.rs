@@ -1,17 +1,15 @@
-use bytes::Bytes;
-use tokio::task::JoinHandle;
+use crate::runtime::TaskHandle;
+use crate::types::Payload;
 use tracing::debug;
 
 use crate::messaging::ServiceRequestContext;
 use crate::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
-
-/// This request is exposed by each Node instance to notify the daemon node that the node is still alive
 pub async fn listen_for_node_health(
     messenger: &MessengerHandle,
     daemon_node_node: &str,
     instance_id: &str,
     node_name: &str,
-) -> PeppyResult<JoinHandle<PeppyResult<()>>> {
+) -> PeppyResult<TaskHandle<PeppyResult<()>>> {
     let mut endpoint = ServiceMessenger::listen(
         messenger,
         daemon_node_node,
@@ -22,11 +20,13 @@ pub async fn listen_for_node_health(
     .await?;
 
     let handle =
-        tokio::spawn(async move { endpoint.handle_requests(handle_node_health_request).await });
+        crate::runtime::spawn(
+            async move { endpoint.handle_requests(handle_node_health_request).await },
+        );
     Ok(handle)
 }
 
-async fn handle_node_health_request(context: ServiceRequestContext) -> PeppyResult<Bytes> {
+async fn handle_node_health_request(context: ServiceRequestContext) -> PeppyResult<Payload> {
     let sender_instance_id = context.message().instance_id();
     handle_node_health_request_inner(&context).map_err(|e| PeppyError::InvalidServiceRequest {
         identifier: sender_instance_id.to_string(),
@@ -34,7 +34,7 @@ async fn handle_node_health_request(context: ServiceRequestContext) -> PeppyResu
     })
 }
 
-fn handle_node_health_request_inner(context: &ServiceRequestContext) -> PeppyResult<Bytes> {
+fn handle_node_health_request_inner(context: &ServiceRequestContext) -> PeppyResult<Payload> {
     let sender_instance_id = context.message().instance_id();
     let payload = context.message().payload();
 
@@ -43,5 +43,5 @@ fn handle_node_health_request_inner(context: &ServiceRequestContext) -> PeppyRes
     // TODO: Based on `sender_instance_id`, find the node in the NodeStack and return an error if
     // it can't be found.
 
-    Ok(payload.to_bytes())
+    Ok(Payload::from(payload.to_bytes()))
 }

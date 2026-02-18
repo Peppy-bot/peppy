@@ -4,11 +4,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::sync::oneshot;
-use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
 use crate::error::{Error, Result};
+use crate::runtime::TaskHandle;
 use crate::runtime::node_runner::NodeRunner;
 use crate::runtime::processor::Processor;
 use crate::services::health::listen_for_node_health;
@@ -132,7 +132,7 @@ pub struct NodeBuilder<Params> {
 
 impl<Params> NodeBuilder<Params>
 where
-    Params: serde::de::DeserializeOwned + schemars::JsonSchema,
+    Params: crate::DeserializeOwned + crate::JsonSchema,
 {
     /// Create a new NodeBuilder
     pub fn new() -> Self {
@@ -209,7 +209,7 @@ where
 
 impl<Params> Default for NodeBuilder<Params>
 where
-    Params: serde::de::DeserializeOwned + schemars::JsonSchema,
+    Params: crate::DeserializeOwned + crate::JsonSchema,
 {
     fn default() -> Self {
         Self::new()
@@ -229,7 +229,7 @@ pub struct NodeContext<Params> {
 
 impl<Params> NodeContext<Params>
 where
-    Params: serde::de::DeserializeOwned + schemars::JsonSchema,
+    Params: crate::DeserializeOwned + crate::JsonSchema,
 {
     /// Create the NodeRunner, connecting to the messaging system.
     ///
@@ -395,8 +395,8 @@ where
 }
 
 struct PreSetupHandles {
-    ready_handle: JoinHandle<Result<()>>,
-    shutdown_handle: JoinHandle<Result<()>>,
+    ready_handle: TaskHandle<Result<()>>,
+    shutdown_handle: TaskHandle<Result<()>>,
     shutdown_rx: oneshot::Receiver<()>,
 }
 
@@ -428,8 +428,8 @@ async fn start_pre_setup_services(node_runner: Arc<NodeRunner>) -> Result<PreSet
 
 async fn run_post_setup_services(
     node_runner: Arc<NodeRunner>,
-    ready_handle: JoinHandle<Result<()>>,
-    shutdown_handle: JoinHandle<Result<()>>,
+    ready_handle: TaskHandle<Result<()>>,
+    shutdown_handle: TaskHandle<Result<()>>,
     mut shutdown_rx: oneshot::Receiver<()>,
     cancellation_token: CancellationToken,
 ) -> Result<()> {
@@ -459,7 +459,7 @@ async fn run_post_setup_services(
     Ok(())
 }
 
-async fn wait_for_handles(handles: Vec<JoinHandle<Result<()>>>) -> Result<()> {
+async fn wait_for_handles(handles: Vec<TaskHandle<Result<()>>>) -> Result<()> {
     futures::future::try_join_all(handles)
         .await
         .map_err(|e| Error::RuntimeInitialization {

@@ -59,6 +59,8 @@ pub fn convert_time_from_capnp(timestamp: CapnpTimestamp) -> SystemTime {
     }
 }
 
+use crate::types::Payload;
+
 /// Encode a Cap'n Proto message builder into bytes.
 ///
 /// # Example
@@ -69,13 +71,14 @@ pub fn convert_time_from_capnp(timestamp: CapnpTimestamp) -> SystemTime {
 /// let mut message = capnp::message::Builder::new_default();
 /// message.init_root::<health_capnp::node_health_request::Builder>();
 ///
-/// let bytes = encode_message(&message).unwrap();
-/// assert!(!bytes.is_empty());
+/// let payload = encode_message(&message).unwrap();
+/// assert!(!payload.is_empty());
 /// ```
-pub fn encode_message(message: &Builder<HeapAllocator>) -> Result<Bytes> {
+pub fn encode_message(message: &Builder<HeapAllocator>) -> Result<Payload> {
     let mut buffer = Vec::new();
-    serialize::write_message(&mut buffer, message)?;
-    Ok(Bytes::from(buffer))
+    serialize::write_message(&mut buffer, message)
+        .map_err(|e| crate::error::Error::Serialization(e.to_string()))?;
+    Ok(Payload::from(Bytes::from(buffer)))
 }
 
 /// Decode bytes into a Cap'n Proto message reader.
@@ -97,5 +100,6 @@ pub fn encode_message(message: &Builder<HeapAllocator>) -> Result<Bytes> {
 pub fn decode_message(
     data: &[u8],
 ) -> Result<capnp::message::Reader<capnp::serialize::OwnedSegments>> {
-    Ok(serialize::read_message(data, ReaderOptions::default())?)
+    Ok(serialize::read_message(data, ReaderOptions::default())
+        .map_err(|e| crate::error::Error::Deserialization(e.to_string()))?)
 }

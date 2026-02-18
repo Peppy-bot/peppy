@@ -1,9 +1,9 @@
 use crate::Result;
 use crate::encoding::{InfoRequest, InfoResponse};
 use crate::names;
-use bytes::Bytes;
 use node_stack::NodeStack;
 use peppylib::messaging::ServiceRequestContext;
+use peppylib::types::Payload;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
 use std::sync::Arc;
 use std::time::Instant;
@@ -60,7 +60,7 @@ async fn handle_info_request(
     instance_id: &str,
     start_time: Instant,
     node_stack: &NodeStack,
-) -> PeppyResult<Bytes> {
+) -> PeppyResult<Payload> {
     let sender_instance_id = context.message().instance_id();
     handle_info_request_inner(
         &context,
@@ -81,11 +81,11 @@ fn handle_info_request_inner(
     instance_id: &str,
     start_time: Instant,
     node_stack: &NodeStack,
-) -> Result<Bytes> {
+) -> Result<Payload> {
     let sender_instance_id = context.message().instance_id();
     let payload = context.message().payload();
 
-    let _request = InfoRequest::decode(&payload.as_bytes())?;
+    let _request = InfoRequest::decode(payload.as_ref())?;
 
     debug!("Received `info` request from {sender_instance_id}");
 

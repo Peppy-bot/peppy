@@ -1,10 +1,10 @@
-use bytes::Bytes;
 use config::consts::PEPPYGEN_OUTPUT_PATH;
 use config::peppy_config::Name;
 use config::runtime::{NodeInstance, RuntimeConfig};
 use peppylib::encoding::health::{NodeHealthRequest, NodeHealthResponse};
 use peppylib::messaging::{NODE_HEALTH_SERVICE, NODE_READY_SERVICE, SHUTDOWN_SERVICE};
 use peppylib::runtime::NodeBuilder;
+use peppylib::types::Payload;
 use pmi::ZenohAdapter;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
@@ -203,10 +203,9 @@ async fn daemon_runner_succeed() {
     )
     .await
     .expect("health service should respond");
-    NodeHealthResponse::decode(&health_response.payload().to_bytes())
-        .expect("health response should decode");
+    NodeHealthResponse::decode(&health_response.payload()).expect("health response should decode");
 
-    let shutdown_payload = Bytes::from_static(b"shutdown");
+    let shutdown_payload = Payload::from_static(b"shutdown");
     let shutdown_response = peppylib::ServiceMessenger::poll(
         &messenger,
         TEST_DAEMON_NODE,
@@ -221,7 +220,7 @@ async fn daemon_runner_succeed() {
     .await
     .expect("shutdown service should respond");
 
-    assert_eq!(shutdown_response.payload().to_bytes(), shutdown_payload);
+    assert_eq!(shutdown_response.payload(), &shutdown_payload);
     assert_eq!(shutdown_response.instance_id(), TEST_INSTANCE_ID);
 
     tokio::time::timeout(Duration::from_secs(10), &mut runner_task)
@@ -388,7 +387,7 @@ async fn node_ready_but_not_healthy() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 
-    let ready_payload = Bytes::from_static(b"ready");
+    let ready_payload = Payload::from_static(b"ready");
     let ready_response = peppylib::ServiceMessenger::poll(
         &messenger,
         TEST_DAEMON_NODE,
@@ -402,7 +401,7 @@ async fn node_ready_but_not_healthy() {
     )
     .await
     .expect("ready service should respond while setup is blocked");
-    assert_eq!(ready_response.payload().to_bytes(), ready_payload);
+    assert_eq!(ready_response.payload(), &ready_payload);
     assert_eq!(ready_response.instance_id(), TEST_INSTANCE_ID);
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
@@ -518,10 +517,9 @@ async fn node_ready_but_not_healthy() {
     )
     .await
     .expect("health service should respond after setup completes");
-    NodeHealthResponse::decode(&health_response.payload().to_bytes())
-        .expect("health response should decode");
+    NodeHealthResponse::decode(&health_response.payload()).expect("health response should decode");
 
-    let shutdown_payload = Bytes::from_static(b"shutdown");
+    let shutdown_payload = Payload::from_static(b"shutdown");
     let shutdown_response = peppylib::ServiceMessenger::poll(
         &messenger,
         TEST_DAEMON_NODE,
@@ -536,7 +534,7 @@ async fn node_ready_but_not_healthy() {
     .await
     .expect("shutdown service should respond");
 
-    assert_eq!(shutdown_response.payload().to_bytes(), shutdown_payload);
+    assert_eq!(shutdown_response.payload(), &shutdown_payload);
     assert_eq!(shutdown_response.instance_id(), TEST_INSTANCE_ID);
 
     tokio::time::timeout(Duration::from_secs(10), &mut runner_task)
@@ -647,7 +645,7 @@ async fn daemon_cancellation_token_cancelled_on_shutdown() {
     }
 
     // Send shutdown request
-    let shutdown_payload = Bytes::from_static(b"shutdown");
+    let shutdown_payload = Payload::from_static(b"shutdown");
     peppylib::ServiceMessenger::poll(
         &messenger,
         TEST_DAEMON_NODE,

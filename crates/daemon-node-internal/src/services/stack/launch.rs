@@ -6,13 +6,13 @@ use crate::encoding::{
 };
 use crate::names;
 use crate::services::node::resolve_node_config;
-use bytes::Bytes;
 use chrono::Local;
 use config::consts::{DEFAULT_MESSAGING_HOST, DEFAULT_MESSAGING_PORT, logs_dir_launch};
 use config::peppy_config::{Deployment, DeploymentSource, PeppyLauncherParser};
 use config::runtime::RuntimeConfig;
 use node_stack::NodeStack;
 use peppylib::messaging::{ActionCreation, ServiceRequestContext, TopicPublisher};
+use peppylib::types::Payload;
 use peppylib::{ActionMessenger, MessengerHandle, PeppyResult};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::File;
@@ -1133,7 +1133,7 @@ async fn handle_goal_request(
     messenger: MessengerHandle,
     bound_daemon_node: String,
     daemon_instance_id: String,
-) -> PeppyResult<Bytes> {
+) -> PeppyResult<Payload> {
     let sender_instance_id = context.message().instance_id();
     let payload = context.message().payload();
 
@@ -1152,7 +1152,7 @@ async fn handle_goal_request(
         *state_guard = LaunchActionState::Running;
     }
 
-    let goal = match LaunchGoal::decode(&payload.as_bytes()) {
+    let goal = match LaunchGoal::decode(payload.as_ref()) {
         Ok(g) => g,
         Err(e) => {
             let mut state_guard = state.lock().await;
@@ -1302,14 +1302,14 @@ async fn process_launch(goal: LaunchGoal, ctx: ProcessLaunchContext) -> LaunchRe
 async fn handle_cancel_request(
     _context: ServiceRequestContext,
     state: Arc<Mutex<LaunchActionState>>,
-) -> PeppyResult<Bytes> {
+) -> PeppyResult<Payload> {
     let state_guard = state.lock().await;
     if matches!(*state_guard, LaunchActionState::Running) {
-        Ok(Bytes::from_static(
+        Ok(Payload::from_static(
             b"cancel acknowledged (operation cannot be interrupted)",
         ))
     } else {
-        Ok(Bytes::from_static(
+        Ok(Payload::from_static(
             b"cancel acknowledged (no operation in progress)",
         ))
     }
@@ -1318,13 +1318,13 @@ async fn handle_cancel_request(
 async fn handle_result_request(
     _context: ServiceRequestContext,
     state: Arc<Mutex<LaunchActionState>>,
-) -> PeppyResult<Bytes> {
+) -> PeppyResult<Payload> {
     let mut state_guard = state.lock().await;
 
     match std::mem::replace(&mut *state_guard, LaunchActionState::Idle) {
         LaunchActionState::Running => {
             *state_guard = LaunchActionState::Running;
-            Ok(Bytes::from_static(
+            Ok(Payload::from_static(
                 b"result pending: operation still in progress",
             ))
         }
@@ -1351,7 +1351,7 @@ async fn handle_result_request(
             Ok(payload)
         }
         LaunchActionState::Idle | LaunchActionState::Rejected => {
-            Ok(Bytes::from_static(b"result pending: no result available"))
+            Ok(Payload::from_static(b"result pending: no result available"))
         }
     }
 }

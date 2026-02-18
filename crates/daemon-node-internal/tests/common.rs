@@ -13,6 +13,7 @@ use daemon_node::{DaemonNode, DaemonNodeArguments};
 use gix_url::Url as GitUrl;
 use node_stack::NodeStack;
 use peppylib::messaging::MessengerHandle;
+use peppylib::runtime::{TaskHandle, spawn};
 use peppylib::{ActionMessenger, PeppyError};
 use pmi::{Messenger, MessengerAdapter, MessengerBackend, MockAdapter};
 use std::path::{Path, PathBuf};
@@ -21,10 +22,9 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
 use tokio::sync::mpsc::UnboundedSender;
-use tokio::task::JoinHandle;
 
-/// A wrapper around `JoinHandle` that aborts the task when dropped.
-pub struct AbortOnDrop<T>(pub JoinHandle<T>);
+/// A wrapper around `TaskHandle` that aborts the task when dropped.
+pub struct AbortOnDrop<T>(pub TaskHandle<T>);
 
 impl<T> Drop for AbortOnDrop<T> {
     fn drop(&mut self) {
@@ -692,7 +692,7 @@ async fn start_daemon_node_with_messenger(
 
     // Use start_with_ready to properly synchronize instead of a time-based sleep
     let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
-    let task = tokio::spawn(async move { daemon_node.start_with_ready(Some(ready_tx)).await });
+    let task = spawn(async move { daemon_node.start_with_ready(Some(ready_tx)).await });
 
     // Wait for all services to be fully registered before returning
     ready_rx.await.expect("daemon node ready signal failed");
