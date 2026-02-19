@@ -14,10 +14,15 @@ pub mod types;
 
 pub use types::Payload;
 
-// Re-export common serialization traits to avoid forcing users to depend on serde/schemars directly
-pub use schemars::JsonSchema;
-pub use serde::de::DeserializeOwned;
-pub use serde::{Deserialize, Serialize};
+#[doc(hidden)]
+pub use schemars;
+#[doc(hidden)]
+pub use serde;
+
+pub mod serialization;
+
+// Re-export common serialization traits from our wrapper module
+pub use serialization::{Deserialize, DeserializeOwned, JsonSchema, Serialize};
 
 #[allow(clippy::all)]
 mod health_capnp {
