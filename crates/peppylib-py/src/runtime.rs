@@ -6,7 +6,7 @@ use pyo3::types::{PyCFunction, PyDict};
 use pythonize::{depythonize, pythonize};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use tokio_util::sync::CancellationToken;
+use peppylib::runtime::CancellationToken;
 
 type SharedPyError = Arc<Mutex<Option<PyErr>>>;
 
