@@ -163,7 +163,7 @@ impl From<pmi::TopicMessage> for Message {
 /// Error returned by non-blocking receive operations when no message is
 /// available or the channel has been closed.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TryRecvError {
+pub(crate) enum TryRecvError {
     /// The channel is currently empty; no message is available.
     Empty,
     /// The channel has been closed and will not produce further messages.
