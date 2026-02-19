@@ -15,11 +15,11 @@ impl Subscription {
         Self { inner }
     }
 
-    pub async fn recv(&mut self) -> Option<Message> {
+    pub async fn on_next_message(&mut self) -> Option<Message> {
         self.inner.rx.recv().await.map(Message::from)
     }
 
-    pub fn try_recv(
+    pub fn try_on_next_message(
         &mut self,
     ) -> std::result::Result<Message, tokio::sync::mpsc::error::TryRecvError> {
         self.inner.rx.try_recv().map(Message::from)

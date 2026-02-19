@@ -64,7 +64,7 @@ impl PySubscription {
         let inner = Arc::clone(&self.inner);
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let mut subscription = inner.lock().await;
-            match subscription.recv().await {
+            match subscription.on_next_message().await {
                 Some(message) => Ok(Some(PyTopicMessage::from(message))),
                 None => Ok(None),
             }

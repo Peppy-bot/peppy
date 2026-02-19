@@ -140,7 +140,7 @@ async fn topic_publish_subscribe_no_target_instance_id() {
     .await
     .expect("Should send the payload");
 
-    let received = tokio::time::timeout(Duration::from_secs(2), subscription.recv())
+    let received = tokio::time::timeout(Duration::from_secs(2), subscription.on_next_message())
         .await
         .expect("Timed out waiting for published message")
         .expect("Should receive the published message");
@@ -225,13 +225,14 @@ async fn topic_publish_subscribe_with_target_instance_id() {
     .await
     .expect("Should send the payload");
 
-    let received = tokio::time::timeout(Duration::from_secs(2), subscription2.recv())
+    let received = tokio::time::timeout(Duration::from_secs(2), subscription2.on_next_message())
         .await
         .expect("Timed out waiting for published message")
         .expect("Should receive the published message");
 
     // The first subscriber should never receive a message
-    let timeout_result = tokio::time::timeout(Duration::from_secs(2), subscription1.recv()).await;
+    let timeout_result =
+        tokio::time::timeout(Duration::from_secs(2), subscription1.on_next_message()).await;
     assert!(
         timeout_result.is_err(),
         "subscription1 should not receive any message"
@@ -311,13 +312,14 @@ async fn topic_publish_subscribe_with_target_daemon_node() {
     .await
     .expect("Should send the payload");
 
-    let received = tokio::time::timeout(Duration::from_secs(2), subscription2.recv())
+    let received = tokio::time::timeout(Duration::from_secs(2), subscription2.on_next_message())
         .await
         .expect("Timed out waiting for published message")
         .expect("Should receive the published message");
 
     // The first subscriber should never receive a message
-    let timeout_result = tokio::time::timeout(Duration::from_secs(2), subscription1.recv()).await;
+    let timeout_result =
+        tokio::time::timeout(Duration::from_secs(2), subscription1.on_next_message()).await;
     assert!(
         timeout_result.is_err(),
         "subscription1 should not receive any message"
@@ -389,7 +391,7 @@ async fn topic_publish_reliable_5000hz_messages() {
 
     let mut received_ids: Vec<u32> = Vec::with_capacity(message_count);
     for _ in 0..message_count {
-        let message = tokio::time::timeout(Duration::from_secs(2), subscription.recv())
+        let message = tokio::time::timeout(Duration::from_secs(2), subscription.on_next_message())
             .await
             .expect("Timed out waiting for a message")
             .expect("Subscription closed before receiving all messages");
