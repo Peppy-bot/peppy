@@ -1,5 +1,5 @@
-use bytes::Bytes;
 use peppylib::messaging::{MessengerHandle, ServiceMessenger};
+use peppylib::types::Payload;
 use pmi::ZenohAdapter;
 use std::time::Duration;
 
@@ -14,8 +14,8 @@ async fn service_messenger_communication() {
     let instance_id = "test_instance";
     let node_name = "test_node";
     let service_name = "test_service";
-    let request_payload = Bytes::from_static(b"Hello request");
-    let response_payload = Bytes::from_static(b"Hello response");
+    let request_payload = Payload::from_static(b"Hello request");
+    let response_payload = Payload::from_static(b"Hello response");
 
     let server_handle = MessengerHandle::from_host_port(&host, port)
         .await
@@ -64,7 +64,7 @@ async fn service_messenger_communication() {
 
     handler.await.expect("handler task should not panic");
 
-    assert_eq!(response.payload().to_bytes(), response_payload);
+    assert_eq!(response.payload(), &response_payload);
     assert_eq!(response.instance_id(), instance_id);
     assert_eq!(response.daemon_node(), daemon_node);
 }

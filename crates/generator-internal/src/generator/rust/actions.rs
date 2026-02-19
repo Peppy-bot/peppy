@@ -86,7 +86,7 @@ pub fn build_action_handle_method(
     let helper_call = if has_payload {
         quote! {
             let message = request_context.message();
-            let payload = message.payload().as_bytes();
+            let payload = message.payload();
             let daemon_node = message.daemon_node().to_string();
             let instance_id = message.instance_id().to_string();
             #helper_name(
@@ -175,7 +175,7 @@ pub fn build_action_payload_handler(
     } else {
         quote!({
             handler(request)?;
-            bytes::Bytes::new()
+            peppylib::Payload::new()
         })
     };
 
@@ -191,7 +191,7 @@ pub fn build_action_payload_handler(
                 handler: &F,
                 daemon_node: String,
                 instance_id: String,
-            ) -> crate::Result<bytes::Bytes>
+            ) -> crate::Result<peppylib::Payload>
             where
                 F: Fn(#request_struct) -> crate::Result<#response_ty>,
             {
@@ -209,7 +209,7 @@ pub fn build_action_payload_handler(
                 handler: &F,
                 daemon_node: String,
                 instance_id: String,
-            ) -> crate::Result<bytes::Bytes>
+            ) -> crate::Result<peppylib::Payload>
             where
                 F: Fn(#request_struct) -> crate::Result<#response_ty>,
             {

@@ -2,8 +2,8 @@
 
 use std::time::Duration;
 
-use bytes::Bytes;
 use capnp::message::Builder;
+use peppylib::types::Payload;
 use peppylib::{MessengerHandle, ServiceMessenger};
 
 use crate::Result;
@@ -20,7 +20,7 @@ impl InfoRequest {
         Self
     }
 
-    pub fn encode(&self) -> Result<Bytes> {
+    pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
             builder.init_root::<info_capnp::info_request::Builder>();
@@ -55,7 +55,7 @@ impl InfoRequest {
             response_timeout,
         )
         .await?;
-        InfoResponse::decode(&response.payload().to_bytes())
+        InfoResponse::decode(response.payload().as_ref())
     }
 }
 
@@ -88,7 +88,7 @@ impl InfoResponse {
         }
     }
 
-    pub fn encode(&self) -> Result<Bytes> {
+    pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
             let mut response = builder.init_root::<info_capnp::info_response::Builder>();

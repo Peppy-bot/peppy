@@ -50,8 +50,8 @@ async fn node_health_request_response_roundtrip() {
     .expect("caller should receive response");
 
     // Decode and verify the response
-    let _health_response = NodeHealthResponse::decode(&response.payload().to_bytes())
-        .expect("should decode health response");
+    let _health_response =
+        NodeHealthResponse::decode(&response.payload()).expect("should decode health response");
 
     assert_eq!(response.instance_id(), client.instance_id);
 }

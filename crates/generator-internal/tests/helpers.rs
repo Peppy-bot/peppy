@@ -432,7 +432,7 @@ pub async fn send_shutdown(
     target_instance_id: &str,
     timeout: Duration,
 ) {
-    let payload = bytes::Bytes::from_static(b"shutdown");
+    let payload = peppylib::types::Payload::from_static(b"shutdown");
     ServiceMessenger::poll(
         messenger,
         bound_daemon_node,
@@ -464,7 +464,7 @@ pub async fn try_send_shutdown(
     target_instance_id: &str,
     timeout: Duration,
 ) {
-    let payload = bytes::Bytes::from_static(b"shutdown");
+    let payload = peppylib::types::Payload::from_static(b"shutdown");
     let _ = ServiceMessenger::poll(
         messenger,
         bound_daemon_node,

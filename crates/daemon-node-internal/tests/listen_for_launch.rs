@@ -320,7 +320,7 @@ async fn send_node_launch_and_wait_with_env(
     .await
     .map_err(|e| format!("Failed to send launch goal: {e}"))?;
 
-    let goal_response_payload = action_handle.goal_response().payload().to_bytes();
+    let goal_response_payload = action_handle.goal_response().payload();
     let goal_response = LaunchGoalResponse::decode(&goal_response_payload)
         .map_err(|e| format!("Failed to decode goal response: {e}"))?;
 
@@ -343,7 +343,7 @@ async fn send_node_launch_and_wait_with_env(
             let drain_timeout = Duration::from_millis(50).min(remaining);
             match tokio::time::timeout(drain_timeout, action_handle.on_next_feedback()).await {
                 Ok(Ok(msg)) => {
-                    let payload = msg.payload().to_bytes();
+                    let payload = msg.payload();
                     let _ = LaunchFeedback::decode(&payload);
                 }
                 Ok(Err(_)) => break,
@@ -360,7 +360,7 @@ async fn send_node_launch_and_wait_with_env(
 
         match ActionMessenger::request_result(messenger, &action_handle, poll_timeout).await {
             Ok(msg) => {
-                let payload = msg.payload().to_bytes();
+                let payload = msg.payload();
                 match LaunchResult::decode(&payload) {
                     Ok(result) => return Ok((goal_response, result)),
                     Err(err) => {

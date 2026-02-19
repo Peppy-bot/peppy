@@ -1,6 +1,6 @@
-use bytes::Bytes;
 use config::node::QoSProfile;
 use peppylib::messaging::{ActionMessenger, MessengerHandle};
+use peppylib::types::Payload;
 use pmi::ZenohAdapter;
 use std::time::Duration;
 
@@ -15,10 +15,10 @@ async fn action_messenger_communication() {
     let instance_id = "test_instance";
     let node_name = "test_node";
     let action_name = "test_action";
-    let goal_payload = Bytes::from_static(b"goal data");
-    let goal_response_payload = Bytes::from_static(b"goal accepted");
-    let feedback_payload = Bytes::from_static(b"50% done");
-    let result_payload = Bytes::from_static(b"action result");
+    let goal_payload = Payload::from_static(b"goal data");
+    let goal_response_payload = Payload::from_static(b"goal accepted");
+    let feedback_payload = Payload::from_static(b"50% done");
+    let result_payload = Payload::from_static(b"action result");
 
     let server_handle = MessengerHandle::from_host_port(&host, port)
         .await
@@ -91,8 +91,8 @@ async fn action_messenger_communication() {
     .expect("send_goal should succeed");
 
     assert_eq!(
-        goal_handle.goal_response().payload().to_bytes(),
-        goal_response_payload
+        goal_handle.goal_response().payload(),
+        &goal_response_payload
     );
 
     // Client: receive feedback
@@ -101,7 +101,7 @@ async fn action_messenger_communication() {
         .expect("should receive feedback within timeout")
         .expect("feedback should not be an error");
 
-    assert_eq!(feedback.payload().to_bytes(), feedback_payload);
+    assert_eq!(feedback.payload(), &feedback_payload);
 
     // Client: request result
     let result =
@@ -109,7 +109,7 @@ async fn action_messenger_communication() {
             .await
             .expect("request_result should succeed");
 
-    assert_eq!(result.payload().to_bytes(), result_payload);
+    assert_eq!(result.payload(), &result_payload);
 
     server.await.expect("server task should not panic");
 }

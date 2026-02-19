@@ -1,6 +1,6 @@
-use bytes::Bytes;
 use capnp::message::Builder;
 use config::node::Toolchain;
+use peppylib::types::Payload;
 use peppylib::{MessengerHandle, ServiceMessenger};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -34,7 +34,7 @@ impl NodeInitRequest {
         }
     }
 
-    pub fn encode(&self) -> Result<Bytes> {
+    pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
             let mut request = builder.init_root::<node_capnp::node_init_request::Builder>();
@@ -80,7 +80,7 @@ impl NodeInitRequest {
             response_timeout,
         )
         .await?;
-        NodeInitResponse::decode(&response.payload().to_bytes())
+        NodeInitResponse::decode(response.payload().as_ref())
     }
 }
 
@@ -106,7 +106,7 @@ impl NodeInitResponse {
         Self::new(false, error_message)
     }
 
-    pub fn encode(&self) -> Result<Bytes> {
+    pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
             let mut response = builder.init_root::<node_capnp::node_init_response::Builder>();

@@ -2,9 +2,9 @@ use super::templates::{apply_python_templates, apply_rust_templates};
 use crate::Result;
 use crate::encoding::{NodeInitRequest, NodeInitResponse};
 use crate::names;
-use bytes::Bytes;
 use config::node::Toolchain;
 use peppylib::messaging::ServiceRequestContext;
+use peppylib::types::Payload;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
 use tokio::task::JoinHandle;
 use tracing::debug;
@@ -34,7 +34,7 @@ pub async fn listen_for_node_init(
     Ok(handle)
 }
 
-async fn handle_node_init_request(context: ServiceRequestContext) -> PeppyResult<Bytes> {
+async fn handle_node_init_request(context: ServiceRequestContext) -> PeppyResult<Payload> {
     let sender_instance_id = context.message().instance_id();
     handle_node_init_request_inner(&context).map_err(|e| PeppyError::InvalidServiceRequest {
         identifier: sender_instance_id.to_string(),
@@ -42,11 +42,11 @@ async fn handle_node_init_request(context: ServiceRequestContext) -> PeppyResult
     })
 }
 
-fn handle_node_init_request_inner(context: &ServiceRequestContext) -> Result<Bytes> {
+fn handle_node_init_request_inner(context: &ServiceRequestContext) -> Result<Payload> {
     let sender_instance_id = context.message().instance_id();
     let payload = context.message().payload();
 
-    let request = NodeInitRequest::decode(&payload.as_bytes())?;
+    let request = NodeInitRequest::decode(payload.as_ref())?;
     let toolchain = request.toolchain;
 
     debug!(
