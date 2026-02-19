@@ -20,28 +20,73 @@ pub fn add_peppylib_dependencies(to_path: &Path) -> Result<()> {
     // Copy Python project templates (pyproject.toml, peppygen/__init__.py)
     crate::generator::common::copy_embedded_templates("peppygen/python", to_path, "")?;
 
-    // Copy the pre-built peppylib Python package (Python files + native .so)
-    let peppylib_dir = to_path.join("peppylib");
-    fs::create_dir_all(&peppylib_dir)?;
+    // Deploy the pre-built peppylib Python package to a shared cache
+    let cache_key = format!(
+        "{}-{}",
+        env!("PEPPYLIB_SO_MTIME"),
+        env!("CARGO_PKG_VERSION")
+    );
+    let cache_dir = config::consts::peppy_data_dir()
+        .join("libs/python")
+        .join(&cache_key);
 
-    for file_path in EmbeddedPeppylibPy::iter() {
-        let file_path_str = file_path.as_ref();
-        let destination = peppylib_dir.join(file_path_str);
+    if !cache_dir.join(".complete").exists() {
+        fs::create_dir_all(cache_dir.parent().unwrap())?;
+        let lock_path = cache_dir.with_extension("lock");
+        let lock_file = fs::File::options()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock_path)?;
+        lock_file.lock()?;
 
-        if let Some(parent) = destination.parent() {
-            fs::create_dir_all(parent)?;
+        if !cache_dir.join(".complete").exists() {
+            let staging_dir = cache_dir.with_extension(format!("staging-{}", std::process::id()));
+            if staging_dir.exists() {
+                fs::remove_dir_all(&staging_dir)?;
+            }
+
+            for file_path in EmbeddedPeppylibPy::iter() {
+                let file_path_str = file_path.as_ref();
+                let destination = staging_dir.join(file_path_str);
+                if let Some(parent) = destination.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                let content = EmbeddedPeppylibPy::get(file_path_str).ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::NotFound,
+                        format!("embedded peppylib file not found: {file_path_str}"),
+                    )
+                })?;
+                fs::write(&destination, content.data.as_ref())?;
+            }
+
+            if cache_dir.exists() {
+                fs::remove_dir_all(&cache_dir)?;
+            }
+            fs::rename(&staging_dir, &cache_dir)?;
+            fs::write(cache_dir.join(".complete"), "")?;
         }
-
-        let content = EmbeddedPeppylibPy::get(file_path_str).ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::NotFound,
-                format!("embedded peppylib file not found: {file_path_str}"),
-            )
-        })?;
-        fs::write(&destination, content.data.as_ref())?;
     }
 
+    // Symlink to_path/peppylib → shared cache
+    let peppylib_link = to_path.join("peppylib");
+    match peppylib_link.symlink_metadata() {
+        Ok(meta) if meta.file_type().is_symlink() => fs::remove_file(&peppylib_link)?,
+        Ok(_) => fs::remove_dir_all(&peppylib_link)?,
+        Err(_) => {}
+    }
+    symlink_dir(&cache_dir, &peppylib_link)?;
+
     Ok(())
+}
+
+fn symlink_dir(original: &Path, link: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    return std::os::unix::fs::symlink(original, link);
+    #[cfg(windows)]
+    return std::os::windows::fs::symlink_dir(original, link);
 }
 
 pub fn add_capnp_schemas(schemas: &HashMap<String, CapnpSchema>, to_path: &Path) -> Result<()> {
