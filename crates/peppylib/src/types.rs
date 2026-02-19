@@ -19,7 +19,6 @@ impl Payload {
     pub(crate) fn into_inner(self) -> Bytes {
         self.0
     }
-
 }
 
 impl Default for Payload {

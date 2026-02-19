@@ -12,8 +12,7 @@ bytes = "1"
 config = { path = "../config-internal" }
 peppylib = { path = "../peppylib" }
 pmi = { path = "../pmi-internal" }
-# TODO: switch to crates.io once pythonize 0.28 is released (pyo3 0.28.0 support)
-pythonize = { git = "https://github.com/reitermarkus/pythonize.git", branch = "update-pyo3" }
+pythonize = { version = "0.28" }
 pyo3 = { version = "0.28", features = ["extension-module", "abi3-py311"] }
 pyo3-async-runtimes = { version = "0.28", features = ["tokio-runtime"] }
 rand = "0.10"
