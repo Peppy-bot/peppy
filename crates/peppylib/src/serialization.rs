@@ -1,10 +1,6 @@
 use serde::de::DeserializeOwned as SerdeDeserializeOwned;
 use serde::{Deserialize as SerdeDeserialize, Serialize as SerdeSerialize};
 
-// Re-export derive macros
-pub use schemars::JsonSchema;
-pub use serde::{Deserialize, Serialize};
-
 /// Wrapper trait for `serde::Serialize`.
 pub trait Serialize: SerdeSerialize {}
 impl<T: ?Sized + SerdeSerialize> Serialize for T {}

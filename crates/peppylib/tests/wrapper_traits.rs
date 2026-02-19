@@ -1,4 +1,4 @@
-use peppylib::{Deserialize, JsonSchema, Serialize};
+use peppylib::derive::{Deserialize, JsonSchema, Serialize};
 
 #[derive(Serialize, Deserialize, JsonSchema)]
 struct TestStruct {
