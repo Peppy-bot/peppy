@@ -61,7 +61,7 @@ impl NodeStopRequest {
             response_timeout,
         )
         .await?;
-        NodeStopResponse::decode(&response.payload().to_bytes())
+        NodeStopResponse::decode(response.payload().as_ref())
     }
 }
 

@@ -109,7 +109,7 @@ impl NodeInfoRequest {
             response_timeout,
         )
         .await?;
-        NodeInfoResponse::decode(&response.payload().to_bytes())
+        NodeInfoResponse::decode(response.payload().as_ref())
     }
 }
 

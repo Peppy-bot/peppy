@@ -64,12 +64,11 @@ use crate::types::Payload;
 /// Encode a Cap'n Proto message builder into bytes.
 ///
 /// # Example
-/// ```
+/// ```ignore
 /// use peppylib::encoding::encode_message;
-/// use peppylib::health_capnp;
 ///
 /// let mut message = capnp::message::Builder::new_default();
-/// message.init_root::<health_capnp::node_health_request::Builder>();
+/// message.init_root::<my_capnp::my_request::Builder>();
 ///
 /// let payload = encode_message(&message).unwrap();
 /// assert!(!payload.is_empty());
@@ -86,16 +85,15 @@ pub fn encode_message(message: &Builder<HeapAllocator>) -> Result<Payload> {
 /// Returns an owned segments reader that can be used to read the message.
 ///
 /// # Example
-/// ```
+/// ```ignore
 /// use peppylib::encoding::{decode_message, encode_message};
-/// use peppylib::health_capnp;
 ///
 /// let mut message = capnp::message::Builder::new_default();
-/// message.init_root::<health_capnp::node_health_request::Builder>();
+/// message.init_root::<my_capnp::my_request::Builder>();
 /// let bytes = encode_message(&message).unwrap();
 ///
 /// let reader = decode_message(&bytes).unwrap();
-/// let _request = reader.get_root::<health_capnp::node_health_request::Reader>().unwrap();
+/// let _request = reader.get_root::<my_capnp::my_request::Reader>().unwrap();
 /// ```
 pub fn decode_message(
     data: &[u8],

@@ -44,7 +44,7 @@ impl From<Message> for PyTopicMessage {
     fn from(msg: Message) -> Self {
         Self {
             key_expr: msg.key_expr().to_string(),
-            payload: msg.payload().to_bytes().to_vec(),
+            payload: msg.payload().to_vec(),
             instance_id: msg.instance_id().to_string(),
             daemon_node: msg.daemon_node().to_string(),
         }

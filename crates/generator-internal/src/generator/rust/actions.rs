@@ -175,7 +175,7 @@ pub fn build_action_payload_handler(
     } else {
         quote!({
             handler(request)?;
-            bytes::Bytes::new()
+            peppylib::Payload::new()
         })
     };
 

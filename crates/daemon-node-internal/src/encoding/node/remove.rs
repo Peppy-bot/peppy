@@ -73,7 +73,7 @@ impl NodeRemoveRequest {
             response_timeout,
         )
         .await?;
-        NodeRemoveResponse::decode(&response.payload().to_bytes())
+        NodeRemoveResponse::decode(response.payload().as_ref())
     }
 }
 

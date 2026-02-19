@@ -21,8 +21,12 @@ impl Subscription {
 
     pub fn try_on_next_message(
         &mut self,
-    ) -> std::result::Result<Message, tokio::sync::mpsc::error::TryRecvError> {
-        self.inner.rx.try_recv().map(Message::from)
+    ) -> std::result::Result<Message, crate::types::TryRecvError> {
+        self.inner
+            .rx
+            .try_recv()
+            .map(Message::from)
+            .map_err(crate::types::TryRecvError::from)
     }
 }
 

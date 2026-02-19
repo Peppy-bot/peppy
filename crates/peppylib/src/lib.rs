@@ -14,11 +14,6 @@ pub mod types;
 
 pub use types::Payload;
 
-#[doc(hidden)]
-pub use schemars;
-#[doc(hidden)]
-pub use serde;
-
 pub mod serialization;
 
 // Re-export common serialization traits from our wrapper module

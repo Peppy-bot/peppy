@@ -1,10 +1,6 @@
 use peppylib::{Deserialize, JsonSchema, Serialize};
 
 #[derive(Serialize, Deserialize, JsonSchema)]
-// If the macros require `serde` or `schemars` to be in scope, this might fail unless we configure them
-// or if peppylib re-exports them in a way the macro can find.
-#[serde(crate = "peppylib::serde")]
-#[schemars(crate = "peppylib::schemars")]
 struct TestStruct {
     field: String,
     count: i32,

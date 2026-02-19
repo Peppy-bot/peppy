@@ -1178,7 +1178,7 @@ async fn service_communication_fails_service_timeouts() {
         )
         .await
         .expect("caller should receive response before timeout");
-        assert_eq!(success_response.payload().to_bytes(), response_payload);
+        assert_eq!(success_response.payload(), response_payload);
         assert_eq!(
             call_count.load(Ordering::SeqCst),
             1,
@@ -1319,7 +1319,7 @@ async fn service_handle_request_processes_multiple_messages() {
             .await
             .expect("caller should receive response");
             assert_eq!(
-                response.payload().to_bytes(),
+                response.payload(),
                 request_payload,
                 "response should match the originating request payload"
             );
@@ -1490,7 +1490,7 @@ async fn single_service_communication_multiple_polls_and_callers() {
                 "stored request payload should match expected value for `{caller_id}` request {request_idx}"
             );
             assert_eq!(
-                response.payload().to_bytes(),
+                response.payload(),
                 expected_payload,
                 "response for `{caller_id}` request {request_idx} should match the originating request payload"
             );
@@ -1650,10 +1650,7 @@ async fn action_communication_no_instance_id_target() {
             goal_handle.goal_response().instance_id(),
             LISTENER_INSTANCE_ID
         );
-        assert_eq!(
-            goal_handle.goal_response().payload().to_bytes(),
-            goal_response_payload
-        );
+        assert_eq!(goal_handle.goal_response().payload(), goal_response_payload);
 
         // Consume one feedback update from the action server.
         let feedback_message = goal_handle
@@ -1674,7 +1671,7 @@ async fn action_communication_no_instance_id_target() {
         .await
         .expect("caller should receive result");
 
-        assert_eq!(result_response.payload().to_bytes(), result_payload);
+        assert_eq!(result_response.payload(), result_payload);
         assert_eq!(result_response.daemon_node(), LISTENER_DAEMON_NODE);
         assert_eq!(result_response.instance_id(), LISTENER_INSTANCE_ID);
     }
@@ -1872,10 +1869,7 @@ async fn action_communication_with_instance_id_target() {
             goal_handle.goal_response().instance_id(),
             LISTENER_INSTANCE_ID2
         );
-        assert_eq!(
-            goal_handle.goal_response().payload().to_bytes(),
-            goal_response_payload
-        );
+        assert_eq!(goal_handle.goal_response().payload(), goal_response_payload);
 
         // Consume one feedback update from the action server.
         let feedback_message = goal_handle
@@ -1896,7 +1890,7 @@ async fn action_communication_with_instance_id_target() {
         .await
         .expect("caller should receive result");
 
-        assert_eq!(result_response.payload().to_bytes(), result_payload);
+        assert_eq!(result_response.payload(), result_payload);
         assert_eq!(result_response.daemon_node(), LISTENER_DAEMON_NODE2);
         assert_eq!(result_response.instance_id(), LISTENER_INSTANCE_ID2);
     }
@@ -2074,10 +2068,7 @@ async fn action_communication_goal_cancelled() {
         goal_handle.goal_response().instance_id(),
         LISTENER_INSTANCE_ID
     );
-    assert_eq!(
-        goal_handle.goal_response().payload().to_bytes(),
-        goal_response_payload
-    );
+    assert_eq!(goal_handle.goal_response().payload(), goal_response_payload);
 
     let first_feedback = goal_handle
         .on_next_feedback()
@@ -2103,10 +2094,7 @@ async fn action_communication_goal_cancelled() {
             .await
             .expect("caller should receive cancel acknowledgement");
 
-    assert_eq!(
-        cancel_response.payload().to_bytes(),
-        cancel_response_payload
-    );
+    assert_eq!(cancel_response.payload(), cancel_response_payload);
     assert_eq!(cancel_response.daemon_node(), LISTENER_DAEMON_NODE);
     assert_eq!(cancel_response.instance_id(), LISTENER_INSTANCE_ID);
 
@@ -2333,7 +2321,7 @@ async fn single_action_communication_multiple_polls() {
             .expect("caller should send goal");
 
             assert_eq!(
-                goal_handle.goal_response().payload().to_bytes(),
+                goal_handle.goal_response().payload(),
                 case.goal_response.clone(),
                 "goal response should match expected payload for `{}`",
                 case.client_id
@@ -2367,7 +2355,7 @@ async fn single_action_communication_multiple_polls() {
             .expect("caller should receive result response");
 
             assert_eq!(
-                result_response.payload().to_bytes(),
+                result_response.payload(),
                 Payload::from_static(b"result=done"),
                 "result response should match expected payload for `{}`",
                 case.client_id

@@ -21,7 +21,7 @@ impl Payload {
     }
 
     /// Return a clone of the inner `Bytes`.
-    pub fn to_bytes(&self) -> Bytes {
+    pub(crate) fn to_bytes(&self) -> Bytes {
         self.0.clone()
     }
 }
@@ -157,5 +157,35 @@ impl Message {
 impl From<pmi::TopicMessage> for Message {
     fn from(msg: pmi::TopicMessage) -> Self {
         Self(msg)
+    }
+}
+
+/// Error returned by non-blocking receive operations when no message is
+/// available or the channel has been closed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TryRecvError {
+    /// The channel is currently empty; no message is available.
+    Empty,
+    /// The channel has been closed and will not produce further messages.
+    Disconnected,
+}
+
+impl std::fmt::Display for TryRecvError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TryRecvError::Empty => write!(f, "channel is empty"),
+            TryRecvError::Disconnected => write!(f, "channel is disconnected"),
+        }
+    }
+}
+
+impl std::error::Error for TryRecvError {}
+
+impl From<tokio::sync::mpsc::error::TryRecvError> for TryRecvError {
+    fn from(err: tokio::sync::mpsc::error::TryRecvError) -> Self {
+        match err {
+            tokio::sync::mpsc::error::TryRecvError::Empty => TryRecvError::Empty,
+            tokio::sync::mpsc::error::TryRecvError::Disconnected => TryRecvError::Disconnected,
+        }
     }
 }

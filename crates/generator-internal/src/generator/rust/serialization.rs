@@ -374,7 +374,7 @@ fn generate_object_assignment(
 }
 
 /// Generates a block expression that serializes fields into a Cap'n Proto message
-/// and returns `bytes::Bytes`.
+/// and returns `peppylib::Payload`.
 ///
 /// `pre_statements` are emitted before `init_root` (e.g. struct field unpacking).
 /// `error_context` must evaluate to `String` at runtime.

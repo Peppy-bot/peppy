@@ -51,7 +51,7 @@ impl NodeResetRequest {
             response_timeout,
         )
         .await?;
-        NodeResetResponse::decode(&response.payload().to_bytes())
+        NodeResetResponse::decode(response.payload().as_ref())
     }
 }
 

@@ -62,7 +62,7 @@ impl NodeListRequest {
             response_timeout,
         )
         .await?;
-        NodeListResponse::decode(&response.payload().to_bytes())
+        NodeListResponse::decode(response.payload().as_ref())
     }
 }
 

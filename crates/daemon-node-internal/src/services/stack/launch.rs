@@ -223,7 +223,7 @@ async fn run_node_add_and_forward_feedback(
     .await
     .map_err(|e| format!("failed to send node_add goal: {e}"))?;
 
-    let goal_response_payload = action_handle.goal_response().payload().to_bytes();
+    let goal_response_payload = action_handle.goal_response().payload();
     let goal_response = NodeAddGoalResponse::decode(&goal_response_payload)
         .map_err(|e| format!("failed to decode node_add goal response: {e}"))?;
 
@@ -246,7 +246,7 @@ async fn run_node_add_and_forward_feedback(
             let drain_timeout = Duration::from_millis(50).min(remaining);
             match tokio::time::timeout(drain_timeout, action_handle.on_next_feedback()).await {
                 Ok(Ok(msg)) => {
-                    let payload = msg.payload().to_bytes();
+                    let payload = msg.payload();
                     if let Ok(feedback) = NodeAddFeedback::decode(&payload) {
                         let launch_feedback = if feedback.is_stdout() {
                             LaunchFeedback::stdout(feedback.line, LaunchFeedbackStep::AddingNode)
@@ -270,7 +270,7 @@ async fn run_node_add_and_forward_feedback(
 
         match ActionMessenger::request_result(&ctx.messenger, &action_handle, poll_timeout).await {
             Ok(msg) => {
-                let payload = msg.payload().to_bytes();
+                let payload = msg.payload();
                 match NodeAddResult::decode(&payload) {
                     Ok(result) => {
                         // Drain any remaining feedback that may have arrived while polling.
@@ -278,7 +278,7 @@ async fn run_node_add_and_forward_feedback(
                             let Ok(Some(msg)) = action_handle.try_next_feedback() else {
                                 break;
                             };
-                            let payload = msg.payload().to_bytes();
+                            let payload = msg.payload();
                             if let Ok(feedback) = NodeAddFeedback::decode(&payload) {
                                 let launch_feedback = if feedback.is_stdout() {
                                     LaunchFeedback::stdout(
@@ -339,7 +339,7 @@ async fn run_node_start_and_forward_feedback(
     .await
     .map_err(|e| format!("failed to send node_start goal: {e}"))?;
 
-    let goal_response_payload = action_handle.goal_response().payload().to_bytes();
+    let goal_response_payload = action_handle.goal_response().payload();
     let goal_response = NodeStartGoalResponse::decode(&goal_response_payload)
         .map_err(|e| format!("failed to decode node_start goal response: {e}"))?;
 
@@ -362,7 +362,7 @@ async fn run_node_start_and_forward_feedback(
             let drain_timeout = Duration::from_millis(50).min(remaining);
             match tokio::time::timeout(drain_timeout, action_handle.on_next_feedback()).await {
                 Ok(Ok(msg)) => {
-                    let payload = msg.payload().to_bytes();
+                    let payload = msg.payload();
                     if let Ok(feedback) = NodeStartFeedback::decode(&payload) {
                         let launch_feedback = if feedback.is_stdout() {
                             LaunchFeedback::stdout(feedback.line, LaunchFeedbackStep::StartingNode)
@@ -386,7 +386,7 @@ async fn run_node_start_and_forward_feedback(
 
         match ActionMessenger::request_result(&ctx.messenger, &action_handle, poll_timeout).await {
             Ok(msg) => {
-                let payload = msg.payload().to_bytes();
+                let payload = msg.payload();
                 match NodeStartResult::decode(&payload) {
                     Ok(result) => {
                         // Drain any remaining feedback that may have arrived while polling.
@@ -394,7 +394,7 @@ async fn run_node_start_and_forward_feedback(
                             let Ok(Some(msg)) = action_handle.try_next_feedback() else {
                                 break;
                             };
-                            let payload = msg.payload().to_bytes();
+                            let payload = msg.payload();
                             if let Ok(feedback) = NodeStartFeedback::decode(&payload) {
                                 let launch_feedback = if feedback.is_stdout() {
                                     LaunchFeedback::stdout(

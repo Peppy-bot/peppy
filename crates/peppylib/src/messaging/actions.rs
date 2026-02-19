@@ -51,8 +51,8 @@ impl ActionGoalHandle {
     pub fn try_next_feedback(&mut self) -> Result<Option<Message>> {
         match self.feedback.try_on_next_message() {
             Ok(message) => Ok(Some(message)),
-            Err(tokio::sync::mpsc::error::TryRecvError::Empty) => Ok(None),
-            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+            Err(crate::types::TryRecvError::Empty) => Ok(None),
+            Err(crate::types::TryRecvError::Disconnected) => {
                 Err(Error::ActionFeedbackChannelClosed)
             }
         }
