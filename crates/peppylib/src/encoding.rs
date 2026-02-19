@@ -3,7 +3,7 @@ pub mod ready;
 pub mod shutdown;
 
 use crate::error::Result;
-use bytes::Bytes;
+use crate::types::Payload;
 use capnp::message::{Builder, HeapAllocator, ReaderOptions};
 use capnp::serialize;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -59,8 +59,6 @@ pub fn convert_time_from_capnp(timestamp: CapnpTimestamp) -> SystemTime {
     }
 }
 
-use crate::types::Payload;
-
 /// Encode a Cap'n Proto message builder into bytes.
 ///
 /// # Example
@@ -77,7 +75,7 @@ pub fn encode_message(message: &Builder<HeapAllocator>) -> Result<Payload> {
     let mut buffer = Vec::new();
     serialize::write_message(&mut buffer, message)
         .map_err(|e| crate::error::Error::Serialization(e.to_string()))?;
-    Ok(Payload::from(Bytes::from(buffer)))
+    Ok(Payload::from(buffer))
 }
 
 /// Decode bytes into a Cap'n Proto message reader.

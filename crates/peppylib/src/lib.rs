@@ -12,7 +12,7 @@ pub use messaging::{ActionMessenger, MessengerHandle, ServiceMessenger, TopicMes
 pub mod config;
 pub mod types;
 
-pub use types::Payload;
+pub use types::{Message, Payload};
 
 pub mod serialization;
 
