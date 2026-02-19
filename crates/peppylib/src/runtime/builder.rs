@@ -3,8 +3,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use super::CancellationToken;
 use tokio::sync::oneshot;
-use tokio_util::sync::CancellationToken;
 use tracing::info;
 
 use crate::error::{Error, Result};

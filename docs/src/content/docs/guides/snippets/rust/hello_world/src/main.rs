@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use peppygen::{NodeBuilder, NodeRunner, Parameters, Result};
-use tokio_util::sync::CancellationToken;
+use peppylib::runtime::CancellationToken;
 
 /// Emits a "hello world count X" message every 3 seconds, starting immediately.
 /// The loop runs until the cancellation token is triggered.
