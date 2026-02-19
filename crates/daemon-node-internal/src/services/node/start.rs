@@ -997,6 +997,11 @@ pub fn start_node(
         command.env("PYTHONUNBUFFERED", "1");
     }
 
+    // Share compiled Rust artifacts across nodes via a common target directory.
+    if manifest.language == PeppygenLanguage::Rust {
+        command.env("CARGO_TARGET_DIR", generator::rust_shared_target_dir());
+    }
+
     command.spawn()
 }
 

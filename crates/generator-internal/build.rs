@@ -226,8 +226,104 @@ fn embed_ruff_binary() {
     }
 }
 
+mod rust_crates_hash {
+    use sha2::{Digest, Sha256};
+    use std::path::{Path, PathBuf};
+
+    /// Computes a content hash of the three Rust crate source trees that get
+    /// embedded into the generator and deployed to every Rust node. The hash
+    /// serves as a cache key so that nodes sharing the same crate sources reuse
+    /// symlinked source directories and compiled artifacts.
+    pub fn run() {
+        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+
+        // Match the include/exclude patterns used by the rust_embed
+        // declarations in `generator/rust/build.rs`.
+        let crate_dirs: &[(&str, &[&str], &[&str])] = &[
+            (
+                "peppylib",
+                &["*.rs", "*.toml", "*.capnp", "*.j2"],
+                &["target/", "tests/", "examples/"],
+            ),
+            (
+                "pmi-internal",
+                &["*.rs", "*.toml", "*.capnp", "*.j2"],
+                &["target/", "tests/"],
+            ),
+            (
+                "config-internal",
+                &["*.rs", "*.toml", "*.capnp", "*.j2", "tools/capnp_"],
+                &["target/", "tests/"],
+            ),
+        ];
+
+        let mut hasher = Sha256::new();
+
+        for (crate_name, includes, excludes) in crate_dirs {
+            let crate_dir = manifest_dir.join("..").join(crate_name);
+            println!("cargo:rerun-if-changed={}", crate_dir.display());
+
+            let mut paths: Vec<PathBuf> = Vec::new();
+            collect_matching_files(&crate_dir, &crate_dir, includes, excludes, &mut paths);
+            paths.sort();
+
+            for path in &paths {
+                let rel = path.strip_prefix(&crate_dir).unwrap();
+                hasher.update(rel.to_string_lossy().as_bytes());
+                let content = std::fs::read(path)
+                    .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
+                hasher.update(&content);
+            }
+        }
+
+        let hash = hasher.finalize();
+        let hex: String = hash.iter().map(|b| format!("{b:02x}")).collect();
+        println!("cargo:rustc-env=RUST_CRATES_HASH={}", &hex[..16]);
+    }
+
+    fn collect_matching_files(
+        base: &Path,
+        dir: &Path,
+        includes: &[&str],
+        excludes: &[&str],
+        out: &mut Vec<PathBuf>,
+    ) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let rel = path.strip_prefix(base).unwrap();
+            let rel_str = rel.to_string_lossy();
+
+            if excludes.iter().any(|pat| matches_pattern(pat, &rel_str)) {
+                continue;
+            }
+
+            if path.is_dir() {
+                collect_matching_files(base, &path, includes, excludes, out);
+            } else if includes.iter().any(|pat| matches_pattern(pat, &rel_str)) {
+                out.push(path);
+            }
+        }
+    }
+
+    /// Minimal pattern match supporting `*.ext` (suffix) and `prefix*` (prefix) forms.
+    fn matches_pattern(pattern: &str, path: &str) -> bool {
+        if let Some(suffix) = pattern.strip_prefix('*') {
+            path.ends_with(suffix)
+        } else if let Some(prefix) = pattern.strip_suffix('*') {
+            // Handles both "target/" (directory prefix) and "tools/capnp_" (file prefix)
+            path.starts_with(prefix)
+        } else {
+            path == pattern
+        }
+    }
+}
+
 fn main() {
     ruff_build::run();
     embed_ruff_binary();
     peppylib_build::run();
+    rust_crates_hash::run();
 }

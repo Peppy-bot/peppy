@@ -11,7 +11,7 @@ use chrono::Local;
 use config::consts::{
     NODE_CONFIG_FILE, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH, logs_dir_add, peppy_data_dir,
 };
-use config::node::{NodeConfig, NodeConfigParser};
+use config::node::{NodeConfig, NodeConfigParser, PeppygenLanguage};
 use git2::{Repository, build::CheckoutBuilder};
 use node_stack::{NodeStack, validate_dependency_specs};
 use peppylib::messaging::{
@@ -1528,6 +1528,17 @@ async fn process_node_add(
             &ctx.log_path,
             format!("Failed to generate peppygen library: {}", e),
         );
+    }
+
+    // Share compiled Rust artifacts across nodes via a common target directory.
+    let mut env_vars = env_vars;
+    if language == PeppygenLanguage::Rust {
+        env_vars.push((
+            "CARGO_TARGET_DIR".to_string(),
+            generator::rust_shared_target_dir()
+                .to_string_lossy()
+                .into_owned(),
+        ));
     }
 
     // Run add_cmd on the copied folder with streaming output
