@@ -29,8 +29,7 @@ async fn listen_for_ping_roundtrip_succeed() {
     .await
     .expect("ping request should succeed");
 
-    let ping_response =
-        PingResponse::decode(&response.payload().to_bytes()).expect("decode should succeed");
+    let ping_response = PingResponse::decode(&response.payload()).expect("decode should succeed");
 
     // Verify the response echoes back the timestamp
     assert_eq!(

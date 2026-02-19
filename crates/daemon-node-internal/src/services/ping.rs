@@ -1,8 +1,8 @@
 use crate::Result;
 use crate::encoding::{PingRequest, PingResponse};
 use crate::names;
-use bytes::Bytes;
 use peppylib::messaging::ServiceRequestContext;
+use peppylib::types::Payload;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
 use tokio::task::JoinHandle;
 use tracing::debug;
@@ -32,7 +32,7 @@ pub async fn listen_for_ping(
     Ok(handle)
 }
 
-async fn handle_ping_request(context: ServiceRequestContext) -> PeppyResult<Bytes> {
+async fn handle_ping_request(context: ServiceRequestContext) -> PeppyResult<Payload> {
     let instance_id = context.message().instance_id();
     handle_ping_request_inner(&context).map_err(|e| PeppyError::InvalidServiceRequest {
         identifier: instance_id.to_string(),
@@ -40,11 +40,11 @@ async fn handle_ping_request(context: ServiceRequestContext) -> PeppyResult<Byte
     })
 }
 
-fn handle_ping_request_inner(context: &ServiceRequestContext) -> Result<Bytes> {
+fn handle_ping_request_inner(context: &ServiceRequestContext) -> Result<Payload> {
     let instance_id = context.message().instance_id();
     let payload = context.message().payload();
 
-    let request = PingRequest::decode(&payload.as_bytes())?;
+    let request = PingRequest::decode(payload.as_ref())?;
 
     debug!(
         "Received ping request from {instance_id}, timestamp={}",

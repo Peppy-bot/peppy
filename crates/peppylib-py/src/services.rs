@@ -3,18 +3,18 @@ mod ready;
 mod shutdown;
 
 use peppylib::PeppyResult;
+use peppylib::runtime::TaskHandle;
 use pyo3::prelude::*;
 use std::sync::Mutex;
-use tokio::task::JoinHandle;
 
-/// Python wrapper for a running service task (JoinHandle).
+/// Python wrapper for a running service task (TaskHandle).
 #[pyclass(name = "ServiceTask")]
 pub struct PyServiceTask {
-    inner: Mutex<Option<JoinHandle<PeppyResult<()>>>>,
+    inner: Mutex<Option<TaskHandle<PeppyResult<()>>>>,
 }
 
 impl PyServiceTask {
-    pub(crate) fn new(handle: JoinHandle<PeppyResult<()>>) -> Self {
+    pub(crate) fn new(handle: TaskHandle<PeppyResult<()>>) -> Self {
         Self {
             inner: Mutex::new(Some(handle)),
         }

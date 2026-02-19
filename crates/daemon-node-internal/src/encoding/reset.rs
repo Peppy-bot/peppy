@@ -1,7 +1,7 @@
 use std::time::Duration;
 
-use bytes::Bytes;
 use capnp::message::Builder;
+use peppylib::types::Payload;
 use peppylib::{MessengerHandle, ServiceMessenger};
 
 use crate::Result;
@@ -18,7 +18,7 @@ impl NodeResetRequest {
         Self
     }
 
-    fn encode(&self) -> Result<Bytes> {
+    fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         builder.init_root::<node_capnp::node_reset_request::Builder>();
         encode_message(&builder)
@@ -51,7 +51,7 @@ impl NodeResetRequest {
             response_timeout,
         )
         .await?;
-        NodeResetResponse::decode(&response.payload().to_bytes())
+        NodeResetResponse::decode(response.payload().as_ref())
     }
 }
 
@@ -77,7 +77,7 @@ impl NodeResetResponse {
         Self::new(false, Some(error_message.into()))
     }
 
-    pub fn encode(&self) -> Result<Bytes> {
+    pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
             let mut response = builder.init_root::<node_capnp::node_reset_response::Builder>();

@@ -1,7 +1,7 @@
 use std::time::Duration;
 
-use bytes::Bytes;
 use capnp::message::Builder;
+use peppylib::types::Payload;
 use peppylib::{MessengerHandle, ServiceMessenger};
 
 use crate::Result;
@@ -24,7 +24,7 @@ impl NodeListRequest {
         self.with_dot_graph
     }
 
-    fn encode(&self) -> Result<Bytes> {
+    fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
             let mut request = builder.init_root::<node_capnp::node_list_request::Builder>();
@@ -62,7 +62,7 @@ impl NodeListRequest {
             response_timeout,
         )
         .await?;
-        NodeListResponse::decode(&response.payload().to_bytes())
+        NodeListResponse::decode(response.payload().as_ref())
     }
 }
 
@@ -86,7 +86,7 @@ impl NodeListResponse {
         }
     }
 
-    pub fn encode(&self) -> Result<Bytes> {
+    pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
             let mut response = builder.init_root::<node_capnp::node_list_response::Builder>();

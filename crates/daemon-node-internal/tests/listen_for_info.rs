@@ -28,8 +28,7 @@ async fn listen_for_info_success() {
     .await
     .expect("info request should succeed");
 
-    let info_response =
-        InfoResponse::decode(&response.payload().to_bytes()).expect("decode should succeed");
+    let info_response = InfoResponse::decode(&response.payload()).expect("decode should succeed");
 
     // Verify the response contains expected fields
     assert_eq!(

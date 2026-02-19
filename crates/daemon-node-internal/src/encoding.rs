@@ -23,17 +23,18 @@ pub use node::{
 pub use ping::{PingRequest, PingResponse};
 pub use reset::{NodeResetRequest, NodeResetResponse};
 
-use bytes::Bytes;
 use capnp::message::{Builder, HeapAllocator, ReaderOptions};
 use capnp::serialize;
 
 use crate::Result;
 
+use peppylib::types::Payload;
+
 /// Encode a Cap'n Proto message builder into bytes.
-pub fn encode_message(message: &Builder<HeapAllocator>) -> Result<Bytes> {
+pub fn encode_message(message: &Builder<HeapAllocator>) -> Result<Payload> {
     let mut buffer = Vec::new();
     serialize::write_message(&mut buffer, message)?;
-    Ok(Bytes::from(buffer))
+    Ok(Payload::from(buffer))
 }
 
 /// Decode bytes into a Cap'n Proto message reader.

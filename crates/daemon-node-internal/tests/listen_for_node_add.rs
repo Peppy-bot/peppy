@@ -1628,7 +1628,7 @@ async fn listen_for_node_add_abandoned_action_does_not_block_next_goal() {
     .expect("first goal should be sent");
 
     // Verify first goal was accepted
-    let first_goal_response_payload = first_action_handle.goal_response().payload().to_bytes();
+    let first_goal_response_payload = first_action_handle.goal_response().payload();
     let first_goal_response = NodeAddGoalResponse::decode(&first_goal_response_payload)
         .expect("failed to decode first goal response");
     assert!(
@@ -1771,7 +1771,7 @@ async fn node_add_same_node_shutdown_existing_instances() {
     )
     .await
     .expect("failed to expose shutdown service for instance 1");
-    let _shutdown_task_1 = AbortOnDrop(tokio::spawn({
+    let _shutdown_task_1 = AbortOnDrop(peppylib::runtime::spawn({
         let called_tx_1 = Arc::clone(&called_tx_1);
         async move {
             shutdown_endpoint_1
@@ -1784,7 +1784,7 @@ async fn node_add_same_node_shutdown_existing_instances() {
                             let _ = tx.send(());
                         }
                         allow_shutdown_1_clone.notified().await;
-                        Ok(payload.to_bytes())
+                        Ok(payload)
                     }
                 })
                 .await
@@ -1804,7 +1804,7 @@ async fn node_add_same_node_shutdown_existing_instances() {
     )
     .await
     .expect("failed to expose shutdown service for instance 2");
-    let _shutdown_task_2 = AbortOnDrop(tokio::spawn({
+    let _shutdown_task_2 = AbortOnDrop(peppylib::runtime::spawn({
         let called_tx_2 = Arc::clone(&called_tx_2);
         async move {
             shutdown_endpoint_2
@@ -1817,7 +1817,7 @@ async fn node_add_same_node_shutdown_existing_instances() {
                             let _ = tx.send(());
                         }
                         allow_shutdown_2_clone.notified().await;
-                        Ok(payload.to_bytes())
+                        Ok(payload)
                     }
                 })
                 .await
@@ -2437,7 +2437,7 @@ async fn listen_for_node_add_dependency_resolved_and_integrity_check_fails() {
     )
     .await
     .expect("provider node_info request should succeed");
-    let provider_info = NodeInfoResponse::decode(&provider_info_response.payload().to_bytes())
+    let provider_info = NodeInfoResponse::decode(&provider_info_response.payload())
         .expect("provider node_info response decode should succeed");
 
     let get_integrity = |kind: InterfaceKind, name: &str| -> String {
