@@ -1,13 +1,13 @@
 use crate::Result;
 use crate::encoding::{InterfaceIntegrity, NodeInfoRequest, NodeInfoResponse, NodeSource};
 use crate::names;
-use bytes::Bytes;
 use config::consts::NODE_CONFIG_FILE;
 use config::fingerprint::fingerprint_for_bytes;
 use config::node::{InterfaceKind, NodeConfig, NodeConfigParser};
 use git2::{Repository, build::CheckoutBuilder};
 use node_stack::NodeStack;
 use peppylib::messaging::ServiceRequestContext;
+use peppylib::types::Payload;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
 use std::collections::HashSet;
 use std::ffi::OsStr;
@@ -53,7 +53,7 @@ async fn handle_node_info_request(
     context: ServiceRequestContext,
     node_stack: Arc<NodeStack>,
     timeout: Duration,
-) -> PeppyResult<Bytes> {
+) -> PeppyResult<Payload> {
     let sender_instance_id = context.message().instance_id().to_string();
 
     match tokio::time::timeout(
@@ -77,11 +77,11 @@ async fn handle_node_info_request(
 async fn handle_node_info_request_inner(
     context: &ServiceRequestContext,
     node_stack: Arc<NodeStack>,
-) -> std::result::Result<Bytes, String> {
+) -> std::result::Result<Payload, String> {
     let sender_instance_id = context.message().instance_id();
     let payload = context.message().payload();
 
-    let request = NodeInfoRequest::decode(&payload.as_bytes()).map_err(|e| format!("{}", e))?;
+    let request = NodeInfoRequest::decode(payload.as_ref()).map_err(|e| format!("{}", e))?;
 
     debug!("Received `node_info` request from {sender_instance_id}");
 

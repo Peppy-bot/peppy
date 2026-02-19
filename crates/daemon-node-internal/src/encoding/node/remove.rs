@@ -1,7 +1,7 @@
 use std::time::Duration;
 
-use bytes::Bytes;
 use capnp::message::Builder;
+use peppylib::types::Payload;
 use peppylib::{MessengerHandle, ServiceMessenger};
 
 use crate::Result;
@@ -31,7 +31,7 @@ impl NodeRemoveRequest {
         self
     }
 
-    fn encode(&self) -> Result<Bytes> {
+    fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
             let mut request = builder.init_root::<node_capnp::node_remove_request::Builder>();
@@ -73,7 +73,7 @@ impl NodeRemoveRequest {
             response_timeout,
         )
         .await?;
-        NodeRemoveResponse::decode(&response.payload().to_bytes())
+        NodeRemoveResponse::decode(response.payload().as_ref())
     }
 }
 
@@ -99,7 +99,7 @@ impl NodeRemoveResponse {
         Self::new(false, Some(error_message.into()))
     }
 
-    pub fn encode(&self) -> Result<Bytes> {
+    pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
             let mut response = builder.init_root::<node_capnp::node_remove_response::Builder>();

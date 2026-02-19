@@ -1,10 +1,11 @@
+use super::topics::Subscription;
 use super::{
     MessengerHandle, PROBE_TIMEOUT, SERVICE_PROBE_PAYLOAD, ServiceEndpoint, TopicPublisher,
 };
 use crate::error::{Error, Result};
-use bytes::Bytes;
+use crate::types::{Message, Payload};
 use config::node::QoSProfile;
-use pmi::{MessengerBackend, Subscription, TopicMessage};
+use pmi::MessengerBackend;
 use tokio::time::Duration;
 
 pub struct ActionMessenger;
@@ -16,7 +17,7 @@ pub struct ActionGoalHandle {
     action_name: String,
     target_daemon_node: Option<String>,
     target_instance_id: Option<String>,
-    goal_response: TopicMessage,
+    goal_response: Message,
     feedback: Subscription,
 }
 
@@ -34,12 +35,12 @@ impl std::fmt::Debug for ActionGoalHandle {
 }
 
 impl ActionGoalHandle {
-    pub fn goal_response(&self) -> &TopicMessage {
+    pub fn goal_response(&self) -> &Message {
         &self.goal_response
     }
 
     /// Receives the next feedback message.
-    pub async fn on_next_feedback(&mut self) -> Result<TopicMessage> {
+    pub async fn on_next_feedback(&mut self) -> Result<Message> {
         self.feedback
             .on_next_message()
             .await
@@ -47,11 +48,11 @@ impl ActionGoalHandle {
     }
 
     /// Attempts to receive the next feedback message without waiting.
-    pub fn try_next_feedback(&mut self) -> Result<Option<TopicMessage>> {
-        match self.feedback.rx.try_recv() {
+    pub fn try_next_feedback(&mut self) -> Result<Option<Message>> {
+        match self.feedback.try_on_next_message() {
             Ok(message) => Ok(Some(message)),
-            Err(tokio::sync::mpsc::error::TryRecvError::Empty) => Ok(None),
-            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+            Err(crate::types::TryRecvError::Empty) => Ok(None),
+            Err(crate::types::TryRecvError::Disconnected) => {
                 Err(Error::ActionFeedbackChannelClosed)
             }
         }
@@ -104,7 +105,7 @@ impl ActionMessenger {
                 target_action_name,
                 target_daemon_node,
                 target_instance_id,
-                Bytes::from_static(SERVICE_PROBE_PAYLOAD),
+                Payload::from_static(SERVICE_PROBE_PAYLOAD),
                 PROBE_TIMEOUT,
             )
             .await
@@ -125,7 +126,7 @@ impl ActionMessenger {
         to_action_name: &str,
         target_daemon_node: Option<&str>,
         target_instance_id: Option<&str>,
-        goal_payload: Bytes,
+        goal_payload: Payload,
         feedback_qos: QoSProfile,
         goal_timeout: Duration,
     ) -> Result<ActionGoalHandle> {
@@ -174,7 +175,7 @@ impl ActionMessenger {
             target_daemon_node: target_daemon_node.map(|daemon| daemon.to_string()),
             target_instance_id: target_instance_id.map(|id| id.to_string()),
             goal_response,
-            feedback: feedback_subscription,
+            feedback: Subscription::new(feedback_subscription),
         })
     }
 
@@ -182,7 +183,7 @@ impl ActionMessenger {
         messenger_handle: &MessengerHandle,
         action_handle: &ActionGoalHandle,
         cancel_timeout: Duration,
-    ) -> Result<TopicMessage> {
+    ) -> Result<Message> {
         Self::cancel_goal_with(
             messenger_handle,
             &action_handle.daemon_node,
@@ -209,7 +210,7 @@ impl ActionMessenger {
         target_daemon_node: Option<&str>,
         target_instance_id: Option<&str>,
         cancel_timeout: Duration,
-    ) -> Result<TopicMessage> {
+    ) -> Result<Message> {
         let cancel_service_name = format!("{action_name}/cancel");
 
         messenger_handle
@@ -221,7 +222,7 @@ impl ActionMessenger {
                 &cancel_service_name,
                 target_daemon_node,
                 target_instance_id,
-                Bytes::new(),
+                Payload::new(),
                 cancel_timeout,
             )
             .await
@@ -231,7 +232,7 @@ impl ActionMessenger {
         messenger_handle: &MessengerHandle,
         action_handle: &ActionGoalHandle,
         result_timeout: Duration,
-    ) -> Result<TopicMessage> {
+    ) -> Result<Message> {
         Self::request_result_with(
             messenger_handle,
             &action_handle.daemon_node,
@@ -258,7 +259,7 @@ impl ActionMessenger {
         target_daemon_node: Option<&str>,
         target_instance_id: Option<&str>,
         result_timeout: Duration,
-    ) -> Result<TopicMessage> {
+    ) -> Result<Message> {
         let result_service_name = format!("{action_name}/result");
 
         messenger_handle
@@ -270,7 +271,7 @@ impl ActionMessenger {
                 &result_service_name,
                 target_daemon_node,
                 target_instance_id,
-                Bytes::new(),
+                Payload::new(),
                 result_timeout,
             )
             .await

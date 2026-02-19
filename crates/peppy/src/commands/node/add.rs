@@ -140,7 +140,7 @@ async fn add_node_async(
         .map_err(|e| Error::ExecutionFailed(format!("Failed to send node_add goal: {}", e)))?;
 
     // Read the goal response to get the log file path
-    let goal_response_payload = action_handle.goal_response().payload().to_bytes();
+    let goal_response_payload = action_handle.goal_response().payload();
     let goal_response = NodeAddGoalResponse::decode(&goal_response_payload)
         .map_err(|e| Error::ExecutionFailed(format!("Failed to decode goal response: {}", e)))?;
 
@@ -178,7 +178,7 @@ async fn add_node_async(
             match tokio::time::timeout(drain_timeout, action_handle.on_next_feedback()).await {
                 Ok(Ok(msg)) => {
                     let payload = msg.payload();
-                    if let Ok(feedback) = NodeAddFeedback::decode(&payload.to_bytes()) {
+                    if let Ok(feedback) = NodeAddFeedback::decode(payload.as_ref()) {
                         scrolling_output.add_line(&feedback.line, feedback.is_stderr());
                     }
                 }
@@ -201,7 +201,7 @@ async fn add_node_async(
         match ActionMessenger::request_result(messenger_handle, &action_handle, poll_timeout).await
         {
             Ok(msg) => {
-                let payload = msg.payload().to_bytes();
+                let payload = msg.payload();
                 match NodeAddResult::decode(&payload) {
                     Ok(result) => break result,
                     Err(err) => {

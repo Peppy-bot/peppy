@@ -175,7 +175,7 @@ pub fn build_subscribed_topic_callback(spec: SubscribedTopicCallbackSpec) -> Res
                     })?
             };
 
-            let payload = message.payload().as_bytes();
+            let payload = message.payload();
             let instance_id = message.instance_id().to_string();
             let message = #helper_fn_ident(payload.as_ref())?;
             Ok((instance_id, message))

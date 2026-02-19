@@ -245,7 +245,7 @@ pub fn build_exposed_service_method(
                 quote!(let request = Request { instance_id, daemon_node };)
             };
             quote! {
-                fn #handler_helper_name<F>(#(#helper_params),*) -> crate::Result<bytes::Bytes>
+                fn #handler_helper_name<F>(#(#helper_params),*) -> crate::Result<peppylib::Payload>
                 where
                     F: Fn(#(#callback_param_types),*) -> crate::Result<#response_ty>,
                 {
@@ -259,7 +259,7 @@ pub fn build_exposed_service_method(
             }
         } else {
             quote! {
-                fn #handler_helper_name<F>(#(#helper_params),*) -> crate::Result<bytes::Bytes>
+                fn #handler_helper_name<F>(#(#helper_params),*) -> crate::Result<peppylib::Payload>
                 where
                     F: Fn(#(#callback_param_types),*) -> crate::Result<#response_ty>,
                 {
@@ -296,7 +296,7 @@ pub fn build_exposed_service_method(
 
         let helper_fn = if use_service_name_const {
             quote! {
-                fn #handler_helper_name<F>(#(#helper_params),*) -> crate::Result<bytes::Bytes>
+                fn #handler_helper_name<F>(#(#helper_params),*) -> crate::Result<peppylib::Payload>
                 where
                     F: Fn(#(#callback_param_types),*) -> crate::Result<#response_ty>,
                 {
@@ -309,7 +309,7 @@ pub fn build_exposed_service_method(
             }
         } else {
             quote! {
-                fn #handler_helper_name<F>(#(#helper_params),*) -> crate::Result<bytes::Bytes>
+                fn #handler_helper_name<F>(#(#helper_params),*) -> crate::Result<peppylib::Payload>
                 where
                     F: Fn(#(#callback_param_types),*) -> crate::Result<#response_ty>,
                 {
@@ -343,7 +343,7 @@ pub fn build_exposed_service_method(
 
             quote!({
                 let message = #request_context_ident.message();
-                let payload = message.payload().as_bytes();
+                let payload = message.payload();
                 let daemon_node = message.daemon_node().to_string();
                 let instance_id = message.instance_id().to_string();
                 #handler_helper_name(#(#helper_args),*)
@@ -377,13 +377,13 @@ pub fn build_exposed_service_method(
         if instance_from_request_context {
             quote!({
                 let message = #request_context_ident.message();
-                let payload = message.payload().as_bytes();
+                let payload = message.payload();
                 let instance_id = message.instance_id().to_string();
                 #handler_helper_name(#(#helper_args),*)
             })
         } else {
             quote!({
-                let payload = #request_context_ident.message().payload().as_bytes();
+                let payload = #request_context_ident.message().payload();
                 #handler_helper_name(#(#helper_args),*)
             })
         }
@@ -401,7 +401,7 @@ pub fn build_exposed_service_method(
         if instance_from_request_context {
             quote!({
                 let message = #request_context_ident.message();
-                let payload = message.payload().as_bytes();
+                let payload = message.payload();
                 let instance_id = message.instance_id().to_string();
                 #handler_helper_name(#(#helper_args),*)
             })
@@ -698,7 +698,7 @@ pub fn build_response_serialization_code(
     let Some(spec) = response_spec else {
         return Ok(quote!({
             #callback_call?;
-            bytes::Bytes::new()
+            peppylib::Payload::new()
         }));
     };
 

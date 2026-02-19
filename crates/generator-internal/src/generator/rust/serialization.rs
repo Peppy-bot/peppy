@@ -374,7 +374,7 @@ fn generate_object_assignment(
 }
 
 /// Generates a block expression that serializes fields into a Cap'n Proto message
-/// and returns `bytes::Bytes`.
+/// and returns `peppylib::Payload`.
 ///
 /// `pre_statements` are emitted before `init_root` (e.g. struct field unpacking).
 /// `error_context` must evaluate to `String` at runtime.
@@ -401,11 +401,11 @@ pub fn build_serialize_payload(
         }
         let mut buffer = Vec::new();
         capnp::serialize::write_message(&mut buffer, &capnp_msg).map_err(|source| {
-            crate::Error::CapnpSerialize {
-                context: #error_context,
-                source,
-            }
+            let context = #error_context;
+            crate::Error::Serialization(
+                format!("{}: {}", context, source)
+            )
         })?;
-        bytes::Bytes::from(buffer)
+        peppylib::Payload::from(buffer)
     })
 }

@@ -66,7 +66,7 @@ async fn listen_for_node_info_on_fs_node_success() {
     .expect("node_info request should succeed");
 
     let info_response =
-        NodeInfoResponse::decode(&response.payload().to_bytes()).expect("decode should succeed");
+        NodeInfoResponse::decode(&response.payload()).expect("decode should succeed");
 
     assert_eq!(
         info_response.config.manifest.name.as_str(),
@@ -119,7 +119,7 @@ async fn listen_for_node_info_on_fs_node_success() {
     .expect("node_info request should succeed");
 
     let info_response =
-        NodeInfoResponse::decode(&response.payload().to_bytes()).expect("decode should succeed");
+        NodeInfoResponse::decode(&response.payload()).expect("decode should succeed");
 
     assert!(info_response.is_in_node_stack, "node should be in stack");
     assert_eq!(
@@ -164,7 +164,7 @@ async fn listen_for_node_info_on_git_node_success() {
     .expect("node_info request should succeed");
 
     let info_response =
-        NodeInfoResponse::decode(&response.payload().to_bytes()).expect("decode should succeed");
+        NodeInfoResponse::decode(&response.payload()).expect("decode should succeed");
 
     assert_eq!(
         info_response.config.manifest.name.as_str(),
@@ -214,7 +214,7 @@ async fn listen_for_node_info_on_git_node_success() {
     .expect("node_info request should succeed");
 
     let info_response =
-        NodeInfoResponse::decode(&response.payload().to_bytes()).expect("decode should succeed");
+        NodeInfoResponse::decode(&response.payload()).expect("decode should succeed");
 
     assert!(info_response.is_in_node_stack, "node should be in stack");
     assert_eq!(
@@ -293,7 +293,7 @@ async fn listen_for_node_info_on_http_node_success() {
     .expect("node_info request should succeed");
 
     let info_response =
-        NodeInfoResponse::decode(&response.payload().to_bytes()).expect("decode should succeed");
+        NodeInfoResponse::decode(&response.payload()).expect("decode should succeed");
 
     assert_eq!(
         info_response.config.manifest.name.as_str(),
@@ -335,7 +335,7 @@ async fn listen_for_node_info_on_http_node_success() {
     .expect("node_info request should succeed");
 
     let info_response =
-        NodeInfoResponse::decode(&response.payload().to_bytes()).expect("decode should succeed");
+        NodeInfoResponse::decode(&response.payload()).expect("decode should succeed");
 
     assert!(info_response.is_in_node_stack, "node should be in stack");
     assert_eq!(
@@ -520,7 +520,7 @@ async fn listen_for_node_info_has_instance_ids() {
     .expect("node_info request should succeed");
 
     let info_response =
-        NodeInfoResponse::decode(&response.payload().to_bytes()).expect("decode should succeed");
+        NodeInfoResponse::decode(&response.payload()).expect("decode should succeed");
 
     assert!(info_response.is_in_node_stack, "node should be in stack");
 
@@ -595,7 +595,7 @@ async fn listen_for_node_info_returns_integrity_fields() {
     .expect("node_info request should succeed");
 
     let info_response =
-        NodeInfoResponse::decode(&response.payload().to_bytes()).expect("decode should succeed");
+        NodeInfoResponse::decode(&response.payload()).expect("decode should succeed");
 
     assert_eq!(
         info_response.interfaces_integrity.len(),
@@ -659,7 +659,7 @@ async fn listen_for_node_info_returns_integrity_fields() {
     .expect("second node_info request should succeed");
 
     let info_response2 =
-        NodeInfoResponse::decode(&response2.payload().to_bytes()).expect("decode should succeed");
+        NodeInfoResponse::decode(&response2.payload()).expect("decode should succeed");
 
     assert_eq!(
         info_response.config_integrity, info_response2.config_integrity,
@@ -749,7 +749,7 @@ async fn listen_for_node_info_recovers_after_invalid_request() {
     .expect("node_info should still work after a failed request");
 
     let info_response =
-        NodeInfoResponse::decode(&response.payload().to_bytes()).expect("decode should succeed");
+        NodeInfoResponse::decode(&response.payload()).expect("decode should succeed");
     assert_eq!(
         info_response.config.manifest.name.as_str(),
         TARGET_NODE_NAME

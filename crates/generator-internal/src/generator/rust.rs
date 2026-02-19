@@ -188,7 +188,7 @@ impl RustGenerator {
             quote! { let goal_payload = #serialize_block; }
         } else {
             quote! {
-                let goal_payload = bytes::Bytes::new();
+                let goal_payload = peppylib::Payload::new();
             }
         };
 
@@ -237,7 +237,7 @@ impl RustGenerator {
             helper_items.push(deserialize_helper);
 
             quote! {
-                let payload = action_handle.goal_response().payload().as_bytes();
+                let payload = action_handle.goal_response().payload();
                 let response_data = deserialize_goal_response(payload.as_ref())?;
                 Ok(Self {
                     messenger: node_runner.messenger().clone(),
@@ -355,7 +355,7 @@ impl RustGenerator {
                 )
                 .await?;
 
-                let payload = response.payload().as_bytes();
+                let payload = response.payload();
                 let response_data = deserialize_cancel_response(payload.as_ref())?;
                 Ok(#cancel_response_ident {
                     daemon_node: response.daemon_node().to_string(),
@@ -444,7 +444,7 @@ impl RustGenerator {
                 &mut self,
             ) -> crate::Result<#struct_ident> {
                 let feedback = self.inner.on_next_feedback().await?;
-                let payload = feedback.payload().as_bytes();
+                let payload = feedback.payload();
                 #helper_fn_ident(payload.as_ref())
             }
         };
@@ -524,7 +524,7 @@ impl RustGenerator {
                     )
                     .await?;
 
-                    let payload = response.payload().as_bytes();
+                    let payload = response.payload();
                     let response_data = deserialize_result_response(payload.as_ref())?;
                     Ok(#result_response_ident {
                         daemon_node: response.daemon_node().to_string(),
@@ -1296,7 +1296,7 @@ impl LanguageGenerator for RustGenerator {
 
             quote! {
                 #suppress_unused
-                let request_payload = bytes::Bytes::new();
+                let request_payload = peppylib::Payload::new();
             }
         };
 
@@ -1351,7 +1351,7 @@ impl LanguageGenerator for RustGenerator {
                 context.add_private_struct(response_struct_tokens);
 
                 let response_tokens = quote! {
-                    let payload = response_message.payload().as_bytes();
+                    let payload = response_message.payload();
                     let response_data = deserialize_response(&payload)?;
                     Ok(#response_struct_ident {
                         daemon_node: response_message.daemon_node().to_string(),

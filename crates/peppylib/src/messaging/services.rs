@@ -3,10 +3,13 @@ use super::{
     encode_service_error_payload, format_target_instance_segment, is_service_probe_payload,
 };
 use crate::error::{Error, Result};
-use bytes::Bytes;
-use pmi::{Message, Messenger, MessengerBackend, PublisherQoS, Subscription, TopicMessage};
+use crate::runtime::{TaskHandle, spawn};
+use crate::types::{Message, Payload};
+use pmi::{
+    Message as PmiMessage, Messenger, MessengerBackend, PublisherQoS, Subscription, TopicMessage,
+};
 use std::{fmt, sync::Arc};
-use tokio::{sync::Mutex, task::JoinHandle, time::Duration};
+use tokio::{sync::Mutex, time::Duration};
 use tracing::error;
 
 pub struct ServiceMessenger;
@@ -51,8 +54,8 @@ pub struct ServiceResponder {
 
 impl ServiceResponder {
     /// Send the response payload for this request.
-    pub async fn respond(self, payload: Bytes) -> Result<()> {
-        let message = Message::new(&self.response_topic, payload);
+    pub async fn respond(self, payload: Payload) -> Result<()> {
+        let message = PmiMessage::new(&self.response_topic, payload.into_inner());
         let mut messenger = self.messenger.lock().await;
         messenger
             .publish(message, PublisherQoS::Standard)
@@ -92,7 +95,7 @@ impl ServiceEndpoint {
     pub async fn handle_next_request<F, Fut>(&mut self, handler: F) -> Result<bool>
     where
         F: FnOnce(ServiceRequestContext) -> Fut,
-        Fut: std::future::Future<Output = Result<Bytes>>,
+        Fut: std::future::Future<Output = Result<Payload>>,
     {
         let Some((context, responder)) = self.recv_next_request().await? else {
             return Ok(false);
@@ -113,7 +116,7 @@ impl ServiceEndpoint {
     pub async fn handle_requests<F, Fut>(&mut self, mut handler: F) -> Result<()>
     where
         F: FnMut(ServiceRequestContext) -> Fut,
-        Fut: std::future::Future<Output = Result<Bytes>>,
+        Fut: std::future::Future<Output = Result<Payload>>,
     {
         while let Some((context, responder)) = self.recv_next_request().await? {
             let response_payload = match handler(context).await {
@@ -134,15 +137,15 @@ impl ServiceEndpoint {
     pub async fn spawn_next_request_handler<F, Fut>(
         &mut self,
         handler: F,
-    ) -> Result<Option<JoinHandle<Result<()>>>>
+    ) -> Result<Option<TaskHandle<Result<()>>>>
     where
         F: FnOnce(ServiceRequestContext) -> Fut + Send + 'static,
-        Fut: std::future::Future<Output = Result<Bytes>> + Send + 'static,
+        Fut: std::future::Future<Output = Result<Payload>> + Send + 'static,
     {
         let Some((context, responder)) = self.recv_next_request().await? else {
             return Ok(None);
         };
-        let task = tokio::spawn(async move {
+        let task = spawn(async move {
             let response_payload = match handler(context).await {
                 Ok(payload) => payload,
                 Err(err) => {
@@ -175,8 +178,8 @@ impl ServiceEndpoint {
                         Ok((context, response_topic)) => {
                             // Auto-handle probes: respond immediately without invoking
                             // the user handler, so is_reachable() checks are transparent.
-                            if is_service_probe_payload(&context.message().payload().as_bytes()) {
-                                let _ = self.publish_response(response_topic, Bytes::new()).await;
+                            if is_service_probe_payload(context.message().payload().as_ref()) {
+                                let _ = self.publish_response(response_topic, Payload::new()).await;
                                 continue;
                             }
                             return Ok((context, response_topic));
@@ -318,21 +321,21 @@ impl ServiceEndpoint {
         Self::publish_response_with_messenger(
             Arc::clone(&self.messenger),
             response_topic.to_string(),
-            Bytes::from_static(SERVICE_ACK_PAYLOAD),
+            Payload::from_static(SERVICE_ACK_PAYLOAD),
         )
         .await
     }
 
-    async fn publish_response(&self, topic: String, payload: Bytes) -> Result<()> {
+    async fn publish_response(&self, topic: String, payload: Payload) -> Result<()> {
         Self::publish_response_with_messenger(Arc::clone(&self.messenger), topic, payload).await
     }
 
     async fn publish_response_with_messenger(
         messenger: Arc<Mutex<Messenger>>,
         topic: String,
-        payload: Bytes,
+        payload: Payload,
     ) -> Result<()> {
-        let response = Message::new(&topic, payload);
+        let response = PmiMessage::new(&topic, payload.into_inner());
         let mut messenger = messenger.lock().await;
         messenger
             .publish(response, PublisherQoS::Standard)
@@ -342,19 +345,19 @@ impl ServiceEndpoint {
 }
 
 pub struct ServiceRequestContext {
-    message: TopicMessage,
+    message: Message,
     request_id: String,
 }
 
 impl ServiceRequestContext {
     pub fn new(message: TopicMessage, request_id: String) -> Self {
         Self {
-            message,
+            message: Message(message),
             request_id,
         }
     }
 
-    pub fn message(&self) -> &TopicMessage {
+    pub fn message(&self) -> &Message {
         &self.message
     }
 
@@ -402,9 +405,9 @@ impl ServiceMessenger {
         target_service_name: &str,
         target_daemon_node: Option<&str>,
         target_instance_id: Option<&str>,
-        request_payload: Bytes,
+        request_payload: Payload,
         response_timeout: impl Into<Option<Duration>>,
-    ) -> Result<TopicMessage> {
+    ) -> Result<Message> {
         messenger
             .poll_service(
                 "service",
@@ -444,7 +447,7 @@ impl ServiceMessenger {
                 target_service_name,
                 target_daemon_node,
                 target_instance_id,
-                Bytes::from_static(SERVICE_PROBE_PAYLOAD),
+                Payload::from_static(SERVICE_PROBE_PAYLOAD),
                 PROBE_TIMEOUT,
             )
             .await

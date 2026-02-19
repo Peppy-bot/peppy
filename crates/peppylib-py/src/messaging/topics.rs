@@ -1,8 +1,7 @@
 use super::{PyMessengerHandle, to_py_err};
 use crate::config::PyQoSProfile;
-use bytes::Bytes;
-use peppylib::messaging::TopicMessenger;
-use pmi::{Subscription, TopicMessage};
+use peppylib::messaging::{Subscription, TopicMessenger};
+use peppylib::types::{Message, Payload};
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 use std::sync::Arc;
@@ -41,11 +40,11 @@ impl PyTopicMessage {
     }
 }
 
-impl From<TopicMessage> for PyTopicMessage {
-    fn from(msg: TopicMessage) -> Self {
+impl From<Message> for PyTopicMessage {
+    fn from(msg: Message) -> Self {
         Self {
             key_expr: msg.key_expr().to_string(),
-            payload: msg.payload().to_bytes().to_vec(),
+            payload: msg.payload().to_vec(),
             instance_id: msg.instance_id().to_string(),
             daemon_node: msg.daemon_node().to_string(),
         }
@@ -137,7 +136,7 @@ impl PyTopicMessenger {
                 &as_node_name,
                 &as_topic_name,
                 qos.into(),
-                Bytes::from(payload),
+                Payload::from(payload),
             )
             .await
             .map_err(to_py_err)?;

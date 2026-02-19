@@ -6,13 +6,13 @@ use crate::encoding::{
 };
 use crate::names;
 use crate::services::node::resolve_node_config;
-use bytes::Bytes;
 use chrono::Local;
 use config::consts::{DEFAULT_MESSAGING_HOST, DEFAULT_MESSAGING_PORT, logs_dir_launch};
 use config::peppy_config::{Deployment, DeploymentSource, PeppyLauncherParser};
 use config::runtime::RuntimeConfig;
 use node_stack::NodeStack;
 use peppylib::messaging::{ActionCreation, ServiceRequestContext, TopicPublisher};
+use peppylib::types::Payload;
 use peppylib::{ActionMessenger, MessengerHandle, PeppyResult};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::File;
@@ -223,7 +223,7 @@ async fn run_node_add_and_forward_feedback(
     .await
     .map_err(|e| format!("failed to send node_add goal: {e}"))?;
 
-    let goal_response_payload = action_handle.goal_response().payload().to_bytes();
+    let goal_response_payload = action_handle.goal_response().payload();
     let goal_response = NodeAddGoalResponse::decode(&goal_response_payload)
         .map_err(|e| format!("failed to decode node_add goal response: {e}"))?;
 
@@ -246,7 +246,7 @@ async fn run_node_add_and_forward_feedback(
             let drain_timeout = Duration::from_millis(50).min(remaining);
             match tokio::time::timeout(drain_timeout, action_handle.on_next_feedback()).await {
                 Ok(Ok(msg)) => {
-                    let payload = msg.payload().to_bytes();
+                    let payload = msg.payload();
                     if let Ok(feedback) = NodeAddFeedback::decode(&payload) {
                         let launch_feedback = if feedback.is_stdout() {
                             LaunchFeedback::stdout(feedback.line, LaunchFeedbackStep::AddingNode)
@@ -270,7 +270,7 @@ async fn run_node_add_and_forward_feedback(
 
         match ActionMessenger::request_result(&ctx.messenger, &action_handle, poll_timeout).await {
             Ok(msg) => {
-                let payload = msg.payload().to_bytes();
+                let payload = msg.payload();
                 match NodeAddResult::decode(&payload) {
                     Ok(result) => {
                         // Drain any remaining feedback that may have arrived while polling.
@@ -278,7 +278,7 @@ async fn run_node_add_and_forward_feedback(
                             let Ok(Some(msg)) = action_handle.try_next_feedback() else {
                                 break;
                             };
-                            let payload = msg.payload().to_bytes();
+                            let payload = msg.payload();
                             if let Ok(feedback) = NodeAddFeedback::decode(&payload) {
                                 let launch_feedback = if feedback.is_stdout() {
                                     LaunchFeedback::stdout(
@@ -339,7 +339,7 @@ async fn run_node_start_and_forward_feedback(
     .await
     .map_err(|e| format!("failed to send node_start goal: {e}"))?;
 
-    let goal_response_payload = action_handle.goal_response().payload().to_bytes();
+    let goal_response_payload = action_handle.goal_response().payload();
     let goal_response = NodeStartGoalResponse::decode(&goal_response_payload)
         .map_err(|e| format!("failed to decode node_start goal response: {e}"))?;
 
@@ -362,7 +362,7 @@ async fn run_node_start_and_forward_feedback(
             let drain_timeout = Duration::from_millis(50).min(remaining);
             match tokio::time::timeout(drain_timeout, action_handle.on_next_feedback()).await {
                 Ok(Ok(msg)) => {
-                    let payload = msg.payload().to_bytes();
+                    let payload = msg.payload();
                     if let Ok(feedback) = NodeStartFeedback::decode(&payload) {
                         let launch_feedback = if feedback.is_stdout() {
                             LaunchFeedback::stdout(feedback.line, LaunchFeedbackStep::StartingNode)
@@ -386,7 +386,7 @@ async fn run_node_start_and_forward_feedback(
 
         match ActionMessenger::request_result(&ctx.messenger, &action_handle, poll_timeout).await {
             Ok(msg) => {
-                let payload = msg.payload().to_bytes();
+                let payload = msg.payload();
                 match NodeStartResult::decode(&payload) {
                     Ok(result) => {
                         // Drain any remaining feedback that may have arrived while polling.
@@ -394,7 +394,7 @@ async fn run_node_start_and_forward_feedback(
                             let Ok(Some(msg)) = action_handle.try_next_feedback() else {
                                 break;
                             };
-                            let payload = msg.payload().to_bytes();
+                            let payload = msg.payload();
                             if let Ok(feedback) = NodeStartFeedback::decode(&payload) {
                                 let launch_feedback = if feedback.is_stdout() {
                                     LaunchFeedback::stdout(
@@ -1133,7 +1133,7 @@ async fn handle_goal_request(
     messenger: MessengerHandle,
     bound_daemon_node: String,
     daemon_instance_id: String,
-) -> PeppyResult<Bytes> {
+) -> PeppyResult<Payload> {
     let sender_instance_id = context.message().instance_id();
     let payload = context.message().payload();
 
@@ -1152,7 +1152,7 @@ async fn handle_goal_request(
         *state_guard = LaunchActionState::Running;
     }
 
-    let goal = match LaunchGoal::decode(&payload.as_bytes()) {
+    let goal = match LaunchGoal::decode(payload.as_ref()) {
         Ok(g) => g,
         Err(e) => {
             let mut state_guard = state.lock().await;
@@ -1302,14 +1302,14 @@ async fn process_launch(goal: LaunchGoal, ctx: ProcessLaunchContext) -> LaunchRe
 async fn handle_cancel_request(
     _context: ServiceRequestContext,
     state: Arc<Mutex<LaunchActionState>>,
-) -> PeppyResult<Bytes> {
+) -> PeppyResult<Payload> {
     let state_guard = state.lock().await;
     if matches!(*state_guard, LaunchActionState::Running) {
-        Ok(Bytes::from_static(
+        Ok(Payload::from_static(
             b"cancel acknowledged (operation cannot be interrupted)",
         ))
     } else {
-        Ok(Bytes::from_static(
+        Ok(Payload::from_static(
             b"cancel acknowledged (no operation in progress)",
         ))
     }
@@ -1318,13 +1318,13 @@ async fn handle_cancel_request(
 async fn handle_result_request(
     _context: ServiceRequestContext,
     state: Arc<Mutex<LaunchActionState>>,
-) -> PeppyResult<Bytes> {
+) -> PeppyResult<Payload> {
     let mut state_guard = state.lock().await;
 
     match std::mem::replace(&mut *state_guard, LaunchActionState::Idle) {
         LaunchActionState::Running => {
             *state_guard = LaunchActionState::Running;
-            Ok(Bytes::from_static(
+            Ok(Payload::from_static(
                 b"result pending: operation still in progress",
             ))
         }
@@ -1351,7 +1351,7 @@ async fn handle_result_request(
             Ok(payload)
         }
         LaunchActionState::Idle | LaunchActionState::Rejected => {
-            Ok(Bytes::from_static(b"result pending: no result available"))
+            Ok(Payload::from_static(b"result pending: no result available"))
         }
     }
 }

@@ -1,10 +1,10 @@
 use crate::Result;
 use crate::encoding::{NodeRemoveRequest, NodeRemoveResponse};
 use crate::names;
-use bytes::Bytes;
 use config::node::Name;
 use node_stack::NodeStack;
 use peppylib::messaging::{SHUTDOWN_SERVICE, ServiceMessenger, ServiceRequestContext};
+use peppylib::types::Payload;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult};
 use std::sync::Arc;
 use std::time::Duration;
@@ -57,7 +57,7 @@ async fn handle_node_remove_request(
     daemon_node_node: String,
     daemon_instance_id: String,
     node_stack: Arc<NodeStack>,
-) -> PeppyResult<Bytes> {
+) -> PeppyResult<Payload> {
     let sender_instance_id = context.message().instance_id();
     handle_node_remove_request_inner(
         &context,
@@ -79,11 +79,11 @@ async fn handle_node_remove_request_inner(
     daemon_node_node: &str,
     daemon_instance_id: &str,
     node_stack: Arc<NodeStack>,
-) -> Result<Bytes> {
+) -> Result<Payload> {
     let sender_instance_id = context.message().instance_id();
     let payload = context.message().payload();
 
-    let request = NodeRemoveRequest::decode(&payload.as_bytes())?;
+    let request = NodeRemoveRequest::decode(payload.as_ref())?;
 
     debug!(
         "Received `node_remove` request from {sender_instance_id}, node_name={}, tag={}, stop_instances={}",
@@ -200,7 +200,7 @@ async fn handle_node_remove_request_inner(
                 SHUTDOWN_SERVICE,
                 Some(daemon_node_node),
                 Some(target.instance_id.as_str()),
-                Bytes::from_static(b"shutdown"),
+                Payload::from_static(b"shutdown"),
                 SHUTDOWN_TIMEOUT,
             )
             .await;

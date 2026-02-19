@@ -1,4 +1,4 @@
-use tokio_util::sync::CancellationToken;
+use super::CancellationToken;
 
 use crate::MessengerHandle;
 use crate::error::Result;

@@ -1,6 +1,6 @@
 //! Cap'n Proto encoding utilities for ready messages.
 
-use bytes::Bytes;
+use crate::types::Payload;
 use capnp::message::Builder;
 
 use crate::error::Result;
@@ -16,7 +16,7 @@ impl NodeReadyRequest {
         Self {}
     }
 
-    pub fn encode(&self) -> Result<Bytes> {
+    pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
             let _request = builder.init_root::<health_capnp::node_ready_request::Builder>();
@@ -26,7 +26,9 @@ impl NodeReadyRequest {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let _request = reader.get_root::<health_capnp::node_ready_request::Reader>()?;
+        let _request = reader
+            .get_root::<health_capnp::node_ready_request::Reader>()
+            .map_err(|e| crate::error::Error::Deserialization(e.to_string()))?;
         Ok(Self {})
     }
 }
@@ -45,7 +47,7 @@ impl NodeReadyResponse {
         Self {}
     }
 
-    pub fn encode(&self) -> Result<Bytes> {
+    pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
             let _response = builder.init_root::<health_capnp::node_ready_response::Builder>();
@@ -55,7 +57,9 @@ impl NodeReadyResponse {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let _response = reader.get_root::<health_capnp::node_ready_response::Reader>()?;
+        let _response = reader
+            .get_root::<health_capnp::node_ready_response::Reader>()
+            .map_err(|e| crate::error::Error::Deserialization(e.to_string()))?;
         Ok(Self {})
     }
 }
