@@ -8,19 +8,15 @@ edition.workspace = true
 config = { path = "../config-internal" }
 askama = "0.15"
 bytes = "1"
-json5 = "1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-serde_json5 = "0.2"
 tokio = { version = "1.47", features = ["sync", "rt"] }
 tracing = "0.1.41"
 derive_more = { version = "2", features = ["from"] }
-capnp = "0.25"
 tempfile = "3"
 
 # Optional deps
 zenoh = { version = "1.5", optional = true }
-regex = "1.12.2"
 
 [dev-dependencies]
 tokio = { version = "1.47", features = [

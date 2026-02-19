@@ -15,7 +15,6 @@ thiserror = "2"
 askama = "0.15"
 toml = "1"
 toml_edit = "0.25"
-sha2 = "0.10"
 indexmap = "2.2"
 rust-embed = { version = "8", features = ["include-exclude"] }
 

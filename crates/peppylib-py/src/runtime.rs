@@ -1,4 +1,5 @@
 use crate::messaging::PyMessengerHandle;
+use peppylib::runtime::CancellationToken;
 use peppylib::runtime::{NodeBuilder, NodeRunner, StandaloneConfig};
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
@@ -6,7 +7,6 @@ use pyo3::types::{PyCFunction, PyDict};
 use pythonize::{depythonize, pythonize};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use peppylib::runtime::CancellationToken;
 
 type SharedPyError = Arc<Mutex<Option<PyErr>>>;
 
