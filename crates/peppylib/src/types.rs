@@ -78,7 +78,7 @@ impl std::ops::Deref for Payload {
 
 impl PartialEq<Bytes> for Payload {
     fn eq(&self, other: &Bytes) -> bool {
-        &self.0 == other
+        self.0 == other
     }
 }
 

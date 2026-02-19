@@ -100,6 +100,6 @@ pub fn encode_message(message: &Builder<HeapAllocator>) -> Result<Payload> {
 pub fn decode_message(
     data: &[u8],
 ) -> Result<capnp::message::Reader<capnp::serialize::OwnedSegments>> {
-    Ok(serialize::read_message(data, ReaderOptions::default())
-        .map_err(|e| crate::error::Error::Deserialization(e.to_string()))?)
+    serialize::read_message(data, ReaderOptions::default())
+        .map_err(|e| crate::error::Error::Deserialization(e.to_string()))
 }

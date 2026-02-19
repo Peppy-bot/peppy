@@ -11,11 +11,11 @@ impl<T: ?Sized + SerdeSerialize> Serialize for T {}
 
 /// Wrapper trait for `serde::Deserialize`.
 pub trait Deserialize<'de>: SerdeDeserialize<'de> {}
-impl<'de, T: ?Sized + SerdeDeserialize<'de>> Deserialize<'de> for T {}
+impl<'de, T: SerdeDeserialize<'de>> Deserialize<'de> for T {}
 
 /// Wrapper trait for `serde::de::DeserializeOwned`.
 pub trait DeserializeOwned: SerdeDeserializeOwned {}
-impl<T: ?Sized + SerdeDeserializeOwned> DeserializeOwned for T {}
+impl<T: SerdeDeserializeOwned> DeserializeOwned for T {}
 
 /// Wrapper trait for `schemars::JsonSchema`.
 pub trait JsonSchema: schemars::JsonSchema {}

@@ -2229,7 +2229,7 @@ async fn single_action_communication_multiple_polls() {
                         async move {
                             let payload = request.message().payload();
                             let payload_bytes = payload.as_ref();
-                            let payload_str = std::str::from_utf8(payload_bytes.as_ref())
+                            let payload_str = std::str::from_utf8(payload_bytes)
                                 .expect("goal payload should be valid UTF-8");
 
                             let client_id = payload_str
@@ -2346,7 +2346,7 @@ async fn single_action_communication_multiple_polls() {
                     .await
                     .expect("caller should receive feedback message");
 
-                if feedback_message.payload() == &case.feedback {
+                if feedback_message.payload() == case.feedback {
                     feedback_matched = true;
                     break;
                 }

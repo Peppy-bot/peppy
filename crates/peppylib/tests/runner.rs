@@ -462,8 +462,7 @@ async fn node_ready_but_not_healthy() {
         Duration::from_millis(200),
     )
     .await
-    .err()
-    .expect("health service should not respond while setup is blocked");
+    .expect_err("health service should not respond while setup is blocked");
 
     match health_err {
         peppylib::PeppyError::ServiceUnreachable { service_name, .. }
