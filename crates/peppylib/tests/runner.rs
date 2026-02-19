@@ -3,13 +3,13 @@ use config::peppy_config::Name;
 use config::runtime::{NodeInstance, RuntimeConfig};
 use peppylib::encoding::health::{NodeHealthRequest, NodeHealthResponse};
 use peppylib::messaging::{NODE_HEALTH_SERVICE, NODE_READY_SERVICE, SHUTDOWN_SERVICE};
+use peppylib::runtime::CancellationToken;
 use peppylib::runtime::NodeBuilder;
 use peppylib::types::Payload;
 use pmi::ZenohAdapter;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
-use tokio_util::sync::CancellationToken;
 
 const TEST_DAEMON_NODE: &str = "test_daemon";
 const TEST_NODE_NAME: &str = "test_node";
@@ -232,7 +232,7 @@ async fn daemon_runner_succeed() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn standalone_runner_succeed() {
-    use tokio_util::sync::CancellationToken;
+    use peppylib::runtime::CancellationToken;
 
     // Acquire the env guard to prevent races with daemon tests that set PEPPY_RUNTIME_CONFIG.
     // This ensures we run in standalone mode.
