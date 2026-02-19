@@ -43,5 +43,5 @@ fn handle_node_health_request_inner(context: &ServiceRequestContext) -> PeppyRes
     // TODO: Based on `sender_instance_id`, find the node in the NodeStack and return an error if
     // it can't be found.
 
-    Ok(Payload::from(payload.to_bytes()))
+    Ok(payload)
 }

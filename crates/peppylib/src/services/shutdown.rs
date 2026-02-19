@@ -70,5 +70,5 @@ async fn handle_shutdown_request_inner(
         let _ = tx.send(());
     }
 
-    Ok(Payload::from(payload.to_bytes()))
+    Ok(payload)
 }

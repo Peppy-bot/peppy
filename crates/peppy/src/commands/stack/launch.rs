@@ -127,10 +127,8 @@ async fn launch_async(
         .await
         .map_err(|e| Error::ExecutionFailed(format!("Failed to send launch goal: {}", e)))?;
 
-    let goal_response = LaunchGoalResponse::decode(
-        &action_handle.goal_response().payload().to_bytes(),
-    )
-    .map_err(|e| Error::ExecutionFailed(format!("Failed to decode goal response: {}", e)))?;
+    let goal_response = LaunchGoalResponse::decode(&action_handle.goal_response().payload())
+        .map_err(|e| Error::ExecutionFailed(format!("Failed to decode goal response: {}", e)))?;
 
     if !goal_response.accepted {
         let reason = goal_response
@@ -169,7 +167,7 @@ async fn launch_async(
 
             match tokio::time::timeout(drain_timeout, action_handle.on_next_feedback()).await {
                 Ok(Ok(msg)) => {
-                    let payload = msg.payload().to_bytes();
+                    let payload = msg.payload();
                     if let Ok(feedback) = LaunchFeedback::decode(&payload) {
                         handle_feedback(
                             &feedback,
@@ -196,7 +194,7 @@ async fn launch_async(
         match ActionMessenger::request_result(messenger_handle, &action_handle, poll_timeout).await
         {
             Ok(msg) => {
-                let payload = msg.payload().to_bytes();
+                let payload = msg.payload();
                 match LaunchResult::decode(&payload) {
                     Ok(result) => {
                         // Drain any remaining feedback so output is stable on completion.
@@ -204,7 +202,7 @@ async fn launch_async(
                             let Ok(Some(msg)) = action_handle.try_next_feedback() else {
                                 break;
                             };
-                            let payload = msg.payload().to_bytes();
+                            let payload = msg.payload();
                             if let Ok(feedback) = LaunchFeedback::decode(&payload) {
                                 handle_feedback(
                                     &feedback,

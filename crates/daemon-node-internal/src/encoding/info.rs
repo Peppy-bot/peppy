@@ -55,7 +55,7 @@ impl InfoRequest {
             response_timeout,
         )
         .await?;
-        InfoResponse::decode(&response.payload().to_bytes())
+        InfoResponse::decode(response.payload().as_ref())
     }
 }
 

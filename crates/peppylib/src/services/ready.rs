@@ -41,5 +41,5 @@ fn handle_node_ready_request_inner(context: &ServiceRequestContext) -> PeppyResu
     debug!("Received `node_ready` request from {sender_instance_id}");
 
     // Echo the payload back to confirm readiness
-    Ok(Payload::from(context.message().payload().to_bytes()))
+    Ok(context.message().payload())
 }

@@ -66,7 +66,7 @@ impl NodeSyncRequest {
             response_timeout,
         )
         .await?;
-        NodeSyncResponse::decode(&response.payload().to_bytes())
+        NodeSyncResponse::decode(response.payload().as_ref())
     }
 }
 

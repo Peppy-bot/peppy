@@ -186,7 +186,7 @@ pub async fn start_instance_async(
         .map_err(|e| Error::ExecutionFailed(format!("Failed to send node_start goal: {}", e)))?;
 
     // Decode the goal response to get log_path
-    let goal_response_payload = action_handle.goal_response().payload().to_bytes();
+    let goal_response_payload = action_handle.goal_response().payload();
     let goal_response = NodeStartGoalResponse::decode(&goal_response_payload)
         .map_err(|e| Error::ExecutionFailed(format!("Failed to decode goal response: {}", e)))?;
 
@@ -222,7 +222,7 @@ pub async fn start_instance_async(
             match tokio::time::timeout(drain_timeout, action_handle.on_next_feedback()).await {
                 Ok(Ok(msg)) => {
                     let payload = msg.payload();
-                    if let Ok(feedback) = NodeStartFeedback::decode(&payload.to_bytes()) {
+                    if let Ok(feedback) = NodeStartFeedback::decode(payload.as_ref()) {
                         scrolling_output.add_line(&feedback.line, feedback.is_stderr());
                     }
                 }
@@ -245,7 +245,7 @@ pub async fn start_instance_async(
         match ActionMessenger::request_result(messenger_handle, &action_handle, poll_timeout).await
         {
             Ok(msg) => {
-                let payload = msg.payload().to_bytes();
+                let payload = msg.payload();
                 match NodeStartResult::decode(&payload) {
                     Ok(result) => break result,
                     Err(err) => {

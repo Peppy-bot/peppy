@@ -198,7 +198,7 @@ impl PyActionMessenger {
             let resp = goal_handle.goal_response();
             let goal_response_cache = PyTopicMessage {
                 key_expr: resp.key_expr().to_string(),
-                payload: resp.payload().to_bytes().to_vec(),
+                payload: resp.payload().to_vec(),
                 instance_id: resp.instance_id().to_string(),
                 daemon_node: resp.daemon_node().to_string(),
             };

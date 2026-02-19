@@ -1628,7 +1628,7 @@ async fn listen_for_node_add_abandoned_action_does_not_block_next_goal() {
     .expect("first goal should be sent");
 
     // Verify first goal was accepted
-    let first_goal_response_payload = first_action_handle.goal_response().payload().to_bytes();
+    let first_goal_response_payload = first_action_handle.goal_response().payload();
     let first_goal_response = NodeAddGoalResponse::decode(&first_goal_response_payload)
         .expect("failed to decode first goal response");
     assert!(
@@ -2437,7 +2437,7 @@ async fn listen_for_node_add_dependency_resolved_and_integrity_check_fails() {
     )
     .await
     .expect("provider node_info request should succeed");
-    let provider_info = NodeInfoResponse::decode(&provider_info_response.payload().to_bytes())
+    let provider_info = NodeInfoResponse::decode(&provider_info_response.payload())
         .expect("provider node_info response decode should succeed");
 
     let get_integrity = |kind: InterfaceKind, name: &str| -> String {

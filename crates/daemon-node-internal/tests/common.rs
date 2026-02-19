@@ -123,7 +123,7 @@ async fn send_node_start_and_wait_internal(
     .map_err(|e| format!("Failed to send goal: {}", e))?;
 
     // Decode the goal response to get log_path
-    let goal_response_payload = action_handle.goal_response().payload().to_bytes();
+    let goal_response_payload = action_handle.goal_response().payload();
     let goal_response = NodeStartGoalResponse::decode(&goal_response_payload)
         .map_err(|e| format!("Failed to decode goal response: {}", e))?;
 
@@ -142,7 +142,7 @@ async fn send_node_start_and_wait_internal(
             match tokio::time::timeout(drain_timeout, action_handle.on_next_feedback()).await {
                 Ok(Ok(msg)) => {
                     let payload = msg.payload();
-                    if let Ok(feedback) = NodeStartFeedback::decode(&payload.to_bytes())
+                    if let Ok(feedback) = NodeStartFeedback::decode(payload.as_ref())
                         && let Some(tx) = feedback_tx
                     {
                         let _ = tx.send(feedback);
@@ -162,7 +162,7 @@ async fn send_node_start_and_wait_internal(
 
         match ActionMessenger::request_result(messenger, &action_handle, poll_timeout).await {
             Ok(msg) => {
-                let payload = msg.payload().to_bytes();
+                let payload = msg.payload();
                 match NodeStartResult::decode(&payload) {
                     Ok(result) => {
                         // Drain any remaining feedback that may have arrived while polling for the
@@ -172,7 +172,7 @@ async fn send_node_start_and_wait_internal(
                                 break;
                             };
                             let payload = msg.payload();
-                            if let Ok(feedback) = NodeStartFeedback::decode(&payload.to_bytes())
+                            if let Ok(feedback) = NodeStartFeedback::decode(payload.as_ref())
                                 && let Some(tx) = feedback_tx
                             {
                                 let _ = tx.send(feedback);
@@ -279,7 +279,7 @@ async fn send_node_add_and_wait_internal<'a>(
     // Check if the goal was rejected - if so, return a failure result immediately.
     // This matches the behavior of the CLI client which doesn't poll for results
     // when the goal is rejected.
-    let goal_response_payload = action_handle.goal_response().payload().to_bytes();
+    let goal_response_payload = action_handle.goal_response().payload();
     let goal_response = NodeAddGoalResponse::decode(&goal_response_payload)
         .map_err(|e| format!("Failed to decode goal response: {}", e))?;
 
@@ -307,7 +307,7 @@ async fn send_node_add_and_wait_internal<'a>(
             match tokio::time::timeout(drain_timeout, action_handle.on_next_feedback()).await {
                 Ok(Ok(msg)) => {
                     let payload = msg.payload();
-                    if let Ok(feedback) = NodeAddFeedback::decode(&payload.to_bytes())
+                    if let Ok(feedback) = NodeAddFeedback::decode(payload.as_ref())
                         && let Some(tx) = feedback_tx
                     {
                         let _ = tx.send(feedback);
@@ -327,7 +327,7 @@ async fn send_node_add_and_wait_internal<'a>(
 
         match ActionMessenger::request_result(messenger, &action_handle, poll_timeout).await {
             Ok(msg) => {
-                let payload = msg.payload().to_bytes();
+                let payload = msg.payload();
                 match NodeAddResult::decode(&payload) {
                     Ok(result) => {
                         // Drain any remaining feedback that may have arrived while polling for the
@@ -337,7 +337,7 @@ async fn send_node_add_and_wait_internal<'a>(
                                 break;
                             };
                             let payload = msg.payload();
-                            if let Ok(feedback) = NodeAddFeedback::decode(&payload.to_bytes())
+                            if let Ok(feedback) = NodeAddFeedback::decode(payload.as_ref())
                                 && let Some(tx) = feedback_tx
                             {
                                 let _ = tx.send(feedback);

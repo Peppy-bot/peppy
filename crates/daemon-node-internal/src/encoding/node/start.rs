@@ -294,6 +294,6 @@ impl NodeStartResult {
     ) -> Result<Self> {
         let response =
             ActionMessenger::request_result(messenger, action_handle, result_timeout).await?;
-        Self::decode(&response.payload().to_bytes())
+        Self::decode(response.payload().as_ref())
     }
 }

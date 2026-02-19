@@ -59,7 +59,7 @@ impl From<ServiceRequestContext> for PyServiceRequestContext {
         Self {
             request_id,
             key_expr: message.key_expr().to_string(),
-            payload: message.payload().to_bytes().to_vec(),
+            payload: message.payload().to_vec(),
             instance_id: message.instance_id().to_string(),
             daemon_node: message.daemon_node().to_string(),
         }

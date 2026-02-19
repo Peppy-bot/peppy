@@ -80,7 +80,7 @@ impl NodeInitRequest {
             response_timeout,
         )
         .await?;
-        NodeInitResponse::decode(&response.payload().to_bytes())
+        NodeInitResponse::decode(response.payload().as_ref())
     }
 }
 
