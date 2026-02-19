@@ -15,6 +15,7 @@ tokio-util = "0.7"
 tempfile = "3"
 tracing = "0.1"
 tracing-subscriber = "0.3"
+serial_test = "3"
 
 [[test]]
 name = "rust_snippets"
