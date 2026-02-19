@@ -433,7 +433,7 @@ impl MessengerHandle {
         };
 
         let response = Message::from(response);
-        let response_payload = response.payload().to_bytes();
+        let response_payload = response.payload();
         if let Some(reason) = decode_service_error_payload(response_payload.as_ref()) {
             return Err(Error::ServiceError {
                 instance_id: target_instance_id,
