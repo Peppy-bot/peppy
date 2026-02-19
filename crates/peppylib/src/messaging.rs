@@ -123,7 +123,6 @@ fn format_target_instance_segment(instance_id: &str) -> Option<String> {
 }
 
 impl MessengerHandle {
-    #[doc(hidden)]
     pub fn from_shared(messenger: Arc<Mutex<Messenger>>) -> Self {
         Self { messenger }
     }
