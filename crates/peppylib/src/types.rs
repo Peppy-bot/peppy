@@ -20,10 +20,6 @@ impl Payload {
         self.0
     }
 
-    /// Return a clone of the inner `Bytes`.
-    pub(crate) fn to_bytes(&self) -> Bytes {
-        self.0.clone()
-    }
 }
 
 impl Default for Payload {
@@ -135,7 +131,7 @@ impl std::fmt::Debug for Message {
 impl Message {
     /// Get the payload of the message.
     pub fn payload(&self) -> Payload {
-        Payload::from(self.0.payload().to_bytes())
+        Payload(self.0.payload().to_bytes())
     }
 
     /// Get the key expression of the message.
