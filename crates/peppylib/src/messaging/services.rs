@@ -427,7 +427,6 @@ impl ServiceMessenger {
                 response_timeout,
             )
             .await
-            .map(Message::from)
     }
 
     /// Sends a lightweight probe to check whether a service is listening.
