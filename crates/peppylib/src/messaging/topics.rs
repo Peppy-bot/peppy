@@ -19,7 +19,7 @@ impl Subscription {
         self.inner.rx.recv().await.map(Message::from)
     }
 
-    pub fn try_on_next_message(
+    pub(crate) fn try_on_next_message(
         &mut self,
     ) -> std::result::Result<Message, crate::types::TryRecvError> {
         self.inner
