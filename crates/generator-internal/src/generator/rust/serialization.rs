@@ -401,11 +401,12 @@ pub fn build_serialize_payload(
         }
         let mut buffer = Vec::new();
         capnp::serialize::write_message(&mut buffer, &capnp_msg).map_err(|source| {
-            crate::Error::CapnpSerialize {
-                context: #error_context,
-                source,
-            }
+            #[allow(clippy::all)]
+            let context = #error_context;
+            crate::Error::Serialization(
+                format!("{}: {}", context, source)
+            )
         })?;
-        bytes::Bytes::from(buffer)
+        peppylib::Payload::from(buffer)
     })
 }
