@@ -16,8 +16,16 @@ pub use types::Payload;
 
 pub mod serialization;
 
-// Re-export common serialization traits from our wrapper module
+// Re-export serialization traits.
 pub use serialization::{Deserialize, DeserializeOwned, JsonSchema, Serialize};
+
+/// Derive macros for the serialization traits.
+///
+/// Usage: `#[derive(peppylib::derive::Serialize, peppylib::derive::Deserialize)]`
+pub mod derive {
+    pub use schemars_derive::JsonSchema;
+    pub use serde_derive::{Deserialize, Serialize};
+}
 
 #[allow(clippy::all)]
 mod health_capnp {
