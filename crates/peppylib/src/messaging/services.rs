@@ -5,12 +5,6 @@ use super::{
 use crate::error::{Error, Result};
 use crate::runtime::{TaskHandle, spawn};
 use crate::types::{Message, Payload};
-// ... (keep other imports)
-
-// ...
-
-/// Sends a lightweight probe to check whether a service is listening.
-// ...
 use pmi::{
     Message as PmiMessage, Messenger, MessengerBackend, PublisherQoS, Subscription, TopicMessage,
 };
