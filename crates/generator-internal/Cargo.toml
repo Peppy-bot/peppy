@@ -18,6 +18,9 @@ toml_edit = "0.25"
 indexmap = "2.2"
 rust-embed = { version = "8", features = ["include-exclude"] }
 
+[build-dependencies]
+sha2 = "0.10"
+
 [dev-dependencies]
 bytes = "1"
 config = { path = "../config-internal", features = ["test_helpers"] }
