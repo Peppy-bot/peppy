@@ -55,7 +55,7 @@ async fn topic_messenger_communication() {
     .expect("emit should succeed");
 
     // Receive the message with a timeout
-    let message = tokio::time::timeout(Duration::from_secs(2), subscription.recv())
+    let message = tokio::time::timeout(Duration::from_secs(2), subscription.on_next_message())
         .await
         .expect("should receive message within timeout")
         .expect("message should not be None");

@@ -42,14 +42,14 @@ impl ActionGoalHandle {
     /// Receives the next feedback message.
     pub async fn on_next_feedback(&mut self) -> Result<Message> {
         self.feedback
-            .recv()
+            .on_next_message()
             .await
             .ok_or(Error::ActionFeedbackChannelClosed)
     }
 
     /// Attempts to receive the next feedback message without waiting.
     pub fn try_next_feedback(&mut self) -> Result<Option<Message>> {
-        match self.feedback.try_recv() {
+        match self.feedback.try_on_next_message() {
             Ok(message) => Ok(Some(message)),
             Err(tokio::sync::mpsc::error::TryRecvError::Empty) => Ok(None),
             Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
