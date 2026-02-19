@@ -43,34 +43,32 @@ pub fn build_deserialize_fn(
         quote! {
             message_reader
                 .get_root::<#reader_type>()
-                .map_err(|source| crate::Error::CapnpDeserialize {
-                    context: context.clone(),
-                    source,
-                })?;
+                .map_err(|source| crate::Error::Deserialization(
+                    format!("{}: {}", context, source)
+                ))?;
         }
     } else {
         quote! {
             let root = message_reader
                 .get_root::<#reader_type>()
-                .map_err(|source| crate::Error::CapnpDeserialize {
-                    context: context.clone(),
-                    source,
-                })?;
+                .map_err(|source| crate::Error::Deserialization(
+                    format!("{}: {}", context, source)
+                ))?;
         }
     };
 
     quote! {
         fn #fn_name(payload: &[u8]) -> crate::Result<#return_type> {
+            #[allow(clippy::all)]
             let context = #context_expr;
             let mut cursor = std::io::Cursor::new(payload);
             let message_reader = capnp::serialize::read_message(
                     &mut cursor,
                     capnp::message::ReaderOptions::new(),
                 )
-                .map_err(|source| crate::Error::CapnpDeserialize {
-                    context: context.clone(),
-                    source,
-                })?;
+                .map_err(|source| crate::Error::Deserialization(
+                    format!("{}: {}", context, source)
+                ))?;
 
             #root_stmt
 
@@ -248,19 +246,23 @@ fn generate_primitive_reader(
                     let #reader_ident = #reader_expr
                         .reborrow()
                         .#method_ident()
-                        .map_err(|source| crate::Error::CapnpField {
-                            field: String::from(#field_literal),
-                            context: #context_expr,
-                            source,
+                        .map_err(|source| {
+                            #[allow(clippy::all)]
+                            let context = #context_expr;
+                            crate::Error::Deserialization(
+                                format!("field '{}' in {}: {}", #field_literal, context, source)
+                            )
                         })?;
                 },
                 quote! {
                     let #value_ident = #reader_ident
                         .to_str()
-                        .map_err(|source| crate::Error::CapnpField {
-                            field: String::from(#field_literal),
-                            context: #context_expr,
-                            source: capnp::Error::failed(source.to_string()),
+                        .map_err(|source| {
+                            #[allow(clippy::all)]
+                            let context = #context_expr;
+                            crate::Error::Deserialization(
+                                format!("field '{}' in {}: {}", #field_literal, context, source)
+                            )
                         })?
                         .to_owned();
                 },
@@ -274,10 +276,12 @@ fn generate_primitive_reader(
                     let #reader_ident = #reader_expr
                         .reborrow()
                         .#method_ident()
-                        .map_err(|source| crate::Error::CapnpField {
-                            field: String::from(#field_literal),
-                            context: #context_expr,
-                            source,
+                        .map_err(|source| {
+                            #[allow(clippy::all)]
+                            let context = #context_expr;
+                            crate::Error::Deserialization(
+                                format!("field '{}' in {}: {}", #field_literal, context, source)
+                            )
                         })?;
                 },
                 quote! {
@@ -294,10 +298,12 @@ fn generate_primitive_reader(
                     let #reader_ident = #reader_expr
                         .reborrow()
                         .#method_ident()
-                        .map_err(|source| crate::Error::CapnpField {
-                            field: String::from(#field_literal),
-                            context: #context_expr,
-                            source,
+                        .map_err(|source| {
+                            #[allow(clippy::all)]
+                            let context = #context_expr;
+                            crate::Error::Deserialization(
+                                format!("field '{}' in {}: {}", #field_literal, context, source)
+                            )
                         })?;
                 },
                 quote! {
@@ -364,10 +370,12 @@ fn generate_u8_array_reader(
         let #reader_ident = #reader_expr
             .reborrow()
             .#method_ident()
-            .map_err(|source| crate::Error::CapnpField {
-                field: String::from(#field_literal),
-                context: #context_expr,
-                source,
+            .map_err(|source| {
+                #[allow(clippy::all)]
+                let context = #context_expr;
+                crate::Error::Deserialization(
+                    format!("field '{}' in {}: {}", #field_literal, context, source)
+                )
             })?;
     }];
 
@@ -378,11 +386,9 @@ fn generate_u8_array_reader(
             statements.push(quote! {
                 if #reader_ident.len() as usize != #len_lit {
                     let actual = #reader_ident.len() as usize;
-                    return Err(crate::Error::InvalidFixedBytes {
-                        field: String::from(#field_literal),
-                        expected: #len_lit,
-                        actual,
-                    });
+                    return Err(crate::Error::Deserialization(
+                        format!("invalid fixed bytes length for field '{}': expected {}, got {}", #field_literal, #len_lit, actual)
+                    ));
                 }
             });
             statements.push(quote! {
@@ -422,10 +428,12 @@ fn generate_primitive_array_reader(
         let #reader_ident = #reader_expr
             .reborrow()
             .#method_ident()
-            .map_err(|source| crate::Error::CapnpField {
-                field: String::from(#field_literal),
-                context: #context_expr,
-                source,
+            .map_err(|source| {
+                #[allow(clippy::all)]
+                let context = #context_expr;
+                crate::Error::Deserialization(
+                    format!("field '{}' in {}: {}", #field_literal, context, source)
+                )
             })?;
     }];
 
@@ -434,11 +442,9 @@ fn generate_primitive_array_reader(
         statements.push(quote! {
             if #reader_ident.len() as usize != #len_lit {
                 let actual = #reader_ident.len() as usize;
-                return Err(crate::Error::InvalidFixedListLength {
-                    field: String::from(#field_literal),
-                    expected: #len_lit,
-                    actual,
-                });
+                return Err(crate::Error::Deserialization(
+                    format!("invalid fixed list length for field '{}': expected {}, got {}", #field_literal, #len_lit, actual)
+                ));
             }
         });
         statements.push(quote! {
@@ -474,10 +480,12 @@ fn generate_object_reader(
         let #reader_ident = #reader_expr
             .reborrow()
             .#method_ident()
-            .map_err(|source| crate::Error::CapnpField {
-                field: String::from(#field_literal),
-                context: #context_expr,
-                source,
+            .map_err(|source| {
+                #[allow(clippy::all)]
+                let context = #context_expr;
+                crate::Error::Deserialization(
+                    format!("field '{}' in {}: {}", #field_literal, context, source)
+                )
             })?;
     }];
 

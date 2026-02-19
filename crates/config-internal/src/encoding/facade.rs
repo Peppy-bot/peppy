@@ -150,7 +150,28 @@ impl CapnpFacade {
             // Stale compile-time path — fall through to bundled binary.
         }
 
-        // 3. Embedded/bundled binary (the production path for distributed builds).
+        // 3. Development/Test environment: check relative to manifest directory if available.
+        if let Ok(manifest_dir) = env::var("CARGO_MANIFEST_DIR") {
+            let tools_dir = PathBuf::from(manifest_dir).join("tools");
+            let binary_name = if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+                "capnp_linux_x86_64"
+            } else if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
+                "capnp_linux_aarch64"
+            } else if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+                "capnp_macos_aarch64"
+            } else {
+                ""
+            };
+
+            if !binary_name.is_empty() {
+                let path = tools_dir.join(binary_name);
+                if path.exists() {
+                    return Self::validate_path(path);
+                }
+            }
+        }
+
+        // 4. Embedded/bundled binary (the production path for distributed builds).
         Self::validate_path(Self::bundled_capnp_binary()?)
     }
 
