@@ -1,5 +1,5 @@
-use bytes::Bytes;
 use peppylib::messaging::{ActionGoalHandle, ActionMessenger, ServiceEndpoint, TopicPublisher};
+use peppylib::types::Payload;
 use pyo3::prelude::*;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -25,7 +25,7 @@ impl PyTopicPublisher {
         let publisher = self.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             publisher
-                .publish(Bytes::from(payload))
+                .publish(Payload::from(payload))
                 .await
                 .map_err(to_py_err)?;
             Ok(())
@@ -186,7 +186,7 @@ impl PyActionMessenger {
                 &to_action_name,
                 target_daemon_node.as_deref(),
                 target_instance_id.as_deref(),
-                Bytes::from(goal_payload),
+                Payload::from(goal_payload),
                 feedback_qos.into(),
                 goal_timeout,
             )
@@ -198,7 +198,7 @@ impl PyActionMessenger {
             let resp = goal_handle.goal_response();
             let goal_response_cache = PyTopicMessage {
                 key_expr: resp.key_expr().to_string(),
-                payload: resp.payload().to_bytes().to_vec(),
+                payload: resp.payload().to_vec(),
                 instance_id: resp.instance_id().to_string(),
                 daemon_node: resp.daemon_node().to_string(),
             };

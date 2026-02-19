@@ -1,9 +1,8 @@
-use bytes::Bytes;
 use chrono::Local;
 use config::consts::DEFAULT_MESSAGING_PORT;
 use names_generator2::get_random;
 use peppylib::messaging::ServiceRequestContext;
-use peppylib::{MessengerHandle, PeppyResult, ServiceMessenger};
+use peppylib::{MessengerHandle, Payload, PeppyResult, ServiceMessenger};
 use rand::rng;
 use tokio::signal;
 
@@ -27,10 +26,10 @@ fn current_timestamp() -> String {
 
 fn payload_as_text(request: &ServiceRequestContext) -> String {
     let payload = request.message().payload();
-    String::from_utf8_lossy(payload.as_bytes().as_ref()).to_string()
+    String::from_utf8_lossy(payload.as_ref()).to_string()
 }
 
-async fn handle_request(request: ServiceRequestContext) -> PeppyResult<Bytes> {
+async fn handle_request(request: ServiceRequestContext) -> PeppyResult<Payload> {
     let payload_text = payload_as_text(&request);
     let instance_id = request.message().instance_id();
     let daemon_node = request.message().daemon_node();
@@ -46,7 +45,7 @@ async fn handle_request(request: ServiceRequestContext) -> PeppyResult<Bytes> {
         current_timestamp()
     );
 
-    Ok(Bytes::from(response_text))
+    Ok(Payload::from(response_text))
 }
 
 fn handle_service_result(result: PeppyResult<bool>) -> bool {

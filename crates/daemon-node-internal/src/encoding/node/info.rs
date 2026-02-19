@@ -3,9 +3,9 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use bytes::Bytes;
 use capnp::message::Builder;
 use config::node::{InterfaceKind, NodeConfig};
+use peppylib::types::Payload;
 use peppylib::{MessengerHandle, ServiceMessenger};
 
 use crate::Result;
@@ -25,7 +25,7 @@ impl NodeInfoRequest {
         Self { source }
     }
 
-    pub fn encode(&self) -> Result<Bytes> {
+    pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
             let request = builder.init_root::<node_capnp::node_info_request::Builder>();
@@ -109,7 +109,7 @@ impl NodeInfoRequest {
             response_timeout,
         )
         .await?;
-        NodeInfoResponse::decode(&response.payload().to_bytes())
+        NodeInfoResponse::decode(response.payload().as_ref())
     }
 }
 
@@ -148,7 +148,7 @@ impl NodeInfoResponse {
         }
     }
 
-    pub fn encode(&self) -> Result<Bytes> {
+    pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
             let mut response = builder.init_root::<node_capnp::node_info_response::Builder>();

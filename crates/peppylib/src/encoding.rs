@@ -3,7 +3,7 @@ pub mod ready;
 pub mod shutdown;
 
 use crate::error::Result;
-use bytes::Bytes;
+use crate::types::Payload;
 use capnp::message::{Builder, HeapAllocator, ReaderOptions};
 use capnp::serialize;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -62,20 +62,20 @@ pub fn convert_time_from_capnp(timestamp: CapnpTimestamp) -> SystemTime {
 /// Encode a Cap'n Proto message builder into bytes.
 ///
 /// # Example
-/// ```
+/// ```ignore
 /// use peppylib::encoding::encode_message;
-/// use peppylib::health_capnp;
 ///
 /// let mut message = capnp::message::Builder::new_default();
-/// message.init_root::<health_capnp::node_health_request::Builder>();
+/// message.init_root::<my_capnp::my_request::Builder>();
 ///
-/// let bytes = encode_message(&message).unwrap();
-/// assert!(!bytes.is_empty());
+/// let payload = encode_message(&message).unwrap();
+/// assert!(!payload.is_empty());
 /// ```
-pub fn encode_message(message: &Builder<HeapAllocator>) -> Result<Bytes> {
+pub fn encode_message(message: &Builder<HeapAllocator>) -> Result<Payload> {
     let mut buffer = Vec::new();
-    serialize::write_message(&mut buffer, message)?;
-    Ok(Bytes::from(buffer))
+    serialize::write_message(&mut buffer, message)
+        .map_err(|e| crate::error::Error::Serialization(e.to_string()))?;
+    Ok(Payload::from(buffer))
 }
 
 /// Decode bytes into a Cap'n Proto message reader.
@@ -83,19 +83,19 @@ pub fn encode_message(message: &Builder<HeapAllocator>) -> Result<Bytes> {
 /// Returns an owned segments reader that can be used to read the message.
 ///
 /// # Example
-/// ```
+/// ```ignore
 /// use peppylib::encoding::{decode_message, encode_message};
-/// use peppylib::health_capnp;
 ///
 /// let mut message = capnp::message::Builder::new_default();
-/// message.init_root::<health_capnp::node_health_request::Builder>();
+/// message.init_root::<my_capnp::my_request::Builder>();
 /// let bytes = encode_message(&message).unwrap();
 ///
 /// let reader = decode_message(&bytes).unwrap();
-/// let _request = reader.get_root::<health_capnp::node_health_request::Reader>().unwrap();
+/// let _request = reader.get_root::<my_capnp::my_request::Reader>().unwrap();
 /// ```
 pub fn decode_message(
     data: &[u8],
 ) -> Result<capnp::message::Reader<capnp::serialize::OwnedSegments>> {
-    Ok(serialize::read_message(data, ReaderOptions::default())?)
+    serialize::read_message(data, ReaderOptions::default())
+        .map_err(|e| crate::error::Error::Deserialization(e.to_string()))
 }

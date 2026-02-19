@@ -1,7 +1,7 @@
 use std::time::Duration;
 
-use bytes::Bytes;
 use capnp::message::Builder;
+use peppylib::types::Payload;
 use peppylib::{MessengerHandle, ServiceMessenger};
 
 use crate::Result;
@@ -22,7 +22,7 @@ impl NodeStopRequest {
         }
     }
 
-    fn encode(&self) -> Result<Bytes> {
+    fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
             let mut request = builder.init_root::<node_capnp::node_stop_request::Builder>();
@@ -61,7 +61,7 @@ impl NodeStopRequest {
             response_timeout,
         )
         .await?;
-        NodeStopResponse::decode(&response.payload().to_bytes())
+        NodeStopResponse::decode(response.payload().as_ref())
     }
 }
 
@@ -87,7 +87,7 @@ impl NodeStopResponse {
         Self::new(false, Some(error_message.into()))
     }
 
-    pub fn encode(&self) -> Result<Bytes> {
+    pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
             let mut response = builder.init_root::<node_capnp::node_stop_response::Builder>();

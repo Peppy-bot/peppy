@@ -3,11 +3,11 @@
 use crate::Result;
 use crate::names;
 use crate::node_capnp;
-use bytes::Bytes;
 use capnp::message::Builder;
 use config::node::QoSProfile;
 use gix_url::Url as GitUrl;
 use peppylib::messaging::ActionGoalHandle;
+use peppylib::types::Payload;
 use peppylib::{ActionMessenger, MessengerHandle};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -100,7 +100,7 @@ impl NodeAddGoal {
         }
     }
 
-    pub fn encode(&self) -> Result<Bytes> {
+    pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
             let mut goal = builder.init_root::<node_capnp::node_add_goal::Builder>();
@@ -240,7 +240,7 @@ impl NodeAddGoalResponse {
         }
     }
 
-    pub fn encode(&self) -> Result<Bytes> {
+    pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
             let mut response = builder.init_root::<node_capnp::node_add_goal_response::Builder>();
@@ -303,7 +303,7 @@ impl NodeAddFeedback {
         self.stream == "stderr"
     }
 
-    pub fn encode(&self) -> Result<Bytes> {
+    pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
             let mut feedback = builder.init_root::<node_capnp::node_add_feedback::Builder>();
@@ -355,7 +355,7 @@ impl NodeAddResult {
         Self::new(PathBuf::new(), log_path, false, Some(error_message.into()))
     }
 
-    pub fn encode(&self) -> Result<Bytes> {
+    pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
             let mut result = builder.init_root::<node_capnp::node_add_result::Builder>();
@@ -396,6 +396,6 @@ impl NodeAddResult {
     ) -> Result<Self> {
         let response =
             ActionMessenger::request_result(messenger, action_handle, result_timeout).await?;
-        Self::decode(&response.payload().to_bytes())
+        Self::decode(response.payload().as_ref())
     }
 }

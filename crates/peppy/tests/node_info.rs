@@ -76,7 +76,7 @@ async fn node_info_shows_dependencies_from_subscribed_interfaces() {
     .expect("node_info request should succeed");
 
     let info_response =
-        NodeInfoResponse::decode(&response.payload().to_bytes()).expect("decode should succeed");
+        NodeInfoResponse::decode(&response.payload()).expect("decode should succeed");
 
     // Verify basic info
     assert_eq!(info_response.config.manifest.name.as_str(), NODE_NAME);
@@ -202,7 +202,7 @@ async fn node_info_no_dependencies_when_no_subscribes() {
     .expect("node_info request should succeed");
 
     let info_response =
-        NodeInfoResponse::decode(&response.payload().to_bytes()).expect("decode should succeed");
+        NodeInfoResponse::decode(&response.payload()).expect("decode should succeed");
 
     // Verify basic info
     assert_eq!(info_response.config.manifest.name.as_str(), NODE_NAME);

@@ -1,9 +1,9 @@
 use crate::Result;
 use crate::encoding::{NodeListRequest, NodeListResponse};
 use crate::names;
-use bytes::Bytes;
 use node_stack::NodeStack;
 use peppylib::messaging::ServiceRequestContext;
+use peppylib::types::Payload;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
 use std::sync::Arc;
 use tokio::task::JoinHandle;
@@ -38,7 +38,7 @@ pub async fn listen_for_stack_list(
 async fn handle_stack_list_request(
     context: ServiceRequestContext,
     node_stack: Arc<NodeStack>,
-) -> PeppyResult<Bytes> {
+) -> PeppyResult<Payload> {
     let sender_instance_id = context.message().instance_id();
     handle_node_list_request_inner(&context, node_stack).map_err(|e| {
         PeppyError::InvalidServiceRequest {
@@ -51,11 +51,11 @@ async fn handle_stack_list_request(
 fn handle_node_list_request_inner(
     context: &ServiceRequestContext,
     node_stack: Arc<NodeStack>,
-) -> Result<Bytes> {
+) -> Result<Payload> {
     let sender_instance_id = context.message().instance_id();
     let payload = context.message().payload();
 
-    let request = NodeListRequest::decode(&payload.as_bytes())?;
+    let request = NodeListRequest::decode(payload.as_ref())?;
 
     debug!("Received `node_list` request from {sender_instance_id}");
 

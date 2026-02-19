@@ -90,6 +90,8 @@ fn make_install_context(
         autostart,
         restart_policy: RestartPolicy::OnFailure {
             delay_secs: Some(5),
+            max_retries: None,
+            reset_after_secs: None,
         },
     })
 }
@@ -229,7 +231,7 @@ fn render_systemd_service(ctx: &ServiceInstallCtx) -> String {
                 lines.push(format!("RestartSec={secs}"));
             }
         }
-        RestartPolicy::OnFailure { delay_secs } => {
+        RestartPolicy::OnFailure { delay_secs, .. } => {
             lines.push("Restart=on-failure".to_string());
             if let Some(secs) = delay_secs {
                 lines.push(format!("RestartSec={secs}"));

@@ -1,12 +1,12 @@
 mod common;
 
-use bytes::Bytes;
 use common::{
     CALLER_INSTANCE_ID, TEST_DAEMON_NODE_NAME, TEST_INSTANCE_ID, TEST_NODE_NAME, get_client_server,
 };
 use peppylib::{
     messaging::{MessengerHandle, ServiceMessenger},
     services::ready::listen_for_node_ready,
+    types::Payload,
 };
 use std::sync::Arc;
 use std::time::Duration;
@@ -29,7 +29,7 @@ async fn ready_node() {
     // Allow the service to fully establish its listeners
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    let request_payload = Bytes::from_static(b"ready");
+    let request_payload = Payload::from_static(b"ready");
 
     // The ready service should accept all valid targeting modes:
     // - specific daemon + specific instance
@@ -61,7 +61,7 @@ async fn ready_node() {
         .await
         .expect("caller should receive response");
 
-        assert_eq!(response.payload().to_bytes(), request_payload);
+        assert_eq!(response.payload(), &request_payload);
         assert_eq!(response.daemon_node(), client.daemon_node_name);
         assert_eq!(response.instance_id(), client.instance_id);
     }

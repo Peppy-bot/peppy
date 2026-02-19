@@ -1,11 +1,11 @@
 use crate::Result;
 use crate::encoding::{NodeSyncRequest, NodeSyncResponse};
 use crate::names;
-use bytes::Bytes;
 use config::node::NodeConfigParser;
 use generator::{DeploymentInterface, InterfaceVariant, SubscribedActionMessage};
 use node_stack::NodeStack;
 use peppylib::messaging::ServiceRequestContext;
+use peppylib::types::Payload;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -106,7 +106,7 @@ pub async fn listen_for_node_sync(
 async fn handle_node_sync_request(
     context: ServiceRequestContext,
     node_stack: Arc<NodeStack>,
-) -> PeppyResult<Bytes> {
+) -> PeppyResult<Payload> {
     let sender_instance_id = context.message().instance_id();
     handle_node_sync_request_inner(&context, &node_stack)
         .await
@@ -119,11 +119,11 @@ async fn handle_node_sync_request(
 async fn handle_node_sync_request_inner(
     context: &ServiceRequestContext,
     node_stack: &NodeStack,
-) -> Result<Bytes> {
+) -> Result<Payload> {
     let sender_instance_id = context.message().instance_id();
     let payload = context.message().payload();
 
-    let request = NodeSyncRequest::decode(&payload.as_bytes())?;
+    let request = NodeSyncRequest::decode(payload.as_ref())?;
 
     debug!("Received `node_sync` request from {sender_instance_id}");
 

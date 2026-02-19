@@ -1,9 +1,9 @@
 mod common;
 
-use bytes::Bytes;
 use common::{
     CALLER_INSTANCE_ID, TEST_DAEMON_NODE_NAME, TEST_INSTANCE_ID, TEST_NODE_NAME, get_client_server,
 };
+use peppylib::types::Payload;
 use peppylib::{
     messaging::{MessengerHandle, SHUTDOWN_SERVICE, ServiceMessenger},
     services::shutdown::listen_for_shutdown,
@@ -31,7 +31,7 @@ async fn shutdown_node() {
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     // Send a shutdown request (payload can be empty or contain shutdown info)
-    let request_payload = Bytes::from_static(b"shutdown");
+    let request_payload = Payload::from_static(b"shutdown");
 
     // Client sends a shutdown request and receives the response
     let response = ServiceMessenger::poll(
@@ -49,7 +49,7 @@ async fn shutdown_node() {
     .expect("caller should receive response");
 
     // Verify the response contains the same payload (echoed back)
-    assert_eq!(response.payload().to_bytes(), request_payload);
+    assert_eq!(response.payload(), request_payload);
     assert_eq!(response.instance_id(), client.instance_id);
 
     // Verify the shutdown signal was sent

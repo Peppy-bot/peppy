@@ -1,6 +1,6 @@
-use bytes::Bytes;
 use peppylib::ServiceMessenger;
 use peppylib::messaging::{ServiceEndpoint, ServiceRequestContext, encode_service_handler_error};
+use peppylib::types::Payload;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 use std::sync::Arc;
@@ -59,7 +59,7 @@ impl From<ServiceRequestContext> for PyServiceRequestContext {
         Self {
             request_id,
             key_expr: message.key_expr().to_string(),
-            payload: message.payload().to_bytes().to_vec(),
+            payload: message.payload().to_vec(),
             instance_id: message.instance_id().to_string(),
             daemon_node: message.daemon_node().to_string(),
         }
@@ -125,7 +125,7 @@ impl PyServiceEndpoint {
                     };
 
                     match response_bytes {
-                        Ok(response_bytes) => Bytes::from(response_bytes),
+                        Ok(response_bytes) => Payload::from(response_bytes),
                         Err(reason) => encode_service_handler_error(&reason),
                     }
                 }
@@ -237,7 +237,7 @@ impl PyServiceMessenger {
                 &target_service_name,
                 target_daemon_node.as_deref(),
                 target_instance_id.as_deref(),
-                Bytes::from(request_payload),
+                Payload::from(request_payload),
                 response_timeout,
             )
             .await
