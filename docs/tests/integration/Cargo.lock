@@ -1277,6 +1277,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "rust-embed",
+ "sha2",
  "syn 2.0.114",
  "thiserror 2.0.18",
  "toml",
