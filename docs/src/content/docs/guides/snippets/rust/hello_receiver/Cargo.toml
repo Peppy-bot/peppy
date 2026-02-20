@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 peppygen = { path = ".peppy/libs/peppygen" }
 peppylib = { path = ".peppy/libs/peppygen/crates/peppylib" }
+tokio = { version = "1", features = ["rt"] }
 tracing = "0.1"
 
 [workspace]

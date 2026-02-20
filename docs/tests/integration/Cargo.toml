@@ -10,6 +10,7 @@ publish = false
 peppy = { path = "../../../crates/peppy", features = ["test-support"] }
 pmi = { path = "../../../crates/pmi-internal" }
 config = { path = "../../../crates/config-internal" }
+serial_test = "3"
 tokio = { version = "1", features = ["full"] }
 tokio-util = "0.7"
 tempfile = "3"
