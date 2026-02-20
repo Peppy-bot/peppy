@@ -1267,6 +1267,7 @@ dependencies = [
  "quote",
  "rust-embed",
  "serde_json5",
+ "sha2",
  "syn 2.0.116",
  "tempfile",
  "thiserror 2.0.18",
