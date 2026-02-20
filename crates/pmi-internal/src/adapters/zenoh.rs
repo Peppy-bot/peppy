@@ -109,8 +109,7 @@ pub struct ZenohClientConfigTemplate {
 
 #[derive(Template)]
 #[template(
-    source = r#"
-{
+    source = r#"{
     "mode": "router",
     "listen": {
         "endpoints": {

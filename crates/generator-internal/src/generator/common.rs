@@ -128,6 +128,7 @@ pub(crate) struct EmbeddedPeppylib;
 #[include = "*.j2"]
 #[exclude = "target/*"]
 #[exclude = "tests/*"]
+#[exclude = "examples/*"]
 pub(crate) struct EmbeddedPmiInternal;
 
 #[derive(Embed)]
@@ -139,6 +140,7 @@ pub(crate) struct EmbeddedPmiInternal;
 #[include = "tools/capnp_*"]
 #[exclude = "target/*"]
 #[exclude = "tests/*"]
+#[exclude = "examples/*"]
 pub(crate) struct EmbeddedConfigInternal;
 
 // ---------------------------------------------------------------------------
@@ -168,7 +170,10 @@ pub(crate) fn deploy_rust_crates_to_shared_cache(node_libs_dir: &Path) -> Result
         .join("libs/rust")
         .join(&cache_key);
 
-    fs::create_dir_all(cache_dir.parent().unwrap())?;
+    let parent = cache_dir
+        .parent()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "cache dir has no parent"))?;
+    fs::create_dir_all(parent)?;
     let lock_path = cache_sibling_path(&cache_dir, ".lock");
     let lock_file = fs::File::options()
         .read(true)

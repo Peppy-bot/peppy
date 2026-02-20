@@ -27,7 +27,10 @@ pub fn add_peppylib_dependencies(to_path: &Path) -> Result<()> {
         .join(&cache_key);
 
     if !cache_dir.join(".complete").exists() {
-        fs::create_dir_all(cache_dir.parent().unwrap())?;
+        let parent = cache_dir.parent().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "cache dir has no parent")
+        })?;
+        fs::create_dir_all(parent)?;
         let lock_path = crate::generator::common::cache_sibling_path(&cache_dir, ".lock");
         let lock_file = fs::File::options()
             .read(true)
