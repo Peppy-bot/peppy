@@ -12,6 +12,34 @@ use std::sync::Arc;
 use tokio::task::JoinHandle;
 use tracing::debug;
 
+pub async fn listen_for_node_sync(
+    messenger: &MessengerHandle,
+    daemon_node_node: &str,
+    instance_id: &str,
+    node_name: &str,
+    node_stack: Arc<NodeStack>,
+) -> Result<JoinHandle<Result<()>>> {
+    let mut endpoint = ServiceMessenger::listen(
+        messenger,
+        daemon_node_node,
+        instance_id,
+        node_name,
+        names::NODE_SYNC,
+    )
+    .await?;
+
+    let handle = tokio::spawn(async move {
+        endpoint
+            .handle_requests(move |context| {
+                handle_node_sync_request(context, Arc::clone(&node_stack))
+            })
+            .await
+            .map_err(Into::into)
+    });
+
+    Ok(handle)
+}
+
 /// Safely removes the `.peppy` directory by atomically renaming it first.
 ///
 /// This avoids TOCTOU (Time Of Check, Time Of Use) race conditions that can occur
@@ -73,34 +101,6 @@ fn remove_previous_peppy_dir(node_root_dir: &std::path::Path) {
             );
         }
     }
-}
-
-pub async fn listen_for_node_sync(
-    messenger: &MessengerHandle,
-    daemon_node_node: &str,
-    instance_id: &str,
-    node_name: &str,
-    node_stack: Arc<NodeStack>,
-) -> Result<JoinHandle<Result<()>>> {
-    let mut endpoint = ServiceMessenger::listen(
-        messenger,
-        daemon_node_node,
-        instance_id,
-        node_name,
-        names::NODE_SYNC,
-    )
-    .await?;
-
-    let handle = tokio::spawn(async move {
-        endpoint
-            .handle_requests(move |context| {
-                handle_node_sync_request(context, Arc::clone(&node_stack))
-            })
-            .await
-            .map_err(Into::into)
-    });
-
-    Ok(handle)
 }
 
 async fn handle_node_sync_request(
