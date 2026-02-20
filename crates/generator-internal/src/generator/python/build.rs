@@ -73,16 +73,9 @@ pub fn add_peppylib_dependencies(to_path: &Path) -> Result<()> {
         Ok(_) => fs::remove_dir_all(&peppylib_link)?,
         Err(_) => {}
     }
-    symlink_dir(&cache_dir, &peppylib_link)?;
+    crate::generator::common::symlink_dir(&cache_dir, &peppylib_link)?;
 
     Ok(())
-}
-
-fn symlink_dir(original: &Path, link: &Path) -> io::Result<()> {
-    #[cfg(unix)]
-    return std::os::unix::fs::symlink(original, link);
-    #[cfg(windows)]
-    return std::os::windows::fs::symlink_dir(original, link);
 }
 
 pub fn add_capnp_schemas(schemas: &HashMap<String, CapnpSchema>, to_path: &Path) -> Result<()> {

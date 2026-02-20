@@ -1,8 +1,10 @@
+#[cfg(feature = "node-create")]
 mod create;
 mod parse;
 mod types;
 
 // Re-export functions
+#[cfg(feature = "node-create")]
 pub use create::NodeConfigCreator;
 pub use parse::NodeConfigParser;
 pub use types::{

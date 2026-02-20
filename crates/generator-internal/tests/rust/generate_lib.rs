@@ -1,5 +1,5 @@
 use config::{
-    consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH},
+    consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH, PEPPYLIB_OUTPUT_PATH},
     node::{MessageFormat, PeppygenLanguage, SubscribedAction, SubscribedService, SubscribedTopic},
 };
 use generator::generate_peppygen_lib;
@@ -147,6 +147,45 @@ fn generate_peppygen_lib_cargo() {
     assert_eq!(
         peppygen_path, PEPPYGEN_OUTPUT_PATH,
         "peppygen dependency path should point to {PEPPYGEN_OUTPUT_PATH}"
+    );
+
+    // Verify peppylib dependency exists and points to the correct path
+    let peppylib_dep = cargo_doc
+        .get("dependencies")
+        .and_then(|d| d.get("peppylib"))
+        .expect("Cargo.toml should have peppylib dependency");
+
+    let peppylib_path = peppylib_dep
+        .get("path")
+        .and_then(|p| p.as_str())
+        .expect("peppylib dependency should have a path");
+    assert_eq!(
+        peppylib_path, PEPPYLIB_OUTPUT_PATH,
+        "peppylib dependency path should point to {PEPPYLIB_OUTPUT_PATH}"
+    );
+
+    // Verify peppylib symlink exists
+    let peppylib_link = node_dir.join(PEPPYLIB_OUTPUT_PATH);
+    assert!(
+        peppylib_link.symlink_metadata().is_ok(),
+        "peppylib symlink should exist at {}",
+        peppylib_link.display()
+    );
+    assert!(
+        peppylib_link
+            .symlink_metadata()
+            .unwrap()
+            .file_type()
+            .is_symlink(),
+        "peppylib should be a symlink"
+    );
+
+    // Verify the peppygen Cargo.toml uses the ../peppylib relative path
+    let peppygen_cargo =
+        fs::read_to_string(&cargo_toml).expect("failed to read peppygen Cargo.toml");
+    assert!(
+        peppygen_cargo.contains("../peppylib"),
+        "peppygen Cargo.toml should reference peppylib via ../peppylib path"
     );
 }
 

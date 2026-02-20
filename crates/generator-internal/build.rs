@@ -226,8 +226,110 @@ fn embed_ruff_binary() {
     }
 }
 
+mod rust_crates_build {
+    use sha2::{Digest, Sha256};
+    use std::path::PathBuf;
+
+    /// Returns true if the file should be included, matching the rust_embed attributes:
+    /// include: *.rs, *.toml, *.capnp, *.j2, tools/capnp_*
+    /// exclude: target/*, tests/*, examples/*
+    fn should_include(relative_path: &str, is_config_internal: bool) -> bool {
+        // Exclude patterns
+        if relative_path.starts_with("target/")
+            || relative_path.starts_with("tests/")
+            || relative_path.starts_with("examples/")
+        {
+            return false;
+        }
+
+        // Include patterns
+        if relative_path.ends_with(".rs")
+            || relative_path.ends_with(".toml")
+            || relative_path.ends_with(".capnp")
+            || relative_path.ends_with(".j2")
+        {
+            return true;
+        }
+
+        // config-internal has tools/capnp_* include pattern
+        if is_config_internal && relative_path.starts_with("tools/capnp_") {
+            return true;
+        }
+
+        false
+    }
+
+    fn collect_files(dir: &std::path::Path, is_config_internal: bool) -> Vec<PathBuf> {
+        let mut files = Vec::new();
+        let mut stack = vec![dir.to_path_buf()];
+
+        while let Some(current) = stack.pop() {
+            let entries = match std::fs::read_dir(&current) {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    let rel = path.strip_prefix(dir).unwrap_or(&path);
+                    let rel_str = rel.to_string_lossy();
+                    // Skip excluded directories entirely
+                    if rel_str == "target" || rel_str == "tests" || rel_str == "examples" {
+                        continue;
+                    }
+                    stack.push(path);
+                } else {
+                    let rel = path.strip_prefix(dir).unwrap_or(&path);
+                    let rel_str = rel.to_string_lossy();
+                    if should_include(&rel_str, is_config_internal) {
+                        files.push(path);
+                    }
+                }
+            }
+        }
+
+        files
+    }
+
+    pub fn run() {
+        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+
+        let crate_dirs = [
+            ("../peppylib", false),
+            ("../pmi-internal", false),
+            ("../config-internal", true),
+        ];
+
+        for (rel, _) in &crate_dirs {
+            println!("cargo:rerun-if-changed={}", rel);
+        }
+
+        let mut hasher = Sha256::new();
+
+        for (rel, is_config) in &crate_dirs {
+            let dir = manifest_dir.join(rel);
+            let mut files = collect_files(&dir, *is_config);
+            // Sort for deterministic hashing
+            files.sort();
+
+            for file_path in &files {
+                let relative = file_path.strip_prefix(&dir).unwrap_or(file_path);
+                hasher.update(relative.to_string_lossy().as_bytes());
+                if let Ok(content) = std::fs::read(file_path) {
+                    hasher.update(&content);
+                }
+            }
+        }
+
+        let hash = hasher.finalize();
+        let hex: String = hash.iter().map(|b| format!("{b:02x}")).collect();
+        println!("cargo:rustc-env=RUST_CRATES_HASH={}", &hex[..16]);
+    }
+}
+
 fn main() {
     ruff_build::run();
     embed_ruff_binary();
     peppylib_build::run();
+    rust_crates_build::run();
 }
