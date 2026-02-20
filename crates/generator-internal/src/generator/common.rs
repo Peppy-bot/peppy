@@ -201,6 +201,7 @@ pub(crate) fn deploy_rust_crates_to_shared_cache(node_libs_dir: &Path) -> Result
         fs::rename(&staging_dir, &cache_dir)?;
         fs::write(cache_dir.join(".complete"), "")?;
     }
+    drop(lock_file);
 
     // Create/replace symlinks for all three crates in node_libs_dir.
     // All three are needed because the crates reference each other via relative
