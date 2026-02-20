@@ -70,6 +70,7 @@ pub fn add_peppylib_dependencies(to_path: &Path) -> Result<()> {
             fs::rename(&staging_dir, &cache_dir)?;
             fs::write(cache_dir.join(".complete"), "")?;
         }
+        drop(lock_file);
     }
 
     // Symlink to_path/peppylib → shared cache
