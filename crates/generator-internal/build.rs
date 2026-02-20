@@ -1,6 +1,28 @@
 /// Pinned ruff release tag used when building from source.
 const RUFF_VERSION: &str = "0.15.0";
 
+/// Recursively collect all files under `dir`.
+fn walkdir(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut files = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(current) = stack.pop() {
+        let entries = match std::fs::read_dir(&current) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else {
+                files.push(path);
+            }
+        }
+    }
+    files.sort();
+    files
+}
+
 fn get_temp_cache_dir(cache_suffix: &str) -> std::path::PathBuf {
     let temp_dir = std::env::temp_dir();
     let cache_dir = temp_dir.join(format!("{}-peppy-cache", cache_suffix));
@@ -138,8 +160,13 @@ mod peppylib_build {
         let so_path = peppylib_py_dir.join("peppylib/_peppylib.abi3.so");
 
         // Rerun when peppylib-py Rust source or Cargo.toml changes
-        println!("cargo:rerun-if-changed=../peppylib-py/src/");
         println!("cargo:rerun-if-changed=../peppylib-py/Cargo.toml");
+        let src_dir = peppylib_py_dir.join("src");
+        if src_dir.is_dir() {
+            for entry in super::walkdir(&src_dir) {
+                println!("cargo:rerun-if-changed={}", entry.display());
+            }
+        }
 
         // Use a separate CARGO_TARGET_DIR so maturin's inner `cargo build`
         // does not deadlock on the workspace build lock held by the outer cargo.
@@ -300,10 +327,6 @@ mod rust_crates_build {
             ("../config-internal", true),
         ];
 
-        for (rel, _) in &crate_dirs {
-            println!("cargo:rerun-if-changed={}", rel);
-        }
-
         let mut hasher = Sha256::new();
 
         for (rel, is_config) in &crate_dirs {
@@ -313,6 +336,7 @@ mod rust_crates_build {
             files.sort();
 
             for file_path in &files {
+                println!("cargo:rerun-if-changed={}", file_path.display());
                 let relative = file_path.strip_prefix(&dir).unwrap_or(file_path);
                 hasher.update(relative.to_string_lossy().as_bytes());
                 if let Ok(content) = std::fs::read(file_path) {
