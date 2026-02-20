@@ -7,8 +7,14 @@ use std::{
 };
 
 #[derive(Template)]
-#[template(source = "{\n    deployments: []\n}\n", ext = "txt")]
-struct PeppyConfigTemplate;
+#[template(
+    source = r#"{
+    deployments: []
+}
+"#,
+    ext = "txt"
+)]
+struct LauncherConfigTemplate;
 
 #[derive(Template)]
 #[template(
@@ -24,64 +30,42 @@ struct PeppyConfigTemplate;
 "#,
     ext = "txt"
 )]
-struct SimpleNodeTemplate<'a> {
+struct NodeTemplate<'a> {
     name: &'a str,
     start_cmd: &'a str,
 }
-
-#[derive(Template)]
-#[template(
-    source = r#"{
-  schema_version: 1,
-  manifest: {
-    name: "{{ name }}",
-    tag: "0.1.0",
-    language: "rust",
-    start_cmd: {{ start_cmd | safe }}
-  }
-}
-"#,
-    ext = "txt"
-)]
-struct FullNodeTemplate<'a> {
-    name: &'a str,
-    start_cmd: &'a str,
-}
-
-// Note: writing is handled by NodeConfigCreator using Askama templates
 
 #[derive(Debug, Clone)]
 pub struct NodeConfigCreator {
-    redered_template: String,
+    rendered_template: String,
 }
 
 impl NodeConfigCreator {
     pub fn simple_node(node_name: &str) -> Result<Self> {
-        let tpl = SimpleNodeTemplate {
+        let tpl = NodeTemplate {
             name: node_name,
-            start_cmd: "[\"cargo\", \"run\", \"--release\"]",
+            start_cmd: r#"["cargo", "run", "--release"]"#,
         };
-        let redered_template = tpl.render().map_err(|e| Error::Serialize(e.to_string()))?;
+        let rendered_template = tpl.render().map_err(|e| Error::Serialize(e.to_string()))?;
 
-        Ok(Self { redered_template })
+        Ok(Self { rendered_template })
     }
 
     pub fn full_node(node_name: &str) -> Result<Self> {
-        // Default command can be parameterized later
-        let tpl = FullNodeTemplate {
+        let tpl = NodeTemplate {
             name: node_name,
-            start_cmd: "[\"cargo\", \"run\", \"--release\"]",
+            start_cmd: r#"["cargo", "run", "--release"]"#,
         };
-        let redered_template = tpl.render().map_err(|e| Error::Serialize(e.to_string()))?;
+        let rendered_template = tpl.render().map_err(|e| Error::Serialize(e.to_string()))?;
 
-        Ok(Self { redered_template })
+        Ok(Self { rendered_template })
     }
 
     pub fn launcher_config() -> Result<Self> {
-        let tpl = PeppyConfigTemplate;
-        let redered_template = tpl.render().map_err(|e| Error::Serialize(e.to_string()))?;
+        let tpl = LauncherConfigTemplate;
+        let rendered_template = tpl.render().map_err(|e| Error::Serialize(e.to_string()))?;
 
-        Ok(Self { redered_template })
+        Ok(Self { rendered_template })
     }
 
     /// Renders the chosen template and writes it to a file
@@ -94,7 +78,7 @@ impl NodeConfigCreator {
         }
 
         let mut file = fs::File::create(path)?;
-        file.write_all(self.redered_template.as_bytes())?;
+        file.write_all(self.rendered_template.as_bytes())?;
 
         Ok(path.to_path_buf())
     }
