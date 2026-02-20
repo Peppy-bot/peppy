@@ -11,6 +11,7 @@ Review this plan thoroughly before making any code changes. For every issue or r
 - I want code that’s “engineered enough” — not under-engineered (fragile, hacky) and not over-engineered (premature abstraction, unnecessary complexity).
 - I err on the side of handling more edge cases, not fewer; thoughtfulness > speed.
 - Bias toward explicit over clever (the code must stay human readable with meaningful function names).
+- Do not leave legacy code behind or code that is meant to support previous version of the code
 
 ---
 
