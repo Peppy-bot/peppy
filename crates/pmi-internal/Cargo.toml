@@ -5,7 +5,7 @@ authors.workspace = true
 edition.workspace = true
 
 [dependencies]
-config = { path = "../config-internal", default-features = false }
+config = { path = "../config-internal" }
 askama = "0.15"
 bytes = "1"
 serde = { version = "1.0", features = ["derive"] }

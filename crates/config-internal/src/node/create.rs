@@ -7,18 +7,42 @@ use std::{
 };
 
 #[derive(Template)]
-#[template(path = "peppy_launcher.json5.j2")]
+#[template(source = "{\n    deployments: []\n}\n", ext = "txt")]
 struct PeppyConfigTemplate;
 
 #[derive(Template)]
-#[template(path = "simple_node.json5.j2")]
+#[template(
+    source = r#"{
+  schema_version: 1,
+  manifest: {
+    name: "{{ name }}",
+    tag: "0.1.0",
+    language: "rust",
+    start_cmd: {{ start_cmd | safe }}
+  }
+}
+"#,
+    ext = "txt"
+)]
 struct SimpleNodeTemplate<'a> {
     name: &'a str,
     start_cmd: &'a str,
 }
 
 #[derive(Template)]
-#[template(path = "full_node.json5.j2")]
+#[template(
+    source = r#"{
+  schema_version: 1,
+  manifest: {
+    name: "{{ name }}",
+    tag: "0.1.0",
+    language: "rust",
+    start_cmd: {{ start_cmd | safe }}
+  }
+}
+"#,
+    ext = "txt"
+)]
 struct FullNodeTemplate<'a> {
     name: &'a str,
     start_cmd: &'a str,
