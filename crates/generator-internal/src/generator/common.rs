@@ -168,40 +168,33 @@ pub(crate) fn deploy_rust_crates_to_shared_cache(node_libs_dir: &Path) -> Result
         .join("libs/rust")
         .join(&cache_key);
 
+    fs::create_dir_all(cache_dir.parent().unwrap())?;
+    let lock_path = cache_sibling_path(&cache_dir, ".lock");
+    let lock_file = fs::File::options()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)?;
+    lock_file.lock()?;
+
     if !cache_dir.join(".complete").exists() {
-        fs::create_dir_all(cache_dir.parent().unwrap())?;
-        let lock_path = cache_sibling_path(&cache_dir, ".lock");
-        let lock_file = fs::File::options()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(&lock_path)?;
-        lock_file.lock()?;
-
-        // Double-check after acquiring lock (another process may have finished)
-        if !cache_dir.join(".complete").exists() {
-            let staging_dir =
-                cache_sibling_path(&cache_dir, &format!(".staging-{}", std::process::id()));
-            if staging_dir.exists() {
-                fs::remove_dir_all(&staging_dir)?;
-            }
-
-            let metadata = WorkspacePackageMetadata::embedded();
-            copy_embedded_crate::<EmbeddedPeppylib>("peppylib", &staging_dir, &metadata)?;
-            copy_embedded_crate::<EmbeddedPmiInternal>("pmi-internal", &staging_dir, &metadata)?;
-            copy_embedded_crate::<EmbeddedConfigInternal>(
-                "config-internal",
-                &staging_dir,
-                &metadata,
-            )?;
-
-            if cache_dir.exists() {
-                fs::remove_dir_all(&cache_dir)?;
-            }
-            fs::rename(&staging_dir, &cache_dir)?;
-            fs::write(cache_dir.join(".complete"), "")?;
+        let staging_dir =
+            cache_sibling_path(&cache_dir, &format!(".staging-{}", std::process::id()));
+        if staging_dir.exists() {
+            fs::remove_dir_all(&staging_dir)?;
         }
+
+        let metadata = WorkspacePackageMetadata::embedded();
+        copy_embedded_crate::<EmbeddedPeppylib>("peppylib", &staging_dir, &metadata)?;
+        copy_embedded_crate::<EmbeddedPmiInternal>("pmi-internal", &staging_dir, &metadata)?;
+        copy_embedded_crate::<EmbeddedConfigInternal>("config-internal", &staging_dir, &metadata)?;
+
+        if cache_dir.exists() {
+            fs::remove_dir_all(&cache_dir)?;
+        }
+        fs::rename(&staging_dir, &cache_dir)?;
+        fs::write(cache_dir.join(".complete"), "")?;
     }
 
     // Create/replace symlinks for all three crates in node_libs_dir.
