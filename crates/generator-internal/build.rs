@@ -47,6 +47,7 @@ mod ruff_build {
 
     pub fn run() {
         println!("cargo:rerun-if-changed=build.rs");
+        println!("cargo:rustc-env=RUFF_VERSION={}", super::RUFF_VERSION);
 
         let profile = env::var("PROFILE").unwrap();
         let is_release = profile == "release";
