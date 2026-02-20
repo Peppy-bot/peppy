@@ -208,12 +208,18 @@ pub(crate) fn deploy_rust_crates_to_shared_cache(node_libs_dir: &Path) -> Result
     // and Cargo resolves these paths relative to the symlink location, not the target.
     for crate_name in &["peppylib", "pmi-internal", "config-internal"] {
         let link = node_libs_dir.join(crate_name);
+        let target = cache_dir.join(crate_name);
         match link.symlink_metadata() {
-            Ok(meta) if meta.file_type().is_symlink() => fs::remove_file(&link)?,
+            Ok(meta) if meta.file_type().is_symlink() => {
+                if fs::read_link(&link).ok().as_deref() == Some(target.as_path()) {
+                    continue;
+                }
+                fs::remove_file(&link)?;
+            }
             Ok(_) => fs::remove_dir_all(&link)?,
             Err(_) => {}
         }
-        symlink_dir(&cache_dir.join(crate_name), &link)?;
+        symlink_dir(&target, &link)?;
     }
 
     Ok(())
