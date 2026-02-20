@@ -75,7 +75,12 @@ pub fn add_peppylib_dependencies(to_path: &Path) -> Result<()> {
     // Symlink to_path/peppylib → shared cache
     let peppylib_link = to_path.join("peppylib");
     match peppylib_link.symlink_metadata() {
-        Ok(meta) if meta.file_type().is_symlink() => fs::remove_file(&peppylib_link)?,
+        Ok(meta) if meta.file_type().is_symlink() => {
+            if fs::read_link(&peppylib_link).ok().as_deref() == Some(cache_dir.as_path()) {
+                return Ok(());
+            }
+            fs::remove_file(&peppylib_link)?;
+        }
         Ok(_) => fs::remove_dir_all(&peppylib_link)?,
         Err(_) => {}
     }

@@ -8,7 +8,14 @@ fn walkdir(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
     while let Some(current) = stack.pop() {
         let entries = match std::fs::read_dir(&current) {
             Ok(e) => e,
-            Err(_) => continue,
+            Err(e) => {
+                eprintln!(
+                    "cargo:warning=Failed to read directory {}: {}",
+                    current.display(),
+                    e
+                );
+                continue;
+            }
         };
         for entry in entries.flatten() {
             let path = entry.path();
@@ -293,7 +300,14 @@ mod rust_crates_build {
         while let Some(current) = stack.pop() {
             let entries = match std::fs::read_dir(&current) {
                 Ok(e) => e,
-                Err(_) => continue,
+                Err(e) => {
+                    eprintln!(
+                        "cargo:warning=Failed to read directory {}: {}",
+                        current.display(),
+                        e
+                    );
+                    continue;
+                }
             };
             for entry in entries.flatten() {
                 let path = entry.path();
@@ -339,8 +353,13 @@ mod rust_crates_build {
                 println!("cargo:rerun-if-changed={}", file_path.display());
                 let relative = file_path.strip_prefix(&dir).unwrap_or(file_path);
                 hasher.update(relative.to_string_lossy().as_bytes());
-                if let Ok(content) = std::fs::read(file_path) {
-                    hasher.update(&content);
+                match std::fs::read(file_path) {
+                    Ok(content) => hasher.update(&content),
+                    Err(e) => eprintln!(
+                        "cargo:warning=Failed to read file for hashing {}: {}",
+                        file_path.display(),
+                        e
+                    ),
                 }
             }
         }
