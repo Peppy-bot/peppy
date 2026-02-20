@@ -166,17 +166,14 @@ fn generate_peppygen_lib_cargo() {
 
     // Verify peppylib symlink exists
     let peppylib_link = node_dir.join(PEPPYLIB_OUTPUT_PATH);
+    let meta = peppylib_link.symlink_metadata().unwrap_or_else(|e| {
+        panic!(
+            "peppylib symlink should exist at {}: {e}",
+            peppylib_link.display()
+        )
+    });
     assert!(
-        peppylib_link.symlink_metadata().is_ok(),
-        "peppylib symlink should exist at {}",
-        peppylib_link.display()
-    );
-    assert!(
-        peppylib_link
-            .symlink_metadata()
-            .unwrap()
-            .file_type()
-            .is_symlink(),
+        meta.file_type().is_symlink(),
         "peppylib should be a symlink"
     );
 
