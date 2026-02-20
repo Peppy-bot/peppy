@@ -132,10 +132,10 @@ where
     backend.build(output_dir)
 }
 
-/// Creates or updates the node's Cargo.toml with the peppygen dependency.
+/// Creates or updates the node's Cargo.toml with the peppygen and peppylib dependencies.
 ///
 /// If the Cargo.toml doesn't exist, it creates a new one with the node name.
-/// If it exists, it ensures the peppygen dependency is present while preserving formatting.
+/// If it exists, it ensures both dependencies are present while preserving formatting.
 fn ensure_node_cargo_toml(node_dir: &Path, node_name: &str) -> Result<()> {
     use std::io::ErrorKind;
     use toml_edit::{DocumentMut, InlineTable, Item, Table, value};
@@ -165,17 +165,23 @@ fn ensure_node_cargo_toml(node_dir: &Path, node_name: &str) -> Result<()> {
         doc
     };
 
-    // Ensure dependencies section exists and add peppygen
+    // Ensure dependencies section exists and add peppygen + peppylib
     if !doc.contains_key("dependencies") {
         doc.insert("dependencies", Item::Table(Table::new()));
     }
 
-    if let Some(dependencies) = doc.get_mut("dependencies").and_then(|d| d.as_table_mut())
-        && !dependencies.contains_key("peppygen")
-    {
-        let mut peppygen_dep = InlineTable::new();
-        peppygen_dep.insert("path", config::consts::PEPPYGEN_OUTPUT_PATH.into());
-        dependencies.insert("peppygen", toml_edit::value(peppygen_dep));
+    if let Some(dependencies) = doc.get_mut("dependencies").and_then(|d| d.as_table_mut()) {
+        if !dependencies.contains_key("peppygen") {
+            let mut peppygen_dep = InlineTable::new();
+            peppygen_dep.insert("path", config::consts::PEPPYGEN_OUTPUT_PATH.into());
+            dependencies.insert("peppygen", toml_edit::value(peppygen_dep));
+        }
+
+        if !dependencies.contains_key("peppylib") {
+            let mut peppylib_dep = InlineTable::new();
+            peppylib_dep.insert("path", config::consts::PEPPYLIB_OUTPUT_PATH.into());
+            dependencies.insert("peppylib", toml_edit::value(peppylib_dep));
+        }
     }
 
     fs::write(&cargo_toml_path, doc.to_string())?;
@@ -190,7 +196,7 @@ mod tests {
     use toml::Value;
 
     #[test]
-    fn ensure_node_cargo_toml_creates_new_file_with_peppygen_dependency() {
+    fn ensure_node_cargo_toml_creates_new_file_with_peppygen_and_peppylib_dependencies() {
         let temp_dir = TempDir::new().expect("failed to create temp directory");
         let node_dir = temp_dir.path();
 
@@ -218,10 +224,18 @@ mod tests {
             .and_then(|p| p.as_str())
             .expect("should have peppygen dependency with path");
         assert_eq!(peppygen_path, config::consts::PEPPYGEN_OUTPUT_PATH);
+
+        let peppylib_path = doc
+            .get("dependencies")
+            .and_then(|d| d.get("peppylib"))
+            .and_then(|p| p.get("path"))
+            .and_then(|p| p.as_str())
+            .expect("should have peppylib dependency with path");
+        assert_eq!(peppylib_path, config::consts::PEPPYLIB_OUTPUT_PATH);
     }
 
     #[test]
-    fn ensure_node_cargo_toml_adds_peppygen_to_existing_file() {
+    fn ensure_node_cargo_toml_adds_deps_to_existing_file() {
         let temp_dir = TempDir::new().expect("failed to create temp directory");
         let node_dir = temp_dir.path();
         let cargo_toml_path = node_dir.join("Cargo.toml");
@@ -263,17 +277,25 @@ mod tests {
             .and_then(|p| p.as_str())
             .expect("should have peppygen dependency with path");
         assert_eq!(peppygen_path, config::consts::PEPPYGEN_OUTPUT_PATH);
+
+        let peppylib_path = doc
+            .get("dependencies")
+            .and_then(|d| d.get("peppylib"))
+            .and_then(|p| p.get("path"))
+            .and_then(|p| p.as_str())
+            .expect("should have peppylib dependency with path");
+        assert_eq!(peppylib_path, config::consts::PEPPYLIB_OUTPUT_PATH);
     }
 
     #[test]
-    fn ensure_node_cargo_toml_does_nothing_if_peppygen_already_exists() {
+    fn ensure_node_cargo_toml_does_nothing_if_deps_already_exist() {
         let temp_dir = TempDir::new().expect("failed to create temp directory");
         let node_dir = temp_dir.path();
         let cargo_toml_path = node_dir.join("Cargo.toml");
 
         let existing_content = r#"
             [package]
-            name = "node_with_peppygen"
+            name = "node_with_deps"
             version = "2.0.0"
             edition = "2021"
 
@@ -282,12 +304,15 @@ mod tests {
 
             [dependencies.peppygen]
             path = ".peppy/libs/peppygen"
+
+            [dependencies.peppylib]
+            path = ".peppy/libs/peppylib"
         "#;
         fs::write(&cargo_toml_path, existing_content).expect("failed to write existing Cargo.toml");
 
         let content_before = fs::read_to_string(&cargo_toml_path).expect("failed to read");
 
-        ensure_node_cargo_toml(node_dir, "node_with_peppygen").expect("should succeed");
+        ensure_node_cargo_toml(node_dir, "node_with_deps").expect("should succeed");
 
         let contents = fs::read_to_string(&cargo_toml_path).expect("failed to read Cargo.toml");
         let doc: Value = toml::from_str(&contents).expect("should be valid TOML");
@@ -297,7 +322,7 @@ mod tests {
             .and_then(|p| p.get("name"))
             .and_then(|n| n.as_str())
             .expect("should have package.name");
-        assert_eq!(package_name, "node_with_peppygen");
+        assert_eq!(package_name, "node_with_deps");
 
         let package_version = doc
             .get("package")
@@ -320,6 +345,14 @@ mod tests {
             .and_then(|p| p.as_str())
             .expect("should have peppygen dependency with path");
         assert_eq!(peppygen_path, config::consts::PEPPYGEN_OUTPUT_PATH);
+
+        let peppylib_path = doc
+            .get("dependencies")
+            .and_then(|d| d.get("peppylib"))
+            .and_then(|p| p.get("path"))
+            .and_then(|p| p.as_str())
+            .expect("should have peppylib dependency with path");
+        assert_eq!(peppylib_path, config::consts::PEPPYLIB_OUTPUT_PATH);
 
         let doc_before: Value = toml::from_str(&content_before).expect("should be valid TOML");
         assert_eq!(doc, doc_before, "logical content should be unchanged");

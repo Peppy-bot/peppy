@@ -92,7 +92,15 @@ use zenoh::qos::{CongestionControl, Priority};
 use zenoh::sample::SampleFields;
 
 #[derive(Template)]
-#[template(path = "zenoh/default_client_config.json5.j2")]
+#[template(
+    source = r#"{
+    "mode": "client",
+    "connect": {
+        "endpoints": ["{{ protocol }}/{{ host }}:{{ port }}"]
+    }
+}"#,
+    ext = "txt"
+)]
 pub struct ZenohClientConfigTemplate {
     pub host: String,
     pub port: u16,
@@ -100,7 +108,18 @@ pub struct ZenohClientConfigTemplate {
 }
 
 #[derive(Template)]
-#[template(path = "zenoh/default_router_config.json5.j2")]
+#[template(
+    source = r#"
+{
+    "mode": "router",
+    "listen": {
+        "endpoints": {
+            "router": ["{{ protocol }}/{{ host }}:{{ port }}"]
+        }
+    }
+}"#,
+    ext = "txt"
+)]
 pub struct ZenohRouterConfigTemplate {
     pub host: String,
     pub port: u16,

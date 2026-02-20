@@ -106,6 +106,121 @@ fn render_template(template_path: &str, peppylib_path: &str) -> Result<String> {
 }
 
 // ---------------------------------------------------------------------------
+// Embedded crate sources for Rust dependency vendoring
+// ---------------------------------------------------------------------------
+
+#[derive(Embed)]
+#[folder = "../peppylib/"]
+#[include = "*.rs"]
+#[include = "*.toml"]
+#[include = "*.capnp"]
+#[include = "*.j2"]
+#[exclude = "target/*"]
+#[exclude = "tests/*"]
+#[exclude = "examples/*"]
+pub(crate) struct EmbeddedPeppylib;
+
+#[derive(Embed)]
+#[folder = "../pmi-internal/"]
+#[include = "*.rs"]
+#[include = "*.toml"]
+#[include = "*.capnp"]
+#[include = "*.j2"]
+#[exclude = "target/*"]
+#[exclude = "tests/*"]
+pub(crate) struct EmbeddedPmiInternal;
+
+#[derive(Embed)]
+#[folder = "../config-internal/"]
+#[include = "*.rs"]
+#[include = "*.toml"]
+#[include = "*.capnp"]
+#[include = "*.j2"]
+#[include = "tools/capnp_*"]
+#[exclude = "target/*"]
+#[exclude = "tests/*"]
+pub(crate) struct EmbeddedConfigInternal;
+
+// ---------------------------------------------------------------------------
+// Cross-platform symlink utility
+// ---------------------------------------------------------------------------
+
+pub(crate) fn symlink_dir(original: &Path, link: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    return std::os::unix::fs::symlink(original, link);
+    #[cfg(windows)]
+    return std::os::windows::fs::symlink_dir(original, link);
+}
+
+// ---------------------------------------------------------------------------
+// Shared Rust crate cache deployment
+// ---------------------------------------------------------------------------
+
+/// Deploys the three vendored Rust crates (peppylib, pmi-internal, config-internal)
+/// to a shared cache directory, then creates a symlink from `node_libs_dir/peppylib`
+/// to the shared cache. This avoids duplicating source files across nodes.
+///
+/// The cache is keyed by content hash + version, and uses file locking with a
+/// staging directory for concurrent-safe deployment.
+pub(crate) fn deploy_rust_crates_to_shared_cache(node_libs_dir: &Path) -> Result<()> {
+    let cache_key = format!("{}-{}", env!("RUST_CRATES_HASH"), env!("CARGO_PKG_VERSION"));
+    let cache_dir = config::consts::peppy_data_dir()
+        .join("libs/rust")
+        .join(&cache_key);
+
+    if !cache_dir.join(".complete").exists() {
+        fs::create_dir_all(cache_dir.parent().unwrap())?;
+        let lock_path = cache_dir.with_extension("lock");
+        let lock_file = fs::File::options()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock_path)?;
+        lock_file.lock()?;
+
+        // Double-check after acquiring lock (another process may have finished)
+        if !cache_dir.join(".complete").exists() {
+            let staging_dir = cache_dir.with_extension(format!("staging-{}", std::process::id()));
+            if staging_dir.exists() {
+                fs::remove_dir_all(&staging_dir)?;
+            }
+
+            let metadata = WorkspacePackageMetadata::embedded();
+            copy_embedded_crate::<EmbeddedPeppylib>("peppylib", &staging_dir, &metadata)?;
+            copy_embedded_crate::<EmbeddedPmiInternal>("pmi-internal", &staging_dir, &metadata)?;
+            copy_embedded_crate::<EmbeddedConfigInternal>(
+                "config-internal",
+                &staging_dir,
+                &metadata,
+            )?;
+
+            if cache_dir.exists() {
+                fs::remove_dir_all(&cache_dir)?;
+            }
+            fs::rename(&staging_dir, &cache_dir)?;
+            fs::write(cache_dir.join(".complete"), "")?;
+        }
+    }
+
+    // Create/replace symlinks for all three crates in node_libs_dir.
+    // All three are needed because the crates reference each other via relative
+    // sibling paths (e.g., peppylib has `config = { path = "../config-internal" }`),
+    // and Cargo resolves these paths relative to the symlink location, not the target.
+    for crate_name in &["peppylib", "pmi-internal", "config-internal"] {
+        let link = node_libs_dir.join(crate_name);
+        match link.symlink_metadata() {
+            Ok(meta) if meta.file_type().is_symlink() => fs::remove_file(&link)?,
+            Ok(_) => fs::remove_dir_all(&link)?,
+            Err(_) => {}
+        }
+        symlink_dir(&cache_dir.join(crate_name), &link)?;
+    }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Shared crate-vendoring utilities
 // ---------------------------------------------------------------------------
 

@@ -9,7 +9,7 @@ readme = "Readme.md"
 
 [dependencies]
 pmi = { path = "../pmi-internal" }
-config = { path = "../config-internal" }
+config = { path = "../config-internal", default-features = false }
 thiserror = "2.0"                                   # Avoid Anyhow in this crate
 tokio = { version = "1.47.0", features = ["full"] }
 tracing = "0.1.41"
