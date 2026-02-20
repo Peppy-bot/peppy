@@ -1,5 +1,4 @@
 use docs_integration_tests::snippet_runner::{run_snippet, run_snippet_with_deps};
-use serial_test::serial;
 
 const SNIPPETS_ROOT: &str = "docs/src/content/docs/guides/snippets/rust";
 
