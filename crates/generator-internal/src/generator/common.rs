@@ -170,7 +170,7 @@ pub(crate) fn deploy_rust_crates_to_shared_cache(node_libs_dir: &Path) -> Result
 
     if !cache_dir.join(".complete").exists() {
         fs::create_dir_all(cache_dir.parent().unwrap())?;
-        let lock_path = cache_dir.with_extension("lock");
+        let lock_path = cache_sibling_path(&cache_dir, ".lock");
         let lock_file = fs::File::options()
             .read(true)
             .write(true)
@@ -181,7 +181,8 @@ pub(crate) fn deploy_rust_crates_to_shared_cache(node_libs_dir: &Path) -> Result
 
         // Double-check after acquiring lock (another process may have finished)
         if !cache_dir.join(".complete").exists() {
-            let staging_dir = cache_dir.with_extension(format!("staging-{}", std::process::id()));
+            let staging_dir =
+                cache_sibling_path(&cache_dir, &format!(".staging-{}", std::process::id()));
             if staging_dir.exists() {
                 fs::remove_dir_all(&staging_dir)?;
             }
@@ -218,6 +219,20 @@ pub(crate) fn deploy_rust_crates_to_shared_cache(node_libs_dir: &Path) -> Result
     }
 
     Ok(())
+}
+
+/// Returns a sibling path of `cache_dir` by appending `suffix` to its full name.
+///
+/// Unlike `Path::with_extension`, this preserves dots in the original name.
+/// For example, given `some/path/abc123-1.0.0` and suffix `.lock`, this returns
+/// `some/path/abc123-1.0.0.lock` (not `some/path/abc123-1.0.lock`).
+pub(crate) fn cache_sibling_path(cache_dir: &Path, suffix: &str) -> std::path::PathBuf {
+    let name = cache_dir
+        .file_name()
+        .expect("cache_dir must have a file name component");
+    let mut new_name = name.to_os_string();
+    new_name.push(suffix);
+    cache_dir.with_file_name(new_name)
 }
 
 // ---------------------------------------------------------------------------
@@ -330,4 +345,32 @@ pub(crate) fn localize_cargo_toml(
 
     fs::write(cargo_toml_path, doc.to_string())?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn cache_sibling_path_preserves_semver_dots() {
+        let cache_dir = PathBuf::from("/data/libs/rust/abc123def456-1.0.0");
+        assert_eq!(
+            cache_sibling_path(&cache_dir, ".lock"),
+            PathBuf::from("/data/libs/rust/abc123def456-1.0.0.lock"),
+        );
+        assert_eq!(
+            cache_sibling_path(&cache_dir, ".staging-42"),
+            PathBuf::from("/data/libs/rust/abc123def456-1.0.0.staging-42"),
+        );
+    }
+
+    #[test]
+    fn cache_sibling_path_works_without_dots() {
+        let cache_dir = PathBuf::from("/data/libs/rust/abc123def456");
+        assert_eq!(
+            cache_sibling_path(&cache_dir, ".lock"),
+            PathBuf::from("/data/libs/rust/abc123def456.lock"),
+        );
+    }
 }

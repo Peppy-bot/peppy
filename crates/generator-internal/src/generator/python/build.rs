@@ -28,7 +28,7 @@ pub fn add_peppylib_dependencies(to_path: &Path) -> Result<()> {
 
     if !cache_dir.join(".complete").exists() {
         fs::create_dir_all(cache_dir.parent().unwrap())?;
-        let lock_path = cache_dir.with_extension("lock");
+        let lock_path = crate::generator::common::cache_sibling_path(&cache_dir, ".lock");
         let lock_file = fs::File::options()
             .read(true)
             .write(true)
@@ -38,7 +38,10 @@ pub fn add_peppylib_dependencies(to_path: &Path) -> Result<()> {
         lock_file.lock()?;
 
         if !cache_dir.join(".complete").exists() {
-            let staging_dir = cache_dir.with_extension(format!("staging-{}", std::process::id()));
+            let staging_dir = crate::generator::common::cache_sibling_path(
+                &cache_dir,
+                &format!(".staging-{}", std::process::id()),
+            );
             if staging_dir.exists() {
                 fs::remove_dir_all(&staging_dir)?;
             }
