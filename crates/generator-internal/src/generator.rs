@@ -171,17 +171,13 @@ fn ensure_node_cargo_toml(node_dir: &Path, node_name: &str) -> Result<()> {
     }
 
     if let Some(dependencies) = doc.get_mut("dependencies").and_then(|d| d.as_table_mut()) {
-        if !dependencies.contains_key("peppygen") {
-            let mut peppygen_dep = InlineTable::new();
-            peppygen_dep.insert("path", config::consts::PEPPYGEN_OUTPUT_PATH.into());
-            dependencies.insert("peppygen", toml_edit::value(peppygen_dep));
-        }
+        let mut peppygen_dep = InlineTable::new();
+        peppygen_dep.insert("path", config::consts::PEPPYGEN_OUTPUT_PATH.into());
+        dependencies.insert("peppygen", toml_edit::value(peppygen_dep));
 
-        if !dependencies.contains_key("peppylib") {
-            let mut peppylib_dep = InlineTable::new();
-            peppylib_dep.insert("path", config::consts::PEPPYLIB_OUTPUT_PATH.into());
-            dependencies.insert("peppylib", toml_edit::value(peppylib_dep));
-        }
+        let mut peppylib_dep = InlineTable::new();
+        peppylib_dep.insert("path", config::consts::PEPPYLIB_OUTPUT_PATH.into());
+        dependencies.insert("peppylib", toml_edit::value(peppylib_dep));
     }
 
     fs::write(&cargo_toml_path, doc.to_string())?;
@@ -288,14 +284,14 @@ mod tests {
     }
 
     #[test]
-    fn ensure_node_cargo_toml_does_nothing_if_deps_already_exist() {
+    fn ensure_node_cargo_toml_overwrites_stale_peppy_paths() {
         let temp_dir = TempDir::new().expect("failed to create temp directory");
         let node_dir = temp_dir.path();
         let cargo_toml_path = node_dir.join("Cargo.toml");
 
         let existing_content = r#"
             [package]
-            name = "node_with_deps"
+            name = "node_with_stale_paths"
             version = "2.0.0"
             edition = "2021"
 
@@ -303,16 +299,14 @@ mod tests {
             serde = "1.0"
 
             [dependencies.peppygen]
-            path = ".peppy/libs/peppygen"
+            path = "old/stale/peppygen"
 
             [dependencies.peppylib]
-            path = ".peppy/libs/peppylib"
+            path = "old/stale/peppylib"
         "#;
         fs::write(&cargo_toml_path, existing_content).expect("failed to write existing Cargo.toml");
 
-        let content_before = fs::read_to_string(&cargo_toml_path).expect("failed to read");
-
-        ensure_node_cargo_toml(node_dir, "node_with_deps").expect("should succeed");
+        ensure_node_cargo_toml(node_dir, "node_with_stale_paths").expect("should succeed");
 
         let contents = fs::read_to_string(&cargo_toml_path).expect("failed to read Cargo.toml");
         let doc: Value = toml::from_str(&contents).expect("should be valid TOML");
@@ -322,7 +316,7 @@ mod tests {
             .and_then(|p| p.get("name"))
             .and_then(|n| n.as_str())
             .expect("should have package.name");
-        assert_eq!(package_name, "node_with_deps");
+        assert_eq!(package_name, "node_with_stale_paths");
 
         let package_version = doc
             .get("package")
@@ -344,7 +338,11 @@ mod tests {
             .and_then(|p| p.get("path"))
             .and_then(|p| p.as_str())
             .expect("should have peppygen dependency with path");
-        assert_eq!(peppygen_path, config::consts::PEPPYGEN_OUTPUT_PATH);
+        assert_eq!(
+            peppygen_path,
+            config::consts::PEPPYGEN_OUTPUT_PATH,
+            "stale peppygen path should be overwritten"
+        );
 
         let peppylib_path = doc
             .get("dependencies")
@@ -352,9 +350,10 @@ mod tests {
             .and_then(|p| p.get("path"))
             .and_then(|p| p.as_str())
             .expect("should have peppylib dependency with path");
-        assert_eq!(peppylib_path, config::consts::PEPPYLIB_OUTPUT_PATH);
-
-        let doc_before: Value = toml::from_str(&content_before).expect("should be valid TOML");
-        assert_eq!(doc, doc_before, "logical content should be unchanged");
+        assert_eq!(
+            peppylib_path,
+            config::consts::PEPPYLIB_OUTPUT_PATH,
+            "stale peppylib path should be overwritten"
+        );
     }
 }
