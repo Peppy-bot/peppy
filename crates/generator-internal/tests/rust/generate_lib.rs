@@ -164,18 +164,23 @@ fn generate_peppygen_lib_cargo() {
         "peppylib dependency path should point to {PEPPYLIB_OUTPUT_PATH}"
     );
 
-    // Verify peppylib symlink exists
-    let peppylib_link = node_dir.join(PEPPYLIB_OUTPUT_PATH);
-    let meta = peppylib_link.symlink_metadata().unwrap_or_else(|e| {
-        panic!(
-            "peppylib symlink should exist at {}: {e}",
-            peppylib_link.display()
-        )
-    });
-    assert!(
-        meta.file_type().is_symlink(),
-        "peppylib should be a symlink"
-    );
+    // Verify all three Rust crate symlinks exist (peppylib, pmi-internal, config-internal)
+    let libs_dir = std::path::Path::new(PEPPYLIB_OUTPUT_PATH)
+        .parent()
+        .expect("PEPPYLIB_OUTPUT_PATH should have a parent directory");
+    for crate_name in ["peppylib", "pmi-internal", "config-internal"] {
+        let link = node_dir.join(libs_dir).join(crate_name);
+        let meta = link.symlink_metadata().unwrap_or_else(|e| {
+            panic!(
+                "{crate_name} symlink should exist at {}: {e}",
+                link.display()
+            )
+        });
+        assert!(
+            meta.file_type().is_symlink(),
+            "{crate_name} should be a symlink"
+        );
+    }
 
     // Verify the peppygen Cargo.toml uses the ../peppylib relative path
     let peppygen_cargo =
