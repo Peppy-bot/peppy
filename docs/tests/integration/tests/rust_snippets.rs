@@ -3,17 +3,12 @@ use serial_test::serial;
 
 const SNIPPETS_ROOT: &str = "docs/src/content/docs/guides/snippets/rust";
 
-// Tests are marked #[serial] to avoid parallel Cargo builds competing for the
-// shared target directory lock, which causes startup timeouts.
-
 #[test]
-#[serial]
 fn hello_world() {
     run_snippet(SNIPPETS_ROOT, "hello_world", &[]);
 }
 
 #[test]
-#[serial]
 fn standalone_node() {
     run_snippet(
         SNIPPETS_ROOT,
@@ -31,7 +26,6 @@ fn standalone_node() {
 }
 
 #[test]
-#[serial]
 fn hello_world_param_and_hello_receiver() {
     run_snippet_with_deps(SNIPPETS_ROOT, "hello_receiver", &[], &["hello_world_param"]);
 }

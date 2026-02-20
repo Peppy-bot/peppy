@@ -82,17 +82,34 @@ impl RuffFacade {
         })?;
 
         let temp_dir = std::env::temp_dir();
-        let binary_path = temp_dir.join("peppy_ruff_binary");
+        let binary_path = temp_dir.join(format!("peppy_ruff_binary_{}", env!("RUFF_VERSION")));
 
         if !binary_path.exists() {
-            std::fs::write(&binary_path, binary_bytes)?;
+            // Write to a process-unique temp file, set permissions, then
+            // atomically rename. This prevents concurrent processes from
+            // observing a partially-written or permission-less binary.
+            let tmp_path = temp_dir.join(format!(
+                "peppy_ruff_binary_{}.{}.tmp",
+                env!("RUFF_VERSION"),
+                std::process::id()
+            ));
+            std::fs::write(&tmp_path, binary_bytes)?;
 
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
-                let mut perms = std::fs::metadata(&binary_path)?.permissions();
+                let mut perms = std::fs::metadata(&tmp_path)?.permissions();
                 perms.set_mode(0o755);
-                std::fs::set_permissions(&binary_path, perms)?;
+                std::fs::set_permissions(&tmp_path, perms)?;
+            }
+
+            // Atomic rename — last writer wins, but the file is always
+            // complete and executable.
+            if let Err(e) = std::fs::rename(&tmp_path, &binary_path) {
+                let _ = std::fs::remove_file(&tmp_path);
+                if !binary_path.exists() {
+                    return Err(e);
+                }
             }
         }
 
