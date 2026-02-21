@@ -78,14 +78,16 @@ fn is_sccache_available() -> bool {
 ///   and the user has not already provided a `RUSTC_WRAPPER` value.
 ///
 /// User-provided values for either variable are never overwritten.
+///
+/// Returns `true` if `RUSTC_WRAPPER=sccache` was injected.
 fn inject_rust_build_env(
     env_vars: &mut Vec<(String, String)>,
     language: PeppygenLanguage,
     node_name: &str,
     tag: &str,
-) {
+) -> bool {
     if language != PeppygenLanguage::Rust {
-        return;
+        return false;
     }
     if !env_vars.iter().any(|(k, _)| k == "CARGO_TARGET_DIR") {
         env_vars.push((
@@ -95,9 +97,12 @@ fn inject_rust_build_env(
                 .into_owned(),
         ));
     }
-    if !env_vars.iter().any(|(k, _)| k == "RUSTC_WRAPPER") && is_sccache_available() {
+    let sccache_injected =
+        !env_vars.iter().any(|(k, _)| k == "RUSTC_WRAPPER") && is_sccache_available();
+    if sccache_injected {
         env_vars.push(("RUSTC_WRAPPER".to_string(), "sccache".to_string()));
     }
+    sccache_injected
 }
 
 pub use add::listen_for_node_add;

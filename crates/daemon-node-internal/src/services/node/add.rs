@@ -1449,12 +1449,18 @@ async fn process_node_add(
     };
     let node_name = node_config.manifest.name.as_str().to_owned();
     let node_tag = node_config.manifest.tag.clone();
-    super::inject_rust_build_env(
+    let sccache_injected = super::inject_rust_build_env(
         &mut env_vars,
         node_config.manifest.language,
         &node_name,
         &node_tag,
     );
+    if sccache_injected {
+        if let Ok(payload) = NodeAddFeedback::stdout("Using sccache for Rust compilation").encode()
+        {
+            let _ = ctx.feedback_publisher.publish(payload).await;
+        }
+    }
     let _cleanup_guard = CleanupDir::new(cleanup_dir);
 
     let previous_snapshot_path = ctx
