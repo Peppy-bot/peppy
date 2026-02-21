@@ -209,5 +209,5 @@ struct NodeInfoResponse {
     # Names of running instances of this node
     instancesNames @2 :List(Text);
     # SHA256 of the entire NodeConfig file
-    configSha256 @4 :Text;
+    configSha256 @3 :Text;
 }
