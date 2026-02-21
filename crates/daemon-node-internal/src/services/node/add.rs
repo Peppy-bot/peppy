@@ -1455,11 +1455,10 @@ async fn process_node_add(
         &node_name,
         &node_tag,
     );
-    if sccache_injected {
-        if let Ok(payload) = NodeAddFeedback::stdout("Using sccache for Rust compilation").encode()
-        {
-            let _ = ctx.feedback_publisher.publish(payload).await;
-        }
+    if sccache_injected
+        && let Ok(payload) = NodeAddFeedback::stdout("Using sccache for Rust compilation").encode()
+    {
+        let _ = ctx.feedback_publisher.publish(payload).await;
     }
     let _cleanup_guard = CleanupDir::new(cleanup_dir);
 
