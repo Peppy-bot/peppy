@@ -1441,16 +1441,26 @@ async fn process_node_add(
     cleanup_dir: Option<PathBuf>,
     ctx: ProcessNodeAddContext,
 ) -> NodeAddResult {
-    let env_vars = match super::validate_goal_env_vars(&goal.env_vars) {
+    let mut env_vars = match super::validate_goal_env_vars(&goal.env_vars) {
         Ok(vars) => vars,
         Err(e) => {
             return NodeAddResult::failure(&ctx.log_path, e.to_string());
         }
     };
-    let _cleanup_guard = CleanupDir::new(cleanup_dir);
-
     let node_name = node_config.manifest.name.as_str().to_owned();
     let node_tag = node_config.manifest.tag.clone();
+    let sccache_injected = super::inject_rust_build_env(
+        &mut env_vars,
+        node_config.manifest.language,
+        &node_name,
+        &node_tag,
+    );
+    if sccache_injected
+        && let Ok(payload) = NodeAddFeedback::stdout("Using sccache for Rust compilation").encode()
+    {
+        let _ = ctx.feedback_publisher.publish(payload).await;
+    }
+    let _cleanup_guard = CleanupDir::new(cleanup_dir);
 
     let previous_snapshot_path = ctx
         .node_stack
