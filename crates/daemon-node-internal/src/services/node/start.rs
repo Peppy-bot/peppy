@@ -623,7 +623,7 @@ async fn process_node_start(
         env_vars,
         ..
     } = goal;
-    let env_vars = match super::validate_goal_env_vars(&env_vars) {
+    let mut env_vars = match super::validate_goal_env_vars(&env_vars) {
         Ok(vars) => vars,
         Err(e) => {
             return NodeStartResult::failure(e.to_string());
@@ -652,6 +652,19 @@ async fn process_node_start(
             ));
         }
     };
+
+    let sccache_injected = super::inject_rust_build_env(
+        &mut env_vars,
+        entity.config().manifest.language,
+        &node_name,
+        &tag,
+    );
+    if sccache_injected
+        && let Ok(payload) =
+            NodeStartFeedback::stdout("Using sccache for Rust compilation").encode()
+    {
+        let _ = feedback_publisher.publish(payload).await;
+    }
 
     // Validate that all required parameters are provided before starting the node
     let missing_params = validate_parameters(
