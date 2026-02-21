@@ -201,13 +201,6 @@ struct NodeInfoRequest {
     }
 }
 
-struct InterfaceIntegrity {
-    name @0 :Text;
-    sha256 @1 :Text;
-    # Interface kind: "topic", "service", or "action"
-    interfaceKind @2 :Text;
-}
-
 struct NodeInfoResponse {
     # JSON5-serialized NodeConfig
     configJson5 @0 :Text;
@@ -215,8 +208,6 @@ struct NodeInfoResponse {
     isInNodeStack @1 :Bool;
     # Names of running instances of this node
     instancesNames @2 :List(Text);
-    # SHA256 hashes for each exposed interface
-    interfacesIntegrity @3 :List(InterfaceIntegrity);
     # SHA256 of the entire NodeConfig file
     configSha256 @4 :Text;
 }

@@ -230,17 +230,6 @@ fn print_node_info(response: &NodeInfoResponse) {
     println!("Integrity");
     println!("{}", "-".repeat(50));
     println!("Config SHA256: {}", response.config_integrity);
-    if response.interfaces_integrity.is_empty() {
-        println!("Interfaces:    No exposed interfaces");
-    } else {
-        println!("Interfaces:");
-        for iface in &response.interfaces_integrity {
-            println!(
-                "  - {} ({}) {}",
-                iface.name, iface.interface_kind, iface.sha256
-            );
-        }
-    }
 
     // Parameters
     if !config.parameters.is_empty() {
