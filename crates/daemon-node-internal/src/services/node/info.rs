@@ -1,9 +1,9 @@
 use crate::Result;
-use crate::encoding::{InterfaceIntegrity, NodeInfoRequest, NodeInfoResponse, NodeSource};
+use crate::encoding::{NodeInfoRequest, NodeInfoResponse, NodeSource};
 use crate::names;
 use config::consts::NODE_CONFIG_FILE;
 use config::fingerprint::fingerprint_for_bytes;
-use config::node::{InterfaceKind, NodeConfig, NodeConfigParser};
+use config::node::{NodeConfig, NodeConfigParser};
 use git2::{Repository, build::CheckoutBuilder};
 use node_stack::NodeStack;
 use peppylib::messaging::ServiceRequestContext;
@@ -391,46 +391,3 @@ fn parse_node_config_from_http_blocking(url: url::Url) -> std::result::Result<No
     })
 }
 
-/// Computes SHA256 hashes for each exposed interface in a node config.
-///
-/// Each interface (topic, service, action) is serialized to JSON and hashed
-/// individually, producing a list of [`InterfaceIntegrity`] entries that
-/// subscribers can use to verify interface compatibility.
-pub fn compute_interfaces_integrity(
-    config: &NodeConfig,
-) -> std::result::Result<Vec<InterfaceIntegrity>, String> {
-    let mut result = Vec::new();
-
-    let Some(exposes) = &config.interfaces.exposes else {
-        return Ok(result);
-    };
-
-    for topic in exposes.topics.iter().flatten() {
-        let json = serde_json::to_string(topic).map_err(|e| format!("{}", e))?;
-        result.push(InterfaceIntegrity {
-            name: topic.name.clone(),
-            sha256: fingerprint_for_bytes(json.as_bytes()),
-            interface_kind: InterfaceKind::Topic,
-        });
-    }
-
-    for service in exposes.services.iter().flatten() {
-        let json = serde_json::to_string(service).map_err(|e| format!("{}", e))?;
-        result.push(InterfaceIntegrity {
-            name: service.name.clone(),
-            sha256: fingerprint_for_bytes(json.as_bytes()),
-            interface_kind: InterfaceKind::Service,
-        });
-    }
-
-    for action in exposes.actions.iter().flatten() {
-        let json = serde_json::to_string(action).map_err(|e| format!("{}", e))?;
-        result.push(InterfaceIntegrity {
-            name: action.name.clone(),
-            sha256: fingerprint_for_bytes(json.as_bytes()),
-            interface_kind: InterfaceKind::Action,
-        });
-    }
-
-    Ok(result)
-}

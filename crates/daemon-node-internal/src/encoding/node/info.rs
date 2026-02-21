@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use capnp::message::Builder;
-use config::node::{InterfaceKind, NodeConfig};
+use config::node::NodeConfig;
 use peppylib::types::Payload;
 use peppylib::{MessengerHandle, ServiceMessenger};
 
@@ -111,13 +111,6 @@ impl NodeInfoRequest {
         .await?;
         NodeInfoResponse::decode(response.payload().as_ref())
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct InterfaceIntegrity {
-    pub name: String,
-    pub sha256: String,
-    pub interface_kind: InterfaceKind,
 }
 
 #[derive(Debug, Clone)]

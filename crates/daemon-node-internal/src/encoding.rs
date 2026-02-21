@@ -14,7 +14,7 @@ pub use launch::{
 };
 pub use node::{
     add::NodeAddFeedback, add::NodeAddGoal, add::NodeAddGoalResponse, add::NodeAddResult,
-    add::NodeSource, info::InterfaceIntegrity, info::NodeInfoRequest, info::NodeInfoResponse,
+    add::NodeSource, info::NodeInfoRequest, info::NodeInfoResponse,
     init::NodeInitRequest, init::NodeInitResponse, list::NodeListRequest, list::NodeListResponse,
     remove::NodeRemoveRequest, remove::NodeRemoveResponse, start::NodeStartFeedback,
     start::NodeStartGoal, start::NodeStartGoalResponse, start::NodeStartResult,
