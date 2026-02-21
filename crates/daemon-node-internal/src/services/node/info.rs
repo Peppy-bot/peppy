@@ -101,8 +101,6 @@ async fn handle_node_info_request_inner(
         None => (false, Vec::new()),
     };
 
-    let interfaces_integrity = compute_interfaces_integrity(&node_config)?;
-
     let config_json = serde_json5::to_string(&node_config).map_err(|e| format!("{}", e))?;
     let config_integrity = fingerprint_for_bytes(config_json.as_bytes());
 
@@ -110,7 +108,6 @@ async fn handle_node_info_request_inner(
         node_config,
         is_in_node_stack,
         instances_names,
-        interfaces_integrity,
         config_integrity,
     )
     .encode()
