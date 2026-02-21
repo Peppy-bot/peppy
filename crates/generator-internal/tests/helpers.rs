@@ -180,10 +180,19 @@ pub fn wait_for_child(
     }
 }
 
+/// Returns a stable, shared target directory for test compilations so that sccache can
+/// reuse the same dir across runs
+fn stable_test_target_dir() -> std::path::PathBuf {
+    config::consts::peppy_data_dir().join("cache/rust/test-targets")
+}
+
 pub fn compile_project(dir: impl AsRef<Path>) {
+    let dir = dir.as_ref();
+    let target_dir = stable_test_target_dir();
     let cargo_output = Command::new("cargo")
         .arg("build")
         .env("CARGO_NET_OFFLINE", "true")
+        .env("CARGO_TARGET_DIR", &target_dir)
         .current_dir(dir)
         .output()
         .expect("failed to invoke cargo build on generated crate");
@@ -194,6 +203,16 @@ pub fn compile_project(dir: impl AsRef<Path>) {
         String::from_utf8_lossy(&cargo_output.stdout),
         String::from_utf8_lossy(&cargo_output.stderr)
     );
+
+    // Copy the binary to the project's local target dir so that spawn_cargo_run
+    // can execute it directly without cargo, avoiding lock contention at runtime.
+    let binary = target_dir.join("debug").join("user_node");
+    if binary.exists() {
+        let local_bin_dir = dir.join("target").join("debug");
+        fs::create_dir_all(&local_bin_dir).expect("failed to create local target/debug dir");
+        fs::copy(&binary, local_bin_dir.join("user_node"))
+            .expect("failed to copy compiled binary to local target dir");
+    }
 }
 
 pub fn insert_dependency_line(contents: &str, dependency_line: &str) -> String {
