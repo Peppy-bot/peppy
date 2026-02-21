@@ -659,12 +659,11 @@ async fn process_node_start(
         &node_name,
         &tag,
     );
-    if sccache_injected {
-        if let Ok(payload) =
+    if sccache_injected
+        && let Ok(payload) =
             NodeStartFeedback::stdout("Using sccache for Rust compilation").encode()
-        {
-            let _ = feedback_publisher.publish(payload).await;
-        }
+    {
+        let _ = feedback_publisher.publish(payload).await;
     }
 
     // Validate that all required parameters are provided before starting the node
