@@ -417,6 +417,11 @@ pub fn generate_peppygen_for_node(
     subscribed_interfaces: Vec<DeploymentInterface>,
     git_hash: &str,
 ) -> crate::Result<()> {
+    // TODO : Create a `peppy.lock` lockfile based on the `subscribed_interfaces`
+    // In the case of a DeploymentSource::Local or DeploymentSource::Git, the sha256 hash should be derived from the content of the node
+    // In the case of a DeploymentSource::Url, it should be derived from DeploymentUrlSource::sha256 of the bundle
+    // The sha256 of the nodes in the node stack can be computed when they are added to the node stack (`listen_for_node_add`) and stored in a `~/.peppy/hashs/fake_uvc_camera_0.1.0_334330/sha256sums.txt` for `~/.peppy/nodes/fake_uvc_camera_0.1.0_334330/peppy.json5` for example. This way the lockfile can be populated based on this file hash.
+    // Find the fastest and most efficient way to get a sha256 from a folder (there can be thousand of files in it, do not include the `.peppy` folder of the nodes).
     generator::generate_peppygen_lib(language, node_dir, subscribed_interfaces, git_hash)?;
 
     Ok(())
