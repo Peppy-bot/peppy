@@ -27,8 +27,11 @@ pub fn add_peppylib_dependencies(to_path: &Path) -> Result<()> {
         .join(&cache_key);
 
     if !cache_dir.join(".complete").exists() {
-        fs::create_dir_all(cache_dir.parent().unwrap())?;
-        let lock_path = cache_dir.with_extension("lock");
+        let parent = cache_dir.parent().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "cache dir has no parent")
+        })?;
+        fs::create_dir_all(parent)?;
+        let lock_path = crate::generator::common::cache_sibling_path(&cache_dir, ".lock");
         let lock_file = fs::File::options()
             .read(true)
             .write(true)
@@ -38,7 +41,10 @@ pub fn add_peppylib_dependencies(to_path: &Path) -> Result<()> {
         lock_file.lock()?;
 
         if !cache_dir.join(".complete").exists() {
-            let staging_dir = cache_dir.with_extension(format!("staging-{}", std::process::id()));
+            let staging_dir = crate::generator::common::cache_sibling_path(
+                &cache_dir,
+                &format!(".staging-{}", std::process::id()),
+            );
             if staging_dir.exists() {
                 fs::remove_dir_all(&staging_dir)?;
             }
@@ -64,25 +70,24 @@ pub fn add_peppylib_dependencies(to_path: &Path) -> Result<()> {
             fs::rename(&staging_dir, &cache_dir)?;
             fs::write(cache_dir.join(".complete"), "")?;
         }
+        drop(lock_file);
     }
 
     // Symlink to_path/peppylib → shared cache
     let peppylib_link = to_path.join("peppylib");
     match peppylib_link.symlink_metadata() {
-        Ok(meta) if meta.file_type().is_symlink() => fs::remove_file(&peppylib_link)?,
+        Ok(meta) if meta.file_type().is_symlink() => {
+            if fs::read_link(&peppylib_link).ok().as_deref() == Some(cache_dir.as_path()) {
+                return Ok(());
+            }
+            fs::remove_file(&peppylib_link)?;
+        }
         Ok(_) => fs::remove_dir_all(&peppylib_link)?,
         Err(_) => {}
     }
-    symlink_dir(&cache_dir, &peppylib_link)?;
+    crate::generator::common::symlink_dir(&cache_dir, &peppylib_link)?;
 
     Ok(())
-}
-
-fn symlink_dir(original: &Path, link: &Path) -> io::Result<()> {
-    #[cfg(unix)]
-    return std::os::unix::fs::symlink(original, link);
-    #[cfg(windows)]
-    return std::os::windows::fs::symlink_dir(original, link);
 }
 
 pub fn add_capnp_schemas(schemas: &HashMap<String, CapnpSchema>, to_path: &Path) -> Result<()> {

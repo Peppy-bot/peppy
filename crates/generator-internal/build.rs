@@ -1,6 +1,35 @@
 /// Pinned ruff release tag used when building from source.
 const RUFF_VERSION: &str = "0.15.0";
 
+/// Recursively collect all files under `dir`.
+fn walkdir(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut files = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(current) = stack.pop() {
+        let entries = match std::fs::read_dir(&current) {
+            Ok(e) => e,
+            Err(e) => {
+                eprintln!(
+                    "cargo:warning=Failed to read directory {}: {}",
+                    current.display(),
+                    e
+                );
+                continue;
+            }
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else {
+                files.push(path);
+            }
+        }
+    }
+    files.sort();
+    files
+}
+
 fn get_temp_cache_dir(cache_suffix: &str) -> std::path::PathBuf {
     let temp_dir = std::env::temp_dir();
     let cache_dir = temp_dir.join(format!("{}-peppy-cache", cache_suffix));
@@ -18,6 +47,7 @@ mod ruff_build {
 
     pub fn run() {
         println!("cargo:rerun-if-changed=build.rs");
+        println!("cargo:rustc-env=RUFF_VERSION={}", super::RUFF_VERSION);
 
         let profile = env::var("PROFILE").unwrap();
         let is_release = profile == "release";
@@ -138,8 +168,13 @@ mod peppylib_build {
         let so_path = peppylib_py_dir.join("peppylib/_peppylib.abi3.so");
 
         // Rerun when peppylib-py Rust source or Cargo.toml changes
-        println!("cargo:rerun-if-changed=../peppylib-py/src/");
         println!("cargo:rerun-if-changed=../peppylib-py/Cargo.toml");
+        let src_dir = peppylib_py_dir.join("src");
+        if src_dir.is_dir() {
+            for entry in super::walkdir(&src_dir) {
+                println!("cargo:rerun-if-changed={}", entry.display());
+            }
+        }
 
         // Use a separate CARGO_TARGET_DIR so maturin's inner `cargo build`
         // does not deadlock on the workspace build lock held by the outer cargo.
@@ -226,8 +261,119 @@ fn embed_ruff_binary() {
     }
 }
 
+mod rust_crates_build {
+    use sha2::{Digest, Sha256};
+    use std::path::PathBuf;
+
+    /// Returns true if the file should be included, matching the rust_embed attributes:
+    /// include: *.rs, *.toml, *.capnp, *.j2, tools/capnp_*
+    /// exclude: target/*, tests/*, examples/*
+    fn should_include(relative_path: &str, is_config_internal: bool) -> bool {
+        // Exclude patterns
+        if relative_path.starts_with("target/")
+            || relative_path.starts_with("tests/")
+            || relative_path.starts_with("examples/")
+        {
+            return false;
+        }
+
+        // Include patterns
+        if relative_path.ends_with(".rs")
+            || relative_path.ends_with(".toml")
+            || relative_path.ends_with(".capnp")
+            || relative_path.ends_with(".j2")
+        {
+            return true;
+        }
+
+        // config-internal has tools/capnp_* include pattern
+        if is_config_internal && relative_path.starts_with("tools/capnp_") {
+            return true;
+        }
+
+        false
+    }
+
+    fn collect_files(dir: &std::path::Path, is_config_internal: bool) -> Vec<PathBuf> {
+        let mut files = Vec::new();
+        let mut stack = vec![dir.to_path_buf()];
+
+        while let Some(current) = stack.pop() {
+            let entries = match std::fs::read_dir(&current) {
+                Ok(e) => e,
+                Err(e) => {
+                    eprintln!(
+                        "cargo:warning=Failed to read directory {}: {}",
+                        current.display(),
+                        e
+                    );
+                    continue;
+                }
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    let rel = path.strip_prefix(dir).unwrap_or(&path);
+                    let rel_str = rel.to_string_lossy();
+                    // Skip excluded directories entirely
+                    if rel_str == "target" || rel_str == "tests" || rel_str == "examples" {
+                        continue;
+                    }
+                    stack.push(path);
+                } else {
+                    let rel = path.strip_prefix(dir).unwrap_or(&path);
+                    let rel_str = rel.to_string_lossy();
+                    if should_include(&rel_str, is_config_internal) {
+                        files.push(path);
+                    }
+                }
+            }
+        }
+
+        files
+    }
+
+    pub fn run() {
+        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+
+        let crate_dirs = [
+            ("../peppylib", false),
+            ("../pmi-internal", false),
+            ("../config-internal", true),
+        ];
+
+        let mut hasher = Sha256::new();
+
+        for (rel, is_config) in &crate_dirs {
+            let dir = manifest_dir.join(rel);
+            let mut files = collect_files(&dir, *is_config);
+            // Sort for deterministic hashing
+            files.sort();
+
+            for file_path in &files {
+                println!("cargo:rerun-if-changed={}", file_path.display());
+                let relative = file_path.strip_prefix(&dir).unwrap_or(file_path);
+                hasher.update(relative.to_string_lossy().as_bytes());
+                match std::fs::read(file_path) {
+                    Ok(content) => hasher.update(&content),
+                    Err(e) => eprintln!(
+                        "cargo:warning=Failed to read file for hashing {}: {}",
+                        file_path.display(),
+                        e
+                    ),
+                }
+            }
+        }
+
+        let hash = hasher.finalize();
+        let hex: String = hash.iter().map(|b| format!("{b:02x}")).collect();
+        println!("cargo:rustc-env=RUST_CRATES_HASH={}", &hex[..16]);
+    }
+}
+
 fn main() {
     ruff_build::run();
     embed_ruff_binary();
     peppylib_build::run();
+    rust_crates_build::run();
 }
