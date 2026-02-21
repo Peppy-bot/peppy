@@ -653,6 +653,14 @@ async fn process_node_start(
         }
     };
 
+    let mut env_vars = env_vars;
+    super::inject_rust_build_env(
+        &mut env_vars,
+        entity.config().manifest.language,
+        &node_name,
+        &tag,
+    );
+
     // Validate that all required parameters are provided before starting the node
     let missing_params = validate_parameters(
         &entity.config().parameters,
