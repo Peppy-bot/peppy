@@ -106,6 +106,141 @@ fn render_template(template_path: &str, peppylib_path: &str) -> Result<String> {
 }
 
 // ---------------------------------------------------------------------------
+// Embedded crate sources for Rust dependency vendoring
+// ---------------------------------------------------------------------------
+
+#[derive(Embed)]
+#[folder = "../peppylib/"]
+#[include = "*.rs"]
+#[include = "*.toml"]
+#[include = "*.capnp"]
+#[include = "*.j2"]
+#[exclude = "target/*"]
+#[exclude = "tests/*"]
+#[exclude = "examples/*"]
+pub(crate) struct EmbeddedPeppylib;
+
+#[derive(Embed)]
+#[folder = "../pmi-internal/"]
+#[include = "*.rs"]
+#[include = "*.toml"]
+#[include = "*.capnp"]
+#[include = "*.j2"]
+#[exclude = "target/*"]
+#[exclude = "tests/*"]
+#[exclude = "examples/*"]
+pub(crate) struct EmbeddedPmiInternal;
+
+#[derive(Embed)]
+#[folder = "../config-internal/"]
+#[include = "*.rs"]
+#[include = "*.toml"]
+#[include = "*.capnp"]
+#[include = "*.j2"]
+#[include = "tools/capnp_*"]
+#[exclude = "target/*"]
+#[exclude = "tests/*"]
+#[exclude = "examples/*"]
+pub(crate) struct EmbeddedConfigInternal;
+
+// ---------------------------------------------------------------------------
+// Cross-platform symlink utility
+// ---------------------------------------------------------------------------
+
+pub(crate) fn symlink_dir(original: &Path, link: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    return std::os::unix::fs::symlink(original, link);
+    #[cfg(windows)]
+    return std::os::windows::fs::symlink_dir(original, link);
+}
+
+// ---------------------------------------------------------------------------
+// Shared Rust crate cache deployment
+// ---------------------------------------------------------------------------
+
+/// Deploys the three vendored Rust crates (peppylib, pmi-internal, config-internal)
+/// to a shared cache directory, then creates a symlink from `node_libs_dir/peppylib`
+/// to the shared cache. This avoids duplicating source files across nodes.
+///
+/// The cache is keyed by content hash + version, and uses file locking with a
+/// staging directory for concurrent-safe deployment.
+pub(crate) fn deploy_rust_crates_to_shared_cache(node_libs_dir: &Path) -> Result<()> {
+    let cache_key = format!("{}-{}", env!("RUST_CRATES_HASH"), env!("CARGO_PKG_VERSION"));
+    let cache_dir = config::consts::peppy_data_dir()
+        .join("libs/rust")
+        .join(&cache_key);
+
+    let parent = cache_dir
+        .parent()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "cache dir has no parent"))?;
+    fs::create_dir_all(parent)?;
+    let lock_path = cache_sibling_path(&cache_dir, ".lock");
+    let lock_file = fs::File::options()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)?;
+    lock_file.lock()?;
+
+    if !cache_dir.join(".complete").exists() {
+        let staging_dir =
+            cache_sibling_path(&cache_dir, &format!(".staging-{}", std::process::id()));
+        if staging_dir.exists() {
+            fs::remove_dir_all(&staging_dir)?;
+        }
+
+        let metadata = WorkspacePackageMetadata::embedded();
+        copy_embedded_crate::<EmbeddedPeppylib>("peppylib", &staging_dir, &metadata)?;
+        copy_embedded_crate::<EmbeddedPmiInternal>("pmi-internal", &staging_dir, &metadata)?;
+        copy_embedded_crate::<EmbeddedConfigInternal>("config-internal", &staging_dir, &metadata)?;
+
+        if cache_dir.exists() {
+            fs::remove_dir_all(&cache_dir)?;
+        }
+        fs::rename(&staging_dir, &cache_dir)?;
+        fs::write(cache_dir.join(".complete"), "")?;
+    }
+    drop(lock_file);
+
+    // Create/replace symlinks for all three crates in node_libs_dir.
+    // All three are needed because the crates reference each other via relative
+    // sibling paths (e.g., peppylib has `config = { path = "../config-internal" }`),
+    // and Cargo resolves these paths relative to the symlink location, not the target.
+    for crate_name in &["peppylib", "pmi-internal", "config-internal"] {
+        let link = node_libs_dir.join(crate_name);
+        let target = cache_dir.join(crate_name);
+        match link.symlink_metadata() {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                if fs::read_link(&link).ok().as_deref() == Some(target.as_path()) {
+                    continue;
+                }
+                fs::remove_file(&link)?;
+            }
+            Ok(_) => fs::remove_dir_all(&link)?,
+            Err(_) => {}
+        }
+        symlink_dir(&target, &link)?;
+    }
+
+    Ok(())
+}
+
+/// Returns a sibling path of `cache_dir` by appending `suffix` to its full name.
+///
+/// Unlike `Path::with_extension`, this preserves dots in the original name.
+/// For example, given `some/path/abc123-1.0.0` and suffix `.lock`, this returns
+/// `some/path/abc123-1.0.0.lock` (not `some/path/abc123-1.0.lock`).
+pub(crate) fn cache_sibling_path(cache_dir: &Path, suffix: &str) -> std::path::PathBuf {
+    let name = cache_dir
+        .file_name()
+        .expect("cache_dir must have a file name component");
+    let mut new_name = name.to_os_string();
+    new_name.push(suffix);
+    cache_dir.with_file_name(new_name)
+}
+
+// ---------------------------------------------------------------------------
 // Shared crate-vendoring utilities
 // ---------------------------------------------------------------------------
 
@@ -215,4 +350,32 @@ pub(crate) fn localize_cargo_toml(
 
     fs::write(cargo_toml_path, doc.to_string())?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn cache_sibling_path_preserves_semver_dots() {
+        let cache_dir = PathBuf::from("/data/libs/rust/abc123def456-1.0.0");
+        assert_eq!(
+            cache_sibling_path(&cache_dir, ".lock"),
+            PathBuf::from("/data/libs/rust/abc123def456-1.0.0.lock"),
+        );
+        assert_eq!(
+            cache_sibling_path(&cache_dir, ".staging-42"),
+            PathBuf::from("/data/libs/rust/abc123def456-1.0.0.staging-42"),
+        );
+    }
+
+    #[test]
+    fn cache_sibling_path_works_without_dots() {
+        let cache_dir = PathBuf::from("/data/libs/rust/abc123def456");
+        assert_eq!(
+            cache_sibling_path(&cache_dir, ".lock"),
+            PathBuf::from("/data/libs/rust/abc123def456.lock"),
+        );
+    }
 }

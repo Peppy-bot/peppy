@@ -2,14 +2,12 @@ use super::identifiers::is_rust_keyword;
 use crate::{
     error::{Error, Result},
     generator::{
-        common::{WorkspacePackageMetadata, copy_embedded_crate},
         naming::{sanitize_component, unique_module_name},
         types::{CapnpSchema, InterfaceArtifact, InterfaceKind},
     },
 };
 use config::encoding::compile_capnp;
 use proc_macro2::Span;
-use rust_embed::Embed;
 use std::{
     collections::{BTreeMap, HashMap},
     fs,
@@ -20,60 +18,18 @@ use syn::{
     parse_quote,
 };
 
-#[derive(Embed)]
-#[folder = "../peppylib/"]
-#[include = "*.rs"]
-#[include = "*.toml"]
-#[include = "*.capnp"]
-#[include = "*.j2"]
-#[exclude = "target/*"]
-#[exclude = "tests/*"]
-#[exclude = "examples/*"]
-struct EmbeddedPeppylib;
-
-#[derive(Embed)]
-#[folder = "../pmi-internal/"]
-#[include = "*.rs"]
-#[include = "*.toml"]
-#[include = "*.capnp"]
-#[include = "*.j2"]
-#[exclude = "target/*"]
-#[exclude = "tests/*"]
-struct EmbeddedPmiInternal;
-
-#[derive(Embed)]
-#[folder = "../config-internal/"]
-#[include = "*.rs"]
-#[include = "*.toml"]
-#[include = "*.capnp"]
-#[include = "*.j2"]
-#[include = "tools/capnp_*"]
-#[exclude = "target/*"]
-#[exclude = "tests/*"]
-struct EmbeddedConfigInternal;
-
 pub fn add_peppylib_dependencies(to_path: impl AsRef<Path>) -> Result<()> {
-    const PEPPYLIB_DIR: &str = "peppylib";
-    const PMI_INTERNAL_DIR: &str = "pmi-internal";
-    const CONFIG_INTERNAL_DIR: &str = "config-internal";
-    const VENDORED_ROOT: &str = "crates";
-    const PEPPYLIB_RELATIVE_PATH: &str = "crates/peppylib";
-
     let to_path = to_path.as_ref();
-    let vendored_crates_dir = to_path.join(VENDORED_ROOT);
-    fs::create_dir_all(&vendored_crates_dir)?;
+    let libs_dir = to_path.parent().ok_or_else(|| {
+        Error::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "peppygen path has no parent directory",
+        ))
+    })?;
 
-    generate_lib_structure(to_path, PEPPYLIB_RELATIVE_PATH)?;
+    crate::generator::common::deploy_rust_crates_to_shared_cache(libs_dir)?;
+    generate_lib_structure(to_path, "../peppylib")?;
 
-    let metadata = WorkspacePackageMetadata::embedded();
-
-    copy_embedded_crate::<EmbeddedPeppylib>(PEPPYLIB_DIR, &vendored_crates_dir, &metadata)?;
-    copy_embedded_crate::<EmbeddedPmiInternal>(PMI_INTERNAL_DIR, &vendored_crates_dir, &metadata)?;
-    copy_embedded_crate::<EmbeddedConfigInternal>(
-        CONFIG_INTERNAL_DIR,
-        &vendored_crates_dir,
-        &metadata,
-    )?;
     Ok(())
 }
 
