@@ -623,7 +623,7 @@ async fn process_node_start(
         env_vars,
         ..
     } = goal;
-    let env_vars = match super::validate_goal_env_vars(&env_vars) {
+    let mut env_vars = match super::validate_goal_env_vars(&env_vars) {
         Ok(vars) => vars,
         Err(e) => {
             return NodeStartResult::failure(e.to_string());
@@ -653,7 +653,6 @@ async fn process_node_start(
         }
     };
 
-    let mut env_vars = env_vars;
     let sccache_injected = super::inject_rust_build_env(
         &mut env_vars,
         entity.config().manifest.language,
