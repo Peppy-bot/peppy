@@ -189,6 +189,15 @@ fn stable_test_target_dir() -> std::path::PathBuf {
 pub fn compile_project(dir: impl AsRef<Path>) {
     let dir = dir.as_ref();
     let target_dir = stable_test_target_dir();
+    fs::create_dir_all(&target_dir).expect("failed to create stable test target directory");
+
+    // Hold an exclusive file lock across both the cargo build and the binary copy.
+    // This prevents a parallel test's build from overwriting the `user_node` binary
+    // in the shared target dir between our build finishing and the copy completing.
+    let lock_file = fs::File::create(target_dir.join(".compile.lock"))
+        .expect("failed to create compile lock file");
+    lock_file.lock().expect("failed to acquire compile lock");
+
     let cargo_output = Command::new("cargo")
         .arg("build")
         .env("CARGO_NET_OFFLINE", "true")
@@ -213,6 +222,7 @@ pub fn compile_project(dir: impl AsRef<Path>) {
         fs::copy(&binary, local_bin_dir.join("user_node"))
             .expect("failed to copy compiled binary to local target dir");
     }
+    // Lock released on drop
 }
 
 pub fn insert_dependency_line(contents: &str, dependency_line: &str) -> String {
