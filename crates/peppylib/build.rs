@@ -1,13 +1,9 @@
 use std::env;
 use std::path::PathBuf;
 
-fn get_capnp_binary() -> Option<PathBuf> {
+fn get_capnp_binary(manifest_dir: &std::path::Path) -> Option<PathBuf> {
     // Use bundled binaries in config-internal crate
-    let manifest_dir = env::var("CARGO_MANIFEST_DIR").ok()?;
-    let config_internal_tools = PathBuf::from(&manifest_dir)
-        .parent()?
-        .join("config-internal")
-        .join("tools");
+    let config_internal_tools = manifest_dir.parent()?.join("config-internal").join("tools");
 
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     let binary_name = "capnp_linux_x86_64";
@@ -36,11 +32,20 @@ fn get_capnp_binary() -> Option<PathBuf> {
 fn main() {
     println!("cargo:rerun-if-changed=schemas/");
 
-    let capnp_path = get_capnp_binary().expect(
+    // Canonicalize the manifest directory to handle symlinked source trees.
+    // When peppylib is deployed via symlink (e.g. node/.peppy/libs/peppylib → shared cache),
+    // Cargo sets CARGO_MANIFEST_DIR to the symlink path but CWD to the resolved path.
+    // The capnp compiler resolves --src-prefix relative to CWD, so schema file paths
+    // must also be canonical to ensure the prefix is stripped correctly.
+    let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap())
+        .canonicalize()
+        .expect("Failed to canonicalize CARGO_MANIFEST_DIR");
+
+    let capnp_path = get_capnp_binary(&manifest_dir).expect(
         "Could not find capnp binary. Please install Cap'n Proto: https://capnproto.org/install.html",
     );
 
-    let schemas_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap()).join("schemas");
+    let schemas_dir = manifest_dir.join("schemas");
     for entry in std::fs::read_dir(&schemas_dir).expect("Failed to read schemas directory") {
         let entry = entry.expect("Failed to read schema directory entry");
         let path = entry.path();
