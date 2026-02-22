@@ -125,6 +125,14 @@ impl DaemonNode {
     }
 
     pub async fn start_with_ready(&self, ready: Option<oneshot::Sender<()>>) -> Result<()> {
+        // Clear instance directories from previous runs
+        let inst_dir = config::consts::instances_dir();
+        if inst_dir.exists()
+            && let Err(e) = std::fs::remove_dir_all(&inst_dir)
+        {
+            tracing::warn!("Failed to clear instances directory: {}", e);
+        }
+
         let daemon_node_name = self.node_name(); // The daemon node binds to itself as the daemon scope
         info!(
             "Starting the daemon node with name {} and instance_id {}...",
