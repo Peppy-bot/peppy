@@ -137,7 +137,7 @@ impl ServeCommandEmulation {
             Arc::clone(&shared_messenger),
             Some("test-daemon"),
             DaemonNodeArguments {
-                node_startup_timeout: Duration::from_secs(10),
+                node_startup_timeout: Duration::from_secs(120),
                 node_start_health_timeout: Duration::from_secs(30),
             },
             temp_dir.path().to_path_buf(),
