@@ -311,24 +311,24 @@ fn topological_sort_local_nodes(configs: Vec<(PathBuf, NodeConfig)>) -> Vec<(Pat
 }
 
 fn resolve_deployment(
-    nodes_cache_dir: &Path,
+    added_nodes_dir: &Path,
     base_dir: &Path,
     deployment: &Deployment,
 ) -> Result<ResolvedNode> {
     match &deployment.source {
         DeploymentSource::Local(spec) => resolve_local_deployment(base_dir, spec),
-        DeploymentSource::Git(spec) => resolve_remote_git(nodes_cache_dir, spec),
-        DeploymentSource::Url(spec) => resolve_remote_url(nodes_cache_dir, spec),
+        DeploymentSource::Git(spec) => resolve_remote_git(added_nodes_dir, spec),
+        DeploymentSource::Url(spec) => resolve_remote_url(added_nodes_dir, spec),
     }
 }
 
 fn build_launch_plan(peppy_launcher: PeppyLauncher, source_stack: NodeStack) -> LaunchPlan {
     let deployments = peppy_launcher.deployments;
-    let nodes_cache_dir = config::consts::nodes_cache_dir();
+    let added_nodes_dir = config::consts::added_nodes_dir();
     let base_dir = source_stack.root().root_path().to_path_buf();
 
     let daemon_config = source_stack.root().config().clone();
-    let stack = NodeStack::new(daemon_config, None, &nodes_cache_dir);
+    let stack = NodeStack::new(daemon_config, None, &added_nodes_dir);
 
     let mut planned = Vec::with_capacity(deployments.len());
 
@@ -342,7 +342,7 @@ fn build_launch_plan(peppy_launcher: PeppyLauncher, source_stack: NodeStack) -> 
             continue;
         }
 
-        let resolved = match resolve_deployment(&nodes_cache_dir, &base_dir, &deployment) {
+        let resolved = match resolve_deployment(&added_nodes_dir, &base_dir, &deployment) {
             Ok(resolved) => resolved,
             Err(err) => {
                 let reason = err.to_string();

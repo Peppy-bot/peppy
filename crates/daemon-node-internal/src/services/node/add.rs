@@ -7,7 +7,8 @@ use crate::encoding::{
 use crate::names;
 use chrono::Local;
 use config::consts::{
-    NODE_CONFIG_FILE, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH, logs_dir_add, peppy_data_dir,
+    NODE_CONFIG_FILE, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH, added_nodes_dir, logs_dir_add,
+    peppy_data_dir,
 };
 use config::node::{NodeConfig, NodeConfigParser};
 use git2::{Repository, build::CheckoutBuilder};
@@ -338,13 +339,13 @@ fn copy_node_to_temp_dir(from_dir: &Path) -> Result<(PathBuf, Vec<String>)> {
 }
 
 /// Archives the contents of `source_dir` into a `.tar.zst` file in the
-/// peppy nodes storage directory.
+/// peppy added nodes directory.
 ///
 /// The archive path follows the format: `<storage_dir>/<node_name>_<tag>.tar.zst`
 ///
 /// Uses zstd compression level 1 (fastest speed).
 fn archive_dir_to_storage(source_dir: &Path, node_name: &str, node_tag: &str) -> Result<PathBuf> {
-    let storage_dir = peppy_data_dir().join("nodes");
+    let storage_dir = added_nodes_dir();
     std::fs::create_dir_all(&storage_dir)?;
 
     let archive_name = format!("{}_{}.tar.zst", node_name, node_tag);
@@ -1357,7 +1358,7 @@ async fn process_node_add(
     if let Some(previous_snapshot_path) = previous_snapshot_path
         && previous_snapshot_path != archive_path
     {
-        let storage_dir = peppy_data_dir().join("nodes");
+        let storage_dir = added_nodes_dir();
         if previous_snapshot_path.starts_with(&storage_dir) {
             if previous_snapshot_path.is_dir() {
                 std::fs::remove_dir_all(&previous_snapshot_path).ok();

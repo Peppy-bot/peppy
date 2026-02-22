@@ -117,11 +117,11 @@ fn git_repo_missing_tag_is_unresolvable() {
         reason
     );
 
-    let nodes_cache_dir = config::consts::nodes_cache_dir();
+    let added_nodes_dir = config::consts::added_nodes_dir();
     assert!(
-        nodes_cache_dir.is_dir(),
+        added_nodes_dir.is_dir(),
         "nodes cache dir {:?} should be created even on failure",
-        nodes_cache_dir
+        added_nodes_dir
     );
 }
 

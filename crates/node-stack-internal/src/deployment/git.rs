@@ -99,12 +99,12 @@ fn ensure_repository(
 }
 
 pub fn resolve_remote_git(
-    nodes_cache_dir: &Path,
+    added_nodes_dir: &Path,
     spec: &DeploymentGitSource,
 ) -> Result<ResolvedNode> {
-    fs::create_dir_all(nodes_cache_dir)?;
+    fs::create_dir_all(added_nodes_dir)?;
 
-    let repo_dir = build_repo_cache_path(nodes_cache_dir, &spec.repo);
+    let repo_dir = build_repo_cache_path(added_nodes_dir, &spec.repo);
     let repo = ensure_repository(&repo_dir, &spec.repo)
         .map_err(|_| Error::NodeNotFound(spec.repo.to_string()))?;
 
