@@ -7,12 +7,15 @@ use httptest::{
 use node_stack::LaunchPlan;
 use tempfile::tempdir;
 
-use crate::helpers::config_common::{daemon_node_config, deployment, write_config};
+use crate::helpers::config_common::{
+    daemon_node_config, deployment, init_test_data_dir, write_config,
+};
 use crate::helpers::http::{create_http_bundle, sha256_checksum};
 
 #[test]
 #[ignore = "requires binding a local HTTP server (may be blocked in sandboxed test environments)"]
 fn http_bundle_is_downloaded_and_resolved() {
+    let _data_dir = init_test_data_dir();
     let temp_dir = tempdir().expect("temp dir");
     let server = Server::run();
 
@@ -65,6 +68,7 @@ fn http_bundle_is_downloaded_and_resolved() {
 #[test]
 #[ignore = "requires binding a local HTTP server (may be blocked in sandboxed test environments)"]
 fn http_bundle_is_cloned_and_same_tag_updates_code() {
+    let _data_dir = init_test_data_dir();
     let temp_dir = tempdir().expect("temp dir");
     let server = Server::run();
 

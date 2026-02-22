@@ -5,12 +5,13 @@ use node_stack::{LaunchPlan, NodeStackError};
 use tempfile::{TempDir, tempdir};
 
 use crate::helpers::config_common::{
-    daemon_node_config, deployment, write_config, write_config_str,
+    daemon_node_config, deployment, init_test_data_dir, write_config, write_config_str,
 };
 use crate::helpers::git::{create_simple_git_repo, push_git_commit};
 
 #[test]
 fn git_repo_is_cloned_and_resolved() {
+    let _data_dir = init_test_data_dir();
     let temp_dir = tempdir().expect("temp dir");
     let manifest_content = r#"{
             schema_version: 1,
@@ -52,6 +53,7 @@ fn git_repo_is_cloned_and_resolved() {
 /// The deployment must remain unresolved when the requested tag is missing.
 #[test]
 fn git_repo_missing_tag_is_unresolvable() {
+    let _data_dir = init_test_data_dir();
     let git_repo_dir = TempDir::new().expect("git repo temp dir");
     let git_repo_path = test_helpers::create_nodes_git_repo(git_repo_dir.path());
     let git_repo_path = git_repo_path.to_str().expect("utf-8 git repo path");
@@ -127,6 +129,7 @@ fn git_repo_missing_tag_is_unresolvable() {
 
 #[test]
 fn git_repo_is_cloned_and_same_tag_updates_code() {
+    let _data_dir = init_test_data_dir();
     let temp_dir = tempdir().expect("temp dir");
     let manifest_v1 = r#"{
             schema_version: 1,
@@ -182,6 +185,10 @@ fn git_repo_is_cloned_and_same_tag_updates_code() {
         .expect("find updated commit");
     repo.tag("1.0.0", &commit, &signature, "tag", true)
         .expect("retag commit");
+
+    // Use a fresh data dir so the second resolution re-clones the remote
+    // (the cached clone does not force-update moved tags on fetch).
+    let _data_dir = init_test_data_dir();
 
     let plan = LaunchPlan::from_launch_file(daemon_node_config(), &launch_file).expect("plan");
     assert_eq!(plan.node_stack().len(), 2, "daemon + uvc_camera");
