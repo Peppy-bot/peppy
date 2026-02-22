@@ -330,6 +330,8 @@ pub struct NodeAddResult {
     pub log_path: PathBuf,
     pub success: bool,
     pub error_message: Option<String>,
+    pub node_name: String,
+    pub node_tag: String,
 }
 
 impl NodeAddResult {
@@ -338,21 +340,37 @@ impl NodeAddResult {
         log_path: impl Into<PathBuf>,
         success: bool,
         error_message: Option<String>,
+        node_name: impl Into<String>,
+        node_tag: impl Into<String>,
     ) -> Self {
         Self {
             snapshot_path: snapshot_path.into(),
             log_path: log_path.into(),
             success,
             error_message,
+            node_name: node_name.into(),
+            node_tag: node_tag.into(),
         }
     }
 
-    pub fn success(snapshot_path: impl Into<PathBuf>, log_path: impl Into<PathBuf>) -> Self {
-        Self::new(snapshot_path, log_path, true, None)
+    pub fn success(
+        snapshot_path: impl Into<PathBuf>,
+        log_path: impl Into<PathBuf>,
+        node_name: impl Into<String>,
+        node_tag: impl Into<String>,
+    ) -> Self {
+        Self::new(snapshot_path, log_path, true, None, node_name, node_tag)
     }
 
     pub fn failure(log_path: impl Into<PathBuf>, error_message: impl Into<String>) -> Self {
-        Self::new(PathBuf::new(), log_path, false, Some(error_message.into()))
+        Self::new(
+            PathBuf::new(),
+            log_path,
+            false,
+            Some(error_message.into()),
+            "",
+            "",
+        )
     }
 
     pub fn encode(&self) -> Result<Payload> {
@@ -365,6 +383,8 @@ impl NodeAddResult {
             }
             result.set_snapshot_path(self.snapshot_path.to_string_lossy().as_ref());
             result.set_log_path(self.log_path.to_string_lossy().as_ref());
+            result.set_node_name(&self.node_name);
+            result.set_node_tag(&self.node_tag);
         }
         encode_message(&builder)
     }
@@ -380,11 +400,15 @@ impl NodeAddResult {
         };
         let snapshot_path = PathBuf::from(result.get_snapshot_path()?.to_str()?);
         let log_path = PathBuf::from(result.get_log_path()?.to_str()?);
+        let node_name = result.get_node_name()?.to_str()?.to_owned();
+        let node_tag = result.get_node_tag()?.to_str()?.to_owned();
         Ok(Self {
             snapshot_path,
             log_path,
             success: result.get_success(),
             error_message,
+            node_name,
+            node_tag,
         })
     }
 

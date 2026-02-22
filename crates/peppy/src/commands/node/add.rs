@@ -1,11 +1,9 @@
-use config::node::NodeConfigParser;
 use daemon_node::encoding::{
     NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAddResult, NodeInfoRequest,
     NodeInfoResponse, NodeSource,
 };
 use peppylib::{ActionMessenger, MessengerHandle, PeppyError};
 use std::io::{self, Write};
-use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::info;
@@ -22,14 +20,6 @@ const CALLER_INSTANCE_ID: &str = "peppy-cli";
 const GOAL_TIMEOUT: Duration = Duration::from_secs(30);
 // Timeout for the node info request
 const INFO_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
-
-fn node_ref_from_peppy_json5(peppy_json5: &Path) -> Result<(String, String)> {
-    let node_config = NodeConfigParser::from_path(peppy_json5).map_err(Error::PeppyConfig)?;
-    Ok((
-        node_config.manifest.name.as_str().to_string(),
-        node_config.manifest.tag.clone(),
-    ))
-}
 
 fn validate_git_ref(git_ref: Option<&str>) -> Result<Option<String>> {
     let git_ref = git_ref.map(str::trim);
@@ -242,22 +232,10 @@ async fn add_node_async(
         ));
     }
 
-    // Get node reference from the snapshot result or from pre-add info
-    let snapshot_node_ref =
-        node_ref_from_peppy_json5(&add_result.snapshot_path.join("peppy.json5")).ok();
-    let pre_add_node_ref = pre_add_node_info.map(|info| {
-        (
-            info.config.manifest.name.as_str().to_string(),
-            info.config.manifest.tag,
-        )
-    });
-    let node_ref = snapshot_node_ref.or(pre_add_node_ref);
+    let node_name = &add_result.node_name;
+    let node_tag = &add_result.node_tag;
 
-    if let Some((node_name, node_tag)) = node_ref.as_ref() {
-        info!("Added node {}:{} to the node stack", node_name, node_tag);
-    } else {
-        info!("Added node to the node stack");
-    }
+    info!("Added node {}:{} to the node stack", node_name, node_tag);
     info!(
         "Snapshot path: {}",
         add_result.snapshot_path.to_string_lossy()
@@ -267,18 +245,11 @@ async fn add_node_async(
         return Ok(());
     }
 
-    let (node_name, node_tag) = node_ref.ok_or_else(|| {
-        Error::ExecutionFailed(
-            "Failed to determine node name/tag after adding. Try running `peppy node list`."
-                .to_string(),
-        )
-    })?;
-
     start_instance_async(
         messenger_handle,
         &daemon_node_name,
-        &node_name,
-        &node_tag,
+        node_name,
+        node_tag,
         &args,
         instance_id,
         timeout_secs,

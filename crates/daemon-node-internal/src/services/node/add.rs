@@ -1374,7 +1374,7 @@ async fn process_node_add(
         archive_path.display()
     );
 
-    NodeAddResult::success(archive_path, &ctx.log_path)
+    NodeAddResult::success(archive_path, &ctx.log_path, node_name, node_tag)
 }
 
 async fn handle_cancel_request(
