@@ -54,7 +54,7 @@ mod tests {
                     name: "uvc_camera",
                     tag: "0.1.0",
                     language: "rust",
-                    start_cmd: ["cargo", "run", "--release"]
+                    start_cmd: ["./target/release/uvc_camera"]
                 }
             }"#,
         )
