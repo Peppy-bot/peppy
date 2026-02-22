@@ -81,7 +81,11 @@ fn fetch_repository(repo: &Repository) -> std::result::Result<(), git2::Error> {
     if let Ok(mut remote) = repo.find_remote("origin") {
         let mut fo = FetchOptions::new();
         fo.download_tags(AutotagOption::All);
-        remote.fetch(&[] as &[&str], Some(&mut fo), None)
+        remote.fetch(
+            &["+refs/tags/*:refs/tags/*", "+refs/heads/*:refs/remotes/origin/*"],
+            Some(&mut fo),
+            None,
+        )
     } else {
         Ok(())
     }
