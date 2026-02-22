@@ -50,7 +50,7 @@ fn validate_goal_env_vars(env_vars: &[(String, String)]) -> Result<Vec<(String, 
         if FORBIDDEN_ENV_KEYS.contains(&normalized.as_str()) {
             return Err(Error::ForbiddenEnvVar(normalized));
         }
-        result.push((normalized, value.clone()));
+        result.push((key.trim().to_string(), value.clone()));
     }
     Ok(result)
 }
@@ -366,5 +366,30 @@ mod tests {
     fn is_supported_http_archive_is_case_insensitive() {
         let url = url::Url::parse("https://example.com/BUNDLE.TAR.ZST").unwrap();
         assert!(is_supported_http_archive(&url));
+    }
+
+    #[test]
+    fn validate_goal_env_vars_preserves_key_casing() {
+        let env_vars = vec![
+            ("my_Custom_Var".to_string(), "value1".to_string()),
+            ("AnotherVar".to_string(), "value2".to_string()),
+        ];
+        let result = validate_goal_env_vars(&env_vars).unwrap();
+        assert_eq!(result[0].0, "my_Custom_Var");
+        assert_eq!(result[1].0, "AnotherVar");
+    }
+
+    #[test]
+    fn validate_goal_env_vars_trims_key_whitespace() {
+        let env_vars = vec![("  MY_VAR  ".to_string(), "value".to_string())];
+        let result = validate_goal_env_vars(&env_vars).unwrap();
+        assert_eq!(result[0].0, "MY_VAR");
+    }
+
+    #[test]
+    fn validate_goal_env_vars_rejects_forbidden_keys_case_insensitively() {
+        let env_vars = vec![("ld_preload".to_string(), "evil.so".to_string())];
+        let err = validate_goal_env_vars(&env_vars).unwrap_err();
+        assert!(err.to_string().contains("LD_PRELOAD"));
     }
 }
