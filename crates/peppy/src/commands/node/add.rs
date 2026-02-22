@@ -232,10 +232,11 @@ async fn add_node_async(
         ));
     }
 
-    let node_name = &add_result.node_name;
-    let node_tag = &add_result.node_tag;
-
-    info!("Added node {}:{} to the node stack", node_name, node_tag);
+    if let (Some(name), Some(tag)) = (&add_result.node_name, &add_result.node_tag) {
+        info!("Added node {}:{} to the node stack", name, tag);
+    } else {
+        info!("Added node to the node stack");
+    }
     info!(
         "Snapshot path: {}",
         add_result.snapshot_path.to_string_lossy()
@@ -244,6 +245,17 @@ async fn add_node_async(
     if !run {
         return Ok(());
     }
+
+    let node_name = add_result.node_name.as_deref().ok_or_else(|| {
+        Error::ExecutionFailed(
+            "Failed to determine node name after adding. Try running `peppy node list`.".into(),
+        )
+    })?;
+    let node_tag = add_result.node_tag.as_deref().ok_or_else(|| {
+        Error::ExecutionFailed(
+            "Failed to determine node tag after adding. Try running `peppy node list`.".into(),
+        )
+    })?;
 
     start_instance_async(
         messenger_handle,

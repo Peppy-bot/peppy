@@ -330,47 +330,36 @@ pub struct NodeAddResult {
     pub log_path: PathBuf,
     pub success: bool,
     pub error_message: Option<String>,
-    pub node_name: String,
-    pub node_tag: String,
+    pub node_name: Option<String>,
+    pub node_tag: Option<String>,
 }
 
 impl NodeAddResult {
-    pub fn new(
-        snapshot_path: impl Into<PathBuf>,
-        log_path: impl Into<PathBuf>,
-        success: bool,
-        error_message: Option<String>,
-        node_name: impl Into<String>,
-        node_tag: impl Into<String>,
-    ) -> Self {
-        Self {
-            snapshot_path: snapshot_path.into(),
-            log_path: log_path.into(),
-            success,
-            error_message,
-            node_name: node_name.into(),
-            node_tag: node_tag.into(),
-        }
-    }
-
     pub fn success(
         snapshot_path: impl Into<PathBuf>,
         log_path: impl Into<PathBuf>,
         node_name: impl Into<String>,
         node_tag: impl Into<String>,
     ) -> Self {
-        Self::new(snapshot_path, log_path, true, None, node_name, node_tag)
+        Self {
+            snapshot_path: snapshot_path.into(),
+            log_path: log_path.into(),
+            success: true,
+            error_message: None,
+            node_name: Some(node_name.into()),
+            node_tag: Some(node_tag.into()),
+        }
     }
 
     pub fn failure(log_path: impl Into<PathBuf>, error_message: impl Into<String>) -> Self {
-        Self::new(
-            PathBuf::new(),
-            log_path,
-            false,
-            Some(error_message.into()),
-            "",
-            "",
-        )
+        Self {
+            snapshot_path: PathBuf::new(),
+            log_path: log_path.into(),
+            success: false,
+            error_message: Some(error_message.into()),
+            node_name: None,
+            node_tag: None,
+        }
     }
 
     pub fn encode(&self) -> Result<Payload> {
@@ -383,32 +372,36 @@ impl NodeAddResult {
             }
             result.set_snapshot_path(self.snapshot_path.to_string_lossy().as_ref());
             result.set_log_path(self.log_path.to_string_lossy().as_ref());
-            result.set_node_name(&self.node_name);
-            result.set_node_tag(&self.node_tag);
+            if let Some(ref node_name) = self.node_name {
+                result.set_node_name(node_name);
+            }
+            if let Some(ref node_tag) = self.node_tag {
+                result.set_node_tag(node_tag);
+            }
         }
         encode_message(&builder)
+    }
+
+    fn optional_text(s: &str) -> Option<String> {
+        if s.is_empty() {
+            None
+        } else {
+            Some(s.to_owned())
+        }
     }
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
         let result = reader.get_root::<node_capnp::node_add_result::Reader>()?;
-        let error_message_str = result.get_error_message()?.to_str()?;
-        let error_message = if error_message_str.is_empty() {
-            None
-        } else {
-            Some(error_message_str.to_owned())
-        };
         let snapshot_path = PathBuf::from(result.get_snapshot_path()?.to_str()?);
         let log_path = PathBuf::from(result.get_log_path()?.to_str()?);
-        let node_name = result.get_node_name()?.to_str()?.to_owned();
-        let node_tag = result.get_node_tag()?.to_str()?.to_owned();
         Ok(Self {
             snapshot_path,
             log_path,
             success: result.get_success(),
-            error_message,
-            node_name,
-            node_tag,
+            error_message: Self::optional_text(result.get_error_message()?.to_str()?),
+            node_name: Self::optional_text(result.get_node_name()?.to_str()?),
+            node_tag: Self::optional_text(result.get_node_tag()?.to_str()?),
         })
     }
 
