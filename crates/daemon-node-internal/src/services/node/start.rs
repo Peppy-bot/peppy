@@ -195,6 +195,8 @@ impl FeedbackSync {
                 break;
             }
             let notified = self.notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
             if self.published_count.load(Ordering::Relaxed) >= target {
                 break;
             }
