@@ -10,8 +10,9 @@ mod templates;
 use crate::encoding::NodeSource;
 use crate::{Error, Result};
 use config::node::{NodeConfig, PeppygenLanguage};
+use git2::{Repository, build::CheckoutBuilder};
 use rand::RngExt;
-use std::path::{Component, Path};
+use std::path::{Component, Path, PathBuf};
 use std::sync::OnceLock;
 use tar::Archive;
 use zstd::stream::read::Decoder;
@@ -215,6 +216,41 @@ pub(crate) fn extract_tar_zst(
     Ok(())
 }
 
+pub(crate) fn sanitize_repo_path(repo_path: &str) -> std::result::Result<PathBuf, String> {
+    let trimmed = repo_path.trim_start_matches(['/', '\\']);
+    let path = PathBuf::from(trimmed);
+    if path.components().any(|c| matches!(c, Component::ParentDir)) {
+        return Err("repo_path must not contain '..'".to_string());
+    }
+    Ok(path)
+}
+
+pub(crate) fn checkout_repo_ref(
+    repo: &Repository,
+    repo_ref: &str,
+) -> std::result::Result<(), git2::Error> {
+    let repo_ref = repo_ref.trim();
+    if repo_ref.is_empty() {
+        return Ok(());
+    }
+    let object = repo
+        .revparse_single(repo_ref)
+        .or_else(|_| repo.revparse_single(&format!("refs/tags/{repo_ref}")))
+        .or_else(|_| repo.revparse_single(&format!("refs/heads/{repo_ref}")))
+        .or_else(|_| repo.revparse_single(&format!("refs/remotes/origin/{repo_ref}")))?;
+    let commit = object.peel_to_commit()?;
+    repo.set_head_detached(commit.id())?;
+    let mut checkout = CheckoutBuilder::new();
+    checkout.force();
+    repo.checkout_head(Some(&mut checkout))?;
+    Ok(())
+}
+
+pub(crate) fn is_supported_http_archive(url: &url::Url) -> bool {
+    let path = url.path().to_ascii_lowercase();
+    path.ends_with(".tar.zst") || path.ends_with(".tar.zstd") || path.ends_with(".tzst")
+}
+
 pub use add::listen_for_node_add;
 pub use info::listen_for_node_info;
 pub use init::listen_for_node_init;
@@ -269,5 +305,66 @@ mod tests {
     #[test]
     fn is_sccache_available_does_not_panic() {
         let _ = is_sccache_available();
+    }
+
+    #[test]
+    fn sanitize_repo_path_accepts_relative_path() {
+        let result = sanitize_repo_path("some/path");
+        assert_eq!(result.unwrap(), PathBuf::from("some/path"));
+    }
+
+    #[test]
+    fn sanitize_repo_path_strips_leading_slashes() {
+        let result = sanitize_repo_path("///some/path");
+        assert_eq!(result.unwrap(), PathBuf::from("some/path"));
+    }
+
+    #[test]
+    fn sanitize_repo_path_strips_leading_backslashes() {
+        let result = sanitize_repo_path("\\\\some\\path");
+        assert_eq!(result.unwrap(), PathBuf::from("some\\path"));
+    }
+
+    #[test]
+    fn sanitize_repo_path_rejects_parent_dir() {
+        let result = sanitize_repo_path("some/../etc/passwd");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains(".."));
+    }
+
+    #[test]
+    fn is_supported_http_archive_accepts_tar_zst() {
+        let url = url::Url::parse("https://example.com/bundle.tar.zst").unwrap();
+        assert!(is_supported_http_archive(&url));
+    }
+
+    #[test]
+    fn is_supported_http_archive_accepts_tar_zstd() {
+        let url = url::Url::parse("https://example.com/bundle.tar.zstd").unwrap();
+        assert!(is_supported_http_archive(&url));
+    }
+
+    #[test]
+    fn is_supported_http_archive_accepts_tzst() {
+        let url = url::Url::parse("https://example.com/bundle.tzst").unwrap();
+        assert!(is_supported_http_archive(&url));
+    }
+
+    #[test]
+    fn is_supported_http_archive_rejects_tar_gz() {
+        let url = url::Url::parse("https://example.com/bundle.tar.gz").unwrap();
+        assert!(!is_supported_http_archive(&url));
+    }
+
+    #[test]
+    fn is_supported_http_archive_rejects_plain_url() {
+        let url = url::Url::parse("https://example.com/page").unwrap();
+        assert!(!is_supported_http_archive(&url));
+    }
+
+    #[test]
+    fn is_supported_http_archive_is_case_insensitive() {
+        let url = url::Url::parse("https://example.com/BUNDLE.TAR.ZST").unwrap();
+        assert!(is_supported_http_archive(&url));
     }
 }
