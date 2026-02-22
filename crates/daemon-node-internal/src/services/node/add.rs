@@ -1,5 +1,6 @@
 use super::super::stack::STACK_LAUNCH_GIT_HASH;
 use super::sync::{collect_subscribed_interfaces, generate_peppygen_for_node};
+use super::{extract_tar_zst, generate_random_id};
 use crate::Result;
 use crate::encoding::{
     NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAddResult, NodeSource,
@@ -638,7 +639,7 @@ fn extract_http_bundle(
     destination: &Path,
     url: &url::Url,
 ) -> std::result::Result<(), String> {
-    super::extract_tar_zst(bundle_path, destination).map_err(|e| format!("{} (source: {})", e, url))
+    extract_tar_zst(bundle_path, destination).map_err(|e| format!("{} (source: {})", e, url))
 }
 
 fn locate_node_root_dir(extracted_dir: &Path) -> std::result::Result<PathBuf, String> {
@@ -719,10 +720,8 @@ fn resolve_http_source_blocking(
         .map_err(|e| format!("Failed to create HTTP download directory: {}", e))?;
 
     let timestamp = Local::now().format("%Y%m%d_%H%M%S_%3f");
-    let operation_dir = http_base_dir.join(format!(
-        "node_add_{timestamp}_{}",
-        super::generate_random_id()
-    ));
+    let operation_dir =
+        http_base_dir.join(format!("node_add_{timestamp}_{}", generate_random_id()));
     std::fs::create_dir_all(&operation_dir)
         .map_err(|e| format!("Failed to create HTTP staging directory: {}", e))?;
 

@@ -89,7 +89,7 @@ pub struct TopicPublisher {
 }
 
 impl TopicPublisher {
-    pub(super) fn new(messenger: Arc<Mutex<Messenger>>, topic: String, qos: PublisherQoS) -> Self {
+    pub(crate) fn new(messenger: Arc<Mutex<Messenger>>, topic: String, qos: PublisherQoS) -> Self {
         Self {
             messenger,
             topic,
