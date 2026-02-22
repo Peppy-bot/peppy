@@ -913,7 +913,7 @@ async fn listen_for_launch_configuration_launch_config_second_request_replaces_e
 
     let _node_a_path = write_node_config(
         nodes_dir.path(),
-        "node_a",
+        "repl_a",
         NODE_TAG,
         "test-hash",
         &["sleep", "60"],
@@ -922,7 +922,7 @@ async fn listen_for_launch_configuration_launch_config_second_request_replaces_e
     );
     let _node_b_path = write_node_config(
         nodes_dir.path(),
-        "node_b",
+        "repl_b",
         NODE_TAG,
         "test-hash",
         &["sleep", "60"],
@@ -936,7 +936,7 @@ async fn listen_for_launch_configuration_launch_config_second_request_replaces_e
             &node_messenger,
             &started_daemon.daemon_node_name,
             "a1",
-            "node_a",
+            "repl_a",
         )
         .await
         .expect("ready should start"),
@@ -946,7 +946,7 @@ async fn listen_for_launch_configuration_launch_config_second_request_replaces_e
             &node_messenger,
             &started_daemon.daemon_node_name,
             "a1",
-            "node_a",
+            "repl_a",
         )
         .await
         .expect("health should start"),
@@ -956,7 +956,7 @@ async fn listen_for_launch_configuration_launch_config_second_request_replaces_e
             &node_messenger,
             &started_daemon.daemon_node_name,
             "b1",
-            "node_b",
+            "repl_b",
         )
         .await
         .expect("ready should start"),
@@ -966,7 +966,7 @@ async fn listen_for_launch_configuration_launch_config_second_request_replaces_e
             &node_messenger,
             &started_daemon.daemon_node_name,
             "b1",
-            "node_b",
+            "repl_b",
         )
         .await
         .expect("health should start"),
@@ -974,7 +974,7 @@ async fn listen_for_launch_configuration_launch_config_second_request_replaces_e
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     let launch_a = r#"
-    { deployments: [ { source: { local: "./node_a" }, instances: [ { instance_id: "a1" } ] } ] }
+    { deployments: [ { source: { local: "./repl_a" }, instances: [ { instance_id: "a1" } ] } ] }
     "#;
     let launch_file_path_a = nodes_dir.path().join("peppy_launcher.json5");
     fs::write(&launch_file_path_a, launch_a).expect("failed to write launch file");
@@ -988,10 +988,10 @@ async fn listen_for_launch_configuration_launch_config_second_request_replaces_e
     .await
     .expect("first launch should complete");
     assert!(result_a.success, "first launch should succeed");
-    assert!(node_stack.contains("node_a", NODE_TAG));
+    assert!(node_stack.contains("repl_a", NODE_TAG));
 
     let launch_b = r#"
-    { deployments: [ { source: { local: "./node_b" }, instances: [ { instance_id: "b1" } ] } ] }
+    { deployments: [ { source: { local: "./repl_b" }, instances: [ { instance_id: "b1" } ] } ] }
     "#;
     let launch_file_path_b = nodes_dir.path().join("peppy_launcher.json5");
     fs::write(&launch_file_path_b, launch_b).expect("failed to write launch file");
@@ -1007,12 +1007,12 @@ async fn listen_for_launch_configuration_launch_config_second_request_replaces_e
     assert!(result_b.success, "second launch should succeed");
 
     assert!(
-        !node_stack.contains("node_a", NODE_TAG),
-        "second request should replace existing stack (remove node_a)"
+        !node_stack.contains("repl_a", NODE_TAG),
+        "second request should replace existing stack (remove repl_a)"
     );
     assert!(
-        node_stack.contains("node_b", NODE_TAG),
-        "second request should replace existing stack (add node_b)"
+        node_stack.contains("repl_b", NODE_TAG),
+        "second request should replace existing stack (add repl_b)"
     );
 }
 
@@ -1045,7 +1045,7 @@ async fn listen_for_launch_configuration_fails_when_one_node_never_becomes_healt
     // Node to be launched.
     let _node_b_path = write_node_config(
         nodes_dir.path(),
-        "node_b",
+        "unhealthy_b",
         NODE_TAG,
         "test-hash",
         &["sleep", "60"],
@@ -1060,7 +1060,7 @@ async fn listen_for_launch_configuration_fails_when_one_node_never_becomes_healt
             &node_messenger,
             &started_daemon.daemon_node_name,
             "b1",
-            "node_b",
+            "unhealthy_b",
         )
         .await
         .expect("ready should start"),
@@ -1068,7 +1068,7 @@ async fn listen_for_launch_configuration_fails_when_one_node_never_becomes_healt
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     let launch_b = r#"
-    { deployments: [ { source: { local: "./node_b" }, instances: [ { instance_id: "b1" } ] } ] }
+    { deployments: [ { source: { local: "./unhealthy_b" }, instances: [ { instance_id: "b1" } ] } ] }
     "#;
     let launch_file_path = nodes_dir.path().join("peppy_launcher.json5");
     fs::write(&launch_file_path, launch_b).expect("failed to write launch file");
@@ -1093,8 +1093,8 @@ async fn listen_for_launch_configuration_fails_when_one_node_never_becomes_healt
         "stack should be restored on failure"
     );
     assert!(
-        !node_stack.contains("node_b", NODE_TAG),
-        "node_b should not be present after failed launch"
+        !node_stack.contains("unhealthy_b", NODE_TAG),
+        "unhealthy_b should not be present after failed launch"
     );
 }
 
@@ -1170,7 +1170,7 @@ async fn listen_for_node_launch_uses_env_overrides_for_path() {
     // daemon environment. In practice, users often "install a tool then source it" (e.g.
     // `. "$HOME/.cargo/env"`), but that only affects their shell, not the daemon. We model this by
     // passing a PATH override in the goal on the second attempt.
-    const NODE_NAME: &str = "node_b";
+    const NODE_NAME: &str = "env_node";
     const NODE_TAG: &str = "0.1.0";
     const INSTANCE_ID: &str = "b1";
 
