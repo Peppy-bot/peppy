@@ -15,7 +15,7 @@ const PEPPY_JSON5_CONFIG: &str = r#"{
     name: "test_node",
     tag: "0.1.0",
     language: "rust",
-    start_cmd: ["cargo", "run", "--release"]
+    start_cmd: ["./target/release/test_node"]
   },
   interfaces: {
     exposes: {
@@ -57,7 +57,7 @@ fn generate_peppygen_lib_minimal_config() {
         name: "minimal_node",
         tag: "0.1.0",
         language: "rust",
-        start_cmd: ["cargo", "run"]
+        start_cmd: ["./target/debug/minimal_node"]
       }
     }"#;
 
@@ -216,7 +216,7 @@ fn generate_peppygen_rust_lib_exposed_and_subscribed_topics() {
             name: "{EXPOSED_NODE_NAME}",
             tag: "0.1.0",
             language: "rust",
-            start_cmd: ["cargo", "run"]
+            start_cmd: ["./target/debug/{EXPOSED_NODE_NAME}"]
           }},
           interfaces: {{
             exposes: {{
@@ -264,7 +264,7 @@ fn generate_peppygen_rust_lib_exposed_and_subscribed_topics() {
             name: "{SUBSCRIBER_NODE_NAME}",
             tag: "0.1.0",
             language: "rust",
-            start_cmd: ["cargo", "run"]
+            start_cmd: ["./target/debug/{SUBSCRIBER_NODE_NAME}"]
           }}
         }}"#
     );
@@ -325,7 +325,7 @@ fn generate_peppygen_rust_lib_exposed_and_subscribed_services() {
             name: "{EXPOSED_NODE_NAME}",
             tag: "0.1.0",
             language: "rust",
-            start_cmd: ["cargo", "run"]
+            start_cmd: ["./target/debug/{EXPOSED_NODE_NAME}"]
           }},
           interfaces: {{
             exposes: {{
@@ -376,7 +376,7 @@ fn generate_peppygen_rust_lib_exposed_and_subscribed_services() {
             name: "{SUBSCRIBER_NODE_NAME}",
             tag: "0.1.0",
             language: "rust",
-            start_cmd: ["cargo", "run"]
+            start_cmd: ["./target/debug/{SUBSCRIBER_NODE_NAME}"]
           }}
         }}"#
     );
@@ -446,7 +446,7 @@ fn generate_peppygen_rust_lib_exposed_and_subscribed_actions() {
             name: "{EXPOSED_NODE_NAME}",
             tag: "0.1.0",
             language: "rust",
-            start_cmd: ["cargo", "run"]
+            start_cmd: ["./target/debug/{EXPOSED_NODE_NAME}"]
           }},
           interfaces: {{
             exposes: {{
@@ -509,7 +509,7 @@ fn generate_peppygen_rust_lib_exposed_and_subscribed_actions() {
             name: "{SUBSCRIBER_NODE_NAME}",
             tag: "0.1.0",
             language: "rust",
-            start_cmd: ["cargo", "run"]
+            start_cmd: ["./target/debug/{SUBSCRIBER_NODE_NAME}"]
           }}
         }}"#
     );

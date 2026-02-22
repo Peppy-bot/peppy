@@ -79,7 +79,7 @@ mod tests {
                     name: "{name}",
                     tag: "0.1.0",
                     language: "rust",
-                    start_cmd: ["cargo", "run", "--release"]
+                    start_cmd: ["./target/release/{name}"]
                 }}
             }}"#
         );
@@ -124,7 +124,7 @@ mod tests {
         // Invalid name (spaces and '!') should fail parsing on initial load
         fs::write(
             temp.path().join(NODE_CONFIG_FILE),
-            "{ schema_version: 1, manifest: { name: 'Invalid Name!', tag: '0.1.0', language: 'rust', start_cmd: ['cargo', 'run', '--release'] } }",
+            "{ schema_version: 1, manifest: { name: 'Invalid Name!', tag: '0.1.0', language: 'rust', start_cmd: ['./target/release/Invalid Name!'] } }",
         )
         .unwrap();
 
