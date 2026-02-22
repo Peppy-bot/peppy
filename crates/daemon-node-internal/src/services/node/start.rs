@@ -33,6 +33,44 @@ const STARTUP_OUTPUT_QUIET_WINDOW: Duration = Duration::from_millis(10);
 
 static RUNTIME_CONFIG_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+pub async fn listen_for_node_start(
+    messenger: &MessengerHandle,
+    daemon_node_node: &str,
+    instance_id: &str,
+    node_name: &str,
+    node_stack: Arc<NodeStack>,
+    node_startup_timeout: Duration,
+    node_start_health_timeout: Duration,
+) -> Result<JoinHandle<Result<()>>> {
+    let action = ActionMessenger::expose(
+        messenger,
+        daemon_node_node,
+        instance_id,
+        node_name,
+        names::NODE_START_ACTION,
+    )
+    .await?;
+
+    let messenger = messenger.clone();
+    let daemon_node_name = daemon_node_node.to_string();
+    let caller_instance_id = instance_id.to_string();
+
+    let handle = tokio::spawn(async move {
+        run_node_start_action_loop(
+            action,
+            node_stack,
+            messenger,
+            daemon_node_name,
+            caller_instance_id,
+            node_startup_timeout,
+            node_start_health_timeout,
+        )
+        .await
+    });
+
+    Ok(handle)
+}
+
 /// Validates that all required parameters from the schema are present in the provided arguments.
 /// Returns a list of all missing parameter paths (e.g., ["device.physical", "video.frame_rate"]).
 fn validate_parameters(
@@ -253,44 +291,6 @@ where
             }
         }
     })
-}
-
-pub async fn listen_for_node_start(
-    messenger: &MessengerHandle,
-    daemon_node_node: &str,
-    instance_id: &str,
-    node_name: &str,
-    node_stack: Arc<NodeStack>,
-    node_startup_timeout: Duration,
-    node_start_health_timeout: Duration,
-) -> Result<JoinHandle<Result<()>>> {
-    let action = ActionMessenger::expose(
-        messenger,
-        daemon_node_node,
-        instance_id,
-        node_name,
-        names::NODE_START_ACTION,
-    )
-    .await?;
-
-    let messenger = messenger.clone();
-    let daemon_node_name = daemon_node_node.to_string();
-    let caller_instance_id = instance_id.to_string();
-
-    let handle = tokio::spawn(async move {
-        run_node_start_action_loop(
-            action,
-            node_stack,
-            messenger,
-            daemon_node_name,
-            caller_instance_id,
-            node_startup_timeout,
-            node_start_health_timeout,
-        )
-        .await
-    });
-
-    Ok(handle)
 }
 
 async fn run_node_start_action_loop(

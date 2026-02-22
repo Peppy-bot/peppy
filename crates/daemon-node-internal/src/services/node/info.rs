@@ -390,4 +390,3 @@ fn parse_node_config_from_http_blocking(url: url::Url) -> std::result::Result<No
         )
     })
 }
-

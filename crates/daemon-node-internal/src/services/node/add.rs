@@ -30,6 +30,7 @@ use tokio::task::JoinHandle;
 use tracing::debug;
 use ureq::Error as HttpError;
 use zstd::stream::read::Decoder;
+use zstd::stream::write::Encoder as ZstdEncoder;
 
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -325,32 +326,47 @@ async fn run_add_cmd_with_streaming(
     Ok(())
 }
 
-/// Copies a node folder to the peppy nodes storage directory.
+/// Copies a node folder to a temporary working directory.
 ///
-/// The destination path follows the format: `<storage_dir>/<node_name>_<tag>_<uuid>`
-///
-/// Returns the path to the copied folder and the list of top-level directories
-/// that were excluded from the copy.
-fn copy_node_to_storage(
-    from_dir: &Path,
-    node_name: &str,
-    node_tag: &str,
-) -> Result<(PathBuf, Vec<String>)> {
-    let storage_dir = peppy_data_dir().join("nodes");
-    let random_id = generate_random_id();
-    let folder_name = format!("{}_{}_{}", node_name, node_tag, random_id);
-    let dest_path = storage_dir.join(&folder_name);
+/// Returns the path to the temporary directory and the list of top-level
+/// directories that were excluded from the copy. The caller is responsible
+/// for cleaning up the temporary directory.
+fn copy_node_to_temp_dir(from_dir: &Path) -> Result<(PathBuf, Vec<String>)> {
+    let temp_dir = tempfile::tempdir()?.keep();
 
     debug!(
-        "Copying node folder from {} to {}",
+        "Copying node folder from {} to temp dir {}",
         from_dir.display(),
-        dest_path.display()
+        temp_dir.display()
     );
 
-    let mut excluded = copy_dir_recursive(from_dir, &dest_path)?;
+    let mut excluded = copy_dir_recursive(from_dir, &temp_dir)?;
     excluded.sort();
 
-    Ok((dest_path, excluded))
+    Ok((temp_dir, excluded))
+}
+
+/// Archives the contents of `source_dir` into a `.tar.zst` file in the
+/// peppy nodes storage directory.
+///
+/// The archive path follows the format: `<storage_dir>/<node_name>_<tag>.tar.zst`
+///
+/// Uses zstd compression level 1 (fastest speed).
+fn archive_dir_to_storage(source_dir: &Path, node_name: &str, node_tag: &str) -> Result<PathBuf> {
+    let storage_dir = peppy_data_dir().join("nodes");
+    std::fs::create_dir_all(&storage_dir)?;
+
+    let archive_name = format!("{}_{}.tar.zst", node_name, node_tag);
+    let archive_path = storage_dir.join(&archive_name);
+
+    let file = File::create(&archive_path)?;
+    let encoder = ZstdEncoder::new(file, 1)?;
+    let mut tar_builder = tar::Builder::new(encoder);
+    tar_builder.append_dir_all(".", source_dir)?;
+    let encoder = tar_builder.into_inner()?;
+    encoder.finish()?;
+
+    Ok(archive_path)
 }
 
 /// Verifies that the node directory is in sync with the currently running daemon
@@ -388,17 +404,6 @@ fn verify_git_hash(source_path: &Path, expected_git_hash: &str) -> std::result::
     }
 
     Ok(())
-}
-
-fn is_node_snapshot_path(path: &Path, node_name: &str, node_tag: &str) -> bool {
-    let storage_dir = peppy_data_dir().join("nodes");
-    if !path.starts_with(&storage_dir) {
-        return false;
-    }
-    let Some(folder_name) = path.file_name().and_then(|n| n.to_str()) else {
-        return false;
-    };
-    folder_name.starts_with(&format!("{node_name}_{node_tag}_"))
 }
 
 /// State for tracking the current node add action.
@@ -1348,17 +1353,18 @@ async fn process_node_add(
         }
     }
 
-    // Copy the node folder to the peppy storage directory.
-    let (copied_path, excluded_dirs) =
-        match copy_node_to_storage(&source_path, &node_name, &node_tag) {
-            Ok(result) => result,
-            Err(e) => {
-                return NodeAddResult::failure(
-                    &ctx.log_path,
-                    format!("Failed to copy node folder: {}", e),
-                );
-            }
-        };
+    // Copy the node folder to a temporary working directory.
+    let (working_dir, excluded_dirs) = match copy_node_to_temp_dir(&source_path) {
+        Ok(result) => result,
+        Err(e) => {
+            return NodeAddResult::failure(
+                &ctx.log_path,
+                format!("Failed to copy node folder: {}", e),
+            );
+        }
+    };
+    // RAII guard: cleans up the temp working dir on any exit path.
+    let working_dir_cleanup = CleanupDir::new(Some(working_dir.clone()));
 
     if !excluded_dirs.is_empty() {
         let msg = format!(
@@ -1377,47 +1383,53 @@ async fn process_node_add(
         ctx.node_stack.find(name, tag).map(|e| e.config().clone())
     });
     if let Some(err) = dep_errors.into_iter().next() {
-        std::fs::remove_dir_all(&copied_path).ok();
         return NodeAddResult::failure(
             &ctx.log_path,
             format!("Failed to add node config: {}", err),
         );
     }
 
-    // Generate the peppygen library for the copied node
+    // Generate the peppygen library in the working directory
     let language = node_config.manifest.language;
     let subscribed_interfaces = collect_subscribed_interfaces(&node_config, &ctx.node_stack);
     if let Err(e) = generate_peppygen_for_node(
         language,
-        &copied_path,
+        &working_dir,
         subscribed_interfaces,
         &goal.git_hash,
     ) {
-        // Clean up the copied folder on failure
-        std::fs::remove_dir_all(&copied_path).ok();
         return NodeAddResult::failure(
             &ctx.log_path,
             format!("Failed to generate peppygen library: {}", e),
         );
     }
 
-    // Run add_cmd on the copied folder with streaming output
+    // Run add_cmd in the working directory with streaming output
     if let Err(e) = run_add_cmd_with_streaming(
         node_config.manifest.add_cmd.as_ref(),
-        &copied_path,
+        &working_dir,
         &env_vars,
         &ctx.feedback_publisher,
         Arc::clone(&ctx.log_file),
     )
     .await
     {
-        // Clean up the copied folder on failure
-        std::fs::remove_dir_all(&copied_path).ok();
         return NodeAddResult::failure(&ctx.log_path, format!("add_cmd failed: {}", e));
     }
 
+    // Archive the working directory to the peppy nodes storage.
+    let archive_path = match archive_dir_to_storage(&working_dir, &node_name, &node_tag) {
+        Ok(path) => path,
+        Err(e) => {
+            return NodeAddResult::failure(&ctx.log_path, format!("Failed to archive node: {}", e));
+        }
+    };
+
+    // Working dir is no longer needed; clean it up immediately.
+    drop(working_dir_cleanup);
+
     if let Err(e) = shutdown_existing_instances(&node_name, &node_tag, &ctx).await {
-        std::fs::remove_dir_all(&copied_path).ok();
+        std::fs::remove_file(&archive_path).ok();
         return NodeAddResult::failure(
             &ctx.log_path,
             format!("Failed to shutdown existing node instances: {}", e),
@@ -1425,27 +1437,36 @@ async fn process_node_add(
     }
 
     // Add the node config to the stack
-    if let Err(e) = ctx.node_stack.push_config(node_config, false, &copied_path) {
-        // Clean up the copied folder on failure
-        std::fs::remove_dir_all(&copied_path).ok();
+    if let Err(e) = ctx
+        .node_stack
+        .push_config(node_config, false, &archive_path)
+    {
+        std::fs::remove_file(&archive_path).ok();
         return NodeAddResult::failure(&ctx.log_path, format!("Failed to add node config: {}", e));
     }
 
+    // Clean up previous snapshot if it differs from the new archive path.
     if let Some(previous_snapshot_path) = previous_snapshot_path
-        && previous_snapshot_path != copied_path
-        && is_node_snapshot_path(&previous_snapshot_path, &node_name, &node_tag)
+        && previous_snapshot_path != archive_path
     {
-        std::fs::remove_dir_all(&previous_snapshot_path).ok();
+        let storage_dir = peppy_data_dir().join("nodes");
+        if previous_snapshot_path.starts_with(&storage_dir) {
+            if previous_snapshot_path.is_dir() {
+                std::fs::remove_dir_all(&previous_snapshot_path).ok();
+            } else {
+                std::fs::remove_file(&previous_snapshot_path).ok();
+            }
+        }
     }
 
     debug!(
         "Added node {}:{} at {}",
         node_name,
         node_tag,
-        copied_path.display()
+        archive_path.display()
     );
 
-    NodeAddResult::success(copied_path, &ctx.log_path)
+    NodeAddResult::success(archive_path, &ctx.log_path)
 }
 
 async fn handle_cancel_request(
