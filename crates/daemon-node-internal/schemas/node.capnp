@@ -73,6 +73,10 @@ struct NodeAddResult {
     snapshotPath @2 :Text;
     # Path to the log file containing stdout/stderr output
     logPath @3 :Text;
+    # Name of the added node (empty on failure)
+    nodeName @4 :Text;
+    # Tag of the added node (empty on failure)
+    nodeTag @5 :Text;
 }
 
 # Node Init service

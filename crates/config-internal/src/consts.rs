@@ -36,13 +36,14 @@ pub enum AppEnv {
 use std::sync::OnceLock;
 
 static APP_ENV: OnceLock<AppEnv> = OnceLock::new();
-static PEPPY_DATA_DIR_OVERRIDE: OnceLock<std::path::PathBuf> = OnceLock::new();
+static PEPPY_DATA_DIR_OVERRIDE: std::sync::Mutex<Option<std::path::PathBuf>> =
+    std::sync::Mutex::new(None);
 
 /// Overrides the peppy data directory for the current process.
 ///
 /// This is primarily intended for tests to isolate filesystem state.
 pub fn set_peppy_data_dir_override(path: std::path::PathBuf) {
-    PEPPY_DATA_DIR_OVERRIDE.set(path).ok();
+    *PEPPY_DATA_DIR_OVERRIDE.lock().expect("peppy data dir lock") = Some(path);
 }
 
 /// Sets the application environment once. Subsequent calls are ignored.
@@ -60,7 +61,11 @@ pub fn app_env() -> AppEnv {
 /// In production: ~/.peppy
 /// In development: /tmp/.peppy
 pub fn peppy_data_dir() -> std::path::PathBuf {
-    if let Some(path) = PEPPY_DATA_DIR_OVERRIDE.get() {
+    if let Some(path) = PEPPY_DATA_DIR_OVERRIDE
+        .lock()
+        .expect("peppy data dir lock")
+        .as_ref()
+    {
         return path.clone();
     }
 

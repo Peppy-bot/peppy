@@ -18,7 +18,7 @@ use peppylib::{ActionMessenger, PeppyError};
 use pmi::{Messenger, MessengerAdapter, MessengerBackend, MockAdapter};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use std::time::Duration;
 use tempfile::TempDir;
 use tokio::sync::Mutex;
@@ -33,11 +33,12 @@ impl<T> Drop for AbortOnDrop<T> {
     }
 }
 
-static TEST_DATA_DIR: OnceLock<TempDir> = OnceLock::new();
+/// Serializes test execution so that only one test at a time holds the peppy data dir override.
+/// Each `StartedDaemonNode` holds the lock guard, releasing it on drop.
+static DATA_DIR_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-fn init_test_data_dir() {
-    let dir = TEST_DATA_DIR.get_or_init(|| tempfile::tempdir().expect("test data dir"));
-    config::consts::set_peppy_data_dir_override(dir.path().to_path_buf());
+fn init_test_data_dir() -> TempDir {
+    tempfile::tempdir().expect("test data dir")
 }
 
 pub const CALLER_INSTANCE_ID: &str = "caller_instance";
@@ -631,10 +632,12 @@ pub struct StartedDaemonNode {
     pub daemon_node_name: String,
     pub node_stack: NodeStack,
     pub task: AbortOnDrop<daemon_node::Result<()>>,
+    _data_dir: TempDir,
+    _data_dir_guard: tokio::sync::MutexGuard<'static, ()>,
 }
 
 pub async fn start_daemon_node_with_mock_messenger() -> StartedDaemonNode {
-    init_test_data_dir();
+    let data_dir = init_test_data_dir();
     let shared_messenger = create_mock_messenger().await;
     let node_startup_timeout = Duration::from_secs(10);
     let node_start_health_timeout = Duration::from_secs(30);
@@ -642,12 +645,13 @@ pub async fn start_daemon_node_with_mock_messenger() -> StartedDaemonNode {
         shared_messenger,
         node_startup_timeout,
         node_start_health_timeout,
+        data_dir,
     )
     .await
 }
 
 pub async fn start_daemon_node_with_real_messenger() -> StartedDaemonNode {
-    init_test_data_dir();
+    let data_dir = init_test_data_dir();
     let mut instance = pmi::ZenohAdapter::start_router_ephemeral(DEFAULT_MESSAGING_HOST, None)
         .await
         .expect("failed to start zenoh router for test");
@@ -663,6 +667,7 @@ pub async fn start_daemon_node_with_real_messenger() -> StartedDaemonNode {
         shared_messenger,
         node_startup_timeout,
         node_start_health_timeout,
+        data_dir,
     )
     .await
 }
@@ -670,13 +675,14 @@ pub async fn start_daemon_node_with_real_messenger() -> StartedDaemonNode {
 pub async fn start_daemon_node_with_health_timeout(
     node_start_health_timeout: Duration,
 ) -> StartedDaemonNode {
-    init_test_data_dir();
+    let data_dir = init_test_data_dir();
     let shared_messenger = create_mock_messenger().await;
     let node_startup_timeout = Duration::from_secs(10);
     start_daemon_node_with_messenger(
         shared_messenger,
         node_startup_timeout,
         node_start_health_timeout,
+        data_dir,
     )
     .await
 }
@@ -685,7 +691,11 @@ async fn start_daemon_node_with_messenger(
     shared_messenger: Arc<Mutex<Messenger>>,
     node_startup_timeout: Duration,
     node_start_health_timeout: Duration,
+    data_dir: TempDir,
 ) -> StartedDaemonNode {
+    let data_dir_guard = DATA_DIR_LOCK.lock().await;
+    config::consts::set_peppy_data_dir_override(data_dir.path().to_path_buf());
+
     let caller_handle = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
     let node_arguments = DaemonNodeArguments {
         node_startup_timeout,
@@ -714,5 +724,7 @@ async fn start_daemon_node_with_messenger(
         daemon_node_name,
         node_stack,
         task: AbortOnDrop(task),
+        _data_dir: data_dir,
+        _data_dir_guard: data_dir_guard,
     }
 }
