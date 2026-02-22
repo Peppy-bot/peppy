@@ -1229,12 +1229,8 @@ async fn process_node_add(
     };
     let node_name = node_config.manifest.name.as_str().to_owned();
     let node_tag = node_config.manifest.tag.clone();
-    let sccache_injected = super::inject_rust_build_env(
-        &mut env_vars,
-        node_config.manifest.language,
-        &node_name,
-        &node_tag,
-    );
+    let sccache_injected =
+        super::inject_rust_build_env(&mut env_vars, node_config.manifest.language);
     if sccache_injected
         && let Ok(payload) = NodeAddFeedback::stdout("Using sccache for Rust compilation").encode()
     {

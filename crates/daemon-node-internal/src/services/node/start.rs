@@ -653,12 +653,8 @@ async fn process_node_start(
         }
     };
 
-    let sccache_injected = super::inject_rust_build_env(
-        &mut env_vars,
-        entity.config().manifest.language,
-        &node_name,
-        &tag,
-    );
+    let sccache_injected =
+        super::inject_rust_build_env(&mut env_vars, entity.config().manifest.language);
     if sccache_injected
         && let Ok(payload) =
             NodeStartFeedback::stdout("Using sccache for Rust compilation").encode()
