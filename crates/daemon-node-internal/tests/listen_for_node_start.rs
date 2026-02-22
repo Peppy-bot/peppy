@@ -438,7 +438,7 @@ async fn listen_for_node_start_streams_stdout_and_stderr() {
     assert!(saw_stdout, "stdout feedback should include marker");
     assert!(saw_stderr, "stderr feedback should include marker");
 
-    std::fs::remove_dir_all(&add_response.snapshot_path).ok();
+    std::fs::remove_file(&add_response.snapshot_path).ok();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -583,7 +583,7 @@ async fn listen_for_node_start_writes_log_file() {
     // Clean up log file
     std::fs::remove_file(log_path).ok();
 
-    std::fs::remove_dir_all(&add_response.snapshot_path).ok();
+    std::fs::remove_file(&add_response.snapshot_path).ok();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -715,7 +715,7 @@ async fn listen_for_node_start_reports_all_missing_parameters() {
         "node_start should not return a PID on failure"
     );
 
-    std::fs::remove_dir_all(&add_response.snapshot_path).ok();
+    std::fs::remove_file(&add_response.snapshot_path).ok();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -864,7 +864,7 @@ async fn listen_for_node_start_reports_only_missing_parameters_when_some_provide
         "node_start should not return a PID on failure"
     );
 
-    std::fs::remove_dir_all(&add_response.snapshot_path).ok();
+    std::fs::remove_file(&add_response.snapshot_path).ok();
 }
 
 /// Tests that a new goal can be processed after a previous action was abandoned
@@ -1103,8 +1103,8 @@ async fn listen_for_node_start_abandoned_action_does_not_block_next_goal() {
         "second instance should be registered after successful start"
     );
 
-    std::fs::remove_dir_all(&first_add_response.snapshot_path).ok();
-    std::fs::remove_dir_all(&second_add_response.snapshot_path).ok();
+    std::fs::remove_file(&first_add_response.snapshot_path).ok();
+    std::fs::remove_file(&second_add_response.snapshot_path).ok();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1259,7 +1259,7 @@ async fn listen_for_node_start_uses_env_overrides_for_path() {
     );
 
     std::fs::remove_file(&start_response.goal_response.log_path).ok();
-    std::fs::remove_dir_all(&add_response.snapshot_path).ok();
+    std::fs::remove_file(&add_response.snapshot_path).ok();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -2,7 +2,7 @@ use crate::Result;
 use crate::encoding::{NodeStartFeedback, NodeStartGoal, NodeStartGoalResponse, NodeStartResult};
 use crate::names;
 use chrono::Local;
-use config::consts::{RUNTIME_CONFIG_VAR_NAME, logs_dir_start, runtime_config_dir};
+use config::consts::{RUNTIME_CONFIG_VAR_NAME, instances_dir, logs_dir_start, runtime_config_dir};
 use config::node::{Name, PeppygenLanguage};
 use config::runtime::RuntimeConfig;
 use config::{AnyType, NodeArguments};
@@ -679,7 +679,22 @@ async fn process_node_start(
         ));
     }
 
-    let mut child = match start_node(&entity, &runtime_config_json5, &env_vars, &log_file) {
+    // Extract node archive to instances directory
+    let instance_dir = match extract_node_archive(entity.root_path(), &node_name, &tag) {
+        Ok(dir) => dir,
+        Err(e) => {
+            debug!("Failed to extract node archive: {}", e);
+            return NodeStartResult::failure(format!("Failed to extract node archive: {}", e));
+        }
+    };
+
+    let mut child = match start_node(
+        &entity,
+        &instance_dir,
+        &runtime_config_json5,
+        &env_vars,
+        &log_file,
+    ) {
         Ok(child) => child,
         Err(e) => {
             debug!("Failed to start node instance '{}': {}", instance_id_str, e);
@@ -944,10 +959,30 @@ async fn kill_and_report_error(
     NodeStartResult::failure(error_msg)
 }
 
+/// Extracts a `.tar.zst` node archive to a new instance directory.
+/// Returns the path to the extracted instance directory.
+fn extract_node_archive(
+    archive_path: &std::path::Path,
+    node_name: &str,
+    node_tag: &str,
+) -> std::result::Result<std::path::PathBuf, String> {
+    let instance_id = super::generate_random_id();
+    let instance_dir_name = format!("{}_{}_{}", node_name, node_tag, instance_id);
+    let instance_dir = instances_dir().join(&instance_dir_name);
+
+    std::fs::create_dir_all(&instance_dir)
+        .map_err(|e| format!("Failed to create instance directory: {}", e))?;
+
+    super::extract_tar_zst(archive_path, &instance_dir)?;
+
+    Ok(instance_dir)
+}
+
 /// Runs a node using its manifest's start_cmd and passes the PEPPY_RUNTIME_CONFIG as an env var.
 /// Returns the spawned child process handle on success.
 pub fn start_node(
     entity: &NodeEntity,
+    working_dir: &std::path::Path,
     runtime_config_json5: &str,
     env_vars: &[(String, String)],
     log_file: &Arc<StdMutex<File>>,
@@ -964,7 +999,7 @@ pub fn start_node(
         manifest.tag,
         program,
         args,
-        entity.root_path()
+        working_dir
     );
 
     // Log the command being executed to the log file before attempting to spawn
@@ -977,7 +1012,7 @@ pub fn start_node(
                 "[{}] Executing start_cmd: {} (working_dir: {})",
                 timestamp,
                 full_cmd,
-                entity.root_path().display()
+                working_dir.display()
             );
             let _ = file.flush();
         }
@@ -994,7 +1029,7 @@ pub fn start_node(
     std::fs::write(&runtime_config_path, runtime_config_json5)?;
 
     let mut command = Command::new(program);
-    command.current_dir(entity.root_path());
+    command.current_dir(working_dir);
     command
         .args(args)
         .stdout(Stdio::piped())

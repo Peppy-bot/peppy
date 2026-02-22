@@ -17,19 +17,16 @@ use peppylib::messaging::{
 };
 use peppylib::types::Payload;
 use peppylib::{ActionMessenger, MessengerHandle, PeppyResult};
-use rand::RngExt;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
-use tar::Archive;
 use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinHandle;
 use tracing::debug;
 use ureq::Error as HttpError;
-use zstd::stream::read::Decoder;
 use zstd::stream::write::Encoder as ZstdEncoder;
 
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
@@ -67,12 +64,6 @@ pub async fn listen_for_node_add(
     });
 
     Ok(handle)
-}
-
-fn generate_random_id() -> String {
-    let mut rng = rand::rng();
-    let bytes: [u8; 3] = rng.random();
-    bytes.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
 /// Directories excluded from node snapshot copies.
@@ -646,92 +637,7 @@ fn extract_http_bundle(
     destination: &Path,
     url: &url::Url,
 ) -> std::result::Result<(), String> {
-    let file = File::open(bundle_path).map_err(|e| {
-        format!(
-            "Failed to open downloaded bundle {}: {}",
-            bundle_path.display(),
-            e
-        )
-    })?;
-
-    let decoder = Decoder::new(file)
-        .map_err(|e| format!("Failed to decode zstd bundle from {}: {}", url, e))?;
-    let mut archive = Archive::new(decoder);
-
-    let entries = archive
-        .entries()
-        .map_err(|e| format!("Failed to read tar bundle entries from {}: {}", url, e))?;
-
-    let mut directories = Vec::new();
-    for entry in entries {
-        let mut entry =
-            entry.map_err(|e| format!("Failed to read tar bundle entry from {}: {}", url, e))?;
-
-        let entry_path = entry
-            .path()
-            .map_err(|e| format!("Failed to read tar bundle entry path from {}: {}", url, e))?
-            .into_owned();
-
-        if entry_path.components().any(|component| {
-            matches!(
-                component,
-                Component::ParentDir | Component::RootDir | Component::Prefix(..)
-            )
-        }) {
-            return Err(format!(
-                "Bundle from {} contains unsafe path: {}",
-                url,
-                entry_path.display()
-            ));
-        }
-
-        if entry.header().entry_type().is_dir() {
-            directories.push(entry);
-        } else {
-            let unpacked = entry.unpack_in(destination).map_err(|e| {
-                format!(
-                    "Failed to unpack tar bundle entry {} from {}: {}",
-                    entry_path.display(),
-                    url,
-                    e
-                )
-            })?;
-            if !unpacked {
-                return Err(format!(
-                    "Bundle from {} contains unsafe path: {}",
-                    url,
-                    entry_path.display()
-                ));
-            }
-        }
-    }
-
-    // Apply directory entries at the end, matching tar::Archive::unpack behavior (avoids
-    // directory permissions interfering with descendant extraction).
-    directories.sort_by(|a, b| b.path_bytes().cmp(&a.path_bytes()));
-    for mut dir in directories {
-        let entry_path = dir
-            .path()
-            .map_err(|e| format!("Failed to read tar bundle entry path from {}: {}", url, e))?
-            .into_owned();
-        let unpacked = dir.unpack_in(destination).map_err(|e| {
-            format!(
-                "Failed to unpack tar bundle entry {} from {}: {}",
-                entry_path.display(),
-                url,
-                e
-            )
-        })?;
-        if !unpacked {
-            return Err(format!(
-                "Bundle from {} contains unsafe path: {}",
-                url,
-                entry_path.display()
-            ));
-        }
-    }
-
-    Ok(())
+    super::extract_tar_zst(bundle_path, destination).map_err(|e| format!("{} (source: {})", e, url))
 }
 
 fn locate_node_root_dir(extracted_dir: &Path) -> std::result::Result<PathBuf, String> {
@@ -812,8 +718,10 @@ fn resolve_http_source_blocking(
         .map_err(|e| format!("Failed to create HTTP download directory: {}", e))?;
 
     let timestamp = Local::now().format("%Y%m%d_%H%M%S_%3f");
-    let operation_dir =
-        http_base_dir.join(format!("node_add_{timestamp}_{}", generate_random_id()));
+    let operation_dir = http_base_dir.join(format!(
+        "node_add_{timestamp}_{}",
+        super::generate_random_id()
+    ));
     std::fs::create_dir_all(&operation_dir)
         .map_err(|e| format!("Failed to create HTTP staging directory: {}", e))?;
 

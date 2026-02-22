@@ -84,6 +84,13 @@ pub fn nodes_cache_dir() -> std::path::PathBuf {
     peppy_data_dir().join("nodes")
 }
 
+/// Returns the node instances directory (extracted archives for running nodes).
+/// In production: ~/.peppy/instances
+/// In development: /tmp/.peppy/instances
+pub fn instances_dir() -> std::path::PathBuf {
+    peppy_data_dir().join("instances")
+}
+
 /// Returns the add logs cache directory.
 /// In production: ~/.peppy/logs/add
 /// In development: /tmp/.peppy/logs/add

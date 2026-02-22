@@ -10,7 +10,11 @@ mod templates;
 use crate::encoding::NodeSource;
 use crate::{Error, Result};
 use config::node::{NodeConfig, PeppygenLanguage};
+use rand::RngExt;
+use std::path::{Component, Path};
 use std::sync::OnceLock;
+use tar::Archive;
+use zstd::stream::read::Decoder;
 
 /// Blocklist of dangerous env vars that could be used for code injection or process manipulation.
 /// Used by both the daemon (to reject requests) and CLI (to filter before sending).
@@ -103,6 +107,128 @@ fn inject_rust_build_env(
         env_vars.push(("RUSTC_WRAPPER".to_string(), "sccache".to_string()));
     }
     sccache_injected
+}
+
+pub(super) fn generate_random_id() -> String {
+    let mut rng = rand::rng();
+    let bytes: [u8; 3] = rng.random();
+    bytes.iter().map(|b| format!("{:02x}", b)).collect()
+}
+
+/// Extracts a `.tar.zst` archive into `destination` with path safety checks.
+/// Rejects entries containing `..`, root, or prefix path components.
+/// Directories are applied last to avoid permission interference during extraction.
+pub(super) fn extract_tar_zst(
+    archive_path: &Path,
+    destination: &Path,
+) -> std::result::Result<(), String> {
+    let file = std::fs::File::open(archive_path)
+        .map_err(|e| format!("Failed to open archive {}: {}", archive_path.display(), e))?;
+
+    let decoder = Decoder::new(file).map_err(|e| {
+        format!(
+            "Failed to decode zstd archive {}: {}",
+            archive_path.display(),
+            e
+        )
+    })?;
+    let mut archive = Archive::new(decoder);
+
+    let entries = archive.entries().map_err(|e| {
+        format!(
+            "Failed to read archive entries from {}: {}",
+            archive_path.display(),
+            e
+        )
+    })?;
+
+    let mut directories = Vec::new();
+    for entry in entries {
+        let mut entry = entry.map_err(|e| {
+            format!(
+                "Failed to read archive entry from {}: {}",
+                archive_path.display(),
+                e
+            )
+        })?;
+
+        let entry_path = entry
+            .path()
+            .map_err(|e| {
+                format!(
+                    "Failed to read entry path from {}: {}",
+                    archive_path.display(),
+                    e
+                )
+            })?
+            .into_owned();
+
+        if entry_path.components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir | Component::RootDir | Component::Prefix(..)
+            )
+        }) {
+            return Err(format!(
+                "Archive {} contains unsafe path: {}",
+                archive_path.display(),
+                entry_path.display()
+            ));
+        }
+
+        if entry.header().entry_type().is_dir() {
+            directories.push(entry);
+        } else {
+            let unpacked = entry.unpack_in(destination).map_err(|e| {
+                format!(
+                    "Failed to unpack entry {} from {}: {}",
+                    entry_path.display(),
+                    archive_path.display(),
+                    e
+                )
+            })?;
+            if !unpacked {
+                return Err(format!(
+                    "Archive {} contains unsafe path: {}",
+                    archive_path.display(),
+                    entry_path.display()
+                ));
+            }
+        }
+    }
+
+    // Apply directory entries at the end, matching tar::Archive::unpack behavior (avoids
+    // directory permissions interfering with descendant extraction).
+    directories.sort_by(|a, b| b.path_bytes().cmp(&a.path_bytes()));
+    for mut dir in directories {
+        let entry_path = dir
+            .path()
+            .map_err(|e| {
+                format!(
+                    "Failed to read entry path from {}: {}",
+                    archive_path.display(),
+                    e
+                )
+            })?
+            .into_owned();
+        let unpacked = dir.unpack_in(destination).map_err(|e| {
+            format!(
+                "Failed to unpack entry {} from {}: {}",
+                entry_path.display(),
+                archive_path.display(),
+                e
+            )
+        })?;
+        if !unpacked {
+            return Err(format!(
+                "Archive {} contains unsafe path: {}",
+                archive_path.display(),
+                entry_path.display()
+            ));
+        }
+    }
+
+    Ok(())
 }
 
 pub use add::listen_for_node_add;
