@@ -355,13 +355,16 @@ fn archive_dir_to_storage(source_dir: &Path, node_name: &str, node_tag: &str) ->
 
     let archive_name = format!("{}_{}.tar.zst", node_name, node_tag);
     let archive_path = storage_dir.join(&archive_name);
+    let tmp_path = storage_dir.join(format!("{}.tmp", archive_name));
 
-    let file = File::create(&archive_path)?;
+    let file = File::create(&tmp_path)?;
     let encoder = ZstdEncoder::new(file, 1)?;
     let mut tar_builder = tar::Builder::new(encoder);
     tar_builder.append_dir_all(".", source_dir)?;
     let encoder = tar_builder.into_inner()?;
     encoder.finish()?;
+
+    std::fs::rename(&tmp_path, &archive_path)?;
 
     Ok(archive_path)
 }
