@@ -12,7 +12,7 @@ use daemon_node::names;
 use git2::{Repository, Signature};
 use gix_url::Url as GitUrl;
 use peppylib::ActionMessenger;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tempfile::TempDir;
@@ -24,6 +24,68 @@ use {
 const ADD_CMD_MARKER_FILE: &str = "add_cmd_executed.marker";
 const GOAL_TIMEOUT: Duration = Duration::from_secs(30);
 const RESULT_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Returns true if the given tar.zst archive contains an entry matching `entry_name`.
+fn archive_contains_entry(archive_path: &Path, entry_name: &str) -> bool {
+    let file = std::fs::File::open(archive_path).expect("failed to open archive");
+    let decoder = zstd::stream::read::Decoder::new(file).expect("failed to create decoder");
+    let mut archive = tar::Archive::new(decoder);
+    archive
+        .entries()
+        .expect("failed to read entries")
+        .any(|entry| {
+            let entry = entry.expect("failed to read entry");
+            let path = entry.path().expect("failed to read entry path");
+            let path_str = path.to_string_lossy();
+            let normalized = path_str.trim_start_matches("./");
+            normalized == entry_name
+        })
+}
+
+/// Reads a file from a tar.zst archive and returns its contents as a String.
+fn read_file_from_archive(archive_path: &Path, entry_name: &str) -> String {
+    let file = std::fs::File::open(archive_path).expect("failed to open archive");
+    let decoder = zstd::stream::read::Decoder::new(file).expect("failed to create decoder");
+    let mut archive = tar::Archive::new(decoder);
+    for entry in archive.entries().expect("failed to read entries") {
+        let mut entry = entry.expect("failed to read entry");
+        let path = entry.path().expect("failed to read entry path");
+        let path_str = path.to_string_lossy();
+        let normalized = path_str.trim_start_matches("./").to_string();
+        if normalized == entry_name {
+            let mut contents = String::new();
+            entry
+                .read_to_string(&mut contents)
+                .expect("failed to read entry contents");
+            return contents;
+        }
+    }
+    panic!(
+        "entry '{}' not found in archive {}",
+        entry_name,
+        archive_path.display()
+    );
+}
+
+/// Lists all file entries in a tar.zst archive (normalized paths without leading "./").
+fn list_archive_entries(archive_path: &Path) -> Vec<String> {
+    let file = std::fs::File::open(archive_path).expect("failed to open archive");
+    let decoder = zstd::stream::read::Decoder::new(file).expect("failed to create decoder");
+    let mut archive = tar::Archive::new(decoder);
+    archive
+        .entries()
+        .expect("failed to read entries")
+        .filter_map(|entry| {
+            let entry = entry.expect("failed to read entry");
+            if entry.header().entry_type().is_dir() {
+                return None;
+            }
+            let path = entry.path().expect("failed to read path");
+            let s = path.to_string_lossy().trim_start_matches("./").to_string();
+            if s.is_empty() { None } else { Some(s) }
+        })
+        .collect()
+}
 
 fn create_versioned_nodes_git_repo(to_path: impl AsRef<Path>) -> PathBuf {
     let base_path = to_path.as_ref();
@@ -166,42 +228,42 @@ async fn listen_for_node_fs_add_success() {
     // `add` only adds the node to the NodeStack but doesn't spawn any instance
     assert_eq!(entity.instances().len(), 0);
 
-    // Verify the node was copied to the peppy storage directory
+    // Verify the node was archived to the peppy storage directory
     let snapshot_path = add_result.snapshot_path.as_path();
     let root_path = entity.root_path();
     assert_eq!(
         snapshot_path, root_path,
-        "snapshot_path should match copied node path"
+        "snapshot_path should match archive path"
     );
     assert!(
         root_path != source_dir.path(),
-        "node should be copied to a different location, got: {}",
+        "node should be archived to a different location, got: {}",
         root_path.display()
     );
     assert!(
         root_path.exists(),
-        "copied node directory should exist: {}",
+        "node archive should exist: {}",
         root_path.display()
     );
     assert!(
-        root_path.join(NODE_CONFIG_FILE).exists(),
-        "config file should be present at the root of the node folder: {}",
-        root_path.join(NODE_CONFIG_FILE).display()
+        archive_contains_entry(root_path, NODE_CONFIG_FILE),
+        "config file should be present in the archive"
     );
 
-    // Verify the path follows the expected naming convention: <node_name>_<tag>_<uuid>
-    let folder_name = root_path
+    // Verify the path follows the expected naming convention: <node_name>_<tag>.tar.zst
+    let file_name = root_path
         .file_name()
         .and_then(|n| n.to_str())
-        .expect("should have folder name");
-    assert!(
-        folder_name.starts_with(&format!("{TARGET_NODE_NAME}_{TARGET_NODE_TAG}_")),
-        "folder name should start with '<node_name>_<tag>_', got: {}",
-        folder_name
+        .expect("should have file name");
+    assert_eq!(
+        file_name,
+        format!("{TARGET_NODE_NAME}_{TARGET_NODE_TAG}.tar.zst"),
+        "archive file name should be '<node_name>_<tag>.tar.zst', got: {}",
+        file_name
     );
 
-    // Clean up the copied directory
-    std::fs::remove_dir_all(root_path).ok();
+    // Clean up the archive
+    std::fs::remove_file(root_path).ok();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -250,25 +312,26 @@ async fn listen_for_node_git_add_success() {
     let snapshot_path = add_result.snapshot_path.as_path();
     let root_path = entity.root_path();
     assert_eq!(snapshot_path, root_path);
-    assert!(root_path.exists(), "snapshot path should exist");
+    assert!(root_path.exists(), "archive should exist");
     assert!(
-        root_path.join(NODE_CONFIG_FILE).exists(),
-        "config file should exist in snapshot"
+        archive_contains_entry(root_path, NODE_CONFIG_FILE),
+        "config file should exist in archive"
     );
 
-    // Verify the path follows the expected naming convention: <node_name>_<tag>_<uuid>
-    let folder_name = root_path
+    // Verify the path follows the expected naming convention: <node_name>_<tag>.tar.zst
+    let file_name = root_path
         .file_name()
         .and_then(|n| n.to_str())
-        .expect("should have folder name");
-    assert!(
-        folder_name.starts_with(&format!("{TARGET_NODE_NAME}_{TARGET_NODE_TAG}_")),
-        "folder name should start with '<node_name>_<tag>_', got: {}",
-        folder_name
+        .expect("should have file name");
+    assert_eq!(
+        file_name,
+        format!("{TARGET_NODE_NAME}_{TARGET_NODE_TAG}.tar.zst"),
+        "archive file name should be '<node_name>_<tag>.tar.zst', got: {}",
+        file_name
     );
 
-    // Clean up the copied directory
-    std::fs::remove_dir_all(root_path).ok();
+    // Clean up the archive
+    std::fs::remove_file(root_path).ok();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -333,14 +396,14 @@ async fn listen_for_node_git_add_with_ref_success() {
         .expect("node should exist in stack")
         .root_path()
         .to_path_buf();
-    std::fs::remove_dir_all(&snapshot_path_head).ok();
+    std::fs::remove_file(&snapshot_path_head).ok();
 
     let snapshot_path_ref = node_stack
         .find(TARGET_NODE_NAME, "0.1.0")
         .expect("node should exist in stack")
         .root_path()
         .to_path_buf();
-    std::fs::remove_dir_all(&snapshot_path_ref).ok();
+    std::fs::remove_file(&snapshot_path_ref).ok();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -428,33 +491,36 @@ async fn listen_for_node_http_add_success() {
     let snapshot_path = add_result.snapshot_path.as_path();
     let root_path = entity.root_path();
     assert_eq!(snapshot_path, root_path);
-    assert!(root_path.exists(), "snapshot path should exist");
+    assert!(root_path.exists(), "archive should exist");
     assert!(
-        root_path.join(NODE_CONFIG_FILE).exists(),
-        "config file should exist in snapshot"
+        archive_contains_entry(root_path, NODE_CONFIG_FILE),
+        "config file should exist in archive"
     );
 
-    let copied_file = root_path.join("test_file.txt");
-    assert!(copied_file.exists(), "test_file.txt should be copied");
-    let copied_content = std::fs::read_to_string(&copied_file).expect("should read copied file");
+    assert!(
+        archive_contains_entry(root_path, "test_file.txt"),
+        "test_file.txt should be in the archive"
+    );
+    let copied_content = read_file_from_archive(root_path, "test_file.txt");
     assert_eq!(
         copied_content, test_file_content,
         "file content should match"
     );
 
-    // Verify the path follows the expected naming convention: <node_name>_<tag>_<uuid>
-    let folder_name = root_path
+    // Verify the path follows the expected naming convention: <node_name>_<tag>.tar.zst
+    let file_name = root_path
         .file_name()
         .and_then(|n| n.to_str())
-        .expect("should have folder name");
-    assert!(
-        folder_name.starts_with(&format!("{TARGET_NODE_NAME}_{TARGET_NODE_TAG}_")),
-        "folder name should start with '<node_name>_<tag>_', got: {}",
-        folder_name
+        .expect("should have file name");
+    assert_eq!(
+        file_name,
+        format!("{TARGET_NODE_NAME}_{TARGET_NODE_TAG}.tar.zst"),
+        "archive file name should be '<node_name>_<tag>.tar.zst', got: {}",
+        file_name
     );
 
-    // Clean up the copied directory
-    std::fs::remove_dir_all(root_path).ok();
+    // Clean up the archive
+    std::fs::remove_file(root_path).ok();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -797,15 +863,15 @@ async fn listen_for_node_add_same_node_same_tags_overwrites_when_no_dependents()
         add_v2.snapshot_path.as_path(),
         "node stack should point to the new snapshot path"
     );
-    assert_ne!(
+    // With deterministic archive naming, v1 and v2 produce the same path.
+    assert_eq!(
         entity.root_path(),
         copied_path_v1.as_path(),
-        "node stack should not point to the previous snapshot path"
+        "deterministic archive path should be the same for both adds"
     );
     assert!(
-        !copied_path_v1.exists(),
-        "previous snapshot should be removed from storage: {}",
-        copied_path_v1.display()
+        entity.root_path().exists(),
+        "archive should exist after overwrite"
     );
     assert!(
         entity
@@ -819,7 +885,7 @@ async fn listen_for_node_add_same_node_same_tags_overwrites_when_no_dependents()
     );
 
     // Clean up
-    std::fs::remove_dir_all(entity.root_path()).ok();
+    std::fs::remove_file(entity.root_path()).ok();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -979,9 +1045,9 @@ async fn listen_for_node_add_same_node_same_tags_fails_when_node_has_dependents(
         "dependent node should still exist after failed overwrite"
     );
 
-    // Clean up snapshots created by successful adds
-    std::fs::remove_dir_all(&dependency_snapshot_path).ok();
-    std::fs::remove_dir_all(&dependent_add.snapshot_path).ok();
+    // Clean up archives created by successful adds
+    std::fs::remove_file(&dependency_snapshot_path).ok();
+    std::fs::remove_file(&dependent_add.snapshot_path).ok();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1058,12 +1124,12 @@ async fn listen_for_node_add_same_node_different_tags_create_two_entities() {
     assert!(node_stack.contains(NODE_NAME, "1.0.0"));
     assert!(node_stack.contains(NODE_NAME, "2.0.0"));
 
-    // Clean up copied directories
+    // Clean up archives
     if let Some(entity) = node_stack.find(NODE_NAME, "1.0.0") {
-        std::fs::remove_dir_all(entity.root_path()).ok();
+        std::fs::remove_file(entity.root_path()).ok();
     }
     if let Some(entity) = node_stack.find(NODE_NAME, "2.0.0") {
-        std::fs::remove_dir_all(entity.root_path()).ok();
+        std::fs::remove_file(entity.root_path()).ok();
     }
 }
 
@@ -1121,30 +1187,34 @@ async fn listen_for_node_add_copies_files_to_storage() {
         .find(TARGET_NODE_NAME, TARGET_NODE_TAG)
         .expect("node should exist in stack");
 
-    let copied_path = entity.root_path();
+    let archive_path = entity.root_path();
     assert_eq!(
         add_result.snapshot_path.as_path(),
-        copied_path,
-        "snapshot_path should match copied node path"
+        archive_path,
+        "snapshot_path should match archive path"
     );
 
-    // Verify the file was copied
-    let copied_file = copied_path.join("test_file.txt");
-    assert!(copied_file.exists(), "test_file.txt should be copied");
-    let content = std::fs::read_to_string(&copied_file).expect("should read copied file");
+    // Verify the file was archived
+    assert!(
+        archive_contains_entry(archive_path, "test_file.txt"),
+        "test_file.txt should be in the archive"
+    );
+    let content = read_file_from_archive(archive_path, "test_file.txt");
     assert_eq!(content, test_file_content, "file content should match");
 
-    // Verify the subdirectory and nested file were copied
-    let copied_nested = copied_path.join("subdir").join("nested_file.txt");
-    assert!(copied_nested.exists(), "nested file should be copied");
-    let nested_content = std::fs::read_to_string(&copied_nested).expect("should read nested file");
+    // Verify the subdirectory and nested file were archived
+    assert!(
+        archive_contains_entry(archive_path, "subdir/nested_file.txt"),
+        "nested file should be in the archive"
+    );
+    let nested_content = read_file_from_archive(archive_path, "subdir/nested_file.txt");
     assert_eq!(
         nested_content, "nested content",
         "nested content should match"
     );
 
     // Clean up
-    std::fs::remove_dir_all(copied_path).ok();
+    std::fs::remove_file(archive_path).ok();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1193,15 +1263,13 @@ async fn listen_for_node_add_runs_add_cmd() {
         .find(TARGET_NODE_NAME, TARGET_NODE_TAG)
         .expect("node should exist in stack");
 
-    let copied_path = entity.root_path();
+    let archive_path = entity.root_path();
 
-    // Verify that add_cmd was executed on the COPIED folder (not the source)
-    // by checking the marker file exists only in the copied path
-    let marker_file = copied_path.join(ADD_CMD_MARKER_FILE);
+    // Verify that add_cmd was executed in the working directory (not the source)
+    // by checking the marker file exists in the archive
     assert!(
-        marker_file.exists(),
-        "add_cmd should have created marker file at {}",
-        marker_file.display()
+        archive_contains_entry(archive_path, ADD_CMD_MARKER_FILE),
+        "add_cmd should have created marker file in the archive"
     );
 
     // Verify add_cmd did NOT run on the source directory
@@ -1213,7 +1281,7 @@ async fn listen_for_node_add_runs_add_cmd() {
     );
 
     // Clean up
-    std::fs::remove_dir_all(copied_path).ok();
+    std::fs::remove_file(archive_path).ok();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1388,7 +1456,7 @@ async fn listen_for_node_add_streams_stdout_and_stderr() {
     assert!(saw_stdout, "stdout feedback should include marker");
     assert!(saw_stderr, "stderr feedback should include marker");
 
-    std::fs::remove_dir_all(&add_result.snapshot_path).ok();
+    std::fs::remove_file(&add_result.snapshot_path).ok();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1566,7 +1634,7 @@ async fn listen_for_node_add_writes_log_file() {
     std::fs::remove_file(&add_result.log_path).ok();
 
     // Clean up snapshot directory
-    std::fs::remove_dir_all(&add_result.snapshot_path).ok();
+    std::fs::remove_file(&add_result.snapshot_path).ok();
 }
 
 /// Tests that a new goal can be processed after a previous action was abandoned
@@ -1688,11 +1756,11 @@ async fn listen_for_node_add_abandoned_action_does_not_block_next_goal() {
     );
     assert_eq!(node_stack.len(), 3, "root + first + second nodes");
 
-    // Clean up snapshot directories
+    // Clean up archives
     if let Some(entity) = node_stack.find(FIRST_NODE_NAME, FIRST_NODE_TAG) {
-        std::fs::remove_dir_all(entity.root_path()).ok();
+        std::fs::remove_file(entity.root_path()).ok();
     }
-    std::fs::remove_dir_all(&second_add_result.snapshot_path).ok();
+    std::fs::remove_file(&second_add_result.snapshot_path).ok();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1919,10 +1987,11 @@ async fn node_add_same_node_shutdown_existing_instances() {
         0,
         "instances should be stopped before overwrite completes"
     );
+    // With deterministic archive naming, v1 and v2 produce the same path.
+    // The archive was overwritten, so it should still exist.
     assert!(
-        !snapshot_v1.exists(),
-        "previous snapshot should be removed from storage: {}",
-        snapshot_v1.display()
+        add_v2.snapshot_path.exists(),
+        "archive should exist after overwrite"
     );
 
     let mut feedback = Vec::new();
@@ -1940,10 +2009,10 @@ async fn node_add_same_node_shutdown_existing_instances() {
     assert!(saw_instance_1, "should emit stop feedback for instance 1");
     assert!(saw_instance_2, "should emit stop feedback for instance 2");
 
-    // Clean up log files and snapshot directory created by successful adds.
+    // Clean up log files and archive created by successful adds.
     std::fs::remove_file(&add_v1.log_path).ok();
     std::fs::remove_file(&add_v2.log_path).ok();
-    std::fs::remove_dir_all(&add_v2.snapshot_path).ok();
+    std::fs::remove_file(&add_v2.snapshot_path).ok();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2039,7 +2108,7 @@ async fn listen_for_node_add_uses_env_overrides_for_path() {
     std::fs::remove_file(&add_result.log_path).ok();
 
     // Clean up snapshot directory
-    std::fs::remove_dir_all(&add_result.snapshot_path).ok();
+    std::fs::remove_file(&add_result.snapshot_path).ok();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2126,7 +2195,7 @@ async fn listen_for_node_add_fails_runs_add_cmd_on_missing_node_dependency() {
     assert_eq!(node_stack.len(), 1, "only root should exist");
 
     // Clean up
-    std::fs::remove_dir_all(&add_result.snapshot_path).ok();
+    std::fs::remove_file(&add_result.snapshot_path).ok();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2261,8 +2330,8 @@ async fn listen_for_node_add_fails_on_missing_interface_even_when_dependency_exi
     assert_eq!(node_stack.len(), 2, "root + dependency only");
 
     // Clean up
-    std::fs::remove_dir_all(&dep_result.snapshot_path).ok();
-    std::fs::remove_dir_all(&add_result.snapshot_path).ok();
+    std::fs::remove_file(&dep_result.snapshot_path).ok();
+    std::fs::remove_file(&add_result.snapshot_path).ok();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2332,14 +2401,17 @@ async fn listen_for_node_add_reports_excluded_dirs_in_feedback() {
         );
     }
 
-    // Verify excluded directories were not copied to the snapshot
+    // Verify excluded directories were not included in the archive
+    let entries = list_archive_entries(&add_result.snapshot_path);
     for dir_name in [".venv", "target", "node_modules", "__pycache__"] {
         assert!(
-            !add_result.snapshot_path.join(dir_name).exists(),
-            "{dir_name} should not be copied to storage"
+            !entries
+                .iter()
+                .any(|e| e.starts_with(&format!("{dir_name}/")) || e == dir_name),
+            "{dir_name} should not be in the archive, entries: {entries:?}"
         );
     }
 
     // Clean up
-    std::fs::remove_dir_all(&add_result.snapshot_path).ok();
+    std::fs::remove_file(&add_result.snapshot_path).ok();
 }
