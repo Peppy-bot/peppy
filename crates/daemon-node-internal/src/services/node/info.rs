@@ -342,14 +342,8 @@ fn parse_node_config_from_http_blocking(url: url::Url) -> std::result::Result<No
         format!("Failed to download bundle from {}: {}", url, reason)
     })?;
 
-    let mut reader = response.into_body().into_reader();
-    let mut bytes = Vec::new();
-    reader
-        .read_to_end(&mut bytes)
-        .map_err(|e| format!("Failed to read response body from {}: {}", url, e))?;
-
-    let cursor = std::io::Cursor::new(bytes);
-    let decoder = Decoder::new(cursor)
+    let reader = response.into_body().into_reader();
+    let decoder = Decoder::new(reader)
         .map_err(|e| format!("Failed to decode zstd bundle from {}: {}", url, e))?;
     let mut archive = Archive::new(decoder);
     let entries = archive
