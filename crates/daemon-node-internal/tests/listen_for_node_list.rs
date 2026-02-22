@@ -93,11 +93,6 @@ async fn listen_for_node_list_returns_succeeds() {
         "graph_json should include added node entry, got:\n{}",
         response.graph_json
     );
-
-    // Clean up copied directory
-    if let Some(entity) = node_stack.find(TARGET_NODE_NAME, TARGET_NODE_TAG) {
-        std::fs::remove_dir_all(entity.root_path()).ok();
-    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -186,9 +181,4 @@ async fn listen_for_node_list_returns_dot_graph() {
         node_stack.to_dot(),
         "dot_graph should match node_stack.to_dot()"
     );
-
-    // Clean up copied directory
-    if let Some(entity) = node_stack.find(TARGET_NODE_NAME, TARGET_NODE_TAG) {
-        std::fs::remove_dir_all(entity.root_path()).ok();
-    }
 }

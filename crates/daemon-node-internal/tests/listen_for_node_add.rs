@@ -261,9 +261,6 @@ async fn listen_for_node_fs_add_success() {
         "archive file name should be '<node_name>_<tag>.tar.zst', got: {}",
         file_name
     );
-
-    // Clean up the archive
-    std::fs::remove_file(root_path).ok();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -329,9 +326,6 @@ async fn listen_for_node_git_add_success() {
         "archive file name should be '<node_name>_<tag>.tar.zst', got: {}",
         file_name
     );
-
-    // Clean up the archive
-    std::fs::remove_file(root_path).ok();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -390,20 +384,6 @@ async fn listen_for_node_git_add_with_ref_success() {
         add_result_ref.error_message
     );
     assert!(node_stack.contains(TARGET_NODE_NAME, "0.1.0"));
-
-    let snapshot_path_head = node_stack
-        .find(TARGET_NODE_NAME, "0.2.0")
-        .expect("node should exist in stack")
-        .root_path()
-        .to_path_buf();
-    std::fs::remove_file(&snapshot_path_head).ok();
-
-    let snapshot_path_ref = node_stack
-        .find(TARGET_NODE_NAME, "0.1.0")
-        .expect("node should exist in stack")
-        .root_path()
-        .to_path_buf();
-    std::fs::remove_file(&snapshot_path_ref).ok();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -518,9 +498,6 @@ async fn listen_for_node_http_add_success() {
         "archive file name should be '<node_name>_<tag>.tar.zst', got: {}",
         file_name
     );
-
-    // Clean up the archive
-    std::fs::remove_file(root_path).ok();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -883,9 +860,6 @@ async fn listen_for_node_add_same_node_same_tags_overwrites_when_no_dependents()
             .is_some_and(|topics| topics.iter().any(|topic| topic.name == "/example")),
         "node should have updated interfaces from the overwritten config"
     );
-
-    // Clean up
-    std::fs::remove_file(entity.root_path()).ok();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1044,10 +1018,6 @@ async fn listen_for_node_add_same_node_same_tags_fails_when_node_has_dependents(
         node_stack.contains(DEPENDENT_NODE_NAME, DEPENDENT_NODE_TAG),
         "dependent node should still exist after failed overwrite"
     );
-
-    // Clean up archives created by successful adds
-    std::fs::remove_file(&dependency_snapshot_path).ok();
-    std::fs::remove_file(&dependent_add.snapshot_path).ok();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1123,14 +1093,6 @@ async fn listen_for_node_add_same_node_different_tags_create_two_entities() {
     assert_eq!(node_stack.len(), 3, "root + two versions");
     assert!(node_stack.contains(NODE_NAME, "1.0.0"));
     assert!(node_stack.contains(NODE_NAME, "2.0.0"));
-
-    // Clean up archives
-    if let Some(entity) = node_stack.find(NODE_NAME, "1.0.0") {
-        std::fs::remove_file(entity.root_path()).ok();
-    }
-    if let Some(entity) = node_stack.find(NODE_NAME, "2.0.0") {
-        std::fs::remove_file(entity.root_path()).ok();
-    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1212,9 +1174,6 @@ async fn listen_for_node_add_copies_files_to_storage() {
         nested_content, "nested content",
         "nested content should match"
     );
-
-    // Clean up
-    std::fs::remove_file(archive_path).ok();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1279,9 +1238,6 @@ async fn listen_for_node_add_runs_add_cmd() {
         "add_cmd should NOT have created marker file in source dir at {}",
         source_marker.display()
     );
-
-    // Clean up
-    std::fs::remove_file(archive_path).ok();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1455,8 +1411,6 @@ async fn listen_for_node_add_streams_stdout_and_stderr() {
 
     assert!(saw_stdout, "stdout feedback should include marker");
     assert!(saw_stderr, "stderr feedback should include marker");
-
-    std::fs::remove_file(&add_result.snapshot_path).ok();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1629,12 +1583,6 @@ async fn listen_for_node_add_writes_log_file() {
         "log file should contain stderr marker with [stderr] prefix, got:\n{}",
         log_content
     );
-
-    // Clean up log file
-    std::fs::remove_file(&add_result.log_path).ok();
-
-    // Clean up snapshot directory
-    std::fs::remove_file(&add_result.snapshot_path).ok();
 }
 
 /// Tests that a new goal can be processed after a previous action was abandoned
@@ -1755,12 +1703,6 @@ async fn listen_for_node_add_abandoned_action_does_not_block_next_goal() {
         "second node should be in stack"
     );
     assert_eq!(node_stack.len(), 3, "root + first + second nodes");
-
-    // Clean up archives
-    if let Some(entity) = node_stack.find(FIRST_NODE_NAME, FIRST_NODE_TAG) {
-        std::fs::remove_file(entity.root_path()).ok();
-    }
-    std::fs::remove_file(&second_add_result.snapshot_path).ok();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2008,11 +1950,6 @@ async fn node_add_same_node_shutdown_existing_instances() {
         .any(|entry| entry.is_stdout() && entry.line.trim() == expected_instance_2.as_str());
     assert!(saw_instance_1, "should emit stop feedback for instance 1");
     assert!(saw_instance_2, "should emit stop feedback for instance 2");
-
-    // Clean up log files and archive created by successful adds.
-    std::fs::remove_file(&add_v1.log_path).ok();
-    std::fs::remove_file(&add_v2.log_path).ok();
-    std::fs::remove_file(&add_v2.snapshot_path).ok();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2103,12 +2040,6 @@ async fn listen_for_node_add_uses_env_overrides_for_path() {
         "The command should succeed, got error: {:?}",
         add_result.error_message
     );
-
-    // Clean up log file
-    std::fs::remove_file(&add_result.log_path).ok();
-
-    // Clean up snapshot directory
-    std::fs::remove_file(&add_result.snapshot_path).ok();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2193,9 +2124,6 @@ async fn listen_for_node_add_fails_runs_add_cmd_on_missing_node_dependency() {
         "node should not be added when dependency is missing"
     );
     assert_eq!(node_stack.len(), 1, "only root should exist");
-
-    // Clean up
-    std::fs::remove_file(&add_result.snapshot_path).ok();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2328,10 +2256,6 @@ async fn listen_for_node_add_fails_on_missing_interface_even_when_dependency_exi
         "dependent node should not be added when interface is missing"
     );
     assert_eq!(node_stack.len(), 2, "root + dependency only");
-
-    // Clean up
-    std::fs::remove_file(&dep_result.snapshot_path).ok();
-    std::fs::remove_file(&add_result.snapshot_path).ok();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2411,7 +2335,4 @@ async fn listen_for_node_add_reports_excluded_dirs_in_feedback() {
             "{dir_name} should not be in the archive, entries: {entries:?}"
         );
     }
-
-    // Clean up
-    std::fs::remove_file(&add_result.snapshot_path).ok();
 }
