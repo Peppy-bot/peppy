@@ -93,7 +93,7 @@ fn inject_rust_build_env(env_vars: &mut Vec<(String, String)>, language: Peppyge
     sccache_injected
 }
 
-pub(super) fn generate_random_id() -> String {
+pub(crate) fn generate_random_id() -> String {
     let mut rng = rand::rng();
     let bytes: [u8; 3] = rng.random();
     bytes.iter().map(|b| format!("{:02x}", b)).collect()
@@ -102,7 +102,7 @@ pub(super) fn generate_random_id() -> String {
 /// Extracts a `.tar.zst` archive into `destination` with path safety checks.
 /// Rejects entries containing `..`, root, or prefix path components.
 /// Directories are applied last to avoid permission interference during extraction.
-pub(super) fn extract_tar_zst(
+pub(crate) fn extract_tar_zst(
     archive_path: &Path,
     destination: &Path,
 ) -> std::result::Result<(), String> {
@@ -223,7 +223,7 @@ pub use start::listen_for_node_start;
 pub use stop::listen_for_node_stop;
 pub use sync::listen_for_node_sync;
 
-pub(super) async fn resolve_node_config(
+pub(crate) async fn resolve_node_config(
     source: NodeSource,
 ) -> std::result::Result<NodeConfig, String> {
     info::resolve_node_config(source).await

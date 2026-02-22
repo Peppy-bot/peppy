@@ -1,6 +1,6 @@
 use crate::generator::naming::sanitize_component;
 
-pub(super) fn is_rust_keyword(ident: &str) -> bool {
+pub(crate) fn is_rust_keyword(ident: &str) -> bool {
     matches!(
         ident,
         "as" | "break"
@@ -60,7 +60,7 @@ pub(super) fn is_rust_keyword(ident: &str) -> bool {
 ///
 /// This is like [`sanitize_component`] but appends `_` when the result is a
 /// Rust keyword (e.g. `type` -> `type_`).
-pub(super) fn sanitize_rust_identifier(raw: &str) -> String {
+pub(crate) fn sanitize_rust_identifier(raw: &str) -> String {
     let mut ident = sanitize_component(raw);
     if is_rust_keyword(&ident) {
         ident.push('_');
@@ -69,7 +69,7 @@ pub(super) fn sanitize_rust_identifier(raw: &str) -> String {
 }
 
 /// Builds a prefixed name from an optional candidate, falling back to `fallback`.
-pub(super) fn prefixed_name(prefix: &str, candidate: Option<&str>, fallback: &str) -> String {
+pub(crate) fn prefixed_name(prefix: &str, candidate: Option<&str>, fallback: &str) -> String {
     let fallback_component = match sanitize_rust_identifier(fallback) {
         component if component.is_empty() => "item".to_string(),
         component => component,

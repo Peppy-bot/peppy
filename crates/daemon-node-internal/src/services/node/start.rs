@@ -1,3 +1,4 @@
+use super::{extract_tar_zst, generate_random_id};
 use crate::Result;
 use crate::encoding::{NodeStartFeedback, NodeStartGoal, NodeStartGoalResponse, NodeStartResult};
 use crate::names;
@@ -962,14 +963,14 @@ fn extract_node_archive(
     node_name: &str,
     node_tag: &str,
 ) -> std::result::Result<std::path::PathBuf, String> {
-    let instance_id = super::generate_random_id();
+    let instance_id = generate_random_id();
     let instance_dir_name = format!("{}_{}_{}", node_name, node_tag, instance_id);
     let instance_dir = instances_dir().join(&instance_dir_name);
 
     std::fs::create_dir_all(&instance_dir)
         .map_err(|e| format!("Failed to create instance directory: {}", e))?;
 
-    super::extract_tar_zst(archive_path, &instance_dir)?;
+    extract_tar_zst(archive_path, &instance_dir)?;
 
     Ok(instance_dir)
 }
