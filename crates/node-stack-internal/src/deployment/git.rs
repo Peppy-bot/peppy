@@ -82,7 +82,10 @@ fn fetch_repository(repo: &Repository) -> std::result::Result<(), git2::Error> {
         let mut fo = FetchOptions::new();
         fo.download_tags(AutotagOption::All);
         remote.fetch(
-            &["+refs/tags/*:refs/tags/*", "+refs/heads/*:refs/remotes/origin/*"],
+            &[
+                "+refs/tags/*:refs/tags/*",
+                "+refs/heads/*:refs/remotes/origin/*",
+            ],
             Some(&mut fo),
             None,
         )
