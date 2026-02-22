@@ -127,6 +127,10 @@ pub async fn resolve_node_config(source: NodeSource) -> std::result::Result<Node
 }
 
 fn parse_node_config_from_fs(node_path: &Path) -> std::result::Result<NodeConfig, String> {
+    if node_path.to_str().is_some_and(|s| s.ends_with(".tar.zst")) {
+        return parse_node_config_from_archive(node_path);
+    }
+
     let config_path = if node_path.is_dir() {
         node_path.join(NODE_CONFIG_FILE)
     } else {
@@ -140,6 +144,79 @@ fn parse_node_config_from_fs(node_path: &Path) -> std::result::Result<NodeConfig
             e
         )
     })
+}
+
+fn parse_node_config_from_archive(archive_path: &Path) -> std::result::Result<NodeConfig, String> {
+    let file = std::fs::File::open(archive_path)
+        .map_err(|e| format!("Failed to open archive {}: {}", archive_path.display(), e))?;
+    let decoder = Decoder::new(file)
+        .map_err(|e| format!("Failed to decode archive {}: {}", archive_path.display(), e))?;
+    let mut archive = Archive::new(decoder);
+    let entries = archive
+        .entries()
+        .map_err(|e| format!("Failed to read archive {}: {}", archive_path.display(), e))?;
+
+    for entry in entries {
+        let mut entry = entry.map_err(|e| {
+            format!(
+                "Failed to read entry from {}: {}",
+                archive_path.display(),
+                e
+            )
+        })?;
+
+        let entry_path = entry
+            .path()
+            .map_err(|e| {
+                format!(
+                    "Failed to read entry path from {}: {}",
+                    archive_path.display(),
+                    e
+                )
+            })?
+            .into_owned();
+
+        if entry.header().entry_type().is_dir() {
+            continue;
+        }
+
+        if entry_path.file_name() != Some(OsStr::new(NODE_CONFIG_FILE)) {
+            continue;
+        }
+
+        let mut content = Vec::new();
+        entry.read_to_end(&mut content).map_err(|e| {
+            format!(
+                "Failed to read {} from {}: {}",
+                NODE_CONFIG_FILE,
+                archive_path.display(),
+                e
+            )
+        })?;
+
+        let config_str = std::str::from_utf8(&content).map_err(|e| {
+            format!(
+                "{} in {} is not valid UTF-8: {}",
+                NODE_CONFIG_FILE,
+                archive_path.display(),
+                e
+            )
+        })?;
+
+        return NodeConfigParser::from_content(config_str).map_err(|e| {
+            format!(
+                "Failed to parse node config from {}: {}",
+                archive_path.display(),
+                e
+            )
+        });
+    }
+
+    Err(format!(
+        "Archive {} does not contain {}",
+        archive_path.display(),
+        NODE_CONFIG_FILE
+    ))
 }
 
 fn sanitize_repo_path(repo_path: &str) -> std::result::Result<PathBuf, String> {
