@@ -186,10 +186,6 @@ fn git_repo_is_cloned_and_same_tag_updates_code() {
     repo.tag("1.0.0", &commit, &signature, "tag", true)
         .expect("retag commit");
 
-    // Use a fresh data dir so the second resolution re-clones the remote
-    // (the cached clone does not force-update moved tags on fetch).
-    let _data_dir = init_test_data_dir();
-
     let plan = LaunchPlan::from_launch_file(daemon_node_config(), &launch_file).expect("plan");
     assert_eq!(plan.node_stack().len(), 2, "daemon + uvc_camera");
     let deployment = plan
