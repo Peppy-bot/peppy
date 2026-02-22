@@ -1,6 +1,9 @@
 use super::super::stack::STACK_LAUNCH_GIT_HASH;
 use super::sync::{collect_subscribed_interfaces, generate_peppygen_for_node};
-use super::{extract_tar_zst, generate_random_id};
+use super::{
+    checkout_repo_ref, extract_tar_zst, generate_random_id, is_supported_http_archive,
+    sanitize_repo_path,
+};
 use crate::Result;
 use crate::encoding::{
     NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAddResult, NodeSource,
@@ -12,7 +15,7 @@ use config::consts::{
     peppy_data_dir,
 };
 use config::node::{NodeConfig, NodeConfigParser};
-use git2::{Repository, build::CheckoutBuilder};
+use git2::Repository;
 use node_stack::{NodeStack, validate_dependency_specs};
 use peppylib::messaging::{
     ActionCreation, SHUTDOWN_SERVICE, ServiceMessenger, ServiceRequestContext, TopicPublisher,
@@ -462,39 +465,6 @@ struct ProcessNodeAddContext {
     log_path: PathBuf,
 }
 
-fn sanitize_repo_path(repo_path: &str) -> std::result::Result<PathBuf, String> {
-    use std::path::Component;
-
-    let trimmed = repo_path.trim_start_matches(['/', '\\']);
-    let path = PathBuf::from(trimmed);
-
-    if path.components().any(|c| matches!(c, Component::ParentDir)) {
-        return Err("repo_path must not contain '..'".to_string());
-    }
-
-    Ok(path)
-}
-
-fn checkout_repo_ref(repo: &Repository, repo_ref: &str) -> std::result::Result<(), git2::Error> {
-    let repo_ref = repo_ref.trim();
-    if repo_ref.is_empty() {
-        return Ok(());
-    }
-
-    let object = repo
-        .revparse_single(repo_ref)
-        .or_else(|_| repo.revparse_single(&format!("refs/tags/{repo_ref}")))
-        .or_else(|_| repo.revparse_single(&format!("refs/heads/{repo_ref}")))
-        .or_else(|_| repo.revparse_single(&format!("refs/remotes/origin/{repo_ref}")))?;
-    let commit = object.peel_to_commit()?;
-
-    repo.set_head_detached(commit.id())?;
-    let mut checkout = CheckoutBuilder::new();
-    checkout.force();
-    repo.checkout_head(Some(&mut checkout))?;
-    Ok(())
-}
-
 async fn resolve_git_source(
     repo_url: &gix_url::Url,
     repo_path: &str,
@@ -565,11 +535,6 @@ async fn resolve_git_source(
         verify_codegen_fingerprint: false,
         cleanup_dir: Some(checkout_dir),
     })
-}
-
-fn is_supported_http_archive(url: &url::Url) -> bool {
-    let path = url.path().to_ascii_lowercase();
-    path.ends_with(".tar.zst") || path.ends_with(".tar.zstd") || path.ends_with(".tzst")
 }
 
 fn sanitize_http_filename(name: &str) -> String {

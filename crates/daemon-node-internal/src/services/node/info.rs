@@ -1,10 +1,11 @@
+use super::{checkout_repo_ref, is_supported_http_archive, sanitize_repo_path};
 use crate::Result;
 use crate::encoding::{NodeInfoRequest, NodeInfoResponse, NodeSource};
 use crate::names;
 use config::consts::NODE_CONFIG_FILE;
 use config::fingerprint::fingerprint_for_bytes;
 use config::node::{NodeConfig, NodeConfigParser};
-use git2::{Repository, build::CheckoutBuilder};
+use git2::Repository;
 use node_stack::NodeStack;
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::types::Payload;
@@ -219,37 +220,6 @@ fn parse_node_config_from_archive(archive_path: &Path) -> std::result::Result<No
     ))
 }
 
-fn sanitize_repo_path(repo_path: &str) -> std::result::Result<PathBuf, String> {
-    let trimmed = repo_path.trim_start_matches(['/', '\\']);
-    let path = PathBuf::from(trimmed);
-
-    if path.components().any(|c| matches!(c, Component::ParentDir)) {
-        return Err("repo_path must not contain '..'".to_string());
-    }
-
-    Ok(path)
-}
-
-fn checkout_repo_ref(repo: &Repository, repo_ref: &str) -> std::result::Result<(), git2::Error> {
-    let repo_ref = repo_ref.trim();
-    if repo_ref.is_empty() {
-        return Ok(());
-    }
-
-    let object = repo
-        .revparse_single(repo_ref)
-        .or_else(|_| repo.revparse_single(&format!("refs/tags/{repo_ref}")))
-        .or_else(|_| repo.revparse_single(&format!("refs/heads/{repo_ref}")))
-        .or_else(|_| repo.revparse_single(&format!("refs/remotes/origin/{repo_ref}")))?;
-    let commit = object.peel_to_commit()?;
-
-    repo.set_head_detached(commit.id())?;
-    let mut checkout = CheckoutBuilder::new();
-    checkout.force();
-    repo.checkout_head(Some(&mut checkout))?;
-    Ok(())
-}
-
 async fn parse_node_config_from_git(
     repo_url: gix_url::Url,
     repo_path: String,
@@ -303,11 +273,6 @@ fn parse_node_config_from_git_blocking(
             e
         )
     })
-}
-
-fn is_supported_http_archive(url: &url::Url) -> bool {
-    let path = url.path().to_ascii_lowercase();
-    path.ends_with(".tar.zst") || path.ends_with(".tar.zstd") || path.ends_with(".tzst")
 }
 
 async fn parse_node_config_from_http(url: url::Url) -> std::result::Result<NodeConfig, String> {
