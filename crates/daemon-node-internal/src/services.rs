@@ -170,8 +170,6 @@ impl DaemonNode {
                 self.instance_id(),
                 self.node_name(),
                 Arc::clone(&self.node_stack),
-                self.node_startup_timeout,
-                self.node_start_health_timeout,
                 self.peppy_dirs.clone(),
             )
             .await?,
@@ -223,9 +221,11 @@ impl DaemonNode {
                 self.instance_id(),
                 self.node_name(),
                 Arc::clone(&self.node_stack),
-                self.node_startup_timeout,
-                self.node_start_health_timeout,
-                self.peppy_dirs.clone(),
+                node::NodeStartServiceConfig {
+                    node_startup_timeout: self.node_startup_timeout,
+                    node_start_health_timeout: self.node_start_health_timeout,
+                    peppy_dirs: self.peppy_dirs.clone(),
+                },
             )
             .await?,
             node::listen_for_node_stop(

@@ -459,6 +459,15 @@ struct ResolvedNodeAddSource {
     cleanup_dir: Option<PathBuf>,
 }
 
+#[derive(Clone)]
+struct NodeAddActionContext {
+    node_stack: Arc<NodeStack>,
+    messenger: MessengerHandle,
+    bound_daemon_node: String,
+    daemon_instance_id: String,
+    peppy_dirs: PeppyDirs,
+}
+
 struct ProcessNodeAddContext {
     messenger: MessengerHandle,
     bound_daemon_node: String,
@@ -782,6 +791,13 @@ async fn run_node_add_action_loop(
     daemon_instance_id: String,
     peppy_dirs: PeppyDirs,
 ) -> Result<()> {
+    let action_context = NodeAddActionContext {
+        node_stack,
+        messenger,
+        bound_daemon_node,
+        daemon_instance_id,
+        peppy_dirs,
+    };
     let state = Arc::new(Mutex::new(NodeAddActionState::default()));
 
     loop {
@@ -790,33 +806,16 @@ async fn run_node_add_action_loop(
             .goal_service
             .handle_next_request({
                 let feedback_publisher = &action.feedback_publisher;
-                let node_stack = Arc::clone(&node_stack);
                 let state = Arc::clone(&state);
-                let messenger = messenger.clone();
-                let bound_daemon_node = bound_daemon_node.clone();
-                let daemon_instance_id = daemon_instance_id.clone();
-                let peppy_dirs = peppy_dirs.clone();
+                let action_context = action_context.clone();
                 move |context| {
                     let feedback_publisher = feedback_publisher.clone();
-                    let node_stack = Arc::clone(&node_stack);
                     let state = Arc::clone(&state);
-                    let messenger = messenger.clone();
-                    let bound_daemon_node = bound_daemon_node.clone();
-                    let daemon_instance_id = daemon_instance_id.clone();
-                    let peppy_dirs = peppy_dirs.clone();
+                    let action_context = action_context.clone();
 
                     async move {
-                        handle_goal_request(
-                            context,
-                            feedback_publisher,
-                            node_stack,
-                            state,
-                            messenger,
-                            bound_daemon_node,
-                            daemon_instance_id,
-                            peppy_dirs,
-                        )
-                        .await
+                        handle_goal_request(context, feedback_publisher, state, action_context)
+                            .await
                     }
                 }
             })
@@ -885,30 +884,18 @@ async fn run_node_add_action_loop(
                         // with "action already in progress".
                         goal_result = action.goal_service.handle_next_request({
                             let feedback_publisher = &action.feedback_publisher;
-                            let node_stack = Arc::clone(&node_stack);
                             let state = Arc::clone(&state);
-                            let messenger = messenger.clone();
-                            let bound_daemon_node = bound_daemon_node.clone();
-                            let daemon_instance_id = daemon_instance_id.clone();
-                            let peppy_dirs = peppy_dirs.clone();
+                            let action_context = action_context.clone();
                             move |context| {
                                 let feedback_publisher = feedback_publisher.clone();
-                                let node_stack = Arc::clone(&node_stack);
                                 let state = Arc::clone(&state);
-                                let messenger = messenger.clone();
-                                let bound_daemon_node = bound_daemon_node.clone();
-                                let daemon_instance_id = daemon_instance_id.clone();
-                                let peppy_dirs = peppy_dirs.clone();
+                                let action_context = action_context.clone();
                                 async move {
                                     handle_goal_request(
                                         context,
                                         feedback_publisher,
-                                        node_stack,
                                         state,
-                                        messenger,
-                                        bound_daemon_node,
-                                        daemon_instance_id,
-                                        peppy_dirs,
+                                        action_context,
                                     )
                                     .await
                                 }
@@ -953,12 +940,8 @@ async fn run_node_add_action_loop(
 async fn handle_goal_request(
     context: ServiceRequestContext,
     feedback_publisher: TopicPublisher,
-    node_stack: Arc<NodeStack>,
     state: Arc<Mutex<NodeAddActionState>>,
-    messenger: MessengerHandle,
-    bound_daemon_node: String,
-    daemon_instance_id: String,
-    peppy_dirs: PeppyDirs,
+    action_context: NodeAddActionContext,
 ) -> PeppyResult<Payload> {
     let sender_instance_id = context.message().instance_id();
     let payload = context.message().payload();
@@ -1003,7 +986,7 @@ async fn handle_goal_request(
         };
     }
 
-    let mut resolved = match resolve_node_add_source(&goal, &peppy_dirs).await {
+    let mut resolved = match resolve_node_add_source(&goal, &action_context.peppy_dirs).await {
         Ok(resolved) => resolved,
         Err(error_msg) => {
             let mut state_guard = state.lock().await;
@@ -1043,7 +1026,7 @@ async fn handle_goal_request(
     let node_tag = resolved.node_config.manifest.tag.clone();
 
     // Create log file with timestamp-based filename
-    let log_dir = peppy_dirs.logs_dir_add();
+    let log_dir = action_context.peppy_dirs.logs_dir_add();
     if let Err(e) = std::fs::create_dir_all(&log_dir) {
         let error_msg = format!("Failed to create logs directory: {}", e);
         debug!("Failed to create logs directory {:?}: {}", log_dir, e);
@@ -1089,6 +1072,13 @@ async fn handle_goal_request(
     let cleanup_dir = checkout_cleanup.take();
     let node_config = resolved.node_config;
     tokio::spawn(async move {
+        let NodeAddActionContext {
+            node_stack,
+            messenger,
+            bound_daemon_node,
+            daemon_instance_id,
+            peppy_dirs,
+        } = action_context;
         let ctx = ProcessNodeAddContext {
             messenger,
             bound_daemon_node,
