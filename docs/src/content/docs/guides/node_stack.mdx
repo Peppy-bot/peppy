@@ -34,6 +34,10 @@ peppy node add .
     :::caution
     [cargo](https://doc.rust-lang.org/cargo/getting-started/installation.html) must be installed on your system. Without it, Peppy will fail with a `No such file or directory` error.
     :::
+
+    :::note
+    For faster Rust builds, install [sccache](https://github.com/mozilla/sccache#installation). When Peppy detects `sccache` on your system PATH, it automatically sets `RUSTC_WRAPPER=sccache` for Rust node builds, caching compilation artifacts across runs.
+    :::
   </TabItem>
 </Tabs>
 

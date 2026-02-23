@@ -1,10 +1,11 @@
+use super::{checkout_repo_ref, is_supported_http_archive, sanitize_repo_path};
 use crate::Result;
-use crate::encoding::{InterfaceIntegrity, NodeInfoRequest, NodeInfoResponse, NodeSource};
+use crate::encoding::{NodeInfoRequest, NodeInfoResponse, NodeSource};
 use crate::names;
 use config::consts::NODE_CONFIG_FILE;
 use config::fingerprint::fingerprint_for_bytes;
-use config::node::{InterfaceKind, NodeConfig, NodeConfigParser};
-use git2::{Repository, build::CheckoutBuilder};
+use config::node::{NodeConfig, NodeConfigParser};
+use git2::Repository;
 use node_stack::NodeStack;
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::types::Payload;
@@ -101,8 +102,6 @@ async fn handle_node_info_request_inner(
         None => (false, Vec::new()),
     };
 
-    let interfaces_integrity = compute_interfaces_integrity(&node_config)?;
-
     let config_json = serde_json5::to_string(&node_config).map_err(|e| format!("{}", e))?;
     let config_integrity = fingerprint_for_bytes(config_json.as_bytes());
 
@@ -110,7 +109,6 @@ async fn handle_node_info_request_inner(
         node_config,
         is_in_node_stack,
         instances_names,
-        interfaces_integrity,
         config_integrity,
     )
     .encode()
@@ -130,6 +128,10 @@ pub async fn resolve_node_config(source: NodeSource) -> std::result::Result<Node
 }
 
 fn parse_node_config_from_fs(node_path: &Path) -> std::result::Result<NodeConfig, String> {
+    if node_path.to_str().is_some_and(|s| s.ends_with(".tar.zst")) {
+        return parse_node_config_from_archive(node_path);
+    }
+
     let config_path = if node_path.is_dir() {
         node_path.join(NODE_CONFIG_FILE)
     } else {
@@ -145,35 +147,77 @@ fn parse_node_config_from_fs(node_path: &Path) -> std::result::Result<NodeConfig
     })
 }
 
-fn sanitize_repo_path(repo_path: &str) -> std::result::Result<PathBuf, String> {
-    let trimmed = repo_path.trim_start_matches(['/', '\\']);
-    let path = PathBuf::from(trimmed);
+fn parse_node_config_from_archive(archive_path: &Path) -> std::result::Result<NodeConfig, String> {
+    let file = std::fs::File::open(archive_path)
+        .map_err(|e| format!("Failed to open archive {}: {}", archive_path.display(), e))?;
+    let decoder = Decoder::new(file)
+        .map_err(|e| format!("Failed to decode archive {}: {}", archive_path.display(), e))?;
+    let mut archive = Archive::new(decoder);
+    let entries = archive
+        .entries()
+        .map_err(|e| format!("Failed to read archive {}: {}", archive_path.display(), e))?;
 
-    if path.components().any(|c| matches!(c, Component::ParentDir)) {
-        return Err("repo_path must not contain '..'".to_string());
+    for entry in entries {
+        let mut entry = entry.map_err(|e| {
+            format!(
+                "Failed to read entry from {}: {}",
+                archive_path.display(),
+                e
+            )
+        })?;
+
+        let entry_path = entry
+            .path()
+            .map_err(|e| {
+                format!(
+                    "Failed to read entry path from {}: {}",
+                    archive_path.display(),
+                    e
+                )
+            })?
+            .into_owned();
+
+        if entry.header().entry_type().is_dir() {
+            continue;
+        }
+
+        if entry_path.file_name() != Some(OsStr::new(NODE_CONFIG_FILE)) {
+            continue;
+        }
+
+        let mut content = Vec::new();
+        entry.read_to_end(&mut content).map_err(|e| {
+            format!(
+                "Failed to read {} from {}: {}",
+                NODE_CONFIG_FILE,
+                archive_path.display(),
+                e
+            )
+        })?;
+
+        let config_str = std::str::from_utf8(&content).map_err(|e| {
+            format!(
+                "{} in {} is not valid UTF-8: {}",
+                NODE_CONFIG_FILE,
+                archive_path.display(),
+                e
+            )
+        })?;
+
+        return NodeConfigParser::from_content(config_str).map_err(|e| {
+            format!(
+                "Failed to parse node config from {}: {}",
+                archive_path.display(),
+                e
+            )
+        });
     }
 
-    Ok(path)
-}
-
-fn checkout_repo_ref(repo: &Repository, repo_ref: &str) -> std::result::Result<(), git2::Error> {
-    let repo_ref = repo_ref.trim();
-    if repo_ref.is_empty() {
-        return Ok(());
-    }
-
-    let object = repo
-        .revparse_single(repo_ref)
-        .or_else(|_| repo.revparse_single(&format!("refs/tags/{repo_ref}")))
-        .or_else(|_| repo.revparse_single(&format!("refs/heads/{repo_ref}")))
-        .or_else(|_| repo.revparse_single(&format!("refs/remotes/origin/{repo_ref}")))?;
-    let commit = object.peel_to_commit()?;
-
-    repo.set_head_detached(commit.id())?;
-    let mut checkout = CheckoutBuilder::new();
-    checkout.force();
-    repo.checkout_head(Some(&mut checkout))?;
-    Ok(())
+    Err(format!(
+        "Archive {} does not contain {}",
+        archive_path.display(),
+        NODE_CONFIG_FILE
+    ))
 }
 
 async fn parse_node_config_from_git(
@@ -231,11 +275,6 @@ fn parse_node_config_from_git_blocking(
     })
 }
 
-fn is_supported_http_archive(url: &url::Url) -> bool {
-    let path = url.path().to_ascii_lowercase();
-    path.ends_with(".tar.zst") || path.ends_with(".tar.zstd") || path.ends_with(".tzst")
-}
-
 async fn parse_node_config_from_http(url: url::Url) -> std::result::Result<NodeConfig, String> {
     tokio::task::spawn_blocking(move || parse_node_config_from_http_blocking(url))
         .await
@@ -268,14 +307,8 @@ fn parse_node_config_from_http_blocking(url: url::Url) -> std::result::Result<No
         format!("Failed to download bundle from {}: {}", url, reason)
     })?;
 
-    let mut reader = response.into_body().into_reader();
-    let mut bytes = Vec::new();
-    reader
-        .read_to_end(&mut bytes)
-        .map_err(|e| format!("Failed to read response body from {}: {}", url, e))?;
-
-    let cursor = std::io::Cursor::new(bytes);
-    let decoder = Decoder::new(cursor)
+    let reader = response.into_body().into_reader();
+    let decoder = Decoder::new(reader)
         .map_err(|e| format!("Failed to decode zstd bundle from {}: {}", url, e))?;
     let mut archive = Archive::new(decoder);
     let entries = archive
@@ -392,48 +425,4 @@ fn parse_node_config_from_http_blocking(url: url::Url) -> std::result::Result<No
             e
         )
     })
-}
-
-/// Computes SHA256 hashes for each exposed interface in a node config.
-///
-/// Each interface (topic, service, action) is serialized to JSON and hashed
-/// individually, producing a list of [`InterfaceIntegrity`] entries that
-/// subscribers can use to verify interface compatibility.
-pub fn compute_interfaces_integrity(
-    config: &NodeConfig,
-) -> std::result::Result<Vec<InterfaceIntegrity>, String> {
-    let mut result = Vec::new();
-
-    let Some(exposes) = &config.interfaces.exposes else {
-        return Ok(result);
-    };
-
-    for topic in exposes.topics.iter().flatten() {
-        let json = serde_json::to_string(topic).map_err(|e| format!("{}", e))?;
-        result.push(InterfaceIntegrity {
-            name: topic.name.clone(),
-            sha256: fingerprint_for_bytes(json.as_bytes()),
-            interface_kind: InterfaceKind::Topic,
-        });
-    }
-
-    for service in exposes.services.iter().flatten() {
-        let json = serde_json::to_string(service).map_err(|e| format!("{}", e))?;
-        result.push(InterfaceIntegrity {
-            name: service.name.clone(),
-            sha256: fingerprint_for_bytes(json.as_bytes()),
-            interface_kind: InterfaceKind::Service,
-        });
-    }
-
-    for action in exposes.actions.iter().flatten() {
-        let json = serde_json::to_string(action).map_err(|e| format!("{}", e))?;
-        result.push(InterfaceIntegrity {
-            name: action.name.clone(),
-            sha256: fingerprint_for_bytes(json.as_bytes()),
-            interface_kind: InterfaceKind::Action,
-        });
-    }
-
-    Ok(result)
 }

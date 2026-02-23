@@ -10,9 +10,7 @@
       "--release"
     ],
     start_cmd: [
-      "cargo",
-      "run",
-      "--release"
+      "./target/release/hello_world_param"
     ]
   },
   parameters: {

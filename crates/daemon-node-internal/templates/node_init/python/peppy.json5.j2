@@ -6,11 +6,12 @@
     language: "python",
     add_cmd: [
       "uv",
-      "sync"
+      "sync",
+      "--no-editable"
     ],
     start_cmd: [
-      "uv",
-      "run",
+      "./.venv/bin/python",
+      "-m",
       "{{ node_name }}"
     ]
   },

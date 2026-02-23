@@ -10,9 +10,7 @@
       "--release"
     ],
     start_cmd: [
-      "cargo",
-      "run",
-      "--release"
+      "./target/release/standalone"
     ]
   },
   // A bunch of fake parameters required to start our node

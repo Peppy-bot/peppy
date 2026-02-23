@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 use config::consts::{
-    NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH, PYTHON_MAX_VERSION, PYTHON_MIN_VERSION,
+    NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH, PYTHON_MAX_VERSION, PYTHON_MIN_VERSION, PeppyDirs,
 };
 use config::node::PeppygenLanguage;
 use generator::generate_peppygen_lib;
@@ -15,13 +15,21 @@ use std::{fs, thread, time::Duration};
 use tempfile::TempDir;
 use tokio::time::sleep;
 
+/// Returns a `PeppyDirs` instance suitable for use in tests.
+///
+/// Uses `PeppyDirs::default()` since generator tests need access to the real
+/// shared cache directories for deploying vendored crates and Python packages.
+pub fn test_peppy_dirs() -> PeppyDirs {
+    PeppyDirs::default()
+}
+
 pub const STUB_NODE_CONFIG: &str = r#"{
   schema_version: 1,
   manifest: {
     name: "generated_node",
     tag: "0.1.0",
     language: "rust",
-    start_cmd: ["cargo", "run", "--release"]
+    start_cmd: ["./target/release/generated_node"]
   }
 }
 "#;
@@ -180,10 +188,28 @@ pub fn wait_for_child(
     }
 }
 
+/// Returns a stable, shared target directory for test compilations so that sccache can
+/// reuse the same dir across runs
+fn stable_test_target_dir() -> std::path::PathBuf {
+    PeppyDirs::default().root().join("cache/rust/test-targets")
+}
+
 pub fn compile_project(dir: impl AsRef<Path>) {
+    let dir = dir.as_ref();
+    let target_dir = stable_test_target_dir();
+    fs::create_dir_all(&target_dir).expect("failed to create stable test target directory");
+
+    // Hold an exclusive file lock across both the cargo build and the binary copy.
+    // This prevents a parallel test's build from overwriting the `user_node` binary
+    // in the shared target dir between our build finishing and the copy completing.
+    let lock_file = fs::File::create(target_dir.join(".compile.lock"))
+        .expect("failed to create compile lock file");
+    lock_file.lock().expect("failed to acquire compile lock");
+
     let cargo_output = Command::new("cargo")
         .arg("build")
         .env("CARGO_NET_OFFLINE", "true")
+        .env("CARGO_TARGET_DIR", &target_dir)
         .current_dir(dir)
         .output()
         .expect("failed to invoke cargo build on generated crate");
@@ -194,6 +220,17 @@ pub fn compile_project(dir: impl AsRef<Path>) {
         String::from_utf8_lossy(&cargo_output.stdout),
         String::from_utf8_lossy(&cargo_output.stderr)
     );
+
+    // Copy the binary to the project's local target dir so that spawn_cargo_run
+    // can execute it directly without cargo, avoiding lock contention at runtime.
+    let binary = target_dir.join("debug").join("user_node");
+    if binary.exists() {
+        let local_bin_dir = dir.join("target").join("debug");
+        fs::create_dir_all(&local_bin_dir).expect("failed to create local target/debug dir");
+        fs::copy(&binary, local_bin_dir.join("user_node"))
+            .expect("failed to copy compiled binary to local target dir");
+    }
+    // Lock released on drop
 }
 
 pub fn insert_dependency_line(contents: &str, dependency_line: &str) -> String {
@@ -237,7 +274,8 @@ pub fn run_generate_peppygen_lib_test(
     fs::write(&config_path, json_config_content).expect("failed to write peppy.json5");
 
     // Generate the library
-    generate_peppygen_lib(language, node_dir, Vec::new(), "test-hash")
+    let peppy_dirs = PeppyDirs::default();
+    generate_peppygen_lib(language, node_dir, Vec::new(), "test-hash", &peppy_dirs)
         .expect("failed to generate library");
 
     // Verify the generated library structure exists

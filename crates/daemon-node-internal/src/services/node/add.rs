@@ -1,37 +1,35 @@
 use super::super::stack::STACK_LAUNCH_GIT_HASH;
-use super::info::compute_interfaces_integrity;
 use super::sync::{collect_subscribed_interfaces, generate_peppygen_for_node};
+use super::{
+    checkout_repo_ref, extract_tar_zst, generate_random_id, is_supported_http_archive,
+    sanitize_repo_path,
+};
 use crate::Result;
 use crate::encoding::{
     NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAddResult, NodeSource,
 };
 use crate::names;
-use crate::{DependencyInterfaceIntegrityError, DependencyInterfaceIntegrityErrors};
 use chrono::Local;
-use config::consts::{
-    NODE_CONFIG_FILE, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH, logs_dir_add, peppy_data_dir,
-};
+use config::consts::{NODE_CONFIG_FILE, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH, PeppyDirs};
 use config::node::{NodeConfig, NodeConfigParser};
-use git2::{Repository, build::CheckoutBuilder};
+use git2::Repository;
 use node_stack::{NodeStack, validate_dependency_specs};
 use peppylib::messaging::{
     ActionCreation, SHUTDOWN_SERVICE, ServiceMessenger, ServiceRequestContext, TopicPublisher,
 };
 use peppylib::types::Payload;
 use peppylib::{ActionMessenger, MessengerHandle, PeppyResult};
-use rand::RngExt;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
-use tar::Archive;
 use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinHandle;
 use tracing::debug;
 use ureq::Error as HttpError;
-use zstd::stream::read::Decoder;
+use zstd::stream::write::Encoder as ZstdEncoder;
 
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -41,6 +39,7 @@ pub async fn listen_for_node_add(
     instance_id: &str,
     node_name: &str,
     node_stack: Arc<NodeStack>,
+    peppy_dirs: PeppyDirs,
 ) -> Result<JoinHandle<Result<()>>> {
     let action = ActionMessenger::expose(
         messenger,
@@ -62,18 +61,13 @@ pub async fn listen_for_node_add(
                 messenger,
                 bound_daemon_node,
                 daemon_instance_id,
+                peppy_dirs,
             )
             .await
         }
     });
 
     Ok(handle)
-}
-
-fn generate_random_id() -> String {
-    let mut rng = rand::rng();
-    let bytes: [u8; 3] = rng.random();
-    bytes.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
 /// Directories excluded from node snapshot copies.
@@ -159,8 +153,12 @@ fn copy_dir_recursive(src: &Path, dest: &Path) -> Result<Vec<String>> {
 
         let src_path = entry.path();
         let dest_path = dest.join(file_name);
+        let ft = entry.file_type()?;
 
-        if src_path.is_dir() {
+        if ft.is_symlink() {
+            // Skip symlinks to avoid infinite recursion with circular links
+            continue;
+        } else if ft.is_dir() {
             copy_dir_recursive(&src_path, &dest_path)?;
         } else {
             std::fs::copy(&src_path, &dest_path)?;
@@ -327,32 +325,57 @@ async fn run_add_cmd_with_streaming(
     Ok(())
 }
 
-/// Copies a node folder to the peppy nodes storage directory.
+/// Copies a node folder to a temporary working directory.
 ///
-/// The destination path follows the format: `<storage_dir>/<node_name>_<tag>_<uuid>`
-///
-/// Returns the path to the copied folder and the list of top-level directories
-/// that were excluded from the copy.
-fn copy_node_to_storage(
-    from_dir: &Path,
-    node_name: &str,
-    node_tag: &str,
-) -> Result<(PathBuf, Vec<String>)> {
-    let storage_dir = peppy_data_dir().join("nodes");
-    let random_id = generate_random_id();
-    let folder_name = format!("{}_{}_{}", node_name, node_tag, random_id);
-    let dest_path = storage_dir.join(&folder_name);
+/// Returns the path to the temporary directory and the list of top-level
+/// directories that were excluded from the copy. The caller is responsible
+/// for cleaning up the temporary directory.
+fn copy_node_to_temp_dir(from_dir: &Path) -> Result<(PathBuf, Vec<String>)> {
+    let temp_dir = tempfile::tempdir()?.keep();
 
     debug!(
-        "Copying node folder from {} to {}",
+        "Copying node folder from {} to temp dir {}",
         from_dir.display(),
-        dest_path.display()
+        temp_dir.display()
     );
 
-    let mut excluded = copy_dir_recursive(from_dir, &dest_path)?;
+    let mut excluded = copy_dir_recursive(from_dir, &temp_dir)?;
     excluded.sort();
 
-    Ok((dest_path, excluded))
+    Ok((temp_dir, excluded))
+}
+
+/// Archives the contents of `source_dir` into a `.tar.zst` file in the
+/// peppy added nodes directory.
+///
+/// The archive path follows the format: `<storage_dir>/<node_name>_<tag>.tar.zst`
+///
+/// Uses zstd compression level 1 (fastest speed).
+fn archive_dir_to_storage(
+    source_dir: &Path,
+    node_name: &str,
+    node_tag: &str,
+    peppy_dirs: &PeppyDirs,
+) -> Result<PathBuf> {
+    let storage_dir = peppy_dirs.added_nodes_dir();
+    std::fs::create_dir_all(&storage_dir)?;
+
+    let archive_name = format!("{}_{}.tar.zst", node_name, node_tag);
+    let archive_path = storage_dir.join(&archive_name);
+    let tmp_path = storage_dir.join(format!("{}.tmp", archive_name));
+
+    let file = File::create(&tmp_path)?;
+    let encoder = ZstdEncoder::new(file, 1)?;
+    let mut tar_builder = tar::Builder::new(encoder);
+    // DO NOT follow symlinks, otherwise it could create unintended behavior for the user who modify files in the path pointed by the symlink
+    tar_builder.follow_symlinks(false);
+    tar_builder.append_dir_all(".", source_dir)?;
+    let encoder = tar_builder.into_inner()?;
+    encoder.finish()?;
+
+    std::fs::rename(&tmp_path, &archive_path)?;
+
+    Ok(archive_path)
 }
 
 /// Verifies that the node directory is in sync with the currently running daemon
@@ -390,149 +413,6 @@ fn verify_git_hash(source_path: &Path, expected_git_hash: &str) -> std::result::
     }
 
     Ok(())
-}
-
-fn is_node_snapshot_path(path: &Path, node_name: &str, node_tag: &str) -> bool {
-    let storage_dir = peppy_data_dir().join("nodes");
-    if !path.starts_with(&storage_dir) {
-        return false;
-    }
-    let Some(folder_name) = path.file_name().and_then(|n| n.to_str()) else {
-        return false;
-    };
-    folder_name.starts_with(&format!("{node_name}_{node_tag}_"))
-}
-
-fn normalize_integrity(value: &str) -> String {
-    let trimmed = value.trim();
-    let without_prefix = trimmed.strip_prefix("sha256:").unwrap_or(trimmed);
-    without_prefix.to_ascii_lowercase()
-}
-
-fn ensure_integrity_matches(
-    node_stack: &NodeStack,
-    dependency_name: &str,
-    dependency_tag: &str,
-    kind: config::node::InterfaceKind,
-    interface_name: &str,
-    expected_integrity_raw: &str,
-) -> std::result::Result<(), DependencyInterfaceIntegrityError> {
-    let expected_integrity = normalize_integrity(expected_integrity_raw);
-    let dependency_name = dependency_name.trim();
-    let dependency_tag = dependency_tag.trim();
-    let interface_name = interface_name.trim();
-
-    let Some(entity) = node_stack.find(dependency_name, dependency_tag) else {
-        return Err(DependencyInterfaceIntegrityError::DependencyNotInStack {
-            dependency: dependency_name.to_owned(),
-            dependency_tag: dependency_tag.to_owned(),
-        });
-    };
-
-    let entries = compute_interfaces_integrity(entity.config()).map_err(|reason| {
-        DependencyInterfaceIntegrityError::IntegrityComputationFailed {
-            dependency: dependency_name.to_owned(),
-            dependency_tag: dependency_tag.to_owned(),
-            reason,
-        }
-    })?;
-
-    let actual_integrity = entries
-        .iter()
-        .find(|entry| entry.interface_kind == kind && entry.name.trim() == interface_name)
-        .map(|entry| entry.sha256.as_str())
-        .ok_or_else(|| DependencyInterfaceIntegrityError::InterfaceNotFound {
-            dependency: dependency_name.to_owned(),
-            dependency_tag: dependency_tag.to_owned(),
-            interface_kind: kind,
-            interface_name: interface_name.to_owned(),
-        })?;
-
-    if expected_integrity == actual_integrity {
-        return Ok(());
-    }
-
-    Err(DependencyInterfaceIntegrityError::IntegrityMismatch {
-        dependency: dependency_name.to_owned(),
-        dependency_tag: dependency_tag.to_owned(),
-        interface_kind: kind,
-        interface_name: interface_name.to_owned(),
-        expected: expected_integrity_raw.trim().to_owned(),
-        actual: actual_integrity.to_owned(),
-    })
-}
-
-fn validate_dependency_interfaces_integrity(
-    node_config: &NodeConfig,
-    node_stack: &NodeStack,
-) -> std::result::Result<(), DependencyInterfaceIntegrityErrors> {
-    use config::node::InterfaceKind;
-
-    let Some(subscriptions) = node_config.interfaces.subscribes_to.as_ref() else {
-        return Ok(());
-    };
-
-    let mut errors: Vec<DependencyInterfaceIntegrityError> = Vec::new();
-
-    if let Some(topics) = subscriptions.topics.as_ref() {
-        for topic in topics {
-            let Some(expected) = topic.integrity.as_deref() else {
-                continue;
-            };
-            if let Err(err) = ensure_integrity_matches(
-                node_stack,
-                topic.node.trim(),
-                topic.tag.trim(),
-                InterfaceKind::Topic,
-                topic.name.trim(),
-                expected,
-            ) {
-                errors.push(err);
-            }
-        }
-    }
-
-    if let Some(services) = subscriptions.services.as_ref() {
-        for service in services {
-            let Some(expected) = service.integrity.as_deref() else {
-                continue;
-            };
-            if let Err(err) = ensure_integrity_matches(
-                node_stack,
-                service.node.trim(),
-                service.tag.trim(),
-                InterfaceKind::Service,
-                service.name.trim(),
-                expected,
-            ) {
-                errors.push(err);
-            }
-        }
-    }
-
-    if let Some(actions) = subscriptions.actions.as_ref() {
-        for action in actions {
-            let Some(expected) = action.integrity.as_deref() else {
-                continue;
-            };
-            if let Err(err) = ensure_integrity_matches(
-                node_stack,
-                action.node.trim(),
-                action.tag.trim(),
-                InterfaceKind::Action,
-                action.name.trim(),
-                expected,
-            ) {
-                errors.push(err);
-            }
-        }
-    }
-
-    if errors.is_empty() {
-        return Ok(());
-    }
-
-    Err(DependencyInterfaceIntegrityErrors::new(errors))
 }
 
 /// State for tracking the current node add action.
@@ -581,47 +461,24 @@ struct ResolvedNodeAddSource {
     cleanup_dir: Option<PathBuf>,
 }
 
+#[derive(Clone)]
+struct NodeAddActionContext {
+    node_stack: Arc<NodeStack>,
+    messenger: MessengerHandle,
+    bound_daemon_node: String,
+    daemon_instance_id: String,
+    peppy_dirs: PeppyDirs,
+}
+
 struct ProcessNodeAddContext {
     messenger: MessengerHandle,
     bound_daemon_node: String,
     daemon_instance_id: String,
     node_stack: Arc<NodeStack>,
+    peppy_dirs: PeppyDirs,
     feedback_publisher: TopicPublisher,
     log_file: Arc<StdMutex<File>>,
     log_path: PathBuf,
-}
-
-fn sanitize_repo_path(repo_path: &str) -> std::result::Result<PathBuf, String> {
-    use std::path::Component;
-
-    let trimmed = repo_path.trim_start_matches(['/', '\\']);
-    let path = PathBuf::from(trimmed);
-
-    if path.components().any(|c| matches!(c, Component::ParentDir)) {
-        return Err("repo_path must not contain '..'".to_string());
-    }
-
-    Ok(path)
-}
-
-fn checkout_repo_ref(repo: &Repository, repo_ref: &str) -> std::result::Result<(), git2::Error> {
-    let repo_ref = repo_ref.trim();
-    if repo_ref.is_empty() {
-        return Ok(());
-    }
-
-    let object = repo
-        .revparse_single(repo_ref)
-        .or_else(|_| repo.revparse_single(&format!("refs/tags/{repo_ref}")))
-        .or_else(|_| repo.revparse_single(&format!("refs/heads/{repo_ref}")))
-        .or_else(|_| repo.revparse_single(&format!("refs/remotes/origin/{repo_ref}")))?;
-    let commit = object.peel_to_commit()?;
-
-    repo.set_head_detached(commit.id())?;
-    let mut checkout = CheckoutBuilder::new();
-    checkout.force();
-    repo.checkout_head(Some(&mut checkout))?;
-    Ok(())
 }
 
 async fn resolve_git_source(
@@ -694,11 +551,6 @@ async fn resolve_git_source(
         verify_codegen_fingerprint: false,
         cleanup_dir: Some(checkout_dir),
     })
-}
-
-fn is_supported_http_archive(url: &url::Url) -> bool {
-    let path = url.path().to_ascii_lowercase();
-    path.ends_with(".tar.zst") || path.ends_with(".tar.zstd") || path.ends_with(".tzst")
 }
 
 fn sanitize_http_filename(name: &str) -> String {
@@ -775,92 +627,7 @@ fn extract_http_bundle(
     destination: &Path,
     url: &url::Url,
 ) -> std::result::Result<(), String> {
-    let file = File::open(bundle_path).map_err(|e| {
-        format!(
-            "Failed to open downloaded bundle {}: {}",
-            bundle_path.display(),
-            e
-        )
-    })?;
-
-    let decoder = Decoder::new(file)
-        .map_err(|e| format!("Failed to decode zstd bundle from {}: {}", url, e))?;
-    let mut archive = Archive::new(decoder);
-
-    let entries = archive
-        .entries()
-        .map_err(|e| format!("Failed to read tar bundle entries from {}: {}", url, e))?;
-
-    let mut directories = Vec::new();
-    for entry in entries {
-        let mut entry =
-            entry.map_err(|e| format!("Failed to read tar bundle entry from {}: {}", url, e))?;
-
-        let entry_path = entry
-            .path()
-            .map_err(|e| format!("Failed to read tar bundle entry path from {}: {}", url, e))?
-            .into_owned();
-
-        if entry_path.components().any(|component| {
-            matches!(
-                component,
-                Component::ParentDir | Component::RootDir | Component::Prefix(..)
-            )
-        }) {
-            return Err(format!(
-                "Bundle from {} contains unsafe path: {}",
-                url,
-                entry_path.display()
-            ));
-        }
-
-        if entry.header().entry_type().is_dir() {
-            directories.push(entry);
-        } else {
-            let unpacked = entry.unpack_in(destination).map_err(|e| {
-                format!(
-                    "Failed to unpack tar bundle entry {} from {}: {}",
-                    entry_path.display(),
-                    url,
-                    e
-                )
-            })?;
-            if !unpacked {
-                return Err(format!(
-                    "Bundle from {} contains unsafe path: {}",
-                    url,
-                    entry_path.display()
-                ));
-            }
-        }
-    }
-
-    // Apply directory entries at the end, matching tar::Archive::unpack behavior (avoids
-    // directory permissions interfering with descendant extraction).
-    directories.sort_by(|a, b| b.path_bytes().cmp(&a.path_bytes()));
-    for mut dir in directories {
-        let entry_path = dir
-            .path()
-            .map_err(|e| format!("Failed to read tar bundle entry path from {}: {}", url, e))?
-            .into_owned();
-        let unpacked = dir.unpack_in(destination).map_err(|e| {
-            format!(
-                "Failed to unpack tar bundle entry {} from {}: {}",
-                entry_path.display(),
-                url,
-                e
-            )
-        })?;
-        if !unpacked {
-            return Err(format!(
-                "Bundle from {} contains unsafe path: {}",
-                url,
-                entry_path.display()
-            ));
-        }
-    }
-
-    Ok(())
+    extract_tar_zst(bundle_path, destination).map_err(|e| format!("{} (source: {})", e, url))
 }
 
 fn locate_node_root_dir(extracted_dir: &Path) -> std::result::Result<PathBuf, String> {
@@ -909,15 +676,19 @@ fn locate_node_root_dir(extracted_dir: &Path) -> std::result::Result<PathBuf, St
     ))
 }
 
-async fn resolve_http_source(url: &url::Url) -> std::result::Result<ResolvedNodeAddSource, String> {
+async fn resolve_http_source(
+    url: &url::Url,
+    peppy_dirs: PeppyDirs,
+) -> std::result::Result<ResolvedNodeAddSource, String> {
     let url = url.clone();
-    tokio::task::spawn_blocking(move || resolve_http_source_blocking(url))
+    tokio::task::spawn_blocking(move || resolve_http_source_blocking(url, &peppy_dirs))
         .await
         .map_err(|e| format!("Failed to join HTTP download task: {}", e))?
 }
 
 fn resolve_http_source_blocking(
     url: url::Url,
+    peppy_dirs: &PeppyDirs,
 ) -> std::result::Result<ResolvedNodeAddSource, String> {
     match url.scheme() {
         "http" | "https" => {}
@@ -936,7 +707,7 @@ fn resolve_http_source_blocking(
         );
     }
 
-    let http_base_dir = peppy_data_dir().join("http_downloads");
+    let http_base_dir = peppy_dirs.http_downloads_dir();
     std::fs::create_dir_all(&http_base_dir)
         .map_err(|e| format!("Failed to create HTTP download directory: {}", e))?;
 
@@ -979,6 +750,7 @@ fn resolve_http_source_blocking(
 
 async fn resolve_node_add_source(
     goal: &NodeAddGoal,
+    peppy_dirs: &PeppyDirs,
 ) -> std::result::Result<ResolvedNodeAddSource, String> {
     match &goal.source {
         NodeSource::Fs(path) => {
@@ -1009,7 +781,7 @@ async fn resolve_node_add_source(
             repo_path,
             repo_ref,
         } => resolve_git_source(repo_url, repo_path, repo_ref.as_deref()).await,
-        NodeSource::Http { url } => resolve_http_source(url).await,
+        NodeSource::Http { url } => resolve_http_source(url, peppy_dirs.clone()).await,
     }
 }
 
@@ -1019,7 +791,15 @@ async fn run_node_add_action_loop(
     messenger: MessengerHandle,
     bound_daemon_node: String,
     daemon_instance_id: String,
+    peppy_dirs: PeppyDirs,
 ) -> Result<()> {
+    let action_context = NodeAddActionContext {
+        node_stack,
+        messenger,
+        bound_daemon_node,
+        daemon_instance_id,
+        peppy_dirs,
+    };
     let state = Arc::new(Mutex::new(NodeAddActionState::default()));
 
     loop {
@@ -1028,30 +808,16 @@ async fn run_node_add_action_loop(
             .goal_service
             .handle_next_request({
                 let feedback_publisher = &action.feedback_publisher;
-                let node_stack = Arc::clone(&node_stack);
                 let state = Arc::clone(&state);
-                let messenger = messenger.clone();
-                let bound_daemon_node = bound_daemon_node.clone();
-                let daemon_instance_id = daemon_instance_id.clone();
+                let action_context = action_context.clone();
                 move |context| {
                     let feedback_publisher = feedback_publisher.clone();
-                    let node_stack = Arc::clone(&node_stack);
                     let state = Arc::clone(&state);
-                    let messenger = messenger.clone();
-                    let bound_daemon_node = bound_daemon_node.clone();
-                    let daemon_instance_id = daemon_instance_id.clone();
+                    let action_context = action_context.clone();
 
                     async move {
-                        handle_goal_request(
-                            context,
-                            feedback_publisher,
-                            node_stack,
-                            state,
-                            messenger,
-                            bound_daemon_node,
-                            daemon_instance_id,
-                        )
-                        .await
+                        handle_goal_request(context, feedback_publisher, state, action_context)
+                            .await
                     }
                 }
             })
@@ -1120,27 +886,18 @@ async fn run_node_add_action_loop(
                         // with "action already in progress".
                         goal_result = action.goal_service.handle_next_request({
                             let feedback_publisher = &action.feedback_publisher;
-                            let node_stack = Arc::clone(&node_stack);
                             let state = Arc::clone(&state);
-                            let messenger = messenger.clone();
-                            let bound_daemon_node = bound_daemon_node.clone();
-                            let daemon_instance_id = daemon_instance_id.clone();
+                            let action_context = action_context.clone();
                             move |context| {
                                 let feedback_publisher = feedback_publisher.clone();
-                                let node_stack = Arc::clone(&node_stack);
                                 let state = Arc::clone(&state);
-                                let messenger = messenger.clone();
-                                let bound_daemon_node = bound_daemon_node.clone();
-                                let daemon_instance_id = daemon_instance_id.clone();
+                                let action_context = action_context.clone();
                                 async move {
                                     handle_goal_request(
                                         context,
                                         feedback_publisher,
-                                        node_stack,
                                         state,
-                                        messenger,
-                                        bound_daemon_node,
-                                        daemon_instance_id,
+                                        action_context,
                                     )
                                     .await
                                 }
@@ -1185,11 +942,8 @@ async fn run_node_add_action_loop(
 async fn handle_goal_request(
     context: ServiceRequestContext,
     feedback_publisher: TopicPublisher,
-    node_stack: Arc<NodeStack>,
     state: Arc<Mutex<NodeAddActionState>>,
-    messenger: MessengerHandle,
-    bound_daemon_node: String,
-    daemon_instance_id: String,
+    action_context: NodeAddActionContext,
 ) -> PeppyResult<Payload> {
     let sender_instance_id = context.message().instance_id();
     let payload = context.message().payload();
@@ -1234,7 +988,7 @@ async fn handle_goal_request(
         };
     }
 
-    let mut resolved = match resolve_node_add_source(&goal).await {
+    let mut resolved = match resolve_node_add_source(&goal, &action_context.peppy_dirs).await {
         Ok(resolved) => resolved,
         Err(error_msg) => {
             let mut state_guard = state.lock().await;
@@ -1274,7 +1028,7 @@ async fn handle_goal_request(
     let node_tag = resolved.node_config.manifest.tag.clone();
 
     // Create log file with timestamp-based filename
-    let log_dir = logs_dir_add();
+    let log_dir = action_context.peppy_dirs.logs_dir_add();
     if let Err(e) = std::fs::create_dir_all(&log_dir) {
         let error_msg = format!("Failed to create logs directory: {}", e);
         debug!("Failed to create logs directory {:?}: {}", log_dir, e);
@@ -1320,11 +1074,19 @@ async fn handle_goal_request(
     let cleanup_dir = checkout_cleanup.take();
     let node_config = resolved.node_config;
     tokio::spawn(async move {
+        let NodeAddActionContext {
+            node_stack,
+            messenger,
+            bound_daemon_node,
+            daemon_instance_id,
+            peppy_dirs,
+        } = action_context;
         let ctx = ProcessNodeAddContext {
             messenger,
             bound_daemon_node,
             daemon_instance_id,
             node_stack,
+            peppy_dirs,
             feedback_publisher: feedback_publisher_clone,
             log_file,
             log_path: log_path_clone,
@@ -1441,16 +1203,22 @@ async fn process_node_add(
     cleanup_dir: Option<PathBuf>,
     ctx: ProcessNodeAddContext,
 ) -> NodeAddResult {
-    let env_vars = match super::validate_goal_env_vars(&goal.env_vars) {
+    let mut env_vars = match super::validate_goal_env_vars(&goal.env_vars) {
         Ok(vars) => vars,
         Err(e) => {
             return NodeAddResult::failure(&ctx.log_path, e.to_string());
         }
     };
-    let _cleanup_guard = CleanupDir::new(cleanup_dir);
-
     let node_name = node_config.manifest.name.as_str().to_owned();
     let node_tag = node_config.manifest.tag.clone();
+    let sccache_injected =
+        super::inject_rust_build_env(&mut env_vars, node_config.manifest.language);
+    if sccache_injected
+        && let Ok(payload) = NodeAddFeedback::stdout("Using sccache for Rust compilation").encode()
+    {
+        let _ = ctx.feedback_publisher.publish(payload).await;
+    }
+    let _cleanup_guard = CleanupDir::new(cleanup_dir);
 
     let previous_snapshot_path = ctx
         .node_stack
@@ -1472,17 +1240,18 @@ async fn process_node_add(
         }
     }
 
-    // Copy the node folder to the peppy storage directory.
-    let (copied_path, excluded_dirs) =
-        match copy_node_to_storage(&source_path, &node_name, &node_tag) {
-            Ok(result) => result,
-            Err(e) => {
-                return NodeAddResult::failure(
-                    &ctx.log_path,
-                    format!("Failed to copy node folder: {}", e),
-                );
-            }
-        };
+    // Copy the node folder to a temporary working directory.
+    let (working_dir, excluded_dirs) = match copy_node_to_temp_dir(&source_path) {
+        Ok(result) => result,
+        Err(e) => {
+            return NodeAddResult::failure(
+                &ctx.log_path,
+                format!("Failed to copy node folder: {}", e),
+            );
+        }
+    };
+    // RAII guard: cleans up the temp working dir on any exit path.
+    let working_dir_cleanup = CleanupDir::new(Some(working_dir.clone()));
 
     if !excluded_dirs.is_empty() {
         let msg = format!(
@@ -1501,52 +1270,58 @@ async fn process_node_add(
         ctx.node_stack.find(name, tag).map(|e| e.config().clone())
     });
     if let Some(err) = dep_errors.into_iter().next() {
-        std::fs::remove_dir_all(&copied_path).ok();
         return NodeAddResult::failure(
             &ctx.log_path,
             format!("Failed to add node config: {}", err),
         );
     }
 
-    if let Err(e) = validate_dependency_interfaces_integrity(&node_config, &ctx.node_stack) {
-        std::fs::remove_dir_all(&copied_path).ok();
-        return NodeAddResult::failure(&ctx.log_path, format!("Failed to add node config: {}", e));
-    }
-
-    // Generate the peppygen library for the copied node
+    // Generate the peppygen library in the working directory
     let language = node_config.manifest.language;
     let subscribed_interfaces = collect_subscribed_interfaces(&node_config, &ctx.node_stack);
     if let Err(e) = generate_peppygen_for_node(
         language,
-        &copied_path,
+        &working_dir,
         subscribed_interfaces,
         &goal.git_hash,
+        &ctx.peppy_dirs,
     ) {
-        // Clean up the copied folder on failure
-        std::fs::remove_dir_all(&copied_path).ok();
         return NodeAddResult::failure(
             &ctx.log_path,
             format!("Failed to generate peppygen library: {}", e),
         );
     }
 
-    // Run add_cmd on the copied folder with streaming output
+    // Run add_cmd in the working directory with streaming output
     if let Err(e) = run_add_cmd_with_streaming(
         node_config.manifest.add_cmd.as_ref(),
-        &copied_path,
+        &working_dir,
         &env_vars,
         &ctx.feedback_publisher,
         Arc::clone(&ctx.log_file),
     )
     .await
     {
-        // Clean up the copied folder on failure
-        std::fs::remove_dir_all(&copied_path).ok();
         return NodeAddResult::failure(&ctx.log_path, format!("add_cmd failed: {}", e));
     }
 
+    // Archive the working directory to the peppy nodes storage.
+    let archive_path =
+        match archive_dir_to_storage(&working_dir, &node_name, &node_tag, &ctx.peppy_dirs) {
+            Ok(path) => path,
+            Err(e) => {
+                return NodeAddResult::failure(
+                    &ctx.log_path,
+                    format!("Failed to archive node: {}", e),
+                );
+            }
+        };
+
+    // Working dir is no longer needed; clean it up immediately.
+    drop(working_dir_cleanup);
+
     if let Err(e) = shutdown_existing_instances(&node_name, &node_tag, &ctx).await {
-        std::fs::remove_dir_all(&copied_path).ok();
+        std::fs::remove_file(&archive_path).ok();
         return NodeAddResult::failure(
             &ctx.log_path,
             format!("Failed to shutdown existing node instances: {}", e),
@@ -1554,27 +1329,36 @@ async fn process_node_add(
     }
 
     // Add the node config to the stack
-    if let Err(e) = ctx.node_stack.push_config(node_config, false, &copied_path) {
-        // Clean up the copied folder on failure
-        std::fs::remove_dir_all(&copied_path).ok();
+    if let Err(e) = ctx
+        .node_stack
+        .push_config(node_config, false, &archive_path)
+    {
+        std::fs::remove_file(&archive_path).ok();
         return NodeAddResult::failure(&ctx.log_path, format!("Failed to add node config: {}", e));
     }
 
+    // Clean up previous snapshot if it differs from the new archive path.
     if let Some(previous_snapshot_path) = previous_snapshot_path
-        && previous_snapshot_path != copied_path
-        && is_node_snapshot_path(&previous_snapshot_path, &node_name, &node_tag)
+        && previous_snapshot_path != archive_path
     {
-        std::fs::remove_dir_all(&previous_snapshot_path).ok();
+        let storage_dir = ctx.peppy_dirs.added_nodes_dir();
+        if previous_snapshot_path.starts_with(&storage_dir) {
+            if previous_snapshot_path.is_dir() {
+                std::fs::remove_dir_all(&previous_snapshot_path).ok();
+            } else {
+                std::fs::remove_file(&previous_snapshot_path).ok();
+            }
+        }
     }
 
     debug!(
         "Added node {}:{} at {}",
         node_name,
         node_tag,
-        copied_path.display()
+        archive_path.display()
     );
 
-    NodeAddResult::success(copied_path, &ctx.log_path)
+    NodeAddResult::success(archive_path, &ctx.log_path, node_name, node_tag)
 }
 
 async fn handle_cancel_request(

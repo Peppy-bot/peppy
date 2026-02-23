@@ -164,11 +164,12 @@ pub(crate) fn symlink_dir(original: &Path, link: &Path) -> io::Result<()> {
 ///
 /// The cache is keyed by content hash + version, and uses file locking with a
 /// staging directory for concurrent-safe deployment.
-pub(crate) fn deploy_rust_crates_to_shared_cache(node_libs_dir: &Path) -> Result<()> {
+pub(crate) fn deploy_rust_crates_to_shared_cache(
+    node_libs_dir: &Path,
+    peppy_dirs: &config::consts::PeppyDirs,
+) -> Result<()> {
     let cache_key = format!("{}-{}", env!("RUST_CRATES_HASH"), env!("CARGO_PKG_VERSION"));
-    let cache_dir = config::consts::peppy_data_dir()
-        .join("libs/rust")
-        .join(&cache_key);
+    let cache_dir = peppy_dirs.rust_libs_cache_dir(&cache_key);
 
     let parent = cache_dir
         .parent()

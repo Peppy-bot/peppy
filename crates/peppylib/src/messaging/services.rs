@@ -28,7 +28,7 @@ pub struct ServiceEndpoint {
 }
 
 impl ServiceEndpoint {
-    pub(super) fn new(
+    pub(crate) fn new(
         messenger: Arc<Mutex<Messenger>>,
         subscriptions: [Subscription; 4],
         bound_daemon_node: String,

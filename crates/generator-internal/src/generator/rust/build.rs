@@ -18,7 +18,10 @@ use syn::{
     parse_quote,
 };
 
-pub fn add_peppylib_dependencies(to_path: impl AsRef<Path>) -> Result<()> {
+pub fn add_peppylib_dependencies(
+    to_path: impl AsRef<Path>,
+    peppy_dirs: &config::consts::PeppyDirs,
+) -> Result<()> {
     let to_path = to_path.as_ref();
     let libs_dir = to_path.parent().ok_or_else(|| {
         Error::Io(std::io::Error::new(
@@ -27,7 +30,7 @@ pub fn add_peppylib_dependencies(to_path: impl AsRef<Path>) -> Result<()> {
         ))
     })?;
 
-    crate::generator::common::deploy_rust_crates_to_shared_cache(libs_dir)?;
+    crate::generator::common::deploy_rust_crates_to_shared_cache(libs_dir, peppy_dirs)?;
     generate_lib_structure(to_path, "../peppylib")?;
 
     Ok(())

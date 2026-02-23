@@ -1,6 +1,6 @@
 use crate::generator::naming::sanitize_component;
 
-pub(super) fn sanitize_python_identifier(raw: &str) -> String {
+pub(crate) fn sanitize_python_identifier(raw: &str) -> String {
     let mut ident = sanitize_component(raw);
     if is_python_keyword(&ident) {
         ident.push('_');
@@ -8,7 +8,7 @@ pub(super) fn sanitize_python_identifier(raw: &str) -> String {
     ident
 }
 
-pub(super) fn is_python_keyword(ident: &str) -> bool {
+pub(crate) fn is_python_keyword(ident: &str) -> bool {
     matches!(
         ident,
         "False"

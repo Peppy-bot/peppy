@@ -439,8 +439,6 @@ pub struct SubscribedTopic {
     pub name: String,
     #[serde(default)]
     pub tag: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub integrity: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -454,8 +452,6 @@ pub struct SubscribedService {
     pub name: String,
     #[serde(default)]
     pub tag: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub integrity: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -468,8 +464,6 @@ pub struct SubscribedAction {
     pub name: String,
     #[serde(default)]
     pub tag: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub integrity: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -565,7 +559,7 @@ pub struct Manifest {
     pub labels: Option<Vec<String>>,
     // Command to run when right before the node is added to the node stack
     pub add_cmd: Option<Vec<String>>,
-    // Command to launch the node, e.g., ["cargo", "run", "--release"]
+    // Command to launch the node, e.g., ["./target/release/my_node"]
     pub start_cmd: Vec<String>,
 }
 

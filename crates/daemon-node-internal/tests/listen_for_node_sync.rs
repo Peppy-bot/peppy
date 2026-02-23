@@ -272,7 +272,7 @@ async fn listen_for_node_generate_missing_dependency_fails() {
                 language: "rust",
                 labels: ["brain"],
                 add_cmd: ["cargo", "build", "--release"],
-                start_cmd: ["cargo", "run", "--release"],
+                start_cmd: ["./target/release/my_robot_brain"],
             },
             parameters: {},
             interfaces: {
@@ -343,7 +343,7 @@ async fn listen_for_node_generate_multiple_missing_dependencies_fails() {
                 language: "rust",
                 labels: ["brain"],
                 add_cmd: ["cargo", "build", "--release"],
-                start_cmd: ["cargo", "run", "--release"],
+                start_cmd: ["./target/release/my_robot_brain"],
             },
             parameters: {},
             interfaces: {
