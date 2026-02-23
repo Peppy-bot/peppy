@@ -18,12 +18,12 @@ use zstd::stream::read::Decoder;
 const CHECKSUM_FILE: &str = ".checksum";
 
 pub fn resolve_remote_url(
-    nodes_cache_dir: &Path,
+    added_nodes_dir: &Path,
     spec: &DeploymentUrlSource,
 ) -> Result<ResolvedNode> {
-    fs::create_dir_all(nodes_cache_dir)?;
+    fs::create_dir_all(added_nodes_dir)?;
 
-    let cache_dir = build_bundle_cache_path(nodes_cache_dir, &spec.url, &spec.sha256);
+    let cache_dir = build_bundle_cache_path(added_nodes_dir, &spec.url, &spec.sha256);
     let expected_checksum = spec.sha256.as_str();
     let needs_refresh = should_refresh(&cache_dir, expected_checksum);
 

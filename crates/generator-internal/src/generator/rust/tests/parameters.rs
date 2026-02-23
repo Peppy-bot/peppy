@@ -201,7 +201,9 @@ fn generate_parameters_struct() {
 
     let (mut generator, output_dir, _, _) = init_test_env::<RustGenerator>(&temp_dir);
     generator.set_parameters(node_config.parameters);
-    generator.build(&output_dir).unwrap();
+    generator
+        .build(&output_dir, &config::consts::PeppyDirs::default())
+        .unwrap();
 
     let parameters_file = output_dir.join("src/parameters.rs");
     assert!(
@@ -266,7 +268,9 @@ fn generate_empty_parameters_struct() {
 
     let (generator, output_dir, _, _) = init_test_env::<RustGenerator>(&temp_dir);
     // Don't set any parameters - use the default empty parameters
-    generator.build(&output_dir).unwrap();
+    generator
+        .build(&output_dir, &config::consts::PeppyDirs::default())
+        .unwrap();
 
     let parameters_file = output_dir.join("src/parameters.rs");
     assert!(
@@ -294,7 +298,9 @@ fn generate_parameters_struct_avoids_nested_struct_name_collisions() {
 
     let (mut generator, output_dir, _, _) = init_test_env::<RustGenerator>(&temp_dir);
     generator.set_parameters(node_config.parameters);
-    generator.build(&output_dir).unwrap();
+    generator
+        .build(&output_dir, &config::consts::PeppyDirs::default())
+        .unwrap();
 
     let parameters_file = output_dir.join("src/parameters.rs");
     assert!(

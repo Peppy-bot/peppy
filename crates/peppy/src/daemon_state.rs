@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use config::consts::peppy_data_dir;
+use config::consts::PeppyDirs;
 use serde::{Deserialize, Serialize};
 use std::fs::{self};
 use std::io;
@@ -115,11 +115,11 @@ impl DaemonState {
     }
 
     fn default_state_file_path() -> PathBuf {
-        peppy_data_dir().join(DAEMON_STATE_FILENAME)
+        PeppyDirs::default().root().join(DAEMON_STATE_FILENAME)
     }
 
     fn candidate_state_file_paths() -> Vec<PathBuf> {
-        let root = peppy_data_dir();
+        let root = PeppyDirs::default().root().to_path_buf();
         let mut paths = vec![Self::default_state_file_path()];
 
         if let Ok(entries) = fs::read_dir(&root) {

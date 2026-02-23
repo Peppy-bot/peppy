@@ -7,7 +7,7 @@ use crate::encoding::{
 use crate::names;
 use crate::services::node::resolve_node_config;
 use chrono::Local;
-use config::consts::{DEFAULT_MESSAGING_HOST, DEFAULT_MESSAGING_PORT, logs_dir_launch};
+use config::consts::{DEFAULT_MESSAGING_HOST, DEFAULT_MESSAGING_PORT, PeppyDirs};
 use config::peppy_config::{Deployment, DeploymentSource, PeppyLauncherParser};
 use config::runtime::RuntimeConfig;
 use node_stack::NodeStack;
@@ -30,8 +30,7 @@ pub async fn listen_for_stack_launch(
     instance_id: &str,
     node_name: &str,
     node_stack: Arc<NodeStack>,
-    _node_startup_timeout: Duration,
-    _node_start_health_timeout: Duration,
+    peppy_dirs: PeppyDirs,
 ) -> Result<JoinHandle<Result<()>>> {
     let action = ActionMessenger::expose(
         messenger,
@@ -53,6 +52,7 @@ pub async fn listen_for_stack_launch(
                 messenger,
                 bound_daemon_node,
                 daemon_instance_id,
+                peppy_dirs,
             )
             .await
         }
@@ -88,6 +88,15 @@ struct ProcessLaunchContext {
     env_vars: Vec<(String, String)>,
     node_add_timeout_secs: u64,
     node_start_timeout_secs: u64,
+}
+
+#[derive(Clone)]
+struct LaunchActionContext {
+    node_stack: Arc<NodeStack>,
+    messenger: MessengerHandle,
+    bound_daemon_node: String,
+    daemon_instance_id: String,
+    peppy_dirs: PeppyDirs,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -976,7 +985,15 @@ async fn run_launch_action_loop(
     messenger: MessengerHandle,
     bound_daemon_node: String,
     daemon_instance_id: String,
+    peppy_dirs: PeppyDirs,
 ) -> Result<()> {
+    let action_context = LaunchActionContext {
+        node_stack,
+        messenger,
+        bound_daemon_node,
+        daemon_instance_id,
+        peppy_dirs,
+    };
     let state = Arc::new(Mutex::new(LaunchActionState::default()));
 
     loop {
@@ -985,30 +1002,16 @@ async fn run_launch_action_loop(
             .goal_service
             .handle_next_request({
                 let feedback_publisher = &action.feedback_publisher;
-                let node_stack = Arc::clone(&node_stack);
                 let state = Arc::clone(&state);
-                let messenger = messenger.clone();
-                let bound_daemon_node = bound_daemon_node.clone();
-                let daemon_instance_id = daemon_instance_id.clone();
+                let action_context = action_context.clone();
                 move |context| {
                     let feedback_publisher = feedback_publisher.clone();
-                    let node_stack = Arc::clone(&node_stack);
                     let state = Arc::clone(&state);
-                    let messenger = messenger.clone();
-                    let bound_daemon_node = bound_daemon_node.clone();
-                    let daemon_instance_id = daemon_instance_id.clone();
+                    let action_context = action_context.clone();
 
                     async move {
-                        handle_goal_request(
-                            context,
-                            feedback_publisher,
-                            node_stack,
-                            state,
-                            messenger,
-                            bound_daemon_node,
-                            daemon_instance_id,
-                        )
-                        .await
+                        handle_goal_request(context, feedback_publisher, state, action_context)
+                            .await
                     }
                 }
             })
@@ -1070,27 +1073,18 @@ async fn run_launch_action_loop(
                         }
                         goal_result = action.goal_service.handle_next_request({
                             let feedback_publisher = &action.feedback_publisher;
-                            let node_stack = Arc::clone(&node_stack);
                             let state = Arc::clone(&state);
-                            let messenger = messenger.clone();
-                            let bound_daemon_node = bound_daemon_node.clone();
-                            let daemon_instance_id = daemon_instance_id.clone();
+                            let action_context = action_context.clone();
                             move |context| {
                                 let feedback_publisher = feedback_publisher.clone();
-                                let node_stack = Arc::clone(&node_stack);
                                 let state = Arc::clone(&state);
-                                let messenger = messenger.clone();
-                                let bound_daemon_node = bound_daemon_node.clone();
-                                let daemon_instance_id = daemon_instance_id.clone();
+                                let action_context = action_context.clone();
                                 async move {
                                     handle_goal_request(
                                         context,
                                         feedback_publisher,
-                                        node_stack,
                                         state,
-                                        messenger,
-                                        bound_daemon_node,
-                                        daemon_instance_id,
+                                        action_context,
                                     )
                                     .await
                                 }
@@ -1128,11 +1122,8 @@ async fn run_launch_action_loop(
 async fn handle_goal_request(
     context: ServiceRequestContext,
     feedback_publisher: TopicPublisher,
-    node_stack: Arc<NodeStack>,
     state: Arc<Mutex<LaunchActionState>>,
-    messenger: MessengerHandle,
-    bound_daemon_node: String,
-    daemon_instance_id: String,
+    action_context: LaunchActionContext,
 ) -> PeppyResult<Payload> {
     let sender_instance_id = context.message().instance_id();
     let payload = context.message().payload();
@@ -1170,7 +1161,7 @@ async fn handle_goal_request(
     debug!("Received `stack_launch` goal from {sender_instance_id}");
 
     // Create log file with timestamp-based filename
-    let log_dir = logs_dir_launch();
+    let log_dir = action_context.peppy_dirs.logs_dir_launch();
     if let Err(e) = std::fs::create_dir_all(&log_dir) {
         let error_msg = format!("Failed to create logs directory: {}", e);
         debug!("Failed to create logs directory {:?}: {}", log_dir, e);
@@ -1211,6 +1202,13 @@ async fn handle_goal_request(
     let state_clone = Arc::clone(&state);
     let log_path_clone = log_path.clone();
     tokio::spawn(async move {
+        let LaunchActionContext {
+            messenger,
+            bound_daemon_node,
+            daemon_instance_id,
+            node_stack,
+            ..
+        } = action_context;
         let env_vars = goal.env_vars.clone();
         let node_add_timeout_secs = goal.node_add_timeout_secs;
         let node_start_timeout_secs = goal.node_start_timeout_secs;

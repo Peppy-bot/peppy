@@ -4,7 +4,7 @@ use std::{
 };
 
 use super::ResolvedNode;
-use crate::error::{Error, Result};
+use crate::error::Result;
 use config::node::NodeConfigParser;
 use config::peppy_config::DeploymentGitSource;
 use git2::{AutotagOption, FetchOptions, ObjectType, Repository};
@@ -81,7 +81,14 @@ fn fetch_repository(repo: &Repository) -> std::result::Result<(), git2::Error> {
     if let Ok(mut remote) = repo.find_remote("origin") {
         let mut fo = FetchOptions::new();
         fo.download_tags(AutotagOption::All);
-        remote.fetch(&[] as &[&str], Some(&mut fo), None)
+        remote.fetch(
+            &[
+                "+refs/tags/*:refs/tags/*",
+                "+refs/heads/*:refs/remotes/origin/*",
+            ],
+            Some(&mut fo),
+            None,
+        )
     } else {
         Ok(())
     }
@@ -99,26 +106,21 @@ fn ensure_repository(
 }
 
 pub fn resolve_remote_git(
-    nodes_cache_dir: &Path,
+    added_nodes_dir: &Path,
     spec: &DeploymentGitSource,
 ) -> Result<ResolvedNode> {
-    fs::create_dir_all(nodes_cache_dir)?;
+    fs::create_dir_all(added_nodes_dir)?;
 
-    let repo_dir = build_repo_cache_path(nodes_cache_dir, &spec.repo);
-    let repo = ensure_repository(&repo_dir, &spec.repo)
-        .map_err(|_| Error::NodeNotFound(spec.repo.to_string()))?;
+    let repo_dir = build_repo_cache_path(added_nodes_dir, &spec.repo);
+    let repo = ensure_repository(&repo_dir, &spec.repo)?;
 
-    fetch_repository(&repo).map_err(|_| Error::NodeNotFound(spec.repo.to_string()))?;
+    fetch_repository(&repo)?;
 
-    let commit = find_commit_for_tag(&repo, &spec.ref_)
-        .map_err(|_| Error::NodeNotFound(format!("{}@{}", spec.repo, spec.ref_)))?;
-    let tree = commit
-        .tree()
-        .map_err(|_| Error::NodeNotFound(spec.repo.to_string()))?;
+    let commit = find_commit_for_tag(&repo, &spec.ref_)?;
+    let tree = commit.tree()?;
 
     let config_path = node_config_path(&spec.path);
-    let content = read_blob_from_tree(&repo, &tree, &config_path)
-        .map_err(|_| Error::NodeNotFound(spec.repo.to_string()))?;
+    let content = read_blob_from_tree(&repo, &tree, &config_path)?;
 
     let node = NodeConfigParser::from_content(&content)?;
 
@@ -175,7 +177,7 @@ mod tests {
                     name: "uvc_camera",
                     tag: "0.1.0",
                     language: "rust",
-                    start_cmd: ["cargo", "run", "--release"]
+                    start_cmd: ["./target/release/uvc_camera"]
                 }
             }"#,
         )
@@ -236,5 +238,25 @@ mod tests {
             resolve_remote_git(cache_dir.path(), &spec).expect("remote deployment resolves");
         assert_eq!(resolved.config.manifest.name.as_str(), "uvc_camera");
         assert_eq!(resolved.config.manifest.tag, "0.1.0");
+    }
+
+    #[test]
+    fn resolve_remote_git_preserves_git_errors() {
+        let cache_dir = tempfile::tempdir().expect("cache dir");
+        let spec = DeploymentGitSource {
+            repo: "https://example.com/does-not-matter.git".to_string(),
+            path: ".".to_string(),
+            ref_: "0.1.0".to_string(),
+        };
+
+        // Force `ensure_repository` to call `Repository::open` on a non-repository path.
+        let repo_dir = build_repo_cache_path(cache_dir.path(), &spec.repo);
+        std::fs::create_dir_all(&repo_dir).expect("create cache directory");
+
+        let err = resolve_remote_git(cache_dir.path(), &spec).expect_err("resolution should fail");
+        assert!(
+            matches!(err, crate::error::Error::Git(_)),
+            "expected git error, got: {err}"
+        );
     }
 }

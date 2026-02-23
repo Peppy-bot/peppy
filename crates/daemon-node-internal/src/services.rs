@@ -8,6 +8,7 @@ pub use node::FORBIDDEN_ENV_KEYS;
 use crate::Result;
 use config::{
     AnyType, NodeArguments,
+    consts::PeppyDirs,
     node::{Manifest, Name, NodeConfig, PeppygenLanguage},
     peppy_config::CURRENT_SCHEMA_VERSION,
 };
@@ -24,6 +25,16 @@ use tokio::sync::{Mutex, oneshot};
 use tracing::info;
 
 const DAEMON_NODE_TAG: &str = "daemon-node";
+
+/// Clears instance directories from previous runs.
+fn clear_instances_dir(peppy_dirs: &PeppyDirs) {
+    let inst_dir = peppy_dirs.instances_dir();
+    if inst_dir.exists()
+        && let Err(e) = std::fs::remove_dir_all(&inst_dir)
+    {
+        tracing::warn!("Failed to clear instances directory: {}", e);
+    }
+}
 
 pub struct DaemonNodeArguments {
     pub node_startup_timeout: Duration,
@@ -50,6 +61,7 @@ pub struct DaemonNode {
     node_config: NodeConfig,
     instance_id: Name,
     messenger: MessengerHandle,
+    peppy_dirs: PeppyDirs,
     start_time: Instant,
     node_startup_timeout: Duration,
     node_start_health_timeout: Duration,
@@ -61,6 +73,7 @@ impl DaemonNode {
         node_name: Option<&str>,
         node_arguments: DaemonNodeArguments,
         root_dir: P,
+        peppy_dirs: PeppyDirs,
     ) -> Self {
         let manifest_name = match node_name {
             Some(name) => Name::new(name).unwrap(),
@@ -94,6 +107,7 @@ impl DaemonNode {
             node_config,
             instance_id,
             messenger,
+            peppy_dirs,
             start_time: Instant::now(),
             node_startup_timeout,
             node_start_health_timeout,
@@ -125,6 +139,8 @@ impl DaemonNode {
     }
 
     pub async fn start_with_ready(&self, ready: Option<oneshot::Sender<()>>) -> Result<()> {
+        clear_instances_dir(&self.peppy_dirs);
+
         let daemon_node_name = self.node_name(); // The daemon node binds to itself as the daemon scope
         info!(
             "Starting the daemon node with name {} and instance_id {}...",
@@ -154,8 +170,7 @@ impl DaemonNode {
                 self.instance_id(),
                 self.node_name(),
                 Arc::clone(&self.node_stack),
-                self.node_startup_timeout,
-                self.node_start_health_timeout,
+                self.peppy_dirs.clone(),
             )
             .await?,
             stack::listen_for_stack_list(
@@ -180,6 +195,7 @@ impl DaemonNode {
                 self.instance_id(),
                 self.node_name(),
                 Arc::clone(&self.node_stack),
+                self.peppy_dirs.clone(),
             )
             .await?,
             node::listen_for_node_info(
@@ -205,8 +221,11 @@ impl DaemonNode {
                 self.instance_id(),
                 self.node_name(),
                 Arc::clone(&self.node_stack),
-                self.node_startup_timeout,
-                self.node_start_health_timeout,
+                node::NodeStartServiceConfig {
+                    node_startup_timeout: self.node_startup_timeout,
+                    node_start_health_timeout: self.node_start_health_timeout,
+                    peppy_dirs: self.peppy_dirs.clone(),
+                },
             )
             .await?,
             node::listen_for_node_stop(
@@ -222,6 +241,7 @@ impl DaemonNode {
                 daemon_node_name,
                 self.instance_id(),
                 self.node_name(),
+                self.peppy_dirs.clone(),
             )
             .await?,
             node::listen_for_node_sync(
@@ -230,6 +250,7 @@ impl DaemonNode {
                 self.instance_id(),
                 self.node_name(),
                 Arc::clone(&self.node_stack),
+                self.peppy_dirs.clone(),
             )
             .await?,
         ];

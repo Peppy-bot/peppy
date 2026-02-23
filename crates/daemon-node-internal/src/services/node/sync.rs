@@ -1,6 +1,7 @@
 use crate::Result;
 use crate::encoding::{NodeSyncRequest, NodeSyncResponse};
 use crate::names;
+use config::consts::PeppyDirs;
 use config::node::NodeConfigParser;
 use generator::{DeploymentInterface, InterfaceVariant, SubscribedActionMessage};
 use node_stack::NodeStack;
@@ -18,6 +19,7 @@ pub async fn listen_for_node_sync(
     instance_id: &str,
     node_name: &str,
     node_stack: Arc<NodeStack>,
+    peppy_dirs: PeppyDirs,
 ) -> Result<JoinHandle<Result<()>>> {
     let mut endpoint = ServiceMessenger::listen(
         messenger,
@@ -31,7 +33,7 @@ pub async fn listen_for_node_sync(
     let handle = tokio::spawn(async move {
         endpoint
             .handle_requests(move |context| {
-                handle_node_sync_request(context, Arc::clone(&node_stack))
+                handle_node_sync_request(context, Arc::clone(&node_stack), peppy_dirs.clone())
             })
             .await
             .map_err(Into::into)
@@ -106,9 +108,10 @@ fn remove_previous_peppy_dir(node_root_dir: &std::path::Path) {
 async fn handle_node_sync_request(
     context: ServiceRequestContext,
     node_stack: Arc<NodeStack>,
+    peppy_dirs: PeppyDirs,
 ) -> PeppyResult<Payload> {
     let sender_instance_id = context.message().instance_id();
-    handle_node_sync_request_inner(&context, &node_stack)
+    handle_node_sync_request_inner(&context, &node_stack, peppy_dirs)
         .await
         .map_err(|e| PeppyError::InvalidServiceRequest {
             identifier: sender_instance_id.to_string(),
@@ -119,6 +122,7 @@ async fn handle_node_sync_request(
 async fn handle_node_sync_request_inner(
     context: &ServiceRequestContext,
     node_stack: &NodeStack,
+    peppy_dirs: PeppyDirs,
 ) -> Result<Payload> {
     let sender_instance_id = context.message().instance_id();
     let payload = context.message().payload();
@@ -251,7 +255,13 @@ async fn handle_node_sync_request_inner(
 
     match tokio::task::spawn_blocking(move || -> Result<()> {
         remove_previous_peppy_dir(&node_root_dir);
-        generate_peppygen_for_node(language, &node_root_dir, subscribed_interfaces, &git_hash)
+        generate_peppygen_for_node(
+            language,
+            &node_root_dir,
+            subscribed_interfaces,
+            &git_hash,
+            &peppy_dirs,
+        )
     })
     .await
     {
@@ -416,8 +426,15 @@ pub fn generate_peppygen_for_node(
     node_dir: impl AsRef<std::path::Path>,
     subscribed_interfaces: Vec<DeploymentInterface>,
     git_hash: &str,
+    peppy_dirs: &PeppyDirs,
 ) -> crate::Result<()> {
-    generator::generate_peppygen_lib(language, node_dir, subscribed_interfaces, git_hash)?;
+    generator::generate_peppygen_lib(
+        language,
+        node_dir,
+        subscribed_interfaces,
+        git_hash,
+        peppy_dirs,
+    )?;
 
     Ok(())
 }
