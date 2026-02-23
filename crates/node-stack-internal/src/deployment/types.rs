@@ -611,9 +611,12 @@ impl NodeStackInner {
             .unwrap_or_default()
     }
 
-    /// Adds a config to the stack or overwrites an existing one.
+    /// Adds a config to the stack or updates an existing one.
     /// Does not create any instances.
+    /// When the entity already exists, config and root_path are always updated.
+    /// Dependency checks and rewiring only occur when interfaces change.
     /// Returns Err(CannotModifyRootNode) if trying to modify the root node config.
+    /// Returns Err(CannotOverwriteNodeWithDependents) if interfaces change and the node has dependents.
     fn push_config_impl<P: Into<PathBuf>>(
         &mut self,
         config: NodeConfig,
@@ -629,42 +632,46 @@ impl NodeStackInner {
         }
 
         if let Some(&index) = self.key_to_index.get(&key) {
-            let should_overwrite = self.graph.node_weight(index).is_some_and(|entity| {
+            let interfaces_changed = self.graph.node_weight(index).is_some_and(|entity| {
                 !interfaces_match(&entity.config().interfaces, &config.interfaces)
-                    || entity.root_path() != root_path.as_path()
             });
 
-            if !should_overwrite {
-                return Ok(());
+            // Dependency checks and rewiring are only needed when interfaces change,
+            // because interface changes can break or create dependency relationships.
+            if interfaces_changed {
+                let has_dependents = self
+                    .graph
+                    .neighbors_directed(index, Direction::Incoming)
+                    .next()
+                    .is_some()
+                    || self
+                        .pending_requirements
+                        .get(&key)
+                        .is_some_and(|requirements| !requirements.is_empty());
+
+                if has_dependents {
+                    return Err(Error::CannotOverwriteNodeWithDependents {
+                        node_name: key.name,
+                        node_tag: key.tag,
+                    });
+                }
+
+                if !allow_missing_dependencies {
+                    let candidate = NodeEntity::new(config.clone(), root_path.clone());
+                    self.validate_dependencies(&candidate)?;
+                }
             }
 
-            let has_dependents = self
-                .graph
-                .neighbors_directed(index, Direction::Incoming)
-                .next()
-                .is_some()
-                || self
-                    .pending_requirements
-                    .get(&key)
-                    .is_some_and(|requirements| !requirements.is_empty());
-
-            if has_dependents {
-                return Err(Error::CannotOverwriteNodeWithDependents {
-                    node_name: key.name,
-                    node_tag: key.tag,
-                });
-            }
-
-            if !allow_missing_dependencies {
-                let candidate = NodeEntity::new(config.clone(), root_path.clone());
-                self.validate_dependencies(&candidate)?;
-            }
-
+            // Always update config and root_path. Non-breaking changes (start_cmd,
+            // add_cmd, labels, parameters) must not be silently dropped.
             if let Some(entity) = self.graph.node_weight_mut(index) {
                 entity.config = config;
                 entity.fs_root_path = root_path;
             }
-            self.rewire_dependencies(index);
+
+            if interfaces_changed {
+                self.rewire_dependencies(index);
+            }
         } else {
             // Entity doesn't exist, create new one without instances
             let entity = NodeEntity::new(config, root_path);
@@ -955,7 +962,7 @@ impl NodeStack {
         guard.find_entity_by_instance_id(instance_id)
     }
 
-    /// Adds a config to the stack or validates an existing one matches.
+    /// Adds a config to the stack or updates an existing one.
     /// Does not create any instances.
     /// If allow_missing_dependencies is true, missing dependencies are tracked as pending
     /// requirements and will be wired once the dependency nodes are added to the stack.
