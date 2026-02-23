@@ -943,6 +943,18 @@ fn extract_node_archive(
 
     let instance_dir = instances_dir.join(instance_id);
 
+    // Clean up any leftover instance directory from a previous failed attempt,
+    // since the instance ID is deterministic and may be retried.
+    if instance_dir.exists() {
+        std::fs::remove_dir_all(&instance_dir).map_err(|e| {
+            format!(
+                "Failed to clean up existing instance directory {}: {}",
+                instance_dir.display(),
+                e
+            )
+        })?;
+    }
+
     std::fs::create_dir(&instance_dir).map_err(|e| {
         format!(
             "Failed to create instance directory {}: {}",
