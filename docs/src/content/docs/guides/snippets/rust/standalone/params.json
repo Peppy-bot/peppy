@@ -1,0 +1,15 @@
+{
+  "device": {
+    "physical": "/dev/video0",
+    "sim": "virtual_camera",
+    "priority": "high"
+  },
+  "video": {
+    "frame_rate": 30,
+    "resolution": {
+      "width": 1920,
+      "height": 1080
+    },
+    "encoding": "h264"
+  }
+}
