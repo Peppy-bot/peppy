@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 use config::consts::{
-    NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH, PYTHON_MAX_VERSION, PYTHON_MIN_VERSION,
+    NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH, PYTHON_MAX_VERSION, PYTHON_MIN_VERSION, PeppyDirs,
 };
 use config::node::PeppygenLanguage;
 use generator::generate_peppygen_lib;
@@ -15,13 +15,21 @@ use std::{fs, thread, time::Duration};
 use tempfile::TempDir;
 use tokio::time::sleep;
 
+/// Returns a `PeppyDirs` instance suitable for use in tests.
+///
+/// Uses `PeppyDirs::default()` since generator tests need access to the real
+/// shared cache directories for deploying vendored crates and Python packages.
+pub fn test_peppy_dirs() -> PeppyDirs {
+    PeppyDirs::default()
+}
+
 pub const STUB_NODE_CONFIG: &str = r#"{
   schema_version: 1,
   manifest: {
     name: "generated_node",
     tag: "0.1.0",
     language: "rust",
-    start_cmd: ["cargo", "run", "--release"]
+    start_cmd: ["./target/release/generated_node"]
   }
 }
 "#;
@@ -183,7 +191,7 @@ pub fn wait_for_child(
 /// Returns a stable, shared target directory for test compilations so that sccache can
 /// reuse the same dir across runs
 fn stable_test_target_dir() -> std::path::PathBuf {
-    config::consts::peppy_data_dir().join("cache/rust/test-targets")
+    PeppyDirs::default().root().join("cache/rust/test-targets")
 }
 
 pub fn compile_project(dir: impl AsRef<Path>) {
@@ -266,7 +274,8 @@ pub fn run_generate_peppygen_lib_test(
     fs::write(&config_path, json_config_content).expect("failed to write peppy.json5");
 
     // Generate the library
-    generate_peppygen_lib(language, node_dir, Vec::new(), "test-hash")
+    let peppy_dirs = PeppyDirs::default();
+    generate_peppygen_lib(language, node_dir, Vec::new(), "test-hash", &peppy_dirs)
         .expect("failed to generate library");
 
     // Verify the generated library structure exists

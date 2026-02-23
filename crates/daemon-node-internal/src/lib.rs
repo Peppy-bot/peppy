@@ -26,6 +26,5 @@ pub mod node_capnp {
     include!(concat!(env!("OUT_DIR"), "/node_capnp.rs"));
 }
 
-pub use error::{DependencyInterfaceIntegrityError, DependencyInterfaceIntegrityErrors};
 pub use error::{Error, Result};
 pub use services::{DaemonNode, DaemonNodeArguments, FORBIDDEN_ENV_KEYS};

@@ -214,9 +214,28 @@ impl CapnpFacade {
         let binary_path = temp_dir.join("peppy_capnp_binary");
 
         if !binary_path.exists() {
-            std::fs::write(&binary_path, binary_bytes).map_err(|err| {
+            // Write to a uniquely-named temporary file first, then atomically
+            // rename into place. This avoids ETXTBSY errors when multiple
+            // threads/processes race to extract and execute the binary.
+            let tmp_path = temp_dir.join(format!("peppy_capnp_binary.tmp.{}", std::process::id()));
+            std::fs::write(&tmp_path, binary_bytes).map_err(|err| {
                 Error::Encoding(format!("failed to write embedded capnp binary: {err}"))
             })?;
+
+            #[cfg(unix)]
+            {
+                let permissions = fs::Permissions::from_mode(0o755);
+                fs::set_permissions(&tmp_path, permissions).map_err(|err| {
+                    Error::Encoding(format!("failed to set permissions on capnp binary: {err}"))
+                })?;
+            }
+
+            // Atomic rename — if another process already placed the binary,
+            // the rename harmlessly replaces it with identical content.
+            // Any process already executing the old inode continues unaffected.
+            if std::fs::rename(&tmp_path, &binary_path).is_err() {
+                let _ = std::fs::remove_file(&tmp_path);
+            }
         }
 
         Ok(binary_path)

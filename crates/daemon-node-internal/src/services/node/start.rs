@@ -1,8 +1,9 @@
+use super::extract_tar_zst;
 use crate::Result;
 use crate::encoding::{NodeStartFeedback, NodeStartGoal, NodeStartGoalResponse, NodeStartResult};
 use crate::names;
 use chrono::Local;
-use config::consts::{RUNTIME_CONFIG_VAR_NAME, logs_dir_start, runtime_config_dir};
+use config::consts::{PeppyDirs, RUNTIME_CONFIG_VAR_NAME};
 use config::node::{Name, PeppygenLanguage};
 use config::runtime::RuntimeConfig;
 use config::{AnyType, NodeArguments};
@@ -32,6 +33,64 @@ const STARTUP_OUTPUT_MAX_WAIT: Duration = Duration::from_millis(100);
 const STARTUP_OUTPUT_QUIET_WINDOW: Duration = Duration::from_millis(10);
 
 static RUNTIME_CONFIG_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Clone)]
+pub struct NodeStartServiceConfig {
+    pub node_startup_timeout: Duration,
+    pub node_start_health_timeout: Duration,
+    pub peppy_dirs: PeppyDirs,
+}
+
+#[derive(Clone)]
+struct NodeStartActionContext {
+    node_stack: Arc<NodeStack>,
+    messenger: MessengerHandle,
+    daemon_node_name: String,
+    caller_instance_id: String,
+    node_startup_timeout: Duration,
+    node_start_health_timeout: Duration,
+    peppy_dirs: PeppyDirs,
+}
+
+struct ProcessNodeStartContext {
+    action: NodeStartActionContext,
+    feedback_publisher: TopicPublisher,
+    log_file: Arc<StdMutex<File>>,
+    sender_instance_id: String,
+}
+
+pub async fn listen_for_node_start(
+    messenger: &MessengerHandle,
+    daemon_node_name: &str,
+    instance_id: &str,
+    node_name: &str,
+    node_stack: Arc<NodeStack>,
+    config: NodeStartServiceConfig,
+) -> Result<JoinHandle<Result<()>>> {
+    let action = ActionMessenger::expose(
+        messenger,
+        daemon_node_name,
+        instance_id,
+        node_name,
+        names::NODE_START_ACTION,
+    )
+    .await?;
+
+    let action_context = NodeStartActionContext {
+        node_stack,
+        messenger: messenger.clone(),
+        daemon_node_name: daemon_node_name.to_string(),
+        caller_instance_id: instance_id.to_string(),
+        node_startup_timeout: config.node_startup_timeout,
+        node_start_health_timeout: config.node_start_health_timeout,
+        peppy_dirs: config.peppy_dirs,
+    };
+
+    let handle =
+        tokio::spawn(async move { run_node_start_action_loop(action, action_context).await });
+
+    Ok(handle)
+}
 
 /// Validates that all required parameters from the schema are present in the provided arguments.
 /// Returns a list of all missing parameter paths (e.g., ["device.physical", "video.frame_rate"]).
@@ -156,6 +215,8 @@ impl FeedbackSync {
                 break;
             }
             let notified = self.notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
             if self.published_count.load(Ordering::Relaxed) >= target {
                 break;
             }
@@ -255,52 +316,9 @@ where
     })
 }
 
-pub async fn listen_for_node_start(
-    messenger: &MessengerHandle,
-    daemon_node_node: &str,
-    instance_id: &str,
-    node_name: &str,
-    node_stack: Arc<NodeStack>,
-    node_startup_timeout: Duration,
-    node_start_health_timeout: Duration,
-) -> Result<JoinHandle<Result<()>>> {
-    let action = ActionMessenger::expose(
-        messenger,
-        daemon_node_node,
-        instance_id,
-        node_name,
-        names::NODE_START_ACTION,
-    )
-    .await?;
-
-    let messenger = messenger.clone();
-    let daemon_node_name = daemon_node_node.to_string();
-    let caller_instance_id = instance_id.to_string();
-
-    let handle = tokio::spawn(async move {
-        run_node_start_action_loop(
-            action,
-            node_stack,
-            messenger,
-            daemon_node_name,
-            caller_instance_id,
-            node_startup_timeout,
-            node_start_health_timeout,
-        )
-        .await
-    });
-
-    Ok(handle)
-}
-
 async fn run_node_start_action_loop(
     mut action: ActionCreation,
-    node_stack: Arc<NodeStack>,
-    messenger: MessengerHandle,
-    daemon_node_name: String,
-    caller_instance_id: String,
-    node_startup_timeout: Duration,
-    node_start_health_timeout: Duration,
+    action_context: NodeStartActionContext,
 ) -> Result<()> {
     let state = Arc::new(Mutex::new(NodeStartActionState::default()));
 
@@ -309,31 +327,15 @@ async fn run_node_start_action_loop(
             .goal_service
             .handle_next_request({
                 let feedback_publisher = &action.feedback_publisher;
-                let node_stack = Arc::clone(&node_stack);
-                let messenger = messenger.clone();
-                let daemon_node_name = daemon_node_name.clone();
-                let caller_instance_id = caller_instance_id.clone();
                 let state = Arc::clone(&state);
+                let action_context = action_context.clone();
                 move |context| {
                     let feedback_publisher = feedback_publisher.clone();
-                    let node_stack = Arc::clone(&node_stack);
-                    let messenger = messenger.clone();
-                    let daemon_node_name = daemon_node_name.clone();
-                    let caller_instance_id = caller_instance_id.clone();
                     let state = Arc::clone(&state);
+                    let action_context = action_context.clone();
                     async move {
-                        handle_goal_request(
-                            context,
-                            feedback_publisher,
-                            node_stack,
-                            messenger,
-                            daemon_node_name,
-                            caller_instance_id,
-                            node_startup_timeout,
-                            node_start_health_timeout,
-                            state,
-                        )
-                        .await
+                        handle_goal_request(context, feedback_publisher, state, action_context)
+                            .await
                     }
                 }
             })
@@ -396,29 +398,18 @@ async fn run_node_start_action_loop(
                         // abandoned action from blocking all subsequent requests.
                         goal_result = action.goal_service.handle_next_request({
                             let feedback_publisher = &action.feedback_publisher;
-                            let node_stack = Arc::clone(&node_stack);
-                            let messenger = messenger.clone();
-                            let daemon_node_name = daemon_node_name.clone();
-                            let caller_instance_id = caller_instance_id.clone();
                             let state = Arc::clone(&state);
+                            let action_context = action_context.clone();
                             move |context| {
                                 let feedback_publisher = feedback_publisher.clone();
-                                let node_stack = Arc::clone(&node_stack);
-                                let messenger = messenger.clone();
-                                let daemon_node_name = daemon_node_name.clone();
-                                let caller_instance_id = caller_instance_id.clone();
                                 let state = Arc::clone(&state);
+                                let action_context = action_context.clone();
                                 async move {
                                     handle_goal_request(
                                         context,
                                         feedback_publisher,
-                                        node_stack,
-                                        messenger,
-                                        daemon_node_name,
-                                        caller_instance_id,
-                                        node_startup_timeout,
-                                        node_start_health_timeout,
                                         state,
+                                        action_context,
                                     )
                                     .await
                                 }
@@ -456,17 +447,11 @@ async fn run_node_start_action_loop(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn handle_goal_request(
     context: ServiceRequestContext,
     feedback_publisher: TopicPublisher,
-    node_stack: Arc<NodeStack>,
-    messenger: MessengerHandle,
-    daemon_node_name: String,
-    caller_instance_id: String,
-    node_startup_timeout: Duration,
-    node_start_health_timeout: Duration,
     state: Arc<Mutex<NodeStartActionState>>,
+    action_context: NodeStartActionContext,
 ) -> PeppyResult<Payload> {
     let sender_instance_id = context.message().instance_id().to_string();
     let payload = context.message().payload();
@@ -538,7 +523,7 @@ async fn handle_goal_request(
     );
 
     // Create log file for stdout/stderr
-    let log_dir = logs_dir_start();
+    let log_dir = action_context.peppy_dirs.logs_dir_start();
     if let Err(e) = std::fs::create_dir_all(&log_dir) {
         let error_msg = format!("Failed to create logs directory: {}", e);
         debug!("Failed to create logs directory {:?}: {}", log_dir, e);
@@ -575,20 +560,13 @@ async fn handle_goal_request(
 
     let state_clone = Arc::clone(&state);
     tokio::spawn(async move {
-        let result = process_node_start(
-            goal,
-            runtime_config,
-            sender_instance_id,
-            node_stack,
-            messenger,
-            daemon_node_name,
-            caller_instance_id,
-            node_startup_timeout,
-            node_start_health_timeout,
+        let process_context = ProcessNodeStartContext {
+            action: action_context,
             feedback_publisher,
             log_file,
-        )
-        .await;
+            sender_instance_id,
+        };
+        let result = process_node_start(goal, runtime_config, process_context).await;
         let mut state_guard = state_clone.lock().await;
         *state_guard = NodeStartActionState::Completed { result };
     });
@@ -602,20 +580,12 @@ async fn handle_goal_request(
         })
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn process_node_start(
     goal: NodeStartGoal,
     runtime_config: RuntimeConfig,
-    sender_instance_id: String,
-    node_stack: Arc<NodeStack>,
-    messenger: MessengerHandle,
-    daemon_node_name: String,
-    caller_instance_id: String,
-    node_startup_timeout: Duration,
-    node_start_health_timeout: Duration,
-    feedback_publisher: TopicPublisher,
-    log_file: Arc<StdMutex<File>>,
+    ctx: ProcessNodeStartContext,
 ) -> NodeStartResult {
+    let sender_instance_id = ctx.sender_instance_id.as_str();
     let NodeStartGoal {
         runtime_config_json5,
         node_name,
@@ -643,7 +613,7 @@ async fn process_node_start(
         node_name, tag, instance_id_str
     );
 
-    let entity = match node_stack.find(&node_name, &tag) {
+    let entity = match ctx.action.node_stack.find(&node_name, &tag) {
         Some(entity) => entity,
         None => {
             return NodeStartResult::failure(format!(
@@ -653,17 +623,13 @@ async fn process_node_start(
         }
     };
 
-    let sccache_injected = super::inject_rust_build_env(
-        &mut env_vars,
-        entity.config().manifest.language,
-        &node_name,
-        &tag,
-    );
+    let sccache_injected =
+        super::inject_rust_build_env(&mut env_vars, entity.config().manifest.language);
     if sccache_injected
         && let Ok(payload) =
             NodeStartFeedback::stdout("Using sccache for Rust compilation").encode()
     {
-        let _ = feedback_publisher.publish(payload).await;
+        let _ = ctx.feedback_publisher.publish(payload).await;
     }
 
     // Validate that all required parameters are provided before starting the node
@@ -679,7 +645,24 @@ async fn process_node_start(
         ));
     }
 
-    let mut child = match start_node(&entity, &runtime_config_json5, &env_vars, &log_file) {
+    // Extract node archive to instances directory
+    let instance_dir =
+        match extract_node_archive(entity.root_path(), instance_id_str, &ctx.action.peppy_dirs) {
+            Ok(dir) => dir,
+            Err(e) => {
+                debug!("Failed to extract node archive: {}", e);
+                return NodeStartResult::failure(format!("Failed to extract node archive: {}", e));
+            }
+        };
+
+    let mut child = match start_node(
+        &entity,
+        &instance_dir,
+        &runtime_config_json5,
+        &env_vars,
+        &ctx.log_file,
+        &ctx.action.peppy_dirs,
+    ) {
         Ok(child) => child,
         Err(e) => {
             debug!("Failed to start node instance '{}': {}", instance_id_str, e);
@@ -692,7 +675,7 @@ async fn process_node_start(
     let stderr_buffer = Arc::new(StdMutex::new(VecDeque::new()));
 
     let (feedback_tx, mut feedback_rx) = mpsc::unbounded_channel::<FeedbackLine>();
-    let feedback_publisher = feedback_publisher.clone();
+    let feedback_publisher = ctx.feedback_publisher.clone();
     let feedback_sync_publisher = feedback_sync.clone();
     tokio::spawn(async move {
         while let Some(line) = feedback_rx.recv().await {
@@ -717,7 +700,7 @@ async fn process_node_start(
             feedback_sync.clone(),
             FeedbackStream::Stdout,
             None,
-            Arc::clone(&log_file),
+            Arc::clone(&ctx.log_file),
         ));
     }
 
@@ -729,27 +712,27 @@ async fn process_node_start(
             feedback_sync.clone(),
             FeedbackStream::Stderr,
             Some(Arc::clone(&stderr_buffer)),
-            Arc::clone(&log_file),
+            Arc::clone(&ctx.log_file),
         ));
     }
+
+    let signal_target = NodeSignalTarget {
+        messenger: &ctx.action.messenger,
+        daemon_node_name: &ctx.action.daemon_node_name,
+        caller_instance_id: &ctx.action.caller_instance_id,
+        target_node_name: runtime_config.node_name.as_str(),
+        target_daemon_node: runtime_config.bound_daemon_node.as_str(),
+        target_instance_id: instance_id_str,
+    };
 
     debug!(
         "Successfully spawned node instance '{}', waiting for ready signal for {}s...",
         instance_id_str,
-        node_startup_timeout.as_secs()
+        ctx.action.node_startup_timeout.as_secs()
     );
 
-    let ready_result = wait_for_ready_signal(
-        &messenger,
-        &daemon_node_name,
-        &caller_instance_id,
-        runtime_config.node_name.as_str(),
-        runtime_config.bound_daemon_node.as_str(),
-        instance_id_str,
-        node_startup_timeout,
-        &mut child,
-    )
-    .await;
+    let ready_result =
+        wait_for_ready_signal(&signal_target, ctx.action.node_startup_timeout, &mut child).await;
 
     if let Err(e) = ready_result {
         debug!(
@@ -775,13 +758,8 @@ async fn process_node_start(
     );
 
     let health_result = perform_health_check(
-        &messenger,
-        &daemon_node_name,
-        &caller_instance_id,
-        runtime_config.node_name.as_str(),
-        runtime_config.bound_daemon_node.as_str(),
-        instance_id_str,
-        node_start_health_timeout,
+        &signal_target,
+        ctx.action.node_start_health_timeout,
         &mut child,
     )
     .await;
@@ -793,7 +771,10 @@ async fn process_node_start(
                 instance_id_str
             );
             let pid = child.id().unwrap_or(0);
-            if let Err(e) = node_stack.add_instance(&node_name, &tag, Some(&instance_id), Some(pid))
+            if let Err(e) =
+                ctx.action
+                    .node_stack
+                    .add_instance(&node_name, &tag, Some(&instance_id), Some(pid))
             {
                 if let Err(kill_err) = child.kill().await {
                     debug!(
@@ -944,13 +925,58 @@ async fn kill_and_report_error(
     NodeStartResult::failure(error_msg)
 }
 
+/// Extracts a `.tar.zst` node archive to a new instance directory.
+/// Returns the path to the extracted instance directory.
+fn extract_node_archive(
+    archive_path: &std::path::Path,
+    instance_id: &str,
+    peppy_dirs: &PeppyDirs,
+) -> std::result::Result<std::path::PathBuf, String> {
+    let instances_dir = peppy_dirs.instances_dir();
+    std::fs::create_dir_all(&instances_dir).map_err(|e| {
+        format!(
+            "Failed to create instances directory {}: {}",
+            instances_dir.display(),
+            e
+        )
+    })?;
+
+    let instance_dir = instances_dir.join(instance_id);
+
+    // Clean up any leftover instance directory from a previous failed attempt,
+    // since the instance ID is deterministic and may be retried.
+    if instance_dir.exists() {
+        std::fs::remove_dir_all(&instance_dir).map_err(|e| {
+            format!(
+                "Failed to clean up existing instance directory {}: {}",
+                instance_dir.display(),
+                e
+            )
+        })?;
+    }
+
+    std::fs::create_dir(&instance_dir).map_err(|e| {
+        format!(
+            "Failed to create instance directory {}: {}",
+            instance_dir.display(),
+            e
+        )
+    })?;
+
+    extract_tar_zst(archive_path, &instance_dir)?;
+
+    Ok(instance_dir)
+}
+
 /// Runs a node using its manifest's start_cmd and passes the PEPPY_RUNTIME_CONFIG as an env var.
 /// Returns the spawned child process handle on success.
 pub fn start_node(
     entity: &NodeEntity,
+    working_dir: &std::path::Path,
     runtime_config_json5: &str,
     env_vars: &[(String, String)],
     log_file: &Arc<StdMutex<File>>,
+    peppy_dirs: &PeppyDirs,
 ) -> std::io::Result<Child> {
     let manifest = &entity.config().manifest;
 
@@ -964,7 +990,7 @@ pub fn start_node(
         manifest.tag,
         program,
         args,
-        entity.root_path()
+        working_dir
     );
 
     // Log the command being executed to the log file before attempting to spawn
@@ -977,7 +1003,7 @@ pub fn start_node(
                 "[{}] Executing start_cmd: {} (working_dir: {})",
                 timestamp,
                 full_cmd,
-                entity.root_path().display()
+                working_dir.display()
             );
             let _ = file.flush();
         }
@@ -986,7 +1012,7 @@ pub fn start_node(
     // Write runtime config to a unique file per spawned process.
     // Using a shared path can cause cross-test and cross-instance races where a node reads the
     // wrong config (instance_id/port), leading to hangs waiting for ready/health responses.
-    let runtime_dir = runtime_config_dir();
+    let runtime_dir = peppy_dirs.runtime_config_dir();
     std::fs::create_dir_all(&runtime_dir)?;
     let counter = RUNTIME_CONFIG_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
     let pid = std::process::id();
@@ -994,7 +1020,7 @@ pub fn start_node(
     std::fs::write(&runtime_config_path, runtime_config_json5)?;
 
     let mut command = Command::new(program);
-    command.current_dir(entity.root_path());
+    command.current_dir(working_dir);
     command
         .args(args)
         .stdout(Stdio::piped())
@@ -1013,17 +1039,20 @@ pub fn start_node(
     command.spawn()
 }
 
+struct NodeSignalTarget<'a> {
+    messenger: &'a MessengerHandle,
+    daemon_node_name: &'a str,
+    caller_instance_id: &'a str,
+    target_node_name: &'a str,
+    target_daemon_node: &'a str,
+    target_instance_id: &'a str,
+}
+
 /// Performs a health check on a newly started node instance.
 /// Polls the node's health service with a timeout and returns Ok if the node responds.
 /// Also monitors the child process to detect early exits.
-#[allow(clippy::too_many_arguments)]
-pub async fn perform_health_check(
-    messenger: &MessengerHandle,
-    daemon_node_name: &str,
-    caller_instance_id: &str,
-    target_node_name: &str,
-    target_daemon_node: &str,
-    target_instance_id: &str,
+async fn perform_health_check(
+    target: &NodeSignalTarget<'_>,
     timeout: Duration,
     child: &mut Child,
 ) -> std::result::Result<(), String> {
@@ -1050,7 +1079,7 @@ pub async fn perform_health_check(
         let now = Instant::now();
         if now >= deadline {
             let err = last_err.unwrap_or_else(|| PeppyError::ServiceTimeout {
-                instance_id: Some(target_instance_id.to_string()),
+                instance_id: Some(target.target_instance_id.to_string()),
                 service_name: NODE_HEALTH_SERVICE.to_string(),
             });
             return Err(format!("health check timed out: {err}"));
@@ -1060,13 +1089,13 @@ pub async fn perform_health_check(
         let attempt_timeout = remaining.min(Duration::from_millis(500));
 
         match ServiceMessenger::poll(
-            messenger,
-            daemon_node_name,
-            caller_instance_id,
-            target_node_name,
+            target.messenger,
+            target.daemon_node_name,
+            target.caller_instance_id,
+            target.target_node_name,
             NODE_HEALTH_SERVICE,
-            Some(target_daemon_node),
-            Some(target_instance_id),
+            Some(target.target_daemon_node),
+            Some(target.target_instance_id),
             request_payload.clone(),
             attempt_timeout,
         )
@@ -1087,14 +1116,8 @@ pub async fn perform_health_check(
 ///
 /// This is used during startup to wait for compilation to complete before
 /// starting the health check timer.
-#[allow(clippy::too_many_arguments)]
-pub async fn wait_for_ready_signal(
-    messenger: &MessengerHandle,
-    daemon_node_name: &str,
-    caller_instance_id: &str,
-    target_node_name: &str,
-    target_daemon_node: &str,
-    target_instance_id: &str,
+async fn wait_for_ready_signal(
+    target: &NodeSignalTarget<'_>,
     timeout: Duration,
     child: &mut Child,
 ) -> std::result::Result<(), String> {
@@ -1120,7 +1143,7 @@ pub async fn wait_for_ready_signal(
         let now = Instant::now();
         if now >= deadline {
             let err = last_err.unwrap_or_else(|| PeppyError::ServiceTimeout {
-                instance_id: Some(target_instance_id.to_string()),
+                instance_id: Some(target.target_instance_id.to_string()),
                 service_name: NODE_READY_SERVICE.to_string(),
             });
             return Err(format!(
@@ -1132,13 +1155,13 @@ pub async fn wait_for_ready_signal(
         let attempt_timeout = remaining.min(Duration::from_millis(500));
 
         match ServiceMessenger::poll(
-            messenger,
-            daemon_node_name,
-            caller_instance_id,
-            target_node_name,
+            target.messenger,
+            target.daemon_node_name,
+            target.caller_instance_id,
+            target.target_node_name,
             NODE_READY_SERVICE,
-            Some(target_daemon_node),
-            Some(target_instance_id),
+            Some(target.target_daemon_node),
+            Some(target.target_instance_id),
             request_payload.clone(),
             attempt_timeout,
         )

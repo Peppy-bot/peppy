@@ -40,13 +40,16 @@ mod tests {
                 name: "test_node",
                 tag: "0.1.0",
                 language: "rust",
-                start_cmd: ["cargo", "run", "--release"],
+                start_cmd: ["./target/release/test_node"],
             },
         }"#;
         let config = NodeConfigParser::from_content(json5).unwrap();
         assert_eq!(config.manifest.name.as_str(), "test_node");
         assert_eq!(config.manifest.tag, "0.1.0");
-        assert_eq!(config.manifest.start_cmd, vec!["cargo", "run", "--release"]);
+        assert_eq!(
+            config.manifest.start_cmd,
+            vec!["./target/release/test_node"]
+        );
         assert!(config.parameters.is_empty());
     }
 
@@ -58,7 +61,7 @@ mod tests {
                 name: "camera_driver",
                 tag: "2.1.0",
                 language: "rust",
-                start_cmd: ["cargo", "run", "--release"],
+                start_cmd: ["./target/release/camera_driver"],
             },
             interfaces: {
                 exposes: {
@@ -75,7 +78,10 @@ mod tests {
             config.manifest.language,
             crate::node::PeppygenLanguage::Rust
         );
-        assert_eq!(config.manifest.start_cmd, vec!["cargo", "run", "--release"]);
+        assert_eq!(
+            config.manifest.start_cmd,
+            vec!["./target/release/camera_driver"]
+        );
         assert!(config.interfaces.exposes.is_some());
     }
 

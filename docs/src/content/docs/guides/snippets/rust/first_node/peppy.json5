@@ -10,9 +10,7 @@
       "--release"
     ],
     start_cmd: [
-      "cargo",
-      "run",
-      "--release"
+      "./target/release/first_node"
     ]
   },
   interfaces: {}

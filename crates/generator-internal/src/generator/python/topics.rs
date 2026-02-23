@@ -7,13 +7,13 @@ use crate::error::Result;
 use crate::generator::naming::sanitize_component;
 use config::node::{ExposedTopic, MessageFormat, SubscribedTopic};
 
-pub(super) fn capnp_loader_fn_name(schema_info: &PythonSchemaInfo) -> String {
+pub(crate) fn capnp_loader_fn_name(schema_info: &PythonSchemaInfo) -> String {
     format!("_{}_capnp", schema_info.file_stem)
 }
 
 /// Emits the shared `_PKG_DIR` constant and related imports needed by capnp schema loaders.
 /// Call this once before emitting any loaders via [`emit_capnp_loader_fn`].
-pub(super) fn emit_capnp_preamble(builder: &mut PythonCodeBuilder) {
+pub(crate) fn emit_capnp_preamble(builder: &mut PythonCodeBuilder) {
     builder.add_import("import capnp");
     builder.add_import("import types");
     builder.add_import("from functools import lru_cache");
@@ -25,7 +25,7 @@ pub(super) fn emit_capnp_preamble(builder: &mut PythonCodeBuilder) {
 
 /// Emits a single `@lru_cache` loader function for a capnp schema.
 /// Requires [`emit_capnp_preamble`] to have been called first.
-pub(super) fn emit_capnp_loader_fn(
+pub(crate) fn emit_capnp_loader_fn(
     builder: &mut PythonCodeBuilder,
     schema_info: &PythonSchemaInfo,
 ) {
@@ -43,7 +43,7 @@ pub(super) fn emit_capnp_loader_fn(
 
 /// Convenience wrapper: emits preamble + a single loader function.
 /// Use this when there is only one schema to load.
-pub(super) fn emit_capnp_schema_loader(
+pub(crate) fn emit_capnp_schema_loader(
     builder: &mut PythonCodeBuilder,
     schema_info: &PythonSchemaInfo,
 ) {

@@ -42,9 +42,10 @@ pub struct NodeConfigCreator {
 
 impl NodeConfigCreator {
     pub fn node(node_name: &str) -> Result<Self> {
+        let start_cmd = format!(r#"["./target/release/{}"]"#, node_name);
         let tpl = NodeTemplate {
             name: node_name,
-            start_cmd: r#"["cargo", "run", "--release"]"#,
+            start_cmd: &start_cmd,
         };
         let rendered_template = tpl.render().map_err(|e| Error::Serialize(e.to_string()))?;
 
@@ -100,7 +101,7 @@ mod tests {
                 name: "a_node",
                 tag: "0.1.0",
                 language: "rust",
-                start_cmd: ["cargo", "run", "--release"],
+                start_cmd: ["./target/release/a_node"],
             }
         }"#;
 

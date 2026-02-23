@@ -6,6 +6,7 @@ use super::{
     ResolvedNode, git::resolve_remote_git, local::resolve_local_deployment, url::resolve_remote_url,
 };
 use crate::error::{Error, Result};
+use config::consts::PeppyDirs;
 use config::node::NodeConfig;
 use config::peppy_config::{Deployment, DeploymentSource, PeppyLauncher, PeppyLauncherParser};
 use config::{AnyType, FSNodeConfigIndex, TypeMismatch};
@@ -120,6 +121,7 @@ impl LaunchPlan {
     pub fn from_launch_file(
         daemon_node: NodeConfig,
         launch_file: impl AsRef<Path>,
+        peppy_dirs: &PeppyDirs,
     ) -> Result<Self> {
         let launch_file = PathBuf::from(launch_file.as_ref());
 
@@ -135,7 +137,7 @@ impl LaunchPlan {
 
         let peppy_launcher = load_peppy_launcher(&launch_file)?;
 
-        Self::from_config(daemon_node, peppy_launcher, &root_dir)
+        Self::from_config(daemon_node, peppy_launcher, &root_dir, peppy_dirs)
     }
 
     /// Creates a launch plan from an already-parsed launcher configuration.
@@ -146,6 +148,7 @@ impl LaunchPlan {
         daemon_node: NodeConfig,
         peppy_launcher: PeppyLauncher,
         nodes_directory: impl AsRef<Path>,
+        peppy_dirs: &PeppyDirs,
     ) -> Result<Self> {
         let nodes_directory = nodes_directory.as_ref();
 
@@ -155,13 +158,17 @@ impl LaunchPlan {
 
         let node_stack = load_nodes_from_fs(nodes_directory, daemon_node)?;
 
-        Ok(build_launch_plan(peppy_launcher, node_stack))
+        Ok(build_launch_plan(peppy_launcher, node_stack, peppy_dirs))
     }
 
-    pub fn with_nodes(launch_file: impl AsRef<Path>, node_stack: NodeStack) -> Result<Self> {
+    pub fn with_nodes(
+        launch_file: impl AsRef<Path>,
+        node_stack: NodeStack,
+        peppy_dirs: &PeppyDirs,
+    ) -> Result<Self> {
         let peppy_launcher = load_peppy_launcher(launch_file.as_ref())?;
 
-        Ok(build_launch_plan(peppy_launcher, node_stack))
+        Ok(build_launch_plan(peppy_launcher, node_stack, peppy_dirs))
     }
 
     pub fn node_stack(&self) -> &NodeStack {
@@ -311,24 +318,28 @@ fn topological_sort_local_nodes(configs: Vec<(PathBuf, NodeConfig)>) -> Vec<(Pat
 }
 
 fn resolve_deployment(
-    nodes_cache_dir: &Path,
+    added_nodes_dir: &Path,
     base_dir: &Path,
     deployment: &Deployment,
 ) -> Result<ResolvedNode> {
     match &deployment.source {
         DeploymentSource::Local(spec) => resolve_local_deployment(base_dir, spec),
-        DeploymentSource::Git(spec) => resolve_remote_git(nodes_cache_dir, spec),
-        DeploymentSource::Url(spec) => resolve_remote_url(nodes_cache_dir, spec),
+        DeploymentSource::Git(spec) => resolve_remote_git(added_nodes_dir, spec),
+        DeploymentSource::Url(spec) => resolve_remote_url(added_nodes_dir, spec),
     }
 }
 
-fn build_launch_plan(peppy_launcher: PeppyLauncher, source_stack: NodeStack) -> LaunchPlan {
+fn build_launch_plan(
+    peppy_launcher: PeppyLauncher,
+    source_stack: NodeStack,
+    peppy_dirs: &PeppyDirs,
+) -> LaunchPlan {
     let deployments = peppy_launcher.deployments;
-    let nodes_cache_dir = config::consts::nodes_cache_dir();
+    let added_nodes_dir = peppy_dirs.added_nodes_dir();
     let base_dir = source_stack.root().root_path().to_path_buf();
 
     let daemon_config = source_stack.root().config().clone();
-    let stack = NodeStack::new(daemon_config, None, &nodes_cache_dir);
+    let stack = NodeStack::new(daemon_config, None, &added_nodes_dir);
 
     let mut planned = Vec::with_capacity(deployments.len());
 
@@ -342,7 +353,7 @@ fn build_launch_plan(peppy_launcher: PeppyLauncher, source_stack: NodeStack) -> 
             continue;
         }
 
-        let resolved = match resolve_deployment(&nodes_cache_dir, &base_dir, &deployment) {
+        let resolved = match resolve_deployment(&added_nodes_dir, &base_dir, &deployment) {
             Ok(resolved) => resolved,
             Err(err) => {
                 let reason = err.to_string();

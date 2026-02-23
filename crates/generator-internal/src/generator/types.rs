@@ -1,4 +1,5 @@
 use crate::error::{Error, Result};
+use config::consts::PeppyDirs;
 use config::node::{
     ExposedAction, ExposedService, ExposedTopic, MessageFormat, PeppygenLanguage, PrimitiveSchema,
     SchemaType, SubscribedAction, SubscribedService, SubscribedTopic, TypeToken,
@@ -108,7 +109,7 @@ pub trait LanguageGenerator {
         messages: &SubscribedActionMessage,
     ) -> Result<()>;
     /// Finalizes the builder and return a path to the library
-    fn build(self, to_path: impl AsRef<Path>) -> Result<()>;
+    fn build(self, to_path: impl AsRef<Path>, peppy_dirs: &PeppyDirs) -> Result<()>;
 }
 
 impl DeploymentInterface {

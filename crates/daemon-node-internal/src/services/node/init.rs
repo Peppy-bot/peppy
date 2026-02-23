@@ -2,6 +2,7 @@ use super::templates::{apply_python_templates, apply_rust_templates};
 use crate::Result;
 use crate::encoding::{NodeInitRequest, NodeInitResponse};
 use crate::names;
+use config::consts::PeppyDirs;
 use config::node::Toolchain;
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::types::Payload;
@@ -14,6 +15,7 @@ pub async fn listen_for_node_init(
     daemon_node_node: &str,
     instance_id: &str,
     node_name: &str,
+    peppy_dirs: PeppyDirs,
 ) -> Result<JoinHandle<Result<()>>> {
     let mut endpoint = ServiceMessenger::listen(
         messenger,
@@ -26,7 +28,7 @@ pub async fn listen_for_node_init(
 
     let handle = tokio::spawn(async move {
         endpoint
-            .handle_requests(handle_node_init_request)
+            .handle_requests(move |context| handle_node_init_request(context, peppy_dirs.clone()))
             .await
             .map_err(Into::into)
     });
@@ -34,15 +36,23 @@ pub async fn listen_for_node_init(
     Ok(handle)
 }
 
-async fn handle_node_init_request(context: ServiceRequestContext) -> PeppyResult<Payload> {
+async fn handle_node_init_request(
+    context: ServiceRequestContext,
+    peppy_dirs: PeppyDirs,
+) -> PeppyResult<Payload> {
     let sender_instance_id = context.message().instance_id();
-    handle_node_init_request_inner(&context).map_err(|e| PeppyError::InvalidServiceRequest {
-        identifier: sender_instance_id.to_string(),
-        reason: e.to_string(),
+    handle_node_init_request_inner(&context, &peppy_dirs).map_err(|e| {
+        PeppyError::InvalidServiceRequest {
+            identifier: sender_instance_id.to_string(),
+            reason: e.to_string(),
+        }
     })
 }
 
-fn handle_node_init_request_inner(context: &ServiceRequestContext) -> Result<Payload> {
+fn handle_node_init_request_inner(
+    context: &ServiceRequestContext,
+    peppy_dirs: &PeppyDirs,
+) -> Result<Payload> {
     let sender_instance_id = context.message().instance_id();
     let payload = context.message().payload();
 
@@ -96,9 +106,13 @@ fn handle_node_init_request_inner(context: &ServiceRequestContext) -> Result<Pay
 
     let language = toolchain.map_to_language();
     // Generate peppygen library (requires peppy.json5 to exist)
-    if let Err(e) =
-        generator::generate_peppygen_lib(language, &node_dir, Vec::new(), &request.git_hash)
-    {
+    if let Err(e) = generator::generate_peppygen_lib(
+        language,
+        &node_dir,
+        Vec::new(),
+        &request.git_hash,
+        peppy_dirs,
+    ) {
         return NodeInitResponse::failure(format!("Failed to generate peppygen: {}", e)).encode();
     }
 

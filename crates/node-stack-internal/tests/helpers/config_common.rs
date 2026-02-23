@@ -1,22 +1,20 @@
 use config::{
+    consts::PeppyDirs,
     node::{NodeConfig, NodeConfigParser},
     peppy_config::{Deployment, DeploymentInstance, DeploymentSource, Name, PeppyLauncher},
 };
-use std::sync::OnceLock;
 use std::{fs, path::PathBuf};
 use tempfile::TempDir;
 
-static TEST_DATA_DIR: OnceLock<TempDir> = OnceLock::new();
-
-fn init_test_data_dir() {
-    let dir = TEST_DATA_DIR.get_or_init(|| tempfile::tempdir().expect("test data dir"));
-    config::consts::set_peppy_data_dir_override(dir.path().to_path_buf());
+pub fn init_test_data_dir() -> (TempDir, PeppyDirs) {
+    let dir = tempfile::tempdir().expect("test data dir");
+    let peppy_dirs = PeppyDirs::new(dir.path());
+    (dir, peppy_dirs)
 }
 
 /// Returns a minimal daemon/root node configuration for tests.
 /// The daemon node is the required root of every NodeStack.
 pub fn daemon_node_config() -> NodeConfig {
-    init_test_data_dir();
     NodeConfigParser::from_content(
         r#"{
             schema_version: 1,
@@ -32,7 +30,6 @@ pub fn daemon_node_config() -> NodeConfig {
 }
 
 pub fn deployment(source: DeploymentSource) -> Deployment {
-    init_test_data_dir();
     let instance = DeploymentInstance {
         instance_id: Name::new("default").unwrap(),
         arguments: Default::default(),
@@ -46,7 +43,6 @@ pub fn deployment(source: DeploymentSource) -> Deployment {
 }
 
 pub fn write_config(path: PathBuf, launcher_config: PeppyLauncher) -> PathBuf {
-    init_test_data_dir();
     let content = serde_json5::to_string(&launcher_config).expect("serialize config");
     fs::create_dir_all(path.parent().expect("dir")).expect("create config directory");
     fs::write(&path, content).expect("write config");
@@ -54,7 +50,6 @@ pub fn write_config(path: PathBuf, launcher_config: PeppyLauncher) -> PathBuf {
 }
 
 pub fn write_config_str(path: PathBuf, content: &str) -> PathBuf {
-    init_test_data_dir();
     fs::create_dir_all(path.parent().expect("dir")).expect("create config directory");
     fs::write(&path, content).expect("write config");
     path

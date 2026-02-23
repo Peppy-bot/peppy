@@ -17,9 +17,7 @@
       "--release"
     ],
     start_cmd: [
-      "cargo",
-      "run",
-      "--release"
+      "./target/release/uvc_camera"
     ]
   },
   // Expected parameter types to start the node
