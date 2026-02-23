@@ -933,12 +933,26 @@ fn extract_node_archive(
     node_tag: &str,
     peppy_dirs: &PeppyDirs,
 ) -> std::result::Result<std::path::PathBuf, String> {
+    let instances_dir = peppy_dirs.instances_dir();
+    std::fs::create_dir_all(&instances_dir).map_err(|e| {
+        format!(
+            "Failed to create instances directory {}: {}",
+            instances_dir.display(),
+            e
+        )
+    })?;
+
     let instance_id = generate_random_id();
     let instance_dir_name = format!("{}_{}_{}", node_name, node_tag, instance_id);
-    let instance_dir = peppy_dirs.instances_dir().join(&instance_dir_name);
+    let instance_dir = instances_dir.join(&instance_dir_name);
 
-    std::fs::create_dir_all(&instance_dir)
-        .map_err(|e| format!("Failed to create instance directory: {}", e))?;
+    std::fs::create_dir(&instance_dir).map_err(|e| {
+        format!(
+            "Failed to create instance directory {}: {}",
+            instance_dir.display(),
+            e
+        )
+    })?;
 
     extract_tar_zst(archive_path, &instance_dir)?;
 

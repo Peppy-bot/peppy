@@ -96,7 +96,7 @@ fn inject_rust_build_env(env_vars: &mut Vec<(String, String)>, language: Peppyge
 
 pub(crate) fn generate_random_id() -> String {
     let mut rng = rand::rng();
-    let bytes: [u8; 3] = rng.random();
+    let bytes: [u8; 6] = rng.random();
     bytes.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
