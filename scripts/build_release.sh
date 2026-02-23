@@ -563,6 +563,15 @@ PY
     cp "$ZENOHD_PATH" "$PKG_DIR/zenohd"
     chmod +x "$PKG_DIR/zenohd"
 
+    # Include the portable apptainer installation directory (Linux only).
+    APPTAINER_DIR="$(find "${TARGET_DIR%/}/${HOST_TRIPLE}/release/build" -type d -path "*/containers-*/out/apptainer-install" -print | head -n 1 || true)"
+    if [ -d "${APPTAINER_DIR-}" ]; then
+        cp -r "$APPTAINER_DIR" "$PKG_DIR/apptainer"
+        echo "Including apptainer directory in release"
+    else
+        echo "warning: apptainer install directory not found in build output; container features will not be bundled" >&2
+    fi
+
     tar -czf "$ASSET_PATH" -C "$PKG_DIR" $(ls "$PKG_DIR")
     echo "Built artifact: $ASSET_PATH"
 
