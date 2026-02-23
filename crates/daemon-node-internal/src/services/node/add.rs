@@ -10,10 +10,7 @@ use crate::encoding::{
 };
 use crate::names;
 use chrono::Local;
-use config::consts::{
-    NODE_CONFIG_FILE, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH, added_nodes_dir, logs_dir_add,
-    peppy_data_dir,
-};
+use config::consts::{NODE_CONFIG_FILE, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH, PeppyDirs};
 use config::node::{NodeConfig, NodeConfigParser};
 use git2::Repository;
 use node_stack::{NodeStack, validate_dependency_specs};
@@ -42,6 +39,7 @@ pub async fn listen_for_node_add(
     instance_id: &str,
     node_name: &str,
     node_stack: Arc<NodeStack>,
+    peppy_dirs: PeppyDirs,
 ) -> Result<JoinHandle<Result<()>>> {
     let action = ActionMessenger::expose(
         messenger,
@@ -63,6 +61,7 @@ pub async fn listen_for_node_add(
                 messenger,
                 bound_daemon_node,
                 daemon_instance_id,
+                peppy_dirs,
             )
             .await
         }
@@ -352,8 +351,13 @@ fn copy_node_to_temp_dir(from_dir: &Path) -> Result<(PathBuf, Vec<String>)> {
 /// The archive path follows the format: `<storage_dir>/<node_name>_<tag>.tar.zst`
 ///
 /// Uses zstd compression level 1 (fastest speed).
-fn archive_dir_to_storage(source_dir: &Path, node_name: &str, node_tag: &str) -> Result<PathBuf> {
-    let storage_dir = added_nodes_dir();
+fn archive_dir_to_storage(
+    source_dir: &Path,
+    node_name: &str,
+    node_tag: &str,
+    peppy_dirs: &PeppyDirs,
+) -> Result<PathBuf> {
+    let storage_dir = peppy_dirs.added_nodes_dir();
     std::fs::create_dir_all(&storage_dir)?;
 
     let archive_name = format!("{}_{}.tar.zst", node_name, node_tag);
@@ -460,6 +464,7 @@ struct ProcessNodeAddContext {
     bound_daemon_node: String,
     daemon_instance_id: String,
     node_stack: Arc<NodeStack>,
+    peppy_dirs: PeppyDirs,
     feedback_publisher: TopicPublisher,
     log_file: Arc<StdMutex<File>>,
     log_path: PathBuf,
@@ -660,15 +665,19 @@ fn locate_node_root_dir(extracted_dir: &Path) -> std::result::Result<PathBuf, St
     ))
 }
 
-async fn resolve_http_source(url: &url::Url) -> std::result::Result<ResolvedNodeAddSource, String> {
+async fn resolve_http_source(
+    url: &url::Url,
+    peppy_dirs: PeppyDirs,
+) -> std::result::Result<ResolvedNodeAddSource, String> {
     let url = url.clone();
-    tokio::task::spawn_blocking(move || resolve_http_source_blocking(url))
+    tokio::task::spawn_blocking(move || resolve_http_source_blocking(url, &peppy_dirs))
         .await
         .map_err(|e| format!("Failed to join HTTP download task: {}", e))?
 }
 
 fn resolve_http_source_blocking(
     url: url::Url,
+    peppy_dirs: &PeppyDirs,
 ) -> std::result::Result<ResolvedNodeAddSource, String> {
     match url.scheme() {
         "http" | "https" => {}
@@ -687,7 +696,7 @@ fn resolve_http_source_blocking(
         );
     }
 
-    let http_base_dir = peppy_data_dir().join("http_downloads");
+    let http_base_dir = peppy_dirs.http_downloads_dir();
     std::fs::create_dir_all(&http_base_dir)
         .map_err(|e| format!("Failed to create HTTP download directory: {}", e))?;
 
@@ -730,6 +739,7 @@ fn resolve_http_source_blocking(
 
 async fn resolve_node_add_source(
     goal: &NodeAddGoal,
+    peppy_dirs: &PeppyDirs,
 ) -> std::result::Result<ResolvedNodeAddSource, String> {
     match &goal.source {
         NodeSource::Fs(path) => {
@@ -760,7 +770,7 @@ async fn resolve_node_add_source(
             repo_path,
             repo_ref,
         } => resolve_git_source(repo_url, repo_path, repo_ref.as_deref()).await,
-        NodeSource::Http { url } => resolve_http_source(url).await,
+        NodeSource::Http { url } => resolve_http_source(url, peppy_dirs.clone()).await,
     }
 }
 
@@ -770,6 +780,7 @@ async fn run_node_add_action_loop(
     messenger: MessengerHandle,
     bound_daemon_node: String,
     daemon_instance_id: String,
+    peppy_dirs: PeppyDirs,
 ) -> Result<()> {
     let state = Arc::new(Mutex::new(NodeAddActionState::default()));
 
@@ -784,6 +795,7 @@ async fn run_node_add_action_loop(
                 let messenger = messenger.clone();
                 let bound_daemon_node = bound_daemon_node.clone();
                 let daemon_instance_id = daemon_instance_id.clone();
+                let peppy_dirs = peppy_dirs.clone();
                 move |context| {
                     let feedback_publisher = feedback_publisher.clone();
                     let node_stack = Arc::clone(&node_stack);
@@ -791,6 +803,7 @@ async fn run_node_add_action_loop(
                     let messenger = messenger.clone();
                     let bound_daemon_node = bound_daemon_node.clone();
                     let daemon_instance_id = daemon_instance_id.clone();
+                    let peppy_dirs = peppy_dirs.clone();
 
                     async move {
                         handle_goal_request(
@@ -801,6 +814,7 @@ async fn run_node_add_action_loop(
                             messenger,
                             bound_daemon_node,
                             daemon_instance_id,
+                            peppy_dirs,
                         )
                         .await
                     }
@@ -876,6 +890,7 @@ async fn run_node_add_action_loop(
                             let messenger = messenger.clone();
                             let bound_daemon_node = bound_daemon_node.clone();
                             let daemon_instance_id = daemon_instance_id.clone();
+                            let peppy_dirs = peppy_dirs.clone();
                             move |context| {
                                 let feedback_publisher = feedback_publisher.clone();
                                 let node_stack = Arc::clone(&node_stack);
@@ -883,6 +898,7 @@ async fn run_node_add_action_loop(
                                 let messenger = messenger.clone();
                                 let bound_daemon_node = bound_daemon_node.clone();
                                 let daemon_instance_id = daemon_instance_id.clone();
+                                let peppy_dirs = peppy_dirs.clone();
                                 async move {
                                     handle_goal_request(
                                         context,
@@ -892,6 +908,7 @@ async fn run_node_add_action_loop(
                                         messenger,
                                         bound_daemon_node,
                                         daemon_instance_id,
+                                        peppy_dirs,
                                     )
                                     .await
                                 }
@@ -941,6 +958,7 @@ async fn handle_goal_request(
     messenger: MessengerHandle,
     bound_daemon_node: String,
     daemon_instance_id: String,
+    peppy_dirs: PeppyDirs,
 ) -> PeppyResult<Payload> {
     let sender_instance_id = context.message().instance_id();
     let payload = context.message().payload();
@@ -985,7 +1003,7 @@ async fn handle_goal_request(
         };
     }
 
-    let mut resolved = match resolve_node_add_source(&goal).await {
+    let mut resolved = match resolve_node_add_source(&goal, &peppy_dirs).await {
         Ok(resolved) => resolved,
         Err(error_msg) => {
             let mut state_guard = state.lock().await;
@@ -1025,7 +1043,7 @@ async fn handle_goal_request(
     let node_tag = resolved.node_config.manifest.tag.clone();
 
     // Create log file with timestamp-based filename
-    let log_dir = logs_dir_add();
+    let log_dir = peppy_dirs.logs_dir_add();
     if let Err(e) = std::fs::create_dir_all(&log_dir) {
         let error_msg = format!("Failed to create logs directory: {}", e);
         debug!("Failed to create logs directory {:?}: {}", log_dir, e);
@@ -1076,6 +1094,7 @@ async fn handle_goal_request(
             bound_daemon_node,
             daemon_instance_id,
             node_stack,
+            peppy_dirs,
             feedback_publisher: feedback_publisher_clone,
             log_file,
             log_path: log_path_clone,
@@ -1273,6 +1292,7 @@ async fn process_node_add(
         &working_dir,
         subscribed_interfaces,
         &goal.git_hash,
+        &ctx.peppy_dirs,
     ) {
         return NodeAddResult::failure(
             &ctx.log_path,
@@ -1294,12 +1314,16 @@ async fn process_node_add(
     }
 
     // Archive the working directory to the peppy nodes storage.
-    let archive_path = match archive_dir_to_storage(&working_dir, &node_name, &node_tag) {
-        Ok(path) => path,
-        Err(e) => {
-            return NodeAddResult::failure(&ctx.log_path, format!("Failed to archive node: {}", e));
-        }
-    };
+    let archive_path =
+        match archive_dir_to_storage(&working_dir, &node_name, &node_tag, &ctx.peppy_dirs) {
+            Ok(path) => path,
+            Err(e) => {
+                return NodeAddResult::failure(
+                    &ctx.log_path,
+                    format!("Failed to archive node: {}", e),
+                );
+            }
+        };
 
     // Working dir is no longer needed; clean it up immediately.
     drop(working_dir_cleanup);
@@ -1325,7 +1349,7 @@ async fn process_node_add(
     if let Some(previous_snapshot_path) = previous_snapshot_path
         && previous_snapshot_path != archive_path
     {
-        let storage_dir = added_nodes_dir();
+        let storage_dir = ctx.peppy_dirs.added_nodes_dir();
         if previous_snapshot_path.starts_with(&storage_dir) {
             if previous_snapshot_path.is_dir() {
                 std::fs::remove_dir_all(&previous_snapshot_path).ok();

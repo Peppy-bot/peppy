@@ -3,7 +3,7 @@ use crate::Result;
 use crate::encoding::{NodeStartFeedback, NodeStartGoal, NodeStartGoalResponse, NodeStartResult};
 use crate::names;
 use chrono::Local;
-use config::consts::{RUNTIME_CONFIG_VAR_NAME, instances_dir, logs_dir_start, runtime_config_dir};
+use config::consts::{PeppyDirs, RUNTIME_CONFIG_VAR_NAME};
 use config::node::{Name, PeppygenLanguage};
 use config::runtime::RuntimeConfig;
 use config::{AnyType, NodeArguments};
@@ -42,6 +42,7 @@ pub async fn listen_for_node_start(
     node_stack: Arc<NodeStack>,
     node_startup_timeout: Duration,
     node_start_health_timeout: Duration,
+    peppy_dirs: PeppyDirs,
 ) -> Result<JoinHandle<Result<()>>> {
     let action = ActionMessenger::expose(
         messenger,
@@ -65,6 +66,7 @@ pub async fn listen_for_node_start(
             caller_instance_id,
             node_startup_timeout,
             node_start_health_timeout,
+            peppy_dirs,
         )
         .await
     });
@@ -304,6 +306,7 @@ async fn run_node_start_action_loop(
     caller_instance_id: String,
     node_startup_timeout: Duration,
     node_start_health_timeout: Duration,
+    peppy_dirs: PeppyDirs,
 ) -> Result<()> {
     let state = Arc::new(Mutex::new(NodeStartActionState::default()));
 
@@ -317,6 +320,7 @@ async fn run_node_start_action_loop(
                 let daemon_node_name = daemon_node_name.clone();
                 let caller_instance_id = caller_instance_id.clone();
                 let state = Arc::clone(&state);
+                let peppy_dirs = peppy_dirs.clone();
                 move |context| {
                     let feedback_publisher = feedback_publisher.clone();
                     let node_stack = Arc::clone(&node_stack);
@@ -324,6 +328,7 @@ async fn run_node_start_action_loop(
                     let daemon_node_name = daemon_node_name.clone();
                     let caller_instance_id = caller_instance_id.clone();
                     let state = Arc::clone(&state);
+                    let peppy_dirs = peppy_dirs.clone();
                     async move {
                         handle_goal_request(
                             context,
@@ -335,6 +340,7 @@ async fn run_node_start_action_loop(
                             node_startup_timeout,
                             node_start_health_timeout,
                             state,
+                            peppy_dirs,
                         )
                         .await
                     }
@@ -404,6 +410,7 @@ async fn run_node_start_action_loop(
                             let daemon_node_name = daemon_node_name.clone();
                             let caller_instance_id = caller_instance_id.clone();
                             let state = Arc::clone(&state);
+                            let peppy_dirs = peppy_dirs.clone();
                             move |context| {
                                 let feedback_publisher = feedback_publisher.clone();
                                 let node_stack = Arc::clone(&node_stack);
@@ -411,6 +418,7 @@ async fn run_node_start_action_loop(
                                 let daemon_node_name = daemon_node_name.clone();
                                 let caller_instance_id = caller_instance_id.clone();
                                 let state = Arc::clone(&state);
+                                let peppy_dirs = peppy_dirs.clone();
                                 async move {
                                     handle_goal_request(
                                         context,
@@ -422,6 +430,7 @@ async fn run_node_start_action_loop(
                                         node_startup_timeout,
                                         node_start_health_timeout,
                                         state,
+                                        peppy_dirs,
                                     )
                                     .await
                                 }
@@ -470,6 +479,7 @@ async fn handle_goal_request(
     node_startup_timeout: Duration,
     node_start_health_timeout: Duration,
     state: Arc<Mutex<NodeStartActionState>>,
+    peppy_dirs: PeppyDirs,
 ) -> PeppyResult<Payload> {
     let sender_instance_id = context.message().instance_id().to_string();
     let payload = context.message().payload();
@@ -541,7 +551,7 @@ async fn handle_goal_request(
     );
 
     // Create log file for stdout/stderr
-    let log_dir = logs_dir_start();
+    let log_dir = peppy_dirs.logs_dir_start();
     if let Err(e) = std::fs::create_dir_all(&log_dir) {
         let error_msg = format!("Failed to create logs directory: {}", e);
         debug!("Failed to create logs directory {:?}: {}", log_dir, e);
@@ -590,6 +600,7 @@ async fn handle_goal_request(
             node_start_health_timeout,
             feedback_publisher,
             log_file,
+            peppy_dirs,
         )
         .await;
         let mut state_guard = state_clone.lock().await;
@@ -618,6 +629,7 @@ async fn process_node_start(
     node_start_health_timeout: Duration,
     feedback_publisher: TopicPublisher,
     log_file: Arc<StdMutex<File>>,
+    peppy_dirs: PeppyDirs,
 ) -> NodeStartResult {
     let NodeStartGoal {
         runtime_config_json5,
@@ -679,7 +691,8 @@ async fn process_node_start(
     }
 
     // Extract node archive to instances directory
-    let instance_dir = match extract_node_archive(entity.root_path(), &node_name, &tag) {
+    let instance_dir = match extract_node_archive(entity.root_path(), &node_name, &tag, &peppy_dirs)
+    {
         Ok(dir) => dir,
         Err(e) => {
             debug!("Failed to extract node archive: {}", e);
@@ -693,6 +706,7 @@ async fn process_node_start(
         &runtime_config_json5,
         &env_vars,
         &log_file,
+        &peppy_dirs,
     ) {
         Ok(child) => child,
         Err(e) => {
@@ -964,10 +978,11 @@ fn extract_node_archive(
     archive_path: &std::path::Path,
     node_name: &str,
     node_tag: &str,
+    peppy_dirs: &PeppyDirs,
 ) -> std::result::Result<std::path::PathBuf, String> {
     let instance_id = generate_random_id();
     let instance_dir_name = format!("{}_{}_{}", node_name, node_tag, instance_id);
-    let instance_dir = instances_dir().join(&instance_dir_name);
+    let instance_dir = peppy_dirs.instances_dir().join(&instance_dir_name);
 
     std::fs::create_dir_all(&instance_dir)
         .map_err(|e| format!("Failed to create instance directory: {}", e))?;
@@ -985,6 +1000,7 @@ pub fn start_node(
     runtime_config_json5: &str,
     env_vars: &[(String, String)],
     log_file: &Arc<StdMutex<File>>,
+    peppy_dirs: &PeppyDirs,
 ) -> std::io::Result<Child> {
     let manifest = &entity.config().manifest;
 
@@ -1020,7 +1036,7 @@ pub fn start_node(
     // Write runtime config to a unique file per spawned process.
     // Using a shared path can cause cross-test and cross-instance races where a node reads the
     // wrong config (instance_id/port), leading to hangs waiting for ready/health responses.
-    let runtime_dir = runtime_config_dir();
+    let runtime_dir = peppy_dirs.runtime_config_dir();
     std::fs::create_dir_all(&runtime_dir)?;
     let counter = RUNTIME_CONFIG_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
     let pid = std::process::id();

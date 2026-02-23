@@ -15,7 +15,7 @@ use crate::helpers::http::{create_http_bundle, sha256_checksum};
 #[test]
 #[ignore = "requires binding a local HTTP server (may be blocked in sandboxed test environments)"]
 fn http_bundle_is_downloaded_and_resolved() {
-    let _data_dir = init_test_data_dir();
+    let (_data_dir, peppy_dirs) = init_test_data_dir();
     let temp_dir = tempdir().expect("temp dir");
     let server = Server::run();
 
@@ -45,7 +45,8 @@ fn http_bundle_is_downloaded_and_resolved() {
         launcher_config,
     );
 
-    let plan = LaunchPlan::from_launch_file(daemon_node_config(), &launch_file).expect("plan");
+    let plan = LaunchPlan::from_launch_file(daemon_node_config(), &launch_file, &peppy_dirs)
+        .expect("plan");
     let stack = plan.node_stack();
     let report = plan.report();
 
@@ -68,7 +69,7 @@ fn http_bundle_is_downloaded_and_resolved() {
 #[test]
 #[ignore = "requires binding a local HTTP server (may be blocked in sandboxed test environments)"]
 fn http_bundle_is_cloned_and_same_tag_updates_code() {
-    let _data_dir = init_test_data_dir();
+    let (_data_dir, peppy_dirs) = init_test_data_dir();
     let temp_dir = tempdir().expect("temp dir");
     let server = Server::run();
 
@@ -109,7 +110,8 @@ fn http_bundle_is_cloned_and_same_tag_updates_code() {
         launcher_config,
     );
 
-    let plan = LaunchPlan::from_launch_file(daemon_node_config(), &launch_file).expect("plan");
+    let plan = LaunchPlan::from_launch_file(daemon_node_config(), &launch_file, &peppy_dirs)
+        .expect("plan");
     assert_eq!(plan.node_stack().len(), 2, "daemon + uvc_camera");
     let planned = plan
         .report()
@@ -132,7 +134,8 @@ fn http_bundle_is_cloned_and_same_tag_updates_code() {
     let launcher_config = PeppyLauncher { deployments };
     write_config(launch_file.clone(), launcher_config);
 
-    let plan = LaunchPlan::from_launch_file(daemon_node_config(), &launch_file).expect("plan");
+    let plan = LaunchPlan::from_launch_file(daemon_node_config(), &launch_file, &peppy_dirs)
+        .expect("plan");
     assert_eq!(plan.node_stack().len(), 2, "daemon + uvc_camera");
     let planned = plan
         .report()
