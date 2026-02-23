@@ -115,9 +115,10 @@ fn git_repo_missing_tag_is_unresolvable() {
 
     let expected = format!("git:{}::{}@v2.0", git_repo_path, lidar_repo_path);
     assert_eq!(deployment, &expected);
+    let reason_lower = reason.to_lowercase();
     assert!(
-        reason.contains("Cannot find the node"),
-        "expected missing node reason, got: {}",
+        reason.contains("v2.0") && reason_lower.contains("not found"),
+        "expected surfaced git missing-tag reason, got: {}",
         reason
     );
 
