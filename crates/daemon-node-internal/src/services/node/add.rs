@@ -367,6 +367,8 @@ fn archive_dir_to_storage(
     let file = File::create(&tmp_path)?;
     let encoder = ZstdEncoder::new(file, 1)?;
     let mut tar_builder = tar::Builder::new(encoder);
+    // DO NOT follow symlinks, otherwise it could create unintended behavior for the user who modify files in the path pointed by the symlink
+    tar_builder.follow_symlinks(false);
     tar_builder.append_dir_all(".", source_dir)?;
     let encoder = tar_builder.into_inner()?;
     encoder.finish()?;
