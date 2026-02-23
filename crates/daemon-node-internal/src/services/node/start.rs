@@ -1,4 +1,4 @@
-use super::{extract_tar_zst, generate_random_id};
+use super::extract_tar_zst;
 use crate::Result;
 use crate::encoding::{NodeStartFeedback, NodeStartGoal, NodeStartGoalResponse, NodeStartResult};
 use crate::names;
@@ -647,7 +647,7 @@ async fn process_node_start(
 
     // Extract node archive to instances directory
     let instance_dir =
-        match extract_node_archive(entity.root_path(), &node_name, &tag, &ctx.action.peppy_dirs) {
+        match extract_node_archive(entity.root_path(), instance_id_str, &ctx.action.peppy_dirs) {
             Ok(dir) => dir,
             Err(e) => {
                 debug!("Failed to extract node archive: {}", e);
@@ -929,8 +929,7 @@ async fn kill_and_report_error(
 /// Returns the path to the extracted instance directory.
 fn extract_node_archive(
     archive_path: &std::path::Path,
-    node_name: &str,
-    node_tag: &str,
+    instance_id: &str,
     peppy_dirs: &PeppyDirs,
 ) -> std::result::Result<std::path::PathBuf, String> {
     let instances_dir = peppy_dirs.instances_dir();
@@ -942,9 +941,7 @@ fn extract_node_archive(
         )
     })?;
 
-    let instance_id = generate_random_id();
-    let instance_dir_name = format!("{}_{}_{}", node_name, node_tag, instance_id);
-    let instance_dir = instances_dir.join(&instance_dir_name);
+    let instance_dir = instances_dir.join(instance_id);
 
     std::fs::create_dir(&instance_dir).map_err(|e| {
         format!(
