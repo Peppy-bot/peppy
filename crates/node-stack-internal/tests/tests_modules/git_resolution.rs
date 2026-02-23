@@ -11,7 +11,7 @@ use crate::helpers::git::{create_simple_git_repo, push_git_commit};
 
 #[test]
 fn git_repo_is_cloned_and_resolved() {
-    let _data_dir = init_test_data_dir();
+    let (_data_dir, peppy_dirs) = init_test_data_dir();
     let temp_dir = tempdir().expect("temp dir");
     let manifest_content = r#"{
             schema_version: 1,
@@ -32,7 +32,8 @@ fn git_repo_is_cloned_and_resolved() {
         launcher_config,
     );
 
-    let plan = LaunchPlan::from_launch_file(daemon_node_config(), &launch_file).expect("plan");
+    let plan = LaunchPlan::from_launch_file(daemon_node_config(), &launch_file, &peppy_dirs)
+        .expect("plan");
     let stack = plan.node_stack();
     let report = plan.report();
 
@@ -53,7 +54,7 @@ fn git_repo_is_cloned_and_resolved() {
 /// The deployment must remain unresolved when the requested tag is missing.
 #[test]
 fn git_repo_missing_tag_is_unresolvable() {
-    let _data_dir = init_test_data_dir();
+    let (_data_dir, peppy_dirs) = init_test_data_dir();
     let git_repo_dir = TempDir::new().expect("git repo temp dir");
     let git_repo_path = test_helpers::create_nodes_git_repo(git_repo_dir.path());
     let git_repo_path = git_repo_path.to_str().expect("utf-8 git repo path");
@@ -82,7 +83,8 @@ fn git_repo_missing_tag_is_unresolvable() {
     let launch_file =
         write_config_str(project_root.join("peppy_launcher.json5"), &launcher_content);
 
-    let plan = LaunchPlan::from_launch_file(daemon_node_config(), launch_file).expect("plan");
+    let plan =
+        LaunchPlan::from_launch_file(daemon_node_config(), launch_file, &peppy_dirs).expect("plan");
     let stack = plan.node_stack();
     let report = plan.report();
 
@@ -119,7 +121,7 @@ fn git_repo_missing_tag_is_unresolvable() {
         reason
     );
 
-    let added_nodes_dir = config::consts::added_nodes_dir();
+    let added_nodes_dir = peppy_dirs.added_nodes_dir();
     assert!(
         added_nodes_dir.is_dir(),
         "nodes cache dir {:?} should be created even on failure",
@@ -129,7 +131,7 @@ fn git_repo_missing_tag_is_unresolvable() {
 
 #[test]
 fn git_repo_is_cloned_and_same_tag_updates_code() {
-    let _data_dir = init_test_data_dir();
+    let (_data_dir, peppy_dirs) = init_test_data_dir();
     let temp_dir = tempdir().expect("temp dir");
     let manifest_v1 = r#"{
             schema_version: 1,
@@ -150,7 +152,8 @@ fn git_repo_is_cloned_and_same_tag_updates_code() {
         launcher_config,
     );
 
-    let plan = LaunchPlan::from_launch_file(daemon_node_config(), &launch_file).expect("plan");
+    let plan = LaunchPlan::from_launch_file(daemon_node_config(), &launch_file, &peppy_dirs)
+        .expect("plan");
     assert_eq!(plan.node_stack().len(), 2, "daemon + uvc_camera");
     let deployment = plan
         .report()
@@ -186,7 +189,8 @@ fn git_repo_is_cloned_and_same_tag_updates_code() {
     repo.tag("1.0.0", &commit, &signature, "tag", true)
         .expect("retag commit");
 
-    let plan = LaunchPlan::from_launch_file(daemon_node_config(), &launch_file).expect("plan");
+    let plan = LaunchPlan::from_launch_file(daemon_node_config(), &launch_file, &peppy_dirs)
+        .expect("plan");
     assert_eq!(plan.node_stack().len(), 2, "daemon + uvc_camera");
     let deployment = plan
         .report()

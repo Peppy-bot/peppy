@@ -202,7 +202,9 @@ fn generate_parameters_struct() {
 
     let mut generator = PythonGenerator::new();
     generator.set_parameters(node_config.parameters);
-    generator.build(&output_dir).unwrap();
+    generator
+        .build(&output_dir, &config::consts::PeppyDirs::default())
+        .unwrap();
 
     let parameters_file = output_dir.join("peppygen").join("parameters.py");
     assert!(
@@ -278,7 +280,9 @@ fn generate_parameters_struct_avoids_nested_class_name_collisions() {
 
     let mut generator = PythonGenerator::new();
     generator.set_parameters(node_config.parameters);
-    generator.build(&output_dir).unwrap();
+    generator
+        .build(&output_dir, &config::consts::PeppyDirs::default())
+        .unwrap();
 
     let parameters_file = output_dir.join("peppygen").join("parameters.py");
     assert!(
@@ -318,7 +322,9 @@ fn generate_empty_parameters_struct() {
 
     let generator = PythonGenerator::new();
     // Don't set any parameters - use the default empty parameters
-    generator.build(&output_dir).unwrap();
+    generator
+        .build(&output_dir, &config::consts::PeppyDirs::default())
+        .unwrap();
 
     let parameters_file = output_dir.join("peppygen").join("parameters.py");
     assert!(
@@ -385,7 +391,9 @@ fn reject_python_parameters_with_unsupported_spec_type() {
 
     let mut generator = PythonGenerator::new();
     generator.set_parameters(node_config.parameters);
-    let err = generator.build(&output_dir).unwrap_err();
+    let err = generator
+        .build(&output_dir, &config::consts::PeppyDirs::default())
+        .unwrap_err();
 
     match err {
         Error::UnsupportedParameterSpecType { path, kind } => {
@@ -411,7 +419,9 @@ fn reject_python_parameters_with_top_level_unsupported_spec_type() {
 
     let mut generator = PythonGenerator::new();
     generator.set_parameters(node_config.parameters);
-    let err = generator.build(&output_dir).unwrap_err();
+    let err = generator
+        .build(&output_dir, &config::consts::PeppyDirs::default())
+        .unwrap_err();
 
     match err {
         Error::UnsupportedParameterSpecType { path, kind } => {
@@ -435,7 +445,9 @@ fn reject_python_parameters_with_unknown_type_name() {
 
     let mut generator = PythonGenerator::new();
     generator.set_parameters(node_config.parameters);
-    let err = generator.build(&output_dir).unwrap_err();
+    let err = generator
+        .build(&output_dir, &config::consts::PeppyDirs::default())
+        .unwrap_err();
 
     match err {
         Error::UnsupportedParameterTypeName { path, type_name } => {

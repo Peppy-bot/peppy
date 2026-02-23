@@ -972,7 +972,9 @@ fn clippy_single_exposed_action_empty_goal_request() {
         .add_subscribed_action(&subscribed_action2, &subscribed_action2_messages)
         .unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);
-    generator.build(&output_dir).unwrap();
+    generator
+        .build(&output_dir, &config::consts::PeppyDirs::default())
+        .unwrap();
     fs::remove_file(output_config).unwrap();
 
     let clippy_output = Command::new("cargo")
@@ -1071,7 +1073,9 @@ fn compile_lib_with_exposed_and_subscribed_actions() {
         .add_subscribed_action(&subscribed_action2, &subscribed_action2_messages)
         .unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);
-    generator.build(&output_dir).unwrap();
+    generator
+        .build(&output_dir, &config::consts::PeppyDirs::default())
+        .unwrap();
     fs::remove_file(output_config).unwrap();
 
     let cargo_output = Command::new("cargo")
@@ -1204,7 +1208,9 @@ fn clippy_subscribed_action_empty_goal_request() {
         .add_subscribed_action(&subscribed_action, &action_messages)
         .unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);
-    generator.build(&output_dir).unwrap();
+    generator
+        .build(&output_dir, &config::consts::PeppyDirs::default())
+        .unwrap();
     fs::remove_file(output_config).unwrap();
 
     let clippy_output = Command::new("cargo")

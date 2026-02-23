@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 use config::consts::{
-    DEFAULT_MESSAGING_HOST, NODE_CONFIG_FILE, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH,
+    DEFAULT_MESSAGING_HOST, NODE_CONFIG_FILE, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH, PeppyDirs,
 };
 use config::node::{PeppygenLanguage, QoSProfile};
 use daemon_node::encoding::{
@@ -33,12 +33,10 @@ impl<T> Drop for AbortOnDrop<T> {
     }
 }
 
-/// Serializes test execution so that only one test at a time holds the peppy data dir override.
-/// Each `StartedDaemonNode` holds the lock guard, releasing it on drop.
-static DATA_DIR_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
-fn init_test_data_dir() -> TempDir {
-    tempfile::tempdir().expect("test data dir")
+fn init_test_data_dir() -> (TempDir, PeppyDirs) {
+    let dir = tempfile::tempdir().expect("test data dir");
+    let peppy_dirs = PeppyDirs::new(dir.path());
+    (dir, peppy_dirs)
 }
 
 pub const CALLER_INSTANCE_ID: &str = "caller_instance";
@@ -493,8 +491,15 @@ pub fn init_test_node_project(node_name: &str, node_tag: &str, build_project: bo
     init_cargo_project(&node_dir, node_name);
     write_test_node_files(&node_dir, node_name, node_tag);
 
-    generator::generate_peppygen_lib(PeppygenLanguage::Rust, &node_dir, Vec::new(), "test-hash")
-        .expect("failed to generate peppygen for test node");
+    let peppy_dirs = PeppyDirs::default();
+    generator::generate_peppygen_lib(
+        PeppygenLanguage::Rust,
+        &node_dir,
+        Vec::new(),
+        "test-hash",
+        &peppy_dirs,
+    )
+    .expect("failed to generate peppygen for test node");
 
     if build_project {
         build_cargo_project(&node_dir);
@@ -631,13 +636,13 @@ pub struct StartedDaemonNode {
     pub caller_handle: MessengerHandle,
     pub daemon_node_name: String,
     pub node_stack: NodeStack,
+    pub peppy_dirs: PeppyDirs,
     pub task: AbortOnDrop<daemon_node::Result<()>>,
     _data_dir: TempDir,
-    _data_dir_guard: tokio::sync::MutexGuard<'static, ()>,
 }
 
 pub async fn start_daemon_node_with_mock_messenger() -> StartedDaemonNode {
-    let data_dir = init_test_data_dir();
+    let (data_dir, peppy_dirs) = init_test_data_dir();
     let shared_messenger = create_mock_messenger().await;
     let node_startup_timeout = Duration::from_secs(10);
     let node_start_health_timeout = Duration::from_secs(30);
@@ -646,12 +651,13 @@ pub async fn start_daemon_node_with_mock_messenger() -> StartedDaemonNode {
         node_startup_timeout,
         node_start_health_timeout,
         data_dir,
+        peppy_dirs,
     )
     .await
 }
 
 pub async fn start_daemon_node_with_real_messenger() -> StartedDaemonNode {
-    let data_dir = init_test_data_dir();
+    let (data_dir, peppy_dirs) = init_test_data_dir();
     let mut instance = pmi::ZenohAdapter::start_router_ephemeral(DEFAULT_MESSAGING_HOST, None)
         .await
         .expect("failed to start zenoh router for test");
@@ -668,6 +674,7 @@ pub async fn start_daemon_node_with_real_messenger() -> StartedDaemonNode {
         node_startup_timeout,
         node_start_health_timeout,
         data_dir,
+        peppy_dirs,
     )
     .await
 }
@@ -675,7 +682,7 @@ pub async fn start_daemon_node_with_real_messenger() -> StartedDaemonNode {
 pub async fn start_daemon_node_with_health_timeout(
     node_start_health_timeout: Duration,
 ) -> StartedDaemonNode {
-    let data_dir = init_test_data_dir();
+    let (data_dir, peppy_dirs) = init_test_data_dir();
     let shared_messenger = create_mock_messenger().await;
     let node_startup_timeout = Duration::from_secs(10);
     start_daemon_node_with_messenger(
@@ -683,6 +690,7 @@ pub async fn start_daemon_node_with_health_timeout(
         node_startup_timeout,
         node_start_health_timeout,
         data_dir,
+        peppy_dirs,
     )
     .await
 }
@@ -692,10 +700,8 @@ async fn start_daemon_node_with_messenger(
     node_startup_timeout: Duration,
     node_start_health_timeout: Duration,
     data_dir: TempDir,
+    peppy_dirs: PeppyDirs,
 ) -> StartedDaemonNode {
-    let data_dir_guard = DATA_DIR_LOCK.lock().await;
-    config::consts::set_peppy_data_dir_override(data_dir.path().to_path_buf());
-
     let caller_handle = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
     let node_arguments = DaemonNodeArguments {
         node_startup_timeout,
@@ -707,6 +713,7 @@ async fn start_daemon_node_with_messenger(
         Some("test_daemon_node"),
         node_arguments,
         root_dir,
+        peppy_dirs.clone(),
     );
     let daemon_node_name = daemon_node.node_name().to_string();
     let node_stack = daemon_node.node_stack().clone();
@@ -723,8 +730,8 @@ async fn start_daemon_node_with_messenger(
         caller_handle,
         daemon_node_name,
         node_stack,
+        peppy_dirs,
         task: AbortOnDrop(task),
         _data_dir: data_dir,
-        _data_dir_guard: data_dir_guard,
     }
 }

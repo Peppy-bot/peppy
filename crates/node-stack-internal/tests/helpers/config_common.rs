@@ -1,14 +1,15 @@
 use config::{
+    consts::PeppyDirs,
     node::{NodeConfig, NodeConfigParser},
     peppy_config::{Deployment, DeploymentInstance, DeploymentSource, Name, PeppyLauncher},
 };
 use std::{fs, path::PathBuf};
 use tempfile::TempDir;
 
-pub fn init_test_data_dir() -> TempDir {
+pub fn init_test_data_dir() -> (TempDir, PeppyDirs) {
     let dir = tempfile::tempdir().expect("test data dir");
-    config::consts::set_peppy_data_dir_override(dir.path().to_path_buf());
-    dir
+    let peppy_dirs = PeppyDirs::new(dir.path());
+    (dir, peppy_dirs)
 }
 
 /// Returns a minimal daemon/root node configuration for tests.

@@ -1,5 +1,6 @@
 use super::serve::{ServeAsyncCommand, ServeAsyncHandle};
 use crate::error::Error;
+use config::consts::PeppyDirs;
 use daemon_node::{DaemonNode, DaemonNodeArguments};
 use pmi::Messenger;
 use std::path::PathBuf;
@@ -26,8 +27,14 @@ impl DaemonNodeRunner {
             node_startup_timeout,
             node_start_health_timeout,
         };
-        let daemon_node =
-            DaemonNode::new(messenger, daemon_name.as_deref(), node_arguments, root_dir);
+        let peppy_dirs = PeppyDirs::default();
+        let daemon_node = DaemonNode::new(
+            messenger,
+            daemon_name.as_deref(),
+            node_arguments,
+            root_dir,
+            peppy_dirs,
+        );
         Self {
             daemon_node,
             messaging_ready,

@@ -1,5 +1,5 @@
 use crate::daemon_state::DaemonState;
-use config::consts::PEPPYGEN_OUTPUT_PATH;
+use config::consts::{PEPPYGEN_OUTPUT_PATH, PeppyDirs};
 use config::node::NodeConfigParser;
 use daemon_node::{DaemonNode, DaemonNodeArguments};
 use pmi::{Messenger, MessengerBackend, MockAdapter, MockInstance, ZenohAdapter, ZenohdInstance};
@@ -133,6 +133,7 @@ impl ServeCommandEmulation {
         let daemon_state_path = DaemonState::state_file_in(temp_dir.path());
         let shared_messenger = Arc::new(TokioMutex::new(messenger));
 
+        let peppy_dirs = PeppyDirs::new(temp_dir.path());
         let daemon_node = DaemonNode::new(
             Arc::clone(&shared_messenger),
             Some("test-daemon"),
@@ -141,6 +142,7 @@ impl ServeCommandEmulation {
                 node_start_health_timeout: Duration::from_secs(30),
             },
             temp_dir.path().to_path_buf(),
+            peppy_dirs,
         );
         let daemon_node_name = daemon_node.node_name().to_string();
 

@@ -6,7 +6,6 @@ use common::{
     start_daemon_node_with_health_timeout, start_daemon_node_with_mock_messenger,
     start_daemon_node_with_real_messenger, write_peppy_json5,
 };
-use config::consts::logs_dir_start;
 use config::node::Name as NodeName;
 use config::peppy_config::Name;
 use config::runtime::{NodeInstance, RuntimeConfig};
@@ -552,7 +551,10 @@ async fn listen_for_node_start_writes_log_file() {
         start_response.goal_response.accepted,
         "goal should be accepted"
     );
-    let expected_log_path = logs_dir_start().join(format!("{}.log", TARGET_INSTANCE_ID));
+    let expected_log_path = started
+        .peppy_dirs
+        .logs_dir_start()
+        .join(format!("{}.log", TARGET_INSTANCE_ID));
     assert_eq!(
         start_response.goal_response.log_path, expected_log_path,
         "goal response log_path should match expected path"

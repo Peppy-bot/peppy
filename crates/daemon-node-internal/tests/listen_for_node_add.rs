@@ -4,7 +4,7 @@ use common::{
     AbortOnDrop, CALLER_INSTANCE_ID, NodeAddSource, TEST_GIT_HASH, send_node_add_and_wait,
     send_node_add_and_wait_with_env, start_daemon_node_with_mock_messenger, write_peppy_json5,
 };
-use config::consts::{NODE_CONFIG_FILE, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH, logs_dir_add};
+use config::consts::{NODE_CONFIG_FILE, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH};
 use config::node::QoSProfile;
 use config::test_helpers;
 use daemon_node::encoding::{NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse};
@@ -1541,7 +1541,7 @@ async fn listen_for_node_add_writes_log_file() {
     );
 
     // Verify the log file is in the expected directory
-    let log_dir = logs_dir_add();
+    let log_dir = started_daemon.peppy_dirs.logs_dir_add();
     assert!(
         add_result.log_path.starts_with(&log_dir),
         "log file should be in logs_dir_add(), expected to start with {:?}, got {:?}",

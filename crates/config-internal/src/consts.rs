@@ -33,18 +33,10 @@ pub enum AppEnv {
     Prod,
 }
 
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 static APP_ENV: OnceLock<AppEnv> = OnceLock::new();
-static PEPPY_DATA_DIR_OVERRIDE: std::sync::Mutex<Option<std::path::PathBuf>> =
-    std::sync::Mutex::new(None);
-
-/// Overrides the peppy data directory for the current process.
-///
-/// This is primarily intended for tests to isolate filesystem state.
-pub fn set_peppy_data_dir_override(path: std::path::PathBuf) {
-    *PEPPY_DATA_DIR_OVERRIDE.lock().expect("peppy data dir lock") = Some(path);
-}
 
 /// Sets the application environment once. Subsequent calls are ignored.
 pub fn set_app_env(env: AppEnv) {
@@ -56,70 +48,85 @@ pub fn app_env() -> AppEnv {
     *APP_ENV.get_or_init(|| AppEnv::Dev)
 }
 
-/// Returns the base peppy data directory.
-/// Can be overridden with PEPPY_DATA_DIR environment variable.
-/// In production: ~/.peppy
-/// In development: /tmp/.peppy
-pub fn peppy_data_dir() -> std::path::PathBuf {
-    if let Some(path) = PEPPY_DATA_DIR_OVERRIDE
-        .lock()
-        .expect("peppy data dir lock")
-        .as_ref()
-    {
-        return path.clone();
+/// Directory layout for peppy data (added nodes, instances, logs, caches).
+///
+/// Threading this struct through production code instead of using a global static
+/// ensures tests can run in parallel with fully isolated filesystem state.
+#[derive(Clone, Debug)]
+pub struct PeppyDirs {
+    root: PathBuf,
+}
+
+impl PeppyDirs {
+    /// Creates a `PeppyDirs` rooted at the given path.
+    pub fn new(root: impl Into<PathBuf>) -> Self {
+        Self { root: root.into() }
     }
 
-    // Check for environment variable override first
-    if let Some(override_path) = std::env::var_os("PEPPY_DATA_DIR") {
-        return std::path::PathBuf::from(override_path);
+    pub fn root(&self) -> &Path {
+        &self.root
     }
 
-    match app_env() {
-        AppEnv::Prod => dirs::home_dir()
-            .unwrap_or_else(std::env::temp_dir)
-            .join(".peppy"),
-        AppEnv::Dev => std::env::temp_dir().join(".peppy"),
+    /// Archived node snapshots from `node add`.
+    pub fn added_nodes_dir(&self) -> PathBuf {
+        self.root.join("added_nodes")
+    }
+
+    /// Extracted archives for running node instances.
+    pub fn instances_dir(&self) -> PathBuf {
+        self.root.join("instances")
+    }
+
+    /// Log directory for `node add` operations.
+    pub fn logs_dir_add(&self) -> PathBuf {
+        self.root.join("logs").join("add")
+    }
+
+    /// Log directory for `node start` operations.
+    pub fn logs_dir_start(&self) -> PathBuf {
+        self.root.join("logs").join("start")
+    }
+
+    /// Log directory for `stack launch` operations.
+    pub fn logs_dir_launch(&self) -> PathBuf {
+        self.root.join("logs").join("launch")
+    }
+
+    /// Runtime configuration directory.
+    pub fn runtime_config_dir(&self) -> PathBuf {
+        self.root.join("runtime")
+    }
+
+    /// Temporary download directory for HTTP-sourced node archives.
+    pub fn http_downloads_dir(&self) -> PathBuf {
+        self.root.join("http_downloads")
+    }
+
+    /// Shared Rust crate cache directory for a given cache key.
+    pub fn rust_libs_cache_dir(&self, cache_key: &str) -> PathBuf {
+        self.root.join("libs").join("rust").join(cache_key)
+    }
+
+    /// Shared Python library cache directory for a given cache key.
+    pub fn python_libs_cache_dir(&self, cache_key: &str) -> PathBuf {
+        self.root.join("libs").join("python").join(cache_key)
     }
 }
 
-/// Returns the added nodes directory (archived node snapshots from `node add`).
-/// In production: ~/.peppy/added_nodes
-/// In development: /tmp/.peppy/added_nodes
-pub fn added_nodes_dir() -> std::path::PathBuf {
-    peppy_data_dir().join("added_nodes")
-}
-
-/// Returns the node instances directory (extracted archives for running nodes).
-/// In production: ~/.peppy/instances
-/// In development: /tmp/.peppy/instances
-pub fn instances_dir() -> std::path::PathBuf {
-    peppy_data_dir().join("instances")
-}
-
-/// Returns the add logs cache directory.
-/// In production: ~/.peppy/logs/add
-/// In development: /tmp/.peppy/logs/add
-pub fn logs_dir_add() -> std::path::PathBuf {
-    peppy_data_dir().join("logs").join("add")
-}
-
-/// Returns the start logs cache directory.
-/// In production: ~/.peppy/logs/start
-/// In development: /tmp/.peppy/logs/start
-pub fn logs_dir_start() -> std::path::PathBuf {
-    peppy_data_dir().join("logs").join("start")
-}
-
-/// Returns the launch logs cache directory.
-/// In production: ~/.peppy/logs/launch
-/// In development: /tmp/.peppy/logs/launch
-pub fn logs_dir_launch() -> std::path::PathBuf {
-    peppy_data_dir().join("logs").join("launch")
-}
-
-/// Returns the runtime config directory path.
-pub fn runtime_config_dir() -> std::path::PathBuf {
-    peppy_data_dir().join("runtime")
+/// Uses the standard application data directory.
+///
+/// - Production: `~/.peppy`
+/// - Development: `/tmp/.peppy`
+impl Default for PeppyDirs {
+    fn default() -> Self {
+        let root = match app_env() {
+            AppEnv::Prod => dirs::home_dir()
+                .unwrap_or_else(std::env::temp_dir)
+                .join(".peppy"),
+            AppEnv::Dev => std::env::temp_dir().join(".peppy"),
+        };
+        Self { root }
+    }
 }
 
 #[cfg(test)]
