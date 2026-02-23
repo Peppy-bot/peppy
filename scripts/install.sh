@@ -134,6 +134,20 @@ __wrap__() {
         exit 1
     fi
 
+    # Apptainer requires Lima on macOS to provide a Linux VM
+    if [ "$PLATFORM" = "apple-darwin" ]; then
+        if ! command -v limactl >/dev/null 2>&1; then
+            echo "" >&2
+            echo "error: peppy requires Lima to run containers on macOS." >&2
+            echo "       Lima provides a lightweight Linux VM for running apptainer." >&2
+            echo "" >&2
+            echo "       Install Lima with:  brew install lima" >&2
+            echo "       Then retry:         curl -fsSL https://peppy.bot/install.sh | sh" >&2
+            echo "" >&2
+            exit 1
+        fi
+    fi
+
     if ! command -v tar >/dev/null 2>&1; then
         echo "error: 'tar' is required to install peppy" >&2
         exit 1
@@ -280,6 +294,21 @@ __wrap__() {
         chmod +x "$PEPPY_BIN_DIR/zenohd"
     fi
 
+    # Find and install apptainer directory tree (portable installation)
+    APPTAINER_SRC=""
+    if [ -d "$TEMP_DIR/apptainer" ]; then
+        APPTAINER_SRC="$TEMP_DIR/apptainer"
+    else
+        APPTAINER_SRC="$(find "$TEMP_DIR" -type d -name apptainer -print | head -n 1 || true)"
+    fi
+
+    if [ -n "${APPTAINER_SRC-}" ] && [ -d "$APPTAINER_SRC" ]; then
+        APPTAINER_DEST="$PEPPY_HOME/apptainer"
+        rm -rf "$APPTAINER_DEST"
+        mv "$APPTAINER_SRC" "$APPTAINER_DEST"
+        chmod +x "$APPTAINER_DEST/bin/apptainer" 2>/dev/null || true
+    fi
+
     if [ "$PEPPY_BIN_DIR" = "$PEPPY_HOME/bin" ]; then
         echo "The 'peppy' binary is installed into '${PEPPY_HOME}'"
     else
@@ -287,6 +316,9 @@ __wrap__() {
     fi
     if [ ! -f "$PEPPY_BIN_DIR/zenohd" ]; then
         echo "warning: 'zenohd' was not found in the archive. 'peppy service serve' requires zenohd on PATH or next to the peppy binary." >&2
+    fi
+    if [ ! -d "$PEPPY_HOME/apptainer/bin" ]; then
+        echo "warning: 'apptainer' directory was not found in the archive. Container features will be unavailable." >&2
     fi
 
     if [ -z "${PEPPY_NO_SERVICE_INSTALL:-}" ]; then
