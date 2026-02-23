@@ -16,15 +16,16 @@ use std::path::Path;
 #[exclude = "__pycache__/*"]
 struct EmbeddedPeppylibPy;
 
-pub fn add_peppylib_dependencies(to_path: &Path) -> Result<()> {
+pub fn add_peppylib_dependencies(
+    to_path: &Path,
+    peppy_dirs: &config::consts::PeppyDirs,
+) -> Result<()> {
     // Copy Python project templates (pyproject.toml, peppygen/__init__.py)
     crate::generator::common::copy_embedded_templates("peppygen/python", to_path, "")?;
 
     // Deploy the pre-built peppylib Python package to a shared cache
     let cache_key = format!("{}-{}", env!("PEPPYLIB_SO_HASH"), env!("CARGO_PKG_VERSION"));
-    let cache_dir = config::consts::peppy_data_dir()
-        .join("libs/python")
-        .join(&cache_key);
+    let cache_dir = peppy_dirs.python_libs_cache_dir(&cache_key);
 
     if !cache_dir.join(".complete").exists() {
         let parent = cache_dir.parent().ok_or_else(|| {

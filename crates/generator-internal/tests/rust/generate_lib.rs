@@ -15,7 +15,7 @@ const PEPPY_JSON5_CONFIG: &str = r#"{
     name: "test_node",
     tag: "0.1.0",
     language: "rust",
-    start_cmd: ["cargo", "run", "--release"]
+    start_cmd: ["./target/release/test_node"]
   },
   interfaces: {
     exposes: {
@@ -57,7 +57,7 @@ fn generate_peppygen_lib_minimal_config() {
         name: "minimal_node",
         tag: "0.1.0",
         language: "rust",
-        start_cmd: ["cargo", "run"]
+        start_cmd: ["./target/debug/minimal_node"]
       }
     }"#;
 
@@ -65,8 +65,14 @@ fn generate_peppygen_lib_minimal_config() {
     fs::write(&config_path, minimal_config).expect("failed to write peppy.json5");
 
     // Generate should succeed even with no interfaces
-    generate_peppygen_lib(PeppygenLanguage::Rust, node_dir, Vec::new(), "test-hash")
-        .expect("failed to generate library for minimal config");
+    generate_peppygen_lib(
+        PeppygenLanguage::Rust,
+        node_dir,
+        Vec::new(),
+        "test-hash",
+        &helpers::test_peppy_dirs(),
+    )
+    .expect("failed to generate library for minimal config");
 
     // Verify the generated library exists
     let peppygen_dir = node_dir.join(PEPPYGEN_OUTPUT_PATH);
@@ -197,7 +203,13 @@ fn generate_peppygen_lib_missing_config() {
     let node_dir = temp_dir.path();
 
     // Try to generate without a peppy.json5 - should fail
-    let result = generate_peppygen_lib(PeppygenLanguage::Rust, node_dir, Vec::new(), "test-hash");
+    let result = generate_peppygen_lib(
+        PeppygenLanguage::Rust,
+        node_dir,
+        Vec::new(),
+        "test-hash",
+        &helpers::test_peppy_dirs(),
+    );
     assert!(result.is_err(), "should fail when peppy.json5 is missing");
 }
 
@@ -216,7 +228,7 @@ fn generate_peppygen_rust_lib_exposed_and_subscribed_topics() {
             name: "{EXPOSED_NODE_NAME}",
             tag: "0.1.0",
             language: "rust",
-            start_cmd: ["cargo", "run"]
+            start_cmd: ["./target/debug/{EXPOSED_NODE_NAME}"]
           }},
           interfaces: {{
             exposes: {{
@@ -242,6 +254,7 @@ fn generate_peppygen_rust_lib_exposed_and_subscribed_topics() {
         exposed_node_dir,
         Vec::new(),
         "test-hash",
+        &helpers::test_peppy_dirs(),
     )
     .expect("failed to generate peppygen lib for exposed node");
 
@@ -264,7 +277,7 @@ fn generate_peppygen_rust_lib_exposed_and_subscribed_topics() {
             name: "{SUBSCRIBER_NODE_NAME}",
             tag: "0.1.0",
             language: "rust",
-            start_cmd: ["cargo", "run"]
+            start_cmd: ["./target/debug/{SUBSCRIBER_NODE_NAME}"]
           }}
         }}"#
     );
@@ -297,6 +310,7 @@ fn generate_peppygen_rust_lib_exposed_and_subscribed_topics() {
         subscriber_node_dir,
         subscribed_interfaces,
         "test-hash",
+        &helpers::test_peppy_dirs(),
     )
     .expect("failed to generate peppygen lib for subscriber node");
 
@@ -325,7 +339,7 @@ fn generate_peppygen_rust_lib_exposed_and_subscribed_services() {
             name: "{EXPOSED_NODE_NAME}",
             tag: "0.1.0",
             language: "rust",
-            start_cmd: ["cargo", "run"]
+            start_cmd: ["./target/debug/{EXPOSED_NODE_NAME}"]
           }},
           interfaces: {{
             exposes: {{
@@ -354,6 +368,7 @@ fn generate_peppygen_rust_lib_exposed_and_subscribed_services() {
         exposed_node_dir,
         Vec::new(),
         "test-hash",
+        &helpers::test_peppy_dirs(),
     )
     .expect("failed to generate peppygen lib for exposed node");
 
@@ -376,7 +391,7 @@ fn generate_peppygen_rust_lib_exposed_and_subscribed_services() {
             name: "{SUBSCRIBER_NODE_NAME}",
             tag: "0.1.0",
             language: "rust",
-            start_cmd: ["cargo", "run"]
+            start_cmd: ["./target/debug/{SUBSCRIBER_NODE_NAME}"]
           }}
         }}"#
     );
@@ -411,6 +426,7 @@ fn generate_peppygen_rust_lib_exposed_and_subscribed_services() {
         subscriber_node_dir,
         subscribed_interfaces,
         "test-hash",
+        &helpers::test_peppy_dirs(),
     )
     .expect("failed to generate peppygen lib for subscriber node");
 
@@ -446,7 +462,7 @@ fn generate_peppygen_rust_lib_exposed_and_subscribed_actions() {
             name: "{EXPOSED_NODE_NAME}",
             tag: "0.1.0",
             language: "rust",
-            start_cmd: ["cargo", "run"]
+            start_cmd: ["./target/debug/{EXPOSED_NODE_NAME}"]
           }},
           interfaces: {{
             exposes: {{
@@ -487,6 +503,7 @@ fn generate_peppygen_rust_lib_exposed_and_subscribed_actions() {
         exposed_node_dir,
         Vec::new(),
         "test-hash",
+        &helpers::test_peppy_dirs(),
     )
     .expect("failed to generate peppygen lib for exposed node");
 
@@ -509,7 +526,7 @@ fn generate_peppygen_rust_lib_exposed_and_subscribed_actions() {
             name: "{SUBSCRIBER_NODE_NAME}",
             tag: "0.1.0",
             language: "rust",
-            start_cmd: ["cargo", "run"]
+            start_cmd: ["./target/debug/{SUBSCRIBER_NODE_NAME}"]
           }}
         }}"#
     );
@@ -555,6 +572,7 @@ fn generate_peppygen_rust_lib_exposed_and_subscribed_actions() {
         subscriber_node_dir,
         subscribed_interfaces,
         "test-hash",
+        &helpers::test_peppy_dirs(),
     )
     .expect("failed to generate peppygen lib for subscriber node");
 

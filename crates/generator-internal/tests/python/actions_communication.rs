@@ -1,6 +1,6 @@
 use crate::helpers::{
     STUB_PYTHON_NODE_CONFIG, WaitContext, copy_config_to_output, init_python_project_venv,
-    init_python_user_node, init_test_env, send_shutdown, spawn_python_run,
+    init_python_user_node, init_test_env, send_shutdown, spawn_python_run, test_peppy_dirs,
     wait_for_action_service_reachable_or_exit, wait_for_child,
     wait_for_health_service_reachable_or_exit, wait_for_service_reachable_or_exit,
 };
@@ -166,7 +166,9 @@ async fn actions_communication() {
         .unwrap();
     generator.add_exposed_service(&flow_done_service).unwrap();
     let output_config = copy_config_to_output(&user_node_subscriber, &output_dir_subscriber);
-    generator.build(&output_dir_subscriber).unwrap();
+    generator
+        .build(&output_dir_subscriber, &test_peppy_dirs())
+        .unwrap();
     fs::remove_file(output_config).unwrap();
     config::fingerprint::create_codegen_fingerprint(
         &peppy_node_config_path,
@@ -234,7 +236,9 @@ if __name__ == "__main__":
         init_test_env::<generator::PythonGenerator>(&temp_dir_exposer, STUB_PYTHON_NODE_CONFIG);
     generator.add_exposed_action(&exposed_action).unwrap();
     let output_config = copy_config_to_output(&user_node_exposer, &output_dir_exposer);
-    generator.build(&output_dir_exposer).unwrap();
+    generator
+        .build(&output_dir_exposer, &test_peppy_dirs())
+        .unwrap();
     fs::remove_file(output_config).unwrap();
     config::fingerprint::create_codegen_fingerprint(
         &peppy_node_config_path,
@@ -490,7 +494,9 @@ async fn actions_communication_cancel_goal() {
         .unwrap();
     generator.add_exposed_service(&flow_done_service).unwrap();
     let output_config = copy_config_to_output(&user_node_subscriber, &output_dir_subscriber);
-    generator.build(&output_dir_subscriber).unwrap();
+    generator
+        .build(&output_dir_subscriber, &test_peppy_dirs())
+        .unwrap();
     fs::remove_file(output_config).unwrap();
     config::fingerprint::create_codegen_fingerprint(
         &peppy_node_config_path,
@@ -555,7 +561,9 @@ if __name__ == "__main__":
         init_test_env::<generator::PythonGenerator>(&temp_dir_exposer, STUB_PYTHON_NODE_CONFIG);
     generator.add_exposed_action(&exposed_action).unwrap();
     let output_config = copy_config_to_output(&user_node_exposer, &output_dir_exposer);
-    generator.build(&output_dir_exposer).unwrap();
+    generator
+        .build(&output_dir_exposer, &test_peppy_dirs())
+        .unwrap();
     fs::remove_file(output_config).unwrap();
     config::fingerprint::create_codegen_fingerprint(
         &peppy_node_config_path,

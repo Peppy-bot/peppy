@@ -104,8 +104,14 @@ fn generate_peppygen_lib_minimal_config() {
     fs::write(&config_path, minimal_config).expect("failed to write peppy.json5");
 
     // Generate should succeed even with no interfaces
-    generate_peppygen_lib(PeppygenLanguage::Python, node_dir, Vec::new(), "test-hash")
-        .expect("failed to generate library for minimal config");
+    generate_peppygen_lib(
+        PeppygenLanguage::Python,
+        node_dir,
+        Vec::new(),
+        "test-hash",
+        &helpers::test_peppy_dirs(),
+    )
+    .expect("failed to generate library for minimal config");
 
     // Verify the generated library exists
     let peppygen_dir = node_dir.join(PEPPYGEN_OUTPUT_PATH);
@@ -118,7 +124,13 @@ fn generate_peppygen_lib_missing_config() {
     let node_dir = temp_dir.path();
 
     // Try to generate without a peppy.json5 - should fail
-    let result = generate_peppygen_lib(PeppygenLanguage::Python, node_dir, Vec::new(), "test-hash");
+    let result = generate_peppygen_lib(
+        PeppygenLanguage::Python,
+        node_dir,
+        Vec::new(),
+        "test-hash",
+        &helpers::test_peppy_dirs(),
+    );
     assert!(result.is_err(), "should fail when peppy.json5 is missing");
 }
 
@@ -164,6 +176,7 @@ fn generate_peppygen_python_lib_exposed_and_subscribed_topics() {
         exposed_node_dir,
         Vec::new(),
         "test-hash",
+        &helpers::test_peppy_dirs(),
     )
     .expect("failed to generate peppygen lib for exposed node");
 
@@ -220,6 +233,7 @@ fn generate_peppygen_python_lib_exposed_and_subscribed_topics() {
         subscriber_node_dir,
         subscribed_interfaces,
         "test-hash",
+        &helpers::test_peppy_dirs(),
     )
     .expect("failed to generate peppygen lib for subscriber node");
 
@@ -278,6 +292,7 @@ fn generate_peppygen_python_lib_exposed_and_subscribed_services() {
         exposed_node_dir,
         Vec::new(),
         "test-hash",
+        &helpers::test_peppy_dirs(),
     )
     .expect("failed to generate peppygen lib for exposed node");
 
@@ -336,6 +351,7 @@ fn generate_peppygen_python_lib_exposed_and_subscribed_services() {
         subscriber_node_dir,
         subscribed_interfaces,
         "test-hash",
+        &helpers::test_peppy_dirs(),
     )
     .expect("failed to generate peppygen lib for subscriber node");
 
@@ -413,6 +429,7 @@ fn generate_peppygen_python_lib_exposed_and_subscribed_actions() {
         exposed_node_dir,
         Vec::new(),
         "test-hash",
+        &helpers::test_peppy_dirs(),
     )
     .expect("failed to generate peppygen lib for exposed node");
 
@@ -482,6 +499,7 @@ fn generate_peppygen_python_lib_exposed_and_subscribed_actions() {
         subscriber_node_dir,
         subscribed_interfaces,
         "test-hash",
+        &helpers::test_peppy_dirs(),
     )
     .expect("failed to generate peppygen lib for subscriber node");
 

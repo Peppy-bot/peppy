@@ -52,7 +52,7 @@ Each node is only aware of the interfaces it exposes and the ones it subscribes 
         tag: "0.1.0",
         language: "rust",
         add_cmd: ["cargo", "build", "--release"],
-        start_cmd: ["cargo", "run", "--release"]
+        start_cmd: ["./target/release/controller"]
       },
       interfaces: {
         exposes: {

@@ -6,7 +6,6 @@ use common::{
     start_daemon_node_with_health_timeout, start_daemon_node_with_mock_messenger,
     start_daemon_node_with_real_messenger, write_peppy_json5,
 };
-use config::consts::logs_dir_start;
 use config::node::Name as NodeName;
 use config::peppy_config::Name;
 use config::runtime::{NodeInstance, RuntimeConfig};
@@ -437,8 +436,6 @@ async fn listen_for_node_start_streams_stdout_and_stderr() {
 
     assert!(saw_stdout, "stdout feedback should include marker");
     assert!(saw_stderr, "stderr feedback should include marker");
-
-    std::fs::remove_dir_all(&add_response.snapshot_path).ok();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -554,7 +551,10 @@ async fn listen_for_node_start_writes_log_file() {
         start_response.goal_response.accepted,
         "goal should be accepted"
     );
-    let expected_log_path = logs_dir_start().join(format!("{}.log", TARGET_INSTANCE_ID));
+    let expected_log_path = started
+        .peppy_dirs
+        .logs_dir_start()
+        .join(format!("{}.log", TARGET_INSTANCE_ID));
     assert_eq!(
         start_response.goal_response.log_path, expected_log_path,
         "goal response log_path should match expected path"
@@ -579,11 +579,6 @@ async fn listen_for_node_start_writes_log_file() {
         "log file should contain stderr marker with [stderr] prefix, got:\n{}",
         log_content
     );
-
-    // Clean up log file
-    std::fs::remove_file(log_path).ok();
-
-    std::fs::remove_dir_all(&add_response.snapshot_path).ok();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -714,8 +709,6 @@ async fn listen_for_node_start_reports_all_missing_parameters() {
         start_response.result.pid.is_none(),
         "node_start should not return a PID on failure"
     );
-
-    std::fs::remove_dir_all(&add_response.snapshot_path).ok();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -863,8 +856,6 @@ async fn listen_for_node_start_reports_only_missing_parameters_when_some_provide
         start_response.result.pid.is_none(),
         "node_start should not return a PID on failure"
     );
-
-    std::fs::remove_dir_all(&add_response.snapshot_path).ok();
 }
 
 /// Tests that a new goal can be processed after a previous action was abandoned
@@ -1102,9 +1093,6 @@ async fn listen_for_node_start_abandoned_action_does_not_block_next_goal() {
         second_found.is_some(),
         "second instance should be registered after successful start"
     );
-
-    std::fs::remove_dir_all(&first_add_response.snapshot_path).ok();
-    std::fs::remove_dir_all(&second_add_response.snapshot_path).ok();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1213,7 +1201,6 @@ async fn listen_for_node_start_uses_env_overrides_for_path() {
         "expected a spawn failure, got: {:?}",
         start_response_missing.result.error_message
     );
-    std::fs::remove_file(&start_response_missing.goal_response.log_path).ok();
 
     // Create a temp bin directory with a `printout` script.
     let bin_dir = tempfile::tempdir().expect("failed to create temp bin dir");
@@ -1257,9 +1244,6 @@ async fn listen_for_node_start_uses_env_overrides_for_path() {
         "node_start should succeed when caller PATH is passed, got error: {:?}",
         start_response.result.error_message
     );
-
-    std::fs::remove_file(&start_response.goal_response.log_path).ok();
-    std::fs::remove_dir_all(&add_response.snapshot_path).ok();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -24,7 +24,7 @@ Each topic defines a `name`, a `qos_profile`, and a `message_format`:
     tag: "0.1.0",
     language: "rust",
     add_cmd: ["cargo", "build", "--release"],
-    start_cmd: ["cargo", "run", "--release"]
+    start_cmd: ["./target/release/uvc_camera"]
   },
   interfaces: {
     exposes: {
@@ -138,7 +138,7 @@ A node that receives messages declares its subscriptions under `interfaces.subsc
     tag: "0.1.0",
     language: "rust",
     add_cmd: ["cargo", "build", "--release"],
-    start_cmd: ["cargo", "run", "--release"]
+    start_cmd: ["./target/release/web_video_stream"]
   },
   interfaces: {
     subscribes_to: {
