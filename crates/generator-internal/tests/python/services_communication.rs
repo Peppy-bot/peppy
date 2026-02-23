@@ -905,6 +905,22 @@ if __name__ == "__main__":
     )
     .await;
 
+    // Verify broadcast reachability before spawning the subscriber.
+    // The targeted probes above confirm each exposer individually, but the
+    // broadcast subscription pattern may not be fully propagated in the
+    // Zenoh routing table yet. This probe exercises the broadcast path,
+    // ensuring both exposers' broadcast subscriptions are active before the
+    // subscriber sends its broadcast poll.
+    wait_for_service_reachable_or_exit(
+        &ctx,
+        UVC_CAMERA_NODE_NAME,
+        "enable_camera",
+        None,
+        &mut exposer1_child,
+        &user_node_exposer1,
+    )
+    .await;
+
     let mut subscriber_child = spawn_python_run(
         &user_node_subscriber,
         &[(RUNTIME_CONFIG_VAR_NAME, &subscriber_runtime_config_str)],
