@@ -1040,3 +1040,163 @@ fn overwriting_existing_node_fails_if_node_has_dependencies() {
         "lidar should still have brain as a dependent"
     );
 }
+
+#[test]
+fn updating_start_cmd_without_changing_interfaces_applies_new_config() {
+    let original_config: config::node::NodeConfig = serde_json5::from_str(
+        r#"{
+            schema_version: 1,
+            manifest: {
+              name: "sensor",
+              tag: "1.0.0",
+              language: "rust",
+              start_cmd: ["./old_binary"]
+            }
+        }"#,
+    )
+    .expect("valid node config");
+
+    let updated_config: config::node::NodeConfig = serde_json5::from_str(
+        r#"{
+            schema_version: 1,
+            manifest: {
+              name: "sensor",
+              tag: "1.0.0",
+              language: "rust",
+              start_cmd: ["./new_binary"]
+            }
+        }"#,
+    )
+    .expect("valid node config");
+
+    let stack = NodeStack::new(daemon_node_config(), None, PathBuf::from("/tmp"));
+
+    stack
+        .push_config(original_config, false, PathBuf::from("/tmp/sensor"))
+        .expect("first config has no dependencies");
+    assert_eq!(stack.len(), 2, "stack should have daemon + sensor");
+
+    let entity = stack.find("sensor", "1.0.0").expect("entity should exist");
+    assert_eq!(
+        entity.config().manifest.start_cmd,
+        vec!["./old_binary"],
+        "entity should have the original start_cmd"
+    );
+
+    // Re-push same name:tag:interfaces:root_path with different start_cmd
+    stack
+        .push_config(updated_config, false, PathBuf::from("/tmp/sensor"))
+        .expect("should update config without error");
+    assert_eq!(stack.len(), 2, "stack should still have daemon + sensor");
+
+    let entity = stack.find("sensor", "1.0.0").expect("entity should exist");
+    assert_eq!(
+        entity.config().manifest.start_cmd,
+        vec!["./new_binary"],
+        "entity should have the updated start_cmd after re-push"
+    );
+    assert_eq!(
+        entity.root_path(),
+        PathBuf::from("/tmp/sensor").as_path(),
+        "root_path should remain unchanged"
+    );
+}
+
+#[test]
+fn updating_start_cmd_succeeds_even_when_node_has_dependents() {
+    let dependency_v1: config::node::NodeConfig = serde_json5::from_str(
+        r#"{
+            schema_version: 1,
+            manifest: {
+              name: "lidar",
+              tag: "1.0.0",
+              language: "rust",
+              start_cmd: ["./old_lidar"]
+            },
+            interfaces: {
+                exposes: {
+                    services: [
+                        { name: "reset_sensor" }
+                    ]
+                }
+            }
+        }"#,
+    )
+    .expect("valid dependency node config");
+
+    let dependent: config::node::NodeConfig = serde_json5::from_str(
+        r#"{
+            schema_version: 1,
+            manifest: {
+              name: "brain",
+              tag: "1.0.0",
+              language: "rust",
+              start_cmd: ["brain"]
+            },
+            interfaces: {
+                subscribes_to: {
+                    services: [
+                        {
+                          id: "reset_sensor_sub",
+                          node: "lidar",
+                          name: "reset_sensor",
+                          tag: "1.0.0"
+                        }
+                    ]
+                }
+            }
+        }"#,
+    )
+    .expect("valid dependent node config");
+
+    // Same interfaces as v1, but different start_cmd
+    let dependency_v1_updated: config::node::NodeConfig = serde_json5::from_str(
+        r#"{
+            schema_version: 1,
+            manifest: {
+              name: "lidar",
+              tag: "1.0.0",
+              language: "rust",
+              start_cmd: ["./new_lidar"]
+            },
+            interfaces: {
+                exposes: {
+                    services: [
+                        { name: "reset_sensor" }
+                    ]
+                }
+            }
+        }"#,
+    )
+    .expect("valid dependency node config");
+
+    let stack = NodeStack::new(daemon_node_config(), None, PathBuf::from("/tmp"));
+
+    stack
+        .push_config(dependency_v1, false, PathBuf::from("/tmp/lidar"))
+        .expect("dependency has no dependencies");
+    stack
+        .push_config(dependent, false, PathBuf::from("/tmp/brain"))
+        .expect("dependent dependency is present");
+
+    // Updating start_cmd without changing interfaces should succeed even with dependents
+    stack
+        .push_config(dependency_v1_updated, false, PathBuf::from("/tmp/lidar"))
+        .expect("non-breaking config update should succeed even with dependents");
+
+    let entity = stack.find("lidar", "1.0.0").expect("entity should exist");
+    assert_eq!(
+        entity.config().manifest.start_cmd,
+        vec!["./new_lidar"],
+        "lidar should have the updated start_cmd"
+    );
+
+    // Dependency wiring should still be intact
+    let dependents = stack.dependents_of("lidar", "1.0.0");
+    assert!(
+        dependents
+            .iter()
+            .any(|entity| entity.config().manifest.name.as_str() == "brain"),
+        "lidar should still have brain as a dependent after non-breaking update"
+    );
+}
