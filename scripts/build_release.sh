@@ -573,7 +573,7 @@ PY
         echo "warning: apptainer install directory not found in build output; container features will not be bundled" >&2
     fi
 
-    tar -czf "$ASSET_PATH" -C "$PKG_DIR" $(ls "$PKG_DIR")
+    tar -czf "$ASSET_PATH" -C "$PKG_DIR" .
     echo "Built artifact: $ASSET_PATH"
 
     SLUG="$(github_repo_slug)"
