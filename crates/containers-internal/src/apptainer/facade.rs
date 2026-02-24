@@ -5,6 +5,12 @@ use std::process::{Child, Command, Output, Stdio};
 const LIMA_INSTANCE: &str = "peppy";
 const MIN_LIMA_VERSION: (u32, u32, u32) = (2, 0, 0);
 
+/// Returns `true` if the string looks like a URI reference (e.g. `docker://...`, `library://...`)
+/// rather than a filesystem path.
+pub(crate) fn is_uri(s: &str) -> bool {
+    s.contains("://")
+}
+
 /// Single-quote a path for safe embedding in a shell command string.
 fn shell_escape(path: &Path) -> String {
     // Replace any single quotes in the path with the '\'' idiom, then wrap in single quotes.
@@ -142,16 +148,15 @@ impl ApptainerFacade {
 
     /// Run a container image: `apptainer run <image> [args...]`
     ///
-    /// If `image` is an absolute path or exists on disk it is translated to a
-    /// guest-visible path when running under Lima.
+    /// If `image` is a filesystem path (not a URI like `docker://...`) it is
+    /// translated to a guest-visible path when running under Lima.
     pub fn run(&self, image: &str, args: &[&str]) -> Result<Child> {
-        let image_path = Path::new(image);
-        let translated = if image_path.is_absolute() {
-            self.translate_path(image_path)?
+        let translated = if is_uri(image) {
+            image.to_string()
+        } else {
+            self.translate_path(Path::new(image))?
                 .to_string_lossy()
                 .into_owned()
-        } else {
-            image.to_string()
         };
         let mut all_args = vec!["run", &translated];
         all_args.extend(args);
@@ -160,16 +165,15 @@ impl ApptainerFacade {
 
     /// Execute a command inside a container: `apptainer exec <container> <cmd...>`
     ///
-    /// If `container` is an absolute path it is translated to a guest-visible path
-    /// when running under Lima.
+    /// If `container` is a filesystem path (not a URI like `docker://...`) it is
+    /// translated to a guest-visible path when running under Lima.
     pub fn exec(&self, container: &str, cmd: &[&str]) -> Result<Child> {
-        let container_path = Path::new(container);
-        let translated = if container_path.is_absolute() {
-            self.translate_path(container_path)?
+        let translated = if is_uri(container) {
+            container.to_string()
+        } else {
+            self.translate_path(Path::new(container))?
                 .to_string_lossy()
                 .into_owned()
-        } else {
-            container.to_string()
         };
         let mut all_args = vec!["exec", &translated];
         all_args.extend(cmd);
@@ -196,18 +200,27 @@ impl ApptainerFacade {
     /// unchanged. Paths outside `$HOME` cannot be accessed by the guest and produce
     /// an error.
     pub(crate) fn translate_path(&self, host_path: &Path) -> Result<PathBuf> {
+        // Resolve relative paths to absolute using the host CWD. This is critical
+        // for Lima: `limactl shell` runs in the guest's home directory, so a
+        // relative path would silently resolve to the wrong location in the guest.
+        let absolute_path = if host_path.is_relative() {
+            std::env::current_dir()?.join(host_path)
+        } else {
+            host_path.to_path_buf()
+        };
+
         if !self.use_lima {
-            return Ok(host_path.to_path_buf());
+            return Ok(absolute_path);
         }
 
         let home = std::env::var("HOME")
             .map_err(|_| Error::ConfigurationError("HOME environment variable not set".into()))?;
 
-        if host_path.starts_with(&home) {
-            Ok(host_path.to_path_buf())
+        if absolute_path.starts_with(&home) {
+            Ok(absolute_path)
         } else {
             Err(Error::PathNotAccessibleInVm {
-                path: host_path.display().to_string(),
+                path: absolute_path.display().to_string(),
             })
         }
     }

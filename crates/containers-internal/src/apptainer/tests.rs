@@ -1,4 +1,4 @@
-use super::facade::{ApptainerFacade, parse_lima_version};
+use super::facade::{ApptainerFacade, is_uri, parse_lima_version};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -240,4 +240,72 @@ fn test_parse_lima_version_invalid() {
     assert_eq!(parse_lima_version("not a version"), None);
     assert_eq!(parse_lima_version(""), None);
     assert_eq!(parse_lima_version("1.2"), None);
+}
+
+// ---------------------------------------------------------------------------
+// URI detection tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_is_uri() {
+    // URI references should be detected
+    assert!(is_uri("docker://ubuntu"));
+    assert!(is_uri("library://default/ubuntu:latest"));
+    assert!(is_uri("oras://registry.example.com/image:tag"));
+    assert!(is_uri("shub://vsoch/hello-world"));
+
+    // Filesystem paths should not be detected as URIs
+    assert!(!is_uri("./my_image.sif"));
+    assert!(!is_uri("/home/user/image.sif"));
+    assert!(!is_uri("image.sif"));
+    assert!(!is_uri("relative/path/to/image.sif"));
+}
+
+// ---------------------------------------------------------------------------
+// Relative path translation tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_translate_path_resolves_relative_linux() {
+    let tmp = TempDir::new().unwrap();
+    let install_dir = create_mock_install_dir(&tmp);
+    let facade = mock_facade(install_dir, false);
+
+    let relative = Path::new("my_image.sif");
+    let result = facade.translate_path(relative).unwrap();
+
+    assert!(
+        result.is_absolute(),
+        "Relative path should be resolved to absolute, got: {}",
+        result.display()
+    );
+    let cwd = std::env::current_dir().unwrap();
+    assert_eq!(
+        result,
+        cwd.join("my_image.sif"),
+        "Relative path should resolve against CWD"
+    );
+}
+
+#[test]
+fn test_translate_path_resolves_relative_lima() {
+    let tmp = TempDir::new().unwrap();
+    let install_dir = create_mock_install_dir(&tmp);
+    let facade = mock_facade(install_dir, true);
+
+    // CWD is under $HOME during tests, so the resolved path should succeed.
+    let relative = Path::new("project/my_image.sif");
+    let result = facade.translate_path(relative).unwrap();
+
+    assert!(
+        result.is_absolute(),
+        "Relative path should be resolved to absolute under Lima, got: {}",
+        result.display()
+    );
+    let cwd = std::env::current_dir().unwrap();
+    assert_eq!(
+        result,
+        cwd.join("project/my_image.sif"),
+        "Relative path should resolve against CWD under Lima"
+    );
 }
