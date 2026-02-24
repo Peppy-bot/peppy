@@ -9,6 +9,8 @@
       "controller",
       "openarm",
     ],
+  },
+  build: {
     add_cmd: [
       "cargo",
       "build",

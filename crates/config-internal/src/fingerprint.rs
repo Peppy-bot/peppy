@@ -152,7 +152,7 @@ mod tests {
         let config_path = tmp.path().join(crate::consts::NODE_CONFIG_FILE);
         let generated_crate = prepare_generated_crate(&tmp);
 
-        let config_contents = r#"{ schema_version: 1, manifest: { name: "camera", tag: "0.1.0", language: "rust", start_cmd: ["./target/release/camera"] } }"#;
+        let config_contents = r#"{ schema_version: 1, manifest: { name: "camera", tag: "0.1.0", language: "rust" }, build: { start_cmd: ["./target/release/camera"] } }"#;
         fs::write(&config_path, config_contents).expect("failed to write config");
 
         generate_node_config_fingerprint(&config_path, &generated_crate)
@@ -176,7 +176,7 @@ mod tests {
         let fingerprint_path = generated_crate.join(NODE_CONFIG_FINGERPRINT_FILE);
         fs::write(&fingerprint_path, "old_fingerprint\n").expect("failed to write old fingerprint");
 
-        let config_contents = r#"{ schema_version: 1, manifest: { name: "camera", tag: "0.1.0", language: "rust", start_cmd: ["./target/release/camera"] } }"#;
+        let config_contents = r#"{ schema_version: 1, manifest: { name: "camera", tag: "0.1.0", language: "rust" }, build: { start_cmd: ["./target/release/camera"] } }"#;
         fs::write(&config_path, config_contents).expect("failed to write config");
 
         generate_node_config_fingerprint(&config_path, &generated_crate)

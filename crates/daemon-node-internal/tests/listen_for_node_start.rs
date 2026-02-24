@@ -140,6 +140,8 @@ async fn listen_for_node_start_timeout() {
                 name: "{}",
                 tag: "0.1.0",
                 language: "rust",
+            }},
+            build: {{
                 start_cmd: ["sleep", "10"]
             }},
             parameters: {{}}
@@ -331,6 +333,8 @@ async fn listen_for_node_start_streams_stdout_and_stderr() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
                 language: "rust",
+            }},
+            build: {{
                 start_cmd: ["sh", "-c", "echo {STDOUT_MARKER}; echo {STDERR_MARKER} 1>&2; sleep 5"]
             }}
         }}"#
@@ -456,6 +460,8 @@ async fn listen_for_node_start_writes_log_file() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
                 language: "rust",
+            }},
+            build: {{
                 start_cmd: ["sh", "-c", "echo {STDOUT_MARKER}; echo {STDERR_MARKER} 1>&2; sleep 5"]
             }}
         }}"#
@@ -598,6 +604,8 @@ async fn listen_for_node_start_reports_all_missing_parameters() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
                 language: "rust",
+            }},
+            build: {{
                 start_cmd: ["echo", "test"]
             }},
             parameters: {{
@@ -728,6 +736,8 @@ async fn listen_for_node_start_reports_only_missing_parameters_when_some_provide
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
                 language: "rust",
+            }},
+            build: {{
                 start_cmd: ["echo", "test"]
             }},
             parameters: {{
@@ -884,6 +894,8 @@ async fn listen_for_node_start_abandoned_action_does_not_block_next_goal() {
                 name: "{FIRST_NODE_NAME}",
                 tag: "{FIRST_NODE_TAG}",
                 language: "rust",
+            }},
+            build: {{
                 start_cmd: ["sleep", "30"]
             }}
         }}"#
@@ -916,6 +928,8 @@ async fn listen_for_node_start_abandoned_action_does_not_block_next_goal() {
                 name: "{SECOND_NODE_NAME}",
                 tag: "{SECOND_NODE_TAG}",
                 language: "rust",
+            }},
+            build: {{
                 start_cmd: ["sleep", "30"]
             }}
         }}"#
@@ -1111,6 +1125,8 @@ async fn listen_for_node_start_uses_env_overrides_for_path() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
                 language: "rust",
+            }},
+            build: {{
                 start_cmd: ["printout", "3"]
             }},
             parameters: {{}}

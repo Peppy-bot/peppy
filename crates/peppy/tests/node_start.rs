@@ -252,7 +252,9 @@ async fn node_run_command_with_args_succeeds() {
   manifest: {
     name: "test_run_args_node",
     tag: "0.1.0",
-    language: "rust",
+    language: "rust"
+  },
+  build: {
     start_cmd: [
       "cargo",
       "run",

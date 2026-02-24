@@ -4,6 +4,8 @@
     name: "standalone",
     tag: "0.1.0",
     language: "python",
+  },
+  build: {
     add_cmd: [
       "uv",
       "sync"

@@ -60,6 +60,7 @@ impl Toolchain {
 pub struct NodeConfig {
     pub schema_version: SchemaVersion,
     pub manifest: Manifest,
+    pub build: Build,
     // TODO: Rename `parameters` to `arguments` when it's given in a NodeConfig, the `parameters` name is only used in DeploymentInstance
     #[serde(default)]
     pub parameters: NodeArguments,
@@ -557,10 +558,23 @@ pub struct Manifest {
     pub language: PeppygenLanguage,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub labels: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Build {
     // Command to run when right before the node is added to the node stack
     pub add_cmd: Option<Vec<String>>,
     // Command to launch the node, e.g., ["./target/release/my_node"]
     pub start_cmd: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub container: Option<ContainerConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ContainerConfig {
+    pub def_file: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
