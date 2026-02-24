@@ -370,18 +370,9 @@ impl ApptainerFacade {
             );
         }
 
-        // Platform-specific error
-        #[cfg(target_os = "macos")]
-        {
-            Err(Error::LimaRequired)
-        }
-
-        #[cfg(not(target_os = "macos"))]
-        {
-            Err(Error::ApptainerNotFound(
-                "Apptainer installation not found. Install apptainer or set PEPPY_APPTAINER_DIR."
-                    .to_string(),
-            ))
-        }
+        Err(Error::ApptainerNotFound(
+            "Apptainer installation not found. Install apptainer or set PEPPY_APPTAINER_DIR."
+                .to_string(),
+        ))
     }
 }
