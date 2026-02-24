@@ -223,6 +223,7 @@ impl ApptainerFacade {
     /// Run an apptainer command to completion and return its output.
     fn run_to_completion(&self, args: &[&str]) -> Result<Output> {
         let mut cmd = self.command(args);
+        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
         cmd.output().map_err(Error::from)
     }
 
@@ -246,12 +247,10 @@ impl ApptainerFacade {
             cmd.arg("shell").arg(LIMA_INSTANCE).arg("--");
             cmd.arg(&self.guest_apptainer_bin);
             cmd.args(args);
-            cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
             cmd
         } else {
             let mut cmd = Command::new(&self.apptainer_bin);
             cmd.args(args);
-            cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
             cmd
         }
     }
