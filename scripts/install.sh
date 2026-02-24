@@ -134,20 +134,6 @@ __wrap__() {
         exit 1
     fi
 
-    # Apptainer requires Lima on macOS to provide a Linux VM
-    if [ "$PLATFORM" = "apple-darwin" ]; then
-        if ! command -v limactl >/dev/null 2>&1; then
-            echo "" >&2
-            echo "error: peppy requires Lima to run containers on macOS." >&2
-            echo "       Lima provides a lightweight Linux VM for running apptainer." >&2
-            echo "" >&2
-            echo "       Install Lima with:  brew install lima" >&2
-            echo "       Then retry:         curl -fsSL https://peppy.bot/install.sh | sh" >&2
-            echo "" >&2
-            exit 1
-        fi
-    fi
-
     # Apptainer requires unprivileged user namespaces on Linux
     if [ "$PLATFORM" != "apple-darwin" ] && [ -f /proc/sys/kernel/unprivileged_userns_clone ]; then
         if [ "$(cat /proc/sys/kernel/unprivileged_userns_clone)" = "0" ]; then
@@ -327,6 +313,24 @@ __wrap__() {
         chmod +x "$APPTAINER_DEST/bin/apptainer" 2>/dev/null || true
     fi
 
+    # Find and install Lima directory (bundled limactl + templates + guest agent)
+    LIMA_SRC=""
+    if [ -d "$TEMP_DIR/lima" ]; then
+        LIMA_SRC="$TEMP_DIR/lima"
+    else
+        LIMA_SRC="$(find "$TEMP_DIR" -type d -name lima -print | head -n 1 || true)"
+    fi
+
+    if [ -n "${LIMA_SRC-}" ] && [ -d "$LIMA_SRC" ]; then
+        LIMA_DEST="$PEPPY_HOME/lima"
+        rm -rf "$LIMA_DEST"
+        mv "$LIMA_SRC" "$LIMA_DEST"
+        chmod +x "$LIMA_DEST/bin/limactl" 2>/dev/null || true
+    fi
+
+    # Create lima-data directory for VM instance state
+    mkdir -p "$PEPPY_HOME/lima-data"
+
     if [ "$PEPPY_BIN_DIR" = "$PEPPY_HOME/bin" ]; then
         echo "The 'peppy' binary is installed into '${PEPPY_HOME}'"
     else
@@ -337,6 +341,9 @@ __wrap__() {
     fi
     if [ ! -d "$PEPPY_HOME/apptainer/bin" ]; then
         echo "warning: 'apptainer' directory was not found in the archive. Container features will be unavailable." >&2
+    fi
+    if [ "$PLATFORM" = "apple-darwin" ] && [ ! -f "$PEPPY_HOME/lima/bin/limactl" ]; then
+        echo "warning: 'lima' directory was not found in the archive. Container features on macOS will be unavailable." >&2
     fi
 
     if [ -z "${PEPPY_NO_SERVICE_INSTALL:-}" ]; then

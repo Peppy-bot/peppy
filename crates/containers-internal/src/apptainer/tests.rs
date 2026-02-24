@@ -1,4 +1,4 @@
-use super::facade::ApptainerFacade;
+use super::facade::{ApptainerFacade, parse_lima_version};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -18,15 +18,35 @@ fn create_mock_install_dir(tmp: &TempDir) -> PathBuf {
     install_dir
 }
 
+/// Create a mock `ApptainerFacade` for unit tests that don't need real Lima.
+///
+/// Sets `limactl_path` and `lima_home` to `None` (tests that need Lima routing
+/// should use the integration test path instead).
+fn mock_facade(install_dir: PathBuf, use_lima: bool) -> ApptainerFacade {
+    let bin = install_dir.join("bin/apptainer");
+    let guest_bin = if use_lima {
+        PathBuf::from("/tmp/peppy/apptainer/bin/apptainer")
+    } else {
+        bin.clone()
+    };
+    ApptainerFacade {
+        apptainer_dir: install_dir,
+        apptainer_bin: bin,
+        guest_apptainer_bin: guest_bin,
+        use_lima,
+        limactl_path: None,
+        lima_home: None,
+    }
+}
+
 #[test]
 fn test_facade_from_valid_dir() {
     let tmp = TempDir::new().expect("Failed to create temp dir");
     let install_dir = create_mock_install_dir(&tmp);
 
-    let facade = ApptainerFacade::from_dir(install_dir.clone());
-    assert!(facade.is_ok(), "Error creating facade: {:?}", facade.err());
-
-    let facade = facade.unwrap();
+    // Use mock_facade instead of from_dir to avoid requiring a real Lima setup.
+    // The full from_dir + Lima integration path is covered by test_apptainer_version_integration.
+    let facade = mock_facade(install_dir.clone(), cfg!(target_os = "macos"));
     assert_eq!(facade.install_dir(), install_dir);
     assert_eq!(facade.binary_path(), install_dir.join("bin/apptainer"));
 }
@@ -68,13 +88,7 @@ fn test_facade_from_dir_fails_when_binary_missing() {
 fn test_binary_path_matches_install_dir() {
     let tmp = TempDir::new().expect("Failed to create temp dir");
     let install_dir = create_mock_install_dir(&tmp);
-    let bin = install_dir.join("bin/apptainer");
-    let facade = ApptainerFacade {
-        apptainer_dir: install_dir.clone(),
-        apptainer_bin: bin.clone(),
-        guest_apptainer_bin: bin,
-        use_lima: false,
-    };
+    let facade = mock_facade(install_dir.clone(), false);
 
     assert_eq!(facade.binary_path(), install_dir.join("bin/apptainer"));
 }
@@ -111,20 +125,14 @@ fn test_apptainer_version_integration() {
 }
 
 // ---------------------------------------------------------------------------
-// Path translation tests (use direct struct construction to inject use_lima)
+// Path translation tests (use mock_facade to inject use_lima)
 // ---------------------------------------------------------------------------
 
 #[test]
 fn test_translate_path_linux_passthrough() {
     let tmp = TempDir::new().unwrap();
     let install_dir = create_mock_install_dir(&tmp);
-    let bin = install_dir.join("bin/apptainer");
-    let facade = ApptainerFacade {
-        apptainer_dir: install_dir,
-        apptainer_bin: bin.clone(),
-        guest_apptainer_bin: bin,
-        use_lima: false,
-    };
+    let facade = mock_facade(install_dir, false);
 
     // Any path should pass through unchanged when use_lima = false.
     let path = Path::new("/some/random/path/outside/home");
@@ -138,14 +146,7 @@ fn test_translate_path_linux_passthrough() {
 fn test_translate_path_lima_under_home() {
     let tmp = TempDir::new().unwrap();
     let install_dir = create_mock_install_dir(&tmp);
-    let bin = install_dir.join("bin/apptainer");
-    let guest_bin = PathBuf::from("/tmp/peppy/apptainer/bin/apptainer");
-    let facade = ApptainerFacade {
-        apptainer_dir: install_dir,
-        apptainer_bin: bin,
-        guest_apptainer_bin: guest_bin,
-        use_lima: true,
-    };
+    let facade = mock_facade(install_dir, true);
 
     let home = std::env::var("HOME").unwrap();
     let path = PathBuf::from(&home).join("projects/my_node/apptainer.def");
@@ -160,14 +161,7 @@ fn test_translate_path_lima_under_home() {
 fn test_translate_path_lima_outside_home_errors() {
     let tmp = TempDir::new().unwrap();
     let install_dir = create_mock_install_dir(&tmp);
-    let bin = install_dir.join("bin/apptainer");
-    let guest_bin = PathBuf::from("/tmp/peppy/apptainer/bin/apptainer");
-    let facade = ApptainerFacade {
-        apptainer_dir: install_dir,
-        apptainer_bin: bin,
-        guest_apptainer_bin: guest_bin,
-        use_lima: true,
-    };
+    let facade = mock_facade(install_dir, true);
 
     let path = Path::new("/opt/external/file.def");
     let result = facade.translate_path(path);
@@ -193,13 +187,7 @@ fn test_translate_path_lima_outside_home_errors() {
 fn test_effective_binary_path_linux() {
     let tmp = TempDir::new().unwrap();
     let install_dir = create_mock_install_dir(&tmp);
-    let bin = install_dir.join("bin/apptainer");
-    let facade = ApptainerFacade {
-        apptainer_dir: install_dir,
-        apptainer_bin: bin.clone(),
-        guest_apptainer_bin: bin,
-        use_lima: false,
-    };
+    let facade = mock_facade(install_dir, false);
 
     assert_eq!(
         facade.effective_binary_path(),
@@ -212,19 +200,44 @@ fn test_effective_binary_path_linux() {
 fn test_effective_binary_path_lima() {
     let tmp = TempDir::new().unwrap();
     let install_dir = create_mock_install_dir(&tmp);
-    let bin = install_dir.join("bin/apptainer");
-    let guest_bin = PathBuf::from("/tmp/peppy/apptainer/bin/apptainer");
-    let facade = ApptainerFacade {
-        apptainer_dir: install_dir,
-        apptainer_bin: bin,
-        guest_apptainer_bin: guest_bin.clone(),
-        use_lima: true,
-    };
+    let facade = mock_facade(install_dir, true);
 
-    assert_eq!(facade.effective_binary_path(), guest_bin);
+    assert_eq!(
+        facade.effective_binary_path(),
+        Path::new("/tmp/peppy/apptainer/bin/apptainer")
+    );
     assert_ne!(
         facade.effective_binary_path(),
         facade.binary_path(),
         "Under Lima, effective_binary_path should differ from host binary_path"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Lima version parsing tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_parse_lima_version_full_string() {
+    assert_eq!(parse_lima_version("limactl version 1.1.0"), Some((1, 1, 0)));
+}
+
+#[test]
+fn test_parse_lima_version_bare_version() {
+    assert_eq!(parse_lima_version("1.0.2"), Some((1, 0, 2)));
+}
+
+#[test]
+fn test_parse_lima_version_with_whitespace() {
+    assert_eq!(
+        parse_lima_version("  limactl version 0.19.1  \n"),
+        Some((0, 19, 1))
+    );
+}
+
+#[test]
+fn test_parse_lima_version_invalid() {
+    assert_eq!(parse_lima_version("not a version"), None);
+    assert_eq!(parse_lima_version(""), None);
+    assert_eq!(parse_lima_version("1.2"), None);
 }

@@ -1,9 +1,12 @@
 mod apptainer_build {
     use std::env;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::process::Command;
 
     const APPTAINER_VERSION: &str = "1.4.5";
+    const LIMA_VERSION: &str = "2.0.3";
+    const LIMA_INSTANCE: &str = "peppy";
+
     fn install_script_url() -> String {
         format!(
             "https://raw.githubusercontent.com/apptainer/apptainer/v{}/tools/install-unprivileged.sh",
@@ -11,22 +14,184 @@ mod apptainer_build {
         )
     }
 
-    fn get_temp_cache_dir(version: &str, arch: &str) -> PathBuf {
-        let temp_dir = env::temp_dir();
-        let cache_dir = temp_dir.join(format!(
-            "apptainer-peppy-cache/apptainer-{}-{}",
-            version, arch
-        ));
+    /// URL for downloading a Lima release archive.
+    fn lima_archive_url(version: &str, os: &str, arch: &str) -> String {
+        format!(
+            "https://github.com/lima-vm/lima/releases/download/v{version}/lima-{version}-{os}-{arch}.tar.gz"
+        )
+    }
 
+    // -----------------------------------------------------------------------
+    // LimaConfig — single source of truth for limactl path, LIMA_HOME, and
+    // instance name. All Lima commands go through `lima_command()` to ensure
+    // LIMA_HOME is always set.
+    // -----------------------------------------------------------------------
+
+    struct LimaConfig {
+        limactl: PathBuf,
+        lima_home: PathBuf,
+        instance: &'static str,
+    }
+
+    impl LimaConfig {
+        /// Create a `Command` for `limactl` with `LIMA_HOME` already set.
+        fn lima_command(&self) -> Command {
+            let mut cmd = Command::new(&self.limactl);
+            cmd.env("LIMA_HOME", &self.lima_home);
+            cmd
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Cache directories
+    // -----------------------------------------------------------------------
+
+    fn cache_root() -> PathBuf {
+        let root = env::temp_dir().join("peppy-build-cache");
+        if !root.exists() {
+            std::fs::create_dir_all(&root).expect("Failed to create peppy build cache root");
+        }
+        root
+    }
+
+    fn get_apptainer_cache_dir(version: &str, arch: &str) -> PathBuf {
+        let cache_dir = cache_root().join(format!("apptainer-{}-{}", version, arch));
         if !cache_dir.exists() {
             std::fs::create_dir_all(&cache_dir)
                 .expect("Failed to create apptainer cache directory");
         }
-
         cache_dir
     }
 
-    fn download_install_script(dest: &std::path::Path) -> bool {
+    fn get_lima_cache_dir(version: &str, os: &str, arch: &str) -> PathBuf {
+        let cache_dir = cache_root().join(format!("lima-{}-{}-{}", version, os, arch));
+        if !cache_dir.exists() {
+            std::fs::create_dir_all(&cache_dir).expect("Failed to create lima cache directory");
+        }
+        cache_dir
+    }
+
+    /// LIMA_HOME for the build-time VM instance.
+    ///
+    /// Uses `~/.peppy/lima-build/` instead of the temp dir because macOS temp
+    /// directories (`/var/folders/.../T/`) are very long and push Unix socket
+    /// paths past the 104-character limit.
+    fn get_lima_build_home() -> PathBuf {
+        let user_home = env::var("HOME").expect("HOME environment variable not set");
+        let home = PathBuf::from(user_home).join(".peppy/lima-build");
+        if !home.exists() {
+            std::fs::create_dir_all(&home).expect("Failed to create lima build data directory");
+        }
+        home
+    }
+
+    // -----------------------------------------------------------------------
+    // Lima download and extraction
+    // -----------------------------------------------------------------------
+
+    /// Download the Lima release archive to `dest`.
+    fn download_lima_archive(dest: &Path, version: &str, os: &str, arch: &str) -> bool {
+        let url = lima_archive_url(version, os, arch);
+        let status = Command::new("curl")
+            .args(["-fsSL", &url, "-o"])
+            .arg(dest)
+            .status();
+
+        match status {
+            Ok(s) if s.success() => true,
+            Ok(s) => {
+                println!(
+                    "cargo:warning=Failed to download Lima archive from {} (exit: {})",
+                    url, s
+                );
+                false
+            }
+            Err(e) => {
+                println!(
+                    "cargo:warning=Failed to run curl to download Lima archive: {}",
+                    e
+                );
+                false
+            }
+        }
+    }
+
+    /// Extract a Lima tarball into `dest_dir`.
+    ///
+    /// Lima archives contain paths like `bin/limactl`, `share/lima/templates/`, etc.
+    fn extract_lima_archive(archive: &Path, dest_dir: &Path) -> bool {
+        if dest_dir.exists() {
+            std::fs::remove_dir_all(dest_dir).ok();
+        }
+        std::fs::create_dir_all(dest_dir).expect("Failed to create lima extraction directory");
+
+        let status = Command::new("tar")
+            .args(["xzf"])
+            .arg(archive)
+            .arg("-C")
+            .arg(dest_dir)
+            .status();
+
+        match status {
+            Ok(s) if s.success() => true,
+            Ok(s) => {
+                println!("cargo:warning=Failed to extract Lima archive (exit: {})", s);
+                false
+            }
+            Err(e) => {
+                println!("cargo:warning=Failed to run tar for Lima extraction: {}", e);
+                false
+            }
+        }
+    }
+
+    /// Download and cache the Lima installation. Returns the path to the cache
+    /// directory containing `bin/limactl` on success.
+    fn ensure_lima_cached(version: &str, os: &str, arch: &str) -> Option<PathBuf> {
+        let cache_dir = get_lima_cache_dir(version, os, arch);
+        let cached_limactl = cache_dir.join("bin/limactl");
+
+        if cached_limactl.exists() {
+            println!(
+                "cargo:warning=Using cached Lima {} installation from {:?}",
+                version, cache_dir
+            );
+            return Some(cache_dir);
+        }
+
+        println!(
+            "cargo:warning=Downloading Lima {} for {}-{}...",
+            version, os, arch
+        );
+
+        let archive_path = cache_root().join(format!("lima-{}-{}-{}.tar.gz", version, os, arch));
+        if !download_lima_archive(&archive_path, version, os, arch) {
+            return None;
+        }
+
+        if !extract_lima_archive(&archive_path, &cache_dir) {
+            return None;
+        }
+
+        // Clean up the archive
+        std::fs::remove_file(&archive_path).ok();
+
+        if !cached_limactl.exists() {
+            println!(
+                "cargo:warning=Lima archive extracted but bin/limactl not found in {:?}",
+                cache_dir
+            );
+            return None;
+        }
+
+        Some(cache_dir)
+    }
+
+    // -----------------------------------------------------------------------
+    // Apptainer install script download
+    // -----------------------------------------------------------------------
+
+    fn download_install_script(dest: &Path) -> bool {
         let status = Command::new("curl")
             .args(["-fsSL", &install_script_url(), "-o"])
             .arg(dest)
@@ -56,7 +221,7 @@ mod apptainer_build {
     /// project — no perl, no python, no system packages required.
     ///
     /// Returns `true` if the script was written successfully.
-    fn create_rpm2cpio_shim(bin_dir: &std::path::Path) -> bool {
+    fn create_rpm2cpio_shim(bin_dir: &Path) -> bool {
         use std::os::unix::fs::PermissionsExt;
 
         let shim = bin_dir.join("rpm2cpio");
@@ -110,10 +275,7 @@ fi
     /// The upstream script requires `bash`, `rpm2cpio`, and `cpio`. If `rpm2cpio`
     /// is not on PATH we create a portable POSIX shim in a temp directory and
     /// prepend it to PATH — no sudo or system-wide installs needed.
-    fn run_install_script_local(
-        script_path: &std::path::Path,
-        install_dir: &std::path::Path,
-    ) -> bool {
+    fn run_install_script_local(script_path: &Path, install_dir: &Path) -> bool {
         // The script expects an empty directory; ensure it is.
         if install_dir.exists() {
             std::fs::remove_dir_all(install_dir).ok();
@@ -179,17 +341,20 @@ fi
         }
     }
 
-    /// Ensure a Lima "default" instance exists and is running.
+    // -----------------------------------------------------------------------
+    // Lima instance management
+    // -----------------------------------------------------------------------
+
+    /// Ensure the peppy Lima instance exists and is running.
     ///
-    /// * If the instance does not exist, create and start it.
+    /// * If the instance does not exist, create and start it with `template`.
     /// * If it exists but is stopped, start it.
     /// * If it is already running, this is a no-op.
-    fn ensure_lima_instance() -> bool {
+    fn ensure_lima_instance(lima: &LimaConfig, template: &str) -> bool {
         // Query instance status using Go template output — avoids brittle JSON parsing.
-        // Returns the status string (e.g. "Running", "Stopped") or None if the
-        // instance does not exist (limactl exits non-zero).
-        let list_output = Command::new("limactl")
-            .args(["list", "--format", "{{.Status}}", "default"])
+        let list_output = lima
+            .lima_command()
+            .args(["list", "--format", "{{.Status}}", lima.instance])
             .output();
 
         let instance_status = match &list_output {
@@ -211,15 +376,15 @@ fi
             }
             Some(_status) => {
                 // Instance exists but is not running — start it.
-                println!("cargo:warning=Starting Lima default instance...");
-                let start = Command::new("limactl").args(["start", "default"]).output();
+                println!("cargo:warning=Starting Lima {} instance...", lima.instance);
+                let start = lima.lima_command().args(["start", lima.instance]).output();
                 match start {
                     Ok(o) if o.status.success() => true,
                     Ok(o) => {
                         let stderr = String::from_utf8_lossy(&o.stderr);
                         println!(
-                            "cargo:warning=Failed to start Lima default instance (exit: {}): {}",
-                            o.status, stderr
+                            "cargo:warning=Failed to start Lima {} instance (exit: {}): {}",
+                            lima.instance, o.status, stderr
                         );
                         false
                     }
@@ -232,18 +397,21 @@ fi
             None => {
                 // Instance does not exist — create and start it.
                 println!(
-                    "cargo:warning=Creating Lima default instance (this may take a few minutes on first run)..."
+                    "cargo:warning=Creating Lima {} instance with {} (this may take a few minutes on first run)...",
+                    lima.instance, template
                 );
-                let create = Command::new("limactl")
-                    .args(["start", "default", "--tty=false"])
+                let name_flag = format!("--name={}", lima.instance);
+                let create = lima
+                    .lima_command()
+                    .args(["start", &name_flag, "--tty=false", template])
                     .output();
                 match create {
                     Ok(o) if o.status.success() => true,
                     Ok(o) => {
                         let stderr = String::from_utf8_lossy(&o.stderr);
                         println!(
-                            "cargo:warning=Failed to create Lima default instance (exit: {}): {}",
-                            o.status, stderr
+                            "cargo:warning=Failed to create Lima {} instance (exit: {}): {}",
+                            lima.instance, o.status, stderr
                         );
                         false
                     }
@@ -260,16 +428,17 @@ fi
     ///
     /// Lima provides a Linux guest where the script can execute with `rpm2cpio`
     /// and `cpio`. The flow:
-    /// 1. Ensure the default Lima instance is running.
+    /// 1. Ensure the peppy Lima instance is running.
     /// 2. Copy the install script into the VM.
     /// 3. Run it inside the VM, installing to a guest-local temp directory.
     /// 4. Copy the resulting directory tree back to the macOS host.
     fn run_install_script_via_lima(
-        script_path: &std::path::Path,
-        install_dir: &std::path::Path,
+        lima: &LimaConfig,
+        script_path: &Path,
+        install_dir: &Path,
     ) -> bool {
-        // 0) Ensure the Lima default instance exists and is running
-        if !ensure_lima_instance() {
+        // 0) Ensure the Lima instance exists and is running
+        if !ensure_lima_instance(lima, "template:default") {
             println!(
                 "cargo:warning=Could not ensure a running Lima instance; apptainer will not be bundled"
             );
@@ -280,11 +449,12 @@ fi
         let guest_install_dir = "/tmp/peppy-apptainer-install";
 
         // 1) Copy the script into the VM
-        let cp_in = Command::new("limactl")
+        let cp_in = lima
+            .lima_command()
             .args([
                 "copy",
                 &script_path.to_string_lossy(),
-                &format!("default:{guest_script}"),
+                &format!("{}:{guest_script}", lima.instance),
             ])
             .output();
         match &cp_in {
@@ -306,10 +476,11 @@ fi
         // 2) Run the install script inside the VM.
         //    Use `bash` because the upstream script uses bash-isms (e.g. `[[`).
         //    Also ensure rpm2cpio and cpio are available in the guest.
-        let run = Command::new("limactl")
+        let run = lima
+            .lima_command()
             .args([
                 "shell",
-                "default",
+                lima.instance,
                 "--",
                 "bash",
                 "-c",
@@ -344,11 +515,12 @@ fi
         }
         std::fs::create_dir_all(install_dir).expect("Failed to create apptainer install directory");
 
-        let cp_out = Command::new("limactl")
+        let cp_out = lima
+            .lima_command()
             .args([
                 "copy",
                 "-r",
-                &format!("default:{guest_install_dir}/."),
+                &format!("{}:{guest_install_dir}/.", lima.instance),
                 &install_dir.to_string_lossy(),
             ])
             .output();
@@ -369,10 +541,11 @@ fi
         }
 
         // 4) Clean up guest temp files
-        let _ = Command::new("limactl")
+        let _ = lima
+            .lima_command()
             .args([
                 "shell",
-                "default",
+                lima.instance,
                 "--",
                 "rm",
                 "-rf",
@@ -384,7 +557,7 @@ fi
         true
     }
 
-    fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+    fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
         if !dst.exists() {
             std::fs::create_dir_all(dst)?;
         }
@@ -410,25 +583,10 @@ fi
         println!("cargo:rerun-if-changed=build.rs");
 
         let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+
+        // On macOS, apptainer is Linux-only and runs inside a Lima VM.
+        // We download and bundle Lima ourselves — no `brew install lima` required.
         let use_lima = if target_os == "macos" {
-            // Apptainer is Linux-only; on macOS it runs inside a Lima VM.
-            let has_lima = Command::new("limactl")
-                .arg("--version")
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status()
-                .is_ok_and(|s| s.success());
-
-            if !has_lima {
-                panic!(
-                    "\n\n\
-                     Apptainer requires Lima on macOS.\n\
-                     Lima provides a lightweight Linux VM for running apptainer containers.\n\n\
-                     Install Lima with:  brew install lima\n\
-                     Then re-run the build.\n\n"
-                );
-            }
-
             true
         } else if target_os != "linux" {
             println!(
@@ -447,9 +605,59 @@ fi
         } else {
             env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_else(|_| "x86_64".to_string())
         };
-        let cache_dir = get_temp_cache_dir(APPTAINER_VERSION, &arch);
 
         let out_dir = env::var("OUT_DIR").unwrap();
+
+        // ------------------------------------------------------------------
+        // Step 1 (macOS only): Download and cache Lima
+        // ------------------------------------------------------------------
+        let lima_config = if use_lima {
+            let lima_cache_dir = match ensure_lima_cached(LIMA_VERSION, "Darwin", "arm64") {
+                Some(dir) => dir,
+                None => {
+                    println!(
+                        "cargo:warning=Could not download Lima; apptainer will not be bundled"
+                    );
+                    return;
+                }
+            };
+
+            let lima = LimaConfig {
+                limactl: lima_cache_dir.join("bin/limactl"),
+                lima_home: get_lima_build_home(),
+                instance: LIMA_INSTANCE,
+            };
+
+            // Copy Lima installation to OUT_DIR for the crate to reference at compile time
+            let out_lima_dir = PathBuf::from(&out_dir).join("lima-install");
+            if out_lima_dir.exists() {
+                std::fs::remove_dir_all(&out_lima_dir).ok();
+            }
+            if let Err(e) = copy_dir_recursive(&lima_cache_dir, &out_lima_dir) {
+                println!(
+                    "cargo:warning=Failed to copy Lima installation to OUT_DIR: {}",
+                    e
+                );
+                return;
+            }
+            println!(
+                "cargo:rustc-env=LIMA_INSTALL_DIR={}",
+                out_lima_dir.display()
+            );
+            println!(
+                "cargo:rustc-env=LIMA_BUILD_HOME={}",
+                lima.lima_home.display()
+            );
+
+            Some(lima)
+        } else {
+            None
+        };
+
+        // ------------------------------------------------------------------
+        // Step 2: Download and cache apptainer
+        // ------------------------------------------------------------------
+        let cache_dir = get_apptainer_cache_dir(APPTAINER_VERSION, &arch);
         let out_install_dir = PathBuf::from(&out_dir).join("apptainer-install");
 
         // Check if we have a valid cached installation (bin/apptainer must exist)
@@ -467,7 +675,7 @@ fi
             );
 
             // Download the install script (curl works on both Linux and macOS)
-            let script_path = cache_dir.parent().unwrap().join("install-unprivileged.sh");
+            let script_path = cache_root().join("install-unprivileged.sh");
             if !download_install_script(&script_path) {
                 println!(
                     "cargo:warning=Could not download apptainer install script; apptainer will not be bundled"
@@ -475,8 +683,8 @@ fi
                 return;
             }
 
-            let success = if use_lima {
-                run_install_script_via_lima(&script_path, &cache_dir)
+            let success = if let Some(ref lima) = lima_config {
+                run_install_script_via_lima(lima, &script_path, &cache_dir)
             } else {
                 run_install_script_local(&script_path, &cache_dir)
             };
@@ -501,7 +709,7 @@ fi
             std::fs::remove_file(&script_path).ok();
         }
 
-        // Copy cached installation to OUT_DIR
+        // Copy cached apptainer installation to OUT_DIR
         if out_install_dir.exists() {
             std::fs::remove_dir_all(&out_install_dir).ok();
         }

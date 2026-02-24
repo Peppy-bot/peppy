@@ -7,11 +7,17 @@ pub enum Error {
     #[error("Apptainer installation not found: {0}")]
     ApptainerNotFound(String),
 
-    #[error(
-        "Apptainer requires Lima on macOS. Install Lima with: brew install lima\n\
-         Then start a Lima instance: limactl start template://apptainer"
-    )]
+    #[error("Lima binary not found in peppy installation. Reinstall peppy or set PEPPY_LIMA_DIR.")]
     LimaRequired,
+
+    #[error(
+        "Lima version {found} is too old. peppy requires Lima >= {minimum}. \
+         Reinstall peppy with an updated release."
+    )]
+    LimaVersionTooOld { found: String, minimum: String },
+
+    #[error("Lima instance management failed: {0}")]
+    LimaInstanceError(String),
 
     #[error("Apptainer command `{command}` failed with {status}: {stderr}")]
     CommandFailed {
