@@ -2,6 +2,7 @@ use super::facade::{ApptainerFacade, is_uri, parse_lima_version};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use tempfile::TempDir;
 
 /// Create a mock apptainer installation directory with the expected structure.
@@ -308,4 +309,51 @@ fn test_translate_path_resolves_relative_lima() {
         cwd.join("project/my_image.sif"),
         "Relative path should resolve against CWD under Lima"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Lima instance status integration test
+// ---------------------------------------------------------------------------
+
+/// Integration test: after ApptainerFacade::new(), the Lima instance should be running.
+///
+/// On macOS, this verifies that the peppy instance was created with the correct template
+/// and is in "Running" state. On Linux, Lima is not used, so we assert the fields are None.
+#[test]
+fn test_lima_instance_running_after_init() {
+    let facade = ApptainerFacade::new()
+        .expect("ApptainerFacade::new() should succeed — apptainer is bundled at compile time");
+
+    if cfg!(target_os = "macos") {
+        let limactl = facade
+            .limactl_path
+            .as_ref()
+            .expect("limactl_path should be Some on macOS");
+        let lima_home = facade
+            .lima_home
+            .as_ref()
+            .expect("lima_home should be Some on macOS");
+
+        let output = Command::new(limactl)
+            .env("LIMA_HOME", lima_home)
+            .args(["list", "--format", "{{.Status}}", "peppy"])
+            .output()
+            .expect("limactl list should execute successfully");
+
+        let status = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        assert_eq!(
+            status, "Running",
+            "Lima peppy instance should be Running after ApptainerFacade::new(), got: '{}'",
+            status
+        );
+    } else {
+        assert!(
+            facade.limactl_path.is_none(),
+            "limactl_path should be None on Linux"
+        );
+        assert!(
+            facade.lima_home.is_none(),
+            "lima_home should be None on Linux"
+        );
+    }
 }

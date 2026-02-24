@@ -6,6 +6,7 @@ mod apptainer_build {
     const APPTAINER_VERSION: &str = "1.4.5";
     const LIMA_VERSION: &str = "2.0.3";
     const LIMA_INSTANCE: &str = "peppy";
+    const LIMA_TEMPLATE: &str = "template:default";
 
     fn install_script_url() -> String {
         format!(
@@ -438,7 +439,7 @@ fi
         install_dir: &Path,
     ) -> bool {
         // 0) Ensure the Lima instance exists and is running
-        if !ensure_lima_instance(lima, "template:default") {
+        if !ensure_lima_instance(lima, LIMA_TEMPLATE) {
             println!(
                 "cargo:warning=Could not ensure a running Lima instance; apptainer will not be bundled"
             );
@@ -731,6 +732,7 @@ fi
         );
         println!("cargo:rustc-env=APPTAINER_VERSION={}", APPTAINER_VERSION);
         println!("cargo:rustc-env=LIMA_INSTANCE={}", LIMA_INSTANCE);
+        println!("cargo:rustc-env=LIMA_TEMPLATE={}", LIMA_TEMPLATE);
     }
 }
 
