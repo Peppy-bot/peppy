@@ -107,7 +107,31 @@ mod apptainer_build {
         println!("cargo:rerun-if-changed=build.rs");
 
         let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
-        if target_os != "linux" {
+        if target_os == "macos" {
+            // Apptainer is Linux-only; on macOS it runs inside a Lima VM.
+            let has_lima = Command::new("limactl")
+                .arg("--version")
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .is_ok_and(|s| s.success());
+
+            if !has_lima {
+                panic!(
+                    "\n\n\
+                     Apptainer requires Lima on macOS.\n\
+                     Lima provides a lightweight Linux VM for running apptainer containers.\n\n\
+                     Install Lima with:  brew install lima\n\
+                     Then re-run the build.\n\n"
+                );
+            }
+
+            // Lima is present but we still can't bundle a Linux binary on macOS.
+            println!(
+                "cargo:warning=macOS detected with Lima present; apptainer binary not bundled (Linux-only). The runtime will delegate to Lima."
+            );
+            return;
+        } else if target_os != "linux" {
             println!(
                 "cargo:warning=Skipping apptainer build: apptainer is Linux-only (target_os={})",
                 target_os
