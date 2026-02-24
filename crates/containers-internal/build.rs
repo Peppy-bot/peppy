@@ -534,6 +534,7 @@ fi
             "cargo:rustc-env=APPTAINER_INSTALL_DIR={}",
             out_install_dir.display()
         );
+        println!("cargo:rustc-env=APPTAINER_VERSION={}", APPTAINER_VERSION);
     }
 }
 

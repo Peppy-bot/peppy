@@ -1,10 +1,11 @@
 use super::facade::ApptainerFacade;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
 /// Create a mock apptainer installation directory with the expected structure.
-fn create_mock_install_dir(tmp: &TempDir) -> std::path::PathBuf {
+fn create_mock_install_dir(tmp: &TempDir) -> PathBuf {
     let install_dir = tmp.path().join("apptainer");
     let bin_dir = install_dir.join("bin");
     fs::create_dir_all(&bin_dir).unwrap();
@@ -122,7 +123,7 @@ fn test_command_builders_produce_correct_args() {
 /// Integration test: resolve the real apptainer installation (from build.rs compile-time
 /// path or system PATH) and run `apptainer --version`.
 ///
-/// On macOS this exercises the Lima routing path.
+/// On macOS this exercises the Lima sync and routing path.
 /// build.rs guarantees apptainer is bundled, so this test should always succeed.
 #[test]
 fn test_apptainer_version_integration() {
@@ -133,6 +134,17 @@ fn test_apptainer_version_integration() {
 
     let facade = ApptainerFacade::new()
         .expect("ApptainerFacade::new() should succeed — apptainer is bundled at compile time");
+
+    // On macOS, effective_binary_path should point to the guest-side installation.
+    if cfg!(target_os = "macos") {
+        let effective = facade.effective_binary_path();
+        assert_eq!(
+            effective,
+            Path::new("/tmp/peppy/apptainer/bin/apptainer"),
+            "On macOS, effective_binary_path should be the guest-side path, got: {}",
+            effective.display()
+        );
+    }
 
     let version = facade.version();
     // SAFETY: restoring original value.
@@ -146,3 +158,120 @@ fn test_apptainer_version_integration() {
     );
     eprintln!("apptainer version: {}", v);
 }
+
+// ---------------------------------------------------------------------------
+// Path translation tests (use new_for_test to inject use_lima without a VM)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_translate_path_linux_passthrough() {
+    let tmp = TempDir::new().unwrap();
+    let install_dir = create_mock_install_dir(&tmp);
+    let bin = install_dir.join("bin/apptainer");
+    let facade = ApptainerFacade {
+        apptainer_dir: install_dir,
+        apptainer_bin: bin.clone(),
+        guest_apptainer_bin: bin,
+        use_lima: false,
+    };
+
+    // Any path should pass through unchanged when use_lima = false.
+    let path = Path::new("/some/random/path/outside/home");
+    assert_eq!(facade.translate_path(path).unwrap(), path);
+
+    let home_path = PathBuf::from(std::env::var("HOME").unwrap()).join("project/file.def");
+    assert_eq!(facade.translate_path(&home_path).unwrap(), home_path);
+}
+
+#[test]
+fn test_translate_path_lima_under_home() {
+    let tmp = TempDir::new().unwrap();
+    let install_dir = create_mock_install_dir(&tmp);
+    let bin = install_dir.join("bin/apptainer");
+    let guest_bin = PathBuf::from("/tmp/peppy/apptainer/bin/apptainer");
+    let facade = ApptainerFacade {
+        apptainer_dir: install_dir,
+        apptainer_bin: bin,
+        guest_apptainer_bin: guest_bin,
+        use_lima: true,
+    };
+
+    let home = std::env::var("HOME").unwrap();
+    let path = PathBuf::from(&home).join("projects/my_node/apptainer.def");
+    assert_eq!(
+        facade.translate_path(&path).unwrap(),
+        path,
+        "Paths under $HOME should pass through unchanged"
+    );
+}
+
+#[test]
+fn test_translate_path_lima_outside_home_errors() {
+    let tmp = TempDir::new().unwrap();
+    let install_dir = create_mock_install_dir(&tmp);
+    let bin = install_dir.join("bin/apptainer");
+    let guest_bin = PathBuf::from("/tmp/peppy/apptainer/bin/apptainer");
+    let facade = ApptainerFacade {
+        apptainer_dir: install_dir,
+        apptainer_bin: bin,
+        guest_apptainer_bin: guest_bin,
+        use_lima: true,
+    };
+
+    let path = Path::new("/opt/external/file.def");
+    let result = facade.translate_path(path);
+    assert!(result.is_err(), "Paths outside $HOME should error under Lima");
+
+    let err_msg = result.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("not accessible inside the Lima VM"),
+        "Error should mention Lima VM inaccessibility, got: {}",
+        err_msg
+    );
+    assert!(
+        err_msg.contains("/opt/external/file.def"),
+        "Error should include the offending path, got: {}",
+        err_msg
+    );
+}
+
+#[test]
+fn test_effective_binary_path_linux() {
+    let tmp = TempDir::new().unwrap();
+    let install_dir = create_mock_install_dir(&tmp);
+    let bin = install_dir.join("bin/apptainer");
+    let facade = ApptainerFacade {
+        apptainer_dir: install_dir,
+        apptainer_bin: bin.clone(),
+        guest_apptainer_bin: bin,
+        use_lima: false,
+    };
+
+    assert_eq!(
+        facade.effective_binary_path(),
+        facade.binary_path(),
+        "On Linux, effective_binary_path should equal binary_path"
+    );
+}
+
+#[test]
+fn test_effective_binary_path_lima() {
+    let tmp = TempDir::new().unwrap();
+    let install_dir = create_mock_install_dir(&tmp);
+    let bin = install_dir.join("bin/apptainer");
+    let guest_bin = PathBuf::from("/tmp/peppy/apptainer/bin/apptainer");
+    let facade = ApptainerFacade {
+        apptainer_dir: install_dir,
+        apptainer_bin: bin,
+        guest_apptainer_bin: guest_bin.clone(),
+        use_lima: true,
+    };
+
+    assert_eq!(facade.effective_binary_path(), guest_bin);
+    assert_ne!(
+        facade.effective_binary_path(),
+        facade.binary_path(),
+        "Under Lima, effective_binary_path should differ from host binary_path"
+    );
+}
+
