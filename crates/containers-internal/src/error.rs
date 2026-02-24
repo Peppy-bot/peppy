@@ -35,6 +35,9 @@ pub enum Error {
     #[error("Failed to sync apptainer installation to Lima VM: {0}")]
     LimaSyncFailed(String),
 
+    #[error("ApptainerFacade is not ready. Call ensure_ready() before running commands.")]
+    NotReady,
+
     #[error(transparent)]
     Io(#[from] std::io::Error),
 
