@@ -4,8 +4,12 @@ mod apptainer_build {
     use std::process::Command;
 
     const APPTAINER_VERSION: &str = "1.4.5";
-    const INSTALL_SCRIPT_URL: &str =
-        "https://raw.githubusercontent.com/apptainer/apptainer/main/tools/install-unprivileged.sh";
+    fn install_script_url() -> String {
+        format!(
+            "https://raw.githubusercontent.com/apptainer/apptainer/v{}/tools/install-unprivileged.sh",
+            APPTAINER_VERSION
+        )
+    }
 
     fn get_temp_cache_dir(version: &str, arch: &str) -> PathBuf {
         let temp_dir = env::temp_dir();
@@ -24,7 +28,7 @@ mod apptainer_build {
 
     fn download_install_script(dest: &std::path::Path) -> bool {
         let status = Command::new("curl")
-            .args(["-fsSL", INSTALL_SCRIPT_URL, "-o"])
+            .args(["-fsSL", &install_script_url(), "-o"])
             .arg(dest)
             .status();
 
