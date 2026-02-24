@@ -48,7 +48,65 @@ mod apptainer_build {
         }
     }
 
+    /// Create a portable POSIX `rpm2cpio` script in `bin_dir` using only standard
+    /// tools (`od`, `dd`, `file`).  Based on `scripts/rpm2cpio.sh` from the RPM
+    /// project — no perl, no python, no system packages required.
+    ///
+    /// Returns `true` if the script was written successfully.
+    fn create_rpm2cpio_shim(bin_dir: &std::path::Path) -> bool {
+        use std::os::unix::fs::PermissionsExt;
+
+        let shim = bin_dir.join("rpm2cpio");
+        // Portable rpm2cpio — based on rpm-software-management/rpm scripts/rpm2cpio.sh.
+        // Handles both file arguments (`rpm2cpio file.rpm`) and stdin pipes
+        // (`curl … | rpm2cpio -`) which the apptainer install script uses.
+        // Uses a shell function for extraction to avoid variable-expansion pitfalls
+        // with redirections in command strings.
+        let script = r#"#!/bin/sh
+pkg="$1"
+_tmp=""
+if [ "$pkg" = "-" ] || [ -z "$pkg" ]; then
+    _tmp=$(mktemp); cat > "$_tmp"; pkg="$_tmp"
+fi
+if [ ! -e "$pkg" ]; then
+    echo "rpm2cpio: no package supplied" >&2
+    [ -n "$_tmp" ] && rm -f "$_tmp"; exit 1
+fi
+leadsize=96
+o=$(expr $leadsize + 8)
+set -- $(od -j $o -N 8 -t u1 "$pkg")
+il=$(expr 256 \* \( 256 \* \( 256 \* $2 + $3 \) + $4 \) + $5)
+dl=$(expr 256 \* \( 256 \* \( 256 \* $6 + $7 \) + $8 \) + $9)
+sigsize=$(expr 8 + 16 \* $il + $dl)
+o=$(expr $o + \( 8 - \( $sigsize \% 8 \) \) \% 8 + $sigsize + 8)
+set -- $(od -j $o -N 8 -t u1 "$pkg")
+il=$(expr 256 \* \( 256 \* \( 256 \* $2 + $3 \) + $4 \) + $5)
+dl=$(expr 256 \* \( 256 \* \( 256 \* $6 + $7 \) + $8 \) + $9)
+hdrsize=$(expr 8 + 16 \* $il + $dl)
+o=$(expr $o + $hdrsize)
+_extract() { dd if="$pkg" ibs="$o" skip=1 2>/dev/null; }
+COMPRESSION=$( (_extract | file -) 2>/dev/null )
+_rc=0
+if echo "$COMPRESSION" | grep -iq gzip; then _extract | gunzip
+elif echo "$COMPRESSION" | grep -iq bzip2; then _extract | bunzip2
+elif echo "$COMPRESSION" | grep -iq xz; then _extract | unxz
+elif echo "$COMPRESSION" | grep -iq zst; then _extract | unzstd
+elif echo "$COMPRESSION" | grep -iq cpio; then _extract
+else echo "Unrecognized rpm: $pkg" >&2; _rc=1
+fi
+[ -n "$_tmp" ] && rm -f "$_tmp"; exit $_rc
+"#;
+        if std::fs::write(&shim, script).is_err() {
+            return false;
+        }
+        std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).is_ok()
+    }
+
     /// Run `install-unprivileged.sh` directly on the host (Linux).
+    ///
+    /// The upstream script requires `bash`, `rpm2cpio`, and `cpio`. If `rpm2cpio`
+    /// is not on PATH we create a portable POSIX shim in a temp directory and
+    /// prepend it to PATH — no sudo or system-wide installs needed.
     fn run_install_script_local(
         script_path: &std::path::Path,
         install_dir: &std::path::Path,
@@ -59,11 +117,44 @@ mod apptainer_build {
         }
         std::fs::create_dir_all(install_dir).expect("Failed to create apptainer install directory");
 
-        let output = Command::new("sh")
-            .arg(script_path)
+        // Ensure rpm2cpio is available — provide a portable shim if needed.
+        let shim_dir = install_dir.parent().unwrap().join("_rpm2cpio_shim");
+        let _ = std::fs::create_dir_all(&shim_dir);
+
+        let has_rpm2cpio = Command::new("rpm2cpio")
+            .arg("--help")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok();
+
+        let extra_path = if !has_rpm2cpio {
+            if !create_rpm2cpio_shim(&shim_dir) {
+                println!("cargo:warning=Failed to create rpm2cpio shim");
+                return false;
+            }
+            Some(shim_dir.clone())
+        } else {
+            None
+        };
+
+        let mut cmd = Command::new("bash");
+        cmd.arg(script_path)
             .args(["-v", APPTAINER_VERSION, "-d", "el9"])
-            .arg(install_dir)
-            .output();
+            .arg(install_dir);
+
+        // Prepend shim directory to PATH if we created one.
+        if let Some(ref shim) = extra_path {
+            let path = env::var("PATH").unwrap_or_default();
+            cmd.env("PATH", format!("{}:{}", shim.display(), path));
+        }
+
+        let output = cmd.output();
+
+        // Clean up shim directory.
+        if extra_path.is_some() {
+            std::fs::remove_dir_all(&shim_dir).ok();
+        }
 
         match output {
             Ok(o) if o.status.success() => true,

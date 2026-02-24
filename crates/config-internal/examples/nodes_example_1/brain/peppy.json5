@@ -9,6 +9,8 @@
     labels: [
       "brain"
     ],
+  },
+  build: {
     add_cmd: [
       "cargo",
       "build",

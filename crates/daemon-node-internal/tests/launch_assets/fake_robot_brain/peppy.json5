@@ -8,6 +8,8 @@
     labels: [
       "brain"
     ],
+  },
+  build: {
     add_cmd: [
       "true"
     ],

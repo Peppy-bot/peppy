@@ -76,10 +76,10 @@ fn print_node_info(response: &NodeInfoResponse) {
     }
 
     // Commands
-    if let Some(add_cmd) = &manifest.add_cmd {
+    if let Some(add_cmd) = &config.build.add_cmd {
         println!("Add cmd:   {}", add_cmd.join(" "));
     }
-    println!("Start cmd: {}", manifest.start_cmd.join(" "));
+    println!("Start cmd: {}", config.build.start_cmd.join(" "));
 
     // Node stack status
     println!();

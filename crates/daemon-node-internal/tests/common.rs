@@ -574,7 +574,9 @@ fn main() -> Result<()> {
     name: "{crate_name}",
     tag: "{node_tag}",
     language: "rust",
-    // Avoid `add_cmd` build step here to make the `add` tests faster
+  }},
+  // Avoid `add_cmd` build step here to make the `add` tests faster
+  build: {{
     add_cmd: [
         "true"
     ],

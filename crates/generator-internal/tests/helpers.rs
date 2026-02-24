@@ -28,7 +28,9 @@ pub const STUB_NODE_CONFIG: &str = r#"{
   manifest: {
     name: "generated_node",
     tag: "0.1.0",
-    language: "rust",
+    language: "rust"
+  },
+  build: {
     start_cmd: ["./target/release/generated_node"]
   }
 }
@@ -526,7 +528,9 @@ pub const STUB_PYTHON_NODE_CONFIG: &str = r#"{
   manifest: {
     name: "generated_node",
     tag: "0.1.0",
-    language: "python",
+    language: "python"
+  },
+  build: {
     start_cmd: ["uv", "run", "python", "main.py"]
   }
 }

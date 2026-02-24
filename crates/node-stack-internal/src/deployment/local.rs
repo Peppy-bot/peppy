@@ -53,7 +53,9 @@ mod tests {
                 manifest: {
                     name: "uvc_camera",
                     tag: "0.1.0",
-                    language: "rust",
+                    language: "rust"
+                },
+                build: {
                     start_cmd: ["./target/release/uvc_camera"]
                 }
             }"#,

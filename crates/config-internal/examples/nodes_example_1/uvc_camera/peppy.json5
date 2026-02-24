@@ -11,6 +11,8 @@
       "camera",
       "usb",
     ],
+  },
+  build: {
     container: {
       def_file: "apptainer.def"
     },

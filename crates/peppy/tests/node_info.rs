@@ -33,7 +33,9 @@ async fn node_info_shows_dependencies_from_subscribed_interfaces() {
             manifest: {{
                 name: "{NODE_NAME}",
                 tag: "{NODE_TAG}",
-                language: "rust",
+                language: "rust"
+            }},
+            build: {{
                 start_cmd: ["sleep", "10"]
             }},
             interfaces: {{
@@ -167,7 +169,9 @@ async fn node_info_no_dependencies_when_no_subscribes() {
             manifest: {{
                 name: "{NODE_NAME}",
                 tag: "{NODE_TAG}",
-                language: "rust",
+                language: "rust"
+            }},
+            build: {{
                 start_cmd: ["sleep", "10"]
             }},
             interfaces: {{
