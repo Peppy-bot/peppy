@@ -20,6 +20,15 @@ pub enum Error {
         stderr: String,
     },
 
+    #[error(
+        "Path {path} is not accessible inside the Lima VM. Lima auto-mounts the home directory (~). \
+         Move your project files under your home directory, or set PEPPY_APPTAINER_DIR to a path under ~."
+    )]
+    PathNotAccessibleInVm { path: String },
+
+    #[error("Failed to sync apptainer installation to Lima VM: {0}")]
+    LimaSyncFailed(String),
+
     #[error(transparent)]
     Io(#[from] std::io::Error),
 
