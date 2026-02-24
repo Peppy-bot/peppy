@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 
 const LIMA_INSTANCE: &str = env!("LIMA_INSTANCE");
+const LIMA_TEMPLATE: &str = env!("LIMA_TEMPLATE");
 const MIN_LIMA_VERSION: (u32, u32, u32) = (2, 0, 0);
 
 /// Returns `true` if the string looks like a URI reference (e.g. `docker://...`, `library://...`)
@@ -85,7 +86,7 @@ impl ApptainerFacade {
             }
             let home = Self::resolve_lima_home()?;
             Self::check_lima_version(&limactl)?;
-            Self::ensure_lima_instance(&limactl, &home, "template:apptainer")?;
+            Self::ensure_lima_instance(&limactl, &home, LIMA_TEMPLATE)?;
             (Some(limactl), Some(home))
         } else {
             (None, None)
