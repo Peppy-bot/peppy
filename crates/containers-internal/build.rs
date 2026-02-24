@@ -486,7 +486,7 @@ fi
                 "bash",
                 "-c",
                 &format!(
-                    "command -v rpm2cpio >/dev/null 2>&1 || sudo apt-get update -qq && sudo apt-get install -y -qq rpm2cpio cpio >/dev/null 2>&1; \
+                    "command -v rpm2cpio >/dev/null 2>&1 || (sudo apt-get update -qq && sudo apt-get install -y -qq rpm2cpio cpio >/dev/null 2>&1); \
                      rm -rf {guest_install_dir} && bash {guest_script} -v {APPTAINER_VERSION} -d el9 {guest_install_dir}"
                 ),
             ])
