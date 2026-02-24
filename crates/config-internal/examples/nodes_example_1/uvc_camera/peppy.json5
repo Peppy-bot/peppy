@@ -11,13 +11,20 @@
       "camera",
       "usb",
     ],
+    container: {
+      def_file: "apptainer.def"
+    },
     add_cmd: [
-      "cargo",
+      "${PEPPY_CONTAINER_ENGINE}",
       "build",
-      "--release"
+      "--fakeroot",
+      "${PEPPY_NODE_NAME}_${PEPPY_NODE_TAG}.sif",
+      "apptainer.def"
     ],
     start_cmd: [
-      "./target/release/uvc_camera"
+      "${PEPPY_CONTAINER_ENGINE}",
+      "run",
+      "${PEPPY_NODE_NAME}_${PEPPY_NODE_TAG}.sif",
     ]
   },
   // Expected parameter types to start the node
