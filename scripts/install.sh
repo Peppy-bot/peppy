@@ -148,6 +148,24 @@ __wrap__() {
         fi
     fi
 
+    # Apptainer requires unprivileged user namespaces on Linux
+    if [ "$PLATFORM" != "apple-darwin" ] && [ -f /proc/sys/kernel/unprivileged_userns_clone ]; then
+        if [ "$(cat /proc/sys/kernel/unprivileged_userns_clone)" = "0" ]; then
+            echo "" >&2
+            echo "error: peppy requires unprivileged user namespaces, but they are disabled on this system." >&2
+            echo "       Apptainer needs user namespaces to run containers without root privileges." >&2
+            echo "" >&2
+            echo "       To enable them, run:" >&2
+            echo "         sudo sysctl -w kernel.unprivileged_userns_clone=1" >&2
+            echo "" >&2
+            echo "       To make this permanent across reboots, add to /etc/sysctl.d/:" >&2
+            echo "         echo 'kernel.unprivileged_userns_clone=1' | sudo tee /etc/sysctl.d/99-userns.conf" >&2
+            echo "         sudo sysctl --system" >&2
+            echo "" >&2
+            exit 1
+        fi
+    fi
+
     if ! command -v tar >/dev/null 2>&1; then
         echo "error: 'tar' is required to install peppy" >&2
         exit 1

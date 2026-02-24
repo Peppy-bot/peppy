@@ -54,7 +54,7 @@
             height: "u32",
             frame: {
               $type: "array",
-              $items: "u8"
+              $items: "u8",
             },
           },
         }
@@ -65,29 +65,18 @@
           request_message_format: {
             enable: "bool",
           },
-          response_message_format: {
-            enabled: "bool",
-            error_msg: { // Won't contain anything if enabled = True
-              $type: "string",
-              $optional: true
-            },
-          },
         },
         {
-          name: "get_camera_info",
           // This service simply returns camera info; no request body is required.
+          name: "video_stream_info",
           response_message_format: {
-            card_type: "string",
-            size: "string",
-            interval: "string"
+            width: "u32",
+            height: "u32",
+            frames_per_second: "u8",
+            encoding: "string",
           },
         },
       ],
-    },
-    subscribes_to: {
-      topics: [],
-      services: [],
-      actions: [],
     },
   }
 }
