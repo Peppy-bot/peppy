@@ -6,7 +6,7 @@ edition.workspace = true
 
 [dependencies]
 thiserror = "2.0"
-tracing = "0.1.41"
+tracing = "0.1"
 
 [dev-dependencies]
 tempfile = "3"

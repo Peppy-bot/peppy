@@ -573,6 +573,16 @@ PY
         echo "warning: apptainer install directory not found in build output; container features will not be bundled" >&2
     fi
 
+    # Include the bundled Lima installation (limactl + templates + guest agent).
+    # On macOS, Lima provides a lightweight Linux VM for running apptainer.
+    LIMA_DIR="$(find "${TARGET_DIR%/}/${HOST_TRIPLE}/release/build" -type d -path "*/containers-*/out/lima-install" -print | head -n 1 || true)"
+    if [ -d "${LIMA_DIR-}" ]; then
+        cp -a "$LIMA_DIR" "$PKG_DIR/lima"
+        echo "Including lima directory in release"
+    else
+        echo "warning: lima install directory not found in build output; Lima will not be bundled" >&2
+    fi
+
     tar -czf "$ASSET_PATH" -C "$PKG_DIR" .
     echo "Built artifact: $ASSET_PATH"
 
