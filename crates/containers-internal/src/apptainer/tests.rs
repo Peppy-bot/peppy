@@ -119,26 +119,30 @@ fn test_command_builders_produce_correct_args() {
     unsafe { restore_env(ENV_KEY, original) };
 }
 
-#[cfg(target_os = "macos")]
+/// Integration test: resolve the real apptainer installation (from build.rs compile-time
+/// path or system PATH) and run `apptainer --version`.
+///
+/// On macOS this exercises the Lima routing path.
+/// build.rs guarantees apptainer is bundled, so this test should always succeed.
 #[test]
-fn test_lima_required_error_on_macos() {
-    // On macOS, if no apptainer is found anywhere, we should get LimaRequired
+fn test_apptainer_version_integration() {
+    // Don't override the env var — let the facade use compile-time or PATH resolution.
     let original = std::env::var(ENV_KEY).ok();
-    // SAFETY: test-only env manipulation.
+    // SAFETY: ensure no override interferes.
     unsafe { restore_env(ENV_KEY, None) };
 
-    // This test is only meaningful if apptainer is NOT installed on the system
-    let result = ApptainerFacade::new();
-    if result.is_err() {
-        let err = result.unwrap_err();
-        let err_msg = err.to_string();
-        assert!(
-            err_msg.contains("Lima"),
-            "Expected Lima-related error on macOS, got: {}",
-            err_msg
-        );
-    }
+    let facade = ApptainerFacade::new()
+        .expect("ApptainerFacade::new() should succeed — apptainer is bundled at compile time");
 
+    let version = facade.version();
     // SAFETY: restoring original value.
     unsafe { restore_env(ENV_KEY, original) };
+
+    let v = version.expect("apptainer --version should succeed");
+    assert!(
+        v.contains("apptainer") || v.contains("1."),
+        "Expected version string containing 'apptainer' or '1.', got: {}",
+        v
+    );
+    eprintln!("apptainer version: {}", v);
 }
