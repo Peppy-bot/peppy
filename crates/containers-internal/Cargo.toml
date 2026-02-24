@@ -10,10 +10,3 @@ tracing = "0.1.41"
 
 [dev-dependencies]
 tempfile = "3"
-
-[features]
-default = ["apptainer"]
-# Feature to enable apptainer container runtime support
-apptainer = ["build_apptainer"]
-# Feature to enable downloading apptainer at build time
-build_apptainer = []

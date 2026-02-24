@@ -1,4 +1,3 @@
-#[cfg(feature = "apptainer")]
 mod apptainer_build {
     use std::env;
     use std::path::PathBuf;
@@ -424,10 +423,6 @@ fi
     }
 
     pub fn run() {
-        if env::var("CARGO_FEATURE_BUILD_APPTAINER").is_err() {
-            return;
-        }
-
         println!("cargo:rerun-if-changed=build.rs");
 
         let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
@@ -543,6 +538,5 @@ fi
 }
 
 fn main() {
-    #[cfg(feature = "apptainer")]
     apptainer_build::run();
 }
