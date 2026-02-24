@@ -2,7 +2,7 @@ use super::super::error::{Error, Result};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 
-const LIMA_INSTANCE: &str = "peppy";
+const LIMA_INSTANCE: &str = env!("LIMA_INSTANCE");
 const MIN_LIMA_VERSION: (u32, u32, u32) = (2, 0, 0);
 
 /// Returns `true` if the string looks like a URI reference (e.g. `docker://...`, `library://...`)
