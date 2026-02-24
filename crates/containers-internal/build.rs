@@ -730,6 +730,7 @@ fi
             out_install_dir.display()
         );
         println!("cargo:rustc-env=APPTAINER_VERSION={}", APPTAINER_VERSION);
+        println!("cargo:rustc-env=LIMA_INSTANCE={}", LIMA_INSTANCE);
     }
 }
 
