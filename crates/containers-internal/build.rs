@@ -409,8 +409,12 @@ fi
             let entry = entry?;
             let src_path = entry.path();
             let dst_path = dst.join(entry.file_name());
+            let file_type = entry.file_type()?;
 
-            if src_path.is_dir() {
+            if file_type.is_symlink() {
+                let target = std::fs::read_link(&src_path)?;
+                std::os::unix::fs::symlink(&target, &dst_path)?;
+            } else if file_type.is_dir() {
                 copy_dir_recursive(&src_path, &dst_path)?;
             } else {
                 std::fs::copy(&src_path, &dst_path)?;

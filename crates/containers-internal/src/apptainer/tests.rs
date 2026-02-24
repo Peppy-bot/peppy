@@ -220,7 +220,10 @@ fn test_translate_path_lima_outside_home_errors() {
 
     let path = Path::new("/opt/external/file.def");
     let result = facade.translate_path(path);
-    assert!(result.is_err(), "Paths outside $HOME should error under Lima");
+    assert!(
+        result.is_err(),
+        "Paths outside $HOME should error under Lima"
+    );
 
     let err_msg = result.unwrap_err().to_string();
     assert!(
@@ -274,4 +277,3 @@ fn test_effective_binary_path_lima() {
         "Under Lima, effective_binary_path should differ from host binary_path"
     );
 }
-
