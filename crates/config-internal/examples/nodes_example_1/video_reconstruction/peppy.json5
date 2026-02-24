@@ -1,0 +1,42 @@
+// Local example that keeps the `web_video_stream` folder path but uses the current
+// fake video reconstruction structure from example_nodes.
+{
+  schema_version: 1,
+  manifest: {
+    name: "video_reconstruction",
+    tag: "0.1.0",
+    language: "rust",
+    add_cmd: [
+      "cargo",
+      "build",
+      "--release"
+    ],
+    start_cmd: [
+      "./target/release/video_reconstruction"
+    ]
+  },
+  parameters: {
+    // How long do you want the reconstruction to be?
+    video_duration_seconds: "u32"
+  },
+  interfaces: {
+    subscribes_to: {
+      topics: [
+        {
+          id: "camera_stream",
+          node: "uvc_camera",
+          tag: "0.1.0",
+          name: "video_stream",
+        },
+      ],
+      services: [
+        {
+          id: "camera_info",
+          node: "uvc_camera",
+          tag: "0.1.0",
+          name: "video_stream_info",
+        },
+      ]
+    },
+  }
+}
