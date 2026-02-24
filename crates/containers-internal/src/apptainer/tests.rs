@@ -1,4 +1,5 @@
-use super::facade::{ApptainerFacade, is_uri, parse_lima_version};
+use super::super::error::Error;
+use super::facade::{ApptainerFacade, Backend, is_uri};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -20,25 +21,28 @@ fn create_mock_install_dir(tmp: &TempDir) -> PathBuf {
 }
 
 /// Create a mock `ApptainerFacade` for unit tests that don't need real Lima.
-///
-/// Sets `limactl_path` and `lima_home` to `None` (tests that need Lima routing
-/// should use the integration test path instead).
-fn mock_facade(install_dir: PathBuf, use_lima: bool) -> ApptainerFacade {
+fn mock_facade(install_dir: PathBuf, lima: bool) -> ApptainerFacade {
     let bin = install_dir.join("bin/apptainer");
-    let guest_bin = if use_lima {
-        PathBuf::from("/tmp/peppy/apptainer/bin/apptainer")
+    let backend = if lima {
+        Backend::Lima {
+            apptainer_bin: bin,
+            guest_apptainer_bin: PathBuf::from("/tmp/peppy/apptainer/bin/apptainer"),
+            limactl_path: PathBuf::from("/mock/limactl"),
+            lima_home: PathBuf::from("/mock/lima-home"),
+            ready: false,
+        }
     } else {
-        bin.clone()
+        Backend::Native { apptainer_bin: bin }
     };
     ApptainerFacade {
         apptainer_dir: install_dir,
-        apptainer_bin: bin,
-        guest_apptainer_bin: guest_bin,
-        use_lima,
-        limactl_path: None,
-        lima_home: None,
+        backend,
     }
 }
+
+// ---------------------------------------------------------------------------
+// Construction tests
+// ---------------------------------------------------------------------------
 
 #[test]
 fn test_facade_from_valid_dir() {
@@ -94,6 +98,39 @@ fn test_binary_path_matches_install_dir() {
     assert_eq!(facade.binary_path(), install_dir.join("bin/apptainer"));
 }
 
+// ---------------------------------------------------------------------------
+// ensure_ready tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_ensure_ready_native_is_noop() {
+    let tmp = TempDir::new().unwrap();
+    let install_dir = create_mock_install_dir(&tmp);
+    let mut facade = mock_facade(install_dir, false);
+
+    // Native backend: ensure_ready should succeed immediately.
+    facade.ensure_ready().unwrap();
+}
+
+#[test]
+fn test_command_before_ensure_ready_returns_not_ready() {
+    let tmp = TempDir::new().unwrap();
+    let install_dir = create_mock_install_dir(&tmp);
+    let facade = mock_facade(install_dir, true);
+
+    // Lima backend with ready=false: calling version() should fail with NotReady.
+    let result = facade.version();
+    assert!(result.is_err());
+    assert!(
+        matches!(result.unwrap_err(), Error::NotReady),
+        "Expected Error::NotReady when calling commands before ensure_ready()"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Integration tests (require real apptainer/Lima)
+// ---------------------------------------------------------------------------
+
 /// Integration test: resolve the real apptainer installation (from build.rs compile-time
 /// path or system PATH) and run `apptainer --version`.
 ///
@@ -101,8 +138,12 @@ fn test_binary_path_matches_install_dir() {
 /// build.rs guarantees apptainer is bundled, so this test should always succeed.
 #[test]
 fn test_apptainer_version_integration() {
-    let facade = ApptainerFacade::new()
+    let mut facade = ApptainerFacade::new()
         .expect("ApptainerFacade::new() should succeed — apptainer is bundled at compile time");
+
+    facade
+        .ensure_ready()
+        .expect("ensure_ready() should succeed");
 
     // On macOS, effective_binary_path should point to the guest-side installation.
     if cfg!(target_os = "macos") {
@@ -126,7 +167,7 @@ fn test_apptainer_version_integration() {
 }
 
 // ---------------------------------------------------------------------------
-// Path translation tests (use mock_facade to inject use_lima)
+// Path translation tests (use mock_facade to inject backend)
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -135,7 +176,7 @@ fn test_translate_path_linux_passthrough() {
     let install_dir = create_mock_install_dir(&tmp);
     let facade = mock_facade(install_dir, false);
 
-    // Any path should pass through unchanged when use_lima = false.
+    // Any path should pass through unchanged when using Native backend.
     let path = Path::new("/some/random/path/outside/home");
     assert_eq!(facade.translate_path(path).unwrap(), path);
 
@@ -215,35 +256,6 @@ fn test_effective_binary_path_lima() {
 }
 
 // ---------------------------------------------------------------------------
-// Lima version parsing tests
-// ---------------------------------------------------------------------------
-
-#[test]
-fn test_parse_lima_version_full_string() {
-    assert_eq!(parse_lima_version("limactl version 1.1.0"), Some((1, 1, 0)));
-}
-
-#[test]
-fn test_parse_lima_version_bare_version() {
-    assert_eq!(parse_lima_version("1.0.2"), Some((1, 0, 2)));
-}
-
-#[test]
-fn test_parse_lima_version_with_whitespace() {
-    assert_eq!(
-        parse_lima_version("  limactl version 0.19.1  \n"),
-        Some((0, 19, 1))
-    );
-}
-
-#[test]
-fn test_parse_lima_version_invalid() {
-    assert_eq!(parse_lima_version("not a version"), None);
-    assert_eq!(parse_lima_version(""), None);
-    assert_eq!(parse_lima_version("1.2"), None);
-}
-
-// ---------------------------------------------------------------------------
 // URI detection tests
 // ---------------------------------------------------------------------------
 
@@ -315,45 +327,45 @@ fn test_translate_path_resolves_relative_lima() {
 // Lima instance status integration test
 // ---------------------------------------------------------------------------
 
-/// Integration test: after ApptainerFacade::new(), the Lima instance should be running.
+/// Integration test: after ApptainerFacade::new() + ensure_ready(), the Lima
+/// instance should be running.
 ///
-/// On macOS, this verifies that the peppy instance was created with the correct template
-/// and is in "Running" state. On Linux, Lima is not used, so we assert the fields are None.
+/// On macOS, this verifies that the peppy instance was created with the correct
+/// template and is in "Running" state. On Linux, Lima is not used, so we assert
+/// the backend is Native.
 #[test]
 fn test_lima_instance_running_after_init() {
-    let facade = ApptainerFacade::new()
+    let mut facade = ApptainerFacade::new()
         .expect("ApptainerFacade::new() should succeed — apptainer is bundled at compile time");
 
-    if cfg!(target_os = "macos") {
-        let limactl = facade
-            .limactl_path
-            .as_ref()
-            .expect("limactl_path should be Some on macOS");
-        let lima_home = facade
-            .lima_home
-            .as_ref()
-            .expect("lima_home should be Some on macOS");
+    facade
+        .ensure_ready()
+        .expect("ensure_ready() should succeed");
 
-        let output = Command::new(limactl)
-            .env("LIMA_HOME", lima_home)
-            .args(["list", "--format", "{{.Status}}", "peppy"])
-            .output()
-            .expect("limactl list should execute successfully");
+    match &facade.backend {
+        Backend::Lima {
+            limactl_path,
+            lima_home,
+            ready,
+            ..
+        } => {
+            assert!(ready, "Lima backend should be ready after ensure_ready()");
 
-        let status = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        assert_eq!(
-            status, "Running",
-            "Lima peppy instance should be Running after ApptainerFacade::new(), got: '{}'",
-            status
-        );
-    } else {
-        assert!(
-            facade.limactl_path.is_none(),
-            "limactl_path should be None on Linux"
-        );
-        assert!(
-            facade.lima_home.is_none(),
-            "lima_home should be None on Linux"
-        );
+            let output = Command::new(limactl_path)
+                .env("LIMA_HOME", lima_home)
+                .args(["list", "--format", "{{.Status}}", "peppy"])
+                .output()
+                .expect("limactl list should execute successfully");
+
+            let status = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            assert_eq!(
+                status, "Running",
+                "Lima peppy instance should be Running after ensure_ready(), got: '{}'",
+                status
+            );
+        }
+        Backend::Native { .. } => {
+            // On Linux, Lima is not used — this is expected.
+        }
     }
 }

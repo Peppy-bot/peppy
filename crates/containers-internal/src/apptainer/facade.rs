@@ -1,10 +1,7 @@
 use super::super::error::{Error, Result};
+use super::lima;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
-
-const LIMA_INSTANCE: &str = env!("LIMA_INSTANCE");
-const LIMA_TEMPLATE: &str = env!("LIMA_TEMPLATE");
-const MIN_LIMA_VERSION: (u32, u32, u32) = (2, 0, 0);
 
 /// Returns `true` if the string looks like a URI reference (e.g. `docker://...`, `library://...`)
 /// rather than a filesystem path.
@@ -12,10 +9,24 @@ pub(crate) fn is_uri(s: &str) -> bool {
     s.contains("://")
 }
 
-/// Single-quote a path for safe embedding in a shell command string.
-fn shell_escape(path: &Path) -> String {
-    // Replace any single quotes in the path with the '\'' idiom, then wrap in single quotes.
-    format!("'{}'", path.display().to_string().replace('\'', "'\\''"))
+/// The execution backend — how apptainer commands are actually invoked.
+#[derive(Debug)]
+pub(crate) enum Backend {
+    /// Linux: run apptainer directly on the host.
+    Native { apptainer_bin: PathBuf },
+    /// macOS: route commands through a Lima VM.
+    Lima {
+        /// Host-side path to `bin/apptainer` within the installation (for validation).
+        apptainer_bin: PathBuf,
+        /// Guest-side path at `/tmp/peppy/apptainer/bin/apptainer`.
+        guest_apptainer_bin: PathBuf,
+        /// Path to the bundled `limactl` binary.
+        limactl_path: PathBuf,
+        /// LIMA_HOME directory for VM instance data.
+        lima_home: PathBuf,
+        /// Whether `ensure_ready()` has been called (VM booted, apptainer synced).
+        ready: bool,
+    },
 }
 
 /// Facade for the Apptainer container runtime.
@@ -29,21 +40,20 @@ fn shell_escape(path: &Path) -> String {
 /// apptainer is Linux-only. The host-side installation is synced to
 /// `/tmp/peppy/apptainer/` inside the guest and all commands use the guest-side
 /// path.
+///
+/// # Two-phase initialization
+///
+/// Construction (`new()` / `from_dir()`) is cheap — it validates paths and
+/// resolves the Lima installation but does **not** boot the VM. Call
+/// [`ensure_ready()`](Self::ensure_ready) before running any commands. On Linux
+/// this is a no-op; on macOS it boots the Lima VM and syncs apptainer into the
+/// guest (may take minutes on first run).
 #[derive(Debug)]
 pub struct ApptainerFacade {
     /// Root of the apptainer installation on the host (contains `bin/`, arch dirs, etc.)
     pub(crate) apptainer_dir: PathBuf,
-    /// Host-side path to `bin/apptainer` within the installation.
-    pub(crate) apptainer_bin: PathBuf,
-    /// Path to `bin/apptainer` as invoked in commands. On Linux this is the same as
-    /// `apptainer_bin`. On macOS (Lima) this is the guest-side path at `/tmp/peppy/apptainer/`.
-    pub(crate) guest_apptainer_bin: PathBuf,
-    /// Whether to route commands through Lima (macOS).
-    pub(crate) use_lima: bool,
-    /// Path to the bundled `limactl` binary. `None` on Linux.
-    pub(crate) limactl_path: Option<PathBuf>,
-    /// LIMA_HOME directory for VM instance data. `None` on Linux.
-    pub(crate) lima_home: Option<PathBuf>,
+    /// Execution backend (Native on Linux, Lima on macOS).
+    pub(crate) backend: Backend,
 }
 
 impl ApptainerFacade {
@@ -54,8 +64,9 @@ impl ApptainerFacade {
     /// 2. `../apptainer/` relative to the current executable (installed layout)
     /// 3. Compile-time `APPTAINER_INSTALL_DIR` set by build.rs
     ///
-    /// On macOS, also resolves the bundled Lima installation, ensures the Lima
-    /// VM instance is running, and syncs apptainer into the guest.
+    /// On macOS, also resolves the bundled Lima installation and validates the
+    /// Lima version, but does **not** boot the VM. Call [`ensure_ready()`](Self::ensure_ready)
+    /// to start the VM and sync apptainer into the guest.
     pub fn new() -> Result<Self> {
         let apptainer_dir = Self::resolve_apptainer_dir()?;
         Self::from_dir(apptainer_dir)
@@ -64,8 +75,9 @@ impl ApptainerFacade {
     /// Creates a new `ApptainerFacade` from an explicit installation directory.
     ///
     /// Validates that `bin/apptainer` exists within `apptainer_dir`. On macOS,
-    /// resolves the bundled Lima installation, ensures the VM instance is
-    /// running, and syncs apptainer into the guest.
+    /// resolves the bundled Lima installation and checks the version, but does
+    /// **not** boot the VM. Call [`ensure_ready()`](Self::ensure_ready) before
+    /// running commands.
     pub fn from_dir(apptainer_dir: PathBuf) -> Result<Self> {
         let apptainer_bin = apptainer_dir.join("bin/apptainer");
 
@@ -76,41 +88,66 @@ impl ApptainerFacade {
             )));
         }
 
-        let use_lima = cfg!(target_os = "macos");
-
-        let (limactl_path, lima_home) = if use_lima {
-            let lima_dir = Self::resolve_lima_dir()?;
-            let limactl = lima_dir.join("bin/limactl");
-            if !limactl.exists() {
+        let backend = if cfg!(target_os = "macos") {
+            let lima_dir = lima::resolve_lima_dir()?;
+            let limactl_path = lima_dir.join("bin/limactl");
+            if !limactl_path.exists() {
                 return Err(Error::LimaRequired);
             }
-            let home = Self::resolve_lima_home()?;
-            Self::check_lima_version(&limactl)?;
-            Self::ensure_lima_instance(&limactl, &home, LIMA_TEMPLATE)?;
-            (Some(limactl), Some(home))
-        } else {
-            (None, None)
-        };
+            let lima_home = lima::resolve_lima_home()?;
+            lima::check_lima_version(&limactl_path)?;
 
-        let guest_apptainer_bin = if use_lima {
-            Self::ensure_guest_apptainer(
-                &apptainer_dir,
-                limactl_path.as_ref().unwrap(),
-                lima_home.as_ref().unwrap(),
-                LIMA_INSTANCE,
-            )?
+            Backend::Lima {
+                apptainer_bin,
+                guest_apptainer_bin: PathBuf::from("/tmp/peppy/apptainer/bin/apptainer"),
+                limactl_path,
+                lima_home,
+                ready: false,
+            }
         } else {
-            apptainer_bin.clone()
+            Backend::Native { apptainer_bin }
         };
 
         Ok(Self {
             apptainer_dir,
-            apptainer_bin,
-            guest_apptainer_bin,
-            use_lima,
-            limactl_path,
-            lima_home,
+            backend,
         })
+    }
+
+    /// Ensures the execution backend is fully ready for running commands.
+    ///
+    /// On Linux (`Backend::Native`): no-op, returns `Ok(())` immediately.
+    ///
+    /// On macOS (`Backend::Lima`): boots the Lima VM if it is not already running,
+    /// and syncs the apptainer installation into the guest. This may take minutes
+    /// on first run. Subsequent calls are idempotent.
+    pub fn ensure_ready(&mut self) -> Result<()> {
+        match &mut self.backend {
+            Backend::Native { .. } => Ok(()),
+            Backend::Lima {
+                limactl_path,
+                lima_home,
+                guest_apptainer_bin,
+                ready,
+                ..
+            } => {
+                if *ready {
+                    return Ok(());
+                }
+
+                lima::ensure_lima_instance(limactl_path, lima_home, lima::LIMA_TEMPLATE)?;
+
+                *guest_apptainer_bin = lima::ensure_guest_apptainer(
+                    &self.apptainer_dir,
+                    limactl_path,
+                    lima_home,
+                    lima::LIMA_INSTANCE,
+                )?;
+
+                *ready = true;
+                Ok(())
+            }
+        }
     }
 
     /// Returns the root directory of the apptainer installation on the host.
@@ -120,7 +157,11 @@ impl ApptainerFacade {
 
     /// Returns the host-side path to the apptainer binary.
     pub fn binary_path(&self) -> &Path {
-        &self.apptainer_bin
+        match &self.backend {
+            Backend::Native { apptainer_bin } | Backend::Lima { apptainer_bin, .. } => {
+                apptainer_bin
+            }
+        }
     }
 
     /// Returns the path used to invoke apptainer in commands.
@@ -128,7 +169,13 @@ impl ApptainerFacade {
     /// On Linux this is the same as [`binary_path()`](Self::binary_path). On macOS
     /// (Lima) this is the guest-side path inside the VM.
     pub fn effective_binary_path(&self) -> &Path {
-        &self.guest_apptainer_bin
+        match &self.backend {
+            Backend::Native { apptainer_bin } => apptainer_bin,
+            Backend::Lima {
+                guest_apptainer_bin,
+                ..
+            } => guest_apptainer_bin,
+        }
     }
 
     /// Query the apptainer version: `apptainer --version`
@@ -152,13 +199,7 @@ impl ApptainerFacade {
     /// If `image` is a filesystem path (not a URI like `docker://...`) it is
     /// translated to a guest-visible path when running under Lima.
     pub fn run(&self, image: &str, args: &[&str]) -> Result<Child> {
-        let translated = if is_uri(image) {
-            image.to_string()
-        } else {
-            self.translate_path(Path::new(image))?
-                .to_string_lossy()
-                .into_owned()
-        };
+        let translated = self.translate_arg(image)?;
         let mut all_args = vec!["run", &translated];
         all_args.extend(args);
         self.spawn(&all_args)
@@ -169,13 +210,7 @@ impl ApptainerFacade {
     /// If `container` is a filesystem path (not a URI like `docker://...`) it is
     /// translated to a guest-visible path when running under Lima.
     pub fn exec(&self, container: &str, cmd: &[&str]) -> Result<Child> {
-        let translated = if is_uri(container) {
-            container.to_string()
-        } else {
-            self.translate_path(Path::new(container))?
-                .to_string_lossy()
-                .into_owned()
-        };
+        let translated = self.translate_arg(container)?;
         let mut all_args = vec!["exec", &translated];
         all_args.extend(cmd);
         self.spawn(&all_args)
@@ -192,11 +227,25 @@ impl ApptainerFacade {
         self.spawn(&["build", &output_str, &def_str])
     }
 
+    /// Translate a string argument: if it is a URI, return as-is; otherwise
+    /// resolve as a filesystem path via [`translate_path()`](Self::translate_path).
+    fn translate_arg(&self, arg: &str) -> Result<String> {
+        if is_uri(arg) {
+            Ok(arg.to_string())
+        } else {
+            Ok(self
+                .translate_path(Path::new(arg))?
+                .to_string_lossy()
+                .into_owned())
+        }
+    }
+
     /// Translate a host-side path to its guest-visible equivalent.
     ///
-    /// When `use_lima` is false (Linux), all paths are returned unchanged.
+    /// When running natively (Linux), all paths are returned unchanged (but
+    /// relative paths are resolved to absolute).
     ///
-    /// When `use_lima` is true (macOS), Lima auto-mounts the home directory (`~`)
+    /// When running under Lima (macOS), Lima auto-mounts the home directory (`~`)
     /// at the same absolute path inside the guest. Paths under `$HOME` are returned
     /// unchanged. Paths outside `$HOME` cannot be accessed by the guest and produce
     /// an error.
@@ -210,19 +259,21 @@ impl ApptainerFacade {
             host_path.to_path_buf()
         };
 
-        if !self.use_lima {
-            return Ok(absolute_path);
-        }
+        match &self.backend {
+            Backend::Native { .. } => Ok(absolute_path),
+            Backend::Lima { .. } => {
+                let home = std::env::var("HOME").map_err(|_| {
+                    Error::ConfigurationError("HOME environment variable not set".into())
+                })?;
 
-        let home = std::env::var("HOME")
-            .map_err(|_| Error::ConfigurationError("HOME environment variable not set".into()))?;
-
-        if absolute_path.starts_with(&home) {
-            Ok(absolute_path)
-        } else {
-            Err(Error::PathNotAccessibleInVm {
-                path: absolute_path.display().to_string(),
-            })
+                if absolute_path.starts_with(&home) {
+                    Ok(absolute_path)
+                } else {
+                    Err(Error::PathNotAccessibleInVm {
+                        path: absolute_path.display().to_string(),
+                    })
+                }
+            }
         }
     }
 
@@ -230,13 +281,13 @@ impl ApptainerFacade {
     ///
     /// On macOS this routes through the bundled `limactl shell peppy --`.
     fn spawn(&self, args: &[&str]) -> Result<Child> {
-        let mut cmd = self.command(args);
+        let mut cmd = self.command(args)?;
         cmd.spawn().map_err(Error::from)
     }
 
     /// Run an apptainer command to completion and return its output.
     fn run_to_completion(&self, args: &[&str]) -> Result<Output> {
-        let mut cmd = self.command(args);
+        let mut cmd = self.command(args)?;
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
         cmd.output().map_err(Error::from)
     }
@@ -246,228 +297,34 @@ impl ApptainerFacade {
     /// On Linux: runs `{apptainer_bin} <args...>` directly.
     /// On macOS: runs `{limactl} shell peppy -- {guest_apptainer_bin} <args...>` to
     /// execute inside the Lima VM using the synced guest-side binary.
-    fn command(&self, args: &[&str]) -> Command {
-        if self.use_lima {
-            let limactl = self
-                .limactl_path
-                .as_ref()
-                .expect("limactl_path required on macOS");
-            let lima_home = self
-                .lima_home
-                .as_ref()
-                .expect("lima_home required on macOS");
-            let mut cmd = Command::new(limactl);
-            cmd.env("LIMA_HOME", lima_home);
-            cmd.arg("shell").arg(LIMA_INSTANCE).arg("--");
-            cmd.arg(&self.guest_apptainer_bin);
-            cmd.args(args);
-            cmd
-        } else {
-            let mut cmd = Command::new(&self.apptainer_bin);
-            cmd.args(args);
-            cmd
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // Lima instance and version management
-    // -----------------------------------------------------------------------
-
-    /// Check that the bundled Lima version meets the minimum requirement.
-    fn check_lima_version(limactl: &Path) -> Result<()> {
-        let output = Command::new(limactl).arg("--version").output()?;
-
-        if !output.status.success() {
-            return Err(Error::LimaRequired);
-        }
-
-        let version_str = String::from_utf8_lossy(&output.stdout);
-        let found = parse_lima_version(&version_str).unwrap_or_default();
-
-        if found < MIN_LIMA_VERSION {
-            return Err(Error::LimaVersionTooOld {
-                found: format!("{}.{}.{}", found.0, found.1, found.2),
-                minimum: format!(
-                    "{}.{}.{}",
-                    MIN_LIMA_VERSION.0, MIN_LIMA_VERSION.1, MIN_LIMA_VERSION.2
-                ),
-            });
-        }
-
-        Ok(())
-    }
-
-    /// Ensure the peppy Lima instance exists and is running.
     ///
-    /// * If the instance does not exist, create and start it with `template`.
-    /// * If it exists but is stopped, start it.
-    /// * If it is already running, this is a no-op.
-    fn ensure_lima_instance(limactl: &Path, lima_home: &Path, template: &str) -> Result<()> {
-        std::fs::create_dir_all(lima_home).map_err(|e| {
-            Error::LimaInstanceError(format!(
-                "failed to create LIMA_HOME {}: {e}",
-                lima_home.display()
-            ))
-        })?;
-
-        let list_output = Command::new(limactl)
-            .env("LIMA_HOME", lima_home)
-            .args(["list", "--format", "{{.Status}}", LIMA_INSTANCE])
-            .output();
-
-        let instance_status = match &list_output {
-            Ok(o) if o.status.success() => {
-                let status = String::from_utf8_lossy(&o.stdout).trim().to_string();
-                if status.is_empty() {
-                    None
-                } else {
-                    Some(status)
-                }
+    /// Returns `Error::NotReady` if the Lima backend has not been initialized via
+    /// [`ensure_ready()`](Self::ensure_ready).
+    fn command(&self, args: &[&str]) -> Result<Command> {
+        match &self.backend {
+            Backend::Native { apptainer_bin } => {
+                let mut cmd = Command::new(apptainer_bin);
+                cmd.args(args);
+                Ok(cmd)
             }
-            _ => None,
-        };
-
-        match instance_status.as_deref() {
-            Some("Running") => Ok(()),
-            Some(_) => {
-                tracing::info!("Starting Lima {} instance...", LIMA_INSTANCE);
-                let start = Command::new(limactl)
-                    .env("LIMA_HOME", lima_home)
-                    .args(["start", LIMA_INSTANCE])
-                    .output()?;
-
-                if start.status.success() {
-                    Ok(())
-                } else {
-                    let stderr = String::from_utf8_lossy(&start.stderr);
-                    Err(Error::LimaInstanceError(format!(
-                        "failed to start Lima {} instance: {stderr}",
-                        LIMA_INSTANCE
-                    )))
+            Backend::Lima {
+                guest_apptainer_bin,
+                limactl_path,
+                lima_home,
+                ready,
+                ..
+            } => {
+                if !ready {
+                    return Err(Error::NotReady);
                 }
-            }
-            None => {
-                tracing::info!(
-                    "Creating Lima {} instance with {} (first run, may take a few minutes)...",
-                    LIMA_INSTANCE,
-                    template
-                );
-                let name_flag = format!("--name={}", LIMA_INSTANCE);
-                let create = Command::new(limactl)
-                    .env("LIMA_HOME", lima_home)
-                    .args(["start", &name_flag, "--tty=false", template])
-                    .output()?;
-
-                if create.status.success() {
-                    Ok(())
-                } else {
-                    let stderr = String::from_utf8_lossy(&create.stderr);
-                    Err(Error::LimaInstanceError(format!(
-                        "failed to create Lima {} instance: {stderr}",
-                        LIMA_INSTANCE
-                    )))
-                }
+                let mut cmd = Command::new(limactl_path);
+                cmd.env("LIMA_HOME", lima_home);
+                cmd.arg("shell").arg(lima::LIMA_INSTANCE).arg("--");
+                cmd.arg(guest_apptainer_bin);
+                cmd.args(args);
+                Ok(cmd)
             }
         }
-    }
-
-    // -----------------------------------------------------------------------
-    // Guest apptainer sync
-    // -----------------------------------------------------------------------
-
-    /// Ensure the apptainer installation is available inside the Lima VM guest.
-    ///
-    /// Syncs the host-side installation to `/tmp/peppy/apptainer/` in the guest.
-    /// This path lives on the guest's native writable filesystem, avoiding Lima's
-    /// read-only home directory mount. A version-stamped marker file avoids
-    /// redundant copies on subsequent invocations.
-    ///
-    /// Returns the guest-side path to `bin/apptainer`.
-    fn ensure_guest_apptainer(
-        host_dir: &Path,
-        limactl: &Path,
-        lima_home: &Path,
-        instance: &str,
-    ) -> Result<PathBuf> {
-        let guest_dir = PathBuf::from("/tmp/peppy/apptainer");
-        let guest_bin = guest_dir.join("bin/apptainer");
-
-        let version = option_env!("APPTAINER_VERSION").unwrap_or("unknown");
-        let marker_name = format!(".peppy-sync-{version}");
-
-        // Fast path: check if the version marker exists (sub-second limactl call).
-        let marker_exists = Command::new(limactl)
-            .env("LIMA_HOME", lima_home)
-            .args(["shell", instance, "--", "test", "-f"])
-            .arg(guest_dir.join(&marker_name))
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .is_ok_and(|s| s.success());
-
-        if marker_exists {
-            return Ok(guest_bin);
-        }
-
-        tracing::info!("Syncing apptainer installation to Lima VM guest...");
-
-        // Remove stale installation in guest.
-        let _ = Command::new(limactl)
-            .env("LIMA_HOME", lima_home)
-            .args(["shell", instance, "--", "rm", "-rf"])
-            .arg(&guest_dir)
-            .status();
-
-        // Create the target directory in the guest.
-        let mkdir = Command::new(limactl)
-            .env("LIMA_HOME", lima_home)
-            .args(["shell", instance, "--", "mkdir", "-p"])
-            .arg(&guest_dir)
-            .output()
-            .map_err(|e| Error::LimaSyncFailed(format!("failed to create guest directory: {e}")))?;
-
-        if !mkdir.status.success() {
-            let stderr = String::from_utf8_lossy(&mkdir.stderr);
-            return Err(Error::LimaSyncFailed(format!(
-                "mkdir in guest returned {}: {stderr}",
-                mkdir.status
-            )));
-        }
-
-        // Copy host installation to guest via tar pipe.
-        // `limactl copy -r` is unreliable with long or special-character paths,
-        // so we tar on the host and untar in the guest through a pipe.
-        let limactl_str = limactl.to_string_lossy();
-        let lima_home_str = lima_home.to_string_lossy();
-        let tar_pipe = Command::new("bash")
-            .arg("-c")
-            .arg(format!(
-                "tar -cf - -C {} . | LIMA_HOME={} {} shell {} -- tar -xf - -C {}",
-                shell_escape(host_dir),
-                shell_escape(Path::new(&*lima_home_str)),
-                shell_escape(Path::new(&*limactl_str)),
-                instance,
-                guest_dir.display(),
-            ))
-            .output()
-            .map_err(|e| Error::LimaSyncFailed(format!("tar pipe to guest failed: {e}")))?;
-
-        if !tar_pipe.status.success() {
-            let stderr = String::from_utf8_lossy(&tar_pipe.stderr);
-            return Err(Error::LimaSyncFailed(format!(
-                "tar pipe to guest returned {}: {stderr}",
-                tar_pipe.status
-            )));
-        }
-
-        // Write the version marker so we skip the sync next time.
-        let _ = Command::new(limactl)
-            .env("LIMA_HOME", lima_home)
-            .args(["shell", instance, "--", "touch"])
-            .arg(guest_dir.join(&marker_name))
-            .status();
-
-        Ok(guest_bin)
     }
 
     // -----------------------------------------------------------------------
@@ -527,101 +384,4 @@ impl ApptainerFacade {
             ))
         }
     }
-
-    /// Resolve the Lima installation directory (contains `bin/limactl`, `share/lima/`).
-    ///
-    /// Resolution order:
-    /// 1. `PEPPY_LIMA_DIR` environment variable
-    /// 2. `../lima/` relative to the current executable (installed layout)
-    /// 3. Compile-time `LIMA_INSTALL_DIR` set by build.rs
-    fn resolve_lima_dir() -> Result<PathBuf> {
-        // 1) Runtime override via environment variable
-        if let Ok(dir) = std::env::var("PEPPY_LIMA_DIR") {
-            let dir = dir.trim().to_string();
-            if !dir.is_empty() {
-                let path = PathBuf::from(&dir);
-                if path.is_dir() {
-                    return Ok(path);
-                }
-                tracing::warn!(
-                    "PEPPY_LIMA_DIR={} does not exist or is not a directory",
-                    dir
-                );
-            }
-        }
-
-        // 2) Relative to the current executable: {exe_dir}/../lima/
-        //    This is the installed layout created by install.sh ($PEPPY_HOME/lima/).
-        if let Ok(exe_path) = std::env::current_exe()
-            && let Some(exe_dir) = exe_path.parent()
-        {
-            let candidate = exe_dir.join("../lima");
-            if candidate.is_dir() {
-                return Ok(candidate);
-            }
-        }
-
-        // 3) Compile-time path injected by build.rs
-        if let Some(dir) = option_env!("LIMA_INSTALL_DIR") {
-            let path = PathBuf::from(dir);
-            if path.is_dir() {
-                return Ok(path);
-            }
-            tracing::debug!(
-                "Compile-time LIMA_INSTALL_DIR={} does not exist at runtime",
-                dir
-            );
-        }
-
-        Err(Error::LimaRequired)
-    }
-
-    /// Resolve the LIMA_HOME directory for VM instance data.
-    ///
-    /// Resolution order:
-    /// 1. `{exe_dir}/../lima-data/` — installed layout (`~/.peppy/lima-data/`).
-    /// 2. Compile-time `LIMA_BUILD_HOME` — reuses the build-time VM during development.
-    /// 3. `~/.peppy/lima-data/` — fallback for unusual layouts.
-    fn resolve_lima_home() -> Result<PathBuf> {
-        // 1) Relative to the current executable: {exe_dir}/../lima-data/
-        //    In the installed layout this is ~/.peppy/lima-data/.
-        //    Only use this if the directory already exists (i.e. was set up by install.sh).
-        if let Ok(exe_path) = std::env::current_exe()
-            && let Some(exe_dir) = exe_path.parent()
-        {
-            let candidate = exe_dir.join("../lima-data");
-            if candidate.is_dir() {
-                return Ok(candidate);
-            }
-        }
-
-        // 2) Compile-time build home — during `cargo test` / `cargo run` in the
-        //    source tree the exe-relative path won't exist, so fall back to the
-        //    LIMA_HOME used at build time (typically ~/.peppy/lima-build/).
-        if let Some(dir) = option_env!("LIMA_BUILD_HOME") {
-            let path = PathBuf::from(dir);
-            if path.is_dir() {
-                return Ok(path);
-            }
-        }
-
-        // 3) Fallback: well-known location in the user's home
-        let home = std::env::var("HOME")
-            .map_err(|_| Error::ConfigurationError("HOME environment variable not set".into()))?;
-        Ok(PathBuf::from(home).join(".peppy/lima-data"))
-    }
-}
-
-/// Parse a Lima version string like `"limactl version 1.1.0"` into `(major, minor, patch)`.
-///
-/// Returns `None` if the string cannot be parsed.
-pub(crate) fn parse_lima_version(version_output: &str) -> Option<(u32, u32, u32)> {
-    // Format: "limactl version X.Y.Z" or just "X.Y.Z"
-    let version_str = version_output.trim().rsplit(' ').next()?;
-
-    let mut parts = version_str.split('.');
-    let major = parts.next()?.parse().ok()?;
-    let minor = parts.next()?.parse().ok()?;
-    let patch = parts.next()?.parse().ok()?;
-    Some((major, minor, patch))
 }
