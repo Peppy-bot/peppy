@@ -509,22 +509,26 @@ fi
             }
         }
 
-        // 3) Copy the result back to the host
+        // 3) Copy the result back to the host via tar pipe.
+        //    `limactl copy -r` is unreliable with long or special-character paths,
+        //    so we tar in the guest and untar on the host through a pipe.
         if install_dir.exists() {
             std::fs::remove_dir_all(install_dir).ok();
         }
         std::fs::create_dir_all(install_dir).expect("Failed to create apptainer install directory");
 
-        let cp_out = lima
-            .lima_command()
-            .args([
-                "copy",
-                "-r",
-                &format!("{}:{guest_install_dir}/.", lima.instance),
-                &install_dir.to_string_lossy(),
-            ])
+        let tar_pipe = Command::new("bash")
+            .arg("-c")
+            .arg(format!(
+                "LIMA_HOME='{}' '{}' shell {} -- tar -cf - -C {} . | tar -xf - -C '{}'",
+                lima.lima_home.display(),
+                lima.limactl.display(),
+                lima.instance,
+                guest_install_dir,
+                install_dir.display(),
+            ))
             .output();
-        match &cp_out {
+        match &tar_pipe {
             Ok(o) if o.status.success() => {}
             Ok(o) => {
                 let stderr = String::from_utf8_lossy(&o.stderr);
@@ -535,7 +539,7 @@ fi
                 return false;
             }
             Err(e) => {
-                println!("cargo:warning=Failed to run limactl copy for result: {}", e);
+                println!("cargo:warning=Failed to run tar pipe from Lima VM: {}", e);
                 return false;
             }
         }
