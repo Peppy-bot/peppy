@@ -43,6 +43,14 @@ impl ApptainerFacade {
     /// `/tmp/peppy/apptainer/` so that commands can find the binary.
     pub fn new() -> Result<Self> {
         let apptainer_dir = Self::resolve_apptainer_dir()?;
+        Self::from_dir(apptainer_dir)
+    }
+
+    /// Creates a new `ApptainerFacade` from an explicit installation directory.
+    ///
+    /// Validates that `bin/apptainer` exists within `apptainer_dir`. On macOS,
+    /// syncs the installation into the Lima VM guest.
+    pub fn from_dir(apptainer_dir: PathBuf) -> Result<Self> {
         let apptainer_bin = apptainer_dir.join("bin/apptainer");
 
         if !apptainer_bin.exists() {
