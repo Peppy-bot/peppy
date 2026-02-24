@@ -198,6 +198,23 @@ impl CapnpFacade {
     }
 
     fn bundled_capnp_binary() -> Result<PathBuf> {
+        use std::sync::OnceLock;
+
+        // Ensure the embedded binary is extracted to disk exactly once per process.
+        // Multiple test threads share the same PID, so without this guard they race
+        // on the same temp file and hit ENOENT / ETXTBSY.
+        static EXTRACTED: OnceLock<std::result::Result<PathBuf, String>> = OnceLock::new();
+
+        let result =
+            EXTRACTED.get_or_init(|| Self::extract_bundled_binary().map_err(|e| e.to_string()));
+
+        match result {
+            Ok(path) => Ok(path.clone()),
+            Err(msg) => Err(Error::Encoding(msg.clone())),
+        }
+    }
+
+    fn extract_bundled_binary() -> Result<PathBuf> {
         mod embedded {
             include!(concat!(env!("OUT_DIR"), "/embedded_capnp.rs"));
         }
@@ -215,9 +232,13 @@ impl CapnpFacade {
 
         if !binary_path.exists() {
             // Write to a uniquely-named temporary file first, then atomically
-            // rename into place. This avoids ETXTBSY errors when multiple
-            // threads/processes race to extract and execute the binary.
-            let tmp_path = temp_dir.join(format!("peppy_capnp_binary.tmp.{}", std::process::id()));
+            // rename into place. Thread ID is included alongside PID to guard
+            // against cross-process races from parallel test binaries.
+            let tmp_path = temp_dir.join(format!(
+                "peppy_capnp_binary.tmp.{}.{:?}",
+                std::process::id(),
+                std::thread::current().id()
+            ));
             std::fs::write(&tmp_path, binary_bytes).map_err(|err| {
                 Error::Encoding(format!("failed to write embedded capnp binary: {err}"))
             })?;
