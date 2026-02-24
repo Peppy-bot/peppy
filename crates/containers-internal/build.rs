@@ -181,41 +181,21 @@ fi
     /// * If it exists but is stopped, start it.
     /// * If it is already running, this is a no-op.
     fn ensure_lima_instance() -> bool {
-        // Query instance status via JSON output.
-        let list_output = Command::new("limactl").args(["list", "--json"]).output();
+        // Query instance status using Go template output — avoids brittle JSON parsing.
+        // Returns the status string (e.g. "Running", "Stopped") or None if the
+        // instance does not exist (limactl exits non-zero).
+        let list_output = Command::new("limactl")
+            .args(["list", "--format", "{{.Status}}", "default"])
+            .output();
 
         let instance_status = match &list_output {
             Ok(o) if o.status.success() => {
-                let stdout = String::from_utf8_lossy(&o.stdout);
-                // limactl list --json prints one JSON object per line (NDJSON).
-                // Look for an object whose "name" is "default" and read its "status".
-                stdout
-                    .lines()
-                    .filter_map(|line| {
-                        let line = line.trim();
-                        if line.is_empty() {
-                            return None;
-                        }
-                        // Minimal JSON parsing: look for "name":"default" and grab "status".
-                        if line.contains("\"name\":\"default\"")
-                            || line.contains("\"name\": \"default\"")
-                        {
-                            // Extract the status value.
-                            if let Some(pos) = line.find("\"status\"") {
-                                let after = &line[pos..];
-                                // Find the value after the colon.
-                                if let Some(colon) = after.find(':') {
-                                    let val_part =
-                                        after[colon + 1..].trim().trim_start_matches('"');
-                                    if let Some(end) = val_part.find('"') {
-                                        return Some(val_part[..end].to_string());
-                                    }
-                                }
-                            }
-                        }
-                        None
-                    })
-                    .next()
+                let status = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                if status.is_empty() {
+                    None
+                } else {
+                    Some(status)
+                }
             }
             _ => None,
         };
