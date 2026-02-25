@@ -64,6 +64,10 @@ mod apptainer_build {
         cache_dir
     }
 
+    fn apptainer_cache_sentinel_path(cache_dir: &Path, version: &str) -> PathBuf {
+        cache_dir.join(format!(".peppy-version-{}", version))
+    }
+
     fn get_lima_cache_dir(version: &str, os: &str, arch: &str) -> PathBuf {
         let cache_dir = cache_root().join(format!("lima-{}-{}-{}", version, os, arch));
         if !cache_dir.exists() {
@@ -292,7 +296,7 @@ fi
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .status()
-            .is_ok();
+            .map_or(false, |status| status.success());
 
         let extra_path = if !has_rpm2cpio {
             if !create_rpm2cpio_shim(&shim_dir) {
@@ -587,6 +591,8 @@ fi
 
     pub fn run() {
         println!("cargo:rerun-if-changed=build.rs");
+        println!("cargo:rerun-if-env-changed=PEPPY_APPTAINER_DIR");
+        println!("cargo:rerun-if-env-changed=PEPPY_LIMA_DIR");
 
         let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
 
@@ -672,9 +678,12 @@ fi
         let cache_dir = get_apptainer_cache_dir(APPTAINER_VERSION, &arch);
         let out_install_dir = PathBuf::from(&out_dir).join("apptainer-install");
 
-        // Check if we have a valid cached installation (bin/apptainer must exist)
+        // Check if we have a fully completed cached installation.
+        // `bin/apptainer` can exist from a partial install, so require a sentinel
+        // written only after successful installation.
         let cached_bin = cache_dir.join("bin/apptainer");
-        if cached_bin.exists() {
+        let cache_sentinel = apptainer_cache_sentinel_path(&cache_dir, APPTAINER_VERSION);
+        if cache_sentinel.exists() && cached_bin.exists() {
             println!(
                 "cargo:warning=Using cached apptainer installation from {:?}",
                 cache_dir
@@ -713,6 +722,16 @@ fi
                 println!(
                     "cargo:warning=Apptainer install completed but bin/apptainer not found in {:?}",
                     cache_dir
+                );
+                return;
+            }
+
+            if let Err(e) =
+                std::fs::write(&cache_sentinel, format!("version={}\n", APPTAINER_VERSION))
+            {
+                println!(
+                    "cargo:warning=Apptainer install completed but failed to write cache sentinel {:?}: {}",
+                    cache_sentinel, e
                 );
                 return;
             }
