@@ -585,6 +585,7 @@ dependencies = [
 name = "containers"
 version = "0.0.1"
 dependencies = [
+ "sha2",
  "thiserror 2.0.18",
  "tracing",
 ]

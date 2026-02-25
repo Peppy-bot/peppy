@@ -178,7 +178,7 @@ def package_release(
     peppy_bin: Path,
     zenohd_bin: Path,
     apptainer_dir: Path,
-    lima_dir: Path,
+    lima_dir: Path | None = None,
 ) -> BuildArtifact:
     """Create a .tgz release archive.
 
@@ -186,7 +186,7 @@ def package_release(
       ./bin/peppy
       ./bin/zenohd
       ./bin/apptainer/
-      ./bin/lima/
+      ./bin/lima/         (macOS only)
 
     Writes the archive to {dist_dir}/peppy-{host_triple}.tgz.
     """
@@ -208,7 +208,8 @@ def package_release(
         (bin_dir / "zenohd").chmod(0o755)
 
         shutil.copytree(apptainer_dir, bin_dir / "apptainer")
-        shutil.copytree(lima_dir, bin_dir / "lima")
+        if lima_dir is not None:
+            shutil.copytree(lima_dir, bin_dir / "lima")
 
         with tarfile.open(asset_path, "w:gz") as tar:
             for child in sorted(pkg_dir.iterdir()):
@@ -240,11 +241,15 @@ def build_and_package(tag: str, repo_root: Path) -> BuildArtifact:
         "containers-*/out/apptainer-install",
         "apptainer install",
     )
-    lima_dir = find_build_dir(
-        host_triple,
-        repo_root,
-        "containers-*/out/lima-install",
-        "lima install",
+    lima_dir = (
+        find_build_dir(
+            host_triple,
+            repo_root,
+            "containers-*/out/lima-install",
+            "lima install",
+        )
+        if "apple-darwin" in host_triple
+        else None
     )
 
     return package_release(

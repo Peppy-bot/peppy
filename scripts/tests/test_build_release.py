@@ -2,13 +2,10 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import httpx
 import pytest
-import respx
 
 from functions.build import BuildArtifact
 from functions.build_release import _build_release_payload, _run_full, _run_local
