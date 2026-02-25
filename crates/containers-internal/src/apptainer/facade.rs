@@ -24,8 +24,6 @@ pub(crate) enum Backend {
         limactl_path: PathBuf,
         /// LIMA_HOME directory for VM instance data.
         lima_home: PathBuf,
-        /// Whether `ensure_ready()` has been called (VM booted, apptainer synced).
-        ready: bool,
     },
 }
 
@@ -41,13 +39,10 @@ pub(crate) enum Backend {
 /// `/tmp/peppy/apptainer/` inside the guest and all commands use the guest-side
 /// path.
 ///
-/// # Two-phase initialization
-///
-/// Construction (`new()` / `from_dir()`) is cheap — it validates paths and
-/// resolves the Lima installation but does **not** boot the VM. Call
-/// [`ensure_ready()`](Self::ensure_ready) before running any commands. On Linux
-/// this is a no-op; on macOS it boots the Lima VM and syncs apptainer into the
-/// guest (may take minutes on first run).
+/// Construction validates paths, resolves the Lima installation (on macOS), and
+/// ensures the backend is fully ready before returning. On Linux this completes
+/// instantly; on macOS it boots the Lima VM and syncs apptainer into the guest
+/// (may take minutes on first run).
 #[derive(Debug)]
 pub struct ApptainerFacade {
     /// Root of the apptainer installation on the host (contains `bin/`, arch dirs, etc.)
@@ -63,21 +58,12 @@ impl ApptainerFacade {
     /// 1. `PEPPY_APPTAINER_DIR` environment variable
     /// 2. `../apptainer/` relative to the current executable (installed layout)
     /// 3. Compile-time `APPTAINER_INSTALL_DIR` set by build.rs
-    ///
-    /// On macOS, also resolves the bundled Lima installation and validates the
-    /// Lima version, but does **not** boot the VM. Call [`ensure_ready()`](Self::ensure_ready)
-    /// to start the VM and sync apptainer into the guest.
     pub fn new() -> Result<Self> {
         let apptainer_dir = Self::resolve_apptainer_dir()?;
         Self::from_dir(apptainer_dir)
     }
 
     /// Creates a new `ApptainerFacade` from an explicit installation directory.
-    ///
-    /// Validates that `bin/apptainer` exists within `apptainer_dir`. On macOS,
-    /// resolves the bundled Lima installation and checks the version, but does
-    /// **not** boot the VM. Call [`ensure_ready()`](Self::ensure_ready) before
-    /// running commands.
     pub fn from_dir(apptainer_dir: PathBuf) -> Result<Self> {
         let apptainer_bin = apptainer_dir.join("bin/apptainer");
 
@@ -102,39 +88,36 @@ impl ApptainerFacade {
                 guest_apptainer_bin: PathBuf::from("/tmp/peppy/apptainer/bin/apptainer"),
                 limactl_path,
                 lima_home,
-                ready: false,
             }
         } else {
             Backend::Native { apptainer_bin }
         };
 
-        Ok(Self {
+        let mut facade = Self {
             apptainer_dir,
             backend,
-        })
+        };
+        facade.ensure_ready()?;
+        Ok(facade)
     }
 
     /// Ensures the execution backend is fully ready for running commands.
+    /// Called once during construction.
     ///
     /// On Linux (`Backend::Native`): no-op, returns `Ok(())` immediately.
     ///
     /// On macOS (`Backend::Lima`): boots the Lima VM if it is not already running,
     /// and syncs the apptainer installation into the guest. This may take minutes
-    /// on first run. Subsequent calls are idempotent.
-    pub fn ensure_ready(&mut self) -> Result<()> {
+    /// on first run.
+    fn ensure_ready(&mut self) -> Result<()> {
         match &mut self.backend {
             Backend::Native { .. } => Ok(()),
             Backend::Lima {
                 limactl_path,
                 lima_home,
                 guest_apptainer_bin,
-                ready,
                 ..
             } => {
-                if *ready {
-                    return Ok(());
-                }
-
                 lima::ensure_lima_instance(limactl_path, lima_home, lima::LIMA_TEMPLATE)?;
 
                 *guest_apptainer_bin = lima::ensure_guest_apptainer(
@@ -144,7 +127,6 @@ impl ApptainerFacade {
                     lima::LIMA_INSTANCE,
                 )?;
 
-                *ready = true;
                 Ok(())
             }
         }
@@ -292,9 +274,6 @@ impl ApptainerFacade {
     /// On Linux: runs `{apptainer_bin} <args...>` directly.
     /// On macOS: runs `{limactl} shell peppy -- {guest_apptainer_bin} <args...>` to
     /// execute inside the Lima VM using the synced guest-side binary.
-    ///
-    /// Returns `Error::NotReady` if the Lima backend has not been initialized via
-    /// [`ensure_ready()`](Self::ensure_ready).
     fn command(&self, args: &[&str]) -> Result<Command> {
         match &self.backend {
             Backend::Native { apptainer_bin } => {
@@ -306,12 +285,8 @@ impl ApptainerFacade {
                 guest_apptainer_bin,
                 limactl_path,
                 lima_home,
-                ready,
                 ..
             } => {
-                if !ready {
-                    return Err(Error::NotReady);
-                }
                 let mut cmd = Command::new(limactl_path);
                 cmd.env("LIMA_HOME", lima_home);
                 cmd.arg("shell").arg(lima::LIMA_INSTANCE).arg("--");
