@@ -6,7 +6,7 @@ mod apptainer_build {
     const APPTAINER_VERSION: &str = "1.4.5";
     const LIMA_VERSION: &str = "2.0.3";
     const LIMA_INSTANCE: &str = "peppy";
-    const LIMA_TEMPLATE: &str = "template:default";
+    const LIMA_TEMPLATE: &str = "template:ubuntu-24.04";
 
     fn install_script_url() -> String {
         format!(
@@ -477,6 +477,7 @@ fi
         // 2) Run the install script inside the VM.
         //    Use `bash` because the upstream script uses bash-isms (e.g. `[[`).
         //    Also ensure rpm2cpio and cpio are available in the guest.
+        //    The Lima VM runs Ubuntu (see LIMA_TEMPLATE), so apt-get is available.
         let run = lima
             .lima_command()
             .args([

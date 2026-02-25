@@ -150,12 +150,10 @@ impl ApptainerFacade {
         }
     }
 
-    /// Returns the root directory of the apptainer installation on the host.
     pub fn install_dir(&self) -> &Path {
         &self.apptainer_dir
     }
 
-    /// Returns the host-side path to the apptainer binary.
     pub fn binary_path(&self) -> &Path {
         match &self.backend {
             Backend::Native { apptainer_bin } | Backend::Lima { apptainer_bin, .. } => {
@@ -178,9 +176,6 @@ impl ApptainerFacade {
         }
     }
 
-    /// Query the apptainer version: `apptainer --version`
-    ///
-    /// Returns the version string (e.g. "apptainer version 1.4.5") on success.
     pub fn version(&self) -> Result<String> {
         let output = self.run_to_completion(&["--version"])?;
         if !output.status.success() {
