@@ -554,14 +554,15 @@ PY
     [ -f "$BIN_PATH" ] || die "peppy binary not found (expected '${TARGET_DIR%/}/${HOST_TRIPLE}/release/peppy')"
 
     PKG_DIR="$(mktemp_dir)"
-    cp "$BIN_PATH" "$PKG_DIR/peppy"
-    chmod +x "$PKG_DIR/peppy"
+    mkdir -p "$PKG_DIR/bin"
+    cp "$BIN_PATH" "$PKG_DIR/bin/peppy"
+    chmod +x "$PKG_DIR/bin/peppy"
 
     # `peppy service serve` spawns `zenohd`; include the built zenohd binary next to peppy.
     ZENOHD_PATH="$(find "${TARGET_DIR%/}/${HOST_TRIPLE}/release/build" -type f -path "*/pmi-*/out/zenohd" -print | head -n 1 || true)"
     [ -f "${ZENOHD_PATH-}" ] || die "zenohd binary not found in target dir (expected it under '${TARGET_DIR%/}/${HOST_TRIPLE}/release/build/pmi-*/out/zenohd')"
-    cp "$ZENOHD_PATH" "$PKG_DIR/zenohd"
-    chmod +x "$PKG_DIR/zenohd"
+    cp "$ZENOHD_PATH" "$PKG_DIR/bin/zenohd"
+    chmod +x "$PKG_DIR/bin/zenohd"
 
     # Include the portable apptainer installation directory.
     # On Linux apptainer runs natively; on macOS it runs inside a Lima VM.
