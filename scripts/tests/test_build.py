@@ -13,7 +13,7 @@ from functions.build import (
     SUPPORTED_TRIPLES,
     BuildArtifact,
     detect_host_triple,
-    find_optional_dir,
+    find_build_dir,
     find_peppy_binary,
     find_zenohd_binary,
     package_release,
@@ -124,7 +124,7 @@ class TestFindZenohdBinary:
                 find_zenohd_binary(triple, tmp_path)
 
 
-class TestFindOptionalDir:
+class TestFindBuildDir:
     def test_found(self, tmp_path: Path) -> None:
         triple = "aarch64-apple-darwin"
         apptainer = (
@@ -140,7 +140,7 @@ class TestFindOptionalDir:
         apptainer.mkdir(parents=True)
 
         with patch.dict(os.environ, {"CARGO_TARGET_DIR": str(tmp_path / "target")}):
-            result = find_optional_dir(
+            result = find_build_dir(
                 triple, tmp_path, "containers-*/out/apptainer-install", "apptainer install"
             )
         assert result == apptainer
@@ -151,10 +151,10 @@ class TestFindOptionalDir:
         build_dir.mkdir(parents=True)
 
         with patch.dict(os.environ, {"CARGO_TARGET_DIR": str(tmp_path / "target")}):
-            result = find_optional_dir(
-                triple, tmp_path, "containers-*/out/apptainer-install", "apptainer install"
-            )
-        assert result is None
+            with pytest.raises(ReleaseError, match="apptainer install directory not found"):
+                find_build_dir(
+                    triple, tmp_path, "containers-*/out/apptainer-install", "apptainer install"
+                )
 
 
 class TestPackageRelease:
@@ -169,7 +169,7 @@ class TestPackageRelease:
         zenohd_bin = tmp_path / "zenohd"
         zenohd_bin.write_bytes(b"zenohd binary")
 
-        # Create fake optional dirs
+        # Create fake dependency dirs
         apptainer_dir = tmp_path / "apptainer-install"
         apptainer_dir.mkdir()
         (apptainer_dir / "bin" / "apptainer").parent.mkdir(parents=True)
@@ -201,31 +201,6 @@ class TestPackageRelease:
             assert any("apptainer" in n for n in member_names)
             assert any("lima" in n for n in member_names)
 
-    def test_without_optional_dirs(self, tmp_path: Path) -> None:
-        triple = "x86_64-unknown-linux-gnu"
-        repo_root = tmp_path / "repo"
-        repo_root.mkdir()
-
-        peppy_bin = tmp_path / "peppy"
-        peppy_bin.write_bytes(b"peppy binary")
-        zenohd_bin = tmp_path / "zenohd"
-        zenohd_bin.write_bytes(b"zenohd binary")
-
-        dist_dir = tmp_path / "dist"
-        with patch.dict(os.environ, {"PEPPY_DIST_DIR": str(dist_dir)}):
-            artifact = package_release(
-                triple, repo_root, peppy_bin, zenohd_bin, None, None
-            )
-
-        assert artifact.asset_path.exists()
-
-        with tarfile.open(artifact.asset_path, "r:gz") as tar:
-            member_names = {m.name for m in tar.getmembers()}
-            assert any("bin/peppy" in n for n in member_names)
-            assert any("bin/zenohd" in n for n in member_names)
-            assert not any("apptainer" in n for n in member_names)
-            assert not any("lima" in n for n in member_names)
-
     def test_respects_peppy_dist_dir(self, tmp_path: Path) -> None:
         triple = "aarch64-apple-darwin"
         custom_dist = tmp_path / "custom_dist"
@@ -235,9 +210,19 @@ class TestPackageRelease:
         zenohd_bin = tmp_path / "zenohd"
         zenohd_bin.write_bytes(b"binary")
 
+        apptainer_dir = tmp_path / "apptainer-install"
+        apptainer_dir.mkdir()
+        (apptainer_dir / "bin").mkdir()
+        (apptainer_dir / "bin" / "apptainer").write_bytes(b"apptainer")
+
+        lima_dir = tmp_path / "lima-install"
+        lima_dir.mkdir()
+        (lima_dir / "bin").mkdir()
+        (lima_dir / "bin" / "limactl").write_bytes(b"limactl")
+
         with patch.dict(os.environ, {"PEPPY_DIST_DIR": str(custom_dist)}):
             artifact = package_release(
-                triple, tmp_path, peppy_bin, zenohd_bin, None, None
+                triple, tmp_path, peppy_bin, zenohd_bin, apptainer_dir, lima_dir
             )
 
         assert artifact.asset_path.parent == custom_dist
