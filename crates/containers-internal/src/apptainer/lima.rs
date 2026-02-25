@@ -17,7 +17,17 @@ pub(crate) fn check_lima_version(limactl: &Path) -> Result<()> {
     let output = Command::new(limactl).arg("--version").output()?;
 
     if !output.status.success() {
-        return Err(Error::LimaRequired);
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(Error::LimaVersionCheckFailed(format!(
+            "`{} --version` exited with {}{}",
+            limactl.display(),
+            output.status,
+            if stderr.is_empty() {
+                String::new()
+            } else {
+                format!(": {stderr}")
+            }
+        )));
     }
 
     let version_str = String::from_utf8_lossy(&output.stdout);
@@ -318,6 +328,9 @@ pub(crate) fn parse_lima_version(version_output: &str) -> Option<(u32, u32, u32)
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::Error;
+    use std::fs;
+    use tempfile::tempdir;
 
     #[test]
     fn test_parse_lima_version_full_string() {
@@ -342,5 +355,31 @@ mod tests {
         assert_eq!(parse_lima_version("not a version"), None);
         assert_eq!(parse_lima_version(""), None);
         assert_eq!(parse_lima_version("1.2"), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_check_lima_version_returns_version_check_error_on_nonzero_exit() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempdir().expect("create temp dir");
+        let limactl = dir.path().join("limactl");
+
+        fs::write(&limactl, "#!/bin/sh\n>&2 echo 'bad lima'\nexit 42\n")
+            .expect("write fake limactl");
+
+        let mut perms = fs::metadata(&limactl).expect("read metadata").permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&limactl, perms).expect("set executable bit");
+
+        let err = check_lima_version(&limactl).expect_err("expected version check failure");
+        match err {
+            Error::LimaVersionCheckFailed(msg) => {
+                assert!(msg.contains("--version"), "unexpected message: {msg}");
+                assert!(msg.contains("42"), "unexpected message: {msg}");
+                assert!(msg.contains("bad lima"), "unexpected message: {msg}");
+            }
+            other => panic!("expected LimaVersionCheckFailed, got {other:?}"),
+        }
     }
 }

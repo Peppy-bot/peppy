@@ -16,6 +16,9 @@ pub enum Error {
     )]
     LimaVersionTooOld { found: String, minimum: String },
 
+    #[error("Failed to query Lima version: {0}")]
+    LimaVersionCheckFailed(String),
+
     #[error("Lima instance management failed: {0}")]
     LimaInstanceError(String),
 
