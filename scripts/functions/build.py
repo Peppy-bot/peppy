@@ -71,6 +71,11 @@ def cargo_build(tag: str, host_triple: str, repo_root: Path) -> None:
 
     Sets PEPPY_GIT_TAG env var for the build.
     """
+    cache_root = Path(tempfile.gettempdir()) / "peppy-build-cache"
+    if cache_root.exists():
+        console.print("Clearing build cache...")
+        shutil.rmtree(cache_root)
+
     console.print("Cleaning previous build artifacts...")
     result = subprocess.run(
         ["cargo", "clean"],
@@ -145,16 +150,16 @@ def find_zenohd_binary(host_triple: str, repo_root: Path) -> Path:
     )
 
 
-def find_optional_dir(
+def find_build_dir(
     host_triple: str,
     repo_root: Path,
     pattern: str,
     label: str,
-) -> Path | None:
-    """Locate an optional directory in the build output.
+) -> Path:
+    """Locate a required directory in the build output.
 
     Searches {target_dir}/{host_triple}/release/build/{pattern}.
-    Returns None with a warning if not found.
+    Raises ReleaseError if not found.
     """
     target_dir = _get_target_dir(repo_root)
     build_dir = target_dir / host_triple / "release" / "build"
@@ -163,10 +168,10 @@ def find_optional_dir(
     if matches and matches[0].is_dir():
         return matches[0]
 
-    console.print(
-        f"[yellow]warning:[/yellow] {label} directory not found in build output"
+    raise ReleaseError(
+        f"{label} directory not found in build output "
+        f"(expected it under '{build_dir}/{pattern}')"
     )
-    return None
 
 
 def package_release(
@@ -174,16 +179,16 @@ def package_release(
     repo_root: Path,
     peppy_bin: Path,
     zenohd_bin: Path,
-    apptainer_dir: Path | None,
-    lima_dir: Path | None,
+    apptainer_dir: Path,
+    lima_dir: Path,
 ) -> BuildArtifact:
     """Create a .tgz release archive.
 
     Creates a temporary directory with the package layout:
       ./bin/peppy
       ./bin/zenohd
-      ./apptainer/ (optional)
-      ./lima/ (optional)
+      ./apptainer/
+      ./lima/
 
     Writes the archive to {dist_dir}/peppy-{host_triple}.tgz.
     """
@@ -204,13 +209,8 @@ def package_release(
         shutil.copy2(zenohd_bin, bin_dir / "zenohd")
         (bin_dir / "zenohd").chmod(0o755)
 
-        if apptainer_dir is not None:
-            shutil.copytree(apptainer_dir, pkg_dir / "apptainer")
-            console.print("Including apptainer directory in release")
-
-        if lima_dir is not None:
-            shutil.copytree(lima_dir, pkg_dir / "lima")
-            console.print("Including lima directory in release")
+        shutil.copytree(apptainer_dir, pkg_dir / "apptainer")
+        shutil.copytree(lima_dir, pkg_dir / "lima")
 
         with tarfile.open(asset_path, "w:gz") as tar:
             for child in sorted(pkg_dir.iterdir()):
@@ -236,13 +236,13 @@ def build_and_package(tag: str, repo_root: Path) -> BuildArtifact:
     peppy_bin = find_peppy_binary(host_triple, repo_root)
     zenohd_bin = find_zenohd_binary(host_triple, repo_root)
 
-    apptainer_dir = find_optional_dir(
+    apptainer_dir = find_build_dir(
         host_triple,
         repo_root,
         "containers-*/out/apptainer-install",
         "apptainer install",
     )
-    lima_dir = find_optional_dir(
+    lima_dir = find_build_dir(
         host_triple,
         repo_root,
         "containers-*/out/lima-install",

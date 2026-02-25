@@ -140,7 +140,7 @@ mod zenoh_build {
 
     fn get_temp_cache_dir(cache_suffix: &str) -> PathBuf {
         let temp_dir = env::temp_dir();
-        let cache_dir = temp_dir.join(format!("{}-peppy-cache", cache_suffix));
+        let cache_dir = temp_dir.join("peppy-build-cache").join(cache_suffix);
 
         // Create cache directory if it doesn't exist
         if !cache_dir.exists() {
