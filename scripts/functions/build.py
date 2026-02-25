@@ -185,8 +185,8 @@ def package_release(
     Creates a temporary directory with the package layout:
       ./bin/peppy
       ./bin/zenohd
-      ./apptainer/
-      ./lima/
+      ./bin/apptainer/
+      ./bin/lima/
 
     Writes the archive to {dist_dir}/peppy-{host_triple}.tgz.
     """
@@ -207,8 +207,8 @@ def package_release(
         shutil.copy2(zenohd_bin, bin_dir / "zenohd")
         (bin_dir / "zenohd").chmod(0o755)
 
-        shutil.copytree(apptainer_dir, pkg_dir / "apptainer")
-        shutil.copytree(lima_dir, pkg_dir / "lima")
+        shutil.copytree(apptainer_dir, bin_dir / "apptainer")
+        shutil.copytree(lima_dir, bin_dir / "lima")
 
         with tarfile.open(asset_path, "w:gz") as tar:
             for child in sorted(pkg_dir.iterdir()):

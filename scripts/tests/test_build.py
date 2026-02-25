@@ -198,8 +198,8 @@ class TestPackageRelease:
             member_names = {m.name for m in tar.getmembers()}
             assert any("bin/peppy" in n for n in member_names)
             assert any("bin/zenohd" in n for n in member_names)
-            assert any("apptainer" in n for n in member_names)
-            assert any("lima" in n for n in member_names)
+            assert any("bin/apptainer" in n for n in member_names)
+            assert any("bin/lima" in n for n in member_names)
 
     def test_respects_peppy_dist_dir(self, tmp_path: Path) -> None:
         triple = "aarch64-apple-darwin"

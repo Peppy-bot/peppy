@@ -296,7 +296,7 @@ fi
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .status()
-            .map_or(false, |status| status.success());
+            .is_ok_and(|status| status.success());
 
         let extra_path = if !has_rpm2cpio {
             if !create_rpm2cpio_shim(&shim_dir) {
