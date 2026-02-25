@@ -23,6 +23,8 @@ Each topic defines a `name`, a `qos_profile`, and a `message_format`:
     name: "uvc_camera",
     tag: "0.1.0",
     language: "rust",
+  },
+  build: {
     add_cmd: ["cargo", "build", "--release"],
     start_cmd: ["./target/release/uvc_camera"]
   },
@@ -137,6 +139,8 @@ A node that receives messages declares its subscriptions under `interfaces.subsc
     name: "web_video_stream",
     tag: "0.1.0",
     language: "rust",
+  },
+  build: {
     add_cmd: ["cargo", "build", "--release"],
     start_cmd: ["./target/release/web_video_stream"]
   },

@@ -968,7 +968,7 @@ fn extract_node_archive(
     Ok(instance_dir)
 }
 
-/// Runs a node using its manifest's start_cmd and passes the PEPPY_RUNTIME_CONFIG as an env var.
+/// Runs a node using its build's start_cmd and passes the PEPPY_RUNTIME_CONFIG as an env var.
 /// Returns the spawned child process handle on success.
 pub fn start_node(
     entity: &NodeEntity,
@@ -978,9 +978,11 @@ pub fn start_node(
     log_file: &Arc<StdMutex<File>>,
     peppy_dirs: &PeppyDirs,
 ) -> std::io::Result<Child> {
-    let manifest = &entity.config().manifest;
+    let config = entity.config();
+    let manifest = &config.manifest;
+    let build = &config.build;
 
-    let Some((program, args)) = manifest.start_cmd.split_first() else {
+    let Some((program, args)) = build.start_cmd.split_first() else {
         return Err(std::io::Error::other("start_cmd is empty"));
     };
 
@@ -995,7 +997,7 @@ pub fn start_node(
 
     // Log the command being executed to the log file before attempting to spawn
     {
-        let full_cmd = manifest.start_cmd.join(" ");
+        let full_cmd = build.start_cmd.join(" ");
         if let Ok(mut file) = log_file.lock() {
             let timestamp = Local::now().format("%Y-%m-%dT%H:%M:%S%.3f");
             let _ = writeln!(

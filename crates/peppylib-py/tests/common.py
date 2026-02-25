@@ -23,6 +23,8 @@ PEPPY_CONFIG = """{
     name: "test_node",
     tag: "0.1.0",
     language: "python",
+  },
+  build: {
     start_cmd: ["uv", "run"]
   },
   parameters: {

@@ -12,7 +12,7 @@ pmi = { path = "../pmi-internal" }
 config = { path = "../config-internal" }
 thiserror = "2.0"                                   # Avoid Anyhow in this crate
 tokio = { version = "1.47.0", features = ["full"] }
-tracing = "0.1.41"
+tracing = "0.1"
 bytes = "1"
 futures = "0.3"
 sha2 = "0.10"

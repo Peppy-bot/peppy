@@ -9,7 +9,8 @@ A **Node** is the fundamental unit of computation in PeppyOS. It represents a ru
 
 A node is defined by its **configuration** file (`peppy.json5`) which includes:
 
-- **Manifest**: The node's identity and execution commands
+- **Manifest**: The node's identity
+- **Build**: Commands to build and launch the node
 - **Parameters**: Configuration values passed to the node
 - **Interfaces**: What the node exposes and subscribes to
 
@@ -22,10 +23,17 @@ The manifest defines a node's identity:
 | `name` | A validated identifier (lowercase letters, digits, `_`, `-`) |
 | `tag` | A version or variant identifier (e.g., `donut`, `v1.0.0`) |
 | `labels` | Optional metadata labels |
-| `add_cmd` | Command to run before adding to the stack |
-| `start_cmd` | Command to launch the node |
 
 A node is uniquely identified by its `name:tag` combination.
+
+### Build
+
+The build section defines how to build and launch the node:
+
+| Field | Description |
+|-------|-------------|
+| `add_cmd` | Command to run before adding to the stack |
+| `start_cmd` | Command to launch the node |
 
 ### Interfaces
 

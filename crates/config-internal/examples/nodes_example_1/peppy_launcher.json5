@@ -19,8 +19,8 @@
       // the source property is mandatory
       source: {
         repo: "https://github.com/Peppy-bot/example_nodes.git",
-        path: "fake_openarm01_controller",
-        ref: "0.1.0"
+        path: "rust/fake_openarm01_controller",
+        ref: "main"
       },
       instances: [
         {
@@ -74,30 +74,13 @@
     },
     {
       source: {
-        local: "./web_video_stream"
+        local: "./video_reconstruction"
       },
       instances: [
         {
-          instance_id: "video_stream1",
+          instance_id: "video_reconstruction_1",
           arguments: {
-            // It's up to the user to filter on these instances ids. Those ids can be extracted from Messenger::runtime()
-            camera_instances_ids: [
-              "camera_front",
-              "camera_rear"
-            ],
-            http: {
-              host: "0.0.0.0",
-              port: 8083,
-              cors_enabled: false,
-              cors_origins: "*",
-              max_connections: "2000",
-              request_timeout_ms: "3000",
-            },
-            video_stream: {
-              format: "mjpeg",
-              quality: 3,
-              max_fps: 30,
-            },
+            video_duration_seconds: 5
           }
         }
       ]

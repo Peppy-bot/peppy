@@ -26,6 +26,8 @@ async fn listen_for_node_generate_success() {
                 name: "example_node",
                 tag: "0.1.0",
                 language: "rust",
+            },
+            build: {
                 start_cmd: ["sleep", "10"]
             }
         }"#,
@@ -271,6 +273,8 @@ async fn listen_for_node_generate_missing_dependency_fails() {
                 tag: "0.1.0",
                 language: "rust",
                 labels: ["brain"],
+            },
+            build: {
                 add_cmd: ["cargo", "build", "--release"],
                 start_cmd: ["./target/release/my_robot_brain"],
             },
@@ -342,6 +346,8 @@ async fn listen_for_node_generate_multiple_missing_dependencies_fails() {
                 tag: "0.1.0",
                 language: "rust",
                 labels: ["brain"],
+            },
+            build: {
                 add_cmd: ["cargo", "build", "--release"],
                 start_cmd: ["./target/release/my_robot_brain"],
             },
@@ -450,6 +456,8 @@ async fn listen_for_node_generate_generates_rust_interfaces() {
                 tag: "0.1.0",
                 language: "rust",
                 labels: ["camera"],
+            },
+            build: {
                 add_cmd: ["true"],
                 start_cmd: ["sleep", "10"],
             },
@@ -541,6 +549,8 @@ async fn listen_for_node_generate_generates_rust_interfaces() {
                 tag: "0.1.0",
                 language: "rust",
                 labels: ["brain"],
+            },
+            build: {
                 add_cmd: ["true"],
                 start_cmd: ["sleep", "10"],
             },
@@ -655,6 +665,8 @@ async fn listen_for_node_generate_generates_rust_subscribed_service_interfaces()
                 tag: "0.1.0",
                 language: "rust",
                 labels: ["camera"],
+            },
+            build: {
                 add_cmd: ["true"],
                 start_cmd: ["sleep", "10"],
             },
@@ -728,6 +740,8 @@ async fn listen_for_node_generate_generates_rust_subscribed_service_interfaces()
                 tag: "0.1.0",
                 language: "rust",
                 labels: ["brain"],
+            },
+            build: {
                 add_cmd: ["true"],
                 start_cmd: ["sleep", "10"],
             },
@@ -803,6 +817,8 @@ async fn listen_for_node_generate_generates_rust_subscribed_topic_interfaces() {
                 tag: "0.1.0",
                 language: "rust",
                 labels: ["camera"],
+            },
+            build: {
                 add_cmd: ["true"],
                 start_cmd: ["sleep", "10"],
             },
@@ -878,6 +894,8 @@ async fn listen_for_node_generate_generates_rust_subscribed_topic_interfaces() {
                 tag: "0.1.0",
                 language: "rust",
                 labels: ["brain"],
+            },
+            build: {
                 add_cmd: ["true"],
                 start_cmd: ["sleep", "10"],
             },
@@ -953,6 +971,8 @@ async fn listen_for_node_generate_generates_rust_subscribed_action_interfaces() 
                 tag: "0.1.0",
                 language: "rust",
                 labels: ["brain"],
+            },
+            build: {
                 add_cmd: ["true"],
                 start_cmd: ["sleep", "10"],
             },
@@ -1034,6 +1054,8 @@ async fn listen_for_node_generate_generates_rust_subscribed_action_interfaces() 
                 tag: "0.1.0",
                 language: "rust",
                 labels: ["controller"],
+            },
+            build: {
                 add_cmd: ["true"],
                 start_cmd: ["sleep", "10"],
             },
@@ -1110,6 +1132,8 @@ async fn listen_for_node_generate_generates_rust_parameters() {
                 tag: "0.1.0",
                 language: "rust",
                 labels: ["camera"],
+            },
+            build: {
                 add_cmd: ["true"],
                 start_cmd: ["sleep", "10"],
             },
@@ -1222,6 +1246,8 @@ async fn listen_for_node_generate_deletes_previous_peppy_folder() {
                 name: "example_node",
                 tag: "0.1.0",
                 language: "rust",
+            },
+            build: {
                 start_cmd: ["sleep", "10"]
             }
         }"#,

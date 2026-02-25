@@ -9,6 +9,8 @@
       "camera",
       "usb",
     ],
+  },
+  build: {
     add_cmd: [
       "true"
     ],
