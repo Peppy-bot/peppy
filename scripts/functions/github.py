@@ -245,7 +245,9 @@ def delete_asset_if_exists(
     Lists all assets for the release, finds one matching asset_name,
     and DELETEs it. No-op if the asset doesn't exist.
     """
-    assets_url = f"https://api.github.com/repos/{slug.full}/releases/{release_id}/assets"
+    assets_url = (
+        f"https://api.github.com/repos/{slug.full}/releases/{release_id}/assets"
+    )
     assets = github_api(client, "GET", assets_url)
 
     if not isinstance(assets, list):

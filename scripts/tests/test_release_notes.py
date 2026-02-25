@@ -23,7 +23,10 @@ from functions.release_notes import (
 
 
 def test_extract_release_date_published_at() -> None:
-    details = {"published_at": "2025-06-15T10:00:00Z", "created_at": "2025-06-14T09:00:00Z"}
+    details = {
+        "published_at": "2025-06-15T10:00:00Z",
+        "created_at": "2025-06-14T09:00:00Z",
+    }
     result = extract_release_date(details)
     assert result == datetime.date(2025, 6, 15)
 
@@ -55,7 +58,9 @@ def test_build_article_html_basic() -> None:
 
 
 def test_build_article_html_with_body() -> None:
-    result = build_article_html("v0.1.0", "Release", "June 15, 2025", "<p>Changes here</p>")
+    result = build_article_html(
+        "v0.1.0", "Release", "June 15, 2025", "<p>Changes here</p>"
+    )
     assert "<p>Changes here</p>" in result
 
 
@@ -108,9 +113,7 @@ def test_normalize_tag_tag_without_v(tmp_path: Path) -> None:
         release_details={"published_at": "2025-06-15T00:00:00Z"},
         body_html="",
     )
-    result = generate_release_notes_file(
-        notes_input, tmp_path, confirm_overwrite=False
-    )
+    result = generate_release_notes_file(notes_input, tmp_path, confirm_overwrite=False)
     assert result.name == "v0.1.0.html"
 
 
@@ -121,9 +124,7 @@ def test_normalize_tag_tag_with_uppercase_v(tmp_path: Path) -> None:
         release_details={"published_at": "2025-06-15T00:00:00Z"},
         body_html="",
     )
-    result = generate_release_notes_file(
-        notes_input, tmp_path, confirm_overwrite=False
-    )
+    result = generate_release_notes_file(notes_input, tmp_path, confirm_overwrite=False)
     assert result.name == "V0.1.0.html"
 
 
@@ -134,9 +135,7 @@ def test_generate_release_notes_file_creates_file(tmp_path: Path) -> None:
         release_details={"published_at": "2025-06-15T10:00:00Z"},
         body_html="<p>Release notes</p>",
     )
-    result = generate_release_notes_file(
-        notes_input, tmp_path, confirm_overwrite=False
-    )
+    result = generate_release_notes_file(notes_input, tmp_path, confirm_overwrite=False)
     assert result.exists()
     content = result.read_text()
     assert "<entry>" in content
@@ -182,9 +181,7 @@ def test_generate_release_notes_file_golden_file(tmp_path: Path) -> None:
         release_details={"published_at": "2025-07-01T12:00:00Z"},
         body_html="<ul><li>Fixed crash on startup</li></ul>",
     )
-    result = generate_release_notes_file(
-        notes_input, tmp_path, confirm_overwrite=False
-    )
+    result = generate_release_notes_file(notes_input, tmp_path, confirm_overwrite=False)
     content = result.read_text()
 
     # Verify structure

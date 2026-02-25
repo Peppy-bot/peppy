@@ -24,7 +24,10 @@ from functions.github import ReleaseInfo, RepoSlug
 @patch("functions.add_release_build.prompt", return_value="v0.1.0")
 @patch("functions.add_release_build.has_uncommitted_changes", return_value=False)
 @patch("functions.add_release_build.get_repo_root")
-@patch("functions.add_release_build.validate_release_environment", return_value="test-token")
+@patch(
+    "functions.add_release_build.validate_release_environment",
+    return_value="test-token",
+)
 def test_run_add_release_build_happy_path(
     mock_validate: MagicMock,
     mock_repo_root: MagicMock,
@@ -48,7 +51,7 @@ def test_run_add_release_build_happy_path(
     mock_build.return_value = BuildArtifact(
         asset_name="peppy-test.tgz",
         asset_path=tmp_path / "test.tgz",
-        host_triple="aarch64-apple-darwin",
+        host_triple="platform-agnostic",
     )
 
     _run()
@@ -71,7 +74,10 @@ def test_run_add_release_build_happy_path(
 @patch("functions.add_release_build.prompt", return_value="v0.1.0")
 @patch("functions.add_release_build.has_uncommitted_changes", return_value=False)
 @patch("functions.add_release_build.get_repo_root")
-@patch("functions.add_release_build.validate_release_environment", return_value="test-token")
+@patch(
+    "functions.add_release_build.validate_release_environment",
+    return_value="test-token",
+)
 def test_run_add_release_build_tag_mismatch_checkout(
     mock_validate: MagicMock,
     mock_repo_root: MagicMock,
@@ -97,7 +103,7 @@ def test_run_add_release_build_tag_mismatch_checkout(
     mock_build.return_value = BuildArtifact(
         asset_name="peppy-test.tgz",
         asset_path=tmp_path / "test.tgz",
-        host_triple="aarch64-apple-darwin",
+        host_triple="platform-agnostic",
     )
 
     _run()

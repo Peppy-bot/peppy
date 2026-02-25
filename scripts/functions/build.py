@@ -55,7 +55,9 @@ def detect_host_triple() -> str:
             break
 
     if not host_triple:
-        raise ReleaseError("could not determine Rust host target triple from 'rustc -vV'")
+        raise ReleaseError(
+            "could not determine Rust host target triple from 'rustc -vV'"
+        )
 
     if host_triple not in SUPPORTED_TRIPLES:
         supported = ", ".join(sorted(SUPPORTED_TRIPLES))

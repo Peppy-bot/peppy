@@ -69,9 +69,7 @@ def test_github_api_empty_body_204(
     github_client: httpx.Client,
     mock_api: respx.MockRouter,
 ) -> None:
-    mock_api.delete("https://api.github.com/test").respond(
-        status_code=204, text=""
-    )
+    mock_api.delete("https://api.github.com/test").respond(status_code=204, text="")
     result = github_api(github_client, "DELETE", "https://api.github.com/test")
     assert result == {}
 
@@ -80,9 +78,7 @@ def test_github_api_empty_body_non_204_is_error(
     github_client: httpx.Client,
     mock_api: respx.MockRouter,
 ) -> None:
-    mock_api.get("https://api.github.com/test").respond(
-        status_code=200, text=""
-    )
+    mock_api.get("https://api.github.com/test").respond(status_code=200, text="")
     with pytest.raises(ReleaseError, match="empty response"):
         github_api(github_client, "GET", "https://api.github.com/test")
 
@@ -117,9 +113,7 @@ def test_github_upload_asset_upload(
     ).respond(json={"id": 100, "name": "test-asset.tgz"})
 
     slug = RepoSlug(owner="owner", repo="repo")
-    result = github_upload_asset(
-        github_client, 1, "test-asset.tgz", asset_file, slug
-    )
+    result = github_upload_asset(github_client, 1, "test-asset.tgz", asset_file, slug)
     assert result["id"] == 100
 
 
@@ -131,15 +125,13 @@ def test_github_upload_asset_upload_failure(
     asset_file = tmp_path / "test-asset.tgz"
     asset_file.write_bytes(b"fake")
 
-    mock_api.post(
-        url__startswith="https://uploads.github.com/"
-    ).respond(status_code=422, text="Validation Failed")
+    mock_api.post(url__startswith="https://uploads.github.com/").respond(
+        status_code=422, text="Validation Failed"
+    )
 
     slug = RepoSlug(owner="owner", repo="repo")
     with pytest.raises(ReleaseError, match="failed to upload asset"):
-        github_upload_asset(
-            github_client, 1, "test-asset.tgz", asset_file, slug
-        )
+        github_upload_asset(github_client, 1, "test-asset.tgz", asset_file, slug)
 
 
 def test_github_repo_slug_from_env() -> None:
@@ -167,7 +159,13 @@ def test_github_repo_slug_from_https_remote(tmp_repo: Path) -> None:
     import subprocess
 
     subprocess.run(
-        ["git", "remote", "set-url", "origin", "https://github.com/https-owner/https-repo.git"],
+        [
+            "git",
+            "remote",
+            "set-url",
+            "origin",
+            "https://github.com/https-owner/https-repo.git",
+        ],
         cwd=tmp_repo,
         capture_output=True,
         check=True,
@@ -193,7 +191,9 @@ def test_github_repo_slug_invalid_slug() -> None:
 def test_parse_release_response_valid(fake_release_response: dict[str, Any]) -> None:
     info = parse_release_response(fake_release_response)
     assert info.release_id == 12345
-    assert info.html_url == "https://github.com/test-owner/test-repo/releases/tag/v0.1.0"
+    assert (
+        info.html_url == "https://github.com/test-owner/test-repo/releases/tag/v0.1.0"
+    )
 
 
 def test_parse_release_response_missing_id() -> None:
@@ -215,12 +215,10 @@ def test_delete_asset_if_exists_found(
     github_client: httpx.Client,
     mock_api: respx.MockRouter,
 ) -> None:
-    mock_api.get(
-        "https://api.github.com/repos/owner/repo/releases/1/assets"
-    ).respond(
+    mock_api.get("https://api.github.com/repos/owner/repo/releases/1/assets").respond(
         json=[
             {"id": 100, "name": "other.tgz"},
-            {"id": 200, "name": "peppy-aarch64-apple-darwin.tgz"},
+            {"id": 200, "name": "peppy-test.tgz"},
         ]
     )
     delete_route = mock_api.delete(
@@ -228,9 +226,7 @@ def test_delete_asset_if_exists_found(
     ).respond(status_code=204, text="")
 
     slug = RepoSlug(owner="owner", repo="repo")
-    delete_asset_if_exists(
-        github_client, 1, "peppy-aarch64-apple-darwin.tgz", slug
-    )
+    delete_asset_if_exists(github_client, 1, "peppy-test.tgz", slug)
     assert delete_route.called
 
 
@@ -238,15 +234,13 @@ def test_delete_asset_if_exists_not_found(
     github_client: httpx.Client,
     mock_api: respx.MockRouter,
 ) -> None:
-    mock_api.get(
-        "https://api.github.com/repos/owner/repo/releases/1/assets"
-    ).respond(json=[{"id": 100, "name": "other.tgz"}])
+    mock_api.get("https://api.github.com/repos/owner/repo/releases/1/assets").respond(
+        json=[{"id": 100, "name": "other.tgz"}]
+    )
 
     slug = RepoSlug(owner="owner", repo="repo")
     # Should not raise
-    delete_asset_if_exists(
-        github_client, 1, "peppy-aarch64-apple-darwin.tgz", slug
-    )
+    delete_asset_if_exists(github_client, 1, "peppy-test.tgz", slug)
 
 
 def test_replace_and_upload_asset_replaces_existing(
@@ -258,9 +252,9 @@ def test_replace_and_upload_asset_replaces_existing(
     asset_file.write_bytes(b"binary content")
 
     # Existing asset found and deleted
-    mock_api.get(
-        "https://api.github.com/repos/owner/repo/releases/1/assets"
-    ).respond(json=[{"id": 300, "name": "peppy-test.tgz"}])
+    mock_api.get("https://api.github.com/repos/owner/repo/releases/1/assets").respond(
+        json=[{"id": 300, "name": "peppy-test.tgz"}]
+    )
     delete_route = mock_api.delete(
         "https://api.github.com/repos/owner/repo/releases/assets/300"
     ).respond(status_code=204, text="")
@@ -269,9 +263,7 @@ def test_replace_and_upload_asset_replaces_existing(
     ).respond(json={"id": 400, "name": "peppy-test.tgz"})
 
     slug = RepoSlug(owner="owner", repo="repo")
-    replace_and_upload_asset(
-        github_client, 1, "peppy-test.tgz", asset_file, slug
-    )
+    replace_and_upload_asset(github_client, 1, "peppy-test.tgz", asset_file, slug)
     assert delete_route.called
     assert upload_route.called
 
