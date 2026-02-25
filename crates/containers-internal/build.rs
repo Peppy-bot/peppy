@@ -1,10 +1,15 @@
 mod apptainer_build {
     use std::env;
+    use std::io::Read;
     use std::path::{Path, PathBuf};
     use std::process::Command;
 
     const APPTAINER_VERSION: &str = "1.4.5";
+    const APPTAINER_INSTALL_SCRIPT_SHA256: &str =
+        "33d416ca870fdfcfc6b5fd8791f02bf041d742a5b718d015a9a1cf61aa1b30dd";
     const LIMA_VERSION: &str = "2.0.3";
+    const LIMA_DARWIN_ARM64_ARCHIVE_SHA256: &str =
+        "22aee997df59e4fd448041b2d1214e48bd8eaf705d2d48a4307d65c1b179dc97";
     const LIMA_INSTANCE: &str = "peppy";
     const LIMA_TEMPLATE: &str = "template:ubuntu-24.04";
 
@@ -20,6 +25,13 @@ mod apptainer_build {
         format!(
             "https://github.com/lima-vm/lima/releases/download/v{version}/lima-{version}-{os}-{arch}.tar.gz"
         )
+    }
+
+    fn lima_archive_sha256(version: &str, os: &str, arch: &str) -> Option<&'static str> {
+        match (version, os, arch) {
+            ("2.0.3", "Darwin", "arm64") => Some(LIMA_DARWIN_ARM64_ARCHIVE_SHA256),
+            _ => None,
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -94,8 +106,66 @@ mod apptainer_build {
     // Lima download and extraction
     // -----------------------------------------------------------------------
 
+    fn file_sha256_hex(path: &Path) -> Option<String> {
+        use sha2::{Digest, Sha256};
+
+        let mut file = match std::fs::File::open(path) {
+            Ok(f) => f,
+            Err(e) => {
+                println!(
+                    "cargo:warning=Failed to open {:?} for SHA-256 verification: {}",
+                    path, e
+                );
+                return None;
+            }
+        };
+
+        let mut hasher = Sha256::new();
+        let mut buffer = [0_u8; 8192];
+        loop {
+            let n = match file.read(&mut buffer) {
+                Ok(n) => n,
+                Err(e) => {
+                    println!(
+                        "cargo:warning=Failed to read {:?} for SHA-256 verification: {}",
+                        path, e
+                    );
+                    return None;
+                }
+            };
+            if n == 0 {
+                break;
+            }
+            hasher.update(&buffer[..n]);
+        }
+
+        Some(format!("{:x}", hasher.finalize()))
+    }
+
+    fn verify_download_sha256(path: &Path, expected_sha256: &str, label: &str) -> bool {
+        let Some(actual_sha256) = file_sha256_hex(path) else {
+            return false;
+        };
+
+        if actual_sha256.eq_ignore_ascii_case(expected_sha256) {
+            true
+        } else {
+            println!(
+                "cargo:warning={} SHA-256 mismatch for {:?}: expected {}, got {}",
+                label, path, expected_sha256, actual_sha256
+            );
+            false
+        }
+    }
+
     /// Download the Lima release archive to `dest`.
-    fn download_lima_archive(dest: &Path, version: &str, os: &str, arch: &str) -> bool {
+    fn download_lima_archive(
+        dest: &Path,
+        version: &str,
+        os: &str,
+        arch: &str,
+        expected_sha256: &str,
+    ) -> bool {
         let url = lima_archive_url(version, os, arch);
         let status = Command::new("curl")
             .args(["-fsSL", &url, "-o"])
@@ -103,7 +173,13 @@ mod apptainer_build {
             .status();
 
         match status {
-            Ok(s) if s.success() => true,
+            Ok(s) if s.success() => {
+                if !verify_download_sha256(dest, expected_sha256, "Lima archive") {
+                    std::fs::remove_file(dest).ok();
+                    return false;
+                }
+                true
+            }
             Ok(s) => {
                 println!(
                     "cargo:warning=Failed to download Lima archive from {} (exit: {})",
@@ -169,8 +245,16 @@ mod apptainer_build {
             version, os, arch
         );
 
+        let Some(expected_sha256) = lima_archive_sha256(version, os, arch) else {
+            println!(
+                "cargo:warning=Missing pinned SHA-256 for Lima {} {}-{} archive; refusing download",
+                version, os, arch
+            );
+            return None;
+        };
+
         let archive_path = cache_root().join(format!("lima-{}-{}-{}.tar.gz", version, os, arch));
-        if !download_lima_archive(&archive_path, version, os, arch) {
+        if !download_lima_archive(&archive_path, version, os, arch, expected_sha256) {
             return None;
         }
 
@@ -196,14 +280,20 @@ mod apptainer_build {
     // Apptainer install script download
     // -----------------------------------------------------------------------
 
-    fn download_install_script(dest: &Path) -> bool {
+    fn download_install_script(dest: &Path, expected_sha256: &str) -> bool {
         let status = Command::new("curl")
             .args(["-fsSL", &install_script_url(), "-o"])
             .arg(dest)
             .status();
 
         match status {
-            Ok(s) if s.success() => true,
+            Ok(s) if s.success() => {
+                if !verify_download_sha256(dest, expected_sha256, "Apptainer install script") {
+                    std::fs::remove_file(dest).ok();
+                    return false;
+                }
+                true
+            }
             Ok(s) => {
                 println!(
                     "cargo:warning=Failed to download apptainer install script (exit: {})",
@@ -697,7 +787,7 @@ fi
 
             // Download the install script (curl works on both Linux and macOS)
             let script_path = cache_root().join("install-unprivileged.sh");
-            if !download_install_script(&script_path) {
+            if !download_install_script(&script_path, APPTAINER_INSTALL_SCRIPT_SHA256) {
                 println!(
                     "cargo:warning=Could not download apptainer install script; apptainer will not be bundled"
                 );
