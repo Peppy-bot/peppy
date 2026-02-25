@@ -219,11 +219,32 @@ pub(crate) fn ensure_guest_apptainer(
     }
 
     // Write the version marker so we skip the sync next time.
-    let _ = Command::new(limactl)
+    match Command::new(limactl)
         .env("LIMA_HOME", lima_home)
         .args(["shell", instance, "--", "touch"])
-        .arg(guest_dir.join(&marker_name))
-        .status();
+        .arg(&marker_path)
+        .status()
+    {
+        Ok(status) if status.success() => {}
+        Ok(status) => {
+            tracing::warn!(
+                status = %status,
+                limactl = %limactl.display(),
+                instance,
+                marker = %marker_path.display(),
+                "Failed to write guest marker; next run may perform full sync"
+            );
+        }
+        Err(err) => {
+            tracing::warn!(
+                error = %err,
+                limactl = %limactl.display(),
+                instance,
+                marker = %marker_path.display(),
+                "Failed to write guest marker; next run may perform full sync"
+            );
+        }
+    }
 
     Ok(guest_bin)
 }
