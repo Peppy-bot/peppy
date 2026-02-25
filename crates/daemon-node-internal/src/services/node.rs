@@ -41,6 +41,10 @@ pub const FORBIDDEN_ENV_KEYS: [&str; 16] = [
     "GLOBIGNORE",
 ];
 
+const PEPPY_APPTAINER_BIN_ENV_VAR: &str = "PEPPY_APPTAINER_BIN";
+const PEPPY_NODE_NAME_ENV_VAR: &str = "PEPPY_NODE_NAME";
+const PEPPY_NODE_TAG_ENV_VAR: &str = "PEPPY_NODE_TAG";
+
 /// Validates environment variables, rejecting any that are in the forbidden list.
 /// Returns an error if any forbidden env var is found.
 fn validate_goal_env_vars(env_vars: &[(String, String)]) -> Result<Vec<(String, String)>> {
@@ -92,6 +96,46 @@ fn inject_rust_build_env(env_vars: &mut Vec<(String, String)>, language: Peppyge
         env_vars.push(("RUSTC_WRAPPER".to_string(), "sccache".to_string()));
     }
     sccache_injected
+}
+
+fn has_env_key(env_vars: &[(String, String)], key: &str) -> bool {
+    env_vars.iter().any(|(k, _)| k == key)
+}
+
+fn push_env_if_missing(env_vars: &mut Vec<(String, String)>, key: &str, value: String) {
+    if !has_env_key(env_vars, key) {
+        env_vars.push((key.to_string(), value));
+    }
+}
+
+fn resolve_apptainer_bin() -> String {
+    if let Ok(value) = std::env::var(PEPPY_APPTAINER_BIN_ENV_VAR) {
+        let trimmed = value.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
+        }
+    }
+
+    if let Ok(current_exe) = std::env::current_exe()
+        && let Some(exe_dir) = current_exe.parent()
+    {
+        let bundled_apptainer = exe_dir.join("apptainer").join("bin").join("apptainer");
+        if bundled_apptainer.is_file() {
+            return bundled_apptainer.to_string_lossy().into_owned();
+        }
+    }
+
+    "apptainer".to_string()
+}
+
+fn inject_node_runtime_env(env_vars: &mut Vec<(String, String)>, node_name: &str, node_tag: &str) {
+    push_env_if_missing(
+        env_vars,
+        PEPPY_APPTAINER_BIN_ENV_VAR,
+        resolve_apptainer_bin(),
+    );
+    push_env_if_missing(env_vars, PEPPY_NODE_NAME_ENV_VAR, node_name.to_string());
+    push_env_if_missing(env_vars, PEPPY_NODE_TAG_ENV_VAR, node_tag.to_string());
 }
 
 pub(crate) fn generate_random_id() -> String {
@@ -305,6 +349,83 @@ mod tests {
     #[test]
     fn is_sccache_available_does_not_panic() {
         let _ = is_sccache_available();
+    }
+
+    #[test]
+    fn inject_node_runtime_env_sets_expected_keys() {
+        let mut env_vars = Vec::new();
+        inject_node_runtime_env(&mut env_vars, "uvc_camera", "0.1.0");
+
+        let apptainer_bin = env_vars
+            .iter()
+            .find(|(k, _)| k == PEPPY_APPTAINER_BIN_ENV_VAR)
+            .map(|(_, v)| v)
+            .expect("PEPPY_APPTAINER_BIN should be injected");
+        assert!(
+            !apptainer_bin.trim().is_empty(),
+            "PEPPY_APPTAINER_BIN should not be empty"
+        );
+
+        assert_eq!(
+            env_vars
+                .iter()
+                .find(|(k, _)| k == PEPPY_NODE_NAME_ENV_VAR)
+                .map(|(_, v)| v.as_str()),
+            Some("uvc_camera")
+        );
+        assert_eq!(
+            env_vars
+                .iter()
+                .find(|(k, _)| k == PEPPY_NODE_TAG_ENV_VAR)
+                .map(|(_, v)| v.as_str()),
+            Some("0.1.0")
+        );
+    }
+
+    #[test]
+    fn inject_node_runtime_env_keeps_existing_values() {
+        let mut env_vars = vec![
+            (
+                PEPPY_APPTAINER_BIN_ENV_VAR.to_string(),
+                "/custom/apptainer".to_string(),
+            ),
+            (
+                PEPPY_NODE_NAME_ENV_VAR.to_string(),
+                "custom_node".to_string(),
+            ),
+            (PEPPY_NODE_TAG_ENV_VAR.to_string(), "9.9.9".to_string()),
+        ];
+
+        inject_node_runtime_env(&mut env_vars, "uvc_camera", "0.1.0");
+
+        assert_eq!(
+            env_vars
+                .iter()
+                .filter(|(k, _)| k == PEPPY_APPTAINER_BIN_ENV_VAR)
+                .count(),
+            1
+        );
+        assert_eq!(
+            env_vars
+                .iter()
+                .find(|(k, _)| k == PEPPY_APPTAINER_BIN_ENV_VAR)
+                .map(|(_, v)| v.as_str()),
+            Some("/custom/apptainer")
+        );
+        assert_eq!(
+            env_vars
+                .iter()
+                .find(|(k, _)| k == PEPPY_NODE_NAME_ENV_VAR)
+                .map(|(_, v)| v.as_str()),
+            Some("custom_node")
+        );
+        assert_eq!(
+            env_vars
+                .iter()
+                .find(|(k, _)| k == PEPPY_NODE_TAG_ENV_VAR)
+                .map(|(_, v)| v.as_str()),
+            Some("9.9.9")
+        );
     }
 
     #[test]

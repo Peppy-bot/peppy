@@ -2095,6 +2095,51 @@ async fn listen_for_node_add_uses_env_overrides_for_path() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_add_injects_runtime_env_vars() {
+    const TARGET_NODE_NAME: &str = "runtime_env_node";
+    const TARGET_NODE_TAG: &str = "0.1.0";
+
+    let started_daemon = start_daemon_node_with_mock_messenger().await;
+    let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
+    let peppy_json5 = format!(
+        r#"{{
+            schema_version: 1,
+            manifest: {{
+                name: "{TARGET_NODE_NAME}",
+                tag: "{TARGET_NODE_TAG}",
+                language: "rust",
+            }},
+            build: {{
+                add_cmd: [
+                    "sh",
+                    "-c",
+                    "test -n \"$PEPPY_APPTAINER_BIN\" && test \"$PEPPY_NODE_NAME\" = \"{TARGET_NODE_NAME}\" && test \"$PEPPY_NODE_TAG\" = \"{TARGET_NODE_TAG}\""
+                ],
+                start_cmd: ["sleep", "10"]
+            }}
+        }}"#
+    );
+    write_peppy_json5(source_dir.path(), &peppy_json5);
+
+    let add_result = send_node_add_and_wait(
+        &started_daemon.caller_handle,
+        &started_daemon.daemon_node_name,
+        source_dir.path(),
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        None,
+    )
+    .await
+    .expect("node_add request should succeed");
+
+    assert!(
+        add_result.success,
+        "node_add should succeed when runtime env vars are injected, got error: {:?}",
+        add_result.error_message
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_add_fails_runs_add_cmd_on_missing_node_dependency() {
     // If there is a missing dependency, the NODE_ADD_ACTION should fail with a MissingDependency error
     // BEFORE running add_cmd. This mimics real nodes (e.g. fake_video_reconstruction) where
