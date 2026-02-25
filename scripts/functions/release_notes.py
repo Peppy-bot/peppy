@@ -160,7 +160,11 @@ def generate_release_notes_file(
     )
 
     releases_dir.mkdir(parents=True, exist_ok=True)
-    file_basename = f"v{version}" if not notes_input.tag.lower().startswith("v") else notes_input.tag
+    file_basename = (
+        f"v{version}"
+        if not notes_input.tag.lower().startswith("v")
+        else notes_input.tag
+    )
     release_file = releases_dir / f"{file_basename}.html"
 
     if release_file.exists() and confirm_overwrite:

@@ -160,7 +160,9 @@ def _run_full() -> None:
         raise ReleaseError("docs release description cannot be empty")
 
     # Release notes method
-    generate_notes = prompt_yn("Generate release notes automatically?", default_yes=True)
+    generate_notes = prompt_yn(
+        "Generate release notes automatically?", default_yes=True
+    )
     notes_body: str | None = None
     if not generate_notes:
         notes_body = _get_release_notes_via_editor()

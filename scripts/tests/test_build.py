@@ -20,7 +20,7 @@ from functions.build import (
 from functions.cli import ReleaseError
 
 
-def test_supported_triples_contains_expected_triples() -> None:
+def test_supported_platform_targets_contains_expected_values() -> None:
     expected = {
         "aarch64-apple-darwin",
         "x86_64-unknown-linux-gnu",
@@ -33,7 +33,7 @@ def test_supported_triples_contains_expected_triples() -> None:
     assert SUPPORTED_TRIPLES == expected
 
 
-def test_detect_host_triple_valid_triple() -> None:
+def test_detect_host_platform_returns_supported_target() -> None:
     rustc_output = "rustc 1.82.0 (abc123 2025-01-01)\nbinary: rustc\nhost: aarch64-apple-darwin\nrelease: 1.82.0\n"
     with patch("functions.build.subprocess.run") as mock_run:
         mock_run.return_value.returncode = 0
@@ -42,8 +42,10 @@ def test_detect_host_triple_valid_triple() -> None:
     assert triple == "aarch64-apple-darwin"
 
 
-def test_detect_host_triple_unsupported_triple() -> None:
-    rustc_output = "rustc 1.82.0\nbinary: rustc\nhost: wasm32-unknown-unknown\nrelease: 1.82.0\n"
+def test_detect_host_platform_rejects_unsupported_target() -> None:
+    rustc_output = (
+        "rustc 1.82.0\nbinary: rustc\nhost: wasm32-unknown-unknown\nrelease: 1.82.0\n"
+    )
     with patch("functions.build.subprocess.run") as mock_run:
         mock_run.return_value.returncode = 0
         mock_run.return_value.stdout = rustc_output
@@ -51,7 +53,7 @@ def test_detect_host_triple_unsupported_triple() -> None:
             detect_host_triple()
 
 
-def test_detect_host_triple_rustc_failure() -> None:
+def test_detect_host_platform_raises_on_rustc_failure() -> None:
     with patch("functions.build.subprocess.run") as mock_run:
         mock_run.return_value.returncode = 1
         mock_run.return_value.stderr = "command not found"
@@ -59,7 +61,7 @@ def test_detect_host_triple_rustc_failure() -> None:
             detect_host_triple()
 
 
-def test_detect_host_triple_no_host_line() -> None:
+def test_detect_host_platform_raises_without_host_line() -> None:
     with patch("functions.build.subprocess.run") as mock_run:
         mock_run.return_value.returncode = 0
         mock_run.return_value.stdout = "rustc 1.82.0\nbinary: rustc\n"
@@ -102,7 +104,14 @@ def test_find_peppy_binary_not_found(tmp_path: Path) -> None:
 def test_find_zenohd_binary_found(tmp_path: Path) -> None:
     triple = "aarch64-apple-darwin"
     zenohd_path = (
-        tmp_path / "target" / triple / "release" / "build" / "pmi-abc123" / "out" / "zenohd"
+        tmp_path
+        / "target"
+        / triple
+        / "release"
+        / "build"
+        / "pmi-abc123"
+        / "out"
+        / "zenohd"
     )
     zenohd_path.parent.mkdir(parents=True)
     zenohd_path.write_bytes(b"fake zenohd")
@@ -151,7 +160,10 @@ def test_find_build_dir_not_found(tmp_path: Path) -> None:
     with patch.dict(os.environ, {"CARGO_TARGET_DIR": str(tmp_path / "target")}):
         with pytest.raises(ReleaseError, match="apptainer install directory not found"):
             find_build_dir(
-                triple, tmp_path, "containers-*/out/apptainer-install", "apptainer install"
+                triple,
+                tmp_path,
+                "containers-*/out/apptainer-install",
+                "apptainer install",
             )
 
 

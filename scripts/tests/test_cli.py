@@ -24,7 +24,9 @@ def test_need_cmd_exists() -> None:
 
 
 def test_need_cmd_missing() -> None:
-    with pytest.raises(ReleaseError, match="missing required command: nonexistent_cmd_xyz"):
+    with pytest.raises(
+        ReleaseError, match="missing required command: nonexistent_cmd_xyz"
+    ):
         need_cmd("nonexistent_cmd_xyz")
 
 
@@ -88,9 +90,7 @@ def test_validate_release_environment_valid_token() -> None:
 
 def test_validate_release_environment_no_token_required() -> None:
     with patch.dict(os.environ, {}, clear=True):
-        token = validate_release_environment(
-            required_commands=(), require_token=False
-        )
+        token = validate_release_environment(required_commands=(), require_token=False)
     assert token == ""
 
 

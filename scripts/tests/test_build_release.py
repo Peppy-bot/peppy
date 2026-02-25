@@ -70,9 +70,9 @@ def test_run_local_mode_builds_artifact(
 ) -> None:
     mock_repo_root.return_value = tmp_path
     mock_build.return_value = BuildArtifact(
-        asset_name="peppy-aarch64-apple-darwin.tgz",
-        asset_path=tmp_path / "dist" / "peppy-aarch64-apple-darwin.tgz",
-        host_triple="aarch64-apple-darwin",
+        asset_name="peppy-test.tgz",
+        asset_path=tmp_path / "dist" / "peppy-test.tgz",
+        host_triple="platform-agnostic",
     )
     _run_local()
     mock_validate.assert_called_once_with(require_token=False)
@@ -108,7 +108,9 @@ def test_run_local_mode_empty_tag_raises(
 @patch("functions.build_release.has_uncommitted_changes", return_value=False)
 @patch("functions.build_release.get_current_branch", return_value="main")
 @patch("functions.build_release.get_repo_root")
-@patch("functions.build_release.validate_release_environment", return_value="test-token")
+@patch(
+    "functions.build_release.validate_release_environment", return_value="test-token"
+)
 def test_run_full_release_flow(
     mock_validate: MagicMock,
     mock_repo_root: MagicMock,
@@ -134,11 +136,14 @@ def test_run_full_release_flow(
     mock_build.return_value = BuildArtifact(
         asset_name="peppy-test.tgz",
         asset_path=tmp_path / "test.tgz",
-        host_triple="aarch64-apple-darwin",
+        host_triple="platform-agnostic",
     )
     mock_slug.return_value = RepoSlug(owner="test-owner", repo="test-repo")
     mock_client.return_value = MagicMock()
-    mock_api.return_value = {"id": 1, "html_url": "https://github.com/test/releases/tag/v0.1.0"}
+    mock_api.return_value = {
+        "id": 1,
+        "html_url": "https://github.com/test/releases/tag/v0.1.0",
+    }
     mock_parse.return_value = ReleaseInfo(
         release_id=1,
         html_url="https://github.com/test/releases/tag/v0.1.0",
