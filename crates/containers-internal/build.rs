@@ -207,7 +207,7 @@ mod apptainer_build {
         std::fs::create_dir_all(dest_dir).expect("Failed to create lima extraction directory");
 
         let status = Command::new("tar")
-            .args(["xzf"])
+            .args(["-xzf"])
             .arg(archive)
             .arg("-C")
             .arg(dest_dir)
