@@ -305,7 +305,7 @@ impl ApptainerFacade {
         }
 
         // 2) Relative to the current executable: {exe_dir}/../apptainer/
-        //    This is the installed layout created by install.sh ($PEPPY_HOME/apptainer/).
+        //    This is the installed layout ($PEPPY_HOME/apptainer/).
         if let Ok(exe_path) = std::env::current_exe()
             && let Some(exe_dir) = exe_path.parent()
         {

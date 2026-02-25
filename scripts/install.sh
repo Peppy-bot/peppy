@@ -298,39 +298,6 @@ __wrap__() {
         chmod +x "$PEPPY_BIN_DIR/zenohd"
     fi
 
-    # Find and install apptainer directory tree (portable installation)
-    APPTAINER_SRC=""
-    if [ -d "$TEMP_DIR/apptainer" ]; then
-        APPTAINER_SRC="$TEMP_DIR/apptainer"
-    else
-        APPTAINER_SRC="$(find "$TEMP_DIR" -type d -name apptainer -print | head -n 1 || true)"
-    fi
-
-    if [ -n "${APPTAINER_SRC-}" ] && [ -d "$APPTAINER_SRC" ]; then
-        APPTAINER_DEST="$PEPPY_HOME/apptainer"
-        rm -rf "$APPTAINER_DEST"
-        mv "$APPTAINER_SRC" "$APPTAINER_DEST"
-        chmod +x "$APPTAINER_DEST/bin/apptainer" 2>/dev/null || true
-    fi
-
-    # Find and install Lima directory (bundled limactl + templates + guest agent)
-    LIMA_SRC=""
-    if [ -d "$TEMP_DIR/lima" ]; then
-        LIMA_SRC="$TEMP_DIR/lima"
-    else
-        LIMA_SRC="$(find "$TEMP_DIR" -type d -name lima -print | head -n 1 || true)"
-    fi
-
-    if [ -n "${LIMA_SRC-}" ] && [ -d "$LIMA_SRC" ]; then
-        LIMA_DEST="$PEPPY_HOME/lima"
-        rm -rf "$LIMA_DEST"
-        mv "$LIMA_SRC" "$LIMA_DEST"
-        chmod +x "$LIMA_DEST/bin/limactl" 2>/dev/null || true
-    fi
-
-    # Create lima-data directory for VM instance state
-    mkdir -p "$PEPPY_HOME/lima-data"
-
     if [ "$PEPPY_BIN_DIR" = "$PEPPY_HOME/bin" ]; then
         echo "The 'peppy' binary is installed into '${PEPPY_HOME}'"
     else
@@ -339,13 +306,6 @@ __wrap__() {
     if [ ! -f "$PEPPY_BIN_DIR/zenohd" ]; then
         echo "warning: 'zenohd' was not found in the archive. 'peppy service serve' requires zenohd on PATH or next to the peppy binary." >&2
     fi
-    if [ ! -d "$PEPPY_HOME/apptainer/bin" ]; then
-        echo "warning: 'apptainer' directory was not found in the archive. Container features will be unavailable." >&2
-    fi
-    if [ "$PLATFORM" = "apple-darwin" ] && [ ! -f "$PEPPY_HOME/lima/bin/limactl" ]; then
-        echo "warning: 'lima' directory was not found in the archive. Container features on macOS will be unavailable." >&2
-    fi
-
     if [ -z "${PEPPY_NO_SERVICE_INSTALL:-}" ]; then
         # Stop and remove existing service before installing the new one
         "$PEPPY_BIN_DIR/peppy" service stop >/dev/null 2>&1 || true
