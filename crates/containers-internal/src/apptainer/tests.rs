@@ -85,8 +85,8 @@ fn test_apptainer_version_integration() {
     let version = facade.version();
     let v = version.expect("apptainer --version should succeed");
     assert!(
-        v.contains("apptainer") || v.contains("1."),
-        "Expected version string containing 'apptainer' or '1.', got: {}",
+        v.contains("apptainer"),
+        "Expected version string containing 'apptainer', got: {}",
         v
     );
     eprintln!("apptainer version: {}", v);
