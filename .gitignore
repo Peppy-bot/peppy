@@ -31,3 +31,8 @@ target
 
 # Documentation stuff
 ‎node_modules
+
+# Python stuff
+.pixi
+__pycache__/
+*.pyc
