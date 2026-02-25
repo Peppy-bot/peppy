@@ -1,0 +1,19 @@
+[project]
+name = "peppy-release-scripts"
+version = "0.0.1"
+requires-python = ">=3.11"
+dependencies = ["httpx", "rich"]
+
+[project.scripts]
+build-release = "functions.build_release:main"
+add-release-build = "functions.add_release_build:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["functions"]
+
+[dependency-groups]
+dev = ["pytest", "respx"]
