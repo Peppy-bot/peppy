@@ -10,6 +10,7 @@ config = { path = "../config-internal" }
 node-stack = { path = "../node-stack-internal" }
 peppylib = { path = "../peppylib" }
 generator = { path = "../generator-internal" }
+containers = { path = "../containers-internal" }
 bytes = "1.10"
 chrono = "0.4"
 hostname = "0.4"

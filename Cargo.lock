@@ -585,6 +585,7 @@ dependencies = [
 name = "containers"
 version = "0.0.1"
 dependencies = [
+ "sha2",
  "tempfile",
  "thiserror 2.0.18",
  "tracing",
@@ -745,6 +746,7 @@ dependencies = [
  "capnpc",
  "chrono",
  "config",
+ "containers",
  "futures",
  "generator",
  "git2",

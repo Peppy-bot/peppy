@@ -1,0 +1,22 @@
+[workspace]
+name = "peppy-release-scripts"
+version = "0.0.1"
+description = "Release scripts for peppy"
+channels = ["conda-forge"]
+platforms = ["linux-64", "osx-arm64", "linux-aarch64"]
+
+[dependencies]
+python = ">=3.11,<3.14"
+pip = "*"
+
+[pypi-dependencies]
+peppy-release-scripts = { path = ".", editable = true }
+httpx = "*"
+rich = "*"
+pytest = "*"
+respx = "*"
+
+[tasks]
+build-release = "build-release"
+add-release-build = "add-release-build"
+test = "pytest tests/ -v"

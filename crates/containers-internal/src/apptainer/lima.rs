@@ -253,7 +253,7 @@ pub(crate) fn ensure_guest_apptainer(
 ///
 /// Resolution order:
 /// 1. `PEPPY_LIMA_DIR` environment variable
-/// 2. `../lima/` relative to the current executable (installed layout)
+/// 2. `lima/` relative to the current executable (installed layout)
 /// 3. Compile-time `LIMA_INSTALL_DIR` set by build.rs
 pub(crate) fn resolve_lima_dir() -> Result<PathBuf> {
     // 1) Runtime override via environment variable
@@ -271,12 +271,12 @@ pub(crate) fn resolve_lima_dir() -> Result<PathBuf> {
         }
     }
 
-    // 2) Relative to the current executable: {exe_dir}/../lima/
-    //    This is the installed layout created by install.sh ($PEPPY_HOME/lima/).
+    // 2) Relative to the current executable: {exe_dir}/lima/
+    //    This is the installed layout created by install.sh ($PEPPY_BIN_DIR/lima/).
     if let Ok(exe_path) = std::env::current_exe()
         && let Some(exe_dir) = exe_path.parent()
     {
-        let candidate = exe_dir.join("../lima");
+        let candidate = exe_dir.join("lima");
         if candidate.is_dir() {
             return Ok(candidate);
         }

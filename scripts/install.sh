@@ -19,6 +19,112 @@ set -eu
 #   PEPPY_FORCE_REINSTALL   If set, skip confirmation when daemon is running (for non-interactive installs)
 
 __wrap__() {
+    IS_TTY=false
+    if [ -t 1 ]; then
+        IS_TTY=true
+    fi
+
+    BOLD=""
+    DIM=""
+    GREEN=""
+    CYAN=""
+    ORANGE=""
+    RESET=""
+    if $IS_TTY; then
+        BOLD="$(printf '\033[1m')"
+        DIM="$(printf '\033[2m')"
+        GREEN="$(printf '\033[32m')"
+        CYAN="$(printf '\033[36m')"
+        ORANGE="$(printf '\033[33m')"
+        case "${TERM:-}" in
+        *256color* | *24bit* | *truecolor*) ORANGE="$(printf '\033[38;5;208m')" ;;
+        esac
+        RESET="$(printf '\033[0m')"
+    fi
+
+    UTF8=false
+    case "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" in
+    *UTF-8* | *utf8* | *UTF8*) UTF8=true ;;
+    esac
+
+    PROGRESS_FULL="#"
+    PROGRESS_EMPTY="-"
+    OK_MARK="OK"
+    if $UTF8; then
+        PROGRESS_FULL="■"
+        PROGRESS_EMPTY="·"
+        OK_MARK="✓"
+    fi
+    PROGRESS_WIDTH=54
+    PROGRESS_NEEDS_NEWLINE=false
+
+    repeat_char() {
+        COUNT="$1"
+        CHAR="$2"
+        OUT=""
+        I=0
+        while [ "$I" -lt "$COUNT" ]; do
+            OUT="${OUT}${CHAR}"
+            I=$((I + 1))
+        done
+        printf "%s" "$OUT"
+    }
+
+    render_progress() {
+        PCT="$1"
+        LABEL="${2:-}"
+        FILLED=$((PCT * PROGRESS_WIDTH / 100))
+        EMPTY=$((PROGRESS_WIDTH - FILLED))
+        FILLED_BAR="$(repeat_char "$FILLED" "$PROGRESS_FULL")"
+        EMPTY_BAR="$(repeat_char "$EMPTY" "$PROGRESS_EMPTY")"
+
+        if $IS_TTY; then
+            printf "\r%s%s%s %3s%%" "$ORANGE" "${FILLED_BAR}${EMPTY_BAR}" "$RESET" "$PCT"
+            if [ -n "$LABEL" ]; then
+                printf " %s" "$LABEL"
+            fi
+            # Clear any trailing characters from a previous, longer progress label.
+            printf "\033[K"
+            PROGRESS_NEEDS_NEWLINE=true
+            if [ "$PCT" -ge 100 ]; then
+                printf "\n"
+                PROGRESS_NEEDS_NEWLINE=false
+            fi
+        else
+            if [ -n "$LABEL" ]; then
+                printf "[%3s%%] %s\n" "$PCT" "$LABEL"
+            else
+                printf "[%3s%%]\n" "$PCT"
+            fi
+        fi
+    }
+
+    flush_progress_line() {
+        if $IS_TTY && $PROGRESS_NEEDS_NEWLINE; then
+            printf "\n"
+            PROGRESS_NEEDS_NEWLINE=false
+        fi
+    }
+
+    print_banner() {
+        if $IS_TTY; then
+            printf "\n%s" "$CYAN"
+        else
+            printf "\n"
+        fi
+        cat <<'EOF'
+██████╗ ███████╗██████╗ ██████╗ ██╗   ██╗ ██████╗ ███████╗
+██╔══██╗██╔════╝██╔══██╗██╔══██╗╚██╗ ██╔╝██╔═══██╗██╔════╝
+██████╔╝█████╗  ██████╔╝██████╔╝ ╚████╔╝ ██║   ██║███████╗
+██╔═══╝ ██╔══╝  ██╔═══╝ ██╔═══╝   ╚██╔╝  ██║   ██║╚════██║
+██║     ███████╗██║     ██║        ██║   ╚██████╔╝███████║
+╚═╝     ╚══════╝╚═╝     ╚═╝        ╚═╝    ╚═════╝ ╚══════╝
+EOF
+        if $IS_TTY; then
+            printf "%s\n" "$RESET"
+        fi
+    }
+
     mask_credentials() {
         URL="$1"
         echo "$URL" | sed -E 's|://[^:@/]+:[^@/]+@|://***:***@|g'
@@ -166,11 +272,14 @@ __wrap__() {
         DOWNLOAD_URL="${PEPPY_DOWNLOAD_URL:-${REPOURL%/}/v${VERSION#v}/${BINARY}${EXTENSION-}}"
     fi
 
+    echo ""
+    printf "%sInstalling peppy version:%s %s\n" "$BOLD" "$RESET" "$VERSION"
     if [ -n "${ARCHIVE_PATH-}" ]; then
-        printf "This script will install peppy for you.\nUsing local archive: %s\n" "$ARCHIVE_PATH"
+        printf "%sSource:%s %s\n" "$DIM" "$RESET" "$ARCHIVE_PATH"
     else
-        printf "This script will automatically download and install peppy (%s) for you.\nGetting it from this url: %s\n" "$VERSION" "$(mask_credentials "$DOWNLOAD_URL")"
+        printf "%sSource:%s %s\n" "$DIM" "$RESET" "$(mask_credentials "$DOWNLOAD_URL")"
     fi
+    render_progress 5 "Preparing installer"
 
     TEMP_FILE="$(mktemp "${TMPDIR:-/tmp}/.peppy_install.XXXXXXXX")"
     TEMP_DIR=""
@@ -185,8 +294,11 @@ __wrap__() {
     trap cleanup EXIT
 
     if [ -n "${ARCHIVE_PATH-}" ]; then
+        render_progress 25 "Reading local archive"
         cp "$ARCHIVE_PATH" "$TEMP_FILE"
+        render_progress 45 "Archive ready"
     else
+        render_progress 20 "Downloading release archive"
         HAVE_CURL=false
         HAVE_CURL_8_8_0=false
         if command -v curl >/dev/null 2>&1; then
@@ -211,13 +323,8 @@ __wrap__() {
             exit 1
         fi
 
-        if [ ! -t 1 ]; then
-            CURL_OPTIONS="-sS"
-            WGET_OPTIONS="--no-verbose"
-        else
-            CURL_OPTIONS=""
-            WGET_OPTIONS="--show-progress"
-        fi
+        CURL_OPTIONS="-sS"
+        WGET_OPTIONS="--no-verbose"
 
         if [ -n "${NETRC:-}" ]; then
             CURL_OPTIONS="$CURL_OPTIONS --netrc-file $NETRC"
@@ -259,6 +366,7 @@ __wrap__() {
             echo "error: '$(mask_credentials "$DOWNLOAD_URL")' is not available" >&2
             exit 1
         fi
+        render_progress 45 "Download complete"
     fi
 
     if [ ! -s "$TEMP_FILE" ]; then
@@ -267,6 +375,7 @@ __wrap__() {
         exit 1
     fi
 
+    render_progress 60 "Extracting archive"
     mkdir -p "$PEPPY_HOME"
     mkdir -p "$PEPPY_BIN_DIR"
     TEMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/.peppy_install_dir.XXXXXXXX")"
@@ -277,19 +386,20 @@ __wrap__() {
         exit 1
     fi
 
-    # Install PEPPY_HOME-level directories (optional — not all platforms bundle them)
+    # Install apptainer/lima directory trees into PEPPY_BIN_DIR (siblings of the peppy binary)
     for DIR_NAME in apptainer lima; do
-        if [ -d "$TEMP_DIR/$DIR_NAME" ]; then
-            rm -rf "$PEPPY_HOME/$DIR_NAME"
-            mv "$TEMP_DIR/$DIR_NAME" "$PEPPY_HOME/$DIR_NAME"
+        if [ -d "$TEMP_DIR/bin/$DIR_NAME" ]; then
+            rm -rf "$PEPPY_BIN_DIR/$DIR_NAME"
+            mv "$TEMP_DIR/bin/$DIR_NAME" "$PEPPY_BIN_DIR/$DIR_NAME"
         fi
     done
 
     # Create lima-data directory for VM instance state (preserved across upgrades)
-    if [ -d "$PEPPY_HOME/lima" ] && [ ! -d "$PEPPY_HOME/lima-data" ]; then
+    if [ -d "$PEPPY_BIN_DIR/lima" ] && [ ! -d "$PEPPY_HOME/lima-data" ]; then
         mkdir -p "$PEPPY_HOME/lima-data"
     fi
 
+    render_progress 75 "Installing binaries"
     # Install binaries
     mv "$TEMP_DIR/bin/peppy" "$PEPPY_BIN_DIR/peppy"
     chmod +x "$PEPPY_BIN_DIR/peppy"
@@ -300,20 +410,18 @@ __wrap__() {
     fi
 
     if [ "$PEPPY_BIN_DIR" = "$PEPPY_HOME/bin" ]; then
+        flush_progress_line
         echo "peppy installed to '${PEPPY_HOME}'"
     else
+        flush_progress_line
         echo "peppy installed to '${PEPPY_BIN_DIR}' (PEPPY_HOME=${PEPPY_HOME})"
-        # Runtime discovers apptainer/lima relative to the binary — hint the user
-        # to set env vars when PEPPY_BIN_DIR is not the default location.
-        if [ -d "$PEPPY_HOME/apptainer" ] || [ -d "$PEPPY_HOME/lima" ]; then
-            echo "hint: since PEPPY_BIN_DIR is not the default, set these env vars for container support:" >&2
-            [ -d "$PEPPY_HOME/apptainer" ] && echo "  export PEPPY_APPTAINER_DIR=${PEPPY_HOME}/apptainer" >&2
-            [ -d "$PEPPY_HOME/lima" ] && echo "  export PEPPY_LIMA_DIR=${PEPPY_HOME}/lima" >&2
-        fi
     fi
     if [ ! -f "$PEPPY_BIN_DIR/zenohd" ]; then
+        flush_progress_line
         echo "warning: 'zenohd' was not found in the archive. 'peppy service serve' requires zenohd on PATH or next to the peppy binary." >&2
     fi
+
+    render_progress 85 "Configuring service"
     if [ -z "${PEPPY_NO_SERVICE_INSTALL:-}" ]; then
         # Stop and remove existing service before installing the new one
         "$PEPPY_BIN_DIR/peppy" service stop >/dev/null 2>&1 || true
@@ -335,10 +443,17 @@ __wrap__() {
             fi
         fi
     else
+        flush_progress_line
         echo "No service install because PEPPY_NO_SERVICE_INSTALL is set"
     fi
 
+    PATH_UPDATED=false
+    PATH_ALREADY_PRESENT=false
+    PATH_UPDATE_FILE=""
+
+    render_progress 92 "Configuring shell PATH"
     if [ -n "${PEPPY_NO_PATH_UPDATE:-}" ]; then
+        flush_progress_line
         echo "No path update because PEPPY_NO_PATH_UPDATE is set"
     else
         update_shell() {
@@ -350,10 +465,13 @@ __wrap__() {
             fi
 
             if ! grep -Fxq "$LINE" "$FILE"; then
-                echo "Updating '${FILE}'"
                 echo >>"$FILE"
                 echo "$LINE" >>"$FILE"
-                echo "Please restart your shell or source your shell config."
+                PATH_UPDATED=true
+                PATH_UPDATE_FILE="$FILE"
+            else
+                PATH_ALREADY_PRESENT=true
+                PATH_UPDATE_FILE="$FILE"
             fi
         }
 
@@ -379,14 +497,32 @@ __wrap__() {
             ;;
 
         '')
+            flush_progress_line
             echo "warn: Could not detect shell type." >&2
             echo "      Please permanently add '${PEPPY_BIN_DIR}' to your \$PATH to enable the 'peppy' command." >&2
             ;;
 
         *)
+            flush_progress_line
             echo "warn: Could not update shell $(basename "$SHELL")" >&2
             echo "      Please permanently add '${PEPPY_BIN_DIR}' to your \$PATH to enable the 'peppy' command." >&2
             ;;
         esac
     fi
+
+    render_progress 100 "Installation complete"
+
+    if $PATH_UPDATED; then
+        printf "%sSuccessfully added peppy to \$PATH in %s%s\n" "$GREEN" "$PATH_UPDATE_FILE" "$RESET"
+    elif $PATH_ALREADY_PRESENT; then
+        printf "%speppy is already available in \$PATH via %s%s\n" "$DIM" "$PATH_UPDATE_FILE" "$RESET"
+    fi
+
+    print_banner
+    echo ""
+    printf "%s%s peppy is ready.%s\n\n" "$GREEN" "$OK_MARK" "$RESET"
+    echo "To get started, reload your shell and:"
+    echo "  peppy         # Run command"
+    echo ""
+    echo "For more information visit https://docs.peppy.bot"
 } && __wrap__ "$@"
