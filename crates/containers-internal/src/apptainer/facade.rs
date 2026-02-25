@@ -54,7 +54,7 @@ impl ApptainerFacade {
     ///
     /// Resolution order:
     /// 1. `PEPPY_APPTAINER_DIR` environment variable
-    /// 2. `../apptainer/` relative to the current executable (installed layout)
+    /// 2. `apptainer/` relative to the current executable (installed layout)
     /// 3. Compile-time `APPTAINER_INSTALL_DIR` set by build.rs
     pub fn new() -> Result<Self> {
         let apptainer_dir = Self::resolve_apptainer_dir()?;
@@ -304,12 +304,12 @@ impl ApptainerFacade {
             }
         }
 
-        // 2) Relative to the current executable: {exe_dir}/../apptainer/
-        //    This is the installed layout created by install.sh ($PEPPY_HOME/apptainer/).
+        // 2) Relative to the current executable: {exe_dir}/apptainer/
+        //    This is the installed layout created by install.sh ($PEPPY_BIN_DIR/apptainer/).
         if let Ok(exe_path) = std::env::current_exe()
             && let Some(exe_dir) = exe_path.parent()
         {
-            let candidate = exe_dir.join("../apptainer");
+            let candidate = exe_dir.join("apptainer");
             if candidate.is_dir() {
                 return Ok(candidate);
             }
