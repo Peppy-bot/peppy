@@ -16,10 +16,8 @@ pub(crate) enum Backend {
     Native { apptainer_bin: PathBuf },
     /// macOS: route commands through a Lima VM.
     Lima {
-        /// Host-side path to `bin/apptainer` within the installation (for validation).
+        /// Path to `bin/apptainer` used for invocation (guest-side inside the VM).
         apptainer_bin: PathBuf,
-        /// Guest-side path at `/tmp/peppy/apptainer/bin/apptainer`.
-        guest_apptainer_bin: PathBuf,
         /// Path to the bundled `limactl` binary.
         limactl_path: PathBuf,
         /// LIMA_HOME directory for VM instance data.
@@ -84,8 +82,7 @@ impl ApptainerFacade {
             lima::check_lima_version(&limactl_path)?;
 
             Backend::Lima {
-                apptainer_bin,
-                guest_apptainer_bin: PathBuf::from("/tmp/peppy/apptainer/bin/apptainer"),
+                apptainer_bin: PathBuf::from("/tmp/peppy/apptainer/bin/apptainer"),
                 limactl_path,
                 lima_home,
             }
@@ -115,12 +112,12 @@ impl ApptainerFacade {
             Backend::Lima {
                 limactl_path,
                 lima_home,
-                guest_apptainer_bin,
+                apptainer_bin,
                 ..
             } => {
                 lima::ensure_lima_instance(limactl_path, lima_home, lima::LIMA_TEMPLATE)?;
 
-                *guest_apptainer_bin = lima::ensure_guest_apptainer(
+                *apptainer_bin = lima::ensure_guest_apptainer(
                     &self.apptainer_dir,
                     limactl_path,
                     lima_home,
@@ -136,25 +133,15 @@ impl ApptainerFacade {
         &self.apptainer_dir
     }
 
+    /// Returns the path to the apptainer binary used for invocation.
+    ///
+    /// On Linux this is the host-side binary. On macOS (Lima) this is the
+    /// guest-side path inside the VM.
     pub fn binary_path(&self) -> &Path {
         match &self.backend {
             Backend::Native { apptainer_bin } | Backend::Lima { apptainer_bin, .. } => {
                 apptainer_bin
             }
-        }
-    }
-
-    /// Returns the path used to invoke apptainer in commands.
-    ///
-    /// On Linux this is the same as [`binary_path()`](Self::binary_path). On macOS
-    /// (Lima) this is the guest-side path inside the VM.
-    pub fn effective_binary_path(&self) -> &Path {
-        match &self.backend {
-            Backend::Native { apptainer_bin } => apptainer_bin,
-            Backend::Lima {
-                guest_apptainer_bin,
-                ..
-            } => guest_apptainer_bin,
         }
     }
 
@@ -282,7 +269,7 @@ impl ApptainerFacade {
                 Ok(cmd)
             }
             Backend::Lima {
-                guest_apptainer_bin,
+                apptainer_bin,
                 limactl_path,
                 lima_home,
                 ..
@@ -290,7 +277,7 @@ impl ApptainerFacade {
                 let mut cmd = Command::new(limactl_path);
                 cmd.env("LIMA_HOME", lima_home);
                 cmd.arg("shell").arg(lima::LIMA_INSTANCE).arg("--");
-                cmd.arg(guest_apptainer_bin);
+                cmd.arg(apptainer_bin);
                 cmd.args(args);
                 Ok(cmd)
             }

@@ -21,16 +21,16 @@ fn create_mock_install_dir(tmp: &TempDir) -> PathBuf {
 
 /// Create a mock `ApptainerFacade` for unit tests that don't need real Lima.
 fn mock_facade(install_dir: PathBuf, lima: bool) -> ApptainerFacade {
-    let bin = install_dir.join("bin/apptainer");
     let backend = if lima {
         Backend::Lima {
-            apptainer_bin: bin,
-            guest_apptainer_bin: PathBuf::from("/tmp/peppy/apptainer/bin/apptainer"),
+            apptainer_bin: PathBuf::from("/tmp/peppy/apptainer/bin/apptainer"),
             limactl_path: PathBuf::from("/mock/limactl"),
             lima_home: PathBuf::from("/mock/lima-home"),
         }
     } else {
-        Backend::Native { apptainer_bin: bin }
+        Backend::Native {
+            apptainer_bin: install_dir.join("bin/apptainer"),
+        }
     };
     ApptainerFacade {
         apptainer_dir: install_dir,
@@ -51,7 +51,15 @@ fn test_facade_from_valid_dir() {
     // The full from_dir + Lima integration path is covered by test_apptainer_version_integration.
     let facade = mock_facade(install_dir.clone(), cfg!(target_os = "macos"));
     assert_eq!(facade.install_dir(), install_dir);
-    assert_eq!(facade.binary_path(), install_dir.join("bin/apptainer"));
+    if cfg!(target_os = "macos") {
+        assert_eq!(
+            facade.binary_path(),
+            Path::new("/tmp/peppy/apptainer/bin/apptainer"),
+            "On macOS, binary_path should be the guest-side path"
+        );
+    } else {
+        assert_eq!(facade.binary_path(), install_dir.join("bin/apptainer"));
+    }
 }
 
 #[test]
@@ -87,15 +95,6 @@ fn test_facade_from_dir_fails_when_binary_missing() {
     );
 }
 
-#[test]
-fn test_binary_path_matches_install_dir() {
-    let tmp = TempDir::new().expect("Failed to create temp dir");
-    let install_dir = create_mock_install_dir(&tmp);
-    let facade = mock_facade(install_dir.clone(), false);
-
-    assert_eq!(facade.binary_path(), install_dir.join("bin/apptainer"));
-}
-
 // ---------------------------------------------------------------------------
 // Integration tests (require real apptainer/Lima)
 // ---------------------------------------------------------------------------
@@ -110,14 +109,14 @@ fn test_apptainer_version_integration() {
     let facade = ApptainerFacade::new()
         .expect("ApptainerFacade::new() should succeed — apptainer is bundled at compile time");
 
-    // On macOS, effective_binary_path should point to the guest-side installation.
+    // On macOS, binary_path should point to the guest-side installation.
     if cfg!(target_os = "macos") {
-        let effective = facade.effective_binary_path();
+        let bin = facade.binary_path();
         assert_eq!(
-            effective,
+            bin,
             Path::new("/tmp/peppy/apptainer/bin/apptainer"),
-            "On macOS, effective_binary_path should be the guest-side path, got: {}",
-            effective.display()
+            "On macOS, binary_path should be the guest-side path, got: {}",
+            bin.display()
         );
     }
 
@@ -191,32 +190,28 @@ fn test_translate_path_lima_outside_home_errors() {
 }
 
 #[test]
-fn test_effective_binary_path_linux() {
+fn test_binary_path_native() {
     let tmp = TempDir::new().unwrap();
     let install_dir = create_mock_install_dir(&tmp);
-    let facade = mock_facade(install_dir, false);
+    let facade = mock_facade(install_dir.clone(), false);
 
     assert_eq!(
-        facade.effective_binary_path(),
         facade.binary_path(),
-        "On Linux, effective_binary_path should equal binary_path"
+        install_dir.join("bin/apptainer"),
+        "Native backend should use host-side binary path"
     );
 }
 
 #[test]
-fn test_effective_binary_path_lima() {
+fn test_binary_path_lima() {
     let tmp = TempDir::new().unwrap();
     let install_dir = create_mock_install_dir(&tmp);
     let facade = mock_facade(install_dir, true);
 
     assert_eq!(
-        facade.effective_binary_path(),
-        Path::new("/tmp/peppy/apptainer/bin/apptainer")
-    );
-    assert_ne!(
-        facade.effective_binary_path(),
         facade.binary_path(),
-        "Under Lima, effective_binary_path should differ from host binary_path"
+        Path::new("/tmp/peppy/apptainer/bin/apptainer"),
+        "Lima backend should use guest-side binary path"
     );
 }
 
