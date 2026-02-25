@@ -4,6 +4,8 @@
     name: "standalone",
     tag: "0.1.0",
     language: "rust",
+  },
+  build: {
     add_cmd: [
       "cargo",
       "build",

@@ -554,16 +554,37 @@ PY
     [ -f "$BIN_PATH" ] || die "peppy binary not found (expected '${TARGET_DIR%/}/${HOST_TRIPLE}/release/peppy')"
 
     PKG_DIR="$(mktemp_dir)"
-    cp "$BIN_PATH" "$PKG_DIR/peppy"
-    chmod +x "$PKG_DIR/peppy"
+    mkdir -p "$PKG_DIR/bin"
+    cp "$BIN_PATH" "$PKG_DIR/bin/peppy"
+    chmod +x "$PKG_DIR/bin/peppy"
 
     # `peppy service serve` spawns `zenohd`; include the built zenohd binary next to peppy.
     ZENOHD_PATH="$(find "${TARGET_DIR%/}/${HOST_TRIPLE}/release/build" -type f -path "*/pmi-*/out/zenohd" -print | head -n 1 || true)"
     [ -f "${ZENOHD_PATH-}" ] || die "zenohd binary not found in target dir (expected it under '${TARGET_DIR%/}/${HOST_TRIPLE}/release/build/pmi-*/out/zenohd')"
-    cp "$ZENOHD_PATH" "$PKG_DIR/zenohd"
-    chmod +x "$PKG_DIR/zenohd"
+    cp "$ZENOHD_PATH" "$PKG_DIR/bin/zenohd"
+    chmod +x "$PKG_DIR/bin/zenohd"
 
-    tar -czf "$ASSET_PATH" -C "$PKG_DIR" $(ls "$PKG_DIR")
+    # Include the portable apptainer installation directory.
+    # On Linux apptainer runs natively; on macOS it runs inside a Lima VM.
+    APPTAINER_DIR="$(find "${TARGET_DIR%/}/${HOST_TRIPLE}/release/build" -type d -path "*/containers-*/out/apptainer-install" -print | head -n 1 || true)"
+    if [ -d "${APPTAINER_DIR-}" ]; then
+        cp -a "$APPTAINER_DIR" "$PKG_DIR/apptainer"
+        echo "Including apptainer directory in release"
+    else
+        echo "warning: apptainer install directory not found in build output; container features will not be bundled" >&2
+    fi
+
+    # Include the bundled Lima installation (limactl + templates + guest agent).
+    # On macOS, Lima provides a lightweight Linux VM for running apptainer.
+    LIMA_DIR="$(find "${TARGET_DIR%/}/${HOST_TRIPLE}/release/build" -type d -path "*/containers-*/out/lima-install" -print | head -n 1 || true)"
+    if [ -d "${LIMA_DIR-}" ]; then
+        cp -a "$LIMA_DIR" "$PKG_DIR/lima"
+        echo "Including lima directory in release"
+    else
+        echo "warning: lima install directory not found in build output; Lima will not be bundled" >&2
+    fi
+
+    tar -czf "$ASSET_PATH" -C "$PKG_DIR" .
     echo "Built artifact: $ASSET_PATH"
 
     SLUG="$(github_repo_slug)"

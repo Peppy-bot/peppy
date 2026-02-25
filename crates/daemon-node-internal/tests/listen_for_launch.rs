@@ -189,6 +189,8 @@ fn write_node_config_with_options(
                 name: "{node_name}",
                 tag: "{node_tag}",
                 language: "rust",
+              }},
+              build: {{
                 add_cmd: [{add_cmd_json5}],
                 start_cmd: [{start_cmd_json5}]
               }},
@@ -232,6 +234,8 @@ fn create_uvc_camera_repo(to_path: &Path, node_tag: &str) -> PathBuf {
                 name: "uvc_camera",
                 tag: "{node_tag}",
                 language: "rust",
+              }},
+              build: {{
                 add_cmd: ["true"],
                 start_cmd: ["sleep", "60"]
               }},

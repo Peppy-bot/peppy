@@ -23,7 +23,9 @@ struct LauncherConfigTemplate;
   manifest: {
     name: "{{ name }}",
     tag: "0.1.0",
-    language: "rust",
+    language: "rust"
+  },
+  build: {
     start_cmd: {{ start_cmd | safe }}
   }
 }
@@ -101,6 +103,8 @@ mod tests {
                 name: "a_node",
                 tag: "0.1.0",
                 language: "rust",
+            },
+            build: {
                 start_cmd: ["./target/release/a_node"],
             }
         }"#;

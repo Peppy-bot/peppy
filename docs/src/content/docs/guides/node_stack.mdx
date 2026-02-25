@@ -41,7 +41,7 @@ peppy node add .
   </TabItem>
 </Tabs>
 
-This command runs the `add_cmd` from the node's `peppy.json5` and registers it with the daemon node to make it available for execution.
+This command runs the `add_cmd` from the node's `peppy.json5` build configuration and registers it with the daemon node to make it available for execution.
 The output of this command provides some useful information:
 
 ```
@@ -63,7 +63,7 @@ Start your node:
 ```sh
 peppy node start hello_world:0.1.0
 ```
-This will run the `start_cmd` command of the `peppy.json5` configuration.
+This will run the `start_cmd` command from the `peppy.json5` build configuration.
 The format is `<node_name>:<tag>` for a node that is already part of the node stack.
 
 The `node start` command outputs the path to a log file where you can inspect the node's output.

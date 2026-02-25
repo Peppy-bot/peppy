@@ -1294,7 +1294,7 @@ async fn process_node_add(
 
     // Run add_cmd in the working directory with streaming output
     if let Err(e) = run_add_cmd_with_streaming(
-        node_config.manifest.add_cmd.as_ref(),
+        node_config.build.add_cmd.as_ref(),
         &working_dir,
         &env_vars,
         &ctx.feedback_publisher,

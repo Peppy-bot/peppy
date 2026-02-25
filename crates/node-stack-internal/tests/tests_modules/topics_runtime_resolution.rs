@@ -13,6 +13,8 @@ fn topic_dependency_resolved_when_dependency_added_first() {
               name: "brain",
               tag: "1.0.0",
               language: "rust",
+            },
+            build: {
               start_cmd: ["brain"]
             },
             interfaces: {
@@ -38,6 +40,8 @@ fn topic_dependency_resolved_when_dependency_added_first() {
               name: "lidar",
               tag: "1.0.0",
               language: "rust",
+            },
+            build: {
               start_cmd: ["lidar"]
             },
             interfaces: {
@@ -113,6 +117,8 @@ fn topic_dependency_fails_when_dependency_is_missing() {
               name: "brain",
               tag: "1.0.0",
               language: "rust",
+            },
+            build: {
               start_cmd: ["brain"]
             },
             interfaces: {
@@ -159,6 +165,8 @@ fn topic_dependency_fails_when_topic_not_exposed_by_dependency() {
               name: "brain",
               tag: "1.0.0",
               language: "rust",
+            },
+            build: {
               start_cmd: ["brain"]
             },
             interfaces: {
@@ -185,6 +193,8 @@ fn topic_dependency_fails_when_topic_not_exposed_by_dependency() {
               name: "lidar",
               tag: "1.0.0",
               language: "rust",
+            },
+            build: {
               start_cmd: ["lidar"]
             },
             interfaces: {

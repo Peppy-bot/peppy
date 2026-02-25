@@ -14,6 +14,8 @@ fn add_instance_creates_new_entity() {
               name: "sensor",
               tag: "1.0.0",
               language: "rust",
+            },
+            build: {
               start_cmd: ["sensor"]
             }
         }"#,
@@ -88,6 +90,8 @@ fn add_instance_to_existing_entity() {
               name: "sensor",
               tag: "1.0.0",
               language: "rust",
+            },
+            build: {
               start_cmd: ["sensor"]
             }
         }"#,
@@ -152,6 +156,8 @@ fn add_instance_with_specific_id() {
               name: "sensor",
               tag: "1.0.0",
               language: "rust",
+            },
+            build: {
               start_cmd: ["sensor"]
             }
         }"#,
@@ -193,6 +199,8 @@ fn remove_instance_from_entity_with_multiple_instances() {
               name: "sensor",
               tag: "1.0.0",
               language: "rust",
+            },
+            build: {
               start_cmd: ["sensor"]
             }
         }"#,
@@ -254,6 +262,8 @@ fn remove_last_instance_removes_entity() {
               name: "sensor",
               tag: "1.0.0",
               language: "rust",
+            },
+            build: {
               start_cmd: ["sensor"]
             }
         }"#,
@@ -301,6 +311,8 @@ fn remove_nonexistent_instance_returns_false() {
               name: "sensor",
               tag: "1.0.0",
               language: "rust",
+            },
+            build: {
               start_cmd: ["sensor"]
             }
         }"#,
@@ -345,6 +357,8 @@ fn reset_clears_all_except_daemon_node() {
               name: "sensor1",
               tag: "1.0.0",
               language: "rust",
+            },
+            build: {
               start_cmd: ["sensor1"]
             }
         }"#,
@@ -358,6 +372,8 @@ fn reset_clears_all_except_daemon_node() {
               name: "sensor2",
               tag: "1.0.0",
               language: "rust",
+            },
+            build: {
               start_cmd: ["sensor2"]
             }
         }"#,
@@ -399,6 +415,8 @@ fn spawning_multiple_instances_on_same_entity() {
               name: "sensor",
               tag: "1.0.0",
               language: "rust",
+            },
+            build: {
               start_cmd: ["sensor"]
             }
         }"#,
@@ -462,6 +480,8 @@ fn adding_same_entity_with_different_interfaces_overwrites_when_no_dependents() 
               name: "sensor",
               tag: "1.0.0",
               language: "rust",
+            },
+            build: {
               start_cmd: ["sensor"]
             },
             interfaces: {
@@ -486,6 +506,8 @@ fn adding_same_entity_with_different_interfaces_overwrites_when_no_dependents() 
               name: "sensor",
               tag: "1.0.0",
               language: "rust",
+            },
+            build: {
               start_cmd: ["sensor"]
             },
             interfaces: {
@@ -559,6 +581,8 @@ fn adding_same_name_with_different_tag_and_different_interfaces_succeeds() {
               name: "sensor",
               tag: "1.0.0",
               language: "rust",
+            },
+            build: {
               start_cmd: ["sensor"]
             },
             interfaces: {
@@ -583,6 +607,8 @@ fn adding_same_name_with_different_tag_and_different_interfaces_succeeds() {
               name: "sensor",
               tag: "2.0.0",
               language: "rust",
+            },
+            build: {
               start_cmd: ["sensor"]
             },
             interfaces: {
@@ -701,6 +727,8 @@ fn node_stack_wires_dependencies_for_dependants() {
               name: "lidar",
               tag: "1.0.0",
               language: "rust",
+            },
+            build: {
               start_cmd: ["lidar"]
             },
             interfaces: {
@@ -721,6 +749,8 @@ fn node_stack_wires_dependencies_for_dependants() {
               name: "brain",
               tag: "1.0.0",
               language: "rust",
+            },
+            build: {
               start_cmd: ["brain"]
             },
             interfaces: {
@@ -765,6 +795,8 @@ fn dependency_fails_when_node_name_mismatches() {
               name: "brain",
               tag: "1.0.0",
               language: "rust",
+            },
+            build: {
               start_cmd: ["brain"]
             },
             interfaces: {
@@ -790,6 +822,8 @@ fn dependency_fails_when_node_name_mismatches() {
               name: "lidar",
               tag: "1.0.0",
               language: "rust",
+            },
+            build: {
               start_cmd: ["lidar"]
             },
             interfaces: {
@@ -852,6 +886,8 @@ fn dependency_fails_when_node_tag_mismatches() {
               name: "brain",
               tag: "1.0.0",
               language: "rust",
+            },
+            build: {
               start_cmd: ["brain"]
             },
             interfaces: {
@@ -877,6 +913,8 @@ fn dependency_fails_when_node_tag_mismatches() {
               name: "lidar",
               tag: "2.0.0",
               language: "rust",
+            },
+            build: {
               start_cmd: ["lidar"]
             },
             interfaces: {
@@ -938,6 +976,8 @@ fn overwriting_existing_node_fails_if_node_has_dependencies() {
               name: "lidar",
               tag: "1.0.0",
               language: "rust",
+            },
+            build: {
               start_cmd: ["lidar"]
             },
             interfaces: {
@@ -958,6 +998,8 @@ fn overwriting_existing_node_fails_if_node_has_dependencies() {
               name: "brain",
               tag: "1.0.0",
               language: "rust",
+            },
+            build: {
               start_cmd: ["brain"]
             },
             interfaces: {
@@ -983,6 +1025,8 @@ fn overwriting_existing_node_fails_if_node_has_dependencies() {
               name: "lidar",
               tag: "1.0.0",
               language: "rust",
+            },
+            build: {
               start_cmd: ["lidar"]
             },
             interfaces: {
@@ -1050,6 +1094,8 @@ fn updating_start_cmd_without_changing_interfaces_applies_new_config() {
               name: "sensor",
               tag: "1.0.0",
               language: "rust",
+            },
+            build: {
               start_cmd: ["./old_binary"]
             }
         }"#,
@@ -1063,6 +1109,8 @@ fn updating_start_cmd_without_changing_interfaces_applies_new_config() {
               name: "sensor",
               tag: "1.0.0",
               language: "rust",
+            },
+            build: {
               start_cmd: ["./new_binary"]
             }
         }"#,
@@ -1078,7 +1126,7 @@ fn updating_start_cmd_without_changing_interfaces_applies_new_config() {
 
     let entity = stack.find("sensor", "1.0.0").expect("entity should exist");
     assert_eq!(
-        entity.config().manifest.start_cmd,
+        entity.config().build.start_cmd,
         vec!["./old_binary"],
         "entity should have the original start_cmd"
     );
@@ -1091,7 +1139,7 @@ fn updating_start_cmd_without_changing_interfaces_applies_new_config() {
 
     let entity = stack.find("sensor", "1.0.0").expect("entity should exist");
     assert_eq!(
-        entity.config().manifest.start_cmd,
+        entity.config().build.start_cmd,
         vec!["./new_binary"],
         "entity should have the updated start_cmd after re-push"
     );
@@ -1111,6 +1159,8 @@ fn updating_start_cmd_succeeds_even_when_node_has_dependents() {
               name: "lidar",
               tag: "1.0.0",
               language: "rust",
+            },
+            build: {
               start_cmd: ["./old_lidar"]
             },
             interfaces: {
@@ -1131,6 +1181,8 @@ fn updating_start_cmd_succeeds_even_when_node_has_dependents() {
               name: "brain",
               tag: "1.0.0",
               language: "rust",
+            },
+            build: {
               start_cmd: ["brain"]
             },
             interfaces: {
@@ -1157,6 +1209,8 @@ fn updating_start_cmd_succeeds_even_when_node_has_dependents() {
               name: "lidar",
               tag: "1.0.0",
               language: "rust",
+            },
+            build: {
               start_cmd: ["./new_lidar"]
             },
             interfaces: {
@@ -1186,7 +1240,7 @@ fn updating_start_cmd_succeeds_even_when_node_has_dependents() {
 
     let entity = stack.find("lidar", "1.0.0").expect("entity should exist");
     assert_eq!(
-        entity.config().manifest.start_cmd,
+        entity.config().build.start_cmd,
         vec!["./new_lidar"],
         "lidar should have the updated start_cmd"
     );

@@ -15,8 +15,8 @@ use tracing_subscriber::fmt::MakeWriter;
 
 pub fn override_start_cmd(peppy_json5: &Path) {
     let mut cfg = NodeConfigParser::from_path(peppy_json5).expect("peppy.json5 should read");
-    cfg.manifest.start_cmd = vec!["sleep".to_string(), "4".to_string()];
-    cfg.manifest.add_cmd = None;
+    cfg.build.start_cmd = vec!["sleep".to_string(), "4".to_string()];
+    cfg.build.add_cmd = None;
 
     let updated_content = serde_json::to_string_pretty(&cfg).expect("peppy.json5 should serialize");
     std::fs::write(peppy_json5, updated_content).expect("peppy.json5 should update");
@@ -26,7 +26,7 @@ pub fn override_start_cmd(peppy_json5: &Path) {
 
 pub fn disable_add_cmd(peppy_json5: &Path) {
     let mut cfg = NodeConfigParser::from_path(peppy_json5).expect("peppy.json5 should read");
-    cfg.manifest.add_cmd = None;
+    cfg.build.add_cmd = None;
 
     let updated_content = serde_json::to_string_pretty(&cfg).expect("peppy.json5 should serialize");
     std::fs::write(peppy_json5, updated_content).expect("peppy.json5 should update");

@@ -2,16 +2,22 @@
 {
   schema_version: 1,
   manifest: {
-    name: "my_action_robot_controller",
+    name: "controller",
     tag: "0.1.0",
     language: "rust",
     labels: [
       "controller",
+      "openarm",
+    ],
+  },
+  build: {
+    add_cmd: [
+      "cargo",
+      "build",
+      "--release"
     ],
     start_cmd: [
-      "cargo",
-      "run",
-      "--release"
+      "./target/release/controller"
     ]
   },
   parameters: {},
@@ -24,7 +30,43 @@
           // The controller exposes this action to the brain
           name: "move_right_arm",
           goal_service: {
-            // Always using "reliable" qos
+            request_message_format: {
+              arm_id: "u16",
+              desired_position: {
+                $type: "array",
+                $items: "i32",
+                $length: 3
+              }
+            },
+            response_message_format: {
+              accepted: "bool"
+            }
+          },
+          feedback_topic: {
+            qos_profile: "standard", // Options: "standard", "reliable", "sensor_data"
+            message_format: {
+              current_position: {
+                $type: "array",
+                $items: "i32",
+                $length: 3
+              }
+            }
+          },
+          // Always using "reliable" qos
+          result_service: {
+            response_message_format: {
+              final_position: {
+                $type: "array",
+                $items: "i32",
+                $length: 3
+              }
+            }
+          }
+        },
+        {
+          // The controller exposes this action to the brain
+          name: "move_left_arm",
+          goal_service: {
             request_message_format: {
               arm_id: "u16",
               desired_position: {

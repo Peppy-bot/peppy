@@ -1,25 +1,23 @@
-// A simple node that has an AI and acts as the brain of the robot
-// It sends actions to the controller to perform those actions
+// A simple node that has an AI and acts as the brain of the robot.
+// It receives camera data and sends actions to the controller.
 {
   schema_version: 1,
   manifest: {
-    name: "my_action_robot_brain",
+    name: "brain",
     tag: "0.1.0",
     language: "rust",
     labels: [
       "brain"
     ],
-    // Eventually in the future if we want to use a container-like technology like apptainer or create WASM binary
-    // container: {
-    //   image_file: "./Dockerfile",
-    //   resources: {
-    //     max_memory_mb: 512,
-    //   },
-    // },
-    start_cmd: [
+  },
+  build: {
+    add_cmd: [
       "cargo",
-      "run",
+      "build",
       "--release"
+    ],
+    start_cmd: [
+      "./target/release/brain"
     ]
   },
   parameters: {},
@@ -30,14 +28,34 @@
       actions: [],
     },
     subscribes_to: {
-      topics: [],
-      services: [],
+      topics: [
+        {
+          id: "camera_stream",
+          node: "uvc_camera",
+          name: "video_stream",
+          tag: "0.1.0",
+        }
+      ],
+      services: [
+        {
+          id: "video_info",
+          node: "uvc_camera",
+          name: "video_stream_info",
+          tag: "0.1.0",
+        }
+      ],
       actions: [
         {
           id: "move_right_arm_action",
-          node: "my_action_robot_controller", // Will look for that node name
-          name: "move_right_arm", // With this action name
-          tag: "0.1.0", // On that particular tag/version
+          node: "controller",
+          name: "move_right_arm",
+          tag: "0.1.0",
+        },
+        {
+          id: "move_left_arm_action",
+          node: "controller",
+          name: "move_left_arm",
+          tag: "0.1.0",
         }
       ]
     },
