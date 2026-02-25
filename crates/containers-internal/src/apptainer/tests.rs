@@ -1,4 +1,3 @@
-use super::super::error::Error;
 use super::facade::{ApptainerFacade, Backend, is_uri};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -29,7 +28,6 @@ fn mock_facade(install_dir: PathBuf, lima: bool) -> ApptainerFacade {
             guest_apptainer_bin: PathBuf::from("/tmp/peppy/apptainer/bin/apptainer"),
             limactl_path: PathBuf::from("/mock/limactl"),
             lima_home: PathBuf::from("/mock/lima-home"),
-            ready: false,
         }
     } else {
         Backend::Native { apptainer_bin: bin }
@@ -99,35 +97,6 @@ fn test_binary_path_matches_install_dir() {
 }
 
 // ---------------------------------------------------------------------------
-// ensure_ready tests
-// ---------------------------------------------------------------------------
-
-#[test]
-fn test_ensure_ready_native_is_noop() {
-    let tmp = TempDir::new().unwrap();
-    let install_dir = create_mock_install_dir(&tmp);
-    let mut facade = mock_facade(install_dir, false);
-
-    // Native backend: ensure_ready should succeed immediately.
-    facade.ensure_ready().unwrap();
-}
-
-#[test]
-fn test_command_before_ensure_ready_returns_not_ready() {
-    let tmp = TempDir::new().unwrap();
-    let install_dir = create_mock_install_dir(&tmp);
-    let facade = mock_facade(install_dir, true);
-
-    // Lima backend with ready=false: calling version() should fail with NotReady.
-    let result = facade.version();
-    assert!(result.is_err());
-    assert!(
-        matches!(result.unwrap_err(), Error::NotReady),
-        "Expected Error::NotReady when calling commands before ensure_ready()"
-    );
-}
-
-// ---------------------------------------------------------------------------
 // Integration tests (require real apptainer/Lima)
 // ---------------------------------------------------------------------------
 
@@ -138,12 +107,8 @@ fn test_command_before_ensure_ready_returns_not_ready() {
 /// build.rs guarantees apptainer is bundled, so this test should always succeed.
 #[test]
 fn test_apptainer_version_integration() {
-    let mut facade = ApptainerFacade::new()
+    let facade = ApptainerFacade::new()
         .expect("ApptainerFacade::new() should succeed — apptainer is bundled at compile time");
-
-    facade
-        .ensure_ready()
-        .expect("ensure_ready() should succeed");
 
     // On macOS, effective_binary_path should point to the guest-side installation.
     if cfg!(target_os = "macos") {
@@ -327,30 +292,23 @@ fn test_translate_path_resolves_relative_lima() {
 // Lima instance status integration test
 // ---------------------------------------------------------------------------
 
-/// Integration test: after ApptainerFacade::new() + ensure_ready(), the Lima
-/// instance should be running.
+/// Integration test: after `ApptainerFacade::new()`, the Lima instance should
+/// be running.
 ///
 /// On macOS, this verifies that the peppy instance was created with the correct
 /// template and is in "Running" state. On Linux, Lima is not used, so we assert
 /// the backend is Native.
 #[test]
 fn test_lima_instance_running_after_init() {
-    let mut facade = ApptainerFacade::new()
+    let facade = ApptainerFacade::new()
         .expect("ApptainerFacade::new() should succeed — apptainer is bundled at compile time");
-
-    facade
-        .ensure_ready()
-        .expect("ensure_ready() should succeed");
 
     match &facade.backend {
         Backend::Lima {
             limactl_path,
             lima_home,
-            ready,
             ..
         } => {
-            assert!(ready, "Lima backend should be ready after ensure_ready()");
-
             let output = Command::new(limactl_path)
                 .env("LIMA_HOME", lima_home)
                 .args(["list", "--format", "{{.Status}}", "peppy"])
@@ -360,7 +318,7 @@ fn test_lima_instance_running_after_init() {
             let status = String::from_utf8_lossy(&output.stdout).trim().to_string();
             assert_eq!(
                 status, "Running",
-                "Lima peppy instance should be Running after ensure_ready(), got: '{}'",
+                "Lima peppy instance should be Running after construction, got: '{}'",
                 status
             );
         }
