@@ -11,7 +11,6 @@ import pytest
 
 from functions.build import (
     SUPPORTED_TRIPLES,
-    BuildArtifact,
     detect_host_triple,
     find_build_dir,
     find_peppy_binary,
@@ -200,6 +199,33 @@ class TestPackageRelease:
             assert any("bin/zenohd" in n for n in member_names)
             assert any("bin/apptainer" in n for n in member_names)
             assert any("bin/lima" in n for n in member_names)
+
+    def test_creates_tarball_without_lima(self, tmp_path: Path) -> None:
+        triple = "x86_64-unknown-linux-gnu"
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+
+        peppy_bin = tmp_path / "peppy"
+        peppy_bin.write_bytes(b"peppy binary")
+        zenohd_bin = tmp_path / "zenohd"
+        zenohd_bin.write_bytes(b"zenohd binary")
+
+        apptainer_dir = tmp_path / "apptainer-install"
+        apptainer_dir.mkdir()
+        (apptainer_dir / "bin" / "apptainer").parent.mkdir(parents=True)
+        (apptainer_dir / "bin" / "apptainer").write_bytes(b"apptainer")
+
+        dist_dir = tmp_path / "dist"
+        with patch.dict(os.environ, {"PEPPY_DIST_DIR": str(dist_dir)}):
+            artifact = package_release(
+                triple, repo_root, peppy_bin, zenohd_bin, apptainer_dir
+            )
+
+        with tarfile.open(artifact.asset_path, "r:gz") as tar:
+            member_names = {m.name for m in tar.getmembers()}
+            assert any("bin/peppy" in n for n in member_names)
+            assert any("bin/apptainer" in n for n in member_names)
+            assert not any("lima" in n for n in member_names)
 
     def test_respects_peppy_dist_dir(self, tmp_path: Path) -> None:
         triple = "aarch64-apple-darwin"
