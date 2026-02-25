@@ -267,41 +267,49 @@ __wrap__() {
         exit 1
     fi
 
+    mkdir -p "$PEPPY_HOME"
     mkdir -p "$PEPPY_BIN_DIR"
     TEMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/.peppy_install_dir.XXXXXXXX")"
     tar -xzf "$TEMP_FILE" -C "$TEMP_DIR"
 
-    PEPPY_PATH=""
-    if [ -f "$TEMP_DIR/peppy" ]; then
-        PEPPY_PATH="$TEMP_DIR/peppy"
-    else
-        PEPPY_PATH="$(find "$TEMP_DIR" -type f -name peppy -print | head -n 1 || true)"
-    fi
-
-    if [ -z "${PEPPY_PATH-}" ] || [ ! -f "$PEPPY_PATH" ]; then
-        echo "error: could not find the 'peppy' binary in the downloaded archive." >&2
+    if [ ! -f "$TEMP_DIR/bin/peppy" ]; then
+        echo "error: could not find 'bin/peppy' in the downloaded archive." >&2
         exit 1
     fi
 
-    ZENOHD_PATH=""
-    if [ -f "$TEMP_DIR/zenohd" ]; then
-        ZENOHD_PATH="$TEMP_DIR/zenohd"
-    else
-        ZENOHD_PATH="$(find "$TEMP_DIR" -type f -name zenohd -print | head -n 1 || true)"
+    # Install PEPPY_HOME-level directories (optional — not all platforms bundle them)
+    for DIR_NAME in apptainer lima; do
+        if [ -d "$TEMP_DIR/$DIR_NAME" ]; then
+            rm -rf "$PEPPY_HOME/$DIR_NAME"
+            mv "$TEMP_DIR/$DIR_NAME" "$PEPPY_HOME/$DIR_NAME"
+        fi
+    done
+
+    # Create lima-data directory for VM instance state (preserved across upgrades)
+    if [ -d "$PEPPY_HOME/lima" ] && [ ! -d "$PEPPY_HOME/lima-data" ]; then
+        mkdir -p "$PEPPY_HOME/lima-data"
     fi
 
-    mv "$PEPPY_PATH" "$PEPPY_BIN_DIR/peppy"
+    # Install binaries
+    mv "$TEMP_DIR/bin/peppy" "$PEPPY_BIN_DIR/peppy"
     chmod +x "$PEPPY_BIN_DIR/peppy"
 
-    if [ -n "${ZENOHD_PATH-}" ] && [ -f "$ZENOHD_PATH" ]; then
-        mv "$ZENOHD_PATH" "$PEPPY_BIN_DIR/zenohd"
+    if [ -f "$TEMP_DIR/bin/zenohd" ]; then
+        mv "$TEMP_DIR/bin/zenohd" "$PEPPY_BIN_DIR/zenohd"
         chmod +x "$PEPPY_BIN_DIR/zenohd"
     fi
 
     if [ "$PEPPY_BIN_DIR" = "$PEPPY_HOME/bin" ]; then
-        echo "The 'peppy' binary is installed into '${PEPPY_HOME}'"
+        echo "peppy installed to '${PEPPY_HOME}'"
     else
-        echo "The 'peppy' binary is installed into '${PEPPY_BIN_DIR}'"
+        echo "peppy installed to '${PEPPY_BIN_DIR}' (PEPPY_HOME=${PEPPY_HOME})"
+        # Runtime discovers apptainer/lima relative to the binary — hint the user
+        # to set env vars when PEPPY_BIN_DIR is not the default location.
+        if [ -d "$PEPPY_HOME/apptainer" ] || [ -d "$PEPPY_HOME/lima" ]; then
+            echo "hint: since PEPPY_BIN_DIR is not the default, set these env vars for container support:" >&2
+            [ -d "$PEPPY_HOME/apptainer" ] && echo "  export PEPPY_APPTAINER_DIR=${PEPPY_HOME}/apptainer" >&2
+            [ -d "$PEPPY_HOME/lima" ] && echo "  export PEPPY_LIMA_DIR=${PEPPY_HOME}/lima" >&2
+        fi
     fi
     if [ ! -f "$PEPPY_BIN_DIR/zenohd" ]; then
         echo "warning: 'zenohd' was not found in the archive. 'peppy service serve' requires zenohd on PATH or next to the peppy binary." >&2

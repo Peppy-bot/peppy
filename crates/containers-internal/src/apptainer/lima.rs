@@ -241,7 +241,7 @@ pub(crate) fn resolve_lima_dir() -> Result<PathBuf> {
     }
 
     // 2) Relative to the current executable: {exe_dir}/../lima/
-    //    This is the installed layout ($PEPPY_HOME/lima/).
+    //    This is the installed layout created by install.sh ($PEPPY_HOME/lima/).
     if let Ok(exe_path) = std::env::current_exe()
         && let Some(exe_dir) = exe_path.parent()
     {
@@ -275,7 +275,7 @@ pub(crate) fn resolve_lima_dir() -> Result<PathBuf> {
 pub(crate) fn resolve_lima_home() -> Result<PathBuf> {
     // 1) Relative to the current executable: {exe_dir}/../lima-data/
     //    In the installed layout this is ~/.peppy/lima-data/.
-    //    Only use this if the directory already exists.
+    //    Only use this if the directory already exists (i.e. was set up by install.sh).
     if let Ok(exe_path) = std::env::current_exe()
         && let Some(exe_dir) = exe_path.parent()
     {
