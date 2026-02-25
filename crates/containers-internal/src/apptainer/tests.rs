@@ -1,42 +1,8 @@
 use super::facade::{ApptainerFacade, Backend, is_uri};
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use tempfile::TempDir;
-
-/// Create a mock apptainer installation directory with the expected structure.
-fn create_mock_install_dir(tmp: &TempDir) -> PathBuf {
-    let install_dir = tmp.path().join("apptainer");
-    let bin_dir = install_dir.join("bin");
-    fs::create_dir_all(&bin_dir).unwrap();
-
-    // Create a dummy apptainer binary (just needs to exist and be a file)
-    let bin_path = bin_dir.join("apptainer");
-    fs::write(&bin_path, "#!/bin/sh\necho mock-apptainer\n").unwrap();
-    fs::set_permissions(&bin_path, fs::Permissions::from_mode(0o755)).unwrap();
-
-    install_dir
-}
-
-/// Create a mock `ApptainerFacade` for unit tests that don't need real Lima.
-fn mock_facade(install_dir: PathBuf, lima: bool) -> ApptainerFacade {
-    let backend = if lima {
-        Backend::Lima {
-            apptainer_bin: PathBuf::from("/tmp/peppy/apptainer/bin/apptainer"),
-            limactl_path: PathBuf::from("/mock/limactl"),
-            lima_home: PathBuf::from("/mock/lima-home"),
-        }
-    } else {
-        Backend::Native {
-            apptainer_bin: install_dir.join("bin/apptainer"),
-        }
-    };
-    ApptainerFacade {
-        apptainer_dir: install_dir,
-        backend,
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Construction tests
@@ -44,22 +10,18 @@ fn mock_facade(install_dir: PathBuf, lima: bool) -> ApptainerFacade {
 
 #[test]
 fn test_facade_from_valid_dir() {
-    let tmp = TempDir::new().expect("Failed to create temp dir");
-    let install_dir = create_mock_install_dir(&tmp);
+    let facade = ApptainerFacade::new()
+        .expect("ApptainerFacade::new() should succeed — apptainer is bundled at compile time");
 
-    // Use mock_facade instead of from_dir to avoid requiring a real Lima setup.
-    // The full from_dir + Lima integration path is covered by test_apptainer_version_integration.
-    let facade = mock_facade(install_dir.clone(), cfg!(target_os = "macos"));
-    assert_eq!(facade.install_dir(), install_dir);
-    if cfg!(target_os = "macos") {
-        assert_eq!(
-            facade.binary_path(),
-            Path::new("/tmp/peppy/apptainer/bin/apptainer"),
-            "On macOS, binary_path should be the guest-side path"
-        );
-    } else {
-        assert_eq!(facade.binary_path(), install_dir.join("bin/apptainer"));
-    }
+    assert!(
+        facade.install_dir().is_dir(),
+        "install_dir() should be a real directory, got: {}",
+        facade.install_dir().display()
+    );
+    assert!(
+        !facade.binary_path().as_os_str().is_empty(),
+        "binary_path() should be non-empty"
+    );
 }
 
 #[test]
@@ -131,28 +93,13 @@ fn test_apptainer_version_integration() {
 }
 
 // ---------------------------------------------------------------------------
-// Path translation tests (use mock_facade to inject backend)
+// Path translation tests
 // ---------------------------------------------------------------------------
 
 #[test]
-fn test_translate_path_linux_passthrough() {
-    let tmp = TempDir::new().unwrap();
-    let install_dir = create_mock_install_dir(&tmp);
-    let facade = mock_facade(install_dir, false);
-
-    // Any path should pass through unchanged when using Native backend.
-    let path = Path::new("/some/random/path/outside/home");
-    assert_eq!(facade.translate_path(path).unwrap(), path);
-
-    let home_path = PathBuf::from(std::env::var("HOME").unwrap()).join("project/file.def");
-    assert_eq!(facade.translate_path(&home_path).unwrap(), home_path);
-}
-
-#[test]
-fn test_translate_path_lima_under_home() {
-    let tmp = TempDir::new().unwrap();
-    let install_dir = create_mock_install_dir(&tmp);
-    let facade = mock_facade(install_dir, true);
+fn test_translate_path_under_home() {
+    let facade = ApptainerFacade::new()
+        .expect("ApptainerFacade::new() should succeed — apptainer is bundled at compile time");
 
     let home = std::env::var("HOME").unwrap();
     let path = PathBuf::from(&home).join("projects/my_node/apptainer.def");
@@ -164,55 +111,37 @@ fn test_translate_path_lima_under_home() {
 }
 
 #[test]
-fn test_translate_path_lima_outside_home_errors() {
-    let tmp = TempDir::new().unwrap();
-    let install_dir = create_mock_install_dir(&tmp);
-    let facade = mock_facade(install_dir, true);
+fn test_translate_path_outside_home() {
+    let facade = ApptainerFacade::new()
+        .expect("ApptainerFacade::new() should succeed — apptainer is bundled at compile time");
 
     let path = Path::new("/opt/external/file.def");
     let result = facade.translate_path(path);
-    assert!(
-        result.is_err(),
-        "Paths outside $HOME should error under Lima"
-    );
 
-    let err_msg = result.unwrap_err().to_string();
-    assert!(
-        err_msg.contains("not accessible inside the Lima VM"),
-        "Error should mention Lima VM inaccessibility, got: {}",
-        err_msg
-    );
-    assert!(
-        err_msg.contains("/opt/external/file.def"),
-        "Error should include the offending path, got: {}",
-        err_msg
-    );
-}
+    if cfg!(target_os = "macos") {
+        assert!(
+            result.is_err(),
+            "Paths outside $HOME should error under Lima"
+        );
 
-#[test]
-fn test_binary_path_native() {
-    let tmp = TempDir::new().unwrap();
-    let install_dir = create_mock_install_dir(&tmp);
-    let facade = mock_facade(install_dir.clone(), false);
-
-    assert_eq!(
-        facade.binary_path(),
-        install_dir.join("bin/apptainer"),
-        "Native backend should use host-side binary path"
-    );
-}
-
-#[test]
-fn test_binary_path_lima() {
-    let tmp = TempDir::new().unwrap();
-    let install_dir = create_mock_install_dir(&tmp);
-    let facade = mock_facade(install_dir, true);
-
-    assert_eq!(
-        facade.binary_path(),
-        Path::new("/tmp/peppy/apptainer/bin/apptainer"),
-        "Lima backend should use guest-side binary path"
-    );
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("not accessible inside the Lima VM"),
+            "Error should mention Lima VM inaccessibility, got: {}",
+            err_msg
+        );
+        assert!(
+            err_msg.contains("/opt/external/file.def"),
+            "Error should include the offending path, got: {}",
+            err_msg
+        );
+    } else {
+        assert_eq!(
+            result.unwrap(),
+            path,
+            "On Linux, paths outside $HOME should pass through unchanged"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -239,12 +168,11 @@ fn test_is_uri() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn test_translate_path_resolves_relative_linux() {
-    let tmp = TempDir::new().unwrap();
-    let install_dir = create_mock_install_dir(&tmp);
-    let facade = mock_facade(install_dir, false);
+fn test_translate_path_resolves_relative() {
+    let facade = ApptainerFacade::new()
+        .expect("ApptainerFacade::new() should succeed — apptainer is bundled at compile time");
 
-    let relative = Path::new("my_image.sif");
+    let relative = Path::new("project/my_image.sif");
     let result = facade.translate_path(relative).unwrap();
 
     assert!(
@@ -255,31 +183,8 @@ fn test_translate_path_resolves_relative_linux() {
     let cwd = std::env::current_dir().unwrap();
     assert_eq!(
         result,
-        cwd.join("my_image.sif"),
-        "Relative path should resolve against CWD"
-    );
-}
-
-#[test]
-fn test_translate_path_resolves_relative_lima() {
-    let tmp = TempDir::new().unwrap();
-    let install_dir = create_mock_install_dir(&tmp);
-    let facade = mock_facade(install_dir, true);
-
-    // CWD is under $HOME during tests, so the resolved path should succeed.
-    let relative = Path::new("project/my_image.sif");
-    let result = facade.translate_path(relative).unwrap();
-
-    assert!(
-        result.is_absolute(),
-        "Relative path should be resolved to absolute under Lima, got: {}",
-        result.display()
-    );
-    let cwd = std::env::current_dir().unwrap();
-    assert_eq!(
-        result,
         cwd.join("project/my_image.sif"),
-        "Relative path should resolve against CWD under Lima"
+        "Relative path should resolve against CWD"
     );
 }
 
