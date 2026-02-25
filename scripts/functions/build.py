@@ -74,7 +74,7 @@ def cargo_build(tag: str, host_triple: str, repo_root: Path) -> None:
     cache_root = Path(tempfile.gettempdir()) / "peppy-build-cache"
     if cache_root.exists():
         console.print("Clearing build cache...")
-        shutil.rmtree(cache_root)
+        shutil.rmtree(cache_root, ignore_errors=True)
 
     console.print("Cleaning previous build artifacts...")
     result = subprocess.run(

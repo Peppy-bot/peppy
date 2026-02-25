@@ -227,6 +227,52 @@ def test_package_release_creates_tarball_without_lima(tmp_path: Path) -> None:
         assert not any("lima" in n for n in member_names)
 
 
+def test_package_release_tarball_matches_install_sh(tmp_path: Path) -> None:
+    """Verify the tarball layout matches what install.sh expects.
+
+    install.sh does: tar -xzf archive -C $TEMP_DIR, then expects:
+      $TEMP_DIR/bin/peppy
+      $TEMP_DIR/bin/zenohd          (optional)
+      $TEMP_DIR/bin/apptainer/...   (optional)
+      $TEMP_DIR/bin/lima/...        (optional, macOS only)
+    """
+    triple = "aarch64-apple-darwin"
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+
+    peppy_bin = tmp_path / "peppy"
+    peppy_bin.write_bytes(b"peppy binary")
+    zenohd_bin = tmp_path / "zenohd"
+    zenohd_bin.write_bytes(b"zenohd binary")
+
+    apptainer_dir = tmp_path / "apptainer-install"
+    apptainer_dir.mkdir()
+    (apptainer_dir / "bin").mkdir(parents=True)
+    (apptainer_dir / "bin" / "apptainer").write_bytes(b"apptainer")
+
+    lima_dir = tmp_path / "lima-install"
+    lima_dir.mkdir()
+    (lima_dir / "bin").mkdir(parents=True)
+    (lima_dir / "bin" / "limactl").write_bytes(b"limactl")
+
+    dist_dir = tmp_path / "dist"
+    with patch.dict(os.environ, {"PEPPY_DIST_DIR": str(dist_dir)}):
+        artifact = package_release(
+            triple, repo_root, peppy_bin, zenohd_bin, apptainer_dir, lima_dir
+        )
+
+    # Simulate what install.sh does: extract and check expected paths
+    extract_dir = tmp_path / "extracted"
+    extract_dir.mkdir()
+    with tarfile.open(artifact.asset_path, "r:gz") as tar:
+        tar.extractall(extract_dir)
+
+    assert (extract_dir / "bin" / "peppy").is_file()
+    assert (extract_dir / "bin" / "zenohd").is_file()
+    assert (extract_dir / "bin" / "apptainer" / "bin" / "apptainer").is_file()
+    assert (extract_dir / "bin" / "lima" / "bin" / "limactl").is_file()
+
+
 def test_package_release_respects_peppy_dist_dir(tmp_path: Path) -> None:
     triple = "aarch64-apple-darwin"
     custom_dist = tmp_path / "custom_dist"
