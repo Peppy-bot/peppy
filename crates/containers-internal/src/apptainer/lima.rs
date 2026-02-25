@@ -129,16 +129,29 @@ pub(crate) fn ensure_guest_apptainer(
 
     let version = option_env!("APPTAINER_VERSION").unwrap_or("unknown");
     let marker_name = format!(".peppy-sync-{version}");
+    let marker_path = guest_dir.join(&marker_name);
 
     // Fast path: check if the version marker exists (sub-second limactl call).
-    let marker_exists = Command::new(limactl)
+    let marker_exists = match Command::new(limactl)
         .env("LIMA_HOME", lima_home)
         .args(["shell", instance, "--", "test", "-f"])
-        .arg(guest_dir.join(&marker_name))
+        .arg(&marker_path)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
-        .is_ok_and(|s| s.success());
+    {
+        Ok(status) => status.success(),
+        Err(err) => {
+            tracing::warn!(
+                error = %err,
+                limactl = %limactl.display(),
+                instance,
+                marker = %marker_path.display(),
+                "Failed to check guest marker; forcing full sync"
+            );
+            false
+        }
+    };
 
     if marker_exists {
         return Ok(guest_bin);
