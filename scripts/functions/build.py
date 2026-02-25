@@ -94,8 +94,6 @@ def cargo_build(tag: str, host_triple: str, repo_root: Path) -> None:
             "build",
             "-p",
             "peppy",
-            "--bin",
-            "peppy",
             "--release",
             "--locked",
             "--target",
