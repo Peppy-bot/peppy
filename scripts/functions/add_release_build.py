@@ -2,7 +2,8 @@
 
 Requires:
   - GITHUB_PEPPY_RELEASE_TOKEN env var (repo-scoped token)
-  - git, cargo, rustc on PATH
+  - MATURIN_PYPI_TOKEN env var (PyPI API token)
+  - git, cargo, rustc, pixi on PATH
 
 Usage:
   add-release-build
@@ -16,13 +17,14 @@ from __future__ import annotations
 import os
 import sys
 
-from .build import build_and_package
+from .build import build_and_package, publish_wheel
 from .cli import (
     ReleaseError,
     console,
     prompt,
     prompt_yn,
     run_with_error_handling,
+    validate_pypi_token,
     validate_release_environment,
 )
 from .github import (
@@ -42,7 +44,11 @@ from .repo import (
 
 
 def _run() -> None:
-    token = validate_release_environment()
+    token = validate_release_environment(
+        required_commands=("git", "cargo", "rustc", "pixi"),
+    )
+    validate_pypi_token()
+
     repo_root = get_repo_root()
     os.chdir(repo_root)
 
@@ -84,6 +90,9 @@ def _run() -> None:
     replace_and_upload_asset(
         client, info.release_id, artifact.asset_name, artifact.asset_path, slug
     )
+
+    # Publish peppylib wheel to PyPI
+    publish_wheel(tag, repo_root)
 
     # Final output
     release_url = info.html_url or f"https://github.com/{slug.full}/releases/tag/{tag}"

@@ -25,6 +25,7 @@ zenoh-simple = "cargo run --manifest-path ../peppylib/examples/zenohd_simple/Car
 
 # Create a package that can be deployed on Pypi
 create-wheel = "bash scripts/create_wheel.sh"
+publish-wheel = { cmd = "bash scripts/publish_wheel.sh", depends-on = ["create-wheel"] }
 
 topic-exposes = "maturin develop && python examples/hello_world_topic_exposes/main.py"
 topic-subscribes = "maturin develop && python examples/hello_world_topic_subscribes_to/main.py"

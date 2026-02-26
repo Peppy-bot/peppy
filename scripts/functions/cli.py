@@ -74,6 +74,22 @@ def validate_release_environment(
     return token
 
 
+def validate_pypi_token() -> str:
+    """Validate that MATURIN_PYPI_TOKEN is set and has the expected format.
+
+    Returns the validated token string.
+    Raises ReleaseError if missing or malformed.
+    """
+    token = os.environ.get("MATURIN_PYPI_TOKEN", "").strip()
+    if not token:
+        raise ReleaseError("MATURIN_PYPI_TOKEN env var is required to publish the wheel")
+    if not token.startswith("pypi-"):
+        raise ReleaseError(
+            "MATURIN_PYPI_TOKEN must be a PyPI API token (starts with 'pypi-')"
+        )
+    return token
+
+
 def run_with_error_handling(fn: Callable[[], None]) -> None:
     """Run a function with standard error handling for release scripts.
 

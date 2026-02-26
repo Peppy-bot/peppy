@@ -225,6 +225,42 @@ def package_release(
     )
 
 
+def _run_pixi_wheel_task(task: str, tag: str, repo_root: Path) -> None:
+    """Run a pixi task in the peppylib-py crate with PEPPY_GIT_TAG set."""
+    peppylib_py_dir = repo_root / "crates" / "peppylib-py"
+    manifest_path = peppylib_py_dir / "pixi.toml"
+
+    result = subprocess.run(
+        ["pixi", "run", "--manifest-path", str(manifest_path), task],
+        cwd=peppylib_py_dir,
+        env={**os.environ, "PEPPY_GIT_TAG": tag},
+    )
+    if result.returncode != 0:
+        raise ReleaseError(f"pixi task '{task}' failed (exit {result.returncode})")
+
+
+def build_wheel(tag: str, repo_root: Path) -> None:
+    """Build the peppylib wheel without publishing.
+
+    Invokes the create-wheel pixi task with PEPPY_GIT_TAG set.
+    """
+    console.print(f"Building peppylib wheel [bold]{tag}[/bold]...")
+    _run_pixi_wheel_task("create-wheel", tag, repo_root)
+    console.print(f"[green]Built peppylib wheel {tag}[/green]")
+
+
+def publish_wheel(tag: str, repo_root: Path) -> None:
+    """Build and publish the peppylib wheel to PyPI.
+
+    Invokes the publish-wheel pixi task (which depends on create-wheel)
+    with PEPPY_GIT_TAG set. Callers must validate MATURIN_PYPI_TOKEN
+    upfront via validate_pypi_token().
+    """
+    console.print(f"Publishing peppylib wheel [bold]{tag}[/bold] to PyPI...")
+    _run_pixi_wheel_task("publish-wheel", tag, repo_root)
+    console.print(f"[green]Published peppylib {tag} to PyPI[/green]")
+
+
 def build_and_package(tag: str, repo_root: Path) -> BuildArtifact:
     """Full build-and-package pipeline: detect triple, build, find binaries, create tarball.
 

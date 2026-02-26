@@ -19,13 +19,14 @@ import sys
 import tempfile
 from pathlib import Path
 
-from .build import build_and_package
+from .build import build_and_package, build_wheel, publish_wheel
 from .cli import (
     ReleaseError,
     console,
     prompt,
     prompt_yn,
     run_with_error_handling,
+    validate_pypi_token,
     validate_release_environment,
 )
 from .github import (
@@ -110,7 +111,10 @@ def _build_release_payload(
 
 def _run_local() -> None:
     """Build a release artifact locally without uploading to GitHub."""
-    validate_release_environment(require_token=False)
+    validate_release_environment(
+        required_commands=("git", "cargo", "rustc", "pixi"),
+        require_token=False,
+    )
     repo_root = get_repo_root()
     os.chdir(repo_root)
 
@@ -123,12 +127,17 @@ def _run_local() -> None:
         raise ReleaseError("release tag cannot be empty")
 
     artifact = build_and_package(tag, repo_root)
+    build_wheel(tag, repo_root)
     console.print(f"\n[green]Built artifact:[/green] {artifact.asset_path}")
 
 
 def _run_full() -> None:
     """Build and publish a full GitHub release."""
-    token = validate_release_environment()
+    token = validate_release_environment(
+        required_commands=("git", "cargo", "rustc", "pixi"),
+    )
+    validate_pypi_token()
+
     repo_root = get_repo_root()
     os.chdir(repo_root)
 
@@ -209,6 +218,9 @@ def _run_full() -> None:
     )
     releases_dir = repo_root / "docs" / "src" / "content" / "releases"
     generate_release_notes_file(notes_input, releases_dir)
+
+    # Publish peppylib wheel to PyPI
+    publish_wheel(tag, repo_root)
 
     # Final output
     release_url = info.html_url or f"https://github.com/{slug.full}/releases/tag/{tag}"
