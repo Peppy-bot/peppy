@@ -5,20 +5,37 @@ mod apptainer_build {
     use std::process::Command;
 
     const APPTAINER_VERSION: &str = "1.4.5";
-    const APPTAINER_INSTALL_SCRIPT_SHA256: &str =
-        "33d416ca870fdfcfc6b5fd8791f02bf041d742a5b718d015a9a1cf61aa1b30dd";
     const LIMA_VERSION: &str = "2.0.3";
     const LIMA_DARWIN_ARM64_ARCHIVE_SHA256: &str =
         "22aee997df59e4fd448041b2d1214e48bd8eaf705d2d48a4307d65c1b179dc97";
     const LIMA_INSTANCE: &str = "peppy";
     const LIMA_TEMPLATE: &str = "template:ubuntu-24.04";
 
-    fn install_script_url() -> String {
-        format!(
-            "https://raw.githubusercontent.com/apptainer/apptainer/v{}/tools/install-unprivileged.sh",
-            APPTAINER_VERSION
-        )
-    }
+    /// The main apptainer RPM filename in the vendor/ directory.
+    const APPTAINER_RPM: &str = "apptainer-1.4.5-3.el9.x86_64.rpm";
+
+    /// Dependency RPMs in the vendor/ directory.
+    const DEPENDENCY_RPMS: &[&str] = &[
+        "audit-libs-3.1.5-7.el9.x86_64.rpm",
+        "bzip2-libs-1.0.8-10.el9_5.x86_64.rpm",
+        "fakeroot-1.37-1.el9.x86_64.rpm",
+        "fakeroot-libs-1.37-1.el9.x86_64.rpm",
+        "fuse3-libs-3.10.2-9.el9.x86_64.rpm",
+        "libacl-2.3.1-4.el9.x86_64.rpm",
+        "libattr-2.5.1-3.el9.x86_64.rpm",
+        "libcap-ng-0.8.2-7.el9.x86_64.rpm",
+        "libseccomp-2.5.2-2.el9.x86_64.rpm",
+        "libselinux-3.6-3.el9.x86_64.rpm",
+        "libsemanage-3.6-5.el9_6.x86_64.rpm",
+        "libsepol-3.6-3.el9.x86_64.rpm",
+        "libxcrypt-4.4.18-3.el9.x86_64.rpm",
+        "libzstd-1.5.5-1.el9.x86_64.rpm",
+        "lz4-libs-1.9.3-5.el9.x86_64.rpm",
+        "lzo-2.10-7.el9.x86_64.rpm",
+        "pcre2-10.40-6.el9.x86_64.rpm",
+        "shadow-utils-subid-4.9-15.el9.x86_64.rpm",
+        "squashfs-tools-4.4-10.git1.el9.x86_64.rpm",
+    ];
 
     /// URL for downloading a Lima release archive.
     fn lima_archive_url(version: &str, os: &str, arch: &str) -> String {
@@ -103,7 +120,7 @@ mod apptainer_build {
     }
 
     // -----------------------------------------------------------------------
-    // Lima download and extraction
+    // Lima download and extraction (macOS only)
     // -----------------------------------------------------------------------
 
     fn file_sha256_hex(path: &Path) -> Option<String> {
@@ -277,39 +294,8 @@ mod apptainer_build {
     }
 
     // -----------------------------------------------------------------------
-    // Apptainer install script download
+    // rpm2cpio shim
     // -----------------------------------------------------------------------
-
-    fn download_install_script(dest: &Path, expected_sha256: &str) -> bool {
-        let status = Command::new("curl")
-            .args(["-fsSL", &install_script_url(), "-o"])
-            .arg(dest)
-            .status();
-
-        match status {
-            Ok(s) if s.success() => {
-                if !verify_download_sha256(dest, expected_sha256, "Apptainer install script") {
-                    std::fs::remove_file(dest).ok();
-                    return false;
-                }
-                true
-            }
-            Ok(s) => {
-                println!(
-                    "cargo:warning=Failed to download apptainer install script (exit: {})",
-                    s
-                );
-                false
-            }
-            Err(e) => {
-                println!(
-                    "cargo:warning=Failed to run curl to download apptainer install script: {}",
-                    e
-                );
-                false
-            }
-        }
-    }
 
     /// Create a portable POSIX `rpm2cpio` script in `bin_dir` using only standard
     /// tools (`od`, `dd`, `file`).  Based on `scripts/rpm2cpio.sh` from the RPM
@@ -320,11 +306,6 @@ mod apptainer_build {
         use std::os::unix::fs::PermissionsExt;
 
         let shim = bin_dir.join("rpm2cpio");
-        // Portable rpm2cpio — based on rpm-software-management/rpm scripts/rpm2cpio.sh.
-        // Handles both file arguments (`rpm2cpio file.rpm`) and stdin pipes
-        // (`curl … | rpm2cpio -`) which the apptainer install script uses.
-        // Uses a shell function for extraction to avoid variable-expansion pitfalls
-        // with redirections in command strings.
         let script = r#"#!/bin/sh
 pkg="$1"
 _tmp=""
@@ -365,71 +346,132 @@ fi
         std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).is_ok()
     }
 
-    /// Run `install-unprivileged.sh` directly on the host (Linux).
+    // -----------------------------------------------------------------------
+    // Local RPM installation (Linux)
+    // -----------------------------------------------------------------------
+
+    /// Install apptainer from local vendor/ RPMs.
     ///
-    /// The upstream script requires `bash`, `rpm2cpio`, and `cpio`. If `rpm2cpio`
-    /// is not on PATH we create a portable POSIX shim in a temp directory and
-    /// prepend it to PATH — no sudo or system-wide installs needed.
-    fn run_install_script_local(script_path: &Path, install_dir: &Path) -> bool {
-        // The script expects an empty directory; ensure it is.
+    /// 1. Creates the `{install_dir}/{arch}/` directory.
+    /// 2. Extracts the main apptainer RPM there.
+    /// 3. Extracts dependency RPMs into `{install_dir}/{arch}/tmp/`.
+    /// 4. Runs `install-unprivileged.sh` to restructure everything.
+    fn install_from_local_rpms(vendor_dir: &Path, install_dir: &Path, arch: &str) -> bool {
+        // Start fresh
         if install_dir.exists() {
             std::fs::remove_dir_all(install_dir).ok();
         }
         std::fs::create_dir_all(install_dir).expect("Failed to create apptainer install directory");
 
-        // Ensure rpm2cpio is available — provide a portable shim if needed.
+        // Create rpm2cpio shim
         let shim_dir = install_dir.parent().unwrap().join("_rpm2cpio_shim");
         let _ = std::fs::create_dir_all(&shim_dir);
+        if !create_rpm2cpio_shim(&shim_dir) {
+            println!("cargo:warning=Failed to create rpm2cpio shim");
+            return false;
+        }
+        let rpm2cpio = shim_dir.join("rpm2cpio");
 
-        let has_rpm2cpio = Command::new("rpm2cpio")
-            .arg("--help")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .is_ok_and(|status| status.success());
+        let arch_dir = install_dir.join(arch);
+        std::fs::create_dir_all(&arch_dir).expect("Failed to create arch directory");
 
-        let extra_path = if !has_rpm2cpio {
-            if !create_rpm2cpio_shim(&shim_dir) {
-                println!("cargo:warning=Failed to create rpm2cpio shim");
+        // Extract the main apptainer RPM into {arch_dir}/
+        let apptainer_rpm = vendor_dir.join(APPTAINER_RPM);
+        if !apptainer_rpm.exists() {
+            println!(
+                "cargo:warning=Apptainer RPM not found at {:?}",
+                apptainer_rpm
+            );
+            return false;
+        }
+        if !extract_rpm(&rpm2cpio, &apptainer_rpm, &arch_dir) {
+            println!("cargo:warning=Failed to extract apptainer RPM");
+            return false;
+        }
+
+        // Extract dependency RPMs into {arch_dir}/tmp/
+        let tmp_dir = arch_dir.join("tmp");
+        std::fs::create_dir_all(&tmp_dir)
+            .expect("Failed to create tmp directory for dependency RPMs");
+        for rpm_name in DEPENDENCY_RPMS {
+            let rpm_path = vendor_dir.join(rpm_name);
+            if !rpm_path.exists() {
+                println!("cargo:warning=Dependency RPM not found at {:?}", rpm_path);
                 return false;
             }
-            Some(shim_dir.clone())
-        } else {
-            None
-        };
-
-        let mut cmd = Command::new("bash");
-        cmd.arg(script_path)
-            .args(["-v", APPTAINER_VERSION, "-d", "el9"])
-            .arg(install_dir);
-
-        // Prepend shim directory to PATH if we created one.
-        if let Some(ref shim) = extra_path {
-            let path = env::var("PATH").unwrap_or_default();
-            cmd.env("PATH", format!("{}:{}", shim.display(), path));
+            if !extract_rpm(&rpm2cpio, &rpm_path, &tmp_dir) {
+                println!(
+                    "cargo:warning=Failed to extract dependency RPM: {}",
+                    rpm_name
+                );
+                return false;
+            }
         }
 
-        let output = cmd.output();
-
-        // Clean up shim directory.
-        if extra_path.is_some() {
-            std::fs::remove_dir_all(&shim_dir).ok();
+        // Run install-unprivileged.sh to restructure the extracted files
+        let post_install = vendor_dir.join("install-unprivileged.sh");
+        if !post_install.exists() {
+            println!(
+                "cargo:warning=install-unprivileged.sh not found at {:?}",
+                post_install
+            );
+            return false;
         }
+
+        let output = Command::new("bash")
+            .arg(&post_install)
+            .arg(install_dir)
+            .arg(arch)
+            .output();
+
+        // Clean up shim directory
+        std::fs::remove_dir_all(&shim_dir).ok();
 
         match output {
             Ok(o) if o.status.success() => true,
             Ok(o) => {
                 let stderr = String::from_utf8_lossy(&o.stderr);
+                let stdout = String::from_utf8_lossy(&o.stdout);
                 println!(
-                    "cargo:warning=Apptainer install script failed (exit: {}): {}",
-                    o.status, stderr
+                    "cargo:warning=install-unprivileged.sh failed (exit: {}): {} {}",
+                    o.status, stderr, stdout
+                );
+                false
+            }
+            Err(e) => {
+                println!("cargo:warning=Failed to run install-unprivileged.sh: {}", e);
+                false
+            }
+        }
+    }
+
+    /// Extract a single RPM file into `dest_dir` using rpm2cpio + cpio.
+    fn extract_rpm(rpm2cpio: &Path, rpm_path: &Path, dest_dir: &Path) -> bool {
+        let output = Command::new("bash")
+            .arg("-c")
+            .arg(format!(
+                "'{}' '{}' | cpio -idum --quiet 2>&1",
+                rpm2cpio.display(),
+                rpm_path.display()
+            ))
+            .current_dir(dest_dir)
+            .output();
+
+        match output {
+            Ok(o) if o.status.success() => true,
+            Ok(o) => {
+                let stderr = String::from_utf8_lossy(&o.stderr);
+                let stdout = String::from_utf8_lossy(&o.stdout);
+                println!(
+                    "cargo:warning=rpm2cpio+cpio failed for {:?} (exit: {}): {} {}",
+                    rpm_path, o.status, stderr, stdout
                 );
                 false
             }
             Err(e) => {
                 println!(
-                    "cargo:warning=Failed to run apptainer install script: {}",
-                    e
+                    "cargo:warning=Failed to run rpm2cpio+cpio for {:?}: {}",
+                    rpm_path, e
                 );
                 false
             }
@@ -437,7 +479,7 @@ fi
     }
 
     // -----------------------------------------------------------------------
-    // Lima instance management
+    // Lima instance management (macOS)
     // -----------------------------------------------------------------------
 
     /// Ensure the peppy Lima instance exists and is running.
@@ -525,20 +567,16 @@ fi
         }
     }
 
-    /// Run `install-unprivileged.sh` inside a Lima VM (macOS).
+    /// Install apptainer via Lima VM (macOS).
     ///
-    /// Lima provides a Linux guest where the script can execute with `rpm2cpio`
-    /// and `cpio`. The flow:
-    /// 1. Ensure the peppy Lima instance is running.
-    /// 2. Copy the install script into the VM.
-    /// 3. Run it inside the VM, installing to a guest-local temp directory.
-    /// 4. Copy the resulting directory tree back to the macOS host.
-    fn run_install_script_via_lima(
+    /// Copies vendor RPMs into the Lima guest, extracts them there, and copies
+    /// the result back to the host.
+    fn install_via_lima(
         lima: &LimaConfig,
-        script_path: &Path,
+        vendor_dir: &Path,
         install_dir: &Path,
+        arch: &str,
     ) -> bool {
-        // 0) Ensure the Lima instance exists and is running
         if !ensure_lima_instance(lima, LIMA_TEMPLATE) {
             println!(
                 "cargo:warning=Could not ensure a running Lima instance; apptainer will not be bundled"
@@ -547,8 +585,6 @@ fi
         }
 
         // Disable AppArmor user namespace restriction in the guest (Ubuntu 24.04+ default).
-        // Required for Apptainer's install-unprivileged.sh to work inside the VM.
-        // Note: sudo runs inside the Lima VM guest, which has passwordless sudo by default.
         let userns_fix = lima
             .lima_command()
             .args([
@@ -582,74 +618,114 @@ fi
             }
         }
 
-        let guest_script = "/tmp/peppy-apptainer-install.sh";
+        let guest_vendor = "/tmp/peppy-vendor";
         let guest_install_dir = "/tmp/peppy-apptainer-install";
 
-        // 1) Copy the script into the VM
-        let cp_in = lima
-            .lima_command()
-            .args([
-                "copy",
-                &script_path.to_string_lossy(),
-                &format!("{}:{guest_script}", lima.instance),
-            ])
-            .output();
-        match &cp_in {
-            Ok(o) if o.status.success() => {}
-            Ok(o) => {
-                let stderr = String::from_utf8_lossy(&o.stderr);
-                println!(
-                    "cargo:warning=Failed to copy install script into Lima VM (exit: {}): {}",
-                    o.status, stderr
-                );
-                return false;
-            }
-            Err(e) => {
-                println!("cargo:warning=Failed to run limactl copy: {}", e);
-                return false;
-            }
-        }
-
-        // 2) Run the install script inside the VM.
-        //    Use `bash` because the upstream script uses bash-isms (e.g. `[[`).
-        //    Also ensure rpm2cpio and cpio are available in the guest.
-        //    The Lima VM runs Ubuntu (see LIMA_TEMPLATE), so apt-get is available.
-        let run = lima
+        // 1) Clean up any previous guest state
+        let _ = lima
             .lima_command()
             .args([
                 "shell",
                 lima.instance,
                 "--",
-                "bash",
-                "-c",
-                &format!(
-                    "command -v rpm2cpio >/dev/null 2>&1 || (sudo apt-get update -qq && sudo apt-get install -y -qq rpm2cpio cpio); \
-                     rm -rf {guest_install_dir} && bash {guest_script} -v {APPTAINER_VERSION} -d el9 {guest_install_dir}"
-                ),
+                "rm",
+                "-rf",
+                guest_vendor,
+                guest_install_dir,
             ])
+            .status();
+
+        // 2) Create guest vendor directory and copy RPMs + post-install script
+        let _ = lima
+            .lima_command()
+            .args(["shell", lima.instance, "--", "mkdir", "-p", guest_vendor])
+            .status();
+
+        // Copy each RPM and the post-install script
+        let mut files_to_copy: Vec<PathBuf> = vec![vendor_dir.join("install-unprivileged.sh")];
+        files_to_copy.push(vendor_dir.join(APPTAINER_RPM));
+        for rpm in DEPENDENCY_RPMS {
+            files_to_copy.push(vendor_dir.join(rpm));
+        }
+
+        for file in &files_to_copy {
+            let cp = lima
+                .lima_command()
+                .args([
+                    "copy",
+                    &file.to_string_lossy(),
+                    &format!(
+                        "{}:{}/{}",
+                        lima.instance,
+                        guest_vendor,
+                        file.file_name().unwrap().to_string_lossy()
+                    ),
+                ])
+                .output();
+            match &cp {
+                Ok(o) if o.status.success() => {}
+                Ok(o) => {
+                    let stderr = String::from_utf8_lossy(&o.stderr);
+                    println!(
+                        "cargo:warning=Failed to copy {:?} into Lima VM (exit: {}): {}",
+                        file.file_name().unwrap(),
+                        o.status,
+                        stderr
+                    );
+                    return false;
+                }
+                Err(e) => {
+                    println!("cargo:warning=Failed to run limactl copy: {}", e);
+                    return false;
+                }
+            }
+        }
+
+        // 3) Install rpm2cpio in the guest if needed, then extract RPMs and post-process
+        let install_cmd = format!(
+            r#"set -e
+command -v rpm2cpio >/dev/null 2>&1 || (sudo apt-get update -qq && sudo apt-get install -y -qq rpm2cpio cpio)
+mkdir -p {guest_install_dir}/{arch}
+cd {guest_install_dir}/{arch}
+rpm2cpio {guest_vendor}/{apptainer_rpm} | cpio -idum --quiet
+mkdir -p tmp
+cd tmp
+for rpm in {guest_vendor}/*.rpm; do
+    [ "$(basename "$rpm")" = "{apptainer_rpm}" ] && continue
+    rpm2cpio "$rpm" | cpio -idum --quiet
+done
+cd {guest_install_dir}/{arch}
+bash {guest_vendor}/install-unprivileged.sh {guest_install_dir} {arch}"#,
+            guest_install_dir = guest_install_dir,
+            guest_vendor = guest_vendor,
+            arch = arch,
+            apptainer_rpm = APPTAINER_RPM,
+        );
+
+        let run = lima
+            .lima_command()
+            .args(["shell", lima.instance, "--", "bash", "-c", &install_cmd])
             .output();
         match &run {
             Ok(o) if o.status.success() => {}
             Ok(o) => {
                 let stderr = String::from_utf8_lossy(&o.stderr);
                 println!(
-                    "cargo:warning=Apptainer install script failed inside Lima VM (exit: {}): {}",
+                    "cargo:warning=Apptainer installation failed inside Lima VM (exit: {}): {}",
                     o.status, stderr
                 );
                 return false;
             }
             Err(e) => {
                 println!(
-                    "cargo:warning=Failed to run install script via limactl shell: {}",
+                    "cargo:warning=Failed to run install via limactl shell: {}",
                     e
                 );
                 return false;
             }
         }
 
-        // 3) Copy the result back to the host via tar pipe.
-        //    `limactl copy -r` is unreliable with long or special-character paths,
-        //    so we tar in the guest and untar on the host through a pipe.
+        // 4) Copy the result back to the host via tar pipe
         if install_dir.exists() {
             std::fs::remove_dir_all(install_dir).ok();
         }
@@ -682,7 +758,7 @@ fi
             }
         }
 
-        // 4) Clean up guest temp files
+        // 5) Clean up guest temp files
         let _ = lima
             .lima_command()
             .args([
@@ -691,7 +767,7 @@ fi
                 "--",
                 "rm",
                 "-rf",
-                guest_script,
+                guest_vendor,
                 guest_install_dir,
             ])
             .status();
@@ -723,6 +799,10 @@ fi
 
     pub fn run() {
         println!("cargo:rerun-if-changed=build.rs");
+        println!(
+            "cargo:rerun-if-changed=vendor/apptainer-{}/",
+            APPTAINER_VERSION
+        );
         println!("cargo:rerun-if-env-changed=PEPPY_APPTAINER_DIR");
         println!("cargo:rerun-if-env-changed=PEPPY_LIMA_DIR");
 
@@ -757,6 +837,9 @@ fi
         };
 
         let out_dir = env::var("OUT_DIR").unwrap();
+        let manifest_dir = env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set");
+        let vendor_dir =
+            PathBuf::from(&manifest_dir).join(format!("vendor/apptainer-{}", APPTAINER_VERSION));
 
         // ------------------------------------------------------------------
         // Step 1 (macOS only): Download and cache Lima
@@ -805,7 +888,7 @@ fi
         };
 
         // ------------------------------------------------------------------
-        // Step 2: Download and cache apptainer
+        // Step 2: Install apptainer from vendor RPMs
         // ------------------------------------------------------------------
         let cache_dir = get_apptainer_cache_dir(APPTAINER_VERSION, &arch);
         let out_install_dir = PathBuf::from(&out_dir).join("apptainer-install");
@@ -822,24 +905,15 @@ fi
             );
         } else {
             println!(
-                "cargo:warning=Downloading and installing apptainer {}{}...",
+                "cargo:warning=Installing apptainer {} from vendor RPMs{}...",
                 APPTAINER_VERSION,
                 if use_lima { " (via Lima)" } else { "" }
             );
 
-            // Download the install script (curl works on both Linux and macOS)
-            let script_path = cache_root().join("install-unprivileged.sh");
-            if !download_install_script(&script_path, APPTAINER_INSTALL_SCRIPT_SHA256) {
-                println!(
-                    "cargo:warning=Could not download apptainer install script; apptainer will not be bundled"
-                );
-                return;
-            }
-
             let success = if let Some(ref lima) = lima_config {
-                run_install_script_via_lima(lima, &script_path, &cache_dir)
+                install_via_lima(lima, &vendor_dir, &cache_dir, &arch)
             } else {
-                run_install_script_local(&script_path, &cache_dir)
+                install_from_local_rpms(&vendor_dir, &cache_dir, &arch)
             };
 
             if !success {
@@ -867,9 +941,6 @@ fi
                 );
                 return;
             }
-
-            // Clean up the install script
-            std::fs::remove_file(&script_path).ok();
         }
 
         // Copy cached apptainer installation to OUT_DIR
