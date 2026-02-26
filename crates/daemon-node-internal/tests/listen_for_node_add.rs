@@ -303,8 +303,8 @@ async fn listen_for_node_container_add_success() {
             ]
         }
     }"#
-    .replace("NODE_NAME", TARGET_NODE_NAME)
-    .replace("NODE_TAG", TARGET_NODE_TAG);
+    .replace("TARGET_NODE_NAME", TARGET_NODE_NAME)
+    .replace("TARGET_NODE_TAG", TARGET_NODE_TAG);
     write_peppy_json5(source_dir.path(), &peppy_json5);
     let apptainer_def = format!(
         r#"
