@@ -102,6 +102,11 @@ async fn listen_for_node_init_rust_success() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_init_rust_container_success() {
+    todo!("Finish")
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_init_python_success() {
     const NODE_NAME: &str = "example_node";
 
@@ -201,6 +206,11 @@ async fn listen_for_node_init_python_success() {
         ".gitignore should exist at {}",
         gitignore_path.display()
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_init_python_container_success() {
+    todo!("Finish")
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -4,4 +4,4 @@ pub(crate) mod lima;
 #[cfg(test)]
 mod tests;
 
-pub use facade::ApptainerFacade;
+pub use facade::Apptainer;

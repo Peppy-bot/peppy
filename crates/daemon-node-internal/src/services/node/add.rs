@@ -1218,6 +1218,7 @@ async fn process_node_add(
     {
         let _ = ctx.feedback_publisher.publish(payload).await;
     }
+    super::inject_node_runtime_env(&mut env_vars, &node_name, &node_tag);
     let _cleanup_guard = CleanupDir::new(cleanup_dir);
 
     let previous_snapshot_path = ctx

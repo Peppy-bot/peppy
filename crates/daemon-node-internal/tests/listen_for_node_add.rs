@@ -270,6 +270,120 @@ async fn listen_for_node_fs_add_success() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_container_add_success() {
+    const TARGET_NODE_NAME: &str = "container_node";
+    const TARGET_NODE_TAG: &str = "0.1.0";
+
+    let started_daemon = start_daemon_node_with_mock_messenger().await;
+    let node_stack = started_daemon.node_stack.clone();
+
+    let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
+    let peppy_json5 = r#"{
+        schema_version: 1,
+        manifest: {
+            name: "TARGET_NODE_NAME",
+            tag: "TARGET_NODE_TAG",
+            language: "rust",
+        },
+        build: {
+            container: {
+                def_file: "apptainer.def",
+            },
+            add_cmd: [
+                "${PEPPY_APPTAINER_BIN}",
+                "build",
+                "--fakeroot",
+                "${PEPPY_NODE_NAME}_${PEPPY_NODE_TAG}.sif",
+                "apptainer.def"
+            ],
+            start_cmd: [
+                "${PEPPY_APPTAINER_BIN}",
+                "run",
+                "${PEPPY_NODE_NAME}_${PEPPY_NODE_TAG}.sif",
+            ]
+        }
+    }"#
+    .replace("TARGET_NODE_NAME", TARGET_NODE_NAME)
+    .replace("TARGET_NODE_TAG", TARGET_NODE_TAG);
+    write_peppy_json5(source_dir.path(), &peppy_json5);
+    let apptainer_def = format!(
+        r#"
+Bootstrap: docker
+From: ubuntu:24.04
+
+%labels
+    Name {TARGET_NODE_NAME}
+    Version {TARGET_NODE_TAG}
+
+%post
+    apt-get update && apt-get install -y --no-install-recommends ca-certificates
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
+%runscript
+    echo "Running {TARGET_NODE_NAME}:{TARGET_NODE_TAG}"
+"#
+    );
+    std::fs::write(source_dir.path().join("apptainer.def"), &apptainer_def)
+        .expect("failed to write apptainer definition");
+
+    let add_result = send_node_add_and_wait(
+        &started_daemon.caller_handle,
+        &started_daemon.daemon_node_name,
+        source_dir.path(),
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        None,
+    )
+    .await
+    .expect("node_add request should succeed");
+
+    assert!(
+        add_result.success,
+        "node_add should succeed, got error: {:?}",
+        add_result.error_message
+    );
+
+    assert!(node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG));
+    assert_eq!(node_stack.len(), 2, "root + added node");
+
+    let entity = node_stack
+        .find(TARGET_NODE_NAME, TARGET_NODE_TAG)
+        .expect("node should exist in stack");
+    // `add` only adds the node to the NodeStack but doesn't spawn any instance
+    assert_eq!(entity.instances().len(), 0);
+
+    // Verify the .sif image was stored in the peppy storage directory
+    let snapshot_path = add_result.snapshot_path.as_path();
+    let root_path = entity.root_path();
+    assert_eq!(
+        snapshot_path, root_path,
+        "snapshot_path should match root_path"
+    );
+    assert!(
+        root_path != source_dir.path(),
+        "node should be stored in a different location than the source, got: {}",
+        root_path.display()
+    );
+    assert!(
+        root_path.exists(),
+        "node .sif image should exist: {}",
+        root_path.display()
+    );
+
+    // Container nodes store the .sif image directly, not wrapped in a tar.zst archive
+    let file_name = root_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .expect("should have file name");
+    assert_eq!(
+        file_name,
+        format!("{TARGET_NODE_NAME}_{TARGET_NODE_TAG}.sif"),
+        "stored image should be '<node_name>_<tag>.sif', got: {}",
+        file_name
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_git_add_success() {
     let git_repo_temp_dir = TempDir::new().unwrap();
     let git_repo_path = test_helpers::create_nodes_git_repo(&git_repo_temp_dir);
@@ -2090,6 +2204,51 @@ async fn listen_for_node_add_uses_env_overrides_for_path() {
     assert!(
         add_result.success,
         "The command should succeed, got error: {:?}",
+        add_result.error_message
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_add_injects_runtime_env_vars() {
+    const TARGET_NODE_NAME: &str = "runtime_env_node";
+    const TARGET_NODE_TAG: &str = "0.1.0";
+
+    let started_daemon = start_daemon_node_with_mock_messenger().await;
+    let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
+    let peppy_json5 = format!(
+        r#"{{
+            schema_version: 1,
+            manifest: {{
+                name: "{TARGET_NODE_NAME}",
+                tag: "{TARGET_NODE_TAG}",
+                language: "rust",
+            }},
+            build: {{
+                add_cmd: [
+                    "sh",
+                    "-c",
+                    "test -n \"$PEPPY_APPTAINER_BIN\" && test \"$PEPPY_NODE_NAME\" = \"{TARGET_NODE_NAME}\" && test \"$PEPPY_NODE_TAG\" = \"{TARGET_NODE_TAG}\""
+                ],
+                start_cmd: ["sleep", "10"]
+            }}
+        }}"#
+    );
+    write_peppy_json5(source_dir.path(), &peppy_json5);
+
+    let add_result = send_node_add_and_wait(
+        &started_daemon.caller_handle,
+        &started_daemon.daemon_node_name,
+        source_dir.path(),
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        None,
+    )
+    .await
+    .expect("node_add request should succeed");
+
+    assert!(
+        add_result.success,
+        "node_add should succeed when runtime env vars are injected, got error: {:?}",
         add_result.error_message
     );
 }
