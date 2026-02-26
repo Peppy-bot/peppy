@@ -1378,30 +1378,30 @@ async fn listen_for_node_container_start_success() {
     // Create source directory with container config and apptainer definition
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
     let peppy_json5 = r#"{
-            schema_version: 1,
-            manifest: {
-                name: "NODE_NAME",
-                tag: "NODE_TAG",
-                language: "rust",
-            },
-            build: {
-              container: {
+        schema_version: 1,
+        manifest: {
+            name: "TARGET_NODE_NAME",
+            tag: "TARGET_NODE_TAG",
+            language: "rust",
+        },
+        build: {
+            container: {
                 def_file: "apptainer.def",
-              },
-              add_cmd: [
+            },
+            add_cmd: [
                 "${PEPPY_APPTAINER_BIN}",
                 "build",
                 "--fakeroot",
                 "${PEPPY_NODE_NAME}_${PEPPY_NODE_TAG}.sif",
                 "apptainer.def"
-              ],
-              start_cmd: [
+            ],
+            start_cmd: [
                 "${PEPPY_APPTAINER_BIN}",
                 "run",
                 "${PEPPY_NODE_NAME}_${PEPPY_NODE_TAG}.sif",
-              ]
-            }
-        }"#
+            ]
+        }
+    }"#
     .replace("NODE_NAME", TARGET_NODE_NAME)
     .replace("NODE_TAG", TARGET_NODE_TAG);
     write_peppy_json5(source_dir.path(), &peppy_json5);
