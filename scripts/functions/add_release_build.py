@@ -2,7 +2,7 @@
 
 Requires:
   - GITHUB_PEPPY_RELEASE_TOKEN env var (repo-scoped token)
-  - MATURIN_PYPI_TOKEN env var (PyPI API token)
+  - UV_PUBLISH_TOKEN env var (PyPI API token)
   - git, cargo, rustc, pixi on PATH
 
 Usage:

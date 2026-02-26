@@ -1,28 +1,28 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Upload a peppylib wheel to PyPI.
+# Upload a peppylib wheel to PyPI using uv publish.
 #
 # Expects the wheel to have been built first via create_wheel.sh.
 #
 # Required env vars:
-#   PEPPY_GIT_TAG       — version tag used to locate the wheel
-#   MATURIN_PYPI_TOKEN  — PyPI API token for authentication
+#   PEPPY_GIT_TAG        — version tag used to locate the wheel
+#   UV_PUBLISH_TOKEN     — PyPI API token for authentication
 #
-# Usage: PEPPY_GIT_TAG=1.2.3 MATURIN_PYPI_TOKEN=pypi-... ./scripts/publish_wheel.sh
+# Usage: PEPPY_GIT_TAG=1.2.3 UV_PUBLISH_TOKEN=pypi-... ./scripts/publish_wheel.sh
 
 if [[ -z "${PEPPY_GIT_TAG:-}" ]]; then
     echo "Error: PEPPY_GIT_TAG must be set" >&2
     exit 1
 fi
 
-if [[ -z "${MATURIN_PYPI_TOKEN:-}" ]]; then
-    echo "Error: MATURIN_PYPI_TOKEN must be set" >&2
+if [[ -z "${UV_PUBLISH_TOKEN:-}" ]]; then
+    echo "Error: UV_PUBLISH_TOKEN must be set" >&2
     exit 1
 fi
 
-if [[ "${MATURIN_PYPI_TOKEN}" != pypi-* ]]; then
-    echo "Error: MATURIN_PYPI_TOKEN must be a PyPI API token (starts with 'pypi-')" >&2
+if [[ "${UV_PUBLISH_TOKEN}" != pypi-* ]]; then
+    echo "Error: UV_PUBLISH_TOKEN must be a PyPI API token (starts with 'pypi-')" >&2
     exit 1
 fi
 
@@ -37,4 +37,4 @@ if ! ls $WHEEL_GLOB >/dev/null 2>&1; then
 fi
 
 # shellcheck disable=SC2086
-maturin upload --non-interactive $WHEEL_GLOB
+uv publish $WHEEL_GLOB

@@ -8,6 +8,7 @@ platforms = ["linux-64", "osx-arm64", "linux-aarch64"]
 [dependencies]
 python = ">=3.11,<3.14"
 pip = "*"
+uv = "*"
 
 [pypi-dependencies]
 maturin = ">=1.0,<2.0"
