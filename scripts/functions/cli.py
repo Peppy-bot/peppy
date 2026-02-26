@@ -75,17 +75,17 @@ def validate_release_environment(
 
 
 def validate_pypi_token() -> str:
-    """Validate that UV_PUBLISH_TOKEN is set and has the expected format.
+    """Validate that PYPI_TOKEN is set and has the expected format.
 
     Returns the validated token string.
     Raises ReleaseError if missing or malformed.
     """
-    token = os.environ.get("UV_PUBLISH_TOKEN", "").strip()
+    token = os.environ.get("PYPI_TOKEN", "").strip()
     if not token:
-        raise ReleaseError("UV_PUBLISH_TOKEN env var is required to publish the wheel")
+        raise ReleaseError("PYPI_TOKEN env var is required to publish the wheel")
     if not token.startswith("pypi-"):
         raise ReleaseError(
-            "UV_PUBLISH_TOKEN must be a PyPI API token (starts with 'pypi-')"
+            "PYPI_TOKEN must be a PyPI API token (starts with 'pypi-')"
         )
     return token
 

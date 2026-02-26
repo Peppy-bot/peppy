@@ -20,21 +20,25 @@ from peppylib import MessengerHandle, TopicMessenger
 from peppylib.config import DEFAULT_MESSAGING_PORT, QoSProfile
 
 async def main():
-    handle = await MessengerHandle.from_host_port("localhost", DEFAULT_MESSAGING_PORT)
+    publisher = await MessengerHandle.from_host_port("localhost", DEFAULT_MESSAGING_PORT)
+    subscriber = await MessengerHandle.from_host_port("localhost", DEFAULT_MESSAGING_PORT)
+
+    # Subscribe first so we don't miss the message
+    subscription = await TopicMessenger.subscribe(
+        subscriber, "daemon", "instance-1", "my-node", "greetings",
+        None, None, QoSProfile.Reliable,
+    )
 
     # Publish
     await TopicMessenger.emit(
-        handle, "daemon", "instance-1", "my-node", "greetings",
+        publisher, "daemon", "instance-1", "my-node", "greetings",
         QoSProfile.Reliable, b"Hello!",
     )
 
-    # Subscribe
-    subscription = await TopicMessenger.subscribe(
-        handle, "daemon", "instance-1", "my-node", "greetings",
-        None, None, QoSProfile.Reliable,
-    )
-    msg = await subscription.on_next_message()
-    print(msg.payload.decode())
+    # Receive
+    msg = await asyncio.wait_for(subscription.on_next_message(), timeout=3.0)
+    if msg is not None:
+        print(msg.payload.decode())
 
 asyncio.run(main())
 ```
@@ -47,24 +51,30 @@ from peppylib import MessengerHandle, ServiceMessenger
 from peppylib.config import DEFAULT_MESSAGING_PORT
 
 async def main():
-    handle = await MessengerHandle.from_host_port("localhost", DEFAULT_MESSAGING_PORT)
+    server_handle = await MessengerHandle.from_host_port("localhost", DEFAULT_MESSAGING_PORT)
+    client_handle = await MessengerHandle.from_host_port("localhost", DEFAULT_MESSAGING_PORT)
 
     # Server
     service = await ServiceMessenger.listen(
-        handle, "daemon", "instance-1", "my-node", "echo",
+        server_handle, "daemon", "instance-1", "my-node", "echo",
     )
 
     async def on_request(req) -> bytes:
         return req.payload
 
-    await service.handle_next_request(on_request)
+    async def serve():
+        await service.handle_next_request(on_request)
 
     # Client
-    response = await ServiceMessenger.poll(
-        handle, "daemon", "instance-1", "my-node", "echo",
-        None, None, b"ping", 3.0,
-    )
-    print(response.payload.decode())
+    async def call():
+        response = await ServiceMessenger.poll(
+            client_handle, "daemon", "instance-1", "my-node", "echo",
+            None, None, b"ping", 3.0,
+        )
+        print(response.payload.decode())
+
+    # Run server and client concurrently
+    await asyncio.gather(asyncio.create_task(serve()), asyncio.create_task(call()))
 
 asyncio.run(main())
 ```
@@ -77,22 +87,38 @@ from peppylib import ActionMessenger, MessengerHandle
 from peppylib.config import DEFAULT_MESSAGING_PORT, QoSProfile
 
 async def main():
-    handle = await MessengerHandle.from_host_port("localhost", DEFAULT_MESSAGING_PORT)
+    server_handle = await MessengerHandle.from_host_port("localhost", DEFAULT_MESSAGING_PORT)
+    client_handle = await MessengerHandle.from_host_port("localhost", DEFAULT_MESSAGING_PORT)
 
-    # Send a goal
-    goal_handle = await ActionMessenger.send_goal(
-        handle, "daemon", "instance-1", "my-node", "compute",
-        None, None, b"task-data", QoSProfile.Reliable, 5.0,
+    # Server: expose an action and handle goal → feedback → result
+    action = await ActionMessenger.expose(
+        server_handle, "daemon", "instance-1", "my-node", "compute",
     )
-    print(goal_handle.goal_response.payload.decode())
 
-    # Receive feedback
-    feedback = await goal_handle.on_next_feedback()
-    print(feedback.payload.decode())
+    async def server():
+        await action.goal_service.handle_next_request(
+            lambda req: f"Goal accepted: {req.payload.decode()}".encode()
+        )
+        await action.feedback_publisher.publish(b"Working on it...")
+        await action.result_service.handle_next_request(
+            lambda _req: b"Computation complete!"
+        )
 
-    # Get result
-    result = await ActionMessenger.request_result(handle, goal_handle, 5.0)
-    print(result.payload.decode())
+    # Client: send goal, receive feedback, get result
+    async def client():
+        goal = await ActionMessenger.send_goal(
+            client_handle, "daemon", "instance-1", "my-node", "compute",
+            None, None, b"task-data", QoSProfile.Reliable, 5.0,
+        )
+        print(goal.goal_response.payload.decode())
+
+        feedback = await asyncio.wait_for(goal.on_next_feedback(), timeout=5.0)
+        print(feedback.payload.decode())
+
+        result = await ActionMessenger.request_result(client_handle, goal, 5.0)
+        print(result.payload.decode())
+
+    await asyncio.gather(asyncio.create_task(server()), asyncio.create_task(client()))
 
 asyncio.run(main())
 ```

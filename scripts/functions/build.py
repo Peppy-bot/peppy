@@ -253,7 +253,7 @@ def publish_wheel(tag: str, repo_root: Path) -> None:
     """Build and publish the peppylib wheel to PyPI.
 
     Invokes the publish-wheel pixi task (which depends on create-wheel)
-    with PEPPY_GIT_TAG set. Callers must validate UV_PUBLISH_TOKEN
+    with PEPPY_GIT_TAG set. Callers must validate PYPI_TOKEN
     upfront via validate_pypi_token().
     """
     console.print(f"Publishing peppylib wheel [bold]{tag}[/bold] to PyPI...")
