@@ -104,7 +104,8 @@ mod apptainer_build {
     // -----------------------------------------------------------------------
 
     fn cache_root() -> PathBuf {
-        let root = env::temp_dir().join("peppy-build-cache");
+        let user_home = env::var("HOME").expect("HOME environment variable not set");
+        let root = PathBuf::from(user_home).join(".peppy/tmp");
         if !root.exists() {
             std::fs::create_dir_all(&root).expect("Failed to create peppy build cache root");
         }
