@@ -14,28 +14,23 @@ mod apptainer_build {
     /// The main apptainer RPM filename in the vendor/ directory.
     const APPTAINER_RPM: &str = "apptainer-1.4.5-3.el9.x86_64.rpm";
 
-    /// Dependency RPMs in the vendor/ directory.
-    const DEPENDENCY_RPMS: &[&str] = &[
-        "audit-libs-3.1.5-7.el9.x86_64.rpm",
-        "bzip2-libs-1.0.8-10.el9_5.x86_64.rpm",
-        "fakeroot-1.37-1.el9.x86_64.rpm",
-        "fakeroot-libs-1.37-1.el9.x86_64.rpm",
-        "fuse3-libs-3.10.2-9.el9.x86_64.rpm",
-        "libacl-2.3.1-4.el9.x86_64.rpm",
-        "libattr-2.5.1-3.el9.x86_64.rpm",
-        "libcap-ng-0.8.2-7.el9.x86_64.rpm",
-        "libseccomp-2.5.2-2.el9.x86_64.rpm",
-        "libselinux-3.6-3.el9.x86_64.rpm",
-        "libsemanage-3.6-5.el9_6.x86_64.rpm",
-        "libsepol-3.6-3.el9.x86_64.rpm",
-        "libxcrypt-4.4.18-3.el9.x86_64.rpm",
-        "libzstd-1.5.5-1.el9.x86_64.rpm",
-        "lz4-libs-1.9.3-5.el9.x86_64.rpm",
-        "lzo-2.10-7.el9.x86_64.rpm",
-        "pcre2-10.40-6.el9.x86_64.rpm",
-        "shadow-utils-subid-4.9-15.el9.x86_64.rpm",
-        "squashfs-tools-4.4-10.git1.el9.x86_64.rpm",
-    ];
+    /// Discover dependency RPMs in `vendor_dir` (all `.rpm` files except the main apptainer RPM).
+    fn dependency_rpms(vendor_dir: &Path) -> Vec<PathBuf> {
+        let mut rpms: Vec<PathBuf> = std::fs::read_dir(vendor_dir)
+            .expect("Failed to read vendor directory")
+            .filter_map(|entry| {
+                let path = entry.ok()?.path();
+                let name = path.file_name()?.to_string_lossy().to_string();
+                if name.ends_with(".rpm") && name != APPTAINER_RPM {
+                    Some(path)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        rpms.sort();
+        rpms
+    }
 
     /// URL for downloading a Lima release archive.
     fn lima_archive_url(version: &str, os: &str, arch: &str) -> String {
@@ -393,16 +388,12 @@ fi
         let tmp_dir = arch_dir.join("tmp");
         std::fs::create_dir_all(&tmp_dir)
             .expect("Failed to create tmp directory for dependency RPMs");
-        for rpm_name in DEPENDENCY_RPMS {
-            let rpm_path = vendor_dir.join(rpm_name);
-            if !rpm_path.exists() {
-                println!("cargo:warning=Dependency RPM not found at {:?}", rpm_path);
-                return false;
-            }
-            if !extract_rpm(&rpm2cpio, &rpm_path, &tmp_dir) {
+        let dep_rpms = dependency_rpms(vendor_dir);
+        for rpm_path in &dep_rpms {
+            if !extract_rpm(&rpm2cpio, rpm_path, &tmp_dir) {
                 println!(
-                    "cargo:warning=Failed to extract dependency RPM: {}",
-                    rpm_name
+                    "cargo:warning=Failed to extract dependency RPM: {:?}",
+                    rpm_path.file_name().unwrap()
                 );
                 return false;
             }
@@ -644,9 +635,7 @@ fi
         // Copy each RPM and the post-install script
         let mut files_to_copy: Vec<PathBuf> = vec![vendor_dir.join("install-unprivileged.sh")];
         files_to_copy.push(vendor_dir.join(APPTAINER_RPM));
-        for rpm in DEPENDENCY_RPMS {
-            files_to_copy.push(vendor_dir.join(rpm));
-        }
+        files_to_copy.extend(dependency_rpms(vendor_dir));
 
         for file in &files_to_copy {
             let cp = lima
