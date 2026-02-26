@@ -73,7 +73,7 @@ def cargo_build(tag: str, host_triple: str, repo_root: Path) -> None:
 
     Sets PEPPY_GIT_TAG env var for the build.
     """
-    cache_root = Path.home() / ".peppy" / "tmp"
+    cache_root = Path(tempfile.gettempdir()) / "peppy-build-cache"
     if cache_root.exists():
         console.print("Clearing build cache...")
         shutil.rmtree(cache_root, ignore_errors=True)
