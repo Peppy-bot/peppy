@@ -370,20 +370,20 @@ mod apptainer_build {
         let filename = apptainer_rpm_filename(arch);
         let cached_rpm = cache_root().join(&filename);
 
-        if cached_rpm.exists() {
-            if let Some(expected_sha256) = apptainer_rpm_sha256(arch) {
-                if verify_download_sha256(&cached_rpm, expected_sha256, "Cached Apptainer RPM") {
-                    println!(
-                        "cargo:warning=Using cached Apptainer RPM from {:?}",
-                        cached_rpm
-                    );
-                    return Some(cached_rpm);
-                }
+        if cached_rpm.exists()
+            && let Some(expected_sha256) = apptainer_rpm_sha256(arch)
+        {
+            if verify_download_sha256(&cached_rpm, expected_sha256, "Cached Apptainer RPM") {
                 println!(
-                    "cargo:warning=Cached Apptainer RPM failed verification, re-downloading..."
+                    "cargo:warning=Using cached Apptainer RPM from {:?}",
+                    cached_rpm
                 );
-                std::fs::remove_file(&cached_rpm).ok();
+                return Some(cached_rpm);
             }
+            println!(
+                "cargo:warning=Cached Apptainer RPM failed verification, re-downloading..."
+            );
+            std::fs::remove_file(&cached_rpm).ok();
         }
 
         println!(
