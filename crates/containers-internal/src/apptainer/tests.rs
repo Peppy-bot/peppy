@@ -126,7 +126,11 @@ fn test_raw_flag_passthrough() {
     let cmd = facade.run("image.sif").raw_flag("--force");
     let args = cmd.build_args().expect("build_args should succeed");
 
-    assert!(args.contains(&"--force".to_string()), "should contain --force: {:?}", args);
+    assert!(
+        args.contains(&"--force".to_string()),
+        "should contain --force: {:?}",
+        args
+    );
 }
 
 #[test]
@@ -158,19 +162,25 @@ fn test_flags_come_before_positional_args() {
     assert_eq!(args[0], "run");
 
     // Find the image position (it's the translated path ending in image.sif)
-    let image_idx = args
-        .iter()
-        .position(|a| a.ends_with("image.sif"))
-        .unwrap();
+    let image_idx = args.iter().position(|a| a.ends_with("image.sif")).unwrap();
 
     // All flags should come before the image
     let fakeroot_idx = args.iter().position(|a| a == "--fakeroot").unwrap();
     let writable_idx = args.iter().position(|a| a == "--writable-tmpfs").unwrap();
     let contain_idx = args.iter().position(|a| a == "--contain").unwrap();
 
-    assert!(fakeroot_idx < image_idx, "--fakeroot should come before image");
-    assert!(writable_idx < image_idx, "--writable-tmpfs should come before image");
-    assert!(contain_idx < image_idx, "--contain should come before image");
+    assert!(
+        fakeroot_idx < image_idx,
+        "--fakeroot should come before image"
+    );
+    assert!(
+        writable_idx < image_idx,
+        "--writable-tmpfs should come before image"
+    );
+    assert!(
+        contain_idx < image_idx,
+        "--contain should come before image"
+    );
 }
 
 // ---------------------------------------------------------------------------
