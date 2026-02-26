@@ -11,17 +11,23 @@ mod apptainer_build {
     const LIMA_INSTANCE: &str = "peppy";
     const LIMA_TEMPLATE: &str = "template:ubuntu-24.04";
 
-    /// The main apptainer RPM filename in the vendor/ directory.
-    const APPTAINER_RPM: &str = "apptainer-1.4.5-3.el9.x86_64.rpm";
+    const APPTAINER_RELEASE: &str = "3.el9";
+    const APPTAINER_X86_64_RPM_SHA256: &str =
+        "1aa20c564fe72ad7023ce5eed0df3d941de56220291c028b073d827b6ef693ee";
+    const APPTAINER_AARCH64_RPM_SHA256: &str =
+        "604ffc47525dabcbfe5f4a19a332a31c8387d9b971e38954bfdcf342d83fb040";
 
-    /// Discover dependency RPMs in `vendor_dir` (all `.rpm` files except the main apptainer RPM).
-    fn dependency_rpms(vendor_dir: &Path) -> Vec<PathBuf> {
-        let mut rpms: Vec<PathBuf> = std::fs::read_dir(vendor_dir)
-            .expect("Failed to read vendor directory")
+    /// Discover dependency RPMs in `dep_dir` (all `.rpm` files).
+    ///
+    /// `dep_dir` is the architecture-specific vendor subdirectory (e.g. `vendor/x86_64/`)
+    /// which contains only dependency RPMs — the main apptainer RPM is downloaded
+    /// separately at build time.
+    fn dependency_rpms(dep_dir: &Path) -> Vec<PathBuf> {
+        let mut rpms: Vec<PathBuf> = std::fs::read_dir(dep_dir)
+            .expect("Failed to read vendor dependency directory")
             .filter_map(|entry| {
                 let path = entry.ok()?.path();
-                let name = path.file_name()?.to_string_lossy().to_string();
-                if name.ends_with(".rpm") && name != APPTAINER_RPM {
+                if path.extension().and_then(|e| e.to_str()) == Some("rpm") {
                     Some(path)
                 } else {
                     None
@@ -30,6 +36,32 @@ mod apptainer_build {
             .collect();
         rpms.sort();
         rpms
+    }
+
+    /// Build the RPM filename for a given architecture.
+    fn apptainer_rpm_filename(arch: &str) -> String {
+        format!(
+            "apptainer-{}-{}.{}.rpm",
+            APPTAINER_VERSION, APPTAINER_RELEASE, arch
+        )
+    }
+
+    /// Build the Koji download URL for the main apptainer RPM.
+    fn apptainer_rpm_url(version: &str, release: &str, arch: &str) -> String {
+        let filename = format!("apptainer-{}-{}.{}.rpm", version, release, arch);
+        format!(
+            "https://kojipkgs.fedoraproject.org/packages/apptainer/{}/{}/{}/{}",
+            version, release, arch, filename
+        )
+    }
+
+    /// Return the pinned SHA-256 hash for the apptainer RPM of the given architecture.
+    fn apptainer_rpm_sha256(arch: &str) -> Option<&'static str> {
+        match arch {
+            "x86_64" => Some(APPTAINER_X86_64_RPM_SHA256),
+            "aarch64" => Some(APPTAINER_AARCH64_RPM_SHA256),
+            _ => None,
+        }
     }
 
     /// URL for downloading a Lima release archive.
@@ -289,6 +321,91 @@ mod apptainer_build {
     }
 
     // -----------------------------------------------------------------------
+    // Apptainer RPM download and caching
+    // -----------------------------------------------------------------------
+
+    /// Download the main apptainer RPM to `dest`, verifying its SHA-256 checksum.
+    fn download_apptainer_rpm(
+        dest: &Path,
+        version: &str,
+        release: &str,
+        arch: &str,
+        expected_sha256: &str,
+    ) -> bool {
+        let url = apptainer_rpm_url(version, release, arch);
+        let status = Command::new("curl")
+            .args(["-fsSL", &url, "-o"])
+            .arg(dest)
+            .status();
+
+        match status {
+            Ok(s) if s.success() => {
+                if !verify_download_sha256(dest, expected_sha256, "Apptainer RPM") {
+                    std::fs::remove_file(dest).ok();
+                    return false;
+                }
+                true
+            }
+            Ok(s) => {
+                println!(
+                    "cargo:warning=Failed to download Apptainer RPM from {} (exit: {})",
+                    url, s
+                );
+                false
+            }
+            Err(e) => {
+                println!(
+                    "cargo:warning=Failed to run curl to download Apptainer RPM: {}",
+                    e
+                );
+                false
+            }
+        }
+    }
+
+    /// Download and cache the main apptainer RPM. Returns the path to the
+    /// cached RPM file on success.
+    fn ensure_apptainer_rpm_cached(version: &str, release: &str, arch: &str) -> Option<PathBuf> {
+        let filename = apptainer_rpm_filename(arch);
+        let cached_rpm = cache_root().join(&filename);
+
+        if cached_rpm.exists() {
+            if let Some(expected_sha256) = apptainer_rpm_sha256(arch) {
+                if verify_download_sha256(&cached_rpm, expected_sha256, "Cached Apptainer RPM") {
+                    println!(
+                        "cargo:warning=Using cached Apptainer RPM from {:?}",
+                        cached_rpm
+                    );
+                    return Some(cached_rpm);
+                }
+                println!(
+                    "cargo:warning=Cached Apptainer RPM failed verification, re-downloading..."
+                );
+                std::fs::remove_file(&cached_rpm).ok();
+            }
+        }
+
+        println!(
+            "cargo:warning=Downloading Apptainer {} RPM for {}...",
+            version, arch
+        );
+
+        let Some(expected_sha256) = apptainer_rpm_sha256(arch) else {
+            println!(
+                "cargo:warning=Missing pinned SHA-256 for Apptainer {} {} RPM; refusing download",
+                version, arch
+            );
+            return None;
+        };
+
+        if !download_apptainer_rpm(&cached_rpm, version, release, arch, expected_sha256) {
+            return None;
+        }
+
+        Some(cached_rpm)
+    }
+
+    // -----------------------------------------------------------------------
     // rpm2cpio shim
     // -----------------------------------------------------------------------
 
@@ -345,13 +462,19 @@ fi
     // Local RPM installation (Linux)
     // -----------------------------------------------------------------------
 
-    /// Install apptainer from local vendor/ RPMs.
+    /// Install apptainer from downloaded RPM and vendored dependency RPMs.
     ///
     /// 1. Creates the `{install_dir}/{arch}/` directory.
     /// 2. Extracts the main apptainer RPM there.
     /// 3. Extracts dependency RPMs into `{install_dir}/{arch}/tmp/`.
-    /// 4. Runs `install-unprivileged.sh` to restructure everything.
-    fn install_from_local_rpms(vendor_dir: &Path, install_dir: &Path, arch: &str) -> bool {
+    /// 4. Runs the install script to restructure everything.
+    fn install_from_local_rpms(
+        apptainer_rpm: &Path,
+        dep_dir: &Path,
+        install_script: &Path,
+        install_dir: &Path,
+        arch: &str,
+    ) -> bool {
         // Start fresh
         if install_dir.exists() {
             std::fs::remove_dir_all(install_dir).ok();
@@ -371,7 +494,6 @@ fi
         std::fs::create_dir_all(&arch_dir).expect("Failed to create arch directory");
 
         // Extract the main apptainer RPM into {arch_dir}/
-        let apptainer_rpm = vendor_dir.join(APPTAINER_RPM);
         if !apptainer_rpm.exists() {
             println!(
                 "cargo:warning=Apptainer RPM not found at {:?}",
@@ -379,7 +501,7 @@ fi
             );
             return false;
         }
-        if !extract_rpm(&rpm2cpio, &apptainer_rpm, &arch_dir) {
+        if !extract_rpm(&rpm2cpio, apptainer_rpm, &arch_dir) {
             println!("cargo:warning=Failed to extract apptainer RPM");
             return false;
         }
@@ -388,7 +510,7 @@ fi
         let tmp_dir = arch_dir.join("tmp");
         std::fs::create_dir_all(&tmp_dir)
             .expect("Failed to create tmp directory for dependency RPMs");
-        let dep_rpms = dependency_rpms(vendor_dir);
+        let dep_rpms = dependency_rpms(dep_dir);
         for rpm_path in &dep_rpms {
             if !extract_rpm(&rpm2cpio, rpm_path, &tmp_dir) {
                 println!(
@@ -399,18 +521,17 @@ fi
             }
         }
 
-        // Run install-unprivileged.sh to restructure the extracted files
-        let post_install = vendor_dir.join("install-unprivileged.sh");
-        if !post_install.exists() {
+        // Run install script to restructure the extracted files
+        if !install_script.exists() {
             println!(
-                "cargo:warning=install-unprivileged.sh not found at {:?}",
-                post_install
+                "cargo:warning=Install script not found at {:?}",
+                install_script
             );
             return false;
         }
 
         let output = Command::new("bash")
-            .arg(&post_install)
+            .arg(install_script)
             .arg(install_dir)
             .arg(arch)
             .output();
@@ -560,11 +681,13 @@ fi
 
     /// Install apptainer via Lima VM (macOS).
     ///
-    /// Copies vendor RPMs into the Lima guest, extracts them there, and copies
-    /// the result back to the host.
+    /// Copies the downloaded RPM and vendored dependency RPMs into the Lima
+    /// guest, extracts them there, and copies the result back to the host.
     fn install_via_lima(
         lima: &LimaConfig,
-        vendor_dir: &Path,
+        apptainer_rpm: &Path,
+        dep_dir: &Path,
+        install_script: &Path,
         install_dir: &Path,
         arch: &str,
     ) -> bool {
@@ -632,10 +755,16 @@ fi
             .args(["shell", lima.instance, "--", "mkdir", "-p", guest_vendor])
             .status();
 
-        // Copy each RPM and the post-install script
-        let mut files_to_copy: Vec<PathBuf> = vec![vendor_dir.join("install-unprivileged.sh")];
-        files_to_copy.push(vendor_dir.join(APPTAINER_RPM));
-        files_to_copy.extend(dependency_rpms(vendor_dir));
+        let rpm_filename = apptainer_rpm
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+
+        // Copy install script, main RPM, and dependency RPMs
+        let mut files_to_copy: Vec<PathBuf> = vec![install_script.to_path_buf()];
+        files_to_copy.push(apptainer_rpm.to_path_buf());
+        files_to_copy.extend(dependency_rpms(dep_dir));
 
         for file in &files_to_copy {
             let cp = lima
@@ -671,24 +800,30 @@ fi
         }
 
         // 3) Install rpm2cpio in the guest if needed, then extract RPMs and post-process
+        let install_script_name = install_script
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
         let install_cmd = format!(
             r#"set -e
 command -v rpm2cpio >/dev/null 2>&1 || (sudo apt-get update -qq && sudo apt-get install -y -qq rpm2cpio cpio)
 mkdir -p {guest_install_dir}/{arch}
 cd {guest_install_dir}/{arch}
-rpm2cpio {guest_vendor}/{apptainer_rpm} | cpio -idum --quiet
+rpm2cpio {guest_vendor}/{rpm_filename} | cpio -idum --quiet
 mkdir -p tmp
 cd tmp
 for rpm in {guest_vendor}/*.rpm; do
-    [ "$(basename "$rpm")" = "{apptainer_rpm}" ] && continue
+    [ "$(basename "$rpm")" = "{rpm_filename}" ] && continue
     rpm2cpio "$rpm" | cpio -idum --quiet
 done
 cd {guest_install_dir}/{arch}
-bash {guest_vendor}/install-unprivileged.sh {guest_install_dir} {arch}"#,
+bash {guest_vendor}/{install_script_name} {guest_install_dir} {arch}"#,
             guest_install_dir = guest_install_dir,
             guest_vendor = guest_vendor,
             arch = arch,
-            apptainer_rpm = APPTAINER_RPM,
+            rpm_filename = rpm_filename,
+            install_script_name = install_script_name,
         );
 
         let run = lima
@@ -789,9 +924,11 @@ bash {guest_vendor}/install-unprivileged.sh {guest_install_dir} {arch}"#,
     pub fn run() {
         println!("cargo:rerun-if-changed=build.rs");
         println!(
-            "cargo:rerun-if-changed=vendor/apptainer-{}/",
+            "cargo:rerun-if-changed=vendor/{}-install-unprivileged.sh",
             APPTAINER_VERSION
         );
+        println!("cargo:rerun-if-changed=vendor/x86_64/");
+        println!("cargo:rerun-if-changed=vendor/aarch64/");
         println!("cargo:rerun-if-env-changed=PEPPY_APPTAINER_DIR");
         println!("cargo:rerun-if-env-changed=PEPPY_LIMA_DIR");
 
@@ -827,8 +964,12 @@ bash {guest_vendor}/install-unprivileged.sh {guest_install_dir} {arch}"#,
 
         let out_dir = env::var("OUT_DIR").unwrap();
         let manifest_dir = env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set");
-        let vendor_dir =
-            PathBuf::from(&manifest_dir).join(format!("vendor/apptainer-{}", APPTAINER_VERSION));
+        let vendor_base = PathBuf::from(&manifest_dir).join("vendor");
+        let dep_dir = vendor_base.join(&arch);
+        let install_script = vendor_base.join(format!(
+            "apptainer-{}-install-unprivileged.sh",
+            APPTAINER_VERSION
+        ));
 
         // ------------------------------------------------------------------
         // Step 1 (macOS only): Download and cache Lima
@@ -877,7 +1018,24 @@ bash {guest_vendor}/install-unprivileged.sh {guest_install_dir} {arch}"#,
         };
 
         // ------------------------------------------------------------------
-        // Step 2: Install apptainer from vendor RPMs
+        // Step 1.5: Download and cache the main Apptainer RPM
+        // ------------------------------------------------------------------
+        let apptainer_rpm = match ensure_apptainer_rpm_cached(
+            APPTAINER_VERSION,
+            APPTAINER_RELEASE,
+            &arch,
+        ) {
+            Some(path) => path,
+            None => {
+                println!(
+                    "cargo:warning=Could not download Apptainer RPM; apptainer will not be bundled"
+                );
+                return;
+            }
+        };
+
+        // ------------------------------------------------------------------
+        // Step 2: Install apptainer from downloaded RPM + vendor dependency RPMs
         // ------------------------------------------------------------------
         let cache_dir = get_apptainer_cache_dir(APPTAINER_VERSION, &arch);
         let out_install_dir = PathBuf::from(&out_dir).join("apptainer-install");
@@ -894,15 +1052,28 @@ bash {guest_vendor}/install-unprivileged.sh {guest_install_dir} {arch}"#,
             );
         } else {
             println!(
-                "cargo:warning=Installing apptainer {} from vendor RPMs{}...",
+                "cargo:warning=Installing apptainer {} from RPMs{}...",
                 APPTAINER_VERSION,
                 if use_lima { " (via Lima)" } else { "" }
             );
 
             let success = if let Some(ref lima) = lima_config {
-                install_via_lima(lima, &vendor_dir, &cache_dir, &arch)
+                install_via_lima(
+                    lima,
+                    &apptainer_rpm,
+                    &dep_dir,
+                    &install_script,
+                    &cache_dir,
+                    &arch,
+                )
             } else {
-                install_from_local_rpms(&vendor_dir, &cache_dir, &arch)
+                install_from_local_rpms(
+                    &apptainer_rpm,
+                    &dep_dir,
+                    &install_script,
+                    &cache_dir,
+                    &arch,
+                )
             };
 
             if !success {
