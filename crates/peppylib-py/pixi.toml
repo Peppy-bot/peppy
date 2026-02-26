@@ -23,6 +23,9 @@ release = "maturin develop --release"
 test = "maturin develop && pytest tests/ -v"
 zenoh-simple = "cargo run --manifest-path ../peppylib/examples/zenohd_simple/Cargo.toml"
 
+# Create a package that can be deployed on Pypi
+create-wheel = "bash scripts/create_wheel.sh"
+
 topic-exposes = "maturin develop && python examples/hello_world_topic_exposes/main.py"
 topic-subscribes = "maturin develop && python examples/hello_world_topic_subscribes_to/main.py"
 
