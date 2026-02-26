@@ -5,6 +5,7 @@ license = { text = "Apache-2.0" }
 authors = [{ name = "GODARD Tuatini", email = "tuatini@peppy.bot" }]
 requires-python = ">=3.11,<3.14"
 description = "The peppyOS control library"
+readme = "README.pypi.md"
 classifiers = [
   "Programming Language :: Python",
   "Programming Language :: Rust",
