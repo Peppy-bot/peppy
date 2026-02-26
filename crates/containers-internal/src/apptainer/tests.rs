@@ -1,17 +1,186 @@
-use super::facade::{ApptainerFacade, Backend, is_uri};
+use super::facade::{Apptainer, Backend, is_uri};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use tempfile::TempDir;
 
 // ---------------------------------------------------------------------------
+// Builder argument assembly tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_run_command_builds_correct_args() {
+    let facade = Apptainer::new()
+        .expect("Apptainer::new() should succeed — apptainer is bundled at compile time");
+
+    let cmd = facade.run("image.sif");
+    let args = cmd.build_args().expect("build_args should succeed");
+
+    assert_eq!(args[0], "run");
+    assert!(
+        args.last().unwrap().ends_with("image.sif"),
+        "last arg should be the image path, got: {:?}",
+        args
+    );
+}
+
+#[test]
+fn test_exec_command_builds_correct_args() {
+    let facade = Apptainer::new()
+        .expect("Apptainer::new() should succeed — apptainer is bundled at compile time");
+
+    let cmd = facade.exec("container.sif", &["echo", "hello"]);
+    let args = cmd.build_args().expect("build_args should succeed");
+
+    assert_eq!(args[0], "exec");
+    assert_eq!(args[args.len() - 2], "echo");
+    assert_eq!(args[args.len() - 1], "hello");
+}
+
+#[test]
+fn test_build_command_builds_correct_args() {
+    let facade = Apptainer::new()
+        .expect("Apptainer::new() should succeed — apptainer is bundled at compile time");
+
+    let home = std::env::var("HOME").unwrap();
+    let output = PathBuf::from(&home).join("test/output.sif");
+    let def = PathBuf::from(&home).join("test/def.def");
+    let cmd = facade.build(&output, &def);
+    let args = cmd.build_args().expect("build_args should succeed");
+
+    assert_eq!(args[0], "build");
+    assert!(args[1].ends_with("test/output.sif"));
+    assert!(args[2].ends_with("test/def.def"));
+}
+
+#[test]
+fn test_bind_flag_accumulates() {
+    let facade = Apptainer::new()
+        .expect("Apptainer::new() should succeed — apptainer is bundled at compile time");
+
+    let home = std::env::var("HOME").unwrap();
+    let dev1 = format!("{home}/dev1");
+    let dev2 = format!("{home}/dev2");
+
+    let cmd = facade.run("image.sif").bind(&dev1, None).bind(&dev2, None);
+    let args = cmd.build_args().expect("build_args should succeed");
+
+    let bind_count = args.iter().filter(|a| *a == "--bind").count();
+    assert_eq!(bind_count, 2, "should have 2 --bind flags, got: {:?}", args);
+}
+
+#[test]
+fn test_bind_with_dest() {
+    let facade = Apptainer::new()
+        .expect("Apptainer::new() should succeed — apptainer is bundled at compile time");
+
+    let home = std::env::var("HOME").unwrap();
+    let src = format!("{home}/data");
+
+    let cmd = facade.run("image.sif").bind(&src, Some("/mnt/data"));
+    let args = cmd.build_args().expect("build_args should succeed");
+
+    let bind_idx = args.iter().position(|a| a == "--bind").unwrap();
+    let bind_spec = &args[bind_idx + 1];
+    assert!(
+        bind_spec.ends_with("data:/mnt/data"),
+        "bind spec should have src:dest format, got: {}",
+        bind_spec
+    );
+}
+
+#[test]
+fn test_binds_convenience() {
+    let facade = Apptainer::new()
+        .expect("Apptainer::new() should succeed — apptainer is bundled at compile time");
+
+    let home = std::env::var("HOME").unwrap();
+    let dev1 = format!("{home}/dev1");
+    let dev2 = format!("{home}/dev2");
+    let dev3 = format!("{home}/dev3");
+
+    let cmd = facade.run("image.sif").binds(&[&dev1, &dev2, &dev3]);
+    let args = cmd.build_args().expect("build_args should succeed");
+
+    let bind_count = args.iter().filter(|a| *a == "--bind").count();
+    assert_eq!(bind_count, 3, "should have 3 --bind flags, got: {:?}", args);
+}
+
+#[test]
+fn test_env_flag_format() {
+    let facade = Apptainer::new()
+        .expect("Apptainer::new() should succeed — apptainer is bundled at compile time");
+
+    let cmd = facade.run("image.sif").env("FOO", "bar");
+    let args = cmd.build_args().expect("build_args should succeed");
+
+    let env_idx = args.iter().position(|a| a == "--env").unwrap();
+    assert_eq!(args[env_idx + 1], "FOO=bar");
+}
+
+#[test]
+fn test_raw_flag_passthrough() {
+    let facade = Apptainer::new()
+        .expect("Apptainer::new() should succeed — apptainer is bundled at compile time");
+
+    let cmd = facade.run("image.sif").raw_flag("--force");
+    let args = cmd.build_args().expect("build_args should succeed");
+
+    assert!(args.contains(&"--force".to_string()), "should contain --force: {:?}", args);
+}
+
+#[test]
+fn test_args_appended_after_image() {
+    let facade = Apptainer::new()
+        .expect("Apptainer::new() should succeed — apptainer is bundled at compile time");
+
+    let cmd = facade.run("image.sif").args(&["--config", "app.yaml"]);
+    let args = cmd.build_args().expect("build_args should succeed");
+
+    // args should end with: [..., "image.sif", "--config", "app.yaml"]
+    assert_eq!(args[args.len() - 2], "--config");
+    assert_eq!(args[args.len() - 1], "app.yaml");
+}
+
+#[test]
+fn test_flags_come_before_positional_args() {
+    let facade = Apptainer::new()
+        .expect("Apptainer::new() should succeed — apptainer is bundled at compile time");
+
+    let cmd = facade
+        .run("image.sif")
+        .fakeroot()
+        .writable_tmpfs()
+        .contain();
+    let args = cmd.build_args().expect("build_args should succeed");
+
+    // Subcommand is first
+    assert_eq!(args[0], "run");
+
+    // Find the image position (it's the translated path ending in image.sif)
+    let image_idx = args
+        .iter()
+        .position(|a| a.ends_with("image.sif"))
+        .unwrap();
+
+    // All flags should come before the image
+    let fakeroot_idx = args.iter().position(|a| a == "--fakeroot").unwrap();
+    let writable_idx = args.iter().position(|a| a == "--writable-tmpfs").unwrap();
+    let contain_idx = args.iter().position(|a| a == "--contain").unwrap();
+
+    assert!(fakeroot_idx < image_idx, "--fakeroot should come before image");
+    assert!(writable_idx < image_idx, "--writable-tmpfs should come before image");
+    assert!(contain_idx < image_idx, "--contain should come before image");
+}
+
+// ---------------------------------------------------------------------------
 // Construction tests
 // ---------------------------------------------------------------------------
 
 #[test]
-fn test_facade_from_valid_dir() {
-    let facade = ApptainerFacade::new()
-        .expect("ApptainerFacade::new() should succeed — apptainer is bundled at compile time");
+fn test_from_valid_dir() {
+    let facade = Apptainer::new()
+        .expect("Apptainer::new() should succeed — apptainer is bundled at compile time");
 
     assert!(
         facade.install_dir().is_dir(),
@@ -25,8 +194,8 @@ fn test_facade_from_valid_dir() {
 }
 
 #[test]
-fn test_facade_from_nonexistent_dir() {
-    let result = ApptainerFacade::from_dir(PathBuf::from(
+fn test_from_nonexistent_dir() {
+    let result = Apptainer::from_dir(PathBuf::from(
         "/nonexistent/apptainer/dir/that/does/not/exist",
     ));
     assert!(result.is_err(), "Expected error for nonexistent directory");
@@ -40,13 +209,13 @@ fn test_facade_from_nonexistent_dir() {
 }
 
 #[test]
-fn test_facade_from_dir_fails_when_binary_missing() {
+fn test_from_dir_fails_when_binary_missing() {
     let tmp = TempDir::new().expect("Failed to create temp dir");
     let install_dir = tmp.path().join("apptainer");
     // Create the directory but NOT the bin/apptainer binary
     fs::create_dir_all(install_dir.join("bin")).unwrap();
 
-    let result = ApptainerFacade::from_dir(install_dir);
+    let result = Apptainer::from_dir(install_dir);
     assert!(result.is_err());
     let err = result.unwrap_err();
     let err_msg = err.to_string();
@@ -68,8 +237,8 @@ fn test_facade_from_dir_fails_when_binary_missing() {
 /// build.rs guarantees apptainer is bundled, so this test should always succeed.
 #[test]
 fn test_apptainer_version_integration() {
-    let facade = ApptainerFacade::new()
-        .expect("ApptainerFacade::new() should succeed — apptainer is bundled at compile time");
+    let facade = Apptainer::new()
+        .expect("Apptainer::new() should succeed — apptainer is bundled at compile time");
 
     // On macOS, binary_path should point to the guest-side installation.
     if cfg!(target_os = "macos") {
@@ -98,8 +267,8 @@ fn test_apptainer_version_integration() {
 
 #[test]
 fn test_translate_path_under_home() {
-    let facade = ApptainerFacade::new()
-        .expect("ApptainerFacade::new() should succeed — apptainer is bundled at compile time");
+    let facade = Apptainer::new()
+        .expect("Apptainer::new() should succeed — apptainer is bundled at compile time");
 
     let home = std::env::var("HOME").unwrap();
     let path = PathBuf::from(&home).join("projects/my_node/apptainer.def");
@@ -112,8 +281,8 @@ fn test_translate_path_under_home() {
 
 #[test]
 fn test_translate_path_outside_home() {
-    let facade = ApptainerFacade::new()
-        .expect("ApptainerFacade::new() should succeed — apptainer is bundled at compile time");
+    let facade = Apptainer::new()
+        .expect("Apptainer::new() should succeed — apptainer is bundled at compile time");
 
     let path = Path::new("/opt/external/file.def");
     let result = facade.translate_path(path);
@@ -169,8 +338,8 @@ fn test_is_uri() {
 
 #[test]
 fn test_translate_path_resolves_relative() {
-    let facade = ApptainerFacade::new()
-        .expect("ApptainerFacade::new() should succeed — apptainer is bundled at compile time");
+    let facade = Apptainer::new()
+        .expect("Apptainer::new() should succeed — apptainer is bundled at compile time");
 
     let relative = Path::new("project/my_image.sif");
     let result = facade.translate_path(relative).unwrap();
@@ -192,7 +361,7 @@ fn test_translate_path_resolves_relative() {
 // Lima instance status integration test
 // ---------------------------------------------------------------------------
 
-/// Integration test: after `ApptainerFacade::new()`, the Lima instance should
+/// Integration test: after `Apptainer::new()`, the Lima instance should
 /// be running.
 ///
 /// On macOS, this verifies that the peppy instance was created with the correct
@@ -200,8 +369,8 @@ fn test_translate_path_resolves_relative() {
 /// the backend is Native.
 #[test]
 fn test_lima_instance_running_after_init() {
-    let facade = ApptainerFacade::new()
-        .expect("ApptainerFacade::new() should succeed — apptainer is bundled at compile time");
+    let facade = Apptainer::new()
+        .expect("Apptainer::new() should succeed — apptainer is bundled at compile time");
 
     match &facade.backend {
         Backend::Lima {
