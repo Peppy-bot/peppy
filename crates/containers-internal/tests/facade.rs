@@ -101,3 +101,40 @@ fn build_and_exec_in_container() {
         status
     );
 }
+
+/// Integration test: bind-mount a host file into the container and read it back.
+///
+/// Creates a file with known content under `$HOME`, bind-mounts it into the
+/// container, and uses `apptainer exec cat` to verify the content is visible
+/// inside. This exercises the `--bind` flag pipeline end-to-end, including
+/// Lima path translation on macOS.
+#[test]
+fn bind_mount_file_visible_in_container() {
+    let (facade, tmp_dir, sif_path) = build_alpine_container();
+
+    // Create a file with known content to bind-mount
+    let marker_path = tmp_dir.path().join("fake-device");
+    let marker_content = "peppy-bind-test-ok";
+    fs::write(&marker_path, marker_content).expect("should be able to write marker file");
+
+    let marker_str = marker_path.to_string_lossy();
+    let output = facade
+        .exec(&sif_path.to_string_lossy(), &["cat", &marker_str])
+        .bind(&marker_str, None)
+        .output()
+        .expect("exec with --bind should succeed");
+
+    assert!(
+        output.status.success(),
+        "apptainer exec with --bind should succeed (exit status: {})\nstderr: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(
+        stdout.trim(),
+        marker_content,
+        "bound file content should be readable inside the container"
+    );
+}
