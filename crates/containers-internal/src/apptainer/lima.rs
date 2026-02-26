@@ -104,7 +104,13 @@ pub(crate) fn ensure_lima_instance(limactl: &Path, lima_home: &Path, template: &
             let name_flag = format!("--name={}", LIMA_INSTANCE);
             let create = Command::new(limactl)
                 .env("LIMA_HOME", lima_home)
-                .args(["start", &name_flag, "--tty=false", template])
+                .args([
+                    "start",
+                    &name_flag,
+                    "--tty=false",
+                    "--mount-writable",
+                    template,
+                ])
                 .output()?;
 
             if create.status.success() {
@@ -118,6 +124,61 @@ pub(crate) fn ensure_lima_instance(limactl: &Path, lima_home: &Path, template: &
             }
         }
     }
+}
+
+/// Disable AppArmor's user namespace restriction inside the Lima guest.
+///
+/// Ubuntu 24.04+ enables `kernel.apparmor_restrict_unprivileged_userns=1` by
+/// default, which blocks Apptainer's unprivileged user namespace operations.
+/// This applies the same workaround used by Lima's own `apptainer.yaml` template.
+///
+/// Note: `sudo` runs inside the Lima VM guest, which has passwordless sudo by default.
+pub(crate) fn ensure_guest_userns(limactl: &Path, lima_home: &Path, instance: &str) -> Result<()> {
+    let check = Command::new(limactl)
+        .env("LIMA_HOME", lima_home)
+        .args([
+            "shell",
+            instance,
+            "--",
+            "cat",
+            "/proc/sys/kernel/apparmor_restrict_unprivileged_userns",
+        ])
+        .output();
+
+    let needs_fix = match &check {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim() == "1",
+        // File doesn't exist (non-AppArmor system) or other error — skip
+        _ => false,
+    };
+
+    if !needs_fix {
+        return Ok(());
+    }
+
+    tracing::info!("Disabling AppArmor user namespace restriction in Lima guest...");
+
+    let apply = Command::new(limactl)
+        .env("LIMA_HOME", lima_home)
+        .args([
+            "shell",
+            instance,
+            "--",
+            "sudo",
+            "sh",
+            "-c",
+            "echo 'kernel.apparmor_restrict_unprivileged_userns=0' > /etc/sysctl.d/99-userns.conf && sysctl --system",
+        ])
+        .output()
+        .map_err(|e| Error::LimaInstanceError(format!("failed to apply userns sysctl: {e}")))?;
+
+    if !apply.status.success() {
+        let stderr = String::from_utf8_lossy(&apply.stderr);
+        return Err(Error::LimaInstanceError(format!(
+            "failed to disable AppArmor userns restriction in guest: {stderr}"
+        )));
+    }
+
+    Ok(())
 }
 
 /// Ensure the apptainer installation is available inside the Lima VM guest.

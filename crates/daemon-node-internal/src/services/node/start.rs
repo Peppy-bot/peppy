@@ -631,6 +631,11 @@ async fn process_node_start(
     {
         let _ = ctx.feedback_publisher.publish(payload).await;
     }
+    super::inject_node_runtime_env(
+        &mut env_vars,
+        entity.config().manifest.name.as_str(),
+        entity.config().manifest.tag.as_str(),
+    );
 
     // Validate that all required parameters are provided before starting the node
     let missing_params = validate_parameters(

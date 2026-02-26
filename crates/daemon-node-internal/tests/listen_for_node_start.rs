@@ -1263,6 +1263,271 @@ async fn listen_for_node_start_uses_env_overrides_for_path() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_start_injects_runtime_env_vars() {
+    const TARGET_NODE_NAME: &str = "runtime_env_start_node";
+    const TARGET_NODE_TAG: &str = "0.1.0";
+    const TARGET_INSTANCE_ID: &str = "runtime_env_start_instance";
+
+    let started = start_daemon_node_with_mock_messenger().await;
+
+    let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
+    let peppy_json5 = format!(
+        r#"{{
+            schema_version: 1,
+            manifest: {{
+                name: "{TARGET_NODE_NAME}",
+                tag: "{TARGET_NODE_TAG}",
+                language: "rust",
+            }},
+            build: {{
+                start_cmd: [
+                    "sh",
+                    "-c",
+                    "test -n \"$PEPPY_APPTAINER_BIN\" && test \"$PEPPY_NODE_NAME\" = \"{TARGET_NODE_NAME}\" && test \"$PEPPY_NODE_TAG\" = \"{TARGET_NODE_TAG}\" && sleep 10"
+                ]
+            }},
+            parameters: {{}}
+        }}"#
+    );
+    write_peppy_json5(source_dir.path(), &peppy_json5);
+
+    let add_response = send_node_add_and_wait(
+        &started.caller_handle,
+        &started.daemon_node_name,
+        source_dir.path(),
+        Duration::from_secs(30),
+        Duration::from_secs(120),
+        None,
+    )
+    .await
+    .expect("node_add should succeed");
+    assert!(
+        add_response.success,
+        "node_add should succeed, got error: {:?}",
+        add_response.error_message
+    );
+
+    let instance_messenger = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
+    let _ready_task = AbortOnDrop(
+        listen_for_node_ready(
+            &instance_messenger,
+            &started.daemon_node_name,
+            TARGET_INSTANCE_ID,
+            TARGET_NODE_NAME,
+        )
+        .await
+        .expect("failed to start ready service"),
+    );
+    let _health_task = AbortOnDrop(
+        listen_for_node_health(
+            &instance_messenger,
+            &started.daemon_node_name,
+            TARGET_INSTANCE_ID,
+            TARGET_NODE_NAME,
+        )
+        .await
+        .expect("failed to start health service"),
+    );
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let runtime_config = RuntimeConfig::new(
+        "127.0.0.1",
+        config::consts::DEFAULT_MESSAGING_PORT,
+        NodeInstance {
+            instance_id: Name::new(TARGET_INSTANCE_ID).unwrap(),
+            arguments: Default::default(),
+        },
+        TARGET_NODE_NAME,
+        &started.daemon_node_name,
+    )
+    .expect("runtime config should be valid");
+    let runtime_config_json5 =
+        serde_json5::to_string(&runtime_config).expect("runtime config should serialize");
+
+    let start_response = send_node_start_and_wait(
+        &started.caller_handle,
+        &started.daemon_node_name,
+        &runtime_config_json5,
+        TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
+        &NodeStartTestTimeouts {
+            goal: Duration::from_secs(10),
+            result: Duration::from_secs(10),
+        },
+        None,
+    )
+    .await
+    .expect("node_start request should complete");
+
+    assert!(
+        start_response.result.success,
+        "node_start should succeed when runtime env vars are injected, got error: {:?}",
+        start_response.result.error_message
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_container_start_success() {
+    const TARGET_NODE_NAME: &str = "container_start_node";
+    const TARGET_NODE_TAG: &str = "0.1.0";
+    const TARGET_INSTANCE_ID: &str = "container_start_instance";
+
+    let started = start_daemon_node_with_mock_messenger().await;
+
+    // Create source directory with container config and apptainer definition
+    let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
+    let peppy_json5 = r#"{
+        schema_version: 1,
+        manifest: {
+            name: "TARGET_NODE_NAME",
+            tag: "TARGET_NODE_TAG",
+            language: "rust",
+        },
+        build: {
+            container: {
+                def_file: "apptainer.def",
+            },
+            add_cmd: [
+                "${PEPPY_APPTAINER_BIN}",
+                "build",
+                "--fakeroot",
+                "${PEPPY_NODE_NAME}_${PEPPY_NODE_TAG}.sif",
+                "apptainer.def"
+            ],
+            start_cmd: [
+                "${PEPPY_APPTAINER_BIN}",
+                "run",
+                "${PEPPY_NODE_NAME}_${PEPPY_NODE_TAG}.sif",
+            ]
+        }
+    }"#
+    .replace("TARGET_NODE_NAME", TARGET_NODE_NAME)
+    .replace("TARGET_NODE_TAG", TARGET_NODE_TAG);
+    write_peppy_json5(source_dir.path(), &peppy_json5);
+
+    let apptainer_def = format!(
+        r#"
+Bootstrap: docker
+From: ubuntu:24.04
+
+%labels
+    Name {TARGET_NODE_NAME}
+    Version {TARGET_NODE_TAG}
+
+%post
+    apt-get update && apt-get install -y --no-install-recommends ca-certificates
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
+%runscript
+    echo "Running {TARGET_NODE_NAME}:{TARGET_NODE_TAG}"
+"#
+    );
+    std::fs::write(source_dir.path().join("apptainer.def"), &apptainer_def)
+        .expect("failed to write apptainer definition");
+
+    // Add the node first (container add flow)
+    let add_response = send_node_add_and_wait(
+        &started.caller_handle,
+        &started.daemon_node_name,
+        source_dir.path(),
+        Duration::from_secs(30),
+        Duration::from_secs(120),
+        None,
+    )
+    .await
+    .expect("node_add should succeed");
+
+    assert!(
+        add_response.success,
+        "node_add should succeed, got error: {:?}",
+        add_response.error_message
+    );
+
+    // Set up ready/health services for the container instance
+    let node_messenger = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
+    let _ready_task = AbortOnDrop(
+        listen_for_node_ready(
+            &node_messenger,
+            &started.daemon_node_name,
+            TARGET_INSTANCE_ID,
+            TARGET_NODE_NAME,
+        )
+        .await
+        .expect("node ready service should start"),
+    );
+    let _health_task = AbortOnDrop(
+        listen_for_node_health(
+            &node_messenger,
+            &started.daemon_node_name,
+            TARGET_INSTANCE_ID,
+            TARGET_NODE_NAME,
+        )
+        .await
+        .expect("node health service should start"),
+    );
+
+    // Allow ready/health services to establish listeners.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Create a runtime config for the node_start request
+    let runtime_config = RuntimeConfig::new(
+        "127.0.0.1",
+        config::consts::DEFAULT_MESSAGING_PORT,
+        NodeInstance {
+            instance_id: Name::new(TARGET_INSTANCE_ID).unwrap(),
+            arguments: Default::default(),
+        },
+        TARGET_NODE_NAME,
+        &started.daemon_node_name,
+    )
+    .expect("runtime config should be valid");
+
+    let runtime_config_json5 =
+        serde_json5::to_string(&runtime_config).expect("runtime config should serialize");
+
+    let start_response = send_node_start_and_wait(
+        &started.caller_handle,
+        &started.daemon_node_name,
+        &runtime_config_json5,
+        TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
+        &NodeStartTestTimeouts {
+            goal: Duration::from_secs(30),
+            result: Duration::from_secs(60),
+        },
+        None,
+    )
+    .await
+    .expect("node_start action should complete");
+
+    // The start should succeed
+    assert!(
+        start_response.result.success,
+        "node_start should succeed, got error: {:?}",
+        start_response.result.error_message
+    );
+
+    // Verify that the PID is returned on success
+    assert!(
+        start_response.result.pid.is_some(),
+        "node_start should return a PID on success"
+    );
+    assert!(
+        start_response.result.pid.unwrap() > 0,
+        "node_start PID should be a positive number"
+    );
+
+    // Verify that the instance was added to the node stack
+    let instance_id = NodeName::new(TARGET_INSTANCE_ID).expect("valid instance id");
+    let found_instance = started.node_stack.find_by_instance_id(&instance_id);
+    assert!(
+        found_instance.is_some(),
+        "instance should be registered in the node stack after successful start"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "Implement later"]
 async fn listen_for_node_start_remove_node_on_unhealthy_node() {
     todo!(

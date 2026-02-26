@@ -258,6 +258,25 @@ EOF
         fi
     fi
 
+    # Ubuntu 24.04+ restricts user namespaces via AppArmor even when
+    # unprivileged_userns_clone is enabled.
+    if [ "$PLATFORM" != "apple-darwin" ] && [ -f /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+        if [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns)" = "1" ]; then
+            echo "" >&2
+            echo "error: peppy requires unrestricted user namespaces, but AppArmor is blocking them on this system." >&2
+            echo "       Apptainer needs user namespaces to run containers without root privileges." >&2
+            echo "" >&2
+            echo "       To disable this restriction, run:" >&2
+            echo "         sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0" >&2
+            echo "" >&2
+            echo "       To make this permanent across reboots:" >&2
+            echo "         echo 'kernel.apparmor_restrict_unprivileged_userns=0' | sudo tee /etc/sysctl.d/99-userns.conf" >&2
+            echo "         sudo sysctl --system" >&2
+            echo "" >&2
+            exit 1
+        fi
+    fi
+
     if ! command -v tar >/dev/null 2>&1; then
         echo "error: 'tar' is required to install peppy" >&2
         exit 1

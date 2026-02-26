@@ -31,8 +31,10 @@ fn walkdir(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
 }
 
 fn get_temp_cache_dir(cache_suffix: &str) -> std::path::PathBuf {
-    let temp_dir = std::env::temp_dir();
-    let cache_dir = temp_dir.join("peppy-build-cache").join(cache_suffix);
+    let user_home = std::env::var("HOME").expect("HOME environment variable not set");
+    let cache_dir = std::path::PathBuf::from(user_home)
+        .join(".peppy/tmp")
+        .join(cache_suffix);
 
     if !cache_dir.exists() {
         std::fs::create_dir_all(&cache_dir).expect("Failed to create cache directory");
