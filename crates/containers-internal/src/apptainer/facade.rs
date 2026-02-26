@@ -2,6 +2,14 @@ use super::super::error::{Error, Result};
 use super::lima;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
+use std::sync::Mutex;
+
+/// Serializes Lima VM initialization to prevent concurrent boot/sync races.
+///
+/// Multiple `Apptainer::new()` calls (e.g. from parallel test threads) would
+/// otherwise race on `limactl start` and the guest apptainer tar sync,
+/// corrupting the guest installation.
+static LIMA_INIT: Mutex<()> = Mutex::new(());
 
 /// Returns `true` if the string looks like a URI reference (e.g. `docker://...`, `library://...`)
 /// rather than a filesystem path.
@@ -115,6 +123,8 @@ impl Apptainer {
                 apptainer_bin,
                 ..
             } => {
+                let _guard = LIMA_INIT.lock().unwrap_or_else(|e| e.into_inner());
+
                 lima::ensure_lima_instance(limactl_path, lima_home, lima::LIMA_TEMPLATE)?;
                 lima::ensure_guest_userns(limactl_path, lima_home, lima::LIMA_INSTANCE)?;
 
