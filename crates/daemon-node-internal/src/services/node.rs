@@ -90,8 +90,7 @@ fn inject_rust_build_env(env_vars: &mut Vec<(String, String)>, language: Peppyge
     if language != PeppygenLanguage::Rust {
         return false;
     }
-    let sccache_injected =
-        !env_vars.iter().any(|(k, _)| k == "RUSTC_WRAPPER") && is_sccache_available();
+    let sccache_injected = !has_env_key(env_vars, "RUSTC_WRAPPER") && is_sccache_available();
     if sccache_injected {
         env_vars.push(("RUSTC_WRAPPER".to_string(), "sccache".to_string()));
     }
