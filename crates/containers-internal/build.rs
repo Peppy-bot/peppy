@@ -498,7 +498,13 @@ fi
                 let name_flag = format!("--name={}", lima.instance);
                 let create = lima
                     .lima_command()
-                    .args(["start", &name_flag, "--tty=false", template])
+                    .args([
+                        "start",
+                        &name_flag,
+                        "--tty=false",
+                        "--mount-writable",
+                        template,
+                    ])
                     .output();
                 match create {
                     Ok(o) if o.status.success() => true,

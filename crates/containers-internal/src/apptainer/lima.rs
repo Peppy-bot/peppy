@@ -104,7 +104,13 @@ pub(crate) fn ensure_lima_instance(limactl: &Path, lima_home: &Path, template: &
             let name_flag = format!("--name={}", LIMA_INSTANCE);
             let create = Command::new(limactl)
                 .env("LIMA_HOME", lima_home)
-                .args(["start", &name_flag, "--tty=false", template])
+                .args([
+                    "start",
+                    &name_flag,
+                    "--tty=false",
+                    "--mount-writable",
+                    template,
+                ])
                 .output()?;
 
             if create.status.success() {
