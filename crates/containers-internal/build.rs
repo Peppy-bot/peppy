@@ -540,6 +540,42 @@ fi
             return false;
         }
 
+        // Disable AppArmor user namespace restriction in the guest (Ubuntu 24.04+ default).
+        // Required for Apptainer's install-unprivileged.sh to work inside the VM.
+        // Note: sudo runs inside the Lima VM guest, which has passwordless sudo by default.
+        let userns_fix = lima
+            .lima_command()
+            .args([
+                "shell",
+                lima.instance,
+                "--",
+                "sudo",
+                "sh",
+                "-c",
+                "if [ -f /proc/sys/kernel/apparmor_restrict_unprivileged_userns ] && \
+                 [ \"$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns)\" = '1' ]; then \
+                   echo 'kernel.apparmor_restrict_unprivileged_userns=0' > /etc/sysctl.d/99-userns.conf && \
+                   sysctl --system; \
+                 fi",
+            ])
+            .output();
+        match &userns_fix {
+            Ok(o) if o.status.success() => {}
+            Ok(o) => {
+                let stderr = String::from_utf8_lossy(&o.stderr);
+                println!(
+                    "cargo:warning=Failed to disable AppArmor userns restriction in Lima guest (exit: {}): {}",
+                    o.status, stderr
+                );
+            }
+            Err(e) => {
+                println!(
+                    "cargo:warning=Failed to run AppArmor userns fix in Lima guest: {}",
+                    e
+                );
+            }
+        }
+
         let guest_script = "/tmp/peppy-apptainer-install.sh";
         let guest_install_dir = "/tmp/peppy-apptainer-install";
 
