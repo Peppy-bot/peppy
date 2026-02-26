@@ -1,18 +1,18 @@
-use containers::ApptainerFacade;
+use containers::Apptainer;
 use std::fs;
 use std::path::PathBuf;
 use tempfile::TempDir;
 
-/// Build a minimal Alpine container image and return the facade, temp dir, and .sif path.
+/// Build a minimal Alpine container image and return the Apptainer handle, temp dir, and .sif path.
 ///
 /// Shared setup for integration tests that need a built container. The temp dir is
 /// placed under `$HOME` (required for Lima path translation on macOS).
 ///
 /// First run downloads the Alpine base image (~30-60s); subsequent runs use the
 /// Apptainer cache and complete in ~5s.
-fn build_alpine_container() -> (ApptainerFacade, TempDir, PathBuf) {
-    let facade = ApptainerFacade::new()
-        .expect("ApptainerFacade::new() should succeed — apptainer is bundled at compile time");
+fn build_alpine_container() -> (Apptainer, TempDir, PathBuf) {
+    let facade = Apptainer::new()
+        .expect("Apptainer::new() should succeed — apptainer is bundled at compile time");
 
     let home = std::env::var("HOME").expect("HOME environment variable must be set");
     let test_tmp_root = PathBuf::from(&home).join(".peppy/test-tmp");
@@ -36,7 +36,8 @@ From: alpine:3.20
     let sif_path = tmp_dir.path().join("test.sif");
     let mut child = facade
         .build(&sif_path, &def_path)
-        .expect("facade.build() should spawn successfully");
+        .spawn()
+        .expect("facade.build().spawn() should succeed");
 
     let status = child
         .wait()
@@ -57,15 +58,16 @@ From: alpine:3.20
 
 /// Integration test: build a container and run it via `apptainer run`.
 ///
-/// Exercises `ApptainerFacade::build()` and `ApptainerFacade::run()` with the
+/// Exercises `Apptainer::build()` and `Apptainer::run()` with the
 /// real Apptainer runtime (routed through Lima on macOS).
 #[test]
 fn build_and_run_container() {
     let (facade, _tmp_dir, sif_path) = build_alpine_container();
 
     let mut child = facade
-        .run(&sif_path.to_string_lossy(), &[])
-        .expect("facade.run() should spawn successfully");
+        .run(&sif_path.to_string_lossy())
+        .spawn()
+        .expect("facade.run().spawn() should succeed");
 
     let status = child
         .wait()
@@ -79,7 +81,7 @@ fn build_and_run_container() {
 
 /// Integration test: build a container and execute a command inside it via `apptainer exec`.
 ///
-/// Exercises `ApptainerFacade::exec()` with the real Apptainer runtime
+/// Exercises `Apptainer::exec()` with the real Apptainer runtime
 /// (routed through Lima on macOS).
 #[test]
 fn build_and_exec_in_container() {
@@ -87,7 +89,8 @@ fn build_and_exec_in_container() {
 
     let mut child = facade
         .exec(&sif_path.to_string_lossy(), &["cat", "/etc/alpine-release"])
-        .expect("facade.exec() should spawn successfully");
+        .spawn()
+        .expect("facade.exec().spawn() should succeed");
 
     let status = child
         .wait()
