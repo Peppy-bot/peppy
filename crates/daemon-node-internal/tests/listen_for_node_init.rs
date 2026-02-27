@@ -3,6 +3,7 @@ mod common;
 use common::{CALLER_INSTANCE_ID, start_daemon_node_with_mock_messenger};
 use config::consts::{NODE_CONFIG_FILE, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH};
 use config::node::Toolchain;
+use config::test_helpers::assert_contains_all;
 use daemon_node::encoding::NodeInitRequest;
 use std::fs;
 use std::time::Duration;
@@ -137,14 +138,83 @@ async fn listen_for_node_init_rust_container_success() {
         "node_init should succeed, got error: {}",
         response.error_message
     );
+
     let node_dir = nodes_root.path().join(NODE_NAME);
-    let apptainr_def_path = node_dir.join("apptainer.def");
     assert!(
-        apptainr_def_path.exists(),
-        "node apptainer.def should exist at {}",
-        apptainr_def_path.display()
+        node_dir.exists(),
+        "node_dir should exist at {}",
+        node_dir.display()
     );
-    todo!("Finish")
+
+    let git_hash_file = node_dir.join(PEPPY_OUTPUT_DIR).join("git.hash");
+    assert!(
+        git_hash_file.exists(),
+        "git.hash file should exist at {}",
+        git_hash_file.display()
+    );
+
+    let node_config_path = node_dir.join(NODE_CONFIG_FILE);
+    assert!(
+        node_config_path.exists(),
+        "node config should exist at {}",
+        node_config_path.display()
+    );
+
+    let cargo_toml_path = node_dir.join("Cargo.toml");
+    assert!(
+        cargo_toml_path.exists(),
+        "node Cargo.toml should exist at {}",
+        cargo_toml_path.display()
+    );
+    let cargo_toml =
+        fs::read_to_string(&cargo_toml_path).expect("failed to read generated Cargo.toml");
+    assert!(
+        cargo_toml.contains("peppygen"),
+        "Cargo.toml should contain peppygen dependency, got:\n{}",
+        cargo_toml
+    );
+    assert!(
+        cargo_toml.contains(PEPPYGEN_OUTPUT_PATH),
+        "Cargo.toml should reference generated peppygen path, got:\n{}",
+        cargo_toml
+    );
+
+    let main_rs_path = node_dir.join("src/main.rs");
+    assert!(
+        main_rs_path.exists(),
+        "src/main.rs should exist at {}",
+        main_rs_path.display()
+    );
+
+    let peppygen_dir = node_dir.join(PEPPYGEN_OUTPUT_PATH);
+    assert!(
+        peppygen_dir.exists(),
+        "peppygen directory should exist at {}",
+        peppygen_dir.display()
+    );
+
+    assert!(
+        config::fingerprint::read_codegen_fingerprint(&node_config_path, PEPPYGEN_OUTPUT_PATH)
+            .is_ok(),
+        "fingerprint file should exist in peppygen directory"
+    );
+
+    let gitignore_path = node_dir.join(".gitignore");
+    assert!(
+        gitignore_path.exists(),
+        ".gitignore should exist at {}",
+        gitignore_path.display()
+    );
+
+    let apptainer_def_path = node_dir.join("apptainer.def");
+    assert!(
+        apptainer_def_path.exists(),
+        "apptainer.def should exist at {}",
+        apptainer_def_path.display()
+    );
+    let apptainer_def =
+        fs::read_to_string(&apptainer_def_path).expect("failed to read generated apptainer.def");
+    assert_contains_all(&apptainer_def, &["Bootstrap: docker", "From: ubuntu:24.04"]);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -275,14 +345,92 @@ async fn listen_for_node_init_python_container_success() {
         "node_init should succeed, got error: {}",
         response.error_message
     );
+
     let node_dir = nodes_root.path().join(NODE_NAME);
-    let apptainr_def_path = node_dir.join("apptainer.def");
     assert!(
-        apptainr_def_path.exists(),
-        "node apptainer.def should exist at {}",
-        apptainr_def_path.display()
+        node_dir.exists(),
+        "node_dir should exist at {}",
+        node_dir.display()
     );
-    todo!("Finish")
+
+    let git_hash_file = node_dir.join(PEPPY_OUTPUT_DIR).join("git.hash");
+    assert!(
+        git_hash_file.exists(),
+        "git.hash file should exist at {}",
+        git_hash_file.display()
+    );
+
+    let node_config_path = node_dir.join(NODE_CONFIG_FILE);
+    assert!(
+        node_config_path.exists(),
+        "node config should exist at {}",
+        node_config_path.display()
+    );
+
+    let pyproject_toml_path = node_dir.join("pyproject.toml");
+    assert!(
+        pyproject_toml_path.exists(),
+        "pyproject.toml should exist at {}",
+        pyproject_toml_path.display()
+    );
+    let pyproject_toml =
+        fs::read_to_string(&pyproject_toml_path).expect("failed to read generated pyproject.toml");
+    assert!(
+        pyproject_toml.contains("peppygen"),
+        "pyproject.toml should contain peppygen dependency, got:\n{}",
+        pyproject_toml
+    );
+    assert!(
+        pyproject_toml.contains(PEPPYGEN_OUTPUT_PATH),
+        "pyproject.toml should reference generated peppygen path, got:\n{}",
+        pyproject_toml
+    );
+
+    let init_py_path = node_dir.join(format!("src/{NODE_NAME}/__init__.py"));
+    assert!(
+        init_py_path.exists(),
+        "src/{}/__init__.py should exist at {}",
+        NODE_NAME,
+        init_py_path.display()
+    );
+
+    let main_py_path = node_dir.join(format!("src/{NODE_NAME}/__main__.py"));
+    assert!(
+        main_py_path.exists(),
+        "src/{}/__main__.py should exist at {}",
+        NODE_NAME,
+        main_py_path.display()
+    );
+
+    let peppygen_dir = node_dir.join(PEPPYGEN_OUTPUT_PATH);
+    assert!(
+        peppygen_dir.exists(),
+        "peppygen directory should exist at {}",
+        peppygen_dir.display()
+    );
+
+    assert!(
+        config::fingerprint::read_codegen_fingerprint(&node_config_path, PEPPYGEN_OUTPUT_PATH)
+            .is_ok(),
+        "fingerprint file should exist in peppygen directory"
+    );
+
+    let gitignore_path = node_dir.join(".gitignore");
+    assert!(
+        gitignore_path.exists(),
+        ".gitignore should exist at {}",
+        gitignore_path.display()
+    );
+
+    let apptainer_def_path = node_dir.join("apptainer.def");
+    assert!(
+        apptainer_def_path.exists(),
+        "apptainer.def should exist at {}",
+        apptainer_def_path.display()
+    );
+    let apptainer_def =
+        fs::read_to_string(&apptainer_def_path).expect("failed to read generated apptainer.def");
+    assert_contains_all(&apptainer_def, &["Bootstrap: docker", "From: ubuntu:24.04"]);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

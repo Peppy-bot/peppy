@@ -66,17 +66,7 @@ pub fn render_artifacts(artifacts: Vec<InterfaceArtifact>) -> Vec<String> {
         .collect()
 }
 
-/// Asserts that all given patterns are present in the rendered output.
-pub fn assert_contains_all(rendered: &str, patterns: &[&str]) {
-    for pattern in patterns {
-        assert_rendered!(
-            rendered.contains(pattern),
-            rendered,
-            "expected to find: {:?}",
-            pattern
-        );
-    }
-}
+pub use config::test_helpers::assert_contains_all;
 
 /// Asserts that at least one artifact contains the given pattern.
 pub fn assert_artifact_contains(artifacts: &[String], pattern: &str) {
