@@ -1,0 +1,70 @@
+// Arm controller that moves toward a target position and publishes
+// its current position. Participates in a feedback loop with the
+// vision node via the "visual_servo_loop" dataflow group.
+{
+  schema_version: 1,
+  manifest: {
+    name: "arm_controller",
+    tag: "0.1.0",
+    language: "rust",
+    labels: [
+      "control",
+      "actuator",
+    ],
+  },
+  build: {
+    add_cmd: [
+      "cargo",
+      "build",
+      "--release"
+    ],
+    start_cmd: [
+      "./target/release/arm_controller"
+    ]
+  },
+  parameters: {},
+  interfaces: {
+    exposes: {
+      topics: [
+        {
+          name: "arm_position",
+          qos_profile: "sensor_data",
+          message_format: {
+            header: {
+              $type: "object",
+              stamp: "time",
+              frame_id: "string",
+            },
+            x: "f64",
+            y: "f64",
+            z: "f64",
+            gripper_open: "bool",
+          },
+        },
+      ],
+      services: [],
+      actions: [],
+    },
+    subscribes_to: {
+      topics: [
+        {
+          id: "target_position",
+          node: "vision",
+          name: "object_position",
+          tag: "0.1.0",
+        },
+      ],
+      services: [],
+      actions: [],
+    },
+    dataflow: [
+      {
+        group: "visual_servo_loop",
+        role: "actuator",
+        publishes: ["arm_position"],
+        consumes: ["target_position"],
+        rate_hz: 1000,
+      },
+    ],
+  }
+}

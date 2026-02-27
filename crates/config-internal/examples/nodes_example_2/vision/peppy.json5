@@ -1,0 +1,68 @@
+// Vision node that detects objects and refines position estimates
+// using the wrist-mounted camera. Participates in a feedback loop
+// with the arm controller via the "visual_servo_loop" dataflow group.
+{
+  schema_version: 1,
+  manifest: {
+    name: "vision",
+    tag: "0.1.0",
+    language: "rust",
+    labels: [
+      "perception",
+    ],
+  },
+  build: {
+    add_cmd: [
+      "cargo",
+      "build",
+      "--release"
+    ],
+    start_cmd: [
+      "./target/release/vision"
+    ]
+  },
+  parameters: {},
+  interfaces: {
+    exposes: {
+      topics: [
+        {
+          name: "object_position",
+          qos_profile: "sensor_data",
+          message_format: {
+            header: {
+              $type: "object",
+              stamp: "time",
+              frame_id: "string",
+            },
+            x: "f64",
+            y: "f64",
+            confidence: "f64",
+          },
+        },
+      ],
+      services: [],
+      actions: [],
+    },
+    subscribes_to: {
+      topics: [
+        {
+          id: "arm_state",
+          node: "arm_controller",
+          name: "arm_position",
+          tag: "0.1.0",
+        },
+      ],
+      services: [],
+      actions: [],
+    },
+    dataflow: [
+      {
+        group: "visual_servo_loop",
+        role: "sensor",
+        publishes: ["object_position"],
+        consumes: ["arm_state"],
+        rate_hz: 30,
+      },
+    ],
+  }
+}

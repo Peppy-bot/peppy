@@ -45,6 +45,18 @@ pub enum ParsingError {
     #[error("Invalid toolchain {0}")]
     InvalidToolchain(String),
 
+    // -- dataflow
+    #[error("Dataflow group \"{group}\": publishes references unknown exposed topic \"{topic}\"")]
+    DataflowPublishesUnknownTopic { group: String, topic: String },
+    #[error("Dataflow group \"{group}\": consumes references unknown subscribed topic id \"{id}\"")]
+    DataflowConsumesUnknownTopic { group: String, id: String },
+    #[error(
+        "Dataflow group \"{group}\": at least one of `publishes` or `consumes` must be non-empty"
+    )]
+    DataflowEmptyGroup { group: String },
+    #[error("Dataflow group \"{group}\" is declared more than once on this node")]
+    DataflowDuplicateGroup { group: String },
+
     #[error("{0}")]
     Structured(String),
 }

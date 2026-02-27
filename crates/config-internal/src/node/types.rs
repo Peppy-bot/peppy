@@ -550,6 +550,31 @@ fn default_action_service_qos_profile() -> QoSProfile {
     QoSProfile::Reliable
 }
 
+/// Declares that this node participates in a dataflow feedback loop with other nodes.
+///
+/// Dataflow groups model bidirectional communication patterns (e.g. visual servoing,
+/// SLAM + navigation) where two or more nodes continuously feed each other's outputs.
+/// The `publishes` and `consumes` fields reference existing exposed topics and subscribed
+/// topic IDs respectively — no new communication primitive is introduced.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DataflowGroup {
+    /// Name of the dataflow group (shared across participating nodes).
+    pub group: Name,
+    /// Freeform role description for documentation (e.g. "sensor", "actuator", "planner").
+    #[serde(default)]
+    pub role: String,
+    /// Optional rate hint in Hz for this participant.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rate_hz: Option<f64>,
+    /// Names of exposed topics this node publishes into the dataflow group.
+    #[serde(default)]
+    pub publishes: Vec<String>,
+    /// IDs of subscribed topics this node consumes from the dataflow group.
+    #[serde(default)]
+    pub consumes: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Manifest {
@@ -584,6 +609,8 @@ pub struct Interfaces {
     pub exposes: Option<Exposes>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub subscribes_to: Option<SubscribesTo>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dataflow: Vec<DataflowGroup>,
 }
 
 #[cfg(test)]
@@ -825,5 +852,122 @@ mod tests {
 
         let parsed: Result<MessageFormat, _> = serde_json5::from_str(json5);
         assert!(parsed.is_err(), "array items cannot contain arrays");
+    }
+
+    // -- DataflowGroup deserialization tests --
+
+    #[test]
+    fn dataflow_group_parses_valid() {
+        let json5 = r#"{
+            group: "visual_servo_loop",
+            role: "sensor",
+            rate_hz: 30.0,
+            publishes: ["object_position"],
+            consumes: ["arm_state"],
+        }"#;
+
+        let group: DataflowGroup =
+            serde_json5::from_str(json5).expect("valid dataflow group should parse");
+        assert_eq!(group.group.as_str(), "visual_servo_loop");
+        assert_eq!(group.role, "sensor");
+        assert_eq!(group.rate_hz, Some(30.0));
+        assert_eq!(group.publishes, vec!["object_position"]);
+        assert_eq!(group.consumes, vec!["arm_state"]);
+    }
+
+    #[test]
+    fn dataflow_group_optional_fields_default() {
+        let json5 = r#"{ group: "my_loop" }"#;
+
+        let group: DataflowGroup =
+            serde_json5::from_str(json5).expect("minimal dataflow group should parse");
+        assert_eq!(group.group.as_str(), "my_loop");
+        assert_eq!(group.role, "");
+        assert_eq!(group.rate_hz, None);
+        assert!(group.publishes.is_empty());
+        assert!(group.consumes.is_empty());
+    }
+
+    #[test]
+    fn dataflow_group_rejects_unknown_fields() {
+        let json5 = r#"{ group: "loop", unknown_field: true }"#;
+
+        let parsed: Result<DataflowGroup, _> = serde_json5::from_str(json5);
+        assert!(
+            parsed.is_err(),
+            "deny_unknown_fields should reject unknown keys"
+        );
+    }
+
+    #[test]
+    fn dataflow_group_requires_group_field() {
+        let json5 = r#"{ role: "sensor" }"#;
+
+        let parsed: Result<DataflowGroup, _> = serde_json5::from_str(json5);
+        assert!(parsed.is_err(), "group field is required");
+    }
+
+    #[test]
+    fn dataflow_group_invalid_group_name() {
+        let json5 = r#"{ group: "invalid/name" }"#;
+
+        let parsed: Result<DataflowGroup, _> = serde_json5::from_str(json5);
+        assert!(
+            parsed.is_err(),
+            "group name with special chars should fail Name validation"
+        );
+    }
+
+    #[test]
+    fn dataflow_absent_from_interfaces_defaults_to_empty() {
+        let json5 = r#"{
+            exposes: { topics: [{ name: "test_topic" }] }
+        }"#;
+
+        let interfaces: Interfaces =
+            serde_json5::from_str(json5).expect("interfaces without dataflow should parse");
+        assert!(
+            interfaces.dataflow.is_empty(),
+            "dataflow should default to empty vec"
+        );
+    }
+
+    #[test]
+    fn dataflow_multiple_groups_parse() {
+        let json5 = r#"{
+            dataflow: [
+                { group: "loop_a", publishes: ["topic_a"] },
+                { group: "loop_b", consumes: ["topic_b"] },
+            ]
+        }"#;
+
+        let interfaces: Interfaces =
+            serde_json5::from_str(json5).expect("multiple dataflow groups should parse");
+        assert_eq!(interfaces.dataflow.len(), 2);
+        assert_eq!(interfaces.dataflow[0].group.as_str(), "loop_a");
+        assert_eq!(interfaces.dataflow[1].group.as_str(), "loop_b");
+    }
+
+    #[test]
+    fn dataflow_group_round_trip() {
+        let json5 = r#"{
+            group: "slam_loop",
+            role: "localizer",
+            rate_hz: 10.0,
+            publishes: ["map", "pose"],
+            consumes: ["cmd_vel"],
+        }"#;
+
+        let group: DataflowGroup =
+            serde_json5::from_str(json5).expect("should parse for round-trip");
+        let serialized = serde_json5::to_string(&group).expect("should serialize");
+        let reparsed: DataflowGroup =
+            serde_json5::from_str(&serialized).expect("should re-parse after round-trip");
+
+        assert_eq!(reparsed.group.as_str(), "slam_loop");
+        assert_eq!(reparsed.role, "localizer");
+        assert_eq!(reparsed.rate_hz, Some(10.0));
+        assert_eq!(reparsed.publishes, vec!["map", "pose"]);
+        assert_eq!(reparsed.consumes, vec!["cmd_vel"]);
     }
 }

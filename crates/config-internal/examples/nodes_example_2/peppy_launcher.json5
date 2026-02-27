@@ -1,0 +1,28 @@
+// PeppyOS Configuration — Visual Servoing Example
+// Deploys a vision node and arm controller that form a feedback loop.
+{
+  deployments: [
+    {
+      source: {
+        local: "./vision"
+      },
+      instances: [
+        {
+          instance_id: "wrist_camera",
+          arguments: {}
+        }
+      ]
+    },
+    {
+      source: {
+        local: "./arm_controller"
+      },
+      instances: [
+        {
+          instance_id: "right_arm",
+          arguments: {}
+        }
+      ]
+    },
+  ]
+}
