@@ -1507,6 +1507,31 @@ From: ubuntu:24.04
         found_instance.is_some(),
         "instance should be registered in the node stack after successful start"
     );
+
+    // Verify the goal response contains a valid log_path
+    assert!(
+        start_response.goal_response.accepted,
+        "goal should be accepted"
+    );
+    let expected_log_path = started
+        .peppy_dirs
+        .logs_dir_start()
+        .join(format!("{}.log", TARGET_INSTANCE_ID));
+    assert_eq!(
+        start_response.goal_response.log_path, expected_log_path,
+        "goal response log_path should match expected path"
+    );
+
+    // Verify the log file exists and contains expected content
+    let log_path = &start_response.goal_response.log_path;
+    assert!(log_path.exists(), "log file should exist at {:?}", log_path);
+
+    let log_content = std::fs::read_to_string(log_path).expect("should be able to read log file");
+    assert!(
+        log_content.contains("Executing apptainer run"),
+        "log file should contain the apptainer run command, got:\n{}",
+        log_content
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

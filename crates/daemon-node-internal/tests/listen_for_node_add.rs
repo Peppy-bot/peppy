@@ -364,6 +364,42 @@ From: ubuntu:24.04
         "stored image should be '<node_name>_<tag>.sif', got: {}",
         file_name
     );
+
+    // Verify the log file path is returned and points to the correct directory
+    assert!(
+        !add_result.log_path.as_os_str().is_empty(),
+        "log_path should not be empty"
+    );
+    assert!(
+        add_result.log_path.exists(),
+        "log file should exist at {:?}",
+        add_result.log_path
+    );
+
+    let log_dir = started_daemon.peppy_dirs.logs_dir_add();
+    assert!(
+        add_result.log_path.starts_with(&log_dir),
+        "log file should be in logs_dir_add(), expected to start with {:?}, got {:?}",
+        log_dir,
+        add_result.log_path
+    );
+
+    // Verify the log file name follows the expected pattern: <node_name>_<tag>_<timestamp>.log
+    let log_filename = add_result
+        .log_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .expect("should have log filename");
+    assert!(
+        log_filename.starts_with(&format!("{TARGET_NODE_NAME}_{TARGET_NODE_TAG}_")),
+        "log filename should start with '<node_name>_<tag>_', got: {}",
+        log_filename
+    );
+    assert!(
+        log_filename.ends_with(".log"),
+        "log filename should end with '.log', got: {}",
+        log_filename
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
