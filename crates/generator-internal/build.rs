@@ -220,18 +220,9 @@ mod peppylib_build {
             so_path,
         );
 
-        // Emit env vars that change when the .so is rebuilt. This forces
+        // Emit a content hash that changes when the .so is rebuilt. This forces
         // cargo to recompile the generator crate so rust_embed re-embeds the
         // fresh native extension.
-        let mtime = std::fs::metadata(&so_path)
-            .and_then(|m| m.modified())
-            .expect("failed to read .so metadata")
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-        println!("cargo:rustc-env=PEPPYLIB_SO_MTIME={mtime}");
-
-        // Content hash of the .so for a robust runtime cache key.
         use sha2::{Digest, Sha256};
         let so_bytes = std::fs::read(&so_path).expect("failed to read .so for hashing");
         let hash = Sha256::digest(&so_bytes);

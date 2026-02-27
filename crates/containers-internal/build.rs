@@ -923,7 +923,7 @@ bash {guest_vendor}/{install_script_name} {guest_install_dir} {arch}"#,
     pub fn run() {
         println!("cargo:rerun-if-changed=build.rs");
         println!(
-            "cargo:rerun-if-changed=vendor/{}-install-unprivileged.sh",
+            "cargo:rerun-if-changed=vendor/apptainer-{}-install-unprivileged.sh",
             APPTAINER_VERSION
         );
         println!("cargo:rerun-if-changed=vendor/x86_64/");

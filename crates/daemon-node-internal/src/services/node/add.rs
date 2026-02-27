@@ -462,15 +462,15 @@ fn build_container_image(
         .build(&output_path, &def_path)
         .fakeroot()
         .spawn()
-        .map_err(|e| {
-            std::io::Error::other(format!("Failed to spawn apptainer build: {}", e))
-        })?;
+        .map_err(|e| std::io::Error::other(format!("Failed to spawn apptainer build: {}", e)))?;
 
     let status = child.wait()?;
     if !status.success() {
-        return Err(
-            std::io::Error::other(format!("apptainer build failed with status {}", status)).into(),
-        );
+        return Err(std::io::Error::other(format!(
+            "apptainer build failed with status {}",
+            status
+        ))
+        .into());
     }
 
     Ok(())
