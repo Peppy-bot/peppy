@@ -116,6 +116,7 @@ fn handle_node_init_request_inner(
         Vec::new(),
         &request.git_hash,
         peppy_dirs,
+        generator::CrateDeployMode::default(),
     ) {
         return NodeInitResponse::failure(format!("Failed to generate peppygen: {}", e)).encode();
     }

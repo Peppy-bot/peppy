@@ -447,11 +447,6 @@ fn build_container_image(
     node_tag: &str,
     def_file: &str,
 ) -> Result<()> {
-    // Apptainer's `%files` copies symlinks as-is, so symlinks pointing to
-    // absolute host paths (e.g. the shared Rust crate cache) would be broken
-    // inside the container. Resolve them to real directories before building.
-    resolve_symlinks_in_dir(working_dir)?;
-
     let apptainer = containers::Apptainer::new().map_err(|e| {
         std::io::Error::new(
             std::io::ErrorKind::NotFound,
@@ -486,47 +481,6 @@ fn build_container_image(
         .into());
     }
 
-    Ok(())
-}
-
-/// Recursively walks a directory and replaces any symlinks that point to
-/// directories with a copy of the target directory's contents.
-///
-/// This is needed for container builds because Apptainer's `%files` section
-/// copies symlinks as-is — if they reference absolute host paths (e.g. the
-/// shared Rust crate cache at `~/.peppy/libs/`), the links will be broken
-/// inside the container.
-fn resolve_symlinks_in_dir(dir: &Path) -> Result<()> {
-    for entry in std::fs::read_dir(dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        let file_type = entry.file_type()?;
-
-        if file_type.is_symlink() {
-            let target = std::fs::canonicalize(&path)?;
-            if target.is_dir() {
-                std::fs::remove_file(&path)?;
-                copy_dir_contents(&target, &path)?;
-            }
-        } else if file_type.is_dir() {
-            resolve_symlinks_in_dir(&path)?;
-        }
-    }
-    Ok(())
-}
-
-/// Recursively copies a directory and all of its contents.
-fn copy_dir_contents(src: &Path, dst: &Path) -> Result<()> {
-    std::fs::create_dir_all(dst)?;
-    for entry in std::fs::read_dir(src)? {
-        let entry = entry?;
-        let entry_dst = dst.join(entry.file_name());
-        if entry.file_type()?.is_dir() {
-            copy_dir_contents(&entry.path(), &entry_dst)?;
-        } else {
-            std::fs::copy(entry.path(), &entry_dst)?;
-        }
-    }
     Ok(())
 }
 
@@ -1430,8 +1384,15 @@ async fn process_node_add(
         );
     }
 
-    // Generate the peppygen library in the working directory
+    // Generate the peppygen library in the working directory.
+    // Container builds need Copy mode because Apptainer's `%files` copies symlinks
+    // as-is — absolute symlinks to the host cache would be broken inside the container.
     let language = node_config.manifest.language;
+    let deploy_mode = if node_config.container.is_some() {
+        generator::CrateDeployMode::Copy
+    } else {
+        generator::CrateDeployMode::Symlink
+    };
     let subscribed_interfaces = collect_subscribed_interfaces(&node_config, &ctx.node_stack);
     if let Err(e) = generate_peppygen_for_node(
         language,
@@ -1439,6 +1400,7 @@ async fn process_node_add(
         subscribed_interfaces,
         &goal.git_hash,
         &ctx.peppy_dirs,
+        deploy_mode,
     ) {
         return NodeAddResult::failure(
             &ctx.log_path,

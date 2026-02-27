@@ -21,6 +21,7 @@ use syn::{
 pub fn add_peppylib_dependencies(
     to_path: impl AsRef<Path>,
     peppy_dirs: &config::consts::PeppyDirs,
+    deploy_mode: crate::generator::common::CrateDeployMode,
 ) -> Result<()> {
     let to_path = to_path.as_ref();
     let libs_dir = to_path.parent().ok_or_else(|| {
@@ -30,7 +31,11 @@ pub fn add_peppylib_dependencies(
         ))
     })?;
 
-    crate::generator::common::deploy_rust_crates_to_shared_cache(libs_dir, peppy_dirs)?;
+    crate::generator::common::deploy_rust_crates_to_shared_cache(
+        libs_dir,
+        peppy_dirs,
+        deploy_mode,
+    )?;
     generate_lib_structure(to_path, "../peppylib")?;
 
     Ok(())

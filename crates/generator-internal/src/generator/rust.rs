@@ -1560,8 +1560,9 @@ impl LanguageGenerator for RustGenerator {
         self,
         to_path: impl AsRef<Path>,
         peppy_dirs: &config::consts::PeppyDirs,
+        deploy_mode: crate::generator::common::CrateDeployMode,
     ) -> Result<()> {
-        build::add_peppylib_dependencies(&to_path, peppy_dirs)?;
+        build::add_peppylib_dependencies(&to_path, peppy_dirs, deploy_mode)?;
         build::add_capnp_schemas(&self.schemas, to_path.as_ref())?;
         build::add_artifacts_to_lib(&to_path, self.sections)?;
         build::add_parameters_to_lib(&to_path, &self.parameters)?;

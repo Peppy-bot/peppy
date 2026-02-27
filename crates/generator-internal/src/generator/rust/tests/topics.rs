@@ -484,7 +484,11 @@ fn clippy_single_exposed_topic_empty_format() {
         .unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);
     generator
-        .build(&output_dir, &config::consts::PeppyDirs::default())
+        .build(
+            &output_dir,
+            &config::consts::PeppyDirs::default(),
+            Default::default(),
+        )
         .unwrap();
     fs::remove_file(output_config).unwrap();
 
@@ -546,7 +550,11 @@ fn compile_lib_with_exposed_and_subscribed_topics() {
         .unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);
     generator
-        .build(&output_dir, &config::consts::PeppyDirs::default())
+        .build(
+            &output_dir,
+            &config::consts::PeppyDirs::default(),
+            Default::default(),
+        )
         .unwrap();
     fs::remove_file(output_config).unwrap();
 

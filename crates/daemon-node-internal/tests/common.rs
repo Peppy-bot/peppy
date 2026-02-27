@@ -503,6 +503,7 @@ pub fn init_test_node_project(node_name: &str, node_tag: &str, build_project: bo
         Vec::new(),
         "test-hash",
         &peppy_dirs,
+        Default::default(),
     )
     .expect("failed to generate peppygen for test node");
 

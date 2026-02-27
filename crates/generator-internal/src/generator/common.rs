@@ -154,19 +154,59 @@ pub(crate) fn symlink_dir(original: &Path, link: &Path) -> io::Result<()> {
     return std::os::windows::fs::symlink_dir(original, link);
 }
 
+/// Recursively copies a directory and all of its contents.
+pub(crate) fn copy_dir_recursive(src: &Path, dst: &Path) -> io::Result<()> {
+    fs::create_dir_all(dst)?;
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let dest_path = dst.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir_recursive(&entry.path(), &dest_path)?;
+        } else {
+            fs::copy(entry.path(), &dest_path)?;
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Crate deployment mode
+// ---------------------------------------------------------------------------
+
+/// Controls how vendored crates are linked into a node's `.peppy/libs/` directory.
+///
+/// `Symlink` (the default) creates symlinks to a shared cache — fast and avoids
+/// duplicating files across nodes on the host filesystem.
+///
+/// `Copy` physically copies the crate sources into the node directory.
+/// This is required for container builds where Apptainer's `%files` section
+/// copies symlinks as-is, breaking absolute symlinks that point to host paths.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CrateDeployMode {
+    #[default]
+    Symlink,
+    Copy,
+}
+
 // ---------------------------------------------------------------------------
 // Shared Rust crate cache deployment
 // ---------------------------------------------------------------------------
 
 /// Deploys the three vendored Rust crates (peppylib, pmi-internal, config-internal)
-/// to a shared cache directory, then creates a symlink from `node_libs_dir/peppylib`
+/// to a shared cache directory, then links or copies them into `node_libs_dir`.
+///
+/// In `Symlink` mode (the default), creates symlinks from `node_libs_dir/{crate}`
 /// to the shared cache. This avoids duplicating source files across nodes.
+///
+/// In `Copy` mode, copies the crate sources directly into `node_libs_dir`.
+/// This is needed for container builds where symlinks to host paths would break.
 ///
 /// The cache is keyed by content hash + version, and uses file locking with a
 /// staging directory for concurrent-safe deployment.
 pub(crate) fn deploy_rust_crates_to_shared_cache(
     node_libs_dir: &Path,
     peppy_dirs: &config::consts::PeppyDirs,
+    deploy_mode: CrateDeployMode,
 ) -> Result<()> {
     let cache_key = format!("{}-{}", env!("RUST_CRATES_HASH"), env!("CARGO_PKG_VERSION"));
     let cache_dir = peppy_dirs.rust_libs_cache_dir(&cache_key);
@@ -204,24 +244,35 @@ pub(crate) fn deploy_rust_crates_to_shared_cache(
     }
     drop(lock_file);
 
-    // Create/replace symlinks for all three crates in node_libs_dir.
+    // Link or copy all three crates into node_libs_dir.
     // All three are needed because the crates reference each other via relative
     // sibling paths (e.g., peppylib has `config = { path = "../config-internal" }`),
     // and Cargo resolves these paths relative to the symlink location, not the target.
     for crate_name in &["peppylib", "pmi-internal", "config-internal"] {
-        let link = node_libs_dir.join(crate_name);
-        let target = cache_dir.join(crate_name);
-        match link.symlink_metadata() {
-            Ok(meta) if meta.file_type().is_symlink() => {
-                if fs::read_link(&link).ok().as_deref() == Some(target.as_path()) {
-                    continue;
+        let dest = node_libs_dir.join(crate_name);
+        let source = cache_dir.join(crate_name);
+
+        match deploy_mode {
+            CrateDeployMode::Symlink => {
+                match dest.symlink_metadata() {
+                    Ok(meta) if meta.file_type().is_symlink() => {
+                        if fs::read_link(&dest).ok().as_deref() == Some(source.as_path()) {
+                            continue;
+                        }
+                        fs::remove_file(&dest)?;
+                    }
+                    Ok(_) => fs::remove_dir_all(&dest)?,
+                    Err(_) => {}
                 }
-                fs::remove_file(&link)?;
+                symlink_dir(&source, &dest)?;
             }
-            Ok(_) => fs::remove_dir_all(&link)?,
-            Err(_) => {}
+            CrateDeployMode::Copy => {
+                if dest.exists() {
+                    fs::remove_dir_all(&dest)?;
+                }
+                copy_dir_recursive(&source, &dest)?;
+            }
         }
-        symlink_dir(&target, &link)?;
     }
 
     Ok(())

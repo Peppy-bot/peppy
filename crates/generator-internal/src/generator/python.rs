@@ -317,11 +317,12 @@ impl LanguageGenerator for PythonGenerator {
         self,
         to_path: impl AsRef<Path>,
         peppy_dirs: &config::consts::PeppyDirs,
+        deploy_mode: crate::generator::common::CrateDeployMode,
     ) -> Result<()> {
         let to_path = to_path.as_ref();
         std::fs::create_dir_all(to_path)?;
 
-        build::add_peppylib_dependencies(to_path, peppy_dirs)?;
+        build::add_peppylib_dependencies(to_path, peppy_dirs, deploy_mode)?;
         build::add_capnp_schemas(&self.schemas, to_path)?;
         build::add_artifacts_to_lib(to_path, self.sections)?;
         build::add_parameters_to_lib(&self.parameters, to_path)?;

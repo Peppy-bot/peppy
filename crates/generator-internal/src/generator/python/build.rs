@@ -19,6 +19,7 @@ struct EmbeddedPeppylibPy;
 pub fn add_peppylib_dependencies(
     to_path: &Path,
     peppy_dirs: &config::consts::PeppyDirs,
+    deploy_mode: crate::generator::common::CrateDeployMode,
 ) -> Result<()> {
     // Copy Python project templates (pyproject.toml, peppygen/__init__.py)
     crate::generator::common::copy_embedded_templates("peppygen/python", to_path, "")?;
@@ -74,19 +75,29 @@ pub fn add_peppylib_dependencies(
         drop(lock_file);
     }
 
-    // Symlink to_path/peppylib → shared cache
-    let peppylib_link = to_path.join("peppylib");
-    match peppylib_link.symlink_metadata() {
-        Ok(meta) if meta.file_type().is_symlink() => {
-            if fs::read_link(&peppylib_link).ok().as_deref() == Some(cache_dir.as_path()) {
-                return Ok(());
+    // Link or copy peppylib into the output directory
+    let peppylib_dest = to_path.join("peppylib");
+    match deploy_mode {
+        crate::generator::common::CrateDeployMode::Symlink => {
+            match peppylib_dest.symlink_metadata() {
+                Ok(meta) if meta.file_type().is_symlink() => {
+                    if fs::read_link(&peppylib_dest).ok().as_deref() == Some(cache_dir.as_path()) {
+                        return Ok(());
+                    }
+                    fs::remove_file(&peppylib_dest)?;
+                }
+                Ok(_) => fs::remove_dir_all(&peppylib_dest)?,
+                Err(_) => {}
             }
-            fs::remove_file(&peppylib_link)?;
+            crate::generator::common::symlink_dir(&cache_dir, &peppylib_dest)?;
         }
-        Ok(_) => fs::remove_dir_all(&peppylib_link)?,
-        Err(_) => {}
+        crate::generator::common::CrateDeployMode::Copy => {
+            if peppylib_dest.exists() {
+                fs::remove_dir_all(&peppylib_dest)?;
+            }
+            crate::generator::common::copy_dir_recursive(&cache_dir, &peppylib_dest)?;
+        }
     }
-    crate::generator::common::symlink_dir(&cache_dir, &peppylib_link)?;
 
     Ok(())
 }

@@ -277,8 +277,15 @@ pub fn run_generate_peppygen_lib_test(
 
     // Generate the library
     let peppy_dirs = PeppyDirs::default();
-    generate_peppygen_lib(language, node_dir, Vec::new(), "test-hash", &peppy_dirs)
-        .expect("failed to generate library");
+    generate_peppygen_lib(
+        language,
+        node_dir,
+        Vec::new(),
+        "test-hash",
+        &peppy_dirs,
+        Default::default(),
+    )
+    .expect("failed to generate library");
 
     // Verify the generated library structure exists
     let peppygen_dir = node_dir.join(PEPPYGEN_OUTPUT_PATH);

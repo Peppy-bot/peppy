@@ -973,7 +973,11 @@ fn clippy_single_exposed_action_empty_goal_request() {
         .unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);
     generator
-        .build(&output_dir, &config::consts::PeppyDirs::default())
+        .build(
+            &output_dir,
+            &config::consts::PeppyDirs::default(),
+            Default::default(),
+        )
         .unwrap();
     fs::remove_file(output_config).unwrap();
 
@@ -1074,7 +1078,11 @@ fn compile_lib_with_exposed_and_subscribed_actions() {
         .unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);
     generator
-        .build(&output_dir, &config::consts::PeppyDirs::default())
+        .build(
+            &output_dir,
+            &config::consts::PeppyDirs::default(),
+            Default::default(),
+        )
         .unwrap();
     fs::remove_file(output_config).unwrap();
 
@@ -1209,7 +1217,11 @@ fn clippy_subscribed_action_empty_goal_request() {
         .unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);
     generator
-        .build(&output_dir, &config::consts::PeppyDirs::default())
+        .build(
+            &output_dir,
+            &config::consts::PeppyDirs::default(),
+            Default::default(),
+        )
         .unwrap();
     fs::remove_file(output_config).unwrap();
 

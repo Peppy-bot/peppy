@@ -104,7 +104,7 @@ async fn topics_communication() {
         .unwrap();
     let output_config = copy_config_to_output(&user_node_subscriber, &subscriber_dir);
     generator
-        .build(&subscriber_dir, &test_peppy_dirs())
+        .build(&subscriber_dir, &test_peppy_dirs(), Default::default())
         .unwrap();
     fs::remove_file(output_config).unwrap();
     config::fingerprint::create_codegen_fingerprint(
@@ -175,7 +175,9 @@ if __name__ == "__main__":
     generator.set_parameters(exposer_parameters.clone());
     generator.add_exposed_topic(&exposed_topic).unwrap();
     let output_config = copy_config_to_output(&user_node_exposer, &exposer_dir);
-    generator.build(&exposer_dir, &test_peppy_dirs()).unwrap();
+    generator
+        .build(&exposer_dir, &test_peppy_dirs(), Default::default())
+        .unwrap();
     fs::remove_file(output_config).unwrap();
 
     // Update the peppy node config to include the parameters schema

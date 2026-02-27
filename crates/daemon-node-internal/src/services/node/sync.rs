@@ -261,6 +261,7 @@ async fn handle_node_sync_request_inner(
             subscribed_interfaces,
             &git_hash,
             &peppy_dirs,
+            generator::CrateDeployMode::default(),
         )
     })
     .await
@@ -427,6 +428,7 @@ pub fn generate_peppygen_for_node(
     subscribed_interfaces: Vec<DeploymentInterface>,
     git_hash: &str,
     peppy_dirs: &PeppyDirs,
+    deploy_mode: generator::CrateDeployMode,
 ) -> crate::Result<()> {
     generator::generate_peppygen_lib(
         language,
@@ -434,6 +436,7 @@ pub fn generate_peppygen_for_node(
         subscribed_interfaces,
         git_hash,
         peppy_dirs,
+        deploy_mode,
     )?;
 
     Ok(())
