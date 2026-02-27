@@ -7,7 +7,7 @@
     tag: "0.1.0",
     language: "rust",
   },
-  build: {
+  process: {
     add_cmd: [
       "cargo",
       "build",

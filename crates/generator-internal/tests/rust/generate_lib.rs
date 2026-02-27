@@ -16,7 +16,7 @@ const PEPPY_JSON5_CONFIG: &str = r#"{
     tag: "0.1.0",
     language: "rust"
   },
-  build: {
+  process: {
     start_cmd: ["./target/release/test_node"]
   },
   interfaces: {
@@ -60,7 +60,7 @@ fn generate_peppygen_lib_minimal_config() {
         tag: "0.1.0",
         language: "rust"
       },
-      build: {
+      process: {
         start_cmd: ["./target/debug/minimal_node"]
       }
     }"#;
@@ -233,7 +233,7 @@ fn generate_peppygen_rust_lib_exposed_and_subscribed_topics() {
             tag: "0.1.0",
             language: "rust"
           }},
-          build: {{
+          process: {{
             start_cmd: ["./target/debug/{EXPOSED_NODE_NAME}"]
           }},
           interfaces: {{
@@ -284,7 +284,7 @@ fn generate_peppygen_rust_lib_exposed_and_subscribed_topics() {
             tag: "0.1.0",
             language: "rust"
           }},
-          build: {{
+          process: {{
             start_cmd: ["./target/debug/{SUBSCRIBER_NODE_NAME}"]
           }}
         }}"#
@@ -348,7 +348,7 @@ fn generate_peppygen_rust_lib_exposed_and_subscribed_services() {
             tag: "0.1.0",
             language: "rust"
           }},
-          build: {{
+          process: {{
             start_cmd: ["./target/debug/{EXPOSED_NODE_NAME}"]
           }},
           interfaces: {{
@@ -402,7 +402,7 @@ fn generate_peppygen_rust_lib_exposed_and_subscribed_services() {
             tag: "0.1.0",
             language: "rust"
           }},
-          build: {{
+          process: {{
             start_cmd: ["./target/debug/{SUBSCRIBER_NODE_NAME}"]
           }}
         }}"#
@@ -475,7 +475,7 @@ fn generate_peppygen_rust_lib_exposed_and_subscribed_actions() {
             tag: "0.1.0",
             language: "rust"
           }},
-          build: {{
+          process: {{
             start_cmd: ["./target/debug/{EXPOSED_NODE_NAME}"]
           }},
           interfaces: {{
@@ -541,7 +541,7 @@ fn generate_peppygen_rust_lib_exposed_and_subscribed_actions() {
             tag: "0.1.0",
             language: "rust"
           }},
-          build: {{
+          process: {{
             start_cmd: ["./target/debug/{SUBSCRIBER_NODE_NAME}"]
           }}
         }}"#

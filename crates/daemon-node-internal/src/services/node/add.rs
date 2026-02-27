@@ -1417,7 +1417,10 @@ async fn process_node_add(
         }
     } else {
         // Regular nodes: run add_cmd then archive the working directory.
-        let add_cmd = node_config.build.as_ref().and_then(|b| b.add_cmd.as_ref());
+        let add_cmd = node_config
+            .process
+            .as_ref()
+            .and_then(|b| b.add_cmd.as_ref());
         if let Err(e) = run_add_cmd_with_streaming(
             add_cmd,
             &working_dir,

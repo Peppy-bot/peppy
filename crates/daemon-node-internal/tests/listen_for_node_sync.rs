@@ -27,7 +27,7 @@ async fn listen_for_node_generate_success() {
                 tag: "0.1.0",
                 language: "rust",
             },
-            build: {
+            process: {
                 start_cmd: ["sleep", "10"]
             }
         }"#,
@@ -274,7 +274,7 @@ async fn listen_for_node_generate_missing_dependency_fails() {
                 language: "rust",
                 labels: ["brain"],
             },
-            build: {
+            process: {
                 add_cmd: ["cargo", "build", "--release"],
                 start_cmd: ["./target/release/my_robot_brain"],
             },
@@ -347,7 +347,7 @@ async fn listen_for_node_generate_multiple_missing_dependencies_fails() {
                 language: "rust",
                 labels: ["brain"],
             },
-            build: {
+            process: {
                 add_cmd: ["cargo", "build", "--release"],
                 start_cmd: ["./target/release/my_robot_brain"],
             },
@@ -457,7 +457,7 @@ async fn listen_for_node_generate_generates_rust_interfaces() {
                 language: "rust",
                 labels: ["camera"],
             },
-            build: {
+            process: {
                 add_cmd: ["true"],
                 start_cmd: ["sleep", "10"],
             },
@@ -550,7 +550,7 @@ async fn listen_for_node_generate_generates_rust_interfaces() {
                 language: "rust",
                 labels: ["brain"],
             },
-            build: {
+            process: {
                 add_cmd: ["true"],
                 start_cmd: ["sleep", "10"],
             },
@@ -666,7 +666,7 @@ async fn listen_for_node_generate_generates_rust_subscribed_service_interfaces()
                 language: "rust",
                 labels: ["camera"],
             },
-            build: {
+            process: {
                 add_cmd: ["true"],
                 start_cmd: ["sleep", "10"],
             },
@@ -741,7 +741,7 @@ async fn listen_for_node_generate_generates_rust_subscribed_service_interfaces()
                 language: "rust",
                 labels: ["brain"],
             },
-            build: {
+            process: {
                 add_cmd: ["true"],
                 start_cmd: ["sleep", "10"],
             },
@@ -818,7 +818,7 @@ async fn listen_for_node_generate_generates_rust_subscribed_topic_interfaces() {
                 language: "rust",
                 labels: ["camera"],
             },
-            build: {
+            process: {
                 add_cmd: ["true"],
                 start_cmd: ["sleep", "10"],
             },
@@ -895,7 +895,7 @@ async fn listen_for_node_generate_generates_rust_subscribed_topic_interfaces() {
                 language: "rust",
                 labels: ["brain"],
             },
-            build: {
+            process: {
                 add_cmd: ["true"],
                 start_cmd: ["sleep", "10"],
             },
@@ -972,7 +972,7 @@ async fn listen_for_node_generate_generates_rust_subscribed_action_interfaces() 
                 language: "rust",
                 labels: ["brain"],
             },
-            build: {
+            process: {
                 add_cmd: ["true"],
                 start_cmd: ["sleep", "10"],
             },
@@ -1055,7 +1055,7 @@ async fn listen_for_node_generate_generates_rust_subscribed_action_interfaces() 
                 language: "rust",
                 labels: ["controller"],
             },
-            build: {
+            process: {
                 add_cmd: ["true"],
                 start_cmd: ["sleep", "10"],
             },
@@ -1133,7 +1133,7 @@ async fn listen_for_node_generate_generates_rust_parameters() {
                 language: "rust",
                 labels: ["camera"],
             },
-            build: {
+            process: {
                 add_cmd: ["true"],
                 start_cmd: ["sleep", "10"],
             },
@@ -1247,7 +1247,7 @@ async fn listen_for_node_generate_deletes_previous_peppy_folder() {
                 tag: "0.1.0",
                 language: "rust",
             },
-            build: {
+            process: {
                 start_cmd: ["sleep", "10"]
             }
         }"#,

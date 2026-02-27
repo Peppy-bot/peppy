@@ -576,7 +576,7 @@ fn main() -> Result<()> {
     language: "rust",
   }},
   // Avoid `add_cmd` build step here to make the `add` tests faster
-  build: {{
+  process: {{
     add_cmd: [
         "true"
     ],

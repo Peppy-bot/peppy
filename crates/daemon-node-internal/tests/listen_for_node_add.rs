@@ -110,7 +110,7 @@ fn create_versioned_nodes_git_repo(to_path: impl AsRef<Path>) -> PathBuf {
                 tag: "0.1.0",
                 language: "rust",
             },
-            build: {
+            process: {
                 start_cmd: ["sleep", "10"]
             }
         }"#,
@@ -150,7 +150,7 @@ fn create_versioned_nodes_git_repo(to_path: impl AsRef<Path>) -> PathBuf {
                 tag: "0.2.0",
                 language: "rust",
             },
-            build: {
+            process: {
                 start_cmd: ["sleep", "10"]
             }
         }"#,
@@ -201,7 +201,7 @@ async fn listen_for_node_fs_add_success() {
                 tag: "{TARGET_NODE_TAG}",
                 language: "rust",
             }},
-            build: {{
+            process: {{
                 start_cmd: ["sleep", "10"]
             }}
         }}"#
@@ -506,7 +506,7 @@ async fn listen_for_node_http_add_success() {
                 tag: "{TARGET_NODE_TAG}",
                 language: "rust",
             }},
-            build: {{
+            process: {{
                 start_cmd: ["sleep", "10"]
             }}
         }}"#
@@ -622,7 +622,7 @@ async fn listen_for_node_add_no_config_found() {
                 tag: "{TARGET_NODE_TAG}",
                 language: "rust",
             }},
-            build: {{
+            process: {{
                 start_cmd: ["sleep", "10"]
             }}
         }}"#
@@ -665,7 +665,7 @@ async fn listen_for_node_add_git_hash_mismatch_fails() {
             tag: "0.1.0",
             language: "rust",
         },
-        build: {
+        process: {
             start_cmd: ["sleep", "10"]
         }
     }"#;
@@ -776,9 +776,9 @@ async fn listen_for_node_add_no_start_cmd_fails() {
         add_result
             .error_message
             .as_ref()
-            .map(|msg| msg.contains("build"))
+            .map(|msg| msg.contains("process"))
             .unwrap_or(false),
-        "error message should mention build, got: {:?}",
+        "error message should mention process, got: {:?}",
         add_result.error_message
     );
 
@@ -800,7 +800,7 @@ async fn listen_for_node_add_dependency_not_resolved() {
             tag: "1.0.0",
             language: "rust",
         },
-        build: {
+        process: {
             start_cmd: ["sleep", "10"],
         },
         interfaces: {
@@ -875,7 +875,7 @@ async fn listen_for_node_add_same_node_same_tags_overwrites_when_no_dependents()
                 tag: "{NODE_TAG}",
                 language: "rust",
             }},
-            build: {{
+            process: {{
                 start_cmd: ["sleep", "10"]
             }},
             parameters: {{}}
@@ -916,7 +916,7 @@ async fn listen_for_node_add_same_node_same_tags_overwrites_when_no_dependents()
                 tag: "{NODE_TAG}",
                 language: "rust",
             }},
-            build: {{
+            process: {{
                 start_cmd: ["sleep", "10"]
             }},
             interfaces: {{
@@ -999,7 +999,7 @@ async fn listen_for_node_add_same_node_same_tags_fails_when_node_has_dependents(
                 tag: "{DEPENDENCY_NODE_TAG}",
                 language: "rust",
             }},
-            build: {{
+            process: {{
                 start_cmd: ["sleep", "10"]
             }},
             interfaces: {{
@@ -1037,7 +1037,7 @@ async fn listen_for_node_add_same_node_same_tags_fails_when_node_has_dependents(
                 tag: "{DEPENDENT_NODE_TAG}",
                 language: "rust",
             }},
-            build: {{
+            process: {{
                 start_cmd: ["sleep", "10"]
             }},
             interfaces: {{
@@ -1087,7 +1087,7 @@ async fn listen_for_node_add_same_node_same_tags_fails_when_node_has_dependents(
                 tag: "{DEPENDENCY_NODE_TAG}",
                 language: "rust",
             }},
-            build: {{
+            process: {{
                 start_cmd: ["sleep", "10"]
             }},
             interfaces: {{
@@ -1159,7 +1159,7 @@ async fn listen_for_node_add_same_node_different_tags_create_two_entities() {
                 tag: "1.0.0",
                 language: "rust",
             }},
-            build: {{
+            process: {{
                 start_cmd: ["sleep", "10"]
             }}
         }}"#
@@ -1191,7 +1191,7 @@ async fn listen_for_node_add_same_node_different_tags_create_two_entities() {
                 tag: "2.0.0",
                 language: "rust",
             }},
-            build: {{
+            process: {{
                 start_cmd: ["sleep", "10"]
             }}
         }}"#
@@ -1248,7 +1248,7 @@ async fn listen_for_node_add_copies_files_to_storage() {
                 tag: "{TARGET_NODE_TAG}",
                 language: "rust",
             }},
-            build: {{
+            process: {{
                 start_cmd: ["sleep", "10"]
             }}
         }}"#
@@ -1322,7 +1322,7 @@ async fn listen_for_node_add_runs_add_cmd() {
                 tag: "{TARGET_NODE_TAG}",
                 language: "rust",
             }},
-            build: {{
+            process: {{
                 add_cmd: ["touch", "{ADD_CMD_MARKER_FILE}"],
                 start_cmd: ["sleep", "10"]
             }}
@@ -1388,7 +1388,7 @@ async fn listen_for_node_add_cmd_failure_fails_add() {
                 tag: "{TARGET_NODE_TAG}",
                 language: "rust",
             }},
-            build: {{
+            process: {{
                 add_cmd: ["this_command_does_not_exist_12345"],
                 start_cmd: ["sleep", "10"]
             }}
@@ -1448,7 +1448,7 @@ async fn listen_for_node_add_cmd_nonzero_exit_fails_add() {
                 tag: "{TARGET_NODE_TAG}",
                 language: "rust",
             }},
-            build: {{
+            process: {{
                 add_cmd: ["sh", "-c", "exit 1"],
                 start_cmd: ["sleep", "10"]
             }}
@@ -1506,7 +1506,7 @@ async fn listen_for_node_add_streams_stdout_and_stderr() {
                 tag: "{TARGET_NODE_TAG}",
                 language: "rust",
             }},
-            build: {{
+            process: {{
                 add_cmd: ["sh", "-c", "echo {STDOUT_MARKER}; echo {STDERR_MARKER} 1>&2"],
                 start_cmd: ["sleep", "10"]
             }}
@@ -1566,7 +1566,7 @@ async fn listen_for_node_add_fingerprint_mismatch() {
                 tag: "{TARGET_NODE_TAG}",
                 language: "rust",
             }},
-            build: {{
+            process: {{
                 start_cmd: ["sleep", "10"]
             }}
         }}"#
@@ -1641,7 +1641,7 @@ async fn listen_for_node_add_writes_log_file() {
                 tag: "{TARGET_NODE_TAG}",
                 language: "rust",
             }},
-            build: {{
+            process: {{
                 add_cmd: ["sh", "-c", "echo {STDOUT_MARKER}; echo {STDERR_MARKER} 1>&2"],
                 start_cmd: ["sleep", "10"]
             }}
@@ -1746,7 +1746,7 @@ async fn listen_for_node_add_abandoned_action_does_not_block_next_goal() {
                 tag: "{FIRST_NODE_TAG}",
                 language: "rust",
             }},
-            build: {{
+            process: {{
                 start_cmd: ["sleep", "10"]
             }}
         }}"#
@@ -1812,7 +1812,7 @@ async fn listen_for_node_add_abandoned_action_does_not_block_next_goal() {
                 tag: "{SECOND_NODE_TAG}",
                 language: "rust",
             }},
-            build: {{
+            process: {{
                 start_cmd: ["sleep", "10"]
             }}
         }}"#
@@ -1871,7 +1871,7 @@ async fn node_add_same_node_shutdown_existing_instances() {
                 tag: "{NODE_TAG}",
                 language: "rust",
             }},
-            build: {{
+            process: {{
                 start_cmd: ["sleep", "10"]
             }}
         }}"#
@@ -1989,7 +1989,7 @@ async fn node_add_same_node_shutdown_existing_instances() {
                 tag: "{NODE_TAG}",
                 language: "rust",
             }},
-            build: {{
+            process: {{
                 start_cmd: ["sleep", "10"]
             }},
             interfaces: {{
@@ -2121,7 +2121,7 @@ async fn listen_for_node_add_uses_env_overrides_for_path() {
                 tag: "{TARGET_NODE_TAG}",
                 language: "rust",
             }},
-            build: {{
+            process: {{
                 add_cmd: ["printout {STDOUT_MARKER}; printout {STDERR_MARKER} 1>&2"],
                 start_cmd: ["sleep", "10"]
             }}
@@ -2206,7 +2206,7 @@ async fn listen_for_node_add_injects_runtime_env_vars() {
                 tag: "{TARGET_NODE_TAG}",
                 language: "rust",
             }},
-            build: {{
+            process: {{
                 add_cmd: [
                     "sh",
                     "-c",
@@ -2261,7 +2261,7 @@ async fn listen_for_node_add_fails_runs_add_cmd_on_missing_node_dependency() {
           tag: "TARGET_NODE_TAG",
           language: "rust",
         },
-        build: {
+        process: {
           add_cmd: ["sh", "-c", "touch MARKER_PATH && exit 1"],
           start_cmd: ["sleep", "10"]
         },
@@ -2348,7 +2348,7 @@ async fn listen_for_node_add_fails_on_missing_interface_even_when_dependency_exi
                 tag: "{DEPENDENCY_NODE_TAG}",
                 language: "rust",
             }},
-            build: {{
+            process: {{
                 start_cmd: ["sleep", "10"]
             }},
             interfaces: {{
@@ -2395,7 +2395,7 @@ async fn listen_for_node_add_fails_on_missing_interface_even_when_dependency_exi
           tag: "TARGET_NODE_TAG",
           language: "rust",
         },
-        build: {
+        process: {
           add_cmd: ["sh", "-c", "touch MARKER_PATH && exit 1"],
           start_cmd: ["sleep", "10"]
         },
@@ -2481,7 +2481,7 @@ async fn listen_for_node_add_reports_excluded_dirs_in_feedback() {
                 tag: "{TARGET_NODE_TAG}",
                 language: "rust",
             }},
-            build: {{
+            process: {{
                 start_cmd: ["sleep", "10"]
             }}
         }}"#

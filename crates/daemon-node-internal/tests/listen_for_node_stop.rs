@@ -45,7 +45,7 @@ async fn listen_for_node_stop_success() {
                 tag: "{TARGET_NODE_TAG}",
                 language: "rust",
             }},
-            build: {{
+            process: {{
                 start_cmd: ["sleep", "10"]
             }},
             parameters: {{}}

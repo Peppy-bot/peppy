@@ -44,7 +44,7 @@ fn write_node_config(
                     tag: "{node_tag}",
                     language: "rust"
                 }},
-                build: {{
+                process: {{
                     start_cmd: [{start_cmd_json5}]
                 }}
             }}"#

@@ -15,7 +15,7 @@
       "STS3XIAO_ESP32C3215"
     ],
   },
-  build: {
+  process: {
     start_cmd: [
       // This programs compiles and flashes the program to the board
       "espflash",

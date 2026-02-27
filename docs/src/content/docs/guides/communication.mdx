@@ -26,7 +26,7 @@ Each node is only aware of the interfaces it exposes and the ones it subscribes 
         tag: "0.1.0",
         language: "python",
       },
-      build: {
+      process: {
         add_cmd: ["uv", "sync"],
         start_cmd: ["uv", "run", "controller"]
       },
@@ -54,7 +54,7 @@ Each node is only aware of the interfaces it exposes and the ones it subscribes 
         tag: "0.1.0",
         language: "rust",
       },
-      build: {
+      process: {
         add_cmd: ["cargo", "build", "--release"],
         start_cmd: ["./target/release/controller"]
       },

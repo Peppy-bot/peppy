@@ -141,7 +141,7 @@ async fn listen_for_node_start_timeout() {
                 tag: "0.1.0",
                 language: "rust",
             }},
-            build: {{
+            process: {{
                 start_cmd: ["sleep", "10"]
             }},
             parameters: {{}}
@@ -334,7 +334,7 @@ async fn listen_for_node_start_streams_stdout_and_stderr() {
                 tag: "{TARGET_NODE_TAG}",
                 language: "rust",
             }},
-            build: {{
+            process: {{
                 start_cmd: ["sh", "-c", "echo {STDOUT_MARKER}; echo {STDERR_MARKER} 1>&2; sleep 5"]
             }}
         }}"#
@@ -461,7 +461,7 @@ async fn listen_for_node_start_writes_log_file() {
                 tag: "{TARGET_NODE_TAG}",
                 language: "rust",
             }},
-            build: {{
+            process: {{
                 start_cmd: ["sh", "-c", "echo {STDOUT_MARKER}; echo {STDERR_MARKER} 1>&2; sleep 5"]
             }}
         }}"#
@@ -605,7 +605,7 @@ async fn listen_for_node_start_reports_all_missing_parameters() {
                 tag: "{TARGET_NODE_TAG}",
                 language: "rust",
             }},
-            build: {{
+            process: {{
                 start_cmd: ["echo", "test"]
             }},
             parameters: {{
@@ -737,7 +737,7 @@ async fn listen_for_node_start_reports_only_missing_parameters_when_some_provide
                 tag: "{TARGET_NODE_TAG}",
                 language: "rust",
             }},
-            build: {{
+            process: {{
                 start_cmd: ["echo", "test"]
             }},
             parameters: {{
@@ -895,7 +895,7 @@ async fn listen_for_node_start_abandoned_action_does_not_block_next_goal() {
                 tag: "{FIRST_NODE_TAG}",
                 language: "rust",
             }},
-            build: {{
+            process: {{
                 start_cmd: ["sleep", "30"]
             }}
         }}"#
@@ -929,7 +929,7 @@ async fn listen_for_node_start_abandoned_action_does_not_block_next_goal() {
                 tag: "{SECOND_NODE_TAG}",
                 language: "rust",
             }},
-            build: {{
+            process: {{
                 start_cmd: ["sleep", "30"]
             }}
         }}"#
@@ -1126,7 +1126,7 @@ async fn listen_for_node_start_uses_env_overrides_for_path() {
                 tag: "{TARGET_NODE_TAG}",
                 language: "rust",
             }},
-            build: {{
+            process: {{
                 start_cmd: ["printout", "3"]
             }},
             parameters: {{}}
@@ -1279,7 +1279,7 @@ async fn listen_for_node_start_injects_runtime_env_vars() {
                 tag: "{TARGET_NODE_TAG}",
                 language: "rust",
             }},
-            build: {{
+            process: {{
                 start_cmd: [
                     "sh",
                     "-c",

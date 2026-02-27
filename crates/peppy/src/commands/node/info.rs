@@ -76,7 +76,7 @@ fn print_node_info(response: &NodeInfoResponse) {
     }
 
     // Commands
-    if let Some(build) = &config.build {
+    if let Some(build) = &config.process {
         if let Some(add_cmd) = &build.add_cmd {
             println!("Add cmd:   {}", add_cmd.join(" "));
         }

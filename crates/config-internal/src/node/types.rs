@@ -61,7 +61,7 @@ pub struct NodeConfig {
     pub schema_version: SchemaVersion,
     pub manifest: Manifest,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub build: Option<Build>,
+    pub process: Option<Process>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub container: Option<ContainerConfig>,
     // TODO: Rename `parameters` to `arguments` when it's given in a NodeConfig, the `parameters` name is only used in DeploymentInstance
@@ -565,7 +565,7 @@ pub struct Manifest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Build {
+pub struct Process {
     // Command to run when right before the node is added to the node stack
     pub add_cmd: Option<Vec<String>>,
     // Command to launch the node, e.g., ["./target/release/my_node"]

@@ -9,7 +9,7 @@
       "openarm"
     ],
   },
-  build: {
+  process: {
     add_cmd: [
       "true"
     ],

@@ -15,7 +15,7 @@ const PEPPY_JSON5_CONFIG: &str = r#"{
     tag: "0.1.0",
     language: "python"
   },
-  build: {
+  process: {
     add_cmd: ["uv", "sync"],
     start_cmd: ["uv", "run", "test_node"]
   },
@@ -98,7 +98,7 @@ fn generate_peppygen_lib_minimal_config() {
         tag: "0.1.0",
         language: "python"
       },
-      build: {
+      process: {
         add_cmd: ["uv", "sync"],
         start_cmd: ["uv", "run", "minimal_node"]
       }
@@ -154,7 +154,7 @@ fn generate_peppygen_python_lib_exposed_and_subscribed_topics() {
             tag: "0.1.0",
             language: "python"
           }},
-          build: {{
+          process: {{
             add_cmd: ["uv", "sync"],
             start_cmd: ["uv", "run", "{EXPOSED_NODE_NAME}"]
           }},
@@ -206,7 +206,7 @@ fn generate_peppygen_python_lib_exposed_and_subscribed_topics() {
             tag: "0.1.0",
             language: "python"
           }},
-          build: {{
+          process: {{
             add_cmd: ["uv", "sync"],
             start_cmd: ["uv", "run", "{SUBSCRIBER_NODE_NAME}"]
           }}
@@ -271,7 +271,7 @@ fn generate_peppygen_python_lib_exposed_and_subscribed_services() {
             tag: "0.1.0",
             language: "python"
           }},
-          build: {{
+          process: {{
             add_cmd: ["uv", "sync"],
             start_cmd: ["uv", "run", "{EXPOSED_NODE_NAME}"]
           }},
@@ -326,7 +326,7 @@ fn generate_peppygen_python_lib_exposed_and_subscribed_services() {
             tag: "0.1.0",
             language: "python"
           }},
-          build: {{
+          process: {{
             add_cmd: ["uv", "sync"],
             start_cmd: ["uv", "run", "{SUBSCRIBER_NODE_NAME}"]
           }}
@@ -400,7 +400,7 @@ fn generate_peppygen_python_lib_exposed_and_subscribed_actions() {
             tag: "0.1.0",
             language: "python"
           }},
-          build: {{
+          process: {{
             add_cmd: ["uv", "sync"],
             start_cmd: ["uv", "run", "{EXPOSED_NODE_NAME}"]
           }},
@@ -467,7 +467,7 @@ fn generate_peppygen_python_lib_exposed_and_subscribed_actions() {
             tag: "0.1.0",
             language: "python"
           }},
-          build: {{
+          process: {{
             add_cmd: ["uv", "sync"],
             start_cmd: ["uv", "run", "{SUBSCRIBER_NODE_NAME}"]
           }}

@@ -254,7 +254,7 @@ async fn node_run_command_with_args_succeeds() {
     tag: "0.1.0",
     language: "rust"
   },
-  build: {
+  process: {
     start_cmd: [
       "cargo",
       "run",

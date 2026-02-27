@@ -24,10 +24,10 @@ impl NodeConfigParser {
         // Strict schema validation is handled by serde via #[serde(deny_unknown_fields)]
         let config: NodeConfig = serde_json5::from_str(content).map_err(ParsingError::from)?;
 
-        // `build` and `container` are mutually exclusive; exactly one must be present.
-        match (&config.build, &config.container) {
-            (Some(_), Some(_)) => return Err(ParsingError::BuildAndContainerConflict.into()),
-            (None, None) => return Err(ParsingError::NoBuildOrContainer.into()),
+        // `process` and `container` are mutually exclusive; exactly one must be present.
+        match (&config.process, &config.container) {
+            (Some(_), Some(_)) => return Err(ParsingError::ProcessAndContainerConflict.into()),
+            (None, None) => return Err(ParsingError::NoProcessOrContainer.into()),
             _ => {}
         }
 
@@ -50,7 +50,7 @@ mod tests {
                 tag: "0.1.0",
                 language: "rust",
             },
-            build: {
+            process: {
                 start_cmd: ["./target/release/test_node"],
             },
         }"#;
@@ -58,7 +58,7 @@ mod tests {
         assert_eq!(config.manifest.name.as_str(), "test_node");
         assert_eq!(config.manifest.tag, "0.1.0");
         assert_eq!(
-            config.build.as_ref().unwrap().start_cmd,
+            config.process.as_ref().unwrap().start_cmd,
             vec!["./target/release/test_node"]
         );
         assert!(config.parameters.is_empty());
@@ -73,7 +73,7 @@ mod tests {
                 tag: "2.1.0",
                 language: "rust",
             },
-            build: {
+            process: {
                 start_cmd: ["./target/release/camera_driver"],
             },
             interfaces: {
@@ -92,7 +92,7 @@ mod tests {
             crate::node::PeppygenLanguage::Rust
         );
         assert_eq!(
-            config.build.as_ref().unwrap().start_cmd,
+            config.process.as_ref().unwrap().start_cmd,
             vec!["./target/release/camera_driver"]
         );
         assert!(config.interfaces.exposes.is_some());
@@ -146,13 +146,13 @@ mod tests {
             },
         }"#;
         let config = NodeConfigParser::from_content(json5).unwrap();
-        assert!(config.build.is_none());
+        assert!(config.process.is_none());
         let container = config.container.as_ref().unwrap();
         assert_eq!(container.def_file, "apptainer.def");
     }
 
     #[test]
-    fn test_build_and_container_conflict() {
+    fn test_process_and_container_conflict() {
         let json5 = r#"{
             schema_version: 1,
             manifest: {
@@ -160,7 +160,7 @@ mod tests {
                 tag: "0.1.0",
                 language: "rust",
             },
-            build: {
+            process: {
                 start_cmd: ["./bin"],
             },
             container: {
@@ -170,12 +170,12 @@ mod tests {
         let result = NodeConfigParser::from_content(json5);
         assert!(matches!(
             result.unwrap_err(),
-            Error::Parsing(ParsingError::BuildAndContainerConflict)
+            Error::Parsing(ParsingError::ProcessAndContainerConflict)
         ));
     }
 
     #[test]
-    fn test_no_build_or_container() {
+    fn test_no_process_or_container() {
         let json5 = r#"{
             schema_version: 1,
             manifest: {
@@ -187,7 +187,7 @@ mod tests {
         let result = NodeConfigParser::from_content(json5);
         assert!(matches!(
             result.unwrap_err(),
-            Error::Parsing(ParsingError::NoBuildOrContainer)
+            Error::Parsing(ParsingError::NoProcessOrContainer)
         ));
     }
 

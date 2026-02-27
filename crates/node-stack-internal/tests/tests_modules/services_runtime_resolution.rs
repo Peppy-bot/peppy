@@ -14,7 +14,7 @@ fn service_dependency_resolved_when_dependency_added_first() {
               tag: "1.0.0",
               language: "rust",
             },
-            build: {
+            process: {
               start_cmd: ["brain"]
             },
             interfaces: {
@@ -41,7 +41,7 @@ fn service_dependency_resolved_when_dependency_added_first() {
               tag: "1.0.0",
               language: "rust",
             },
-            build: {
+            process: {
               start_cmd: ["lidar"]
             },
             interfaces: {
@@ -119,7 +119,7 @@ fn service_dependency_fails_when_dependency_is_missing() {
               tag: "1.0.0",
               language: "rust",
             },
-            build: {
+            process: {
               start_cmd: ["brain"]
             },
             interfaces: {
@@ -167,7 +167,7 @@ fn service_dependency_fails_when_service_not_exposed_by_dependency() {
               tag: "1.0.0",
               language: "rust",
             },
-            build: {
+            process: {
               start_cmd: ["brain"]
             },
             interfaces: {
@@ -195,7 +195,7 @@ fn service_dependency_fails_when_service_not_exposed_by_dependency() {
               tag: "1.0.0",
               language: "rust",
             },
-            build: {
+            process: {
               start_cmd: ["lidar"]
             },
             interfaces: {
