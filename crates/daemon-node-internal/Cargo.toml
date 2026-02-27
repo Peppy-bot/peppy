@@ -5,7 +5,7 @@ authors.workspace = true
 edition.workspace = true
 
 [dependencies]
-pmi = { path = "../pmi-internal", features = ["zenoh"] }
+pmi = { path = "../pmi-internal", features = ["zenoh", "build_zenoh"] }
 config = { path = "../config-internal" }
 node-stack = { path = "../node-stack-internal" }
 peppylib = { path = "../peppylib" }
