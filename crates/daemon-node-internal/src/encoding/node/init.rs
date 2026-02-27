@@ -16,6 +16,7 @@ pub struct NodeInitRequest {
     pub node_root_dir: PathBuf,
     pub node_name: String,
     pub git_hash: String,
+    pub with_container: bool,
     pub toolchain: Toolchain,
 }
 
@@ -24,12 +25,14 @@ impl NodeInitRequest {
         node_root_dir: impl Into<PathBuf>,
         node_name: impl Into<String>,
         git_hash: impl Into<String>,
+        with_container: bool,
         toolchain: Toolchain,
     ) -> Self {
         Self {
             node_root_dir: node_root_dir.into(),
             node_name: node_name.into(),
             git_hash: git_hash.into(),
+            with_container,
             toolchain,
         }
     }
@@ -41,6 +44,7 @@ impl NodeInitRequest {
             request.set_node_root_dir(self.node_root_dir.to_string_lossy());
             request.set_node_name(&self.node_name);
             request.set_git_hash(&self.git_hash);
+            request.set_with_container(self.with_container);
             request.set_toolchain(self.toolchain.to_string());
         }
         encode_message(&builder)
@@ -55,6 +59,7 @@ impl NodeInitRequest {
             node_root_dir: PathBuf::from(request.get_node_root_dir()?.to_str()?),
             node_name: request.get_node_name()?.to_str()?.to_owned(),
             git_hash: request.get_git_hash()?.to_str()?.to_owned(),
+            with_container: request.get_with_container(),
             toolchain,
         })
     }

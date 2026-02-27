@@ -16,16 +16,22 @@ async fn listen_for_node_init_rust_success() {
 
     let nodes_root = tempdir().expect("failed to create temp nodes root directory");
 
-    let response = NodeInitRequest::new(nodes_root.path(), NODE_NAME, "abc123", Toolchain::Cargo)
-        .poll(
-            &started_daemon.caller_handle,
-            &started_daemon.daemon_node_name,
-            CALLER_INSTANCE_ID,
-            &started_daemon.daemon_node_name,
-            Duration::from_secs(10),
-        )
-        .await
-        .expect("node_init request should complete");
+    let response = NodeInitRequest::new(
+        nodes_root.path(),
+        NODE_NAME,
+        "abc123",
+        false,
+        Toolchain::Cargo,
+    )
+    .poll(
+        &started_daemon.caller_handle,
+        &started_daemon.daemon_node_name,
+        CALLER_INSTANCE_ID,
+        &started_daemon.daemon_node_name,
+        Duration::from_secs(10),
+    )
+    .await
+    .expect("node_init request should complete");
 
     assert!(
         response.success,
@@ -103,6 +109,41 @@ async fn listen_for_node_init_rust_success() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_init_rust_container_success() {
+    const NODE_NAME: &str = "example_node";
+
+    let started_daemon = start_daemon_node_with_mock_messenger().await;
+
+    let nodes_root = tempdir().expect("failed to create temp nodes root directory");
+
+    let response = NodeInitRequest::new(
+        nodes_root.path(),
+        NODE_NAME,
+        "abc123",
+        true,
+        Toolchain::Cargo,
+    )
+    .poll(
+        &started_daemon.caller_handle,
+        &started_daemon.daemon_node_name,
+        CALLER_INSTANCE_ID,
+        &started_daemon.daemon_node_name,
+        Duration::from_secs(10),
+    )
+    .await
+    .expect("node_init request should complete");
+
+    assert!(
+        response.success,
+        "node_init should succeed, got error: {}",
+        response.error_message
+    );
+    let node_dir = nodes_root.path().join(NODE_NAME);
+    let apptainr_def_path = node_dir.join("apptainer.def");
+    assert!(
+        apptainr_def_path.exists(),
+        "node apptainer.def should exist at {}",
+        apptainr_def_path.display()
+    );
     todo!("Finish")
 }
 
@@ -114,16 +155,17 @@ async fn listen_for_node_init_python_success() {
 
     let nodes_root = tempdir().expect("failed to create temp nodes root directory");
 
-    let response = NodeInitRequest::new(nodes_root.path(), NODE_NAME, "abc123", Toolchain::Uv)
-        .poll(
-            &started_daemon.caller_handle,
-            &started_daemon.daemon_node_name,
-            CALLER_INSTANCE_ID,
-            &started_daemon.daemon_node_name,
-            None::<Duration>,
-        )
-        .await
-        .expect("node_init request should complete");
+    let response =
+        NodeInitRequest::new(nodes_root.path(), NODE_NAME, "abc123", false, Toolchain::Uv)
+            .poll(
+                &started_daemon.caller_handle,
+                &started_daemon.daemon_node_name,
+                CALLER_INSTANCE_ID,
+                &started_daemon.daemon_node_name,
+                None::<Duration>,
+            )
+            .await
+            .expect("node_init request should complete");
 
     assert!(
         response.success,
@@ -210,6 +252,36 @@ async fn listen_for_node_init_python_success() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_init_python_container_success() {
+    const NODE_NAME: &str = "example_node";
+
+    let started_daemon = start_daemon_node_with_mock_messenger().await;
+
+    let nodes_root = tempdir().expect("failed to create temp nodes root directory");
+
+    let response =
+        NodeInitRequest::new(nodes_root.path(), NODE_NAME, "abc123", true, Toolchain::Uv)
+            .poll(
+                &started_daemon.caller_handle,
+                &started_daemon.daemon_node_name,
+                CALLER_INSTANCE_ID,
+                &started_daemon.daemon_node_name,
+                None::<Duration>,
+            )
+            .await
+            .expect("node_init request should complete");
+
+    assert!(
+        response.success,
+        "node_init should succeed, got error: {}",
+        response.error_message
+    );
+    let node_dir = nodes_root.path().join(NODE_NAME);
+    let apptainr_def_path = node_dir.join("apptainer.def");
+    assert!(
+        apptainr_def_path.exists(),
+        "node apptainer.def should exist at {}",
+        apptainr_def_path.display()
+    );
     todo!("Finish")
 }
 
@@ -239,16 +311,22 @@ async fn listen_for_node_init_fails_if_directory_exists() {
         "precondition: peppygen output should not exist"
     );
 
-    let response = NodeInitRequest::new(nodes_root.path(), NODE_NAME, "abc123", Toolchain::Cargo)
-        .poll(
-            &started_daemon.caller_handle,
-            &started_daemon.daemon_node_name,
-            CALLER_INSTANCE_ID,
-            &started_daemon.daemon_node_name,
-            Duration::from_secs(10),
-        )
-        .await
-        .expect("node_init request should complete");
+    let response = NodeInitRequest::new(
+        nodes_root.path(),
+        NODE_NAME,
+        "abc123",
+        false,
+        Toolchain::Cargo,
+    )
+    .poll(
+        &started_daemon.caller_handle,
+        &started_daemon.daemon_node_name,
+        CALLER_INSTANCE_ID,
+        &started_daemon.daemon_node_name,
+        Duration::from_secs(10),
+    )
+    .await
+    .expect("node_init request should complete");
 
     assert!(!response.success, "node_init should fail");
     assert!(

@@ -89,6 +89,8 @@ struct NodeInitRequest {
     gitHash @2 :Text;
     # Toolchain to use for the node ("cargo" or "uv")
     toolchain @3 :Text;
+    # Whether to initialize the node with container support
+    withContainer @4 :Bool;
 }
 
 struct NodeInitResponse {

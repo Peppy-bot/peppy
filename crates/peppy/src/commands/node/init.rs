@@ -77,6 +77,7 @@ impl NodeInitBuilder {
             &self.to_dir,
             self.node_name.as_str(),
             git_hash,
+            false,
             self.toolchain,
         );
 
