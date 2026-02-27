@@ -206,6 +206,18 @@ fn spawn_output_reader<R: Read + Send + 'static>(
     })
 }
 
+/// Expands `${VAR}` references in a string using the provided environment variables.
+fn expand_env_vars(s: &str, env_vars: &[(String, String)]) -> String {
+    let mut result = s.to_string();
+    for (key, value) in env_vars {
+        let pattern = format!("${{{}}}", key);
+        if result.contains(&pattern) {
+            result = result.replace(&pattern, value);
+        }
+    }
+    result
+}
+
 /// Runs the add_cmd for a node and streams output via the feedback publisher.
 /// Returns Ok(()) if add_cmd is None or executes successfully.
 async fn run_add_cmd_with_streaming(
@@ -222,6 +234,11 @@ async fn run_add_cmd_with_streaming(
     if cmd.is_empty() {
         return Err("add_cmd is empty".to_string());
     };
+
+    // Expand ${VAR} references in add_cmd strings using the injected env vars.
+    // This is necessary because multi-element commands are executed directly
+    // (not through a shell), so shell-style variable expansion doesn't happen.
+    let cmd: Vec<String> = cmd.iter().map(|s| expand_env_vars(s, env_vars)).collect();
 
     let (program, args) = if cmd.len() == 1 {
         if cfg!(windows) {
@@ -376,6 +393,91 @@ fn archive_dir_to_storage(
     std::fs::rename(&tmp_path, &archive_path)?;
 
     Ok(archive_path)
+}
+
+/// Moves the built `.sif` container image from the working directory to peppy storage.
+///
+/// The image is expected at `working_dir/{node_name}_{node_tag}.sif`, which is the
+/// conventional output path produced by `apptainer build` in the node's `add_cmd`.
+///
+/// Returns the final storage path: `<added_nodes_dir>/<node_name>_<tag>.sif`.
+fn move_sif_to_storage(
+    working_dir: &Path,
+    node_name: &str,
+    node_tag: &str,
+    peppy_dirs: &PeppyDirs,
+) -> Result<PathBuf> {
+    let sif_name = format!("{}_{}.sif", node_name, node_tag);
+    let sif_source = working_dir.join(&sif_name);
+
+    if !sif_source.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!(
+                "Expected container image not found at {}",
+                sif_source.display()
+            ),
+        )
+        .into());
+    }
+
+    let storage_dir = peppy_dirs.added_nodes_dir();
+    std::fs::create_dir_all(&storage_dir)?;
+
+    let dest_path = storage_dir.join(&sif_name);
+    let tmp_path = storage_dir.join(format!("{}.tmp", sif_name));
+
+    // Copy + rename (not rename alone) because the working dir may be on a
+    // different filesystem than storage. Matches archive_dir_to_storage pattern.
+    std::fs::copy(&sif_source, &tmp_path)?;
+    std::fs::rename(&tmp_path, &dest_path)?;
+
+    Ok(dest_path)
+}
+
+/// Builds a container image using the Apptainer facade.
+///
+/// Runs `apptainer build --fakeroot {node_name}_{node_tag}.sif {def_file}` in the
+/// working directory. The resulting `.sif` file is left in `working_dir` for
+/// [`move_sif_to_storage`] to relocate.
+fn build_container_image(
+    working_dir: &Path,
+    node_name: &str,
+    node_tag: &str,
+    def_file: &str,
+) -> Result<()> {
+    let apptainer = containers::Apptainer::new().map_err(|e| {
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("Failed to initialize Apptainer runtime: {}", e),
+        )
+    })?;
+
+    let sif_name = format!("{}_{}.sif", node_name, node_tag);
+    let output_path = working_dir.join(&sif_name);
+    let def_path = working_dir.join(def_file);
+
+    let mut child = apptainer
+        .build(&output_path, &def_path)
+        .fakeroot()
+        .spawn()
+        .map_err(|e| {
+            std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("Failed to spawn apptainer build: {}", e),
+            )
+        })?;
+
+    let status = child.wait()?;
+    if !status.success() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            format!("apptainer build failed with status {}", status),
+        )
+        .into());
+    }
+
+    Ok(())
 }
 
 /// Verifies that the node directory is in sync with the currently running daemon
@@ -1293,21 +1395,39 @@ async fn process_node_add(
         );
     }
 
-    // Run add_cmd in the working directory with streaming output
-    if let Err(e) = run_add_cmd_with_streaming(
-        node_config.build.add_cmd.as_ref(),
-        &working_dir,
-        &env_vars,
-        &ctx.feedback_publisher,
-        Arc::clone(&ctx.log_file),
-    )
-    .await
-    {
-        return NodeAddResult::failure(&ctx.log_path, format!("add_cmd failed: {}", e));
-    }
-
-    // Archive the working directory to the peppy nodes storage.
-    let archive_path =
+    let snapshot_path = if let Some(container) = &node_config.build.container {
+        // Container nodes: use the Apptainer facade to build the .sif image from
+        // the definition file, then move it to storage.
+        if let Err(e) =
+            build_container_image(&working_dir, &node_name, &node_tag, &container.def_file)
+        {
+            return NodeAddResult::failure(
+                &ctx.log_path,
+                format!("Failed to build container image: {}", e),
+            );
+        }
+        match move_sif_to_storage(&working_dir, &node_name, &node_tag, &ctx.peppy_dirs) {
+            Ok(path) => path,
+            Err(e) => {
+                return NodeAddResult::failure(
+                    &ctx.log_path,
+                    format!("Failed to store container image: {}", e),
+                );
+            }
+        }
+    } else {
+        // Regular nodes: run add_cmd then archive the working directory.
+        if let Err(e) = run_add_cmd_with_streaming(
+            node_config.build.add_cmd.as_ref(),
+            &working_dir,
+            &env_vars,
+            &ctx.feedback_publisher,
+            Arc::clone(&ctx.log_file),
+        )
+        .await
+        {
+            return NodeAddResult::failure(&ctx.log_path, format!("add_cmd failed: {}", e));
+        }
         match archive_dir_to_storage(&working_dir, &node_name, &node_tag, &ctx.peppy_dirs) {
             Ok(path) => path,
             Err(e) => {
@@ -1316,13 +1436,14 @@ async fn process_node_add(
                     format!("Failed to archive node: {}", e),
                 );
             }
-        };
+        }
+    };
 
     // Working dir is no longer needed; clean it up immediately.
     drop(working_dir_cleanup);
 
     if let Err(e) = shutdown_existing_instances(&node_name, &node_tag, &ctx).await {
-        std::fs::remove_file(&archive_path).ok();
+        std::fs::remove_file(&snapshot_path).ok();
         return NodeAddResult::failure(
             &ctx.log_path,
             format!("Failed to shutdown existing node instances: {}", e),
@@ -1332,15 +1453,15 @@ async fn process_node_add(
     // Add the node config to the stack
     if let Err(e) = ctx
         .node_stack
-        .push_config(node_config, false, &archive_path)
+        .push_config(node_config, false, &snapshot_path)
     {
-        std::fs::remove_file(&archive_path).ok();
+        std::fs::remove_file(&snapshot_path).ok();
         return NodeAddResult::failure(&ctx.log_path, format!("Failed to add node config: {}", e));
     }
 
-    // Clean up previous snapshot if it differs from the new archive path.
+    // Clean up previous snapshot if it differs from the new one.
     if let Some(previous_snapshot_path) = previous_snapshot_path
-        && previous_snapshot_path != archive_path
+        && previous_snapshot_path != snapshot_path
     {
         let storage_dir = ctx.peppy_dirs.added_nodes_dir();
         if previous_snapshot_path.starts_with(&storage_dir) {
@@ -1356,10 +1477,10 @@ async fn process_node_add(
         "Added node {}:{} at {}",
         node_name,
         node_tag,
-        archive_path.display()
+        snapshot_path.display()
     );
 
-    NodeAddResult::success(archive_path, &ctx.log_path, node_name, node_tag)
+    NodeAddResult::success(snapshot_path, &ctx.log_path, node_name, node_tag)
 }
 
 async fn handle_cancel_request(

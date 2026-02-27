@@ -315,10 +315,6 @@ From: ubuntu:24.04
     Name {TARGET_NODE_NAME}
     Version {TARGET_NODE_TAG}
 
-%post
-    apt-get update && apt-get install -y --no-install-recommends ca-certificates
-    apt-get clean && rm -rf /var/lib/apt/lists/*
-
 %runscript
     echo "Running {TARGET_NODE_NAME}:{TARGET_NODE_TAG}"
 "#
