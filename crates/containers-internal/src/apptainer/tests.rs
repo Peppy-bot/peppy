@@ -323,6 +323,55 @@ fn test_translate_path_outside_home() {
     }
 }
 
+/// macOS `tempfile::tempdir()` creates directories under `/var/folders/...`,
+/// which is NOT mounted in the Lima VM. This test documents that
+/// `translate_path()` correctly rejects such paths on macOS.
+#[test]
+fn test_translate_path_rejects_var_folders() {
+    let facade = Apptainer::new()
+        .expect("Apptainer::new() should succeed — apptainer is bundled at compile time");
+
+    let path = Path::new("/var/folders/T4/random123abc/T/tempdir/output.sif");
+    let result = facade.translate_path(path);
+
+    if cfg!(target_os = "macos") {
+        assert!(
+            result.is_err(),
+            "Paths under /var/folders should be rejected under Lima (not mounted in guest)"
+        );
+    } else {
+        assert_eq!(
+            result.unwrap(),
+            path,
+            "On Linux, all absolute paths should pass through unchanged"
+        );
+    }
+}
+
+/// Verifies that `build().build_args()` rejects paths outside `$HOME` on macOS,
+/// exercising the full command-builder pipeline (not just `translate_path` directly).
+#[test]
+fn test_build_args_rejects_path_outside_home() {
+    let facade = Apptainer::new()
+        .expect("Apptainer::new() should succeed — apptainer is bundled at compile time");
+
+    let output = Path::new("/var/folders/xx/temp123/output.sif");
+    let home = std::env::var("HOME").unwrap();
+    let def = PathBuf::from(&home).join("project/test.def");
+
+    let cmd = facade.build(output, &def);
+    let result = cmd.build_args();
+
+    if cfg!(target_os = "macos") {
+        assert!(
+            result.is_err(),
+            "build_args() should reject output paths outside $HOME under Lima"
+        );
+    } else {
+        assert!(result.is_ok(), "On Linux, all paths should be accepted");
+    }
+}
+
 // ---------------------------------------------------------------------------
 // URI detection tests
 // ---------------------------------------------------------------------------

@@ -34,7 +34,12 @@ impl<T> Drop for AbortOnDrop<T> {
 }
 
 fn init_test_data_dir() -> (TempDir, PeppyDirs) {
-    let dir = tempfile::tempdir().expect("test data dir");
+    // Place test data under $HOME so paths are visible inside the Lima VM on macOS.
+    // Lima 2.0+ only mounts ~ into the guest; system temp (/var/folders/...) is inaccessible.
+    let home = std::env::var("HOME").expect("HOME must be set");
+    let test_tmp_root = std::path::PathBuf::from(&home).join(".peppy/test-tmp");
+    std::fs::create_dir_all(&test_tmp_root).expect("create ~/.peppy/test-tmp/");
+    let dir = TempDir::new_in(&test_tmp_root).expect("test data dir");
     let peppy_dirs = PeppyDirs::new(dir.path());
     (dir, peppy_dirs)
 }

@@ -347,8 +347,9 @@ async fn run_add_cmd_with_streaming(
 /// Returns the path to the temporary directory and the list of top-level
 /// directories that were excluded from the copy. The caller is responsible
 /// for cleaning up the temporary directory.
-fn copy_node_to_temp_dir(from_dir: &Path) -> Result<(PathBuf, Vec<String>)> {
-    let temp_dir = tempfile::tempdir()?.keep();
+fn copy_node_to_temp_dir(from_dir: &Path, tmp_root: &Path) -> Result<(PathBuf, Vec<String>)> {
+    std::fs::create_dir_all(tmp_root)?;
+    let temp_dir = tempfile::TempDir::new_in(tmp_root)?.keep();
 
     debug!(
         "Copying node folder from {} to temp dir {}",
@@ -1344,15 +1345,16 @@ async fn process_node_add(
     }
 
     // Copy the node folder to a temporary working directory.
-    let (working_dir, excluded_dirs) = match copy_node_to_temp_dir(&source_path) {
-        Ok(result) => result,
-        Err(e) => {
-            return NodeAddResult::failure(
-                &ctx.log_path,
-                format!("Failed to copy node folder: {}", e),
-            );
-        }
-    };
+    let (working_dir, excluded_dirs) =
+        match copy_node_to_temp_dir(&source_path, &ctx.peppy_dirs.tmp_dir()) {
+            Ok(result) => result,
+            Err(e) => {
+                return NodeAddResult::failure(
+                    &ctx.log_path,
+                    format!("Failed to copy node folder: {}", e),
+                );
+            }
+        };
     // RAII guard: cleans up the temp working dir on any exit path.
     let working_dir_cleanup = CleanupDir::new(Some(working_dir.clone()));
 

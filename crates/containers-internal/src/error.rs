@@ -30,8 +30,9 @@ pub enum Error {
     },
 
     #[error(
-        "Path {path} is not accessible inside the Lima VM. Lima auto-mounts the home directory (~). \
-         Move your project files under your home directory, or set PEPPY_APPTAINER_DIR to a path under ~."
+        "Path {path} is not accessible inside the Lima VM. Lima only mounts the home \
+         directory (~) into the guest. Ensure all file paths (project files, working \
+         directories, and build outputs) are under your home directory."
     )]
     PathNotAccessibleInVm { path: String },
 

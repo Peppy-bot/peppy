@@ -102,6 +102,14 @@ impl PeppyDirs {
         self.root.join("http_downloads")
     }
 
+    /// Temporary working directory for operations that may involve containers.
+    ///
+    /// On macOS with Lima, temp directories must be under `$HOME` to be
+    /// visible inside the guest VM. Use this instead of `std::env::temp_dir()`.
+    pub fn tmp_dir(&self) -> PathBuf {
+        self.root.join("tmp")
+    }
+
     /// Shared Rust crate cache directory for a given cache key.
     pub fn rust_libs_cache_dir(&self, cache_key: &str) -> PathBuf {
         self.root.join("libs").join("rust").join(cache_key)
