@@ -1126,7 +1126,7 @@ fn updating_start_cmd_without_changing_interfaces_applies_new_config() {
 
     let entity = stack.find("sensor", "1.0.0").expect("entity should exist");
     assert_eq!(
-        entity.config().build.start_cmd,
+        entity.config().build.as_ref().unwrap().start_cmd,
         vec!["./old_binary"],
         "entity should have the original start_cmd"
     );
@@ -1139,7 +1139,7 @@ fn updating_start_cmd_without_changing_interfaces_applies_new_config() {
 
     let entity = stack.find("sensor", "1.0.0").expect("entity should exist");
     assert_eq!(
-        entity.config().build.start_cmd,
+        entity.config().build.as_ref().unwrap().start_cmd,
         vec!["./new_binary"],
         "entity should have the updated start_cmd after re-push"
     );
@@ -1240,7 +1240,7 @@ fn updating_start_cmd_succeeds_even_when_node_has_dependents() {
 
     let entity = stack.find("lidar", "1.0.0").expect("entity should exist");
     assert_eq!(
-        entity.config().build.start_cmd,
+        entity.config().build.as_ref().unwrap().start_cmd,
         vec!["./new_lidar"],
         "lidar should have the updated start_cmd"
     );

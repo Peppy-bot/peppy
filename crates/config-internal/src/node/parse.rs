@@ -22,7 +22,16 @@ impl NodeConfigParser {
     /// Takes a JSON5 content as parameter
     pub fn from_content(content: &str) -> Result<NodeConfig> {
         // Strict schema validation is handled by serde via #[serde(deny_unknown_fields)]
-        serde_json5::from_str::<NodeConfig>(content).map_err(|e| ParsingError::from(e).into())
+        let config: NodeConfig = serde_json5::from_str(content).map_err(ParsingError::from)?;
+
+        // `build` and `container` are mutually exclusive; exactly one must be present.
+        match (&config.build, &config.container) {
+            (Some(_), Some(_)) => return Err(ParsingError::BuildAndContainerConflict.into()),
+            (None, None) => return Err(ParsingError::NoBuildOrContainer.into()),
+            _ => {}
+        }
+
+        Ok(config)
     }
 }
 
@@ -48,7 +57,10 @@ mod tests {
         let config = NodeConfigParser::from_content(json5).unwrap();
         assert_eq!(config.manifest.name.as_str(), "test_node");
         assert_eq!(config.manifest.tag, "0.1.0");
-        assert_eq!(config.build.start_cmd, vec!["./target/release/test_node"]);
+        assert_eq!(
+            config.build.as_ref().unwrap().start_cmd,
+            vec!["./target/release/test_node"]
+        );
         assert!(config.parameters.is_empty());
     }
 
@@ -80,7 +92,7 @@ mod tests {
             crate::node::PeppygenLanguage::Rust
         );
         assert_eq!(
-            config.build.start_cmd,
+            config.build.as_ref().unwrap().start_cmd,
             vec!["./target/release/camera_driver"]
         );
         assert!(config.interfaces.exposes.is_some());
@@ -117,6 +129,65 @@ mod tests {
         assert!(matches!(
             result.unwrap_err(),
             Error::Parsing(ParsingError::CannotParseConfig(_))
+        ));
+    }
+
+    #[test]
+    fn test_parse_container_config() {
+        let json5 = r#"{
+            schema_version: 1,
+            manifest: {
+                name: "container_node",
+                tag: "0.1.0",
+                language: "rust",
+            },
+            container: {
+                def_file: "apptainer.def",
+            },
+        }"#;
+        let config = NodeConfigParser::from_content(json5).unwrap();
+        assert!(config.build.is_none());
+        let container = config.container.as_ref().unwrap();
+        assert_eq!(container.def_file, "apptainer.def");
+    }
+
+    #[test]
+    fn test_build_and_container_conflict() {
+        let json5 = r#"{
+            schema_version: 1,
+            manifest: {
+                name: "bad_node",
+                tag: "0.1.0",
+                language: "rust",
+            },
+            build: {
+                start_cmd: ["./bin"],
+            },
+            container: {
+                def_file: "apptainer.def",
+            },
+        }"#;
+        let result = NodeConfigParser::from_content(json5);
+        assert!(matches!(
+            result.unwrap_err(),
+            Error::Parsing(ParsingError::BuildAndContainerConflict)
+        ));
+    }
+
+    #[test]
+    fn test_no_build_or_container() {
+        let json5 = r#"{
+            schema_version: 1,
+            manifest: {
+                name: "bare_node",
+                tag: "0.1.0",
+                language: "rust",
+            },
+        }"#;
+        let result = NodeConfigParser::from_content(json5);
+        assert!(matches!(
+            result.unwrap_err(),
+            Error::Parsing(ParsingError::NoBuildOrContainer)
         ));
     }
 

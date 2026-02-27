@@ -167,6 +167,8 @@ fn git_repo_is_cloned_and_same_tag_updates_code() {
         .node()
         .expect("resolved node config")
         .build
+        .as_ref()
+        .unwrap()
         .start_cmd
         .clone();
     assert_eq!(start_cmd_v1, vec!["run_v1".to_string()]);
@@ -208,6 +210,8 @@ fn git_repo_is_cloned_and_same_tag_updates_code() {
         .node()
         .expect("resolved node config after update")
         .build
+        .as_ref()
+        .unwrap()
         .start_cmd
         .clone();
 

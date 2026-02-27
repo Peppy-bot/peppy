@@ -985,7 +985,11 @@ pub fn start_node(
 ) -> std::io::Result<Child> {
     let config = entity.config();
     let manifest = &config.manifest;
-    let build = &config.build;
+    let build = config.build.as_ref().ok_or_else(|| {
+        std::io::Error::other(
+            "node has no build config (container nodes cannot be started this way)",
+        )
+    })?;
 
     let Some((program, args)) = build.start_cmd.split_first() else {
         return Err(std::io::Error::other("start_cmd is empty"));

@@ -1384,22 +1384,8 @@ async fn listen_for_node_container_start_success() {
             tag: "TARGET_NODE_TAG",
             language: "rust",
         },
-        build: {
-            container: {
-                def_file: "apptainer.def",
-            },
-            add_cmd: [
-                "${PEPPY_APPTAINER_BIN}",
-                "build",
-                "--fakeroot",
-                "${PEPPY_NODE_NAME}_${PEPPY_NODE_TAG}.sif",
-                "apptainer.def"
-            ],
-            start_cmd: [
-                "${PEPPY_APPTAINER_BIN}",
-                "run",
-                "${PEPPY_NODE_NAME}_${PEPPY_NODE_TAG}.sif",
-            ]
+        container: {
+            def_file: "apptainer.def",
         }
     }"#
     .replace("TARGET_NODE_NAME", TARGET_NODE_NAME)
@@ -1414,10 +1400,6 @@ From: ubuntu:24.04
 %labels
     Name {TARGET_NODE_NAME}
     Version {TARGET_NODE_TAG}
-
-%post
-    apt-get update && apt-get install -y --no-install-recommends ca-certificates
-    apt-get clean && rm -rf /var/lib/apt/lists/*
 
 %runscript
     echo "Running {TARGET_NODE_NAME}:{TARGET_NODE_TAG}"

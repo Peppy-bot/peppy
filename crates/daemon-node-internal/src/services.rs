@@ -91,11 +91,11 @@ impl DaemonNode {
                 language: PeppygenLanguage::Rust,
                 labels: None,
             },
-            build: Build {
+            build: Some(Build {
                 add_cmd: None,
                 start_cmd: vec![],
-                container: None,
-            },
+            }),
+            container: None,
             parameters: node_arguments.into(),
             interfaces: Default::default(),
         };

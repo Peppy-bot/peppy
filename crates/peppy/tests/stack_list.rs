@@ -22,7 +22,7 @@ fn make_consumer_depend_on_provider(
     let mut provider_cfg = NodeConfigParser::from_path(provider_peppy_json5)
         .expect("provider peppy.json5 should read");
 
-    provider_cfg.build.add_cmd = None;
+    provider_cfg.build.as_mut().unwrap().add_cmd = None;
 
     let exposes = provider_cfg
         .interfaces
@@ -48,7 +48,7 @@ fn make_consumer_depend_on_provider(
     let mut consumer_cfg = NodeConfigParser::from_path(consumer_peppy_json5)
         .expect("consumer peppy.json5 should read");
 
-    consumer_cfg.build.add_cmd = None;
+    consumer_cfg.build.as_mut().unwrap().add_cmd = None;
 
     consumer_cfg.interfaces.subscribes_to = Some(SubscribesTo {
         topics: Some(vec![SubscribedTopic {

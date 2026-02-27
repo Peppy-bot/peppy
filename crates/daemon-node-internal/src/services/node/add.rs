@@ -1395,7 +1395,7 @@ async fn process_node_add(
         );
     }
 
-    let snapshot_path = if let Some(container) = &node_config.build.container {
+    let snapshot_path = if let Some(container) = &node_config.container {
         // Container nodes: use the Apptainer facade to build the .sif image from
         // the definition file, then move it to storage.
         if let Err(e) =
@@ -1417,8 +1417,9 @@ async fn process_node_add(
         }
     } else {
         // Regular nodes: run add_cmd then archive the working directory.
+        let add_cmd = node_config.build.as_ref().and_then(|b| b.add_cmd.as_ref());
         if let Err(e) = run_add_cmd_with_streaming(
-            node_config.build.add_cmd.as_ref(),
+            add_cmd,
             &working_dir,
             &env_vars,
             &ctx.feedback_publisher,

@@ -285,22 +285,9 @@ async fn listen_for_node_container_add_success() {
             tag: "TARGET_NODE_TAG",
             language: "rust",
         },
-        build: {
-            container: {
-                def_file: "apptainer.def",
-            },
-            add_cmd: [
-                "${PEPPY_APPTAINER_BIN}",
-                "build",
-                "--fakeroot",
-                "${PEPPY_NODE_NAME}_${PEPPY_NODE_TAG}.sif",
-                "apptainer.def"
-            ],
-            start_cmd: [
-                "${PEPPY_APPTAINER_BIN}",
-                "run",
-                "${PEPPY_NODE_NAME}_${PEPPY_NODE_TAG}.sif",
-            ]
+        // Using `container` let `peppy` manage the node internally
+        container: {
+            def_file: "apptainer.def",
         }
     }"#
     .replace("TARGET_NODE_NAME", TARGET_NODE_NAME)

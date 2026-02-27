@@ -45,6 +45,12 @@ pub enum ParsingError {
     #[error("Invalid toolchain {0}")]
     InvalidToolchain(String),
 
+    // -- node config: build vs container
+    #[error("Node config must have exactly one of `build` or `container`, not both")]
+    BuildAndContainerConflict,
+    #[error("Node config must have either `build` or `container`")]
+    NoBuildOrContainer,
+
     #[error("{0}")]
     Structured(String),
 }
