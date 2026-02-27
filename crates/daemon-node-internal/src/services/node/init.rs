@@ -85,7 +85,9 @@ fn handle_node_init_request_inner(
     // since generate_peppygen_lib requires peppy.json5 to exist)
     match toolchain {
         Toolchain::Cargo => {
-            if let Err(e) = apply_rust_templates(&request.node_name, &node_dir) {
+            if let Err(e) =
+                apply_rust_templates(&request.node_name, &node_dir, request.with_container)
+            {
                 return NodeInitResponse::failure(format!(
                     "Failed to create Rust configuration: {}",
                     e
@@ -94,7 +96,9 @@ fn handle_node_init_request_inner(
             }
         }
         Toolchain::Uv => {
-            if let Err(e) = apply_python_templates(&request.node_name, &node_dir) {
+            if let Err(e) =
+                apply_python_templates(&request.node_name, &node_dir, request.with_container)
+            {
                 return NodeInitResponse::failure(format!(
                     "Failed to create Python configuration: {}",
                     e

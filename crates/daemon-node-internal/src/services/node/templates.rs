@@ -35,6 +35,7 @@ pub struct PythonPyprojectToml<'a> {
 #[template(path = "node_init/rust/peppy.json5.j2")]
 pub struct RustPeppyJson5<'a> {
     pub node_name: &'a str,
+    pub with_container: bool,
 }
 
 /// Template for Python peppy.json5 file
@@ -42,6 +43,15 @@ pub struct RustPeppyJson5<'a> {
 #[template(path = "node_init/python/peppy.json5.j2")]
 pub struct PythonPeppyJson5<'a> {
     pub node_name: &'a str,
+    pub with_container: bool,
+}
+
+/// Template for Apptainer definition file (shared across languages)
+#[derive(Template)]
+#[template(path = "node_init/shared/apptainer.def.j2")]
+pub struct ApptainerDef<'a> {
+    pub node_name: &'a str,
+    pub tag: &'a str,
 }
 
 /// Copies all embedded static files under the given prefix
@@ -75,8 +85,15 @@ fn copy_embedded_static_files(prefix: &str, dest_dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Writes the apptainer.def file to the node directory (shared across languages)
+fn apply_container_template(node_name: &str, tag: &str, node_dir: &Path) -> Result<()> {
+    let apptainer_def = ApptainerDef { node_name, tag };
+    std::fs::write(node_dir.join("apptainer.def"), apptainer_def.render()?)?;
+    Ok(())
+}
+
 /// Applies templates and copies static files for Rust node initialization
-pub fn apply_rust_templates(node_name: &str, node_dir: &Path) -> Result<()> {
+pub fn apply_rust_templates(node_name: &str, node_dir: &Path, with_container: bool) -> Result<()> {
     // Copy all static files (non-.j2 files) recursively
     copy_embedded_static_files("node_init/rust", node_dir)?;
 
@@ -89,17 +106,28 @@ pub fn apply_rust_templates(node_name: &str, node_dir: &Path) -> Result<()> {
     std::fs::write(node_dir.join("Cargo.toml"), cargo_toml.render()?)?;
 
     // Apply peppy.json5 template
-    let peppy_json5 = RustPeppyJson5 { node_name };
+    let peppy_json5 = RustPeppyJson5 {
+        node_name,
+        with_container,
+    };
     std::fs::write(
         node_dir.join(config::consts::NODE_CONFIG_FILE),
         peppy_json5.render()?,
     )?;
 
+    if with_container {
+        apply_container_template(node_name, "0.1.0", node_dir)?;
+    }
+
     Ok(())
 }
 
 /// Applies templates and copies static files for Python node initialization
-pub fn apply_python_templates(node_name: &str, node_dir: &Path) -> Result<()> {
+pub fn apply_python_templates(
+    node_name: &str,
+    node_dir: &Path,
+    with_container: bool,
+) -> Result<()> {
     // Apply pyproject.toml template
     let pyproject_toml = PythonPyprojectToml {
         node_name,
@@ -110,7 +138,10 @@ pub fn apply_python_templates(node_name: &str, node_dir: &Path) -> Result<()> {
     std::fs::write(node_dir.join("pyproject.toml"), pyproject_toml.render()?)?;
 
     // Apply peppy.json5 template
-    let peppy_json5 = PythonPeppyJson5 { node_name };
+    let peppy_json5 = PythonPeppyJson5 {
+        node_name,
+        with_container,
+    };
     std::fs::write(
         node_dir.join(config::consts::NODE_CONFIG_FILE),
         peppy_json5.render()?,
@@ -138,6 +169,10 @@ if __name__ == "__main__":
     main()
 "#,
     )?;
+
+    if with_container {
+        apply_container_template(node_name, "0.1.0", node_dir)?;
+    }
 
     Ok(())
 }

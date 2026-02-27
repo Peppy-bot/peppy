@@ -5,6 +5,11 @@
     tag: "0.1.0",
     language: "rust",
   },
+{% if with_container %}
+  container: {
+    def_file: "apptainer.def",
+  },
+{% else %}
   process: {
     add_cmd: [
       "cargo",
@@ -15,5 +20,6 @@
       "./target/release/{{ node_name }}"
     ]
   },
+{% endif %}
   interfaces: {}
 }
