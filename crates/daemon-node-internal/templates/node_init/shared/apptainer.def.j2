@@ -1,9 +1,0 @@
-Bootstrap: docker
-From: ubuntu:24.04
-
-%labels
-    Name {{ node_name }}
-    Version {{ tag }}
-
-%runscript
-    exec sleep 300

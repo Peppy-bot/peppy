@@ -46,10 +46,16 @@ pub struct PythonPeppyJson5<'a> {
     pub with_container: bool,
 }
 
-/// Template for Apptainer definition file (shared across languages)
 #[derive(Template)]
-#[template(path = "node_init/shared/apptainer.def.j2")]
-pub struct ApptainerDef<'a> {
+#[template(path = "node_init/rust/apptainer.def.j2")]
+pub struct ApptainerRustDef<'a> {
+    pub node_name: &'a str,
+    pub tag: &'a str,
+}
+
+#[derive(Template)]
+#[template(path = "node_init/python/apptainer.def.j2")]
+pub struct ApptainerPythonDef<'a> {
     pub node_name: &'a str,
     pub tag: &'a str,
 }
@@ -85,13 +91,6 @@ fn copy_embedded_static_files(prefix: &str, dest_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Writes the apptainer.def file to the node directory (shared across languages)
-fn apply_container_template(node_name: &str, tag: &str, node_dir: &Path) -> Result<()> {
-    let apptainer_def = ApptainerDef { node_name, tag };
-    std::fs::write(node_dir.join("apptainer.def"), apptainer_def.render()?)?;
-    Ok(())
-}
-
 /// Applies templates and copies static files for Rust node initialization
 pub fn apply_rust_templates(node_name: &str, node_dir: &Path, with_container: bool) -> Result<()> {
     // Copy all static files (non-.j2 files) recursively
@@ -116,7 +115,11 @@ pub fn apply_rust_templates(node_name: &str, node_dir: &Path, with_container: bo
     )?;
 
     if with_container {
-        apply_container_template(node_name, "0.1.0", node_dir)?;
+        let apptainer_def = ApptainerRustDef {
+            node_name,
+            tag: "0.1.0",
+        };
+        std::fs::write(node_dir.join("apptainer.def"), apptainer_def.render()?)?;
     }
 
     Ok(())
@@ -171,7 +174,11 @@ if __name__ == "__main__":
     )?;
 
     if with_container {
-        apply_container_template(node_name, "0.1.0", node_dir)?;
+        let apptainer_def = ApptainerPythonDef {
+            node_name,
+            tag: "0.1.0",
+        };
+        std::fs::write(node_dir.join("apptainer.def"), apptainer_def.render()?)?;
     }
 
     Ok(())
