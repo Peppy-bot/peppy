@@ -535,6 +535,20 @@ impl<'a> ApptainerCommand<'a> {
         cmd.spawn().map_err(Error::from)
     }
 
+    /// Build the fully-configured [`Command`] without spawning it.
+    ///
+    /// This is useful when callers need to customize stdio piping (e.g., for
+    /// async output capture via `tokio::process::Command`) or add additional
+    /// process-level configuration before spawning.
+    ///
+    /// The returned command has **no stdio overrides** — stdout, stderr, and
+    /// stdin all default to `Inherit`.
+    pub fn into_std_command(self) -> Result<Command> {
+        let args = self.build_args()?;
+        let str_args: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+        self.facade.command(&str_args)
+    }
+
     /// Run the command to completion and return its captured output.
     ///
     /// Stdout and stderr are piped (captured).

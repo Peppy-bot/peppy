@@ -650,28 +650,64 @@ async fn process_node_start(
         ));
     }
 
-    // Extract node archive to instances directory
-    let instance_dir =
+    let is_container = entity.config().container.is_some();
+
+    // Prepare instance directory:
+    // - Container nodes: create empty dir (SIF image is self-contained)
+    // - Process nodes: extract .tar.zst archive into the directory
+    let instance_dir = if is_container {
+        match create_instance_dir(instance_id_str, &ctx.action.peppy_dirs) {
+            Ok(dir) => dir,
+            Err(e) => {
+                debug!("Failed to create instance directory: {}", e);
+                return NodeStartResult::failure(format!(
+                    "Failed to create instance directory: {}",
+                    e
+                ));
+            }
+        }
+    } else {
         match extract_node_archive(entity.root_path(), instance_id_str, &ctx.action.peppy_dirs) {
             Ok(dir) => dir,
             Err(e) => {
                 debug!("Failed to extract node archive: {}", e);
                 return NodeStartResult::failure(format!("Failed to extract node archive: {}", e));
             }
-        };
+        }
+    };
 
-    let mut child = match start_node(
-        &entity,
-        &instance_dir,
-        &runtime_config_json5,
-        &env_vars,
-        &ctx.log_file,
-        &ctx.action.peppy_dirs,
-    ) {
-        Ok(child) => child,
-        Err(e) => {
-            debug!("Failed to start node instance '{}': {}", instance_id_str, e);
-            return NodeStartResult::failure(format!("Failed to start node: {}", e));
+    // Spawn the node process:
+    // - Container nodes: apptainer run <sif>
+    // - Process nodes: execute start_cmd
+    let mut child = if is_container {
+        match start_container_node(
+            entity.root_path(),
+            &instance_dir,
+            &runtime_config_json5,
+            &env_vars,
+            &ctx.log_file,
+            &ctx.action.peppy_dirs,
+        ) {
+            Ok(child) => child,
+            Err(e) => {
+                debug!("Failed to start container node: {}", e);
+                return NodeStartResult::failure(format!("Failed to start container node: {}", e));
+            }
+        }
+    } else {
+        match start_node(
+            &entity,
+            &instance_dir,
+            &runtime_config_json5,
+            &env_vars,
+            &ctx.log_file,
+            &ctx.action.peppy_dirs,
+        ) {
+            Ok(child) => child,
+            Err(e) => {
+                debug!("Failed to start node instance '{}': {}", instance_id_str, e);
+                return NodeStartResult::failure(format!("Failed to start node: {}", e));
+            }
         }
     };
 
@@ -930,10 +966,9 @@ async fn kill_and_report_error(
     NodeStartResult::failure(error_msg)
 }
 
-/// Extracts a `.tar.zst` node archive to a new instance directory.
-/// Returns the path to the extracted instance directory.
-fn extract_node_archive(
-    archive_path: &std::path::Path,
+/// Creates (or recreates) a clean instance directory under the instances dir.
+/// Returns the path to the newly created directory.
+fn create_instance_dir(
     instance_id: &str,
     peppy_dirs: &PeppyDirs,
 ) -> std::result::Result<std::path::PathBuf, String> {
@@ -968,8 +1003,18 @@ fn extract_node_archive(
         )
     })?;
 
-    extract_tar_zst(archive_path, &instance_dir)?;
+    Ok(instance_dir)
+}
 
+/// Extracts a `.tar.zst` node archive to a new instance directory.
+/// Returns the path to the extracted instance directory.
+fn extract_node_archive(
+    archive_path: &std::path::Path,
+    instance_id: &str,
+    peppy_dirs: &PeppyDirs,
+) -> std::result::Result<std::path::PathBuf, String> {
+    let instance_dir = create_instance_dir(instance_id, peppy_dirs)?;
+    extract_tar_zst(archive_path, &instance_dir)?;
     Ok(instance_dir)
 }
 
@@ -1046,6 +1091,76 @@ pub fn start_node(
     if manifest.language == PeppygenLanguage::Python {
         command.env("PYTHONUNBUFFERED", "1");
     }
+
+    command.spawn()
+}
+
+/// Starts a container node using the Apptainer runtime.
+///
+/// Builds an `apptainer run <sif_path>` command with environment variables
+/// passed into the container via `--env` flags. Returns a tokio [`Child`] with
+/// piped stdout/stderr for async output capture.
+fn start_container_node(
+    sif_path: &std::path::Path,
+    working_dir: &std::path::Path,
+    runtime_config_json5: &str,
+    env_vars: &[(String, String)],
+    log_file: &Arc<StdMutex<File>>,
+    peppy_dirs: &PeppyDirs,
+) -> std::io::Result<Child> {
+    let apptainer = containers::Apptainer::new()
+        .map_err(|e| std::io::Error::other(format!("Failed to initialize Apptainer: {}", e)))?;
+
+    // Write runtime config to a unique file (same pattern as start_node).
+    let runtime_dir = peppy_dirs.runtime_config_dir();
+    std::fs::create_dir_all(&runtime_dir)?;
+    let counter = RUNTIME_CONFIG_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let pid = std::process::id();
+    let runtime_config_path = runtime_dir.join(format!("runtime_config_{pid}_{counter}.json5"));
+    std::fs::write(&runtime_config_path, runtime_config_json5)?;
+
+    let sif_str = sif_path
+        .to_str()
+        .ok_or_else(|| std::io::Error::other("SIF path is not valid UTF-8"))?;
+
+    // Build apptainer run command. Environment variables are passed into the
+    // container via --env flags (not host-side process env) so they are
+    // visible inside the container.
+    let mut apptainer_cmd = apptainer.run(sif_str);
+    for (key, value) in env_vars {
+        apptainer_cmd = apptainer_cmd.env(key, value);
+    }
+    apptainer_cmd = apptainer_cmd.env(
+        RUNTIME_CONFIG_VAR_NAME,
+        runtime_config_path.to_str().unwrap_or_default(),
+    );
+
+    // Log the command being executed
+    {
+        if let Ok(mut file) = log_file.lock() {
+            let timestamp = Local::now().format("%Y-%m-%dT%H:%M:%S%.3f");
+            let _ = writeln!(
+                file,
+                "[{}] Executing apptainer run: {} (working_dir: {})",
+                timestamp,
+                sif_path.display(),
+                working_dir.display()
+            );
+            let _ = file.flush();
+        }
+    }
+
+    // Get the fully-built std::process::Command from the Apptainer facade,
+    // then convert to tokio::process::Command for async stdio piping.
+    let std_cmd = apptainer_cmd
+        .into_std_command()
+        .map_err(|e| std::io::Error::other(format!("Failed to build apptainer command: {}", e)))?;
+
+    let mut command = Command::from(std_cmd);
+    command
+        .current_dir(working_dir)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
 
     command.spawn()
 }

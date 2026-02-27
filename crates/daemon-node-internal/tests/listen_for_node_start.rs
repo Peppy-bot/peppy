@@ -1402,7 +1402,7 @@ From: ubuntu:24.04
     Version {TARGET_NODE_TAG}
 
 %runscript
-    echo "Running {TARGET_NODE_NAME}:{TARGET_NODE_TAG}"
+    exec sleep 300
 "#
     );
     std::fs::write(source_dir.path().join("apptainer.def"), &apptainer_def)

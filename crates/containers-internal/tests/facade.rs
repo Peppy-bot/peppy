@@ -165,3 +165,39 @@ fn bind_mount_file_visible_in_container() {
         "bound file content should be readable inside the container"
     );
 }
+
+/// Integration test: `into_std_command` produces a runnable `std::process::Command`.
+///
+/// Exercises the `into_std_command()` terminal method by building a run command,
+/// customizing its stdio (the primary use case for this API), and verifying the
+/// output matches what `spawn()` would produce.
+#[test]
+fn into_std_command_produces_runnable_command() {
+    let Some((facade, _tmp_dir, sif_path)) = build_alpine_container() else {
+        return;
+    };
+
+    let mut cmd = facade
+        .run(&sif_path.to_string_lossy())
+        .into_std_command()
+        .expect("into_std_command should succeed");
+
+    // Verify caller can customize stdio (the main reason this method exists)
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+
+    let output = cmd.output().expect("spawned command should complete");
+    assert!(
+        output.status.success(),
+        "command from into_std_command should succeed (exit status: {})\nstderr: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(
+        stdout.trim(),
+        "peppy-test-ok",
+        "into_std_command run should produce the same output as spawn"
+    );
+}
