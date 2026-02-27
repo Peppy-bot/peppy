@@ -23,7 +23,7 @@ async fn listen_for_node_remove_success() {
 
     let peppy_json5 = format!(
         r#"{{
-            schema_version: 1,
+            schema_version: 2,
             manifest: {{
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
@@ -142,7 +142,7 @@ async fn listen_for_node_remove_stop_running_instances_first() {
 
     let peppy_json5 = format!(
         r#"{{
-            schema_version: 1,
+            schema_version: 2,
             manifest: {{
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
@@ -237,7 +237,7 @@ async fn listen_for_node_fails_when_stop_instances_parameter_not_set_and_instanc
 
     let peppy_json5 = format!(
         r#"{{
-            schema_version: 1,
+            schema_version: 2,
             manifest: {{
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",

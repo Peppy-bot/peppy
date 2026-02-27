@@ -162,18 +162,26 @@ async fn handle_node_sync_request_inner(
     } else {
         match NodeConfigParser::from_path(&node_config_path) {
             Ok(node_config) => {
-                // Validate dependencies exist in the node stack
+                // Validate dependencies and peers exist in the node stack
+                let resolve =
+                    |name: &str, tag: &str| node_stack.find(name, tag).map(|e| e.config().clone());
                 let dep_errors = node_stack::validate_dependency_specs(
                     &node_config,
                     node_config.manifest.name.as_str(),
                     &node_config.manifest.tag,
-                    |name, tag| node_stack.find(name, tag).map(|e| e.config().clone()),
+                    resolve,
+                );
+                let peer_errors = node_stack::validate_peer_specs(
+                    &node_config,
+                    node_config.manifest.name.as_str(),
+                    &node_config.manifest.tag,
+                    resolve,
                 );
 
                 let mut missing_dependencies: HashSet<String> = HashSet::new();
                 let mut missing_interfaces: Vec<String> = Vec::new();
 
-                for err in &dep_errors {
+                for err in dep_errors.iter().chain(peer_errors.iter()) {
                     match err {
                         node_stack::NodeStackError::MissingDependency {
                             dependency,
@@ -289,93 +297,94 @@ async fn handle_node_sync_request_inner(
     NodeSyncResponse::success().encode()
 }
 
+/// Resolves topic interfaces from a list of subscribed topics by looking up
+/// exposed message formats from dependency/peer nodes in the node stack.
+fn resolve_topic_interfaces(
+    topics: &[config::node::SubscribedTopic],
+    node_stack: &NodeStack,
+    interfaces: &mut Vec<DeploymentInterface>,
+) {
+    for subscribed_topic in topics {
+        if let Some(dependency_entity) =
+            node_stack.find(&subscribed_topic.node, &subscribed_topic.tag)
+            && let Some(exposes) = &dependency_entity.config().interfaces.exposes
+            && let Some(exposed_topics) = &exposes.topics
+            && let Some(exposed_topic) = exposed_topics
+                .iter()
+                .find(|t| t.name.trim() == subscribed_topic.name.trim())
+            && let Some(message_format) = &exposed_topic.message_format
+        {
+            interfaces.push(DeploymentInterface::new(InterfaceVariant::SubscribedTopic(
+                subscribed_topic.clone(),
+                message_format.clone(),
+            )));
+        }
+    }
+}
+
+/// Resolves service interfaces from a list of subscribed services by looking up
+/// exposed request/response formats from dependency/peer nodes in the node stack.
+fn resolve_service_interfaces(
+    services: &[config::node::SubscribedService],
+    node_stack: &NodeStack,
+    interfaces: &mut Vec<DeploymentInterface>,
+) {
+    for subscribed_service in services {
+        if let Some(dependency_entity) =
+            node_stack.find(&subscribed_service.node, &subscribed_service.tag)
+            && let Some(exposes) = &dependency_entity.config().interfaces.exposes
+            && let Some(exposed_services) = &exposes.services
+            && let Some(exposed_service) = exposed_services
+                .iter()
+                .find(|s| s.name.trim() == subscribed_service.name.trim())
+        {
+            interfaces.push(DeploymentInterface::new(
+                InterfaceVariant::SubscribedService(
+                    subscribed_service.clone(),
+                    exposed_service
+                        .request_message_format
+                        .clone()
+                        .unwrap_or_default(),
+                    exposed_service
+                        .response_message_format
+                        .clone()
+                        .unwrap_or_default(),
+                ),
+            ));
+        }
+    }
+}
+
 /// Collects subscribed interfaces from a node config and resolves their message formats
 /// by looking up the exposed interfaces from dependency nodes in the node stack.
+/// Also collects `peers_with` interfaces using the same resolution logic.
 pub fn collect_subscribed_interfaces(
     node_config: &config::node::NodeConfig,
     node_stack: &NodeStack,
 ) -> Vec<DeploymentInterface> {
     let mut interfaces = Vec::new();
 
-    let Some(subscribes_to) = &node_config.interfaces.subscribes_to else {
-        return interfaces;
-    };
-
-    // Collect subscribed topics
-    if let Some(topics) = &subscribes_to.topics {
-        for subscribed_topic in topics {
-            // Find the dependency node in the stack
-            if let Some(dependency_entity) =
-                node_stack.find(&subscribed_topic.node, &subscribed_topic.tag)
-            {
-                // Find the exposed topic with the matching name
-                if let Some(exposes) = &dependency_entity.config().interfaces.exposes
-                    && let Some(exposed_topics) = &exposes.topics
-                    && let Some(exposed_topic) = exposed_topics
-                        .iter()
-                        .find(|t| t.name.trim() == subscribed_topic.name.trim())
-                {
-                    // Get the message format from the exposed topic
-                    if let Some(message_format) = &exposed_topic.message_format {
-                        interfaces.push(DeploymentInterface::new(
-                            InterfaceVariant::SubscribedTopic(
-                                subscribed_topic.clone(),
-                                message_format.clone(),
-                            ),
-                        ));
-                    }
-                }
-            }
+    // Collect subscribes_to interfaces (hard dependencies)
+    if let Some(subscribes_to) = &node_config.interfaces.subscribes_to {
+        if let Some(topics) = &subscribes_to.topics {
+            resolve_topic_interfaces(topics, node_stack, &mut interfaces);
         }
-    }
 
-    // Collect subscribed services
-    if let Some(services) = &subscribes_to.services {
-        for subscribed_service in services {
-            // Find the dependency node in the stack
-            if let Some(dependency_entity) =
-                node_stack.find(&subscribed_service.node, &subscribed_service.tag)
-            {
-                // Find the exposed service with the matching name
-                if let Some(exposes) = &dependency_entity.config().interfaces.exposes
-                    && let Some(exposed_services) = &exposes.services
-                    && let Some(exposed_service) = exposed_services
-                        .iter()
-                        .find(|s| s.name.trim() == subscribed_service.name.trim())
-                {
-                    interfaces.push(DeploymentInterface::new(
-                        InterfaceVariant::SubscribedService(
-                            subscribed_service.clone(),
-                            exposed_service
-                                .request_message_format
-                                .clone()
-                                .unwrap_or_default(),
-                            exposed_service
-                                .response_message_format
-                                .clone()
-                                .unwrap_or_default(),
-                        ),
-                    ));
-                }
-            }
+        if let Some(services) = &subscribes_to.services {
+            resolve_service_interfaces(services, node_stack, &mut interfaces);
         }
-    }
 
-    // Collect subscribed actions
-    if let Some(actions) = &subscribes_to.actions {
-        for subscribed_action in actions {
-            // Find the dependency node in the stack
-            if let Some(dependency_entity) =
-                node_stack.find(&subscribed_action.node, &subscribed_action.tag)
-            {
-                // Find the exposed action with the matching name
-                if let Some(exposes) = &dependency_entity.config().interfaces.exposes
+        // Collect subscribed actions
+        if let Some(actions) = &subscribes_to.actions {
+            for subscribed_action in actions {
+                if let Some(dependency_entity) =
+                    node_stack.find(&subscribed_action.node, &subscribed_action.tag)
+                    && let Some(exposes) = &dependency_entity.config().interfaces.exposes
                     && let Some(exposed_actions) = &exposes.actions
                     && let Some(exposed_action) = exposed_actions
                         .iter()
                         .find(|a| a.name.trim() == subscribed_action.name.trim())
                 {
-                    // Build the SubscribedActionMessage from exposed action endpoints
                     let action_message = SubscribedActionMessage {
                         goal_request: exposed_action
                             .goal_service
@@ -407,6 +416,17 @@ pub fn collect_subscribed_interfaces(
                     ));
                 }
             }
+        }
+    }
+
+    // Collect peers_with interfaces (no dependency edges, same resolution logic)
+    if let Some(peers_with) = &node_config.interfaces.peers_with {
+        if let Some(topics) = &peers_with.topics {
+            resolve_topic_interfaces(topics, node_stack, &mut interfaces);
+        }
+
+        if let Some(services) = &peers_with.services {
+            resolve_service_interfaces(services, node_stack, &mut interfaces);
         }
     }
 

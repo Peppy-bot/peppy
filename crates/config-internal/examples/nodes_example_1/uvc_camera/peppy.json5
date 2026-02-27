@@ -1,6 +1,6 @@
 // A simple node that emits video frames from a UVC camera
 {
-  schema_version: 1,
+  schema_version: 2,
   manifest: {
     name: "uvc_camera",
     tag: "0.1.0",

@@ -104,7 +104,7 @@ fn create_versioned_nodes_git_repo(to_path: impl AsRef<Path>) -> PathBuf {
     std::fs::write(
         repo_path.join(&rel_config_path),
         r#"{
-            schema_version: 1,
+            schema_version: 2,
             manifest: {
                 name: "uvc_camera",
                 tag: "0.1.0",
@@ -144,7 +144,7 @@ fn create_versioned_nodes_git_repo(to_path: impl AsRef<Path>) -> PathBuf {
     std::fs::write(
         repo_path.join(&rel_config_path),
         r#"{
-            schema_version: 1,
+            schema_version: 2,
             manifest: {
                 name: "uvc_camera",
                 tag: "0.2.0",
@@ -195,7 +195,7 @@ async fn listen_for_node_fs_add_success() {
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
     let peppy_json5 = format!(
         r#"{{
-            schema_version: 1,
+            schema_version: 2,
             manifest: {{
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
@@ -279,7 +279,7 @@ async fn listen_for_node_container_add_success() {
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
     let peppy_json5 = r#"{
-        schema_version: 1,
+        schema_version: 2,
         manifest: {
             name: "TARGET_NODE_NAME",
             tag: "TARGET_NODE_TAG",
@@ -517,7 +517,7 @@ async fn listen_for_node_http_add_success() {
     let bundle_dir = tempfile::tempdir().expect("failed to create temp bundle dir");
     let peppy_json5 = format!(
         r#"{{
-            schema_version: 1,
+            schema_version: 2,
             manifest: {{
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
@@ -633,7 +633,7 @@ async fn listen_for_node_add_no_config_found() {
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
     let peppy_json5 = format!(
         r#"{{
-            schema_version: 1,
+            schema_version: 2,
             manifest: {{
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
@@ -676,7 +676,7 @@ async fn listen_for_node_add_git_hash_mismatch_fails() {
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
     let peppy_json5 = r#"{
-        schema_version: 1,
+        schema_version: 2,
         manifest: {
             name: "git_hash_mismatch_node",
             tag: "0.1.0",
@@ -764,7 +764,7 @@ async fn listen_for_node_add_no_start_cmd_fails() {
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
     let peppy_json5 = r#"{
-        schema_version: 1,
+        schema_version: 2,
         manifest: {
             name: "no_start_cmd_node",
             tag: "0.1.0",
@@ -811,7 +811,7 @@ async fn listen_for_node_add_dependency_not_resolved() {
 
     // Try to add a consumer node that depends on a non-existent provider
     let peppy_json5 = r#"{
-        schema_version: 1,
+        schema_version: 2,
         manifest: {
             name: "consumer_node",
             tag: "1.0.0",
@@ -886,7 +886,7 @@ async fn listen_for_node_add_same_node_same_tags_overwrites_when_no_dependents()
     // First add: no interfaces
     let peppy_json5_v1 = format!(
         r#"{{
-            schema_version: 1,
+            schema_version: 2,
             manifest: {{
                 name: "{NODE_NAME}",
                 tag: "{NODE_TAG}",
@@ -927,7 +927,7 @@ async fn listen_for_node_add_same_node_same_tags_overwrites_when_no_dependents()
     // Second add: same name+tag but different interfaces -> should overwrite.
     let peppy_json5_v2 = format!(
         r#"{{
-            schema_version: 1,
+            schema_version: 2,
             manifest: {{
                 name: "{NODE_NAME}",
                 tag: "{NODE_TAG}",
@@ -1010,7 +1010,7 @@ async fn listen_for_node_add_same_node_same_tags_fails_when_node_has_dependents(
 
     let dependency_peppy_json5_v1 = format!(
         r#"{{
-            schema_version: 1,
+            schema_version: 2,
             manifest: {{
                 name: "{DEPENDENCY_NODE_NAME}",
                 tag: "{DEPENDENCY_NODE_TAG}",
@@ -1048,7 +1048,7 @@ async fn listen_for_node_add_same_node_same_tags_fails_when_node_has_dependents(
 
     let dependent_peppy_json5 = format!(
         r#"{{
-            schema_version: 1,
+            schema_version: 2,
             manifest: {{
                 name: "{DEPENDENT_NODE_NAME}",
                 tag: "{DEPENDENT_NODE_TAG}",
@@ -1098,7 +1098,7 @@ async fn listen_for_node_add_same_node_same_tags_fails_when_node_has_dependents(
     // Overwrite attempt: same name+tag but different interfaces should fail due to dependent nodes.
     let dependency_peppy_json5_v2 = format!(
         r#"{{
-            schema_version: 1,
+            schema_version: 2,
             manifest: {{
                 name: "{DEPENDENCY_NODE_NAME}",
                 tag: "{DEPENDENCY_NODE_TAG}",
@@ -1170,7 +1170,7 @@ async fn listen_for_node_add_same_node_different_tags_create_two_entities() {
 
     let peppy_json5_v1 = format!(
         r#"{{
-            schema_version: 1,
+            schema_version: 2,
             manifest: {{
                 name: "{NODE_NAME}",
                 tag: "1.0.0",
@@ -1202,7 +1202,7 @@ async fn listen_for_node_add_same_node_different_tags_create_two_entities() {
 
     let peppy_json5_v2 = format!(
         r#"{{
-            schema_version: 1,
+            schema_version: 2,
             manifest: {{
                 name: "{NODE_NAME}",
                 tag: "2.0.0",
@@ -1259,7 +1259,7 @@ async fn listen_for_node_add_copies_files_to_storage() {
 
     let peppy_json5 = format!(
         r#"{{
-            schema_version: 1,
+            schema_version: 2,
             manifest: {{
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
@@ -1333,7 +1333,7 @@ async fn listen_for_node_add_runs_add_cmd() {
     // add_cmd creates a marker file to prove it was executed
     let peppy_json5 = format!(
         r#"{{
-            schema_version: 1,
+            schema_version: 2,
             manifest: {{
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
@@ -1399,7 +1399,7 @@ async fn listen_for_node_add_cmd_failure_fails_add() {
     // add_cmd that will fail (non-existent command)
     let peppy_json5 = format!(
         r#"{{
-            schema_version: 1,
+            schema_version: 2,
             manifest: {{
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
@@ -1459,7 +1459,7 @@ async fn listen_for_node_add_cmd_nonzero_exit_fails_add() {
     // add_cmd that exits with non-zero status
     let peppy_json5 = format!(
         r#"{{
-            schema_version: 1,
+            schema_version: 2,
             manifest: {{
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
@@ -1517,7 +1517,7 @@ async fn listen_for_node_add_streams_stdout_and_stderr() {
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
     let peppy_json5 = format!(
         r#"{{
-            schema_version: 1,
+            schema_version: 2,
             manifest: {{
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
@@ -1577,7 +1577,7 @@ async fn listen_for_node_add_fingerprint_mismatch() {
 
     let peppy_json5 = format!(
         r#"{{
-            schema_version: 1,
+            schema_version: 2,
             manifest: {{
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
@@ -1652,7 +1652,7 @@ async fn listen_for_node_add_writes_log_file() {
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
     let peppy_json5 = format!(
         r#"{{
-            schema_version: 1,
+            schema_version: 2,
             manifest: {{
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
@@ -1757,7 +1757,7 @@ async fn listen_for_node_add_abandoned_action_does_not_block_next_goal() {
     let first_source_dir = tempfile::tempdir().expect("failed to create temp source dir");
     let first_peppy_json5 = format!(
         r#"{{
-            schema_version: 1,
+            schema_version: 2,
             manifest: {{
                 name: "{FIRST_NODE_NAME}",
                 tag: "{FIRST_NODE_TAG}",
@@ -1823,7 +1823,7 @@ async fn listen_for_node_add_abandoned_action_does_not_block_next_goal() {
     let second_source_dir = tempfile::tempdir().expect("failed to create temp source dir");
     let second_peppy_json5 = format!(
         r#"{{
-            schema_version: 1,
+            schema_version: 2,
             manifest: {{
                 name: "{SECOND_NODE_NAME}",
                 tag: "{SECOND_NODE_TAG}",
@@ -1882,7 +1882,7 @@ async fn node_add_same_node_shutdown_existing_instances() {
     let source_dir_v1 = tempfile::tempdir().expect("failed to create temp source dir");
     let peppy_json5_v1 = format!(
         r#"{{
-            schema_version: 1,
+            schema_version: 2,
             manifest: {{
                 name: "{NODE_NAME}",
                 tag: "{NODE_TAG}",
@@ -2000,7 +2000,7 @@ async fn node_add_same_node_shutdown_existing_instances() {
     let source_dir_v2 = tempfile::tempdir().expect("failed to create temp source dir");
     let peppy_json5_v2 = format!(
         r#"{{
-            schema_version: 1,
+            schema_version: 2,
             manifest: {{
                 name: "{NODE_NAME}",
                 tag: "{NODE_TAG}",
@@ -2132,7 +2132,7 @@ async fn listen_for_node_add_uses_env_overrides_for_path() {
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
     let peppy_json5 = format!(
         r#"{{
-            schema_version: 1,
+            schema_version: 2,
             manifest: {{
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
@@ -2217,7 +2217,7 @@ async fn listen_for_node_add_injects_runtime_env_vars() {
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
     let peppy_json5 = format!(
         r#"{{
-            schema_version: 1,
+            schema_version: 2,
             manifest: {{
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
@@ -2272,7 +2272,7 @@ async fn listen_for_node_add_fails_runs_add_cmd_on_missing_node_dependency() {
     // incomplete peppygen interfaces from missing dependencies). We use an absolute path
     // for the marker so it survives the copied-dir cleanup on failure.
     let peppy_json5 = r#"{
-        schema_version: 1,
+        schema_version: 2,
         manifest: {
           name: "TARGET_NODE_NAME",
           tag: "TARGET_NODE_TAG",
@@ -2359,7 +2359,7 @@ async fn listen_for_node_add_fails_on_missing_interface_even_when_dependency_exi
     let dep_source_dir = tempfile::tempdir().expect("failed to create temp dep source dir");
     let dep_peppy_json5 = format!(
         r#"{{
-            schema_version: 1,
+            schema_version: 2,
             manifest: {{
                 name: "{DEPENDENCY_NODE_NAME}",
                 tag: "{DEPENDENCY_NODE_TAG}",
@@ -2406,7 +2406,7 @@ async fn listen_for_node_add_fails_on_missing_interface_even_when_dependency_exi
     let marker_path = marker_dir.path().join(ADD_CMD_MARKER_FILE);
 
     let target_peppy_json5 = r#"{
-        schema_version: 1,
+        schema_version: 2,
         manifest: {
           name: "TARGET_NODE_NAME",
           tag: "TARGET_NODE_TAG",
@@ -2492,7 +2492,7 @@ async fn listen_for_node_add_reports_excluded_dirs_in_feedback() {
 
     let peppy_json5 = format!(
         r#"{{
-            schema_version: 1,
+            schema_version: 2,
             manifest: {{
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",

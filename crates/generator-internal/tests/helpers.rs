@@ -24,7 +24,7 @@ pub fn test_peppy_dirs() -> PeppyDirs {
 }
 
 pub const STUB_NODE_CONFIG: &str = r#"{
-  schema_version: 1,
+  schema_version: 2,
   manifest: {
     name: "generated_node",
     tag: "0.1.0",
@@ -524,7 +524,7 @@ pub async fn try_send_shutdown(
 // ---------------------------------------------------------------------------
 
 pub const STUB_PYTHON_NODE_CONFIG: &str = r#"{
-  schema_version: 1,
+  schema_version: 2,
   manifest: {
     name: "generated_node",
     tag: "0.1.0",

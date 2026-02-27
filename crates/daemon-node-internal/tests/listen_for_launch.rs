@@ -184,7 +184,7 @@ fn write_node_config_with_options(
         &node_config_path,
         format!(
             r#"{{
-              schema_version: 1,
+              schema_version: 2,
               manifest: {{
                 name: "{node_name}",
                 tag: "{node_tag}",
@@ -229,7 +229,7 @@ fn create_uvc_camera_repo(to_path: &Path, node_tag: &str) -> PathBuf {
         repo_path.join(&rel_config_path),
         format!(
             r#"{{
-              schema_version: 1,
+              schema_version: 2,
               manifest: {{
                 name: "uvc_camera",
                 tag: "{node_tag}",

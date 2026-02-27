@@ -172,7 +172,7 @@ mod tests {
         std::fs::write(
             &file_path,
             r#"{
-                schema_version: 1,
+                schema_version: 2,
                 manifest: {
                     name: "uvc_camera",
                     tag: "0.1.0",

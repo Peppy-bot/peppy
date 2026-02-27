@@ -1,5 +1,5 @@
 {
-  schema_version: 1,
+  schema_version: 2,
   manifest: {
     name: "hello_world",
     tag: "0.1.0",

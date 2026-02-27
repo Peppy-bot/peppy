@@ -37,7 +37,7 @@ async fn listen_for_node_info_on_fs_node_success() {
     let node_dir = tempfile::tempdir().expect("failed to create temp node dir");
     let peppy_json5 = format!(
         r#"{{
-            schema_version: 1,
+            schema_version: 2,
             manifest: {{
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
@@ -232,7 +232,7 @@ async fn listen_for_node_info_on_http_node_success() {
     let bundle_dir = tempfile::tempdir().expect("failed to create temp bundle dir");
     let peppy_json5 = format!(
         r#"{{
-            schema_version: 1,
+            schema_version: 2,
             manifest: {{
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
@@ -355,7 +355,7 @@ async fn listen_for_node_info_has_instance_ids() {
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
     let peppy_json5 = format!(
         r#"{{
-            schema_version: 1,
+            schema_version: 2,
             manifest: {{
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
@@ -585,7 +585,7 @@ async fn listen_for_node_info_recovers_after_invalid_request() {
     let node_dir = tempfile::tempdir().expect("failed to create temp node dir");
     let peppy_json5 = format!(
         r#"{{
-            schema_version: 1,
+            schema_version: 2,
             manifest: {{
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",

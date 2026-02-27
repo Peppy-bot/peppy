@@ -20,7 +20,7 @@ fn http_bundle_is_downloaded_and_resolved() {
     let server = Server::run();
 
     let manifest_content = r#"{
-            schema_version: 1,
+            schema_version: 2,
             manifest: { name: "uvc_camera", tag: "1.2.3", language: "rust" },
             build: { start_cmd: ["uvc_camera"] }
         }"#;
@@ -75,7 +75,7 @@ fn http_bundle_is_cloned_and_same_tag_updates_code() {
     let server = Server::run();
 
     let manifest_v1 = r#"{
-            schema_version: 1,
+            schema_version: 2,
             manifest: { name: "uvc_camera", tag: "1.0.0", language: "rust" },
             build: { start_cmd: ["run_v1"] }
         }"#;
@@ -83,7 +83,7 @@ fn http_bundle_is_cloned_and_same_tag_updates_code() {
     let checksum_v1 = sha256_checksum(&bundle_bytes_v1);
 
     let manifest_v2 = r#"{
-            schema_version: 1,
+            schema_version: 2,
             manifest: { name: "uvc_camera", tag: "1.0.0", language: "rust" },
             build: { start_cmd: ["run_v2"] }
         }"#;

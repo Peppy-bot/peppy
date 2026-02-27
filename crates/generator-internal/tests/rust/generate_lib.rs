@@ -10,7 +10,7 @@ use tempfile::TempDir;
 use crate::helpers;
 
 const PEPPY_JSON5_CONFIG: &str = r#"{
-  schema_version: 1,
+  schema_version: 2,
   manifest: {
     name: "test_node",
     tag: "0.1.0",
@@ -54,7 +54,7 @@ fn generate_peppygen_lib_minimal_config() {
 
     // Minimal config with no interfaces
     let minimal_config = r#"{
-      schema_version: 1,
+      schema_version: 2,
       manifest: {
         name: "minimal_node",
         tag: "0.1.0",
@@ -227,7 +227,7 @@ fn generate_peppygen_rust_lib_exposed_and_subscribed_topics() {
 
     let exposed_config = format!(
         r#"{{
-          schema_version: 1,
+          schema_version: 2,
           manifest: {{
             name: "{EXPOSED_NODE_NAME}",
             tag: "0.1.0",
@@ -278,7 +278,7 @@ fn generate_peppygen_rust_lib_exposed_and_subscribed_topics() {
 
     let subscriber_config = format!(
         r#"{{
-          schema_version: 1,
+          schema_version: 2,
           manifest: {{
             name: "{SUBSCRIBER_NODE_NAME}",
             tag: "0.1.0",
@@ -342,7 +342,7 @@ fn generate_peppygen_rust_lib_exposed_and_subscribed_services() {
 
     let exposed_config = format!(
         r#"{{
-          schema_version: 1,
+          schema_version: 2,
           manifest: {{
             name: "{EXPOSED_NODE_NAME}",
             tag: "0.1.0",
@@ -396,7 +396,7 @@ fn generate_peppygen_rust_lib_exposed_and_subscribed_services() {
 
     let subscriber_config = format!(
         r#"{{
-          schema_version: 1,
+          schema_version: 2,
           manifest: {{
             name: "{SUBSCRIBER_NODE_NAME}",
             tag: "0.1.0",
@@ -469,7 +469,7 @@ fn generate_peppygen_rust_lib_exposed_and_subscribed_actions() {
 
     let exposed_config = format!(
         r#"{{
-          schema_version: 1,
+          schema_version: 2,
           manifest: {{
             name: "{EXPOSED_NODE_NAME}",
             tag: "0.1.0",
@@ -535,7 +535,7 @@ fn generate_peppygen_rust_lib_exposed_and_subscribed_actions() {
 
     let subscriber_config = format!(
         r#"{{
-          schema_version: 1,
+          schema_version: 2,
           manifest: {{
             name: "{SUBSCRIBER_NODE_NAME}",
             tag: "0.1.0",

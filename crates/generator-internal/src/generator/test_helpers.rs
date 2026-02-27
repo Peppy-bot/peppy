@@ -15,7 +15,7 @@ use tempfile::TempDir;
 use super::types::InterfaceArtifact;
 
 pub const STUB_NODE_CONFIG: &str = r#"{
-  schema_version: 1,
+  schema_version: 2,
   manifest: {
     name: "generated_node",
     tag: "0.1.0",

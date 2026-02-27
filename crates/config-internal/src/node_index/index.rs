@@ -74,7 +74,7 @@ mod tests {
         let path = dir.join(NODE_CONFIG_FILE);
         let json5 = format!(
             r#"{{
-                schema_version: 1,
+                schema_version: 2,
                 manifest: {{
                     name: "{name}",
                     tag: "0.1.0",
@@ -126,7 +126,7 @@ mod tests {
         // Invalid name (spaces and '!') should fail parsing on initial load
         fs::write(
             temp.path().join(NODE_CONFIG_FILE),
-            "{ schema_version: 1, manifest: { name: 'Invalid Name!', tag: '0.1.0', language: 'rust' }, build: { start_cmd: ['./target/release/Invalid Name!'] } }",
+            "{ schema_version: 2, manifest: { name: 'Invalid Name!', tag: '0.1.0', language: 'rust' }, build: { start_cmd: ['./target/release/Invalid Name!'] } }",
         )
         .unwrap();
 

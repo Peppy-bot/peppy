@@ -12,7 +12,7 @@ use std::{
 /// Version identifier embedded in node `peppy.json5` manifests.
 /// Using a simple alias keeps serialization straightforward while making the intent explicit.
 pub type SchemaVersion = u16;
-pub const CURRENT_SCHEMA_VERSION: SchemaVersion = 1;
+pub const CURRENT_SCHEMA_VERSION: SchemaVersion = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

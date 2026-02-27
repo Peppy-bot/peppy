@@ -569,7 +569,7 @@ fn main() -> Result<()> {
         node_dir.join(NODE_CONFIG_FILE),
         format!(
             r#"{{
-  schema_version: 1,
+  schema_version: 2,
   manifest: {{
     name: "{crate_name}",
     tag: "{node_tag}",

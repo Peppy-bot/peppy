@@ -104,7 +104,7 @@ async fn daemon_runner_succeed() {
     let temp_dir = tempfile::tempdir().expect("failed to create temp dir for test runner");
     let peppy_config_path = temp_dir.path().join(peppylib::config::NODE_CONFIG_FILE);
     let peppy_config = r#"{
-      schema_version: 1,
+      schema_version: 2,
       manifest: {
         name: "test_node",
         tag: "0.1.0",
@@ -248,7 +248,7 @@ async fn standalone_runner_succeed() {
     let temp_dir = tempfile::tempdir().expect("failed to create temp dir for test runner");
     let peppy_config_path = temp_dir.path().join(peppylib::config::NODE_CONFIG_FILE);
     let peppy_config = r#"{
-      schema_version: 1,
+      schema_version: 2,
       manifest: {
         name: "test_node",
         tag: "0.1.0",
@@ -307,7 +307,7 @@ async fn node_ready_but_not_healthy() {
     let temp_dir = tempfile::tempdir().expect("failed to create temp dir for test runner");
     let peppy_config_path = temp_dir.path().join(peppylib::config::NODE_CONFIG_FILE);
     let peppy_config = r#"{
-      schema_version: 1,
+      schema_version: 2,
       manifest: {
         name: "test_node",
         tag: "0.1.0",
@@ -559,7 +559,7 @@ async fn daemon_cancellation_token_cancelled_on_shutdown() {
     let temp_dir = tempfile::tempdir().expect("failed to create temp dir for test runner");
     let peppy_config_path = temp_dir.path().join(peppylib::config::NODE_CONFIG_FILE);
     let peppy_config = r#"{
-      schema_version: 1,
+      schema_version: 2,
       manifest: {
         name: "test_node",
         tag: "0.1.0",
@@ -693,7 +693,7 @@ async fn node_runner_exposes_messenger_and_metadata() {
     let temp_dir = tempfile::tempdir().expect("failed to create temp dir for test runner");
     let peppy_config_path = temp_dir.path().join(peppylib::config::NODE_CONFIG_FILE);
     let peppy_config = r#"{
-      schema_version: 1,
+      schema_version: 2,
       manifest: {
         name: "test_node",
         tag: "0.1.0",

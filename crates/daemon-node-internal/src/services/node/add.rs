@@ -13,7 +13,7 @@ use chrono::Local;
 use config::consts::{NODE_CONFIG_FILE, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH, PeppyDirs};
 use config::node::{NodeConfig, NodeConfigParser};
 use git2::Repository;
-use node_stack::{NodeStack, validate_dependency_specs};
+use node_stack::{NodeStack, validate_dependency_specs, validate_peer_specs};
 use peppylib::messaging::{
     ActionCreation, SHUTDOWN_SERVICE, ServiceMessenger, ServiceRequestContext, TopicPublisher,
 };
@@ -1267,13 +1267,26 @@ async fn process_node_add(
     // Validate that all dependency nodes exist in the stack and expose the required
     // interfaces before running add_cmd. This prevents confusing build failures when
     // peppygen is generated with incomplete interfaces due to missing dependencies.
-    let dep_errors = validate_dependency_specs(&node_config, &node_name, &node_tag, |name, tag| {
-        ctx.node_stack.find(name, tag).map(|e| e.config().clone())
-    });
+    let resolve =
+        |name: &str, tag: &str| ctx.node_stack.find(name, tag).map(|e| e.config().clone());
+    let dep_errors = validate_dependency_specs(&node_config, &node_name, &node_tag, resolve);
     if let Some(err) = dep_errors.into_iter().next() {
         return NodeAddResult::failure(
             &ctx.log_path,
             format!("Failed to add node config: {}", err),
+        );
+    }
+
+    // Validate that all peer nodes exist in the stack and expose the required interfaces.
+    // Peer nodes have no dependency edge, but their message formats must be resolvable.
+    let peer_errors = validate_peer_specs(&node_config, &node_name, &node_tag, resolve);
+    if let Some(err) = peer_errors.into_iter().next() {
+        return NodeAddResult::failure(
+            &ctx.log_path,
+            format!(
+                "Peer node not found in stack: {}. Add the peer node first, then re-add this node.",
+                err
+            ),
         );
     }
 

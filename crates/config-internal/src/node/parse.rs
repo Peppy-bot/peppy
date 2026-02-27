@@ -22,7 +22,9 @@ impl NodeConfigParser {
     /// Takes a JSON5 content as parameter
     pub fn from_content(content: &str) -> Result<NodeConfig> {
         // Strict schema validation is handled by serde via #[serde(deny_unknown_fields)]
-        serde_json5::from_str::<NodeConfig>(content).map_err(|e| ParsingError::from(e).into())
+        let config: NodeConfig = serde_json5::from_str(content).map_err(ParsingError::from)?;
+        config.validate()?;
+        Ok(config)
     }
 }
 
@@ -35,7 +37,7 @@ mod tests {
     #[test]
     fn test_parse_minimal_config() {
         let json5 = r#"{
-            schema_version: 1,
+            schema_version: 2,
             manifest: {
                 name: "test_node",
                 tag: "0.1.0",
@@ -55,7 +57,7 @@ mod tests {
     #[test]
     fn test_parse_complex_config() {
         let json5 = r#"{
-            schema_version: 1,
+            schema_version: 2,
             manifest: {
                 name: "camera_driver",
                 tag: "2.1.0",

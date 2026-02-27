@@ -1,0 +1,45 @@
+// Vision node for visual servoing.
+// Publishes detected object positions and reads arm position from the arm controller peer.
+{
+  schema_version: 2,
+  manifest: {
+    name: "vision",
+    tag: "0.1.0",
+    language: "python",
+    labels: [
+      "perception",
+      "camera",
+    ],
+  },
+  build: {
+    start_cmd: [
+      "python",
+      "main.py"
+    ]
+  },
+  interfaces: {
+    exposes: {
+      topics: [
+        {
+          name: "object_position",
+          qos_profile: "sensor_data",
+          message_format: {
+            x: "f64",
+            y: "f64",
+            confidence: "f32"
+          }
+        }
+      ],
+    },
+    peers_with: {
+      topics: [
+        {
+          id: "arm_pos",
+          node: "arm_controller",
+          name: "arm_position",
+          tag: "0.1.0"
+        }
+      ],
+    },
+  }
+}

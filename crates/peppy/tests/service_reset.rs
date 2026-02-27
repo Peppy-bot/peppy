@@ -33,7 +33,7 @@ fn write_node_config(
         &node_config_path,
         format!(
             r#"{{
-                schema_version: 1,
+                schema_version: 2,
                 manifest: {{
                     name: "{node_name}",
                     tag: "{node_tag}",

@@ -29,7 +29,7 @@ async fn node_info_shows_dependencies_from_subscribed_interfaces() {
     let node_dir = tempfile::tempdir().expect("failed to create temp node dir");
     let peppy_json5 = format!(
         r#"{{
-            schema_version: 1,
+            schema_version: 2,
             manifest: {{
                 name: "{NODE_NAME}",
                 tag: "{NODE_TAG}",
@@ -165,7 +165,7 @@ async fn node_info_no_dependencies_when_no_subscribes() {
     let node_dir = tempfile::tempdir().expect("failed to create temp node dir");
     let peppy_json5 = format!(
         r#"{{
-            schema_version: 1,
+            schema_version: 2,
             manifest: {{
                 name: "{NODE_NAME}",
                 tag: "{NODE_TAG}",

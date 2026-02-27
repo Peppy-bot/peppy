@@ -1,7 +1,7 @@
 // Local example that keeps the `web_video_stream` folder path but uses the current
 // fake video reconstruction structure from example_nodes.
 {
-  schema_version: 1,
+  schema_version: 2,
   manifest: {
     name: "video_reconstruction",
     tag: "0.1.0",

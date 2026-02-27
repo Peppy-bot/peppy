@@ -649,22 +649,30 @@ async fn validate_and_order_dependencies(
         .map(|p| NodeKey::new(&p.node_name, &p.node_tag))
         .collect();
 
-    // Validate all dependencies exist and expose the required interfaces.
-    let dependency_errors: Vec<String> = planned
+    // Validate all dependencies and peers exist and expose the required interfaces.
+    let resolve = |name: &str, tag: &str| configs_by_key.get(&NodeKey::new(name, tag)).cloned();
+    let validation_errors: Vec<String> = planned
         .iter()
         .flat_map(|item| {
-            node_stack::validate_dependency_specs(
+            let dep_errors = node_stack::validate_dependency_specs(
                 &item.config,
                 &item.node_name,
                 &item.node_tag,
-                |name, tag| configs_by_key.get(&NodeKey::new(name, tag)).cloned(),
-            )
+                resolve,
+            );
+            let peer_errors = node_stack::validate_peer_specs(
+                &item.config,
+                &item.node_name,
+                &item.node_tag,
+                resolve,
+            );
+            dep_errors.into_iter().chain(peer_errors)
         })
         .map(|e| e.to_string())
         .collect();
 
-    if !dependency_errors.is_empty() {
-        let msg = dependency_errors.join("\n");
+    if !validation_errors.is_empty() {
+        let msg = validation_errors.join("\n");
         publish_stderr(ctx, msg.clone(), LaunchFeedbackStep::LauncherStep).await;
         return Err(LaunchResult::failure(&ctx.log_path, msg));
     }

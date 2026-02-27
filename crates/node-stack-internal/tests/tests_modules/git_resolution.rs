@@ -14,7 +14,7 @@ fn git_repo_is_cloned_and_resolved() {
     let (_data_dir, peppy_dirs) = init_test_data_dir();
     let temp_dir = tempdir().expect("temp dir");
     let manifest_content = r#"{
-            schema_version: 1,
+            schema_version: 2,
             manifest: { name: "uvc_camera", tag: "1.2.3", language: "rust" },
             build: { start_cmd: ["uvc_camera"] }
         }"#;
@@ -136,7 +136,7 @@ fn git_repo_is_cloned_and_same_tag_updates_code() {
     let (_data_dir, peppy_dirs) = init_test_data_dir();
     let temp_dir = tempdir().expect("temp dir");
     let manifest_v1 = r#"{
-            schema_version: 1,
+            schema_version: 2,
             manifest: { name: "uvc_camera", tag: "1.0.0", language: "rust" },
             build: { start_cmd: ["run_v1"] }
         }"#;
@@ -173,7 +173,7 @@ fn git_repo_is_cloned_and_same_tag_updates_code() {
 
     // Update the remote repository keeping the same tag but new contents.
     let manifest_v2 = r#"{
-            schema_version: 1,
+            schema_version: 2,
             manifest: { name: "uvc_camera", tag: "1.0.0", language: "rust" },
             build: { start_cmd: ["run_v2"] }
         }"#;

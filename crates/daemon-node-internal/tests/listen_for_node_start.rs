@@ -135,7 +135,7 @@ async fn listen_for_node_start_timeout() {
     // Using "sleep 10" as a simple command that runs but doesn't respond
     let peppy_json5 = format!(
         r#"{{
-            schema_version: 1,
+            schema_version: 2,
             manifest: {{
                 name: "{}",
                 tag: "0.1.0",
@@ -328,7 +328,7 @@ async fn listen_for_node_start_streams_stdout_and_stderr() {
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
     let peppy_json5 = format!(
         r#"{{
-            schema_version: 1,
+            schema_version: 2,
             manifest: {{
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
@@ -455,7 +455,7 @@ async fn listen_for_node_start_writes_log_file() {
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
     let peppy_json5 = format!(
         r#"{{
-            schema_version: 1,
+            schema_version: 2,
             manifest: {{
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
@@ -599,7 +599,7 @@ async fn listen_for_node_start_reports_all_missing_parameters() {
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
     let peppy_json5 = format!(
         r#"{{
-            schema_version: 1,
+            schema_version: 2,
             manifest: {{
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
@@ -731,7 +731,7 @@ async fn listen_for_node_start_reports_only_missing_parameters_when_some_provide
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
     let peppy_json5 = format!(
         r#"{{
-            schema_version: 1,
+            schema_version: 2,
             manifest: {{
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
@@ -889,7 +889,7 @@ async fn listen_for_node_start_abandoned_action_does_not_block_next_goal() {
     let first_source_dir = tempfile::tempdir().expect("failed to create temp source dir");
     let first_peppy_json5 = format!(
         r#"{{
-            schema_version: 1,
+            schema_version: 2,
             manifest: {{
                 name: "{FIRST_NODE_NAME}",
                 tag: "{FIRST_NODE_TAG}",
@@ -923,7 +923,7 @@ async fn listen_for_node_start_abandoned_action_does_not_block_next_goal() {
     let second_source_dir = tempfile::tempdir().expect("failed to create temp source dir");
     let second_peppy_json5 = format!(
         r#"{{
-            schema_version: 1,
+            schema_version: 2,
             manifest: {{
                 name: "{SECOND_NODE_NAME}",
                 tag: "{SECOND_NODE_TAG}",
@@ -1120,7 +1120,7 @@ async fn listen_for_node_start_uses_env_overrides_for_path() {
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
     let peppy_json5 = format!(
         r#"{{
-            schema_version: 1,
+            schema_version: 2,
             manifest: {{
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
@@ -1273,7 +1273,7 @@ async fn listen_for_node_start_injects_runtime_env_vars() {
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
     let peppy_json5 = format!(
         r#"{{
-            schema_version: 1,
+            schema_version: 2,
             manifest: {{
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
@@ -1378,7 +1378,7 @@ async fn listen_for_node_container_start_success() {
     // Create source directory with container config and apptainer definition
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
     let peppy_json5 = r#"{
-        schema_version: 1,
+        schema_version: 2,
         manifest: {
             name: "TARGET_NODE_NAME",
             tag: "TARGET_NODE_TAG",

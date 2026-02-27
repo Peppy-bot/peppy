@@ -292,6 +292,106 @@ pub fn collect_dependency_specs(node: &NodeConfig) -> Vec<DependencySpec> {
         .collect()
 }
 
+/// Collects peer specs from a node's `peers_with` section.
+/// Unlike `collect_dependency_specs`, these do NOT create dependency edges in the graph.
+/// They are used for validation only — ensuring the peer node exists and exposes the interface.
+pub fn collect_peer_specs(node: &NodeConfig) -> Vec<DependencySpec> {
+    let Some(peers) = node.interfaces.peers_with.as_ref() else {
+        return Vec::new();
+    };
+
+    let mut specs: HashMap<(String, String), HashSet<InterfaceRequirement>> = HashMap::new();
+
+    if let Some(topics) = peers.topics.as_ref() {
+        for topic in topics {
+            let node_name = topic.node.trim();
+            if node_name.is_empty() {
+                continue;
+            }
+            let interface_name = topic.name.trim();
+            if interface_name.is_empty() {
+                continue;
+            }
+            let requirement = InterfaceRequirement::new(InterfaceKind::Topic, interface_name);
+            let tag = topic.tag.trim().to_owned();
+            specs
+                .entry((node_name.to_owned(), tag))
+                .or_default()
+                .insert(requirement);
+        }
+    }
+
+    if let Some(services) = peers.services.as_ref() {
+        for service in services {
+            let node_name = service.node.trim();
+            if node_name.is_empty() {
+                continue;
+            }
+            let interface_name = service.name.trim();
+            if interface_name.is_empty() {
+                continue;
+            }
+            let requirement = InterfaceRequirement::new(InterfaceKind::Service, interface_name);
+            let tag = service.tag.trim().to_owned();
+            specs
+                .entry((node_name.to_owned(), tag))
+                .or_default()
+                .insert(requirement);
+        }
+    }
+
+    specs
+        .into_iter()
+        .flat_map(|((name, tag), requirements)| {
+            requirements
+                .into_iter()
+                .map(move |interface| DependencySpec {
+                    node_name: name.clone(),
+                    node_tag: tag.clone(),
+                    interface,
+                })
+        })
+        .collect()
+}
+
+/// Validates that all peer references of a node config exist and expose the required interfaces.
+///
+/// Uses the provided `resolve` closure to look up a peer's `NodeConfig` by name and tag.
+/// Returns a list of all validation errors found (empty if all peers are satisfied).
+pub fn validate_peer_specs(
+    config: &NodeConfig,
+    dependant_name: &str,
+    dependant_tag: &str,
+    resolve: impl Fn(&str, &str) -> Option<NodeConfig>,
+) -> Vec<crate::error::Error> {
+    let mut errors = Vec::new();
+
+    for spec in collect_peer_specs(config) {
+        let Some(peer_config) = resolve(&spec.node_name, &spec.node_tag) else {
+            errors.push(crate::error::Error::MissingDependency {
+                dependant: dependant_name.to_owned(),
+                dependant_tag: dependant_tag.to_owned(),
+                dependency: spec.node_name,
+                dependency_tag: spec.node_tag,
+            });
+            continue;
+        };
+
+        if !exposes_interface(&peer_config, &spec.interface) {
+            errors.push(crate::error::Error::MissingInterface {
+                dependant: dependant_name.to_owned(),
+                dependant_tag: dependant_tag.to_owned(),
+                dependency: spec.node_name,
+                dependency_tag: spec.node_tag,
+                interface_kind: format!("{:?}", spec.interface.kind()),
+                interface_name: spec.interface.name().to_owned(),
+            });
+        }
+    }
+
+    errors
+}
+
 /// Validates that all dependencies of a node config exist and expose the required interfaces.
 ///
 /// Uses the provided `resolve` closure to look up a dependency's `NodeConfig` by name and tag.

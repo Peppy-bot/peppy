@@ -21,7 +21,7 @@ async fn listen_for_node_generate_success() {
     write_node_config(
         node_dir.path(),
         r#"{
-            schema_version: 1,
+            schema_version: 2,
             manifest: {
                 name: "example_node",
                 tag: "0.1.0",
@@ -267,7 +267,7 @@ async fn listen_for_node_generate_missing_dependency_fails() {
         node_dir.path(),
         r#"
         {
-            schema_version: 1,
+            schema_version: 2,
             manifest: {
                 name: "my_robot_brain",
                 tag: "0.1.0",
@@ -340,7 +340,7 @@ async fn listen_for_node_generate_multiple_missing_dependencies_fails() {
         node_dir.path(),
         r#"
         {
-            schema_version: 1,
+            schema_version: 2,
             manifest: {
                 name: "my_robot_brain",
                 tag: "0.1.0",
@@ -450,7 +450,7 @@ async fn listen_for_node_generate_generates_rust_interfaces() {
         uvc_camera_node_dir.path(),
         r#"
         {
-            schema_version: 1,
+            schema_version: 2,
             manifest: {
                 name: "uvc_camera",
                 tag: "0.1.0",
@@ -543,7 +543,7 @@ async fn listen_for_node_generate_generates_rust_interfaces() {
         brain_node_dir.path(),
         r#"
         {
-            schema_version: 1,
+            schema_version: 2,
             manifest: {
                 name: "my_robot_brain",
                 tag: "0.1.0",
@@ -659,7 +659,7 @@ async fn listen_for_node_generate_generates_rust_subscribed_service_interfaces()
         uvc_camera_node_dir.path(),
         r#"
         {
-            schema_version: 1,
+            schema_version: 2,
             manifest: {
                 name: "uvc_camera",
                 tag: "0.1.0",
@@ -734,7 +734,7 @@ async fn listen_for_node_generate_generates_rust_subscribed_service_interfaces()
         brain_node_dir.path(),
         r#"
         {
-            schema_version: 1,
+            schema_version: 2,
             manifest: {
                 name: "my_robot_brain",
                 tag: "0.1.0",
@@ -811,7 +811,7 @@ async fn listen_for_node_generate_generates_rust_subscribed_topic_interfaces() {
         uvc_camera_node_dir.path(),
         r#"
         {
-            schema_version: 1,
+            schema_version: 2,
             manifest: {
                 name: "uvc_camera",
                 tag: "0.1.0",
@@ -888,7 +888,7 @@ async fn listen_for_node_generate_generates_rust_subscribed_topic_interfaces() {
         brain_node_dir.path(),
         r#"
         {
-            schema_version: 1,
+            schema_version: 2,
             manifest: {
                 name: "my_robot_brain",
                 tag: "0.1.0",
@@ -965,7 +965,7 @@ async fn listen_for_node_generate_generates_rust_subscribed_action_interfaces() 
         action_server_node_dir.path(),
         r#"
         {
-            schema_version: 1,
+            schema_version: 2,
             manifest: {
                 name: "brain",
                 tag: "0.1.0",
@@ -1048,7 +1048,7 @@ async fn listen_for_node_generate_generates_rust_subscribed_action_interfaces() 
         controller_node_dir.path(),
         r#"
         {
-            schema_version: 1,
+            schema_version: 2,
             manifest: {
                 name: "controller",
                 tag: "0.1.0",
@@ -1126,7 +1126,7 @@ async fn listen_for_node_generate_generates_rust_parameters() {
         node_dir.path(),
         r#"
         {
-            schema_version: 1,
+            schema_version: 2,
             manifest: {
                 name: "uvc_camera",
                 tag: "0.1.0",
@@ -1241,7 +1241,7 @@ async fn listen_for_node_generate_deletes_previous_peppy_folder() {
     write_node_config(
         node_dir.path(),
         r#"{
-            schema_version: 1,
+            schema_version: 2,
             manifest: {
                 name: "example_node",
                 tag: "0.1.0",

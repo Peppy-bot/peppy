@@ -380,9 +380,7 @@ mod apptainer_build {
                 );
                 return Some(cached_rpm);
             }
-            println!(
-                "cargo:warning=Cached Apptainer RPM failed verification, re-downloading..."
-            );
+            println!("cargo:warning=Cached Apptainer RPM failed verification, re-downloading...");
             std::fs::remove_file(&cached_rpm).ok();
         }
 

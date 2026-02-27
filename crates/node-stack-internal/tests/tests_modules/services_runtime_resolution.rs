@@ -8,7 +8,7 @@ use crate::helpers::config_common::daemon_node_config;
 fn service_dependency_resolved_when_dependency_added_first() {
     let dependent: config::node::NodeConfig = serde_json5::from_str(
         r#"{
-            schema_version: 1,
+            schema_version: 2,
             manifest: {
               name: "brain",
               tag: "1.0.0",
@@ -35,7 +35,7 @@ fn service_dependency_resolved_when_dependency_added_first() {
 
     let dependency: config::node::NodeConfig = serde_json5::from_str(
         r#"{
-            schema_version: 1,
+            schema_version: 2,
             manifest: {
               name: "lidar",
               tag: "1.0.0",
@@ -113,7 +113,7 @@ fn service_dependency_resolved_when_dependency_added_first() {
 fn service_dependency_fails_when_dependency_is_missing() {
     let dependent: config::node::NodeConfig = serde_json5::from_str(
         r#"{
-            schema_version: 1,
+            schema_version: 2,
             manifest: {
               name: "brain",
               tag: "1.0.0",
@@ -161,7 +161,7 @@ fn service_dependency_fails_when_service_not_exposed_by_dependency() {
     // but the target node exists without exposing the requested service
     let dependent: config::node::NodeConfig = serde_json5::from_str(
         r#"{
-            schema_version: 1,
+            schema_version: 2,
             manifest: {
               name: "brain",
               tag: "1.0.0",
@@ -189,7 +189,7 @@ fn service_dependency_fails_when_service_not_exposed_by_dependency() {
     // This node has the correct name but exposes a different service
     let dependency_wrong_service: config::node::NodeConfig = serde_json5::from_str(
         r#"{
-            schema_version: 1,
+            schema_version: 2,
             manifest: {
               name: "lidar",
               tag: "1.0.0",

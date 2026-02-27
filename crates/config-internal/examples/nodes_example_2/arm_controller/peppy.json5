@@ -1,0 +1,49 @@
+// Arm controller for visual servoing.
+// Publishes current arm position and reads object positions from the vision peer.
+{
+  schema_version: 2,
+  manifest: {
+    name: "arm_controller",
+    tag: "0.1.0",
+    language: "rust",
+    labels: [
+      "controller",
+      "actuator",
+    ],
+  },
+  build: {
+    add_cmd: [
+      "cargo",
+      "build",
+      "--release"
+    ],
+    start_cmd: [
+      "./target/release/arm_controller"
+    ]
+  },
+  interfaces: {
+    exposes: {
+      topics: [
+        {
+          name: "arm_position",
+          qos_profile: "sensor_data",
+          message_format: {
+            x: "f64",
+            y: "f64",
+            z: "f64"
+          }
+        }
+      ],
+    },
+    peers_with: {
+      topics: [
+        {
+          id: "object_pos",
+          node: "vision",
+          name: "object_position",
+          tag: "0.1.0"
+        }
+      ],
+    },
+  }
+}

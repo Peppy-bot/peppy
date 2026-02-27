@@ -5,6 +5,7 @@ use serde::{
     de::{self, Deserializer, MapAccess, Visitor},
 };
 use std::{
+    collections::HashSet,
     convert::TryFrom,
     fmt::{self, Display, Formatter},
     str::FromStr,
@@ -66,6 +67,47 @@ pub struct NodeConfig {
     pub parameters: NodeArguments,
     #[serde(default)]
     pub interfaces: Interfaces,
+}
+
+impl NodeConfig {
+    /// Validates the node config after parsing.
+    /// Checks that all subscription IDs across `subscribes_to` and `peers_with` are unique.
+    pub fn validate(&self) -> Result<(), ParsingError> {
+        let mut seen_ids = HashSet::new();
+
+        if let Some(ref subs) = self.interfaces.subscribes_to {
+            for topic in subs.topics.iter().flatten() {
+                if !seen_ids.insert(topic.id.as_str().to_owned()) {
+                    return Err(ParsingError::DuplicateName(topic.id.as_str().to_owned()));
+                }
+            }
+            for service in subs.services.iter().flatten() {
+                if !seen_ids.insert(service.id.as_str().to_owned()) {
+                    return Err(ParsingError::DuplicateName(service.id.as_str().to_owned()));
+                }
+            }
+            for action in subs.actions.iter().flatten() {
+                if !seen_ids.insert(action.id.as_str().to_owned()) {
+                    return Err(ParsingError::DuplicateName(action.id.as_str().to_owned()));
+                }
+            }
+        }
+
+        if let Some(ref peers) = self.interfaces.peers_with {
+            for topic in peers.topics.iter().flatten() {
+                if !seen_ids.insert(topic.id.as_str().to_owned()) {
+                    return Err(ParsingError::DuplicateName(topic.id.as_str().to_owned()));
+                }
+            }
+            for service in peers.services.iter().flatten() {
+                if !seen_ids.insert(service.id.as_str().to_owned()) {
+                    return Err(ParsingError::DuplicateName(service.id.as_str().to_owned()));
+                }
+            }
+        }
+
+        Ok(())
+    }
 }
 
 /// Validated node name. Lowercase letters, digits, '_' and '-' only.
@@ -579,11 +621,22 @@ pub struct ContainerConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
+pub struct PeersWith {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub topics: Option<Vec<SubscribedTopic>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub services: Option<Vec<SubscribedService>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct Interfaces {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub exposes: Option<Exposes>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub subscribes_to: Option<SubscribesTo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub peers_with: Option<PeersWith>,
 }
 
 #[cfg(test)]
@@ -825,5 +878,121 @@ mod tests {
 
         let parsed: Result<MessageFormat, _> = serde_json5::from_str(json5);
         assert!(parsed.is_err(), "array items cannot contain arrays");
+    }
+
+    #[test]
+    fn peers_with_topics_parse() {
+        let json5 = r#"{
+            schema_version: 2,
+            manifest: { name: "vision", tag: "0.1.0", language: "python" },
+            build: { start_cmd: ["python", "main.py"] },
+            interfaces: {
+                exposes: {
+                    topics: [{ name: "object_position", qos_profile: "sensor_data", message_format: { x: "f64", y: "f64" } }]
+                },
+                peers_with: {
+                    topics: [{ id: "arm_pos", node: "arm_controller", name: "arm_position", tag: "0.1.0" }]
+                }
+            }
+        }"#;
+
+        let config: NodeConfig = serde_json5::from_str(json5).expect("should parse peers_with");
+        let peers = config
+            .interfaces
+            .peers_with
+            .expect("peers_with should be Some");
+        let topics = peers.topics.expect("topics should be Some");
+        assert_eq!(topics.len(), 1);
+        assert_eq!(topics[0].id.as_str(), "arm_pos");
+        assert_eq!(topics[0].node, "arm_controller");
+        assert_eq!(topics[0].name, "arm_position");
+    }
+
+    #[test]
+    fn peers_with_services_parse() {
+        let json5 = r#"{
+            schema_version: 2,
+            manifest: { name: "nav", tag: "0.1.0", language: "rust" },
+            build: { start_cmd: ["./nav"] },
+            interfaces: {
+                peers_with: {
+                    services: [{ id: "slam_query", node: "slam", name: "query_map", tag: "0.1.0" }]
+                }
+            }
+        }"#;
+
+        let config: NodeConfig =
+            serde_json5::from_str(json5).expect("should parse peers_with services");
+        let peers = config
+            .interfaces
+            .peers_with
+            .expect("peers_with should be Some");
+        let services = peers.services.expect("services should be Some");
+        assert_eq!(services.len(), 1);
+        assert_eq!(services[0].id.as_str(), "slam_query");
+        assert_eq!(services[0].node, "slam");
+    }
+
+    #[test]
+    fn peers_with_rejects_unknown_fields() {
+        let json5 = r#"{
+            schema_version: 2,
+            manifest: { name: "test", tag: "0.1.0", language: "rust" },
+            build: { start_cmd: ["./test"] },
+            interfaces: {
+                peers_with: {
+                    actions: []
+                }
+            }
+        }"#;
+
+        assert!(
+            serde_json5::from_str::<NodeConfig>(json5).is_err(),
+            "peers_with should not accept actions"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_duplicate_ids_across_subscribes_to_and_peers_with() {
+        let json5 = r#"{
+            schema_version: 2,
+            manifest: { name: "test", tag: "0.1.0", language: "rust" },
+            build: { start_cmd: ["./test"] },
+            interfaces: {
+                subscribes_to: {
+                    topics: [{ id: "data", node: "sensor", name: "data", tag: "0.1.0" }]
+                },
+                peers_with: {
+                    topics: [{ id: "data", node: "other", name: "other_data", tag: "0.1.0" }]
+                }
+            }
+        }"#;
+
+        let config: NodeConfig = serde_json5::from_str(json5).expect("should parse");
+        let result = config.validate();
+        assert!(
+            result.is_err(),
+            "duplicate ID 'data' across subscribes_to and peers_with should fail"
+        );
+    }
+
+    #[test]
+    fn validate_allows_unique_ids_across_subscribes_to_and_peers_with() {
+        let json5 = r#"{
+            schema_version: 2,
+            manifest: { name: "test", tag: "0.1.0", language: "rust" },
+            build: { start_cmd: ["./test"] },
+            interfaces: {
+                subscribes_to: {
+                    topics: [{ id: "sensor_data", node: "sensor", name: "data", tag: "0.1.0" }]
+                },
+                peers_with: {
+                    topics: [{ id: "peer_data", node: "other", name: "other_data", tag: "0.1.0" }]
+                }
+            }
+        }"#;
+
+        let config: NodeConfig = serde_json5::from_str(json5).expect("should parse");
+        config.validate().expect("unique IDs should be valid");
     }
 }

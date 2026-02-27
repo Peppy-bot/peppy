@@ -17,7 +17,7 @@ pub fn init_test_data_dir() -> (TempDir, PeppyDirs) {
 pub fn daemon_node_config() -> NodeConfig {
     NodeConfigParser::from_content(
         r#"{
-            schema_version: 1,
+            schema_version: 2,
             manifest: {
                 name: "daemon",
                 tag: "1.0.0",

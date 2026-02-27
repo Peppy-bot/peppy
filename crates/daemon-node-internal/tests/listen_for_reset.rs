@@ -33,7 +33,7 @@ async fn listen_for_node_reset_clears_node_stack() {
 
     let peppy_json5_a = format!(
         r#"{{
-            schema_version: 1,
+            schema_version: 2,
             manifest: {{
                 name: "{TARGET_NODE_A_NAME}",
                 tag: "{TARGET_NODE_A_TAG}",
@@ -66,7 +66,7 @@ async fn listen_for_node_reset_clears_node_stack() {
 
     let peppy_json5_b = format!(
         r#"{{
-            schema_version: 1,
+            schema_version: 2,
             manifest: {{
                 name: "{TARGET_NODE_B_NAME}",
                 tag: "{TARGET_NODE_B_TAG}",

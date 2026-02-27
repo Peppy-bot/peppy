@@ -1,5 +1,5 @@
 {
-  schema_version: 1,
+  schema_version: 2,
   manifest: {
     // This is a brain that can plug to any controller
     name: "fake_robot_brain",

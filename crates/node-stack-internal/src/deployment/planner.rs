@@ -1,7 +1,9 @@
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
-use super::types::{NodeStack, collect_dependency_specs, validate_dependency_specs};
+use super::types::{
+    NodeStack, collect_dependency_specs, validate_dependency_specs, validate_peer_specs,
+};
 use super::{
     ResolvedNode, git::resolve_remote_git, local::resolve_local_deployment, url::resolve_remote_url,
 };
@@ -602,17 +604,27 @@ fn validate_stack_dependencies(stack: &NodeStack) -> Vec<Error> {
         })
         .collect();
 
-    snapshot
-        .iter()
-        .flat_map(|entity| {
-            validate_dependency_specs(
-                entity.config(),
-                entity.config().manifest.name.as_str(),
-                &entity.config().manifest.tag,
-                |name, tag| node_index.get(&(name, tag)).map(|c| (*c).clone()),
-            )
-        })
-        .collect()
+    let resolve = |name: &str, tag: &str| node_index.get(&(name, tag)).map(|c| (*c).clone());
+
+    let dependency_errors = snapshot.iter().flat_map(|entity| {
+        validate_dependency_specs(
+            entity.config(),
+            entity.config().manifest.name.as_str(),
+            &entity.config().manifest.tag,
+            resolve,
+        )
+    });
+
+    let peer_errors = snapshot.iter().flat_map(|entity| {
+        validate_peer_specs(
+            entity.config(),
+            entity.config().manifest.name.as_str(),
+            &entity.config().manifest.tag,
+            resolve,
+        )
+    });
+
+    dependency_errors.chain(peer_errors).collect()
 }
 
 fn deployment_source_id(source: &DeploymentSource) -> String {
