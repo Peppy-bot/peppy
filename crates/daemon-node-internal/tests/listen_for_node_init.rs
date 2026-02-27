@@ -153,13 +153,6 @@ async fn listen_for_node_init_rust_container_success() {
         git_hash_file.display()
     );
 
-    let node_config_path = node_dir.join(NODE_CONFIG_FILE);
-    assert!(
-        node_config_path.exists(),
-        "node config should exist at {}",
-        node_config_path.display()
-    );
-
     let cargo_toml_path = node_dir.join("Cargo.toml");
     assert!(
         cargo_toml_path.exists(),
@@ -193,6 +186,13 @@ async fn listen_for_node_init_rust_container_success() {
         peppygen_dir.display()
     );
 
+    let node_config_path = node_dir.join(NODE_CONFIG_FILE);
+    assert!(
+        node_config_path.exists(),
+        "node config should exist at {}",
+        node_config_path.display()
+    );
+
     assert!(
         config::fingerprint::read_codegen_fingerprint(&node_config_path, PEPPYGEN_OUTPUT_PATH)
             .is_ok(),
@@ -215,6 +215,10 @@ async fn listen_for_node_init_rust_container_success() {
     let apptainer_def =
         fs::read_to_string(&apptainer_def_path).expect("failed to read generated apptainer.def");
     assert_contains_all(&apptainer_def, &["Bootstrap: docker", "From: ubuntu:24.04"]);
+
+    let node_config =
+        fs::read_to_string(&node_config_path).expect("failed to read generated peppy.json5");
+    assert_contains_all(&node_config, &["container:"]);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -360,13 +364,6 @@ async fn listen_for_node_init_python_container_success() {
         git_hash_file.display()
     );
 
-    let node_config_path = node_dir.join(NODE_CONFIG_FILE);
-    assert!(
-        node_config_path.exists(),
-        "node config should exist at {}",
-        node_config_path.display()
-    );
-
     let pyproject_toml_path = node_dir.join("pyproject.toml");
     assert!(
         pyproject_toml_path.exists(),
@@ -409,6 +406,13 @@ async fn listen_for_node_init_python_container_success() {
         peppygen_dir.display()
     );
 
+    let node_config_path = node_dir.join(NODE_CONFIG_FILE);
+    assert!(
+        node_config_path.exists(),
+        "node config should exist at {}",
+        node_config_path.display()
+    );
+
     assert!(
         config::fingerprint::read_codegen_fingerprint(&node_config_path, PEPPYGEN_OUTPUT_PATH)
             .is_ok(),
@@ -431,6 +435,10 @@ async fn listen_for_node_init_python_container_success() {
     let apptainer_def =
         fs::read_to_string(&apptainer_def_path).expect("failed to read generated apptainer.def");
     assert_contains_all(&apptainer_def, &["Bootstrap: docker", "From: ubuntu:24.04"]);
+
+    let node_config =
+        fs::read_to_string(&node_config_path).expect("failed to read generated peppy.json5");
+    assert_contains_all(&node_config, &["container:"]);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
