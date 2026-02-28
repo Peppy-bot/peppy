@@ -436,16 +436,25 @@ fn move_sif_to_storage(
     Ok(dest_path)
 }
 
+/// Maximum number of stderr lines to retain for error diagnostics.
+const BUILD_STDERR_TAIL_LINES: usize = 20;
+
 /// Builds a container image using the Apptainer facade.
 ///
 /// Runs `apptainer build --fakeroot {node_name}_{node_tag}.sif {def_file}` in the
-/// working directory. The resulting `.sif` file is left in `working_dir` for
+/// working directory. Build output is streamed to both the CLI (via the feedback
+/// publisher) and the log file. On failure, the last [`BUILD_STDERR_TAIL_LINES`]
+/// lines of stderr are included in the error message.
+///
+/// The resulting `.sif` file is left in `working_dir` for
 /// [`move_sif_to_storage`] to relocate.
-fn build_container_image(
+async fn build_container_image(
     working_dir: &Path,
     node_name: &str,
     node_tag: &str,
     def_file: &str,
+    feedback_publisher: &TopicPublisher,
+    log_file: Arc<StdMutex<File>>,
 ) -> Result<()> {
     let apptainer = containers::Apptainer::new().map_err(|e| {
         std::io::Error::new(
@@ -467,18 +476,94 @@ fn build_container_image(
     // Set the working directory so `%files . /opt/{name}` in the .def file
     // copies from the node's source directory, not the daemon's cwd.
     cmd.current_dir(working_dir);
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+    cmd.stdin(Stdio::null());
 
     let mut child = cmd
         .spawn()
         .map_err(|e| std::io::Error::other(format!("Failed to spawn apptainer build: {}", e)))?;
 
-    let status = child.wait()?;
+    // Stream stdout and stderr to the log file and CLI, mirroring
+    // the pattern from `run_add_cmd_with_streaming`.
+    let (feedback_tx, mut feedback_rx) = mpsc::unbounded_channel::<FeedbackLine>();
+    let feedback_publisher = feedback_publisher.clone();
+
+    // Collect stderr lines in a ring buffer so we can include them in the error
+    // message if the build fails.
+    let stderr_tail: Arc<StdMutex<std::collections::VecDeque<String>>> = Arc::new(StdMutex::new(
+        std::collections::VecDeque::with_capacity(BUILD_STDERR_TAIL_LINES),
+    ));
+    let stderr_tail_writer = Arc::clone(&stderr_tail);
+
+    let publisher_handle = tokio::spawn(async move {
+        while let Some(line) = feedback_rx.recv().await {
+            // Track recent stderr lines for diagnostics on failure.
+            if matches!(line.stream, FeedbackStream::Stderr)
+                && let Ok(mut tail) = stderr_tail_writer.lock()
+            {
+                if tail.len() == BUILD_STDERR_TAIL_LINES {
+                    tail.pop_front();
+                }
+                tail.push_back(line.line.clone());
+            }
+
+            let feedback = match line.stream {
+                FeedbackStream::Stdout => NodeAddFeedback::stdout(&line.line),
+                FeedbackStream::Stderr => NodeAddFeedback::stderr(&line.line),
+            };
+            if let Ok(payload) = feedback.encode() {
+                let _ = feedback_publisher.publish(payload).await;
+            }
+        }
+    });
+
+    let mut reader_handles = Vec::new();
+
+    if let Some(stdout) = child.stdout.take() {
+        reader_handles.push(spawn_output_reader(
+            stdout,
+            feedback_tx.clone(),
+            FeedbackStream::Stdout,
+            Arc::clone(&log_file),
+        ));
+    }
+
+    if let Some(stderr) = child.stderr.take() {
+        reader_handles.push(spawn_output_reader(
+            stderr,
+            feedback_tx.clone(),
+            FeedbackStream::Stderr,
+            Arc::clone(&log_file),
+        ));
+    }
+
+    // Drop our sender so the publisher task can finish once readers are done.
+    drop(feedback_tx);
+
+    let status = tokio::task::spawn_blocking(move || child.wait())
+        .await
+        .map_err(|e| std::io::Error::other(format!("failed to wait for apptainer build: {}", e)))?
+        .map_err(|e| std::io::Error::other(format!("failed to wait for apptainer build: {}", e)))?;
+
+    // Wait for readers + publisher to drain before inspecting stderr_tail.
+    for handle in reader_handles {
+        let _ = handle.await;
+    }
+    let _ = publisher_handle.await;
+
     if !status.success() {
-        return Err(std::io::Error::other(format!(
-            "apptainer build failed with status {}",
-            status
-        ))
-        .into());
+        let tail = stderr_tail
+            .lock()
+            .map(|t| t.iter().cloned().collect::<Vec<_>>())
+            .unwrap_or_default();
+
+        let mut msg = format!("apptainer build failed with status {}", status);
+        if !tail.is_empty() {
+            msg.push_str("\n\n--- stderr (last lines) ---\n");
+            msg.push_str(&tail.join("\n"));
+        }
+        return Err(std::io::Error::other(msg).into());
     }
 
     Ok(())
@@ -1411,8 +1496,15 @@ async fn process_node_add(
     let snapshot_path = if let Some(container) = &node_config.container {
         // Container nodes: use the Apptainer facade to build the .sif image from
         // the definition file, then move it to storage.
-        if let Err(e) =
-            build_container_image(&working_dir, &node_name, &node_tag, &container.def_file)
+        if let Err(e) = build_container_image(
+            &working_dir,
+            &node_name,
+            &node_tag,
+            &container.def_file,
+            &ctx.feedback_publisher,
+            Arc::clone(&ctx.log_file),
+        )
+        .await
         {
             return NodeAddResult::failure(
                 &ctx.log_path,

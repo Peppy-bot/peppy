@@ -1535,6 +1535,137 @@ From: ubuntu:24.04
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_start_container_failure_includes_stderr_in_error() {
+    const TARGET_NODE_NAME: &str = "failing_container_node";
+    const TARGET_NODE_TAG: &str = "0.1.0";
+    const TARGET_INSTANCE_ID: &str = "failing_container_instance";
+    const STDERR_MARKER: &str = "peppy_container_fatal_error_marker";
+
+    let started = start_daemon_node_with_mock_messenger().await;
+
+    // Create a container node whose runscript writes a diagnostic to stderr
+    // then exits immediately. This causes the ready signal to fail because the
+    // process dies, and the stderr output should be captured in the error.
+    let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
+    let peppy_json5 = r#"{
+        schema_version: 1,
+        manifest: {
+            name: "TARGET_NODE_NAME",
+            tag: "TARGET_NODE_TAG",
+            language: "rust",
+        },
+        container: {
+            def_file: "apptainer.def",
+        }
+    }"#
+    .replace("TARGET_NODE_NAME", TARGET_NODE_NAME)
+    .replace("TARGET_NODE_TAG", TARGET_NODE_TAG);
+    write_peppy_json5(source_dir.path(), &peppy_json5);
+
+    let apptainer_def = format!(
+        r#"
+Bootstrap: docker
+From: alpine:3.20
+
+%labels
+    Name {TARGET_NODE_NAME}
+    Version {TARGET_NODE_TAG}
+
+%runscript
+    echo "{STDERR_MARKER}" >&2
+    exit 1
+"#
+    );
+    std::fs::write(source_dir.path().join("apptainer.def"), &apptainer_def)
+        .expect("failed to write apptainer definition");
+
+    // Add the node first (builds the .sif image)
+    let add_response = send_node_add_and_wait(
+        &started.caller_handle,
+        &started.daemon_node_name,
+        source_dir.path(),
+        Duration::from_secs(30),
+        Duration::from_secs(120),
+        None,
+    )
+    .await
+    .expect("node_add should succeed");
+
+    assert!(
+        add_response.success,
+        "node_add should succeed, got error: {:?}",
+        add_response.error_message
+    );
+
+    // Do NOT set up ready/health services — the process will exit immediately
+    // which means the ready signal will fail (process died).
+
+    let runtime_config = config::runtime::RuntimeConfig::new(
+        "127.0.0.1",
+        config::consts::DEFAULT_MESSAGING_PORT,
+        config::runtime::NodeInstance {
+            instance_id: config::peppy_config::Name::new(TARGET_INSTANCE_ID).unwrap(),
+            arguments: Default::default(),
+        },
+        TARGET_NODE_NAME,
+        &started.daemon_node_name,
+    )
+    .expect("runtime config should be valid");
+
+    let runtime_config_json5 =
+        serde_json5::to_string(&runtime_config).expect("runtime config should serialize");
+
+    let start_response = send_node_start_and_wait(
+        &started.caller_handle,
+        &started.daemon_node_name,
+        &runtime_config_json5,
+        TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
+        &NodeStartTestTimeouts {
+            goal: Duration::from_secs(30),
+            result: Duration::from_secs(60),
+        },
+        None,
+    )
+    .await
+    .expect("node_start action should complete");
+
+    // The start should fail because the process exits immediately
+    assert!(
+        !start_response.result.success,
+        "node_start should fail because the container process exits immediately"
+    );
+
+    // The error message should include stderr output from the container process
+    let error_msg = start_response
+        .result
+        .error_message
+        .as_ref()
+        .expect("error_message should be present");
+    assert!(
+        error_msg.contains(STDERR_MARKER),
+        "error should include stderr from the container process, got: {}",
+        error_msg
+    );
+
+    // Verify the log file contains the streamed output
+    let log_path = &start_response.goal_response.log_path;
+    assert!(log_path.exists(), "log file should exist at {:?}", log_path);
+
+    let log_content = std::fs::read_to_string(log_path).expect("should be able to read log file");
+    assert!(
+        log_content.contains("Executing apptainer run"),
+        "log file should contain the apptainer run command, got:\n{}",
+        log_content
+    );
+    assert!(
+        log_content.contains(STDERR_MARKER),
+        "log file should contain the stderr marker from the container process, got:\n{}",
+        log_content
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "Implement later"]
 async fn listen_for_node_start_remove_node_on_unhealthy_node() {
     todo!(

@@ -400,6 +400,17 @@ From: ubuntu:24.04
         "log filename should end with '.log', got: {}",
         log_filename
     );
+
+    // Verify that container build output was streamed to the log file.
+    // Apptainer build always writes status messages to stderr/stdout which our
+    // streaming infrastructure captures with [stdout]/[stderr] prefixes.
+    let log_content =
+        std::fs::read_to_string(&add_result.log_path).expect("should be able to read log file");
+    assert!(
+        log_content.contains("[stdout]") || log_content.contains("[stderr]"),
+        "log file should contain streamed build output with [stdout]/[stderr] prefixes, got:\n{}",
+        log_content
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2573,4 +2584,108 @@ async fn listen_for_node_add_reports_excluded_dirs_in_feedback() {
             "{dir_name} should not be in the archive, entries: {entries:?}"
         );
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_add_container_build_failure_includes_stderr_in_error() {
+    const TARGET_NODE_NAME: &str = "broken_container_node";
+    const TARGET_NODE_TAG: &str = "0.1.0";
+
+    let started_daemon = start_daemon_node_with_mock_messenger().await;
+    let node_stack = started_daemon.node_stack.clone();
+
+    let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
+    let peppy_json5 = r#"{
+        schema_version: 1,
+        manifest: {
+            name: "TARGET_NODE_NAME",
+            tag: "TARGET_NODE_TAG",
+            language: "rust",
+        },
+        container: {
+            def_file: "apptainer.def",
+        }
+    }"#
+    .replace("TARGET_NODE_NAME", TARGET_NODE_NAME)
+    .replace("TARGET_NODE_TAG", TARGET_NODE_TAG);
+    write_peppy_json5(source_dir.path(), &peppy_json5);
+
+    // Write a deliberately broken definition file so apptainer build fails with
+    // a diagnostic message on stderr.
+    let broken_def = "\
+Bootstrap: invalid_bootstrap_agent_that_does_not_exist
+From: nowhere
+
+%runscript
+    echo broken
+";
+    std::fs::write(source_dir.path().join("apptainer.def"), broken_def)
+        .expect("failed to write broken apptainer definition");
+
+    let (feedback_tx, mut feedback_rx) = tokio::sync::mpsc::unbounded_channel::<NodeAddFeedback>();
+    let add_result = send_node_add_and_wait(
+        &started_daemon.caller_handle,
+        &started_daemon.daemon_node_name,
+        source_dir.path(),
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        Some(feedback_tx),
+    )
+    .await
+    .expect("node_add request should complete");
+
+    // The build should fail
+    assert!(
+        !add_result.success,
+        "node_add should fail with a broken def file"
+    );
+
+    // The error message should mention the container build failure
+    let error_msg = add_result
+        .error_message
+        .as_ref()
+        .expect("error_message should be present");
+    assert!(
+        error_msg.contains("Failed to build container image"),
+        "error should mention container build failure, got: {}",
+        error_msg
+    );
+
+    // The error message should include the stderr tail from apptainer so the user
+    // sees WHY the build failed, not just the exit code.
+    assert!(
+        error_msg.contains("stderr"),
+        "error should include stderr output from apptainer build, got: {}",
+        error_msg
+    );
+
+    // Node should not be in the stack
+    assert!(
+        !node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG),
+        "node should not be added when container build fails"
+    );
+
+    // Verify the log file was written and contains build output
+    assert!(
+        add_result.log_path.exists(),
+        "log file should exist even on failure: {:?}",
+        add_result.log_path
+    );
+    let log_content =
+        std::fs::read_to_string(&add_result.log_path).expect("should be able to read log file");
+    assert!(
+        log_content.contains("[stdout]") || log_content.contains("[stderr]"),
+        "log file should contain streamed build output, got:\n{}",
+        log_content
+    );
+
+    // Verify feedback was streamed to the CLI during the build
+    let mut feedback = Vec::new();
+    while let Ok(entry) = feedback_rx.try_recv() {
+        feedback.push(entry);
+    }
+    assert!(
+        !feedback.is_empty(),
+        "feedback should have been streamed during the container build"
+    );
 }
