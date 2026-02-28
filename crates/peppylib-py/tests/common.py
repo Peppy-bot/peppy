@@ -24,7 +24,7 @@ PEPPY_CONFIG = """{
     tag: "0.1.0",
     language: "python",
   },
-  build: {
+  process: {
     start_cmd: ["uv", "run"]
   },
   parameters: {
