@@ -1402,6 +1402,7 @@ From: alpine:3.20
     Version {TARGET_NODE_TAG}
 
 %runscript
+    echo "Received env var $MY_ENV_VAR"
     exec sleep 300
 "#
     );
@@ -1468,7 +1469,9 @@ From: alpine:3.20
     let runtime_config_json5 =
         serde_json5::to_string(&runtime_config).expect("runtime config should serialize");
 
-    let start_response = send_node_start_and_wait(
+    let env_vars = vec![("MY_ENV_VAR".to_string(), "hello_from_peppy".to_string())];
+
+    let start_response = send_node_start_and_wait_with_env(
         &started.caller_handle,
         &started.daemon_node_name,
         &runtime_config_json5,
@@ -1479,6 +1482,7 @@ From: alpine:3.20
             result: Duration::from_secs(60),
         },
         None,
+        env_vars,
     )
     .await
     .expect("node_start action should complete");
@@ -1530,6 +1534,11 @@ From: alpine:3.20
     assert!(
         log_content.contains("Executing apptainer run"),
         "log file should contain the apptainer run command, got:\n{}",
+        log_content
+    );
+    assert!(
+        log_content.contains("Received env var hello_from_peppy"),
+        "log file should contain the env var output from the runscript, got:\n{}",
         log_content
     );
 }
