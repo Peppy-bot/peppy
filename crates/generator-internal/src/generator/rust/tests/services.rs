@@ -1,4 +1,4 @@
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use super::*;
 use config::node::{ExposedService, PeppygenLanguage, SubscribedService};
@@ -461,6 +461,7 @@ fn clippy_single_exposed_service_without_request_body() {
         .arg("warnings")
         .env("CARGO_NET_OFFLINE", "true")
         .current_dir(&output_dir)
+        .stdin(Stdio::null())
         .output()
         .expect("failed to run cargo clippy on generated crate");
     assert!(
@@ -542,6 +543,7 @@ fn compile_lib_with_exposed_and_subscribed_services() {
         .arg("build")
         .env("CARGO_NET_OFFLINE", "true")
         .current_dir(&output_dir)
+        .stdin(Stdio::null())
         .output()
         .expect("failed to invoke cargo build on generated crate");
     assert!(
@@ -562,6 +564,7 @@ fn compile_lib_with_exposed_and_subscribed_services() {
         .arg("warnings")
         .env("CARGO_NET_OFFLINE", "true")
         .current_dir(&output_dir)
+        .stdin(Stdio::null())
         .output()
         .expect("failed to run cargo clippy on generated crate");
     assert!(
@@ -659,6 +662,7 @@ fn clippy_subscribed_service_empty_request_format() {
         .arg("warnings")
         .env("CARGO_NET_OFFLINE", "true")
         .current_dir(&output_dir)
+        .stdin(Stdio::null())
         .output()
         .expect("failed to run cargo clippy on generated crate");
     assert!(
@@ -713,6 +717,7 @@ fn clippy_subscribed_service_empty_response_format() {
         .arg("warnings")
         .env("CARGO_NET_OFFLINE", "true")
         .current_dir(&output_dir)
+        .stdin(Stdio::null())
         .output()
         .expect("failed to run cargo clippy on generated crate");
     assert!(

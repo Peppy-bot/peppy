@@ -81,6 +81,7 @@ pub fn init_cargo_user_node(to_dir: impl AsRef<Path>) {
             .arg("--vcs")
             .arg("none")
             .current_dir(crate_dir)
+            .stdin(Stdio::null())
             .output()
             .expect("failed to invoke cargo init for user node");
     }
@@ -213,6 +214,7 @@ pub fn compile_project(dir: impl AsRef<Path>) {
         .env("CARGO_NET_OFFLINE", "true")
         .env("CARGO_TARGET_DIR", &target_dir)
         .current_dir(dir)
+        .stdin(Stdio::null())
         .output()
         .expect("failed to invoke cargo build on generated crate");
     assert!(
@@ -572,6 +574,7 @@ pub fn init_python_project_venv(dir: impl AsRef<Path>) {
     let output = Command::new("uv")
         .arg("sync")
         .current_dir(dir.as_ref())
+        .stdin(Stdio::null())
         .output()
         .expect("failed to invoke uv sync on Python project");
     assert!(

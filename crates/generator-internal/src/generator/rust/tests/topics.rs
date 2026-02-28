@@ -1,6 +1,6 @@
 use super::*;
 use config::node::{ExposedTopic, MessageFormat, PeppygenLanguage, SubscribedTopic};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 const EXPOSED_TOPIC_EXAMPLE: &str = r#"
 {
@@ -502,6 +502,7 @@ fn clippy_single_exposed_topic_empty_format() {
         .arg("warnings")
         .env("CARGO_NET_OFFLINE", "true")
         .current_dir(&output_dir)
+        .stdin(Stdio::null())
         .output()
         .expect("failed to run cargo clippy on generated crate");
     assert!(
@@ -562,6 +563,7 @@ fn compile_lib_with_exposed_and_subscribed_topics() {
         .arg("build")
         .env("CARGO_NET_OFFLINE", "true")
         .current_dir(&output_dir)
+        .stdin(Stdio::null())
         .output()
         .expect("failed to invoke cargo build on generated crate");
     assert!(
@@ -582,6 +584,7 @@ fn compile_lib_with_exposed_and_subscribed_topics() {
         .arg("warnings")
         .env("CARGO_NET_OFFLINE", "true")
         .current_dir(&output_dir)
+        .stdin(Stdio::null())
         .output()
         .expect("failed to run cargo clippy on generated crate");
     assert!(
