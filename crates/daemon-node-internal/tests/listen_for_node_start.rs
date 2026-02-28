@@ -1395,7 +1395,7 @@ async fn listen_for_node_start_with_container_success() {
     let apptainer_def = format!(
         r#"
 Bootstrap: docker
-From: ubuntu:24.04
+From: alpine:3.20
 
 %labels
     Name {TARGET_NODE_NAME}

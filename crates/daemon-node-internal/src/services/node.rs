@@ -17,6 +17,10 @@ use std::sync::OnceLock;
 use tar::Archive;
 use zstd::stream::read::Decoder;
 
+/// Maximum number of stderr lines to retain for error diagnostics.
+/// Used by both the `add` (container build) and `start` (node run) services.
+const STDERR_TAIL_LINES: usize = 20;
+
 /// Blocklist of dangerous env vars that could be used for code injection or process manipulation.
 /// Used by both the daemon (to reject requests) and CLI (to filter before sending).
 pub const FORBIDDEN_ENV_KEYS: [&str; 16] = [

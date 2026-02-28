@@ -1,4 +1,4 @@
-use super::extract_tar_zst;
+use super::{STDERR_TAIL_LINES, extract_tar_zst};
 use crate::Result;
 use crate::encoding::{NodeStartFeedback, NodeStartGoal, NodeStartGoalResponse, NodeStartResult};
 use crate::names;
@@ -28,7 +28,6 @@ use tokio::sync::{Mutex, Notify, mpsc};
 use tokio::task::JoinHandle;
 use tracing::debug;
 
-const STDERR_BUFFER_LINES: usize = 20;
 const STARTUP_OUTPUT_MAX_WAIT: Duration = Duration::from_millis(100);
 const STARTUP_OUTPUT_QUIET_WINDOW: Duration = Duration::from_millis(10);
 
@@ -260,7 +259,7 @@ impl FeedbackSync {
 
 fn push_stderr_line(buffer: &Arc<StdMutex<VecDeque<String>>>, line: &str) {
     let mut guard = buffer.lock().expect("stderr buffer lock poisoned");
-    if guard.len() == STDERR_BUFFER_LINES {
+    if guard.len() == STDERR_TAIL_LINES {
         guard.pop_front();
     }
     guard.push_back(line.to_string());
@@ -960,7 +959,10 @@ async fn kill_and_report_error(
     let error_msg = if stderr_output.is_empty() {
         error.to_string()
     } else {
-        format!("{}. Node stderr: {}", error, stderr_output)
+        format!(
+            "{}\n\n--- stderr (last lines) ---\n{}",
+            error, stderr_output
+        )
     };
 
     NodeStartResult::failure(error_msg)

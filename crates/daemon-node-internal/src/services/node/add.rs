@@ -31,6 +31,7 @@ use tracing::debug;
 use ureq::Error as HttpError;
 use zstd::stream::write::Encoder as ZstdEncoder;
 
+use super::STDERR_TAIL_LINES;
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub async fn listen_for_node_add(
@@ -436,14 +437,11 @@ fn move_sif_to_storage(
     Ok(dest_path)
 }
 
-/// Maximum number of stderr lines to retain for error diagnostics.
-const BUILD_STDERR_TAIL_LINES: usize = 20;
-
 /// Builds a container image using the Apptainer facade.
 ///
 /// Runs `apptainer build --fakeroot {node_name}_{node_tag}.sif {def_file}` in the
 /// working directory. Build output is streamed to both the CLI (via the feedback
-/// publisher) and the log file. On failure, the last [`BUILD_STDERR_TAIL_LINES`]
+/// publisher) and the log file. On failure, the last [`STDERR_TAIL_LINES`]
 /// lines of stderr are included in the error message.
 ///
 /// The resulting `.sif` file is left in `working_dir` for
@@ -492,7 +490,7 @@ async fn build_container_image(
     // Collect stderr lines in a ring buffer so we can include them in the error
     // message if the build fails.
     let stderr_tail: Arc<StdMutex<std::collections::VecDeque<String>>> = Arc::new(StdMutex::new(
-        std::collections::VecDeque::with_capacity(BUILD_STDERR_TAIL_LINES),
+        std::collections::VecDeque::with_capacity(STDERR_TAIL_LINES),
     ));
     let stderr_tail_writer = Arc::clone(&stderr_tail);
 
@@ -502,7 +500,7 @@ async fn build_container_image(
             if matches!(line.stream, FeedbackStream::Stderr)
                 && let Ok(mut tail) = stderr_tail_writer.lock()
             {
-                if tail.len() == BUILD_STDERR_TAIL_LINES {
+                if tail.len() == STDERR_TAIL_LINES {
                     tail.pop_front();
                 }
                 tail.push_back(line.line.clone());
