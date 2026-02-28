@@ -62,7 +62,10 @@ fn test_bind_flag_accumulates() {
     let dev1 = format!("{home}/dev1");
     let dev2 = format!("{home}/dev2");
 
-    let cmd = facade.run("image.sif").bind(&dev1, None, None).bind(&dev2, None, None);
+    let cmd = facade
+        .run("image.sif")
+        .bind(&dev1, None, None)
+        .bind(&dev2, None, None);
     let args = cmd.build_args().expect("build_args should succeed");
 
     let bind_count = args.iter().filter(|a| *a == "--bind").count();
@@ -97,7 +100,9 @@ fn test_bind_with_opts() {
     let home = std::env::var("HOME").unwrap();
     let src = format!("{home}/data");
 
-    let cmd = facade.run("image.sif").bind(&src, Some("/mnt/data"), Some("ro"));
+    let cmd = facade
+        .run("image.sif")
+        .bind(&src, Some("/mnt/data"), Some("ro"));
     let args = cmd.build_args().expect("build_args should succeed");
 
     let bind_idx = args.iter().position(|a| a == "--bind").unwrap();
@@ -365,6 +370,40 @@ fn test_translate_path_rejects_var_folders() {
             path,
             "On Linux, all absolute paths should pass through unchanged"
         );
+    }
+}
+
+/// Verifies that `translate_path()` accepts paths outside `$HOME` when they have
+/// been registered in `extra_mounts` (simulating what `ensure_host_mounts()` does).
+#[test]
+fn test_translate_path_accepts_registered_extra_mount() {
+    let mut facade = Apptainer::new()
+        .expect("Apptainer::new() should succeed — apptainer is bundled at compile time");
+
+    let mount_dir = PathBuf::from("/var/folders/T4/random123abc/T/tempdir");
+    let file_in_mount = mount_dir.join("output.sif");
+
+    if cfg!(target_os = "macos") {
+        // Before registration: should be rejected
+        assert!(
+            facade.translate_path(&file_in_mount).is_err(),
+            "Path outside $HOME should be rejected before registration"
+        );
+
+        // Register the mount directory
+        facade.extra_mounts.push(mount_dir);
+
+        // After registration: should be accepted
+        let result = facade.translate_path(&file_in_mount);
+        assert!(
+            result.is_ok(),
+            "Path under a registered extra mount should be accepted, got: {:?}",
+            result.unwrap_err()
+        );
+        assert_eq!(result.unwrap(), file_in_mount);
+    } else {
+        // On Linux, all paths pass through regardless
+        assert!(facade.translate_path(&file_in_mount).is_ok());
     }
 }
 

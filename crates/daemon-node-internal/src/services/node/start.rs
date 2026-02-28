@@ -1169,9 +1169,9 @@ fn start_container_node(
 
     if !parsed_mounts.is_empty() {
         let src_paths: Vec<&str> = parsed_mounts.iter().map(|m| m.src).collect();
-        apptainer.ensure_host_mounts(&src_paths).map_err(|e| {
-            std::io::Error::other(format!("Failed to ensure host mounts: {}", e))
-        })?;
+        apptainer
+            .ensure_host_mounts(&src_paths)
+            .map_err(|e| std::io::Error::other(format!("Failed to ensure host mounts: {}", e)))?;
     }
 
     // Build apptainer run command. Environment variables are passed into the

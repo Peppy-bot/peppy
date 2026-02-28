@@ -31,8 +31,9 @@ pub enum Error {
 
     #[error(
         "Path {path} is not accessible inside the Lima VM. Lima only mounts the home \
-         directory (~) into the guest. Ensure all file paths (project files, working \
-         directories, and build outputs) are under your home directory."
+         directory (~) and explicitly configured mount paths into the guest. Ensure all \
+         file paths are under your home directory, or configure them via \
+         container.mount_paths in peppy.json5."
     )]
     PathNotAccessibleInVm { path: String },
 

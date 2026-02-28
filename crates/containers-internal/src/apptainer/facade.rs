@@ -55,6 +55,9 @@ pub struct Apptainer {
     pub(crate) apptainer_dir: PathBuf,
     /// Execution backend (Native on Linux, Lima on macOS).
     pub(crate) backend: Backend,
+    /// Host paths registered via `ensure_host_mounts()` that are accessible
+    /// in the Lima VM even though they are outside `$HOME`.
+    pub(crate) extra_mounts: Vec<PathBuf>,
 }
 
 impl Apptainer {
@@ -101,6 +104,7 @@ impl Apptainer {
         let mut facade = Self {
             apptainer_dir,
             backend,
+            extra_mounts: Vec::new(),
         };
         facade.ensure_ready()?;
         Ok(facade)
@@ -193,9 +197,7 @@ impl Apptainer {
 
                 let modified = lima::ensure_extra_mounts(&config_path, &external_paths)?;
                 if modified {
-                    tracing::info!(
-                        "Lima config updated with new mounts, restarting VM..."
-                    );
+                    tracing::info!("Lima config updated with new mounts, restarting VM...");
                     lima::stop_instance(&limactl_path, &lima_home, lima::LIMA_INSTANCE)?;
                     lima::ensure_lima_instance(&limactl_path, &lima_home, lima::LIMA_TEMPLATE)?;
                     lima::ensure_guest_userns(&limactl_path, &lima_home, lima::LIMA_INSTANCE)?;
@@ -211,6 +213,20 @@ impl Apptainer {
                     } = self.backend
                     {
                         *bin = apptainer_bin;
+                    }
+                }
+
+                // Register paths so translate_path() accepts them.
+                for path_str in &external_paths {
+                    let abs = if Path::new(path_str).is_relative() {
+                        std::env::current_dir()
+                            .map(|cwd| cwd.join(path_str))
+                            .unwrap_or_else(|_| PathBuf::from(path_str))
+                    } else {
+                        PathBuf::from(path_str)
+                    };
+                    if !self.extra_mounts.contains(&abs) {
+                        self.extra_mounts.push(abs);
                     }
                 }
 
@@ -335,8 +351,9 @@ impl Apptainer {
     ///
     /// When running under Lima (macOS), Lima auto-mounts the home directory (`~`)
     /// at the same absolute path inside the guest. Paths under `$HOME` are returned
-    /// unchanged. Paths outside `$HOME` cannot be accessed by the guest and produce
-    /// an error.
+    /// unchanged. Paths outside `$HOME` are accepted if they were registered via
+    /// [`ensure_host_mounts()`](Self::ensure_host_mounts); otherwise an error is
+    /// returned.
     pub(crate) fn translate_path(&self, host_path: &Path) -> Result<PathBuf> {
         // Resolve relative paths to absolute using the host CWD. This is critical
         // for Lima: `limactl shell` runs in the guest's home directory, so a
@@ -355,12 +372,21 @@ impl Apptainer {
                 })?;
 
                 if absolute_path.starts_with(&home) {
-                    Ok(absolute_path)
-                } else {
-                    Err(Error::PathNotAccessibleInVm {
-                        path: absolute_path.display().to_string(),
-                    })
+                    return Ok(absolute_path);
                 }
+
+                // Check paths registered via ensure_host_mounts().
+                if self
+                    .extra_mounts
+                    .iter()
+                    .any(|m| absolute_path.starts_with(m))
+                {
+                    return Ok(absolute_path);
+                }
+
+                Err(Error::PathNotAccessibleInVm {
+                    path: absolute_path.display().to_string(),
+                })
             }
         }
     }
@@ -667,9 +693,7 @@ impl<'a> ApptainerCommand<'a> {
             args.push("--bind".to_string());
             let translated_src = self.facade.translate_arg(&bind.src)?;
             match (&bind.dest, &bind.opts) {
-                (Some(dest), Some(opts)) => {
-                    args.push(format!("{translated_src}:{dest}:{opts}"))
-                }
+                (Some(dest), Some(opts)) => args.push(format!("{translated_src}:{dest}:{opts}")),
                 (Some(dest), None) => args.push(format!("{translated_src}:{dest}")),
                 (None, _) => args.push(translated_src),
             }

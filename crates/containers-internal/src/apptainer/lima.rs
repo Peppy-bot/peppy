@@ -453,9 +453,9 @@ pub(crate) fn ensure_extra_mounts(config_path: &Path, paths: &[&str]) -> Result<
         .entry(serde_yaml::Value::String("mounts".to_string()))
         .or_insert_with(|| serde_yaml::Value::Sequence(Vec::new()));
 
-    let mounts_seq = mounts.as_sequence_mut().ok_or_else(|| {
-        Error::LimaInstanceError("Lima config 'mounts' is not a sequence".into())
-    })?;
+    let mounts_seq = mounts
+        .as_sequence_mut()
+        .ok_or_else(|| Error::LimaInstanceError("Lima config 'mounts' is not a sequence".into()))?;
 
     // Collect existing mount locations
     let existing: Vec<String> = mounts_seq
@@ -555,8 +555,7 @@ mod tests {
     fn test_ensure_extra_mounts_skips_existing() {
         let dir = tempdir().expect("create temp dir");
         let config_path = dir.path().join("lima.yaml");
-        let initial =
-            "mounts:\n  - location: \"~\"\n    writable: true\n  - location: /tmp/existing\n    writable: true\n";
+        let initial = "mounts:\n  - location: \"~\"\n    writable: true\n  - location: /tmp/existing\n    writable: true\n";
         fs::write(&config_path, initial).expect("write initial config");
 
         let modified =
