@@ -30,6 +30,8 @@ use tracing::debug;
 
 const STARTUP_OUTPUT_MAX_WAIT: Duration = Duration::from_millis(100);
 const STARTUP_OUTPUT_QUIET_WINDOW: Duration = Duration::from_millis(10);
+const CONTAINER_STARTUP_OUTPUT_MAX_WAIT: Duration = Duration::from_secs(2);
+const CONTAINER_STARTUP_OUTPUT_QUIET_WINDOW: Duration = Duration::from_millis(100);
 
 static RUNTIME_CONFIG_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -298,14 +300,15 @@ where
                 let _ = writeln!(file, "[{}] [{}] {}", timestamp, stream_prefix, line);
             }
 
-            if !publish_enabled.load(Ordering::Relaxed) {
-                continue;
-            }
-
+            // Always capture stderr for error diagnostics, regardless of publish state
             if matches!(stream, FeedbackStream::Stderr)
                 && let Some(buffer) = &stderr_buffer
             {
                 push_stderr_line(buffer, &line);
+            }
+
+            if !publish_enabled.load(Ordering::Relaxed) {
+                continue;
             }
 
             if feedback_tx.send(FeedbackLine { stream, line }).is_ok() {
@@ -793,6 +796,7 @@ async fn process_node_start(
             &e,
             stderr_buffer,
             output_reader_handles,
+            Arc::clone(&ctx.log_file),
         )
         .await;
         feedback_sync.flush().await;
@@ -836,8 +840,16 @@ async fn process_node_start(
                 publish_enabled.store(false, Ordering::Relaxed);
                 return result;
             }
+            let (max_wait, quiet_window) = if is_container {
+                (
+                    CONTAINER_STARTUP_OUTPUT_MAX_WAIT,
+                    CONTAINER_STARTUP_OUTPUT_QUIET_WINDOW,
+                )
+            } else {
+                (STARTUP_OUTPUT_MAX_WAIT, STARTUP_OUTPUT_QUIET_WINDOW)
+            };
             feedback_sync
-                .wait_for_read_quiescence(STARTUP_OUTPUT_MAX_WAIT, STARTUP_OUTPUT_QUIET_WINDOW)
+                .wait_for_read_quiescence(max_wait, quiet_window)
                 .await;
             let result = NodeStartResult::success(pid);
             feedback_sync.flush().await;
@@ -855,6 +867,7 @@ async fn process_node_start(
                 &e,
                 stderr_buffer,
                 output_reader_handles,
+                Arc::clone(&ctx.log_file),
             )
             .await;
             feedback_sync.flush().await;
@@ -936,6 +949,7 @@ async fn kill_and_report_error(
     error: &str,
     stderr_buffer: Arc<StdMutex<VecDeque<String>>>,
     output_reader_handles: Vec<JoinHandle<()>>,
+    log_file: Arc<StdMutex<File>>,
 ) -> NodeStartResult {
     if let Err(kill_err) = child.kill().await {
         debug!(
@@ -954,7 +968,15 @@ async fn kill_and_report_error(
 
     let stderr_output = {
         let guard = stderr_buffer.lock().expect("stderr buffer lock poisoned");
-        guard.iter().cloned().collect::<Vec<_>>().join("\n")
+        let buffer_lines: Vec<String> = guard.iter().cloned().collect();
+        if !buffer_lines.is_empty() {
+            buffer_lines.join("\n")
+        } else {
+            // Fall back to the log file for stderr lines — the log write is unconditional
+            // and may have captured output that the stderr_buffer missed due to timing
+            // (e.g. the async reader hadn't processed the line before we read the buffer).
+            extract_stderr_from_log(&log_file)
+        }
     };
 
     if !stderr_output.is_empty() {
@@ -974,6 +996,37 @@ async fn kill_and_report_error(
     };
 
     NodeStartResult::failure(error_msg)
+}
+
+/// Extracts stderr lines from the log file.
+///
+/// The log file captures all output unconditionally (before any async processing),
+/// so it serves as a reliable fallback when the stderr_buffer is empty due to
+/// async scheduling timing (e.g., the reader task hadn't processed the line before
+/// the buffer was read).
+fn extract_stderr_from_log(log_file: &Arc<StdMutex<File>>) -> String {
+    use std::io::{Read, Seek};
+
+    let content = match log_file.lock() {
+        Ok(mut f) => {
+            if f.seek(std::io::SeekFrom::Start(0)).is_err() {
+                return String::new();
+            }
+            let mut buf = String::new();
+            if f.read_to_string(&mut buf).is_err() {
+                return String::new();
+            }
+            buf
+        }
+        Err(_) => return String::new(),
+    };
+
+    content
+        .lines()
+        .filter(|l| l.contains("[stderr]"))
+        .filter_map(|l| l.split_once("[stderr] ").map(|(_, rest)| rest))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Creates (or recreates) a clean instance directory under the instances dir.

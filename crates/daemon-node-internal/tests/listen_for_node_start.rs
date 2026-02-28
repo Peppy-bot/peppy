@@ -16,6 +16,11 @@ use peppylib::services::ready::listen_for_node_ready;
 use std::sync::Arc;
 use std::time::Duration;
 use tempfile::TempDir;
+use tokio::sync::Mutex;
+
+/// Container tests share a single Lima VM instance and must run serially
+/// to avoid concurrent limactl operations (start/stop) that cause failures.
+static CONTAINER_TEST_MUTEX: Mutex<()> = Mutex::const_new(());
 
 /// Creates a temp directory with a peppy.json5 file
 fn create_node_config_dir(peppy_json5: &str) -> TempDir {
@@ -1369,6 +1374,8 @@ async fn listen_for_node_start_injects_runtime_env_vars() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_start_with_container_success() {
+    let _guard = CONTAINER_TEST_MUTEX.lock().await;
+
     const TARGET_NODE_NAME: &str = "container_start_node";
     const TARGET_NODE_TAG: &str = "0.1.0";
     const TARGET_INSTANCE_ID: &str = "container_start_instance";
@@ -1577,6 +1584,8 @@ From: alpine:3.20
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_start_container_failure_includes_stderr_in_error() {
+    let _guard = CONTAINER_TEST_MUTEX.lock().await;
+
     const TARGET_NODE_NAME: &str = "failing_container_node";
     const TARGET_NODE_TAG: &str = "0.1.0";
     const TARGET_INSTANCE_ID: &str = "failing_container_instance";
