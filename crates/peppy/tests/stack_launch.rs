@@ -132,6 +132,7 @@ async fn node_launch_command_succeed() {
             node_name: peppy::commands::node::NodeName::new(node_b_name).expect("valid node name"),
             to_dir: None,
             toolchain: Toolchain::Cargo,
+            with_container: false,
         },
     }
     .execute(&ctx)

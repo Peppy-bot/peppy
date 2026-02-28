@@ -1368,7 +1368,7 @@ async fn listen_for_node_start_injects_runtime_env_vars() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_container_start_success() {
+async fn listen_for_node_start_with_container_success() {
     const TARGET_NODE_NAME: &str = "container_start_node";
     const TARGET_NODE_TAG: &str = "0.1.0";
     const TARGET_INSTANCE_ID: &str = "container_start_instance";

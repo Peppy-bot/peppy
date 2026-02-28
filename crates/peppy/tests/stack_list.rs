@@ -111,6 +111,7 @@ async fn node_list_command_succeeds() {
             node_name: NodeName::new(provider_name).expect("valid node name"),
             to_dir: None,
             toolchain: Toolchain::Cargo,
+            with_container: false,
         },
     }
     .execute(&node_ctx)
@@ -121,6 +122,7 @@ async fn node_list_command_succeeds() {
             node_name: NodeName::new(consumer_name).expect("valid node name"),
             to_dir: None,
             toolchain: Toolchain::Cargo,
+            with_container: false,
         },
     }
     .execute(&node_ctx)
@@ -255,6 +257,7 @@ async fn node_list_command_with_dot_representation_succeeds() {
             node_name: NodeName::new(provider_name).expect("valid node name"),
             to_dir: None,
             toolchain: Toolchain::Cargo,
+            with_container: false,
         },
     }
     .execute(&node_ctx)
@@ -265,6 +268,7 @@ async fn node_list_command_with_dot_representation_succeeds() {
             node_name: NodeName::new(consumer_name).expect("valid node name"),
             to_dir: None,
             toolchain: Toolchain::Cargo,
+            with_container: false,
         },
     }
     .execute(&node_ctx)

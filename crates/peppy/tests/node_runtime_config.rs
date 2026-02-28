@@ -39,6 +39,7 @@ async fn node_runtime_config_command_outputs_valid_config() {
             node_name: NodeName::new(node_name).expect("valid node name"),
             to_dir: None,
             toolchain: Toolchain::Cargo,
+            with_container: false,
         },
     }
     .execute(&node_ctx)
@@ -146,6 +147,7 @@ async fn node_runtime_config_command_with_peppy_json5_outputs_valid_config() {
             node_name: NodeName::new(node_name).expect("valid node name"),
             to_dir: None,
             toolchain: Toolchain::Cargo,
+            with_container: false,
         },
     }
     .execute(&node_ctx)

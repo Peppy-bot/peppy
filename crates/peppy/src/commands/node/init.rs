@@ -18,16 +18,23 @@ pub struct NodeInitBuilder {
     to_dir: PathBuf,
     node_name: NodeName,
     toolchain: Toolchain,
+    with_container: bool,
     timeout: Option<Duration>,
 }
 
 impl NodeInitBuilder {
-    pub fn new(ctx: &Arc<AppContext>, node_name: NodeName, toolchain: Toolchain) -> Self {
+    pub fn new(
+        ctx: &Arc<AppContext>,
+        node_name: NodeName,
+        toolchain: Toolchain,
+        with_container: bool,
+    ) -> Self {
         Self {
             ctx: Arc::clone(ctx),
             to_dir: ctx.root_dir.clone(),
             node_name,
             toolchain,
+            with_container,
             timeout: Some(REQUEST_TIMEOUT),
         }
     }
@@ -77,7 +84,7 @@ impl NodeInitBuilder {
             &self.to_dir,
             self.node_name.as_str(),
             git_hash,
-            false,
+            self.with_container,
             self.toolchain,
         );
 

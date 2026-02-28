@@ -50,6 +50,7 @@ fn node_remove_command_succeeds() {
             node_name: NodeName::new(node_name).expect("valid node name"),
             to_dir: None,
             toolchain: Toolchain::Cargo,
+            with_container: false,
         },
     }
     .execute(&node_ctx)
@@ -183,6 +184,7 @@ fn node_remove_command_force_bypasses_prompt_and_stops_instances() {
             node_name: NodeName::new(node_name).expect("valid node name"),
             to_dir: None,
             toolchain: Toolchain::Cargo,
+            with_container: false,
         },
     }
     .execute(&node_ctx)
@@ -322,6 +324,7 @@ fn node_remove_command_with_stop_instances_succeeds_and_stops_instances() {
             node_name: NodeName::new(node_name).expect("valid node name"),
             to_dir: None,
             toolchain: Toolchain::Cargo,
+            with_container: false,
         },
     }
     .execute(&node_ctx)

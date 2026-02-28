@@ -270,7 +270,7 @@ async fn listen_for_node_fs_add_success() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_container_add_success() {
+async fn listen_for_node_add_with_container_success() {
     const TARGET_NODE_NAME: &str = "container_node";
     const TARGET_NODE_TAG: &str = "0.1.0";
 

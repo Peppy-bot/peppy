@@ -75,6 +75,9 @@ pub enum NodeCommands {
         /// Optional: target directory (defaults to current directory)
         #[arg(long)]
         to_dir: Option<PathBuf>,
+        /// Generate container build support (Apptainer definition file)
+        #[arg(long = "container")]
+        with_container: bool,
     },
     /// Add a node to the node stack based on its peppy.json5 file
     Add {
@@ -190,8 +193,10 @@ impl Command for NodeCommand {
                 to_dir,
                 node_name,
                 toolchain,
+                with_container,
             } => {
-                let mut node_builder = NodeInitBuilder::new(ctx, node_name, toolchain);
+                let mut node_builder =
+                    NodeInitBuilder::new(ctx, node_name, toolchain, with_container);
 
                 if let Some(dir) = to_dir {
                     node_builder = node_builder.to_dir(dir);
