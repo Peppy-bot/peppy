@@ -576,6 +576,8 @@ pub struct Process {
 #[serde(deny_unknown_fields)]
 pub struct ContainerConfig {
     pub def_file: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mount_paths: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
