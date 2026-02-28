@@ -2689,3 +2689,10 @@ From: nowhere
         "feedback should have been streamed during the container build"
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_add_logs_error_on_spawn_failure() {
+    todo!(
+        "Similar to listen_for_node_start_logs_error_on_spawn_failure but for `add` instead of `start`"
+    )
+}

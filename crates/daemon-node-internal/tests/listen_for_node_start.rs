@@ -1716,6 +1716,116 @@ From: alpine:3.20
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_start_logs_error_on_spawn_failure() {
+    const TARGET_NODE_NAME: &str = "spawn_failure_node";
+    const TARGET_NODE_TAG: &str = "0.1.0";
+    const TARGET_INSTANCE_ID: &str = "spawn_failure_instance";
+
+    let started = start_daemon_node_with_mock_messenger().await;
+
+    // Create a process node with a start_cmd that cannot be found.
+    // This will cause command.spawn() to fail in start_node().
+    let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
+    let peppy_json5 = format!(
+        r#"{{
+            schema_version: 1,
+            manifest: {{
+                name: "{TARGET_NODE_NAME}",
+                tag: "{TARGET_NODE_TAG}",
+                language: "rust",
+            }},
+            process: {{
+                start_cmd: ["nonexistent_binary_peppy_test_xyz"]
+            }}
+        }}"#
+    );
+    write_peppy_json5(source_dir.path(), &peppy_json5);
+
+    let add_response = send_node_add_and_wait(
+        &started.caller_handle,
+        &started.daemon_node_name,
+        source_dir.path(),
+        Duration::from_secs(5),
+        Duration::from_secs(5),
+        None,
+    )
+    .await
+    .expect("node_add should succeed");
+
+    assert!(
+        add_response.success,
+        "node_add should succeed, got error: {:?}",
+        add_response.error_message
+    );
+
+    let runtime_config = RuntimeConfig::new(
+        "127.0.0.1",
+        config::consts::DEFAULT_MESSAGING_PORT,
+        NodeInstance {
+            instance_id: Name::new(TARGET_INSTANCE_ID).unwrap(),
+            arguments: Default::default(),
+        },
+        TARGET_NODE_NAME,
+        &started.daemon_node_name,
+    )
+    .expect("runtime config should be valid");
+
+    let runtime_config_json5 =
+        serde_json5::to_string(&runtime_config).expect("runtime config should serialize");
+
+    let start_response = send_node_start_and_wait(
+        &started.caller_handle,
+        &started.daemon_node_name,
+        &runtime_config_json5,
+        TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
+        &NodeStartTestTimeouts {
+            goal: Duration::from_secs(5),
+            result: Duration::from_secs(10),
+        },
+        None,
+    )
+    .await
+    .expect("node_start action should complete");
+
+    assert!(
+        !start_response.result.success,
+        "node_start should fail because the binary does not exist"
+    );
+
+    let error_msg = start_response
+        .result
+        .error_message
+        .as_ref()
+        .expect("error_message should be present");
+    assert!(
+        error_msg.contains("Failed to start node"),
+        "error should mention start failure, got: {}",
+        error_msg
+    );
+
+    // The log file should exist and contain the error — not be empty
+    let log_path = &start_response.goal_response.log_path;
+    assert!(log_path.exists(), "log file should exist at {:?}", log_path);
+
+    let log_content = std::fs::read_to_string(log_path).expect("should be able to read log file");
+    assert!(
+        !log_content.is_empty(),
+        "log file should not be empty when a start failure occurs"
+    );
+    assert!(
+        log_content.contains("[error]"),
+        "log file should contain an [error] entry, got:\n{}",
+        log_content
+    );
+    assert!(
+        log_content.contains("Failed to start node"),
+        "log file should contain the failure message, got:\n{}",
+        log_content
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "Implement later"]
 async fn listen_for_node_start_remove_node_on_unhealthy_node() {
     todo!(

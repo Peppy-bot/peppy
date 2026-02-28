@@ -408,21 +408,53 @@ pub(crate) fn parse_lima_version(version_output: &str) -> Option<(u32, u32, u32)
 }
 
 /// Stop a Lima instance.
+///
+/// Idempotent: returns `Ok(())` if the instance is already stopped or does not
+/// exist, so callers do not need to guard against these cases.
 pub(crate) fn stop_instance(limactl: &Path, lima_home: &Path, instance: &str) -> Result<()> {
-    tracing::info!("Stopping Lima {} instance...", instance);
-    let output = Command::new(limactl)
+    let list_output = Command::new(limactl)
         .env("LIMA_HOME", lima_home)
-        .args(["stop", instance])
-        .output()?;
+        .args(["list", "--format", "{{.Status}}", instance])
+        .output();
 
-    if output.status.success() {
-        Ok(())
-    } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        Err(Error::LimaInstanceError(format!(
-            "failed to stop Lima {} instance: {stderr}",
-            instance
-        )))
+    let status = match &list_output {
+        Ok(o) if o.status.success() => {
+            let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            if s.is_empty() { None } else { Some(s) }
+        }
+        _ => None,
+    };
+
+    match status.as_deref() {
+        Some("Running") => {
+            tracing::info!("Stopping Lima {} instance...", instance);
+            let output = Command::new(limactl)
+                .env("LIMA_HOME", lima_home)
+                .args(["stop", instance])
+                .output()?;
+
+            if output.status.success() {
+                Ok(())
+            } else {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                Err(Error::LimaInstanceError(format!(
+                    "failed to stop Lima {} instance: {stderr}",
+                    instance
+                )))
+            }
+        }
+        Some(other) => {
+            tracing::info!(
+                "Lima {} instance status is '{}', skipping stop",
+                instance,
+                other
+            );
+            Ok(())
+        }
+        None => {
+            tracing::info!("Lima {} instance does not exist, skipping stop", instance);
+            Ok(())
+        }
     }
 }
 
@@ -605,5 +637,65 @@ mod tests {
             }
             other => panic!("expected LimaVersionCheckFailed, got {other:?}"),
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_stop_instance_is_idempotent_for_nonexistent() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempdir().expect("create temp dir");
+        let limactl = dir.path().join("limactl");
+        let lima_home = dir.path().join("lima_home");
+        fs::create_dir_all(&lima_home).expect("create lima home");
+
+        // Fake limactl: `list` returns empty status (instance doesn't exist),
+        // `stop` would fail — but should never be called.
+        fs::write(
+            &limactl,
+            "#!/bin/sh\nif [ \"$1\" = \"list\" ]; then echo ''; exit 0; else echo 'should not be called' >&2; exit 1; fi\n",
+        )
+        .expect("write fake limactl");
+
+        let mut perms = fs::metadata(&limactl).expect("read metadata").permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&limactl, perms).expect("set executable bit");
+
+        let result = stop_instance(&limactl, &lima_home, "nonexistent_instance");
+        assert!(
+            result.is_ok(),
+            "stop_instance should succeed for non-existent instance, got: {:?}",
+            result.unwrap_err()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_stop_instance_is_idempotent_for_stopped() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempdir().expect("create temp dir");
+        let limactl = dir.path().join("limactl");
+        let lima_home = dir.path().join("lima_home");
+        fs::create_dir_all(&lima_home).expect("create lima home");
+
+        // Fake limactl: `list` returns "Stopped" status.
+        // `stop` would fail — but should never be called.
+        fs::write(
+            &limactl,
+            "#!/bin/sh\nif [ \"$1\" = \"list\" ]; then echo 'Stopped'; exit 0; else echo 'should not be called' >&2; exit 1; fi\n",
+        )
+        .expect("write fake limactl");
+
+        let mut perms = fs::metadata(&limactl).expect("read metadata").permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&limactl, perms).expect("set executable bit");
+
+        let result = stop_instance(&limactl, &lima_home, "stopped_instance");
+        assert!(
+            result.is_ok(),
+            "stop_instance should succeed for already-stopped instance, got: {:?}",
+            result.unwrap_err()
+        );
     }
 }

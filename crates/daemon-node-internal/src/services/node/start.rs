@@ -598,7 +598,9 @@ async fn process_node_start(
     let mut env_vars = match super::validate_goal_env_vars(&env_vars) {
         Ok(vars) => vars,
         Err(e) => {
-            return NodeStartResult::failure(e.to_string());
+            let msg = e.to_string();
+            write_error_to_log(&ctx.log_file, &msg);
+            return NodeStartResult::failure(msg);
         }
     };
 
@@ -606,7 +608,9 @@ async fn process_node_start(
     let instance_id = match Name::new(instance_id_str) {
         Ok(name) => name,
         Err(e) => {
-            return NodeStartResult::failure(format!("Invalid instance_id: {}", e));
+            let msg = format!("Invalid instance_id: {}", e);
+            write_error_to_log(&ctx.log_file, &msg);
+            return NodeStartResult::failure(msg);
         }
     };
 
@@ -618,10 +622,9 @@ async fn process_node_start(
     let entity = match ctx.action.node_stack.find(&node_name, &tag) {
         Some(entity) => entity,
         None => {
-            return NodeStartResult::failure(format!(
-                "Node '{}:{}' not found in node stack",
-                node_name, tag
-            ));
+            let msg = format!("Node '{}:{}' not found in node stack", node_name, tag);
+            write_error_to_log(&ctx.log_file, &msg);
+            return NodeStartResult::failure(msg);
         }
     };
 
@@ -646,10 +649,9 @@ async fn process_node_start(
         "",
     );
     if !missing_params.is_empty() {
-        return NodeStartResult::failure(format!(
-            "Missing required parameters: {}",
-            missing_params.join(", ")
-        ));
+        let msg = format!("Missing required parameters: {}", missing_params.join(", "));
+        write_error_to_log(&ctx.log_file, &msg);
+        return NodeStartResult::failure(msg);
     }
 
     let is_container = entity.config().container.is_some();
@@ -661,19 +663,20 @@ async fn process_node_start(
         match create_instance_dir(instance_id_str, &ctx.action.peppy_dirs) {
             Ok(dir) => dir,
             Err(e) => {
-                debug!("Failed to create instance directory: {}", e);
-                return NodeStartResult::failure(format!(
-                    "Failed to create instance directory: {}",
-                    e
-                ));
+                let msg = format!("Failed to create instance directory: {}", e);
+                debug!("{}", msg);
+                write_error_to_log(&ctx.log_file, &msg);
+                return NodeStartResult::failure(msg);
             }
         }
     } else {
         match extract_node_archive(entity.root_path(), instance_id_str, &ctx.action.peppy_dirs) {
             Ok(dir) => dir,
             Err(e) => {
-                debug!("Failed to extract node archive: {}", e);
-                return NodeStartResult::failure(format!("Failed to extract node archive: {}", e));
+                let msg = format!("Failed to extract node archive: {}", e);
+                debug!("{}", msg);
+                write_error_to_log(&ctx.log_file, &msg);
+                return NodeStartResult::failure(msg);
             }
         }
     };
@@ -700,8 +703,10 @@ async fn process_node_start(
         ) {
             Ok(child) => child,
             Err(e) => {
-                debug!("Failed to start container node: {}", e);
-                return NodeStartResult::failure(format!("Failed to start container node: {}", e));
+                let msg = format!("Failed to start container node: {}", e);
+                debug!("{}", msg);
+                write_error_to_log(&ctx.log_file, &msg);
+                return NodeStartResult::failure(msg);
             }
         }
     } else {
@@ -715,8 +720,10 @@ async fn process_node_start(
         ) {
             Ok(child) => child,
             Err(e) => {
+                let msg = format!("Failed to start node: {}", e);
                 debug!("Failed to start node instance '{}': {}", instance_id_str, e);
-                return NodeStartResult::failure(format!("Failed to start node: {}", e));
+                write_error_to_log(&ctx.log_file, &msg);
+                return NodeStartResult::failure(msg);
             }
         }
     };
@@ -834,8 +841,9 @@ async fn process_node_start(
                         instance_id_str, kill_err
                     );
                 }
-                let result =
-                    NodeStartResult::failure(format!("Failed to register instance: {}", e));
+                let msg = format!("Failed to register instance: {}", e);
+                write_error_to_log(&ctx.log_file, &msg);
+                let result = NodeStartResult::failure(msg);
                 feedback_sync.flush().await;
                 publish_enabled.store(false, Ordering::Relaxed);
                 return result;
@@ -1027,6 +1035,18 @@ fn extract_stderr_from_log(log_file: &Arc<StdMutex<File>>) -> String {
         .filter_map(|l| l.split_once("[stderr] ").map(|(_, rest)| rest))
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// Write an error message to the node's log file with a timestamp.
+///
+/// Best-effort: silently ignores lock/write failures since the error is also
+/// returned in the `NodeStartResult`.
+fn write_error_to_log(log_file: &Arc<StdMutex<File>>, error_msg: &str) {
+    if let Ok(mut file) = log_file.lock() {
+        let timestamp = Local::now().format("%Y-%m-%dT%H:%M:%S%.3f");
+        let _ = writeln!(file, "[{}] [error] {}", timestamp, error_msg);
+        let _ = file.flush();
+    }
 }
 
 /// Creates (or recreates) a clean instance directory under the instances dir.
