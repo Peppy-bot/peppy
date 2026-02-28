@@ -1,18 +1,14 @@
 mod common;
 
 use common::{
-    AbortOnDrop, CALLER_INSTANCE_ID, NodeStartTestTimeouts, send_node_add_and_wait,
-    send_node_start_and_wait, start_daemon_node_with_mock_messenger,
+    CALLER_INSTANCE_ID, NodeStartTestTimeouts, send_node_add_and_wait, send_node_start_and_wait,
+    start_daemon_node_with_real_messenger,
 };
 use config::node::Name as NodeName;
 use config::node::Toolchain;
 use config::peppy_config::Name;
 use config::runtime::{NodeInstance, RuntimeConfig};
 use daemon_node::encoding::NodeInitRequest;
-use peppylib::messaging::MessengerHandle;
-use peppylib::services::health::listen_for_node_health;
-use peppylib::services::ready::listen_for_node_ready;
-use std::sync::Arc;
 use std::time::Duration;
 use tempfile::tempdir;
 
@@ -51,7 +47,7 @@ async fn container_e2e_rust_init_add_start() {
     const NODE_TAG: &str = "0.1.0";
     const INSTANCE_ID: &str = "rust_e2e_instance";
 
-    let started = start_daemon_node_with_mock_messenger().await;
+    let started = start_daemon_node_with_real_messenger().await;
 
     // Step 1: Init the node with container support
     let nodes_root = tempdir().expect("failed to create temp nodes root directory");
@@ -103,35 +99,17 @@ async fn container_e2e_rust_init_add_start() {
         add_response.error_message
     );
 
-    // Step 3: Set up ready/health services for the container instance
-    let node_messenger = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
-    let _ready_task = AbortOnDrop(
-        listen_for_node_ready(
-            &node_messenger,
-            &started.daemon_node_name,
-            INSTANCE_ID,
-            NODE_NAME,
-        )
+    // Step 3: Start the container against a real messaging endpoint.
+    // This mirrors real world usage and avoids mocked ready/health responders.
+    let (messaging_host, messaging_port) = started
+        .caller_handle
+        .messaging_endpoint()
         .await
-        .expect("node ready service should start"),
-    );
-    let _health_task = AbortOnDrop(
-        listen_for_node_health(
-            &node_messenger,
-            &started.daemon_node_name,
-            INSTANCE_ID,
-            NODE_NAME,
-        )
-        .await
-        .expect("node health service should start"),
-    );
+        .expect("zenoh endpoint should be available");
 
-    tokio::time::sleep(Duration::from_millis(50)).await;
-
-    // Step 4: Start the container
     let runtime_config = RuntimeConfig::new(
-        "127.0.0.1",
-        config::consts::DEFAULT_MESSAGING_PORT,
+        messaging_host.as_str(),
+        messaging_port,
         NodeInstance {
             instance_id: Name::new(INSTANCE_ID).unwrap(),
             arguments: Default::default(),
@@ -197,6 +175,11 @@ async fn container_e2e_rust_init_add_start() {
         "log file should contain apptainer run command, got:\n{}",
         log_content
     );
+    assert!(
+        !log_content.contains("CodegenFingerprintRead"),
+        "log file should not contain config fingerprint startup errors, got:\n{}",
+        log_content
+    );
 }
 
 /// End-to-end test: init a Python container node, build the container image,
@@ -215,7 +198,7 @@ async fn container_e2e_python_init_add_start() {
     const NODE_TAG: &str = "0.1.0";
     const INSTANCE_ID: &str = "python_e2e_instance";
 
-    let started = start_daemon_node_with_mock_messenger().await;
+    let started = start_daemon_node_with_real_messenger().await;
 
     // Step 1: Init the node with container support
     let nodes_root = tempdir().expect("failed to create temp nodes root directory");
@@ -267,35 +250,17 @@ async fn container_e2e_python_init_add_start() {
         add_response.error_message
     );
 
-    // Step 3: Set up ready/health services for the container instance
-    let node_messenger = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
-    let _ready_task = AbortOnDrop(
-        listen_for_node_ready(
-            &node_messenger,
-            &started.daemon_node_name,
-            INSTANCE_ID,
-            NODE_NAME,
-        )
+    // Step 3: Start the container against a real messaging endpoint.
+    // This mirrors real world usage and avoids mocked ready/health responders.
+    let (messaging_host, messaging_port) = started
+        .caller_handle
+        .messaging_endpoint()
         .await
-        .expect("node ready service should start"),
-    );
-    let _health_task = AbortOnDrop(
-        listen_for_node_health(
-            &node_messenger,
-            &started.daemon_node_name,
-            INSTANCE_ID,
-            NODE_NAME,
-        )
-        .await
-        .expect("node health service should start"),
-    );
+        .expect("zenoh endpoint should be available");
 
-    tokio::time::sleep(Duration::from_millis(50)).await;
-
-    // Step 4: Start the container
     let runtime_config = RuntimeConfig::new(
-        "127.0.0.1",
-        config::consts::DEFAULT_MESSAGING_PORT,
+        messaging_host.as_str(),
+        messaging_port,
         NodeInstance {
             instance_id: Name::new(INSTANCE_ID).unwrap(),
             arguments: Default::default(),
@@ -359,6 +324,11 @@ async fn container_e2e_python_init_add_start() {
     assert!(
         log_content.contains("Executing apptainer run"),
         "log file should contain apptainer run command, got:\n{}",
+        log_content
+    );
+    assert!(
+        !log_content.contains("CodegenFingerprintRead"),
+        "log file should not contain config fingerprint startup errors, got:\n{}",
         log_content
     );
 }

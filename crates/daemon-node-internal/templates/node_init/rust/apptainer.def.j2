@@ -26,4 +26,5 @@ From: ubuntu:24.04
     cargo build --release
 
 %runscript
-    exec /opt/{{ node_name }}/target/release/{{ node_name }}
+    cd /opt/{{ node_name }}
+    exec ./target/release/{{ node_name }}
