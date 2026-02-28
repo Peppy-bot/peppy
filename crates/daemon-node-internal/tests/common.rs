@@ -17,7 +17,7 @@ use peppylib::runtime::{TaskHandle, spawn};
 use peppylib::{ActionMessenger, PeppyError};
 use pmi::{Messenger, MessengerAdapter, MessengerBackend, MockAdapter};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::time::Duration;
 use tempfile::TempDir;
@@ -524,6 +524,7 @@ fn init_cargo_project(node_dir: &Path, crate_name: &str) {
         .arg(crate_name)
         .env("CARGO_NET_OFFLINE", "true")
         .current_dir(node_dir)
+        .stdin(Stdio::null())
         .output()
         .expect("failed to invoke `cargo init` for test node");
 
@@ -616,6 +617,7 @@ fn build_cargo_project(dir: &Path) {
         .arg("build")
         .env("CARGO_NET_OFFLINE", "true")
         .current_dir(dir)
+        .stdin(Stdio::null())
         .output()
         .expect("failed to invoke `cargo build` for test node");
 

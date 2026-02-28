@@ -1,5 +1,5 @@
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 
 /// Facade for the `ruff` Python linter/formatter binary.
 ///
@@ -23,7 +23,6 @@ impl RuffFacade {
         let output = Command::new(&self.ruff_path)
             .args(["format", "--quiet"])
             .arg(path)
-            .stdin(Stdio::null())
             .output()?;
 
         if !output.status.success() {
@@ -41,7 +40,6 @@ impl RuffFacade {
         let output = Command::new(&self.ruff_path)
             .args(["check", "--fix", "--quiet"])
             .arg(path)
-            .stdin(Stdio::null())
             .output()?;
 
         if !output.status.success() {

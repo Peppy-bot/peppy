@@ -1,7 +1,7 @@
 use super::facade::{Apptainer, Backend, is_uri};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use tempfile::TempDir;
 
 // ---------------------------------------------------------------------------
@@ -440,6 +440,7 @@ fn test_lima_instance_running_after_init() {
             let output = Command::new(limactl_path)
                 .env("LIMA_HOME", lima_home)
                 .args(["list", "--format", "{{.Status}}", "peppy"])
+                .stdin(Stdio::null())
                 .output()
                 .expect("limactl list should execute successfully");
 

@@ -8,7 +8,7 @@ use config::node::Name;
 use daemon_node::encoding::NodeStopRequest;
 use peppylib::messaging::MessengerHandle;
 use peppylib::services::shutdown::listen_for_shutdown;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -74,6 +74,7 @@ async fn listen_for_node_stop_success() {
     // Spawn a real process to simulate the running node
     let mut child_process = Command::new("sleep")
         .arg("60")
+        .stdin(Stdio::null())
         .spawn()
         .expect("failed to spawn sleep process");
     let pid = child_process.id();
