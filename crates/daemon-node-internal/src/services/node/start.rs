@@ -1130,6 +1130,10 @@ fn start_container_node(
     // visible inside the container.
     let mut apptainer_cmd = apptainer.run(sif_str);
     for (key, value) in env_vars {
+        // Apptainer manages HOME itself; passing it via --env triggers a warning.
+        if key.eq_ignore_ascii_case("HOME") {
+            continue;
+        }
         apptainer_cmd = apptainer_cmd.env(key, value);
     }
     apptainer_cmd = apptainer_cmd.env(
