@@ -407,6 +407,100 @@ pub(crate) fn parse_lima_version(version_output: &str) -> Option<(u32, u32, u32)
     Some((major, minor, patch))
 }
 
+/// Stop a Lima instance.
+pub(crate) fn stop_instance(limactl: &Path, lima_home: &Path, instance: &str) -> Result<()> {
+    tracing::info!("Stopping Lima {} instance...", instance);
+    let output = Command::new(limactl)
+        .env("LIMA_HOME", lima_home)
+        .args(["stop", instance])
+        .output()?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(Error::LimaInstanceError(format!(
+            "failed to stop Lima {} instance: {stderr}",
+            instance
+        )))
+    }
+}
+
+/// Ensure that the given host paths are listed as mounts in the Lima config.
+///
+/// Reads the Lima YAML config, checks existing mount locations, and appends
+/// any missing paths as writable mounts. Returns `true` if the config was
+/// modified (meaning the VM needs to be restarted to pick up the changes).
+pub(crate) fn ensure_extra_mounts(config_path: &Path, paths: &[&str]) -> Result<bool> {
+    let content = std::fs::read_to_string(config_path).map_err(|e| {
+        Error::LimaInstanceError(format!(
+            "failed to read Lima config {}: {e}",
+            config_path.display()
+        ))
+    })?;
+
+    let mut config: serde_yaml::Value = serde_yaml::from_str(&content).map_err(|e| {
+        Error::LimaInstanceError(format!(
+            "failed to parse Lima config {}: {e}",
+            config_path.display()
+        ))
+    })?;
+
+    // Get or create the mounts array
+    let mounts = config
+        .as_mapping_mut()
+        .ok_or_else(|| Error::LimaInstanceError("Lima config is not a YAML mapping".into()))?
+        .entry(serde_yaml::Value::String("mounts".to_string()))
+        .or_insert_with(|| serde_yaml::Value::Sequence(Vec::new()));
+
+    let mounts_seq = mounts.as_sequence_mut().ok_or_else(|| {
+        Error::LimaInstanceError("Lima config 'mounts' is not a sequence".into())
+    })?;
+
+    // Collect existing mount locations
+    let existing: Vec<String> = mounts_seq
+        .iter()
+        .filter_map(|entry| {
+            entry
+                .get("location")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+        })
+        .collect();
+
+    let mut modified = false;
+    for path in paths {
+        if !existing.iter().any(|loc| loc == *path) {
+            let mut mount_entry = serde_yaml::Mapping::new();
+            mount_entry.insert(
+                serde_yaml::Value::String("location".to_string()),
+                serde_yaml::Value::String(path.to_string()),
+            );
+            mount_entry.insert(
+                serde_yaml::Value::String("writable".to_string()),
+                serde_yaml::Value::Bool(true),
+            );
+            mounts_seq.push(serde_yaml::Value::Mapping(mount_entry));
+            tracing::info!("Adding Lima mount: {}", path);
+            modified = true;
+        }
+    }
+
+    if modified {
+        let yaml_str = serde_yaml::to_string(&config).map_err(|e| {
+            Error::LimaInstanceError(format!("failed to serialize Lima config: {e}"))
+        })?;
+        std::fs::write(config_path, yaml_str).map_err(|e| {
+            Error::LimaInstanceError(format!(
+                "failed to write Lima config {}: {e}",
+                config_path.display()
+            ))
+        })?;
+    }
+
+    Ok(modified)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -437,6 +531,55 @@ mod tests {
         assert_eq!(parse_lima_version("not a version"), None);
         assert_eq!(parse_lima_version(""), None);
         assert_eq!(parse_lima_version("1.2"), None);
+    }
+
+    #[test]
+    fn test_ensure_extra_mounts_adds_new_mount() {
+        let dir = tempdir().expect("create temp dir");
+        let config_path = dir.path().join("lima.yaml");
+        let initial = "mounts:\n  - location: \"~\"\n    writable: true\n";
+        fs::write(&config_path, initial).expect("write initial config");
+
+        let modified =
+            ensure_extra_mounts(&config_path, &["/tmp/test_mount"]).expect("should succeed");
+        assert!(modified, "config should have been modified");
+
+        let content = fs::read_to_string(&config_path).expect("read config");
+        assert!(
+            content.contains("/tmp/test_mount"),
+            "config should contain new mount path, got:\n{content}"
+        );
+    }
+
+    #[test]
+    fn test_ensure_extra_mounts_skips_existing() {
+        let dir = tempdir().expect("create temp dir");
+        let config_path = dir.path().join("lima.yaml");
+        let initial =
+            "mounts:\n  - location: \"~\"\n    writable: true\n  - location: /tmp/existing\n    writable: true\n";
+        fs::write(&config_path, initial).expect("write initial config");
+
+        let modified =
+            ensure_extra_mounts(&config_path, &["/tmp/existing"]).expect("should succeed");
+        assert!(!modified, "config should not have been modified");
+    }
+
+    #[test]
+    fn test_ensure_extra_mounts_creates_mounts_section() {
+        let dir = tempdir().expect("create temp dir");
+        let config_path = dir.path().join("lima.yaml");
+        let initial = "images: []\n";
+        fs::write(&config_path, initial).expect("write initial config");
+
+        let modified =
+            ensure_extra_mounts(&config_path, &["/data/shared"]).expect("should succeed");
+        assert!(modified, "config should have been modified");
+
+        let content = fs::read_to_string(&config_path).expect("read config");
+        assert!(
+            content.contains("/data/shared"),
+            "config should contain new mount, got:\n{content}"
+        );
     }
 
     #[cfg(unix)]

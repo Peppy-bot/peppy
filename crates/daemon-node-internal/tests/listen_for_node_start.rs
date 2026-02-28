@@ -1375,6 +1375,12 @@ async fn listen_for_node_start_with_container_success() {
 
     let started = start_daemon_node_with_mock_messenger().await;
 
+    // Create a temp directory to bind-mount into the container with a test file
+    let mount_dir = tempfile::tempdir().expect("failed to create temp mount dir");
+    std::fs::write(mount_dir.path().join("mount_test.txt"), "mount_content")
+        .expect("failed to write mount test file");
+    let mount_dir_str = mount_dir.path().to_string_lossy().to_string();
+
     // Create source directory with container config and apptainer definition
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
     let peppy_json5 = r#"{
@@ -1386,10 +1392,14 @@ async fn listen_for_node_start_with_container_success() {
         },
         container: {
             def_file: "apptainer.def",
+            mount_paths: [
+                "MOUNT_DIR:MOUNT_DIR:ro"
+            ]
         }
     }"#
     .replace("TARGET_NODE_NAME", TARGET_NODE_NAME)
-    .replace("TARGET_NODE_TAG", TARGET_NODE_TAG);
+    .replace("TARGET_NODE_TAG", TARGET_NODE_TAG)
+    .replace("MOUNT_DIR", &mount_dir_str);
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
     let apptainer_def = format!(
@@ -1403,6 +1413,9 @@ From: alpine:3.20
 
 %runscript
     echo "Received env var $MY_ENV_VAR"
+    if [ -f {mount_dir_str}/mount_test.txt ]; then
+        echo "Mount path verified: $(cat {mount_dir_str}/mount_test.txt)"
+    fi
     exec sleep 300
 "#
     );
@@ -1539,6 +1552,25 @@ From: alpine:3.20
     assert!(
         log_content.contains("Received env var hello_from_peppy"),
         "log file should contain the env var output from the runscript, got:\n{}",
+        log_content
+    );
+
+    // Verify that mount_paths are logged as bind mounts
+    assert!(
+        log_content.contains("bind_mounts:"),
+        "log file should contain bind_mounts info, got:\n{}",
+        log_content
+    );
+    assert!(
+        log_content.contains(&mount_dir_str),
+        "log file should contain the mount directory path, got:\n{}",
+        log_content
+    );
+
+    // Verify the mount path was accessible inside the container
+    assert!(
+        log_content.contains("Mount path verified: mount_content"),
+        "log file should confirm mount path was accessible in container, got:\n{}",
         log_content
     );
 }

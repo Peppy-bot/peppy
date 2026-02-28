@@ -62,7 +62,7 @@ fn test_bind_flag_accumulates() {
     let dev1 = format!("{home}/dev1");
     let dev2 = format!("{home}/dev2");
 
-    let cmd = facade.run("image.sif").bind(&dev1, None).bind(&dev2, None);
+    let cmd = facade.run("image.sif").bind(&dev1, None, None).bind(&dev2, None, None);
     let args = cmd.build_args().expect("build_args should succeed");
 
     let bind_count = args.iter().filter(|a| *a == "--bind").count();
@@ -77,7 +77,7 @@ fn test_bind_with_dest() {
     let home = std::env::var("HOME").unwrap();
     let src = format!("{home}/data");
 
-    let cmd = facade.run("image.sif").bind(&src, Some("/mnt/data"));
+    let cmd = facade.run("image.sif").bind(&src, Some("/mnt/data"), None);
     let args = cmd.build_args().expect("build_args should succeed");
 
     let bind_idx = args.iter().position(|a| a == "--bind").unwrap();
@@ -85,6 +85,26 @@ fn test_bind_with_dest() {
     assert!(
         bind_spec.ends_with("data:/mnt/data"),
         "bind spec should have src:dest format, got: {}",
+        bind_spec
+    );
+}
+
+#[test]
+fn test_bind_with_opts() {
+    let facade = Apptainer::new()
+        .expect("Apptainer::new() should succeed — apptainer is bundled at compile time");
+
+    let home = std::env::var("HOME").unwrap();
+    let src = format!("{home}/data");
+
+    let cmd = facade.run("image.sif").bind(&src, Some("/mnt/data"), Some("ro"));
+    let args = cmd.build_args().expect("build_args should succeed");
+
+    let bind_idx = args.iter().position(|a| a == "--bind").unwrap();
+    let bind_spec = &args[bind_idx + 1];
+    assert!(
+        bind_spec.ends_with("data:/mnt/data:ro"),
+        "bind spec should have src:dest:opts format, got: {}",
         bind_spec
     );
 }

@@ -160,7 +160,7 @@ fn bind_mount_file_visible_in_container() {
     let marker_str = marker_path.to_string_lossy();
     let mut cmd = facade
         .exec(&sif_path.to_string_lossy(), &["cat", &marker_str])
-        .bind(&marker_str, None)
+        .bind(&marker_str, None, None)
         .into_std_command()
         .expect("exec with --bind should build command");
     cmd.stdin(Stdio::null());

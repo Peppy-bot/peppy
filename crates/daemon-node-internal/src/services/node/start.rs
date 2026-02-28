@@ -678,12 +678,20 @@ async fn process_node_start(
     // Spawn the node process:
     // - Container nodes: apptainer run <sif>
     // - Process nodes: execute start_cmd
+    let mount_paths = entity
+        .config()
+        .container
+        .as_ref()
+        .and_then(|c| c.mount_paths.as_deref())
+        .unwrap_or_default();
+
     let mut child = if is_container {
         match start_container_node(
             entity.root_path(),
             &instance_dir,
             &runtime_config_json5,
             &env_vars,
+            mount_paths,
             &ctx.log_file,
             &ctx.action.peppy_dirs,
         ) {
@@ -1100,17 +1108,19 @@ pub fn start_node(
 /// Starts a container node using the Apptainer runtime.
 ///
 /// Builds an `apptainer run <sif_path>` command with environment variables
-/// passed into the container via `--env` flags. Returns a tokio [`Child`] with
-/// piped stdout/stderr for async output capture.
+/// passed into the container via `--env` flags and optional bind mounts from
+/// `mount_paths`. Returns a tokio [`Child`] with piped stdout/stderr for
+/// async output capture.
 fn start_container_node(
     sif_path: &std::path::Path,
     working_dir: &std::path::Path,
     runtime_config_json5: &str,
     env_vars: &[(String, String)],
+    mount_paths: &[String],
     log_file: &Arc<StdMutex<File>>,
     peppy_dirs: &PeppyDirs,
 ) -> std::io::Result<Child> {
-    let apptainer = containers::Apptainer::new()
+    let mut apptainer = containers::Apptainer::new()
         .map_err(|e| std::io::Error::other(format!("Failed to initialize Apptainer: {}", e)))?;
 
     // Write runtime config to a unique file (same pattern as start_node).
@@ -1124,6 +1134,45 @@ fn start_container_node(
     let sif_str = sif_path
         .to_str()
         .ok_or_else(|| std::io::Error::other("SIF path is not valid UTF-8"))?;
+
+    // Parse mount_paths and ensure host paths are accessible (Lima VM mounts).
+    // Format: "host_path:container_path[:options]"
+    struct ParsedMount<'a> {
+        src: &'a str,
+        dest: Option<&'a str>,
+        opts: Option<&'a str>,
+    }
+
+    let parsed_mounts: Vec<ParsedMount<'_>> = mount_paths
+        .iter()
+        .map(|m| {
+            let parts: Vec<&str> = m.splitn(3, ':').collect();
+            match parts.len() {
+                1 => ParsedMount {
+                    src: parts[0],
+                    dest: None,
+                    opts: None,
+                },
+                2 => ParsedMount {
+                    src: parts[0],
+                    dest: Some(parts[1]),
+                    opts: None,
+                },
+                _ => ParsedMount {
+                    src: parts[0],
+                    dest: Some(parts[1]),
+                    opts: Some(parts[2]),
+                },
+            }
+        })
+        .collect();
+
+    if !parsed_mounts.is_empty() {
+        let src_paths: Vec<&str> = parsed_mounts.iter().map(|m| m.src).collect();
+        apptainer.ensure_host_mounts(&src_paths).map_err(|e| {
+            std::io::Error::other(format!("Failed to ensure host mounts: {}", e))
+        })?;
+    }
 
     // Build apptainer run command. Environment variables are passed into the
     // container via --env flags (not host-side process env) so they are
@@ -1141,16 +1190,22 @@ fn start_container_node(
         runtime_config_path.to_str().unwrap_or_default(),
     );
 
+    // Add bind mounts from mount_paths
+    for mount in &parsed_mounts {
+        apptainer_cmd = apptainer_cmd.bind(mount.src, mount.dest, mount.opts);
+    }
+
     // Log the command being executed
     {
         if let Ok(mut file) = log_file.lock() {
             let timestamp = Local::now().format("%Y-%m-%dT%H:%M:%S%.3f");
             let _ = writeln!(
                 file,
-                "[{}] Executing apptainer run: {} (working_dir: {})",
+                "[{}] Executing apptainer run: {} (working_dir: {}, bind_mounts: [{}])",
                 timestamp,
                 sif_path.display(),
-                working_dir.display()
+                working_dir.display(),
+                mount_paths.join(", ")
             );
             let _ = file.flush();
         }

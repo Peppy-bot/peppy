@@ -144,6 +144,81 @@ impl Apptainer {
         &self.apptainer_dir
     }
 
+    /// Ensure that the given host paths are accessible inside the execution
+    /// environment.
+    ///
+    /// On Linux (`Backend::Native`): no-op — all host paths are directly
+    /// accessible.
+    ///
+    /// On macOS (`Backend::Lima`): Lima only auto-mounts `$HOME` into the
+    /// guest VM. Paths outside `$HOME` must be explicitly added to the Lima
+    /// configuration. This method updates the Lima YAML config with any
+    /// missing mounts and restarts the VM if changes were made.
+    pub fn ensure_host_mounts(&mut self, mount_src_paths: &[&str]) -> Result<()> {
+        match &self.backend {
+            Backend::Native { .. } => Ok(()),
+            Backend::Lima {
+                limactl_path,
+                lima_home,
+                ..
+            } => {
+                let home = std::env::var("HOME").map_err(|_| {
+                    Error::ConfigurationError("HOME environment variable not set".into())
+                })?;
+
+                let external_paths: Vec<&str> = mount_src_paths
+                    .iter()
+                    .filter(|p| {
+                        let abs = if Path::new(p).is_relative() {
+                            std::env::current_dir()
+                                .map(|cwd| cwd.join(p))
+                                .unwrap_or_else(|_| PathBuf::from(p))
+                        } else {
+                            PathBuf::from(p)
+                        };
+                        !abs.starts_with(&home)
+                    })
+                    .copied()
+                    .collect();
+
+                if external_paths.is_empty() {
+                    return Ok(());
+                }
+
+                let _guard = LIMA_INIT.lock().unwrap_or_else(|e| e.into_inner());
+
+                let limactl_path = limactl_path.clone();
+                let lima_home = lima_home.clone();
+                let config_path = lima_home.join(lima::LIMA_INSTANCE).join("lima.yaml");
+
+                let modified = lima::ensure_extra_mounts(&config_path, &external_paths)?;
+                if modified {
+                    tracing::info!(
+                        "Lima config updated with new mounts, restarting VM..."
+                    );
+                    lima::stop_instance(&limactl_path, &lima_home, lima::LIMA_INSTANCE)?;
+                    lima::ensure_lima_instance(&limactl_path, &lima_home, lima::LIMA_TEMPLATE)?;
+                    lima::ensure_guest_userns(&limactl_path, &lima_home, lima::LIMA_INSTANCE)?;
+                    let apptainer_bin = lima::ensure_guest_apptainer(
+                        &self.apptainer_dir,
+                        &limactl_path,
+                        &lima_home,
+                        lima::LIMA_INSTANCE,
+                    )?;
+                    if let Backend::Lima {
+                        apptainer_bin: ref mut bin,
+                        ..
+                    } = self.backend
+                    {
+                        *bin = apptainer_bin;
+                    }
+                }
+
+                Ok(())
+            }
+        }
+    }
+
     /// Returns the path to the apptainer binary used for invocation.
     ///
     /// On Linux this is the host-side binary. On macOS (Lima) this is the
@@ -188,7 +263,7 @@ impl Apptainer {
     /// ```no_run
     /// # let facade = containers::Apptainer::new()?;
     /// let mut child = facade.run("image.sif")
-    ///     .bind("/dev/ttyUSB0", None)
+    ///     .bind("/dev/ttyUSB0", None, None)
     ///     .env("ROS_DOMAIN_ID", "42")
     ///     .spawn()?;
     /// # Ok::<(), containers::Error>(())
@@ -376,6 +451,7 @@ impl Apptainer {
 struct BindMount {
     src: String,
     dest: Option<String>,
+    opts: Option<String>,
 }
 
 /// The kind of apptainer subcommand being built.
@@ -404,8 +480,8 @@ enum CommandKind {
 /// # let facade = containers::Apptainer::new()?;
 /// // Mount multiple devices and set environment variables
 /// let mut child = facade.run("image.sif")
-///     .bind("/dev/ttyUSB0", None)
-///     .bind("/dev/can0", None)
+///     .bind("/dev/ttyUSB0", None, None)
+///     .bind("/dev/can0", None, None)
 ///     .env("ROS_DOMAIN_ID", "42")
 ///     .spawn()?;
 ///
@@ -413,7 +489,7 @@ enum CommandKind {
 /// let devices = vec!["/dev/ttyUSB0", "/dev/can0"];
 /// let mut cmd = facade.run("image.sif");
 /// for dev in &devices {
-///     cmd = cmd.bind(dev, None);
+///     cmd = cmd.bind(dev, None, None);
 /// }
 /// let mut child = cmd.spawn()?;
 /// # Ok::<(), containers::Error>(())
@@ -430,15 +506,17 @@ impl<'a> ApptainerCommand<'a> {
     // Named flag methods
     // -----------------------------------------------------------------------
 
-    /// Add a `--bind src[:dest]` mount.
+    /// Add a `--bind src[:dest[:opts]]` mount.
     ///
     /// The host-side `src` path is automatically translated for Lima on macOS
     /// when the command is executed. If `dest` is `None`, the container-side
-    /// path mirrors the host path.
-    pub fn bind(mut self, src: &str, dest: Option<&str>) -> Self {
+    /// path mirrors the host path. Optional `opts` (e.g. `"ro"`, `"rw"`) are
+    /// appended after the destination.
+    pub fn bind(mut self, src: &str, dest: Option<&str>, opts: Option<&str>) -> Self {
         self.bind_mounts.push(BindMount {
             src: src.to_string(),
             dest: dest.map(|d| d.to_string()),
+            opts: opts.map(|o| o.to_string()),
         });
         self
     }
@@ -452,6 +530,7 @@ impl<'a> ApptainerCommand<'a> {
             self.bind_mounts.push(BindMount {
                 src: src.to_string(),
                 dest: None,
+                opts: None,
             });
         }
         self
@@ -587,9 +666,12 @@ impl<'a> ApptainerCommand<'a> {
         for bind in &self.bind_mounts {
             args.push("--bind".to_string());
             let translated_src = self.facade.translate_arg(&bind.src)?;
-            match &bind.dest {
-                Some(dest) => args.push(format!("{translated_src}:{dest}")),
-                None => args.push(translated_src),
+            match (&bind.dest, &bind.opts) {
+                (Some(dest), Some(opts)) => {
+                    args.push(format!("{translated_src}:{dest}:{opts}"))
+                }
+                (Some(dest), None) => args.push(format!("{translated_src}:{dest}")),
+                (None, _) => args.push(translated_src),
             }
         }
 
