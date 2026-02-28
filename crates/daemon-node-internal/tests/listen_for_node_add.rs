@@ -2692,7 +2692,83 @@ From: nowhere
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_add_logs_error_on_spawn_failure() {
-    todo!(
-        "Similar to listen_for_node_start_logs_error_on_spawn_failure but for `add` instead of `start`"
+    const TARGET_NODE_NAME: &str = "add_spawn_failure_node";
+    const TARGET_NODE_TAG: &str = "0.1.0";
+
+    let started_daemon = start_daemon_node_with_mock_messenger().await;
+    let node_stack = started_daemon.node_stack.clone();
+
+    let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
+
+    // Multi-element add_cmd with a nonexistent binary.
+    // Multi-element commands are executed directly (not via shell), so
+    // command.spawn() will fail with a "No such file or directory" error.
+    let peppy_json5 = format!(
+        r#"{{
+            schema_version: 1,
+            manifest: {{
+                name: "{TARGET_NODE_NAME}",
+                tag: "{TARGET_NODE_TAG}",
+                language: "rust",
+            }},
+            process: {{
+                add_cmd: ["nonexistent_binary_peppy_test_xyz", "--flag"],
+                start_cmd: ["sleep", "10"]
+            }}
+        }}"#
+    );
+    write_peppy_json5(source_dir.path(), &peppy_json5);
+
+    let add_result = send_node_add_and_wait(
+        &started_daemon.caller_handle,
+        &started_daemon.daemon_node_name,
+        source_dir.path(),
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        None,
     )
+    .await
+    .expect("node_add request should complete");
+
+    assert!(!add_result.success, "node_add should fail when spawn fails");
+
+    let error_msg = add_result
+        .error_message
+        .as_ref()
+        .expect("error_message should be present");
+    assert!(
+        error_msg.contains("add_cmd failed"),
+        "error should mention add_cmd failure, got: {}",
+        error_msg
+    );
+
+    // The log file should exist and contain the error
+    assert!(
+        add_result.log_path.exists(),
+        "log file should exist at {:?}",
+        add_result.log_path
+    );
+
+    let log_content =
+        std::fs::read_to_string(&add_result.log_path).expect("should be able to read log file");
+    assert!(
+        !log_content.is_empty(),
+        "log file should not be empty when a spawn failure occurs"
+    );
+    assert!(
+        log_content.contains("[error]"),
+        "log file should contain an [error] entry, got:\n{}",
+        log_content
+    );
+    assert!(
+        log_content.contains("add_cmd failed"),
+        "log file should contain the failure message, got:\n{}",
+        log_content
+    );
+
+    // Node should not be in the stack
+    assert!(
+        !node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG),
+        "node should not be added when add_cmd fails"
+    );
 }

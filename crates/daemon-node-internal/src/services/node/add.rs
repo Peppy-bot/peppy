@@ -1384,6 +1384,18 @@ async fn shutdown_existing_instances(
     Ok(())
 }
 
+/// Write an error message to the node's log file with a timestamp.
+///
+/// Best-effort: silently ignores lock/write failures since the error is also
+/// returned in the `NodeAddResult`.
+fn write_error_to_log(log_file: &Arc<StdMutex<File>>, error_msg: &str) {
+    if let Ok(mut file) = log_file.lock() {
+        let timestamp = Local::now().format("%Y-%m-%dT%H:%M:%S%.3f");
+        let _ = writeln!(file, "[{}] [error] {}", timestamp, error_msg);
+        let _ = file.flush();
+    }
+}
+
 async fn process_node_add(
     goal: NodeAddGoal,
     node_config: NodeConfig,
@@ -1395,7 +1407,9 @@ async fn process_node_add(
     let mut env_vars = match super::validate_goal_env_vars(&goal.env_vars) {
         Ok(vars) => vars,
         Err(e) => {
-            return NodeAddResult::failure(&ctx.log_path, e.to_string());
+            let msg = e.to_string();
+            write_error_to_log(&ctx.log_file, &msg);
+            return NodeAddResult::failure(&ctx.log_path, msg);
         }
     };
     let node_name = node_config.manifest.name.as_str().to_owned();
@@ -1423,10 +1437,9 @@ async fn process_node_add(
         if let Err(e) =
             config::fingerprint::verify_codegen_fingerprint(&config_path, PEPPYGEN_OUTPUT_PATH)
         {
-            return NodeAddResult::failure(
-                &ctx.log_path,
-                format!("Codegen fingerprint verification failed: {}", e),
-            );
+            let msg = format!("Codegen fingerprint verification failed: {}", e);
+            write_error_to_log(&ctx.log_file, &msg);
+            return NodeAddResult::failure(&ctx.log_path, msg);
         }
     }
 
@@ -1435,10 +1448,9 @@ async fn process_node_add(
         match copy_node_to_temp_dir(&source_path, &ctx.peppy_dirs.tmp_dir()) {
             Ok(result) => result,
             Err(e) => {
-                return NodeAddResult::failure(
-                    &ctx.log_path,
-                    format!("Failed to copy node folder: {}", e),
-                );
+                let msg = format!("Failed to copy node folder: {}", e);
+                write_error_to_log(&ctx.log_file, &msg);
+                return NodeAddResult::failure(&ctx.log_path, msg);
             }
         };
     // RAII guard: cleans up the temp working dir on any exit path.
@@ -1461,10 +1473,9 @@ async fn process_node_add(
         ctx.node_stack.find(name, tag).map(|e| e.config().clone())
     });
     if let Some(err) = dep_errors.into_iter().next() {
-        return NodeAddResult::failure(
-            &ctx.log_path,
-            format!("Failed to add node config: {}", err),
-        );
+        let msg = format!("Failed to add node config: {}", err);
+        write_error_to_log(&ctx.log_file, &msg);
+        return NodeAddResult::failure(&ctx.log_path, msg);
     }
 
     // Generate the peppygen library in the working directory.
@@ -1485,10 +1496,9 @@ async fn process_node_add(
         &ctx.peppy_dirs,
         deploy_mode,
     ) {
-        return NodeAddResult::failure(
-            &ctx.log_path,
-            format!("Failed to generate peppygen library: {}", e),
-        );
+        let msg = format!("Failed to generate peppygen library: {}", e);
+        write_error_to_log(&ctx.log_file, &msg);
+        return NodeAddResult::failure(&ctx.log_path, msg);
     }
 
     let snapshot_path = if let Some(container) = &node_config.container {
@@ -1504,18 +1514,16 @@ async fn process_node_add(
         )
         .await
         {
-            return NodeAddResult::failure(
-                &ctx.log_path,
-                format!("Failed to build container image: {}", e),
-            );
+            let msg = format!("Failed to build container image: {}", e);
+            write_error_to_log(&ctx.log_file, &msg);
+            return NodeAddResult::failure(&ctx.log_path, msg);
         }
         match move_sif_to_storage(&working_dir, &node_name, &node_tag, &ctx.peppy_dirs) {
             Ok(path) => path,
             Err(e) => {
-                return NodeAddResult::failure(
-                    &ctx.log_path,
-                    format!("Failed to store container image: {}", e),
-                );
+                let msg = format!("Failed to store container image: {}", e);
+                write_error_to_log(&ctx.log_file, &msg);
+                return NodeAddResult::failure(&ctx.log_path, msg);
             }
         }
     } else {
@@ -1533,15 +1541,16 @@ async fn process_node_add(
         )
         .await
         {
-            return NodeAddResult::failure(&ctx.log_path, format!("add_cmd failed: {}", e));
+            let msg = format!("add_cmd failed: {}", e);
+            write_error_to_log(&ctx.log_file, &msg);
+            return NodeAddResult::failure(&ctx.log_path, msg);
         }
         match archive_dir_to_storage(&working_dir, &node_name, &node_tag, &ctx.peppy_dirs) {
             Ok(path) => path,
             Err(e) => {
-                return NodeAddResult::failure(
-                    &ctx.log_path,
-                    format!("Failed to archive node: {}", e),
-                );
+                let msg = format!("Failed to archive node: {}", e);
+                write_error_to_log(&ctx.log_file, &msg);
+                return NodeAddResult::failure(&ctx.log_path, msg);
             }
         }
     };
@@ -1551,10 +1560,9 @@ async fn process_node_add(
 
     if let Err(e) = shutdown_existing_instances(&node_name, &node_tag, &ctx).await {
         std::fs::remove_file(&snapshot_path).ok();
-        return NodeAddResult::failure(
-            &ctx.log_path,
-            format!("Failed to shutdown existing node instances: {}", e),
-        );
+        let msg = format!("Failed to shutdown existing node instances: {}", e);
+        write_error_to_log(&ctx.log_file, &msg);
+        return NodeAddResult::failure(&ctx.log_path, msg);
     }
 
     // Add the node config to the stack
@@ -1563,7 +1571,9 @@ async fn process_node_add(
         .push_config(node_config, false, &snapshot_path)
     {
         std::fs::remove_file(&snapshot_path).ok();
-        return NodeAddResult::failure(&ctx.log_path, format!("Failed to add node config: {}", e));
+        let msg = format!("Failed to add node config: {}", e);
+        write_error_to_log(&ctx.log_file, &msg);
+        return NodeAddResult::failure(&ctx.log_path, msg);
     }
 
     // Clean up previous snapshot if it differs from the new one.
