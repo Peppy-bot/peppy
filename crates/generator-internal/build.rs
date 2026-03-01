@@ -194,6 +194,7 @@ mod peppylib_build {
     /// Extracts `_peppylib.abi3.so` from the newest `.whl` file in the given directory.
     ///
     /// Maturin wheels are zip archives containing the `.so` at `peppylib/_peppylib.abi3.so`.
+    #[cfg(target_os = "macos")]
     fn extract_so_from_wheel(wheels_dir: &Path) -> Vec<u8> {
         let whl_path = std::fs::read_dir(wheels_dir)
             .expect("failed to read wheels directory")
@@ -222,6 +223,7 @@ mod peppylib_build {
     }
 
     /// Ensures the `aarch64-unknown-linux-gnu` Rust target is installed.
+    #[cfg(target_os = "macos")]
     fn ensure_linux_rust_target() {
         let status = Command::new("rustup")
             .args(["target", "add", "aarch64-unknown-linux-gnu"])
