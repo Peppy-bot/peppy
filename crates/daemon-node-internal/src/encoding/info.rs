@@ -60,6 +60,12 @@ impl InfoRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContainerInfo {
+    pub apptainer_version: String,
+    pub lima_version: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InfoResponse {
     pub uptime_secs: u64,
     pub daemon_node_name: String,
@@ -67,6 +73,7 @@ pub struct InfoResponse {
     pub host_name: String,
     pub node_count: u32,
     pub git_version: String,
+    pub container_info: ContainerInfo,
 }
 
 impl InfoResponse {
@@ -77,6 +84,7 @@ impl InfoResponse {
         host_name: impl Into<String>,
         node_count: u32,
         git_version: impl Into<String>,
+        container_info: ContainerInfo,
     ) -> Self {
         Self {
             uptime_secs,
@@ -85,6 +93,7 @@ impl InfoResponse {
             host_name: host_name.into(),
             node_count,
             git_version: git_version.into(),
+            container_info,
         }
     }
 
@@ -98,6 +107,9 @@ impl InfoResponse {
             response.set_host_name(&self.host_name);
             response.set_node_count(self.node_count);
             response.set_git_version(&self.git_version);
+            let mut container = response.init_container_info();
+            container.set_apptainer_version(&self.container_info.apptainer_version);
+            container.set_lima_version(&self.container_info.lima_version);
         }
         encode_message(&builder)
     }
@@ -105,6 +117,7 @@ impl InfoResponse {
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
         let response = reader.get_root::<info_capnp::info_response::Reader>()?;
+        let container = response.get_container_info()?;
         Ok(Self {
             uptime_secs: response.get_uptime_secs(),
             daemon_node_name: response.get_daemon_node_name()?.to_str()?.to_owned(),
@@ -112,6 +125,10 @@ impl InfoResponse {
             host_name: response.get_host_name()?.to_str()?.to_owned(),
             node_count: response.get_node_count(),
             git_version: response.get_git_version()?.to_str()?.to_owned(),
+            container_info: ContainerInfo {
+                apptainer_version: container.get_apptainer_version()?.to_str()?.to_owned(),
+                lima_version: container.get_lima_version()?.to_str()?.to_owned(),
+            },
         })
     }
 }

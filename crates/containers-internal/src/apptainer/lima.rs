@@ -198,7 +198,7 @@ pub(crate) fn ensure_guest_apptainer(
     let guest_dir = PathBuf::from("/tmp/peppy/apptainer");
     let guest_bin = guest_dir.join("bin/apptainer");
 
-    let version = option_env!("APPTAINER_VERSION").unwrap_or("unknown");
+    let version = crate::APPTAINER_VERSION;
     let marker_name = format!(".peppy-sync-{version}");
     let marker_path = guest_dir.join(&marker_name);
 

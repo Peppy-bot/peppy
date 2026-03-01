@@ -933,11 +933,10 @@ bash {guest_vendor}/{install_script_name} {guest_install_dir} {arch}"#,
 
         let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
 
-        // Emit these unconditionally so that `env!("LIMA_INSTANCE")` and
-        // `env!("LIMA_TEMPLATE")` in lima.rs always compile, even when
-        // build.rs early-returns (e.g. on unsupported targets or download failures).
         println!("cargo:rustc-env=LIMA_INSTANCE={}", LIMA_INSTANCE);
         println!("cargo:rustc-env=LIMA_TEMPLATE={}", LIMA_TEMPLATE);
+        println!("cargo:rustc-env=APPTAINER_VERSION={}", APPTAINER_VERSION);
+        println!("cargo:rustc-env=LIMA_VERSION={}", LIMA_VERSION);
 
         // On macOS, apptainer is Linux-only and runs inside a Lima VM.
         // We download and bundle Lima ourselves — no `brew install lima` required.
@@ -1118,7 +1117,6 @@ bash {guest_vendor}/{install_script_name} {guest_install_dir} {arch}"#,
             "cargo:rustc-env=APPTAINER_INSTALL_DIR={}",
             out_install_dir.display()
         );
-        println!("cargo:rustc-env=APPTAINER_VERSION={}", APPTAINER_VERSION);
     }
 }
 
