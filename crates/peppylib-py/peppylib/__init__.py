@@ -2,7 +2,28 @@
 peppylib - The peppyOS control library
 """
 
+import os
 import sys
+
+# When deployed, the native extension lives in a platform-specific subpackage
+# (e.g. macos_aarch64/_peppylib.abi3.so). Pre-load it into sys.modules so that
+# subsequent `from . import _peppylib` and `from ._peppylib import ...` resolve.
+# In local dev mode (maturin develop), the subdir doesn't exist and the standard
+# flat import on line 24 handles it instead.
+import platform as _platform
+
+_os_tag = {"Darwin": "macos", "Linux": "linux"}.get(_platform.system())
+if _os_tag:
+    _arch = _platform.machine().replace("arm64", "aarch64")
+    _platform_pkg = f"{_os_tag}_{_arch}"
+    if os.path.isdir(os.path.join(os.path.dirname(__file__), _platform_pkg)):
+        import importlib
+
+        _peppylib = importlib.import_module(
+            f".{_platform_pkg}._peppylib", package=__package__
+        )
+        sys.modules[f"{__package__}._peppylib"] = _peppylib
+
 from ._version import __version__
 from . import encoding
 

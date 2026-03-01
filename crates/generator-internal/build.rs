@@ -164,6 +164,15 @@ mod peppylib_build {
         lock_file
     }
 
+    fn platform_tag() -> String {
+        let os = match std::env::consts::OS {
+            "macos" => "macos",
+            "linux" => "linux",
+            os => panic!("Unsupported OS: {os}"),
+        };
+        format!("{os}_{}", std::env::consts::ARCH)
+    }
+
     fn compile_so(
         peppylib_py_dir: &std::path::Path,
         target_dir: &std::path::Path,
@@ -201,7 +210,23 @@ mod peppylib_build {
             so_path,
         );
 
-        so_path
+        // Move .so into platform-specific subdirectory so rust_embed embeds it
+        // under the correct platform tag (e.g. peppylib/macos_aarch64/).
+        let tag = platform_tag();
+        let platform_dir = peppylib_py_dir.join(format!("peppylib/{tag}"));
+        std::fs::create_dir_all(&platform_dir)
+            .expect("Failed to create platform subdirectory for .so");
+        let final_so_path = platform_dir.join("_peppylib.abi3.so");
+        std::fs::rename(&so_path, &final_so_path)
+            .expect("Failed to move .so to platform subdirectory");
+
+        // Make the platform dir a proper Python package so importlib.import_module works.
+        let init_path = platform_dir.join("__init__.py");
+        if !init_path.exists() {
+            std::fs::write(&init_path, "").expect("Failed to create __init__.py");
+        }
+
+        final_so_path
     }
 
     pub fn run() {
