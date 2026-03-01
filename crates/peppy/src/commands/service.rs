@@ -25,6 +25,10 @@ pub enum ServiceCommands {
     },
     /// Install the peppy daemon as a background service (user-level by default; run with sudo for system-wide).
     Install {},
+    /// Stop the peppy background service.
+    Stop {},
+    /// Uninstall the peppy background service.
+    Uninstall {},
     /// Reset the current daemon node stack (clears all nodes except the daemon).
     Reset {},
 }
@@ -46,6 +50,8 @@ impl Command for ServiceCommand {
             }
             .execute(app_ctx),
             ServiceCommands::Install {} => install::InstallCommand {}.execute(app_ctx),
+            ServiceCommands::Stop {} => install::StopCommand {}.execute(app_ctx),
+            ServiceCommands::Uninstall {} => install::UninstallCommand {}.execute(app_ctx),
             ServiceCommands::Reset {} => reset::ResetCommand {}.execute(app_ctx),
         }
     }

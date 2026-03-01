@@ -4,6 +4,11 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
 
+#[cfg(target_os = "linux")]
+use super::facade::{check_fakeroot_deps, find_binary};
+#[cfg(target_os = "linux")]
+use crate::error::Error;
+
 // ---------------------------------------------------------------------------
 // Builder argument assembly tests
 // ---------------------------------------------------------------------------
@@ -537,5 +542,159 @@ fn test_host_gateway_returns_correct_value() {
             None,
             "On Linux (Native), host_gateway() should return None"
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Fakeroot dependency pre-flight check tests (Linux only)
+// ---------------------------------------------------------------------------
+
+#[cfg(target_os = "linux")]
+#[test]
+fn test_find_binary_returns_path_when_present() {
+    let dir = TempDir::new().expect("create temp dir");
+    let binary = dir.path().join("my_binary");
+    fs::write(&binary, "#!/bin/sh\n").expect("write fake binary");
+
+    let result = find_binary("my_binary", &[dir.path().to_path_buf()]);
+    assert_eq!(result, Some(binary));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn test_find_binary_returns_none_when_absent() {
+    let dir = TempDir::new().expect("create temp dir");
+
+    let result = find_binary("nonexistent_binary", &[dir.path().to_path_buf()]);
+    assert_eq!(result, None);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn test_check_fakeroot_deps_succeeds_when_both_present_and_setuid() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = TempDir::new().expect("create temp dir");
+
+    for name in &["newuidmap", "newgidmap"] {
+        let path = dir.path().join(name);
+        fs::write(&path, "#!/bin/sh\n").expect("write fake binary");
+        let mut perms = fs::metadata(&path).expect("read metadata").permissions();
+        perms.set_mode(0o4755);
+        fs::set_permissions(&path, perms).expect("set permissions");
+
+        // The kernel may silently strip setuid on nosetuid-mounted tmpfs.
+        let actual_mode = fs::metadata(&path)
+            .expect("read metadata")
+            .permissions()
+            .mode();
+        if actual_mode & 0o4000 == 0 {
+            eprintln!(
+                "SKIPPING: filesystem stripped setuid bit (mode: {actual_mode:#o}). \
+                 This is expected on nosetuid-mounted tmpfs."
+            );
+            return;
+        }
+    }
+
+    let result = check_fakeroot_deps(&[dir.path().to_path_buf()]);
+    assert!(
+        result.is_ok(),
+        "should succeed when both binaries are present with setuid, got: {:?}",
+        result.unwrap_err()
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn test_check_fakeroot_deps_fails_when_newuidmap_missing() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = TempDir::new().expect("create temp dir");
+
+    // Only create newgidmap, not newuidmap
+    let path = dir.path().join("newgidmap");
+    fs::write(&path, "#!/bin/sh\n").expect("write fake binary");
+    let mut perms = fs::metadata(&path).expect("read metadata").permissions();
+    perms.set_mode(0o4755);
+    fs::set_permissions(&path, perms).expect("set permissions");
+
+    let err = check_fakeroot_deps(&[dir.path().to_path_buf()])
+        .expect_err("should fail when newuidmap is missing");
+
+    match err {
+        Error::FakerootDepsNotFound { binary, details } => {
+            assert_eq!(binary, "newuidmap");
+            assert!(
+                details.contains("not found"),
+                "expected 'not found' in details, got: {details}"
+            );
+        }
+        other => panic!("expected FakerootDepsNotFound, got: {other:?}"),
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn test_check_fakeroot_deps_fails_when_newgidmap_missing() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = TempDir::new().expect("create temp dir");
+
+    // Only create newuidmap, not newgidmap
+    let path = dir.path().join("newuidmap");
+    fs::write(&path, "#!/bin/sh\n").expect("write fake binary");
+    let mut perms = fs::metadata(&path).expect("read metadata").permissions();
+    perms.set_mode(0o4755);
+    fs::set_permissions(&path, perms).expect("set permissions");
+
+    // If the kernel stripped setuid, this test would fail for the wrong reason
+    // (newuidmap found but without setuid). Skip in that case.
+    let actual_mode = fs::metadata(&path)
+        .expect("read metadata")
+        .permissions()
+        .mode();
+    if actual_mode & 0o4000 == 0 {
+        eprintln!("SKIPPING: filesystem stripped setuid bit");
+        return;
+    }
+
+    let err = check_fakeroot_deps(&[dir.path().to_path_buf()])
+        .expect_err("should fail when newgidmap is missing");
+
+    match err {
+        Error::FakerootDepsNotFound { binary, details } => {
+            assert_eq!(binary, "newgidmap");
+            assert!(
+                details.contains("not found"),
+                "expected 'not found' in details, got: {details}"
+            );
+        }
+        other => panic!("expected FakerootDepsNotFound, got: {other:?}"),
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn test_check_fakeroot_deps_fails_when_missing_setuid_bit() {
+    let dir = TempDir::new().expect("create temp dir");
+
+    for name in &["newuidmap", "newgidmap"] {
+        let path = dir.path().join(name);
+        fs::write(&path, "#!/bin/sh\n").expect("write fake binary");
+        // Mode 0755 — no setuid bit
+    }
+
+    let err = check_fakeroot_deps(&[dir.path().to_path_buf()])
+        .expect_err("should fail when setuid bit is missing");
+
+    match err {
+        Error::FakerootDepsNotFound { details, .. } => {
+            assert!(
+                details.contains("setuid"),
+                "expected 'setuid' in details, got: {details}"
+            );
+        }
+        other => panic!("expected FakerootDepsNotFound, got: {other:?}"),
     }
 }
