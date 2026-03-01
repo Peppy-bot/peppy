@@ -8,13 +8,47 @@ use std::fs;
 use std::io;
 use std::path::Path;
 
-/// Pre-built peppylib Python package (Python wrappers + compiled native extension).
+/// Pre-built peppylib Python package (Python wrappers + compiled native extensions).
+///
+/// Contains platform-suffixed `.so` files (e.g. `_peppylib.abi3.macos-aarch64.so`,
+/// `_peppylib.abi3.linux-aarch64.so`). During deployment, the correct platform's
+/// `.so` is selected and renamed to `_peppylib.abi3.so`.
 #[derive(Embed)]
 #[folder = "../peppylib-py/peppylib/"]
 #[include = "*.py"]
 #[include = "*.so"]
 #[exclude = "__pycache__/*"]
 struct EmbeddedPeppylibPy;
+
+/// The filename prefix that all platform-suffixed native extensions share.
+const SO_PLATFORM_PREFIX: &str = "_peppylib.abi3.";
+/// The canonical filename Python uses to import the native extension.
+const SO_CANONICAL_NAME: &str = "_peppylib.abi3.so";
+
+/// Returns the platform suffix for the current host (e.g. "macos-aarch64", "linux-x86_64").
+fn host_platform_suffix() -> String {
+    format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH)
+}
+
+/// Returns the platform suffix to select for the given deploy mode.
+///
+/// - `Symlink` (native execution): use the host platform's `.so`
+/// - `Copy` (container builds): use the Linux `.so` matching the host architecture
+fn target_platform_suffix(deploy_mode: crate::generator::common::CrateDeployMode) -> String {
+    match deploy_mode {
+        crate::generator::common::CrateDeployMode::Symlink => host_platform_suffix(),
+        crate::generator::common::CrateDeployMode::Copy => {
+            format!("linux-{}", std::env::consts::ARCH)
+        }
+    }
+}
+
+/// Checks whether an embedded filename is a platform-suffixed `.so` file.
+fn is_platform_so(filename: &str) -> bool {
+    filename.starts_with(SO_PLATFORM_PREFIX)
+        && filename.ends_with(".so")
+        && filename != SO_CANONICAL_NAME
+}
 
 pub fn add_peppylib_dependencies(
     to_path: &Path,
@@ -24,8 +58,16 @@ pub fn add_peppylib_dependencies(
     // Copy Python project templates (pyproject.toml, peppygen/__init__.py)
     crate::generator::common::copy_embedded_templates("peppygen/python", to_path, "")?;
 
-    // Deploy the pre-built peppylib Python package to a shared cache
-    let cache_key = format!("{}-{}", env!("PEPPYLIB_SO_HASH"), env!("CARGO_PKG_VERSION"));
+    // Determine which platform's .so to deploy, and include it in the cache key
+    // so that native and container caches are separate.
+    let target_suffix = target_platform_suffix(deploy_mode);
+    let expected_so_name = format!("{SO_PLATFORM_PREFIX}{target_suffix}.so");
+    let cache_key = format!(
+        "{}-{}-{}",
+        env!("PEPPYLIB_SO_HASH"),
+        env!("CARGO_PKG_VERSION"),
+        target_suffix,
+    );
     let cache_dir = peppy_dirs.python_libs_cache_dir(&cache_key);
 
     if !cache_dir.join(".complete").exists() {
@@ -51,8 +93,36 @@ pub fn add_peppylib_dependencies(
                 fs::remove_dir_all(&staging_dir)?;
             }
 
+            let mut found_target_so = false;
             for file_path in EmbeddedPeppylibPy::iter() {
                 let file_path_str = file_path.as_ref();
+                let filename = Path::new(file_path_str)
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or(file_path_str);
+
+                // Skip platform .so files that don't match the target
+                if is_platform_so(filename) {
+                    if filename != expected_so_name {
+                        continue;
+                    }
+                    // Rename the matching platform .so to the canonical name
+                    let canonical_path = Path::new(file_path_str).with_file_name(SO_CANONICAL_NAME);
+                    let destination = staging_dir.join(canonical_path);
+                    if let Some(parent) = destination.parent() {
+                        fs::create_dir_all(parent)?;
+                    }
+                    let content = EmbeddedPeppylibPy::get(file_path_str).ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::NotFound,
+                            format!("embedded peppylib file not found: {file_path_str}"),
+                        )
+                    })?;
+                    fs::write(&destination, content.data.as_ref())?;
+                    found_target_so = true;
+                    continue;
+                }
+
                 let destination = staging_dir.join(file_path_str);
                 if let Some(parent) = destination.parent() {
                     fs::create_dir_all(parent)?;
@@ -64,6 +134,17 @@ pub fn add_peppylib_dependencies(
                     )
                 })?;
                 fs::write(&destination, content.data.as_ref())?;
+            }
+
+            if !found_target_so {
+                return Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!(
+                        "no embedded native extension found for platform '{target_suffix}' \
+                         (expected '{expected_so_name}')"
+                    ),
+                )
+                .into());
             }
 
             if cache_dir.exists() {
@@ -259,5 +340,66 @@ mod tests {
         let init_content = fs::read_to_string(temp_dir.path().join("__init__.py"))
             .expect("expected __init__.py content");
         assert_eq!(init_content, "from . import class_\n");
+    }
+
+    #[test]
+    fn embedded_peppylib_contains_platform_suffixed_so_files() {
+        let so_files: Vec<String> = EmbeddedPeppylibPy::iter()
+            .filter(|f| f.as_ref().ends_with(".so"))
+            .map(|f| f.as_ref().to_string())
+            .collect();
+
+        assert!(
+            !so_files.is_empty(),
+            "expected at least one .so file in embedded peppylib"
+        );
+
+        // Every .so file should be platform-suffixed, not the canonical name
+        for so_file in &so_files {
+            let filename = Path::new(so_file).file_name().unwrap().to_str().unwrap();
+            assert!(
+                is_platform_so(filename),
+                "expected platform-suffixed .so, got: {filename}"
+            );
+        }
+
+        // The host platform's .so must be present
+        let host_suffix = host_platform_suffix();
+        let host_so = format!("{SO_PLATFORM_PREFIX}{host_suffix}.so");
+        assert!(
+            so_files.iter().any(|f| f.ends_with(&host_so)),
+            "missing host platform .so ({host_so}), found: {so_files:?}"
+        );
+    }
+
+    #[test]
+    fn is_platform_so_identifies_suffixed_files() {
+        assert!(is_platform_so("_peppylib.abi3.macos-aarch64.so"));
+        assert!(is_platform_so("_peppylib.abi3.linux-aarch64.so"));
+        assert!(is_platform_so("_peppylib.abi3.linux-x86_64.so"));
+        assert!(
+            !is_platform_so("_peppylib.abi3.so"),
+            "canonical name should not be treated as platform-suffixed"
+        );
+        assert!(!is_platform_so("__init__.py"));
+    }
+
+    #[test]
+    fn target_platform_suffix_selects_linux_for_copy_mode() {
+        use crate::generator::common::CrateDeployMode;
+
+        let symlink_suffix = target_platform_suffix(CrateDeployMode::Symlink);
+        assert_eq!(symlink_suffix, host_platform_suffix());
+
+        let copy_suffix = target_platform_suffix(CrateDeployMode::Copy);
+        assert!(
+            copy_suffix.starts_with("linux-"),
+            "Copy mode should select linux platform, got: {copy_suffix}"
+        );
+        // Architecture should match the host
+        assert!(
+            copy_suffix.ends_with(std::env::consts::ARCH),
+            "Copy mode should use host architecture, got: {copy_suffix}"
+        );
     }
 }

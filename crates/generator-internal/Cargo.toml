@@ -20,6 +20,7 @@ rust-embed = { version = "8", features = ["include-exclude"] }
 
 [build-dependencies]
 sha2 = "0.10"
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 bytes = "1"

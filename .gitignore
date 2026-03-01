@@ -39,6 +39,7 @@ target
 .pixi
 __pycache__/
 *.pyc
+*.abi3*.so
 
 # Downloaded apptainer RPM (fetched at build time, not vendored)
 crates/containers-internal/vendor/apptainer-*.rpm
