@@ -692,7 +692,36 @@ async fn process_node_start(
         .unwrap_or_default();
 
     let mut child = if is_container {
+        let mut apptainer = match containers::Apptainer::new() {
+            Ok(a) => a,
+            Err(e) => {
+                let msg = format!("Failed to initialize Apptainer: {}", e);
+                write_error_to_log(&ctx.log_file, &msg);
+                return NodeStartResult::failure(msg);
+            }
+        };
+
+        // Set the correct messaging host for the container environment.
+        // On macOS (Lima), 127.0.0.1 inside the VM is the VM's localhost,
+        // not the macOS host. Use Lima's host gateway hostname instead.
+        let runtime_config_json5 = match apptainer.host_gateway() {
+            Some(gateway) => {
+                let mut cfg = runtime_config.clone();
+                cfg.messaging_host = gateway.to_string();
+                match serde_json5::to_string(&cfg) {
+                    Ok(json) => json,
+                    Err(e) => {
+                        let msg = format!("Failed to serialize runtime config: {}", e);
+                        write_error_to_log(&ctx.log_file, &msg);
+                        return NodeStartResult::failure(msg);
+                    }
+                }
+            }
+            None => runtime_config_json5,
+        };
+
         match start_container_node(
+            &mut apptainer,
             entity.root_path(),
             &instance_dir,
             &runtime_config_json5,
@@ -1234,7 +1263,9 @@ fn collect_container_binds(
 /// passed into the container via `--env` flags and optional bind mounts from
 /// `mount_paths`. Returns a tokio [`Child`] with piped stdout/stderr for
 /// async output capture.
+#[allow(clippy::too_many_arguments)]
 fn start_container_node(
+    apptainer: &mut containers::Apptainer,
     sif_path: &std::path::Path,
     working_dir: &std::path::Path,
     runtime_config_json5: &str,
@@ -1243,9 +1274,6 @@ fn start_container_node(
     log_file: &Arc<StdMutex<File>>,
     peppy_dirs: &PeppyDirs,
 ) -> std::io::Result<Child> {
-    let mut apptainer = containers::Apptainer::new()
-        .map_err(|e| std::io::Error::other(format!("Failed to initialize Apptainer: {}", e)))?;
-
     // Write runtime config to a unique file (same pattern as start_node).
     let runtime_dir = peppy_dirs.runtime_config_dir();
     std::fs::create_dir_all(&runtime_dir)?;

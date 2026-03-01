@@ -11,6 +11,9 @@ use std::sync::Mutex;
 /// corrupting the guest installation.
 static LIMA_INIT: Mutex<()> = Mutex::new(());
 
+/// Lima hostname that resolves to the macOS host IP from inside the guest VM.
+const LIMA_HOST_GATEWAY: &str = "host.lima.internal";
+
 /// Returns `true` if the string looks like a URI reference (e.g. `docker://...`, `library://...`)
 /// rather than a filesystem path.
 pub(crate) fn is_uri(s: &str) -> bool {
@@ -146,6 +149,20 @@ impl Apptainer {
 
     pub fn install_dir(&self) -> &Path {
         &self.apptainer_dir
+    }
+
+    /// Returns the hostname that resolves to the host machine from inside
+    /// the execution environment.
+    ///
+    /// - `Backend::Lima`: `Some("host.lima.internal")` — Lima's built-in
+    ///   hostname for guest-to-host connectivity.
+    /// - `Backend::Native`: `None` — Apptainer shares the host network
+    ///   namespace, so `127.0.0.1` already refers to the host.
+    pub fn host_gateway(&self) -> Option<&'static str> {
+        match &self.backend {
+            Backend::Native { .. } => None,
+            Backend::Lima { .. } => Some(LIMA_HOST_GATEWAY),
+        }
     }
 
     /// Ensure that the given host paths are accessible inside the execution

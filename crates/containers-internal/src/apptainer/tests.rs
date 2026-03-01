@@ -515,3 +515,27 @@ fn test_lima_instance_running_after_init() {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Host gateway tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_host_gateway_returns_correct_value() {
+    let facade = Apptainer::new()
+        .expect("Apptainer::new() should succeed — apptainer is bundled at compile time");
+
+    if cfg!(target_os = "macos") {
+        assert_eq!(
+            facade.host_gateway(),
+            Some("host.lima.internal"),
+            "On macOS (Lima), host_gateway() should return the Lima host gateway hostname"
+        );
+    } else {
+        assert_eq!(
+            facade.host_gateway(),
+            None,
+            "On Linux (Native), host_gateway() should return None"
+        );
+    }
+}
