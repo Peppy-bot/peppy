@@ -240,40 +240,94 @@ EOF
         exit 1
     fi
 
-    # Apptainer requires unprivileged user namespaces on Linux
-    if [ "$PLATFORM" != "apple-darwin" ] && [ -f /proc/sys/kernel/unprivileged_userns_clone ]; then
-        if [ "$(cat /proc/sys/kernel/unprivileged_userns_clone)" = "0" ]; then
-            echo "" >&2
-            echo "error: peppy requires unprivileged user namespaces, but they are disabled on this system." >&2
-            echo "       Apptainer needs user namespaces to run containers without root privileges." >&2
-            echo "" >&2
-            echo "       To enable them, run:" >&2
-            echo "         sudo sysctl -w kernel.unprivileged_userns_clone=1" >&2
-            echo "" >&2
-            echo "       To make this permanent across reboots, add to /etc/sysctl.d/:" >&2
-            echo "         echo 'kernel.unprivileged_userns_clone=1' | sudo tee /etc/sysctl.d/99-userns.conf" >&2
-            echo "         sudo sysctl --system" >&2
-            echo "" >&2
-            exit 1
-        fi
-    fi
+    # ---- Linux system dependency checks (consolidated) ----------------------
+    # Detect all issues first, then offer a single sudo prompt to fix them all.
+    if [ "$PLATFORM" != "apple-darwin" ]; then
+        SUDO_FIXES=""
+        SUDO_FIX_LABELS=""
 
-    # Ubuntu 24.04+ restricts user namespaces via AppArmor even when
-    # unprivileged_userns_clone is enabled.
-    if [ "$PLATFORM" != "apple-darwin" ] && [ -f /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
-        if [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns)" = "1" ]; then
-            echo "" >&2
-            echo "error: peppy requires unrestricted user namespaces, but AppArmor is blocking them on this system." >&2
-            echo "       Apptainer needs user namespaces to run containers without root privileges." >&2
-            echo "" >&2
-            echo "       To disable this restriction, run:" >&2
-            echo "         sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0" >&2
-            echo "" >&2
-            echo "       To make this permanent across reboots:" >&2
-            echo "         echo 'kernel.apparmor_restrict_unprivileged_userns=0' | sudo tee /etc/sysctl.d/99-userns.conf" >&2
-            echo "         sudo sysctl --system" >&2
-            echo "" >&2
-            exit 1
+        # Check 1: unprivileged user namespaces
+        if [ -f /proc/sys/kernel/unprivileged_userns_clone ] && \
+           [ "$(cat /proc/sys/kernel/unprivileged_userns_clone)" = "0" ]; then
+            SUDO_FIXES="${SUDO_FIXES}sysctl -w kernel.unprivileged_userns_clone=1 && "
+            SUDO_FIXES="${SUDO_FIXES}mkdir -p /etc/sysctl.d && "
+            SUDO_FIXES="${SUDO_FIXES}printf 'kernel.unprivileged_userns_clone=1\n' >> /etc/sysctl.d/99-peppy-userns.conf && "
+            SUDO_FIX_LABELS="${SUDO_FIX_LABELS}  - Enable unprivileged user namespaces\n"
+        fi
+
+        # Check 2: AppArmor user namespace restriction (Ubuntu 24.04+)
+        if [ -f /proc/sys/kernel/apparmor_restrict_unprivileged_userns ] && \
+           [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns)" = "1" ]; then
+            SUDO_FIXES="${SUDO_FIXES}sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 && "
+            SUDO_FIXES="${SUDO_FIXES}mkdir -p /etc/sysctl.d && "
+            SUDO_FIXES="${SUDO_FIXES}printf 'kernel.apparmor_restrict_unprivileged_userns=0\n' >> /etc/sysctl.d/99-peppy-userns.conf && "
+            SUDO_FIX_LABELS="${SUDO_FIX_LABELS}  - Disable AppArmor user namespace restriction\n"
+        fi
+
+        # Check 3: newuidmap / newgidmap with setuid bit
+        UIDMAP_MISSING=false
+        if ! command -v newuidmap >/dev/null 2>&1 || ! command -v newgidmap >/dev/null 2>&1; then
+            UIDMAP_MISSING=true
+        else
+            # Found on PATH — verify setuid bit (leading 4 in octal permissions)
+            NUIDMAP_PATH="$(command -v newuidmap)"
+            NGIDMAP_PATH="$(command -v newgidmap)"
+            NUIDMAP_PERMS="$(stat -c '%a' "$NUIDMAP_PATH" 2>/dev/null || stat -f '%Lp' "$NUIDMAP_PATH" 2>/dev/null)"
+            NGIDMAP_PERMS="$(stat -c '%a' "$NGIDMAP_PATH" 2>/dev/null || stat -f '%Lp' "$NGIDMAP_PATH" 2>/dev/null)"
+            case "$NUIDMAP_PERMS" in 4*) ;; *) UIDMAP_MISSING=true ;; esac
+            case "$NGIDMAP_PERMS" in 4*) ;; *) UIDMAP_MISSING=true ;; esac
+        fi
+
+        if $UIDMAP_MISSING; then
+            if command -v apt-get >/dev/null 2>&1; then
+                SUDO_FIXES="${SUDO_FIXES}apt-get update -qq && apt-get install -y -qq uidmap && "
+            elif command -v dnf >/dev/null 2>&1; then
+                SUDO_FIXES="${SUDO_FIXES}dnf install -y shadow-utils && "
+            elif command -v pacman >/dev/null 2>&1; then
+                SUDO_FIXES="${SUDO_FIXES}pacman -S --noconfirm shadow && "
+            else
+                echo "" >&2
+                echo "error: newuidmap/newgidmap (from the uidmap package) are required but not found." >&2
+                echo "       No supported package manager detected (apt-get, dnf, pacman)." >&2
+                echo "       Install them manually and re-run this script." >&2
+                echo "" >&2
+                exit 1
+            fi
+            SUDO_FIX_LABELS="${SUDO_FIX_LABELS}  - Install uidmap package (provides newuidmap/newgidmap)\n"
+        fi
+
+        # Prompt once for all fixes
+        if [ -n "$SUDO_FIXES" ]; then
+            echo ""
+            echo "peppy requires the following system changes:"
+            printf "$SUDO_FIX_LABELS"
+            echo ""
+
+            if [ -t 0 ]; then
+                printf "Apply these fixes now? (requires sudo) [Y/n] "
+                read -r REPLY
+                case "$REPLY" in
+                [Nn] | [Nn][Oo])
+                    echo "" >&2
+                    echo "error: peppy cannot run without these system dependencies." >&2
+                    echo "       Apply them manually and re-run the installer." >&2
+                    exit 1
+                    ;;
+                esac
+            elif [ -z "${PEPPY_FORCE_REINSTALL:-}" ]; then
+                echo "error: cannot prompt for confirmation (stdin is not a terminal)." >&2
+                echo "       Set PEPPY_FORCE_REINSTALL=1 to apply fixes automatically." >&2
+                exit 1
+            fi
+
+            # Strip trailing " && " and execute everything under one sudo invocation
+            SUDO_FIXES="${SUDO_FIXES% && }"
+            if ! sudo sh -c "$SUDO_FIXES"; then
+                echo "" >&2
+                echo "error: failed to apply system fixes." >&2
+                exit 1
+            fi
+            echo "System dependencies configured successfully."
         fi
     fi
 

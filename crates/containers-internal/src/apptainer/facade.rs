@@ -63,6 +63,54 @@ pub struct Apptainer {
     pub(crate) extra_mounts: Vec<PathBuf>,
 }
 
+/// Search for a binary by name in the given directories (typically from `$PATH`).
+#[cfg(target_os = "linux")]
+pub(crate) fn find_binary(name: &str, search_dirs: &[PathBuf]) -> Option<PathBuf> {
+    search_dirs
+        .iter()
+        .map(|dir| dir.join(name))
+        .find(|path| path.is_file())
+}
+
+/// Check that fakeroot dependencies (`newuidmap`, `newgidmap`) are available
+/// and have setuid-root permissions.
+///
+/// `apptainer build --fakeroot` requires these binaries from the `uidmap`
+/// (Debian/Ubuntu) or `shadow-utils` (Fedora/RHEL) package.  They must be
+/// installed with the setuid bit set (mode `4755`).
+#[cfg(target_os = "linux")]
+pub(crate) fn check_fakeroot_deps(search_dirs: &[PathBuf]) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    for binary in &["newuidmap", "newgidmap"] {
+        let path = find_binary(binary, search_dirs).ok_or_else(|| Error::FakerootDepsNotFound {
+            binary: (*binary).to_string(),
+            details: format!(
+                "`{binary}` not found on PATH. \
+                     Install the `uidmap` (Debian/Ubuntu) or `shadow-utils` (Fedora/RHEL) package."
+            ),
+        })?;
+
+        let metadata = std::fs::metadata(&path).map_err(|e| Error::FakerootDepsNotFound {
+            binary: (*binary).to_string(),
+            details: format!("failed to stat `{}`: {e}", path.display()),
+        })?;
+
+        let mode = metadata.permissions().mode();
+        if mode & 0o4000 == 0 {
+            return Err(Error::FakerootDepsNotFound {
+                binary: (*binary).to_string(),
+                details: format!(
+                    "`{binary}` found at {} but missing setuid bit (mode: {mode:#o}). \
+                     The binary must be installed with setuid-root permissions.",
+                    path.display()
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
 impl Apptainer {
     /// Creates a new `Apptainer` by resolving the apptainer installation directory.
     ///
@@ -123,7 +171,18 @@ impl Apptainer {
     /// on first run.
     fn ensure_ready(&mut self) -> Result<()> {
         match &mut self.backend {
-            Backend::Native { .. } => Ok(()),
+            Backend::Native { .. } => {
+                #[cfg(target_os = "linux")]
+                {
+                    let search_dirs: Vec<PathBuf> = std::env::var("PATH")
+                        .unwrap_or_default()
+                        .split(':')
+                        .map(PathBuf::from)
+                        .collect();
+                    check_fakeroot_deps(&search_dirs)?;
+                }
+                Ok(())
+            }
             Backend::Lima {
                 limactl_path,
                 lima_home,

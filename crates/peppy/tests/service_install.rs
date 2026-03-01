@@ -42,3 +42,24 @@ fn install_peppy_service() {
     #[cfg(target_os = "macos")]
     assert_eq!(service_path.file_name().unwrap(), "bot.peppy.plist");
 }
+
+/// Verifies that `stop_peppy_daemon` does not panic when no service is installed.
+/// The service-manager crate will return an error (service not found), which is expected.
+#[test]
+fn stop_peppy_daemon_does_not_panic() {
+    let result = install::stop_peppy_daemon();
+    // We only care that it doesn't panic — the error (service not found) is expected
+    // on machines where the service isn't installed.
+    if let Err(e) = &result {
+        eprintln!("stop_peppy_daemon returned expected error: {e}");
+    }
+}
+
+/// Verifies that `uninstall_peppy_daemon` does not panic when no service is installed.
+#[test]
+fn uninstall_peppy_daemon_does_not_panic() {
+    let result = install::uninstall_peppy_daemon();
+    if let Err(e) = &result {
+        eprintln!("uninstall_peppy_daemon returned expected error: {e}");
+    }
+}

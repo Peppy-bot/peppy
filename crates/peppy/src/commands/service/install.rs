@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use service_manager::{
     RestartPolicy, ServiceInstallCtx, ServiceLabel, ServiceLevel, ServiceManager,
-    ServiceManagerKind, ServiceStartCtx, TypedServiceManager,
+    ServiceManagerKind, ServiceStartCtx, ServiceStopCtx, ServiceUninstallCtx, TypedServiceManager,
 };
 
 use super::Command;
@@ -25,6 +25,52 @@ impl Command for InstallCommand {
     fn execute(self, _ctx: &Arc<AppContext>) -> Result<()> {
         install_peppy_daemon(None).map(|_| ())
     }
+}
+
+pub struct StopCommand {}
+
+impl Command for StopCommand {
+    fn execute(self, _ctx: &Arc<AppContext>) -> Result<()> {
+        stop_peppy_daemon()
+    }
+}
+
+pub struct UninstallCommand {}
+
+impl Command for UninstallCommand {
+    fn execute(self, _ctx: &Arc<AppContext>) -> Result<()> {
+        uninstall_peppy_daemon()
+    }
+}
+
+pub fn stop_peppy_daemon() -> Result<()> {
+    let kind = ServiceManagerKind::native()?;
+    let label: ServiceLabel = service_label(kind).parse()?;
+    let mut manager = TypedServiceManager::target(kind);
+    let manager_level = preferred_service_level(kind);
+    if manager.level() != manager_level {
+        manager
+            .set_level(manager_level)
+            .map_err(|e| Error::ExecutionFailed(e.to_string()))?;
+    }
+    manager
+        .stop(ServiceStopCtx { label })
+        .map_err(|e| Error::ExecutionFailed(e.to_string()))
+}
+
+pub fn uninstall_peppy_daemon() -> Result<()> {
+    let kind = ServiceManagerKind::native()?;
+    let label: ServiceLabel = service_label(kind).parse()?;
+    let mut manager = TypedServiceManager::target(kind);
+    let manager_level = preferred_service_level(kind);
+    if manager.level() != manager_level {
+        manager
+            .set_level(manager_level)
+            .map_err(|e| Error::ExecutionFailed(e.to_string()))?;
+    }
+    manager
+        .uninstall(ServiceUninstallCtx { label })
+        .map_err(|e| Error::ExecutionFailed(e.to_string()))
 }
 
 pub fn install_peppy_daemon(service_dir_override: Option<PathBuf>) -> Result<PathBuf> {

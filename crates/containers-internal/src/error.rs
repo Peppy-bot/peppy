@@ -45,4 +45,13 @@ pub enum Error {
 
     #[error("Configuration error: {0}")]
     ConfigurationError(String),
+
+    #[error(
+        "Fakeroot support requires `{binary}` with setuid-root permissions.\n\
+         Install the `uidmap` package:\n\n  \
+         sudo apt-get install uidmap    # Debian/Ubuntu\n  \
+         sudo dnf install shadow-utils  # Fedora/RHEL\n\n\
+         Details: {details}"
+    )]
+    FakerootDepsNotFound { binary: String, details: String },
 }
