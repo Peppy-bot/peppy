@@ -1178,6 +1178,56 @@ pub fn start_node(
     command.spawn()
 }
 
+/// Describes a bind mount for a container node.
+struct ContainerBind {
+    src: String,
+    dest: Option<String>,
+    opts: Option<String>,
+}
+
+/// Collect all bind mounts needed for a container node.
+///
+/// Always includes the runtime config file as the first entry so it is
+/// accessible inside the container regardless of Apptainer's `$HOME` auto-bind
+/// behavior (which may not cover `~/.peppy/` when running inside a Lima VM).
+fn collect_container_binds(
+    runtime_config_path: &std::path::Path,
+    mount_paths: &[String],
+) -> Vec<ContainerBind> {
+    let mut binds = Vec::with_capacity(1 + mount_paths.len());
+
+    // Runtime config must always be bound into the container.
+    binds.push(ContainerBind {
+        src: runtime_config_path.to_string_lossy().into_owned(),
+        dest: None,
+        opts: None,
+    });
+
+    // User-specified mount paths (format: "host:container[:opts]")
+    for m in mount_paths {
+        let parts: Vec<&str> = m.splitn(3, ':').collect();
+        binds.push(match parts.len() {
+            1 => ContainerBind {
+                src: parts[0].into(),
+                dest: None,
+                opts: None,
+            },
+            2 => ContainerBind {
+                src: parts[0].into(),
+                dest: Some(parts[1].into()),
+                opts: None,
+            },
+            _ => ContainerBind {
+                src: parts[0].into(),
+                dest: Some(parts[1].into()),
+                opts: Some(parts[2].into()),
+            },
+        });
+    }
+
+    binds
+}
+
 /// Starts a container node using the Apptainer runtime.
 ///
 /// Builds an `apptainer run <sif_path>` command with environment variables
@@ -1208,40 +1258,13 @@ fn start_container_node(
         .to_str()
         .ok_or_else(|| std::io::Error::other("SIF path is not valid UTF-8"))?;
 
-    // Parse mount_paths and ensure host paths are accessible (Lima VM mounts).
-    // Format: "host_path:container_path[:options]"
-    struct ParsedMount<'a> {
-        src: &'a str,
-        dest: Option<&'a str>,
-        opts: Option<&'a str>,
-    }
+    // Collect all bind mounts (runtime config + user-specified mount_paths).
+    let binds = collect_container_binds(&runtime_config_path, mount_paths);
 
-    let parsed_mounts: Vec<ParsedMount<'_>> = mount_paths
-        .iter()
-        .map(|m| {
-            let parts: Vec<&str> = m.splitn(3, ':').collect();
-            match parts.len() {
-                1 => ParsedMount {
-                    src: parts[0],
-                    dest: None,
-                    opts: None,
-                },
-                2 => ParsedMount {
-                    src: parts[0],
-                    dest: Some(parts[1]),
-                    opts: None,
-                },
-                _ => ParsedMount {
-                    src: parts[0],
-                    dest: Some(parts[1]),
-                    opts: Some(parts[2]),
-                },
-            }
-        })
-        .collect();
-
-    if !parsed_mounts.is_empty() {
-        let src_paths: Vec<&str> = parsed_mounts.iter().map(|m| m.src).collect();
+    // Ensure host paths outside $HOME are accessible in the Lima VM.
+    // Skip binds[0] (runtime config) — it's always under $HOME.
+    if binds.len() > 1 {
+        let src_paths: Vec<&str> = binds[1..].iter().map(|b| b.src.as_str()).collect();
         apptainer
             .ensure_host_mounts(&src_paths)
             .map_err(|e| std::io::Error::other(format!("Failed to ensure host mounts: {}", e)))?;
@@ -1263,9 +1286,9 @@ fn start_container_node(
         runtime_config_path.to_str().unwrap_or_default(),
     );
 
-    // Add bind mounts from mount_paths
-    for mount in &parsed_mounts {
-        apptainer_cmd = apptainer_cmd.bind(mount.src, mount.dest, mount.opts);
+    // Add all bind mounts (runtime config + user-specified).
+    for bind in &binds {
+        apptainer_cmd = apptainer_cmd.bind(&bind.src, bind.dest.as_deref(), bind.opts.as_deref());
     }
 
     // Log the command being executed
@@ -1433,5 +1456,49 @@ async fn wait_for_ready_signal(
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn test_collect_container_binds_always_includes_runtime_config() {
+        let rc = PathBuf::from("/home/user/.peppy/runtime/runtime_config_99_0.json5");
+        let binds = collect_container_binds(&rc, &[]);
+
+        assert_eq!(binds.len(), 1);
+        assert_eq!(
+            binds[0].src,
+            "/home/user/.peppy/runtime/runtime_config_99_0.json5"
+        );
+        assert!(binds[0].dest.is_none());
+        assert!(binds[0].opts.is_none());
+    }
+
+    #[test]
+    fn test_collect_container_binds_includes_user_mounts() {
+        let rc = PathBuf::from("/home/user/.peppy/runtime/rc.json5");
+        let user_mounts = vec![
+            "/data/input:/container/input:ro".to_string(),
+            "/dev/ttyUSB0".to_string(),
+        ];
+
+        let binds = collect_container_binds(&rc, &user_mounts);
+
+        assert_eq!(binds.len(), 3);
+        // First entry is always the runtime config
+        assert_eq!(binds[0].src, "/home/user/.peppy/runtime/rc.json5");
+        assert!(binds[0].dest.is_none());
+        assert!(binds[0].opts.is_none());
+        // User mounts follow
+        assert_eq!(binds[1].src, "/data/input");
+        assert_eq!(binds[1].dest.as_deref(), Some("/container/input"));
+        assert_eq!(binds[1].opts.as_deref(), Some("ro"));
+        assert_eq!(binds[2].src, "/dev/ttyUSB0");
+        assert!(binds[2].dest.is_none());
+        assert!(binds[2].opts.is_none());
     }
 }
