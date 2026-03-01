@@ -463,6 +463,35 @@ pub(crate) fn stop_instance(limactl: &Path, lima_home: &Path, instance: &str) ->
 /// Reads the Lima YAML config, checks existing mount locations, and appends
 /// any missing paths as writable mounts. Returns `true` if the config was
 /// modified (meaning the VM needs to be restarted to pick up the changes).
+/// Top-level system directories that Lima 2.0+ rejects as guest mountPoints.
+const BLOCKED_MOUNT_PATHS: &[&str] = &[
+    "/", "/bin", "/dev", "/etc", "/home", "/opt", "/sbin", "/tmp", "/usr", "/var",
+];
+
+/// Check whether a path is a blocked top-level system mount.
+///
+/// Only exact top-level matches are blocked — subdirectories like `/tmp/my_app`
+/// are allowed. Also handles macOS `/private/X` equivalents (e.g., `/private/tmp`
+/// maps to `/tmp`).
+pub(crate) fn is_blocked_system_mount(path: &str) -> bool {
+    if BLOCKED_MOUNT_PATHS.contains(&path) {
+        return true;
+    }
+    // macOS: /private/tmp -> /tmp, /private/var -> /var
+    if let Some(stripped) = path.strip_prefix("/private") {
+        return BLOCKED_MOUNT_PATHS.contains(&stripped);
+    }
+    false
+}
+
+/// Ensure that the given host paths are listed as mounts in the Lima config.
+///
+/// Reads the Lima YAML config, checks existing mount locations, and appends
+/// any missing paths as writable mounts. Returns `true` if the config was
+/// modified (meaning the VM needs to be restarted to pick up the changes).
+///
+/// Also performs cleanup: removes existing mount entries for paths that no longer
+/// exist on the host or that are blocked system paths (which Lima would reject).
 pub(crate) fn ensure_extra_mounts(config_path: &Path, paths: &[&str]) -> Result<bool> {
     let content = std::fs::read_to_string(config_path).map_err(|e| {
         Error::LimaInstanceError(format!(
@@ -489,7 +518,36 @@ pub(crate) fn ensure_extra_mounts(config_path: &Path, paths: &[&str]) -> Result<
         .as_sequence_mut()
         .ok_or_else(|| Error::LimaInstanceError("Lima config 'mounts' is not a sequence".into()))?;
 
-    // Collect existing mount locations
+    let mut modified = false;
+
+    // Phase 1: Clean up stale or invalid existing mounts.
+    let original_len = mounts_seq.len();
+    mounts_seq.retain(|entry| {
+        let Some(location) = entry.get("location").and_then(|v| v.as_str()) else {
+            return true; // Keep entries without a location field
+        };
+        // Always keep the home mount
+        if location == "~" || location == "null" {
+            return true;
+        }
+        if is_blocked_system_mount(location) {
+            tracing::info!("Removing invalid Lima mount (system path): {}", location);
+            return false;
+        }
+        if !Path::new(location).exists() {
+            tracing::info!(
+                "Removing stale Lima mount (path does not exist): {}",
+                location
+            );
+            return false;
+        }
+        true
+    });
+    if mounts_seq.len() != original_len {
+        modified = true;
+    }
+
+    // Phase 2: Add new mounts (skip blocked system paths).
     let existing: Vec<String> = mounts_seq
         .iter()
         .filter_map(|entry| {
@@ -500,8 +558,14 @@ pub(crate) fn ensure_extra_mounts(config_path: &Path, paths: &[&str]) -> Result<
         })
         .collect();
 
-    let mut modified = false;
     for path in paths {
+        if is_blocked_system_mount(path) {
+            tracing::info!(
+                "Skipping Lima mount for system path: {} (blocked by Lima)",
+                path
+            );
+            continue;
+        }
         if !existing.iter().any(|loc| loc == *path) {
             let mut mount_entry = serde_yaml::Mapping::new();
             mount_entry.insert(
@@ -587,11 +651,18 @@ mod tests {
     fn test_ensure_extra_mounts_skips_existing() {
         let dir = tempdir().expect("create temp dir");
         let config_path = dir.path().join("lima.yaml");
-        let initial = "mounts:\n  - location: \"~\"\n    writable: true\n  - location: /tmp/existing\n    writable: true\n";
+
+        // Use a real directory so the cleanup phase doesn't remove it as stale.
+        let existing_dir = dir.path().join("existing_mount");
+        fs::create_dir_all(&existing_dir).expect("create existing mount dir");
+        let existing_path = existing_dir.to_str().unwrap();
+
+        let initial = format!(
+            "mounts:\n  - location: \"~\"\n    writable: true\n  - location: {existing_path}\n    writable: true\n"
+        );
         fs::write(&config_path, initial).expect("write initial config");
 
-        let modified =
-            ensure_extra_mounts(&config_path, &["/tmp/existing"]).expect("should succeed");
+        let modified = ensure_extra_mounts(&config_path, &[existing_path]).expect("should succeed");
         assert!(!modified, "config should not have been modified");
     }
 
@@ -696,6 +767,124 @@ mod tests {
             result.is_ok(),
             "stop_instance should succeed for already-stopped instance, got: {:?}",
             result.unwrap_err()
+        );
+    }
+
+    #[test]
+    fn test_is_blocked_system_mount_rejects_top_level() {
+        assert!(is_blocked_system_mount("/"));
+        assert!(is_blocked_system_mount("/tmp"));
+        assert!(is_blocked_system_mount("/var"));
+        assert!(is_blocked_system_mount("/etc"));
+        assert!(is_blocked_system_mount("/bin"));
+        assert!(is_blocked_system_mount("/dev"));
+        assert!(is_blocked_system_mount("/home"));
+        assert!(is_blocked_system_mount("/opt"));
+        assert!(is_blocked_system_mount("/sbin"));
+        assert!(is_blocked_system_mount("/usr"));
+    }
+
+    #[test]
+    fn test_is_blocked_system_mount_rejects_private_equivalents() {
+        assert!(is_blocked_system_mount("/private/tmp"));
+        assert!(is_blocked_system_mount("/private/var"));
+        assert!(is_blocked_system_mount("/private/etc"));
+    }
+
+    #[test]
+    fn test_is_blocked_system_mount_allows_subdirectories() {
+        assert!(!is_blocked_system_mount("/tmp/my_app"));
+        assert!(!is_blocked_system_mount("/var/log/my_app"));
+        assert!(!is_blocked_system_mount("/data/shared"));
+        assert!(!is_blocked_system_mount("/mnt/external"));
+        assert!(!is_blocked_system_mount("/private/tmp/foo"));
+    }
+
+    #[test]
+    fn test_ensure_extra_mounts_removes_system_path_mounts() {
+        let dir = tempdir().expect("create temp dir");
+        let config_path = dir.path().join("lima.yaml");
+        let initial = r#"mounts:
+- location: "~"
+  writable: true
+- location: /tmp
+  writable: true
+- location: /private/tmp
+  writable: true
+"#;
+        fs::write(&config_path, initial).expect("write initial config");
+
+        let modified = ensure_extra_mounts(&config_path, &[]).expect("should succeed");
+        assert!(
+            modified,
+            "config should be modified (system path mounts removed)"
+        );
+
+        let content = fs::read_to_string(&config_path).expect("read config");
+        assert!(
+            !content.contains("location: /tmp"),
+            "system path /tmp should be removed, got:\n{content}"
+        );
+        assert!(
+            !content.contains("/private/tmp"),
+            "system path /private/tmp should be removed, got:\n{content}"
+        );
+        assert!(
+            content.contains("~"),
+            "home mount should be preserved, got:\n{content}"
+        );
+    }
+
+    #[test]
+    fn test_ensure_extra_mounts_removes_stale_mounts() {
+        let dir = tempdir().expect("create temp dir");
+        let config_path = dir.path().join("lima.yaml");
+        let initial = r#"mounts:
+- location: "~"
+  writable: true
+- location: /nonexistent/stale/path/from/old/test
+  writable: true
+"#;
+        fs::write(&config_path, initial).expect("write initial config");
+
+        let modified = ensure_extra_mounts(&config_path, &[]).expect("should succeed");
+        assert!(modified, "config should be modified (stale mount removed)");
+
+        let content = fs::read_to_string(&config_path).expect("read config");
+        assert!(
+            !content.contains("/nonexistent/stale/path"),
+            "stale mount should be removed, got:\n{content}"
+        );
+        assert!(
+            content.contains("~"),
+            "home mount should be preserved, got:\n{content}"
+        );
+    }
+
+    #[test]
+    fn test_ensure_extra_mounts_skips_adding_system_paths() {
+        let dir = tempdir().expect("create temp dir");
+        let config_path = dir.path().join("lima.yaml");
+        let initial = "mounts:\n- location: \"~\"\n  writable: true\n";
+        fs::write(&config_path, initial).expect("write initial config");
+
+        // Create a real directory so the valid path actually exists
+        let valid_dir = dir.path().join("valid_mount");
+        fs::create_dir_all(&valid_dir).expect("create valid mount dir");
+        let valid_path = valid_dir.to_str().unwrap();
+
+        let modified =
+            ensure_extra_mounts(&config_path, &["/tmp", valid_path]).expect("should succeed");
+        assert!(modified, "config should be modified (valid path added)");
+
+        let content = fs::read_to_string(&config_path).expect("read config");
+        assert!(
+            !content.contains("location: /tmp"),
+            "system path /tmp should not be added, got:\n{content}"
+        );
+        assert!(
+            content.contains(valid_path),
+            "valid path should be added, got:\n{content}"
         );
     }
 }

@@ -31,6 +31,13 @@ impl NodeConfigParser {
             _ => {}
         }
 
+        // Validate container mount paths (reject top-level system directories).
+        if let Some(container) = &config.container
+            && let Err((path, blocked_list)) = container.validate()
+        {
+            return Err(ParsingError::InvalidMountPath(path, blocked_list).into());
+        }
+
         Ok(config)
     }
 }
@@ -207,5 +214,92 @@ mod tests {
             panic!("expected InvalidDeploymentSource error");
         };
         assert_eq!(msg, "local path cannot be empty");
+    }
+
+    #[test]
+    fn test_container_config_rejects_system_path_mount() {
+        let json5 = r#"{
+            schema_version: 1,
+            manifest: {
+                name: "bad_mount_node",
+                tag: "0.1.0",
+                language: "rust",
+            },
+            container: {
+                def_file: "apptainer.def",
+                mount_paths: ["/tmp:/tmp:rw"],
+            },
+        }"#;
+        let result = NodeConfigParser::from_content(json5);
+        assert!(
+            matches!(
+                result.as_ref().unwrap_err(),
+                Error::Parsing(ParsingError::InvalidMountPath(_, _))
+            ),
+            "expected InvalidMountPath error, got: {:?}",
+            result.unwrap_err()
+        );
+    }
+
+    #[test]
+    fn test_container_config_rejects_private_system_path_mount() {
+        let json5 = r#"{
+            schema_version: 1,
+            manifest: {
+                name: "bad_mount_node",
+                tag: "0.1.0",
+                language: "rust",
+            },
+            container: {
+                def_file: "apptainer.def",
+                mount_paths: ["/private/tmp:/tmp:rw"],
+            },
+        }"#;
+        let result = NodeConfigParser::from_content(json5);
+        assert!(
+            matches!(
+                result.as_ref().unwrap_err(),
+                Error::Parsing(ParsingError::InvalidMountPath(_, _))
+            ),
+            "expected InvalidMountPath error for /private/tmp, got: {:?}",
+            result.unwrap_err()
+        );
+    }
+
+    #[test]
+    fn test_container_config_accepts_subdirectory_mount() {
+        let json5 = r#"{
+            schema_version: 1,
+            manifest: {
+                name: "good_mount_node",
+                tag: "0.1.0",
+                language: "rust",
+            },
+            container: {
+                def_file: "apptainer.def",
+                mount_paths: ["/tmp/my_app_data:/tmp/my_app_data:rw"],
+            },
+        }"#;
+        let config =
+            NodeConfigParser::from_content(json5).expect("subdirectory mount should be accepted");
+        let mount_paths = config.container.unwrap().mount_paths.unwrap();
+        assert_eq!(mount_paths, vec!["/tmp/my_app_data:/tmp/my_app_data:rw"]);
+    }
+
+    #[test]
+    fn test_container_config_accepts_no_mount_paths() {
+        let json5 = r#"{
+            schema_version: 1,
+            manifest: {
+                name: "no_mount_node",
+                tag: "0.1.0",
+                language: "rust",
+            },
+            container: {
+                def_file: "apptainer.def",
+            },
+        }"#;
+        let config = NodeConfigParser::from_content(json5).expect("no mount_paths should be valid");
+        assert!(config.container.unwrap().mount_paths.is_none());
     }
 }
