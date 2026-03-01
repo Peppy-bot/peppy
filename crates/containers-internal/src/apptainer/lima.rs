@@ -878,8 +878,15 @@ mod tests {
         assert!(modified, "config should be modified (valid path added)");
 
         let content = fs::read_to_string(&config_path).expect("read config");
+        let parsed: serde_yaml::Value =
+            serde_yaml::from_str(&content).expect("parse result config");
+        let has_tmp_mount = parsed["mounts"]
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .any(|m| m["location"].as_str() == Some("/tmp"));
         assert!(
-            !content.contains("location: /tmp"),
+            !has_tmp_mount,
             "system path /tmp should not be added, got:\n{content}"
         );
         assert!(
