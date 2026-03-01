@@ -23,7 +23,6 @@ patchelf = ">=0.17.2.4"
 [tasks]
 dev = "maturin develop"
 release = "maturin develop --release"
-cross-linux-dev = "maturin build --zig --target aarch64-unknown-linux-gnu"
 cross-linux-release = "maturin build --zig --release --target aarch64-unknown-linux-gnu"
 test = "maturin develop && pytest tests/ -v"
 zenoh-simple = "cargo run --manifest-path ../peppylib/examples/zenohd_simple/Cargo.toml"

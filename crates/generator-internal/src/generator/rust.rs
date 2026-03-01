@@ -2,11 +2,11 @@
 mod tests;
 
 mod actions;
-mod build;
 mod context;
 mod deserialization;
 mod identifiers;
 pub mod parameters;
+mod scaffold;
 mod serialization;
 mod services;
 mod topics;
@@ -1562,10 +1562,10 @@ impl LanguageGenerator for RustGenerator {
         peppy_dirs: &config::consts::PeppyDirs,
         deploy_mode: crate::generator::common::CrateDeployMode,
     ) -> Result<()> {
-        build::add_peppylib_dependencies(&to_path, peppy_dirs, deploy_mode)?;
-        build::add_capnp_schemas(&self.schemas, to_path.as_ref())?;
-        build::add_artifacts_to_lib(&to_path, self.sections)?;
-        build::add_parameters_to_lib(&to_path, &self.parameters)?;
+        scaffold::add_peppylib_dependencies(&to_path, peppy_dirs, deploy_mode)?;
+        scaffold::add_capnp_schemas(&self.schemas, to_path.as_ref())?;
+        scaffold::add_artifacts_to_lib(&to_path, self.sections)?;
+        scaffold::add_parameters_to_lib(&to_path, &self.parameters)?;
         Ok(())
     }
 }
