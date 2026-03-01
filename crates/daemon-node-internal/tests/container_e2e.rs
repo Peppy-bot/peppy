@@ -37,7 +37,7 @@ fn apptainer_available() -> bool {
 /// Exercises the full chain: NodeInitRequest (with_container=true) ->
 /// node_add (apptainer build) -> node_start (apptainer run).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "slow: builds container images via Lima VM"]
+//#[ignore = "slow: builds container images via Lima VM"]
 async fn container_e2e_rust_init_add_start() {
     if !apptainer_available() {
         return;
@@ -188,7 +188,7 @@ async fn container_e2e_rust_init_add_start() {
 /// Exercises the full chain: NodeInitRequest (with_container=true) ->
 /// node_add (apptainer build) -> node_start (apptainer run).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "slow: builds container images via Lima VM"]
+//#[ignore = "slow: builds container images via Lima VM"]
 async fn container_e2e_python_init_add_start() {
     if !apptainer_available() {
         return;

@@ -164,10 +164,49 @@ mod peppylib_build {
         lock_file
     }
 
+    fn compile_so(
+        peppylib_py_dir: &std::path::Path,
+        target_dir: &std::path::Path,
+        pixi_task: &str,
+    ) -> PathBuf {
+        let so_path = peppylib_py_dir.join("peppylib/_peppylib.abi3.so");
+
+        println!("cargo:warning=Building peppylib-py native extension via pixi ({pixi_task})…");
+
+        // Serialize concurrent pixi invocations to avoid "Text file busy" races
+        // when multiple build scripts run pixi on the same environment.
+        let lock_path = peppylib_py_dir.join(".pixi/.build.lock");
+        let _pixi_lock = acquire_pixi_lock(&lock_path);
+
+        let output = Command::new("pixi")
+            .args(["run", "-e", "default", pixi_task])
+            .current_dir(peppylib_py_dir)
+            .env("CARGO_TARGET_DIR", target_dir)
+            .env_remove("RUSTC")
+            .env_remove("RUSTDOC")
+            .output()
+            .expect("Failed to run `pixi run` for peppylib-py");
+
+        if !output.status.success() {
+            panic!(
+                "pixi run {pixi_task} failed for peppylib-py:\nstdout:\n{}\nstderr:\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+            );
+        }
+
+        assert!(
+            so_path.exists(),
+            "Expected _peppylib.abi3.so at {:?} after pixi run {pixi_task}, but not found",
+            so_path,
+        );
+
+        so_path
+    }
+
     pub fn run() {
         let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let peppylib_py_dir = manifest_dir.join("../peppylib-py");
-        let so_path = peppylib_py_dir.join("peppylib/_peppylib.abi3.so");
 
         // Rerun when peppylib-py Rust source or Cargo.toml changes
         println!("cargo:rerun-if-changed=../peppylib-py/Cargo.toml");
@@ -190,35 +229,7 @@ mod peppylib_build {
             "dev"
         };
 
-        println!("cargo:warning=Building peppylib-py native extension via pixi ({pixi_task})…");
-
-        // Serialize concurrent pixi invocations to avoid "Text file busy" races
-        // when multiple build scripts run pixi on the same environment.
-        let lock_path = peppylib_py_dir.join(".pixi/.build.lock");
-        let _pixi_lock = acquire_pixi_lock(&lock_path);
-
-        let output = Command::new("pixi")
-            .args(["run", "-e", "default", pixi_task])
-            .current_dir(&peppylib_py_dir)
-            .env("CARGO_TARGET_DIR", &target_dir)
-            .env_remove("RUSTC")
-            .env_remove("RUSTDOC")
-            .output()
-            .expect("Failed to run `pixi run` for peppylib-py");
-
-        if !output.status.success() {
-            panic!(
-                "pixi run {pixi_task} failed for peppylib-py:\nstdout:\n{}\nstderr:\n{}",
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr),
-            );
-        }
-
-        assert!(
-            so_path.exists(),
-            "Expected _peppylib.abi3.so at {:?} after pixi run {pixi_task}, but not found",
-            so_path,
-        );
+        let so_path = compile_so(&peppylib_py_dir, &target_dir, pixi_task);
 
         // Emit a content hash that changes when the .so is rebuilt. This forces
         // cargo to recompile the generator crate so rust_embed re-embeds the
