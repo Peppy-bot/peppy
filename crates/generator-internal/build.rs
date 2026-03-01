@@ -285,14 +285,13 @@ mod peppylib_build {
             )
         });
 
-        // 3. On macOS: cross-compile the Linux .so via maturin + zig
+        // 3. On macOS: cross-compile the Linux .so via maturin + zig.
+        //    Always use release mode for the cross-compiled .so — it's a container
+        //    deployment artifact that never needs debug symbols, and debug builds
+        //    are ~4x larger (bloating the embedded binary and container image).
         #[cfg(target_os = "macos")]
         {
-            let cross_pixi_task = if profile == "release" {
-                "cross-linux-release"
-            } else {
-                "cross-linux-dev"
-            };
+            let cross_pixi_task = "cross-linux-release";
 
             println!(
                 "cargo:warning=Cross-compiling peppylib-py for linux-aarch64 via pixi ({cross_pixi_task})…"
