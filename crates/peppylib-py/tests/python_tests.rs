@@ -4,6 +4,7 @@ use std::process::Command;
 
 #[test]
 fn run_pytest_suite() {
+    // TODO: The zenohd binary is missing here
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
 
     let output = Command::new("pixi")

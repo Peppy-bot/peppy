@@ -35,7 +35,7 @@ To build PeppyOS, just type the following:
 cargo build --release --all-targets
 ```
 
-Note: `peppy service serve` uses Zenoh and spawns a `zenohd` router process. If `zenohd` isn't next to the `peppy` binary or on `PATH`, set `PEPPY_ZENOHD_PATH` (or `ZENOHD_BINARY_PATH`) to its location.
+Note: `peppy service serve` uses Zenoh and spawns a `zenohd` router process. If `zenohd` isn't next to the `peppy` binary or on `PATH`, set `PEPPY_ZENOHD_PATH` to its location.
 
 
 ## 📚 Examples

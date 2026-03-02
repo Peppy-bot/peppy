@@ -173,12 +173,16 @@ mod peppylib_build {
 
     /// Runs a pixi task and panics on failure.
     fn run_pixi_task(peppylib_py_dir: &Path, task: &str, target_dir: &Path) {
-        let output = Command::new("pixi")
-            .args(["run", "-e", "default", task])
+        let output = Command::new("sh")
+            .args([
+                "-c",
+                &format!("ulimit -n 10240 && exec pixi run -e default {task}"),
+            ])
             .current_dir(peppylib_py_dir)
             .env("CARGO_TARGET_DIR", target_dir)
             .env_remove("RUSTC")
             .env_remove("RUSTDOC")
+            .stdin(std::process::Stdio::null())
             .output()
             .unwrap_or_else(|e| panic!("Failed to run `pixi run {task}`: {e}"));
 
