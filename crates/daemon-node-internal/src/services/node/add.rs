@@ -12,6 +12,7 @@ use crate::names;
 use chrono::Local;
 use config::consts::{NODE_CONFIG_FILE, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH, PeppyDirs};
 use config::node::{NodeConfig, NodeConfigParser};
+use futures::FutureExt;
 use git2::Repository;
 use node_stack::{NodeStack, validate_dependency_specs};
 use peppylib::messaging::{
@@ -21,6 +22,7 @@ use peppylib::types::Payload;
 use peppylib::{ActionMessenger, MessengerHandle, PeppyResult};
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Write};
+use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex as StdMutex};
@@ -1257,7 +1259,10 @@ async fn handle_goal_request(
 
     debug!("Created log file for node add: {}", log_path.display());
 
-    // Process the add operation in a separate task to not block goal response
+    // Process the add operation in a separate task to not block goal response.
+    // Panics are caught via catch_unwind so the state always transitions to
+    // Completed — without this, a panic silently aborts the task and leaves
+    // the state stuck on Running, causing clients to time out.
     let state_clone = Arc::clone(&state);
     let feedback_publisher_clone = feedback_publisher.clone();
     let log_path_clone = log_path.clone();
@@ -1273,6 +1278,8 @@ async fn handle_goal_request(
             daemon_instance_id,
             peppy_dirs,
         } = action_context;
+        let log_file_for_panic = log_file.clone();
+        let log_path_for_panic = log_path_clone.clone();
         let ctx = ProcessNodeAddContext {
             messenger,
             bound_daemon_node,
@@ -1283,15 +1290,28 @@ async fn handle_goal_request(
             log_file,
             log_path: log_path_clone,
         };
-        let result = process_node_add(
+        let result = match AssertUnwindSafe(process_node_add(
             goal,
             node_config,
             source_path,
             verify_codegen_fingerprint,
             cleanup_dir,
             ctx,
-        )
-        .await;
+        ))
+        .catch_unwind()
+        .await
+        {
+            Ok(result) => result,
+            Err(panic_payload) => {
+                let msg = format!(
+                    "node_add task panicked: {}",
+                    super::panic_message(&*panic_payload)
+                );
+                tracing::error!("{}", msg);
+                write_error_to_log(&log_file_for_panic, &msg);
+                NodeAddResult::failure(log_path_for_panic, msg)
+            }
+        };
         let mut state_guard = state_clone.lock().await;
         *state_guard = NodeAddActionState::Completed { result };
     });

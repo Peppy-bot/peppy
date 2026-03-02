@@ -21,6 +21,18 @@ use zstd::stream::read::Decoder;
 /// Used by both the `add` (container build) and `start` (node run) services.
 const STDERR_TAIL_LINES: usize = 20;
 
+/// Extract a human-readable message from a panic payload.
+/// Used by spawned task handlers to convert panics into failure results.
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "unknown panic payload".to_string()
+    }
+}
+
 /// Blocklist of dangerous env vars that could be used for code injection or process manipulation.
 /// Used by both the daemon (to reject requests) and CLI (to filter before sending).
 pub const FORBIDDEN_ENV_KEYS: [&str; 16] = [
@@ -515,5 +527,23 @@ mod tests {
         let env_vars = vec![("ld_preload".to_string(), "evil.so".to_string())];
         let err = validate_goal_env_vars(&env_vars).unwrap_err();
         assert!(err.to_string().contains("LD_PRELOAD"));
+    }
+
+    #[test]
+    fn panic_message_extracts_str_payload() {
+        let payload: Box<dyn std::any::Any + Send> = Box::new("something broke");
+        assert_eq!(panic_message(&*payload), "something broke");
+    }
+
+    #[test]
+    fn panic_message_extracts_string_payload() {
+        let payload: Box<dyn std::any::Any + Send> = Box::new(String::from("detailed error"));
+        assert_eq!(panic_message(&*payload), "detailed error");
+    }
+
+    #[test]
+    fn panic_message_handles_unknown_payload() {
+        let payload: Box<dyn std::any::Any + Send> = Box::new(42i32);
+        assert_eq!(panic_message(&*payload), "unknown panic payload");
     }
 }

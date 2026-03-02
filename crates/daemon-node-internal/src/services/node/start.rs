@@ -7,6 +7,7 @@ use config::consts::{PeppyDirs, RUNTIME_CONFIG_VAR_NAME};
 use config::node::{Name, PeppygenLanguage};
 use config::runtime::RuntimeConfig;
 use config::{AnyType, NodeArguments};
+use futures::FutureExt;
 use node_stack::{NodeEntity, NodeStack};
 use peppylib::encoding::health::NodeHealthRequest;
 use peppylib::encoding::ready::NodeReadyRequest;
@@ -18,6 +19,7 @@ use peppylib::{ActionMessenger, MessengerHandle, PeppyError, PeppyResult, Servic
 use std::collections::VecDeque;
 use std::fs::File;
 use std::io::Write;
+use std::panic::AssertUnwindSafe;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
@@ -572,15 +574,34 @@ async fn handle_goal_request(
 
     debug!("Created log file for node start: {}", log_path.display());
 
+    // Panics are caught via catch_unwind so the state always transitions to
+    // Completed — without this, a panic silently aborts the task and leaves
+    // the state stuck on Running, causing clients to time out.
     let state_clone = Arc::clone(&state);
     tokio::spawn(async move {
+        let log_file_for_panic = log_file.clone();
         let process_context = ProcessNodeStartContext {
             action: action_context,
             feedback_publisher,
             log_file,
             sender_instance_id,
         };
-        let result = process_node_start(goal, runtime_config, process_context).await;
+        let result =
+            match AssertUnwindSafe(process_node_start(goal, runtime_config, process_context))
+                .catch_unwind()
+                .await
+            {
+                Ok(result) => result,
+                Err(panic_payload) => {
+                    let msg = format!(
+                        "node_start task panicked: {}",
+                        super::panic_message(&*panic_payload)
+                    );
+                    tracing::error!("{}", msg);
+                    write_error_to_log(&log_file_for_panic, &msg);
+                    NodeStartResult::failure(msg)
+                }
+            };
         let mut state_guard = state_clone.lock().await;
         *state_guard = NodeStartActionState::Completed { result };
     });
