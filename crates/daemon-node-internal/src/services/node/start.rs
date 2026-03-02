@@ -32,6 +32,7 @@ const STARTUP_OUTPUT_MAX_WAIT: Duration = Duration::from_millis(100);
 const STARTUP_OUTPUT_QUIET_WINDOW: Duration = Duration::from_millis(10);
 const CONTAINER_STARTUP_OUTPUT_MAX_WAIT: Duration = Duration::from_secs(2);
 const CONTAINER_STARTUP_OUTPUT_QUIET_WINDOW: Duration = Duration::from_millis(100);
+const FEEDBACK_FLUSH_TIMEOUT: Duration = Duration::from_secs(5);
 
 static RUNTIME_CONFIG_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -209,19 +210,30 @@ impl FeedbackSync {
         self.notify.notify_waiters();
     }
 
-    async fn flush(&self) {
+    /// Waits until all read lines have been published, or until `timeout` elapses.
+    /// Returns `true` if all lines were flushed, `false` on timeout.
+    async fn flush_with_timeout(&self, timeout: Duration) -> bool {
         let target = self.read_count.load(Ordering::Relaxed);
+        let deadline = tokio::time::Instant::now() + timeout;
         loop {
             if self.published_count.load(Ordering::Relaxed) >= target {
-                break;
+                return true;
             }
+            let now = tokio::time::Instant::now();
+            if now >= deadline {
+                return false;
+            }
+            let remaining = deadline - now;
             let notified = self.notify.notified();
             tokio::pin!(notified);
             notified.as_mut().enable();
             if self.published_count.load(Ordering::Relaxed) >= target {
-                break;
+                return true;
             }
-            notified.await;
+            match tokio::time::timeout(remaining, notified).await {
+                Ok(_) => {}
+                Err(_) => return false,
+            }
         }
     }
 
@@ -692,10 +704,15 @@ async fn process_node_start(
         .unwrap_or_default();
 
     let mut child = if is_container {
-        let mut apptainer = match containers::Apptainer::new() {
-            Ok(a) => a,
-            Err(e) => {
+        let mut apptainer = match tokio::task::spawn_blocking(containers::Apptainer::new).await {
+            Ok(Ok(a)) => a,
+            Ok(Err(e)) => {
                 let msg = format!("Failed to initialize Apptainer: {}", e);
+                write_error_to_log(&ctx.log_file, &msg);
+                return NodeStartResult::failure(msg);
+            }
+            Err(e) => {
+                let msg = format!("Apptainer initialization task failed: {}", e);
                 write_error_to_log(&ctx.log_file, &msg);
                 return NodeStartResult::failure(msg);
             }
@@ -835,7 +852,15 @@ async fn process_node_start(
             Arc::clone(&ctx.log_file),
         )
         .await;
-        feedback_sync.flush().await;
+        if !feedback_sync
+            .flush_with_timeout(FEEDBACK_FLUSH_TIMEOUT)
+            .await
+        {
+            debug!(
+                "feedback flush timed out for node instance '{}'",
+                instance_id_str
+            );
+        }
         publish_enabled.store(false, Ordering::Relaxed);
         return result;
     }
@@ -873,7 +898,15 @@ async fn process_node_start(
                 let msg = format!("Failed to register instance: {}", e);
                 write_error_to_log(&ctx.log_file, &msg);
                 let result = NodeStartResult::failure(msg);
-                feedback_sync.flush().await;
+                if !feedback_sync
+                    .flush_with_timeout(FEEDBACK_FLUSH_TIMEOUT)
+                    .await
+                {
+                    debug!(
+                        "feedback flush timed out for node instance '{}'",
+                        instance_id_str
+                    );
+                }
                 publish_enabled.store(false, Ordering::Relaxed);
                 return result;
             }
@@ -889,7 +922,15 @@ async fn process_node_start(
                 .wait_for_read_quiescence(max_wait, quiet_window)
                 .await;
             let result = NodeStartResult::success(pid);
-            feedback_sync.flush().await;
+            if !feedback_sync
+                .flush_with_timeout(FEEDBACK_FLUSH_TIMEOUT)
+                .await
+            {
+                debug!(
+                    "feedback flush timed out for node instance '{}'",
+                    instance_id_str
+                );
+            }
             publish_enabled.store(false, Ordering::Relaxed);
             result
         }
@@ -907,7 +948,15 @@ async fn process_node_start(
                 Arc::clone(&ctx.log_file),
             )
             .await;
-            feedback_sync.flush().await;
+            if !feedback_sync
+                .flush_with_timeout(FEEDBACK_FLUSH_TIMEOUT)
+                .await
+            {
+                debug!(
+                    "feedback flush timed out for node instance '{}'",
+                    instance_id_str
+                );
+            }
             publish_enabled.store(false, Ordering::Relaxed);
             result
         }

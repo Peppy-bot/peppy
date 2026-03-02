@@ -667,6 +667,17 @@ pub async fn start_daemon_node_with_mock_messenger() -> StartedDaemonNode {
 }
 
 pub async fn start_daemon_node_with_real_messenger() -> StartedDaemonNode {
+    start_daemon_node_with_real_messenger_and_timeouts(
+        Duration::from_secs(10),
+        Duration::from_secs(30),
+    )
+    .await
+}
+
+pub async fn start_daemon_node_with_real_messenger_and_timeouts(
+    node_startup_timeout: Duration,
+    node_start_health_timeout: Duration,
+) -> StartedDaemonNode {
     let (data_dir, peppy_dirs) = init_test_data_dir();
     let mut instance = pmi::ZenohAdapter::start_router_ephemeral(DEFAULT_MESSAGING_HOST, None)
         .await
@@ -677,8 +688,6 @@ pub async fn start_daemon_node_with_real_messenger() -> StartedDaemonNode {
         .await
         .expect("failed to start zenoh session");
     let shared_messenger = Arc::new(Mutex::new(instance.take_messenger()));
-    let node_startup_timeout = Duration::from_secs(10);
-    let node_start_health_timeout = Duration::from_secs(30);
     start_daemon_node_with_messenger(
         shared_messenger,
         node_startup_timeout,

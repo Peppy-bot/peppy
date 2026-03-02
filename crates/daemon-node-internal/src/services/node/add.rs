@@ -454,12 +454,15 @@ async fn build_container_image(
     feedback_publisher: &TopicPublisher,
     log_file: Arc<StdMutex<File>>,
 ) -> Result<()> {
-    let apptainer = containers::Apptainer::new().map_err(|e| {
-        std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            format!("Failed to initialize Apptainer runtime: {}", e),
-        )
-    })?;
+    let apptainer = tokio::task::spawn_blocking(containers::Apptainer::new)
+        .await
+        .map_err(|e| std::io::Error::other(format!("Apptainer initialization task failed: {}", e)))?
+        .map_err(|e| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("Failed to initialize Apptainer runtime: {}", e),
+            )
+        })?;
 
     let sif_name = format!("{}_{}.sif", node_name, node_tag);
     let output_path = working_dir.join(&sif_name);

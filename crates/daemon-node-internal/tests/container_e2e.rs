@@ -2,7 +2,7 @@ mod common;
 
 use common::{
     CALLER_INSTANCE_ID, NodeStartTestTimeouts, send_node_add_and_wait, send_node_start_and_wait,
-    start_daemon_node_with_real_messenger,
+    start_daemon_node_with_real_messenger_and_timeouts,
 };
 use config::node::Name as NodeName;
 use config::node::Toolchain;
@@ -47,7 +47,11 @@ async fn container_e2e_rust_init_add_start() {
     const NODE_TAG: &str = "0.1.0";
     const INSTANCE_ID: &str = "rust_e2e_instance";
 
-    let started = start_daemon_node_with_real_messenger().await;
+    let started = start_daemon_node_with_real_messenger_and_timeouts(
+        Duration::from_secs(120),
+        Duration::from_secs(60),
+    )
+    .await;
 
     // Step 1: Init the node with container support
     let nodes_root = tempdir().expect("failed to create temp nodes root directory");
@@ -198,7 +202,11 @@ async fn container_e2e_python_init_add_start() {
     const NODE_TAG: &str = "0.1.0";
     const INSTANCE_ID: &str = "python_e2e_instance";
 
-    let started = start_daemon_node_with_real_messenger().await;
+    let started = start_daemon_node_with_real_messenger_and_timeouts(
+        Duration::from_secs(120),
+        Duration::from_secs(60),
+    )
+    .await;
 
     // Step 1: Init the node with container support
     let nodes_root = tempdir().expect("failed to create temp nodes root directory");
