@@ -32,5 +32,5 @@ serde_json5 = "0.2"
 default = ["zenoh"]
 # Feature to enable zenoh messaging backend
 zenoh = ["dep:zenoh"]
-# Feature to enable building zenoh from source
-build_zenoh = []
+# Feature to download the pre-built zenohd binary from GitHub releases
+build_zenoh = ["zenoh"]
