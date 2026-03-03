@@ -1,5 +1,5 @@
 use crate::Result;
-use crate::encoding::{InfoRequest, InfoResponse};
+use crate::encoding::{ContainerInfo, InfoRequest, InfoResponse};
 use crate::names;
 use node_stack::NodeStack;
 use peppylib::messaging::ServiceRequestContext;
@@ -97,6 +97,11 @@ fn handle_info_request_inner(
     let node_count = node_stack.len() as u32;
     let git_version = option_env!("PEPPY_GIT_TAG").unwrap_or("unknown");
 
+    let container_info = ContainerInfo {
+        apptainer_version: containers::APPTAINER_VERSION.to_owned(),
+        lima_version: containers::LIMA_VERSION.to_owned(),
+    };
+
     InfoResponse::new(
         uptime_secs,
         daemon_node_name,
@@ -104,6 +109,7 @@ fn handle_info_request_inner(
         host_name,
         node_count,
         git_version,
+        container_info,
     )
     .encode()
 }

@@ -8,7 +8,7 @@ mod node;
 mod ping;
 mod reset;
 
-pub use info::{InfoRequest, InfoResponse};
+pub use info::{ContainerInfo, InfoRequest, InfoResponse};
 pub use launch::{
     LaunchFeedback, LaunchFeedbackStep, LaunchGoal, LaunchGoalResponse, LaunchResult,
 };

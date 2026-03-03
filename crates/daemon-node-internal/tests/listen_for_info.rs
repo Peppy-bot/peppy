@@ -48,4 +48,12 @@ async fn listen_for_info_success() {
         !info_response.git_version.is_empty(),
         "git_version should not be empty"
     );
+    assert!(
+        !info_response.container_info.apptainer_version.is_empty(),
+        "apptainer_version should not be empty"
+    );
+    assert!(
+        !info_response.container_info.lima_version.is_empty(),
+        "lima_version should not be empty"
+    );
 }

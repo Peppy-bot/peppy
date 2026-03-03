@@ -25,7 +25,7 @@ async fn listen_for_node_list_returns_succeeds() {
                 tag: "{TARGET_NODE_TAG}",
                 language: "rust",
             }},
-            build: {{
+            process: {{
                 start_cmd: ["sleep", "10"]
             }},
             parameters: {{}}
@@ -115,7 +115,7 @@ async fn listen_for_node_list_returns_dot_graph() {
                 tag: "{TARGET_NODE_TAG}",
                 language: "rust",
             }},
-            build: {{
+            process: {{
                 start_cmd: ["sleep", "10"]
             }},
             parameters: {{}}

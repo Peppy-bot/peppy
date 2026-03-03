@@ -45,6 +45,18 @@ pub enum ParsingError {
     #[error("Invalid toolchain {0}")]
     InvalidToolchain(String),
 
+    // -- node config: process vs container
+    #[error("Node config must have exactly one of `process` or `container`, not both")]
+    ProcessAndContainerConflict,
+    #[error("Node config must have either `process` or `container`")]
+    NoProcessOrContainer,
+
+    // -- container config: mount paths
+    #[error(
+        "Invalid mount path `{0}`: top-level system directories ({1}) cannot be used as mount sources — use a subdirectory instead (e.g., /tmp/my_app)"
+    )]
+    InvalidMountPath(String, String),
+
     #[error("{0}")]
     Structured(String),
 }

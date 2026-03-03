@@ -44,7 +44,7 @@ fn write_node_config(
                     tag: "{node_tag}",
                     language: "rust"
                 }},
-                build: {{
+                process: {{
                     start_cmd: [{start_cmd_json5}]
                 }}
             }}"#
@@ -132,6 +132,7 @@ async fn node_launch_command_succeed() {
             node_name: peppy::commands::node::NodeName::new(node_b_name).expect("valid node name"),
             to_dir: None,
             toolchain: Toolchain::Cargo,
+            with_container: false,
         },
     }
     .execute(&ctx)

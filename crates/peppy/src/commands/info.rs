@@ -66,6 +66,14 @@ async fn info_async(ctx: &Arc<AppContext>) -> Result<()> {
             println!("Host name: {}", response.host_name);
             println!("Uptime: {}s", response.uptime_secs);
             println!("Node count: {}", response.node_count);
+            println!();
+            println!("Container Info");
+            println!("--------------");
+            println!(
+                "Apptainer version: {}",
+                response.container_info.apptainer_version
+            );
+            println!("Lima version: {}", response.container_info.lima_version);
         }
         Err(e) => {
             eprintln!();

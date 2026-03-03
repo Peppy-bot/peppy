@@ -9,7 +9,7 @@ use crate::Result;
 use config::{
     AnyType, NodeArguments,
     consts::PeppyDirs,
-    node::{Build, Manifest, Name, NodeConfig, PeppygenLanguage},
+    node::{Manifest, Name, NodeConfig, PeppygenLanguage, Process},
     peppy_config::CURRENT_SCHEMA_VERSION,
 };
 use names_generator2::get_random;
@@ -91,11 +91,11 @@ impl DaemonNode {
                 language: PeppygenLanguage::Rust,
                 labels: None,
             },
-            build: Build {
+            process: Some(Process {
                 add_cmd: None,
                 start_cmd: vec![],
-                container: None,
-            },
+            }),
+            container: None,
             parameters: node_arguments.into(),
             interfaces: Default::default(),
         };

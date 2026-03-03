@@ -1,6 +1,7 @@
 use containers::Apptainer;
 use std::fs;
 use std::path::PathBuf;
+use std::process::Stdio;
 use tempfile::TempDir;
 
 /// Build a minimal Alpine container image and return the Apptainer handle, temp dir, and .sif path.
@@ -51,7 +52,15 @@ From: alpine:3.20
     .expect("should be able to write .def file");
 
     let sif_path = tmp_dir.path().join("test.sif");
-    let mut child = match facade.build(&sif_path, &def_path).spawn() {
+    let mut cmd = match facade.build(&sif_path, &def_path).into_std_command() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("SKIPPING: apptainer build failed to create command: {e}");
+            return None;
+        }
+    };
+    cmd.stdin(Stdio::null());
+    let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
             eprintln!("SKIPPING: apptainer build failed to spawn: {e}");
@@ -87,11 +96,13 @@ fn build_and_run_container() {
         return;
     };
 
-    let mut child = facade
+    let mut cmd = facade
         .run(&sif_path.to_string_lossy())
-        .spawn()
-        .expect("facade.run().spawn() should succeed");
+        .into_std_command()
+        .expect("facade.run().into_std_command() should succeed");
+    cmd.stdin(Stdio::null());
 
+    let mut child = cmd.spawn().expect("run command should spawn");
     let status = child
         .wait()
         .expect("should be able to wait on run child process");
@@ -112,11 +123,13 @@ fn build_and_exec_in_container() {
         return;
     };
 
-    let mut child = facade
+    let mut cmd = facade
         .exec(&sif_path.to_string_lossy(), &["cat", "/etc/alpine-release"])
-        .spawn()
-        .expect("facade.exec().spawn() should succeed");
+        .into_std_command()
+        .expect("facade.exec().into_std_command() should succeed");
+    cmd.stdin(Stdio::null());
 
+    let mut child = cmd.spawn().expect("exec command should spawn");
     let status = child
         .wait()
         .expect("should be able to wait on exec child process");
@@ -145,11 +158,15 @@ fn bind_mount_file_visible_in_container() {
     fs::write(&marker_path, marker_content).expect("should be able to write marker file");
 
     let marker_str = marker_path.to_string_lossy();
-    let output = facade
+    let mut cmd = facade
         .exec(&sif_path.to_string_lossy(), &["cat", &marker_str])
-        .bind(&marker_str, None)
-        .output()
-        .expect("exec with --bind should succeed");
+        .bind(&marker_str, None, None)
+        .into_std_command()
+        .expect("exec with --bind should build command");
+    cmd.stdin(Stdio::null());
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+    let output = cmd.output().expect("exec with --bind should succeed");
 
     assert!(
         output.status.success(),
@@ -163,5 +180,42 @@ fn bind_mount_file_visible_in_container() {
         stdout.trim(),
         marker_content,
         "bound file content should be readable inside the container"
+    );
+}
+
+/// Integration test: `into_std_command` produces a runnable `std::process::Command`.
+///
+/// Exercises the `into_std_command()` terminal method by building a run command,
+/// customizing its stdio (the primary use case for this API), and verifying the
+/// output matches what `spawn()` would produce.
+#[test]
+fn into_std_command_produces_runnable_command() {
+    let Some((facade, _tmp_dir, sif_path)) = build_alpine_container() else {
+        return;
+    };
+
+    let mut cmd = facade
+        .run(&sif_path.to_string_lossy())
+        .into_std_command()
+        .expect("into_std_command should succeed");
+
+    // Verify caller can customize stdio (the main reason this method exists)
+    cmd.stdin(Stdio::null());
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+
+    let output = cmd.output().expect("spawned command should complete");
+    assert!(
+        output.status.success(),
+        "command from into_std_command should succeed (exit status: {})\nstderr: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(
+        stdout.trim(),
+        "peppy-test-ok",
+        "into_std_command run should produce the same output as spawn"
     );
 }

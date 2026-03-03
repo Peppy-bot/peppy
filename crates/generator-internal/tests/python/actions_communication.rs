@@ -167,7 +167,11 @@ async fn actions_communication() {
     generator.add_exposed_service(&flow_done_service).unwrap();
     let output_config = copy_config_to_output(&user_node_subscriber, &output_dir_subscriber);
     generator
-        .build(&output_dir_subscriber, &test_peppy_dirs())
+        .build(
+            &output_dir_subscriber,
+            &test_peppy_dirs(),
+            Default::default(),
+        )
         .unwrap();
     fs::remove_file(output_config).unwrap();
     config::fingerprint::create_codegen_fingerprint(
@@ -237,7 +241,7 @@ if __name__ == "__main__":
     generator.add_exposed_action(&exposed_action).unwrap();
     let output_config = copy_config_to_output(&user_node_exposer, &output_dir_exposer);
     generator
-        .build(&output_dir_exposer, &test_peppy_dirs())
+        .build(&output_dir_exposer, &test_peppy_dirs(), Default::default())
         .unwrap();
     fs::remove_file(output_config).unwrap();
     config::fingerprint::create_codegen_fingerprint(
@@ -495,7 +499,11 @@ async fn actions_communication_cancel_goal() {
     generator.add_exposed_service(&flow_done_service).unwrap();
     let output_config = copy_config_to_output(&user_node_subscriber, &output_dir_subscriber);
     generator
-        .build(&output_dir_subscriber, &test_peppy_dirs())
+        .build(
+            &output_dir_subscriber,
+            &test_peppy_dirs(),
+            Default::default(),
+        )
         .unwrap();
     fs::remove_file(output_config).unwrap();
     config::fingerprint::create_codegen_fingerprint(
@@ -562,7 +570,7 @@ if __name__ == "__main__":
     generator.add_exposed_action(&exposed_action).unwrap();
     let output_config = copy_config_to_output(&user_node_exposer, &output_dir_exposer);
     generator
-        .build(&output_dir_exposer, &test_peppy_dirs())
+        .build(&output_dir_exposer, &test_peppy_dirs(), Default::default())
         .unwrap();
     fs::remove_file(output_config).unwrap();
     config::fingerprint::create_codegen_fingerprint(

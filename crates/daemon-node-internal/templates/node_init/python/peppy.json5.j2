@@ -5,7 +5,12 @@
     tag: "0.1.0",
     language: "python",
   },
-  build: {
+{% if with_container %}
+  container: {
+    def_file: "apptainer.def",
+  },
+{% else %}
+  process: {
     add_cmd: [
       "uv",
       "sync",
@@ -17,5 +22,6 @@
       "{{ node_name }}"
     ]
   },
+{% endif %}
   interfaces: {}
 }

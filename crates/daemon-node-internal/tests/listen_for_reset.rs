@@ -39,7 +39,7 @@ async fn listen_for_node_reset_clears_node_stack() {
                 tag: "{TARGET_NODE_A_TAG}",
                 language: "rust",
             }},
-            build: {{
+            process: {{
                 start_cmd: ["sleep", "10"]
             }},
             parameters: {{}}
@@ -72,7 +72,7 @@ async fn listen_for_node_reset_clears_node_stack() {
                 tag: "{TARGET_NODE_B_TAG}",
                 language: "rust",
             }},
-            build: {{
+            process: {{
                 start_cmd: ["sleep", "10"]
             }},
             parameters: {{}}

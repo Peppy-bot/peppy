@@ -22,7 +22,23 @@ impl NodeConfigParser {
     /// Takes a JSON5 content as parameter
     pub fn from_content(content: &str) -> Result<NodeConfig> {
         // Strict schema validation is handled by serde via #[serde(deny_unknown_fields)]
-        serde_json5::from_str::<NodeConfig>(content).map_err(|e| ParsingError::from(e).into())
+        let config: NodeConfig = serde_json5::from_str(content).map_err(ParsingError::from)?;
+
+        // `process` and `container` are mutually exclusive; exactly one must be present.
+        match (&config.process, &config.container) {
+            (Some(_), Some(_)) => return Err(ParsingError::ProcessAndContainerConflict.into()),
+            (None, None) => return Err(ParsingError::NoProcessOrContainer.into()),
+            _ => {}
+        }
+
+        // Validate container mount paths (reject top-level system directories).
+        if let Some(container) = &config.container
+            && let Err((path, blocked_list)) = container.validate()
+        {
+            return Err(ParsingError::InvalidMountPath(path, blocked_list).into());
+        }
+
+        Ok(config)
     }
 }
 
@@ -41,14 +57,17 @@ mod tests {
                 tag: "0.1.0",
                 language: "rust",
             },
-            build: {
+            process: {
                 start_cmd: ["./target/release/test_node"],
             },
         }"#;
         let config = NodeConfigParser::from_content(json5).unwrap();
         assert_eq!(config.manifest.name.as_str(), "test_node");
         assert_eq!(config.manifest.tag, "0.1.0");
-        assert_eq!(config.build.start_cmd, vec!["./target/release/test_node"]);
+        assert_eq!(
+            config.process.as_ref().unwrap().start_cmd,
+            vec!["./target/release/test_node"]
+        );
         assert!(config.parameters.is_empty());
     }
 
@@ -61,7 +80,7 @@ mod tests {
                 tag: "2.1.0",
                 language: "rust",
             },
-            build: {
+            process: {
                 start_cmd: ["./target/release/camera_driver"],
             },
             interfaces: {
@@ -80,7 +99,7 @@ mod tests {
             crate::node::PeppygenLanguage::Rust
         );
         assert_eq!(
-            config.build.start_cmd,
+            config.process.as_ref().unwrap().start_cmd,
             vec!["./target/release/camera_driver"]
         );
         assert!(config.interfaces.exposes.is_some());
@@ -121,6 +140,65 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_container_config() {
+        let json5 = r#"{
+            schema_version: 1,
+            manifest: {
+                name: "container_node",
+                tag: "0.1.0",
+                language: "rust",
+            },
+            container: {
+                def_file: "apptainer.def",
+            },
+        }"#;
+        let config = NodeConfigParser::from_content(json5).unwrap();
+        assert!(config.process.is_none());
+        let container = config.container.as_ref().unwrap();
+        assert_eq!(container.def_file, "apptainer.def");
+    }
+
+    #[test]
+    fn test_process_and_container_conflict() {
+        let json5 = r#"{
+            schema_version: 1,
+            manifest: {
+                name: "bad_node",
+                tag: "0.1.0",
+                language: "rust",
+            },
+            process: {
+                start_cmd: ["./bin"],
+            },
+            container: {
+                def_file: "apptainer.def",
+            },
+        }"#;
+        let result = NodeConfigParser::from_content(json5);
+        assert!(matches!(
+            result.unwrap_err(),
+            Error::Parsing(ParsingError::ProcessAndContainerConflict)
+        ));
+    }
+
+    #[test]
+    fn test_no_process_or_container() {
+        let json5 = r#"{
+            schema_version: 1,
+            manifest: {
+                name: "bare_node",
+                tag: "0.1.0",
+                language: "rust",
+            },
+        }"#;
+        let result = NodeConfigParser::from_content(json5);
+        assert!(matches!(
+            result.unwrap_err(),
+            Error::Parsing(ParsingError::NoProcessOrContainer)
+        ));
+    }
+
+    #[test]
     fn test_invalid_deployment_source() {
         let json5 = r#"{
             deployments: [
@@ -136,5 +214,92 @@ mod tests {
             panic!("expected InvalidDeploymentSource error");
         };
         assert_eq!(msg, "local path cannot be empty");
+    }
+
+    #[test]
+    fn test_container_config_rejects_system_path_mount() {
+        let json5 = r#"{
+            schema_version: 1,
+            manifest: {
+                name: "bad_mount_node",
+                tag: "0.1.0",
+                language: "rust",
+            },
+            container: {
+                def_file: "apptainer.def",
+                mount_paths: ["/tmp:/tmp:rw"],
+            },
+        }"#;
+        let result = NodeConfigParser::from_content(json5);
+        assert!(
+            matches!(
+                result.as_ref().unwrap_err(),
+                Error::Parsing(ParsingError::InvalidMountPath(_, _))
+            ),
+            "expected InvalidMountPath error, got: {:?}",
+            result.unwrap_err()
+        );
+    }
+
+    #[test]
+    fn test_container_config_rejects_private_system_path_mount() {
+        let json5 = r#"{
+            schema_version: 1,
+            manifest: {
+                name: "bad_mount_node",
+                tag: "0.1.0",
+                language: "rust",
+            },
+            container: {
+                def_file: "apptainer.def",
+                mount_paths: ["/private/tmp:/tmp:rw"],
+            },
+        }"#;
+        let result = NodeConfigParser::from_content(json5);
+        assert!(
+            matches!(
+                result.as_ref().unwrap_err(),
+                Error::Parsing(ParsingError::InvalidMountPath(_, _))
+            ),
+            "expected InvalidMountPath error for /private/tmp, got: {:?}",
+            result.unwrap_err()
+        );
+    }
+
+    #[test]
+    fn test_container_config_accepts_subdirectory_mount() {
+        let json5 = r#"{
+            schema_version: 1,
+            manifest: {
+                name: "good_mount_node",
+                tag: "0.1.0",
+                language: "rust",
+            },
+            container: {
+                def_file: "apptainer.def",
+                mount_paths: ["/tmp/my_app_data:/tmp/my_app_data:rw"],
+            },
+        }"#;
+        let config =
+            NodeConfigParser::from_content(json5).expect("subdirectory mount should be accepted");
+        let mount_paths = config.container.unwrap().mount_paths.unwrap();
+        assert_eq!(mount_paths, vec!["/tmp/my_app_data:/tmp/my_app_data:rw"]);
+    }
+
+    #[test]
+    fn test_container_config_accepts_no_mount_paths() {
+        let json5 = r#"{
+            schema_version: 1,
+            manifest: {
+                name: "no_mount_node",
+                tag: "0.1.0",
+                language: "rust",
+            },
+            container: {
+                def_file: "apptainer.def",
+            },
+        }"#;
+        let config = NodeConfigParser::from_content(json5).expect("no mount_paths should be valid");
+        assert!(config.container.unwrap().mount_paths.is_none());
     }
 }

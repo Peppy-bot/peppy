@@ -1,8 +1,13 @@
 use super::facade::{Apptainer, Backend, is_uri};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use tempfile::TempDir;
+
+#[cfg(target_os = "linux")]
+use super::facade::{check_fakeroot_deps, find_binary};
+#[cfg(target_os = "linux")]
+use crate::error::Error;
 
 // ---------------------------------------------------------------------------
 // Builder argument assembly tests
@@ -62,7 +67,10 @@ fn test_bind_flag_accumulates() {
     let dev1 = format!("{home}/dev1");
     let dev2 = format!("{home}/dev2");
 
-    let cmd = facade.run("image.sif").bind(&dev1, None).bind(&dev2, None);
+    let cmd = facade
+        .run("image.sif")
+        .bind(&dev1, None, None)
+        .bind(&dev2, None, None);
     let args = cmd.build_args().expect("build_args should succeed");
 
     let bind_count = args.iter().filter(|a| *a == "--bind").count();
@@ -77,7 +85,7 @@ fn test_bind_with_dest() {
     let home = std::env::var("HOME").unwrap();
     let src = format!("{home}/data");
 
-    let cmd = facade.run("image.sif").bind(&src, Some("/mnt/data"));
+    let cmd = facade.run("image.sif").bind(&src, Some("/mnt/data"), None);
     let args = cmd.build_args().expect("build_args should succeed");
 
     let bind_idx = args.iter().position(|a| a == "--bind").unwrap();
@@ -85,6 +93,28 @@ fn test_bind_with_dest() {
     assert!(
         bind_spec.ends_with("data:/mnt/data"),
         "bind spec should have src:dest format, got: {}",
+        bind_spec
+    );
+}
+
+#[test]
+fn test_bind_with_opts() {
+    let facade = Apptainer::new()
+        .expect("Apptainer::new() should succeed — apptainer is bundled at compile time");
+
+    let home = std::env::var("HOME").unwrap();
+    let src = format!("{home}/data");
+
+    let cmd = facade
+        .run("image.sif")
+        .bind(&src, Some("/mnt/data"), Some("ro"));
+    let args = cmd.build_args().expect("build_args should succeed");
+
+    let bind_idx = args.iter().position(|a| a == "--bind").unwrap();
+    let bind_spec = &args[bind_idx + 1];
+    assert!(
+        bind_spec.ends_with("data:/mnt/data:ro"),
+        "bind spec should have src:dest:opts format, got: {}",
         bind_spec
     );
 }
@@ -323,6 +353,89 @@ fn test_translate_path_outside_home() {
     }
 }
 
+/// macOS `tempfile::tempdir()` creates directories under `/var/folders/...`,
+/// which is NOT mounted in the Lima VM. This test documents that
+/// `translate_path()` correctly rejects such paths on macOS.
+#[test]
+fn test_translate_path_rejects_var_folders() {
+    let facade = Apptainer::new()
+        .expect("Apptainer::new() should succeed — apptainer is bundled at compile time");
+
+    let path = Path::new("/var/folders/T4/random123abc/T/tempdir/output.sif");
+    let result = facade.translate_path(path);
+
+    if cfg!(target_os = "macos") {
+        assert!(
+            result.is_err(),
+            "Paths under /var/folders should be rejected under Lima (not mounted in guest)"
+        );
+    } else {
+        assert_eq!(
+            result.unwrap(),
+            path,
+            "On Linux, all absolute paths should pass through unchanged"
+        );
+    }
+}
+
+/// Verifies that `translate_path()` accepts paths outside `$HOME` when they have
+/// been registered in `extra_mounts` (simulating what `ensure_host_mounts()` does).
+#[test]
+fn test_translate_path_accepts_registered_extra_mount() {
+    let mut facade = Apptainer::new()
+        .expect("Apptainer::new() should succeed — apptainer is bundled at compile time");
+
+    let mount_dir = PathBuf::from("/var/folders/T4/random123abc/T/tempdir");
+    let file_in_mount = mount_dir.join("output.sif");
+
+    if cfg!(target_os = "macos") {
+        // Before registration: should be rejected
+        assert!(
+            facade.translate_path(&file_in_mount).is_err(),
+            "Path outside $HOME should be rejected before registration"
+        );
+
+        // Register the mount directory
+        facade.extra_mounts.push(mount_dir);
+
+        // After registration: should be accepted
+        let result = facade.translate_path(&file_in_mount);
+        assert!(
+            result.is_ok(),
+            "Path under a registered extra mount should be accepted, got: {:?}",
+            result.unwrap_err()
+        );
+        assert_eq!(result.unwrap(), file_in_mount);
+    } else {
+        // On Linux, all paths pass through regardless
+        assert!(facade.translate_path(&file_in_mount).is_ok());
+    }
+}
+
+/// Verifies that `build().build_args()` rejects paths outside `$HOME` on macOS,
+/// exercising the full command-builder pipeline (not just `translate_path` directly).
+#[test]
+fn test_build_args_rejects_path_outside_home() {
+    let facade = Apptainer::new()
+        .expect("Apptainer::new() should succeed — apptainer is bundled at compile time");
+
+    let output = Path::new("/var/folders/xx/temp123/output.sif");
+    let home = std::env::var("HOME").unwrap();
+    let def = PathBuf::from(&home).join("project/test.def");
+
+    let cmd = facade.build(output, &def);
+    let result = cmd.build_args();
+
+    if cfg!(target_os = "macos") {
+        assert!(
+            result.is_err(),
+            "build_args() should reject output paths outside $HOME under Lima"
+        );
+    } else {
+        assert!(result.is_ok(), "On Linux, all paths should be accepted");
+    }
+}
+
 // ---------------------------------------------------------------------------
 // URI detection tests
 // ---------------------------------------------------------------------------
@@ -391,6 +504,7 @@ fn test_lima_instance_running_after_init() {
             let output = Command::new(limactl_path)
                 .env("LIMA_HOME", lima_home)
                 .args(["list", "--format", "{{.Status}}", "peppy"])
+                .stdin(Stdio::null())
                 .output()
                 .expect("limactl list should execute successfully");
 
@@ -404,5 +518,183 @@ fn test_lima_instance_running_after_init() {
         Backend::Native { .. } => {
             // On Linux, Lima is not used — this is expected.
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Host gateway tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_host_gateway_returns_correct_value() {
+    let facade = Apptainer::new()
+        .expect("Apptainer::new() should succeed — apptainer is bundled at compile time");
+
+    if cfg!(target_os = "macos") {
+        assert_eq!(
+            facade.host_gateway(),
+            Some("host.lima.internal"),
+            "On macOS (Lima), host_gateway() should return the Lima host gateway hostname"
+        );
+    } else {
+        assert_eq!(
+            facade.host_gateway(),
+            None,
+            "On Linux (Native), host_gateway() should return None"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Fakeroot dependency pre-flight check tests (Linux only)
+// ---------------------------------------------------------------------------
+
+#[cfg(target_os = "linux")]
+#[test]
+fn test_find_binary_returns_path_when_present() {
+    let dir = TempDir::new().expect("create temp dir");
+    let binary = dir.path().join("my_binary");
+    fs::write(&binary, "#!/bin/sh\n").expect("write fake binary");
+
+    let result = find_binary("my_binary", &[dir.path().to_path_buf()]);
+    assert_eq!(result, Some(binary));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn test_find_binary_returns_none_when_absent() {
+    let dir = TempDir::new().expect("create temp dir");
+
+    let result = find_binary("nonexistent_binary", &[dir.path().to_path_buf()]);
+    assert_eq!(result, None);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn test_check_fakeroot_deps_succeeds_when_both_present_and_setuid() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = TempDir::new().expect("create temp dir");
+
+    for name in &["newuidmap", "newgidmap"] {
+        let path = dir.path().join(name);
+        fs::write(&path, "#!/bin/sh\n").expect("write fake binary");
+        let mut perms = fs::metadata(&path).expect("read metadata").permissions();
+        perms.set_mode(0o4755);
+        fs::set_permissions(&path, perms).expect("set permissions");
+
+        // The kernel may silently strip setuid on nosetuid-mounted tmpfs.
+        let actual_mode = fs::metadata(&path)
+            .expect("read metadata")
+            .permissions()
+            .mode();
+        if actual_mode & 0o4000 == 0 {
+            eprintln!(
+                "SKIPPING: filesystem stripped setuid bit (mode: {actual_mode:#o}). \
+                 This is expected on nosetuid-mounted tmpfs."
+            );
+            return;
+        }
+    }
+
+    let result = check_fakeroot_deps(&[dir.path().to_path_buf()]);
+    assert!(
+        result.is_ok(),
+        "should succeed when both binaries are present with setuid, got: {:?}",
+        result.unwrap_err()
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn test_check_fakeroot_deps_fails_when_newuidmap_missing() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = TempDir::new().expect("create temp dir");
+
+    // Only create newgidmap, not newuidmap
+    let path = dir.path().join("newgidmap");
+    fs::write(&path, "#!/bin/sh\n").expect("write fake binary");
+    let mut perms = fs::metadata(&path).expect("read metadata").permissions();
+    perms.set_mode(0o4755);
+    fs::set_permissions(&path, perms).expect("set permissions");
+
+    let err = check_fakeroot_deps(&[dir.path().to_path_buf()])
+        .expect_err("should fail when newuidmap is missing");
+
+    match err {
+        Error::FakerootDepsNotFound { binary, details } => {
+            assert_eq!(binary, "newuidmap");
+            assert!(
+                details.contains("not found"),
+                "expected 'not found' in details, got: {details}"
+            );
+        }
+        other => panic!("expected FakerootDepsNotFound, got: {other:?}"),
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn test_check_fakeroot_deps_fails_when_newgidmap_missing() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = TempDir::new().expect("create temp dir");
+
+    // Only create newuidmap, not newgidmap
+    let path = dir.path().join("newuidmap");
+    fs::write(&path, "#!/bin/sh\n").expect("write fake binary");
+    let mut perms = fs::metadata(&path).expect("read metadata").permissions();
+    perms.set_mode(0o4755);
+    fs::set_permissions(&path, perms).expect("set permissions");
+
+    // If the kernel stripped setuid, this test would fail for the wrong reason
+    // (newuidmap found but without setuid). Skip in that case.
+    let actual_mode = fs::metadata(&path)
+        .expect("read metadata")
+        .permissions()
+        .mode();
+    if actual_mode & 0o4000 == 0 {
+        eprintln!("SKIPPING: filesystem stripped setuid bit");
+        return;
+    }
+
+    let err = check_fakeroot_deps(&[dir.path().to_path_buf()])
+        .expect_err("should fail when newgidmap is missing");
+
+    match err {
+        Error::FakerootDepsNotFound { binary, details } => {
+            assert_eq!(binary, "newgidmap");
+            assert!(
+                details.contains("not found"),
+                "expected 'not found' in details, got: {details}"
+            );
+        }
+        other => panic!("expected FakerootDepsNotFound, got: {other:?}"),
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn test_check_fakeroot_deps_fails_when_missing_setuid_bit() {
+    let dir = TempDir::new().expect("create temp dir");
+
+    for name in &["newuidmap", "newgidmap"] {
+        let path = dir.path().join(name);
+        fs::write(&path, "#!/bin/sh\n").expect("write fake binary");
+        // Mode 0755 — no setuid bit
+    }
+
+    let err = check_fakeroot_deps(&[dir.path().to_path_buf()])
+        .expect_err("should fail when setuid bit is missing");
+
+    match err {
+        Error::FakerootDepsNotFound { details, .. } => {
+            assert!(
+                details.contains("setuid"),
+                "expected 'setuid' in details, got: {details}"
+            );
+        }
+        other => panic!("expected FakerootDepsNotFound, got: {other:?}"),
     }
 }

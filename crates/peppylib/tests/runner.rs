@@ -110,7 +110,7 @@ async fn daemon_runner_succeed() {
         tag: "0.1.0",
         language: "rust",
       },
-      build: {
+      process: {
         start_cmd: ["./target/debug/test_node"]
       },
       parameters: {
@@ -254,7 +254,7 @@ async fn standalone_runner_succeed() {
         tag: "0.1.0",
         language: "rust",
       },
-      build: {
+      process: {
         start_cmd: ["./target/debug/test_node"]
       },
       parameters: {
@@ -313,7 +313,7 @@ async fn node_ready_but_not_healthy() {
         tag: "0.1.0",
         language: "rust",
       },
-      build: {
+      process: {
         start_cmd: ["./target/debug/test_node"]
       },
       parameters: {
@@ -565,7 +565,7 @@ async fn daemon_cancellation_token_cancelled_on_shutdown() {
         tag: "0.1.0",
         language: "rust",
       },
-      build: {
+      process: {
         start_cmd: ["./target/debug/test_node"]
       },
       parameters: {
@@ -699,7 +699,7 @@ async fn node_runner_exposes_messenger_and_metadata() {
         tag: "0.1.0",
         language: "rust",
       },
-      build: {
+      process: {
         start_cmd: ["./target/debug/test_node"]
       },
       parameters: {

@@ -65,6 +65,7 @@ async fn node_sync_rust_command_succeeds() {
             node_name: NodeName::new(node_name).expect("valid node name"),
             to_dir: None,
             toolchain: Toolchain::Cargo,
+            with_container: false,
         },
     }
     .execute(&node_ctx)
@@ -182,6 +183,7 @@ async fn node_sync_python_command_succeeds() {
         &node_ctx,
         NodeName::new(node_name).expect("valid node name"),
         Toolchain::Uv,
+        false,
     )
     .with_timeout(None::<Duration>)
     .build()

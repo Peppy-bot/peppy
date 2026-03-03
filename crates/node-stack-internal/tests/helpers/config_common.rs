@@ -23,7 +23,7 @@ pub fn daemon_node_config() -> NodeConfig {
                 tag: "1.0.0",
                 language: "rust",
             },
-            build: {
+            process: {
                 start_cmd: ["daemon"]
             }
         }"#,

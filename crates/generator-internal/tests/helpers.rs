@@ -30,7 +30,7 @@ pub const STUB_NODE_CONFIG: &str = r#"{
     tag: "0.1.0",
     language: "rust"
   },
-  build: {
+  process: {
     start_cmd: ["./target/release/generated_node"]
   }
 }
@@ -81,6 +81,7 @@ pub fn init_cargo_user_node(to_dir: impl AsRef<Path>) {
             .arg("--vcs")
             .arg("none")
             .current_dir(crate_dir)
+            .stdin(Stdio::null())
             .output()
             .expect("failed to invoke cargo init for user node");
     }
@@ -213,6 +214,7 @@ pub fn compile_project(dir: impl AsRef<Path>) {
         .env("CARGO_NET_OFFLINE", "true")
         .env("CARGO_TARGET_DIR", &target_dir)
         .current_dir(dir)
+        .stdin(Stdio::null())
         .output()
         .expect("failed to invoke cargo build on generated crate");
     assert!(
@@ -277,8 +279,15 @@ pub fn run_generate_peppygen_lib_test(
 
     // Generate the library
     let peppy_dirs = PeppyDirs::default();
-    generate_peppygen_lib(language, node_dir, Vec::new(), "test-hash", &peppy_dirs)
-        .expect("failed to generate library");
+    generate_peppygen_lib(
+        language,
+        node_dir,
+        Vec::new(),
+        "test-hash",
+        &peppy_dirs,
+        Default::default(),
+    )
+    .expect("failed to generate library");
 
     // Verify the generated library structure exists
     let peppygen_dir = node_dir.join(PEPPYGEN_OUTPUT_PATH);
@@ -530,7 +539,7 @@ pub const STUB_PYTHON_NODE_CONFIG: &str = r#"{
     tag: "0.1.0",
     language: "python"
   },
-  build: {
+  process: {
     start_cmd: ["uv", "run", "python", "main.py"]
   }
 }
@@ -565,6 +574,7 @@ pub fn init_python_project_venv(dir: impl AsRef<Path>) {
     let output = Command::new("uv")
         .arg("sync")
         .current_dir(dir.as_ref())
+        .stdin(Stdio::null())
         .output()
         .expect("failed to invoke uv sync on Python project");
     assert!(

@@ -1,7 +1,7 @@
 use super::*;
 
 use config::node::{ExposedAction, SubscribedAction};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::{collections::HashMap, fs};
 
 // --- Exposes examples
@@ -973,7 +973,11 @@ fn clippy_single_exposed_action_empty_goal_request() {
         .unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);
     generator
-        .build(&output_dir, &config::consts::PeppyDirs::default())
+        .build(
+            &output_dir,
+            &config::consts::PeppyDirs::default(),
+            Default::default(),
+        )
         .unwrap();
     fs::remove_file(output_config).unwrap();
 
@@ -987,6 +991,7 @@ fn clippy_single_exposed_action_empty_goal_request() {
         .arg("warnings")
         .env("CARGO_NET_OFFLINE", "true")
         .current_dir(&output_dir)
+        .stdin(Stdio::null())
         .output()
         .expect("failed to run cargo clippy on generated crate");
     assert!(
@@ -1074,7 +1079,11 @@ fn compile_lib_with_exposed_and_subscribed_actions() {
         .unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);
     generator
-        .build(&output_dir, &config::consts::PeppyDirs::default())
+        .build(
+            &output_dir,
+            &config::consts::PeppyDirs::default(),
+            Default::default(),
+        )
         .unwrap();
     fs::remove_file(output_config).unwrap();
 
@@ -1082,6 +1091,7 @@ fn compile_lib_with_exposed_and_subscribed_actions() {
         .arg("build")
         .env("CARGO_NET_OFFLINE", "true")
         .current_dir(&output_dir)
+        .stdin(Stdio::null())
         .output()
         .expect("failed to invoke cargo build on generated crate");
     assert!(
@@ -1102,6 +1112,7 @@ fn compile_lib_with_exposed_and_subscribed_actions() {
         .arg("warnings")
         .env("CARGO_NET_OFFLINE", "true")
         .current_dir(&output_dir)
+        .stdin(Stdio::null())
         .output()
         .expect("failed to run cargo clippy on generated crate");
     assert!(
@@ -1209,7 +1220,11 @@ fn clippy_subscribed_action_empty_goal_request() {
         .unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);
     generator
-        .build(&output_dir, &config::consts::PeppyDirs::default())
+        .build(
+            &output_dir,
+            &config::consts::PeppyDirs::default(),
+            Default::default(),
+        )
         .unwrap();
     fs::remove_file(output_config).unwrap();
 
@@ -1223,6 +1238,7 @@ fn clippy_subscribed_action_empty_goal_request() {
         .arg("warnings")
         .env("CARGO_NET_OFFLINE", "true")
         .current_dir(&output_dir)
+        .stdin(Stdio::null())
         .output()
         .expect("failed to run cargo clippy on generated crate");
     assert!(

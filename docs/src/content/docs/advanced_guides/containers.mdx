@@ -5,6 +5,277 @@ sidebar:
   order: 4
 ---
 
-## Introduction
+import { Tabs, TabItem } from '@astrojs/starlight/components';
 
-TODO
+Containers package a node and all of its dependencies into a single, self-contained image.
+A containerized node runs identically regardless of what is installed on the host — no more "works on my machine" issues.
+
+Use containers when you need:
+- **Portability** — ship a node to another machine without worrying about system dependencies.
+- **Reproducibility** — guarantee the same runtime environment every time.
+- **Isolation** — prevent conflicts between nodes that need different versions of the same library.
+
+PeppyOS uses [Apptainer](https://apptainer.org/) as its container runtime.
+On macOS, Apptainer runs transparently inside a [Lima](https://lima-vm.io/) virtual machine — no extra setup is needed.
+
+## Initializing a container node
+
+Pass the `--container` flag to `peppy node init`:
+
+<Tabs>
+  <TabItem label="Python">
+    ```sh
+    peppy node init --toolchain uv --container my_node
+    ```
+  </TabItem>
+  <TabItem label="Rust">
+    ```sh
+    peppy node init --toolchain cargo --container my_node
+    ```
+  </TabItem>
+</Tabs>
+
+This generates the same project scaffolding as a regular node, plus an `apptainer.def` file that describes how the container image is built.
+
+## The `peppy.json5` configuration
+
+A container node uses a `container` block instead of the usual `process` block. The two are mutually exclusive — a node is either a container node or a process node, never both.
+
+<Tabs>
+  <TabItem label="Python">
+    ```json5 title="peppy.json5"
+    {
+      schema_version: 1,
+      manifest: {
+        name: "my_node",
+        tag: "0.1.0",
+        language: "python",
+      },
+      container: {
+        def_file: "apptainer.def",
+      },
+      interfaces: {}
+    }
+    ```
+  </TabItem>
+  <TabItem label="Rust">
+    ```json5 title="peppy.json5"
+    {
+      schema_version: 1,
+      manifest: {
+        name: "my_node",
+        tag: "0.1.0",
+        language: "rust",
+      },
+      container: {
+        def_file: "apptainer.def",
+      },
+      interfaces: {}
+    }
+    ```
+  </TabItem>
+</Tabs>
+
+The `def_file` field points to the Apptainer definition file relative to the node root. You can rename or relocate it as long as `def_file` matches.
+
+Compare this with a standard process node, which defines `add_cmd` and `start_cmd` instead:
+
+<Tabs>
+  <TabItem label="Python">
+    ```json5 title="peppy.json5 (process node)"
+    {
+      schema_version: 1,
+      manifest: {
+        name: "my_node",
+        tag: "0.1.0",
+        language: "python",
+      },
+      process: {
+        add_cmd: ["uv", "sync", "--no-editable"],
+        start_cmd: ["./.venv/bin/python", "-m", "my_node"]
+      },
+      interfaces: {}
+    }
+    ```
+  </TabItem>
+  <TabItem label="Rust">
+    ```json5 title="peppy.json5 (process node)"
+    {
+      schema_version: 1,
+      manifest: {
+        name: "my_node",
+        tag: "0.1.0",
+        language: "rust",
+      },
+      process: {
+        add_cmd: ["cargo", "build", "--release"],
+        start_cmd: ["./target/release/my_node"]
+      },
+      interfaces: {}
+    }
+    ```
+  </TabItem>
+</Tabs>
+
+Container nodes don't need `add_cmd` or `start_cmd` — the definition file takes care of both building and running the node.
+
+## The `apptainer.def` file
+
+The generated definition file is a standard [Apptainer definition file](https://apptainer.org/docs/user/latest/definition_files.html).
+Here is what `peppy node init --container` generates:
+
+<Tabs>
+  <TabItem label="Python">
+    ```dockerfile title="apptainer.def"
+    Bootstrap: docker
+    From: ubuntu:24.04
+
+    %labels
+        Name my_node
+        Version 0.1.0
+
+    %environment
+        export PATH="/opt/my_node/.venv/bin:$PATH"
+
+    %files
+        . /opt/my_node
+
+    %post
+        set -eux
+
+        apt-get update
+        apt-get install -y --no-install-recommends \
+            ca-certificates curl python3 python3-venv
+        rm -rf /var/lib/apt/lists/*
+
+        curl -LsSf https://astral.sh/uv/install.sh | sh
+        export PATH="/root/.local/bin:$PATH"
+
+        cd /opt/my_node
+        uv sync --no-editable
+
+    %runscript
+        cd /opt/my_node
+        exec ./.venv/bin/python -m my_node
+    ```
+  </TabItem>
+  <TabItem label="Rust">
+    ```dockerfile title="apptainer.def"
+    Bootstrap: docker
+    From: ubuntu:24.04
+
+    %labels
+        Name my_node
+        Version 0.1.0
+
+    %environment
+        export PATH="/root/.cargo/bin:$PATH"
+
+    %files
+        . /opt/my_node
+
+    %post
+        set -eux
+
+        apt-get update
+        apt-get install -y --no-install-recommends \
+            ca-certificates curl build-essential pkg-config
+        rm -rf /var/lib/apt/lists/*
+
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+        export PATH="/root/.cargo/bin:$PATH"
+
+        cd /opt/my_node
+        cargo build --release
+
+    %runscript
+        exec /opt/my_node/target/release/my_node
+    ```
+  </TabItem>
+</Tabs>
+
+Each section serves a specific purpose:
+
+| Section | Purpose |
+|---------|---------|
+| `Bootstrap` / `From` | Base image to build from (Ubuntu 24.04 by default) |
+| `%labels` | Metadata embedded in the image |
+| `%environment` | Environment variables set when the container runs |
+| `%files` | Copies the node source into the image at `/opt/<node_name>` |
+| `%post` | Build steps — install system packages, toolchains, and compile the node |
+| `%runscript` | Entry point executed when the container starts |
+
+:::note
+The `%files` section copies the entire node directory into the container. PeppyOS automatically copies (rather than symlinks) internal libraries like `peppylib` so that they are fully available inside the image.
+:::
+
+## Adding a container node
+
+Adding a container node works the same as a regular node:
+
+```sh
+peppy node add ./my_node
+```
+
+Under the hood, PeppyOS runs `apptainer build --fakeroot` to produce a `.sif` (Singularity Image Format) file.
+This replaces the `add_cmd` step used by process nodes — the entire build happens inside the container according to the `%post` section of the definition file.
+
+The resulting `.sif` file is stored in PeppyOS's internal storage and is ready to be started.
+
+:::note
+Container builds can take longer than regular builds because they install system packages and toolchains from scratch.
+Subsequent builds reuse Docker layer caches when possible.
+:::
+
+## Starting a container node
+
+Starting a container node also uses the same command:
+
+```sh
+peppy node start my_node
+```
+
+PeppyOS runs the `.sif` image with `apptainer run`. Environment variables such as `PEPPY_RUNTIME_CONFIG` are passed into the container automatically — you don't need to configure anything beyond what a regular node requires.
+
+The container executes the `%runscript` section, which runs the compiled binary (Rust) or the Python module entry point.
+
+## macOS support
+
+On macOS, Apptainer is not natively available. PeppyOS bundles a [Lima](https://lima-vm.io/) virtual machine that runs Apptainer inside a lightweight Linux guest.
+This is handled transparently — all `peppy node` commands work identically on macOS and Linux. No additional installation or configuration is required.
+
+## Customizing the definition file
+
+The generated `apptainer.def` is a starting point. You can modify it freely to fit your needs. Common customizations include:
+
+### Adding system dependencies
+
+Add packages to the `%post` section:
+
+```dockerfile
+%post
+    apt-get update
+    apt-get install -y --no-install-recommends \
+        ca-certificates curl build-essential pkg-config \
+        libopencv-dev libudev-dev
+    rm -rf /var/lib/apt/lists/*
+```
+
+### Changing the base image
+
+Swap the `From` line to use a different base:
+
+```dockerfile
+Bootstrap: docker
+From: nvidia/cuda:12.4.0-devel-ubuntu24.04
+```
+
+### Adding environment variables
+
+Add variables to the `%environment` section so they are available at runtime:
+
+```dockerfile
+%environment
+    export PATH="/root/.cargo/bin:$PATH"
+    export RUST_LOG=info
+```

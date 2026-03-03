@@ -16,6 +16,11 @@ use peppylib::services::ready::listen_for_node_ready;
 use std::sync::Arc;
 use std::time::Duration;
 use tempfile::TempDir;
+use tokio::sync::Mutex;
+
+/// Container tests share a single Lima VM instance and must run serially
+/// to avoid concurrent limactl operations (start/stop) that cause failures.
+static CONTAINER_TEST_MUTEX: Mutex<()> = Mutex::const_new(());
 
 /// Creates a temp directory with a peppy.json5 file
 fn create_node_config_dir(peppy_json5: &str) -> TempDir {
@@ -141,7 +146,7 @@ async fn listen_for_node_start_timeout() {
                 tag: "0.1.0",
                 language: "rust",
             }},
-            build: {{
+            process: {{
                 start_cmd: ["sleep", "10"]
             }},
             parameters: {{}}
@@ -334,7 +339,7 @@ async fn listen_for_node_start_streams_stdout_and_stderr() {
                 tag: "{TARGET_NODE_TAG}",
                 language: "rust",
             }},
-            build: {{
+            process: {{
                 start_cmd: ["sh", "-c", "echo {STDOUT_MARKER}; echo {STDERR_MARKER} 1>&2; sleep 5"]
             }}
         }}"#
@@ -461,7 +466,7 @@ async fn listen_for_node_start_writes_log_file() {
                 tag: "{TARGET_NODE_TAG}",
                 language: "rust",
             }},
-            build: {{
+            process: {{
                 start_cmd: ["sh", "-c", "echo {STDOUT_MARKER}; echo {STDERR_MARKER} 1>&2; sleep 5"]
             }}
         }}"#
@@ -605,7 +610,7 @@ async fn listen_for_node_start_reports_all_missing_parameters() {
                 tag: "{TARGET_NODE_TAG}",
                 language: "rust",
             }},
-            build: {{
+            process: {{
                 start_cmd: ["echo", "test"]
             }},
             parameters: {{
@@ -737,7 +742,7 @@ async fn listen_for_node_start_reports_only_missing_parameters_when_some_provide
                 tag: "{TARGET_NODE_TAG}",
                 language: "rust",
             }},
-            build: {{
+            process: {{
                 start_cmd: ["echo", "test"]
             }},
             parameters: {{
@@ -895,7 +900,7 @@ async fn listen_for_node_start_abandoned_action_does_not_block_next_goal() {
                 tag: "{FIRST_NODE_TAG}",
                 language: "rust",
             }},
-            build: {{
+            process: {{
                 start_cmd: ["sleep", "30"]
             }}
         }}"#
@@ -929,7 +934,7 @@ async fn listen_for_node_start_abandoned_action_does_not_block_next_goal() {
                 tag: "{SECOND_NODE_TAG}",
                 language: "rust",
             }},
-            build: {{
+            process: {{
                 start_cmd: ["sleep", "30"]
             }}
         }}"#
@@ -1126,7 +1131,7 @@ async fn listen_for_node_start_uses_env_overrides_for_path() {
                 tag: "{TARGET_NODE_TAG}",
                 language: "rust",
             }},
-            build: {{
+            process: {{
                 start_cmd: ["printout", "3"]
             }},
             parameters: {{}}
@@ -1279,7 +1284,7 @@ async fn listen_for_node_start_injects_runtime_env_vars() {
                 tag: "{TARGET_NODE_TAG}",
                 language: "rust",
             }},
-            build: {{
+            process: {{
                 start_cmd: [
                     "sh",
                     "-c",
@@ -1368,12 +1373,20 @@ async fn listen_for_node_start_injects_runtime_env_vars() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_container_start_success() {
+async fn listen_for_node_start_with_container_success() {
+    let _guard = CONTAINER_TEST_MUTEX.lock().await;
+
     const TARGET_NODE_NAME: &str = "container_start_node";
     const TARGET_NODE_TAG: &str = "0.1.0";
     const TARGET_INSTANCE_ID: &str = "container_start_instance";
 
     let started = start_daemon_node_with_mock_messenger().await;
+
+    // Create a temp directory to bind-mount into the container with a test file
+    let mount_dir = tempfile::tempdir().expect("failed to create temp mount dir");
+    std::fs::write(mount_dir.path().join("mount_test.txt"), "mount_content")
+        .expect("failed to write mount test file");
+    let mount_dir_str = mount_dir.path().to_string_lossy().to_string();
 
     // Create source directory with container config and apptainer definition
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
@@ -1384,43 +1397,33 @@ async fn listen_for_node_container_start_success() {
             tag: "TARGET_NODE_TAG",
             language: "rust",
         },
-        build: {
-            container: {
-                def_file: "apptainer.def",
-            },
-            add_cmd: [
-                "${PEPPY_APPTAINER_BIN}",
-                "build",
-                "--fakeroot",
-                "${PEPPY_NODE_NAME}_${PEPPY_NODE_TAG}.sif",
-                "apptainer.def"
-            ],
-            start_cmd: [
-                "${PEPPY_APPTAINER_BIN}",
-                "run",
-                "${PEPPY_NODE_NAME}_${PEPPY_NODE_TAG}.sif",
+        container: {
+            def_file: "apptainer.def",
+            mount_paths: [
+                "MOUNT_DIR:MOUNT_DIR:ro"
             ]
         }
     }"#
     .replace("TARGET_NODE_NAME", TARGET_NODE_NAME)
-    .replace("TARGET_NODE_TAG", TARGET_NODE_TAG);
+    .replace("TARGET_NODE_TAG", TARGET_NODE_TAG)
+    .replace("MOUNT_DIR", &mount_dir_str);
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
     let apptainer_def = format!(
         r#"
 Bootstrap: docker
-From: ubuntu:24.04
+From: alpine:3.20
 
 %labels
     Name {TARGET_NODE_NAME}
     Version {TARGET_NODE_TAG}
 
-%post
-    apt-get update && apt-get install -y --no-install-recommends ca-certificates
-    apt-get clean && rm -rf /var/lib/apt/lists/*
-
 %runscript
-    echo "Running {TARGET_NODE_NAME}:{TARGET_NODE_TAG}"
+    echo "Received env var $MY_ENV_VAR"
+    if [ -f {mount_dir_str}/mount_test.txt ]; then
+        echo "Mount path verified: $(cat {mount_dir_str}/mount_test.txt)"
+    fi
+    exec sleep 300
 "#
     );
     std::fs::write(source_dir.path().join("apptainer.def"), &apptainer_def)
@@ -1486,7 +1489,9 @@ From: ubuntu:24.04
     let runtime_config_json5 =
         serde_json5::to_string(&runtime_config).expect("runtime config should serialize");
 
-    let start_response = send_node_start_and_wait(
+    let env_vars = vec![("MY_ENV_VAR".to_string(), "hello_from_peppy".to_string())];
+
+    let start_response = send_node_start_and_wait_with_env(
         &started.caller_handle,
         &started.daemon_node_name,
         &runtime_config_json5,
@@ -1497,6 +1502,7 @@ From: ubuntu:24.04
             result: Duration::from_secs(60),
         },
         None,
+        env_vars,
     )
     .await
     .expect("node_start action should complete");
@@ -1524,6 +1530,298 @@ From: ubuntu:24.04
     assert!(
         found_instance.is_some(),
         "instance should be registered in the node stack after successful start"
+    );
+
+    // Verify the goal response contains a valid log_path
+    assert!(
+        start_response.goal_response.accepted,
+        "goal should be accepted"
+    );
+    let expected_log_path = started
+        .peppy_dirs
+        .logs_dir_start()
+        .join(format!("{}.log", TARGET_INSTANCE_ID));
+    assert_eq!(
+        start_response.goal_response.log_path, expected_log_path,
+        "goal response log_path should match expected path"
+    );
+
+    // Verify the log file exists and contains expected content
+    let log_path = &start_response.goal_response.log_path;
+    assert!(log_path.exists(), "log file should exist at {:?}", log_path);
+
+    let log_content = std::fs::read_to_string(log_path).expect("should be able to read log file");
+    assert!(
+        log_content.contains("Executing apptainer run"),
+        "log file should contain the apptainer run command, got:\n{}",
+        log_content
+    );
+    assert!(
+        log_content.contains("Received env var hello_from_peppy"),
+        "log file should contain the env var output from the runscript, got:\n{}",
+        log_content
+    );
+
+    // Verify that mount_paths are logged as bind mounts
+    assert!(
+        log_content.contains("bind_mounts:"),
+        "log file should contain bind_mounts info, got:\n{}",
+        log_content
+    );
+    assert!(
+        log_content.contains(&mount_dir_str),
+        "log file should contain the mount directory path, got:\n{}",
+        log_content
+    );
+
+    // Verify the mount path was accessible inside the container
+    assert!(
+        log_content.contains("Mount path verified: mount_content"),
+        "log file should confirm mount path was accessible in container, got:\n{}",
+        log_content
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_start_container_failure_includes_stderr_in_error() {
+    let _guard = CONTAINER_TEST_MUTEX.lock().await;
+
+    const TARGET_NODE_NAME: &str = "failing_container_node";
+    const TARGET_NODE_TAG: &str = "0.1.0";
+    const TARGET_INSTANCE_ID: &str = "failing_container_instance";
+    const STDERR_MARKER: &str = "peppy_container_fatal_error_marker";
+
+    let started = start_daemon_node_with_mock_messenger().await;
+
+    // Create a container node whose runscript writes a diagnostic to stderr
+    // then exits immediately. This causes the ready signal to fail because the
+    // process dies, and the stderr output should be captured in the error.
+    let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
+    let peppy_json5 = r#"{
+        schema_version: 1,
+        manifest: {
+            name: "TARGET_NODE_NAME",
+            tag: "TARGET_NODE_TAG",
+            language: "rust",
+        },
+        container: {
+            def_file: "apptainer.def",
+        }
+    }"#
+    .replace("TARGET_NODE_NAME", TARGET_NODE_NAME)
+    .replace("TARGET_NODE_TAG", TARGET_NODE_TAG);
+    write_peppy_json5(source_dir.path(), &peppy_json5);
+
+    let apptainer_def = format!(
+        r#"
+Bootstrap: docker
+From: alpine:3.20
+
+%labels
+    Name {TARGET_NODE_NAME}
+    Version {TARGET_NODE_TAG}
+
+%runscript
+    echo "{STDERR_MARKER}" >&2
+    exit 1
+"#
+    );
+    std::fs::write(source_dir.path().join("apptainer.def"), &apptainer_def)
+        .expect("failed to write apptainer definition");
+
+    // Add the node first (builds the .sif image)
+    let add_response = send_node_add_and_wait(
+        &started.caller_handle,
+        &started.daemon_node_name,
+        source_dir.path(),
+        Duration::from_secs(30),
+        Duration::from_secs(120),
+        None,
+    )
+    .await
+    .expect("node_add should succeed");
+
+    assert!(
+        add_response.success,
+        "node_add should succeed, got error: {:?}",
+        add_response.error_message
+    );
+
+    // Do NOT set up ready/health services — the process will exit immediately
+    // which means the ready signal will fail (process died).
+
+    let runtime_config = config::runtime::RuntimeConfig::new(
+        "127.0.0.1",
+        config::consts::DEFAULT_MESSAGING_PORT,
+        config::runtime::NodeInstance {
+            instance_id: config::peppy_config::Name::new(TARGET_INSTANCE_ID).unwrap(),
+            arguments: Default::default(),
+        },
+        TARGET_NODE_NAME,
+        &started.daemon_node_name,
+    )
+    .expect("runtime config should be valid");
+
+    let runtime_config_json5 =
+        serde_json5::to_string(&runtime_config).expect("runtime config should serialize");
+
+    let start_response = send_node_start_and_wait(
+        &started.caller_handle,
+        &started.daemon_node_name,
+        &runtime_config_json5,
+        TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
+        &NodeStartTestTimeouts {
+            goal: Duration::from_secs(30),
+            result: Duration::from_secs(60),
+        },
+        None,
+    )
+    .await
+    .expect("node_start action should complete");
+
+    // The start should fail because the process exits immediately
+    assert!(
+        !start_response.result.success,
+        "node_start should fail because the container process exits immediately"
+    );
+
+    // The error message should include stderr output from the container process
+    let error_msg = start_response
+        .result
+        .error_message
+        .as_ref()
+        .expect("error_message should be present");
+    assert!(
+        error_msg.contains(STDERR_MARKER),
+        "error should include stderr from the container process, got: {}",
+        error_msg
+    );
+
+    // Verify the log file contains the streamed output
+    let log_path = &start_response.goal_response.log_path;
+    assert!(log_path.exists(), "log file should exist at {:?}", log_path);
+
+    let log_content = std::fs::read_to_string(log_path).expect("should be able to read log file");
+    assert!(
+        log_content.contains("Executing apptainer run"),
+        "log file should contain the apptainer run command, got:\n{}",
+        log_content
+    );
+    assert!(
+        log_content.contains(STDERR_MARKER),
+        "log file should contain the stderr marker from the container process, got:\n{}",
+        log_content
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_start_logs_error_on_spawn_failure() {
+    const TARGET_NODE_NAME: &str = "spawn_failure_node";
+    const TARGET_NODE_TAG: &str = "0.1.0";
+    const TARGET_INSTANCE_ID: &str = "spawn_failure_instance";
+
+    let started = start_daemon_node_with_mock_messenger().await;
+
+    // Create a process node with a start_cmd that cannot be found.
+    // This will cause command.spawn() to fail in start_node().
+    let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
+    let peppy_json5 = format!(
+        r#"{{
+            schema_version: 1,
+            manifest: {{
+                name: "{TARGET_NODE_NAME}",
+                tag: "{TARGET_NODE_TAG}",
+                language: "rust",
+            }},
+            process: {{
+                start_cmd: ["nonexistent_binary_peppy_test_xyz"]
+            }}
+        }}"#
+    );
+    write_peppy_json5(source_dir.path(), &peppy_json5);
+
+    let add_response = send_node_add_and_wait(
+        &started.caller_handle,
+        &started.daemon_node_name,
+        source_dir.path(),
+        Duration::from_secs(5),
+        Duration::from_secs(5),
+        None,
+    )
+    .await
+    .expect("node_add should succeed");
+
+    assert!(
+        add_response.success,
+        "node_add should succeed, got error: {:?}",
+        add_response.error_message
+    );
+
+    let runtime_config = RuntimeConfig::new(
+        "127.0.0.1",
+        config::consts::DEFAULT_MESSAGING_PORT,
+        NodeInstance {
+            instance_id: Name::new(TARGET_INSTANCE_ID).unwrap(),
+            arguments: Default::default(),
+        },
+        TARGET_NODE_NAME,
+        &started.daemon_node_name,
+    )
+    .expect("runtime config should be valid");
+
+    let runtime_config_json5 =
+        serde_json5::to_string(&runtime_config).expect("runtime config should serialize");
+
+    let start_response = send_node_start_and_wait(
+        &started.caller_handle,
+        &started.daemon_node_name,
+        &runtime_config_json5,
+        TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
+        &NodeStartTestTimeouts {
+            goal: Duration::from_secs(5),
+            result: Duration::from_secs(10),
+        },
+        None,
+    )
+    .await
+    .expect("node_start action should complete");
+
+    assert!(
+        !start_response.result.success,
+        "node_start should fail because the binary does not exist"
+    );
+
+    let error_msg = start_response
+        .result
+        .error_message
+        .as_ref()
+        .expect("error_message should be present");
+    assert!(
+        error_msg.contains("Failed to start node"),
+        "error should mention start failure, got: {}",
+        error_msg
+    );
+
+    // The log file should exist and contain the error — not be empty
+    let log_path = &start_response.goal_response.log_path;
+    assert!(log_path.exists(), "log file should exist at {:?}", log_path);
+
+    let log_content = std::fs::read_to_string(log_path).expect("should be able to read log file");
+    assert!(
+        !log_content.is_empty(),
+        "log file should not be empty when a start failure occurs"
+    );
+    assert!(
+        log_content.contains("[error]"),
+        "log file should contain an [error] entry, got:\n{}",
+        log_content
+    );
+    assert!(
+        log_content.contains("Failed to start node"),
+        "log file should contain the failure message, got:\n{}",
+        log_content
     );
 }
 

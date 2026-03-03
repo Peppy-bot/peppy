@@ -2,7 +2,7 @@ use super::super::stack::STACK_LAUNCH_GIT_HASH;
 use super::sync::{collect_subscribed_interfaces, generate_peppygen_for_node};
 use super::{
     checkout_repo_ref, extract_tar_zst, generate_random_id, is_supported_http_archive,
-    sanitize_repo_path,
+    sanitize_repo_path, write_error_to_log,
 };
 use crate::Result;
 use crate::encoding::{
@@ -12,6 +12,7 @@ use crate::names;
 use chrono::Local;
 use config::consts::{NODE_CONFIG_FILE, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH, PeppyDirs};
 use config::node::{NodeConfig, NodeConfigParser};
+use futures::FutureExt;
 use git2::Repository;
 use node_stack::{NodeStack, validate_dependency_specs};
 use peppylib::messaging::{
@@ -21,6 +22,7 @@ use peppylib::types::Payload;
 use peppylib::{ActionMessenger, MessengerHandle, PeppyResult};
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Write};
+use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex as StdMutex};
@@ -31,6 +33,7 @@ use tracing::debug;
 use ureq::Error as HttpError;
 use zstd::stream::write::Encoder as ZstdEncoder;
 
+use super::STDERR_TAIL_LINES;
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub async fn listen_for_node_add(
@@ -206,6 +209,18 @@ fn spawn_output_reader<R: Read + Send + 'static>(
     })
 }
 
+/// Expands `${VAR}` references in a string using the provided environment variables.
+fn expand_env_vars(s: &str, env_vars: &[(String, String)]) -> String {
+    let mut result = s.to_string();
+    for (key, value) in env_vars {
+        let pattern = format!("${{{}}}", key);
+        if result.contains(&pattern) {
+            result = result.replace(&pattern, value);
+        }
+    }
+    result
+}
+
 /// Runs the add_cmd for a node and streams output via the feedback publisher.
 /// Returns Ok(()) if add_cmd is None or executes successfully.
 async fn run_add_cmd_with_streaming(
@@ -222,6 +237,11 @@ async fn run_add_cmd_with_streaming(
     if cmd.is_empty() {
         return Err("add_cmd is empty".to_string());
     };
+
+    // Expand ${VAR} references in add_cmd strings using the injected env vars.
+    // This is necessary because multi-element commands are executed directly
+    // (not through a shell), so shell-style variable expansion doesn't happen.
+    let cmd: Vec<String> = cmd.iter().map(|s| expand_env_vars(s, env_vars)).collect();
 
     let (program, args) = if cmd.len() == 1 {
         if cfg!(windows) {
@@ -330,8 +350,9 @@ async fn run_add_cmd_with_streaming(
 /// Returns the path to the temporary directory and the list of top-level
 /// directories that were excluded from the copy. The caller is responsible
 /// for cleaning up the temporary directory.
-fn copy_node_to_temp_dir(from_dir: &Path) -> Result<(PathBuf, Vec<String>)> {
-    let temp_dir = tempfile::tempdir()?.keep();
+fn copy_node_to_temp_dir(from_dir: &Path, tmp_root: &Path) -> Result<(PathBuf, Vec<String>)> {
+    std::fs::create_dir_all(tmp_root)?;
+    let temp_dir = tempfile::TempDir::new_in(tmp_root)?.keep();
 
     debug!(
         "Copying node folder from {} to temp dir {}",
@@ -376,6 +397,179 @@ fn archive_dir_to_storage(
     std::fs::rename(&tmp_path, &archive_path)?;
 
     Ok(archive_path)
+}
+
+/// Moves the built `.sif` container image from the working directory to peppy storage.
+///
+/// The image is expected at `working_dir/{node_name}_{node_tag}.sif`, which is the
+/// conventional output path produced by `apptainer build` in the node's `add_cmd`.
+///
+/// Returns the final storage path: `<added_nodes_dir>/<node_name>_<tag>.sif`.
+fn move_sif_to_storage(
+    working_dir: &Path,
+    node_name: &str,
+    node_tag: &str,
+    peppy_dirs: &PeppyDirs,
+) -> Result<PathBuf> {
+    let sif_name = format!("{}_{}.sif", node_name, node_tag);
+    let sif_source = working_dir.join(&sif_name);
+
+    if !sif_source.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!(
+                "Expected container image not found at {}",
+                sif_source.display()
+            ),
+        )
+        .into());
+    }
+
+    let storage_dir = peppy_dirs.added_nodes_dir();
+    std::fs::create_dir_all(&storage_dir)?;
+
+    let dest_path = storage_dir.join(&sif_name);
+    let tmp_path = storage_dir.join(format!("{}.tmp", sif_name));
+
+    // Copy + rename (not rename alone) because the working dir may be on a
+    // different filesystem than storage. Matches archive_dir_to_storage pattern.
+    std::fs::copy(&sif_source, &tmp_path)?;
+    std::fs::rename(&tmp_path, &dest_path)?;
+
+    Ok(dest_path)
+}
+
+/// Builds a container image using the Apptainer facade.
+///
+/// Runs `apptainer build --fakeroot {node_name}_{node_tag}.sif {def_file}` in the
+/// working directory. Build output is streamed to both the CLI (via the feedback
+/// publisher) and the log file. On failure, the last [`STDERR_TAIL_LINES`]
+/// lines of stderr are included in the error message.
+///
+/// The resulting `.sif` file is left in `working_dir` for
+/// [`move_sif_to_storage`] to relocate.
+async fn build_container_image(
+    working_dir: &Path,
+    node_name: &str,
+    node_tag: &str,
+    def_file: &str,
+    feedback_publisher: &TopicPublisher,
+    log_file: Arc<StdMutex<File>>,
+) -> Result<()> {
+    let apptainer = tokio::task::spawn_blocking(containers::Apptainer::new)
+        .await
+        .map_err(|e| std::io::Error::other(format!("Apptainer initialization task failed: {}", e)))?
+        .map_err(|e| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("Failed to initialize Apptainer runtime: {}", e),
+            )
+        })?;
+
+    let sif_name = format!("{}_{}.sif", node_name, node_tag);
+    let output_path = working_dir.join(&sif_name);
+    let def_path = working_dir.join(def_file);
+
+    let mut cmd = apptainer
+        .build(&output_path, &def_path)
+        .fakeroot()
+        .into_std_command()
+        .map_err(|e| std::io::Error::other(format!("Failed to build apptainer command: {}", e)))?;
+
+    // Set the working directory so `%files . /opt/{name}` in the .def file
+    // copies from the node's source directory, not the daemon's cwd.
+    cmd.current_dir(working_dir);
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+    cmd.stdin(Stdio::null());
+
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| std::io::Error::other(format!("Failed to spawn apptainer build: {}", e)))?;
+
+    // Stream stdout and stderr to the log file and CLI, mirroring
+    // the pattern from `run_add_cmd_with_streaming`.
+    let (feedback_tx, mut feedback_rx) = mpsc::unbounded_channel::<FeedbackLine>();
+    let feedback_publisher = feedback_publisher.clone();
+
+    // Collect stderr lines in a ring buffer so we can include them in the error
+    // message if the build fails.
+    let stderr_tail: Arc<StdMutex<std::collections::VecDeque<String>>> = Arc::new(StdMutex::new(
+        std::collections::VecDeque::with_capacity(STDERR_TAIL_LINES),
+    ));
+    let stderr_tail_writer = Arc::clone(&stderr_tail);
+
+    let publisher_handle = tokio::spawn(async move {
+        while let Some(line) = feedback_rx.recv().await {
+            // Track recent stderr lines for diagnostics on failure.
+            if matches!(line.stream, FeedbackStream::Stderr)
+                && let Ok(mut tail) = stderr_tail_writer.lock()
+            {
+                if tail.len() == STDERR_TAIL_LINES {
+                    tail.pop_front();
+                }
+                tail.push_back(line.line.clone());
+            }
+
+            let feedback = match line.stream {
+                FeedbackStream::Stdout => NodeAddFeedback::stdout(&line.line),
+                FeedbackStream::Stderr => NodeAddFeedback::stderr(&line.line),
+            };
+            if let Ok(payload) = feedback.encode() {
+                let _ = feedback_publisher.publish(payload).await;
+            }
+        }
+    });
+
+    let mut reader_handles = Vec::new();
+
+    if let Some(stdout) = child.stdout.take() {
+        reader_handles.push(spawn_output_reader(
+            stdout,
+            feedback_tx.clone(),
+            FeedbackStream::Stdout,
+            Arc::clone(&log_file),
+        ));
+    }
+
+    if let Some(stderr) = child.stderr.take() {
+        reader_handles.push(spawn_output_reader(
+            stderr,
+            feedback_tx.clone(),
+            FeedbackStream::Stderr,
+            Arc::clone(&log_file),
+        ));
+    }
+
+    // Drop our sender so the publisher task can finish once readers are done.
+    drop(feedback_tx);
+
+    let status = tokio::task::spawn_blocking(move || child.wait())
+        .await
+        .map_err(|e| std::io::Error::other(format!("failed to wait for apptainer build: {}", e)))?
+        .map_err(|e| std::io::Error::other(format!("failed to wait for apptainer build: {}", e)))?;
+
+    // Wait for readers + publisher to drain before inspecting stderr_tail.
+    for handle in reader_handles {
+        let _ = handle.await;
+    }
+    let _ = publisher_handle.await;
+
+    if !status.success() {
+        let tail = stderr_tail
+            .lock()
+            .map(|t| t.iter().cloned().collect::<Vec<_>>())
+            .unwrap_or_default();
+
+        let mut msg = format!("apptainer build failed with status {}", status);
+        if !tail.is_empty() {
+            msg.push_str("\n\n--- stderr (last lines) ---\n");
+            msg.push_str(&tail.join("\n"));
+        }
+        return Err(std::io::Error::other(msg).into());
+    }
+
+    Ok(())
 }
 
 /// Verifies that the node directory is in sync with the currently running daemon
@@ -1065,7 +1259,10 @@ async fn handle_goal_request(
 
     debug!("Created log file for node add: {}", log_path.display());
 
-    // Process the add operation in a separate task to not block goal response
+    // Process the add operation in a separate task to not block goal response.
+    // Panics are caught via catch_unwind so the state always transitions to
+    // Completed — without this, a panic silently aborts the task and leaves
+    // the state stuck on Running, causing clients to time out.
     let state_clone = Arc::clone(&state);
     let feedback_publisher_clone = feedback_publisher.clone();
     let log_path_clone = log_path.clone();
@@ -1081,6 +1278,8 @@ async fn handle_goal_request(
             daemon_instance_id,
             peppy_dirs,
         } = action_context;
+        let log_file_for_panic = log_file.clone();
+        let log_path_for_panic = log_path_clone.clone();
         let ctx = ProcessNodeAddContext {
             messenger,
             bound_daemon_node,
@@ -1091,15 +1290,28 @@ async fn handle_goal_request(
             log_file,
             log_path: log_path_clone,
         };
-        let result = process_node_add(
+        let result = match AssertUnwindSafe(process_node_add(
             goal,
             node_config,
             source_path,
             verify_codegen_fingerprint,
             cleanup_dir,
             ctx,
-        )
-        .await;
+        ))
+        .catch_unwind()
+        .await
+        {
+            Ok(result) => result,
+            Err(panic_payload) => {
+                let msg = format!(
+                    "node_add task panicked: {}",
+                    super::panic_message(&*panic_payload)
+                );
+                tracing::error!("{}", msg);
+                write_error_to_log(&log_file_for_panic, &msg);
+                NodeAddResult::failure(log_path_for_panic, msg)
+            }
+        };
         let mut state_guard = state_clone.lock().await;
         *state_guard = NodeAddActionState::Completed { result };
     });
@@ -1206,7 +1418,9 @@ async fn process_node_add(
     let mut env_vars = match super::validate_goal_env_vars(&goal.env_vars) {
         Ok(vars) => vars,
         Err(e) => {
-            return NodeAddResult::failure(&ctx.log_path, e.to_string());
+            let msg = e.to_string();
+            write_error_to_log(&ctx.log_file, &msg);
+            return NodeAddResult::failure(&ctx.log_path, msg);
         }
     };
     let node_name = node_config.manifest.name.as_str().to_owned();
@@ -1234,23 +1448,22 @@ async fn process_node_add(
         if let Err(e) =
             config::fingerprint::verify_codegen_fingerprint(&config_path, PEPPYGEN_OUTPUT_PATH)
         {
-            return NodeAddResult::failure(
-                &ctx.log_path,
-                format!("Codegen fingerprint verification failed: {}", e),
-            );
+            let msg = format!("Codegen fingerprint verification failed: {}", e);
+            write_error_to_log(&ctx.log_file, &msg);
+            return NodeAddResult::failure(&ctx.log_path, msg);
         }
     }
 
     // Copy the node folder to a temporary working directory.
-    let (working_dir, excluded_dirs) = match copy_node_to_temp_dir(&source_path) {
-        Ok(result) => result,
-        Err(e) => {
-            return NodeAddResult::failure(
-                &ctx.log_path,
-                format!("Failed to copy node folder: {}", e),
-            );
-        }
-    };
+    let (working_dir, excluded_dirs) =
+        match copy_node_to_temp_dir(&source_path, &ctx.peppy_dirs.tmp_dir()) {
+            Ok(result) => result,
+            Err(e) => {
+                let msg = format!("Failed to copy node folder: {}", e);
+                write_error_to_log(&ctx.log_file, &msg);
+                return NodeAddResult::failure(&ctx.log_path, msg);
+            }
+        };
     // RAII guard: cleans up the temp working dir on any exit path.
     let working_dir_cleanup = CleanupDir::new(Some(working_dir.clone()));
 
@@ -1271,14 +1484,20 @@ async fn process_node_add(
         ctx.node_stack.find(name, tag).map(|e| e.config().clone())
     });
     if let Some(err) = dep_errors.into_iter().next() {
-        return NodeAddResult::failure(
-            &ctx.log_path,
-            format!("Failed to add node config: {}", err),
-        );
+        let msg = format!("Failed to add node config: {}", err);
+        write_error_to_log(&ctx.log_file, &msg);
+        return NodeAddResult::failure(&ctx.log_path, msg);
     }
 
-    // Generate the peppygen library in the working directory
+    // Generate the peppygen library in the working directory.
+    // Container builds need Copy mode because Apptainer's `%files` copies symlinks
+    // as-is — absolute symlinks to the host cache would be broken inside the container.
     let language = node_config.manifest.language;
+    let deploy_mode = if node_config.container.is_some() {
+        generator::CrateDeployMode::Copy
+    } else {
+        generator::CrateDeployMode::Symlink
+    };
     let subscribed_interfaces = collect_subscribed_interfaces(&node_config, &ctx.node_stack);
     if let Err(e) = generate_peppygen_for_node(
         language,
@@ -1286,61 +1505,91 @@ async fn process_node_add(
         subscribed_interfaces,
         &goal.git_hash,
         &ctx.peppy_dirs,
+        deploy_mode,
     ) {
-        return NodeAddResult::failure(
-            &ctx.log_path,
-            format!("Failed to generate peppygen library: {}", e),
-        );
+        let msg = format!("Failed to generate peppygen library: {}", e);
+        write_error_to_log(&ctx.log_file, &msg);
+        return NodeAddResult::failure(&ctx.log_path, msg);
     }
 
-    // Run add_cmd in the working directory with streaming output
-    if let Err(e) = run_add_cmd_with_streaming(
-        node_config.build.add_cmd.as_ref(),
-        &working_dir,
-        &env_vars,
-        &ctx.feedback_publisher,
-        Arc::clone(&ctx.log_file),
-    )
-    .await
-    {
-        return NodeAddResult::failure(&ctx.log_path, format!("add_cmd failed: {}", e));
-    }
-
-    // Archive the working directory to the peppy nodes storage.
-    let archive_path =
+    let snapshot_path = if let Some(container) = &node_config.container {
+        // Container nodes: use the Apptainer facade to build the .sif image from
+        // the definition file, then move it to storage.
+        if let Err(e) = build_container_image(
+            &working_dir,
+            &node_name,
+            &node_tag,
+            &container.def_file,
+            &ctx.feedback_publisher,
+            Arc::clone(&ctx.log_file),
+        )
+        .await
+        {
+            let msg = format!("Failed to build container image: {}", e);
+            write_error_to_log(&ctx.log_file, &msg);
+            return NodeAddResult::failure(&ctx.log_path, msg);
+        }
+        match move_sif_to_storage(&working_dir, &node_name, &node_tag, &ctx.peppy_dirs) {
+            Ok(path) => path,
+            Err(e) => {
+                let msg = format!("Failed to store container image: {}", e);
+                write_error_to_log(&ctx.log_file, &msg);
+                return NodeAddResult::failure(&ctx.log_path, msg);
+            }
+        }
+    } else {
+        // Regular nodes: run add_cmd then archive the working directory.
+        let add_cmd = node_config
+            .process
+            .as_ref()
+            .and_then(|b| b.add_cmd.as_ref());
+        if let Err(e) = run_add_cmd_with_streaming(
+            add_cmd,
+            &working_dir,
+            &env_vars,
+            &ctx.feedback_publisher,
+            Arc::clone(&ctx.log_file),
+        )
+        .await
+        {
+            let msg = format!("add_cmd failed: {}", e);
+            write_error_to_log(&ctx.log_file, &msg);
+            return NodeAddResult::failure(&ctx.log_path, msg);
+        }
         match archive_dir_to_storage(&working_dir, &node_name, &node_tag, &ctx.peppy_dirs) {
             Ok(path) => path,
             Err(e) => {
-                return NodeAddResult::failure(
-                    &ctx.log_path,
-                    format!("Failed to archive node: {}", e),
-                );
+                let msg = format!("Failed to archive node: {}", e);
+                write_error_to_log(&ctx.log_file, &msg);
+                return NodeAddResult::failure(&ctx.log_path, msg);
             }
-        };
+        }
+    };
 
     // Working dir is no longer needed; clean it up immediately.
     drop(working_dir_cleanup);
 
     if let Err(e) = shutdown_existing_instances(&node_name, &node_tag, &ctx).await {
-        std::fs::remove_file(&archive_path).ok();
-        return NodeAddResult::failure(
-            &ctx.log_path,
-            format!("Failed to shutdown existing node instances: {}", e),
-        );
+        std::fs::remove_file(&snapshot_path).ok();
+        let msg = format!("Failed to shutdown existing node instances: {}", e);
+        write_error_to_log(&ctx.log_file, &msg);
+        return NodeAddResult::failure(&ctx.log_path, msg);
     }
 
     // Add the node config to the stack
     if let Err(e) = ctx
         .node_stack
-        .push_config(node_config, false, &archive_path)
+        .push_config(node_config, false, &snapshot_path)
     {
-        std::fs::remove_file(&archive_path).ok();
-        return NodeAddResult::failure(&ctx.log_path, format!("Failed to add node config: {}", e));
+        std::fs::remove_file(&snapshot_path).ok();
+        let msg = format!("Failed to add node config: {}", e);
+        write_error_to_log(&ctx.log_file, &msg);
+        return NodeAddResult::failure(&ctx.log_path, msg);
     }
 
-    // Clean up previous snapshot if it differs from the new archive path.
+    // Clean up previous snapshot if it differs from the new one.
     if let Some(previous_snapshot_path) = previous_snapshot_path
-        && previous_snapshot_path != archive_path
+        && previous_snapshot_path != snapshot_path
     {
         let storage_dir = ctx.peppy_dirs.added_nodes_dir();
         if previous_snapshot_path.starts_with(&storage_dir) {
@@ -1356,10 +1605,10 @@ async fn process_node_add(
         "Added node {}:{} at {}",
         node_name,
         node_tag,
-        archive_path.display()
+        snapshot_path.display()
     );
 
-    NodeAddResult::success(archive_path, &ctx.log_path, node_name, node_tag)
+    NodeAddResult::success(snapshot_path, &ctx.log_path, node_name, node_tag)
 }
 
 async fn handle_cancel_request(

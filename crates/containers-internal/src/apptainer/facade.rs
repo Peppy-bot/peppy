@@ -11,6 +11,9 @@ use std::sync::Mutex;
 /// corrupting the guest installation.
 static LIMA_INIT: Mutex<()> = Mutex::new(());
 
+/// Lima hostname that resolves to the macOS host IP from inside the guest VM.
+const LIMA_HOST_GATEWAY: &str = "host.lima.internal";
+
 /// Returns `true` if the string looks like a URI reference (e.g. `docker://...`, `library://...`)
 /// rather than a filesystem path.
 pub(crate) fn is_uri(s: &str) -> bool {
@@ -55,6 +58,57 @@ pub struct Apptainer {
     pub(crate) apptainer_dir: PathBuf,
     /// Execution backend (Native on Linux, Lima on macOS).
     pub(crate) backend: Backend,
+    /// Host paths registered via `ensure_host_mounts()` that are accessible
+    /// in the Lima VM even though they are outside `$HOME`.
+    pub(crate) extra_mounts: Vec<PathBuf>,
+}
+
+/// Search for a binary by name in the given directories (typically from `$PATH`).
+#[cfg(target_os = "linux")]
+pub(crate) fn find_binary(name: &str, search_dirs: &[PathBuf]) -> Option<PathBuf> {
+    search_dirs
+        .iter()
+        .map(|dir| dir.join(name))
+        .find(|path| path.is_file())
+}
+
+/// Check that fakeroot dependencies (`newuidmap`, `newgidmap`) are available
+/// and have setuid-root permissions.
+///
+/// `apptainer build --fakeroot` requires these binaries from the `uidmap`
+/// (Debian/Ubuntu) or `shadow-utils` (Fedora/RHEL) package.  They must be
+/// installed with the setuid bit set (mode `4755`).
+#[cfg(target_os = "linux")]
+pub(crate) fn check_fakeroot_deps(search_dirs: &[PathBuf]) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    for binary in &["newuidmap", "newgidmap"] {
+        let path = find_binary(binary, search_dirs).ok_or_else(|| Error::FakerootDepsNotFound {
+            binary: (*binary).to_string(),
+            details: format!(
+                "`{binary}` not found on PATH. \
+                     Install the `uidmap` (Debian/Ubuntu) or `shadow-utils` (Fedora/RHEL) package."
+            ),
+        })?;
+
+        let metadata = std::fs::metadata(&path).map_err(|e| Error::FakerootDepsNotFound {
+            binary: (*binary).to_string(),
+            details: format!("failed to stat `{}`: {e}", path.display()),
+        })?;
+
+        let mode = metadata.permissions().mode();
+        if mode & 0o4000 == 0 {
+            return Err(Error::FakerootDepsNotFound {
+                binary: (*binary).to_string(),
+                details: format!(
+                    "`{binary}` found at {} but missing setuid bit (mode: {mode:#o}). \
+                     The binary must be installed with setuid-root permissions.",
+                    path.display()
+                ),
+            });
+        }
+    }
+    Ok(())
 }
 
 impl Apptainer {
@@ -101,6 +155,7 @@ impl Apptainer {
         let mut facade = Self {
             apptainer_dir,
             backend,
+            extra_mounts: Vec::new(),
         };
         facade.ensure_ready()?;
         Ok(facade)
@@ -116,7 +171,18 @@ impl Apptainer {
     /// on first run.
     fn ensure_ready(&mut self) -> Result<()> {
         match &mut self.backend {
-            Backend::Native { .. } => Ok(()),
+            Backend::Native { .. } => {
+                #[cfg(target_os = "linux")]
+                {
+                    let search_dirs: Vec<PathBuf> = std::env::var("PATH")
+                        .unwrap_or_default()
+                        .split(':')
+                        .map(PathBuf::from)
+                        .collect();
+                    check_fakeroot_deps(&search_dirs)?;
+                }
+                Ok(())
+            }
             Backend::Lima {
                 limactl_path,
                 lima_home,
@@ -142,6 +208,92 @@ impl Apptainer {
 
     pub fn install_dir(&self) -> &Path {
         &self.apptainer_dir
+    }
+
+    /// Returns the hostname that resolves to the host machine from inside
+    /// the execution environment.
+    ///
+    /// - `Backend::Lima`: `Some("host.lima.internal")` — Lima's built-in
+    ///   hostname for guest-to-host connectivity.
+    /// - `Backend::Native`: `None` — Apptainer shares the host network
+    ///   namespace, so `127.0.0.1` already refers to the host.
+    pub fn host_gateway(&self) -> Option<&'static str> {
+        match &self.backend {
+            Backend::Native { .. } => None,
+            Backend::Lima { .. } => Some(LIMA_HOST_GATEWAY),
+        }
+    }
+
+    /// Ensure that the given host paths are accessible inside the execution
+    /// environment.
+    ///
+    /// On Linux (`Backend::Native`): no-op — all host paths are directly
+    /// accessible.
+    ///
+    /// On macOS (`Backend::Lima`): Lima only auto-mounts `$HOME` into the
+    /// guest VM. Paths outside `$HOME` must be explicitly added to the Lima
+    /// configuration. This method updates the Lima YAML config with any
+    /// missing mounts and restarts the VM if changes were made.
+    pub fn ensure_host_mounts(&mut self, mount_src_paths: &[&str]) -> Result<()> {
+        match &self.backend {
+            Backend::Native { .. } => Ok(()),
+            Backend::Lima {
+                limactl_path,
+                lima_home,
+                ..
+            } => {
+                let home = std::env::var("HOME").map_err(|_| {
+                    Error::ConfigurationError("HOME environment variable not set".into())
+                })?;
+
+                let external_paths: Vec<&str> = mount_src_paths
+                    .iter()
+                    .filter(|p| !resolve_absolute(p).starts_with(&home))
+                    .copied()
+                    .collect();
+
+                if external_paths.is_empty() {
+                    return Ok(());
+                }
+
+                let _guard = LIMA_INIT.lock().unwrap_or_else(|e| e.into_inner());
+
+                let limactl_path = limactl_path.clone();
+                let lima_home = lima_home.clone();
+                let config_path = lima_home.join(lima::LIMA_INSTANCE).join("lima.yaml");
+
+                let modified = lima::ensure_extra_mounts(&config_path, &external_paths)?;
+                if modified {
+                    tracing::info!("Lima config updated with new mounts, restarting VM...");
+                    lima::stop_instance(&limactl_path, &lima_home, lima::LIMA_INSTANCE)?;
+                    lima::ensure_lima_instance(&limactl_path, &lima_home, lima::LIMA_TEMPLATE)?;
+                    lima::ensure_guest_userns(&limactl_path, &lima_home, lima::LIMA_INSTANCE)?;
+                    let apptainer_bin = lima::ensure_guest_apptainer(
+                        &self.apptainer_dir,
+                        &limactl_path,
+                        &lima_home,
+                        lima::LIMA_INSTANCE,
+                    )?;
+                    if let Backend::Lima {
+                        apptainer_bin: ref mut bin,
+                        ..
+                    } = self.backend
+                    {
+                        *bin = apptainer_bin;
+                    }
+                }
+
+                // Register paths so translate_path() accepts them.
+                for path_str in &external_paths {
+                    let abs = resolve_absolute(path_str);
+                    if !self.extra_mounts.contains(&abs) {
+                        self.extra_mounts.push(abs);
+                    }
+                }
+
+                Ok(())
+            }
+        }
     }
 
     /// Returns the path to the apptainer binary used for invocation.
@@ -188,7 +340,7 @@ impl Apptainer {
     /// ```no_run
     /// # let facade = containers::Apptainer::new()?;
     /// let mut child = facade.run("image.sif")
-    ///     .bind("/dev/ttyUSB0", None)
+    ///     .bind("/dev/ttyUSB0", None, None)
     ///     .env("ROS_DOMAIN_ID", "42")
     ///     .spawn()?;
     /// # Ok::<(), containers::Error>(())
@@ -260,8 +412,9 @@ impl Apptainer {
     ///
     /// When running under Lima (macOS), Lima auto-mounts the home directory (`~`)
     /// at the same absolute path inside the guest. Paths under `$HOME` are returned
-    /// unchanged. Paths outside `$HOME` cannot be accessed by the guest and produce
-    /// an error.
+    /// unchanged. Paths outside `$HOME` are accepted if they were registered via
+    /// [`ensure_host_mounts()`](Self::ensure_host_mounts); otherwise an error is
+    /// returned.
     pub(crate) fn translate_path(&self, host_path: &Path) -> Result<PathBuf> {
         // Resolve relative paths to absolute using the host CWD. This is critical
         // for Lima: `limactl shell` runs in the guest's home directory, so a
@@ -280,12 +433,21 @@ impl Apptainer {
                 })?;
 
                 if absolute_path.starts_with(&home) {
-                    Ok(absolute_path)
-                } else {
-                    Err(Error::PathNotAccessibleInVm {
-                        path: absolute_path.display().to_string(),
-                    })
+                    return Ok(absolute_path);
                 }
+
+                // Check paths registered via ensure_host_mounts().
+                if self
+                    .extra_mounts
+                    .iter()
+                    .any(|m| absolute_path.starts_with(m))
+                {
+                    return Ok(absolute_path);
+                }
+
+                Err(Error::PathNotAccessibleInVm {
+                    path: absolute_path.display().to_string(),
+                })
             }
         }
     }
@@ -368,6 +530,19 @@ impl Apptainer {
     }
 }
 
+/// Resolve a potentially relative path to an absolute one.
+///
+/// Falls back to the original path if `current_dir()` fails.
+fn resolve_absolute(path: &str) -> PathBuf {
+    if Path::new(path).is_relative() {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(path))
+            .unwrap_or_else(|_| PathBuf::from(path))
+    } else {
+        PathBuf::from(path)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // ApptainerCommand builder
 // ---------------------------------------------------------------------------
@@ -376,6 +551,7 @@ impl Apptainer {
 struct BindMount {
     src: String,
     dest: Option<String>,
+    opts: Option<String>,
 }
 
 /// The kind of apptainer subcommand being built.
@@ -404,8 +580,8 @@ enum CommandKind {
 /// # let facade = containers::Apptainer::new()?;
 /// // Mount multiple devices and set environment variables
 /// let mut child = facade.run("image.sif")
-///     .bind("/dev/ttyUSB0", None)
-///     .bind("/dev/can0", None)
+///     .bind("/dev/ttyUSB0", None, None)
+///     .bind("/dev/can0", None, None)
 ///     .env("ROS_DOMAIN_ID", "42")
 ///     .spawn()?;
 ///
@@ -413,7 +589,7 @@ enum CommandKind {
 /// let devices = vec!["/dev/ttyUSB0", "/dev/can0"];
 /// let mut cmd = facade.run("image.sif");
 /// for dev in &devices {
-///     cmd = cmd.bind(dev, None);
+///     cmd = cmd.bind(dev, None, None);
 /// }
 /// let mut child = cmd.spawn()?;
 /// # Ok::<(), containers::Error>(())
@@ -430,15 +606,17 @@ impl<'a> ApptainerCommand<'a> {
     // Named flag methods
     // -----------------------------------------------------------------------
 
-    /// Add a `--bind src[:dest]` mount.
+    /// Add a `--bind src[:dest[:opts]]` mount.
     ///
     /// The host-side `src` path is automatically translated for Lima on macOS
     /// when the command is executed. If `dest` is `None`, the container-side
-    /// path mirrors the host path.
-    pub fn bind(mut self, src: &str, dest: Option<&str>) -> Self {
+    /// path mirrors the host path. Optional `opts` (e.g. `"ro"`, `"rw"`) are
+    /// appended after the destination.
+    pub fn bind(mut self, src: &str, dest: Option<&str>, opts: Option<&str>) -> Self {
         self.bind_mounts.push(BindMount {
             src: src.to_string(),
             dest: dest.map(|d| d.to_string()),
+            opts: opts.map(|o| o.to_string()),
         });
         self
     }
@@ -452,6 +630,7 @@ impl<'a> ApptainerCommand<'a> {
             self.bind_mounts.push(BindMount {
                 src: src.to_string(),
                 dest: None,
+                opts: None,
             });
         }
         self
@@ -535,6 +714,20 @@ impl<'a> ApptainerCommand<'a> {
         cmd.spawn().map_err(Error::from)
     }
 
+    /// Build the fully-configured [`Command`] without spawning it.
+    ///
+    /// This is useful when callers need to customize stdio piping (e.g., for
+    /// async output capture via `tokio::process::Command`) or add additional
+    /// process-level configuration before spawning.
+    ///
+    /// The returned command has **no stdio overrides** — stdout, stderr, and
+    /// stdin all default to `Inherit`.
+    pub fn into_std_command(self) -> Result<Command> {
+        let args = self.build_args()?;
+        let str_args: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+        self.facade.command(&str_args)
+    }
+
     /// Run the command to completion and return its captured output.
     ///
     /// Stdout and stderr are piped (captured).
@@ -573,9 +766,10 @@ impl<'a> ApptainerCommand<'a> {
         for bind in &self.bind_mounts {
             args.push("--bind".to_string());
             let translated_src = self.facade.translate_arg(&bind.src)?;
-            match &bind.dest {
-                Some(dest) => args.push(format!("{translated_src}:{dest}")),
-                None => args.push(translated_src),
+            match (&bind.dest, &bind.opts) {
+                (Some(dest), Some(opts)) => args.push(format!("{translated_src}:{dest}:{opts}")),
+                (Some(dest), None) => args.push(format!("{translated_src}:{dest}")),
+                (None, _) => args.push(translated_src),
             }
         }
 

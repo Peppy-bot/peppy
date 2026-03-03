@@ -5,6 +5,11 @@
 struct InfoRequest {
 }
 
+struct ContainerInfo {
+    apptainerVersion @0 :Text;
+    limaVersion @1 :Text;
+}
+
 struct InfoResponse {
     uptimeSecs @0 :UInt64;
     daemonNodeName @1 :Text;
@@ -12,4 +17,5 @@ struct InfoResponse {
     hostName @3 :Text;
     nodeCount @4 :UInt32;
     gitVersion @5 :Text;
+    containerInfo @6 :ContainerInfo;
 }

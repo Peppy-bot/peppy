@@ -110,7 +110,7 @@ fn create_versioned_nodes_git_repo(to_path: impl AsRef<Path>) -> PathBuf {
                 tag: "0.1.0",
                 language: "rust",
             },
-            build: {
+            process: {
                 start_cmd: ["sleep", "10"]
             }
         }"#,
@@ -150,7 +150,7 @@ fn create_versioned_nodes_git_repo(to_path: impl AsRef<Path>) -> PathBuf {
                 tag: "0.2.0",
                 language: "rust",
             },
-            build: {
+            process: {
                 start_cmd: ["sleep", "10"]
             }
         }"#,
@@ -201,7 +201,7 @@ async fn listen_for_node_fs_add_success() {
                 tag: "{TARGET_NODE_TAG}",
                 language: "rust",
             }},
-            build: {{
+            process: {{
                 start_cmd: ["sleep", "10"]
             }}
         }}"#
@@ -270,7 +270,7 @@ async fn listen_for_node_fs_add_success() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_container_add_success() {
+async fn listen_for_node_add_with_container_success() {
     const TARGET_NODE_NAME: &str = "container_node";
     const TARGET_NODE_TAG: &str = "0.1.0";
 
@@ -285,22 +285,9 @@ async fn listen_for_node_container_add_success() {
             tag: "TARGET_NODE_TAG",
             language: "rust",
         },
-        build: {
-            container: {
-                def_file: "apptainer.def",
-            },
-            add_cmd: [
-                "${PEPPY_APPTAINER_BIN}",
-                "build",
-                "--fakeroot",
-                "${PEPPY_NODE_NAME}_${PEPPY_NODE_TAG}.sif",
-                "apptainer.def"
-            ],
-            start_cmd: [
-                "${PEPPY_APPTAINER_BIN}",
-                "run",
-                "${PEPPY_NODE_NAME}_${PEPPY_NODE_TAG}.sif",
-            ]
+        // Using `container` let `peppy` manage the node internally
+        container: {
+            def_file: "apptainer.def",
         }
     }"#
     .replace("TARGET_NODE_NAME", TARGET_NODE_NAME)
@@ -309,15 +296,11 @@ async fn listen_for_node_container_add_success() {
     let apptainer_def = format!(
         r#"
 Bootstrap: docker
-From: ubuntu:24.04
+From: alpine:3.20
 
 %labels
     Name {TARGET_NODE_NAME}
     Version {TARGET_NODE_TAG}
-
-%post
-    apt-get update && apt-get install -y --no-install-recommends ca-certificates
-    apt-get clean && rm -rf /var/lib/apt/lists/*
 
 %runscript
     echo "Running {TARGET_NODE_NAME}:{TARGET_NODE_TAG}"
@@ -380,6 +363,53 @@ From: ubuntu:24.04
         format!("{TARGET_NODE_NAME}_{TARGET_NODE_TAG}.sif"),
         "stored image should be '<node_name>_<tag>.sif', got: {}",
         file_name
+    );
+
+    // Verify the log file path is returned and points to the correct directory
+    assert!(
+        !add_result.log_path.as_os_str().is_empty(),
+        "log_path should not be empty"
+    );
+    assert!(
+        add_result.log_path.exists(),
+        "log file should exist at {:?}",
+        add_result.log_path
+    );
+
+    let log_dir = started_daemon.peppy_dirs.logs_dir_add();
+    assert!(
+        add_result.log_path.starts_with(&log_dir),
+        "log file should be in logs_dir_add(), expected to start with {:?}, got {:?}",
+        log_dir,
+        add_result.log_path
+    );
+
+    // Verify the log file name follows the expected pattern: <node_name>_<tag>_<timestamp>.log
+    let log_filename = add_result
+        .log_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .expect("should have log filename");
+    assert!(
+        log_filename.starts_with(&format!("{TARGET_NODE_NAME}_{TARGET_NODE_TAG}_")),
+        "log filename should start with '<node_name>_<tag>_', got: {}",
+        log_filename
+    );
+    assert!(
+        log_filename.ends_with(".log"),
+        "log filename should end with '.log', got: {}",
+        log_filename
+    );
+
+    // Verify that container build output was streamed to the log file.
+    // Apptainer build always writes status messages to stderr/stdout which our
+    // streaming infrastructure captures with [stdout]/[stderr] prefixes.
+    let log_content =
+        std::fs::read_to_string(&add_result.log_path).expect("should be able to read log file");
+    assert!(
+        log_content.contains("[stdout]") || log_content.contains("[stderr]"),
+        "log file should contain streamed build output with [stdout]/[stderr] prefixes, got:\n{}",
+        log_content
     );
 }
 
@@ -523,7 +553,7 @@ async fn listen_for_node_http_add_success() {
                 tag: "{TARGET_NODE_TAG}",
                 language: "rust",
             }},
-            build: {{
+            process: {{
                 start_cmd: ["sleep", "10"]
             }}
         }}"#
@@ -639,7 +669,7 @@ async fn listen_for_node_add_no_config_found() {
                 tag: "{TARGET_NODE_TAG}",
                 language: "rust",
             }},
-            build: {{
+            process: {{
                 start_cmd: ["sleep", "10"]
             }}
         }}"#
@@ -682,7 +712,7 @@ async fn listen_for_node_add_git_hash_mismatch_fails() {
             tag: "0.1.0",
             language: "rust",
         },
-        build: {
+        process: {
             start_cmd: ["sleep", "10"]
         }
     }"#;
@@ -793,9 +823,9 @@ async fn listen_for_node_add_no_start_cmd_fails() {
         add_result
             .error_message
             .as_ref()
-            .map(|msg| msg.contains("build"))
+            .map(|msg| msg.contains("process"))
             .unwrap_or(false),
-        "error message should mention build, got: {:?}",
+        "error message should mention process, got: {:?}",
         add_result.error_message
     );
 
@@ -817,7 +847,7 @@ async fn listen_for_node_add_dependency_not_resolved() {
             tag: "1.0.0",
             language: "rust",
         },
-        build: {
+        process: {
             start_cmd: ["sleep", "10"],
         },
         interfaces: {
@@ -892,7 +922,7 @@ async fn listen_for_node_add_same_node_same_tags_overwrites_when_no_dependents()
                 tag: "{NODE_TAG}",
                 language: "rust",
             }},
-            build: {{
+            process: {{
                 start_cmd: ["sleep", "10"]
             }},
             parameters: {{}}
@@ -933,7 +963,7 @@ async fn listen_for_node_add_same_node_same_tags_overwrites_when_no_dependents()
                 tag: "{NODE_TAG}",
                 language: "rust",
             }},
-            build: {{
+            process: {{
                 start_cmd: ["sleep", "10"]
             }},
             interfaces: {{
@@ -1016,7 +1046,7 @@ async fn listen_for_node_add_same_node_same_tags_fails_when_node_has_dependents(
                 tag: "{DEPENDENCY_NODE_TAG}",
                 language: "rust",
             }},
-            build: {{
+            process: {{
                 start_cmd: ["sleep", "10"]
             }},
             interfaces: {{
@@ -1054,7 +1084,7 @@ async fn listen_for_node_add_same_node_same_tags_fails_when_node_has_dependents(
                 tag: "{DEPENDENT_NODE_TAG}",
                 language: "rust",
             }},
-            build: {{
+            process: {{
                 start_cmd: ["sleep", "10"]
             }},
             interfaces: {{
@@ -1104,7 +1134,7 @@ async fn listen_for_node_add_same_node_same_tags_fails_when_node_has_dependents(
                 tag: "{DEPENDENCY_NODE_TAG}",
                 language: "rust",
             }},
-            build: {{
+            process: {{
                 start_cmd: ["sleep", "10"]
             }},
             interfaces: {{
@@ -1176,7 +1206,7 @@ async fn listen_for_node_add_same_node_different_tags_create_two_entities() {
                 tag: "1.0.0",
                 language: "rust",
             }},
-            build: {{
+            process: {{
                 start_cmd: ["sleep", "10"]
             }}
         }}"#
@@ -1208,7 +1238,7 @@ async fn listen_for_node_add_same_node_different_tags_create_two_entities() {
                 tag: "2.0.0",
                 language: "rust",
             }},
-            build: {{
+            process: {{
                 start_cmd: ["sleep", "10"]
             }}
         }}"#
@@ -1265,7 +1295,7 @@ async fn listen_for_node_add_copies_files_to_storage() {
                 tag: "{TARGET_NODE_TAG}",
                 language: "rust",
             }},
-            build: {{
+            process: {{
                 start_cmd: ["sleep", "10"]
             }}
         }}"#
@@ -1339,7 +1369,7 @@ async fn listen_for_node_add_runs_add_cmd() {
                 tag: "{TARGET_NODE_TAG}",
                 language: "rust",
             }},
-            build: {{
+            process: {{
                 add_cmd: ["touch", "{ADD_CMD_MARKER_FILE}"],
                 start_cmd: ["sleep", "10"]
             }}
@@ -1405,7 +1435,7 @@ async fn listen_for_node_add_cmd_failure_fails_add() {
                 tag: "{TARGET_NODE_TAG}",
                 language: "rust",
             }},
-            build: {{
+            process: {{
                 add_cmd: ["this_command_does_not_exist_12345"],
                 start_cmd: ["sleep", "10"]
             }}
@@ -1465,7 +1495,7 @@ async fn listen_for_node_add_cmd_nonzero_exit_fails_add() {
                 tag: "{TARGET_NODE_TAG}",
                 language: "rust",
             }},
-            build: {{
+            process: {{
                 add_cmd: ["sh", "-c", "exit 1"],
                 start_cmd: ["sleep", "10"]
             }}
@@ -1523,7 +1553,7 @@ async fn listen_for_node_add_streams_stdout_and_stderr() {
                 tag: "{TARGET_NODE_TAG}",
                 language: "rust",
             }},
-            build: {{
+            process: {{
                 add_cmd: ["sh", "-c", "echo {STDOUT_MARKER}; echo {STDERR_MARKER} 1>&2"],
                 start_cmd: ["sleep", "10"]
             }}
@@ -1583,7 +1613,7 @@ async fn listen_for_node_add_fingerprint_mismatch() {
                 tag: "{TARGET_NODE_TAG}",
                 language: "rust",
             }},
-            build: {{
+            process: {{
                 start_cmd: ["sleep", "10"]
             }}
         }}"#
@@ -1658,7 +1688,7 @@ async fn listen_for_node_add_writes_log_file() {
                 tag: "{TARGET_NODE_TAG}",
                 language: "rust",
             }},
-            build: {{
+            process: {{
                 add_cmd: ["sh", "-c", "echo {STDOUT_MARKER}; echo {STDERR_MARKER} 1>&2"],
                 start_cmd: ["sleep", "10"]
             }}
@@ -1763,7 +1793,7 @@ async fn listen_for_node_add_abandoned_action_does_not_block_next_goal() {
                 tag: "{FIRST_NODE_TAG}",
                 language: "rust",
             }},
-            build: {{
+            process: {{
                 start_cmd: ["sleep", "10"]
             }}
         }}"#
@@ -1829,7 +1859,7 @@ async fn listen_for_node_add_abandoned_action_does_not_block_next_goal() {
                 tag: "{SECOND_NODE_TAG}",
                 language: "rust",
             }},
-            build: {{
+            process: {{
                 start_cmd: ["sleep", "10"]
             }}
         }}"#
@@ -1888,7 +1918,7 @@ async fn node_add_same_node_shutdown_existing_instances() {
                 tag: "{NODE_TAG}",
                 language: "rust",
             }},
-            build: {{
+            process: {{
                 start_cmd: ["sleep", "10"]
             }}
         }}"#
@@ -2006,7 +2036,7 @@ async fn node_add_same_node_shutdown_existing_instances() {
                 tag: "{NODE_TAG}",
                 language: "rust",
             }},
-            build: {{
+            process: {{
                 start_cmd: ["sleep", "10"]
             }},
             interfaces: {{
@@ -2138,7 +2168,7 @@ async fn listen_for_node_add_uses_env_overrides_for_path() {
                 tag: "{TARGET_NODE_TAG}",
                 language: "rust",
             }},
-            build: {{
+            process: {{
                 add_cmd: ["printout {STDOUT_MARKER}; printout {STDERR_MARKER} 1>&2"],
                 start_cmd: ["sleep", "10"]
             }}
@@ -2223,7 +2253,7 @@ async fn listen_for_node_add_injects_runtime_env_vars() {
                 tag: "{TARGET_NODE_TAG}",
                 language: "rust",
             }},
-            build: {{
+            process: {{
                 add_cmd: [
                     "sh",
                     "-c",
@@ -2278,7 +2308,7 @@ async fn listen_for_node_add_fails_runs_add_cmd_on_missing_node_dependency() {
           tag: "TARGET_NODE_TAG",
           language: "rust",
         },
-        build: {
+        process: {
           add_cmd: ["sh", "-c", "touch MARKER_PATH && exit 1"],
           start_cmd: ["sleep", "10"]
         },
@@ -2365,7 +2395,7 @@ async fn listen_for_node_add_fails_on_missing_interface_even_when_dependency_exi
                 tag: "{DEPENDENCY_NODE_TAG}",
                 language: "rust",
             }},
-            build: {{
+            process: {{
                 start_cmd: ["sleep", "10"]
             }},
             interfaces: {{
@@ -2412,7 +2442,7 @@ async fn listen_for_node_add_fails_on_missing_interface_even_when_dependency_exi
           tag: "TARGET_NODE_TAG",
           language: "rust",
         },
-        build: {
+        process: {
           add_cmd: ["sh", "-c", "touch MARKER_PATH && exit 1"],
           start_cmd: ["sleep", "10"]
         },
@@ -2498,7 +2528,7 @@ async fn listen_for_node_add_reports_excluded_dirs_in_feedback() {
                 tag: "{TARGET_NODE_TAG}",
                 language: "rust",
             }},
-            build: {{
+            process: {{
                 start_cmd: ["sleep", "10"]
             }}
         }}"#
@@ -2554,4 +2584,191 @@ async fn listen_for_node_add_reports_excluded_dirs_in_feedback() {
             "{dir_name} should not be in the archive, entries: {entries:?}"
         );
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_add_container_build_failure_includes_stderr_in_error() {
+    const TARGET_NODE_NAME: &str = "broken_container_node";
+    const TARGET_NODE_TAG: &str = "0.1.0";
+
+    let started_daemon = start_daemon_node_with_mock_messenger().await;
+    let node_stack = started_daemon.node_stack.clone();
+
+    let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
+    let peppy_json5 = r#"{
+        schema_version: 1,
+        manifest: {
+            name: "TARGET_NODE_NAME",
+            tag: "TARGET_NODE_TAG",
+            language: "rust",
+        },
+        container: {
+            def_file: "apptainer.def",
+        }
+    }"#
+    .replace("TARGET_NODE_NAME", TARGET_NODE_NAME)
+    .replace("TARGET_NODE_TAG", TARGET_NODE_TAG);
+    write_peppy_json5(source_dir.path(), &peppy_json5);
+
+    // Write a deliberately broken definition file so apptainer build fails with
+    // a diagnostic message on stderr.
+    let broken_def = "\
+Bootstrap: invalid_bootstrap_agent_that_does_not_exist
+From: nowhere
+
+%runscript
+    echo broken
+";
+    std::fs::write(source_dir.path().join("apptainer.def"), broken_def)
+        .expect("failed to write broken apptainer definition");
+
+    let (feedback_tx, mut feedback_rx) = tokio::sync::mpsc::unbounded_channel::<NodeAddFeedback>();
+    let add_result = send_node_add_and_wait(
+        &started_daemon.caller_handle,
+        &started_daemon.daemon_node_name,
+        source_dir.path(),
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        Some(feedback_tx),
+    )
+    .await
+    .expect("node_add request should complete");
+
+    // The build should fail
+    assert!(
+        !add_result.success,
+        "node_add should fail with a broken def file"
+    );
+
+    // The error message should mention the container build failure
+    let error_msg = add_result
+        .error_message
+        .as_ref()
+        .expect("error_message should be present");
+    assert!(
+        error_msg.contains("Failed to build container image"),
+        "error should mention container build failure, got: {}",
+        error_msg
+    );
+
+    // The error message should include the stderr tail from apptainer so the user
+    // sees WHY the build failed, not just the exit code.
+    assert!(
+        error_msg.contains("stderr"),
+        "error should include stderr output from apptainer build, got: {}",
+        error_msg
+    );
+
+    // Node should not be in the stack
+    assert!(
+        !node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG),
+        "node should not be added when container build fails"
+    );
+
+    // Verify the log file was written and contains build output
+    assert!(
+        add_result.log_path.exists(),
+        "log file should exist even on failure: {:?}",
+        add_result.log_path
+    );
+    let log_content =
+        std::fs::read_to_string(&add_result.log_path).expect("should be able to read log file");
+    assert!(
+        log_content.contains("[stdout]") || log_content.contains("[stderr]"),
+        "log file should contain streamed build output, got:\n{}",
+        log_content
+    );
+
+    // Verify feedback was streamed to the CLI during the build
+    let mut feedback = Vec::new();
+    while let Ok(entry) = feedback_rx.try_recv() {
+        feedback.push(entry);
+    }
+    assert!(
+        !feedback.is_empty(),
+        "feedback should have been streamed during the container build"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_add_logs_error_on_spawn_failure() {
+    const TARGET_NODE_NAME: &str = "add_spawn_failure_node";
+    const TARGET_NODE_TAG: &str = "0.1.0";
+
+    let started_daemon = start_daemon_node_with_mock_messenger().await;
+    let node_stack = started_daemon.node_stack.clone();
+
+    let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
+
+    // Multi-element add_cmd with a nonexistent binary.
+    // Multi-element commands are executed directly (not via shell), so
+    // command.spawn() will fail with a "No such file or directory" error.
+    let peppy_json5 = format!(
+        r#"{{
+            schema_version: 1,
+            manifest: {{
+                name: "{TARGET_NODE_NAME}",
+                tag: "{TARGET_NODE_TAG}",
+                language: "rust",
+            }},
+            process: {{
+                add_cmd: ["nonexistent_binary_peppy_test_xyz", "--flag"],
+                start_cmd: ["sleep", "10"]
+            }}
+        }}"#
+    );
+    write_peppy_json5(source_dir.path(), &peppy_json5);
+
+    let add_result = send_node_add_and_wait(
+        &started_daemon.caller_handle,
+        &started_daemon.daemon_node_name,
+        source_dir.path(),
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        None,
+    )
+    .await
+    .expect("node_add request should complete");
+
+    assert!(!add_result.success, "node_add should fail when spawn fails");
+
+    let error_msg = add_result
+        .error_message
+        .as_ref()
+        .expect("error_message should be present");
+    assert!(
+        error_msg.contains("add_cmd failed"),
+        "error should mention add_cmd failure, got: {}",
+        error_msg
+    );
+
+    // The log file should exist and contain the error
+    assert!(
+        add_result.log_path.exists(),
+        "log file should exist at {:?}",
+        add_result.log_path
+    );
+
+    let log_content =
+        std::fs::read_to_string(&add_result.log_path).expect("should be able to read log file");
+    assert!(
+        !log_content.is_empty(),
+        "log file should not be empty when a spawn failure occurs"
+    );
+    assert!(
+        log_content.contains("[error]"),
+        "log file should contain an [error] entry, got:\n{}",
+        log_content
+    );
+    assert!(
+        log_content.contains("add_cmd failed"),
+        "log file should contain the failure message, got:\n{}",
+        log_content
+    );
+
+    // Node should not be in the stack
+    assert!(
+        !node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG),
+        "node should not be added when add_cmd fails"
+    );
 }

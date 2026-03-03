@@ -16,7 +16,7 @@ const NODE_EXAMPLE: &str = r#"
       "usb",
     ],
   },
-  build: {
+  process: {
     start_cmd: [
       "python",
       "-m",
@@ -55,7 +55,7 @@ const INVALID_PARAMETERS_NODE_EXAMPLE: &str = r#"
       "usb",
     ],
   },
-  build: {
+  process: {
     start_cmd: [
       "python",
       "-m",
@@ -97,7 +97,7 @@ const NESTED_CLASS_COLLISION_NODE_EXAMPLE: &str = r#"
       "usb",
     ],
   },
-  build: {
+  process: {
     start_cmd: [
       "python",
       "-m",
@@ -133,7 +133,7 @@ const UNSUPPORTED_PARAMETERS_VARIANT_NODE_EXAMPLE: &str = r#"
       "usb",
     ],
   },
-  build: {
+  process: {
     start_cmd: [
       "python",
       "-m",
@@ -162,7 +162,7 @@ const UNKNOWN_PARAMETER_TYPE_NODE_EXAMPLE: &str = r#"
       "usb",
     ],
   },
-  build: {
+  process: {
     start_cmd: [
       "python",
       "-m",
@@ -189,7 +189,7 @@ const UNSUPPORTED_TOP_LEVEL_PARAMETER_VARIANT_NODE_EXAMPLE: &str = r#"
       "usb",
     ],
   },
-  build: {
+  process: {
     start_cmd: [
       "python",
       "-m",
@@ -215,7 +215,11 @@ fn generate_parameters_struct() {
     let mut generator = PythonGenerator::new();
     generator.set_parameters(node_config.parameters);
     generator
-        .build(&output_dir, &config::consts::PeppyDirs::default())
+        .build(
+            &output_dir,
+            &config::consts::PeppyDirs::default(),
+            Default::default(),
+        )
         .unwrap();
 
     let parameters_file = output_dir.join("peppygen").join("parameters.py");
@@ -293,7 +297,11 @@ fn generate_parameters_struct_avoids_nested_class_name_collisions() {
     let mut generator = PythonGenerator::new();
     generator.set_parameters(node_config.parameters);
     generator
-        .build(&output_dir, &config::consts::PeppyDirs::default())
+        .build(
+            &output_dir,
+            &config::consts::PeppyDirs::default(),
+            Default::default(),
+        )
         .unwrap();
 
     let parameters_file = output_dir.join("peppygen").join("parameters.py");
@@ -335,7 +343,11 @@ fn generate_empty_parameters_struct() {
     let generator = PythonGenerator::new();
     // Don't set any parameters - use the default empty parameters
     generator
-        .build(&output_dir, &config::consts::PeppyDirs::default())
+        .build(
+            &output_dir,
+            &config::consts::PeppyDirs::default(),
+            Default::default(),
+        )
         .unwrap();
 
     let parameters_file = output_dir.join("peppygen").join("parameters.py");
@@ -404,7 +416,11 @@ fn reject_python_parameters_with_unsupported_spec_type() {
     let mut generator = PythonGenerator::new();
     generator.set_parameters(node_config.parameters);
     let err = generator
-        .build(&output_dir, &config::consts::PeppyDirs::default())
+        .build(
+            &output_dir,
+            &config::consts::PeppyDirs::default(),
+            Default::default(),
+        )
         .unwrap_err();
 
     match err {
@@ -432,7 +448,11 @@ fn reject_python_parameters_with_top_level_unsupported_spec_type() {
     let mut generator = PythonGenerator::new();
     generator.set_parameters(node_config.parameters);
     let err = generator
-        .build(&output_dir, &config::consts::PeppyDirs::default())
+        .build(
+            &output_dir,
+            &config::consts::PeppyDirs::default(),
+            Default::default(),
+        )
         .unwrap_err();
 
     match err {
@@ -458,7 +478,11 @@ fn reject_python_parameters_with_unknown_type_name() {
     let mut generator = PythonGenerator::new();
     generator.set_parameters(node_config.parameters);
     let err = generator
-        .build(&output_dir, &config::consts::PeppyDirs::default())
+        .build(
+            &output_dir,
+            &config::consts::PeppyDirs::default(),
+            Default::default(),
+        )
         .unwrap_err();
 
     match err {

@@ -9,13 +9,32 @@ mod templates;
 
 use crate::encoding::NodeSource;
 use crate::{Error, Result};
+use chrono::Local;
 use config::node::{NodeConfig, PeppygenLanguage};
 use git2::{Repository, build::CheckoutBuilder};
 use rand::RngExt;
+use std::fs::File;
+use std::io::Write;
 use std::path::{Component, Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use tar::Archive;
 use zstd::stream::read::Decoder;
+
+/// Maximum number of stderr lines to retain for error diagnostics.
+/// Used by both the `add` (container build) and `start` (node run) services.
+const STDERR_TAIL_LINES: usize = 20;
+
+/// Extract a human-readable message from a panic payload.
+/// Used by spawned task handlers to convert panics into failure results.
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "unknown panic payload".to_string()
+    }
+}
 
 /// Blocklist of dangerous env vars that could be used for code injection or process manipulation.
 /// Used by both the daemon (to reject requests) and CLI (to filter before sending).
@@ -57,6 +76,18 @@ fn validate_goal_env_vars(env_vars: &[(String, String)]) -> Result<Vec<(String, 
         result.push((key.trim().to_string(), value.clone()));
     }
     Ok(result)
+}
+
+/// Write an error message to the node's log file with a timestamp.
+///
+/// Best-effort: silently ignores lock/write failures since the error is also
+/// returned in the result encoding.
+fn write_error_to_log(log_file: &Arc<StdMutex<File>>, error_msg: &str) {
+    if let Ok(mut file) = log_file.lock() {
+        let timestamp = Local::now().format("%Y-%m-%dT%H:%M:%S%.3f");
+        let _ = writeln!(file, "[{}] [error] {}", timestamp, error_msg);
+        let _ = file.flush();
+    }
 }
 
 static SCCACHE_AVAILABLE: OnceLock<bool> = OnceLock::new();
@@ -511,5 +542,23 @@ mod tests {
         let env_vars = vec![("ld_preload".to_string(), "evil.so".to_string())];
         let err = validate_goal_env_vars(&env_vars).unwrap_err();
         assert!(err.to_string().contains("LD_PRELOAD"));
+    }
+
+    #[test]
+    fn panic_message_extracts_str_payload() {
+        let payload: Box<dyn std::any::Any + Send> = Box::new("something broke");
+        assert_eq!(panic_message(&*payload), "something broke");
+    }
+
+    #[test]
+    fn panic_message_extracts_string_payload() {
+        let payload: Box<dyn std::any::Any + Send> = Box::new(String::from("detailed error"));
+        assert_eq!(panic_message(&*payload), "detailed error");
+    }
+
+    #[test]
+    fn panic_message_handles_unknown_payload() {
+        let payload: Box<dyn std::any::Any + Send> = Box::new(42i32);
+        assert_eq!(panic_message(&*payload), "unknown panic payload");
     }
 }

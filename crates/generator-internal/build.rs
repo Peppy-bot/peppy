@@ -143,8 +143,15 @@ mod ruff_build {
 
 mod peppylib_build {
     use std::fs::File;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::process::Command;
+
+    /// Returns the platform suffix for the current host (e.g. "macos-aarch64", "linux-x86_64").
+    fn host_platform_suffix() -> String {
+        let os = std::env::var("CARGO_CFG_TARGET_OS").unwrap();
+        let arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap();
+        format!("{os}-{arch}")
+    }
 
     fn acquire_pixi_lock(lock_path: &std::path::Path) -> File {
         let lock_dir = lock_path
@@ -164,10 +171,78 @@ mod peppylib_build {
         lock_file
     }
 
+    /// Runs a pixi task and panics on failure.
+    fn run_pixi_task(peppylib_py_dir: &Path, task: &str, target_dir: &Path) {
+        let output = Command::new("sh")
+            .args([
+                "-c",
+                &format!("ulimit -n 10240 && exec pixi run -e default {task}"),
+            ])
+            .current_dir(peppylib_py_dir)
+            .env("CARGO_TARGET_DIR", target_dir)
+            .env_remove("RUSTC")
+            .env_remove("RUSTDOC")
+            .stdin(std::process::Stdio::null())
+            .output()
+            .unwrap_or_else(|e| panic!("Failed to run `pixi run {task}`: {e}"));
+
+        if !output.status.success() {
+            panic!(
+                "pixi run {task} failed for peppylib-py:\nstdout:\n{}\nstderr:\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+            );
+        }
+    }
+
+    /// Extracts `_peppylib.abi3.so` from the newest `.whl` file in the given directory.
+    ///
+    /// Maturin wheels are zip archives containing the `.so` at `peppylib/_peppylib.abi3.so`.
+    #[cfg(target_os = "macos")]
+    fn extract_so_from_wheel(wheels_dir: &Path) -> Vec<u8> {
+        let whl_path = std::fs::read_dir(wheels_dir)
+            .expect("failed to read wheels directory")
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().is_some_and(|ext| ext == "whl"))
+            .max_by_key(|e| e.metadata().ok().and_then(|m| m.modified().ok()))
+            .map(|e| e.path())
+            .expect("no .whl file found in wheels directory");
+
+        let file = File::open(&whl_path).expect("failed to open wheel file");
+        let mut archive = zip::ZipArchive::new(file).expect("failed to read wheel as zip archive");
+
+        let so_entry_name = archive
+            .file_names()
+            .find(|name| name.ends_with("_peppylib.abi3.so"))
+            .expect("wheel does not contain _peppylib.abi3.so")
+            .to_string();
+
+        let mut entry = archive
+            .by_name(&so_entry_name)
+            .expect("failed to read .so entry from wheel");
+
+        let mut buf = Vec::with_capacity(entry.size() as usize);
+        std::io::Read::read_to_end(&mut entry, &mut buf).expect("failed to extract .so from wheel");
+        buf
+    }
+
+    /// Ensures the `aarch64-unknown-linux-gnu` Rust target is installed.
+    #[cfg(target_os = "macos")]
+    fn ensure_linux_rust_target() {
+        let status = Command::new("rustup")
+            .args(["target", "add", "aarch64-unknown-linux-gnu"])
+            .status()
+            .expect("failed to run rustup target add");
+        if !status.success() {
+            panic!("rustup target add aarch64-unknown-linux-gnu failed");
+        }
+    }
+
     pub fn run() {
         let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let peppylib_py_dir = manifest_dir.join("../peppylib-py");
-        let so_path = peppylib_py_dir.join("peppylib/_peppylib.abi3.so");
+        let peppylib_dir = peppylib_py_dir.join("peppylib");
+        let so_path = peppylib_dir.join("_peppylib.abi3.so");
 
         // Rerun when peppylib-py Rust source or Cargo.toml changes
         println!("cargo:rerun-if-changed=../peppylib-py/Cargo.toml");
@@ -190,29 +265,14 @@ mod peppylib_build {
             "dev"
         };
 
-        println!("cargo:warning=Building peppylib-py native extension via pixi ({pixi_task})…");
-
         // Serialize concurrent pixi invocations to avoid "Text file busy" races
         // when multiple build scripts run pixi on the same environment.
         let lock_path = peppylib_py_dir.join(".pixi/.build.lock");
         let _pixi_lock = acquire_pixi_lock(&lock_path);
 
-        let output = Command::new("pixi")
-            .args(["run", "-e", "default", pixi_task])
-            .current_dir(&peppylib_py_dir)
-            .env("CARGO_TARGET_DIR", &target_dir)
-            .env_remove("RUSTC")
-            .env_remove("RUSTDOC")
-            .output()
-            .expect("Failed to run `pixi run` for peppylib-py");
-
-        if !output.status.success() {
-            panic!(
-                "pixi run {pixi_task} failed for peppylib-py:\nstdout:\n{}\nstderr:\n{}",
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr),
-            );
-        }
+        // 1. Build the native .so (host platform)
+        println!("cargo:warning=Building peppylib-py native extension via pixi ({pixi_task})…");
+        run_pixi_task(&peppylib_py_dir, pixi_task, &target_dir);
 
         assert!(
             so_path.exists(),
@@ -220,21 +280,73 @@ mod peppylib_build {
             so_path,
         );
 
-        // Emit env vars that change when the .so is rebuilt. This forces
-        // cargo to recompile the generator crate so rust_embed re-embeds the
-        // fresh native extension.
-        let mtime = std::fs::metadata(&so_path)
-            .and_then(|m| m.modified())
-            .expect("failed to read .so metadata")
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-        println!("cargo:rustc-env=PEPPYLIB_SO_MTIME={mtime}");
+        let host_suffix = host_platform_suffix();
 
-        // Content hash of the .so for a robust runtime cache key.
+        // 2. Rename native .so to platform-suffixed name
+        let native_so_path = peppylib_dir.join(format!("_peppylib.abi3.{host_suffix}.so"));
+        std::fs::rename(&so_path, &native_so_path).unwrap_or_else(|e| {
+            panic!(
+                "failed to rename {:?} to {:?}: {e}",
+                so_path, native_so_path
+            )
+        });
+
+        // 3. On macOS: cross-compile the Linux .so via maturin + zig.
+        //    Always use release mode for the cross-compiled .so — it's a container
+        //    deployment artifact that never needs debug symbols, and debug builds
+        //    are ~4x larger (bloating the embedded binary and container image).
+        #[cfg(target_os = "macos")]
+        {
+            let cross_pixi_task = "cross-linux-release";
+
+            println!(
+                "cargo:warning=Cross-compiling peppylib-py for linux-aarch64 via pixi ({cross_pixi_task})…"
+            );
+
+            ensure_linux_rust_target();
+            run_pixi_task(&peppylib_py_dir, cross_pixi_task, &target_dir);
+
+            // The cross-compiled wheel is written to {target_dir}/wheels/
+            let wheels_dir = target_dir.join("wheels");
+            let linux_so_bytes = extract_so_from_wheel(&wheels_dir);
+
+            let linux_so_path = peppylib_dir.join("_peppylib.abi3.linux-aarch64.so");
+            std::fs::write(&linux_so_path, &linux_so_bytes).unwrap_or_else(|e| {
+                panic!("failed to write linux .so to {:?}: {e}", linux_so_path)
+            });
+
+            // Clean up wheel files to avoid stale artifacts
+            std::fs::remove_dir_all(&wheels_dir).ok();
+        }
+
+        // Remove the original unsuffixed .so if it still exists (shouldn't after rename,
+        // but guard against partial rebuilds)
+        if so_path.exists() {
+            std::fs::remove_file(&so_path).ok();
+        }
+
+        // 4. Compute a combined hash of all platform .so files for cache invalidation
         use sha2::{Digest, Sha256};
-        let so_bytes = std::fs::read(&so_path).expect("failed to read .so for hashing");
-        let hash = Sha256::digest(&so_bytes);
+        let mut hasher = Sha256::new();
+        let mut so_files: Vec<_> = std::fs::read_dir(&peppylib_dir)
+            .expect("failed to read peppylib directory")
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                e.path()
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.starts_with("_peppylib.abi3.") && n.ends_with(".so"))
+            })
+            .map(|e| e.path())
+            .collect();
+        so_files.sort();
+        for so_file in &so_files {
+            let bytes = std::fs::read(so_file)
+                .unwrap_or_else(|e| panic!("failed to read {:?} for hashing: {e}", so_file));
+            hasher.update(so_file.file_name().unwrap().as_encoded_bytes());
+            hasher.update(&bytes);
+        }
+        let hash = hasher.finalize();
         let hex: String = hash.iter().map(|b| format!("{b:02x}")).collect();
         println!("cargo:rustc-env=PEPPYLIB_SO_HASH={}", &hex[..16]);
     }

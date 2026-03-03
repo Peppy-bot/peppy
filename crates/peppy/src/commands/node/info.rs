@@ -76,10 +76,15 @@ fn print_node_info(response: &NodeInfoResponse) {
     }
 
     // Commands
-    if let Some(add_cmd) = &config.build.add_cmd {
-        println!("Add cmd:   {}", add_cmd.join(" "));
+    if let Some(build) = &config.process {
+        if let Some(add_cmd) = &build.add_cmd {
+            println!("Add cmd:   {}", add_cmd.join(" "));
+        }
+        println!("Start cmd: {}", build.start_cmd.join(" "));
     }
-    println!("Start cmd: {}", config.build.start_cmd.join(" "));
+    if let Some(container) = &config.container {
+        println!("Container: {}", container.def_file);
+    }
 
     // Node stack status
     println!();

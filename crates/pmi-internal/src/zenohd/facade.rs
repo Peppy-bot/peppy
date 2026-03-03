@@ -58,12 +58,10 @@ impl ZenohdFacade {
 
     fn get_zenohd_binary() -> Option<String> {
         // 1) Runtime override for packaged installs / system configuration.
-        for key in ["PEPPY_ZENOHD_PATH", "ZENOHD_BINARY_PATH"] {
-            if let Ok(path) = env::var(key).map(|path| path.trim().to_string())
-                && !path.is_empty()
-            {
-                return Some(path);
-            }
+        if let Ok(path) = env::var("PEPPY_ZENOHD_PATH").map(|path| path.trim().to_string())
+            && !path.is_empty()
+        {
+            return Some(path);
         }
 
         // 2) Prefer a `zenohd` binary placed next to the current executable.
@@ -151,7 +149,7 @@ impl ZenohdFacade {
     pub fn start_router(&mut self) -> Result<()> {
         let zenohd_path = self.zenohd_path.as_ref().ok_or_else(|| {
             Error::ZenohdError(
-                "Zenohd binary not found. Install `zenohd` (or place it next to the `peppy` binary), or set PEPPY_ZENOHD_PATH/ZENOHD_BINARY_PATH."
+                "Zenohd binary not found. Install `zenohd` (or place it next to the `peppy` binary), or set PEPPY_ZENOHD_PATH."
                     .to_string(),
             )
         })?;

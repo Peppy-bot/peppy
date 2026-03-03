@@ -17,7 +17,7 @@ use peppylib::runtime::{TaskHandle, spawn};
 use peppylib::{ActionMessenger, PeppyError};
 use pmi::{Messenger, MessengerAdapter, MessengerBackend, MockAdapter};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::time::Duration;
 use tempfile::TempDir;
@@ -34,7 +34,12 @@ impl<T> Drop for AbortOnDrop<T> {
 }
 
 fn init_test_data_dir() -> (TempDir, PeppyDirs) {
-    let dir = tempfile::tempdir().expect("test data dir");
+    // Place test data under $HOME so paths are visible inside the Lima VM on macOS.
+    // Lima 2.0+ only mounts ~ into the guest; system temp (/var/folders/...) is inaccessible.
+    let home = std::env::var("HOME").expect("HOME must be set");
+    let test_tmp_root = std::path::PathBuf::from(&home).join(".peppy/test-tmp");
+    std::fs::create_dir_all(&test_tmp_root).expect("create ~/.peppy/test-tmp/");
+    let dir = TempDir::new_in(&test_tmp_root).expect("test data dir");
     let peppy_dirs = PeppyDirs::new(dir.path());
     (dir, peppy_dirs)
 }
@@ -498,6 +503,7 @@ pub fn init_test_node_project(node_name: &str, node_tag: &str, build_project: bo
         Vec::new(),
         "test-hash",
         &peppy_dirs,
+        Default::default(),
     )
     .expect("failed to generate peppygen for test node");
 
@@ -518,6 +524,7 @@ fn init_cargo_project(node_dir: &Path, crate_name: &str) {
         .arg(crate_name)
         .env("CARGO_NET_OFFLINE", "true")
         .current_dir(node_dir)
+        .stdin(Stdio::null())
         .output()
         .expect("failed to invoke `cargo init` for test node");
 
@@ -576,7 +583,7 @@ fn main() -> Result<()> {
     language: "rust",
   }},
   // Avoid `add_cmd` build step here to make the `add` tests faster
-  build: {{
+  process: {{
     add_cmd: [
         "true"
     ],
@@ -610,6 +617,7 @@ fn build_cargo_project(dir: &Path) {
         .arg("build")
         .env("CARGO_NET_OFFLINE", "true")
         .current_dir(dir)
+        .stdin(Stdio::null())
         .output()
         .expect("failed to invoke `cargo build` for test node");
 
@@ -659,6 +667,17 @@ pub async fn start_daemon_node_with_mock_messenger() -> StartedDaemonNode {
 }
 
 pub async fn start_daemon_node_with_real_messenger() -> StartedDaemonNode {
+    start_daemon_node_with_real_messenger_and_timeouts(
+        Duration::from_secs(10),
+        Duration::from_secs(30),
+    )
+    .await
+}
+
+pub async fn start_daemon_node_with_real_messenger_and_timeouts(
+    node_startup_timeout: Duration,
+    node_start_health_timeout: Duration,
+) -> StartedDaemonNode {
     let (data_dir, peppy_dirs) = init_test_data_dir();
     let mut instance = pmi::ZenohAdapter::start_router_ephemeral(DEFAULT_MESSAGING_HOST, None)
         .await
@@ -669,8 +688,6 @@ pub async fn start_daemon_node_with_real_messenger() -> StartedDaemonNode {
         .await
         .expect("failed to start zenoh session");
     let shared_messenger = Arc::new(Mutex::new(instance.take_messenger()));
-    let node_startup_timeout = Duration::from_secs(10);
-    let node_start_health_timeout = Duration::from_secs(30);
     start_daemon_node_with_messenger(
         shared_messenger,
         node_startup_timeout,

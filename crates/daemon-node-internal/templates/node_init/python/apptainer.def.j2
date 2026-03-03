@@ -1,0 +1,30 @@
+Bootstrap: docker
+From: ubuntu:24.04
+
+%labels
+    Name {{ node_name }}
+    Version {{ tag }}
+
+%environment
+    export PATH="/opt/{{ node_name }}/.venv/bin:$PATH"
+
+%files
+    . /opt/{{ node_name }}
+
+%post
+    set -eux
+
+    apt-get update
+    apt-get install -y --no-install-recommends \
+        ca-certificates curl python3 python3-venv
+    rm -rf /var/lib/apt/lists/*
+
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    export PATH="/root/.local/bin:$PATH"
+
+    cd /opt/{{ node_name }}
+    uv sync --no-editable
+
+%runscript
+    cd /opt/{{ node_name }}
+    exec ./.venv/bin/python -m {{ node_name }}

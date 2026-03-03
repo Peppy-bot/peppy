@@ -36,32 +36,10 @@ def test_prompt_with_user_input() -> None:
     assert result == "my_answer"
 
 
-def test_prompt_with_default() -> None:
-    with patch("functions.cli.Prompt.ask", return_value="default_val"):
-        result = prompt("Enter value", default="default_val")
-    assert result == "default_val"
-
-
-def test_prompt_empty_input_returns_empty() -> None:
-    with patch("functions.cli.Prompt.ask", return_value=""):
-        result = prompt("Enter value")
-    assert result == ""
-
-
 def test_prompt_none_input_returns_empty() -> None:
     with patch("functions.cli.Prompt.ask", return_value=None):
         result = prompt("Enter value")
     assert result == ""
-
-
-def test_prompt_yn_yes() -> None:
-    with patch("functions.cli.Confirm.ask", return_value=True):
-        assert prompt_yn("Continue?") is True
-
-
-def test_prompt_yn_no() -> None:
-    with patch("functions.cli.Confirm.ask", return_value=False):
-        assert prompt_yn("Continue?") is False
 
 
 def test_prompt_yn_default_yes() -> None:

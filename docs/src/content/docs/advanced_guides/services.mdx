@@ -23,7 +23,7 @@ Each service defines a `name`, an optional `request_message_format`, and an opti
     tag: "0.1.0",
     language: "rust",
   },
-  build: {
+  process: {
     add_cmd: ["cargo", "build", "--release"],
     start_cmd: ["./target/release/uvc_camera"]
   },
@@ -153,7 +153,7 @@ A node that calls a service declares its subscriptions under `interfaces.subscri
     tag: "0.1.0",
     language: "rust",
   },
-  build: {
+  process: {
     add_cmd: ["cargo", "build", "--release"],
     start_cmd: ["./target/release/robot_brain"]
   },

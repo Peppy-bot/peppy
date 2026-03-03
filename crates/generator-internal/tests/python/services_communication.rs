@@ -119,7 +119,11 @@ async fn services_communication_no_target_instance_id() {
         .unwrap();
     let output_config = copy_config_to_output(&user_node_subscriber, &output_dir_subscriber);
     generator
-        .build(&output_dir_subscriber, &test_peppy_dirs())
+        .build(
+            &output_dir_subscriber,
+            &test_peppy_dirs(),
+            Default::default(),
+        )
         .unwrap();
     fs::remove_file(output_config).unwrap();
     config::fingerprint::create_codegen_fingerprint(
@@ -179,7 +183,7 @@ if __name__ == "__main__":
     generator.add_exposed_service(&exposed_service).unwrap();
     let output_config = copy_config_to_output(&user_node_exposer, &output_dir_exposer);
     generator
-        .build(&output_dir_exposer, &test_peppy_dirs())
+        .build(&output_dir_exposer, &test_peppy_dirs(), Default::default())
         .unwrap();
     fs::remove_file(output_config).unwrap();
     config::fingerprint::create_codegen_fingerprint(
@@ -407,7 +411,11 @@ async fn services_communication_exposed_service_without_request_body() {
         .unwrap();
     let output_config = copy_config_to_output(&user_node_subscriber, &output_dir_subscriber);
     generator
-        .build(&output_dir_subscriber, &test_peppy_dirs())
+        .build(
+            &output_dir_subscriber,
+            &test_peppy_dirs(),
+            Default::default(),
+        )
         .unwrap();
     fs::remove_file(output_config).unwrap();
     config::fingerprint::create_codegen_fingerprint(
@@ -466,7 +474,7 @@ if __name__ == "__main__":
     generator.add_exposed_service(&exposed_service).unwrap();
     let output_config = copy_config_to_output(&user_node_exposer, &output_dir_exposer);
     generator
-        .build(&output_dir_exposer, &test_peppy_dirs())
+        .build(&output_dir_exposer, &test_peppy_dirs(), Default::default())
         .unwrap();
     fs::remove_file(output_config).unwrap();
     config::fingerprint::create_codegen_fingerprint(
@@ -675,7 +683,11 @@ async fn services_communication_multiple_exposed_instances_same_service_not_targ
         .unwrap();
     let output_config = copy_config_to_output(&user_node_subscriber, &output_dir_subscriber);
     generator
-        .build(&output_dir_subscriber, &test_peppy_dirs())
+        .build(
+            &output_dir_subscriber,
+            &test_peppy_dirs(),
+            Default::default(),
+        )
         .unwrap();
     fs::remove_file(output_config).unwrap();
     config::fingerprint::create_codegen_fingerprint(
@@ -735,7 +747,7 @@ if __name__ == "__main__":
     generator.add_exposed_service(&exposed_service).unwrap();
     let output_config = copy_config_to_output(&user_node_exposer1, &output_dir_exposer1);
     generator
-        .build(&output_dir_exposer1, &test_peppy_dirs())
+        .build(&output_dir_exposer1, &test_peppy_dirs(), Default::default())
         .unwrap();
     fs::remove_file(output_config).unwrap();
     config::fingerprint::create_codegen_fingerprint(
@@ -799,7 +811,7 @@ if __name__ == "__main__":
     generator.add_exposed_service(&exposed_service2).unwrap();
     let output_config = copy_config_to_output(&user_node_exposer2, &output_dir_exposer2);
     generator
-        .build(&output_dir_exposer2, &test_peppy_dirs())
+        .build(&output_dir_exposer2, &test_peppy_dirs(), Default::default())
         .unwrap();
     fs::remove_file(output_config).unwrap();
     config::fingerprint::create_codegen_fingerprint(

@@ -54,11 +54,8 @@ impl ServeCommandBuilder {
         let listening_port = extract_messaging_port();
         let adapter = match engine.as_str() {
             "zenoh" => {
-                let adapter = ZenohAdapter::with_router(
-                    ZenohNetProtocol::Tcp,
-                    config::consts::DEFAULT_MESSAGING_HOST,
-                    listening_port,
-                )?;
+                let adapter =
+                    ZenohAdapter::with_router(ZenohNetProtocol::Tcp, "0.0.0.0", listening_port)?;
                 MessengerAdapter::Zenoh(adapter)
             }
             "mock" => MessengerAdapter::Mock(MockAdapter::default()),

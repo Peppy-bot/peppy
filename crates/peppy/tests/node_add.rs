@@ -54,6 +54,7 @@ fn node_add_command_succeeds() {
             node_name: NodeName::new(node_name).expect("valid node name"),
             to_dir: None,
             toolchain: Toolchain::Cargo,
+            with_container: false,
         },
     }
     .execute(&node_ctx)
@@ -175,6 +176,7 @@ fn node_add_command_with_run_arg_succeeds() {
             node_name: NodeName::new(node_name).expect("valid node name"),
             to_dir: None,
             toolchain: Toolchain::Cargo,
+            with_container: false,
         },
     }
     .execute(&node_ctx)
@@ -319,6 +321,7 @@ fn node_add_after_failed_sync_succeeds() {
             node_name: NodeName::new(node_name).expect("valid node name"),
             to_dir: None,
             toolchain: Toolchain::Cargo,
+            with_container: false,
         },
     }
     .execute(&node_ctx)
@@ -484,6 +487,7 @@ fn node_add_same_node_shutdown_existing_instances() {
             node_name: NodeName::new(node_name).expect("valid node name"),
             to_dir: None,
             toolchain: Toolchain::Cargo,
+            with_container: false,
         },
     }
     .execute(&node_ctx)

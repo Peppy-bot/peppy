@@ -47,7 +47,7 @@ Each action defines a `goal_service`, a `feedback_topic`, and a `result_service`
     tag: "0.1.0",
     language: "rust",
   },
-  build: {
+  process: {
     add_cmd: ["cargo", "build", "--release"],
     start_cmd: ["./target/release/brain"]
   },
@@ -218,7 +218,7 @@ A node that sends goals declares its subscriptions under `interfaces.subscribes_
     tag: "0.1.0",
     language: "rust",
   },
-  build: {
+  process: {
     add_cmd: ["cargo", "build", "--release"],
     start_cmd: ["./target/release/controller"]
   },

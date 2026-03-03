@@ -1,11 +1,17 @@
-#[cfg(feature = "zenoh")]
+#[cfg(feature = "build_zenoh")]
 mod zenoh_tests {
     use bytes::Bytes;
     use pmi::{Message, MessengerBackend, PublisherQoS, SubscriberQoS, ZenohAdapter};
     use std::time::Duration;
+    use tokio::sync::Mutex;
 
     const INSTANCE_ID: &str = "test-instance";
     const DAEMON_NODE: &str = "test-daemon";
+
+    /// Each test spawns a zenohd process. Under parallel execution the combined
+    /// startup load can cause transient handshake failures.  Serializing with a
+    /// mutex eliminates the flakiness without adding time-based probes.
+    static ZENOH_SERIAL: Mutex<()> = Mutex::const_new(());
 
     /// Creates a valid key expression with the expected format for TopicMessage.
     /// Format: target_daemon/caller_daemon/target_instance/caller_instance/topic
@@ -25,6 +31,7 @@ mod zenoh_tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn test_publish_before_start_session_fails() {
+        let _lock = ZENOH_SERIAL.lock().await;
         let mut instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
             .await
             .expect("Failed to start zenohd process");
@@ -46,6 +53,7 @@ mod zenoh_tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_basic_publish_subscribe() {
+        let _lock = ZENOH_SERIAL.lock().await;
         let mut instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
             .await
             .expect("Failed to start zenohd process");
@@ -84,6 +92,7 @@ mod zenoh_tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_multiple_topics() {
+        let _lock = ZENOH_SERIAL.lock().await;
         let mut instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
             .await
             .expect("Failed to start zenohd process");
@@ -140,6 +149,7 @@ mod zenoh_tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_multiple_messages_same_topic() {
+        let _lock = ZENOH_SERIAL.lock().await;
         let mut instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
             .await
             .expect("Failed to start zenohd process");
@@ -194,6 +204,7 @@ mod zenoh_tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_late_subscription() {
+        let _lock = ZENOH_SERIAL.lock().await;
         let mut instance = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
             .await
             .expect("Failed to start zenohd process");
@@ -244,6 +255,7 @@ mod zenoh_tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn test_with_router_creates_adapter_with_router() {
+        let _lock = ZENOH_SERIAL.lock().await;
         use pmi::{Messenger, MessengerAdapter, ZenohNetProtocol};
 
         // Reserve a port first to ensure we have an available one
@@ -273,6 +285,7 @@ mod zenoh_tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_connect_to_existing_router() {
+        let _lock = ZENOH_SERIAL.lock().await;
         use pmi::{Messenger, MessengerAdapter, ZenohNetProtocol};
 
         // Start a router using start_router_ephemeral
@@ -328,6 +341,7 @@ mod zenoh_tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn test_start_router_ephemeral_with_specific_port() {
+        let _lock = ZENOH_SERIAL.lock().await;
         // Reserve a port first to ensure we have an available one
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let port = listener.local_addr().unwrap().port();

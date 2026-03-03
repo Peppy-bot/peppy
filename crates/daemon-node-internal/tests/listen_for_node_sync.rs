@@ -14,7 +14,7 @@ fn write_node_config(node_dir: &Path, peppy_json5: &str) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_generate_success() {
+async fn listen_for_node_sync_success() {
     let started_daemon = start_daemon_node_with_mock_messenger().await;
 
     let node_dir = tempdir().expect("failed to create temp node directory");
@@ -27,7 +27,7 @@ async fn listen_for_node_generate_success() {
                 tag: "0.1.0",
                 language: "rust",
             },
-            build: {
+            process: {
                 start_cmd: ["sleep", "10"]
             }
         }"#,
@@ -43,11 +43,11 @@ async fn listen_for_node_generate_success() {
             Duration::from_secs(5),
         )
         .await
-        .expect("node_generate request should complete");
+        .expect("node_sync request should complete");
 
     assert!(
         response.success,
-        "node_generate should succeed, got error: {}",
+        "node_sync should succeed, got error: {}",
         response.error_message
     );
 
@@ -97,7 +97,7 @@ async fn listen_for_node_generate_success() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_generate_missing_node_root_dir_fails() {
+async fn listen_for_node_sync_missing_node_root_dir_fails() {
     let started_daemon = start_daemon_node_with_mock_messenger().await;
 
     let response = NodeSyncRequest::new("", common::TEST_GIT_HASH)
@@ -109,9 +109,9 @@ async fn listen_for_node_generate_missing_node_root_dir_fails() {
             Duration::from_secs(5),
         )
         .await
-        .expect("node_generate request should complete");
+        .expect("node_sync request should complete");
 
-    assert!(!response.success, "node_generate should fail");
+    assert!(!response.success, "node_sync should fail");
     assert!(
         response.error_message.contains("Missing `node_root_dir`"),
         "error should mention missing node_root_dir, got: {}",
@@ -120,7 +120,7 @@ async fn listen_for_node_generate_missing_node_root_dir_fails() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_generate_node_root_dir_does_not_exist_fails() {
+async fn listen_for_node_sync_node_root_dir_does_not_exist_fails() {
     let started_daemon = start_daemon_node_with_mock_messenger().await;
 
     let tmp = tempdir().expect("failed to create temp directory");
@@ -140,9 +140,9 @@ async fn listen_for_node_generate_node_root_dir_does_not_exist_fails() {
             Duration::from_secs(5),
         )
         .await
-        .expect("node_generate request should complete");
+        .expect("node_sync request should complete");
 
-    assert!(!response.success, "node_generate should fail");
+    assert!(!response.success, "node_sync should fail");
     assert!(
         response
             .error_message
@@ -153,7 +153,7 @@ async fn listen_for_node_generate_node_root_dir_does_not_exist_fails() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_generate_node_root_dir_is_not_a_directory_fails() {
+async fn listen_for_node_sync_node_root_dir_is_not_a_directory_fails() {
     let started_daemon = start_daemon_node_with_mock_messenger().await;
 
     let tmp = tempdir().expect("failed to create temp directory");
@@ -169,9 +169,9 @@ async fn listen_for_node_generate_node_root_dir_is_not_a_directory_fails() {
             Duration::from_secs(5),
         )
         .await
-        .expect("node_generate request should complete");
+        .expect("node_sync request should complete");
 
-    assert!(!response.success, "node_generate should fail");
+    assert!(!response.success, "node_sync should fail");
     assert!(
         response
             .error_message
@@ -182,7 +182,7 @@ async fn listen_for_node_generate_node_root_dir_is_not_a_directory_fails() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_generate_missing_peppy_json5_fails() {
+async fn listen_for_node_sync_missing_peppy_json5_fails() {
     let started_daemon = start_daemon_node_with_mock_messenger().await;
 
     let node_dir = tempdir().expect("failed to create temp node directory");
@@ -198,9 +198,9 @@ async fn listen_for_node_generate_missing_peppy_json5_fails() {
             Duration::from_secs(5),
         )
         .await
-        .expect("node_generate request should complete");
+        .expect("node_sync request should complete");
 
-    assert!(!response.success, "node_generate should fail");
+    assert!(!response.success, "node_sync should fail");
     assert!(
         response
             .error_message
@@ -222,7 +222,7 @@ async fn listen_for_node_generate_missing_peppy_json5_fails() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_generate_invalid_peppy_json5_fails() {
+async fn listen_for_node_sync_invalid_peppy_json5_fails() {
     let started_daemon = start_daemon_node_with_mock_messenger().await;
 
     let node_dir = tempdir().expect("failed to create temp node directory");
@@ -239,9 +239,9 @@ async fn listen_for_node_generate_invalid_peppy_json5_fails() {
             Duration::from_secs(5),
         )
         .await
-        .expect("node_generate request should complete");
+        .expect("node_sync request should complete");
 
-    assert!(!response.success, "node_generate should fail");
+    assert!(!response.success, "node_sync should fail");
     assert!(
         response
             .error_message
@@ -257,12 +257,12 @@ async fn listen_for_node_generate_invalid_peppy_json5_fails() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_generate_missing_dependency_fails() {
+async fn listen_for_node_sync_missing_dependency_fails() {
     let started_daemon = start_daemon_node_with_mock_messenger().await;
 
     let node_dir = tempdir().expect("failed to create temp node directory");
     // The node subscribes to `video_stream` from `uvc_camera:0.1.0`, but this node doesn't exist in the node stack
-    // so the generation fails since it can't generate the Rust interfaces
+    // so the generation fails since it can't sync the Rust interfaces
     write_node_config(
         node_dir.path(),
         r#"
@@ -274,7 +274,7 @@ async fn listen_for_node_generate_missing_dependency_fails() {
                 language: "rust",
                 labels: ["brain"],
             },
-            build: {
+            process: {
                 add_cmd: ["cargo", "build", "--release"],
                 start_cmd: ["./target/release/my_robot_brain"],
             },
@@ -311,9 +311,9 @@ async fn listen_for_node_generate_missing_dependency_fails() {
             Duration::from_secs(5),
         )
         .await
-        .expect("node_generate request should complete");
+        .expect("node_sync request should complete");
 
-    assert!(!response.success, "node_generate should fail");
+    assert!(!response.success, "node_sync should fail");
     assert!(
         response.error_message.contains(
             "my_robot_brain:0.1.0 depends on `uvc_camera:0.1.0`, but it does not exist in the stack"
@@ -330,7 +330,7 @@ async fn listen_for_node_generate_missing_dependency_fails() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_generate_multiple_missing_dependencies_fails() {
+async fn listen_for_node_sync_multiple_missing_dependencies_fails() {
     let started_daemon = start_daemon_node_with_mock_messenger().await;
 
     let node_dir = tempdir().expect("failed to create temp node directory");
@@ -347,7 +347,7 @@ async fn listen_for_node_generate_multiple_missing_dependencies_fails() {
                 language: "rust",
                 labels: ["brain"],
             },
-            build: {
+            process: {
                 add_cmd: ["cargo", "build", "--release"],
                 start_cmd: ["./target/release/my_robot_brain"],
             },
@@ -402,9 +402,9 @@ async fn listen_for_node_generate_multiple_missing_dependencies_fails() {
             Duration::from_secs(5),
         )
         .await
-        .expect("node_generate request should complete");
+        .expect("node_sync request should complete");
 
-    assert!(!response.success, "node_generate should fail");
+    assert!(!response.success, "node_sync should fail");
     // The error message should contain all three unique missing dependencies
     assert!(
         response.error_message.contains("uvc_camera:0.1.0"),
@@ -442,7 +442,7 @@ async fn listen_for_node_generate_multiple_missing_dependencies_fails() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_generate_generates_rust_interfaces() {
+async fn listen_for_node_sync_generates_rust_interfaces() {
     let started_daemon = start_daemon_node_with_mock_messenger().await;
 
     let uvc_camera_node_dir = tempdir().expect("failed to create temp node directory");
@@ -457,7 +457,7 @@ async fn listen_for_node_generate_generates_rust_interfaces() {
                 language: "rust",
                 labels: ["camera"],
             },
-            build: {
+            process: {
                 add_cmd: ["true"],
                 start_cmd: ["sleep", "10"],
             },
@@ -506,11 +506,11 @@ async fn listen_for_node_generate_generates_rust_interfaces() {
                 Duration::from_secs(5),
             )
             .await
-            .expect("node_generate request should complete");
+            .expect("node_sync request should complete");
 
     assert!(
         uvc_camera_response.success,
-        "uvc_camera node_generate should succeed, got error: {}",
+        "uvc_camera node_sync should succeed, got error: {}",
         uvc_camera_response.error_message
     );
 
@@ -550,7 +550,7 @@ async fn listen_for_node_generate_generates_rust_interfaces() {
                 language: "rust",
                 labels: ["brain"],
             },
-            build: {
+            process: {
                 add_cmd: ["true"],
                 start_cmd: ["sleep", "10"],
             },
@@ -586,11 +586,11 @@ async fn listen_for_node_generate_generates_rust_interfaces() {
             Duration::from_secs(5),
         )
         .await
-        .expect("node_generate request should complete");
+        .expect("node_sync request should complete");
 
     assert!(
         brain_response.success,
-        "my_robot_brain node_generate should succeed, got error: {}",
+        "my_robot_brain node_sync should succeed, got error: {}",
         brain_response.error_message
     );
 
@@ -651,7 +651,7 @@ async fn listen_for_node_generate_generates_rust_interfaces() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_generate_generates_rust_subscribed_service_interfaces() {
+async fn listen_for_node_sync_generates_rust_subscribed_service_interfaces() {
     let started_daemon = start_daemon_node_with_mock_messenger().await;
 
     let uvc_camera_node_dir = tempdir().expect("failed to create temp node directory");
@@ -666,7 +666,7 @@ async fn listen_for_node_generate_generates_rust_subscribed_service_interfaces()
                 language: "rust",
                 labels: ["camera"],
             },
-            build: {
+            process: {
                 add_cmd: ["true"],
                 start_cmd: ["sleep", "10"],
             },
@@ -699,11 +699,11 @@ async fn listen_for_node_generate_generates_rust_subscribed_service_interfaces()
                 Duration::from_secs(5),
             )
             .await
-            .expect("node_generate request should complete");
+            .expect("node_sync request should complete");
 
     assert!(
         uvc_camera_response.success,
-        "uvc_camera node_generate should succeed, got error: {}",
+        "uvc_camera node_sync should succeed, got error: {}",
         uvc_camera_response.error_message
     );
 
@@ -741,7 +741,7 @@ async fn listen_for_node_generate_generates_rust_subscribed_service_interfaces()
                 language: "rust",
                 labels: ["brain"],
             },
-            build: {
+            process: {
                 add_cmd: ["true"],
                 start_cmd: ["sleep", "10"],
             },
@@ -776,11 +776,11 @@ async fn listen_for_node_generate_generates_rust_subscribed_service_interfaces()
             Duration::from_secs(5),
         )
         .await
-        .expect("node_generate request should complete");
+        .expect("node_sync request should complete");
 
     assert!(
         brain_response.success,
-        "my_robot_brain node_generate should succeed, got error: {}",
+        "my_robot_brain node_sync should succeed, got error: {}",
         brain_response.error_message
     );
 
@@ -803,7 +803,7 @@ async fn listen_for_node_generate_generates_rust_subscribed_service_interfaces()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_generate_generates_rust_subscribed_topic_interfaces() {
+async fn listen_for_node_sync_generates_rust_subscribed_topic_interfaces() {
     let started_daemon = start_daemon_node_with_mock_messenger().await;
 
     let uvc_camera_node_dir = tempdir().expect("failed to create temp node directory");
@@ -818,7 +818,7 @@ async fn listen_for_node_generate_generates_rust_subscribed_topic_interfaces() {
                 language: "rust",
                 labels: ["camera"],
             },
-            build: {
+            process: {
                 add_cmd: ["true"],
                 start_cmd: ["sleep", "10"],
             },
@@ -853,11 +853,11 @@ async fn listen_for_node_generate_generates_rust_subscribed_topic_interfaces() {
                 Duration::from_secs(5),
             )
             .await
-            .expect("node_generate request should complete");
+            .expect("node_sync request should complete");
 
     assert!(
         uvc_camera_response.success,
-        "uvc_camera node_generate should succeed, got error: {}",
+        "uvc_camera node_sync should succeed, got error: {}",
         uvc_camera_response.error_message
     );
 
@@ -895,7 +895,7 @@ async fn listen_for_node_generate_generates_rust_subscribed_topic_interfaces() {
                 language: "rust",
                 labels: ["brain"],
             },
-            build: {
+            process: {
                 add_cmd: ["true"],
                 start_cmd: ["sleep", "10"],
             },
@@ -930,11 +930,11 @@ async fn listen_for_node_generate_generates_rust_subscribed_topic_interfaces() {
             Duration::from_secs(5),
         )
         .await
-        .expect("node_generate request should complete");
+        .expect("node_sync request should complete");
 
     assert!(
         brain_response.success,
-        "my_robot_brain node_generate should succeed, got error: {}",
+        "my_robot_brain node_sync should succeed, got error: {}",
         brain_response.error_message
     );
 
@@ -957,7 +957,7 @@ async fn listen_for_node_generate_generates_rust_subscribed_topic_interfaces() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_generate_generates_rust_subscribed_action_interfaces() {
+async fn listen_for_node_sync_generates_rust_subscribed_action_interfaces() {
     let started_daemon = start_daemon_node_with_mock_messenger().await;
 
     let action_server_node_dir = tempdir().expect("failed to create temp node directory");
@@ -972,7 +972,7 @@ async fn listen_for_node_generate_generates_rust_subscribed_action_interfaces() 
                 language: "rust",
                 labels: ["brain"],
             },
-            build: {
+            process: {
                 add_cmd: ["true"],
                 start_cmd: ["sleep", "10"],
             },
@@ -1013,11 +1013,11 @@ async fn listen_for_node_generate_generates_rust_subscribed_action_interfaces() 
                 Duration::from_secs(5),
             )
             .await
-            .expect("node_generate request should complete");
+            .expect("node_sync request should complete");
 
     assert!(
         action_server_response.success,
-        "brain node_generate should succeed, got error: {}",
+        "brain node_sync should succeed, got error: {}",
         action_server_response.error_message
     );
 
@@ -1055,7 +1055,7 @@ async fn listen_for_node_generate_generates_rust_subscribed_action_interfaces() 
                 language: "rust",
                 labels: ["controller"],
             },
-            build: {
+            process: {
                 add_cmd: ["true"],
                 start_cmd: ["sleep", "10"],
             },
@@ -1091,11 +1091,11 @@ async fn listen_for_node_generate_generates_rust_subscribed_action_interfaces() 
                 Duration::from_secs(5),
             )
             .await
-            .expect("node_generate request should complete");
+            .expect("node_sync request should complete");
 
     assert!(
         controller_response.success,
-        "controller node_generate should succeed, got error: {}",
+        "controller node_sync should succeed, got error: {}",
         controller_response.error_message
     );
 
@@ -1118,7 +1118,7 @@ async fn listen_for_node_generate_generates_rust_subscribed_action_interfaces() 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_generate_generates_rust_parameters() {
+async fn listen_for_node_sync_generates_rust_parameters() {
     let started_daemon = start_daemon_node_with_mock_messenger().await;
 
     let node_dir = tempdir().expect("failed to create temp node directory");
@@ -1133,7 +1133,7 @@ async fn listen_for_node_generate_generates_rust_parameters() {
                 language: "rust",
                 labels: ["camera"],
             },
-            build: {
+            process: {
                 add_cmd: ["true"],
                 start_cmd: ["sleep", "10"],
             },
@@ -1167,11 +1167,11 @@ async fn listen_for_node_generate_generates_rust_parameters() {
             Duration::from_secs(5),
         )
         .await
-        .expect("node_generate request should complete");
+        .expect("node_sync request should complete");
 
     assert!(
         response.success,
-        "uvc_camera node_generate should succeed, got error: {}",
+        "uvc_camera node_sync should succeed, got error: {}",
         response.error_message
     );
 
@@ -1234,7 +1234,7 @@ async fn listen_for_node_generate_generates_rust_parameters() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_generate_deletes_previous_peppy_folder() {
+async fn listen_for_node_sync_deletes_previous_peppy_folder() {
     let started_daemon = start_daemon_node_with_mock_messenger().await;
 
     let node_dir = tempdir().expect("failed to create temp node directory");
@@ -1247,7 +1247,7 @@ async fn listen_for_node_generate_deletes_previous_peppy_folder() {
                 tag: "0.1.0",
                 language: "rust",
             },
-            build: {
+            process: {
                 start_cmd: ["sleep", "10"]
             }
         }"#,
@@ -1263,11 +1263,11 @@ async fn listen_for_node_generate_deletes_previous_peppy_folder() {
             Duration::from_secs(5),
         )
         .await
-        .expect("node_generate request should complete");
+        .expect("node_sync request should complete");
 
     assert!(
         response.success,
-        "first node_generate should succeed, got error: {}",
+        "first node_sync should succeed, got error: {}",
         response.error_message
     );
 
@@ -1297,11 +1297,11 @@ async fn listen_for_node_generate_deletes_previous_peppy_folder() {
             Duration::from_secs(5),
         )
         .await
-        .expect("node_generate request should complete");
+        .expect("node_sync request should complete");
 
     assert!(
         response.success,
-        "second node_generate should succeed, got error: {}",
+        "second node_sync should succeed, got error: {}",
         response.error_message
     );
 

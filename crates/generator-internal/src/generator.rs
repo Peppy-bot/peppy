@@ -1,4 +1,4 @@
-mod common;
+pub mod common;
 pub(crate) mod naming;
 #[cfg(test)]
 #[macro_use]
@@ -40,6 +40,7 @@ pub fn generate_peppygen_lib(
     subscribed_interfaces: Vec<DeploymentInterface>,
     git_hash: &str,
     peppy_dirs: &PeppyDirs,
+    deploy_mode: common::CrateDeployMode,
 ) -> Result<()> {
     let node_dir = node_dir.as_ref();
     let node_config_path = node_dir.join(NODE_CONFIG_FILE);
@@ -67,7 +68,13 @@ pub fn generate_peppygen_lib(
         PeppygenLanguage::Rust => {
             let mut rust_generator = RustGenerator::new();
             rust_generator.set_parameters(node_config.parameters);
-            generate_with_backend(rust_generator, &interfaces, &output_dir, peppy_dirs)?;
+            generate_with_backend(
+                rust_generator,
+                &interfaces,
+                &output_dir,
+                peppy_dirs,
+                deploy_mode,
+            )?;
             // Create or update the node's Cargo.toml with peppygen dependency
             ensure_node_cargo_toml(node_dir, node_config.manifest.name.as_str())?;
             Ok(())
@@ -75,7 +82,13 @@ pub fn generate_peppygen_lib(
         PeppygenLanguage::Python => {
             let mut python_generator = PythonGenerator::new();
             python_generator.set_parameters(node_config.parameters);
-            generate_with_backend(python_generator, &interfaces, &output_dir, peppy_dirs)
+            generate_with_backend(
+                python_generator,
+                &interfaces,
+                &output_dir,
+                peppy_dirs,
+                deploy_mode,
+            )
         }
     };
 
@@ -124,6 +137,7 @@ fn generate_with_backend<B>(
     interfaces: &[DeploymentInterface],
     output_dir: &Path,
     peppy_dirs: &PeppyDirs,
+    deploy_mode: common::CrateDeployMode,
 ) -> Result<()>
 where
     B: LanguageGenerator,
@@ -131,7 +145,7 @@ where
     for interface in interfaces {
         interface.register_with(&mut backend)?;
     }
-    backend.build(output_dir, peppy_dirs)
+    backend.build(output_dir, peppy_dirs, deploy_mode)
 }
 
 /// Creates or updates the node's Cargo.toml with the peppygen and peppylib dependencies.

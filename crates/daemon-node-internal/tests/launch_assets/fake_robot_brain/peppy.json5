@@ -9,7 +9,7 @@
       "brain"
     ],
   },
-  build: {
+  process: {
     add_cmd: [
       "true"
     ],

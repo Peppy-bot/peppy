@@ -46,6 +46,7 @@ fn node_cargo_init_command_success() {
             node_name: NodeName::new(node_name).expect("valid node name"),
             toolchain: Toolchain::Cargo,
             to_dir: None,
+            with_container: false,
         },
     }
     .execute(&node_ctx)
@@ -93,6 +94,88 @@ fn node_cargo_init_command_success() {
 }
 
 #[test]
+fn node_cargo_init_with_container_generates_apptainer_def() {
+    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
+    let serve = rt
+        .block_on(ServeCommandEmulation::with_mock())
+        .expect("failed to start mock serve emulation");
+
+    let node_dir = tempfile::tempdir().expect("failed to create temp dir for node");
+    let node_name = "test_node";
+
+    let node_ctx = Arc::new(
+        AppContext::with_messenger(node_dir.path(), serve.messenger())
+            .with_daemon_state_file(serve.daemon_state_path()),
+    );
+
+    let log_capture = LogCapture::new();
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .without_time()
+        .with_writer(log_capture.clone())
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+
+    NodeCommand {
+        command: NodeCommands::Init {
+            node_name: NodeName::new(node_name).expect("valid node name"),
+            toolchain: Toolchain::Cargo,
+            to_dir: None,
+            with_container: true,
+        },
+    }
+    .execute(&node_ctx)
+    .expect("node create command should succeed");
+
+    let created_node_dir = node_dir.path().join(node_name);
+    assert!(
+        created_node_dir.join("apptainer.def").exists(),
+        "apptainer.def should exist when --with-container is set"
+    );
+}
+
+#[test]
+fn node_cargo_init_without_container_omits_apptainer_def() {
+    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
+    let serve = rt
+        .block_on(ServeCommandEmulation::with_mock())
+        .expect("failed to start mock serve emulation");
+
+    let node_dir = tempfile::tempdir().expect("failed to create temp dir for node");
+    let node_name = "test_node";
+
+    let node_ctx = Arc::new(
+        AppContext::with_messenger(node_dir.path(), serve.messenger())
+            .with_daemon_state_file(serve.daemon_state_path()),
+    );
+
+    let log_capture = LogCapture::new();
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .without_time()
+        .with_writer(log_capture.clone())
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+
+    NodeCommand {
+        command: NodeCommands::Init {
+            node_name: NodeName::new(node_name).expect("valid node name"),
+            toolchain: Toolchain::Cargo,
+            to_dir: None,
+            with_container: false,
+        },
+    }
+    .execute(&node_ctx)
+    .expect("node create command should succeed");
+
+    let created_node_dir = node_dir.path().join(node_name);
+    assert!(
+        !created_node_dir.join("apptainer.def").exists(),
+        "apptainer.def should not exist when --with-container is not set"
+    );
+}
+
+#[test]
 fn node_uv_init_command_success() {
     let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
     let serve = rt
@@ -126,6 +209,7 @@ fn node_uv_init_command_success() {
         &node_ctx,
         NodeName::new(node_name).expect("valid node name"),
         Toolchain::Uv,
+        false,
     )
     .with_timeout(None::<Duration>)
     .build()

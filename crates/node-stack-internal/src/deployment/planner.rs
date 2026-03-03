@@ -15,7 +15,7 @@ use config::{AnyType, FSNodeConfigIndex, TypeMismatch};
 pub enum PlannedDeployment {
     Resolved {
         deployment: Deployment,
-        node: NodeConfig,
+        node: Box<NodeConfig>,
     },
     Unresolved {
         deployment: Deployment,
@@ -25,7 +25,10 @@ pub enum PlannedDeployment {
 
 impl PlannedDeployment {
     pub fn resolved(deployment: Deployment, node: NodeConfig) -> Self {
-        Self::Resolved { deployment, node }
+        Self::Resolved {
+            deployment,
+            node: Box::new(node),
+        }
     }
 
     pub fn unresolved(deployment: Deployment, error: Error) -> Self {
@@ -44,7 +47,7 @@ impl PlannedDeployment {
 
     pub fn node(&self) -> Option<&NodeConfig> {
         match self {
-            Self::Resolved { node, .. } => Some(node),
+            Self::Resolved { node, .. } => Some(node.as_ref()),
             Self::Unresolved { .. } => None,
         }
     }
