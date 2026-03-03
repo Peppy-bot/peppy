@@ -1325,6 +1325,15 @@ fn start_container_node(
     // Collect all bind mounts (runtime config + user-specified mount_paths).
     let binds = collect_container_binds(&runtime_config_path, mount_paths);
 
+    // Ensure host-side source directories exist for user-specified bind mounts.
+    // Skip binds[0] (runtime config file) — its parent dir is already created above.
+    for bind in &binds[1..] {
+        let src = std::path::Path::new(&bind.src);
+        if !src.exists() {
+            std::fs::create_dir_all(src)?;
+        }
+    }
+
     // Ensure host paths outside $HOME are accessible in the Lima VM.
     // Skip binds[0] (runtime config) — it's always under $HOME.
     if binds.len() > 1 {

@@ -1582,6 +1582,161 @@ From: alpine:3.20
     );
 }
 
+/// Verifies that `start_container_node` auto-creates host-side mount source
+/// directories that do not yet exist, so Apptainer bind mounts succeed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_start_with_container_creates_missing_mount_dir() {
+    let _guard = CONTAINER_TEST_MUTEX.lock().await;
+
+    const TARGET_NODE_NAME: &str = "container_mount_create_node";
+    const TARGET_NODE_TAG: &str = "0.1.0";
+    const TARGET_INSTANCE_ID: &str = "container_mount_create_instance";
+
+    let started = start_daemon_node_with_mock_messenger().await;
+
+    // Use a non-existent subdirectory inside a temp dir as the mount source.
+    // The framework should auto-create it before invoking Apptainer.
+    let parent_dir = tempfile::tempdir().expect("failed to create temp parent dir");
+    let mount_dir = parent_dir.path().join("nonexistent_subdir");
+    assert!(!mount_dir.exists(), "mount dir should not exist yet");
+    let mount_dir_str = mount_dir.to_string_lossy().to_string();
+
+    // Create source directory with container config and apptainer definition
+    let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
+    let peppy_json5 = r#"{
+        schema_version: 1,
+        manifest: {
+            name: "TARGET_NODE_NAME",
+            tag: "TARGET_NODE_TAG",
+            language: "rust",
+        },
+        container: {
+            def_file: "apptainer.def",
+            mount_paths: [
+                "MOUNT_DIR:MOUNT_DIR:rw"
+            ]
+        }
+    }"#
+    .replace("TARGET_NODE_NAME", TARGET_NODE_NAME)
+    .replace("TARGET_NODE_TAG", TARGET_NODE_TAG)
+    .replace("MOUNT_DIR", &mount_dir_str);
+    write_peppy_json5(source_dir.path(), &peppy_json5);
+
+    let apptainer_def = format!(
+        r#"
+Bootstrap: docker
+From: alpine:3.20
+
+%labels
+    Name {TARGET_NODE_NAME}
+    Version {TARGET_NODE_TAG}
+
+%runscript
+    if [ -d {mount_dir_str} ]; then
+        echo "Mount dir exists inside container"
+    fi
+    exec sleep 300
+"#
+    );
+    std::fs::write(source_dir.path().join("apptainer.def"), &apptainer_def)
+        .expect("failed to write apptainer definition");
+
+    // Add the node first (container add flow)
+    let add_response = send_node_add_and_wait(
+        &started.caller_handle,
+        &started.daemon_node_name,
+        source_dir.path(),
+        Duration::from_secs(30),
+        Duration::from_secs(120),
+        None,
+    )
+    .await
+    .expect("node_add should succeed");
+
+    assert!(
+        add_response.success,
+        "node_add should succeed, got error: {:?}",
+        add_response.error_message
+    );
+
+    // Set up ready/health services for the container instance
+    let node_messenger = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
+    let _ready_task = AbortOnDrop(
+        listen_for_node_ready(
+            &node_messenger,
+            &started.daemon_node_name,
+            TARGET_INSTANCE_ID,
+            TARGET_NODE_NAME,
+        )
+        .await
+        .expect("node ready service should start"),
+    );
+    let _health_task = AbortOnDrop(
+        listen_for_node_health(
+            &node_messenger,
+            &started.daemon_node_name,
+            TARGET_INSTANCE_ID,
+            TARGET_NODE_NAME,
+        )
+        .await
+        .expect("node health service should start"),
+    );
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let runtime_config = RuntimeConfig::new(
+        "127.0.0.1",
+        config::consts::DEFAULT_MESSAGING_PORT,
+        NodeInstance {
+            instance_id: Name::new(TARGET_INSTANCE_ID).unwrap(),
+            arguments: Default::default(),
+        },
+        TARGET_NODE_NAME,
+        &started.daemon_node_name,
+    )
+    .expect("runtime config should be valid");
+
+    let runtime_config_json5 =
+        serde_json5::to_string(&runtime_config).expect("runtime config should serialize");
+
+    let start_response = send_node_start_and_wait(
+        &started.caller_handle,
+        &started.daemon_node_name,
+        &runtime_config_json5,
+        TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
+        &NodeStartTestTimeouts {
+            goal: Duration::from_secs(30),
+            result: Duration::from_secs(60),
+        },
+        None,
+    )
+    .await
+    .expect("node_start action should complete");
+
+    // The start should succeed — the framework should have auto-created the mount dir.
+    assert!(
+        start_response.result.success,
+        "node_start should succeed (mount dir auto-created), got error: {:?}",
+        start_response.result.error_message
+    );
+
+    // Verify the host-side directory was created by the framework.
+    assert!(
+        mount_dir.exists(),
+        "mount dir should have been auto-created on the host"
+    );
+
+    // Verify the mount was accessible inside the container.
+    let log_path = &start_response.goal_response.log_path;
+    let log_content = std::fs::read_to_string(log_path).expect("should be able to read log file");
+    assert!(
+        log_content.contains("Mount dir exists inside container"),
+        "container should see the auto-created mount dir, got:\n{}",
+        log_content
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_start_container_failure_includes_stderr_in_error() {
     let _guard = CONTAINER_TEST_MUTEX.lock().await;
