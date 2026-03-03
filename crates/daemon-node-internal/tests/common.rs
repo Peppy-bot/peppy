@@ -139,20 +139,24 @@ async fn send_node_start_and_wait_internal(
     let goal_response = NodeStartGoalResponse::decode(&goal_response_payload)
         .map_err(|e| format!("Failed to decode goal response: {}", e))?;
 
-    let deadline = tokio::time::Instant::now() + timeouts.result;
+    let absolute_deadline = tokio::time::Instant::now() + timeouts.result;
+    let mut last_activity = tokio::time::Instant::now();
     let feedback_tx = feedback_tx.as_ref();
 
     loop {
         // Drain feedback so the publisher doesn't block on a full channel.
         loop {
             let now = tokio::time::Instant::now();
-            if now >= deadline {
+            if now >= absolute_deadline {
                 return Err("Timeout waiting for node_start result".to_string());
             }
-            let remaining = deadline - now;
-            let drain_timeout = Duration::from_millis(50).min(remaining);
+            if now.duration_since(last_activity) >= timeouts.result {
+                return Err("Timeout waiting for node_start result (idle)".to_string());
+            }
+            let drain_timeout = Duration::from_millis(50);
             match tokio::time::timeout(drain_timeout, action_handle.on_next_feedback()).await {
                 Ok(Ok(msg)) => {
+                    last_activity = tokio::time::Instant::now();
                     let payload = msg.payload();
                     if let Ok(feedback) = NodeStartFeedback::decode(payload.as_ref())
                         && let Some(tx) = feedback_tx
@@ -166,11 +170,13 @@ async fn send_node_start_and_wait_internal(
         }
 
         let now = tokio::time::Instant::now();
-        if now >= deadline {
+        if now >= absolute_deadline {
             return Err("Timeout waiting for node_start result".to_string());
         }
-        let remaining = deadline - now;
-        let poll_timeout = Duration::from_millis(200).min(remaining);
+        if now.duration_since(last_activity) >= timeouts.result {
+            return Err("Timeout waiting for node_start result (idle)".to_string());
+        }
+        let poll_timeout = Duration::from_millis(200);
 
         match ActionMessenger::request_result(messenger, &action_handle, poll_timeout).await {
             Ok(msg) => {
@@ -304,20 +310,24 @@ async fn send_node_add_and_wait_internal<'a>(
         ));
     }
 
-    let deadline = tokio::time::Instant::now() + result_timeout;
+    let absolute_deadline = tokio::time::Instant::now() + result_timeout;
+    let mut last_activity = tokio::time::Instant::now();
     let feedback_tx = feedback_tx.as_ref();
 
     loop {
         // Drain feedback so the publisher doesn't block on a full channel.
         loop {
             let now = tokio::time::Instant::now();
-            if now >= deadline {
+            if now >= absolute_deadline {
                 return Err("Timeout waiting for node_add result".to_string());
             }
-            let remaining = deadline - now;
-            let drain_timeout = Duration::from_millis(50).min(remaining);
+            if now.duration_since(last_activity) >= result_timeout {
+                return Err("Timeout waiting for node_add result (idle)".to_string());
+            }
+            let drain_timeout = Duration::from_millis(50);
             match tokio::time::timeout(drain_timeout, action_handle.on_next_feedback()).await {
                 Ok(Ok(msg)) => {
+                    last_activity = tokio::time::Instant::now();
                     let payload = msg.payload();
                     if let Ok(feedback) = NodeAddFeedback::decode(payload.as_ref())
                         && let Some(tx) = feedback_tx
@@ -331,11 +341,13 @@ async fn send_node_add_and_wait_internal<'a>(
         }
 
         let now = tokio::time::Instant::now();
-        if now >= deadline {
+        if now >= absolute_deadline {
             return Err("Timeout waiting for node_add result".to_string());
         }
-        let remaining = deadline - now;
-        let poll_timeout = Duration::from_millis(200).min(remaining);
+        if now.duration_since(last_activity) >= result_timeout {
+            return Err("Timeout waiting for node_add result (idle)".to_string());
+        }
+        let poll_timeout = Duration::from_millis(200);
 
         match ActionMessenger::request_result(messenger, &action_handle, poll_timeout).await {
             Ok(msg) => {

@@ -16,8 +16,10 @@ use crate::terminal::ScrollingOutput;
 
 const CALLER_INSTANCE_ID: &str = "peppy-cli";
 const GOAL_TIMEOUT: Duration = Duration::from_secs(30);
-// Some launches can take a REALLY long time
-const RESULT_TIMEOUT: Duration = Duration::from_secs(3600);
+// Idle timeout for the overall launch result (resets on feedback from daemon)
+const IDLE_TIMEOUT: Duration = Duration::from_secs(600);
+// Absolute max timeout for the entire launch operation
+const MAX_TIMEOUT: Duration = Duration::from_secs(7200);
 const FEEDBACK_DRAIN_TIMEOUT: Duration = Duration::from_millis(50);
 const RESULT_POLL_TIMEOUT: Duration = Duration::from_millis(200);
 const SCROLLING_OUTPUT_LINES: usize = 10;
@@ -61,22 +63,25 @@ fn handle_feedback(
 pub fn launch(
     ctx: &Arc<AppContext>,
     launcher_config_path: PathBuf,
-    node_add_timeout_secs: u64,
-    node_start_timeout_secs: u64,
+    node_add_idle_timeout_secs: u64,
+    node_start_idle_timeout_secs: u64,
+    max_timeout_secs: u64,
 ) -> Result<()> {
     crate::commands::block_on(launch_async(
         ctx,
         launcher_config_path,
-        node_add_timeout_secs,
-        node_start_timeout_secs,
+        node_add_idle_timeout_secs,
+        node_start_idle_timeout_secs,
+        max_timeout_secs,
     ))
 }
 
 async fn launch_async(
     ctx: &Arc<AppContext>,
     launcher_config_path: PathBuf,
-    node_add_timeout_secs: u64,
-    node_start_timeout_secs: u64,
+    node_add_idle_timeout_secs: u64,
+    node_start_idle_timeout_secs: u64,
+    max_timeout_secs: u64,
 ) -> Result<()> {
     let daemon_state = ctx.read_daemon_state().map_err(|e| {
         Error::ExecutionFailed(format!(
@@ -110,8 +115,9 @@ async fn launch_async(
 
     let goal = LaunchGoal::new(
         &launcher_config_path,
-        node_add_timeout_secs,
-        node_start_timeout_secs,
+        node_add_idle_timeout_secs,
+        node_start_idle_timeout_secs,
+        max_timeout_secs,
     )
     .with_env_vars(caller_env_overrides());
 
@@ -145,7 +151,8 @@ async fn launch_async(
         goal_response.log_path.display()
     );
 
-    let deadline = tokio::time::Instant::now() + RESULT_TIMEOUT;
+    let absolute_deadline = tokio::time::Instant::now() + MAX_TIMEOUT;
+    let mut last_activity = tokio::time::Instant::now();
     let mut scrolling_output: Option<ScrollingOutput> = None;
     let mut current_scrolling_step: Option<LaunchFeedbackStep> = None;
 
@@ -153,20 +160,31 @@ async fn launch_async(
         // Drain feedback so the subscriber channel doesn't fill up and block publication.
         loop {
             let now = tokio::time::Instant::now();
-            if now >= deadline {
+            if now >= absolute_deadline {
                 if let Some(output) = scrolling_output.as_mut() {
                     output.clear();
                 }
                 return Err(Error::ExecutionFailed(format!(
-                    "Launch timed out waiting for result. Log file: {}",
+                    "Launch timed out: max timeout exceeded. Log file: {}",
                     goal_response.log_path.display()
                 )));
             }
-            let remaining = deadline - now;
-            let drain_timeout = FEEDBACK_DRAIN_TIMEOUT.min(remaining);
+            if now.duration_since(last_activity) >= IDLE_TIMEOUT {
+                if let Some(output) = scrolling_output.as_mut() {
+                    output.clear();
+                }
+                return Err(Error::ExecutionFailed(format!(
+                    "Launch timed out: no output received for {}s. Log file: {}",
+                    IDLE_TIMEOUT.as_secs(),
+                    goal_response.log_path.display()
+                )));
+            }
 
-            match tokio::time::timeout(drain_timeout, action_handle.on_next_feedback()).await {
+            match tokio::time::timeout(FEEDBACK_DRAIN_TIMEOUT, action_handle.on_next_feedback())
+                .await
+            {
                 Ok(Ok(msg)) => {
+                    last_activity = tokio::time::Instant::now();
                     let payload = msg.payload();
                     if let Ok(feedback) = LaunchFeedback::decode(&payload) {
                         handle_feedback(
@@ -182,16 +200,22 @@ async fn launch_async(
         }
 
         let now = tokio::time::Instant::now();
-        if now >= deadline {
+        if now >= absolute_deadline {
             return Err(Error::ExecutionFailed(format!(
-                "Launch timed out waiting for result. Log file: {}",
+                "Launch timed out: max timeout exceeded. Log file: {}",
                 goal_response.log_path.display()
             )));
         }
-        let remaining = deadline - now;
-        let poll_timeout = RESULT_POLL_TIMEOUT.min(remaining);
+        if now.duration_since(last_activity) >= IDLE_TIMEOUT {
+            return Err(Error::ExecutionFailed(format!(
+                "Launch timed out: no output received for {}s. Log file: {}",
+                IDLE_TIMEOUT.as_secs(),
+                goal_response.log_path.display()
+            )));
+        }
 
-        match ActionMessenger::request_result(messenger_handle, &action_handle, poll_timeout).await
+        match ActionMessenger::request_result(messenger_handle, &action_handle, RESULT_POLL_TIMEOUT)
+            .await
         {
             Ok(msg) => {
                 let payload = msg.payload();

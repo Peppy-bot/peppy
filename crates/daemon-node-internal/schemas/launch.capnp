@@ -12,10 +12,12 @@ struct LaunchGoal {
     peppyLaunchFilePath @0 :Text;
     # Environment variables to apply when executing add_cmd and start_cmd (e.g. PATH)
     envVars @1 :List(EnvVar);
-    # Timeout in seconds for each node add operation
-    nodeAddTimeoutSecs @2 :UInt64;
-    # Timeout in seconds for each node start operation
-    nodeStartTimeoutSecs @3 :UInt64;
+    # Idle timeout in seconds for each node add operation (resets on feedback)
+    nodeAddIdleTimeoutSecs @2 :UInt64;
+    # Idle timeout in seconds for each node start operation (resets on feedback)
+    nodeStartIdleTimeoutSecs @3 :UInt64;
+    # Absolute max timeout in seconds per operation (0 = default 3600s)
+    maxTimeoutSecs @4 :UInt64;
 }
 
 struct LaunchGoalResponse {

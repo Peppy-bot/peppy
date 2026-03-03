@@ -102,9 +102,12 @@ pub enum NodeCommands {
         /// Optional: specify a deterministic instance ID
         #[arg(long, hide = true)]
         instance_id: Option<String>,
-        /// Timeout in seconds for the add operation (default: 600 = 10 minutes)
+        /// Idle timeout in seconds — resets whenever output is received (default: 600)
         #[arg(long, default_value = "600")]
-        timeout: u64,
+        idle_timeout: u64,
+        /// Absolute max timeout in seconds (safety net, default: 3600 = 1 hour)
+        #[arg(long, default_value = "3600")]
+        max_timeout: u64,
         /// When set, bypass the confirmation prompt and stop running instances before overwriting
         #[arg(long)]
         force: bool,
@@ -132,9 +135,12 @@ pub enum NodeCommands {
         /// Optional: specify a deterministic instance ID
         #[arg(long)]
         instance_id: Option<String>,
-        /// Timeout in seconds for the start operation (default: 600 = 10 minutes)
+        /// Idle timeout in seconds — resets whenever output is received (default: 600)
         #[arg(long, default_value = "600")]
-        timeout: u64,
+        idle_timeout: u64,
+        /// Absolute max timeout in seconds (safety net, default: 3600 = 1 hour)
+        #[arg(long, default_value = "3600")]
+        max_timeout: u64,
     },
     /// Prints out the runtime config of a node instance
     #[command(group(ArgGroup::new("node_source").required(true).args(["node_name", "node_dir"])))]
@@ -210,7 +216,8 @@ impl Command for NodeCommand {
                 start: run,
                 args,
                 instance_id,
-                timeout,
+                idle_timeout,
+                max_timeout,
                 force,
             } => {
                 let display_source = if source::is_probably_remote_source(&source) {
@@ -220,7 +227,17 @@ impl Command for NodeCommand {
                     path.canonicalize().unwrap_or(path).display().to_string()
                 };
                 info!("Adding node from {}...", display_source);
-                add::add_node(ctx, source, git_ref, run, args, instance_id, timeout, force)
+                add::add_node(
+                    ctx,
+                    source,
+                    git_ref,
+                    run,
+                    args,
+                    instance_id,
+                    idle_timeout,
+                    max_timeout,
+                    force,
+                )
             }
             NodeCommands::Sync {} => {
                 info!("Syncing node interfaces...");
@@ -232,13 +249,22 @@ impl Command for NodeCommand {
                 tag,
                 args,
                 instance_id,
-                timeout,
+                idle_timeout,
+                max_timeout,
             } => {
                 let (node_name, tag) = node_ref
                     .or_else(|| node_name.zip(tag))
                     .expect("either node_ref or node_name+tag must be provided");
                 info!("Running node {}:{}...", node_name, tag);
-                start::run_node(ctx, node_name, tag, args, instance_id, timeout)
+                start::run_node(
+                    ctx,
+                    node_name,
+                    tag,
+                    args,
+                    instance_id,
+                    idle_timeout,
+                    max_timeout,
+                )
             }
             NodeCommands::RuntimeConfig {
                 node_name,

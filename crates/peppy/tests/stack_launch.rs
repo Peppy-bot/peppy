@@ -120,7 +120,8 @@ async fn node_launch_command_succeed() {
             start: false,
             args: Vec::new(),
             instance_id: None,
-            timeout: 60,
+            idle_timeout: 60,
+            max_timeout: 3600,
             force: false,
         },
     }
@@ -202,8 +203,9 @@ async fn node_launch_command_succeed() {
     StackCommand {
         command: StackCommands::Launch {
             launcher_config_path: launcher_path,
-            node_add_timeout_secs: 60,
-            node_start_timeout_secs: 60,
+            node_add_idle_timeout_secs: 60,
+            node_start_idle_timeout_secs: 60,
+            max_timeout_secs: 3600,
         },
     }
     .execute(&ctx)
@@ -350,7 +352,8 @@ async fn node_launch_command_fails_when_node_never_becomes_healthy() {
             start: false,
             args: Vec::new(),
             instance_id: None,
-            timeout: 60,
+            idle_timeout: 60,
+            max_timeout: 3600,
             force: false,
         },
     }
@@ -401,8 +404,9 @@ async fn node_launch_command_fails_when_node_never_becomes_healthy() {
     let launch_result = StackCommand {
         command: StackCommands::Launch {
             launcher_config_path: launcher_path,
-            node_add_timeout_secs: 60,
-            node_start_timeout_secs: 60,
+            node_add_idle_timeout_secs: 60,
+            node_start_idle_timeout_secs: 60,
+            max_timeout_secs: 3600,
         },
     }
     .execute(&ctx);

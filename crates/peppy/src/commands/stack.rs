@@ -16,12 +16,15 @@ pub enum StackCommands {
     Launch {
         /// Path to the peppy launcher configuration file
         launcher_config_path: PathBuf,
-        /// Timeout in seconds for each node add operation
+        /// Idle timeout in seconds for each node add operation (resets on output)
         #[arg(long, default_value_t = 300)]
-        node_add_timeout_secs: u64,
-        /// Timeout in seconds for each node start operation
+        node_add_idle_timeout_secs: u64,
+        /// Idle timeout in seconds for each node start operation (resets on output)
         #[arg(long, default_value_t = 300)]
-        node_start_timeout_secs: u64,
+        node_start_idle_timeout_secs: u64,
+        /// Absolute max timeout in seconds per operation (safety net)
+        #[arg(long, default_value_t = 3600)]
+        max_timeout_secs: u64,
     },
     /// List the nodes in the current node stack
     List {
@@ -43,15 +46,17 @@ impl Command for StackCommand {
             }
             StackCommands::Launch {
                 launcher_config_path,
-                node_add_timeout_secs,
-                node_start_timeout_secs,
+                node_add_idle_timeout_secs,
+                node_start_idle_timeout_secs,
+                max_timeout_secs,
             } => {
                 info!("Launching stack...");
                 launch::launch(
                     ctx,
                     launcher_config_path,
-                    node_add_timeout_secs,
-                    node_start_timeout_secs,
+                    node_add_idle_timeout_secs,
+                    node_start_idle_timeout_secs,
+                    max_timeout_secs,
                 )
             }
         }

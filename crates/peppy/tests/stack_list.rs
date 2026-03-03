@@ -160,7 +160,8 @@ async fn node_list_command_succeeds() {
             start: false,
             args: Vec::new(),
             instance_id: None,
-            timeout: 60,
+            idle_timeout: 60,
+            max_timeout: 3600,
             force: false,
         },
     }
@@ -175,7 +176,8 @@ async fn node_list_command_succeeds() {
             start: false,
             args: Vec::new(),
             instance_id: None,
-            timeout: 60,
+            idle_timeout: 60,
+            max_timeout: 3600,
             force: false,
         },
     }
@@ -304,7 +306,8 @@ async fn node_list_command_with_dot_representation_succeeds() {
             start: false,
             args: Vec::new(),
             instance_id: None,
-            timeout: 60,
+            idle_timeout: 60,
+            max_timeout: 3600,
             force: false,
         },
     }
@@ -318,7 +321,8 @@ async fn node_list_command_with_dot_representation_succeeds() {
             start: false,
             args: Vec::new(),
             instance_id: None,
-            timeout: 60,
+            idle_timeout: 60,
+            max_timeout: 3600,
             force: false,
         },
     }

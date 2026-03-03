@@ -41,7 +41,8 @@ pub fn add_node(
     run: bool,
     args: Vec<(String, String)>,
     instance_id: Option<String>,
-    timeout_secs: u64,
+    idle_timeout_secs: u64,
+    max_timeout_secs: u64,
     force: bool,
 ) -> Result<()> {
     crate::commands::block_on(add_node_async(
@@ -51,7 +52,8 @@ pub fn add_node(
         run,
         args,
         instance_id,
-        timeout_secs,
+        idle_timeout_secs,
+        max_timeout_secs,
         force,
     ))
 }
@@ -64,7 +66,8 @@ async fn add_node_async(
     run: bool,
     args: Vec<(String, String)>,
     instance_id: Option<String>,
-    timeout_secs: u64,
+    idle_timeout_secs: u64,
+    max_timeout_secs: u64,
     force: bool,
 ) -> Result<()> {
     let daemon_state = ctx.read_daemon_state().map_err(|e| {
@@ -115,7 +118,8 @@ async fn add_node_async(
         .ok_or_else(|| Error::ExecutionFailed("Failed to connect to daemon".to_string()))?;
 
     // Create and send the goal to start the add action
-    let add_goal = NodeAddGoal::from_source(node_source, git_hash, timeout_secs)
+    // Pass max_timeout_secs as the goal timeout for daemon-side busy reporting
+    let add_goal = NodeAddGoal::from_source(node_source, git_hash, max_timeout_secs)
         .with_env_vars(caller_env_overrides());
     let mut action_handle = add_goal
         .send_goal(
@@ -149,24 +153,33 @@ async fn add_node_async(
     const SCROLLING_OUTPUT_LINES: usize = 10;
     let mut scrolling_output = ScrollingOutput::new(SCROLLING_OUTPUT_LINES);
 
-    let result_timeout = Duration::from_secs(timeout_secs);
-    let deadline = tokio::time::Instant::now() + result_timeout;
+    let idle_timeout = Duration::from_secs(idle_timeout_secs);
+    let absolute_deadline = tokio::time::Instant::now() + Duration::from_secs(max_timeout_secs);
+    let mut last_activity = tokio::time::Instant::now();
     let add_result = loop {
         // Drain feedback so the publisher doesn't block on a full channel.
         loop {
             let now = tokio::time::Instant::now();
-            if now >= deadline {
+            if now >= absolute_deadline {
                 scrolling_output.clear();
                 return Err(Error::ExecutionFailed(format!(
-                    "Timeout waiting for node_add result after {} seconds. \
-                     Use --timeout <seconds> to increase the timeout.",
-                    timeout_secs
+                    "Timeout: max timeout of {}s exceeded. \
+                     Use --max-timeout <seconds> to increase.",
+                    max_timeout_secs
                 )));
             }
-            let remaining = deadline - now;
-            let drain_timeout = Duration::from_millis(50).min(remaining);
+            if now.duration_since(last_activity) >= idle_timeout {
+                scrolling_output.clear();
+                return Err(Error::ExecutionFailed(format!(
+                    "Timeout: no output received for {}s. \
+                     Use --idle-timeout <seconds> to increase.",
+                    idle_timeout_secs
+                )));
+            }
+            let drain_timeout = Duration::from_millis(50);
             match tokio::time::timeout(drain_timeout, action_handle.on_next_feedback()).await {
                 Ok(Ok(msg)) => {
+                    last_activity = tokio::time::Instant::now();
                     let payload = msg.payload();
                     if let Ok(feedback) = NodeAddFeedback::decode(payload.as_ref()) {
                         scrolling_output.add_line(&feedback.line, feedback.is_stderr());
@@ -178,16 +191,23 @@ async fn add_node_async(
         }
 
         let now = tokio::time::Instant::now();
-        if now >= deadline {
+        if now >= absolute_deadline {
             scrolling_output.clear();
             return Err(Error::ExecutionFailed(format!(
-                "Timeout waiting for node_add result after {} seconds. \
-                 Use --timeout <seconds> to increase the timeout.",
-                timeout_secs
+                "Timeout: max timeout of {}s exceeded. \
+                 Use --max-timeout <seconds> to increase.",
+                max_timeout_secs
             )));
         }
-        let remaining = deadline - now;
-        let poll_timeout = Duration::from_millis(200).min(remaining);
+        if now.duration_since(last_activity) >= idle_timeout {
+            scrolling_output.clear();
+            return Err(Error::ExecutionFailed(format!(
+                "Timeout: no output received for {}s. \
+                 Use --idle-timeout <seconds> to increase.",
+                idle_timeout_secs
+            )));
+        }
+        let poll_timeout = Duration::from_millis(200);
         match ActionMessenger::request_result(messenger_handle, &action_handle, poll_timeout).await
         {
             Ok(msg) => {
@@ -264,7 +284,8 @@ async fn add_node_async(
         node_tag,
         &args,
         instance_id,
-        timeout_secs,
+        idle_timeout_secs,
+        max_timeout_secs,
     )
     .await?;
 

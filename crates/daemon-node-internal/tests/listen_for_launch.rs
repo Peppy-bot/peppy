@@ -304,7 +304,7 @@ async fn send_node_launch_and_wait_with_env(
     result_timeout: Duration,
     env_vars: Vec<(String, String)>,
 ) -> Result<(LaunchGoalResponse, LaunchResult), String> {
-    let goal = LaunchGoal::new(peppy_launch_file_path, 300, 300).with_env_vars(env_vars);
+    let goal = LaunchGoal::new(peppy_launch_file_path, 300, 300, 3600).with_env_vars(env_vars);
     let goal_payload = goal
         .encode()
         .map_err(|e| format!("Failed to encode launch goal: {e}"))?;
@@ -334,19 +334,23 @@ async fn send_node_launch_and_wait_with_env(
             .unwrap_or_else(|| "launch goal rejected".to_string()));
     }
 
-    let deadline = tokio::time::Instant::now() + result_timeout;
+    let absolute_deadline = tokio::time::Instant::now() + result_timeout;
+    let mut last_activity = tokio::time::Instant::now();
 
     loop {
         // Drain feedback so the publisher doesn't block on a full channel.
         loop {
             let now = tokio::time::Instant::now();
-            if now >= deadline {
+            if now >= absolute_deadline {
                 return Err("Timeout waiting for launch result".to_string());
             }
-            let remaining = deadline - now;
-            let drain_timeout = Duration::from_millis(50).min(remaining);
+            if now.duration_since(last_activity) >= result_timeout {
+                return Err("Timeout waiting for launch result (idle)".to_string());
+            }
+            let drain_timeout = Duration::from_millis(50);
             match tokio::time::timeout(drain_timeout, action_handle.on_next_feedback()).await {
                 Ok(Ok(msg)) => {
+                    last_activity = tokio::time::Instant::now();
                     let payload = msg.payload();
                     let _ = LaunchFeedback::decode(&payload);
                 }
@@ -356,11 +360,13 @@ async fn send_node_launch_and_wait_with_env(
         }
 
         let now = tokio::time::Instant::now();
-        if now >= deadline {
+        if now >= absolute_deadline {
             return Err("Timeout waiting for launch result".to_string());
         }
-        let remaining = deadline - now;
-        let poll_timeout = Duration::from_millis(200).min(remaining);
+        if now.duration_since(last_activity) >= result_timeout {
+            return Err("Timeout waiting for launch result (idle)".to_string());
+        }
+        let poll_timeout = Duration::from_millis(200);
 
         match ActionMessenger::request_result(messenger, &action_handle, poll_timeout).await {
             Ok(msg) => {

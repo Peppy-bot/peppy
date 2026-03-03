@@ -20,21 +20,24 @@ use super::{decode_message, encode_message};
 pub struct LaunchGoal {
     pub peppy_launch_file_path: PathBuf,
     pub env_vars: Vec<(String, String)>,
-    pub node_add_timeout_secs: u64,
-    pub node_start_timeout_secs: u64,
+    pub node_add_idle_timeout_secs: u64,
+    pub node_start_idle_timeout_secs: u64,
+    pub max_timeout_secs: u64,
 }
 
 impl LaunchGoal {
     pub fn new(
         peppy_launch_file_path: impl Into<PathBuf>,
-        node_add_timeout_secs: u64,
-        node_start_timeout_secs: u64,
+        node_add_idle_timeout_secs: u64,
+        node_start_idle_timeout_secs: u64,
+        max_timeout_secs: u64,
     ) -> Self {
         Self {
             peppy_launch_file_path: peppy_launch_file_path.into(),
             env_vars: Vec::new(),
-            node_add_timeout_secs,
-            node_start_timeout_secs,
+            node_add_idle_timeout_secs,
+            node_start_idle_timeout_secs,
+            max_timeout_secs,
         }
     }
 
@@ -57,9 +60,10 @@ impl LaunchGoal {
             }
 
             goal.reborrow()
-                .set_node_add_timeout_secs(self.node_add_timeout_secs);
+                .set_node_add_idle_timeout_secs(self.node_add_idle_timeout_secs);
             goal.reborrow()
-                .set_node_start_timeout_secs(self.node_start_timeout_secs);
+                .set_node_start_idle_timeout_secs(self.node_start_idle_timeout_secs);
+            goal.reborrow().set_max_timeout_secs(self.max_timeout_secs);
         }
         encode_message(&builder)
     }
@@ -78,11 +82,19 @@ impl LaunchGoal {
             ));
         }
 
+        let max_timeout_secs = goal.get_max_timeout_secs();
+        let max_timeout_secs = if max_timeout_secs == 0 {
+            3600
+        } else {
+            max_timeout_secs
+        };
+
         Ok(Self {
             peppy_launch_file_path: PathBuf::from(goal.get_peppy_launch_file_path()?.to_str()?),
             env_vars,
-            node_add_timeout_secs: goal.get_node_add_timeout_secs(),
-            node_start_timeout_secs: goal.get_node_start_timeout_secs(),
+            node_add_idle_timeout_secs: goal.get_node_add_idle_timeout_secs(),
+            node_start_idle_timeout_secs: goal.get_node_start_idle_timeout_secs(),
+            max_timeout_secs,
         })
     }
 

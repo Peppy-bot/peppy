@@ -79,7 +79,8 @@ fn node_add_command_succeeds() {
             start: false,
             args: Vec::new(),
             instance_id: None,
-            timeout: 60,
+            idle_timeout: 60,
+            max_timeout: 3600,
             force: false,
         },
     }
@@ -220,7 +221,8 @@ fn node_add_command_with_run_arg_succeeds() {
             start: true,
             args: Vec::new(),
             instance_id: Some(instance_id.to_string()),
-            timeout: 60,
+            idle_timeout: 60,
+            max_timeout: 3600,
             force: false,
         },
     }
@@ -352,7 +354,8 @@ fn node_add_after_failed_sync_succeeds() {
             start: false,
             args: Vec::new(),
             instance_id: None,
-            timeout: 60,
+            idle_timeout: 60,
+            max_timeout: 3600,
             force: false,
         },
     }
@@ -390,7 +393,8 @@ fn node_add_after_failed_sync_succeeds() {
             start: false,
             args: Vec::new(),
             instance_id: None,
-            timeout: 60,
+            idle_timeout: 60,
+            max_timeout: 3600,
             force: false,
         },
     }
@@ -539,7 +543,8 @@ fn node_add_same_node_shutdown_existing_instances() {
             start: true,
             args: Vec::new(),
             instance_id: Some(instance_id.to_string()),
-            timeout: 60,
+            idle_timeout: 60,
+            max_timeout: 3600,
             force: false,
         },
     }
@@ -593,7 +598,8 @@ fn node_add_same_node_shutdown_existing_instances() {
             start: false, // Don't start a new instance this time
             args: Vec::new(),
             instance_id: None,
-            timeout: 60,
+            idle_timeout: 60,
+            max_timeout: 3600,
             force: true, // Bypass confirmation prompt
         },
     }
