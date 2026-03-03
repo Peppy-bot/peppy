@@ -24,6 +24,12 @@ pub use env::caller_env_overrides;
 pub use init::NodeInitBuilder;
 pub use types::NodeName;
 
+/// Idle + absolute-max timeout pair used by `node add` and `node start` polling loops.
+pub(crate) struct TimeoutConfig {
+    pub idle_secs: u64,
+    pub max_secs: u64,
+}
+
 /// Parses a node_name:tag argument string into a tuple
 fn parse_node_ref(s: &str) -> Result<(String, String), String> {
     let pos = s.find(':').ok_or_else(|| {
@@ -213,7 +219,7 @@ impl Command for NodeCommand {
             NodeCommands::Add {
                 source,
                 git_ref,
-                start: run,
+                start,
                 args,
                 instance_id,
                 idle_timeout,
@@ -227,17 +233,16 @@ impl Command for NodeCommand {
                     path.canonicalize().unwrap_or(path).display().to_string()
                 };
                 info!("Adding node from {}...", display_source);
-                add::add_node(
-                    ctx,
-                    source,
-                    git_ref,
-                    run,
-                    args,
-                    instance_id,
-                    idle_timeout,
-                    max_timeout,
-                    force,
-                )
+                let start_options = if start {
+                    Some(add::StartAfterAddOptions { args, instance_id })
+                } else {
+                    None
+                };
+                let timeouts = TimeoutConfig {
+                    idle_secs: idle_timeout,
+                    max_secs: max_timeout,
+                };
+                add::add_node(ctx, source, git_ref, start_options, timeouts, force)
             }
             NodeCommands::Sync {} => {
                 info!("Syncing node interfaces...");
@@ -256,15 +261,11 @@ impl Command for NodeCommand {
                     .or_else(|| node_name.zip(tag))
                     .expect("either node_ref or node_name+tag must be provided");
                 info!("Running node {}:{}...", node_name, tag);
-                start::run_node(
-                    ctx,
-                    node_name,
-                    tag,
-                    args,
-                    instance_id,
-                    idle_timeout,
-                    max_timeout,
-                )
+                let timeouts = TimeoutConfig {
+                    idle_secs: idle_timeout,
+                    max_secs: max_timeout,
+                };
+                start::run_node(ctx, node_name, tag, args, instance_id, timeouts)
             }
             NodeCommands::RuntimeConfig {
                 node_name,

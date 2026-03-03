@@ -15,6 +15,7 @@ use crate::context::AppContext;
 use crate::error::{Error, Result};
 use crate::terminal::ScrollingOutput;
 
+use super::TimeoutConfig;
 use super::env::caller_env_overrides;
 
 const CALLER_INSTANCE_ID: &str = "peppy-cli";
@@ -113,7 +114,6 @@ fn parse_value(value: &str) -> AnyType {
 
 /// Shared logic for starting a node instance.
 /// Used by both `run_node` and `add_node` (when --run is set).
-#[allow(clippy::too_many_arguments)]
 pub async fn start_instance_async(
     messenger_handle: &MessengerHandle,
     daemon_node_name: &str,
@@ -121,8 +121,7 @@ pub async fn start_instance_async(
     tag: &str,
     args: &[(String, String)],
     instance_id: Option<String>,
-    idle_timeout_secs: u64,
-    max_timeout_secs: u64,
+    timeouts: &TimeoutConfig,
 ) -> Result<String> {
     // Generate or use provided instance_id
     let instance_id = instance_id.unwrap_or_else(|| get_random(rng()));
@@ -172,7 +171,7 @@ pub async fn start_instance_async(
         &runtime_config_json,
         node_name.to_string(),
         tag.to_string(),
-        max_timeout_secs,
+        timeouts.max_secs,
     )
     .with_env_vars(caller_env_overrides());
     let mut action_handle = start_goal
@@ -205,8 +204,8 @@ pub async fn start_instance_async(
 
     let mut scrolling_output = ScrollingOutput::new(SCROLLING_OUTPUT_LINES);
 
-    let idle_timeout = Duration::from_secs(idle_timeout_secs);
-    let absolute_deadline = tokio::time::Instant::now() + Duration::from_secs(max_timeout_secs);
+    let idle_timeout = Duration::from_secs(timeouts.idle_secs);
+    let absolute_deadline = tokio::time::Instant::now() + Duration::from_secs(timeouts.max_secs);
     let mut last_activity = tokio::time::Instant::now();
     let start_result = loop {
         // Drain feedback so the publisher doesn't block on a full channel.
@@ -217,7 +216,7 @@ pub async fn start_instance_async(
                 return Err(Error::ExecutionFailed(format!(
                     "Timeout: max timeout of {}s exceeded. \
                      Use --max-timeout <seconds> to increase.",
-                    max_timeout_secs
+                    timeouts.max_secs
                 )));
             }
             if now.duration_since(last_activity) >= idle_timeout {
@@ -225,7 +224,7 @@ pub async fn start_instance_async(
                 return Err(Error::ExecutionFailed(format!(
                     "Timeout: no output received for {}s. \
                      Use --idle-timeout <seconds> to increase.",
-                    idle_timeout_secs
+                    timeouts.idle_secs
                 )));
             }
             let drain_timeout = Duration::from_millis(50);
@@ -248,7 +247,7 @@ pub async fn start_instance_async(
             return Err(Error::ExecutionFailed(format!(
                 "Timeout: max timeout of {}s exceeded. \
                  Use --max-timeout <seconds> to increase.",
-                max_timeout_secs
+                timeouts.max_secs
             )));
         }
         if now.duration_since(last_activity) >= idle_timeout {
@@ -256,7 +255,7 @@ pub async fn start_instance_async(
             return Err(Error::ExecutionFailed(format!(
                 "Timeout: no output received for {}s. \
                  Use --idle-timeout <seconds> to increase.",
-                idle_timeout_secs
+                timeouts.idle_secs
             )));
         }
         let poll_timeout = Duration::from_millis(200);
@@ -317,8 +316,7 @@ pub fn run_node(
     tag: String,
     args: Vec<(String, String)>,
     instance_id: Option<String>,
-    idle_timeout_secs: u64,
-    max_timeout_secs: u64,
+    timeouts: TimeoutConfig,
 ) -> Result<()> {
     crate::commands::block_on(run_node_async(
         ctx,
@@ -326,8 +324,7 @@ pub fn run_node(
         tag,
         args,
         instance_id,
-        idle_timeout_secs,
-        max_timeout_secs,
+        timeouts,
     ))
 }
 
@@ -337,8 +334,7 @@ async fn run_node_async(
     tag: String,
     args: Vec<(String, String)>,
     instance_id: Option<String>,
-    idle_timeout_secs: u64,
-    max_timeout_secs: u64,
+    timeouts: TimeoutConfig,
 ) -> Result<()> {
     let daemon_state = ctx.read_daemon_state().map_err(|e| {
         Error::ExecutionFailed(format!(
@@ -360,8 +356,7 @@ async fn run_node_async(
         &tag,
         &args,
         instance_id,
-        idle_timeout_secs,
-        max_timeout_secs,
+        &timeouts,
     )
     .await?;
 

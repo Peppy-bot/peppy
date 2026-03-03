@@ -8,12 +8,19 @@ use std::sync::Arc;
 use std::time::Duration;
 use tracing::info;
 
+use super::TimeoutConfig;
 use super::env::caller_env_overrides;
 use super::source::parse_node_source;
 use super::start::start_instance_async;
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 use crate::terminal::ScrollingOutput;
+
+/// Options for starting a node instance immediately after adding it.
+pub(crate) struct StartAfterAddOptions {
+    pub args: Vec<(String, String)>,
+    pub instance_id: Option<String>,
+}
 
 const CALLER_INSTANCE_ID: &str = "peppy-cli";
 // Timeout for the goal to be accepted (should be fast)
@@ -33,41 +40,30 @@ fn validate_git_ref(git_ref: Option<&str>) -> Result<Option<String>> {
     Ok(git_ref.map(str::to_owned))
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn add_node(
     ctx: &Arc<AppContext>,
     source: String,
     git_ref: Option<String>,
-    run: bool,
-    args: Vec<(String, String)>,
-    instance_id: Option<String>,
-    idle_timeout_secs: u64,
-    max_timeout_secs: u64,
+    start_options: Option<StartAfterAddOptions>,
+    timeouts: TimeoutConfig,
     force: bool,
 ) -> Result<()> {
     crate::commands::block_on(add_node_async(
         ctx,
         source,
         git_ref,
-        run,
-        args,
-        instance_id,
-        idle_timeout_secs,
-        max_timeout_secs,
+        start_options,
+        timeouts,
         force,
     ))
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn add_node_async(
     ctx: &Arc<AppContext>,
     source: String,
     git_ref: Option<String>,
-    run: bool,
-    args: Vec<(String, String)>,
-    instance_id: Option<String>,
-    idle_timeout_secs: u64,
-    max_timeout_secs: u64,
+    start_options: Option<StartAfterAddOptions>,
+    timeouts: TimeoutConfig,
     force: bool,
 ) -> Result<()> {
     let daemon_state = ctx.read_daemon_state().map_err(|e| {
@@ -118,8 +114,8 @@ async fn add_node_async(
         .ok_or_else(|| Error::ExecutionFailed("Failed to connect to daemon".to_string()))?;
 
     // Create and send the goal to start the add action
-    // Pass max_timeout_secs as the goal timeout for daemon-side busy reporting
-    let add_goal = NodeAddGoal::from_source(node_source, git_hash, max_timeout_secs)
+    // Pass max timeout as the goal timeout for daemon-side busy reporting
+    let add_goal = NodeAddGoal::from_source(node_source, git_hash, timeouts.max_secs)
         .with_env_vars(caller_env_overrides());
     let mut action_handle = add_goal
         .send_goal(
@@ -153,8 +149,8 @@ async fn add_node_async(
     const SCROLLING_OUTPUT_LINES: usize = 10;
     let mut scrolling_output = ScrollingOutput::new(SCROLLING_OUTPUT_LINES);
 
-    let idle_timeout = Duration::from_secs(idle_timeout_secs);
-    let absolute_deadline = tokio::time::Instant::now() + Duration::from_secs(max_timeout_secs);
+    let idle_timeout = Duration::from_secs(timeouts.idle_secs);
+    let absolute_deadline = tokio::time::Instant::now() + Duration::from_secs(timeouts.max_secs);
     let mut last_activity = tokio::time::Instant::now();
     let add_result = loop {
         // Drain feedback so the publisher doesn't block on a full channel.
@@ -165,7 +161,7 @@ async fn add_node_async(
                 return Err(Error::ExecutionFailed(format!(
                     "Timeout: max timeout of {}s exceeded. \
                      Use --max-timeout <seconds> to increase.",
-                    max_timeout_secs
+                    timeouts.max_secs
                 )));
             }
             if now.duration_since(last_activity) >= idle_timeout {
@@ -173,7 +169,7 @@ async fn add_node_async(
                 return Err(Error::ExecutionFailed(format!(
                     "Timeout: no output received for {}s. \
                      Use --idle-timeout <seconds> to increase.",
-                    idle_timeout_secs
+                    timeouts.idle_secs
                 )));
             }
             let drain_timeout = Duration::from_millis(50);
@@ -196,7 +192,7 @@ async fn add_node_async(
             return Err(Error::ExecutionFailed(format!(
                 "Timeout: max timeout of {}s exceeded. \
                  Use --max-timeout <seconds> to increase.",
-                max_timeout_secs
+                timeouts.max_secs
             )));
         }
         if now.duration_since(last_activity) >= idle_timeout {
@@ -204,7 +200,7 @@ async fn add_node_async(
             return Err(Error::ExecutionFailed(format!(
                 "Timeout: no output received for {}s. \
                  Use --idle-timeout <seconds> to increase.",
-                idle_timeout_secs
+                timeouts.idle_secs
             )));
         }
         let poll_timeout = Duration::from_millis(200);
@@ -262,9 +258,9 @@ async fn add_node_async(
         add_result.snapshot_path.to_string_lossy()
     );
 
-    if !run {
+    let Some(start_options) = start_options else {
         return Ok(());
-    }
+    };
 
     let node_name = add_result.node_name.as_deref().ok_or_else(|| {
         Error::ExecutionFailed(
@@ -282,10 +278,9 @@ async fn add_node_async(
         &daemon_node_name,
         node_name,
         node_tag,
-        &args,
-        instance_id,
-        idle_timeout_secs,
-        max_timeout_secs,
+        &start_options.args,
+        start_options.instance_id,
+        &timeouts,
     )
     .await?;
 
