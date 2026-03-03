@@ -21,6 +21,8 @@ use super::env::caller_env_overrides;
 const CALLER_INSTANCE_ID: &str = "peppy-cli";
 const GOAL_TIMEOUT: Duration = Duration::from_secs(30);
 const SCROLLING_OUTPUT_LINES: usize = 10;
+const FEEDBACK_DRAIN_TIMEOUT: Duration = Duration::from_millis(50);
+const RESULT_POLL_TIMEOUT: Duration = Duration::from_millis(200);
 
 /// Converts a list of key=value string pairs into NodeArguments.
 /// Dot-separated keys are converted into nested objects.
@@ -227,8 +229,7 @@ pub async fn start_instance_async(
                     timeouts.idle_secs
                 )));
             }
-            let drain_timeout = Duration::from_millis(50);
-            match tokio::time::timeout(drain_timeout, action_handle.on_next_feedback()).await {
+            match tokio::time::timeout(FEEDBACK_DRAIN_TIMEOUT, action_handle.on_next_feedback()).await {
                 Ok(Ok(msg)) => {
                     last_activity = tokio::time::Instant::now();
                     let payload = msg.payload();
@@ -258,8 +259,7 @@ pub async fn start_instance_async(
                 timeouts.idle_secs
             )));
         }
-        let poll_timeout = Duration::from_millis(200);
-        match ActionMessenger::request_result(messenger_handle, &action_handle, poll_timeout).await
+        match ActionMessenger::request_result(messenger_handle, &action_handle, RESULT_POLL_TIMEOUT).await
         {
             Ok(msg) => {
                 let payload = msg.payload();

@@ -25,6 +25,8 @@ pub(crate) struct StartAfterAddOptions {
 const CALLER_INSTANCE_ID: &str = "peppy-cli";
 // Timeout for the goal to be accepted (should be fast)
 const GOAL_TIMEOUT: Duration = Duration::from_secs(30);
+const FEEDBACK_DRAIN_TIMEOUT: Duration = Duration::from_millis(50);
+const RESULT_POLL_TIMEOUT: Duration = Duration::from_millis(200);
 // Timeout for the node info request
 const INFO_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -172,8 +174,7 @@ async fn add_node_async(
                     timeouts.idle_secs
                 )));
             }
-            let drain_timeout = Duration::from_millis(50);
-            match tokio::time::timeout(drain_timeout, action_handle.on_next_feedback()).await {
+            match tokio::time::timeout(FEEDBACK_DRAIN_TIMEOUT, action_handle.on_next_feedback()).await {
                 Ok(Ok(msg)) => {
                     last_activity = tokio::time::Instant::now();
                     let payload = msg.payload();
@@ -203,8 +204,7 @@ async fn add_node_async(
                 timeouts.idle_secs
             )));
         }
-        let poll_timeout = Duration::from_millis(200);
-        match ActionMessenger::request_result(messenger_handle, &action_handle, poll_timeout).await
+        match ActionMessenger::request_result(messenger_handle, &action_handle, RESULT_POLL_TIMEOUT).await
         {
             Ok(msg) => {
                 let payload = msg.payload();
