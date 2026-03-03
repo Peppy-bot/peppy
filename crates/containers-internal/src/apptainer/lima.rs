@@ -464,6 +464,9 @@ pub(crate) fn stop_instance(limactl: &Path, lima_home: &Path, instance: &str) ->
 /// any missing paths as writable mounts. Returns `true` if the config was
 /// modified (meaning the VM needs to be restarted to pick up the changes).
 /// Top-level system directories that Lima 2.0+ rejects as guest mountPoints.
+///
+/// NOTE: This list is duplicated in `config-internal/src/node/types.rs`
+/// (which this crate cannot depend on). Keep both in sync.
 const BLOCKED_MOUNT_PATHS: &[&str] = &[
     "/", "/bin", "/dev", "/etc", "/home", "/opt", "/sbin", "/tmp", "/usr", "/var",
 ];

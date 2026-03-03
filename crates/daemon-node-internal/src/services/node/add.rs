@@ -2,7 +2,7 @@ use super::super::stack::STACK_LAUNCH_GIT_HASH;
 use super::sync::{collect_subscribed_interfaces, generate_peppygen_for_node};
 use super::{
     checkout_repo_ref, extract_tar_zst, generate_random_id, is_supported_http_archive,
-    sanitize_repo_path,
+    sanitize_repo_path, write_error_to_log,
 };
 use crate::Result;
 use crate::encoding::{
@@ -1405,18 +1405,6 @@ async fn shutdown_existing_instances(
     }
 
     Ok(())
-}
-
-/// Write an error message to the node's log file with a timestamp.
-///
-/// Best-effort: silently ignores lock/write failures since the error is also
-/// returned in the `NodeAddResult`.
-fn write_error_to_log(log_file: &Arc<StdMutex<File>>, error_msg: &str) {
-    if let Ok(mut file) = log_file.lock() {
-        let timestamp = Local::now().format("%Y-%m-%dT%H:%M:%S%.3f");
-        let _ = writeln!(file, "[{}] [error] {}", timestamp, error_msg);
-        let _ = file.flush();
-    }
 }
 
 async fn process_node_add(

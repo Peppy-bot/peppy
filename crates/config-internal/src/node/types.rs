@@ -578,6 +578,9 @@ pub struct Process {
 /// as bind-mount sources in Apptainer is almost always a mistake (mounting an
 /// entire system directory into a container). Users should use subdirectories
 /// instead (e.g., `/tmp/my_app` rather than `/tmp`).
+///
+/// NOTE: This list is duplicated in `containers-internal/src/apptainer/lima.rs`
+/// (which cannot depend on this crate). Keep both in sync.
 const BLOCKED_MOUNT_PATHS: &[&str] = &[
     "/", "/bin", "/dev", "/etc", "/home", "/opt", "/sbin", "/tmp", "/usr", "/var",
 ];

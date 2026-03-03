@@ -248,16 +248,7 @@ impl Apptainer {
 
                 let external_paths: Vec<&str> = mount_src_paths
                     .iter()
-                    .filter(|p| {
-                        let abs = if Path::new(p).is_relative() {
-                            std::env::current_dir()
-                                .map(|cwd| cwd.join(p))
-                                .unwrap_or_else(|_| PathBuf::from(p))
-                        } else {
-                            PathBuf::from(p)
-                        };
-                        !abs.starts_with(&home)
-                    })
+                    .filter(|p| !resolve_absolute(p).starts_with(&home))
                     .copied()
                     .collect();
 
@@ -294,13 +285,7 @@ impl Apptainer {
 
                 // Register paths so translate_path() accepts them.
                 for path_str in &external_paths {
-                    let abs = if Path::new(path_str).is_relative() {
-                        std::env::current_dir()
-                            .map(|cwd| cwd.join(path_str))
-                            .unwrap_or_else(|_| PathBuf::from(path_str))
-                    } else {
-                        PathBuf::from(path_str)
-                    };
+                    let abs = resolve_absolute(path_str);
                     if !self.extra_mounts.contains(&abs) {
                         self.extra_mounts.push(abs);
                     }
@@ -542,6 +527,19 @@ impl Apptainer {
             "Apptainer installation not found. Install apptainer or set PEPPY_APPTAINER_DIR."
                 .to_string(),
         ))
+    }
+}
+
+/// Resolve a potentially relative path to an absolute one.
+///
+/// Falls back to the original path if `current_dir()` fails.
+fn resolve_absolute(path: &str) -> PathBuf {
+    if Path::new(path).is_relative() {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(path))
+            .unwrap_or_else(|_| PathBuf::from(path))
+    } else {
+        PathBuf::from(path)
     }
 }
 

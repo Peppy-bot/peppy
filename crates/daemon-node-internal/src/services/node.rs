@@ -9,11 +9,14 @@ mod templates;
 
 use crate::encoding::NodeSource;
 use crate::{Error, Result};
+use chrono::Local;
 use config::node::{NodeConfig, PeppygenLanguage};
 use git2::{Repository, build::CheckoutBuilder};
 use rand::RngExt;
+use std::fs::File;
+use std::io::Write;
 use std::path::{Component, Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use tar::Archive;
 use zstd::stream::read::Decoder;
 
@@ -73,6 +76,18 @@ fn validate_goal_env_vars(env_vars: &[(String, String)]) -> Result<Vec<(String, 
         result.push((key.trim().to_string(), value.clone()));
     }
     Ok(result)
+}
+
+/// Write an error message to the node's log file with a timestamp.
+///
+/// Best-effort: silently ignores lock/write failures since the error is also
+/// returned in the result encoding.
+fn write_error_to_log(log_file: &Arc<StdMutex<File>>, error_msg: &str) {
+    if let Ok(mut file) = log_file.lock() {
+        let timestamp = Local::now().format("%Y-%m-%dT%H:%M:%S%.3f");
+        let _ = writeln!(file, "[{}] [error] {}", timestamp, error_msg);
+        let _ = file.flush();
+    }
 }
 
 static SCCACHE_AVAILABLE: OnceLock<bool> = OnceLock::new();

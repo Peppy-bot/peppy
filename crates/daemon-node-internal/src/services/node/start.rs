@@ -1,4 +1,4 @@
-use super::{STDERR_TAIL_LINES, extract_tar_zst};
+use super::{STDERR_TAIL_LINES, extract_tar_zst, write_error_to_log};
 use crate::Result;
 use crate::encoding::{NodeStartFeedback, NodeStartGoal, NodeStartGoalResponse, NodeStartResult};
 use crate::names;
@@ -236,6 +236,16 @@ impl FeedbackSync {
                 Ok(_) => {}
                 Err(_) => return false,
             }
+        }
+    }
+
+    /// Flush pending feedback, logging a debug warning on timeout.
+    async fn flush_or_warn(&self, instance_id: &str) {
+        if !self.flush_with_timeout(FEEDBACK_FLUSH_TIMEOUT).await {
+            debug!(
+                "feedback flush timed out for node instance '{}'",
+                instance_id
+            );
         }
     }
 
@@ -873,15 +883,7 @@ async fn process_node_start(
             Arc::clone(&ctx.log_file),
         )
         .await;
-        if !feedback_sync
-            .flush_with_timeout(FEEDBACK_FLUSH_TIMEOUT)
-            .await
-        {
-            debug!(
-                "feedback flush timed out for node instance '{}'",
-                instance_id_str
-            );
-        }
+        feedback_sync.flush_or_warn(instance_id_str).await;
         publish_enabled.store(false, Ordering::Relaxed);
         return result;
     }
@@ -919,15 +921,7 @@ async fn process_node_start(
                 let msg = format!("Failed to register instance: {}", e);
                 write_error_to_log(&ctx.log_file, &msg);
                 let result = NodeStartResult::failure(msg);
-                if !feedback_sync
-                    .flush_with_timeout(FEEDBACK_FLUSH_TIMEOUT)
-                    .await
-                {
-                    debug!(
-                        "feedback flush timed out for node instance '{}'",
-                        instance_id_str
-                    );
-                }
+                feedback_sync.flush_or_warn(instance_id_str).await;
                 publish_enabled.store(false, Ordering::Relaxed);
                 return result;
             }
@@ -943,15 +937,7 @@ async fn process_node_start(
                 .wait_for_read_quiescence(max_wait, quiet_window)
                 .await;
             let result = NodeStartResult::success(pid);
-            if !feedback_sync
-                .flush_with_timeout(FEEDBACK_FLUSH_TIMEOUT)
-                .await
-            {
-                debug!(
-                    "feedback flush timed out for node instance '{}'",
-                    instance_id_str
-                );
-            }
+            feedback_sync.flush_or_warn(instance_id_str).await;
             publish_enabled.store(false, Ordering::Relaxed);
             result
         }
@@ -969,15 +955,7 @@ async fn process_node_start(
                 Arc::clone(&ctx.log_file),
             )
             .await;
-            if !feedback_sync
-                .flush_with_timeout(FEEDBACK_FLUSH_TIMEOUT)
-                .await
-            {
-                debug!(
-                    "feedback flush timed out for node instance '{}'",
-                    instance_id_str
-                );
-            }
+            feedback_sync.flush_or_warn(instance_id_str).await;
             publish_enabled.store(false, Ordering::Relaxed);
             result
         }
@@ -1134,18 +1112,6 @@ fn extract_stderr_from_log(log_file: &Arc<StdMutex<File>>) -> String {
         .filter_map(|l| l.split_once("[stderr] ").map(|(_, rest)| rest))
         .collect::<Vec<_>>()
         .join("\n")
-}
-
-/// Write an error message to the node's log file with a timestamp.
-///
-/// Best-effort: silently ignores lock/write failures since the error is also
-/// returned in the `NodeStartResult`.
-fn write_error_to_log(log_file: &Arc<StdMutex<File>>, error_msg: &str) {
-    if let Ok(mut file) = log_file.lock() {
-        let timestamp = Local::now().format("%Y-%m-%dT%H:%M:%S%.3f");
-        let _ = writeln!(file, "[{}] [error] {}", timestamp, error_msg);
-        let _ = file.flush();
-    }
 }
 
 /// Creates (or recreates) a clean instance directory under the instances dir.
