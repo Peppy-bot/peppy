@@ -15,6 +15,16 @@ use crate::names;
 
 use super::{decode_message, encode_message};
 
+/// Default idle timeout in seconds for operations (used as fallback when 0 is received on the wire).
+const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 600;
+/// Default max timeout in seconds for operations (used as fallback when 0 is received on the wire).
+const DEFAULT_MAX_TIMEOUT_SECS: u64 = 3600;
+
+/// Applies a default value when a timeout field is 0 (Cap'n Proto defaults unset UInt64 to 0).
+fn with_timeout_default(value: u64, default: u64) -> u64 {
+    if value == 0 { default } else { value }
+}
+
 /// Goal message for the Launch action.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LaunchGoal {
@@ -82,19 +92,21 @@ impl LaunchGoal {
             ));
         }
 
-        let max_timeout_secs = goal.get_max_timeout_secs();
-        let max_timeout_secs = if max_timeout_secs == 0 {
-            3600
-        } else {
-            max_timeout_secs
-        };
-
         Ok(Self {
             peppy_launch_file_path: PathBuf::from(goal.get_peppy_launch_file_path()?.to_str()?),
             env_vars,
-            node_add_idle_timeout_secs: goal.get_node_add_idle_timeout_secs(),
-            node_start_idle_timeout_secs: goal.get_node_start_idle_timeout_secs(),
-            max_timeout_secs,
+            node_add_idle_timeout_secs: with_timeout_default(
+                goal.get_node_add_idle_timeout_secs(),
+                DEFAULT_IDLE_TIMEOUT_SECS,
+            ),
+            node_start_idle_timeout_secs: with_timeout_default(
+                goal.get_node_start_idle_timeout_secs(),
+                DEFAULT_IDLE_TIMEOUT_SECS,
+            ),
+            max_timeout_secs: with_timeout_default(
+                goal.get_max_timeout_secs(),
+                DEFAULT_MAX_TIMEOUT_SECS,
+            ),
         })
     }
 

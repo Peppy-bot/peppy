@@ -9,7 +9,7 @@ use daemon_node::encoding::{
 use peppylib::{ActionMessenger, PeppyError};
 use tracing::info;
 
-use crate::commands::node::caller_env_overrides;
+use crate::commands::node::{DEFAULT_IDLE_TIMEOUT_SECS, caller_env_overrides};
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 use crate::terminal::ScrollingOutput;
@@ -17,8 +17,8 @@ use crate::terminal::ScrollingOutput;
 const CALLER_INSTANCE_ID: &str = "peppy-cli";
 const GOAL_TIMEOUT: Duration = Duration::from_secs(30);
 // Idle timeout for the overall launch result (resets on feedback from daemon)
-const IDLE_TIMEOUT: Duration = Duration::from_secs(600);
-// Absolute max timeout for the entire launch operation
+const IDLE_TIMEOUT: Duration = Duration::from_secs(DEFAULT_IDLE_TIMEOUT_SECS);
+// Absolute max timeout for the entire launch operation (2x per-operation max to allow for multi-node sequential processing)
 const MAX_TIMEOUT: Duration = Duration::from_secs(7200);
 const FEEDBACK_DRAIN_TIMEOUT: Duration = Duration::from_millis(50);
 const RESULT_POLL_TIMEOUT: Duration = Duration::from_millis(200);

@@ -47,7 +47,6 @@ Review this plan thoroughly before making any code changes. For every issue or r
 - Missing edge case coverage—be thorough.
 - Untested failure modes and error paths.
 - Tests must be human readable, prefer code clarity here over optimisation.
-- Always run `cargo fmt` and `cargo clippy --all-targets` in Rust projects to ensure compliance with code style
 
 ---
 

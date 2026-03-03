@@ -24,6 +24,11 @@ pub use env::caller_env_overrides;
 pub use init::NodeInitBuilder;
 pub use types::NodeName;
 
+/// Default idle timeout in seconds (resets on output).
+pub(crate) const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 600;
+/// Default absolute max timeout in seconds (safety net).
+pub(crate) const DEFAULT_MAX_TIMEOUT_SECS: u64 = 3600;
+
 /// Idle + absolute-max timeout pair used by `node add` and `node start` polling loops.
 pub(crate) struct TimeoutConfig {
     pub idle_secs: u64,
@@ -108,11 +113,11 @@ pub enum NodeCommands {
         /// Optional: specify a deterministic instance ID
         #[arg(long, hide = true)]
         instance_id: Option<String>,
-        /// Idle timeout in seconds — resets whenever output is received (default: 600)
-        #[arg(long, default_value = "600")]
+        /// Idle timeout in seconds — resets whenever output is received
+        #[arg(long, default_value_t = DEFAULT_IDLE_TIMEOUT_SECS)]
         idle_timeout: u64,
-        /// Absolute max timeout in seconds (safety net, default: 3600 = 1 hour)
-        #[arg(long, default_value = "3600")]
+        /// Absolute max timeout in seconds (safety net)
+        #[arg(long, default_value_t = DEFAULT_MAX_TIMEOUT_SECS)]
         max_timeout: u64,
         /// When set, bypass the confirmation prompt and stop running instances before overwriting
         #[arg(long)]
@@ -141,11 +146,11 @@ pub enum NodeCommands {
         /// Optional: specify a deterministic instance ID
         #[arg(long)]
         instance_id: Option<String>,
-        /// Idle timeout in seconds — resets whenever output is received (default: 600)
-        #[arg(long, default_value = "600")]
+        /// Idle timeout in seconds — resets whenever output is received
+        #[arg(long, default_value_t = DEFAULT_IDLE_TIMEOUT_SECS)]
         idle_timeout: u64,
-        /// Absolute max timeout in seconds (safety net, default: 3600 = 1 hour)
-        #[arg(long, default_value = "3600")]
+        /// Absolute max timeout in seconds (safety net)
+        #[arg(long, default_value_t = DEFAULT_MAX_TIMEOUT_SECS)]
         max_timeout: u64,
     },
     /// Prints out the runtime config of a node instance
