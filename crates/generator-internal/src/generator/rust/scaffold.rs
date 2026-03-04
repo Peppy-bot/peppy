@@ -1,4 +1,8 @@
 use super::identifiers::is_rust_keyword;
+use crate::generator::common::{
+    CrateDeployMode, EmbeddedConfigInternal, EmbeddedPeppylib, EmbeddedPmiInternal,
+    WorkspacePackageMetadata, cache_sibling_path, copy_dir_recursive,
+};
 use crate::{
     error::{Error, Result},
     generator::{
@@ -8,6 +12,9 @@ use crate::{
 };
 use config::encoding::compile_capnp;
 use proc_macro2::Span;
+use rust_embed::Embed;
+use std::io;
+use std::io::ErrorKind;
 use std::{
     collections::{BTreeMap, HashMap},
     fs,
@@ -17,11 +24,12 @@ use syn::{
     Attribute, File, FnArg, ImplItem, ImplItemFn, Item, ItemFn, ItemImpl, Type, parse_file,
     parse_quote,
 };
+use toml_edit::{DocumentMut, value};
 
 pub fn add_peppylib_dependencies(
     to_path: impl AsRef<Path>,
     peppy_dirs: &config::consts::PeppyDirs,
-    deploy_mode: crate::generator::common::CrateDeployMode,
+    deploy_mode: CrateDeployMode,
 ) -> Result<()> {
     let to_path = to_path.as_ref();
     let libs_dir = to_path.parent().ok_or_else(|| {
@@ -31,11 +39,7 @@ pub fn add_peppylib_dependencies(
         ))
     })?;
 
-    crate::generator::common::deploy_rust_crates_to_shared_cache(
-        libs_dir,
-        peppy_dirs,
-        deploy_mode,
-    )?;
+    deploy_rust_crates_to_shared_cache(libs_dir, peppy_dirs, deploy_mode)?;
     generate_lib_structure(to_path, "../peppylib")?;
 
     Ok(())
@@ -104,6 +108,187 @@ pub fn add_capnp_schemas(schemas: &HashMap<String, CapnpSchema>, crate_root: &Pa
     }
 
     compile_capnp(&schema_paths, &src_dir).map_err(Error::MessageEncoding)?;
+    Ok(())
+}
+
+fn symlink_dir(original: &Path, link: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    return std::os::unix::fs::symlink(original, link);
+}
+
+/// Replaces workspace-inherited fields (`version.workspace = true`, etc.)
+/// in a `Cargo.toml` with concrete values from the given metadata.
+fn localize_cargo_toml(cargo_toml_path: &Path, metadata: &WorkspacePackageMetadata) -> Result<()> {
+    if !cargo_toml_path.exists() {
+        return Ok(());
+    }
+
+    let contents = fs::read_to_string(cargo_toml_path)?;
+    let mut doc: DocumentMut = contents
+        .parse()
+        .map_err(|err| io::Error::new(ErrorKind::InvalidData, err))?;
+
+    if let Some(package) = doc.get_mut("package").and_then(|p| p.as_table_mut()) {
+        if package
+            .get("version")
+            .and_then(|v| v.as_table())
+            .and_then(|table| table.get("workspace"))
+            .and_then(|w| w.as_bool())
+            == Some(true)
+        {
+            package.insert("version", value(metadata.version));
+        }
+
+        if package
+            .get("edition")
+            .and_then(|v| v.as_table())
+            .and_then(|table| table.get("workspace"))
+            .and_then(|w| w.as_bool())
+            == Some(true)
+        {
+            package.insert("edition", value(metadata.edition));
+        }
+
+        if package
+            .get("authors")
+            .and_then(|v| v.as_table())
+            .and_then(|table| table.get("workspace"))
+            .and_then(|w| w.as_bool())
+            == Some(true)
+        {
+            package.remove("authors");
+        }
+    }
+
+    fs::write(cargo_toml_path, doc.to_string())?;
+    Ok(())
+}
+
+/// Copies all files from an embedded crate into `vendored_root/crate_dir`,
+/// then localizes the `Cargo.toml` to replace workspace inheritance.
+fn copy_embedded_crate<E: Embed>(
+    crate_dir: &str,
+    vendored_root: &Path,
+    metadata: &WorkspacePackageMetadata,
+) -> Result<()> {
+    let destination_dir = vendored_root.join(crate_dir);
+    if destination_dir.exists() {
+        fs::remove_dir_all(&destination_dir)?;
+    }
+
+    for file_path in E::iter() {
+        let file_path_str = file_path.as_ref();
+        let destination = destination_dir.join(file_path_str);
+
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        let content = E::get(file_path_str).ok_or_else(|| {
+            io::Error::new(
+                ErrorKind::NotFound,
+                format!("embedded file not found: {file_path_str}"),
+            )
+        })?;
+        fs::write(&destination, content.data.as_ref())?;
+
+        // Set execute permissions on binary files in tools/ directory
+        #[cfg(unix)]
+        if file_path_str.starts_with("tools/") {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&destination)?.permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&destination, perms)?;
+        }
+    }
+
+    localize_cargo_toml(&destination_dir.join("Cargo.toml"), metadata)?;
+    Ok(())
+}
+
+/// Deploys the three vendored Rust crates (peppylib, pmi-internal, config-internal)
+/// to a shared cache directory, then links or copies them into `node_libs_dir`.
+///
+/// In `Symlink` mode (the default), creates symlinks from `node_libs_dir/{crate}`
+/// to the shared cache. This avoids duplicating source files across nodes.
+///
+/// In `Copy` mode, copies the crate sources directly into `node_libs_dir`.
+/// This is needed for container builds where symlinks to host paths would break.
+///
+/// The cache is keyed by content hash + version, and uses file locking with a
+/// staging directory for concurrent-safe deployment.
+fn deploy_rust_crates_to_shared_cache(
+    node_libs_dir: &Path,
+    peppy_dirs: &config::consts::PeppyDirs,
+    deploy_mode: CrateDeployMode,
+) -> Result<()> {
+    let cache_key = format!("{}-{}", env!("RUST_CRATES_HASH"), env!("CARGO_PKG_VERSION"));
+    let cache_dir = peppy_dirs.rust_libs_cache_dir(&cache_key);
+
+    let parent = cache_dir
+        .parent()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "cache dir has no parent"))?;
+    fs::create_dir_all(parent)?;
+    let lock_path = cache_sibling_path(&cache_dir, ".lock");
+    let lock_file = fs::File::options()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)?;
+    lock_file.lock()?;
+
+    if !cache_dir.join(".complete").exists() {
+        let staging_dir =
+            cache_sibling_path(&cache_dir, &format!(".staging-{}", std::process::id()));
+        if staging_dir.exists() {
+            fs::remove_dir_all(&staging_dir)?;
+        }
+
+        let metadata = WorkspacePackageMetadata::embedded();
+        copy_embedded_crate::<EmbeddedPeppylib>("peppylib", &staging_dir, &metadata)?;
+        copy_embedded_crate::<EmbeddedPmiInternal>("pmi-internal", &staging_dir, &metadata)?;
+        copy_embedded_crate::<EmbeddedConfigInternal>("config-internal", &staging_dir, &metadata)?;
+
+        if cache_dir.exists() {
+            fs::remove_dir_all(&cache_dir)?;
+        }
+        fs::rename(&staging_dir, &cache_dir)?;
+        fs::write(cache_dir.join(".complete"), "")?;
+    }
+    drop(lock_file);
+
+    // Link or copy all three crates into node_libs_dir.
+    // All three are needed because the crates reference each other via relative
+    // sibling paths (e.g., peppylib has `config = { path = "../config-internal" }`),
+    // and Cargo resolves these paths relative to the symlink location, not the target.
+    for crate_name in &["peppylib", "pmi-internal", "config-internal"] {
+        let dest = node_libs_dir.join(crate_name);
+        let source = cache_dir.join(crate_name);
+
+        match deploy_mode {
+            CrateDeployMode::Symlink => {
+                match dest.symlink_metadata() {
+                    Ok(meta) if meta.file_type().is_symlink() => {
+                        if fs::read_link(&dest).ok().as_deref() == Some(source.as_path()) {
+                            continue;
+                        }
+                        fs::remove_file(&dest)?;
+                    }
+                    Ok(_) => fs::remove_dir_all(&dest)?,
+                    Err(_) => {}
+                }
+                symlink_dir(&source, &dest)?;
+            }
+            CrateDeployMode::Copy => {
+                if dest.exists() {
+                    fs::remove_dir_all(&dest)?;
+                }
+                copy_dir_recursive(&source, &dest)?;
+            }
+        }
+    }
+
     Ok(())
 }
 

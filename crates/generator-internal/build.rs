@@ -308,9 +308,8 @@ mod peppylib_build {
         let linux_so_bytes = extract_so_from_wheel(&wheels_dir);
 
         let linux_so_path = peppylib_dir.join("_peppylib.abi3.linux-aarch64.so");
-        std::fs::write(&linux_so_path, &linux_so_bytes).unwrap_or_else(|e| {
-            panic!("failed to write linux .so to {:?}: {e}", linux_so_path)
-        });
+        std::fs::write(&linux_so_path, &linux_so_bytes)
+            .unwrap_or_else(|e| panic!("failed to write linux .so to {:?}: {e}", linux_so_path));
 
         // Clean up wheel files to avoid stale artifacts
         std::fs::remove_dir_all(&wheels_dir).ok();
@@ -359,7 +358,13 @@ mod peppylib_build {
         let target_dir = cache_dir.join("target");
         let pixi_task = resolve_pixi_task();
 
-        build_native_so(&peppylib_py_dir, &peppylib_dir, &so_path, pixi_task, &target_dir);
+        build_native_so(
+            &peppylib_py_dir,
+            &peppylib_dir,
+            &so_path,
+            pixi_task,
+            &target_dir,
+        );
 
         #[cfg(target_os = "macos")]
         cross_compile_linux_so(&peppylib_py_dir, &target_dir, &peppylib_dir);

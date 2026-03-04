@@ -1,5 +1,6 @@
 use super::identifiers::is_python_keyword;
 use crate::error::Result;
+use crate::generator::common::{cache_sibling_path, copy_dir_recursive};
 use crate::generator::naming::{sanitize_component, unique_module_name};
 use crate::generator::types::{CapnpSchema, InterfaceArtifact, InterfaceKind};
 use rust_embed::Embed;
@@ -30,16 +31,16 @@ fn host_platform_suffix() -> String {
     format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH)
 }
 
-/// Returns the platform suffix to select for the given deploy mode.
+/// Returns the platform suffix to deploy.
 ///
-/// - `Symlink` (native execution): use the host platform's `.so`
-/// - `Copy` (container builds): use the Linux `.so` matching the host architecture
-fn target_platform_suffix(deploy_mode: crate::generator::common::CrateDeployMode) -> String {
-    match deploy_mode {
-        crate::generator::common::CrateDeployMode::Symlink => host_platform_suffix(),
-        crate::generator::common::CrateDeployMode::Copy => {
-            format!("linux-{}", std::env::consts::ARCH)
-        }
+/// - Non-container nodes run on the host, so use the host platform's `.so`.
+/// - Container nodes run inside a Linux VM, so use the Linux `.so` matching
+///   the host architecture.
+fn target_platform_suffix(is_container: bool) -> String {
+    if is_container {
+        format!("linux-{}", std::env::consts::ARCH)
+    } else {
+        host_platform_suffix()
     }
 }
 
@@ -53,14 +54,14 @@ fn is_platform_so(filename: &str) -> bool {
 pub fn add_peppylib_dependencies(
     to_path: &Path,
     peppy_dirs: &config::consts::PeppyDirs,
-    deploy_mode: crate::generator::common::CrateDeployMode,
+    is_container: bool,
 ) -> Result<()> {
     // Copy Python project templates (pyproject.toml, peppygen/__init__.py)
     crate::generator::common::copy_embedded_templates("peppygen/python", to_path, "")?;
 
     // Determine which platform's .so to deploy, and include it in the cache key
     // so that native and container caches are separate.
-    let target_suffix = target_platform_suffix(deploy_mode);
+    let target_suffix = target_platform_suffix(is_container);
     let expected_so_name = format!("{SO_PLATFORM_PREFIX}{target_suffix}.so");
     let cache_key = format!(
         "{}-{}-{}",
@@ -75,7 +76,7 @@ pub fn add_peppylib_dependencies(
             io::Error::new(io::ErrorKind::InvalidInput, "cache dir has no parent")
         })?;
         fs::create_dir_all(parent)?;
-        let lock_path = crate::generator::common::cache_sibling_path(&cache_dir, ".lock");
+        let lock_path = cache_sibling_path(&cache_dir, ".lock");
         let lock_file = fs::File::options()
             .read(true)
             .write(true)
@@ -85,10 +86,8 @@ pub fn add_peppylib_dependencies(
         lock_file.lock()?;
 
         if !cache_dir.join(".complete").exists() {
-            let staging_dir = crate::generator::common::cache_sibling_path(
-                &cache_dir,
-                &format!(".staging-{}", std::process::id()),
-            );
+            let staging_dir =
+                cache_sibling_path(&cache_dir, &format!(".staging-{}", std::process::id()));
             if staging_dir.exists() {
                 fs::remove_dir_all(&staging_dir)?;
             }
@@ -156,29 +155,13 @@ pub fn add_peppylib_dependencies(
         drop(lock_file);
     }
 
-    // Link or copy peppylib into the output directory
+    // Always copy peppylib into the output directory so each node gets the
+    // correct platform binary (host or Linux) without shared symlinks.
     let peppylib_dest = to_path.join("peppylib");
-    match deploy_mode {
-        crate::generator::common::CrateDeployMode::Symlink => {
-            match peppylib_dest.symlink_metadata() {
-                Ok(meta) if meta.file_type().is_symlink() => {
-                    if fs::read_link(&peppylib_dest).ok().as_deref() == Some(cache_dir.as_path()) {
-                        return Ok(());
-                    }
-                    fs::remove_file(&peppylib_dest)?;
-                }
-                Ok(_) => fs::remove_dir_all(&peppylib_dest)?,
-                Err(_) => {}
-            }
-            crate::generator::common::symlink_dir(&cache_dir, &peppylib_dest)?;
-        }
-        crate::generator::common::CrateDeployMode::Copy => {
-            if peppylib_dest.exists() {
-                fs::remove_dir_all(&peppylib_dest)?;
-            }
-            crate::generator::common::copy_dir_recursive(&cache_dir, &peppylib_dest)?;
-        }
+    if peppylib_dest.exists() {
+        fs::remove_dir_all(&peppylib_dest)?;
     }
+    copy_dir_recursive(&cache_dir, &peppylib_dest)?;
 
     Ok(())
 }
@@ -315,6 +298,8 @@ impl ModuleCategory {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::*;
+    use std::path::PathBuf;
     use tempfile::TempDir;
 
     #[test]
@@ -385,21 +370,43 @@ mod tests {
     }
 
     #[test]
-    fn target_platform_suffix_selects_linux_for_copy_mode() {
-        use crate::generator::common::CrateDeployMode;
+    fn target_platform_suffix_selects_host_for_non_container() {
+        let suffix = target_platform_suffix(false);
+        assert_eq!(suffix, host_platform_suffix());
+    }
 
-        let symlink_suffix = target_platform_suffix(CrateDeployMode::Symlink);
-        assert_eq!(symlink_suffix, host_platform_suffix());
-
-        let copy_suffix = target_platform_suffix(CrateDeployMode::Copy);
+    #[test]
+    fn target_platform_suffix_selects_linux_for_container() {
+        let suffix = target_platform_suffix(true);
         assert!(
-            copy_suffix.starts_with("linux-"),
-            "Copy mode should select linux platform, got: {copy_suffix}"
+            suffix.starts_with("linux-"),
+            "container should select linux platform, got: {suffix}"
         );
-        // Architecture should match the host
         assert!(
-            copy_suffix.ends_with(std::env::consts::ARCH),
-            "Copy mode should use host architecture, got: {copy_suffix}"
+            suffix.ends_with(std::env::consts::ARCH),
+            "container should use host architecture, got: {suffix}"
+        );
+    }
+
+    #[test]
+    fn cache_sibling_path_preserves_semver_dots() {
+        let cache_dir = PathBuf::from("/data/libs/rust/abc123def456-1.0.0");
+        assert_eq!(
+            cache_sibling_path(&cache_dir, ".lock"),
+            PathBuf::from("/data/libs/rust/abc123def456-1.0.0.lock"),
+        );
+        assert_eq!(
+            cache_sibling_path(&cache_dir, ".staging-42"),
+            PathBuf::from("/data/libs/rust/abc123def456-1.0.0.staging-42"),
+        );
+    }
+
+    #[test]
+    fn cache_sibling_path_works_without_dots() {
+        let cache_dir = PathBuf::from("/data/libs/rust/abc123def456");
+        assert_eq!(
+            cache_sibling_path(&cache_dir, ".lock"),
+            PathBuf::from("/data/libs/rust/abc123def456.lock"),
         );
     }
 }
