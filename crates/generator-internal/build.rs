@@ -238,13 +238,7 @@ mod peppylib_build {
         }
     }
 
-    pub fn run() {
-        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let peppylib_py_dir = manifest_dir.join("../peppylib-py");
-        let peppylib_dir = peppylib_py_dir.join("peppylib");
-        let so_path = peppylib_dir.join("_peppylib.abi3.so");
-
-        // Rerun when peppylib-py Rust source or Cargo.toml changes
+    fn register_rerun_triggers(peppylib_py_dir: &Path) {
         println!("cargo:rerun-if-changed=../peppylib-py/Cargo.toml");
         let src_dir = peppylib_py_dir.join("src");
         if src_dir.is_dir() {
@@ -252,27 +246,32 @@ mod peppylib_build {
                 println!("cargo:rerun-if-changed={}", entry.display());
             }
         }
+    }
 
-        // Use a separate CARGO_TARGET_DIR so maturin's inner `cargo build`
-        // does not deadlock on the workspace build lock held by the outer cargo.
-        let cache_dir = super::get_temp_cache_dir("peppylib-py");
-        let target_dir = cache_dir.join("target");
-
+    fn resolve_pixi_task() -> &'static str {
         let profile = std::env::var("PROFILE").unwrap();
-        let pixi_task = if profile == "release" {
+        if profile == "release" {
             "release"
         } else {
             "dev"
-        };
+        }
+    }
 
+    /// Builds the native `.so` via pixi and renames it to a platform-suffixed name.
+    fn build_native_so(
+        peppylib_py_dir: &Path,
+        peppylib_dir: &Path,
+        so_path: &Path,
+        pixi_task: &str,
+        target_dir: &Path,
+    ) {
         // Serialize concurrent pixi invocations to avoid "Text file busy" races
         // when multiple build scripts run pixi on the same environment.
         let lock_path = peppylib_py_dir.join(".pixi/.build.lock");
         let _pixi_lock = acquire_pixi_lock(&lock_path);
 
-        // 1. Build the native .so (host platform)
         println!("cargo:warning=Building peppylib-py native extension via pixi ({pixi_task})…");
-        run_pixi_task(&peppylib_py_dir, pixi_task, &target_dir);
+        run_pixi_task(peppylib_py_dir, pixi_task, target_dir);
 
         assert!(
             so_path.exists(),
@@ -281,54 +280,49 @@ mod peppylib_build {
         );
 
         let host_suffix = host_platform_suffix();
-
-        // 2. Rename native .so to platform-suffixed name
         let native_so_path = peppylib_dir.join(format!("_peppylib.abi3.{host_suffix}.so"));
-        std::fs::rename(&so_path, &native_so_path).unwrap_or_else(|e| {
+        std::fs::rename(so_path, &native_so_path).unwrap_or_else(|e| {
             panic!(
                 "failed to rename {:?} to {:?}: {e}",
                 so_path, native_so_path
             )
         });
+    }
 
-        // 3. On macOS: cross-compile the Linux .so via maturin + zig.
-        //    Always use release mode for the cross-compiled .so — it's a container
-        //    deployment artifact that never needs debug symbols, and debug builds
-        //    are ~4x larger (bloating the embedded binary and container image).
-        #[cfg(target_os = "macos")]
-        {
-            let cross_pixi_task = "cross-linux-release";
+    /// Cross-compiles the Linux `.so` via maturin + zig.
+    ///
+    /// Always uses release mode — the cross-compiled `.so` is a container deployment
+    /// artifact that never needs debug symbols, and debug builds are ~4x larger.
+    #[cfg(target_os = "macos")]
+    fn cross_compile_linux_so(peppylib_py_dir: &Path, target_dir: &Path, peppylib_dir: &Path) {
+        let cross_pixi_task = "cross-linux-release";
 
-            println!(
-                "cargo:warning=Cross-compiling peppylib-py for linux-aarch64 via pixi ({cross_pixi_task})…"
-            );
+        println!(
+            "cargo:warning=Cross-compiling peppylib-py for linux-aarch64 via pixi ({cross_pixi_task})…"
+        );
 
-            ensure_linux_rust_target();
-            run_pixi_task(&peppylib_py_dir, cross_pixi_task, &target_dir);
+        ensure_linux_rust_target();
+        run_pixi_task(peppylib_py_dir, cross_pixi_task, target_dir);
 
-            // The cross-compiled wheel is written to {target_dir}/wheels/
-            let wheels_dir = target_dir.join("wheels");
-            let linux_so_bytes = extract_so_from_wheel(&wheels_dir);
+        let wheels_dir = target_dir.join("wheels");
+        let linux_so_bytes = extract_so_from_wheel(&wheels_dir);
 
-            let linux_so_path = peppylib_dir.join("_peppylib.abi3.linux-aarch64.so");
-            std::fs::write(&linux_so_path, &linux_so_bytes).unwrap_or_else(|e| {
-                panic!("failed to write linux .so to {:?}: {e}", linux_so_path)
-            });
+        let linux_so_path = peppylib_dir.join("_peppylib.abi3.linux-aarch64.so");
+        std::fs::write(&linux_so_path, &linux_so_bytes).unwrap_or_else(|e| {
+            panic!("failed to write linux .so to {:?}: {e}", linux_so_path)
+        });
 
-            // Clean up wheel files to avoid stale artifacts
-            std::fs::remove_dir_all(&wheels_dir).ok();
-        }
+        // Clean up wheel files to avoid stale artifacts
+        std::fs::remove_dir_all(&wheels_dir).ok();
+    }
 
-        // Remove the original unsuffixed .so if it still exists (shouldn't after rename,
-        // but guard against partial rebuilds)
-        if so_path.exists() {
-            std::fs::remove_file(&so_path).ok();
-        }
-
-        // 4. Compute a combined hash of all platform .so files for cache invalidation
+    /// Computes a combined SHA-256 hash of all platform `.so` files and emits it
+    /// as the `PEPPYLIB_SO_HASH` env var for cache invalidation.
+    fn compute_and_emit_so_hash(peppylib_dir: &Path) {
         use sha2::{Digest, Sha256};
+
         let mut hasher = Sha256::new();
-        let mut so_files: Vec<_> = std::fs::read_dir(&peppylib_dir)
+        let mut so_files: Vec<_> = std::fs::read_dir(peppylib_dir)
             .expect("failed to read peppylib directory")
             .filter_map(|e| e.ok())
             .filter(|e| {
@@ -349,6 +343,33 @@ mod peppylib_build {
         let hash = hasher.finalize();
         let hex: String = hash.iter().map(|b| format!("{b:02x}")).collect();
         println!("cargo:rustc-env=PEPPYLIB_SO_HASH={}", &hex[..16]);
+    }
+
+    pub fn run() {
+        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let peppylib_py_dir = manifest_dir.join("../peppylib-py");
+        let peppylib_dir = peppylib_py_dir.join("peppylib");
+        let so_path = peppylib_dir.join("_peppylib.abi3.so");
+
+        register_rerun_triggers(&peppylib_py_dir);
+
+        // Use a separate CARGO_TARGET_DIR so maturin's inner `cargo build`
+        // does not deadlock on the workspace build lock held by the outer cargo.
+        let cache_dir = super::get_temp_cache_dir("peppylib-py");
+        let target_dir = cache_dir.join("target");
+        let pixi_task = resolve_pixi_task();
+
+        build_native_so(&peppylib_py_dir, &peppylib_dir, &so_path, pixi_task, &target_dir);
+
+        #[cfg(target_os = "macos")]
+        cross_compile_linux_so(&peppylib_py_dir, &target_dir, &peppylib_dir);
+
+        // Guard against partial rebuilds leaving an unsuffixed .so behind
+        if so_path.exists() {
+            std::fs::remove_file(&so_path).ok();
+        }
+
+        compute_and_emit_so_hash(&peppylib_dir);
     }
 }
 
@@ -486,8 +507,10 @@ mod rust_crates_build {
 }
 
 fn main() {
+    // TODO: Download ruff instead of building
     ruff_build::run();
     embed_ruff_binary();
+
     peppylib_build::run();
     rust_crates_build::run();
 }
