@@ -123,8 +123,6 @@ mod tests {
         let symlink_path = temp_dir.path().join("link");
         #[cfg(unix)]
         std::os::unix::fs::symlink(external_dir.path(), &symlink_path).unwrap();
-        #[cfg(windows)]
-        std::os::windows::fs::symlink_dir(external_dir.path(), &symlink_path).unwrap();
 
         // Create peppy.json5 in main directory
         let main_peppy = temp_dir.path().join(NODE_CONFIG_FILE);

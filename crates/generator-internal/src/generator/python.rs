@@ -40,6 +40,7 @@ pub struct PythonGenerator {
     sections: Vec<InterfaceArtifact>,
     parameters: config::NodeArguments,
     schemas: HashMap<String, CapnpSchema>,
+    is_container: bool,
 }
 
 impl PythonGenerator {
@@ -50,6 +51,14 @@ impl PythonGenerator {
     /// Sets the node parameters for code generation.
     pub fn set_parameters(&mut self, parameters: config::NodeArguments) {
         self.parameters = parameters;
+    }
+
+    /// Marks this generator as targeting a container deployment.
+    ///
+    /// When `true`, the Linux cross-compiled `.so` is deployed; otherwise the
+    /// host platform's `.so` is used.
+    pub fn set_container(&mut self, is_container: bool) {
+        self.is_container = is_container;
     }
 
     fn push_section(&mut self, section: InterfaceArtifact) {
@@ -317,12 +326,12 @@ impl LanguageGenerator for PythonGenerator {
         self,
         to_path: impl AsRef<Path>,
         peppy_dirs: &config::consts::PeppyDirs,
-        deploy_mode: crate::generator::common::CrateDeployMode,
+        _deploy_mode: crate::generator::common::CrateDeployMode,
     ) -> Result<()> {
         let to_path = to_path.as_ref();
         std::fs::create_dir_all(to_path)?;
 
-        scaffold::add_peppylib_dependencies(to_path, peppy_dirs, deploy_mode)?;
+        scaffold::add_peppylib_dependencies(to_path, peppy_dirs, self.is_container)?;
         scaffold::add_capnp_schemas(&self.schemas, to_path)?;
         scaffold::add_artifacts_to_lib(to_path, self.sections)?;
         scaffold::add_parameters_to_lib(&self.parameters, to_path)?;
