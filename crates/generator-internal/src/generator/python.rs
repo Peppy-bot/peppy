@@ -87,19 +87,18 @@ impl PythonGenerator {
             .map_err(crate::error::Error::MessageEncoding)?;
         let schema_source = artifacts.encoding_schema().to_string();
 
-        let file_stem = resolve_schema_file_stem(schema_key);
-        let base_name = file_stem.strip_suffix("_message").unwrap_or(&file_stem);
-        let struct_name = format!("{}Message", to_camel_case(base_name));
+        let resolved = resolve_schema_file_stem(schema_key);
+        let struct_name = format!("{}Message", to_camel_case(&resolved.base_name));
         let schema_text =
             schema_source.replacen("struct Message", &format!("struct {struct_name}"), 1);
 
         self.schemas.insert(
-            file_stem.clone(),
-            CapnpSchema::new(file_stem.clone(), schema_text),
+            resolved.file_stem.clone(),
+            CapnpSchema::new(resolved.file_stem.clone(), schema_text),
         );
 
         Ok(PythonSchemaInfo {
-            file_stem,
+            file_stem: resolved.file_stem,
             struct_name,
         })
     }

@@ -80,16 +80,17 @@ impl RustGenerator {
         artifacts: &CapnpSchemaArtifacts,
     ) -> Result<SchemaInfo> {
         let schema_source = artifacts.encoding_schema();
-        let file_stem = resolve_schema_file_stem(schema_key);
+        let resolved = resolve_schema_file_stem(schema_key);
         let struct_name = format!("{struct_prefix}Message");
         let struct_module = crate::generator::naming::normalize_snake_case(&struct_name);
         let schema = schema_source.replacen("struct Message", &format!("struct {struct_name}"), 1);
 
-        let capnp_schema = CapnpSchema::new(file_stem.clone(), schema);
-        self.schemas.insert(file_stem.clone(), capnp_schema);
+        let capnp_schema = CapnpSchema::new(resolved.file_stem.clone(), schema);
+        self.schemas
+            .insert(resolved.file_stem.clone(), capnp_schema);
 
         Ok(SchemaInfo {
-            file_stem,
+            file_stem: resolved.file_stem,
             struct_module,
         })
     }
@@ -299,10 +300,7 @@ impl RustGenerator {
                 Some(&response_data_ident),
             )?;
 
-            context.add_response_struct_with_metadata(
-                response_ident.clone(),
-                Some(&response_data_ident),
-            );
+            context.add_metadata_struct(response_ident.clone(), Some(&response_data_ident));
 
             let response_schema_key = format!("{}_response", spec.schema_key);
             let response_schema = self.register_schema(
@@ -343,14 +341,14 @@ impl RustGenerator {
                     let payload = response.payload();
                     let response_data = #deserializer_ident(payload.as_ref())?;
                     Ok(#response_ident {
-                        daemon_node: response.daemon_node().to_string(),
                         instance_id: response.instance_id().to_string(),
+                        daemon_node: response.daemon_node().to_string(),
                         data: response_data,
                     })
                 }
             }
         } else {
-            context.add_response_struct_with_metadata(response_ident.clone(), None);
+            context.add_metadata_struct(response_ident.clone(), None);
 
             let messenger_call = &spec.messenger_call;
             quote! {
@@ -361,8 +359,8 @@ impl RustGenerator {
                     let response = #messenger_call.await?;
 
                     Ok(#response_ident {
-                        daemon_node: response.daemon_node().to_string(),
                         instance_id: response.instance_id().to_string(),
+                        daemon_node: response.daemon_node().to_string(),
                     })
                 }
             }
@@ -591,28 +589,12 @@ impl LanguageGenerator for RustGenerator {
             None
         };
 
-        let request_struct_tokens = if let Some(ref data_ident) = request_data_struct_ident {
-            quote! {
-                #[derive(Debug, Clone)]
-                #[allow(dead_code)]
-                pub struct Request {
-                    pub instance_id: String,
-                    pub daemon_node: String,
-                    pub data: #data_ident,
-                }
-            }
-        } else {
-            quote! {
-                #[derive(Debug, Clone)]
-                #[allow(dead_code)]
-                pub struct Request {
-                    pub instance_id: String,
-                    pub daemon_node: String,
-                }
-            }
-        };
-        context.add_private_struct(request_struct_tokens);
-        let request_struct_ident = Some(Ident::new("Request", Span::call_site()));
+        let request_struct_ident = Ident::new("Request", Span::call_site());
+        context.add_metadata_struct(
+            request_struct_ident.clone(),
+            request_data_struct_ident.as_ref(),
+        );
+        let request_struct_ident = Some(request_struct_ident);
 
         let response_spec = if let Some(return_artifacts) = response_artifacts.as_ref() {
             let response_prefix = format!("{struct_prefix}Response");
@@ -721,28 +703,10 @@ impl LanguageGenerator for RustGenerator {
                 None
             };
 
-            let goal_request_struct_tokens = if let Some(ref data_ident) = goal_request_data_struct
-            {
-                quote! {
-                    #[derive(Debug, Clone)]
-                    #[allow(dead_code)]
-                    pub struct GoalRequest {
-                        pub instance_id: String,
-                        pub daemon_node: String,
-                        pub data: #data_ident,
-                    }
-                }
-            } else {
-                quote! {
-                    #[derive(Debug, Clone)]
-                    #[allow(dead_code)]
-                    pub struct GoalRequest {
-                        pub instance_id: String,
-                        pub daemon_node: String,
-                    }
-                }
-            };
-            context.add_private_struct(goal_request_struct_tokens);
+            context.add_metadata_struct(
+                Ident::new("GoalRequest", Span::call_site()),
+                goal_request_data_struct.as_ref(),
+            );
 
             let encoding = self.prepare_message_encoding(
                 &label,
@@ -807,14 +771,7 @@ impl LanguageGenerator for RustGenerator {
             let cancel_response_artifacts =
                 map_message_format(&cancel_label, Some(&cancel_response_format))?;
 
-            context.add_private_struct(quote! {
-                #[derive(Debug, Clone)]
-                #[allow(dead_code)]
-                pub struct CancelRequest {
-                    pub instance_id: String,
-                    pub daemon_node: String,
-                }
-            });
+            context.add_metadata_struct(Ident::new("CancelRequest", Span::call_site()), None);
 
             let _cancel_params = collect_function_params(
                 None,
@@ -872,14 +829,7 @@ impl LanguageGenerator for RustGenerator {
                 result.response_message_format.as_ref(),
             )?;
 
-            context.add_private_struct(quote! {
-                #[derive(Debug, Clone)]
-                #[allow(dead_code)]
-                pub struct ResultRequest {
-                    pub instance_id: String,
-                    pub daemon_node: String,
-                }
-            });
+            context.add_metadata_struct(Ident::new("ResultRequest", Span::call_site()), None);
 
             let _result_params = collect_function_params(
                 None,
@@ -1246,17 +1196,15 @@ impl LanguageGenerator for RustGenerator {
                     let response_message = #poll_call.await?;
                 };
 
-                context.add_response_struct_with_metadata(
-                    response_struct_ident.clone(),
-                    Some(&response_data_ident),
-                );
+                context
+                    .add_metadata_struct(response_struct_ident.clone(), Some(&response_data_ident));
 
                 let response_tokens = quote! {
                     let payload = response_message.payload();
                     let response_data = deserialize_response(&payload)?;
                     Ok(#response_struct_ident {
-                        daemon_node: response_message.daemon_node().to_string(),
                         instance_id: response_message.instance_id().to_string(),
+                        daemon_node: response_message.daemon_node().to_string(),
                         data: response_data,
                     })
                 };
