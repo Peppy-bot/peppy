@@ -246,20 +246,17 @@ mod peppylib_build {
                 println!("cargo:rerun-if-changed={}", entry.display());
             }
         }
-        // Watch the peppylib package directory (.so and .py files) so that
-        // cargo recompiles when rust_embed's embedded content changes.
+
+        // Watch .py source files in the peppylib package directory.
         let peppylib_dir = peppylib_py_dir.join("peppylib");
         if peppylib_dir.is_dir() {
             for entry in super::walkdir(&peppylib_dir) {
-                // Skip __pycache__ artifacts — they're excluded from embedding
-                // and change on every Python invocation.
-                if entry
-                    .components()
-                    .any(|c| c.as_os_str() == "__pycache__")
-                {
+                if entry.components().any(|c| c.as_os_str() == "__pycache__") {
                     continue;
                 }
-                println!("cargo:rerun-if-changed={}", entry.display());
+                if entry.extension().is_some_and(|ext| ext == "py") {
+                    println!("cargo:rerun-if-changed={}", entry.display());
+                }
             }
         }
     }
