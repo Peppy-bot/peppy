@@ -244,11 +244,7 @@ async fn run_add_cmd_with_streaming(
     let cmd: Vec<String> = cmd.iter().map(|s| expand_env_vars(s, env_vars)).collect();
 
     let (program, args) = if cmd.len() == 1 {
-        if cfg!(windows) {
-            ("cmd".to_string(), vec!["/C".to_string(), cmd[0].clone()])
-        } else {
-            ("sh".to_string(), vec!["-c".to_string(), cmd[0].clone()])
-        }
+        ("sh".to_string(), vec!["-c".to_string(), cmd[0].clone()])
     } else {
         (cmd[0].clone(), cmd[1..].to_vec())
     };

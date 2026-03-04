@@ -33,13 +33,9 @@ ERROR: pixi is not installed or not found in PATH
 
 pixi is required to build the Python bindings for peppylib.
 
-To install pixi, run one of the following commands:
+To install pixi, run:
 
-  Linux/macOS:
     curl -fsSL https://pixi.sh/install.sh | bash
-
-  Windows:
-    powershell -ExecutionPolicy ByPass -c "irm https://pixi.sh/install.ps1 | iex"
 
 For more information, visit: https://pixi.sh
 ================================================================================
@@ -63,13 +59,9 @@ ERROR: uv is not installed or not found in PATH
 
 uv is required to build the Python bindings for peppylib.
 
-To install uv, run one of the following commands:
+To install uv, run:
 
-  Linux/macOS:
     curl -LsSf https://astral.sh/uv/install.sh | sh
-
-  Windows:
-    powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
 
 For more information, visit: https://docs.astral.sh/uv/
 ================================================================================
