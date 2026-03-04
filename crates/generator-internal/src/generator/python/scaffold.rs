@@ -298,7 +298,6 @@ impl ModuleCategory {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use super::*;
     use std::path::PathBuf;
     use tempfile::TempDir;
 
