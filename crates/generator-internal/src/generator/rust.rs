@@ -19,7 +19,9 @@ use super::types::{
     cancel_action_response_format, non_empty_message_format,
 };
 use crate::error::Result;
-use crate::generator::naming::{non_empty_str, resolve_schema_file_stem, sanitize_component, to_camel_case};
+use crate::generator::naming::{
+    non_empty_str, resolve_schema_file_stem, sanitize_component, to_camel_case,
+};
 use config::encoding::{CapnpSchemaArtifacts, FunctionParam};
 use config::node::{
     ExposedAction, ExposedService, ExposedTopic, MessageFormat, SubscribedAction,
@@ -452,7 +454,6 @@ impl RustGenerator {
 
         Ok((method_tokens, vec![helper_tokens]))
     }
-
 }
 
 /// Describes the parameterizable parts of a subscribed action response method
@@ -1387,10 +1388,12 @@ impl LanguageGenerator for RustGenerator {
 
         let cancel_schema_key = format!("{action_struct_name}_cancel_goal");
         let cancel_response_format = cancel_action_response_format();
-        let cancel_artifacts = map_message_format(&cancel_schema_key, Some(&cancel_response_format))?
-            .expect("cancel response format should yield artifacts");
-        let (cancel_method, mut cancel_helpers) =
-            self.build_subscribed_action_response_method(&mut context, SubscribedActionResponseMethodSpec {
+        let cancel_artifacts =
+            map_message_format(&cancel_schema_key, Some(&cancel_response_format))?
+                .expect("cancel response format should yield artifacts");
+        let (cancel_method, mut cancel_helpers) = self.build_subscribed_action_response_method(
+            &mut context,
+            SubscribedActionResponseMethodSpec {
                 action_struct_name: &action_struct_name,
                 method_name: "cancel_goal",
                 response_struct_name: "CancelResponse",
@@ -1406,7 +1409,8 @@ impl LanguageGenerator for RustGenerator {
                         timeout,
                     )
                 },
-            })?;
+            },
+        )?;
         methods.push(cancel_method);
         helper_items.append(&mut cancel_helpers);
 
@@ -1422,10 +1426,13 @@ impl LanguageGenerator for RustGenerator {
         }
 
         let result_schema_key = format!("{action_struct_name}_get_result");
-        let result_artifacts =
-            map_message_format(&format!("{result_schema_key}_response"), result_response_format)?;
-        let (result_method, mut result_helpers) =
-            self.build_subscribed_action_response_method(&mut context, SubscribedActionResponseMethodSpec {
+        let result_artifacts = map_message_format(
+            &format!("{result_schema_key}_response"),
+            result_response_format,
+        )?;
+        let (result_method, mut result_helpers) = self.build_subscribed_action_response_method(
+            &mut context,
+            SubscribedActionResponseMethodSpec {
                 action_struct_name: &action_struct_name,
                 method_name: "get_result",
                 response_struct_name: "ResultResponse",
@@ -1441,7 +1448,8 @@ impl LanguageGenerator for RustGenerator {
                         timeout,
                     )
                 },
-            })?;
+            },
+        )?;
         methods.push(result_method);
         helper_items.append(&mut result_helpers);
 

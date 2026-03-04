@@ -10,7 +10,6 @@ use config::node::MessageFormat;
 use proc_macro2::{Ident, Literal, Span, TokenStream};
 use quote::quote;
 
-
 pub struct ServiceResponseSpec<'a> {
     pub format: &'a MessageFormat,
     pub struct_ident: Ident,
