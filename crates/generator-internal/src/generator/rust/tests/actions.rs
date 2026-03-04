@@ -662,7 +662,7 @@ fn subscribed_to_action() {
         &rendered,
         &[
             "format!(\"{} {} GoalResponse\", TARGET_NODE_NAME, TARGET_ACTION_NAME)",
-            "format!(\"{} {} ResultResponse\", TARGET_NODE_NAME, TARGET_ACTION_NAME)",
+            r#"TARGET_NODE_NAME, TARGET_ACTION_NAME, "ResultResponse""#,
             "format!(\"{} {} FeedbackMessage\", TARGET_NODE_NAME, TARGET_ACTION_NAME)",
         ],
     );
@@ -775,7 +775,7 @@ fn subscribed_to_two_actions_same_node() {
         move_arm,
         &[
             "format!(\"{} {} GoalResponse\", TARGET_NODE_NAME, TARGET_ACTION_NAME)",
-            "format!(\"{} {} ResultResponse\", TARGET_NODE_NAME, TARGET_ACTION_NAME)",
+            r#"TARGET_NODE_NAME, TARGET_ACTION_NAME, "ResultResponse""#,
             "format!(\"{} {} FeedbackMessage\", TARGET_NODE_NAME, TARGET_ACTION_NAME)",
         ],
     );
@@ -814,7 +814,7 @@ fn subscribed_to_two_actions_same_node() {
         rotate_servo,
         &[
             "format!(\"{} {} GoalResponse\", TARGET_NODE_NAME, TARGET_ACTION_NAME)",
-            "format!(\"{} {} ResultResponse\", TARGET_NODE_NAME, TARGET_ACTION_NAME)",
+            r#"TARGET_NODE_NAME, TARGET_ACTION_NAME, "ResultResponse""#,
             "format!(\"{} {} FeedbackMessage\", TARGET_NODE_NAME, TARGET_ACTION_NAME)",
         ],
     );

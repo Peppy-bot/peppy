@@ -1,5 +1,5 @@
 use super::deserialization::build_deserialize_fn;
-use super::serialization::{MessageEncodingSpec, build_serialize_payload};
+use super::serialization::MessageEncodingSpec;
 use super::services::{
     ServiceResponseSpec, build_response_payload_tokens, build_result_expr_from_values,
     build_return_type_from_params, deserialize_fields_from_format,
@@ -259,58 +259,20 @@ pub fn build_action_feedback_emit(
     encoding: Option<&MessageEncodingSpec>,
     label: &str,
 ) -> TokenStream {
-    let mut method_param_tokens = Vec::new();
-    let instance_id_ident = Ident::new("instance_id", Span::call_site());
-    for param in params {
-        if param.ident == instance_id_ident {
-            continue;
-        }
-        let ident = &param.ident;
-        let ty = &param.ty;
-        method_param_tokens.push(quote!(#ident: #ty));
-    }
-
-    let method_signature = if method_param_tokens.is_empty() {
-        quote!(&self)
-    } else {
-        quote!(&self, #(#method_param_tokens),*)
-    };
+    use super::topics::{EmitMethodSpec, build_emit_method};
 
     let label_literal = Literal::string(label);
+    let method_ident = Ident::new("emit_feedback", Span::call_site());
 
-    match encoding {
-        Some(spec) => {
-            let error_context = quote!(format!("{} {}", #label_literal, ACTION_NAME));
-            let serialize_block =
-                build_serialize_payload(&spec.builder_type, &[], &spec.assignments, &error_context);
-
-            quote! {
-                #[allow(clippy::too_many_arguments)]
-                pub async fn emit_feedback(#method_signature) -> crate::Result<()> {
-                    let payload = #serialize_block;
-                    self.feedback_publisher.publish(payload).await?;
-                    Ok(())
-                }
-            }
-        }
-        None => {
-            let ignore_params: Vec<TokenStream> = params
-                .iter()
-                .map(|param| {
-                    let ident = &param.ident;
-                    quote!(let _ = #ident;)
-                })
-                .collect();
-
-            quote! {
-                #[allow(clippy::too_many_arguments)]
-                pub async fn emit_feedback(#method_signature) -> crate::Result<()> {
-                    #(#ignore_params)*
-                    Err(crate::Error::MessageFormatUnavailable {
-                        context: format!("{} {}", #label_literal, ACTION_NAME),
-                    })
-                }
-            }
-        }
-    }
+    build_emit_method(EmitMethodSpec {
+        method_name: &method_ident,
+        params,
+        encoding,
+        receiver: quote!(&self),
+        publish_body: quote! {
+            self.feedback_publisher.publish(payload).await?;
+        },
+        error_context: quote!(format!("{} {}", #label_literal, ACTION_NAME)),
+        suppress_unused: Vec::new(),
+    })
 }

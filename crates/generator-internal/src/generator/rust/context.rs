@@ -30,6 +30,23 @@ impl GenerationContext {
         self.private_items.push(tokens);
     }
 
+    /// Registers a response struct with standard metadata fields: `daemon_node`, `instance_id`,
+    /// and an optional `data` field of the given type.
+    pub fn add_response_struct_with_metadata(
+        &mut self,
+        struct_ident: Ident,
+        data_ident: Option<&Ident>,
+    ) {
+        let mut fields = vec![
+            (Ident::new("daemon_node", Span::call_site()), quote!(String)),
+            (Ident::new("instance_id", Span::call_site()), quote!(String)),
+        ];
+        if let Some(data_ident) = data_ident {
+            fields.push((Ident::new("data", Span::call_site()), quote!(#data_ident)));
+        }
+        self.add_struct(struct_ident, fields);
+    }
+
     pub fn wrap_optional_type(&mut self, ty: TokenStream) -> TokenStream {
         quote!(Option<#ty>)
     }

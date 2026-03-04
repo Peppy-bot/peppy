@@ -184,6 +184,25 @@ pub fn sanitize_capnp_field_name(input: &str) -> String {
     }
 }
 
+/// Resolves a Cap'n Proto schema file stem from a raw schema key.
+///
+/// Sanitizes the key to snake_case, falls back to `"message"` if empty,
+/// and appends `"_message"` suffix when not already present.
+pub(crate) fn resolve_schema_file_stem(schema_key: &str) -> String {
+    let key_component = sanitize_component(schema_key);
+    let base_name = if key_component.is_empty() {
+        "message".to_string()
+    } else {
+        key_component
+    };
+
+    if base_name.ends_with("_message") {
+        base_name
+    } else {
+        format!("{base_name}_message")
+    }
+}
+
 /// Generates a unique module name by appending a numeric suffix on collision.
 ///
 /// `sanitize_fn` converts the raw name into a valid module name for the target language.
