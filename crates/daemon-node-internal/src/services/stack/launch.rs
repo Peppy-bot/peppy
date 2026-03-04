@@ -86,8 +86,9 @@ struct ProcessLaunchContext {
     log_file: Arc<StdMutex<File>>,
     log_path: PathBuf,
     env_vars: Vec<(String, String)>,
-    node_add_timeout_secs: u64,
-    node_start_timeout_secs: u64,
+    node_add_idle_timeout_secs: u64,
+    node_start_idle_timeout_secs: u64,
+    max_timeout_secs: u64,
 }
 
 #[derive(Clone)]
@@ -211,7 +212,8 @@ async fn run_node_add_and_forward_feedback(
     ctx: &ProcessLaunchContext,
     node_add_goal: &NodeAddGoal,
     goal_timeout: Duration,
-    result_timeout: Duration,
+    idle_timeout: Duration,
+    max_timeout: Duration,
 ) -> std::result::Result<NodeAddResult, String> {
     let goal_payload = node_add_goal
         .encode()
@@ -242,19 +244,26 @@ async fn run_node_add_and_forward_feedback(
             .unwrap_or_else(|| "node_add goal rejected".to_string()));
     }
 
-    let deadline = tokio::time::Instant::now() + result_timeout;
+    let absolute_deadline = tokio::time::Instant::now() + max_timeout;
+    let mut last_activity = tokio::time::Instant::now();
 
     loop {
         // Drain feedback so the publisher doesn't block on a full channel.
         loop {
             let now = tokio::time::Instant::now();
-            if now >= deadline {
-                return Err("timeout waiting for node_add result".to_string());
+            if now >= absolute_deadline {
+                return Err("timeout waiting for node_add result: max timeout exceeded".to_string());
             }
-            let remaining = deadline - now;
-            let drain_timeout = Duration::from_millis(50).min(remaining);
+            if now.duration_since(last_activity) >= idle_timeout {
+                return Err(format!(
+                    "timeout waiting for node_add result: no output received for {}s",
+                    idle_timeout.as_secs()
+                ));
+            }
+            let drain_timeout = Duration::from_millis(50);
             match tokio::time::timeout(drain_timeout, action_handle.on_next_feedback()).await {
                 Ok(Ok(msg)) => {
+                    last_activity = tokio::time::Instant::now();
                     let payload = msg.payload();
                     if let Ok(feedback) = NodeAddFeedback::decode(&payload) {
                         let launch_feedback = if feedback.is_stdout() {
@@ -271,11 +280,16 @@ async fn run_node_add_and_forward_feedback(
         }
 
         let now = tokio::time::Instant::now();
-        if now >= deadline {
-            return Err("timeout waiting for node_add result".to_string());
+        if now >= absolute_deadline {
+            return Err("timeout waiting for node_add result: max timeout exceeded".to_string());
         }
-        let remaining = deadline - now;
-        let poll_timeout = Duration::from_millis(200).min(remaining);
+        if now.duration_since(last_activity) >= idle_timeout {
+            return Err(format!(
+                "timeout waiting for node_add result: no output received for {}s",
+                idle_timeout.as_secs()
+            ));
+        }
+        let poll_timeout = Duration::from_millis(200);
 
         match ActionMessenger::request_result(&ctx.messenger, &action_handle, poll_timeout).await {
             Ok(msg) => {
@@ -327,7 +341,8 @@ async fn run_node_start_and_forward_feedback(
     ctx: &ProcessLaunchContext,
     node_start_goal: &NodeStartGoal,
     goal_timeout: Duration,
-    result_timeout: Duration,
+    idle_timeout: Duration,
+    max_timeout: Duration,
 ) -> std::result::Result<NodeStartResult, String> {
     let goal_payload = node_start_goal
         .encode()
@@ -358,19 +373,28 @@ async fn run_node_start_and_forward_feedback(
             .unwrap_or_else(|| "node_start goal rejected".to_string()));
     }
 
-    let deadline = tokio::time::Instant::now() + result_timeout;
+    let absolute_deadline = tokio::time::Instant::now() + max_timeout;
+    let mut last_activity = tokio::time::Instant::now();
 
     loop {
         // Drain feedback so the publisher doesn't block on a full channel.
         loop {
             let now = tokio::time::Instant::now();
-            if now >= deadline {
-                return Err("timeout waiting for node_start result".to_string());
+            if now >= absolute_deadline {
+                return Err(
+                    "timeout waiting for node_start result: max timeout exceeded".to_string(),
+                );
             }
-            let remaining = deadline - now;
-            let drain_timeout = Duration::from_millis(50).min(remaining);
+            if now.duration_since(last_activity) >= idle_timeout {
+                return Err(format!(
+                    "timeout waiting for node_start result: no output received for {}s",
+                    idle_timeout.as_secs()
+                ));
+            }
+            let drain_timeout = Duration::from_millis(50);
             match tokio::time::timeout(drain_timeout, action_handle.on_next_feedback()).await {
                 Ok(Ok(msg)) => {
+                    last_activity = tokio::time::Instant::now();
                     let payload = msg.payload();
                     if let Ok(feedback) = NodeStartFeedback::decode(&payload) {
                         let launch_feedback = if feedback.is_stdout() {
@@ -387,11 +411,16 @@ async fn run_node_start_and_forward_feedback(
         }
 
         let now = tokio::time::Instant::now();
-        if now >= deadline {
-            return Err("timeout waiting for node_start result".to_string());
+        if now >= absolute_deadline {
+            return Err("timeout waiting for node_start result: max timeout exceeded".to_string());
         }
-        let remaining = deadline - now;
-        let poll_timeout = Duration::from_millis(200).min(remaining);
+        if now.duration_since(last_activity) >= idle_timeout {
+            return Err(format!(
+                "timeout waiting for node_start result: no output received for {}s",
+                idle_timeout.as_secs()
+            ));
+        }
+        let poll_timeout = Duration::from_millis(200);
 
         match ActionMessenger::request_result(&ctx.messenger, &action_handle, poll_timeout).await {
             Ok(msg) => {
@@ -821,7 +850,8 @@ async fn add_nodes_to_stack(
     )
     .await;
 
-    let node_add_result_timeout = Duration::from_secs(ctx.node_add_timeout_secs);
+    let idle_timeout = Duration::from_secs(ctx.node_add_idle_timeout_secs);
+    let max_timeout = Duration::from_secs(ctx.max_timeout_secs);
     let goal_timeout = Duration::from_secs(30);
 
     for key in ordered {
@@ -836,10 +866,11 @@ async fn add_nodes_to_stack(
         )
         .await;
 
-        let timeout_secs = node_add_result_timeout.as_secs();
+        // Pass max_timeout_secs to the goal for daemon-side busy reporting
+        let goal_timeout_secs = ctx.max_timeout_secs;
         let node_add_goal = match &item.source {
             NodeSource::Fs(path) => {
-                NodeAddGoal::new(path.clone(), STACK_LAUNCH_GIT_HASH, timeout_secs)
+                NodeAddGoal::new(path.clone(), STACK_LAUNCH_GIT_HASH, goal_timeout_secs)
             }
             NodeSource::Git {
                 repo_url,
@@ -850,10 +881,10 @@ async fn add_nodes_to_stack(
                 repo_path.clone(),
                 repo_ref.clone(),
                 STACK_LAUNCH_GIT_HASH,
-                timeout_secs,
+                goal_timeout_secs,
             ),
             NodeSource::Http { url } => {
-                NodeAddGoal::new_http(url.clone(), STACK_LAUNCH_GIT_HASH, timeout_secs)
+                NodeAddGoal::new_http(url.clone(), STACK_LAUNCH_GIT_HASH, goal_timeout_secs)
             }
         }
         .with_env_vars(ctx.env_vars.clone());
@@ -862,7 +893,8 @@ async fn add_nodes_to_stack(
             ctx,
             &node_add_goal,
             goal_timeout,
-            node_add_result_timeout,
+            idle_timeout,
+            max_timeout,
         )
         .await
         {
@@ -892,7 +924,8 @@ async fn start_node_instances(
 ) -> std::result::Result<(), LaunchResult> {
     publish_stdout(ctx, "Starting nodes...", LaunchFeedbackStep::LauncherStep).await;
 
-    let node_start_result_timeout = Duration::from_secs(ctx.node_start_timeout_secs);
+    let idle_timeout = Duration::from_secs(ctx.node_start_idle_timeout_secs);
+    let max_timeout = Duration::from_secs(ctx.max_timeout_secs);
     let goal_timeout = Duration::from_secs(30);
 
     // Compute runtime config host/port.
@@ -945,11 +978,12 @@ async fn start_node_instances(
                 }
             };
 
+            // Pass max_timeout_secs to the goal for daemon-side busy reporting
             let node_start_goal = NodeStartGoal::new(
                 &runtime_config_json5,
                 item.node_name.as_str(),
                 item.node_tag.as_str(),
-                node_start_result_timeout.as_secs(),
+                ctx.max_timeout_secs,
             )
             .with_env_vars(ctx.env_vars.clone());
 
@@ -957,7 +991,8 @@ async fn start_node_instances(
                 ctx,
                 &node_start_goal,
                 goal_timeout,
-                node_start_result_timeout,
+                idle_timeout,
+                max_timeout,
             )
             .await
             {
@@ -1210,8 +1245,9 @@ async fn handle_goal_request(
             ..
         } = action_context;
         let env_vars = goal.env_vars.clone();
-        let node_add_timeout_secs = goal.node_add_timeout_secs;
-        let node_start_timeout_secs = goal.node_start_timeout_secs;
+        let node_add_idle_timeout_secs = goal.node_add_idle_timeout_secs;
+        let node_start_idle_timeout_secs = goal.node_start_idle_timeout_secs;
+        let max_timeout_secs = goal.max_timeout_secs;
         let ctx = ProcessLaunchContext {
             messenger,
             bound_daemon_node,
@@ -1221,8 +1257,9 @@ async fn handle_goal_request(
             log_file,
             log_path: log_path_clone.clone(),
             env_vars,
-            node_add_timeout_secs,
-            node_start_timeout_secs,
+            node_add_idle_timeout_secs,
+            node_start_idle_timeout_secs,
+            max_timeout_secs,
         };
         let result = process_launch(goal, ctx).await;
         let mut state_guard = state_clone.lock().await;

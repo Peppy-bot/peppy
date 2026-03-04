@@ -73,7 +73,8 @@ fn node_remove_command_succeeds() {
             start: false,
             args: Vec::new(),
             instance_id: None,
-            timeout: 60,
+            idle_timeout: 60,
+            max_timeout: 3600,
             force: false,
         },
     }
@@ -238,7 +239,8 @@ fn node_remove_command_force_bypasses_prompt_and_stops_instances() {
             start: true,
             args: Vec::new(),
             instance_id: Some(instance_id.to_string()),
-            timeout: 60,
+            idle_timeout: 60,
+            max_timeout: 3600,
             force: false,
         },
     }
@@ -378,7 +380,8 @@ fn node_remove_command_with_stop_instances_succeeds_and_stops_instances() {
             start: true,
             args: Vec::new(),
             instance_id: Some(instance_id.to_string()),
-            timeout: 60,
+            idle_timeout: 60,
+            max_timeout: 3600,
             force: false,
         },
     }
