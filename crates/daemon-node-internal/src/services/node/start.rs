@@ -1232,6 +1232,11 @@ pub fn start_node(
     for (key, value) in env_vars {
         command.env(key, value);
     }
+    // Set PWD to match the actual working directory so tools that read this
+    // variable (e.g. capnproto's KJ) see a consistent value. The caller's
+    // PWD is stripped by caller_env_overrides() since it refers to the
+    // caller's directory, not the node's instance dir.
+    command.env("PWD", working_dir);
     command.env(RUNTIME_CONFIG_VAR_NAME, &runtime_config_path);
 
     // Force unbuffered stdout/stderr for Python nodes. Without this, Python
