@@ -6,6 +6,7 @@ From: ubuntu:24.04
     Version {{ tag }}
 
 %environment
+    export DEBIAN_FRONTEND=noninteractive
     export PATH="/root/.cargo/bin:$PATH"
 
 %files
