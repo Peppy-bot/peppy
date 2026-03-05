@@ -134,13 +134,6 @@ mod capnp_build {
                 return;
             }
 
-            #[cfg(windows)]
-            let built_binary = {
-                let mut path = install_dir.join("bin").join("capnp");
-                path.set_extension("exe");
-                path
-            };
-            #[cfg(not(windows))]
             let built_binary = install_dir.join("bin").join("capnp");
 
             if !built_binary.exists() {

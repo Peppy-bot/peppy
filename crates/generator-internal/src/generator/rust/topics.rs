@@ -18,13 +18,38 @@ pub struct SubscribedTopicCallbackSpec<'a> {
     pub struct_prefix: &'a str,
 }
 
-pub fn build_topic_emit(
-    method_ident: &Ident,
-    params: &[FunctionParam],
-    encoding: Option<&MessageEncodingSpec>,
-    topic: &ExposedTopic,
-    label: &str,
-) -> TokenStream {
+/// Specification for building an emit-style method (topic emit or action feedback emit).
+pub struct EmitMethodSpec<'a> {
+    pub method_name: &'a Ident,
+    pub params: &'a [FunctionParam],
+    pub encoding: Option<&'a MessageEncodingSpec>,
+    /// Method receiver and leading params, e.g. `node_runner: &crate::NodeRunner` or `&self`.
+    pub receiver: TokenStream,
+    /// The code that publishes a serialized payload (used when encoding exists).
+    pub publish_body: TokenStream,
+    /// Expression for the error context in both success and error paths.
+    pub error_context: TokenStream,
+    /// Extra unused-suppression statements for the None (no-encoding) branch,
+    /// e.g. `let _ = node_runner;` when the receiver would otherwise be unused.
+    pub suppress_unused: Vec<TokenStream>,
+}
+
+/// Builds an emit-style async method that serializes params and publishes.
+///
+/// Shared logic for both `build_topic_emit` and `build_action_feedback_emit`:
+/// filters instance_id from params, branches on encoding presence, and either
+/// serializes + publishes or returns `MessageFormatUnavailable`.
+pub fn build_emit_method(spec: EmitMethodSpec<'_>) -> TokenStream {
+    let EmitMethodSpec {
+        method_name,
+        params,
+        encoding,
+        receiver,
+        publish_body,
+        error_context,
+        suppress_unused,
+    } = spec;
+
     let mut method_param_tokens = Vec::new();
     let instance_id_ident = Ident::new("instance_id", proc_macro2::Span::call_site());
     for param in params {
@@ -37,40 +62,21 @@ pub fn build_topic_emit(
     }
 
     let method_signature = if method_param_tokens.is_empty() {
-        quote!(node_runner: &crate::NodeRunner)
+        receiver
     } else {
-        quote!(node_runner: &crate::NodeRunner, #(#method_param_tokens),*)
+        quote!(#receiver, #(#method_param_tokens),*)
     };
-    let topic_literal = Literal::string(topic.name.as_str());
-    let qos_tokens = qos_profile_tokens(&topic.qos_profile);
-    let label_literal = Literal::string(label);
 
     match encoding {
         Some(spec) => {
-            let error_context = quote!(String::from(#label_literal));
             let serialize_block =
                 build_serialize_payload(&spec.builder_type, &[], &spec.assignments, &error_context);
 
             quote! {
                 #[allow(clippy::too_many_arguments)]
-                pub async fn #method_ident(#method_signature) -> crate::Result<()> {
+                pub async fn #method_name(#method_signature) -> crate::Result<()> {
                     let payload = #serialize_block;
-                    let qos = #qos_tokens;
-                    let as_topic = #topic_literal;
-                    let as_node_name = node_runner.processor().node_name();
-                    let as_instance_id = node_runner.processor().bound_instance_id();
-                    let with_daemon_node = node_runner.processor().bound_daemon_node();
-
-                    peppylib::TopicMessenger::emit(
-                        node_runner.messenger(),
-                        with_daemon_node,
-                        as_instance_id,
-                        as_node_name,
-                        as_topic,
-                        qos,
-                        payload,
-                    )
-                        .await?;
+                    #publish_body
                     Ok(())
                 }
             }
@@ -86,16 +92,55 @@ pub fn build_topic_emit(
 
             quote! {
                 #[allow(clippy::too_many_arguments)]
-                pub async fn #method_ident(#method_signature) -> crate::Result<()> {
-                    let _ = node_runner;
+                pub async fn #method_name(#method_signature) -> crate::Result<()> {
+                    #(#suppress_unused)*
                     #(#ignore_params)*
                     Err(crate::Error::MessageFormatUnavailable {
-                        context: String::from(#label_literal),
+                        context: #error_context,
                     })
                 }
             }
         }
     }
+}
+
+pub fn build_topic_emit(
+    method_ident: &Ident,
+    params: &[FunctionParam],
+    encoding: Option<&MessageEncodingSpec>,
+    topic: &ExposedTopic,
+    label: &str,
+) -> TokenStream {
+    let topic_literal = Literal::string(topic.name.as_str());
+    let qos_tokens = qos_profile_tokens(&topic.qos_profile);
+    let label_literal = Literal::string(label);
+
+    build_emit_method(EmitMethodSpec {
+        method_name: method_ident,
+        params,
+        encoding,
+        receiver: quote!(node_runner: &crate::NodeRunner),
+        publish_body: quote! {
+            let qos = #qos_tokens;
+            let as_topic = #topic_literal;
+            let as_node_name = node_runner.processor().node_name();
+            let as_instance_id = node_runner.processor().bound_instance_id();
+            let with_daemon_node = node_runner.processor().bound_daemon_node();
+
+            peppylib::TopicMessenger::emit(
+                node_runner.messenger(),
+                with_daemon_node,
+                as_instance_id,
+                as_node_name,
+                as_topic,
+                qos,
+                payload,
+            )
+                .await?;
+        },
+        error_context: quote!(String::from(#label_literal)),
+        suppress_unused: vec![quote!(let _ = node_runner;)],
+    })
 }
 
 pub fn build_subscribed_topic_callback(spec: SubscribedTopicCallbackSpec) -> Result<TokenStream> {

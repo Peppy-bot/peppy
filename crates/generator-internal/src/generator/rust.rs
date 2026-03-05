@@ -19,7 +19,9 @@ use super::types::{
     cancel_action_response_format, non_empty_message_format,
 };
 use crate::error::Result;
-use crate::generator::naming::{non_empty_str, sanitize_component, to_camel_case};
+use crate::generator::naming::{
+    non_empty_str, resolve_schema_file_stem, sanitize_component, to_camel_case,
+};
 use config::encoding::{CapnpSchemaArtifacts, FunctionParam};
 use config::node::{
     ExposedAction, ExposedService, ExposedTopic, MessageFormat, SubscribedAction,
@@ -78,29 +80,17 @@ impl RustGenerator {
         artifacts: &CapnpSchemaArtifacts,
     ) -> Result<SchemaInfo> {
         let schema_source = artifacts.encoding_schema();
-
-        let key_component = sanitize_component(schema_key);
-        let base_name = if key_component.is_empty() {
-            "message".to_string()
-        } else {
-            key_component
-        };
-
-        let file_stem = if base_name.ends_with("_message") {
-            base_name
-        } else {
-            format!("{base_name}_message")
-        };
-
+        let resolved = resolve_schema_file_stem(schema_key);
         let struct_name = format!("{struct_prefix}Message");
         let struct_module = crate::generator::naming::normalize_snake_case(&struct_name);
         let schema = schema_source.replacen("struct Message", &format!("struct {struct_name}"), 1);
 
-        let capnp_schema = CapnpSchema::new(file_stem.clone(), schema);
-        self.schemas.insert(file_stem.clone(), capnp_schema);
+        let capnp_schema = CapnpSchema::new(resolved.file_stem.clone(), schema);
+        self.schemas
+            .insert(resolved.file_stem.clone(), capnp_schema);
 
         Ok(SchemaInfo {
-            file_stem,
+            file_stem: resolved.file_stem,
             struct_module,
         })
     }
@@ -286,86 +276,97 @@ impl RustGenerator {
         Ok((method_tokens, helper_items, has_goal_response_data))
     }
 
-    /// Builds the cancel_goal method for subscribed actions using ActionMessenger::cancel_goal
-    fn build_subscribed_action_cancel_method(
+    /// Builds a subscribed action response method (cancel_goal or get_result).
+    ///
+    /// Both follow the same structure: register response artifacts, build a deserializer,
+    /// and generate a method that calls the appropriate ActionMessenger function.
+    fn build_subscribed_action_response_method(
         &mut self,
         context: &mut GenerationContext,
-        action_struct_name: &str,
-        schema_key: &str,
+        spec: SubscribedActionResponseMethodSpec<'_>,
     ) -> Result<(TokenStream, Vec<TokenStream>)> {
-        let cancel_response_format = cancel_action_response_format();
-        let response_artifacts = map_message_format(schema_key, Some(&cancel_response_format))?
-            .expect("cancel response format should yield artifacts");
+        let response_data_ident = Ident::new(spec.data_struct_name, Span::call_site());
+        let response_ident = Ident::new(spec.response_struct_name, Span::call_site());
+        let method_name_ident = Ident::new(spec.method_name, Span::call_site());
+        let deserializer_ident = Ident::new(spec.deserializer_name, Span::call_site());
 
-        let cancel_response_data_ident = Ident::new("CancelResponseData", Span::call_site());
-        let cancel_response_ident = Ident::new("CancelResponse", Span::call_site());
+        let mut helper_items = Vec::new();
+        let method_tokens = if let Some(response_artifacts) = spec.response_artifacts {
+            let _response_params = collect_function_params(
+                None,
+                Some(&response_artifacts),
+                &format!("{}{}", spec.action_struct_name, spec.response_struct_name),
+                context,
+                Some(&response_data_ident),
+            )?;
 
-        let _response_params = collect_function_params(
-            None,
-            Some(&response_artifacts),
-            &format!("{action_struct_name}CancelResponse"),
-            context,
-            Some(&cancel_response_data_ident),
-        )?;
+            context.add_metadata_struct(response_ident.clone(), Some(&response_data_ident));
 
-        let cancel_response_fields = vec![
-            (Ident::new("daemon_node", Span::call_site()), quote!(String)),
-            (Ident::new("instance_id", Span::call_site()), quote!(String)),
-            (
-                Ident::new("data", Span::call_site()),
-                quote!(#cancel_response_data_ident),
-            ),
-        ];
-        context.add_struct(cancel_response_ident.clone(), cancel_response_fields);
+            let response_schema_key = format!("{}_response", spec.schema_key);
+            let response_schema = self.register_schema(
+                &response_schema_key,
+                spec.schema_message_prefix,
+                &response_artifacts,
+            )?;
+            let reader_type = response_schema.reader_type_tokens();
 
-        let response_schema_key = format!("{schema_key}_response");
-        let response_schema = self.register_schema(
-            &response_schema_key,
-            "CancelResponseMessage",
-            &response_artifacts,
-        )?;
-        let reader_type = response_schema.reader_type_tokens();
+            let response_format = response_artifacts.message_format();
+            let data_label = spec.data_struct_name;
+            let response_label = spec.response_struct_name;
+            let context_expr = quote!(format!(
+                "{} {} {}",
+                TARGET_NODE_NAME, TARGET_ACTION_NAME, #response_label
+            ));
+            let (response_statements, response_inits, _) =
+                deserialize_format_fields(response_format, data_label, &context_expr)?;
 
-        let response_format = response_artifacts.message_format();
-        let context_expr = quote!(format!(
-            "{} {} CancelResponse",
-            TARGET_NODE_NAME, TARGET_ACTION_NAME
-        ));
-        let (response_statements, response_inits, _) =
-            deserialize_format_fields(response_format, "CancelResponseData", &context_expr)?;
+            let deserialize_helper = build_deserialize_fn(
+                &deserializer_ident,
+                &reader_type,
+                &context_expr,
+                &quote!(#response_data_ident),
+                &response_statements,
+                &quote!(#response_data_ident { #( #response_inits ),* }),
+            );
+            helper_items.push(deserialize_helper);
 
-        let deserialize_helper = build_deserialize_fn(
-            &Ident::new("deserialize_cancel_response", Span::call_site()),
-            &reader_type,
-            &context_expr,
-            &quote!(#cancel_response_data_ident),
-            &response_statements,
-            &quote!(#cancel_response_data_ident { #( #response_inits ),* }),
-        );
+            let messenger_call = &spec.messenger_call;
+            quote! {
+                pub async fn #method_name_ident(
+                    &self,
+                    timeout: std::time::Duration,
+                ) -> crate::Result<#response_ident> {
+                    let response = #messenger_call.await?;
 
-        let method_tokens = quote! {
-            pub async fn cancel_goal(
-                &self,
-                timeout: std::time::Duration,
-            ) -> crate::Result<#cancel_response_ident> {
-                let response = peppylib::ActionMessenger::cancel_goal(
-                    &self.messenger,
-                    &self.inner,
-                    timeout,
-                )
-                .await?;
+                    let payload = response.payload();
+                    let response_data = #deserializer_ident(payload.as_ref())?;
+                    Ok(#response_ident {
+                        instance_id: response.instance_id().to_string(),
+                        daemon_node: response.daemon_node().to_string(),
+                        data: response_data,
+                    })
+                }
+            }
+        } else {
+            context.add_metadata_struct(response_ident.clone(), None);
 
-                let payload = response.payload();
-                let response_data = deserialize_cancel_response(payload.as_ref())?;
-                Ok(#cancel_response_ident {
-                    daemon_node: response.daemon_node().to_string(),
-                    instance_id: response.instance_id().to_string(),
-                    data: response_data,
-                })
+            let messenger_call = &spec.messenger_call;
+            quote! {
+                pub async fn #method_name_ident(
+                    &self,
+                    timeout: std::time::Duration,
+                ) -> crate::Result<#response_ident> {
+                    let response = #messenger_call.await?;
+
+                    Ok(#response_ident {
+                        instance_id: response.instance_id().to_string(),
+                        daemon_node: response.daemon_node().to_string(),
+                    })
+                }
             }
         };
 
-        Ok((method_tokens, vec![deserialize_helper]))
+        Ok((method_tokens, helper_items))
     }
 
     /// Builds the on_next_feedback_message method for subscribed actions
@@ -451,117 +452,20 @@ impl RustGenerator {
 
         Ok((method_tokens, vec![helper_tokens]))
     }
+}
 
-    /// Builds the get_result method for subscribed actions using ActionMessenger::request_result
-    fn build_subscribed_action_result_method(
-        &mut self,
-        context: &mut GenerationContext,
-        action_struct_name: &str,
-        response_format: Option<&MessageFormat>,
-        schema_key: &str,
-    ) -> Result<(TokenStream, Vec<TokenStream>)> {
-        let response_artifacts =
-            map_message_format(&format!("{schema_key}_response"), response_format)?;
-
-        let result_response_data_ident = Ident::new("ResultResponseData", Span::call_site());
-        let result_response_ident = Ident::new("ResultResponse", Span::call_site());
-
-        let mut helper_items = Vec::new();
-        let method_tokens = if let Some(ref response_artifacts) = response_artifacts {
-            let _response_params = collect_function_params(
-                None,
-                Some(response_artifacts),
-                &format!("{action_struct_name}ResultResponse"),
-                context,
-                Some(&result_response_data_ident),
-            )?;
-
-            let result_response_fields = vec![
-                (Ident::new("daemon_node", Span::call_site()), quote!(String)),
-                (Ident::new("instance_id", Span::call_site()), quote!(String)),
-                (
-                    Ident::new("data", Span::call_site()),
-                    quote!(#result_response_data_ident),
-                ),
-            ];
-            context.add_struct(result_response_ident.clone(), result_response_fields);
-
-            let response_schema_key = format!("{schema_key}_response");
-            let response_schema = self.register_schema(
-                &response_schema_key,
-                "ResultResponseMessage",
-                response_artifacts,
-            )?;
-            let reader_type = response_schema.reader_type_tokens();
-
-            let response_format = response_artifacts.message_format();
-            let context_expr = quote!(format!(
-                "{} {} ResultResponse",
-                TARGET_NODE_NAME, TARGET_ACTION_NAME
-            ));
-            let (response_statements, response_inits, _) =
-                deserialize_format_fields(response_format, "ResultResponseData", &context_expr)?;
-
-            let deserialize_helper = build_deserialize_fn(
-                &Ident::new("deserialize_result_response", Span::call_site()),
-                &reader_type,
-                &context_expr,
-                &quote!(#result_response_data_ident),
-                &response_statements,
-                &quote!(#result_response_data_ident { #( #response_inits ),* }),
-            );
-            helper_items.push(deserialize_helper);
-
-            quote! {
-                pub async fn get_result(
-                    &self,
-                    timeout: std::time::Duration,
-                ) -> crate::Result<#result_response_ident> {
-                    let response = peppylib::ActionMessenger::request_result(
-                        &self.messenger,
-                        &self.inner,
-                        timeout,
-                    )
-                    .await?;
-
-                    let payload = response.payload();
-                    let response_data = deserialize_result_response(payload.as_ref())?;
-                    Ok(#result_response_ident {
-                        daemon_node: response.daemon_node().to_string(),
-                        instance_id: response.instance_id().to_string(),
-                        data: response_data,
-                    })
-                }
-            }
-        } else {
-            let result_response_fields = vec![
-                (Ident::new("daemon_node", Span::call_site()), quote!(String)),
-                (Ident::new("instance_id", Span::call_site()), quote!(String)),
-            ];
-            context.add_struct(result_response_ident.clone(), result_response_fields);
-
-            quote! {
-                pub async fn get_result(
-                    &self,
-                    timeout: std::time::Duration,
-                ) -> crate::Result<#result_response_ident> {
-                    let response = peppylib::ActionMessenger::request_result(
-                        &self.messenger,
-                        &self.inner,
-                        timeout,
-                    )
-                    .await?;
-
-                    Ok(#result_response_ident {
-                        daemon_node: response.daemon_node().to_string(),
-                        instance_id: response.instance_id().to_string(),
-                    })
-                }
-            }
-        };
-
-        Ok((method_tokens, helper_items))
-    }
+/// Describes the parameterizable parts of a subscribed action response method
+/// (cancel_goal or get_result).
+struct SubscribedActionResponseMethodSpec<'a> {
+    action_struct_name: &'a str,
+    method_name: &'a str,
+    response_struct_name: &'a str,
+    data_struct_name: &'a str,
+    deserializer_name: &'a str,
+    schema_message_prefix: &'a str,
+    schema_key: &'a str,
+    response_artifacts: Option<CapnpSchemaArtifacts>,
+    messenger_call: TokenStream,
 }
 
 struct SchemaInfo {
@@ -685,28 +589,12 @@ impl LanguageGenerator for RustGenerator {
             None
         };
 
-        let request_struct_tokens = if let Some(ref data_ident) = request_data_struct_ident {
-            quote! {
-                #[derive(Debug, Clone)]
-                #[allow(dead_code)]
-                pub struct Request {
-                    pub instance_id: String,
-                    pub daemon_node: String,
-                    pub data: #data_ident,
-                }
-            }
-        } else {
-            quote! {
-                #[derive(Debug, Clone)]
-                #[allow(dead_code)]
-                pub struct Request {
-                    pub instance_id: String,
-                    pub daemon_node: String,
-                }
-            }
-        };
-        context.add_private_struct(request_struct_tokens);
-        let request_struct_ident = Some(Ident::new("Request", Span::call_site()));
+        let request_struct_ident = Ident::new("Request", Span::call_site());
+        context.add_metadata_struct(
+            request_struct_ident.clone(),
+            request_data_struct_ident.as_ref(),
+        );
+        let request_struct_ident = Some(request_struct_ident);
 
         let response_spec = if let Some(return_artifacts) = response_artifacts.as_ref() {
             let response_prefix = format!("{struct_prefix}Response");
@@ -815,28 +703,10 @@ impl LanguageGenerator for RustGenerator {
                 None
             };
 
-            let goal_request_struct_tokens = if let Some(ref data_ident) = goal_request_data_struct
-            {
-                quote! {
-                    #[derive(Debug, Clone)]
-                    #[allow(dead_code)]
-                    pub struct GoalRequest {
-                        pub instance_id: String,
-                        pub daemon_node: String,
-                        pub data: #data_ident,
-                    }
-                }
-            } else {
-                quote! {
-                    #[derive(Debug, Clone)]
-                    #[allow(dead_code)]
-                    pub struct GoalRequest {
-                        pub instance_id: String,
-                        pub daemon_node: String,
-                    }
-                }
-            };
-            context.add_private_struct(goal_request_struct_tokens);
+            context.add_metadata_struct(
+                Ident::new("GoalRequest", Span::call_site()),
+                goal_request_data_struct.as_ref(),
+            );
 
             let encoding = self.prepare_message_encoding(
                 &label,
@@ -901,14 +771,7 @@ impl LanguageGenerator for RustGenerator {
             let cancel_response_artifacts =
                 map_message_format(&cancel_label, Some(&cancel_response_format))?;
 
-            context.add_private_struct(quote! {
-                #[derive(Debug, Clone)]
-                #[allow(dead_code)]
-                pub struct CancelRequest {
-                    pub instance_id: String,
-                    pub daemon_node: String,
-                }
-            });
+            context.add_metadata_struct(Ident::new("CancelRequest", Span::call_site()), None);
 
             let _cancel_params = collect_function_params(
                 None,
@@ -966,14 +829,7 @@ impl LanguageGenerator for RustGenerator {
                 result.response_message_format.as_ref(),
             )?;
 
-            context.add_private_struct(quote! {
-                #[derive(Debug, Clone)]
-                #[allow(dead_code)]
-                pub struct ResultRequest {
-                    pub instance_id: String,
-                    pub daemon_node: String,
-                }
-            });
+            context.add_metadata_struct(Ident::new("ResultRequest", Span::call_site()), None);
 
             let _result_params = collect_function_params(
                 None,
@@ -1340,22 +1196,15 @@ impl LanguageGenerator for RustGenerator {
                     let response_message = #poll_call.await?;
                 };
 
-                let response_struct_tokens = quote! {
-                    #[derive(Debug, Clone)]
-                    pub struct #response_struct_ident {
-                        pub daemon_node: String,
-                        pub instance_id: String,
-                        pub data: #response_data_ident,
-                    }
-                };
-                context.add_private_struct(response_struct_tokens);
+                context
+                    .add_metadata_struct(response_struct_ident.clone(), Some(&response_data_ident));
 
                 let response_tokens = quote! {
                     let payload = response_message.payload();
                     let response_data = deserialize_response(&payload)?;
                     Ok(#response_struct_ident {
-                        daemon_node: response_message.daemon_node().to_string(),
                         instance_id: response_message.instance_id().to_string(),
+                        daemon_node: response_message.daemon_node().to_string(),
                         data: response_data,
                     })
                 };
@@ -1486,10 +1335,29 @@ impl LanguageGenerator for RustGenerator {
         helper_items.append(&mut goal_helpers);
 
         let cancel_schema_key = format!("{action_struct_name}_cancel_goal");
-        let (cancel_method, mut cancel_helpers) = self.build_subscribed_action_cancel_method(
+        let cancel_response_format = cancel_action_response_format();
+        let cancel_artifacts =
+            map_message_format(&cancel_schema_key, Some(&cancel_response_format))?
+                .expect("cancel response format should yield artifacts");
+        let (cancel_method, mut cancel_helpers) = self.build_subscribed_action_response_method(
             &mut context,
-            &action_struct_name,
-            &cancel_schema_key,
+            SubscribedActionResponseMethodSpec {
+                action_struct_name: &action_struct_name,
+                method_name: "cancel_goal",
+                response_struct_name: "CancelResponse",
+                data_struct_name: "CancelResponseData",
+                deserializer_name: "deserialize_cancel_response",
+                schema_message_prefix: "CancelResponseMessage",
+                schema_key: &cancel_schema_key,
+                response_artifacts: Some(cancel_artifacts),
+                messenger_call: quote! {
+                    peppylib::ActionMessenger::cancel_goal(
+                        &self.messenger,
+                        &self.inner,
+                        timeout,
+                    )
+                },
+            },
         )?;
         methods.push(cancel_method);
         helper_items.append(&mut cancel_helpers);
@@ -1506,11 +1374,29 @@ impl LanguageGenerator for RustGenerator {
         }
 
         let result_schema_key = format!("{action_struct_name}_get_result");
-        let (result_method, mut result_helpers) = self.build_subscribed_action_result_method(
-            &mut context,
-            &action_struct_name,
+        let result_artifacts = map_message_format(
+            &format!("{result_schema_key}_response"),
             result_response_format,
-            &result_schema_key,
+        )?;
+        let (result_method, mut result_helpers) = self.build_subscribed_action_response_method(
+            &mut context,
+            SubscribedActionResponseMethodSpec {
+                action_struct_name: &action_struct_name,
+                method_name: "get_result",
+                response_struct_name: "ResultResponse",
+                data_struct_name: "ResultResponseData",
+                deserializer_name: "deserialize_result_response",
+                schema_message_prefix: "ResultResponseMessage",
+                schema_key: &result_schema_key,
+                response_artifacts: result_artifacts,
+                messenger_call: quote! {
+                    peppylib::ActionMessenger::request_result(
+                        &self.messenger,
+                        &self.inner,
+                        timeout,
+                    )
+                },
+            },
         )?;
         methods.push(result_method);
         helper_items.append(&mut result_helpers);

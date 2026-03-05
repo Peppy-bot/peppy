@@ -184,6 +184,41 @@ pub fn sanitize_capnp_field_name(input: &str) -> String {
     }
 }
 
+/// Resolved schema file stem with both the base name and the full file stem.
+pub(crate) struct ResolvedSchemaFileStem {
+    /// The sanitized base name (without the `_message` suffix).
+    pub base_name: String,
+    /// The full file stem (always ends with `_message`).
+    pub file_stem: String,
+}
+
+/// Resolves a Cap'n Proto schema file stem from a raw schema key.
+///
+/// Sanitizes the key to snake_case, falls back to `"message"` if empty,
+/// and appends `"_message"` suffix when not already present.
+pub(crate) fn resolve_schema_file_stem(schema_key: &str) -> ResolvedSchemaFileStem {
+    let key_component = sanitize_component(schema_key);
+    let base_name = if key_component.is_empty() {
+        "message".to_string()
+    } else {
+        key_component
+    };
+
+    if base_name.ends_with("_message") {
+        let stem_base = base_name.strip_suffix("_message").unwrap().to_string();
+        ResolvedSchemaFileStem {
+            base_name: stem_base,
+            file_stem: base_name,
+        }
+    } else {
+        let file_stem = format!("{base_name}_message");
+        ResolvedSchemaFileStem {
+            base_name,
+            file_stem,
+        }
+    }
+}
+
 /// Generates a unique module name by appending a numeric suffix on collision.
 ///
 /// `sanitize_fn` converts the raw name into a valid module name for the target language.
@@ -251,5 +286,33 @@ mod tests {
         assert_eq!(unique_module_name("foo", &mut counts, identity), "foo");
         assert_eq!(unique_module_name("foo", &mut counts, identity), "foo_1");
         assert_eq!(unique_module_name("foo", &mut counts, identity), "foo_2");
+    }
+
+    #[test]
+    fn resolve_schema_file_stem_appends_message_suffix() {
+        let resolved = resolve_schema_file_stem("my_topic");
+        assert_eq!(resolved.base_name, "my_topic");
+        assert_eq!(resolved.file_stem, "my_topic_message");
+    }
+
+    #[test]
+    fn resolve_schema_file_stem_keeps_existing_message_suffix() {
+        let resolved = resolve_schema_file_stem("goal_response_message");
+        assert_eq!(resolved.base_name, "goal_response");
+        assert_eq!(resolved.file_stem, "goal_response_message");
+    }
+
+    #[test]
+    fn resolve_schema_file_stem_empty_key_falls_back_to_message() {
+        let resolved = resolve_schema_file_stem("");
+        assert_eq!(resolved.base_name, "message");
+        assert_eq!(resolved.file_stem, "message_message");
+    }
+
+    #[test]
+    fn resolve_schema_file_stem_sanitizes_special_characters() {
+        let resolved = resolve_schema_file_stem("My-Topic");
+        assert_eq!(resolved.base_name, "my_topic");
+        assert_eq!(resolved.file_stem, "my_topic_message");
     }
 }

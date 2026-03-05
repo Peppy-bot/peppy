@@ -13,7 +13,7 @@ mod services;
 mod topics;
 mod type_mapping;
 
-use super::naming::{module_name_from_components, sanitize_component, to_camel_case};
+use super::naming::{module_name_from_components, resolve_schema_file_stem, to_camel_case};
 use super::types::{
     CapnpSchema, InterfaceArtifact, InterfaceKind, LanguageGenerator, SubscribedActionMessage,
     cancel_action_response_format, non_empty_message_format, validate_fixed_length_array_items,
@@ -87,29 +87,18 @@ impl PythonGenerator {
             .map_err(crate::error::Error::MessageEncoding)?;
         let schema_source = artifacts.encoding_schema().to_string();
 
-        let key_component = sanitize_component(schema_key);
-        let base_name = if key_component.is_empty() {
-            "message".to_string()
-        } else {
-            key_component
-        };
-        let file_stem = if base_name.ends_with("_message") {
-            base_name.clone()
-        } else {
-            format!("{base_name}_message")
-        };
-
-        let struct_name = format!("{}Message", to_camel_case(&base_name));
+        let resolved = resolve_schema_file_stem(schema_key);
+        let struct_name = format!("{}Message", to_camel_case(&resolved.base_name));
         let schema_text =
             schema_source.replacen("struct Message", &format!("struct {struct_name}"), 1);
 
         self.schemas.insert(
-            file_stem.clone(),
-            CapnpSchema::new(file_stem.clone(), schema_text),
+            resolved.file_stem.clone(),
+            CapnpSchema::new(resolved.file_stem.clone(), schema_text),
         );
 
         Ok(PythonSchemaInfo {
-            file_stem,
+            file_stem: resolved.file_stem,
             struct_name,
         })
     }

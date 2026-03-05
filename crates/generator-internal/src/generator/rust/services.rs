@@ -9,7 +9,6 @@ use config::encoding::FunctionParam;
 use config::node::MessageFormat;
 use proc_macro2::{Ident, Literal, Span, TokenStream};
 use quote::quote;
-use std::collections::HashMap;
 
 pub struct ServiceResponseSpec<'a> {
     pub format: &'a MessageFormat,
@@ -173,7 +172,35 @@ pub fn build_exposed_service_method(
                 )
             });
 
+    let has_payload = encoding.is_some();
     let mut helper_tokens = Vec::new();
+
+    // Build helper_params once (shared across encoding/no-encoding paths).
+    let mut helper_params: Vec<TokenStream> = Vec::new();
+    if has_payload {
+        helper_params.push(quote!(payload: &[u8]));
+    }
+    helper_params.push(quote!(handler: &F));
+    if use_service_name_const {
+        helper_params.push(quote!(daemon_node: String));
+        helper_params.push(quote!(instance_id: String));
+    } else if instance_from_request_context {
+        let instance_ident =
+            instance_binding_ident
+                .as_ref()
+                .ok_or_else(|| Error::InvariantViolation {
+                    context: String::from(
+                        "instance_id param should exist when provided from context",
+                    ),
+                })?;
+        helper_params.push(quote!(#instance_ident: String));
+    }
+    if let Some(instance_ident) = service_instance_param_ident.as_ref() {
+        helper_params.push(quote!(#instance_ident: &str));
+    }
+
+    // Build helper function body preamble from independent concerns.
+    let mut body_preamble: Vec<TokenStream> = Vec::new();
 
     if let Some(request_spec) = encoding {
         let request_format = request_format.ok_or_else(|| Error::InvariantViolation {
@@ -185,12 +212,12 @@ pub fn build_exposed_service_method(
         } else {
             request_struct
         };
-
         let instance_id_for_deserializer = if instance_from_request_context {
             None
         } else {
             instance_id_param
         };
+
         let request_deserializer = build_request_deserializer(&RequestDeserializerSpec {
             deserializer_fn_name: &request_deserializer_name,
             request_spec,
@@ -217,197 +244,82 @@ pub fn build_exposed_service_method(
             request_pattern.clone()
         };
 
-        let mut helper_params: Vec<TokenStream> = vec![quote!(payload: &[u8]), quote!(handler: &F)];
-
-        if use_service_name_const {
-            helper_params.push(quote!(daemon_node: String));
-            helper_params.push(quote!(instance_id: String));
-        } else if instance_from_request_context {
-            let instance_ident =
-                instance_binding_ident
-                    .as_ref()
-                    .ok_or_else(|| Error::InvariantViolation {
-                        context: String::from(
-                            "instance_id param should exist when provided from context",
-                        ),
-                    })?;
-            helper_params.push(quote!(#instance_ident: String));
-        }
-
-        if let Some(instance_ident) = service_instance_param_ident.as_ref() {
-            helper_params.push(quote!(#instance_ident: &str));
-        }
-
-        let helper_fn = if use_service_name_const {
-            let request_construction = if request_data_struct.is_some() {
-                quote!(let request = Request { instance_id, daemon_node, data: request_data };)
-            } else {
-                quote!(let request = Request { instance_id, daemon_node };)
-            };
-            quote! {
-                fn #handler_helper_name<F>(#(#helper_params),*) -> crate::Result<peppylib::Payload>
-                where
-                    F: Fn(#(#callback_param_types),*) -> crate::Result<#response_ty>,
-                {
-                    let #deserializer_pattern = #request_deserializer_name(payload)?;
-                    #request_construction
-
-                    let response_payload = #response_serialization;
-
-                    Ok(response_payload)
-                }
-            }
-        } else {
-            quote! {
-                fn #handler_helper_name<F>(#(#helper_params),*) -> crate::Result<peppylib::Payload>
-                where
-                    F: Fn(#(#callback_param_types),*) -> crate::Result<#response_ty>,
-                {
-                    let #deserializer_pattern = #request_deserializer_name(payload)?;
-
-                    let response_payload = #response_serialization;
-
-                    Ok(response_payload)
-                }
-            }
-        };
-        helper_tokens.push(helper_fn);
-    } else {
-        let mut helper_params: Vec<TokenStream> = vec![quote!(handler: &F)];
-
-        if use_service_name_const {
-            helper_params.push(quote!(daemon_node: String));
-            helper_params.push(quote!(instance_id: String));
-        } else if instance_from_request_context {
-            let instance_ident =
-                instance_binding_ident
-                    .as_ref()
-                    .ok_or_else(|| Error::InvariantViolation {
-                        context: String::from(
-                            "instance_id param should exist when provided from context",
-                        ),
-                    })?;
-            helper_params.push(quote!(#instance_ident: String));
-        }
-
-        if let Some(instance_ident) = service_instance_param_ident.as_ref() {
-            helper_params.push(quote!(#instance_ident: &str));
-        }
-
-        let helper_fn = if use_service_name_const {
-            quote! {
-                fn #handler_helper_name<F>(#(#helper_params),*) -> crate::Result<peppylib::Payload>
-                where
-                    F: Fn(#(#callback_param_types),*) -> crate::Result<#response_ty>,
-                {
-                    let request = Request { instance_id, daemon_node };
-
-                    let response_payload = #response_serialization;
-
-                    Ok(response_payload)
-                }
-            }
-        } else {
-            quote! {
-                fn #handler_helper_name<F>(#(#helper_params),*) -> crate::Result<peppylib::Payload>
-                where
-                    F: Fn(#(#callback_param_types),*) -> crate::Result<#response_ty>,
-                {
-                    let response_payload = #response_serialization;
-
-                    Ok(response_payload)
-                }
-            }
-        };
-        helper_tokens.push(helper_fn);
+        body_preamble
+            .push(quote!(let #deserializer_pattern = #request_deserializer_name(payload)?;));
     }
 
-    let request_context_ident = if encoding.is_some() || instance_from_request_context {
+    if use_service_name_const {
+        let request_construction = if has_payload && request_data_struct.is_some() {
+            quote!(let request = Request { instance_id, daemon_node, data: request_data };)
+        } else {
+            quote!(let request = Request { instance_id, daemon_node };)
+        };
+        body_preamble.push(request_construction);
+    }
+
+    let helper_fn = quote! {
+        fn #handler_helper_name<F>(#(#helper_params),*) -> crate::Result<peppylib::Payload>
+        where
+            F: Fn(#(#callback_param_types),*) -> crate::Result<#response_ty>,
+        {
+            #(#body_preamble)*
+
+            let response_payload = #response_serialization;
+
+            Ok(response_payload)
+        }
+    };
+    helper_tokens.push(helper_fn);
+
+    // Build helper call tokens by composing 3 independent concerns.
+    let request_context_ident = if has_payload || instance_from_request_context {
         Ident::new("request_context", Span::call_site())
     } else {
         Ident::new("_request_context", Span::call_site())
     };
 
-    let helper_call_tokens = if use_service_name_const {
-        if encoding.is_some() {
-            let mut helper_args: Vec<TokenStream> = vec![
-                quote!(payload.as_ref()),
-                quote!(&handler),
-                quote!(daemon_node),
-                quote!(instance_id),
-            ];
+    let needs_message_binding = use_service_name_const || instance_from_request_context;
+    let mut call_preamble: Vec<TokenStream> = Vec::new();
+    let mut helper_args: Vec<TokenStream> = Vec::new();
 
-            if let Some(arg) = service_instance_call_arg.clone() {
-                helper_args.push(arg);
-            }
-
-            quote!({
-                let message = #request_context_ident.message();
-                let payload = message.payload();
-                let daemon_node = message.daemon_node().to_string();
-                let instance_id = message.instance_id().to_string();
-                #handler_helper_name(#(#helper_args),*)
-            })
-        } else {
-            let mut helper_args: Vec<TokenStream> =
-                vec![quote!(&handler), quote!(daemon_node), quote!(instance_id)];
-
-            if let Some(arg) = service_instance_call_arg.clone() {
-                helper_args.push(arg);
-            }
-
-            quote!({
-                let message = #request_context_ident.message();
-                let daemon_node = message.daemon_node().to_string();
-                let instance_id = message.instance_id().to_string();
-                #handler_helper_name(#(#helper_args),*)
-            })
+    if needs_message_binding {
+        call_preamble.push(quote!(let message = #request_context_ident.message();));
+        // Extract payload from message when encoding is present, or when
+        // instance_from_request_context without use_service_name_const (preserves
+        // existing generated code shape).
+        if has_payload || (instance_from_request_context && !use_service_name_const) {
+            call_preamble.push(quote!(let payload = message.payload();));
         }
-    } else if encoding.is_some() {
-        let mut helper_args: Vec<TokenStream> = vec![quote!(payload.as_ref()), quote!(&handler)];
+    } else if has_payload {
+        call_preamble.push(quote!(let payload = #request_context_ident.message().payload();));
+    }
 
-        if instance_from_request_context {
-            helper_args.push(quote!(instance_id));
-        }
+    if has_payload {
+        helper_args.push(quote!(payload.as_ref()));
+    }
+    helper_args.push(quote!(&handler));
 
-        if let Some(arg) = service_instance_call_arg.clone() {
-            helper_args.push(arg);
-        }
+    if use_service_name_const {
+        call_preamble.push(quote!(let daemon_node = message.daemon_node().to_string();));
+        call_preamble.push(quote!(let instance_id = message.instance_id().to_string();));
+        helper_args.push(quote!(daemon_node));
+        helper_args.push(quote!(instance_id));
+    } else if instance_from_request_context {
+        call_preamble.push(quote!(let instance_id = message.instance_id().to_string();));
+        helper_args.push(quote!(instance_id));
+    }
 
-        if instance_from_request_context {
-            quote!({
-                let message = #request_context_ident.message();
-                let payload = message.payload();
-                let instance_id = message.instance_id().to_string();
-                #handler_helper_name(#(#helper_args),*)
-            })
-        } else {
-            quote!({
-                let payload = #request_context_ident.message().payload();
-                #handler_helper_name(#(#helper_args),*)
-            })
-        }
+    if let Some(arg) = &service_instance_call_arg {
+        helper_args.push(arg.clone());
+    }
+
+    let helper_call_tokens = if call_preamble.is_empty() {
+        quote!(#handler_helper_name(#(#helper_args),*))
     } else {
-        let mut helper_args: Vec<TokenStream> = vec![quote!(&handler)];
-
-        if instance_from_request_context {
-            helper_args.push(quote!(instance_id));
-        }
-
-        if let Some(arg) = service_instance_call_arg.clone() {
-            helper_args.push(arg);
-        }
-
-        if instance_from_request_context {
-            quote!({
-                let message = #request_context_ident.message();
-                let payload = message.payload();
-                let instance_id = message.instance_id().to_string();
-                #handler_helper_name(#(#helper_args),*)
-            })
-        } else {
-            quote!(#handler_helper_name(#(#helper_args),*))
-        }
+        quote!({
+            #(#call_preamble)*
+            #handler_helper_name(#(#helper_args),*)
+        })
     };
 
     let service_name_ref = if use_service_name_const {
@@ -611,7 +523,7 @@ pub fn build_request_deserializer(spec: &RequestDeserializerSpec) -> Result<Toke
         let schema_lookup = SchemaFieldLookup::new(request_format)?;
         let mut names = NameGenerator::new();
         let mut field_statements = Vec::new();
-        let mut handler_value_map: HashMap<String, Ident> = HashMap::new();
+        let mut handler_values: Vec<(String, Ident)> = Vec::with_capacity(wire_params.len());
         let mut instance_value_ident = None;
         let instance_field_key = instance_param.ident.to_string();
 
@@ -632,7 +544,7 @@ pub fn build_request_deserializer(spec: &RequestDeserializerSpec) -> Result<Toke
             if field_key == instance_field_key {
                 instance_value_ident = Some(value_ident);
             } else {
-                handler_value_map.insert(field_key, value_ident);
+                handler_values.push((field_key, value_ident));
             }
         }
 
@@ -644,13 +556,13 @@ pub fn build_request_deserializer(spec: &RequestDeserializerSpec) -> Result<Toke
         let mut ordered_request_values: Vec<Ident> = Vec::with_capacity(handler_params.len());
         for param in handler_params {
             let key = param.ident.to_string();
-            let value_ident =
-                handler_value_map
-                    .get(&key)
-                    .cloned()
-                    .ok_or_else(|| Error::InvariantViolation {
-                        context: format!("missing field `{key}` in request payload"),
-                    })?;
+            let value_ident = handler_values
+                .iter()
+                .find(|(k, _)| k == &key)
+                .map(|(_, v)| v.clone())
+                .ok_or_else(|| Error::InvariantViolation {
+                    context: format!("missing field `{key}` in request payload"),
+                })?;
             ordered_request_values.push(value_ident);
         }
 
@@ -757,7 +669,7 @@ pub fn deserialize_fields_from_format(
     let schema_lookup = SchemaFieldLookup::new(request_format)?;
     let mut names = NameGenerator::new();
     let mut field_statements = Vec::new();
-    let mut value_idents = Vec::new();
+    let mut value_idents = Vec::with_capacity(params.len());
 
     for param in params {
         let field_key = param.ident.to_string();
@@ -812,7 +724,7 @@ pub fn build_response_payload_tokens(
     let format = spec.format;
     let builder_ident = Ident::new("root", Span::call_site());
 
-    let mut assignments = Vec::new();
+    let mut assignments = Vec::with_capacity(format.0.len());
     let mut names = NameGenerator::new();
 
     for (field_name, schema) in &format.0 {
