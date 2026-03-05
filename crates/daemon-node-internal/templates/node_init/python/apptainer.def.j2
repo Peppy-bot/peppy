@@ -6,7 +6,6 @@ From: ubuntu:24.04
     Version {{ tag }}
 
 %environment
-    export DEBIAN_FRONTEND=noninteractive
     export PATH="/opt/{{ node_name }}/.venv/bin:$PATH"
 
 %files
@@ -14,6 +13,7 @@ From: ubuntu:24.04
 
 %post
     set -eux
+    export DEBIAN_FRONTEND=noninteractive
 
     apt-get update
     apt-get install -y --no-install-recommends \
