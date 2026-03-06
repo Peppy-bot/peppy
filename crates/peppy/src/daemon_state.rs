@@ -15,8 +15,8 @@ const DAEMON_STATE_FILENAME: &str = "daemon_state.json";
 /// and a temp directory in development.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct DaemonState {
-    /// The name of the node currently acting as the daemon node.
-    pub daemon_node_name: String,
+    /// The name of the node currently acting as the core node.
+    pub core_node_name: String,
     pub daemon_pid: Option<u32>,
     /// The port the messaging router is listening on.
     #[serde(default = "default_messaging_port")]
@@ -32,12 +32,12 @@ fn default_messaging_port() -> u16 {
 
 impl DaemonState {
     pub(crate) fn new(
-        daemon_node_name: impl Into<String>,
+        core_node_name: impl Into<String>,
         messaging_port: u16,
         git_hash: impl Into<String>,
     ) -> Self {
         Self {
-            daemon_node_name: daemon_node_name.into(),
+            core_node_name: core_node_name.into(),
             daemon_pid: Some(std::process::id()),
             messaging_port,
             git_hash: git_hash.into(),

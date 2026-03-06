@@ -92,14 +92,14 @@ pub fn build_exposed_action(
                 "GoalRequest",
                 &[
                     ("instance_id", "str"),
-                    ("daemon_node", "str"),
+                    ("core_node", "str"),
                     ("data", "GoalRequestData"),
                 ],
             );
         } else {
             builder.dataclass(
                 "GoalRequest",
-                &[("instance_id", "str"), ("daemon_node", "str")],
+                &[("instance_id", "str"), ("core_node", "str")],
             );
         }
 
@@ -111,7 +111,7 @@ pub fn build_exposed_action(
 
         builder.dataclass(
             "CancelRequest",
-            &[("instance_id", "str"), ("daemon_node", "str")],
+            &[("instance_id", "str"), ("core_node", "str")],
         );
 
         let cancel_format = cancel_action_response_format();
@@ -131,7 +131,7 @@ pub fn build_exposed_action(
     let result_handler_type = if let Some(result) = &action.result_service {
         builder.dataclass(
             "ResultRequest",
-            &[("instance_id", "str"), ("daemon_node", "str")],
+            &[("instance_id", "str"), ("core_node", "str")],
         );
 
         let result_resp_format = non_empty_message_format(result.response_message_format.as_ref());
@@ -197,11 +197,11 @@ pub fn build_exposed_action(
         builder.blank_line();
         if has_goal_request {
             builder.line(&format!(
-                "async def _handle_goal_payload(payload: bytes, handler: {ght}, daemon_node: str, instance_id: str) -> bytes:"
+                "async def _handle_goal_payload(payload: bytes, handler: {ght}, core_node: str, instance_id: str) -> bytes:"
             ));
         } else {
             builder.line(&format!(
-                "async def _handle_goal_payload(handler: {ght}, daemon_node: str, instance_id: str) -> bytes:"
+                "async def _handle_goal_payload(handler: {ght}, core_node: str, instance_id: str) -> bytes:"
             ));
         }
         builder.indent();
@@ -209,10 +209,10 @@ pub fn build_exposed_action(
         if has_goal_request {
             builder.line("request_data = _deserialize_goal_request(payload)");
             builder.line(
-                "request = GoalRequest(instance_id=instance_id, daemon_node=daemon_node, data=request_data)",
+                "request = GoalRequest(instance_id=instance_id, core_node=core_node, data=request_data)",
             );
         } else {
-            builder.line("request = GoalRequest(instance_id=instance_id, daemon_node=daemon_node)");
+            builder.line("request = GoalRequest(instance_id=instance_id, core_node=core_node)");
         }
 
         emit_handler_response_body(
@@ -229,10 +229,10 @@ pub fn build_exposed_action(
         let cancel_format = cancel_action_response_format();
         let cancel_handler_type = "Callable[[CancelRequest], CancelResponse]";
         builder.line(&format!(
-            "async def _handle_cancel_payload(handler: {cancel_handler_type}, daemon_node: str, instance_id: str) -> bytes:"
+            "async def _handle_cancel_payload(handler: {cancel_handler_type}, core_node: str, instance_id: str) -> bytes:"
         ));
         builder.indent();
-        builder.line("request = CancelRequest(instance_id=instance_id, daemon_node=daemon_node)");
+        builder.line("request = CancelRequest(instance_id=instance_id, core_node=core_node)");
 
         emit_handler_response_body(
             &mut builder,
@@ -252,10 +252,10 @@ pub fn build_exposed_action(
                 ),
             })?;
         builder.line(&format!(
-            "async def _handle_result_payload(handler: {rht}, daemon_node: str, instance_id: str) -> bytes:"
+            "async def _handle_result_payload(handler: {rht}, core_node: str, instance_id: str) -> bytes:"
         ));
         builder.indent();
-        builder.line("request = ResultRequest(instance_id=instance_id, daemon_node=daemon_node)");
+        builder.line("request = ResultRequest(instance_id=instance_id, core_node=core_node)");
 
         emit_handler_response_body(
             &mut builder,
@@ -285,7 +285,7 @@ pub fn build_exposed_action(
     builder.line("action = await peppylib.ActionMessenger.expose(");
     builder.indent();
     builder.line("node_runner.messenger(),");
-    builder.line("node_runner.bound_daemon_node(),");
+    builder.line("node_runner.bound_core_node(),");
     builder.line("node_runner.bound_instance_id(),");
     builder.line("node_runner.node_name(),");
     builder.line("ACTION_NAME,");
@@ -326,14 +326,14 @@ pub fn build_exposed_action(
         if has_goal_request {
             builder.line("payload = message.payload");
         }
-        builder.line("daemon_node = message.daemon_node");
+        builder.line("core_node = message.core_node");
         builder.line("instance_id = message.instance_id");
         if has_goal_request {
             builder.line(
-                "return await _handle_goal_payload(payload, handler, daemon_node, instance_id)",
+                "return await _handle_goal_payload(payload, handler, core_node, instance_id)",
             );
         } else {
-            builder.line("return await _handle_goal_payload(handler, daemon_node, instance_id)");
+            builder.line("return await _handle_goal_payload(handler, core_node, instance_id)");
         }
         builder.dedent();
         builder.line("await self.goal_service.handle_next_request(_on_request)");
@@ -349,9 +349,9 @@ pub fn build_exposed_action(
         builder.line("async def _on_request(request_context):");
         builder.indent();
         builder.line("message = request_context.message");
-        builder.line("daemon_node = message.daemon_node");
+        builder.line("core_node = message.core_node");
         builder.line("instance_id = message.instance_id");
-        builder.line("return await _handle_cancel_payload(handler, daemon_node, instance_id)");
+        builder.line("return await _handle_cancel_payload(handler, core_node, instance_id)");
         builder.dedent();
         builder.line("await self.cancel_service.handle_next_request(_on_request)");
         builder.dedent();
@@ -375,9 +375,9 @@ pub fn build_exposed_action(
         builder.line("async def _on_request(request_context):");
         builder.indent();
         builder.line("message = request_context.message");
-        builder.line("daemon_node = message.daemon_node");
+        builder.line("core_node = message.core_node");
         builder.line("instance_id = message.instance_id");
-        builder.line("return await _handle_result_payload(handler, daemon_node, instance_id)");
+        builder.line("return await _handle_result_payload(handler, core_node, instance_id)");
         builder.dedent();
         builder.line("await self.result_service.handle_next_request(_on_request)");
         builder.dedent();
@@ -521,7 +521,7 @@ pub fn build_subscribed_action(
     builder.dataclass(
         "CancelResponse",
         &[
-            ("daemon_node", "str"),
+            ("core_node", "str"),
             ("instance_id", "str"),
             ("data", "CancelResponseData"),
         ],
@@ -533,7 +533,7 @@ pub fn build_subscribed_action(
         builder.dataclass(
             "ResultResponse",
             &[
-                ("daemon_node", "str"),
+                ("core_node", "str"),
                 ("instance_id", "str"),
                 ("data", "ResultResponseData"),
             ],
@@ -541,7 +541,7 @@ pub fn build_subscribed_action(
     } else {
         builder.dataclass(
             "ResultResponse",
-            &[("daemon_node", "str"), ("instance_id", "str")],
+            &[("core_node", "str"), ("instance_id", "str")],
         );
     }
 
@@ -625,9 +625,9 @@ pub fn build_subscribed_action(
     // fire_goal @classmethod
     builder.line("@classmethod");
     if has_goal_request {
-        builder.line("async def fire_goal(cls, node_runner: peppylib.NodeRunner, request: GoalRequest, timeout: float, feedback_qos: peppylib.QoSProfile, target_daemon_node: Optional[str] = None, target_instance_id: Optional[str] = None) -> Self:");
+        builder.line("async def fire_goal(cls, node_runner: peppylib.NodeRunner, request: GoalRequest, timeout: float, feedback_qos: peppylib.QoSProfile, target_core_node: Optional[str] = None, target_instance_id: Optional[str] = None) -> Self:");
     } else {
-        builder.line("async def fire_goal(cls, node_runner: peppylib.NodeRunner, timeout: float, feedback_qos: peppylib.QoSProfile, target_daemon_node: Optional[str] = None, target_instance_id: Optional[str] = None) -> Self:");
+        builder.line("async def fire_goal(cls, node_runner: peppylib.NodeRunner, timeout: float, feedback_qos: peppylib.QoSProfile, target_core_node: Optional[str] = None, target_instance_id: Optional[str] = None) -> Self:");
     }
     builder.indent();
 
@@ -654,11 +654,11 @@ pub fn build_subscribed_action(
     builder.line("action_handle = await peppylib.ActionMessenger.send_goal(");
     builder.indent();
     builder.line("node_runner.messenger(),");
-    builder.line("node_runner.bound_daemon_node(),");
+    builder.line("node_runner.bound_core_node(),");
     builder.line("node_runner.bound_instance_id(),");
     builder.line("TARGET_NODE_NAME,");
     builder.line("TARGET_ACTION_NAME,");
-    builder.line("target_daemon_node,");
+    builder.line("target_core_node,");
     builder.line("target_instance_id,");
     builder.line("goal_payload,");
     builder.line("feedback_qos,");
@@ -693,7 +693,7 @@ pub fn build_subscribed_action(
 
     builder.line("payload = response.payload");
     builder.line("cancel_response_data = _deserialize_cancel_response(payload)");
-    builder.line("return CancelResponse(daemon_node=response.daemon_node, instance_id=response.instance_id, data=cancel_response_data)");
+    builder.line("return CancelResponse(core_node=response.core_node, instance_id=response.instance_id, data=cancel_response_data)");
 
     builder.dedent();
     builder.blank_line();
@@ -727,9 +727,9 @@ pub fn build_subscribed_action(
     if has_result_response {
         builder.line("payload = response.payload");
         builder.line("result_response_data = _deserialize_result_response(payload)");
-        builder.line("return ResultResponse(daemon_node=response.daemon_node, instance_id=response.instance_id, data=result_response_data)");
+        builder.line("return ResultResponse(core_node=response.core_node, instance_id=response.instance_id, data=result_response_data)");
     } else {
-        builder.line("return ResultResponse(daemon_node=response.daemon_node, instance_id=response.instance_id)");
+        builder.line("return ResultResponse(core_node=response.core_node, instance_id=response.instance_id)");
     }
 
     builder.dedent();

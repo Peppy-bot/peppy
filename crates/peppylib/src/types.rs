@@ -121,7 +121,7 @@ impl std::fmt::Debug for Message {
         f.debug_struct("Message")
             .field("key_expr", &self.key_expr())
             .field("instance_id", &self.instance_id())
-            .field("daemon_node", &self.daemon_node())
+            .field("core_node", &self.core_node())
             .field("payload", &self.payload())
             .finish()
     }
@@ -143,9 +143,9 @@ impl Message {
         self.0.instance_id()
     }
 
-    /// Get the daemon node of the sender.
-    pub fn daemon_node(&self) -> &str {
-        self.0.daemon_node()
+    /// Get the core node of the sender.
+    pub fn core_node(&self) -> &str {
+        self.0.core_node()
     }
 }
 

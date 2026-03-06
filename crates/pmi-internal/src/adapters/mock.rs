@@ -261,18 +261,18 @@ mod tests {
 
     // Key expression format: target_daemon/caller_daemon/target_instance/caller_instance/...
     // Instance ID is extracted from segment index 3 (caller_instance)
-    // Daemon node is extracted from segment index 1 (caller_daemon)
+    // Core node is extracted from segment index 1 (caller_daemon)
     const INSTANCE_ID: &str = "test_instance";
-    const DAEMON_NODE: &str = "test_daemon";
+    const CORE_NODE: &str = "test_core_node";
 
     /// Creates a valid key expression with the expected format for TopicMessage
     fn make_key_expr(topic: &str) -> String {
         // Format: target_daemon/caller_daemon/target_instance/caller_instance/topic
         // Segments: 0=target_daemon, 1=caller_daemon, 2=target_instance, 3=caller_instance
-        // TopicMessage extracts: instance_id from index 3, daemon_node from index 1
+        // TopicMessage extracts: instance_id from index 3, core_node from index 1
         format!(
             "target_daemon/{}/target_instance/{}/{}",
-            DAEMON_NODE, INSTANCE_ID, topic
+            CORE_NODE, INSTANCE_ID, topic
         )
     }
 
@@ -361,7 +361,7 @@ mod tests {
         assert!(received.is_some());
         let received_msg = received.unwrap();
         assert_eq!(received_msg.instance_id(), INSTANCE_ID);
-        assert_eq!(received_msg.daemon_node(), DAEMON_NODE);
+        assert_eq!(received_msg.core_node(), CORE_NODE);
         assert_eq!(received_msg.payload(), message.payload());
 
         // Test shutdown
@@ -542,7 +542,7 @@ mod tests {
     #[test]
     fn test_topic_matches_service_patterns() {
         // Real patterns from the service messenger
-        // Subscription pattern: {bound_daemon_node}/*/{as_instance_id}/*/{service_root}/request/**
+        // Subscription pattern: {bound_core_node}/*/{as_instance_id}/*/{service_root}/request/**
         // Request topic: {target_daemon}/{caller_daemon}/{target_instance}/{caller_instance}/{service_root}/request/{request_id}
 
         // Pattern 1: Specific daemon, specific instance
@@ -563,10 +563,10 @@ mod tests {
         let topic = "_any_/caller_daemon/_any_/caller_instance/service/node/ping/request/12345";
         assert!(MockAdapter::topic_matches(pattern, topic));
 
-        // DaemonNode uses its own name as the bound daemon (e.g., "daemon_node")
-        // This allows targeted requests to reach the daemon node specifically
-        let pattern = "daemon_node/*/listener_instance/*/service/node/ping/request/**";
-        let topic = "daemon_node/caller_daemon/listener_instance/caller_instance/service/node/ping/request/12345";
+        // CoreNode uses its own name as the bound daemon (e.g., "core_node")
+        // This allows targeted requests to reach the core node specifically
+        let pattern = "core_node/*/listener_instance/*/service/node/ping/request/**";
+        let topic = "core_node/caller_daemon/listener_instance/caller_instance/service/node/ping/request/12345";
         assert!(MockAdapter::topic_matches(pattern, topic));
     }
 }

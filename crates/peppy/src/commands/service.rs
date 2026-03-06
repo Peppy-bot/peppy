@@ -1,5 +1,5 @@
 mod builder;
-mod daemon_node;
+mod core_node;
 mod messaging_router;
 
 pub mod install;
@@ -19,7 +19,7 @@ pub enum ServiceCommands {
         /// Messaging engine to use (zenoh by default)
         #[arg(long, default_value = "zenoh")]
         messaging_engine: String,
-        /// Optional name for the daemon node
+        /// Optional name for the core node
         #[arg(long)]
         daemon_name: Option<String>,
     },
@@ -29,7 +29,7 @@ pub enum ServiceCommands {
     Stop {},
     /// Uninstall the peppy background service.
     Uninstall {},
-    /// Reset the current daemon node stack (clears all nodes except the daemon).
+    /// Reset the current core node stack (clears all nodes except the daemon).
     Reset {},
 }
 

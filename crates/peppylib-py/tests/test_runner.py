@@ -38,7 +38,7 @@ from common import (
     wait_for_service,
 )
 
-TEST_DAEMON_NODE = "test_daemon"
+TEST_CORE_NODE = "test_daemon"
 SHUTDOWN_SENDER_INSTANCE_ID = "test_shutdown_sender"
 
 
@@ -53,10 +53,10 @@ async def _wait_for_service(
     await wait_for_service(
         messenger,
         service_name,
-        TEST_DAEMON_NODE,
+        TEST_CORE_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
         TEST_NODE_NAME,
-        TEST_DAEMON_NODE,
+        TEST_CORE_NODE,
         TEST_INSTANCE_ID,
         runner_thread,
         error_queue,
@@ -79,7 +79,7 @@ async def test_daemon_runner_succeed(monkeypatch):
                 router.host,
                 router.port,
                 TEST_NODE_NAME,
-                TEST_DAEMON_NODE,
+                TEST_CORE_NODE,
                 TEST_INSTANCE_ID,
                 {"frequency_hz": TEST_FREQUENCY_HZ},
             )
@@ -119,11 +119,11 @@ async def test_daemon_runner_succeed(monkeypatch):
             # Poll health service
             health_response = await ServiceMessenger.poll(
                 messenger,
-                TEST_DAEMON_NODE,
+                TEST_CORE_NODE,
                 SHUTDOWN_SENDER_INSTANCE_ID,
                 TEST_NODE_NAME,
                 NODE_HEALTH_SERVICE,
-                TEST_DAEMON_NODE,
+                TEST_CORE_NODE,
                 TEST_INSTANCE_ID,
                 b"health",
                 2.0,
@@ -133,11 +133,11 @@ async def test_daemon_runner_succeed(monkeypatch):
             # Send shutdown
             shutdown_response = await ServiceMessenger.poll(
                 messenger,
-                TEST_DAEMON_NODE,
+                TEST_CORE_NODE,
                 SHUTDOWN_SENDER_INSTANCE_ID,
                 TEST_NODE_NAME,
                 SHUTDOWN_SERVICE,
-                TEST_DAEMON_NODE,
+                TEST_CORE_NODE,
                 TEST_INSTANCE_ID,
                 b"shutdown",
                 2.0,
@@ -422,7 +422,7 @@ async def test_node_ready_but_not_healthy(monkeypatch):
                 router.host,
                 router.port,
                 TEST_NODE_NAME,
-                TEST_DAEMON_NODE,
+                TEST_CORE_NODE,
                 TEST_INSTANCE_ID,
                 {"frequency_hz": TEST_FREQUENCY_HZ},
             )
@@ -464,11 +464,11 @@ async def test_node_ready_but_not_healthy(monkeypatch):
             # Poll ready service — should echo back
             ready_response = await ServiceMessenger.poll(
                 messenger,
-                TEST_DAEMON_NODE,
+                TEST_CORE_NODE,
                 SHUTDOWN_SENDER_INSTANCE_ID,
                 TEST_NODE_NAME,
                 NODE_READY_SERVICE,
-                TEST_DAEMON_NODE,
+                TEST_CORE_NODE,
                 TEST_INSTANCE_ID,
                 b"ready",
                 2.0,
@@ -487,11 +487,11 @@ async def test_node_ready_but_not_healthy(monkeypatch):
             # Health service should NOT be reachable while setup is blocked
             health_reachable = await ServiceMessenger.is_reachable(
                 messenger,
-                TEST_DAEMON_NODE,
+                TEST_CORE_NODE,
                 SHUTDOWN_SENDER_INSTANCE_ID,
                 TEST_NODE_NAME,
                 NODE_HEALTH_SERVICE,
-                TEST_DAEMON_NODE,
+                TEST_CORE_NODE,
                 TEST_INSTANCE_ID,
             )
             assert not health_reachable, (
@@ -502,11 +502,11 @@ async def test_node_ready_but_not_healthy(monkeypatch):
             with pytest.raises(ConnectionError):
                 await ServiceMessenger.poll(
                     messenger,
-                    TEST_DAEMON_NODE,
+                    TEST_CORE_NODE,
                     SHUTDOWN_SENDER_INSTANCE_ID,
                     TEST_NODE_NAME,
                     NODE_HEALTH_SERVICE,
-                    TEST_DAEMON_NODE,
+                    TEST_CORE_NODE,
                     TEST_INSTANCE_ID,
                     b"health",
                     0.2,
@@ -526,11 +526,11 @@ async def test_node_ready_but_not_healthy(monkeypatch):
             # Poll health service — should now succeed
             health_response = await ServiceMessenger.poll(
                 messenger,
-                TEST_DAEMON_NODE,
+                TEST_CORE_NODE,
                 SHUTDOWN_SENDER_INSTANCE_ID,
                 TEST_NODE_NAME,
                 NODE_HEALTH_SERVICE,
-                TEST_DAEMON_NODE,
+                TEST_CORE_NODE,
                 TEST_INSTANCE_ID,
                 b"health",
                 2.0,
@@ -540,11 +540,11 @@ async def test_node_ready_but_not_healthy(monkeypatch):
             # Send shutdown
             shutdown_response = await ServiceMessenger.poll(
                 messenger,
-                TEST_DAEMON_NODE,
+                TEST_CORE_NODE,
                 SHUTDOWN_SENDER_INSTANCE_ID,
                 TEST_NODE_NAME,
                 SHUTDOWN_SERVICE,
-                TEST_DAEMON_NODE,
+                TEST_CORE_NODE,
                 TEST_INSTANCE_ID,
                 b"shutdown",
                 2.0,
@@ -574,7 +574,7 @@ async def test_daemon_cancellation_token_cancelled_on_shutdown(monkeypatch):
                 router.host,
                 router.port,
                 TEST_NODE_NAME,
-                TEST_DAEMON_NODE,
+                TEST_CORE_NODE,
                 TEST_INSTANCE_ID,
                 {"frequency_hz": TEST_FREQUENCY_HZ},
             )
@@ -620,11 +620,11 @@ async def test_daemon_cancellation_token_cancelled_on_shutdown(monkeypatch):
             # Send shutdown
             await ServiceMessenger.poll(
                 messenger,
-                TEST_DAEMON_NODE,
+                TEST_CORE_NODE,
                 SHUTDOWN_SENDER_INSTANCE_ID,
                 TEST_NODE_NAME,
                 SHUTDOWN_SERVICE,
-                TEST_DAEMON_NODE,
+                TEST_CORE_NODE,
                 TEST_INSTANCE_ID,
                 b"shutdown",
                 2.0,
@@ -643,7 +643,7 @@ async def test_daemon_cancellation_token_cancelled_on_shutdown(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_node_runner_exposes_messenger_and_metadata(monkeypatch):
-    """NodeRunner exposes messenger(), bound_daemon_node(), bound_instance_id(), node_name()."""
+    """NodeRunner exposes messenger(), bound_core_node(), bound_instance_id(), node_name()."""
     monkeypatch.delenv(RUNTIME_CONFIG_VAR_NAME, raising=False)
     async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -668,7 +668,7 @@ async def test_node_runner_exposes_messenger_and_metadata(monkeypatch):
                         result_queue.put(
                             {
                                 "messenger": node_runner.messenger(),
-                                "bound_daemon_node": node_runner.bound_daemon_node(),
+                                "bound_core_node": node_runner.bound_core_node(),
                                 "bound_instance_id": node_runner.bound_instance_id(),
                                 "node_name": node_runner.node_name(),
                                 "token": node_runner.cancellation_token(),
@@ -689,7 +689,7 @@ async def test_node_runner_exposes_messenger_and_metadata(monkeypatch):
 
             result = await asyncio.to_thread(result_queue.get, timeout=5.0)
 
-            assert result["bound_daemon_node"] == "standalone-daemon"
+            assert result["bound_core_node"] == "standalone-daemon"
             assert result["bound_instance_id"] == TEST_INSTANCE_ID
             assert result["node_name"] == TEST_NODE_NAME
 

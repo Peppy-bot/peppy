@@ -6,7 +6,7 @@ mod zenoh_tests {
     use tokio::sync::Mutex;
 
     const INSTANCE_ID: &str = "test-instance";
-    const DAEMON_NODE: &str = "test-daemon";
+    const CORE_NODE: &str = "test-core-node";
 
     /// Each test spawns a zenohd process. Under parallel execution the combined
     /// startup load can cause transient handshake failures.  Serializing with a
@@ -15,11 +15,11 @@ mod zenoh_tests {
 
     /// Creates a valid key expression with the expected format for TopicMessage.
     /// Format: target_daemon/caller_daemon/target_instance/caller_instance/topic
-    /// TopicMessage extracts: instance_id from index 3, daemon_node from index 1
+    /// TopicMessage extracts: instance_id from index 3, core_node from index 1
     fn make_key_expr(topic: &str) -> String {
         format!(
             "target_daemon/{}/target_instance/{}/{}",
-            DAEMON_NODE, INSTANCE_ID, topic
+            CORE_NODE, INSTANCE_ID, topic
         )
     }
 
@@ -86,7 +86,7 @@ mod zenoh_tests {
         // Verify subscriber receives the message
         let received = sub.rx.recv().await.expect("Failed to receive message");
         assert_eq!(received.instance_id(), INSTANCE_ID);
-        assert_eq!(received.daemon_node(), DAEMON_NODE);
+        assert_eq!(received.core_node(), CORE_NODE);
         assert_eq!(received.payload(), msg.payload());
     }
 
@@ -138,12 +138,12 @@ mod zenoh_tests {
         // Verify each subscriber receives only its topic's message
         let received1 = sub1.rx.recv().await.expect("Failed to receive on topic1");
         assert_eq!(received1.instance_id(), INSTANCE_ID);
-        assert_eq!(received1.daemon_node(), DAEMON_NODE);
+        assert_eq!(received1.core_node(), CORE_NODE);
         assert_eq!(received1.payload(), msg1.payload());
 
         let received2 = sub2.rx.recv().await.expect("Failed to receive on topic2");
         assert_eq!(received2.instance_id(), INSTANCE_ID);
-        assert_eq!(received2.daemon_node(), DAEMON_NODE);
+        assert_eq!(received2.core_node(), CORE_NODE);
         assert_eq!(received2.payload(), msg2.payload());
     }
 
@@ -249,7 +249,7 @@ mod zenoh_tests {
         // Late subscriber should only receive the new message, not the early one
         let received = late_sub.rx.recv().await.expect("Failed to receive message");
         assert_eq!(received.instance_id(), INSTANCE_ID);
-        assert_eq!(received.daemon_node(), DAEMON_NODE);
+        assert_eq!(received.core_node(), CORE_NODE);
         assert_eq!(received.payload(), new_msg.payload());
     }
 

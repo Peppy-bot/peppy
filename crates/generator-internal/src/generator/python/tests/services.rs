@@ -161,8 +161,8 @@ fn expose_service() {
     // Messenger integration
     assert_contains_all(&rendered, &["peppylib.ServiceMessenger.listen("]);
 
-    // daemon_node field in Request
-    assert_contains_all(&rendered, &["daemon_node: str"]);
+    // core_node field in Request
+    assert_contains_all(&rendered, &["core_node: str"]);
 
     // _deserialize_request function with typed signature
     assert_contains_all(
@@ -177,9 +177,9 @@ fn expose_service() {
     assert_contains_all(
         &rendered,
         &[
-            "async def _handle_request_payload(payload: bytes, handler: Callable[[Request], Response], daemon_node: str, instance_id: str) -> bytes:",
+            "async def _handle_request_payload(payload: bytes, handler: Callable[[Request], Response], core_node: str, instance_id: str) -> bytes:",
             "request_data = _deserialize_request(payload)",
-            "request = Request(instance_id=instance_id, daemon_node=daemon_node, data=request_data)",
+            "request = Request(instance_id=instance_id, core_node=core_node, data=request_data)",
             "response = handler(request)",
             "if hasattr(response, \"__await__\"):",
             "response = await response",
@@ -192,7 +192,7 @@ fn expose_service() {
         &rendered,
         &[
             "async def _on_request(request_context):",
-            "return await _handle_request_payload(payload, handler, daemon_node, instance_id)",
+            "return await _handle_request_payload(payload, handler, core_node, instance_id)",
             "await endpoint.handle_next_request(_on_request)",
         ],
     );
@@ -212,7 +212,7 @@ fn expose_service_without_request_body() {
     // Service without request body should still have Request class for metadata
     assert_contains_all(
         &rendered,
-        &["class Request:", "instance_id: str", "daemon_node: str"],
+        &["class Request:", "instance_id: str", "core_node: str"],
     );
 
     // But no RequestData class
@@ -233,8 +233,8 @@ fn expose_service_without_request_body() {
     assert_contains_all(
         &rendered,
         &[
-            "async def _handle_request_payload(handler: Callable[[Request], Response], daemon_node: str, instance_id: str) -> bytes:",
-            "request = Request(instance_id=instance_id, daemon_node=daemon_node)",
+            "async def _handle_request_payload(handler: Callable[[Request], Response], core_node: str, instance_id: str) -> bytes:",
+            "request = Request(instance_id=instance_id, core_node=core_node)",
         ],
     );
 
@@ -253,7 +253,7 @@ fn expose_service_without_request_body() {
         &rendered,
         &[
             "async def _on_request(request_context):",
-            "return await _handle_request_payload(handler, daemon_node, instance_id)",
+            "return await _handle_request_payload(handler, core_node, instance_id)",
             "await endpoint.handle_next_request(_on_request)",
         ],
     );
@@ -372,7 +372,7 @@ fn subscribed_to_service() {
             "enabled: bool",
             "error_msg: Optional[str]",
             "class Response:",
-            "daemon_node: str",
+            "core_node: str",
             "instance_id: str",
             "data: ResponseData",
         ],
@@ -395,7 +395,7 @@ fn subscribed_to_service() {
             "node_runner: peppylib.NodeRunner",
             "request: Request",
             "timeout: float",
-            "target_daemon_node: Optional[str] = None",
+            "target_core_node: Optional[str] = None",
             "target_instance_id: Optional[str] = None",
             ") -> Response:",
         ],

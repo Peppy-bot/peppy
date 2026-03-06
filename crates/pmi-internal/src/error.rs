@@ -25,7 +25,7 @@ pub enum Error {
     ZenohDConfigurationNotFound,
     InstanceIdNotFound(String),
     InstanceIdExtractionError(String),
-    DaemonNodeNotFound(String),
+    CoreNodeNotFound(String),
 
     // Encoding
     UnsupportedEncoding(String),

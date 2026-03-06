@@ -1,6 +1,6 @@
 @0xa8f5c2b9e4d3f1a8;
 
-# Health message structures for daemon-node services
+# Health message structures for core-node services
 
 struct NodeHealthRequest {
     # Empty for now - could add specific health check parameters later

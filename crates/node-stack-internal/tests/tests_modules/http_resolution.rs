@@ -8,7 +8,7 @@ use node_stack::LaunchPlan;
 use tempfile::tempdir;
 
 use crate::helpers::config_common::{
-    daemon_node_config, deployment, init_test_data_dir, write_config,
+    core_node_config, deployment, init_test_data_dir, write_config,
 };
 use crate::helpers::http::{create_http_bundle, sha256_checksum};
 
@@ -46,12 +46,12 @@ fn http_bundle_is_downloaded_and_resolved() {
         launcher_config,
     );
 
-    let plan = LaunchPlan::from_launch_file(daemon_node_config(), &launch_file, &peppy_dirs)
+    let plan = LaunchPlan::from_launch_file(core_node_config(), &launch_file, &peppy_dirs)
         .expect("plan");
     let stack = plan.node_stack();
     let report = plan.report();
 
-    assert_eq!(stack.len(), 2, "daemon + uvc_camera");
+    assert_eq!(stack.len(), 2, "core node + uvc_camera");
     assert!(stack.contains("uvc_camera", "1.2.3"));
 
     let deployment = report
@@ -113,9 +113,9 @@ fn http_bundle_is_cloned_and_same_tag_updates_code() {
         launcher_config,
     );
 
-    let plan = LaunchPlan::from_launch_file(daemon_node_config(), &launch_file, &peppy_dirs)
+    let plan = LaunchPlan::from_launch_file(core_node_config(), &launch_file, &peppy_dirs)
         .expect("plan");
-    assert_eq!(plan.node_stack().len(), 2, "daemon + uvc_camera");
+    assert_eq!(plan.node_stack().len(), 2, "core node + uvc_camera");
     let planned = plan
         .report()
         .find_deployment_by_name("uvc_camera")
@@ -139,9 +139,9 @@ fn http_bundle_is_cloned_and_same_tag_updates_code() {
     let launcher_config = PeppyLauncher { deployments };
     write_config(launch_file.clone(), launcher_config);
 
-    let plan = LaunchPlan::from_launch_file(daemon_node_config(), &launch_file, &peppy_dirs)
+    let plan = LaunchPlan::from_launch_file(core_node_config(), &launch_file, &peppy_dirs)
         .expect("plan");
-    assert_eq!(plan.node_stack().len(), 2, "daemon + uvc_camera");
+    assert_eq!(plan.node_stack().len(), 2, "core node + uvc_camera");
     let planned = plan
         .report()
         .find_deployment_by_name("uvc_camera")

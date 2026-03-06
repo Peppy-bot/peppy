@@ -33,11 +33,11 @@ async def receive_feedback(goal_handle, goal_label: str):
         return
 
     feedback_text = message.payload.decode("utf-8")
-    daemon_node = message.daemon_node
+    core_node = message.core_node
     instance_id = message.instance_id
     print(
         f"{BOLD}{YELLOW}[FEEDBACK] Received feedback for `{goal_label}` from `{instance_id}` "
-        f"and daemon node `{daemon_node}`: `{feedback_text}`{RESET}"
+        f"and core node `{core_node}`: `{feedback_text}`{RESET}"
     )
 
 
@@ -53,21 +53,21 @@ async def main():
             "Did you start a zenohd server with the `zenohd_simple` example?"
         )
 
-    daemon_node = f"{generate_name()}_daemon"
+    core_node = f"{generate_name()}_daemon"
     instance_id = f"{generate_name()}_listener"
 
     # --- Send initial goal ---
     print(
         f"{BOLD}{GREEN}[GOAL] Sending goal to `{ACTION_NAME}` action as `{instance_id}` "
-        f"and daemon node `{daemon_node}`...{RESET}"
+        f"and core node `{core_node}`...{RESET}"
     )
     goal_handle = await ActionMessenger.send_goal(
         sender_handle,
-        daemon_node,
+        core_node,
         instance_id,
         NODE_NAME,
         ACTION_NAME,
-        None,  # target_daemon_node - binds with the first found
+        None,  # target_core_node - binds with the first found
         None,  # target_instance_id - binds with the first found
         b"Hello from the action client",
         QoSProfile.Reliable,
@@ -78,7 +78,7 @@ async def main():
     goal_response_text = goal_response.payload.decode("utf-8")
     print(
         f"{BOLD}{GREEN}[GOAL] Received goal response from `{goal_response.instance_id}` "
-        f"and daemon node `{goal_response.daemon_node}`: `{goal_response_text}`{RESET}"
+        f"and core node `{goal_response.core_node}`: `{goal_response_text}`{RESET}"
     )
 
     await receive_feedback(goal_handle, "initial goal")
@@ -98,11 +98,11 @@ async def main():
     print(f"{BOLD}{GREEN}[GOAL] Sending cancellable goal...{RESET}")
     goal_handle = await ActionMessenger.send_goal(
         sender_handle,
-        daemon_node,
+        core_node,
         instance_id,
         NODE_NAME,
         ACTION_NAME,
-        None,  # target_daemon_node
+        None,  # target_core_node
         None,  # target_instance_id
         b"This goal will be cancelled",
         QoSProfile.Reliable,

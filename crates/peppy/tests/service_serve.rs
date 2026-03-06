@@ -28,7 +28,7 @@ fn serve_command() {
 
     ServeCommand {
         messaging_engine: "mock".to_string(),
-        daemon_name: Some("daemon-node".to_string()),
+        daemon_name: Some("core-node".to_string()),
         shutdown_token: Some(shutdown_token),
     }
     .execute(&ctx)
@@ -38,11 +38,11 @@ fn serve_command() {
         .join()
         .expect("shutdown thread should complete without panic");
 
-    let daemon_node_name = ctx
-        .daemon_node_name()
-        .expect("daemon state daemon node name should be readable");
+    let core_node_name = ctx
+        .core_node_name()
+        .expect("daemon state core node name should be readable");
     assert_eq!(
-        daemon_node_name, "daemon-node",
+        core_node_name, "core-node",
         "daemon state should use the configured daemon name"
     );
 

@@ -11,11 +11,11 @@ use tokio::time::Duration;
 pub struct ActionMessenger;
 
 pub struct ActionGoalHandle {
-    daemon_node: String,
+    core_node: String,
     instance_id: String,
     node_name: String,
     action_name: String,
-    target_daemon_node: Option<String>,
+    target_core_node: Option<String>,
     target_instance_id: Option<String>,
     goal_response: Message,
     feedback: Subscription,
@@ -24,11 +24,11 @@ pub struct ActionGoalHandle {
 impl std::fmt::Debug for ActionGoalHandle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ActionGoalHandle")
-            .field("daemon_node", &self.daemon_node)
+            .field("core_node", &self.core_node)
             .field("instance_id", &self.instance_id)
             .field("node_name", &self.node_name)
             .field("action_name", &self.action_name)
-            .field("target_daemon_node", &self.target_daemon_node)
+            .field("target_core_node", &self.target_core_node)
             .field("target_instance_id", &self.target_instance_id)
             .finish_non_exhaustive()
     }
@@ -70,14 +70,14 @@ pub struct ActionCreation {
 impl ActionMessenger {
     pub async fn expose(
         messenger: &MessengerHandle,
-        bound_daemon_node: &str,
+        bound_core_node: &str,
         as_instance_id: &str,
         as_node_name: &str,
         as_action_name: &str,
     ) -> Result<ActionCreation> {
         messenger
             .expose_action(
-                bound_daemon_node,
+                bound_core_node,
                 as_node_name,
                 as_action_name,
                 as_instance_id,
@@ -89,21 +89,21 @@ impl ActionMessenger {
     #[allow(clippy::too_many_arguments)]
     pub async fn is_reachable(
         messenger: &MessengerHandle,
-        bound_daemon_node: &str,
+        bound_core_node: &str,
         as_instance_id: &str,
         target_node_name: &str,
         target_action_name: &str,
-        target_daemon_node: Option<&str>,
+        target_core_node: Option<&str>,
         target_instance_id: Option<&str>,
     ) -> Result<bool> {
         match messenger
             .poll_service(
                 "action",
-                bound_daemon_node,
+                bound_core_node,
                 as_instance_id,
                 target_node_name,
                 target_action_name,
-                target_daemon_node,
+                target_core_node,
                 target_instance_id,
                 Payload::from_static(SERVICE_PROBE_PAYLOAD),
                 PROBE_TIMEOUT,
@@ -120,26 +120,26 @@ impl ActionMessenger {
     #[allow(clippy::too_many_arguments)]
     pub async fn send_goal(
         messenger: &MessengerHandle,
-        as_daemon_node: &str,
+        as_core_node: &str,
         as_instance_id: &str,
         to_node_name: &str,
         to_action_name: &str,
-        target_daemon_node: Option<&str>,
+        target_core_node: Option<&str>,
         target_instance_id: Option<&str>,
         goal_payload: Payload,
         feedback_qos: QoSProfile,
         goal_timeout: Duration,
     ) -> Result<ActionGoalHandle> {
         let feedback_topic = {
-            let sender_daemon = target_daemon_node.unwrap_or("*");
+            let sender_daemon = target_core_node.unwrap_or("*");
             match target_instance_id {
                 Some(target_instance_id) => {
                     format!(
-                        "{as_daemon_node}/{sender_daemon}/{as_instance_id}/{target_instance_id}/action/{to_node_name}/{to_action_name}/feedback/{target_instance_id}"
+                        "{as_core_node}/{sender_daemon}/{as_instance_id}/{target_instance_id}/action/{to_node_name}/{to_action_name}/feedback/{target_instance_id}"
                     )
                 }
                 None => format!(
-                    "{as_daemon_node}/*/{as_instance_id}/*/action/{to_node_name}/{to_action_name}/feedback/*"
+                    "{as_core_node}/*/{as_instance_id}/*/action/{to_node_name}/{to_action_name}/feedback/*"
                 ),
             }
         };
@@ -156,11 +156,11 @@ impl ActionMessenger {
         let goal_response = messenger
             .poll_service(
                 "action",
-                as_daemon_node,
+                as_core_node,
                 as_instance_id,
                 to_node_name,
                 &goal_service_name,
-                target_daemon_node,
+                target_core_node,
                 target_instance_id,
                 goal_payload,
                 goal_timeout,
@@ -168,11 +168,11 @@ impl ActionMessenger {
             .await?;
 
         Ok(ActionGoalHandle {
-            daemon_node: as_daemon_node.to_string(),
+            core_node: as_core_node.to_string(),
             instance_id: as_instance_id.to_string(),
             node_name: to_node_name.to_string(),
             action_name: to_action_name.to_string(),
-            target_daemon_node: target_daemon_node.map(|daemon| daemon.to_string()),
+            target_core_node: target_core_node.map(|daemon| daemon.to_string()),
             target_instance_id: target_instance_id.map(|id| id.to_string()),
             goal_response,
             feedback: Subscription::new(feedback_subscription),
@@ -186,11 +186,11 @@ impl ActionMessenger {
     ) -> Result<Message> {
         Self::cancel_goal_with(
             messenger_handle,
-            &action_handle.daemon_node,
+            &action_handle.core_node,
             &action_handle.instance_id,
             &action_handle.node_name,
             &action_handle.action_name,
-            action_handle.target_daemon_node.as_deref(),
+            action_handle.target_core_node.as_deref(),
             action_handle.target_instance_id.as_deref(),
             cancel_timeout,
         )
@@ -203,11 +203,11 @@ impl ActionMessenger {
     #[allow(clippy::too_many_arguments)]
     pub async fn cancel_goal_with(
         messenger_handle: &MessengerHandle,
-        daemon_node: &str,
+        core_node: &str,
         instance_id: &str,
         node_name: &str,
         action_name: &str,
-        target_daemon_node: Option<&str>,
+        target_core_node: Option<&str>,
         target_instance_id: Option<&str>,
         cancel_timeout: Duration,
     ) -> Result<Message> {
@@ -216,11 +216,11 @@ impl ActionMessenger {
         messenger_handle
             .poll_service(
                 "action",
-                daemon_node,
+                core_node,
                 instance_id,
                 node_name,
                 &cancel_service_name,
-                target_daemon_node,
+                target_core_node,
                 target_instance_id,
                 Payload::new(),
                 cancel_timeout,
@@ -235,11 +235,11 @@ impl ActionMessenger {
     ) -> Result<Message> {
         Self::request_result_with(
             messenger_handle,
-            &action_handle.daemon_node,
+            &action_handle.core_node,
             &action_handle.instance_id,
             &action_handle.node_name,
             &action_handle.action_name,
-            action_handle.target_daemon_node.as_deref(),
+            action_handle.target_core_node.as_deref(),
             action_handle.target_instance_id.as_deref(),
             result_timeout,
         )
@@ -252,11 +252,11 @@ impl ActionMessenger {
     #[allow(clippy::too_many_arguments)]
     pub async fn request_result_with(
         messenger_handle: &MessengerHandle,
-        daemon_node: &str,
+        core_node: &str,
         instance_id: &str,
         node_name: &str,
         action_name: &str,
-        target_daemon_node: Option<&str>,
+        target_core_node: Option<&str>,
         target_instance_id: Option<&str>,
         result_timeout: Duration,
     ) -> Result<Message> {
@@ -265,11 +265,11 @@ impl ActionMessenger {
         messenger_handle
             .poll_service(
                 "action",
-                daemon_node,
+                core_node,
                 instance_id,
                 node_name,
                 &result_service_name,
-                target_daemon_node,
+                target_core_node,
                 target_instance_id,
                 Payload::new(),
                 result_timeout,

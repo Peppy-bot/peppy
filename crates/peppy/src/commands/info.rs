@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use daemon_node::encoding::InfoRequest;
+use core_node::encoding::InfoRequest;
 
 use super::Command;
 use crate::context::AppContext;
@@ -26,14 +26,14 @@ async fn info_async(ctx: &Arc<AppContext>) -> Result<()> {
     println!("----------");
     println!("Version: {}", client_version);
 
-    // Query daemon node for its version
+    // Query core node for its version
     let daemon_state = ctx.read_daemon_state().map_err(|e| {
         Error::ExecutionFailed(format!(
             "Failed to read daemon state. Is the peppy daemon running? Error: {}",
             e
         ))
     })?;
-    let daemon_node_name = daemon_state.daemon_node_name.clone();
+    let core_node_name = daemon_state.core_node_name.clone();
 
     ctx.connect()
         .await
@@ -46,9 +46,9 @@ async fn info_async(ctx: &Arc<AppContext>) -> Result<()> {
     match request
         .poll(
             messenger,
-            &daemon_node_name,
+            &core_node_name,
             CALLER_INSTANCE_ID,
-            &daemon_node_name,
+            &core_node_name,
             REQUEST_TIMEOUT,
         )
         .await
@@ -58,10 +58,10 @@ async fn info_async(ctx: &Arc<AppContext>) -> Result<()> {
             println!("Daemon Info");
             println!("-----------");
             println!("Version: {}", response.git_version);
-            println!("Daemon node name: {}", response.daemon_node_name);
+            println!("Core node name: {}", response.core_node_name);
             println!(
-                "Daemon node instance ID: {}",
-                response.daemon_node_instance_id
+                "Core node instance ID: {}",
+                response.core_node_instance_id
             );
             println!("Host name: {}", response.host_name);
             println!("Uptime: {}s", response.uptime_secs);

@@ -12,7 +12,7 @@ async fn main() {
 
     // Those properties are found in the peppy_launcher.json5 `deployments` array
     let node_name = "hello_node";
-    let daemon_node = format!("{}_daemon", get_random(rng()));
+    let core_node = format!("{}_daemon", get_random(rng()));
     let instance_id = format!("{}_emitter", get_random(rng()));
 
     // Create a messenger for the sending node.
@@ -28,10 +28,10 @@ async fn main() {
 
     let payload = Bytes::from_static(b"Hello world");
 
-    println!("Sending payload as {instance_id} with daemon node {daemon_node}...");
+    println!("Sending payload as {instance_id} with core node {core_node}...");
     TopicMessenger::emit(
         &sender_handle,
-        &daemon_node,
+        &core_node,
         &instance_id,
         node_name,
         topic_name,

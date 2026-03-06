@@ -16,7 +16,7 @@ async def test_messenger_communication():
     # Start an ephemeral router for this test
     async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
         test_id = uuid.uuid4().hex[:8]
-        daemon_node = f"test_daemon_{test_id}"
+        core_node = f"test_daemon_{test_id}"
         instance_id = f"test_instance_{test_id}"
         node_name = f"test_node_{test_id}"
         topic_name = f"test_topic_{test_id}"
@@ -29,11 +29,11 @@ async def test_messenger_communication():
         # Subscribe to the topic first
         subscription = await TopicMessenger.subscribe(
             receiver_handle,
-            daemon_node,
+            core_node,
             instance_id,
             node_name,
             topic_name,
-            None,  # Accept messages from any daemon node
+            None,  # Accept messages from any core node
             None,  # Accept messages from any instance
             qos,
         )
@@ -44,7 +44,7 @@ async def test_messenger_communication():
         # Emit a message
         await TopicMessenger.emit(
             sender_handle,
-            daemon_node,
+            core_node,
             instance_id,
             node_name,
             topic_name,
@@ -63,4 +63,4 @@ async def test_messenger_communication():
             f"Expected payload {payload!r}, got {message.payload!r}"
         )
         assert message.instance_id == instance_id
-        assert message.daemon_node == daemon_node
+        assert message.core_node == core_node

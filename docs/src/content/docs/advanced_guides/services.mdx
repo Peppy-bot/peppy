@@ -198,7 +198,7 @@ fn main() -> Result<()> {
         let response = uvc_camera_enable_camera::poll(
             &node_runner,
             Duration::from_secs(5), // timeout
-            None,                   // target_daemon_node (None = any)
+            None,                   // target_core_node (None = any)
             None,                   // target_instance_id (None = any)
             request,
         )
@@ -219,7 +219,7 @@ fn main() -> Result<()> {
 The `poll` function takes:
 - `node_runner` — the node runner reference.
 - `timeout` — maximum time to wait for a response.
-- `target_daemon_node` — optionally target a specific daemon node, or `None` for any.
+- `target_core_node` — optionally target a specific core node, or `None` for any.
 - `target_instance_id` — optionally target a specific instance, or `None` for any.
 - `request` — the request payload.
 

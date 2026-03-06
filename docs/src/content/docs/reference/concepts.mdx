@@ -72,7 +72,7 @@ The **Node Stack** is the central data structure that manages all active nodes i
 1. **Dependency Management**: Tracks which nodes depend on which other nodes
 2. **Interface Validation**: Ensures nodes expose the interfaces their dependents require
 3. **Instance Lifecycle**: Manages the creation and removal of node instances
-4. **Root Node**: Always contains a root node (the daemon node) that cannot be removed
+4. **Root Node**: Always contains a root node (the core node) that cannot be removed
 
 ### How Dependencies Work
 
@@ -92,7 +92,7 @@ The node stack can be visualized in multiple formats:
 
 The **Daemon Node** is a special node that serves as the root of the node stack and is always present. It is responsible for:
 
-- **Dependency Creation**: When a node subscribes to an interface, the daemon node creates a dependency on the node that exposes that interface
+- **Dependency Creation**: When a node subscribes to an interface, the core node creates a dependency on the node that exposes that interface
 - **Stack Management**: Managing the lifecycle of all other nodes in the system
 - **System Coordination**: Acting as the central coordinator for the entire PeppyOS runtime
 

@@ -11,7 +11,7 @@ async fn action_messenger_communication() {
         .expect("failed to start zenoh router for test");
     let (host, port) = (instance.host.clone(), instance.port);
 
-    let daemon_node = "test_daemon";
+    let core_node = "test_daemon";
     let instance_id = "test_instance";
     let node_name = "test_node";
     let action_name = "test_action";
@@ -30,7 +30,7 @@ async fn action_messenger_communication() {
     // Expose the action server
     let mut action = ActionMessenger::expose(
         &server_handle,
-        daemon_node,
+        core_node,
         instance_id,
         node_name,
         action_name,
@@ -77,11 +77,11 @@ async fn action_messenger_communication() {
     // Client: send goal
     let mut goal_handle = ActionMessenger::send_goal(
         &client_handle,
-        daemon_node,
+        core_node,
         instance_id,
         node_name,
         action_name,
-        Some(daemon_node),
+        Some(core_node),
         Some(instance_id),
         goal_payload,
         QoSProfile::Reliable,

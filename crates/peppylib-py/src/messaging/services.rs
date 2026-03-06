@@ -15,7 +15,7 @@ pub struct PyServiceRequestContext {
     key_expr: String,
     payload: Vec<u8>,
     instance_id: String,
-    daemon_node: String,
+    core_node: String,
 }
 
 #[pymethods]
@@ -36,8 +36,8 @@ impl PyServiceRequestContext {
     }
 
     #[getter]
-    fn daemon_node(&self) -> &str {
-        &self.daemon_node
+    fn core_node(&self) -> &str {
+        &self.core_node
     }
 
     /// Returns the underlying message as a `TopicMessage`.
@@ -47,7 +47,7 @@ impl PyServiceRequestContext {
             key_expr: self.key_expr.clone(),
             payload: self.payload.clone(),
             instance_id: self.instance_id.clone(),
-            daemon_node: self.daemon_node.clone(),
+            core_node: self.core_node.clone(),
         }
     }
 }
@@ -61,7 +61,7 @@ impl From<ServiceRequestContext> for PyServiceRequestContext {
             key_expr: message.key_expr().to_string(),
             payload: message.payload().to_vec(),
             instance_id: message.instance_id().to_string(),
-            daemon_node: message.daemon_node().to_string(),
+            core_node: message.core_node().to_string(),
         }
     }
 }
@@ -156,7 +156,7 @@ impl PyServiceMessenger {
     fn listen<'py>(
         py: Python<'py>,
         messenger: &PyMessengerHandle,
-        as_daemon_node: String,
+        as_core_node: String,
         as_instance_id: String,
         as_node_name: String,
         as_service_name: String,
@@ -165,7 +165,7 @@ impl PyServiceMessenger {
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let endpoint = ServiceMessenger::listen(
                 &handle,
-                &as_daemon_node,
+                &as_core_node,
                 &as_instance_id,
                 &as_node_name,
                 &as_service_name,
@@ -180,27 +180,27 @@ impl PyServiceMessenger {
 
     /// Check if a service has active subscribers.
     #[staticmethod]
-    #[pyo3(signature = (messenger, bound_daemon_node, as_instance_id, target_node_name, target_service_name, target_daemon_node=None, target_instance_id=None))]
+    #[pyo3(signature = (messenger, bound_core_node, as_instance_id, target_node_name, target_service_name, target_core_node=None, target_instance_id=None))]
     #[allow(clippy::too_many_arguments)]
     fn is_reachable<'py>(
         py: Python<'py>,
         messenger: &PyMessengerHandle,
-        bound_daemon_node: String,
+        bound_core_node: String,
         as_instance_id: String,
         target_node_name: String,
         target_service_name: String,
-        target_daemon_node: Option<String>,
+        target_core_node: Option<String>,
         target_instance_id: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let handle = messenger.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let reachable = ServiceMessenger::is_reachable(
                 &handle,
-                &bound_daemon_node,
+                &bound_core_node,
                 &as_instance_id,
                 &target_node_name,
                 &target_service_name,
-                target_daemon_node.as_deref(),
+                target_core_node.as_deref(),
                 target_instance_id.as_deref(),
             )
             .await
@@ -211,16 +211,16 @@ impl PyServiceMessenger {
 
     /// Send a request to a service and wait for a response.
     #[staticmethod]
-    #[pyo3(signature = (messenger, bound_daemon_node, as_instance_id, target_node_name, target_service_name, target_daemon_node=None, target_instance_id=None, request_payload=vec![], response_timeout_secs=2.0))]
+    #[pyo3(signature = (messenger, bound_core_node, as_instance_id, target_node_name, target_service_name, target_core_node=None, target_instance_id=None, request_payload=vec![], response_timeout_secs=2.0))]
     #[allow(clippy::too_many_arguments)]
     fn poll<'py>(
         py: Python<'py>,
         messenger: &PyMessengerHandle,
-        bound_daemon_node: String,
+        bound_core_node: String,
         as_instance_id: String,
         target_node_name: String,
         target_service_name: String,
-        target_daemon_node: Option<String>,
+        target_core_node: Option<String>,
         target_instance_id: Option<String>,
         request_payload: Vec<u8>,
         response_timeout_secs: f64,
@@ -231,11 +231,11 @@ impl PyServiceMessenger {
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let response = ServiceMessenger::poll(
                 &handle,
-                &bound_daemon_node,
+                &bound_core_node,
                 &as_instance_id,
                 &target_node_name,
                 &target_service_name,
-                target_daemon_node.as_deref(),
+                target_core_node.as_deref(),
                 target_instance_id.as_deref(),
                 Payload::from(request_payload),
                 response_timeout,

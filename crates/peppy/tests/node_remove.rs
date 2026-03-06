@@ -1,5 +1,5 @@
 use config::node::Toolchain;
-use daemon_node::encoding::NodeListRequest;
+use core_node::encoding::NodeListRequest;
 use node_stack::SerializedNodeGraph;
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands, NodeName};
@@ -22,10 +22,10 @@ fn node_remove_command_succeeds() {
         .block_on(ServeCommandEmulation::with_mock())
         .expect("failed to create serve emulation");
     let shared_messenger = serve.messenger();
-    let daemon_node_name = serve.daemon_node_name().to_string();
+    let core_node_name = serve.core_node_name().to_string();
     assert!(
-        !daemon_node_name.is_empty(),
-        "daemon_node_name should not be empty"
+        !core_node_name.is_empty(),
+        "core_node_name should not be empty"
     );
 
     let node_dir = tempfile::tempdir().expect("failed to create temp dir for node");
@@ -81,7 +81,7 @@ fn node_remove_command_succeeds() {
     .execute(&node_ctx)
     .expect("node add command should succeed");
 
-    // Assert there is one node + the daemon node in the node stack after add
+    // Assert there is one node + the core node in the node stack after add
     let messenger_handle = node_ctx
         .messenger_handle()
         .expect("messenger handle should be available");
@@ -89,9 +89,9 @@ fn node_remove_command_succeeds() {
     let response = rt
         .block_on(NodeListRequest::new(false).poll(
             messenger_handle,
-            &daemon_node_name,
+            &core_node_name,
             CALLER_INSTANCE_ID,
-            &daemon_node_name,
+            &core_node_name,
             Duration::from_secs(5),
         ))
         .expect("node_list request should complete");
@@ -102,7 +102,7 @@ fn node_remove_command_succeeds() {
     assert_eq!(
         graph.nodes.len(),
         2,
-        "graph should only contain the daemon node + the added node. Got: {:?}",
+        "graph should only contain the core node + the added node. Got: {:?}",
         graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
     );
 
@@ -130,9 +130,9 @@ fn node_remove_command_succeeds() {
     let response = rt
         .block_on(NodeListRequest::new(false).poll(
             messenger_handle,
-            &daemon_node_name,
+            &core_node_name,
             CALLER_INSTANCE_ID,
-            &daemon_node_name,
+            &core_node_name,
             Duration::from_secs(5),
         ))
         .expect("node_list request should complete");
@@ -143,7 +143,7 @@ fn node_remove_command_succeeds() {
     assert_eq!(
         graph.nodes.len(),
         1,
-        "graph should only contain the daemon node. Got: {:?}",
+        "graph should only contain the core node. Got: {:?}",
         graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
     );
 }
@@ -156,10 +156,10 @@ fn node_remove_command_force_bypasses_prompt_and_stops_instances() {
         .block_on(ServeCommandEmulation::with_mock())
         .expect("failed to create serve emulation");
     let shared_messenger = serve.messenger();
-    let daemon_node_name = serve.daemon_node_name().to_string();
+    let core_node_name = serve.core_node_name().to_string();
     assert!(
-        !daemon_node_name.is_empty(),
-        "daemon_node_name should not be empty"
+        !core_node_name.is_empty(),
+        "core_node_name should not be empty"
     );
 
     let node_dir = tempfile::tempdir().expect("failed to create temp dir for node");
@@ -208,7 +208,7 @@ fn node_remove_command_force_bypasses_prompt_and_stops_instances() {
     let _node_ready_handle = rt
         .block_on(listen_for_node_ready(
             &node_messenger,
-            &daemon_node_name,
+            &core_node_name,
             instance_id,
             node_name,
         ))
@@ -216,7 +216,7 @@ fn node_remove_command_force_bypasses_prompt_and_stops_instances() {
     let _node_health_handle = rt
         .block_on(listen_for_node_health(
             &node_messenger,
-            &daemon_node_name,
+            &core_node_name,
             instance_id,
             node_name,
         ))
@@ -224,7 +224,7 @@ fn node_remove_command_force_bypasses_prompt_and_stops_instances() {
     let (_node_shutdown_handle, node_shutdown_rx) = rt
         .block_on(listen_for_shutdown(
             &node_messenger,
-            &daemon_node_name,
+            &core_node_name,
             instance_id,
             node_name,
         ))
@@ -269,9 +269,9 @@ fn node_remove_command_force_bypasses_prompt_and_stops_instances() {
     let response = rt
         .block_on(NodeListRequest::new(false).poll(
             messenger_handle,
-            &daemon_node_name,
+            &core_node_name,
             CALLER_INSTANCE_ID,
-            &daemon_node_name,
+            &core_node_name,
             Duration::from_secs(5),
         ))
         .expect("node_list request should complete");
@@ -297,10 +297,10 @@ fn node_remove_command_with_stop_instances_succeeds_and_stops_instances() {
         .block_on(ServeCommandEmulation::with_mock())
         .expect("failed to create serve emulation");
     let shared_messenger = serve.messenger();
-    let daemon_node_name = serve.daemon_node_name().to_string();
+    let core_node_name = serve.core_node_name().to_string();
     assert!(
-        !daemon_node_name.is_empty(),
-        "daemon_node_name should not be empty"
+        !core_node_name.is_empty(),
+        "core_node_name should not be empty"
     );
 
     let node_dir = tempfile::tempdir().expect("failed to create temp dir for node");
@@ -347,7 +347,7 @@ fn node_remove_command_with_stop_instances_succeeds_and_stops_instances() {
     let _node_ready_handle = rt
         .block_on(listen_for_node_ready(
             &node_messenger,
-            &daemon_node_name,
+            &core_node_name,
             instance_id,
             node_name,
         ))
@@ -356,7 +356,7 @@ fn node_remove_command_with_stop_instances_succeeds_and_stops_instances() {
     let _node_health_handle = rt
         .block_on(listen_for_node_health(
             &node_messenger,
-            &daemon_node_name,
+            &core_node_name,
             instance_id,
             node_name,
         ))
@@ -365,7 +365,7 @@ fn node_remove_command_with_stop_instances_succeeds_and_stops_instances() {
     let (_node_shutdown_handle, node_shutdown_rx) = rt
         .block_on(listen_for_shutdown(
             &node_messenger,
-            &daemon_node_name,
+            &core_node_name,
             instance_id,
             node_name,
         ))
@@ -416,9 +416,9 @@ fn node_remove_command_with_stop_instances_succeeds_and_stops_instances() {
     let response = rt
         .block_on(NodeListRequest::new(false).poll(
             messenger_handle,
-            &daemon_node_name,
+            &core_node_name,
             CALLER_INSTANCE_ID,
-            &daemon_node_name,
+            &core_node_name,
             Duration::from_secs(5),
         ))
         .expect("node_list request should complete");

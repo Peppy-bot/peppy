@@ -12,9 +12,9 @@ pub fn init_test_data_dir() -> (TempDir, PeppyDirs) {
     (dir, peppy_dirs)
 }
 
-/// Returns a minimal daemon/root node configuration for tests.
-/// The daemon node is the required root of every NodeStack.
-pub fn daemon_node_config() -> NodeConfig {
+/// Returns a minimal core/root node configuration for tests.
+/// The core node is the required root of every NodeStack.
+pub fn core_node_config() -> NodeConfig {
     NodeConfigParser::from_content(
         r#"{
             schema_version: 1,
@@ -28,7 +28,7 @@ pub fn daemon_node_config() -> NodeConfig {
             }
         }"#,
     )
-    .expect("parse daemon node config")
+    .expect("parse core node config")
 }
 
 pub fn deployment(source: DeploymentSource) -> Deployment {

@@ -1,7 +1,7 @@
 use crate::daemon_state::DaemonState;
 use config::consts::{PEPPYGEN_OUTPUT_PATH, PeppyDirs};
 use config::node::NodeConfigParser;
-use daemon_node::{DaemonNode, DaemonNodeArguments};
+use core_node::{CoreNode, CoreNodeArguments};
 use pmi::{Messenger, MessengerBackend, MockAdapter, MockInstance, ZenohAdapter, ZenohdInstance};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -101,10 +101,10 @@ enum MessengerInstance {
 pub struct ServeCommandEmulation {
     _temp_dir: TempDir,
     _instance: MessengerInstance,
-    _daemon_node_task: JoinHandle<daemon_node::Result<()>>,
+    _core_node_task: JoinHandle<core_node::Result<()>>,
     shared_messenger: Arc<TokioMutex<Messenger>>,
     daemon_state_path: PathBuf,
-    daemon_node_name: String,
+    core_node_name: String,
     messaging_port: u16,
 }
 
@@ -135,34 +135,34 @@ impl ServeCommandEmulation {
         let shared_messenger = Arc::new(TokioMutex::new(messenger));
 
         let peppy_dirs = PeppyDirs::new(temp_dir.path());
-        let daemon_node = DaemonNode::new(
+        let core_node = CoreNode::new(
             Arc::clone(&shared_messenger),
             Some("test-daemon"),
-            DaemonNodeArguments {
+            CoreNodeArguments {
                 node_startup_timeout: Duration::from_secs(120),
                 node_start_health_timeout: Duration::from_secs(30),
             },
             temp_dir.path().to_path_buf(),
             peppy_dirs,
         );
-        let daemon_node_name = daemon_node.node_name().to_string();
+        let core_node_name = core_node.node_name().to_string();
 
         let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
-        let daemon_node_task =
-            tokio::spawn(async move { daemon_node.start_with_ready(Some(ready_tx)).await });
-        ready_rx.await.expect("daemon node ready signal failed");
+        let core_node_task =
+            tokio::spawn(async move { core_node.start_with_ready(Some(ready_tx)).await });
+        ready_rx.await.expect("core node ready signal failed");
 
-        let daemon_state = DaemonState::new(&daemon_node_name, port, "test-git-hash");
+        let daemon_state = DaemonState::new(&core_node_name, port, "test-git-hash");
         DaemonState::write_to(&daemon_state_path, &daemon_state)
             .expect("failed to write daemon state");
 
         Ok(Self {
             _temp_dir: temp_dir,
             _instance: instance,
-            _daemon_node_task: daemon_node_task,
+            _core_node_task: core_node_task,
             shared_messenger,
             daemon_state_path,
-            daemon_node_name,
+            core_node_name,
             messaging_port: port,
         })
     }
@@ -179,8 +179,8 @@ impl ServeCommandEmulation {
         &self.daemon_state_path
     }
 
-    pub fn daemon_node_name(&self) -> &str {
-        &self.daemon_node_name
+    pub fn core_node_name(&self) -> &str {
+        &self.core_node_name
     }
 
     pub fn messaging_port(&self) -> u16 {

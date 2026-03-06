@@ -13,7 +13,7 @@ The **node stack** is the central registry that manages all your nodes and their
 
 When you add a node to the stack, PeppyOS validates that all its dependencies are satisfied—ensuring that any topics, services, or actions your node relies on are provided by other nodes already in the stack. This dependency validation prevents runtime errors and helps you understand how your nodes interconnect.
 
-The stack always contains a **daemon node** and an instance of it at its root, which coordinates the lifecycle of all other nodes. You can query the stack to see which nodes depend on each other, visualize the dependency graph, and manage node instances.
+The stack always contains a **core node** and an instance of it at its root, which coordinates the lifecycle of all other nodes. You can query the stack to see which nodes depend on each other, visualize the dependency graph, and manage node instances.
 The **node stack** is started as a daemon on your system and the `peppy` binary communicates with it to execute user actions.
 
 ## Adding `hello_world` to the stack
@@ -41,7 +41,7 @@ peppy node add .
   </TabItem>
 </Tabs>
 
-This command runs the `add_cmd` from the node's `peppy.json5` process configuration and registers it with the daemon node to make it available for execution.
+This command runs the `add_cmd` from the node's `peppy.json5` process configuration and registers it with the core node to make it available for execution.
 The output of this command provides some useful information:
 
 ```
@@ -104,13 +104,13 @@ To remove the node from the node stack, run:
 peppy node remove hello_world:0.1.0
 ```
 
-If you run `node stack list` again, you'll see that only the daemon node remains:
+If you run `node stack list` again, you'll see that only the core node remains:
 ```sh
 ❯ peppy stack list
 Listing nodes...
 Requesting node stack graph from daemon 'hungry-buck-4136'...
 Node stack:
-  - hungry-buck-4136:daemon-node (/root/.peppy/bin) (1 instance: ["sleepy-wiles-5676"])
+  - hungry-buck-4136:core-node (/root/.peppy/bin) (1 instance: ["sleepy-wiles-5676"])
 Dependencies:
   (none)
 ```
