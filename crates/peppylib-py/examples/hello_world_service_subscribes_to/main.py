@@ -12,7 +12,7 @@ async def main():
     # Create a messenger for the sending node.
     host = "127.0.0.1"
     port = DEFAULT_MESSAGING_PORT
-    core_node = f"{generate_name()}_daemon"
+    core_node = f"{generate_name()}_core"
     instance_id = f"{generate_name()}_caller"
 
     try:

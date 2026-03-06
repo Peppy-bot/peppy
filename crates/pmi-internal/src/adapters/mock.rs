@@ -259,19 +259,19 @@ mod tests {
     use crate::types::{MessengerAdapter, PublisherQoS, SubscriberQoS};
     use crate::{Message, Messenger, MessengerBackend};
 
-    // Key expression format: target_daemon/caller_daemon/target_instance/caller_instance/...
+    // Key expression format: target_core_node/caller_core_node/target_instance/caller_instance/...
     // Instance ID is extracted from segment index 3 (caller_instance)
-    // Core node is extracted from segment index 1 (caller_daemon)
+    // Core node is extracted from segment index 1 (caller_core_node)
     const INSTANCE_ID: &str = "test_instance";
     const CORE_NODE: &str = "test_core_node";
 
     /// Creates a valid key expression with the expected format for TopicMessage
     fn make_key_expr(topic: &str) -> String {
-        // Format: target_daemon/caller_daemon/target_instance/caller_instance/topic
-        // Segments: 0=target_daemon, 1=caller_daemon, 2=target_instance, 3=caller_instance
+        // Format: target_core_node/caller_core_node/target_instance/caller_instance/topic
+        // Segments: 0=target_core_node, 1=caller_core_node, 2=target_instance, 3=caller_instance
         // TopicMessage extracts: instance_id from index 3, core_node from index 1
         format!(
-            "target_daemon/{}/target_instance/{}/{}",
+            "target_core_node/{}/target_instance/{}/{}",
             CORE_NODE, INSTANCE_ID, topic
         )
     }
@@ -338,7 +338,7 @@ mod tests {
         assert!(messenger.start_session().await.is_ok());
 
         // Test subscribe first - pattern must match the key format from make_key_expr
-        // make_key_expr("test/topic/data") = "target_daemon/test_daemon/target_instance/test_instance/test/topic/data"
+        // make_key_expr("test/topic/data") = "target_core_node/test_daemon/target_instance/test_instance/test/topic/data"
         // Pattern uses wildcards for first 4 segments and matches rest literally
         let subscription = messenger
             .subscribe("*/*/*/*/test/topic/**", SubscriberQoS::Standard)
@@ -543,30 +543,29 @@ mod tests {
     fn test_topic_matches_service_patterns() {
         // Real patterns from the service messenger
         // Subscription pattern: {bound_core_node}/*/{as_instance_id}/*/{service_root}/request/**
-        // Request topic: {target_daemon}/{caller_daemon}/{target_instance}/{caller_instance}/{service_root}/request/{request_id}
+        // Request topic: {target_core_node}/{caller_core_node}/{target_instance}/{caller_instance}/{service_root}/request/{request_id}
 
-        // Pattern 1: Specific daemon, specific instance
-        // Service bound to daemon "listener_daemon" with instance "listener_instance"
-        let pattern = "listener_daemon/*/listener_instance/*/service/node/ping/request/**";
+        // Pattern 1: Specific core node, specific instance
+        // Service bound to core node "listener_core_node" with instance "listener_instance"
+        let pattern = "listener_core_node/*/listener_instance/*/service/node/ping/request/**";
         // Request targeting the specific instance
-        let topic = "listener_daemon/caller_daemon/listener_instance/caller_instance/service/node/ping/request/12345";
+        let topic = "listener_core_node/caller_core_node/listener_instance/caller_instance/service/node/ping/request/12345";
         assert!(MockAdapter::topic_matches(pattern, topic));
 
-        // Pattern 3: Broadcast daemon (_any_), specific instance
+        // Pattern 3: Broadcast core node (_any_), specific instance
         let pattern = "_any_/*/listener_instance/*/service/node/ping/request/**";
-        let topic =
-            "_any_/caller_daemon/listener_instance/caller_instance/service/node/ping/request/12345";
+        let topic = "_any_/caller_core_node/listener_instance/caller_instance/service/node/ping/request/12345";
         assert!(MockAdapter::topic_matches(pattern, topic));
 
-        // Pattern 4: Broadcast daemon, broadcast instance
+        // Pattern 4: Broadcast core node, broadcast instance
         let pattern = "_any_/*/_any_/*/service/node/ping/request/**";
-        let topic = "_any_/caller_daemon/_any_/caller_instance/service/node/ping/request/12345";
+        let topic = "_any_/caller_core_node/_any_/caller_instance/service/node/ping/request/12345";
         assert!(MockAdapter::topic_matches(pattern, topic));
 
         // CoreNode uses its own name as the bound daemon (e.g., "core_node")
         // This allows targeted requests to reach the core node specifically
         let pattern = "core_node/*/listener_instance/*/service/node/ping/request/**";
-        let topic = "core_node/caller_daemon/listener_instance/caller_instance/service/node/ping/request/12345";
+        let topic = "core_node/caller_core_node/listener_instance/caller_instance/service/node/ping/request/12345";
         assert!(MockAdapter::topic_matches(pattern, topic));
     }
 }

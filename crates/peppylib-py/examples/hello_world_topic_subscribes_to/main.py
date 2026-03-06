@@ -13,7 +13,7 @@ async def main():
 
     # Those properties are found in the peppy_launcher.json5 `deployments` array
     node_name = "hello_node"
-    core_node = f"{generate_name()}_daemon"
+    core_node = f"{generate_name()}_core"
     instance_id = f"{generate_name()}_receiver"
 
     # Create a messenger for the receiving node.

@@ -38,7 +38,7 @@ from common import (
     wait_for_service,
 )
 
-TEST_CORE_NODE = "test_daemon"
+TEST_CORE_NODE = "test_core"
 SHUTDOWN_SENDER_INSTANCE_ID = "test_shutdown_sender"
 
 

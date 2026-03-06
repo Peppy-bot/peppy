@@ -985,8 +985,8 @@ async fn service_communication_poll_wrong_core_node() {
             CALLER_INSTANCE_ID,
             listener_node_name,
             listener_service_name,
-            Some("wrong_daemon"), // target_core_node - wrong one!
-            None,                 // no specific target_instance_id
+            Some("wrong_core_node"), // target_core_node - wrong one!
+            None,                    // no specific target_instance_id
             request_payload.clone(),
             Duration::from_millis(200),
         )
@@ -1642,10 +1642,7 @@ async fn action_communication_no_instance_id_target() {
         .await
         .expect("caller should send goal");
 
-        assert_eq!(
-            goal_handle.goal_response().core_node(),
-            LISTENER_CORE_NODE
-        );
+        assert_eq!(goal_handle.goal_response().core_node(), LISTENER_CORE_NODE);
         assert_eq!(
             goal_handle.goal_response().instance_id(),
             LISTENER_INSTANCE_ID
@@ -1861,10 +1858,7 @@ async fn action_communication_with_instance_id_target() {
         .await
         .expect("caller should send goal");
 
-        assert_eq!(
-            goal_handle.goal_response().core_node(),
-            LISTENER_CORE_NODE2
-        );
+        assert_eq!(goal_handle.goal_response().core_node(), LISTENER_CORE_NODE2);
         assert_eq!(
             goal_handle.goal_response().instance_id(),
             LISTENER_INSTANCE_ID2
@@ -2060,10 +2054,7 @@ async fn action_communication_goal_cancelled() {
     .await
     .expect("caller should send goal");
 
-    assert_eq!(
-        goal_handle.goal_response().core_node(),
-        LISTENER_CORE_NODE
-    );
+    assert_eq!(goal_handle.goal_response().core_node(), LISTENER_CORE_NODE);
     assert_eq!(
         goal_handle.goal_response().instance_id(),
         LISTENER_INSTANCE_ID

@@ -56,14 +56,14 @@ pub async fn listen_for_node_add(
     let handle = tokio::spawn({
         let messenger = messenger.clone();
         let bound_core_node = core_node_name.to_string();
-        let daemon_instance_id = instance_id.to_string();
+        let core_instance_id = instance_id.to_string();
         async move {
             run_node_add_action_loop(
                 action,
                 node_stack,
                 messenger,
                 bound_core_node,
-                daemon_instance_id,
+                core_instance_id,
                 peppy_dirs,
             )
             .await
@@ -656,14 +656,14 @@ struct NodeAddActionContext {
     node_stack: Arc<NodeStack>,
     messenger: MessengerHandle,
     bound_core_node: String,
-    daemon_instance_id: String,
+    core_instance_id: String,
     peppy_dirs: PeppyDirs,
 }
 
 struct ProcessNodeAddContext {
     messenger: MessengerHandle,
     bound_core_node: String,
-    daemon_instance_id: String,
+    core_instance_id: String,
     node_stack: Arc<NodeStack>,
     peppy_dirs: PeppyDirs,
     feedback_publisher: TopicPublisher,
@@ -980,14 +980,14 @@ async fn run_node_add_action_loop(
     node_stack: Arc<NodeStack>,
     messenger: MessengerHandle,
     bound_core_node: String,
-    daemon_instance_id: String,
+    core_instance_id: String,
     peppy_dirs: PeppyDirs,
 ) -> Result<()> {
     let action_context = NodeAddActionContext {
         node_stack,
         messenger,
         bound_core_node,
-        daemon_instance_id,
+        core_instance_id,
         peppy_dirs,
     };
     let state = Arc::new(Mutex::new(NodeAddActionState::default()));
@@ -1271,7 +1271,7 @@ async fn handle_goal_request(
             node_stack,
             messenger,
             bound_core_node,
-            daemon_instance_id,
+            core_instance_id,
             peppy_dirs,
         } = action_context;
         let log_file_for_panic = log_file.clone();
@@ -1279,7 +1279,7 @@ async fn handle_goal_request(
         let ctx = ProcessNodeAddContext {
             messenger,
             bound_core_node,
-            daemon_instance_id,
+            core_instance_id,
             node_stack,
             peppy_dirs,
             feedback_publisher: feedback_publisher_clone,
@@ -1358,7 +1358,7 @@ async fn shutdown_existing_instances(
         ServiceMessenger::poll(
             &ctx.messenger,
             &ctx.bound_core_node,
-            &ctx.daemon_instance_id,
+            &ctx.core_instance_id,
             node_name,
             SHUTDOWN_SERVICE,
             Some(&ctx.bound_core_node),

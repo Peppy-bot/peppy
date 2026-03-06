@@ -144,7 +144,7 @@ impl CoreNode {
     pub async fn start_with_ready(&self, ready: Option<oneshot::Sender<()>>) -> Result<()> {
         clear_instances_dir(&self.peppy_dirs);
 
-        let core_node_name = self.node_name(); // The core node binds to itself as the daemon scope
+        let core_node_name = self.node_name(); // The core node binds to itself
         info!(
             "Starting the core node with name {} and instance_id {}...",
             self.node_name(),

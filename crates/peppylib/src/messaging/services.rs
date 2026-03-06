@@ -200,21 +200,23 @@ impl ServiceEndpoint {
         &self,
         request: TopicMessage,
     ) -> Result<(ServiceRequestContext, String)> {
-        // Format: target_daemon/caller_daemon/target_instance/caller_instance/service_root/request/id
+        // Format: target_core_node/caller_core_node/target_instance/caller_instance/service_root/request/id
         let identifier = request.key_expr().to_string();
         let mut parts = identifier.split('/').filter(|segment| !segment.is_empty());
 
-        // Parse target_daemon (first segment)
-        let target_daemon_segment = parts.next().ok_or_else(|| Error::InvalidServiceRequest {
-            identifier: identifier.clone(),
-            reason: "missing target core node segment in request".to_string(),
-        })?;
+        // Parse target_core_node (first segment)
+        let target_core_node_segment =
+            parts.next().ok_or_else(|| Error::InvalidServiceRequest {
+                identifier: identifier.clone(),
+                reason: "missing target core node segment in request".to_string(),
+            })?;
 
-        // Parse caller_daemon (second segment)
-        let caller_daemon_segment = parts.next().ok_or_else(|| Error::InvalidServiceRequest {
-            identifier: identifier.clone(),
-            reason: "missing caller core node segment in request".to_string(),
-        })?;
+        // Parse caller_core_node (second segment)
+        let caller_core_node_segment =
+            parts.next().ok_or_else(|| Error::InvalidServiceRequest {
+                identifier: identifier.clone(),
+                reason: "missing caller core node segment in request".to_string(),
+            })?;
 
         // Parse target_instance (third segment)
         let target_instance_segment = parts.next().ok_or_else(|| Error::InvalidServiceRequest {
@@ -293,18 +295,18 @@ impl ServiceEndpoint {
         // This ensures all listeners receiving a broadcast see the same key_expr
         let message_identifier = format!(
             "{}/{}/{}/{}/{}/request/{request_id}",
-            target_daemon_segment,
-            caller_daemon_segment,
+            target_core_node_segment,
+            caller_core_node_segment,
             target_instance_segment,
             caller_instance_segment,
             self.service_root
         );
 
-        // Response topic format: caller_daemon/responder_daemon/caller_instance/responder_instance/service_root/response/request_id
+        // Response topic format: caller_core_node/responder_core_node/caller_instance/responder_instance/service_root/response/request_id
         // This ensures core_node() returns responder's daemon (position 1) and instance_id() returns responder's instance (position 3)
         let response_topic = format!(
             "{}/{}/{}/{}/{}/response/{request_id}",
-            caller_daemon_segment,
+            caller_core_node_segment,
             self.bound_core_node,
             caller_instance_segment,
             response_target_instance_segment,
@@ -386,12 +388,7 @@ impl ServiceMessenger {
         as_service_name: &str,
     ) -> Result<ServiceEndpoint> {
         messenger
-            .expose_service(
-                as_core_node,
-                as_instance_id,
-                as_node_name,
-                as_service_name,
-            )
+            .expose_service(as_core_node, as_instance_id, as_node_name, as_service_name)
             .await
     }
 

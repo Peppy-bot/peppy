@@ -16,7 +16,7 @@ async def test_messenger_communication():
     # Start an ephemeral router for this test
     async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
         test_id = uuid.uuid4().hex[:8]
-        core_node = f"test_daemon_{test_id}"
+        core_node = f"test_core_{test_id}"
         instance_id = f"test_instance_{test_id}"
         node_name = f"test_node_{test_id}"
         topic_name = f"test_topic_{test_id}"

@@ -66,7 +66,7 @@ fn handle_service_result(result: PeppyResult<bool>) -> bool {
 async fn main() {
     // Create a messenger for the receiving node.
     let receiver_handle = connect_messenger("127.0.0.1", DEFAULT_MESSAGING_PORT).await;
-    let core_node = format!("{}_daemon", get_random(rng()));
+    let core_node = format!("{}_core", get_random(rng()));
     let instance_id = format!("{}_listener", get_random(rng()));
 
     let mut service = ServiceMessenger::listen(

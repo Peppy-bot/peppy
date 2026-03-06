@@ -21,13 +21,13 @@ pub async fn listen_for_node_remove(
     node_stack: Arc<NodeStack>,
 ) -> Result<JoinHandle<Result<()>>> {
     let core_node_node = core_node_node.to_string();
-    let daemon_instance_id = instance_id.to_string();
+    let core_instance_id = instance_id.to_string();
     let messenger = messenger.clone();
 
     let mut endpoint = ServiceMessenger::listen(
         &messenger,
         &core_node_node,
-        &daemon_instance_id,
+        &core_instance_id,
         node_name,
         names::NODE_REMOVE,
     )
@@ -40,7 +40,7 @@ pub async fn listen_for_node_remove(
                     context,
                     messenger.clone(),
                     core_node_node.clone(),
-                    daemon_instance_id.clone(),
+                    core_instance_id.clone(),
                     Arc::clone(&node_stack),
                 )
             })
@@ -55,7 +55,7 @@ async fn handle_node_remove_request(
     context: ServiceRequestContext,
     messenger: MessengerHandle,
     core_node_node: String,
-    daemon_instance_id: String,
+    core_instance_id: String,
     node_stack: Arc<NodeStack>,
 ) -> PeppyResult<Payload> {
     let sender_instance_id = context.message().instance_id();
@@ -63,7 +63,7 @@ async fn handle_node_remove_request(
         &context,
         &messenger,
         &core_node_node,
-        &daemon_instance_id,
+        &core_instance_id,
         node_stack,
     )
     .await
@@ -77,7 +77,7 @@ async fn handle_node_remove_request_inner(
     context: &ServiceRequestContext,
     messenger: &MessengerHandle,
     core_node_node: &str,
-    daemon_instance_id: &str,
+    core_instance_id: &str,
     node_stack: Arc<NodeStack>,
 ) -> Result<Payload> {
     let sender_instance_id = context.message().instance_id();
@@ -152,7 +152,7 @@ async fn handle_node_remove_request_inner(
         let reachable = match ServiceMessenger::is_reachable(
             messenger,
             core_node_node,
-            daemon_instance_id,
+            core_instance_id,
             &target.node_name,
             SHUTDOWN_SERVICE,
             Some(core_node_node),
@@ -195,7 +195,7 @@ async fn handle_node_remove_request_inner(
             let shutdown_result = ServiceMessenger::poll(
                 messenger,
                 core_node_node,
-                daemon_instance_id,
+                core_instance_id,
                 &target.node_name,
                 SHUTDOWN_SERVICE,
                 Some(core_node_node),

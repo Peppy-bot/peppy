@@ -17,7 +17,7 @@ use std::{fs, time::Duration};
 use tempfile::TempDir;
 
 // --- Common test constants
-const TEST_CORE_NODE: &str = "test_daemon";
+const TEST_CORE_NODE: &str = "test_core";
 const SUBSCRIBER_NODE_NAME: &str = "subscriber_node";
 const SUBSCRIBER_INSTANCE_ID: &str = "subscriber_instance";
 const EXPOSER_INSTANCE_ID: &str = "exposer_instance";

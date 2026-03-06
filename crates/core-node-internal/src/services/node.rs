@@ -9,14 +9,21 @@ mod templates;
 
 use crate::encoding::NodeSource;
 use crate::{Error, Result};
+pub use add::listen_for_node_add;
 use chrono::Local;
 use config::node::{NodeConfig, PeppygenLanguage};
 use git2::{Repository, build::CheckoutBuilder};
+pub use info::listen_for_node_info;
+pub use init::listen_for_node_init;
 use rand::RngExt;
+pub use remove::listen_for_node_remove;
+pub use start::{NodeStartServiceConfig, listen_for_node_start};
 use std::fs::File;
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
+pub use stop::listen_for_node_stop;
+pub use sync::listen_for_node_sync;
 use tar::Archive;
 use zstd::stream::read::Decoder;
 
@@ -324,14 +331,6 @@ pub(crate) fn is_supported_http_archive(url: &url::Url) -> bool {
     let path = url.path().to_ascii_lowercase();
     path.ends_with(".tar.zst") || path.ends_with(".tar.zstd") || path.ends_with(".tzst")
 }
-
-pub use add::listen_for_node_add;
-pub use info::listen_for_node_info;
-pub use init::listen_for_node_init;
-pub use remove::listen_for_node_remove;
-pub use start::{NodeStartServiceConfig, listen_for_node_start};
-pub use stop::listen_for_node_stop;
-pub use sync::listen_for_node_sync;
 
 pub(crate) async fn resolve_node_config(
     source: NodeSource,

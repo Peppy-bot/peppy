@@ -11,7 +11,7 @@ async fn action_messenger_communication() {
         .expect("failed to start zenoh router for test");
     let (host, port) = (instance.host.clone(), instance.port);
 
-    let core_node = "test_daemon";
+    let core_node = "test_core";
     let instance_id = "test_instance";
     let node_name = "test_node";
     let action_name = "test_action";

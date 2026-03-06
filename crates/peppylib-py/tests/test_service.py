@@ -11,7 +11,7 @@ import pytest
 
 from peppylib import MessengerHandle, ServiceMessenger, ZenohdInstance
 
-CORE_NODE = "test_daemon"
+CORE_NODE = "test_core"
 INSTANCE_ID = "test_instance"
 NODE_NAME = "test_node"
 SERVICE_NAME = "test_service"

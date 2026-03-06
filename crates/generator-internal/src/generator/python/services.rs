@@ -162,9 +162,8 @@ pub fn build_exposed_service(
     builder.line("core_node = message.core_node");
     builder.line("instance_id = message.instance_id");
     if has_request {
-        builder.line(
-            "return await _handle_request_payload(payload, handler, core_node, instance_id)",
-        );
+        builder
+            .line("return await _handle_request_payload(payload, handler, core_node, instance_id)");
     } else {
         builder.line("return await _handle_request_payload(handler, core_node, instance_id)");
     }

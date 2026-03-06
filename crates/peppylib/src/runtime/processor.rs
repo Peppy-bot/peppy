@@ -368,7 +368,7 @@ mod tests {
                 arguments: { value: 42 }
             },
             node_name: "test_node",
-            bound_core_node: "daemon-1234"
+            bound_core_node: "core-1234"
         }"#;
 
         let runtime_config: RuntimeConfig =
@@ -422,7 +422,7 @@ mod tests {
                 arguments: { value: 42, extra_param: "unexpected" }
             },
             node_name: "test_node",
-            bound_core_node: "daemon-1234"
+            bound_core_node: "core-1234"
         }"#
         .to_string();
 
@@ -477,7 +477,7 @@ mod tests {
                 arguments: { value: "not_an_integer" }
             },
             node_name: "test_node",
-            bound_core_node: "daemon-1234"
+            bound_core_node: "core-1234"
         }"#
         .to_string();
 
@@ -538,7 +538,7 @@ mod tests {
                 arguments: { config: { enabled: "yes", threshold: 0.5 } }
             },
             node_name: "test_node",
-            bound_core_node: "daemon-1234"
+            bound_core_node: "core-1234"
         }"#
         .to_string();
 
@@ -598,7 +598,7 @@ mod tests {
                 arguments: { tags: ["valid", 123, "also_valid"] }
             },
             node_name: "test_node",
-            bound_core_node: "daemon-1234"
+            bound_core_node: "core-1234"
         }"#
         .to_string();
 
@@ -650,7 +650,7 @@ mod tests {
                 arguments: { value: 42 }
             },
             node_name: "test_node",
-            bound_core_node: "daemon-1234"
+            bound_core_node: "core-1234"
         }"#;
 
         let runtime_config: RuntimeConfig =

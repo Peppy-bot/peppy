@@ -729,7 +729,9 @@ pub fn build_subscribed_action(
         builder.line("result_response_data = _deserialize_result_response(payload)");
         builder.line("return ResultResponse(core_node=response.core_node, instance_id=response.instance_id, data=result_response_data)");
     } else {
-        builder.line("return ResultResponse(core_node=response.core_node, instance_id=response.instance_id)");
+        builder.line(
+            "return ResultResponse(core_node=response.core_node, instance_id=response.instance_id)",
+        );
     }
 
     builder.dedent();

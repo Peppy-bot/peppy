@@ -57,7 +57,7 @@ fn add_instance_creates_new_entity() {
     let root = stack.root();
     assert_eq!(
         root.config().manifest.name.as_str(),
-        "daemon",
+        "core",
         "root should be core node, not sensor"
     );
     assert_ne!(
@@ -77,7 +77,7 @@ fn add_instance_creates_new_entity() {
         .iter()
         .map(|e| e.config().manifest.name.as_str())
         .collect();
-    assert!(names.contains(&"daemon"), "snapshot should contain daemon");
+    assert!(names.contains(&"core"), "snapshot should contain core");
     assert!(names.contains(&"sensor"), "snapshot should contain sensor");
 }
 
@@ -393,7 +393,7 @@ fn reset_clears_all_except_core_node() {
 
     assert_eq!(stack.len(), 1, "stack should only have root after reset");
     assert!(
-        stack.contains("daemon", "1.0.0"),
+        stack.contains("core", "1.0.0"),
         "root should still exist after reset"
     );
     assert!(
@@ -675,7 +675,7 @@ fn root_returns_the_core_node() {
     let root = stack.root();
     assert_eq!(
         root.config().manifest.name.as_str(),
-        "daemon",
+        "core",
         "root should be core node"
     );
     assert_eq!(
@@ -696,7 +696,7 @@ fn cannot_modify_root_node() {
     let root_instance_id = stack.root().instances()[0].instance_id().clone();
 
     // Try to remove the root's instance
-    let result = stack.remove_instance("daemon", "1.0.0", &root_instance_id);
+    let result = stack.remove_instance("core", "1.0.0", &root_instance_id);
     assert!(
         result.is_err(),
         "should not be able to remove root node instance"

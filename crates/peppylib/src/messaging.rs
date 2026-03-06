@@ -227,7 +227,7 @@ impl MessengerHandle {
         service_root: String,
         as_instance_id: &str,
     ) -> Result<ServiceEndpoint> {
-        // Format: target_daemon/caller_daemon/target_instance/caller_instance/service_root/request/id
+        // Format: target_core_node/caller_core_node/target_instance/caller_instance/service_root/request/id
         // We need 4 subscription patterns to match all valid request combinations:
         let patterns = [
             // 1. Specific daemon, specific instance
@@ -300,7 +300,7 @@ impl MessengerHandle {
 
         // If no target specified, use BROADCAST_MARKER for broadcast requests
         // This allows Zenoh subscription patterns to filter at the key expression level
-        let (effective_target_daemon, effective_target_instance) =
+        let (effective_target_core_node, effective_target_instance) =
             match (target_core_node, target_instance_id.as_deref()) {
                 (Some(daemon), Some(instance)) => (daemon.to_string(), instance.to_string()),
                 (Some(daemon), None) => (daemon.to_string(), BROADCAST_MARKER.to_string()),
@@ -313,24 +313,24 @@ impl MessengerHandle {
             format_bound_instance_segment(&effective_target_instance);
         let request_id = generate_request_id();
 
-        // Format: target_daemon/caller_daemon/target_instance/caller_instance/service_root/request/id
-        let target_daemon = target_bound_instance_segment
+        // Format: target_core_node/caller_core_node/target_instance/caller_instance/service_root/request/id
+        let target_core_node = target_bound_instance_segment
             .as_ref()
-            .map(|_| effective_target_daemon.as_str())
+            .map(|_| effective_target_core_node.as_str())
             .unwrap_or(BROADCAST_MARKER);
         let target_instance = target_bound_instance_segment
             .as_deref()
             .unwrap_or(BROADCAST_MARKER);
         let request_topic = format!(
             "{}/{}/{}/{}/{}/request/{request_id}",
-            target_daemon,
+            target_core_node,
             bound_core_node,
             target_instance,
             caller_target_instance_segment,
             service_root
         );
 
-        // Response topic format: caller_daemon/responder_daemon/caller_instance/responder_instance/service_root/response/request_id
+        // Response topic format: caller_core_node/responder_core_node/caller_instance/responder_instance/service_root/response/request_id
         // Always subscribe with wildcards for responder daemon and instance.
         // The request_id (UUID) uniquely identifies our response, so wildcards
         // are safe and — crucially — keep the subscriber pattern consistent

@@ -11,7 +11,7 @@ import pytest
 
 from peppylib import ActionMessenger, MessengerHandle, QoSProfile, ZenohdInstance
 
-CORE_NODE = "test_daemon"
+CORE_NODE = "test_core"
 INSTANCE_ID = "test_instance"
 NODE_NAME = "test_node"
 ACTION_NAME = "test_action"
@@ -198,7 +198,7 @@ async def test_send_goal_honors_target_core_node():
                 INSTANCE_ID,
                 NODE_NAME,
                 ACTION_NAME,
-                "wrong_daemon",
+                "wrong_core_node",
                 INSTANCE_ID,
                 GOAL_PAYLOAD,
                 QoSProfile.Reliable,

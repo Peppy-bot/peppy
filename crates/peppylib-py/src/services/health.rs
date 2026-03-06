@@ -23,10 +23,9 @@ impl PyNodeHealthService {
     ) -> PyResult<Bound<'py, PyAny>> {
         let handle = messenger.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let join_handle =
-                listen_for_node_health(&handle, &core_node, &instance_id, &node_name)
-                    .await
-                    .map_err(to_py_err)?;
+            let join_handle = listen_for_node_health(&handle, &core_node, &instance_id, &node_name)
+                .await
+                .map_err(to_py_err)?;
             Ok(PyServiceTask::new(join_handle))
         })
     }

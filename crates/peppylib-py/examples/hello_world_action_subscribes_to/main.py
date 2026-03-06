@@ -53,7 +53,7 @@ async def main():
             "Did you start a zenohd server with the `zenohd_simple` example?"
         )
 
-    core_node = f"{generate_name()}_daemon"
+    core_node = f"{generate_name()}_core"
     instance_id = f"{generate_name()}_listener"
 
     # --- Send initial goal ---

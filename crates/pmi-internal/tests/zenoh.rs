@@ -14,11 +14,11 @@ mod zenoh_tests {
     static ZENOH_SERIAL: Mutex<()> = Mutex::const_new(());
 
     /// Creates a valid key expression with the expected format for TopicMessage.
-    /// Format: target_daemon/caller_daemon/target_instance/caller_instance/topic
+    /// Format: target_core_node/caller_core_node/target_instance/caller_instance/topic
     /// TopicMessage extracts: instance_id from index 3, core_node from index 1
     fn make_key_expr(topic: &str) -> String {
         format!(
-            "target_daemon/{}/target_instance/{}/{}",
+            "target_core_node/{}/target_instance/{}/{}",
             CORE_NODE, INSTANCE_ID, topic
         )
     }
@@ -67,7 +67,7 @@ mod zenoh_tests {
         // Subscribe to a topic pattern that matches the key expression format
         let mut sub = instance
             .messenger()
-            .subscribe("target_daemon/**/test_topic", SubscriberQoS::Standard)
+            .subscribe("target_core_node/**/test_topic", SubscriberQoS::Standard)
             .await
             .expect("Failed to subscribe");
 
@@ -106,12 +106,12 @@ mod zenoh_tests {
         // Subscribe to multiple topics with different throughput modes
         let mut sub1 = instance
             .messenger()
-            .subscribe("target_daemon/**/topic1", SubscriberQoS::Standard)
+            .subscribe("target_core_node/**/topic1", SubscriberQoS::Standard)
             .await
             .expect("Failed to subscribe to topic1");
         let mut sub2 = instance
             .messenger()
-            .subscribe("target_daemon/**/topic2", SubscriberQoS::HighThroughput)
+            .subscribe("target_core_node/**/topic2", SubscriberQoS::HighThroughput)
             .await
             .expect("Failed to subscribe to topic2");
 
@@ -162,7 +162,7 @@ mod zenoh_tests {
 
         let mut sub = instance
             .messenger()
-            .subscribe("target_daemon/**/test_topic", SubscriberQoS::Standard)
+            .subscribe("target_core_node/**/test_topic", SubscriberQoS::Standard)
             .await
             .expect("Failed to subscribe");
 
@@ -228,7 +228,7 @@ mod zenoh_tests {
         // Create subscription after the message was published
         let mut late_sub = instance
             .messenger()
-            .subscribe("target_daemon/**/test_topic", SubscriberQoS::Standard)
+            .subscribe("target_core_node/**/test_topic", SubscriberQoS::Standard)
             .await
             .expect("Failed to create late subscription");
 
@@ -322,7 +322,7 @@ mod zenoh_tests {
         // Subscribe on router, publish from client to verify connectivity
         let mut sub = router_instance
             .messenger()
-            .subscribe("target_daemon/**/connect_test", SubscriberQoS::Standard)
+            .subscribe("target_core_node/**/connect_test", SubscriberQoS::Standard)
             .await
             .expect("Failed to subscribe");
 
@@ -365,7 +365,7 @@ mod zenoh_tests {
 
         let mut sub = instance
             .messenger()
-            .subscribe("target_daemon/**/port_test", SubscriberQoS::Standard)
+            .subscribe("target_core_node/**/port_test", SubscriberQoS::Standard)
             .await
             .expect("Failed to subscribe");
 

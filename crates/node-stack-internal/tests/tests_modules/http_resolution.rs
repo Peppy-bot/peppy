@@ -46,8 +46,8 @@ fn http_bundle_is_downloaded_and_resolved() {
         launcher_config,
     );
 
-    let plan = LaunchPlan::from_launch_file(core_node_config(), &launch_file, &peppy_dirs)
-        .expect("plan");
+    let plan =
+        LaunchPlan::from_launch_file(core_node_config(), &launch_file, &peppy_dirs).expect("plan");
     let stack = plan.node_stack();
     let report = plan.report();
 
@@ -113,8 +113,8 @@ fn http_bundle_is_cloned_and_same_tag_updates_code() {
         launcher_config,
     );
 
-    let plan = LaunchPlan::from_launch_file(core_node_config(), &launch_file, &peppy_dirs)
-        .expect("plan");
+    let plan =
+        LaunchPlan::from_launch_file(core_node_config(), &launch_file, &peppy_dirs).expect("plan");
     assert_eq!(plan.node_stack().len(), 2, "core node + uvc_camera");
     let planned = plan
         .report()
@@ -139,8 +139,8 @@ fn http_bundle_is_cloned_and_same_tag_updates_code() {
     let launcher_config = PeppyLauncher { deployments };
     write_config(launch_file.clone(), launcher_config);
 
-    let plan = LaunchPlan::from_launch_file(core_node_config(), &launch_file, &peppy_dirs)
-        .expect("plan");
+    let plan =
+        LaunchPlan::from_launch_file(core_node_config(), &launch_file, &peppy_dirs).expect("plan");
     assert_eq!(plan.node_stack().len(), 2, "core node + uvc_camera");
     let planned = plan
         .report()

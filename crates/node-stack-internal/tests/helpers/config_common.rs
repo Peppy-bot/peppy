@@ -19,12 +19,12 @@ pub fn core_node_config() -> NodeConfig {
         r#"{
             schema_version: 1,
             manifest: {
-                name: "daemon",
+                name: "core",
                 tag: "1.0.0",
                 language: "rust",
             },
             process: {
-                start_cmd: ["daemon"]
+                start_cmd: ["core"]
             }
         }"#,
     )

@@ -12,7 +12,7 @@ async fn main() {
 
     // Those properties are found in the peppy_launcher.json5 `deployments` array
     let node_name = "hello_node";
-    let core_node = format!("{}_daemon", get_random(rng()));
+    let core_node = format!("{}_core", get_random(rng()));
     let instance_id = format!("{}_emitter", get_random(rng()));
 
     // Create a messenger for the sending node.

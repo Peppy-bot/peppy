@@ -22,7 +22,7 @@ async fn connect_messenger(host: &str, port: u16) -> MessengerHandle {
 async fn main() {
     // Create a messenger for the sending node.
     let sender_handle = connect_messenger("127.0.0.1", DEFAULT_MESSAGING_PORT).await;
-    let core_node = format!("{}_daemon", get_random(rng()));
+    let core_node = format!("{}_core", get_random(rng()));
     let as_instance_id = format!("{}_caller", get_random(rng()));
 
     let request_payload = Bytes::from_static(b"Hello service");

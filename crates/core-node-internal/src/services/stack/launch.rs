@@ -44,14 +44,14 @@ pub async fn listen_for_stack_launch(
     let handle = tokio::spawn({
         let messenger = messenger.clone();
         let bound_core_node = core_node_name.to_string();
-        let daemon_instance_id = instance_id.to_string();
+        let core_instance_id = instance_id.to_string();
         async move {
             run_launch_action_loop(
                 action,
                 node_stack,
                 messenger,
                 bound_core_node,
-                daemon_instance_id,
+                core_instance_id,
                 peppy_dirs,
             )
             .await
@@ -80,7 +80,7 @@ enum LaunchActionState {
 struct ProcessLaunchContext {
     messenger: MessengerHandle,
     bound_core_node: String,
-    daemon_instance_id: String,
+    core_instance_id: String,
     node_stack: Arc<NodeStack>,
     feedback_publisher: TopicPublisher,
     log_file: Arc<StdMutex<File>>,
@@ -96,7 +96,7 @@ struct LaunchActionContext {
     node_stack: Arc<NodeStack>,
     messenger: MessengerHandle,
     bound_core_node: String,
-    daemon_instance_id: String,
+    core_instance_id: String,
     peppy_dirs: PeppyDirs,
 }
 
@@ -222,7 +222,7 @@ async fn run_node_add_and_forward_feedback(
     let mut action_handle = ActionMessenger::send_goal(
         &ctx.messenger,
         &ctx.bound_core_node,
-        &ctx.daemon_instance_id,
+        &ctx.core_instance_id,
         &ctx.bound_core_node,
         names::NODE_ADD_ACTION,
         None,
@@ -351,7 +351,7 @@ async fn run_node_start_and_forward_feedback(
     let mut action_handle = ActionMessenger::send_goal(
         &ctx.messenger,
         &ctx.bound_core_node,
-        &ctx.daemon_instance_id,
+        &ctx.core_instance_id,
         &ctx.bound_core_node,
         names::NODE_START_ACTION,
         None,
@@ -1019,14 +1019,14 @@ async fn run_launch_action_loop(
     node_stack: Arc<NodeStack>,
     messenger: MessengerHandle,
     bound_core_node: String,
-    daemon_instance_id: String,
+    core_instance_id: String,
     peppy_dirs: PeppyDirs,
 ) -> Result<()> {
     let action_context = LaunchActionContext {
         node_stack,
         messenger,
         bound_core_node,
-        daemon_instance_id,
+        core_instance_id,
         peppy_dirs,
     };
     let state = Arc::new(Mutex::new(LaunchActionState::default()));
@@ -1240,7 +1240,7 @@ async fn handle_goal_request(
         let LaunchActionContext {
             messenger,
             bound_core_node,
-            daemon_instance_id,
+            core_instance_id,
             node_stack,
             ..
         } = action_context;
@@ -1251,7 +1251,7 @@ async fn handle_goal_request(
         let ctx = ProcessLaunchContext {
             messenger,
             bound_core_node,
-            daemon_instance_id,
+            core_instance_id,
             node_stack,
             feedback_publisher,
             log_file,

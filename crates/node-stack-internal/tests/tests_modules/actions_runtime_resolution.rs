@@ -95,7 +95,11 @@ fn action_dependency_resolved_when_dependency_added_first() {
     stack
         .push_config(dependency, false, PathBuf::from("/tmp"))
         .expect("dependency node has no dependencies");
-    assert_eq!(stack.len(), 2, "stack should have core node + dependency node");
+    assert_eq!(
+        stack.len(),
+        2,
+        "stack should have core node + dependency node"
+    );
 
     // Now add the dependent node
     stack

@@ -121,7 +121,9 @@ async fn listen_for_node_start_success() {
 
     // Verify that the instance was added to the node stack
     let instance_id = NodeName::new(TARGET_INSTANCE_ID).expect("valid instance id");
-    let found_instance = started_core_node.node_stack.find_by_instance_id(&instance_id);
+    let found_instance = started_core_node
+        .node_stack
+        .find_by_instance_id(&instance_id);
     assert!(
         found_instance.is_some(),
         "instance should be registered in the node stack after successful start"

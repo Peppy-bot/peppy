@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-const TEST_CORE_NODE: &str = "test_daemon";
+const TEST_CORE_NODE: &str = "test_core";
 const TEST_NODE_NAME: &str = "test_node";
 const TEST_INSTANCE_ID: &str = "test_instance";
 const SHUTDOWN_SENDER_INSTANCE_ID: &str = "test_shutdown_sender";

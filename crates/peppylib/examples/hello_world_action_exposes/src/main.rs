@@ -348,7 +348,7 @@ async fn run_action_loop(mut action: ActionCreation) {
 #[tokio::main]
 async fn main() {
     let receiver_handle = connect_messenger("127.0.0.1", DEFAULT_MESSAGING_PORT).await;
-    let core_node_name = format!("{}_daemon", get_random(rng()));
+    let core_node_name = format!("{}_core", get_random(rng()));
     let as_instance_id = format!("{}_listener", get_random(rng()));
 
     let action = ActionMessenger::expose(

@@ -22,10 +22,10 @@ CALLER_INSTANCE_ID = "caller_instance"
 async def test_ready_node():
     """Ready service accepts all valid targeting modes and echoes back the payload.
     The test validates four targeting combinations:
-    - specific daemon + specific instance
-    - specific daemon + broadcast instance
-    - broadcast daemon + specific instance
-    - full broadcast (daemon + instance)
+    - specific core node + specific instance
+    - specific core node + broadcast instance
+    - broadcast core node + specific instance
+    - full broadcast (core node + instance)
     """
     async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
         messenger = await MessengerHandle.from_host_port(router.host, router.port)
