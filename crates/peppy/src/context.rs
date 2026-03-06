@@ -1,4 +1,5 @@
 use crate::daemon_state::DaemonState;
+use crate::error::Error;
 use peppylib::MessengerHandle;
 use pmi::Messenger;
 use std::path::{Path, PathBuf};
@@ -29,18 +30,25 @@ impl AppContext {
         self
     }
 
-    pub(crate) fn read_daemon_state(&self) -> std::io::Result<DaemonState> {
-        match &self.daemon_state_path {
+    pub(crate) fn read_daemon_state(&self) -> crate::error::Result<DaemonState> {
+        let state = match &self.daemon_state_path {
             Some(path) => DaemonState::read_from(path),
             None => DaemonState::read(),
         }
+        .map_err(|e| {
+            Error::ExecutionFailed(format!(
+                "Failed to read daemon state. Is the peppy daemon running? Error: {}",
+                e
+            ))
+        })?;
+        Ok(state)
     }
 
-    pub fn core_node_name(&self) -> std::io::Result<String> {
+    pub fn core_node_name(&self) -> crate::error::Result<String> {
         Ok(self.read_daemon_state()?.core_node_name)
     }
 
-    pub fn messaging_port(&self) -> std::io::Result<u16> {
+    pub fn messaging_port(&self) -> crate::error::Result<u16> {
         Ok(self.read_daemon_state()?.messaging_port)
     }
 
@@ -55,9 +63,9 @@ impl AppContext {
     }
 
     pub async fn connect(&self) -> crate::error::Result<()> {
+        let messaging_port = self.messaging_port()?;
         self.messenger_handle
             .get_or_try_init(|| async {
-                let messaging_port = self.messaging_port()?;
                 MessengerHandle::from_host_port(
                     config::consts::DEFAULT_MESSAGING_HOST,
                     messaging_port,

@@ -20,12 +20,7 @@ impl Command for ResetCommand {
 }
 
 async fn reset_async(ctx: &Arc<AppContext>) -> Result<()> {
-    let daemon_state = ctx.read_daemon_state().map_err(|e| {
-        Error::ExecutionFailed(format!(
-            "Failed to read daemon state. Is the peppy daemon running? Error: {}",
-            e
-        ))
-    })?;
+    let daemon_state = ctx.read_daemon_state()?;
     let core_node_name = daemon_state.core_node_name;
 
     ctx.connect().await?;

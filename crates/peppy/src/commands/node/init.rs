@@ -56,12 +56,7 @@ impl NodeInitBuilder {
 
     async fn build_async(self) -> Result<()> {
         // Read the daemon state to discover the core node name
-        let daemon_state = self.ctx.read_daemon_state().map_err(|e| {
-            Error::ExecutionFailed(format!(
-                "Failed to read daemon state. Is the peppy daemon running? Error: {}",
-                e
-            ))
-        })?;
+        let daemon_state = self.ctx.read_daemon_state()?;
         let core_node_name = &daemon_state.core_node_name;
         let git_hash = &daemon_state.git_hash;
 
