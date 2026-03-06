@@ -31,7 +31,7 @@ async fn list_nodes_async(ctx: &Arc<AppContext>, dot_graph_path: Option<PathBuf>
         .ok_or_else(|| Error::ExecutionFailed("Failed to connect to daemon".to_string()))?;
 
     info!(
-        "Requesting node stack graph from daemon '{}'...",
+        "Requesting node stack graph from core '{}'...",
         core_node_name
     );
 

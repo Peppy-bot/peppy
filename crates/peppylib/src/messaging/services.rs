@@ -19,8 +19,8 @@ pub struct ServiceEndpoint {
     /// Subscriptions to service requests. Four patterns are needed to match:
     /// - [0] Requests targeting this specific core node and instance
     /// - [1] Requests targeting this specific core node with broadcast instance
-    /// - [2] Broadcast requests (any daemon) targeting this specific instance
-    /// - [3] Full broadcast requests (any daemon, any instance)
+    /// - [2] Broadcast requests (any core node) targeting this specific instance
+    /// - [3] Full broadcast requests (any core node, any instance)
     subscriptions: [Subscription; 4],
     bound_core_node: String,
     service_root: String,
@@ -303,7 +303,7 @@ impl ServiceEndpoint {
         );
 
         // Response topic format: caller_core_node/responder_core_node/caller_instance/responder_instance/service_root/response/request_id
-        // This ensures core_node() returns responder's daemon (position 1) and instance_id() returns responder's instance (position 3)
+        // This ensures core_node() returns responder's core node (position 1) and instance_id() returns responder's instance (position 3)
         let response_topic = format!(
             "{}/{}/{}/{}/{}/response/{request_id}",
             caller_core_node_segment,

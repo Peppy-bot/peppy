@@ -32,10 +32,10 @@ async fn ready_node() {
     let request_payload = Payload::from_static(b"ready");
 
     // The ready service should accept all valid targeting modes:
-    // - specific daemon + specific instance
-    // - specific daemon + broadcast instance
-    // - broadcast daemon + specific instance
-    // - full broadcast (daemon + instance)
+    // - specific core node + specific instance
+    // - specific core node + broadcast instance
+    // - broadcast core node + specific instance
+    // - full broadcast (core node + instance)
     let target_combinations = [
         (
             Some(client.core_node_name.as_str()),

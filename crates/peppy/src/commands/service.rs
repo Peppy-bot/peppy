@@ -21,7 +21,7 @@ pub enum ServiceCommands {
         messaging_engine: String,
         /// Optional name for the core node
         #[arg(long)]
-        daemon_name: Option<String>,
+        core_node_name: Option<String>,
     },
     /// Install the peppy daemon as a background service (user-level by default; run with sudo for system-wide).
     Install {},
@@ -29,7 +29,7 @@ pub enum ServiceCommands {
     Stop {},
     /// Uninstall the peppy background service.
     Uninstall {},
-    /// Reset the current core node stack (clears all nodes except the daemon).
+    /// Reset the current core node stack (clears all nodes except the core node).
     Reset {},
 }
 
@@ -42,10 +42,10 @@ impl Command for ServiceCommand {
         match self.command {
             ServiceCommands::Serve {
                 messaging_engine,
-                daemon_name,
+                core_node_name,
             } => serve::ServeCommand {
                 messaging_engine,
-                daemon_name,
+                core_node_name,
                 shutdown_token: None,
             }
             .execute(app_ctx),

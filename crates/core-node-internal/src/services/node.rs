@@ -44,7 +44,7 @@ fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
 }
 
 /// Blocklist of dangerous env vars that could be used for code injection or process manipulation.
-/// Used by both the daemon (to reject requests) and CLI (to filter before sending).
+/// Used by both the core node (to reject requests) and CLI (to filter before sending).
 pub const FORBIDDEN_ENV_KEYS: [&str; 16] = [
     // Linux dynamic linker injection
     "LD_PRELOAD",

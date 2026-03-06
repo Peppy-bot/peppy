@@ -11,7 +11,7 @@ struct NodeHealthResponse {
 }
 
 struct NodeReadyRequest {
-    # Empty for now - daemon polls this to check if node's runner::run() has started
+    # Empty for now - core node polls this to check if node's runner::run() has started
 }
 
 struct NodeReadyResponse {

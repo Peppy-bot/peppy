@@ -124,18 +124,18 @@ impl ActionMessenger {
         as_instance_id: &str,
         to_node_name: &str,
         to_action_name: &str,
-        target_core_node: Option<&str>,
+        target_core_instance_id: Option<&str>,
         target_instance_id: Option<&str>,
         goal_payload: Payload,
         feedback_qos: QoSProfile,
         goal_timeout: Duration,
     ) -> Result<ActionGoalHandle> {
         let feedback_topic = {
-            let sender_daemon = target_core_node.unwrap_or("*");
+            let sender_core_node = target_core_instance_id.unwrap_or("*");
             match target_instance_id {
                 Some(target_instance_id) => {
                     format!(
-                        "{as_core_node}/{sender_daemon}/{as_instance_id}/{target_instance_id}/action/{to_node_name}/{to_action_name}/feedback/{target_instance_id}"
+                        "{as_core_node}/{sender_core_node}/{as_instance_id}/{target_instance_id}/action/{to_node_name}/{to_action_name}/feedback/{target_instance_id}"
                     )
                 }
                 None => format!(
@@ -160,7 +160,7 @@ impl ActionMessenger {
                 as_instance_id,
                 to_node_name,
                 &goal_service_name,
-                target_core_node,
+                target_core_instance_id,
                 target_instance_id,
                 goal_payload,
                 goal_timeout,
@@ -172,7 +172,7 @@ impl ActionMessenger {
             instance_id: as_instance_id.to_string(),
             node_name: to_node_name.to_string(),
             action_name: to_action_name.to_string(),
-            target_core_node: target_core_node.map(|daemon| daemon.to_string()),
+            target_core_node: target_core_instance_id.map(|name| name.to_string()),
             target_instance_id: target_instance_id.map(|id| id.to_string()),
             goal_response,
             feedback: Subscription::new(feedback_subscription),

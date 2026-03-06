@@ -338,7 +338,7 @@ mod tests {
         assert!(messenger.start_session().await.is_ok());
 
         // Test subscribe first - pattern must match the key format from make_key_expr
-        // make_key_expr("test/topic/data") = "target_core_node/test_daemon/target_instance/test_instance/test/topic/data"
+        // make_key_expr("test/topic/data") = "target_core_node/test_core/target_instance/test_instance/test/topic/data"
         // Pattern uses wildcards for first 4 segments and matches rest literally
         let subscription = messenger
             .subscribe("*/*/*/*/test/topic/**", SubscriberQoS::Standard)
@@ -535,7 +535,7 @@ mod tests {
         assert!(!MockAdapter::topic_matches("a/*/c/**", "a/b/d"));
         assert!(MockAdapter::topic_matches(
             "*/*/service/**",
-            "daemon/caller/service/ping/request/123"
+            "core_node/caller/service/ping/request/123"
         ));
     }
 
@@ -562,7 +562,7 @@ mod tests {
         let topic = "_any_/caller_core_node/_any_/caller_instance/service/node/ping/request/12345";
         assert!(MockAdapter::topic_matches(pattern, topic));
 
-        // CoreNode uses its own name as the bound daemon (e.g., "core_node")
+        // CoreNode uses its own name as the bound core node (e.g., "core_node")
         // This allows targeted requests to reach the core node specifically
         let pattern = "core_node/*/listener_instance/*/service/node/ping/request/**";
         let topic = "core_node/caller_core_node/listener_instance/caller_instance/service/node/ping/request/12345";

@@ -66,7 +66,7 @@ fn add_instance_creates_new_entity() {
         "sensor should not be the root node"
     );
 
-    // Verify sensor is in the stack's snapshot alongside daemon
+    // Verify sensor is in the stack's snapshot alongside the core node
     let snapshot = stack.snapshot();
     assert_eq!(
         snapshot.len(),

@@ -689,7 +689,7 @@ async def test_node_runner_exposes_messenger_and_metadata(monkeypatch):
 
             result = await asyncio.to_thread(result_queue.get, timeout=5.0)
 
-            assert result["bound_core_node"] == "standalone-daemon"
+            assert result["bound_core_node"] == "standalone-core"
             assert result["bound_instance_id"] == TEST_INSTANCE_ID
             assert result["node_name"] == TEST_NODE_NAME
 

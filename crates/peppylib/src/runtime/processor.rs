@@ -104,7 +104,7 @@ impl Processor {
                 arguments,
             },
             &node_name,
-            "standalone-daemon",
+            "standalone-core",
         )?;
 
         Ok(Self { runtime_config })
@@ -695,7 +695,7 @@ mod tests {
 
         assert_eq!(processor.node_name(), "my_node");
         assert_eq!(processor.bound_instance_id(), "standalone");
-        assert_eq!(processor.bound_core_node(), "standalone-daemon");
+        assert_eq!(processor.bound_core_node(), "standalone-core");
         assert_eq!(processor.messaging_host(), "127.0.0.1");
         assert_eq!(processor.messaging_port(), 7448);
     }

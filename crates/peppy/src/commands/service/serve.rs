@@ -196,7 +196,7 @@ impl Serve {
 
 pub struct ServeCommand {
     pub messaging_engine: String,
-    pub daemon_name: Option<String>,
+    pub core_node_name: Option<String>,
     pub shutdown_token: Option<CancellationToken>,
 }
 
@@ -204,7 +204,7 @@ impl Command for ServeCommand {
     fn execute(self, ctx: &Arc<AppContext>) -> Result<()> {
         let mut builder = ServeCommandBuilder::new(&ctx.root_dir)?
             .with_messaging_router(self.messaging_engine)?
-            .with_core_node(self.daemon_name)?;
+            .with_core_node(self.core_node_name)?;
 
         if let Some(token) = self.shutdown_token {
             builder = builder.with_shutdown_token(token);

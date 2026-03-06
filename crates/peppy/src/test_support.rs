@@ -137,7 +137,7 @@ impl ServeCommandEmulation {
         let peppy_dirs = PeppyDirs::new(temp_dir.path());
         let core_node = CoreNode::new(
             Arc::clone(&shared_messenger),
-            Some("test-daemon"),
+            Some("test-core-node"),
             CoreNodeArguments {
                 node_startup_timeout: Duration::from_secs(120),
                 node_start_health_timeout: Duration::from_secs(30),

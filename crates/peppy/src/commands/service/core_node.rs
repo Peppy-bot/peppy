@@ -17,7 +17,7 @@ pub struct CoreNodeRunner {
 impl CoreNodeRunner {
     pub fn new(
         messenger: Arc<Mutex<Messenger>>,
-        daemon_name: Option<String>,
+        core_node_name: Option<String>,
         node_startup_timeout: Duration,
         node_start_health_timeout: Duration,
         root_dir: PathBuf,
@@ -30,7 +30,7 @@ impl CoreNodeRunner {
         let peppy_dirs = PeppyDirs::default();
         let core_node = CoreNode::new(
             messenger,
-            daemon_name.as_deref(),
+            core_node_name.as_deref(),
             node_arguments,
             root_dir,
             peppy_dirs,

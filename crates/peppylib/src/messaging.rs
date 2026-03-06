@@ -230,13 +230,13 @@ impl MessengerHandle {
         // Format: target_core_node/caller_core_node/target_instance/caller_instance/service_root/request/id
         // We need 4 subscription patterns to match all valid request combinations:
         let patterns = [
-            // 1. Specific daemon, specific instance
+            // 1. Specific core node, specific instance
             format!("{bound_core_node}/*/{as_instance_id}/*/{service_root}/request/**"),
-            // 2. Specific daemon, broadcast instance
+            // 2. Specific core node, broadcast instance
             format!("{bound_core_node}/*/{BROADCAST_MARKER}/*/{service_root}/request/**"),
-            // 3. Broadcast daemon, specific instance
+            // 3. Broadcast core node, specific instance
             format!("{BROADCAST_MARKER}/*/{as_instance_id}/*/{service_root}/request/**"),
-            // 4. Broadcast daemon, broadcast instance
+            // 4. Broadcast core node, broadcast instance
             format!("{BROADCAST_MARKER}/*/{BROADCAST_MARKER}/*/{service_root}/request/**"),
         ];
 
@@ -302,8 +302,8 @@ impl MessengerHandle {
         // This allows Zenoh subscription patterns to filter at the key expression level
         let (effective_target_core_node, effective_target_instance) =
             match (target_core_node, target_instance_id.as_deref()) {
-                (Some(daemon), Some(instance)) => (daemon.to_string(), instance.to_string()),
-                (Some(daemon), None) => (daemon.to_string(), BROADCAST_MARKER.to_string()),
+                (Some(core_node), Some(instance)) => (core_node.to_string(), instance.to_string()),
+                (Some(core_node), None) => (core_node.to_string(), BROADCAST_MARKER.to_string()),
                 (None, Some(instance)) => (BROADCAST_MARKER.to_string(), instance.to_string()),
                 (None, None) => (BROADCAST_MARKER.to_string(), BROADCAST_MARKER.to_string()),
             };
@@ -331,7 +331,7 @@ impl MessengerHandle {
         );
 
         // Response topic format: caller_core_node/responder_core_node/caller_instance/responder_instance/service_root/response/request_id
-        // Always subscribe with wildcards for responder daemon and instance.
+        // Always subscribe with wildcards for responder core node and instance.
         // The request_id (UUID) uniquely identifies our response, so wildcards
         // are safe and — crucially — keep the subscriber pattern consistent
         // across different targeting modes, avoiding Zenoh routing-table

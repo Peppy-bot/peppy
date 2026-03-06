@@ -77,9 +77,9 @@ impl ServeCommandBuilder {
         Ok(self)
     }
 
-    pub fn with_core_node(mut self, daemon_name: Option<String>) -> Result<Self> {
+    pub fn with_core_node(mut self, core_node_name: Option<String>) -> Result<Self> {
         self.core_node_requested = true;
-        self.core_node_name = daemon_name;
+        self.core_node_name = core_node_name;
         Ok(self)
     }
 

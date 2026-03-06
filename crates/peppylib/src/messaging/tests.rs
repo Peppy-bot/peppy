@@ -1633,7 +1633,7 @@ async fn action_communication_no_instance_id_target() {
             CALLER_INSTANCE_ID,
             listener_node_name,
             listener_action_name,
-            None, // No target daemon_id
+            None, // No target core_id
             None, // No target instance_id
             goal_payload,
             QoSProfile::Reliable,

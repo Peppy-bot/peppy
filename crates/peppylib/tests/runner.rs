@@ -744,7 +744,7 @@ async fn node_runner_exposes_messenger_and_metadata() {
         .expect("runner setup should complete")
         .expect("runner setup signal should be sent");
 
-    assert_eq!(metadata.bound_core_node, "standalone-daemon");
+    assert_eq!(metadata.bound_core_node, "standalone-core");
     assert_eq!(metadata.bound_instance_id, TEST_INSTANCE_ID);
     assert_eq!(metadata.node_name, TEST_NODE_NAME);
     assert_eq!(metadata.messaging_port, router_port);

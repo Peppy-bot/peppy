@@ -28,7 +28,7 @@ fn serve_command() {
 
     ServeCommand {
         messaging_engine: "mock".to_string(),
-        daemon_name: Some("core-node".to_string()),
+        core_node_name: Some("core-node".to_string()),
         shutdown_token: Some(shutdown_token),
     }
     .execute(&ctx)
@@ -43,7 +43,7 @@ fn serve_command() {
         .expect("daemon state core node name should be readable");
     assert_eq!(
         core_node_name, "core-node",
-        "daemon state should use the configured daemon name"
+        "daemon state should use the configured core node name"
     );
 
     let logs = log_capture.logs();
