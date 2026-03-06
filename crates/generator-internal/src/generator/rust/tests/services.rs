@@ -276,7 +276,7 @@ fn subscribed_to_service() {
         &rendered,
         &[
             "pub async fn poll(",
-            "target_daemon_node: Option<&str>",
+            "target_core_node: Option<&str>",
             "target_instance_id: Option<&str>",
             "-> crate::Result<Response>",
         ],

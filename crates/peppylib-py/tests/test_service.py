@@ -11,7 +11,7 @@ import pytest
 
 from peppylib import MessengerHandle, ServiceMessenger, ZenohdInstance
 
-DAEMON_NODE = "test_daemon"
+CORE_NODE = "test_core"
 INSTANCE_ID = "test_instance"
 NODE_NAME = "test_node"
 SERVICE_NAME = "test_service"
@@ -30,7 +30,7 @@ async def test_service_messenger_communication():
         # Start the service listener
         service = await ServiceMessenger.listen(
             server_handle,
-            DAEMON_NODE,
+            CORE_NODE,
             INSTANCE_ID,
             NODE_NAME,
             SERVICE_NAME,
@@ -48,11 +48,11 @@ async def test_service_messenger_communication():
         # Poll the service as a client
         response = await ServiceMessenger.poll(
             client_handle,
-            DAEMON_NODE,
+            CORE_NODE,
             INSTANCE_ID,
             NODE_NAME,
             SERVICE_NAME,
-            DAEMON_NODE,
+            CORE_NODE,
             INSTANCE_ID,
             REQUEST_PAYLOAD,
             2.0,
@@ -62,7 +62,7 @@ async def test_service_messenger_communication():
 
         assert response.payload == RESPONSE_PAYLOAD
         assert response.instance_id == INSTANCE_ID
-        assert response.daemon_node == DAEMON_NODE
+        assert response.core_node == CORE_NODE
 
 
 @pytest.mark.asyncio
@@ -74,11 +74,11 @@ async def test_service_poll_rejects_invalid_timeout():
         with pytest.raises(ValueError, match="response_timeout_secs"):
             await ServiceMessenger.poll(
                 client_handle,
-                DAEMON_NODE,
+                CORE_NODE,
                 INSTANCE_ID,
                 NODE_NAME,
                 SERVICE_NAME,
-                DAEMON_NODE,
+                CORE_NODE,
                 INSTANCE_ID,
                 REQUEST_PAYLOAD,
                 -1.0,
@@ -94,7 +94,7 @@ async def test_service_handler_exception_returns_service_error():
 
         service = await ServiceMessenger.listen(
             server_handle,
-            DAEMON_NODE,
+            CORE_NODE,
             INSTANCE_ID,
             NODE_NAME,
             SERVICE_NAME,
@@ -110,11 +110,11 @@ async def test_service_handler_exception_returns_service_error():
         with pytest.raises(RuntimeError, match="handler boom"):
             await ServiceMessenger.poll(
                 client_handle,
-                DAEMON_NODE,
+                CORE_NODE,
                 INSTANCE_ID,
                 NODE_NAME,
                 SERVICE_NAME,
-                DAEMON_NODE,
+                CORE_NODE,
                 INSTANCE_ID,
                 REQUEST_PAYLOAD,
                 2.0,

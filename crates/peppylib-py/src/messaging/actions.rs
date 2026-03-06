@@ -46,11 +46,11 @@ impl PyTopicPublisher {
 pub struct PyActionGoalHandle {
     pub(crate) inner: Arc<Mutex<ActionGoalHandle>>,
     goal_response_cache: PyTopicMessage,
-    daemon_node: String,
+    core_node: String,
     instance_id: String,
     node_name: String,
     action_name: String,
-    target_daemon_node: Option<String>,
+    target_core_node: Option<String>,
     target_instance_id: Option<String>,
 }
 
@@ -132,7 +132,7 @@ impl PyActionMessenger {
     fn expose<'py>(
         py: Python<'py>,
         messenger: &PyMessengerHandle,
-        as_daemon_node: String,
+        as_core_node: String,
         as_instance_id: String,
         as_node_name: String,
         as_action_name: String,
@@ -141,7 +141,7 @@ impl PyActionMessenger {
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let creation = ActionMessenger::expose(
                 &handle,
-                &as_daemon_node,
+                &as_core_node,
                 &as_instance_id,
                 &as_node_name,
                 &as_action_name,
@@ -160,16 +160,16 @@ impl PyActionMessenger {
 
     /// Send a goal to an action server.
     #[staticmethod]
-    #[pyo3(signature = (messenger, as_daemon_node, as_instance_id, to_node_name, to_action_name, target_daemon_node=None, target_instance_id=None, goal_payload=vec![], feedback_qos=PyQoSProfile::Reliable, goal_timeout_secs=2.0))]
+    #[pyo3(signature = (messenger, as_core_node, as_instance_id, to_node_name, to_action_name, target_core_node=None, target_instance_id=None, goal_payload=vec![], feedback_qos=PyQoSProfile::Reliable, goal_timeout_secs=2.0))]
     #[allow(clippy::too_many_arguments)]
     fn send_goal<'py>(
         py: Python<'py>,
         messenger: &PyMessengerHandle,
-        as_daemon_node: String,
+        as_core_node: String,
         as_instance_id: String,
         to_node_name: String,
         to_action_name: String,
-        target_daemon_node: Option<String>,
+        target_core_node: Option<String>,
         target_instance_id: Option<String>,
         goal_payload: Vec<u8>,
         feedback_qos: PyQoSProfile,
@@ -180,11 +180,11 @@ impl PyActionMessenger {
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let goal_handle = ActionMessenger::send_goal(
                 &handle,
-                &as_daemon_node,
+                &as_core_node,
                 &as_instance_id,
                 &to_node_name,
                 &to_action_name,
-                target_daemon_node.as_deref(),
+                target_core_node.as_deref(),
                 target_instance_id.as_deref(),
                 Payload::from(goal_payload),
                 feedback_qos.into(),
@@ -200,17 +200,17 @@ impl PyActionMessenger {
                 key_expr: resp.key_expr().to_string(),
                 payload: resp.payload().to_vec(),
                 instance_id: resp.instance_id().to_string(),
-                daemon_node: resp.daemon_node().to_string(),
+                core_node: resp.core_node().to_string(),
             };
 
             Ok(PyActionGoalHandle {
                 inner: Arc::new(Mutex::new(goal_handle)),
                 goal_response_cache,
-                daemon_node: as_daemon_node,
+                core_node: as_core_node,
                 instance_id: as_instance_id,
                 node_name: to_node_name,
                 action_name: to_action_name,
-                target_daemon_node,
+                target_core_node,
                 target_instance_id,
             })
         })
@@ -229,20 +229,20 @@ impl PyActionMessenger {
     ) -> PyResult<Bound<'py, PyAny>> {
         let cancel_timeout = duration_from_secs_f64("cancel_timeout_secs", cancel_timeout_secs)?;
         let handle = messenger.inner.clone();
-        let daemon_node = goal_handle.daemon_node.clone();
+        let core_node = goal_handle.core_node.clone();
         let instance_id = goal_handle.instance_id.clone();
         let node_name = goal_handle.node_name.clone();
         let action_name = goal_handle.action_name.clone();
-        let target_daemon_node = goal_handle.target_daemon_node.clone();
+        let target_core_node = goal_handle.target_core_node.clone();
         let target_instance_id = goal_handle.target_instance_id.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let response = ActionMessenger::cancel_goal_with(
                 &handle,
-                &daemon_node,
+                &core_node,
                 &instance_id,
                 &node_name,
                 &action_name,
-                target_daemon_node.as_deref(),
+                target_core_node.as_deref(),
                 target_instance_id.as_deref(),
                 cancel_timeout,
             )
@@ -265,20 +265,20 @@ impl PyActionMessenger {
     ) -> PyResult<Bound<'py, PyAny>> {
         let result_timeout = duration_from_secs_f64("result_timeout_secs", result_timeout_secs)?;
         let handle = messenger.inner.clone();
-        let daemon_node = goal_handle.daemon_node.clone();
+        let core_node = goal_handle.core_node.clone();
         let instance_id = goal_handle.instance_id.clone();
         let node_name = goal_handle.node_name.clone();
         let action_name = goal_handle.action_name.clone();
-        let target_daemon_node = goal_handle.target_daemon_node.clone();
+        let target_core_node = goal_handle.target_core_node.clone();
         let target_instance_id = goal_handle.target_instance_id.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let response = ActionMessenger::request_result_with(
                 &handle,
-                &daemon_node,
+                &core_node,
                 &instance_id,
                 &node_name,
                 &action_name,
-                target_daemon_node.as_deref(),
+                target_core_node.as_deref(),
                 target_instance_id.as_deref(),
                 result_timeout,
             )
@@ -290,27 +290,27 @@ impl PyActionMessenger {
 
     /// Check whether an action server is reachable.
     #[staticmethod]
-    #[pyo3(signature = (messenger, bound_daemon_node, as_instance_id, target_node_name, target_action_name, target_daemon_node=None, target_instance_id=None))]
+    #[pyo3(signature = (messenger, bound_core_node, as_instance_id, target_node_name, target_action_name, target_core_node=None, target_instance_id=None))]
     #[allow(clippy::too_many_arguments)]
     fn is_reachable<'py>(
         py: Python<'py>,
         messenger: &PyMessengerHandle,
-        bound_daemon_node: String,
+        bound_core_node: String,
         as_instance_id: String,
         target_node_name: String,
         target_action_name: String,
-        target_daemon_node: Option<String>,
+        target_core_node: Option<String>,
         target_instance_id: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let handle = messenger.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let reachable = ActionMessenger::is_reachable(
                 &handle,
-                &bound_daemon_node,
+                &bound_core_node,
                 &as_instance_id,
                 &target_node_name,
                 &target_action_name,
-                target_daemon_node.as_deref(),
+                target_core_node.as_deref(),
                 target_instance_id.as_deref(),
             )
             .await

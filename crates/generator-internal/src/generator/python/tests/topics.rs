@@ -465,7 +465,7 @@ fn subscribed_to_topic() {
         &[
             "async def on_next_message_received(",
             "node_runner: peppylib.NodeRunner",
-            "daemon_node_target: Optional[str] = None",
+            "core_node_target: Optional[str] = None",
             "instance_id_target: Optional[str] = None",
             ") -> Tuple[str, Message]:",
         ],
@@ -478,7 +478,7 @@ fn subscribed_to_topic() {
             "\"uvc_camera\"",
             "\"video_stream\"",
             "peppylib.TopicMessenger.subscribe(",
-            "daemon_node_target,",
+            "core_node_target,",
             "instance_id_target,",
         ],
     );

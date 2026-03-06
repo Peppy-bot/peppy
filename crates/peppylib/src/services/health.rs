@@ -6,13 +6,13 @@ use crate::messaging::ServiceRequestContext;
 use crate::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
 pub async fn listen_for_node_health(
     messenger: &MessengerHandle,
-    daemon_node_node: &str,
+    core_node_node: &str,
     instance_id: &str,
     node_name: &str,
 ) -> PeppyResult<TaskHandle<PeppyResult<()>>> {
     let mut endpoint = ServiceMessenger::listen(
         messenger,
-        daemon_node_node,
+        core_node_node,
         instance_id,
         node_name,
         super::super::messaging::NODE_HEALTH_SERVICE,

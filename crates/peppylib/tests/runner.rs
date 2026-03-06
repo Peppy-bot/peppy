@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-const TEST_DAEMON_NODE: &str = "test_daemon";
+const TEST_CORE_NODE: &str = "test_core";
 const TEST_NODE_NAME: &str = "test_node";
 const TEST_INSTANCE_ID: &str = "test_instance";
 const SHUTDOWN_SENDER_INSTANCE_ID: &str = "test_shutdown_sender";
@@ -132,7 +132,7 @@ async fn daemon_runner_succeed() {
                 .expect("runtime args should parse"),
         },
         TEST_NODE_NAME,
-        TEST_DAEMON_NODE,
+        TEST_CORE_NODE,
     )
     .expect("runtime config should build");
     let runtime_config_path = temp_dir.path().join("peppy_runtime.json5");
@@ -169,11 +169,11 @@ async fn daemon_runner_succeed() {
 
         if peppylib::ServiceMessenger::is_reachable(
             &messenger,
-            TEST_DAEMON_NODE,
+            TEST_CORE_NODE,
             SHUTDOWN_SENDER_INSTANCE_ID,
             TEST_NODE_NAME,
             SHUTDOWN_SERVICE,
-            Some(TEST_DAEMON_NODE),
+            Some(TEST_CORE_NODE),
             Some(TEST_INSTANCE_ID),
         )
         .await
@@ -194,11 +194,11 @@ async fn daemon_runner_succeed() {
         .expect("failed to encode health request");
     let health_response = peppylib::ServiceMessenger::poll(
         &messenger,
-        TEST_DAEMON_NODE,
+        TEST_CORE_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
         TEST_NODE_NAME,
         NODE_HEALTH_SERVICE,
-        Some(TEST_DAEMON_NODE),
+        Some(TEST_CORE_NODE),
         Some(TEST_INSTANCE_ID),
         health_request,
         Duration::from_secs(2),
@@ -210,11 +210,11 @@ async fn daemon_runner_succeed() {
     let shutdown_payload = Payload::from_static(b"shutdown");
     let shutdown_response = peppylib::ServiceMessenger::poll(
         &messenger,
-        TEST_DAEMON_NODE,
+        TEST_CORE_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
         TEST_NODE_NAME,
         SHUTDOWN_SERVICE,
-        Some(TEST_DAEMON_NODE),
+        Some(TEST_CORE_NODE),
         Some(TEST_INSTANCE_ID),
         shutdown_payload.clone(),
         Duration::from_secs(2),
@@ -335,7 +335,7 @@ async fn node_ready_but_not_healthy() {
                 .expect("runtime args should parse"),
         },
         TEST_NODE_NAME,
-        TEST_DAEMON_NODE,
+        TEST_CORE_NODE,
     )
     .expect("runtime config should build");
     let runtime_config_path = temp_dir.path().join("peppy_runtime.json5");
@@ -373,11 +373,11 @@ async fn node_ready_but_not_healthy() {
 
         if peppylib::ServiceMessenger::is_reachable(
             &messenger,
-            TEST_DAEMON_NODE,
+            TEST_CORE_NODE,
             SHUTDOWN_SENDER_INSTANCE_ID,
             TEST_NODE_NAME,
             NODE_READY_SERVICE,
-            Some(TEST_DAEMON_NODE),
+            Some(TEST_CORE_NODE),
             Some(TEST_INSTANCE_ID),
         )
         .await
@@ -396,11 +396,11 @@ async fn node_ready_but_not_healthy() {
     let ready_payload = Payload::from_static(b"ready");
     let ready_response = peppylib::ServiceMessenger::poll(
         &messenger,
-        TEST_DAEMON_NODE,
+        TEST_CORE_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
         TEST_NODE_NAME,
         NODE_READY_SERVICE,
-        Some(TEST_DAEMON_NODE),
+        Some(TEST_CORE_NODE),
         Some(TEST_INSTANCE_ID),
         ready_payload.clone(),
         Duration::from_secs(2),
@@ -418,11 +418,11 @@ async fn node_ready_but_not_healthy() {
 
         if peppylib::ServiceMessenger::is_reachable(
             &messenger,
-            TEST_DAEMON_NODE,
+            TEST_CORE_NODE,
             SHUTDOWN_SENDER_INSTANCE_ID,
             TEST_NODE_NAME,
             SHUTDOWN_SERVICE,
-            Some(TEST_DAEMON_NODE),
+            Some(TEST_CORE_NODE),
             Some(TEST_INSTANCE_ID),
         )
         .await
@@ -441,11 +441,11 @@ async fn node_ready_but_not_healthy() {
     assert!(
         !peppylib::ServiceMessenger::is_reachable(
             &messenger,
-            TEST_DAEMON_NODE,
+            TEST_CORE_NODE,
             SHUTDOWN_SENDER_INSTANCE_ID,
             TEST_NODE_NAME,
             NODE_HEALTH_SERVICE,
-            Some(TEST_DAEMON_NODE),
+            Some(TEST_CORE_NODE),
             Some(TEST_INSTANCE_ID),
         )
         .await
@@ -458,11 +458,11 @@ async fn node_ready_but_not_healthy() {
         .expect("failed to encode health request");
     let health_err = peppylib::ServiceMessenger::poll(
         &messenger,
-        TEST_DAEMON_NODE,
+        TEST_CORE_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
         TEST_NODE_NAME,
         NODE_HEALTH_SERVICE,
-        Some(TEST_DAEMON_NODE),
+        Some(TEST_CORE_NODE),
         Some(TEST_INSTANCE_ID),
         health_request.clone(),
         Duration::from_millis(200),
@@ -489,11 +489,11 @@ async fn node_ready_but_not_healthy() {
 
         if peppylib::ServiceMessenger::is_reachable(
             &messenger,
-            TEST_DAEMON_NODE,
+            TEST_CORE_NODE,
             SHUTDOWN_SENDER_INSTANCE_ID,
             TEST_NODE_NAME,
             NODE_HEALTH_SERVICE,
-            Some(TEST_DAEMON_NODE),
+            Some(TEST_CORE_NODE),
             Some(TEST_INSTANCE_ID),
         )
         .await
@@ -511,11 +511,11 @@ async fn node_ready_but_not_healthy() {
 
     let health_response = peppylib::ServiceMessenger::poll(
         &messenger,
-        TEST_DAEMON_NODE,
+        TEST_CORE_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
         TEST_NODE_NAME,
         NODE_HEALTH_SERVICE,
-        Some(TEST_DAEMON_NODE),
+        Some(TEST_CORE_NODE),
         Some(TEST_INSTANCE_ID),
         health_request,
         Duration::from_secs(2),
@@ -527,11 +527,11 @@ async fn node_ready_but_not_healthy() {
     let shutdown_payload = Payload::from_static(b"shutdown");
     let shutdown_response = peppylib::ServiceMessenger::poll(
         &messenger,
-        TEST_DAEMON_NODE,
+        TEST_CORE_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
         TEST_NODE_NAME,
         SHUTDOWN_SERVICE,
-        Some(TEST_DAEMON_NODE),
+        Some(TEST_CORE_NODE),
         Some(TEST_INSTANCE_ID),
         shutdown_payload.clone(),
         Duration::from_secs(2),
@@ -587,7 +587,7 @@ async fn daemon_cancellation_token_cancelled_on_shutdown() {
                 .expect("runtime args should parse"),
         },
         TEST_NODE_NAME,
-        TEST_DAEMON_NODE,
+        TEST_CORE_NODE,
     )
     .expect("runtime config should build");
     let runtime_config_path = temp_dir.path().join("peppy_runtime.json5");
@@ -631,11 +631,11 @@ async fn daemon_cancellation_token_cancelled_on_shutdown() {
 
         if peppylib::ServiceMessenger::is_reachable(
             &messenger,
-            TEST_DAEMON_NODE,
+            TEST_CORE_NODE,
             SHUTDOWN_SENDER_INSTANCE_ID,
             TEST_NODE_NAME,
             SHUTDOWN_SERVICE,
-            Some(TEST_DAEMON_NODE),
+            Some(TEST_CORE_NODE),
             Some(TEST_INSTANCE_ID),
         )
         .await
@@ -655,11 +655,11 @@ async fn daemon_cancellation_token_cancelled_on_shutdown() {
     let shutdown_payload = Payload::from_static(b"shutdown");
     peppylib::ServiceMessenger::poll(
         &messenger,
-        TEST_DAEMON_NODE,
+        TEST_CORE_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
         TEST_NODE_NAME,
         SHUTDOWN_SERVICE,
-        Some(TEST_DAEMON_NODE),
+        Some(TEST_CORE_NODE),
         Some(TEST_INSTANCE_ID),
         shutdown_payload,
         Duration::from_secs(2),
@@ -715,7 +715,7 @@ async fn node_runner_exposes_messenger_and_metadata() {
         .with_node_name(TEST_NODE_NAME);
 
     struct RunnerMetadata {
-        bound_daemon_node: String,
+        bound_core_node: String,
         bound_instance_id: String,
         node_name: String,
         messaging_port: u16,
@@ -729,7 +729,7 @@ async fn node_runner_exposes_messenger_and_metadata() {
             .standalone(standalone_config)
             .run(|_parameters: Parameters, node_runner| async move {
                 let _ = setup_tx.send(RunnerMetadata {
-                    bound_daemon_node: node_runner.processor().bound_daemon_node().to_string(),
+                    bound_core_node: node_runner.processor().bound_core_node().to_string(),
                     bound_instance_id: node_runner.processor().bound_instance_id().to_string(),
                     node_name: node_runner.processor().node_name().to_string(),
                     messaging_port: node_runner.messenger().messaging_port().await,
@@ -744,7 +744,7 @@ async fn node_runner_exposes_messenger_and_metadata() {
         .expect("runner setup should complete")
         .expect("runner setup signal should be sent");
 
-    assert_eq!(metadata.bound_daemon_node, "standalone-daemon");
+    assert_eq!(metadata.bound_core_node, "standalone-core");
     assert_eq!(metadata.bound_instance_id, TEST_INSTANCE_ID);
     assert_eq!(metadata.node_name, TEST_NODE_NAME);
     assert_eq!(metadata.messaging_port, router_port);

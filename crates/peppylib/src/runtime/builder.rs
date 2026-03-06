@@ -405,7 +405,7 @@ async fn start_pre_setup_services(node_runner: Arc<NodeRunner>) -> Result<PreSet
 
     let ready_handle = listen_for_node_ready(
         node_runner.messenger(),
-        processor.bound_daemon_node(),
+        processor.bound_core_node(),
         processor.bound_instance_id(),
         processor.node_name(),
     )
@@ -413,7 +413,7 @@ async fn start_pre_setup_services(node_runner: Arc<NodeRunner>) -> Result<PreSet
 
     let (shutdown_handle, shutdown_rx) = listen_for_shutdown(
         node_runner.messenger(),
-        processor.bound_daemon_node(),
+        processor.bound_core_node(),
         processor.bound_instance_id(),
         processor.node_name(),
     )
@@ -437,7 +437,7 @@ async fn run_post_setup_services(
 
     let health_handle = listen_for_node_health(
         node_runner.messenger(),
-        processor.bound_daemon_node(),
+        processor.bound_core_node(),
         processor.bound_instance_id(),
         processor.node_name(),
     )

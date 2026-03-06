@@ -238,7 +238,7 @@ fn exposed_action() {
         &[
             "pub struct GoalRequest",
             "pub instance_id: String",
-            "pub daemon_node: String",
+            "pub core_node: String",
             "pub data: GoalRequestData",
         ],
     );
@@ -344,7 +344,7 @@ fn expose_action_without_request_body() {
         .next()
         .expect("artifact is present");
 
-    // GoalRequest still exists (with instance_id and daemon_node) even without data
+    // GoalRequest still exists (with instance_id and core_node) even without data
     assert_contains_all(
         &rendered,
         &[
@@ -597,7 +597,7 @@ fn subscribed_to_action() {
             "pub struct ResultResponseData",
             "pub final_position: [i32; 3]",
             "pub struct ResultResponse",
-            "pub daemon_node: String",
+            "pub core_node: String",
             "pub instance_id: String",
         ],
     );

@@ -1,4 +1,4 @@
-pub const DAEMON_NODE_TOPIC_NAME: &str = "command";
+pub const CORE_NODE_TOPIC_NAME: &str = "command";
 pub const NODE_CONFIG_FILE: &str = "peppy.json5";
 pub const RUNTIME_CONFIG_VAR_NAME: &str = "PEPPY_RUNTIME_CONFIG";
 /// The peppy output directory relative to node_dir (contains generated libraries).

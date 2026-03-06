@@ -897,14 +897,14 @@ pub struct NodeStack {
 
 impl NodeStack {
     /// Creates a new NodeStack with the given root node configuration.
-    /// The root node (daemon node) is the parent of all other nodes in the graph
+    /// The root node (core node) is the parent of all other nodes in the graph
     /// and cannot be removed from the stack.
     ///
     /// If `instance_id` is `None`, a random instance ID will be generated for the root node.
     ///
     /// # Arguments
     ///
-    /// * `root_config` - The configuration for the root node (daemon node).
+    /// * `root_config` - The configuration for the root node (core node).
     /// * `instance_id` - Optional instance ID for the root node. If `None`, a random ID is generated.
     /// * `root_path` - The filesystem path where the root node will be stored.
     pub fn new<P: Into<PathBuf>>(
@@ -931,7 +931,7 @@ impl NodeStack {
         self.len() == 0
     }
 
-    /// Returns the root node (daemon node) of this stack.
+    /// Returns the root node (core node) of this stack.
     /// The root node is guaranteed to always exist.
     pub fn root(&self) -> NodeEntity {
         let guard = self.shared.read().expect("node stack poisoned");

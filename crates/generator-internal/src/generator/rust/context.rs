@@ -30,12 +30,12 @@ impl GenerationContext {
         self.private_items.push(tokens);
     }
 
-    /// Registers a struct with standard metadata fields: `instance_id`, `daemon_node`,
+    /// Registers a struct with standard metadata fields: `instance_id`, `core_node`,
     /// and an optional `data` field of the given type.
     pub fn add_metadata_struct(&mut self, struct_ident: Ident, data_ident: Option<&Ident>) {
         let mut fields = vec![
             (Ident::new("instance_id", Span::call_site()), quote!(String)),
-            (Ident::new("daemon_node", Span::call_site()), quote!(String)),
+            (Ident::new("core_node", Span::call_site()), quote!(String)),
         ];
         if let Some(data_ident) = data_ident {
             fields.push((Ident::new("data", Span::call_site()), quote!(#data_ident)));

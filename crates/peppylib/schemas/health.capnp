@@ -1,6 +1,6 @@
 @0xa8f5c2b9e4d3f1a8;
 
-# Health message structures for daemon-node services
+# Health message structures for core-node services
 
 struct NodeHealthRequest {
     # Empty for now - could add specific health check parameters later
@@ -11,7 +11,7 @@ struct NodeHealthResponse {
 }
 
 struct NodeReadyRequest {
-    # Empty for now - daemon polls this to check if node's runner::run() has started
+    # Empty for now - core node polls this to check if node's runner::run() has started
 }
 
 struct NodeReadyResponse {

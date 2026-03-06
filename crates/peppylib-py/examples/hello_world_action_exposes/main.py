@@ -32,13 +32,13 @@ def current_timestamp() -> str:
 
 async def handle_goal_request(request, feedback_publisher) -> bytes:
     request_id = request.request_id
-    daemon_node = request.message.daemon_node
+    core_node = request.message.core_node
     instance_id = request.message.instance_id
     payload_text = request.message.payload.decode("utf-8")
 
     print(
         f"{BOLD}{GREEN}[GOAL] [{current_timestamp()}] Received goal `{request_id}` "
-        f"from `{instance_id}` and daemon node `{daemon_node}`{RESET}"
+        f"from `{instance_id}` and core node `{core_node}`{RESET}"
     )
 
     feedback_text = f"feedback: working on `{payload_text}`"
@@ -210,12 +210,12 @@ async def main():
             "Did you start a zenohd server with the `zenohd_simple` example?"
         )
 
-    daemon_node = f"{generate_name()}_daemon"
+    core_node = f"{generate_name()}_core"
     instance_id = f"{generate_name()}_listener"
 
     action = await ActionMessenger.expose(
         receiver_handle,
-        daemon_node,
+        core_node,
         instance_id,
         NODE_NAME,
         ACTION_NAME,
@@ -223,7 +223,7 @@ async def main():
 
     print(
         f"{BOLD}{WHITE}[ACTION] Waiting for action goals as `{instance_id}` "
-        f"and daemon node `{daemon_node}`... Press CTRL+C to stop.{RESET}"
+        f"and core node `{core_node}`... Press CTRL+C to stop.{RESET}"
     )
 
     loop = asyncio.get_running_loop()

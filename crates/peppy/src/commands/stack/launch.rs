@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use config::peppy_config::PeppyLauncherParser;
-use daemon_node::encoding::{
+use core_node::encoding::{
     LaunchFeedback, LaunchFeedbackStep, LaunchGoal, LaunchGoalResponse, LaunchResult,
 };
 use peppylib::{ActionMessenger, PeppyError};
@@ -83,15 +83,10 @@ async fn launch_async(
     node_start_idle_timeout_secs: u64,
     max_timeout_secs: u64,
 ) -> Result<()> {
-    let daemon_state = ctx.read_daemon_state().map_err(|e| {
-        Error::ExecutionFailed(format!(
-            "Failed to read daemon state. Is the peppy daemon running? Error: {}",
-            e
-        ))
-    })?;
-    let daemon_node_name = daemon_state.daemon_node_name;
+    let daemon_state = ctx.read_daemon_state()?;
+    let core_node_name = daemon_state.core_node_name;
 
-    // Canonicalize the path so the daemon node can find the file regardless of its working directory
+    // Canonicalize the path so the core node can find the file regardless of its working directory
     let launcher_config_path = launcher_config_path.canonicalize().map_err(|e| {
         Error::ExecutionFailed(format!(
             "Failed to resolve launcher config path '{}': {}",
@@ -104,7 +99,7 @@ async fn launch_async(
 
     info!(
         "Calling launcher on daemon '{}' with config={}",
-        daemon_node_name,
+        core_node_name,
         launcher_config_path.display()
     );
 
@@ -124,7 +119,7 @@ async fn launch_async(
     let mut action_handle = goal
         .send_goal(
             messenger_handle,
-            &daemon_node_name,
+            &core_node_name,
             CALLER_INSTANCE_ID,
             None,
             None,

@@ -248,7 +248,7 @@ impl RustGenerator {
             pub async fn fire_goal(
                 node_runner: &crate::NodeRunner,
                 timeout: std::time::Duration,
-                target_daemon_node: Option<&str>,
+                target_core_node: Option<&str>,
                 target_instance_id: Option<&str>,
                 #request_param
                 feedback_qos: peppylib::config::QoSProfile,
@@ -257,11 +257,11 @@ impl RustGenerator {
 
                 let action_handle = peppylib::ActionMessenger::send_goal(
                     node_runner.messenger(),
-                    node_runner.processor().bound_daemon_node(),
+                    node_runner.processor().bound_core_node(),
                     node_runner.processor().bound_instance_id(),
                     TARGET_NODE_NAME,
                     TARGET_ACTION_NAME,
-                    target_daemon_node,
+                    target_core_node,
                     target_instance_id,
                     goal_payload,
                     feedback_qos,
@@ -342,7 +342,7 @@ impl RustGenerator {
                     let response_data = #deserializer_ident(payload.as_ref())?;
                     Ok(#response_ident {
                         instance_id: response.instance_id().to_string(),
-                        daemon_node: response.daemon_node().to_string(),
+                        core_node: response.core_node().to_string(),
                         data: response_data,
                     })
                 }
@@ -360,7 +360,7 @@ impl RustGenerator {
 
                     Ok(#response_ident {
                         instance_id: response.instance_id().to_string(),
-                        daemon_node: response.daemon_node().to_string(),
+                        core_node: response.core_node().to_string(),
                     })
                 }
             }
@@ -1159,11 +1159,11 @@ impl LanguageGenerator for RustGenerator {
         let poll_call = quote! {
             peppylib::ServiceMessenger::poll(
                 node_runner.messenger(),
-                node_runner.processor().bound_daemon_node(),
+                node_runner.processor().bound_core_node(),
                 node_runner.processor().bound_instance_id(),
                 NODE_NAME,
                 SERVICE_NAME,
-                target_daemon_node,
+                target_core_node,
                 target_instance_id,
                 request_payload,
                 timeout,
@@ -1204,7 +1204,7 @@ impl LanguageGenerator for RustGenerator {
                     let response_data = deserialize_response(&payload)?;
                     Ok(#response_struct_ident {
                         instance_id: response_message.instance_id().to_string(),
-                        daemon_node: response_message.daemon_node().to_string(),
+                        core_node: response_message.core_node().to_string(),
                         data: response_data,
                     })
                 };
@@ -1244,7 +1244,7 @@ impl LanguageGenerator for RustGenerator {
         let mut fn_param_tokens = vec![
             quote!(node_runner: &crate::NodeRunner),
             quote!(timeout: std::time::Duration),
-            quote!(target_daemon_node: Option<&str>),
+            quote!(target_core_node: Option<&str>),
             quote!(target_instance_id: Option<&str>),
         ];
         if !request_struct_params.is_empty() {

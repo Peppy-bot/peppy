@@ -1,4 +1,4 @@
-use super::daemon_node::DaemonNodeRunner;
+use super::core_node::CoreNodeRunner;
 use super::messaging_router::MessagingRouter;
 use super::serve::{CompositeCommand, Serve};
 use crate::daemon_state::DaemonState;
@@ -24,8 +24,8 @@ pub struct ServeCommandBuilder {
     composite_command: CompositeCommand,
     messenger: Option<Arc<Mutex<Messenger>>>,
     messaging_ready: Option<watch::Receiver<bool>>,
-    daemon_node_requested: bool,
-    daemon_node_name: Option<String>,
+    core_node_requested: bool,
+    core_node_name: Option<String>,
     shutdown_token: Option<CancellationToken>,
     root_dir: PathBuf,
 }
@@ -36,8 +36,8 @@ impl ServeCommandBuilder {
             composite_command: CompositeCommand::default(),
             messenger: None,
             messaging_ready: None,
-            daemon_node_requested: false,
-            daemon_node_name: None,
+            core_node_requested: false,
+            core_node_name: None,
             shutdown_token: None,
             root_dir: root_dir.into(),
         })
@@ -77,28 +77,28 @@ impl ServeCommandBuilder {
         Ok(self)
     }
 
-    pub fn with_daemon_node(mut self, daemon_name: Option<String>) -> Result<Self> {
-        self.daemon_node_requested = true;
-        self.daemon_node_name = daemon_name;
+    pub fn with_core_node(mut self, core_node_name: Option<String>) -> Result<Self> {
+        self.core_node_requested = true;
+        self.core_node_name = core_node_name;
         Ok(self)
     }
 
     pub fn build(mut self) -> Result<Serve> {
-        if self.daemon_node_requested {
+        if self.core_node_requested {
             if let Some(messenger) = &self.messenger {
-                let daemon_node = DaemonNodeRunner::new(
+                let core_node = CoreNodeRunner::new(
                     Arc::clone(messenger),
-                    self.daemon_node_name.clone(),
+                    self.core_node_name.clone(),
                     DEFAULT_NODE_STARTUP_TIMEOUT,
                     DEFAULT_NODE_START_HEALTH_TIMEOUT,
                     self.root_dir.clone(),
                     self.messaging_ready.clone(),
                 );
 
-                // Write the daemon state file with the daemon node name
-                let daemon_node_name = daemon_node.node_name().to_string();
+                // Write the daemon state file with the core node name
+                let core_node_name = core_node.node_name().to_string();
                 let daemon_state = DaemonState::new(
-                    &daemon_node_name,
+                    &core_node_name,
                     messenger.blocking_lock().messaging_port(),
                     GIT_HASH,
                 );
@@ -106,14 +106,14 @@ impl ServeCommandBuilder {
                     Error::ExecutionFailed(format!("Failed to write daemon state: {}", e))
                 })?;
                 info!(
-                    "Daemon state written to {} with daemon_node_name={}",
+                    "Daemon state written to {} with core_node_name={}",
                     state_path.display(),
-                    daemon_node_name
+                    core_node_name
                 );
 
                 self.composite_command = self
                     .composite_command
-                    .add_async_command(Box::new(daemon_node));
+                    .add_async_command(Box::new(core_node));
             } else {
                 warn!("Commands listener requires a messaging router");
                 return Err(Error::MissingMessagingRouter);

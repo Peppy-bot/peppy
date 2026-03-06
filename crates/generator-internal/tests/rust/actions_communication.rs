@@ -17,7 +17,7 @@ use std::{fs, time::Duration};
 use tempfile::TempDir;
 
 // --- Common test constants
-const TEST_DAEMON_NODE: &str = "test_daemon";
+const TEST_CORE_NODE: &str = "test_core";
 const SUBSCRIBER_NODE_NAME: &str = "subscriber_node";
 const SUBSCRIBER_INSTANCE_ID: &str = "subscriber_instance";
 const EXPOSER_INSTANCE_ID: &str = "exposer_instance";
@@ -172,7 +172,7 @@ async fn actions_communication() {
             arguments: Default::default(),
         },
         SUBSCRIBER_NODE_NAME,
-        TEST_DAEMON_NODE,
+        TEST_CORE_NODE,
     )
     .unwrap();
     let subscriber_runtime_config_path = temp_dir_subscriber.path().join("peppy_runtime.json5");
@@ -211,11 +211,11 @@ fn main() -> Result<()> {
         let feedback_wait = goal.on_next_feedback_message();
         let notify_feedback_ready = peppygen::ServiceMessenger::poll(
             node_runner.messenger(),
-            node_runner.processor().bound_daemon_node(),
+            node_runner.processor().bound_core_node(),
             node_runner.processor().bound_instance_id(),
             TARGET_NODE_NAME,
             FEEDBACK_READY_SERVICE,
-            Some(node_runner.processor().bound_daemon_node()),
+            Some(node_runner.processor().bound_core_node()),
             Some(TARGET_INSTANCE_ID),
             Vec::<u8>::new().into(),
             Duration::from_secs(5),
@@ -228,11 +228,11 @@ fn main() -> Result<()> {
 
         peppygen::ServiceMessenger::poll(
             node_runner.messenger(),
-            node_runner.processor().bound_daemon_node(),
+            node_runner.processor().bound_core_node(),
             node_runner.processor().bound_instance_id(),
             TARGET_NODE_NAME,
             FEEDBACK_RECEIVED_SERVICE,
-            Some(node_runner.processor().bound_daemon_node()),
+            Some(node_runner.processor().bound_core_node()),
             Some(TARGET_INSTANCE_ID),
             Vec::<u8>::new().into(),
             Duration::from_secs(5),
@@ -279,7 +279,7 @@ fn main() -> Result<()> {
             arguments: Default::default(),
         },
         BRAIN_NODE_NAME, // Must match the node name expected by the subscriber
-        TEST_DAEMON_NODE,
+        TEST_CORE_NODE,
     )
     .unwrap();
     let exposer_runtime_config_path = temp_dir_exposer.path().join("peppy_runtime.json5");
@@ -316,7 +316,7 @@ fn main() -> Result<()> {
 
         let mut feedback_ready_service = peppygen::ServiceMessenger::listen(
             node_runner.messenger(),
-            node_runner.processor().bound_daemon_node(),
+            node_runner.processor().bound_core_node(),
             node_runner.processor().bound_instance_id(),
             node_runner.processor().node_name(),
             FEEDBACK_READY_SERVICE,
@@ -329,7 +329,7 @@ fn main() -> Result<()> {
 
         let mut feedback_received_service = peppygen::ServiceMessenger::listen(
             node_runner.messenger(),
-            node_runner.processor().bound_daemon_node(),
+            node_runner.processor().bound_core_node(),
             node_runner.processor().bound_instance_id(),
             node_runner.processor().node_name(),
             FEEDBACK_RECEIVED_SERVICE,
@@ -398,9 +398,9 @@ fn main() -> Result<()> {
 
     let action_ctx = WaitContext {
         messenger: &messenger,
-        bound_daemon_node: TEST_DAEMON_NODE,
+        bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_daemon_node: None,
+        target_core_node: None,
     };
     wait_for_action_service_reachable_or_exit(
         &action_ctx,
@@ -419,9 +419,9 @@ fn main() -> Result<()> {
 
     let ctx = WaitContext {
         messenger: &messenger,
-        bound_daemon_node: TEST_DAEMON_NODE,
+        bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_daemon_node: Some(TEST_DAEMON_NODE),
+        target_core_node: Some(TEST_CORE_NODE),
     };
     wait_for_health_service_reachable_or_exit(
         &ctx,
@@ -442,20 +442,20 @@ fn main() -> Result<()> {
 
     send_shutdown(
         &messenger,
-        TEST_DAEMON_NODE,
+        TEST_CORE_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
         SUBSCRIBER_NODE_NAME,
-        Some(TEST_DAEMON_NODE),
+        Some(TEST_CORE_NODE),
         subscriber_instance_id,
         Duration::from_secs(5),
     )
     .await;
     send_shutdown(
         &messenger,
-        TEST_DAEMON_NODE,
+        TEST_CORE_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
         BRAIN_NODE_NAME,
-        Some(TEST_DAEMON_NODE),
+        Some(TEST_CORE_NODE),
         exposer_instance_id,
         Duration::from_secs(5),
     )
@@ -566,7 +566,7 @@ async fn actions_communication_cancel_goal() {
             arguments: Default::default(),
         },
         SUBSCRIBER_NODE_NAME,
-        TEST_DAEMON_NODE,
+        TEST_CORE_NODE,
     )
     .unwrap();
     let subscriber_runtime_config_path = temp_dir_subscriber.path().join("peppy_runtime.json5");
@@ -637,7 +637,7 @@ fn main() -> Result<()> {
             arguments: Default::default(),
         },
         BRAIN_NODE_NAME, // Must match the node name expected by the subscriber
-        TEST_DAEMON_NODE,
+        TEST_CORE_NODE,
     )
     .unwrap();
     let exposer_runtime_config_path = temp_dir_exposer.path().join("peppy_runtime.json5");
@@ -704,9 +704,9 @@ fn main() -> Result<()> {
 
     let action_ctx = WaitContext {
         messenger: &messenger,
-        bound_daemon_node: TEST_DAEMON_NODE,
+        bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_daemon_node: None,
+        target_core_node: None,
     };
     wait_for_action_service_reachable_or_exit(
         &action_ctx,
@@ -725,9 +725,9 @@ fn main() -> Result<()> {
 
     let ctx = WaitContext {
         messenger: &messenger,
-        bound_daemon_node: TEST_DAEMON_NODE,
+        bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_daemon_node: Some(TEST_DAEMON_NODE),
+        target_core_node: Some(TEST_CORE_NODE),
     };
     wait_for_health_service_reachable_or_exit(
         &ctx,
@@ -748,20 +748,20 @@ fn main() -> Result<()> {
 
     send_shutdown(
         &messenger,
-        TEST_DAEMON_NODE,
+        TEST_CORE_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
         SUBSCRIBER_NODE_NAME,
-        Some(TEST_DAEMON_NODE),
+        Some(TEST_CORE_NODE),
         subscriber_instance_id,
         Duration::from_secs(5),
     )
     .await;
     send_shutdown(
         &messenger,
-        TEST_DAEMON_NODE,
+        TEST_CORE_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
         BRAIN_NODE_NAME,
-        Some(TEST_DAEMON_NODE),
+        Some(TEST_CORE_NODE),
         exposer_instance_id,
         Duration::from_secs(5),
     )

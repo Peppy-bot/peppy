@@ -1,7 +1,7 @@
 mod common;
 
 use common::{
-    CALLER_INSTANCE_ID, TEST_DAEMON_NODE_NAME, TEST_INSTANCE_ID, TEST_NODE_NAME, get_client_server,
+    CALLER_INSTANCE_ID, TEST_CORE_NODE_NAME, TEST_INSTANCE_ID, TEST_NODE_NAME, get_client_server,
 };
 use peppylib::types::Payload;
 use peppylib::{
@@ -20,7 +20,7 @@ async fn shutdown_node() {
 
     let (shutdown_task, shutdown_rx) = listen_for_shutdown(
         &server_handle,
-        TEST_DAEMON_NODE_NAME,
+        TEST_CORE_NODE_NAME,
         TEST_INSTANCE_ID,
         TEST_NODE_NAME,
     )
@@ -36,11 +36,11 @@ async fn shutdown_node() {
     // Client sends a shutdown request and receives the response
     let response = ServiceMessenger::poll(
         &client.caller_handle,
-        &client.daemon_node_name,
+        &client.core_node_name,
         CALLER_INSTANCE_ID,
         TEST_NODE_NAME,
         SHUTDOWN_SERVICE,
-        Some(&client.daemon_node_name),
+        Some(&client.core_node_name),
         Some(&client.instance_id),
         request_payload.clone(),
         Duration::from_secs(2),

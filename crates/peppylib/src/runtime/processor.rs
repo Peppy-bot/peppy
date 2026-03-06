@@ -104,7 +104,7 @@ impl Processor {
                 arguments,
             },
             &node_name,
-            "standalone-daemon",
+            "standalone-core",
         )?;
 
         Ok(Self { runtime_config })
@@ -175,8 +175,8 @@ impl Processor {
         self.runtime_config.node_instance.instance_id.as_str()
     }
 
-    pub fn bound_daemon_node(&self) -> &str {
-        self.runtime_config.bound_daemon_node.as_str()
+    pub fn bound_core_node(&self) -> &str {
+        self.runtime_config.bound_core_node.as_str()
     }
 
     pub fn input_arguments(&self) -> &NodeArguments {
@@ -240,7 +240,7 @@ mod tests {
 
     #[test]
     fn loads_runtime_config_from_env() {
-        let bound_daemon_node = "epic-whale-6789";
+        let bound_core_node = "epic-whale-6789";
         let bound_node_name = "uvc_camera";
         let bound_instance_id = "camera_front";
 
@@ -292,13 +292,13 @@ mod tests {
                 }
             },
             node_name: "$NODE_NAME",
-            bound_daemon_node: "$DAEMON_NODE"
+            bound_core_node: "$CORE_NODE"
         }"#;
 
         let populated_config = json5_config
             .replace("$INSTANCE_ID", bound_instance_id)
             .replace("$NODE_NAME", bound_node_name)
-            .replace("$DAEMON_NODE", bound_daemon_node);
+            .replace("$CORE_NODE", bound_core_node);
 
         let runtime_config: RuntimeConfig =
             serde_json5::from_str(&populated_config).expect("runtime config should parse");
@@ -337,7 +337,7 @@ mod tests {
         expected_parameters.insert("mode".into(), AnyType::String("auto".into()));
 
         assert_eq!(runtime_processor.bound_instance_id(), bound_instance_id);
-        assert_eq!(runtime_processor.bound_daemon_node(), bound_daemon_node);
+        assert_eq!(runtime_processor.bound_core_node(), bound_core_node);
         assert_eq!(runtime_processor.node_name(), bound_node_name);
         assert_eq!(runtime_processor.input_arguments(), &expected_parameters);
     }
@@ -368,7 +368,7 @@ mod tests {
                 arguments: { value: 42 }
             },
             node_name: "test_node",
-            bound_daemon_node: "daemon-1234"
+            bound_core_node: "core-1234"
         }"#;
 
         let runtime_config: RuntimeConfig =
@@ -422,7 +422,7 @@ mod tests {
                 arguments: { value: 42, extra_param: "unexpected" }
             },
             node_name: "test_node",
-            bound_daemon_node: "daemon-1234"
+            bound_core_node: "core-1234"
         }"#
         .to_string();
 
@@ -477,7 +477,7 @@ mod tests {
                 arguments: { value: "not_an_integer" }
             },
             node_name: "test_node",
-            bound_daemon_node: "daemon-1234"
+            bound_core_node: "core-1234"
         }"#
         .to_string();
 
@@ -538,7 +538,7 @@ mod tests {
                 arguments: { config: { enabled: "yes", threshold: 0.5 } }
             },
             node_name: "test_node",
-            bound_daemon_node: "daemon-1234"
+            bound_core_node: "core-1234"
         }"#
         .to_string();
 
@@ -598,7 +598,7 @@ mod tests {
                 arguments: { tags: ["valid", 123, "also_valid"] }
             },
             node_name: "test_node",
-            bound_daemon_node: "daemon-1234"
+            bound_core_node: "core-1234"
         }"#
         .to_string();
 
@@ -650,7 +650,7 @@ mod tests {
                 arguments: { value: 42 }
             },
             node_name: "test_node",
-            bound_daemon_node: "daemon-1234"
+            bound_core_node: "core-1234"
         }"#;
 
         let runtime_config: RuntimeConfig =
@@ -695,7 +695,7 @@ mod tests {
 
         assert_eq!(processor.node_name(), "my_node");
         assert_eq!(processor.bound_instance_id(), "standalone");
-        assert_eq!(processor.bound_daemon_node(), "standalone-daemon");
+        assert_eq!(processor.bound_core_node(), "standalone-core");
         assert_eq!(processor.messaging_host(), "127.0.0.1");
         assert_eq!(processor.messaging_port(), 7448);
     }
