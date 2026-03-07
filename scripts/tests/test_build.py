@@ -81,14 +81,14 @@ def test_find_zenohd_binary_found(tmp_path: Path) -> None:
     assert result == zenohd_path
 
 
-def test_find_zenohd_binary_not_found(tmp_path: Path) -> None:
+def test_find_zenohd_binary_not_found_returns_none(tmp_path: Path) -> None:
     triple = "aarch64-apple-darwin"
     build_dir = tmp_path / "target" / triple / "release" / "build"
     build_dir.mkdir(parents=True)
 
     with patch.dict(os.environ, {"CARGO_TARGET_DIR": str(tmp_path / "target")}):
-        with pytest.raises(ReleaseError, match="zenohd binary not found"):
-            find_zenohd_binary(triple, tmp_path)
+        result = find_zenohd_binary(triple, tmp_path)
+    assert result is None
 
 
 def test_find_build_dir_found(tmp_path: Path) -> None:

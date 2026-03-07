@@ -235,14 +235,18 @@ mod zenoh_build {
             );
 
             let target = env::var("TARGET").expect("TARGET not set");
-            let expected_hash = checksums.get(&target).unwrap_or_else(|| {
-                let supported: Vec<&str> = checksums.keys().map(|s| s.as_str()).collect();
-                panic!(
-                    "No checksum for target '{}' in zenoh-checksums.toml. Supported targets: {:?}. \
-                     Install zenohd manually and set PEPPY_ZENOHD_PATH instead.",
-                    target, supported
-                );
-            });
+            let expected_hash = match checksums.get(&target) {
+                Some(hash) => hash,
+                None => {
+                    println!(
+                        "cargo:warning=No pre-built zenohd binary available for target '{}'. \
+                         zenohd will not be embedded. Install zenohd manually and set \
+                         PEPPY_ZENOHD_PATH at runtime if needed.",
+                        target
+                    );
+                    return;
+                }
+            };
 
             let cache_dir = get_temp_cache_dir("zenoh");
             let cached_zenoh_path = cache_dir.join(format!("zenohd-{}-{}", release_tag, target));

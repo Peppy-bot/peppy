@@ -73,10 +73,11 @@ def find_peppy_binary(target_triple: str, repo_root: Path) -> Path:
     raise ReleaseError(f"peppy binary not found (expected '{primary}')")
 
 
-def find_zenohd_binary(target_triple: str, repo_root: Path) -> Path:
+def find_zenohd_binary(target_triple: str, repo_root: Path) -> Path | None:
     """Locate the built zenohd binary in the build output.
 
     Searches {target_dir}/{target_triple}/release/build/pmi-*/out/zenohd.
+    Returns None if no pre-built zenohd was embedded (e.g. riscv64).
     """
     target_dir = _get_target_dir(repo_root)
     build_dir = target_dir / target_triple / "release" / "build"
@@ -85,10 +86,7 @@ def find_zenohd_binary(target_triple: str, repo_root: Path) -> Path:
     if matches:
         return matches[0]
 
-    raise ReleaseError(
-        f"zenohd binary not found in target dir "
-        f"(expected it under '{build_dir}/pmi-*/out/zenohd')"
-    )
+    return None
 
 
 def find_build_dir(
@@ -119,16 +117,16 @@ def package_release(
     target_triple: str,
     repo_root: Path,
     peppy_bin: Path,
-    zenohd_bin: Path,
-    apptainer_dir: Path,
+    zenohd_bin: Path | None,
+    apptainer_dir: Path | None,
     lima_dir: Path | None = None,
 ) -> BuildArtifact:
     """Create a .tgz release archive.
 
     Creates a temporary directory with the package layout:
       ./bin/peppy
-      ./bin/zenohd
-      ./bin/apptainer/
+      ./bin/zenohd        (if available for target)
+      ./bin/apptainer/    (if available for target)
       ./bin/lima/         (macOS only)
 
     Writes the archive to {dist_dir}/peppy-{target_triple}.tgz.
@@ -147,10 +145,12 @@ def package_release(
         shutil.copy2(peppy_bin, bin_dir / "peppy")
         (bin_dir / "peppy").chmod(0o755)
 
-        shutil.copy2(zenohd_bin, bin_dir / "zenohd")
-        (bin_dir / "zenohd").chmod(0o755)
+        if zenohd_bin is not None:
+            shutil.copy2(zenohd_bin, bin_dir / "zenohd")
+            (bin_dir / "zenohd").chmod(0o755)
 
-        shutil.copytree(apptainer_dir, bin_dir / "apptainer")
+        if apptainer_dir is not None:
+            shutil.copytree(apptainer_dir, bin_dir / "apptainer")
         if lima_dir is not None:
             shutil.copytree(lima_dir, bin_dir / "lima")
 
@@ -194,12 +194,16 @@ def build_and_package(
     peppy_bin = find_peppy_binary(target_triple, repo_root)
     zenohd_bin = find_zenohd_binary(target_triple, repo_root)
 
-    apptainer_dir = find_build_dir(
-        target_triple,
-        repo_root,
-        "containers-*/out/apptainer-install",
-        "apptainer install",
-    )
+    try:
+        apptainer_dir: Path | None = find_build_dir(
+            target_triple,
+            repo_root,
+            "containers-*/out/apptainer-install",
+            "apptainer install",
+        )
+    except ReleaseError:
+        apptainer_dir = None
+
     lima_dir = (
         find_build_dir(
             target_triple,
