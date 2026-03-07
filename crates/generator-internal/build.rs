@@ -43,13 +43,6 @@ fn get_temp_cache_dir(cache_suffix: &str) -> std::path::PathBuf {
     cache_dir
 }
 
-/// Returns true if we're cross-compiling (target != host).
-fn is_cross_compiling() -> bool {
-    let target = std::env::var("TARGET").unwrap_or_default();
-    let host = std::env::var("HOST").unwrap_or_default();
-    !target.is_empty() && !host.is_empty() && target != host
-}
-
 /// Returns the Rust target triple for the current build from cargo env vars.
 fn build_target_triple() -> String {
     let arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap();
@@ -167,10 +160,14 @@ mod peppylib_build {
     use std::path::{Path, PathBuf};
     use std::process::Command;
 
-    /// Returns the platform suffix for the current target (e.g. "macos-aarch64", "linux-x86_64").
+    /// Returns the platform suffix for the host machine (e.g. "macos-aarch64", "linux-x86_64").
+    ///
+    /// Uses `std::env::consts` which always reflects the machine running the build script,
+    /// not the cross-compile target. This is correct because pixi/maturin produces a `.so`
+    /// for the host regardless of Cargo's `--target`.
     fn host_platform_suffix() -> String {
-        let os = std::env::var("CARGO_CFG_TARGET_OS").unwrap();
-        let arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap();
+        let os = std::env::consts::OS;
+        let arch = std::env::consts::ARCH;
         format!("{os}-{arch}")
     }
 
@@ -403,16 +400,10 @@ mod peppylib_build {
         let target_dir = cache_dir.join("target");
         let pixi_task = resolve_pixi_task();
 
-        // Skip peppylib build when cross-compiling or pixi is unavailable.
-        // Cross-compiling would produce a binary for the wrong architecture.
+        // Skip peppylib build when pixi is unavailable.
         // When skipped, the hash is computed from whatever .so files already
-        // exist (e.g. from a prior native build on macOS).
-        if super::is_cross_compiling() {
-            println!(
-                "cargo:warning=Skipping peppylib-py build (cross-compiling). \
-                 Using existing .so files."
-            );
-        } else if !is_pixi_available() {
+        // exist (e.g. from a prior build).
+        if !is_pixi_available() {
             println!(
                 "cargo:warning=Skipping peppylib-py build (pixi not available). \
                  Using existing .so files."
