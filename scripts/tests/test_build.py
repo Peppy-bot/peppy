@@ -24,6 +24,7 @@ def test_release_triples_contains_expected_values() -> None:
         "aarch64-apple-darwin",
         "x86_64-unknown-linux-gnu",
         "aarch64-unknown-linux-gnu",
+        "riscv64gc-unknown-linux-gnu",
     )
     assert RELEASE_TRIPLES == expected
 

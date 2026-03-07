@@ -117,7 +117,7 @@ def test_run_full_rejects_non_macos(mock_platform: MagicMock) -> None:
 @patch("functions.build_release.find_limactl")
 @patch("functions.build_release.is_macos_arm64", return_value=True)
 @patch("functions.build_release.build_and_package")
-def test_build_all_targets_on_macos_builds_three(
+def test_build_all_targets_on_macos_builds_four(
     mock_build: MagicMock,
     mock_platform: MagicMock,
     mock_find_lima: MagicMock,
@@ -138,11 +138,12 @@ def test_build_all_targets_on_macos_builds_three(
         "aarch64-apple-darwin",
         "x86_64-unknown-linux-gnu",
         "aarch64-unknown-linux-gnu",
+        "riscv64gc-unknown-linux-gnu",
     ]
     artifacts = _build_all_targets("v0.1.0", targets, tmp_path)
 
-    assert len(artifacts) == 3
-    assert mock_build.call_count == 3
+    assert len(artifacts) == 4
+    assert mock_build.call_count == 4
 
     # Native macOS build (no limactl kwarg)
     assert mock_build.call_args_list[0] == call(
@@ -154,6 +155,9 @@ def test_build_all_targets_on_macos_builds_three(
     )
     assert mock_build.call_args_list[2] == call(
         "v0.1.0", "aarch64-unknown-linux-gnu", tmp_path, limactl=limactl,
+    )
+    assert mock_build.call_args_list[3] == call(
+        "v0.1.0", "riscv64gc-unknown-linux-gnu", tmp_path, limactl=limactl,
     )
 
     mock_ensure_vm.assert_called_once()
@@ -204,11 +208,13 @@ def test_run_full_uploads_all_artifacts(
         "aarch64-apple-darwin",
         "x86_64-unknown-linux-gnu",
         "aarch64-unknown-linux-gnu",
+        "riscv64gc-unknown-linux-gnu",
     ]
     mock_build_all.return_value = [
         BuildArtifact("peppy-a.tgz", tmp_path / "a.tgz", "aarch64-apple-darwin"),
         BuildArtifact("peppy-b.tgz", tmp_path / "b.tgz", "x86_64-unknown-linux-gnu"),
         BuildArtifact("peppy-c.tgz", tmp_path / "c.tgz", "aarch64-unknown-linux-gnu"),
+        BuildArtifact("peppy-d.tgz", tmp_path / "d.tgz", "riscv64gc-unknown-linux-gnu"),
     ]
     mock_slug.return_value = RepoSlug(owner="test-owner", repo="test-repo")
     mock_client.return_value = MagicMock()
@@ -224,5 +230,5 @@ def test_run_full_uploads_all_artifacts(
     _run_full()
 
     mock_validate.assert_called_once()
-    assert mock_upload.call_count == 3
+    assert mock_upload.call_count == 4
     mock_gen_notes.assert_called_once()

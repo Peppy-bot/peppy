@@ -17,6 +17,7 @@ RELEASE_TRIPLES: tuple[str, ...] = (
     "aarch64-apple-darwin",
     "x86_64-unknown-linux-gnu",
     "aarch64-unknown-linux-gnu",
+    "riscv64gc-unknown-linux-gnu",
 )
 
 
@@ -124,13 +125,15 @@ def get_native_triple() -> str:
         return "x86_64-unknown-linux-gnu"
     if os_name == "Linux" and arch in ("aarch64", "arm64"):
         return "aarch64-unknown-linux-gnu"
+    if os_name == "Linux" and arch == "riscv64":
+        return "riscv64gc-unknown-linux-gnu"
     raise ReleaseError(f"unsupported platform: {os_name} {arch}")
 
 
 def get_targets_for_platform() -> list[str]:
     """Return the list of target triples to build for the current platform.
 
-    On macOS ARM64: all 3 release triples.
+    On macOS ARM64: all 4 release triples.
     On Linux: only the native triple.
     """
     if is_macos_arm64():
