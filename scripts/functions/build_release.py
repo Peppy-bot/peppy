@@ -173,16 +173,16 @@ def _run_local() -> None:
 
 
 def _run_full() -> None:
-    """Build all 4 targets and publish a full GitHub release.
+    """Build all 3 targets and publish a full GitHub release.
 
     Only allowed on macOS ARM64, because a complete release requires
-    all 4 targets (macOS + 3 Linux) and macOS cannot be built from Linux.
+    all 3 targets (macOS + 2 Linux) and macOS cannot be built from Linux.
     """
     if not is_macos_arm64():
         raise ReleaseError(
             "full releases can only be created from macOS ARM64 "
-            "(a release must contain all 4 targets: "
-            "macos-aarch64, linux-x86_64, linux-aarch64, linux-riscv64)"
+            "(a release must contain all 3 targets: "
+            "macos-aarch64, linux-x86_64, linux-aarch64)"
         )
 
     token = validate_release_environment()

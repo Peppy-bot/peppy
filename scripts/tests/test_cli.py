@@ -150,12 +150,6 @@ def test_get_native_triple_linux_aarch64() -> None:
         assert get_native_triple() == "aarch64-unknown-linux-gnu"
 
 
-def test_get_native_triple_linux_riscv64() -> None:
-    with patch("functions.cli.platform.system", return_value="Linux"), \
-         patch("functions.cli.platform.machine", return_value="riscv64"):
-        assert get_native_triple() == "riscv64gc-unknown-linux-gnu"
-
-
 def test_get_native_triple_unsupported_platform() -> None:
     with patch("functions.cli.platform.system", return_value="Windows"), \
          patch("functions.cli.platform.machine", return_value="AMD64"):
@@ -168,7 +162,7 @@ def test_get_targets_for_platform_macos_returns_all() -> None:
          patch("functions.cli.platform.machine", return_value="arm64"):
         targets = get_targets_for_platform()
     assert targets == list(RELEASE_TRIPLES)
-    assert len(targets) == 4
+    assert len(targets) == 3
 
 
 def test_get_targets_for_platform_linux_returns_native() -> None:

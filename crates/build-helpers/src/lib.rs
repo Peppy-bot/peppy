@@ -17,10 +17,8 @@ pub fn build_target_triple() -> String {
     let env_abi = std::env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
     match (os.as_str(), arch.as_str(), env_abi.as_str()) {
         ("macos", "aarch64", _) => "aarch64-apple-darwin".to_string(),
-        ("macos", "x86_64", _) => "x86_64-apple-darwin".to_string(),
         ("linux", "x86_64", "gnu") => "x86_64-unknown-linux-gnu".to_string(),
         ("linux", "aarch64", "gnu") => "aarch64-unknown-linux-gnu".to_string(),
-        ("linux", "riscv64", "gnu") => "riscv64gc-unknown-linux-gnu".to_string(),
         _ => format!("{arch}-unknown-{os}-{env_abi}"),
     }
 }

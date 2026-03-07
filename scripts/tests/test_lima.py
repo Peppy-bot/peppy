@@ -129,20 +129,6 @@ def test_cargo_build_in_lima_sets_cross_linker_for_x86_64(tmp_path: Path) -> Non
     assert "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=x86_64-linux-gnu-gcc" in script
 
 
-def test_cargo_build_in_lima_sets_cross_linker_for_riscv64(tmp_path: Path) -> None:
-    limactl = tmp_path / "limactl"
-    repo_root = tmp_path / "repo"
-
-    with patch("functions.lima._lima_shell") as mock_shell:
-        mock_shell.return_value = MagicMock(returncode=0)
-        cargo_build_in_lima(
-            limactl, "v0.1.0", "riscv64gc-unknown-linux-gnu", repo_root
-        )
-
-    script = mock_shell.call_args[0][1]
-    assert "CARGO_TARGET_RISCV64GC_UNKNOWN_LINUX_GNU_LINKER=riscv64-linux-gnu-gcc" in script
-
-
 def test_cargo_build_in_lima_no_cross_linker_for_aarch64(tmp_path: Path) -> None:
     limactl = tmp_path / "limactl"
     repo_root = tmp_path / "repo"

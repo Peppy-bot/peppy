@@ -17,7 +17,6 @@ RELEASE_TRIPLES: tuple[str, ...] = (
     "aarch64-apple-darwin",
     "x86_64-unknown-linux-gnu",
     "aarch64-unknown-linux-gnu",
-    "riscv64gc-unknown-linux-gnu",
 )
 
 
@@ -126,8 +125,6 @@ def get_native_triple() -> str:
         return "x86_64-unknown-linux-gnu"
     if os_name == "Linux" and arch in ("aarch64", "arm64"):
         return "aarch64-unknown-linux-gnu"
-    if os_name == "Linux" and arch == "riscv64":
-        return "riscv64gc-unknown-linux-gnu"
     raise ReleaseError(f"unsupported platform: {os_name} {arch}")
 
 

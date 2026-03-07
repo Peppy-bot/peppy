@@ -61,7 +61,10 @@ def test_build_release_payload_empty_notes_body() -> None:
 
 
 @patch("functions.build_release._build_all_targets")
-@patch("functions.build_release.get_targets_for_platform", return_value=["x86_64-unknown-linux-gnu"])
+@patch(
+    "functions.build_release.get_targets_for_platform",
+    return_value=["x86_64-unknown-linux-gnu"],
+)
 @patch("functions.build_release.has_uncommitted_changes", return_value=False)
 @patch("functions.build_release.get_repo_root")
 @patch("functions.build_release.validate_release_environment", return_value="")
@@ -86,7 +89,9 @@ def test_run_local_on_linux_builds_native_only(
     _run_local()
     mock_validate.assert_called_once_with(require_token=False)
     mock_build_all.assert_called_once_with(
-        "v0.1.0", ["x86_64-unknown-linux-gnu"], tmp_path,
+        "v0.1.0",
+        ["x86_64-unknown-linux-gnu"],
+        tmp_path,
     )
 
 
@@ -108,21 +113,25 @@ def test_run_local_mode_empty_tag_raises(
 
 @patch("functions.build_release.is_macos_arm64", return_value=False)
 def test_run_full_rejects_non_macos(mock_platform: MagicMock) -> None:
-    with pytest.raises(ReleaseError, match="full releases can only be created from macOS ARM64"):
+    with pytest.raises(
+        ReleaseError, match="full releases can only be created from macOS ARM64"
+    ):
         _run_full()
 
 
+@patch("functions.build_release.verify_all_releases")
 @patch("functions.build_release.ensure_rust_in_vm")
 @patch("functions.build_release.ensure_lima_vm")
 @patch("functions.build_release.find_limactl")
 @patch("functions.build_release.is_macos_arm64", return_value=True)
 @patch("functions.build_release.build_and_package")
-def test_build_all_targets_on_macos_builds_four(
+def test_build_all_targets_on_macos_builds_three(
     mock_build: MagicMock,
     mock_platform: MagicMock,
     mock_find_lima: MagicMock,
     mock_ensure_vm: MagicMock,
     mock_ensure_rust: MagicMock,
+    mock_verify: MagicMock,
     tmp_path: Path,
 ) -> None:
     limactl = tmp_path / "limactl"
@@ -138,26 +147,30 @@ def test_build_all_targets_on_macos_builds_four(
         "aarch64-apple-darwin",
         "x86_64-unknown-linux-gnu",
         "aarch64-unknown-linux-gnu",
-        "riscv64gc-unknown-linux-gnu",
     ]
     artifacts = _build_all_targets("v0.1.0", targets, tmp_path)
 
-    assert len(artifacts) == 4
-    assert mock_build.call_count == 4
+    assert len(artifacts) == 3
+    assert mock_build.call_count == 3
 
     # Native macOS build (no limactl kwarg)
     assert mock_build.call_args_list[0] == call(
-        "v0.1.0", "aarch64-apple-darwin", tmp_path,
+        "v0.1.0",
+        "aarch64-apple-darwin",
+        tmp_path,
     )
     # Linux builds via Lima
     assert mock_build.call_args_list[1] == call(
-        "v0.1.0", "x86_64-unknown-linux-gnu", tmp_path, limactl=limactl,
+        "v0.1.0",
+        "x86_64-unknown-linux-gnu",
+        tmp_path,
+        limactl=limactl,
     )
     assert mock_build.call_args_list[2] == call(
-        "v0.1.0", "aarch64-unknown-linux-gnu", tmp_path, limactl=limactl,
-    )
-    assert mock_build.call_args_list[3] == call(
-        "v0.1.0", "riscv64gc-unknown-linux-gnu", tmp_path, limactl=limactl,
+        "v0.1.0",
+        "aarch64-unknown-linux-gnu",
+        tmp_path,
+        limactl=limactl,
     )
 
     mock_ensure_vm.assert_called_once()
@@ -178,7 +191,9 @@ def test_build_all_targets_on_macos_builds_four(
 @patch("functions.build_release.has_uncommitted_changes", return_value=False)
 @patch("functions.build_release.get_current_branch", return_value="main")
 @patch("functions.build_release.get_repo_root")
-@patch("functions.build_release.validate_release_environment", return_value="test-token")
+@patch(
+    "functions.build_release.validate_release_environment", return_value="test-token"
+)
 @patch("functions.build_release.is_macos_arm64", return_value=True)
 def test_run_full_uploads_all_artifacts(
     mock_platform: MagicMock,
@@ -208,13 +223,11 @@ def test_run_full_uploads_all_artifacts(
         "aarch64-apple-darwin",
         "x86_64-unknown-linux-gnu",
         "aarch64-unknown-linux-gnu",
-        "riscv64gc-unknown-linux-gnu",
     ]
     mock_build_all.return_value = [
         BuildArtifact("peppy-a.tgz", tmp_path / "a.tgz", "aarch64-apple-darwin"),
         BuildArtifact("peppy-b.tgz", tmp_path / "b.tgz", "x86_64-unknown-linux-gnu"),
         BuildArtifact("peppy-c.tgz", tmp_path / "c.tgz", "aarch64-unknown-linux-gnu"),
-        BuildArtifact("peppy-d.tgz", tmp_path / "d.tgz", "riscv64gc-unknown-linux-gnu"),
     ]
     mock_slug.return_value = RepoSlug(owner="test-owner", repo="test-repo")
     mock_client.return_value = MagicMock()
@@ -230,5 +243,5 @@ def test_run_full_uploads_all_artifacts(
     _run_full()
 
     mock_validate.assert_called_once()
-    assert mock_upload.call_count == 4
+    assert mock_upload.call_count == 3
     mock_gen_notes.assert_called_once()

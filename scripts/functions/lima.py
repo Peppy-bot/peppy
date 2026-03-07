@@ -132,9 +132,9 @@ export CARGO_HOME={GUEST_CARGO_HOME}
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
     | sh -s -- -y --no-modify-path
 export PATH="{GUEST_CARGO_HOME}/bin:$PATH"
-rustup target add x86_64-unknown-linux-gnu riscv64gc-unknown-linux-gnu
+rustup target add x86_64-unknown-linux-gnu
 sudo apt-get update -qq
-sudo apt-get install -y -qq build-essential unzip gcc-x86-64-linux-gnu gcc-riscv64-linux-gnu \
+sudo apt-get install -y -qq build-essential unzip gcc-x86-64-linux-gnu \
     golang-go libseccomp-dev make pkg-config squashfs-tools cryptsetup > /dev/null 2>&1
 """
     result = _lima_shell(limactl, install_script)
@@ -156,10 +156,6 @@ def cargo_build_in_lima(
     if "x86_64" in target_triple:
         cross_linker_lines.append(
             "export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=x86_64-linux-gnu-gcc"
-        )
-    if "riscv64" in target_triple:
-        cross_linker_lines.append(
-            "export CARGO_TARGET_RISCV64GC_UNKNOWN_LINUX_GNU_LINKER=riscv64-linux-gnu-gcc"
         )
     cross_linker = "\n".join(cross_linker_lines)
 
