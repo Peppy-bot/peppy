@@ -113,9 +113,9 @@ def ensure_rust_in_vm(limactl: Path) -> None:
             "shell",
             LIMA_INSTANCE,
             "--",
-            "test",
-            "-x",
-            f"{GUEST_CARGO_HOME}/bin/rustc",
+            "bash",
+            "-c",
+            f"test -x {GUEST_CARGO_HOME}/bin/rustc && command -v cc >/dev/null 2>&1",
         ],
     )
     if check.returncode == 0:
@@ -134,7 +134,7 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
 export PATH="{GUEST_CARGO_HOME}/bin:$PATH"
 rustup target add x86_64-unknown-linux-gnu riscv64gc-unknown-linux-gnu
 sudo apt-get update -qq
-sudo apt-get install -y -qq gcc-x86-64-linux-gnu gcc-riscv64-linux-gnu > /dev/null 2>&1
+sudo apt-get install -y -qq build-essential gcc-x86-64-linux-gnu gcc-riscv64-linux-gnu > /dev/null 2>&1
 """
     result = _lima_shell(limactl, install_script)
     if result.returncode != 0:
@@ -171,7 +171,7 @@ export RUSTUP_HOME={GUEST_RUSTUP_HOME}
 export CARGO_HOME={GUEST_CARGO_HOME}
 export PATH="{GUEST_CARGO_HOME}/bin:$PATH"
 export PEPPY_GIT_TAG={tag}
-unset RUSTC_WRAPPER
+export RUSTC_WRAPPER=""
 {cross_linker}
 cd {repo_root}
 cargo build -p peppy --release --locked --target {target_triple}

@@ -110,7 +110,7 @@ def test_cargo_build_in_lima_constructs_correct_command(tmp_path: Path) -> None:
     assert f"RUSTUP_HOME={GUEST_RUSTUP_HOME}" in script
     assert f"CARGO_HOME={GUEST_CARGO_HOME}" in script
     assert "PEPPY_GIT_TAG=v0.1.0" in script
-    assert "unset RUSTC_WRAPPER" in script
+    assert 'RUSTC_WRAPPER=""' in script
     assert "--target aarch64-unknown-linux-gnu" in script
     assert str(repo_root) in script
 
