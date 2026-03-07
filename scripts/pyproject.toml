@@ -6,7 +6,6 @@ dependencies = ["httpx", "rich"]
 
 [project.scripts]
 build-release = "functions.build_release:main"
-add-release-build = "functions.add_release_build:main"
 
 [build-system]
 requires = ["hatchling"]

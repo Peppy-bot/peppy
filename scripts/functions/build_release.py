@@ -1,11 +1,15 @@
-"""Build and publish a GitHub Release for peppy for the current host architecture.
+"""Build and publish a GitHub Release for peppy.
+
+On macOS ARM64: builds all 3 targets (native + Linux via Lima VM).
+On Linux: builds the native target only (--local mode required).
 
 Requires:
-  - GITHUB_PEPPY_RELEASE_TOKEN env var (repo-scoped token) — not needed with --local
+  - GITHUB_PEPPY_RELEASE_TOKEN env var (repo-scoped token) -- not needed with --local
   - git, cargo, rustc on PATH
+  - Lima VM (macOS only, auto-managed)
 
 Outputs:
-  - A tar.gz archive in ./dist/
+  - Tar.gz archives in ./dist/
   - A release notes HTML file in ./docs/src/content/releases/ (unless --local)
 """
 
@@ -19,10 +23,12 @@ import sys
 import tempfile
 from pathlib import Path
 
-from .build import build_and_package
+from .build import BuildArtifact, build_and_package
 from .cli import (
     ReleaseError,
     console,
+    get_targets_for_platform,
+    is_macos_arm64,
     prompt,
     prompt_yn,
     run_with_error_handling,
@@ -35,6 +41,7 @@ from .github import (
     parse_release_response,
     replace_and_upload_asset,
 )
+from .lima import ensure_lima_vm, ensure_rust_in_vm, find_limactl
 from .release_notes import (
     ReleaseNotesInput,
     fetch_release_body_html,
@@ -50,7 +57,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--local",
         action="store_true",
-        help="Build the release artifact locally without uploading to GitHub.",
+        help="Build release artifacts locally without uploading to GitHub.",
     )
     return parser.parse_args()
 
@@ -108,8 +115,36 @@ def _build_release_payload(
     return data
 
 
+def _build_all_targets(
+    tag: str,
+    targets: list[str],
+    repo_root: Path,
+) -> list[BuildArtifact]:
+    """Build and package for all requested targets.
+
+    On macOS: builds the native target first (which triggers Lima download
+    via the containers crate build.rs), then uses Lima for Linux targets.
+    Targets are built sequentially to avoid cargo metadata conflicts.
+    """
+    artifacts: list[BuildArtifact] = []
+    limactl: Path | None = None
+
+    for triple in targets:
+        if "linux" in triple and is_macos_arm64():
+            if limactl is None:
+                limactl = find_limactl(repo_root)
+                ensure_lima_vm(limactl)
+                ensure_rust_in_vm(limactl)
+            artifact = build_and_package(tag, triple, repo_root, limactl=limactl)
+        else:
+            artifact = build_and_package(tag, triple, repo_root)
+        artifacts.append(artifact)
+
+    return artifacts
+
+
 def _run_local() -> None:
-    """Build a release artifact locally without uploading to GitHub."""
+    """Build release artifacts locally without uploading to GitHub."""
     validate_release_environment(require_token=False)
     repo_root = get_repo_root()
     os.chdir(repo_root)
@@ -122,12 +157,27 @@ def _run_local() -> None:
     if not tag:
         raise ReleaseError("release tag cannot be empty")
 
-    artifact = build_and_package(tag, repo_root)
-    console.print(f"\n[green]Built artifact:[/green] {artifact.asset_path}")
+    targets = get_targets_for_platform()
+    artifacts = _build_all_targets(tag, targets, repo_root)
+
+    console.print()
+    for artifact in artifacts:
+        console.print(f"[green]Built:[/green] {artifact.asset_path}")
 
 
 def _run_full() -> None:
-    """Build and publish a full GitHub release."""
+    """Build all 3 targets and publish a full GitHub release.
+
+    Only allowed on macOS ARM64, because a complete release requires
+    all 3 targets (macOS + 2 Linux) and macOS cannot be built from Linux.
+    """
+    if not is_macos_arm64():
+        raise ReleaseError(
+            "full releases can only be created from macOS ARM64 "
+            "(a release must contain all 3 targets: "
+            "macos-aarch64, linux-x86_64, linux-aarch64)"
+        )
+
     token = validate_release_environment()
     repo_root = get_repo_root()
     os.chdir(repo_root)
@@ -167,8 +217,9 @@ def _run_full() -> None:
     if not generate_notes:
         notes_body = _get_release_notes_via_editor()
 
-    # Build and package
-    artifact = build_and_package(tag, repo_root)
+    # Build and package all targets
+    targets = get_targets_for_platform()
+    artifacts = _build_all_targets(tag, targets, repo_root)
 
     # Resolve repo slug and create client
     slug = github_repo_slug()
@@ -187,10 +238,11 @@ def _run_full() -> None:
     )
     info = parse_release_response(release_response)
 
-    # Upload asset
-    replace_and_upload_asset(
-        client, info.release_id, artifact.asset_name, artifact.asset_path, slug
-    )
+    # Upload all artifacts
+    for artifact in artifacts:
+        replace_and_upload_asset(
+            client, info.release_id, artifact.asset_name, artifact.asset_path, slug
+        )
 
     # Fetch and write release notes for docs
     console.print("Fetching release notes...")

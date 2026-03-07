@@ -719,7 +719,7 @@ packages:
 - pypi: ./
   name: peppy-release-scripts
   version: 0.0.1
-  sha256: e1bd82f5f1029329b606171c4de43e81911b64ee02344d089d294f0a19f3eeeb
+  sha256: 23ee4b2422e4a55d5c1aba1b59a2fba4cb9f8ae0a910a8ef544a262bd055f6cc
   requires_dist:
   - httpx
   - rich

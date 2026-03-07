@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import platform
 import shutil
 import sys
 from collections.abc import Callable, Sequence
@@ -11,6 +12,12 @@ from rich.console import Console
 from rich.prompt import Confirm, Prompt
 
 console = Console(stderr=True)
+
+RELEASE_TRIPLES: tuple[str, ...] = (
+    "aarch64-apple-darwin",
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+)
 
 
 class ReleaseError(Exception):
@@ -87,3 +94,47 @@ def run_with_error_handling(fn: Callable[[], None]) -> None:
     except KeyboardInterrupt:
         console.print("\n[dim]Aborted.[/dim]")
         sys.exit(130)
+
+
+def detect_platform() -> tuple[str, str]:
+    """Return (os_name, arch) for the current host.
+
+    Examples: ('Darwin', 'arm64'), ('Linux', 'x86_64').
+    """
+    return (platform.system(), platform.machine())
+
+
+def is_macos_arm64() -> bool:
+    """Return True if running on macOS Apple Silicon."""
+    os_name, arch = detect_platform()
+    return os_name == "Darwin" and arch == "arm64"
+
+
+def is_linux() -> bool:
+    """Return True if running on Linux."""
+    return platform.system() == "Linux"
+
+
+def get_native_triple() -> str:
+    """Return the Rust target triple for the current host."""
+    os_name, arch = detect_platform()
+    if os_name == "Darwin" and arch == "arm64":
+        return "aarch64-apple-darwin"
+    if os_name == "Linux" and arch in ("x86_64", "amd64"):
+        return "x86_64-unknown-linux-gnu"
+    if os_name == "Linux" and arch in ("aarch64", "arm64"):
+        return "aarch64-unknown-linux-gnu"
+    raise ReleaseError(f"unsupported platform: {os_name} {arch}")
+
+
+def get_targets_for_platform() -> list[str]:
+    """Return the list of target triples to build for the current platform.
+
+    On macOS ARM64: all 3 release triples.
+    On Linux: only the native triple.
+    """
+    if is_macos_arm64():
+        return list(RELEASE_TRIPLES)
+    if is_linux():
+        return [get_native_triple()]
+    raise ReleaseError("unsupported platform (requires macOS ARM64 or Linux)")
