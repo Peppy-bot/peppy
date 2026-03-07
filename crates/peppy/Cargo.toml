@@ -34,6 +34,9 @@ rand = "0.10"
 crossterm = "0.29"
 tempfile = { version = "3.8", optional = true }
 
+[build-dependencies]
+build-helpers = { path = "../build-helpers" }
+
 [features]
 default = ["test-support"]
 test-support = ["dep:tempfile"]

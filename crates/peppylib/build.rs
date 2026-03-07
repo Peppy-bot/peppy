@@ -1,34 +1,6 @@
 use std::env;
 use std::path::PathBuf;
 
-fn get_capnp_binary(manifest_dir: &std::path::Path) -> Option<PathBuf> {
-    // Use bundled binaries in config-internal crate
-    let config_internal_tools = manifest_dir.parent()?.join("config-internal").join("tools");
-
-    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-    let binary_name = "capnp_linux_x86_64";
-
-    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
-    let binary_name = "capnp_linux_aarch64";
-
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    let binary_name = "capnp_macos_aarch64";
-
-    #[cfg(not(any(
-        all(target_os = "linux", target_arch = "x86_64"),
-        all(target_os = "linux", target_arch = "aarch64"),
-        all(target_os = "macos", target_arch = "aarch64")
-    )))]
-    let binary_name = "capnp_unsupported";
-
-    let binary_path = config_internal_tools.join(binary_name);
-    if binary_path.exists() {
-        Some(binary_path)
-    } else {
-        None
-    }
-}
-
 fn main() {
     println!("cargo:rerun-if-changed=schemas/");
 
@@ -41,7 +13,8 @@ fn main() {
         .canonicalize()
         .expect("Failed to canonicalize CARGO_MANIFEST_DIR");
 
-    let capnp_path = get_capnp_binary(&manifest_dir).expect(
+    let tools_dir = manifest_dir.parent().unwrap().join("config-internal").join("tools");
+    let capnp_path = build_helpers::find_bundled_capnp(&tools_dir).expect(
         "Could not find capnp binary. Please install Cap'n Proto: https://capnproto.org/install.html",
     );
 

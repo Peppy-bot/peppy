@@ -30,33 +30,6 @@ fn walkdir(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
     files
 }
 
-fn get_temp_cache_dir(cache_suffix: &str) -> std::path::PathBuf {
-    let user_home = std::env::var("HOME").expect("HOME environment variable not set");
-    let cache_dir = std::path::PathBuf::from(user_home)
-        .join(".peppy/tmp")
-        .join(cache_suffix);
-
-    if !cache_dir.exists() {
-        std::fs::create_dir_all(&cache_dir).expect("Failed to create cache directory");
-    }
-
-    cache_dir
-}
-
-/// Returns the Rust target triple for the current build from cargo env vars.
-fn build_target_triple() -> String {
-    let arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap();
-    let os = std::env::var("CARGO_CFG_TARGET_OS").unwrap();
-    let env_abi = std::env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
-    match (os.as_str(), arch.as_str(), env_abi.as_str()) {
-        ("macos", "aarch64", _) => "aarch64-apple-darwin".to_string(),
-        ("macos", "x86_64", _) => "x86_64-apple-darwin".to_string(),
-        ("linux", "x86_64", "gnu") => "x86_64-unknown-linux-gnu".to_string(),
-        ("linux", "aarch64", "gnu") => "aarch64-unknown-linux-gnu".to_string(),
-        ("linux", "riscv64", "gnu") => "riscv64gc-unknown-linux-gnu".to_string(),
-        _ => format!("{arch}-unknown-{os}-{env_abi}"),
-    }
-}
 
 mod ruff_build {
     use std::env;
@@ -119,10 +92,10 @@ mod ruff_build {
         println!("cargo:rustc-env=RUFF_VERSION={}", super::RUFF_VERSION);
 
         let profile = env::var("PROFILE").unwrap();
-        let target = super::build_target_triple();
+        let target = build_helpers::build_target_triple();
 
         // Architecture-aware cache to avoid sharing binaries between platforms
-        let cache_dir = super::get_temp_cache_dir(&format!("ruff-{}", super::RUFF_VERSION));
+        let cache_dir = build_helpers::cache_dir(&format!("ruff-{}", super::RUFF_VERSION));
         let cached_ruff_path = cache_dir.join(format!("ruff-{profile}-{target}"));
 
         let out_dir = env::var("OUT_DIR").unwrap();
@@ -141,17 +114,32 @@ mod ruff_build {
 
         // 2. Download pre-built binary from GitHub releases
         if !download_ruff(&target, &cached_ruff_path) {
-            panic!(
-                "Failed to download ruff {} for {target}. \
-                 Check network connectivity and that the release exists at \
-                 https://github.com/astral-sh/ruff/releases/tag/{}",
-                super::RUFF_VERSION,
-                super::RUFF_VERSION,
+            // 3. Compile from source as fallback
+            println!(
+                "cargo:warning=Pre-built ruff not available for {target}, compiling from source..."
             );
+            match build_helpers::cargo_install_binary(
+                "ruff",
+                super::RUFF_VERSION,
+                &target,
+                &cache_dir,
+            ) {
+                Some(compiled) => {
+                    std::fs::copy(&compiled, &cached_ruff_path)
+                        .expect("Failed to copy compiled ruff binary to cache");
+                }
+                None => panic!(
+                    "Failed to download or compile ruff {} for {target}. \
+                     Ensure a Rust toolchain with the {target} target is installed, \
+                     or check https://github.com/astral-sh/ruff/releases/tag/{}",
+                    super::RUFF_VERSION,
+                    super::RUFF_VERSION,
+                ),
+            }
         }
 
         std::fs::copy(&cached_ruff_path, &ruff_binary_path)
-            .expect("Failed to copy downloaded ruff binary");
+            .expect("Failed to copy ruff binary to OUT_DIR");
     }
 }
 
@@ -396,7 +384,7 @@ mod peppylib_build {
 
         // Use a separate CARGO_TARGET_DIR so maturin's inner `cargo build`
         // does not deadlock on the workspace build lock held by the outer cargo.
-        let cache_dir = super::get_temp_cache_dir("peppylib-py");
+        let cache_dir = build_helpers::cache_dir("peppylib-py");
         let target_dir = cache_dir.join("target");
         let pixi_task = resolve_pixi_task();
 

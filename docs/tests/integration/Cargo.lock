@@ -345,6 +345,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "build-helpers"
+version = "0.0.1"
+dependencies = [
+ "sha2",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.20.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -539,6 +546,7 @@ name = "config"
 version = "0.0.1"
 dependencies = [
  "askama",
+ "build-helpers",
  "capnp",
  "capnpc",
  "clap",
@@ -585,9 +593,9 @@ dependencies = [
 name = "containers"
 version = "0.0.1"
 dependencies = [
+ "build-helpers",
  "serde",
  "serde_yaml",
- "sha2",
  "thiserror 2.0.18",
  "tracing",
 ]
@@ -622,6 +630,7 @@ name = "core-node"
 version = "0.0.1"
 dependencies = [
  "askama",
+ "build-helpers",
  "bytes",
  "capnp",
  "capnpc",
@@ -1282,6 +1291,7 @@ name = "generator"
 version = "0.0.1"
 dependencies = [
  "askama",
+ "build-helpers",
  "config",
  "indexmap 2.13.0",
  "pmi",
@@ -2618,6 +2628,7 @@ name = "peppy"
 version = "0.0.1"
 dependencies = [
  "askama",
+ "build-helpers",
  "bytes",
  "clap",
  "config",
@@ -2650,6 +2661,7 @@ dependencies = [
 name = "peppylib"
 version = "0.0.1"
 dependencies = [
+ "build-helpers",
  "bytes",
  "capnp",
  "capnpc",
@@ -2831,6 +2843,7 @@ name = "pmi"
 version = "0.0.1"
 dependencies = [
  "askama",
+ "build-helpers",
  "bytes",
  "config",
  "derive_more",

@@ -7,16 +7,7 @@ fn main() {
     embed_git_hash();
 
     // Embed the git tag if provided (set by build_release.sh)
-    embed_git_tag();
-}
-
-fn embed_git_tag() {
-    // Only set PEPPY_GIT_TAG if it's provided in the environment (by build_release.sh)
-    if let Ok(git_tag) = std::env::var("PEPPY_GIT_TAG")
-        && !git_tag.is_empty()
-    {
-        println!("cargo:rustc-env=PEPPY_GIT_TAG={}", git_tag);
-    }
+    build_helpers::embed_git_tag();
 }
 
 fn embed_git_hash() {

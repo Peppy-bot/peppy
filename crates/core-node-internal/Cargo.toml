@@ -41,6 +41,7 @@ zstd = "0.13.3"
 tempfile = "3.10"
 
 [build-dependencies]
+build-helpers = { path = "../build-helpers" }
 capnpc = "0.25"
 
 [dev-dependencies]

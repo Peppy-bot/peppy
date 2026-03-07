@@ -42,6 +42,7 @@ from .github import (
     replace_and_upload_asset,
 )
 from .lima import ensure_lima_vm, ensure_rust_in_vm, find_limactl
+from .verify_release import verify_all_releases
 from .release_notes import (
     ReleaseNotesInput,
     fetch_release_body_html,
@@ -139,6 +140,12 @@ def _build_all_targets(
         else:
             artifact = build_and_package(tag, triple, repo_root)
         artifacts.append(artifact)
+
+    # Verify all release archives contain the required binaries
+    if artifacts:
+        dist_dir = artifacts[0].asset_path.parent
+        verify_all_releases(dist_dir)
+        console.print("[green]All release archives verified successfully.[/green]")
 
     return artifacts
 

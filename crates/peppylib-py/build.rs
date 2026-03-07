@@ -3,13 +3,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 fn main() {
-    // Embed the git tag if provided (set by build_release.sh via PEPPY_GIT_TAG env var)
-    if let Ok(git_tag) = std::env::var("PEPPY_GIT_TAG")
-        && !git_tag.is_empty()
-    {
-        println!("cargo:rustc-env=PEPPY_GIT_TAG={}", git_tag);
-    }
-    println!("cargo:rerun-if-env-changed=PEPPY_GIT_TAG");
+    build_helpers::embed_git_tag();
 
     check_pixi_installed();
     // pixi is installed, configure Python path if not already set

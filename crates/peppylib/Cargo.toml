@@ -28,6 +28,7 @@ tempfile = { version = "3.10", optional = true }
 capnp = "0.25"
 
 [build-dependencies]
+build-helpers = { path = "../build-helpers" }
 capnpc = "0.25"
 
 [dev-dependencies]

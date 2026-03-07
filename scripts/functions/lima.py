@@ -134,7 +134,8 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
 export PATH="{GUEST_CARGO_HOME}/bin:$PATH"
 rustup target add x86_64-unknown-linux-gnu riscv64gc-unknown-linux-gnu
 sudo apt-get update -qq
-sudo apt-get install -y -qq build-essential unzip gcc-x86-64-linux-gnu gcc-riscv64-linux-gnu > /dev/null 2>&1
+sudo apt-get install -y -qq build-essential unzip gcc-x86-64-linux-gnu gcc-riscv64-linux-gnu \
+    golang-go libseccomp-dev make pkg-config squashfs-tools cryptsetup > /dev/null 2>&1
 """
     result = _lima_shell(limactl, install_script)
     if result.returncode != 0:

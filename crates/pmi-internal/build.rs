@@ -139,19 +139,6 @@ mod zenoh_build {
         })
     }
 
-    fn get_temp_cache_dir(cache_suffix: &str) -> PathBuf {
-        let user_home = env::var("HOME").expect("HOME environment variable not set");
-        let cache_dir = PathBuf::from(user_home)
-            .join(".peppy/tmp")
-            .join(cache_suffix);
-
-        if !cache_dir.exists() {
-            std::fs::create_dir_all(&cache_dir).expect("Failed to create cache directory");
-        }
-
-        cache_dir
-    }
-
     /// Parses `zenoh-checksums.toml` and returns (version, target→hash map).
     fn parse_checksums(content: &str) -> (String, HashMap<String, String>) {
         let mut version = String::new();
@@ -182,33 +169,6 @@ mod zenoh_build {
         (version, checksums)
     }
 
-    /// Computes SHA256 of a file using the system `shasum` (macOS) or `sha256sum` (Linux).
-    fn sha256_file(path: &Path) -> String {
-        // Try shasum first (macOS), then sha256sum (Linux)
-        let output = Command::new("shasum")
-            .args(["-a", "256", path.to_str().unwrap()])
-            .output()
-            .or_else(|_| {
-                Command::new("sha256sum")
-                    .arg(path.to_str().unwrap())
-                    .output()
-            })
-            .expect("Failed to compute SHA256: neither `shasum` nor `sha256sum` found");
-
-        assert!(
-            output.status.success(),
-            "SHA256 computation failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-
-        let stdout = String::from_utf8(output.stdout).expect("Invalid UTF-8 in shasum output");
-        stdout
-            .split_whitespace()
-            .next()
-            .expect("Empty shasum output")
-            .to_string()
-    }
-
     pub fn build_zenoh(release_tag: &str) {
         // Download pre-built zenoh router binary when the build_zenoh feature is enabled
         if env::var("CARGO_FEATURE_BUILD_ZENOH").is_ok() {
@@ -235,20 +195,8 @@ mod zenoh_build {
             );
 
             let target = env::var("TARGET").expect("TARGET not set");
-            let expected_hash = match checksums.get(&target) {
-                Some(hash) => hash,
-                None => {
-                    println!(
-                        "cargo:warning=No pre-built zenohd binary available for target '{}'. \
-                         zenohd will not be embedded. Install zenohd manually and set \
-                         PEPPY_ZENOHD_PATH at runtime if needed.",
-                        target
-                    );
-                    return;
-                }
-            };
 
-            let cache_dir = get_temp_cache_dir("zenoh");
+            let cache_dir = build_helpers::cache_dir("zenoh");
             let cached_zenoh_path = cache_dir.join(format!("zenohd-{}-{}", release_tag, target));
 
             let out_dir = env::var("OUT_DIR").unwrap();
@@ -261,7 +209,8 @@ mod zenoh_build {
                 );
                 std::fs::copy(&cached_zenoh_path, &zenoh_binary_path)
                     .expect("Failed to copy cached zenohd binary");
-            } else {
+            } else if let Some(expected_hash) = checksums.get(&target) {
+                // Download pre-built binary (checksum available for this target)
                 let url = format!(
                     "https://github.com/eclipse-zenoh/zenoh/releases/download/{version}/zenoh-{version}-{target}-standalone.zip",
                     version = release_tag,
@@ -277,7 +226,6 @@ mod zenoh_build {
                     .status();
 
                 if status.is_err() || !status.as_ref().unwrap().success() {
-                    // Clean up partial download
                     std::fs::remove_file(&zip_path).ok();
                     panic!(
                         "Failed to download zenohd from {}. \
@@ -287,15 +235,12 @@ mod zenoh_build {
                 }
 
                 // Verify SHA256
-                let actual_hash = sha256_file(&zip_path);
-                if actual_hash != *expected_hash {
+                if !build_helpers::verify_sha256(&zip_path, expected_hash, "zenohd zip") {
                     std::fs::remove_file(&zip_path).ok();
                     panic!(
-                        "SHA256 checksum mismatch for {}!\n  Expected: {}\n  Actual:   {}\n\
+                        "SHA256 checksum mismatch for {}! \
                          The downloaded file has been deleted. This may indicate a corrupted download or a tampered release.",
                         zip_path.display(),
-                        expected_hash,
-                        actual_hash
                     );
                 }
 
@@ -334,6 +279,30 @@ mod zenoh_build {
                 // Clean up
                 std::fs::remove_file(&zip_path).ok();
                 std::fs::remove_dir_all(&extract_dir).ok();
+            } else {
+                // No pre-built binary available — compile from source
+                println!(
+                    "cargo:warning=No pre-built zenohd binary for target '{}', compiling from source...",
+                    target
+                );
+                match build_helpers::cargo_install_binary(
+                    "zenohd",
+                    release_tag,
+                    &target,
+                    &cache_dir,
+                ) {
+                    Some(compiled) => {
+                        std::fs::copy(&compiled, &cached_zenoh_path)
+                            .expect("Failed to copy compiled zenohd binary to cache");
+                        std::fs::copy(&cached_zenoh_path, &zenoh_binary_path)
+                            .expect("Failed to copy zenohd binary to OUT_DIR");
+                    }
+                    None => panic!(
+                        "Failed to download or compile zenohd {} for target '{}'. \
+                         Ensure a Rust toolchain with the {} target is installed.",
+                        release_tag, target, target
+                    ),
+                }
             }
 
             println!("cargo:rustc-env=ZENOHD_BINARY_PATH={}", zenoh_binary_path);
