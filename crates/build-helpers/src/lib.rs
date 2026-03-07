@@ -102,10 +102,10 @@ pub fn verify_sha256(path: &Path, expected: &str, label: &str) -> bool {
 /// Also registers `cargo:rerun-if-env-changed` so cargo rebuilds when the
 /// variable changes.
 pub fn embed_git_tag() {
-    if let Ok(git_tag) = std::env::var("PEPPY_GIT_TAG") {
-        if !git_tag.is_empty() {
-            println!("cargo:rustc-env=PEPPY_GIT_TAG={git_tag}");
-        }
+    if let Ok(git_tag) = std::env::var("PEPPY_GIT_TAG")
+        && !git_tag.is_empty()
+    {
+        println!("cargo:rustc-env=PEPPY_GIT_TAG={git_tag}");
     }
     println!("cargo:rerun-if-env-changed=PEPPY_GIT_TAG");
 }

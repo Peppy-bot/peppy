@@ -311,9 +311,7 @@ mod apptainer_build {
             version, arch
         );
 
-        let Some(expected_sha256) = apptainer_rpm_sha256(arch) else {
-            return None;
-        };
+        let expected_sha256 = apptainer_rpm_sha256(arch)?;
 
         if !download_apptainer_rpm(&cached_rpm, version, release, arch, expected_sha256) {
             return None;
