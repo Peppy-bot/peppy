@@ -6,11 +6,7 @@ use std::process::Command;
 pub fn cache_dir(suffix: &str) -> PathBuf {
     let user_home = std::env::var("HOME").expect("HOME environment variable not set");
     let cache_dir = PathBuf::from(user_home).join(".peppy/tmp").join(suffix);
-
-    if !cache_dir.exists() {
-        std::fs::create_dir_all(&cache_dir).expect("Failed to create cache directory");
-    }
-
+    std::fs::create_dir_all(&cache_dir).expect("Failed to create cache directory");
     cache_dir
 }
 
@@ -152,6 +148,29 @@ fn host_capnp_binary_name() -> &'static str {
     }
 }
 
+/// Acquire an exclusive file lock for serializing concurrent build invocations.
+///
+/// Creates the lock directory if needed, opens the lock file, and acquires
+/// an exclusive lock. Returns the `File` handle — the lock is held as long
+/// as the handle is alive.
+pub fn acquire_file_lock(lock_path: &Path) -> std::fs::File {
+    let lock_dir = lock_path
+        .parent()
+        .expect("lock path should include a parent directory");
+    std::fs::create_dir_all(lock_dir).expect("Failed to create lock directory");
+
+    let lock_file = std::fs::File::options()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(lock_path)
+        .expect("Failed to open lock file");
+
+    lock_file.lock().expect("Failed to acquire build lock");
+    lock_file
+}
+
 /// Compile a Rust binary from crates.io using `cargo install` with cross-compilation support.
 ///
 /// Returns `Some(path)` to the cached binary on success, `None` on failure.
@@ -233,11 +252,10 @@ pub fn cargo_install_binary(
         return None;
     }
 
-    // Clean up the install temp directory (keep cargo-build-{name} for incremental builds)
+    // Clean up temp directories
     std::fs::remove_dir_all(&install_root).ok();
+    std::fs::remove_dir_all(&cargo_target_dir).ok();
 
-    println!(
-        "cargo:warning=Successfully compiled and cached {name} {version} for {target}"
-    );
+    println!("cargo:warning=Successfully compiled and cached {name} {version} for {target}");
     Some(cached_binary)
 }

@@ -114,9 +114,7 @@ mod apptainer_build {
     fn get_lima_build_home() -> PathBuf {
         let user_home = env::var("HOME").expect("HOME environment variable not set");
         let home = PathBuf::from(user_home).join(".peppy/lima-build");
-        if !home.exists() {
-            std::fs::create_dir_all(&home).expect("Failed to create lima build data directory");
-        }
+        std::fs::create_dir_all(&home).expect("Failed to create lima build data directory");
         home
     }
 
@@ -773,11 +771,7 @@ bash {guest_vendor}/{install_script_name} {guest_install_dir} {arch}"#,
     }
 
     /// Copy a directory from the Lima guest to the host via tar pipe.
-    fn copy_lima_result_to_host(
-        lima: &LimaConfig,
-        guest_dir: &str,
-        host_dir: &Path,
-    ) -> bool {
+    fn copy_lima_result_to_host(lima: &LimaConfig, guest_dir: &str, host_dir: &Path) -> bool {
         if host_dir.exists() {
             std::fs::remove_dir_all(host_dir).ok();
         }
@@ -813,14 +807,7 @@ bash {guest_vendor}/{install_script_name} {guest_install_dir} {arch}"#,
         // Clean up guest temp files
         let _ = lima
             .lima_command()
-            .args([
-                "shell",
-                lima.instance,
-                "--",
-                "rm",
-                "-rf",
-                guest_dir,
-            ])
+            .args(["shell", lima.instance, "--", "rm", "-rf", guest_dir])
             .status();
 
         true
@@ -855,7 +842,9 @@ bash {guest_vendor}/{install_script_name} {guest_install_dir} {arch}"#,
 
         // Download source tarball
         if !build_helpers::run_command(
-            Command::new("curl").args(["-fsSL", &tarball_url, "-o"]).arg(&tarball_path),
+            Command::new("curl")
+                .args(["-fsSL", &tarball_url, "-o"])
+                .arg(&tarball_path),
             &format!("download apptainer {version} source tarball"),
         ) {
             return false;
@@ -1093,10 +1082,7 @@ rm -rf /tmp/apptainer-{version} /tmp/apptainer-{version}.tar.gz"#,
                 std::fs::remove_dir_all(&out_lima_dir).ok();
             }
             if let Err(e) = copy_dir_recursive(&lima_cache_dir, &out_lima_dir) {
-                panic!(
-                    "Failed to copy Lima installation to OUT_DIR: {}",
-                    e
-                );
+                panic!("Failed to copy Lima installation to OUT_DIR: {}", e);
             }
             println!(
                 "cargo:rustc-env=LIMA_INSTALL_DIR={}",
@@ -1170,16 +1156,13 @@ rm -rf /tmp/apptainer-{version} /tmp/apptainer-{version}.tar.gz"#,
                 cache_dir
             );
 
-            std::fs::write(
-                &cache_sentinel,
-                format!("version={}\n", APPTAINER_VERSION),
-            )
-            .unwrap_or_else(|e| {
-                panic!(
-                    "Failed to write apptainer cache sentinel {:?}: {}",
-                    cache_sentinel, e
-                )
-            });
+            std::fs::write(&cache_sentinel, format!("version={}\n", APPTAINER_VERSION))
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "Failed to write apptainer cache sentinel {:?}: {}",
+                        cache_sentinel, e
+                    )
+                });
         } else {
             // No pre-built RPM for this architecture — build from source
             println!(
@@ -1206,16 +1189,13 @@ rm -rf /tmp/apptainer-{version} /tmp/apptainer-{version}.tar.gz"#,
                 cache_dir
             );
 
-            std::fs::write(
-                &cache_sentinel,
-                format!("version={}\n", APPTAINER_VERSION),
-            )
-            .unwrap_or_else(|e| {
-                panic!(
-                    "Failed to write apptainer cache sentinel {:?}: {}",
-                    cache_sentinel, e
-                )
-            });
+            std::fs::write(&cache_sentinel, format!("version={}\n", APPTAINER_VERSION))
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "Failed to write apptainer cache sentinel {:?}: {}",
+                        cache_sentinel, e
+                    )
+                });
         }
 
         // ------------------------------------------------------------------
@@ -1224,12 +1204,8 @@ rm -rf /tmp/apptainer-{version} /tmp/apptainer-{version}.tar.gz"#,
         if out_install_dir.exists() {
             std::fs::remove_dir_all(&out_install_dir).ok();
         }
-        copy_dir_recursive(&cache_dir, &out_install_dir).unwrap_or_else(|e| {
-            panic!(
-                "Failed to copy apptainer installation to OUT_DIR: {}",
-                e
-            )
-        });
+        copy_dir_recursive(&cache_dir, &out_install_dir)
+            .unwrap_or_else(|e| panic!("Failed to copy apptainer installation to OUT_DIR: {}", e));
 
         println!(
             "cargo:rustc-env=APPTAINER_INSTALL_DIR={}",

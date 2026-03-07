@@ -118,8 +118,7 @@ mod capnp_build {
                 built_binary
             );
 
-            fs::copy(&built_binary, &cached_capnp_path)
-                .expect("Failed to cache capnp binary");
+            fs::copy(&built_binary, &cached_capnp_path).expect("Failed to cache capnp binary");
             fs::copy(&built_binary, &capnp_binary_path)
                 .expect("Failed to copy capnp binary to OUT_DIR");
 

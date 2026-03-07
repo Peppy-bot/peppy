@@ -1,4 +1,3 @@
-use std::fs::File;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -82,7 +81,7 @@ fn configure_python_from_pixi() {
     // Serialize concurrent pixi invocations to avoid "Text file busy" races
     // when multiple build scripts run pixi on the same environment.
     let lock_path = manifest_dir.join(".pixi/.build.lock");
-    let _pixi_lock = acquire_pixi_lock(&lock_path);
+    let _pixi_lock = build_helpers::acquire_file_lock(&lock_path);
 
     let output = Command::new("pixi")
         .args(["run", "--manifest-path"])
@@ -112,22 +111,4 @@ fn configure_python_from_pixi() {
     unsafe {
         std::env::set_var("PYO3_PYTHON", &python_path);
     }
-}
-
-fn acquire_pixi_lock(lock_path: &std::path::Path) -> File {
-    let lock_dir = lock_path
-        .parent()
-        .expect("pixi lock path should include a parent directory");
-    std::fs::create_dir_all(lock_dir).expect("Failed to create pixi lock directory");
-
-    let lock_file = File::options()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(lock_path)
-        .expect("Failed to open pixi lock file");
-
-    lock_file.lock().expect("Failed to acquire pixi build lock");
-    lock_file
 }

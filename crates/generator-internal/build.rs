@@ -9,7 +9,7 @@ fn walkdir(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
         let entries = match std::fs::read_dir(&current) {
             Ok(e) => e,
             Err(e) => {
-                eprintln!(
+                println!(
                     "cargo:warning=Failed to read directory {}: {}",
                     current.display(),
                     e
@@ -29,7 +29,6 @@ fn walkdir(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
     files.sort();
     files
 }
-
 
 mod ruff_build {
     use std::env;
@@ -159,24 +158,6 @@ mod peppylib_build {
         format!("{os}-{arch}")
     }
 
-    fn acquire_pixi_lock(lock_path: &std::path::Path) -> File {
-        let lock_dir = lock_path
-            .parent()
-            .expect("pixi lock path should include a parent directory");
-        std::fs::create_dir_all(lock_dir).expect("Failed to create pixi lock directory");
-
-        let lock_file = File::options()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(lock_path)
-            .expect("Failed to open pixi lock file");
-
-        lock_file.lock().expect("Failed to acquire pixi build lock");
-        lock_file
-    }
-
     /// Runs a pixi task and panics on failure.
     fn run_pixi_task(peppylib_py_dir: &Path, task: &str, target_dir: &Path) {
         let output = Command::new("sh")
@@ -298,7 +279,7 @@ mod peppylib_build {
         // Serialize concurrent pixi invocations to avoid "Text file busy" races
         // when multiple build scripts run pixi on the same environment.
         let lock_path = peppylib_py_dir.join(".pixi/.build.lock");
-        let _pixi_lock = acquire_pixi_lock(&lock_path);
+        let _pixi_lock = build_helpers::acquire_file_lock(&lock_path);
 
         println!("cargo:warning=Building peppylib-py native extension via pixi ({pixi_task})…");
         run_pixi_task(peppylib_py_dir, pixi_task, target_dir);
@@ -482,7 +463,7 @@ mod rust_crates_build {
             let entries = match std::fs::read_dir(&current) {
                 Ok(e) => e,
                 Err(e) => {
-                    eprintln!(
+                    println!(
                         "cargo:warning=Failed to read directory {}: {}",
                         current.display(),
                         e
@@ -536,7 +517,7 @@ mod rust_crates_build {
                 hasher.update(relative.to_string_lossy().as_bytes());
                 match std::fs::read(file_path) {
                     Ok(content) => hasher.update(&content),
-                    Err(e) => eprintln!(
+                    Err(e) => println!(
                         "cargo:warning=Failed to read file for hashing {}: {}",
                         file_path.display(),
                         e

@@ -113,7 +113,8 @@ def is_macos_arm64() -> bool:
 
 def is_linux() -> bool:
     """Return True if running on Linux."""
-    return platform.system() == "Linux"
+    os_name, _ = detect_platform()
+    return os_name == "Linux"
 
 
 def get_native_triple() -> str:

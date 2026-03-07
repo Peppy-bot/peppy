@@ -7,7 +7,11 @@ fn main() {
     println!("cargo:rerun-if-changed=schemas/");
 
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
-    let tools_dir = manifest_dir.parent().unwrap().join("config-internal").join("tools");
+    let tools_dir = manifest_dir
+        .parent()
+        .unwrap()
+        .join("config-internal")
+        .join("tools");
     let capnp_path = build_helpers::find_bundled_capnp(&tools_dir).expect(
         "Could not find capnp binary. Please install Cap'n Proto: https://capnproto.org/install.html",
     );

@@ -292,9 +292,7 @@ mod zenoh_build {
                     &cache_dir,
                 ) {
                     Some(compiled) => {
-                        std::fs::copy(&compiled, &cached_zenoh_path)
-                            .expect("Failed to copy compiled zenohd binary to cache");
-                        std::fs::copy(&cached_zenoh_path, &zenoh_binary_path)
+                        std::fs::copy(&compiled, &zenoh_binary_path)
                             .expect("Failed to copy zenohd binary to OUT_DIR");
                     }
                     None => panic!(
