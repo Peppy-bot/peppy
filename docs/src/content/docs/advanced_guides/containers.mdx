@@ -126,70 +126,73 @@ Here is what `peppy node init --container` generates:
 
 <Tabs>
   <TabItem label="Python">
-    ```dockerfile title="apptainer.def"
-    Bootstrap: docker
-    From: ubuntu:24.04
+    ```apptainer title="apptainer.def"
+Bootstrap: docker
+From: ubuntu:24.04
 
-    %labels
-        Name my_node
-        Version 0.1.0
+%labels
+    Name my_node
+    Version 0.1.0
 
-    %environment
-        export PATH="/opt/my_node/.venv/bin:$PATH"
+%environment
+    export PATH="/opt/my_node/.venv/bin:$PATH"
 
-    %files
-        . /opt/my_node
+%files
+    . /opt/my_node
 
-    %post
-        set -eux
+%post
+    set -eux
+    export DEBIAN_FRONTEND=noninteractive
 
-        apt-get update
-        apt-get install -y --no-install-recommends \
-            ca-certificates curl python3 python3-venv
-        rm -rf /var/lib/apt/lists/*
+    apt-get update
+    apt-get install -y --no-install-recommends \
+        ca-certificates curl python3 python3-venv
+    rm -rf /var/lib/apt/lists/*
 
-        curl -LsSf https://astral.sh/uv/install.sh | sh
-        export PATH="/root/.local/bin:$PATH"
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    export PATH="/root/.local/bin:$PATH"
 
-        cd /opt/my_node
-        uv sync --no-editable
+    cd /opt/my_node
+    uv sync --no-editable
 
-    %runscript
-        cd /opt/my_node
-        exec ./.venv/bin/python -m my_node
+%runscript
+    cd /opt/my_node
+    exec ./.venv/bin/python -m my_node
     ```
   </TabItem>
   <TabItem label="Rust">
-    ```dockerfile title="apptainer.def"
-    Bootstrap: docker
-    From: ubuntu:24.04
+    ```apptainer title="apptainer.def"
+Bootstrap: docker
+From: ubuntu:24.04
 
-    %labels
-        Name my_node
-        Version 0.1.0
+%labels
+    Name my_node
+    Version 0.1.0
 
-    %environment
-        export PATH="/root/.cargo/bin:$PATH"
+%environment
+    export PATH="/root/.cargo/bin:$PATH"
 
-    %files
-        . /opt/my_node
+%files
+    . /opt/my_node
 
-    %post
-        set -eux
+%post
+    set -eux
+    export DEBIAN_FRONTEND=noninteractive
 
-        apt-get update
-        apt-get install -y --no-install-recommends \
-            ca-certificates curl build-essential pkg-config
-        rm -rf /var/lib/apt/lists/*
+    apt-get update
+    apt-get install -y --no-install-recommends \
+        ca-certificates curl build-essential pkg-config
+    rm -rf /var/lib/apt/lists/*
 
-        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-        export PATH="/root/.cargo/bin:$PATH"
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+    export PATH="/root/.cargo/bin:$PATH"
 
-        cd /opt/my_node
-        cargo build --release
+    cd /opt/my_node
+    cargo build --release
 
-    %runscript
-        exec /opt/my_node/target/release/my_node
+%runscript
+    cd /opt/my_node
+    exec ./target/release/my_node
     ```
   </TabItem>
 </Tabs>
@@ -252,7 +255,7 @@ The generated `apptainer.def` is a starting point. You can modify it freely to f
 
 Add packages to the `%post` section:
 
-```dockerfile
+```apptainer
 %post
     apt-get update
     apt-get install -y --no-install-recommends \
@@ -265,7 +268,7 @@ Add packages to the `%post` section:
 
 Swap the `From` line to use a different base:
 
-```dockerfile
+```apptainer
 Bootstrap: docker
 From: nvidia/cuda:12.4.0-devel-ubuntu24.04
 ```
@@ -274,7 +277,7 @@ From: nvidia/cuda:12.4.0-devel-ubuntu24.04
 
 Add variables to the `%environment` section so they are available at runtime:
 
-```dockerfile
+```apptainer
 %environment
     export PATH="/root/.cargo/bin:$PATH"
     export RUST_LOG=info

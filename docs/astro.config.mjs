@@ -4,6 +4,11 @@ import starlight from '@astrojs/starlight';
 import { decodeHTML } from 'entities';
 import { fileURLToPath } from 'node:url';
 import { basename } from 'node:path';
+import { readFileSync } from 'node:fs';
+
+const apptainerGrammar = JSON.parse(
+	readFileSync(new URL('./src/grammars/apptainer.tmLanguage.json', import.meta.url), 'utf-8')
+);
 
 function releaseHtmlEntryType() {
 	function parseAtomEntry(source, fileUrl) {
@@ -124,6 +129,11 @@ export default defineConfig({
 	integrations: [
 		releaseHtmlEntryType(),
 		starlight({
+			expressiveCode: {
+				shiki: {
+					langs: [{ ...apptainerGrammar, name: 'apptainer' }],
+				},
+			},
 			title: 'PeppyOS',
 			customCss: ['./src/styles/custom.css'],
 			components: {
