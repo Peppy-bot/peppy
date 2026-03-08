@@ -109,6 +109,7 @@ pub(crate) fn ensure_lima_instance(limactl: &Path, lima_home: &Path, template: &
                     &name_flag,
                     "--tty=false",
                     "--mount-writable",
+                    "--memory=12",
                     template,
                 ])
                 .output()?;

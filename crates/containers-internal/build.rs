@@ -572,6 +572,7 @@ fi
                         &name_flag,
                         "--tty=false",
                         "--mount-writable",
+                        "--memory=12",
                         template,
                     ])
                     .output();
