@@ -143,7 +143,6 @@ mod ruff_build {
 }
 
 mod peppylib_build {
-    use std::fs::File;
     use std::path::{Path, PathBuf};
     use std::process::Command;
 
@@ -195,7 +194,7 @@ mod peppylib_build {
             .map(|e| e.path())
             .expect("no .whl file found in wheels directory");
 
-        let file = File::open(&whl_path).expect("failed to open wheel file");
+        let file = std::fs::File::open(&whl_path).expect("failed to open wheel file");
         let mut archive = zip::ZipArchive::new(file).expect("failed to read wheel as zip archive");
 
         let so_entry_name = archive
