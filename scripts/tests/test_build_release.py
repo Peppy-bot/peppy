@@ -83,7 +83,7 @@ def test_run_local_on_linux_builds_native_only(
         BuildArtifact(
             asset_name="peppy-x86_64-unknown-linux-gnu.tgz",
             asset_path=tmp_path / "dist" / "peppy-x86_64-unknown-linux-gnu.tgz",
-            host_triple="x86_64-unknown-linux-gnu",
+            target_triple="x86_64-unknown-linux-gnu",
         )
     ]
     _run_local()
@@ -140,7 +140,7 @@ def test_build_all_targets_on_macos_builds_three(
     mock_build.return_value = BuildArtifact(
         asset_name="peppy-test.tgz",
         asset_path=tmp_path / "test.tgz",
-        host_triple="test",
+        target_triple="test",
     )
 
     targets = [

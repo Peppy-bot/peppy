@@ -19,7 +19,7 @@ class BuildArtifact:
 
     asset_name: str
     asset_path: Path
-    host_triple: str
+    target_triple: str
 
 
 def cargo_build(tag: str, target_triple: str, repo_root: Path) -> None:
@@ -163,7 +163,7 @@ def package_release(
     return BuildArtifact(
         asset_name=asset_name,
         asset_path=asset_path,
-        host_triple=target_triple,
+        target_triple=target_triple,
     )
 
 

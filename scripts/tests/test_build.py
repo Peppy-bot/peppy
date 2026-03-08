@@ -154,7 +154,7 @@ def test_package_release_creates_valid_tarball(tmp_path: Path) -> None:
 
     assert artifact.asset_name == f"peppy-{triple}.tgz"
     assert artifact.asset_path.exists()
-    assert artifact.host_triple == triple
+    assert artifact.target_triple == triple
 
     with tarfile.open(artifact.asset_path, "r:gz") as tar:
         member_names = {m.name for m in tar.getmembers()}
