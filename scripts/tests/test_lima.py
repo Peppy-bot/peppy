@@ -112,6 +112,7 @@ def test_cargo_build_in_lima_constructs_correct_command(tmp_path: Path) -> None:
     assert "PEPPY_GIT_TAG=v0.1.0" in script
     assert 'RUSTC_WRAPPER=""' in script
     assert "--target aarch64-unknown-linux-gnu" in script
+    assert "-j 2" in script
     assert str(repo_root) in script
 
 

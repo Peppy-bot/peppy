@@ -35,6 +35,6 @@ edition = "2024"
 # [workspace.profile.dev]
 # opt-level = 1
 
-# [workspace.profile.release]
-# lto = "thin"
-# codegen-units = 1
+[profile.release]
+lto = "thin"
+codegen-units = 1

@@ -171,7 +171,7 @@ export PEPPY_GIT_TAG={tag}
 export RUSTC_WRAPPER=""
 {cross_linker}
 cd {repo_root}
-cargo build -p peppy --release --locked --target {target_triple}
+cargo build -p peppy --release --locked --target {target_triple} -j 2
 """
     result = _lima_shell(limactl, build_script)
     if result.returncode != 0:
