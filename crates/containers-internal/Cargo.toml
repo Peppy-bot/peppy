@@ -14,4 +14,4 @@ tracing = "0.1"
 tempfile = "3"
 
 [build-dependencies]
-build-helpers = { path = "../build-helpers" }
+build-helpers = { path = "../build-helpers-internal" }

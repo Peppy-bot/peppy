@@ -39,7 +39,7 @@ pub fn run_command(command: &mut Command, description: &str) -> bool {
 }
 
 /// Computes the SHA-256 hash of a file using the `sha2` crate. Returns `None` on I/O error.
-pub fn sha256_file(path: &Path) -> Option<String> {
+fn sha256_file(path: &Path) -> Option<String> {
     use sha2::{Digest, Sha256};
 
     let mut file = match std::fs::File::open(path) {

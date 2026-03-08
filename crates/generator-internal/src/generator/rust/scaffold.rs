@@ -206,7 +206,7 @@ fn copy_embedded_crate<E: Embed>(
     Ok(())
 }
 
-/// Deploys the four vendored Rust crates (peppylib, pmi-internal, config-internal, build-helpers)
+/// Deploys the four vendored Rust crates (peppylib, pmi-internal, config-internal, build-helpers-internal)
 /// to a shared cache directory, then links or copies them into `node_libs_dir`.
 ///
 /// In `Symlink` mode (the default), creates symlinks from `node_libs_dir/{crate}`
@@ -249,7 +249,11 @@ fn deploy_rust_crates_to_shared_cache(
         copy_embedded_crate::<EmbeddedPeppylib>("peppylib", &staging_dir, &metadata)?;
         copy_embedded_crate::<EmbeddedPmiInternal>("pmi-internal", &staging_dir, &metadata)?;
         copy_embedded_crate::<EmbeddedConfigInternal>("config-internal", &staging_dir, &metadata)?;
-        copy_embedded_crate::<EmbeddedBuildHelpers>("build-helpers", &staging_dir, &metadata)?;
+        copy_embedded_crate::<EmbeddedBuildHelpers>(
+            "build-helpers-internal",
+            &staging_dir,
+            &metadata,
+        )?;
 
         if cache_dir.exists() {
             fs::remove_dir_all(&cache_dir)?;
@@ -262,13 +266,13 @@ fn deploy_rust_crates_to_shared_cache(
     // Link or copy all four crates into node_libs_dir.
     // All four are needed because the crates reference each other via relative
     // sibling paths (e.g., peppylib has `config = { path = "../config-internal" }`
-    // and `build-helpers = { path = "../build-helpers" }` in build-dependencies),
+    // and `build-helpers = { path = "../build-helpers-internal" }` in build-dependencies),
     // and Cargo resolves these paths relative to the symlink location, not the target.
     for crate_name in &[
         "peppylib",
         "pmi-internal",
         "config-internal",
-        "build-helpers",
+        "build-helpers-internal",
     ] {
         let dest = node_libs_dir.join(crate_name);
         let source = cache_dir.join(crate_name);

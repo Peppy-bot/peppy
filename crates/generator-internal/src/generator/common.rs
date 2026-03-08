@@ -143,7 +143,7 @@ pub(crate) struct EmbeddedPmiInternal;
 pub(crate) struct EmbeddedConfigInternal;
 
 #[derive(Embed)]
-#[folder = "../build-helpers/"]
+#[folder = "../build-helpers-internal/"]
 #[include = "*.rs"]
 #[include = "*.toml"]
 #[exclude = "target/*"]

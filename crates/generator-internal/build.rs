@@ -501,7 +501,7 @@ mod rust_crates_build {
             ("../peppylib", false),
             ("../pmi-internal", false),
             ("../config-internal", true),
-            ("../build-helpers", false),
+            ("../build-helpers-internal", false),
         ];
 
         let mut hasher = Sha256::new();
