@@ -18,5 +18,4 @@ respx = "*"
 
 [tasks]
 build-release = "build-release"
-add-release-build = "add-release-build"
 test = "pytest tests/ -v"

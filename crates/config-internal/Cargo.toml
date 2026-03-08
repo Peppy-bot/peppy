@@ -21,6 +21,9 @@ indexmap = { version = "2.2", features = ["serde"] }
 git2 = { version = "0.20", optional = true }
 dirs = "6"
 
+[build-dependencies]
+build-helpers = { path = "../build-helpers-internal" }
+
 [dev-dependencies]
 
 [features]

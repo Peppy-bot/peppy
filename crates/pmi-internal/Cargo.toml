@@ -18,6 +18,9 @@ tempfile = "3"
 # Optional deps
 zenoh = { version = "1.5", optional = true }
 
+[build-dependencies]
+build-helpers = { path = "../build-helpers-internal" }
+
 [dev-dependencies]
 tokio = { version = "1.47", features = [
     "sync",

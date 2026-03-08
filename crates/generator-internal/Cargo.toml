@@ -19,6 +19,7 @@ indexmap = "2.2"
 rust-embed = { version = "8", features = ["include-exclude"] }
 
 [build-dependencies]
+build-helpers = { path = "../build-helpers-internal" }
 sha2 = "0.10"
 zip = { version = "8", default-features = false, features = ["deflate"] }
 

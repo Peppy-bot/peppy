@@ -6,7 +6,7 @@ edition.workspace = true
 
 [dependencies]
 config = { path = "../config-internal", features = ["test_helpers"] }
-git2 = "0.20"
+git2 = { version = "0.20", features = ["vendored-openssl"] }
 petgraph = "0.8.3"
 serde = { version = "1.0", features = ["derive"] }
 thiserror = "2.0"

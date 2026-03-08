@@ -9,7 +9,7 @@ fn walkdir(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
         let entries = match std::fs::read_dir(&current) {
             Ok(e) => e,
             Err(e) => {
-                eprintln!(
+                println!(
                     "cargo:warning=Failed to read directory {}: {}",
                     current.display(),
                     e
@@ -30,114 +30,115 @@ fn walkdir(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
     files
 }
 
-fn get_temp_cache_dir(cache_suffix: &str) -> std::path::PathBuf {
-    let user_home = std::env::var("HOME").expect("HOME environment variable not set");
-    let cache_dir = std::path::PathBuf::from(user_home)
-        .join(".peppy/tmp")
-        .join(cache_suffix);
-
-    if !cache_dir.exists() {
-        std::fs::create_dir_all(&cache_dir).expect("Failed to create cache directory");
-    }
-
-    cache_dir
-}
-
 mod ruff_build {
     use std::env;
     use std::process::Command;
+
+    /// Try to download a pre-built ruff binary from GitHub releases.
+    fn download_ruff(target: &str, dest: &std::path::Path) -> bool {
+        let url = format!(
+            "https://github.com/astral-sh/ruff/releases/download/{version}/ruff-{target}.tar.gz",
+            version = super::RUFF_VERSION,
+        );
+
+        println!(
+            "cargo:warning=Downloading ruff {} for {}...",
+            super::RUFF_VERSION,
+            target
+        );
+
+        let temp_dir = dest.parent().unwrap().join("ruff-download-tmp");
+        std::fs::create_dir_all(&temp_dir).ok();
+
+        let status = Command::new("sh")
+            .args([
+                "-c",
+                &format!(
+                    "curl -sSfL '{}' | tar xz --strip-components=1 -C '{}'",
+                    url,
+                    temp_dir.display()
+                ),
+            ])
+            .status();
+
+        if status.is_err() || !status.as_ref().unwrap().success() {
+            println!(
+                "cargo:warning=Failed to download ruff for {} (no pre-built binary available)",
+                target
+            );
+            std::fs::remove_dir_all(&temp_dir).ok();
+            return false;
+        }
+
+        let ruff_bin = temp_dir.join("ruff");
+        if ruff_bin.exists() {
+            if let Err(e) = std::fs::copy(&ruff_bin, dest) {
+                println!("cargo:warning=Failed to copy downloaded ruff binary: {e}");
+                std::fs::remove_dir_all(&temp_dir).ok();
+                return false;
+            }
+            std::fs::remove_dir_all(&temp_dir).ok();
+            return true;
+        }
+
+        println!("cargo:warning=Downloaded ruff archive did not contain ruff binary");
+        std::fs::remove_dir_all(&temp_dir).ok();
+        false
+    }
 
     pub fn run() {
         println!("cargo:rerun-if-changed=build.rs");
         println!("cargo:rustc-env=RUFF_VERSION={}", super::RUFF_VERSION);
 
         let profile = env::var("PROFILE").unwrap();
-        let is_release = profile == "release";
+        let target = build_helpers::build_target_triple();
 
-        // Use version-tagged temp directory for persistent cache
-        let cache_dir = super::get_temp_cache_dir(&format!("ruff-{}", super::RUFF_VERSION));
-        let cached_ruff_path = cache_dir.join(format!("ruff-{profile}"));
+        // Architecture-aware cache to avoid sharing binaries between platforms
+        let cache_dir = build_helpers::cache_dir(&format!("ruff-{}", super::RUFF_VERSION));
+        let cached_ruff_path = cache_dir.join(format!("ruff-{profile}-{target}"));
 
-        // Always copy to OUT_DIR for runtime access
         let out_dir = env::var("OUT_DIR").unwrap();
         let ruff_binary_path = format!("{}/ruff", out_dir);
 
-        // Check if ruff is already cached
+        // 1. Check architecture-aware cache
         if cached_ruff_path.exists() {
             println!(
                 "cargo:warning=Using cached ruff binary from {:?}",
                 cached_ruff_path
             );
-
-            // Copy cached binary to OUT_DIR
             std::fs::copy(&cached_ruff_path, &ruff_binary_path)
                 .expect("Failed to copy cached ruff binary");
-        } else {
-            println!("cargo:warning=Building ruff binary from source...");
-
-            // Build in a temporary directory within cache
-            let build_dir = cache_dir.join("ruff-src");
-            if build_dir.exists() {
-                std::fs::remove_dir_all(&build_dir).ok();
-            }
-
-            // Clone ruff repository
-            let output = Command::new("git")
-                .args([
-                    "clone",
-                    "--depth",
-                    "1",
-                    "--branch",
-                    super::RUFF_VERSION,
-                    "https://github.com/astral-sh/ruff",
-                    build_dir.to_str().unwrap(),
-                ])
-                .output()
-                .expect("Failed to execute git clone");
-
-            if !output.status.success() {
-                panic!(
-                    "Failed to clone ruff repository: {}",
-                    String::from_utf8_lossy(&output.stderr)
-                );
-            }
-
-            // Build ruff using the stable toolchain, which may be newer than the
-            // project's default toolchain pinned via rustup. We must also clear
-            // RUSTC/RUSTDOC because Cargo injects the current toolchain's paths
-            // into the build-script environment, which would override the
-            // RUSTUP_TOOLCHAIN selection.
-            let mut cmd = Command::new("cargo");
-            cmd.current_dir(&build_dir)
-                .env("RUSTUP_TOOLCHAIN", "stable")
-                .env_remove("RUSTC")
-                .env_remove("RUSTDOC");
-            if is_release {
-                cmd.args(["build", "--release", "--bin", "ruff"]);
-            } else {
-                cmd.args(["build", "--bin", "ruff"]);
-            }
-            let status = cmd.status();
-
-            if status.is_err() || !status.unwrap().success() {
-                panic!("Failed to build ruff binary");
-            }
-
-            // Copy to cache with version tag
-            let target_subdir = if is_release { "release" } else { "debug" };
-            std::fs::copy(
-                build_dir.join(format!("target/{target_subdir}/ruff")),
-                &cached_ruff_path,
-            )
-            .expect("Failed to cache ruff binary");
-
-            // Copy to OUT_DIR for runtime
-            std::fs::copy(&cached_ruff_path, &ruff_binary_path)
-                .expect("Failed to copy ruff binary to OUT_DIR");
-
-            // Clean up build directory
-            std::fs::remove_dir_all(&build_dir).ok();
+            return;
         }
+
+        // 2. Download pre-built binary from GitHub releases
+        if !download_ruff(&target, &cached_ruff_path) {
+            // 3. Compile from source as fallback
+            println!(
+                "cargo:warning=Pre-built ruff not available for {target}, compiling from source..."
+            );
+            match build_helpers::cargo_install_binary(
+                "ruff",
+                super::RUFF_VERSION,
+                &target,
+                &cache_dir,
+            ) {
+                Some(compiled) => {
+                    std::fs::copy(&compiled, &cached_ruff_path)
+                        .expect("Failed to copy compiled ruff binary to cache");
+                }
+                None => panic!(
+                    "Failed to download or compile ruff {} for {target}. \
+                     Ensure a Rust toolchain with the {target} target is installed, \
+                     or check https://github.com/astral-sh/ruff/releases/tag/{}",
+                    super::RUFF_VERSION,
+                    super::RUFF_VERSION,
+                ),
+            }
+        }
+
+        std::fs::copy(&cached_ruff_path, &ruff_binary_path)
+            .expect("Failed to copy ruff binary to OUT_DIR");
     }
 }
 
@@ -146,29 +147,15 @@ mod peppylib_build {
     use std::path::{Path, PathBuf};
     use std::process::Command;
 
-    /// Returns the platform suffix for the current host (e.g. "macos-aarch64", "linux-x86_64").
+    /// Returns the platform suffix for the host machine (e.g. "macos-aarch64", "linux-x86_64").
+    ///
+    /// Uses `std::env::consts` which always reflects the machine running the build script,
+    /// not the cross-compile target. This is correct because pixi/maturin produces a `.so`
+    /// for the host regardless of Cargo's `--target`.
     fn host_platform_suffix() -> String {
-        let os = std::env::var("CARGO_CFG_TARGET_OS").unwrap();
-        let arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap();
+        let os = std::env::consts::OS;
+        let arch = std::env::consts::ARCH;
         format!("{os}-{arch}")
-    }
-
-    fn acquire_pixi_lock(lock_path: &std::path::Path) -> File {
-        let lock_dir = lock_path
-            .parent()
-            .expect("pixi lock path should include a parent directory");
-        std::fs::create_dir_all(lock_dir).expect("Failed to create pixi lock directory");
-
-        let lock_file = File::options()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(lock_path)
-            .expect("Failed to open pixi lock file");
-
-        lock_file.lock().expect("Failed to acquire pixi build lock");
-        lock_file
     }
 
     /// Runs a pixi task and panics on failure.
@@ -270,6 +257,17 @@ mod peppylib_build {
         }
     }
 
+    /// Returns true if `pixi` is available on PATH.
+    fn is_pixi_available() -> bool {
+        Command::new("pixi")
+            .arg("--version")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+    }
+
     /// Builds the native `.so` via pixi and renames it to a platform-suffixed name.
     fn build_native_so(
         peppylib_py_dir: &Path,
@@ -281,7 +279,7 @@ mod peppylib_build {
         // Serialize concurrent pixi invocations to avoid "Text file busy" races
         // when multiple build scripts run pixi on the same environment.
         let lock_path = peppylib_py_dir.join(".pixi/.build.lock");
-        let _pixi_lock = acquire_pixi_lock(&lock_path);
+        let _pixi_lock = build_helpers::acquire_file_lock(&lock_path);
 
         println!("cargo:warning=Building peppylib-py native extension via pixi ({pixi_task})…");
         run_pixi_task(peppylib_py_dir, pixi_task, target_dir);
@@ -367,20 +365,30 @@ mod peppylib_build {
 
         // Use a separate CARGO_TARGET_DIR so maturin's inner `cargo build`
         // does not deadlock on the workspace build lock held by the outer cargo.
-        let cache_dir = super::get_temp_cache_dir("peppylib-py");
+        let cache_dir = build_helpers::cache_dir("peppylib-py");
         let target_dir = cache_dir.join("target");
         let pixi_task = resolve_pixi_task();
 
-        build_native_so(
-            &peppylib_py_dir,
-            &peppylib_dir,
-            &so_path,
-            pixi_task,
-            &target_dir,
-        );
+        // Skip peppylib build when pixi is unavailable.
+        // When skipped, the hash is computed from whatever .so files already
+        // exist (e.g. from a prior build).
+        if !is_pixi_available() {
+            println!(
+                "cargo:warning=Skipping peppylib-py build (pixi not available). \
+                 Using existing .so files."
+            );
+        } else {
+            build_native_so(
+                &peppylib_py_dir,
+                &peppylib_dir,
+                &so_path,
+                pixi_task,
+                &target_dir,
+            );
 
-        #[cfg(target_os = "macos")]
-        cross_compile_linux_so(&peppylib_py_dir, &target_dir, &peppylib_dir);
+            #[cfg(target_os = "macos")]
+            cross_compile_linux_so(&peppylib_py_dir, &target_dir, &peppylib_dir);
+        }
 
         // Guard against partial rebuilds leaving an unsuffixed .so behind
         if so_path.exists() {
@@ -455,7 +463,7 @@ mod rust_crates_build {
             let entries = match std::fs::read_dir(&current) {
                 Ok(e) => e,
                 Err(e) => {
-                    eprintln!(
+                    println!(
                         "cargo:warning=Failed to read directory {}: {}",
                         current.display(),
                         e
@@ -493,6 +501,7 @@ mod rust_crates_build {
             ("../peppylib", false),
             ("../pmi-internal", false),
             ("../config-internal", true),
+            ("../build-helpers-internal", false),
         ];
 
         let mut hasher = Sha256::new();
@@ -509,7 +518,7 @@ mod rust_crates_build {
                 hasher.update(relative.to_string_lossy().as_bytes());
                 match std::fs::read(file_path) {
                     Ok(content) => hasher.update(&content),
-                    Err(e) => eprintln!(
+                    Err(e) => println!(
                         "cargo:warning=Failed to read file for hashing {}: {}",
                         file_path.display(),
                         e
@@ -525,7 +534,6 @@ mod rust_crates_build {
 }
 
 fn main() {
-    // TODO: Download ruff instead of building
     ruff_build::run();
     embed_ruff_binary();
 

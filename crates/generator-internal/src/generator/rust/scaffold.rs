@@ -1,7 +1,7 @@
 use super::identifiers::is_rust_keyword;
 use crate::generator::common::{
-    CrateDeployMode, EmbeddedConfigInternal, EmbeddedPeppylib, EmbeddedPmiInternal,
-    WorkspacePackageMetadata, cache_sibling_path, copy_dir_recursive,
+    CrateDeployMode, EmbeddedBuildHelpers, EmbeddedConfigInternal, EmbeddedPeppylib,
+    EmbeddedPmiInternal, WorkspacePackageMetadata, cache_sibling_path, copy_dir_recursive,
 };
 use crate::{
     error::{Error, Result},
@@ -206,7 +206,7 @@ fn copy_embedded_crate<E: Embed>(
     Ok(())
 }
 
-/// Deploys the three vendored Rust crates (peppylib, pmi-internal, config-internal)
+/// Deploys the four vendored Rust crates (peppylib, pmi-internal, config-internal, build-helpers-internal)
 /// to a shared cache directory, then links or copies them into `node_libs_dir`.
 ///
 /// In `Symlink` mode (the default), creates symlinks from `node_libs_dir/{crate}`
@@ -249,6 +249,11 @@ fn deploy_rust_crates_to_shared_cache(
         copy_embedded_crate::<EmbeddedPeppylib>("peppylib", &staging_dir, &metadata)?;
         copy_embedded_crate::<EmbeddedPmiInternal>("pmi-internal", &staging_dir, &metadata)?;
         copy_embedded_crate::<EmbeddedConfigInternal>("config-internal", &staging_dir, &metadata)?;
+        copy_embedded_crate::<EmbeddedBuildHelpers>(
+            "build-helpers-internal",
+            &staging_dir,
+            &metadata,
+        )?;
 
         if cache_dir.exists() {
             fs::remove_dir_all(&cache_dir)?;
@@ -258,11 +263,17 @@ fn deploy_rust_crates_to_shared_cache(
     }
     drop(lock_file);
 
-    // Link or copy all three crates into node_libs_dir.
-    // All three are needed because the crates reference each other via relative
-    // sibling paths (e.g., peppylib has `config = { path = "../config-internal" }`),
+    // Link or copy all four crates into node_libs_dir.
+    // All four are needed because the crates reference each other via relative
+    // sibling paths (e.g., peppylib has `config = { path = "../config-internal" }`
+    // and `build-helpers = { path = "../build-helpers-internal" }` in build-dependencies),
     // and Cargo resolves these paths relative to the symlink location, not the target.
-    for crate_name in &["peppylib", "pmi-internal", "config-internal"] {
+    for crate_name in &[
+        "peppylib",
+        "pmi-internal",
+        "config-internal",
+        "build-helpers-internal",
+    ] {
         let dest = node_libs_dir.join(crate_name);
         let source = cache_dir.join(crate_name);
 

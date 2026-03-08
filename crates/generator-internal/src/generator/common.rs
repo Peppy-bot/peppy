@@ -142,6 +142,13 @@ pub(crate) struct EmbeddedPmiInternal;
 #[exclude = "examples/*"]
 pub(crate) struct EmbeddedConfigInternal;
 
+#[derive(Embed)]
+#[folder = "../build-helpers-internal/"]
+#[include = "*.rs"]
+#[include = "*.toml"]
+#[exclude = "target/*"]
+pub(crate) struct EmbeddedBuildHelpers;
+
 /// Recursively copies a directory and all of its contents.
 pub(crate) fn copy_dir_recursive(src: &Path, dst: &Path) -> io::Result<()> {
     fs::create_dir_all(dst)?;

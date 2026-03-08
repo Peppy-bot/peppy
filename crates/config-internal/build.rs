@@ -8,38 +8,9 @@ mod capnp_build {
     // Version tags for external binaries (should match Cargo.toml dependencies where applicable)
     const CAPNP_VERSION: &str = "1.2.0";
 
-    fn get_temp_cache_dir(cache_suffix: &str) -> PathBuf {
-        let user_home = env::var("HOME").expect("HOME environment variable not set");
-        let cache_dir = PathBuf::from(user_home)
-            .join(".peppy/tmp")
-            .join(cache_suffix);
-
-        if !cache_dir.exists() {
-            fs::create_dir_all(&cache_dir).expect("Failed to create cache directory");
-        }
-
-        cache_dir
-    }
-
-    fn run_command(command: &mut Command, description: &str) -> bool {
-        match command.status() {
-            Ok(status) if status.success() => true,
-            Ok(status) => {
-                println!("cargo:warning=Failed to {description} (exit status: {status})");
-                false
-            }
-            Err(err) => {
-                println!("cargo:warning=Failed to {description}: {err}");
-                false
-            }
-        }
-    }
-
-    pub fn build_capnp(release_tag: &str) {
-        if env::var("CARGO_FEATURE_BUILD_CAPNP").is_err() {
-            return;
-        }
-
+    /// Build capnp from source using git clone + cmake.
+    /// Panics if cmake or git are not available.
+    fn build_capnp_from_source(release_tag: &str) {
         println!("cargo:rerun-if-changed=build.rs");
 
         let profile = env::var("PROFILE").unwrap();
@@ -49,7 +20,7 @@ mod capnp_build {
             "Debug"
         };
 
-        let cache_dir = get_temp_cache_dir("capnp");
+        let cache_dir = build_helpers::cache_dir("capnp");
         let cache_key = format!("capnp-{release_tag}-{profile}");
         let cached_capnp_path = cache_dir.join(&cache_key);
 
@@ -57,12 +28,10 @@ mod capnp_build {
         let capnp_binary_path = out_dir.join("capnp");
 
         if cached_capnp_path.exists() {
-            if let Err(err) = fs::copy(&cached_capnp_path, &capnp_binary_path) {
-                println!("cargo:warning=Failed to copy cached capnp binary: {err}");
-                return;
-            }
+            fs::copy(&cached_capnp_path, &capnp_binary_path)
+                .expect("Failed to copy cached capnp binary");
         } else {
-            println!("cargo:warning=Building capnp binary from source...");
+            println!("cargo:warning=Building capnp binary from source (requires cmake and git)...");
 
             let source_dir = cache_dir.join("capnp-src");
             if source_dir.exists() {
@@ -75,18 +44,20 @@ mod capnp_build {
                 format!("v{release_tag}")
             };
 
-            let mut clone = Command::new("git");
-            clone
-                .arg("clone")
-                .arg("--depth")
-                .arg("1")
-                .arg("--branch")
-                .arg(&git_tag)
-                .arg("https://github.com/capnproto/capnproto.git")
-                .arg(&source_dir);
-            if !run_command(&mut clone, "clone capnp repository") {
-                return;
-            }
+            assert!(
+                build_helpers::run_command(
+                    Command::new("git")
+                        .arg("clone")
+                        .arg("--depth")
+                        .arg("1")
+                        .arg("--branch")
+                        .arg(&git_tag)
+                        .arg("https://github.com/capnproto/capnproto.git")
+                        .arg(&source_dir),
+                    "clone capnp repository"
+                ),
+                "Failed to clone capnproto. Ensure git is installed."
+            );
 
             let build_dir = source_dir.join("build");
             let install_dir = source_dir.join("install");
@@ -98,61 +69,58 @@ mod capnp_build {
                 let _ = fs::remove_dir_all(&install_dir);
             }
 
-            let mut configure = Command::new("cmake");
-            configure
-                .current_dir(&source_dir)
-                .arg("-S")
-                .arg("c++")
-                .arg("-B")
-                .arg("build")
-                .arg(format!("-DCMAKE_BUILD_TYPE={cmake_build_type}"));
-            if !run_command(&mut configure, "configure capnp build") {
-                return;
-            }
+            assert!(
+                build_helpers::run_command(
+                    Command::new("cmake")
+                        .current_dir(&source_dir)
+                        .arg("-S")
+                        .arg("c++")
+                        .arg("-B")
+                        .arg("build")
+                        .arg(format!("-DCMAKE_BUILD_TYPE={cmake_build_type}")),
+                    "configure capnp build"
+                ),
+                "Failed to configure capnp. Ensure cmake is installed."
+            );
 
-            let mut build = Command::new("cmake");
-            build
-                .current_dir(&source_dir)
-                .arg("--build")
-                .arg("build")
-                .arg("--target")
-                .arg("capnp")
-                .arg("--config")
-                .arg(cmake_build_type);
-            if !run_command(&mut build, "compile capnp binary") {
-                return;
-            }
+            assert!(
+                build_helpers::run_command(
+                    Command::new("cmake")
+                        .current_dir(&source_dir)
+                        .arg("--build")
+                        .arg("build")
+                        .arg("--target")
+                        .arg("capnp")
+                        .arg("--config")
+                        .arg(cmake_build_type),
+                    "compile capnp binary"
+                ),
+                "Failed to compile capnp."
+            );
 
-            let mut install = Command::new("cmake");
-            install
-                .current_dir(&source_dir)
-                .arg("--install")
-                .arg("build")
-                .arg("--prefix")
-                .arg(&install_dir);
-            if !run_command(&mut install, "install capnp binary") {
-                return;
-            }
+            assert!(
+                build_helpers::run_command(
+                    Command::new("cmake")
+                        .current_dir(&source_dir)
+                        .arg("--install")
+                        .arg("build")
+                        .arg("--prefix")
+                        .arg(&install_dir),
+                    "install capnp binary"
+                ),
+                "Failed to install capnp."
+            );
 
             let built_binary = install_dir.join("bin").join("capnp");
+            assert!(
+                built_binary.exists(),
+                "Capnp binary not found at expected location: {:?}",
+                built_binary
+            );
 
-            if !built_binary.exists() {
-                println!(
-                    "cargo:warning=Capnp binary not found at expected location: {:?}",
-                    built_binary
-                );
-                return;
-            }
-
-            if let Err(err) = fs::copy(&built_binary, &cached_capnp_path) {
-                println!("cargo:warning=Failed to cache capnp binary: {err}");
-                return;
-            }
-
-            if let Err(err) = fs::copy(&built_binary, &capnp_binary_path) {
-                println!("cargo:warning=Failed to copy capnp binary to OUT_DIR: {err}");
-                return;
-            }
+            fs::copy(&built_binary, &cached_capnp_path).expect("Failed to cache capnp binary");
+            fs::copy(&built_binary, &capnp_binary_path)
+                .expect("Failed to copy capnp binary to OUT_DIR");
 
             let _ = fs::remove_dir_all(&source_dir);
         }
@@ -163,8 +131,9 @@ mod capnp_build {
         );
     }
 
-    /// Generates a Rust module containing the embedded capnp binary for the target platform.
-    pub fn embed_bundled_capnp() {
+    /// Try to embed a bundled capnp binary for the target platform.
+    /// Returns `true` if a bundled binary was found and embedded, `false` otherwise.
+    fn try_embed_bundled_capnp() -> bool {
         let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
         let tools_dir = manifest_dir.join("tools");
         let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
@@ -176,14 +145,7 @@ mod capnp_build {
             ("linux", "x86_64") => "capnp_linux_x86_64",
             ("linux", "aarch64") => "capnp_linux_aarch64",
             ("macos", "aarch64") => "capnp_macos_aarch64",
-            _ => {
-                // Generate a module that returns an error for unsupported platforms
-                let generated = out_dir.join("embedded_capnp.rs");
-                let mut file = fs::File::create(&generated).unwrap();
-                writeln!(file, r#"pub const CAPNP_BINARY: Option<&[u8]> = None;"#).unwrap();
-                println!("cargo:rerun-if-changed=build.rs");
-                return;
-            }
+            _ => return false,
         };
 
         let binary_path = tools_dir.join(binary_name);
@@ -197,11 +159,43 @@ mod capnp_build {
             binary_path.display()
         )
         .unwrap();
+
+        true
+    }
+
+    /// Embed the capnp binary built from source (in OUT_DIR) via include_bytes.
+    fn embed_built_capnp() {
+        let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
+        let capnp_binary_path = out_dir.join("capnp");
+
+        let generated = out_dir.join("embedded_capnp.rs");
+        let mut file = fs::File::create(&generated).unwrap();
+
+        assert!(
+            capnp_binary_path.exists(),
+            "Expected capnp binary at {:?} after source build, but not found",
+            capnp_binary_path
+        );
+
+        writeln!(
+            file,
+            r#"pub const CAPNP_BINARY: Option<&[u8]> = Some(include_bytes!("{}"));"#,
+            capnp_binary_path.display()
+        )
+        .unwrap();
     }
 
     pub fn run() {
-        build_capnp(CAPNP_VERSION);
-        embed_bundled_capnp();
+        if try_embed_bundled_capnp() {
+            return;
+        }
+
+        // No bundled binary for this platform — build from source
+        println!(
+            "cargo:warning=No bundled capnp binary for this platform, building from source..."
+        );
+        build_capnp_from_source(CAPNP_VERSION);
+        embed_built_capnp();
     }
 }
 
