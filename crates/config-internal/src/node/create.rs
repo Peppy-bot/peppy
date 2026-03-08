@@ -25,7 +25,7 @@ struct LauncherConfigTemplate;
     tag: "0.1.0",
     language: "rust"
   },
-  build: {
+  process: {
     start_cmd: {{ start_cmd | safe }}
   }
 }
@@ -104,7 +104,7 @@ mod tests {
                 tag: "0.1.0",
                 language: "rust",
             },
-            build: {
+            process: {
                 start_cmd: ["./target/release/a_node"],
             }
         }"#;

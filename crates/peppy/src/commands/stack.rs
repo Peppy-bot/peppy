@@ -8,6 +8,7 @@ use clap::Subcommand;
 use tracing::info;
 
 use super::Command;
+use super::node::{DEFAULT_IDLE_TIMEOUT_SECS, DEFAULT_MAX_TIMEOUT_SECS};
 use crate::{context::AppContext, error::Error as CommandError};
 
 #[derive(Subcommand)]
@@ -16,12 +17,15 @@ pub enum StackCommands {
     Launch {
         /// Path to the peppy launcher configuration file
         launcher_config_path: PathBuf,
-        /// Timeout in seconds for each node add operation
-        #[arg(long, default_value_t = 300)]
-        node_add_timeout_secs: u64,
-        /// Timeout in seconds for each node start operation
-        #[arg(long, default_value_t = 300)]
-        node_start_timeout_secs: u64,
+        /// Idle timeout in seconds for each node add operation (resets on output)
+        #[arg(long, default_value_t = DEFAULT_IDLE_TIMEOUT_SECS)]
+        node_add_idle_timeout_secs: u64,
+        /// Idle timeout in seconds for each node start operation (resets on output)
+        #[arg(long, default_value_t = DEFAULT_IDLE_TIMEOUT_SECS)]
+        node_start_idle_timeout_secs: u64,
+        /// Absolute max timeout in seconds per operation (safety net)
+        #[arg(long, default_value_t = DEFAULT_MAX_TIMEOUT_SECS)]
+        max_timeout_secs: u64,
     },
     /// List the nodes in the current node stack
     List {
@@ -43,15 +47,17 @@ impl Command for StackCommand {
             }
             StackCommands::Launch {
                 launcher_config_path,
-                node_add_timeout_secs,
-                node_start_timeout_secs,
+                node_add_idle_timeout_secs,
+                node_start_idle_timeout_secs,
+                max_timeout_secs,
             } => {
                 info!("Launching stack...");
                 launch::launch(
                     ctx,
                     launcher_config_path,
-                    node_add_timeout_secs,
-                    node_start_timeout_secs,
+                    node_add_idle_timeout_secs,
+                    node_start_idle_timeout_secs,
+                    max_timeout_secs,
                 )
             }
         }

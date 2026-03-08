@@ -24,6 +24,17 @@ pub use env::caller_env_overrides;
 pub use init::NodeInitBuilder;
 pub use types::NodeName;
 
+/// Default idle timeout in seconds (resets on output).
+pub(crate) const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 600;
+/// Default absolute max timeout in seconds (safety net).
+pub(crate) const DEFAULT_MAX_TIMEOUT_SECS: u64 = 3600;
+
+/// Idle + absolute-max timeout pair used by `node add` and `node start` polling loops.
+pub(crate) struct TimeoutConfig {
+    pub idle_secs: u64,
+    pub max_secs: u64,
+}
+
 /// Parses a node_name:tag argument string into a tuple
 fn parse_node_ref(s: &str) -> Result<(String, String), String> {
     let pos = s.find(':').ok_or_else(|| {
@@ -75,6 +86,9 @@ pub enum NodeCommands {
         /// Optional: target directory (defaults to current directory)
         #[arg(long)]
         to_dir: Option<PathBuf>,
+        /// Generate container build support (Apptainer definition file)
+        #[arg(long = "container")]
+        with_container: bool,
     },
     /// Add a node to the node stack based on its peppy.json5 file
     Add {
@@ -99,9 +113,12 @@ pub enum NodeCommands {
         /// Optional: specify a deterministic instance ID
         #[arg(long, hide = true)]
         instance_id: Option<String>,
-        /// Timeout in seconds for the add operation (default: 600 = 10 minutes)
-        #[arg(long, default_value = "600")]
-        timeout: u64,
+        /// Idle timeout in seconds — resets whenever output is received
+        #[arg(long, default_value_t = DEFAULT_IDLE_TIMEOUT_SECS)]
+        idle_timeout: u64,
+        /// Absolute max timeout in seconds (safety net)
+        #[arg(long, default_value_t = DEFAULT_MAX_TIMEOUT_SECS)]
+        max_timeout: u64,
         /// When set, bypass the confirmation prompt and stop running instances before overwriting
         #[arg(long)]
         force: bool,
@@ -129,9 +146,12 @@ pub enum NodeCommands {
         /// Optional: specify a deterministic instance ID
         #[arg(long)]
         instance_id: Option<String>,
-        /// Timeout in seconds for the start operation (default: 600 = 10 minutes)
-        #[arg(long, default_value = "600")]
-        timeout: u64,
+        /// Idle timeout in seconds — resets whenever output is received
+        #[arg(long, default_value_t = DEFAULT_IDLE_TIMEOUT_SECS)]
+        idle_timeout: u64,
+        /// Absolute max timeout in seconds (safety net)
+        #[arg(long, default_value_t = DEFAULT_MAX_TIMEOUT_SECS)]
+        max_timeout: u64,
     },
     /// Prints out the runtime config of a node instance
     #[command(group(ArgGroup::new("node_source").required(true).args(["node_name", "node_dir"])))]
@@ -190,8 +210,10 @@ impl Command for NodeCommand {
                 to_dir,
                 node_name,
                 toolchain,
+                with_container,
             } => {
-                let mut node_builder = NodeInitBuilder::new(ctx, node_name, toolchain);
+                let mut node_builder =
+                    NodeInitBuilder::new(ctx, node_name, toolchain, with_container);
 
                 if let Some(dir) = to_dir {
                     node_builder = node_builder.to_dir(dir);
@@ -202,10 +224,11 @@ impl Command for NodeCommand {
             NodeCommands::Add {
                 source,
                 git_ref,
-                start: run,
+                start,
                 args,
                 instance_id,
-                timeout,
+                idle_timeout,
+                max_timeout,
                 force,
             } => {
                 let display_source = if source::is_probably_remote_source(&source) {
@@ -215,7 +238,16 @@ impl Command for NodeCommand {
                     path.canonicalize().unwrap_or(path).display().to_string()
                 };
                 info!("Adding node from {}...", display_source);
-                add::add_node(ctx, source, git_ref, run, args, instance_id, timeout, force)
+                let start_options = if start {
+                    Some(add::StartAfterAddOptions { args, instance_id })
+                } else {
+                    None
+                };
+                let timeouts = TimeoutConfig {
+                    idle_secs: idle_timeout,
+                    max_secs: max_timeout,
+                };
+                add::add_node(ctx, source, git_ref, start_options, timeouts, force)
             }
             NodeCommands::Sync {} => {
                 info!("Syncing node interfaces...");
@@ -227,13 +259,18 @@ impl Command for NodeCommand {
                 tag,
                 args,
                 instance_id,
-                timeout,
+                idle_timeout,
+                max_timeout,
             } => {
                 let (node_name, tag) = node_ref
                     .or_else(|| node_name.zip(tag))
                     .expect("either node_ref or node_name+tag must be provided");
                 info!("Running node {}:{}...", node_name, tag);
-                start::run_node(ctx, node_name, tag, args, instance_id, timeout)
+                let timeouts = TimeoutConfig {
+                    idle_secs: idle_timeout,
+                    max_secs: max_timeout,
+                };
+                start::run_node(ctx, node_name, tag, args, instance_id, timeouts)
             }
             NodeCommands::RuntimeConfig {
                 node_name,

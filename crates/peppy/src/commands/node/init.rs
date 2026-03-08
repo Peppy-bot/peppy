@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use config::node::Toolchain;
-use daemon_node::encoding::NodeInitRequest;
+use core_node::encoding::NodeInitRequest;
 use tracing::info;
 
 use super::types::NodeName;
@@ -18,16 +18,23 @@ pub struct NodeInitBuilder {
     to_dir: PathBuf,
     node_name: NodeName,
     toolchain: Toolchain,
+    with_container: bool,
     timeout: Option<Duration>,
 }
 
 impl NodeInitBuilder {
-    pub fn new(ctx: &Arc<AppContext>, node_name: NodeName, toolchain: Toolchain) -> Self {
+    pub fn new(
+        ctx: &Arc<AppContext>,
+        node_name: NodeName,
+        toolchain: Toolchain,
+        with_container: bool,
+    ) -> Self {
         Self {
             ctx: Arc::clone(ctx),
             to_dir: ctx.root_dir.clone(),
             node_name,
             toolchain,
+            with_container,
             timeout: Some(REQUEST_TIMEOUT),
         }
     }
@@ -48,21 +55,16 @@ impl NodeInitBuilder {
     }
 
     async fn build_async(self) -> Result<()> {
-        // Read the daemon state to discover the daemon node name
-        let daemon_state = self.ctx.read_daemon_state().map_err(|e| {
-            Error::ExecutionFailed(format!(
-                "Failed to read daemon state. Is the peppy daemon running? Error: {}",
-                e
-            ))
-        })?;
-        let daemon_node_name = &daemon_state.daemon_node_name;
+        // Read the daemon state to discover the core node name
+        let daemon_state = self.ctx.read_daemon_state()?;
+        let core_node_name = &daemon_state.core_node_name;
         let git_hash = &daemon_state.git_hash;
 
         info!(
-            "Creating node '{}' in {} and daemon node '{}'",
+            "Creating node '{}' in {} and core node '{}'",
             self.node_name,
             self.to_dir.display(),
-            &daemon_node_name
+            &core_node_name
         );
 
         // Connect to the daemon if not already connected
@@ -77,15 +79,16 @@ impl NodeInitBuilder {
             &self.to_dir,
             self.node_name.as_str(),
             git_hash,
+            self.with_container,
             self.toolchain,
         );
 
         let response = request
             .poll(
                 messenger_handle,
-                daemon_node_name,
+                core_node_name,
                 CALLER_INSTANCE_ID,
-                daemon_node_name,
+                core_node_name,
                 self.timeout,
             )
             .await

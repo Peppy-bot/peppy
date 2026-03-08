@@ -1,7 +1,7 @@
 use super::*;
 
 use config::node::{ExposedAction, SubscribedAction};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::{collections::HashMap, fs};
 
 // --- Exposes examples
@@ -238,7 +238,7 @@ fn exposed_action() {
         &[
             "pub struct GoalRequest",
             "pub instance_id: String",
-            "pub daemon_node: String",
+            "pub core_node: String",
             "pub data: GoalRequestData",
         ],
     );
@@ -344,7 +344,7 @@ fn expose_action_without_request_body() {
         .next()
         .expect("artifact is present");
 
-    // GoalRequest still exists (with instance_id and daemon_node) even without data
+    // GoalRequest still exists (with instance_id and core_node) even without data
     assert_contains_all(
         &rendered,
         &[
@@ -597,7 +597,7 @@ fn subscribed_to_action() {
             "pub struct ResultResponseData",
             "pub final_position: [i32; 3]",
             "pub struct ResultResponse",
-            "pub daemon_node: String",
+            "pub core_node: String",
             "pub instance_id: String",
         ],
     );
@@ -662,7 +662,7 @@ fn subscribed_to_action() {
         &rendered,
         &[
             "format!(\"{} {} GoalResponse\", TARGET_NODE_NAME, TARGET_ACTION_NAME)",
-            "format!(\"{} {} ResultResponse\", TARGET_NODE_NAME, TARGET_ACTION_NAME)",
+            r#"TARGET_NODE_NAME, TARGET_ACTION_NAME, "ResultResponse""#,
             "format!(\"{} {} FeedbackMessage\", TARGET_NODE_NAME, TARGET_ACTION_NAME)",
         ],
     );
@@ -775,7 +775,7 @@ fn subscribed_to_two_actions_same_node() {
         move_arm,
         &[
             "format!(\"{} {} GoalResponse\", TARGET_NODE_NAME, TARGET_ACTION_NAME)",
-            "format!(\"{} {} ResultResponse\", TARGET_NODE_NAME, TARGET_ACTION_NAME)",
+            r#"TARGET_NODE_NAME, TARGET_ACTION_NAME, "ResultResponse""#,
             "format!(\"{} {} FeedbackMessage\", TARGET_NODE_NAME, TARGET_ACTION_NAME)",
         ],
     );
@@ -814,7 +814,7 @@ fn subscribed_to_two_actions_same_node() {
         rotate_servo,
         &[
             "format!(\"{} {} GoalResponse\", TARGET_NODE_NAME, TARGET_ACTION_NAME)",
-            "format!(\"{} {} ResultResponse\", TARGET_NODE_NAME, TARGET_ACTION_NAME)",
+            r#"TARGET_NODE_NAME, TARGET_ACTION_NAME, "ResultResponse""#,
             "format!(\"{} {} FeedbackMessage\", TARGET_NODE_NAME, TARGET_ACTION_NAME)",
         ],
     );
@@ -973,7 +973,11 @@ fn clippy_single_exposed_action_empty_goal_request() {
         .unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);
     generator
-        .build(&output_dir, &config::consts::PeppyDirs::default())
+        .build(
+            &output_dir,
+            &config::consts::PeppyDirs::default(),
+            Default::default(),
+        )
         .unwrap();
     fs::remove_file(output_config).unwrap();
 
@@ -987,6 +991,7 @@ fn clippy_single_exposed_action_empty_goal_request() {
         .arg("warnings")
         .env("CARGO_NET_OFFLINE", "true")
         .current_dir(&output_dir)
+        .stdin(Stdio::null())
         .output()
         .expect("failed to run cargo clippy on generated crate");
     assert!(
@@ -1074,7 +1079,11 @@ fn compile_lib_with_exposed_and_subscribed_actions() {
         .unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);
     generator
-        .build(&output_dir, &config::consts::PeppyDirs::default())
+        .build(
+            &output_dir,
+            &config::consts::PeppyDirs::default(),
+            Default::default(),
+        )
         .unwrap();
     fs::remove_file(output_config).unwrap();
 
@@ -1082,6 +1091,7 @@ fn compile_lib_with_exposed_and_subscribed_actions() {
         .arg("build")
         .env("CARGO_NET_OFFLINE", "true")
         .current_dir(&output_dir)
+        .stdin(Stdio::null())
         .output()
         .expect("failed to invoke cargo build on generated crate");
     assert!(
@@ -1102,6 +1112,7 @@ fn compile_lib_with_exposed_and_subscribed_actions() {
         .arg("warnings")
         .env("CARGO_NET_OFFLINE", "true")
         .current_dir(&output_dir)
+        .stdin(Stdio::null())
         .output()
         .expect("failed to run cargo clippy on generated crate");
     assert!(
@@ -1209,7 +1220,11 @@ fn clippy_subscribed_action_empty_goal_request() {
         .unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);
     generator
-        .build(&output_dir, &config::consts::PeppyDirs::default())
+        .build(
+            &output_dir,
+            &config::consts::PeppyDirs::default(),
+            Default::default(),
+        )
         .unwrap();
     fs::remove_file(output_config).unwrap();
 
@@ -1223,6 +1238,7 @@ fn clippy_subscribed_action_empty_goal_request() {
         .arg("warnings")
         .env("CARGO_NET_OFFLINE", "true")
         .current_dir(&output_dir)
+        .stdin(Stdio::null())
         .output()
         .expect("failed to run cargo clippy on generated crate");
     assert!(

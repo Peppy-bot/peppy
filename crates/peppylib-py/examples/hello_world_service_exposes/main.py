@@ -17,11 +17,11 @@ def current_timestamp() -> str:
 async def handle_request(request) -> bytes:
     payload_text = request.payload.decode("utf-8")
     instance_id = request.instance_id
-    daemon_node = request.daemon_node
+    core_node = request.core_node
 
     print(
         f"[{current_timestamp()}] Received request with payload `{payload_text}` "
-        f"from `{instance_id}` and daemon node `{daemon_node}`"
+        f"from `{instance_id}` and core node `{core_node}`"
     )
 
     response_text = f"ack: {payload_text}"
@@ -34,7 +34,7 @@ async def main():
     # Create a messenger for the receiving node.
     host = "127.0.0.1"
     port = DEFAULT_MESSAGING_PORT
-    daemon_node = f"{generate_name()}_daemon"
+    core_node = f"{generate_name()}_core"
     instance_id = f"{generate_name()}_listener"
 
     try:
@@ -47,7 +47,7 @@ async def main():
 
     service = await ServiceMessenger.listen(
         receiver_handle,
-        daemon_node,
+        core_node,
         instance_id,
         NODE_NAME,
         SERVICE_NAME,

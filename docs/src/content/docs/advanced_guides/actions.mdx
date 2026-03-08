@@ -47,7 +47,7 @@ Each action defines a `goal_service`, a `feedback_topic`, and a `result_service`
     tag: "0.1.0",
     language: "rust",
   },
-  build: {
+  process: {
     add_cmd: ["cargo", "build", "--release"],
     start_cmd: ["./target/release/brain"]
   },
@@ -157,7 +157,7 @@ fn main() -> Result<()> {
 
 The `GoalRequest` contains:
 - `instance_id` — the instance that sent the goal.
-- `daemon_node` — the daemon node of the caller.
+- `core_node` — the core node of the caller.
 - `data` — the deserialized goal parameters (only present when `request_message_format` is defined).
 
 ### Handling cancellation
@@ -218,7 +218,7 @@ A node that sends goals declares its subscriptions under `interfaces.subscribes_
     tag: "0.1.0",
     language: "rust",
   },
-  build: {
+  process: {
     add_cmd: ["cargo", "build", "--release"],
     start_cmd: ["./target/release/controller"]
   },
@@ -262,7 +262,7 @@ fn main() -> Result<()> {
         let mut goal = brain_move_arm::fire_goal(
             &node_runner,
             Duration::from_secs(5),       // timeout
-            None,                          // target_daemon_node (None = any)
+            None,                          // target_core_node (None = any)
             None,                          // target_instance_id (None = any)
             request,
             QoSProfile::SensorData,        // QoS for the feedback topic

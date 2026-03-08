@@ -5,7 +5,7 @@ use std::time::Duration;
 use config::node::NodeConfigParser;
 use config::peppy_config::Name;
 use config::runtime::{NodeInstance, RuntimeConfig};
-use daemon_node::encoding::NodeListRequest;
+use core_node::encoding::NodeListRequest;
 use names_generator2::get_random;
 use node_stack::SerializedNodeGraph;
 use rand::rng;
@@ -51,13 +51,8 @@ async fn print_runtime_config_async(
     node_name: String,
     args: Vec<(String, String)>,
 ) -> Result<()> {
-    let daemon_state = ctx.read_daemon_state().map_err(|e| {
-        Error::ExecutionFailed(format!(
-            "Failed to read daemon state. Is the peppy daemon running? Error: {}",
-            e
-        ))
-    })?;
-    let daemon_node_name = daemon_state.daemon_node_name;
+    let daemon_state = ctx.read_daemon_state()?;
+    let core_node_name = daemon_state.core_node_name;
 
     ctx.connect().await?;
     let messenger_handle = ctx
@@ -68,9 +63,9 @@ async fn print_runtime_config_async(
     let response = NodeListRequest::new(false)
         .poll(
             messenger_handle,
-            &daemon_node_name,
+            &core_node_name,
             CALLER_INSTANCE_ID,
-            &daemon_node_name,
+            &core_node_name,
             REQUEST_TIMEOUT,
         )
         .await
@@ -119,7 +114,7 @@ async fn print_runtime_config_async(
             arguments: args_to_node_arguments(&args),
         },
         node_name,
-        daemon_node_name,
+        core_node_name,
     )
     .map_err(Error::PeppyConfig)?;
 

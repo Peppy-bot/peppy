@@ -1,0 +1,73 @@
+{
+  schema_version: 1,
+  manifest: {
+    name: "fake_uvc_camera",
+    tag: "0.1.0",
+    language: "rust",
+    labels: [
+      "uvc",
+      "camera",
+      "usb",
+    ],
+  },
+  process: {
+    add_cmd: [
+      "true"
+    ],
+    start_cmd: [
+      "sleep",
+      "60"
+    ]
+  },
+  // Those are fake parameters supposed to emulate a real camera
+  parameters: {
+    device: {
+      physical: "string",
+      sim: "string",
+      priority: "string"
+    },
+    video: {
+      frame_rate: "u16",
+      resolution: {
+        width: "u16",
+        height: "u16",
+      },
+      encoding: "string",
+    },
+  },
+  interfaces: {
+    exposes: {
+      topics: [
+        {
+          name: "video_stream",
+          qos_profile: "sensor_data",
+          message_format: {
+            header: {
+              $type: "object",
+              stamp: "time",
+              frame_id: "u32",
+            },
+            encoding: "string",
+            width: "u32",
+            height: "u32",
+            frame: {
+              $type: "array",
+              $items: "u8",
+            },
+          },
+        }
+      ],
+      services: [
+        {
+          name: "video_stream_info",
+          response_message_format: {
+            width: "u32",
+            height: "u32",
+            frames_per_second: "u8",
+            encoding: "string",
+          },
+        },
+      ],
+    }
+  }
+}

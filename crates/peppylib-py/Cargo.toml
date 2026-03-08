@@ -11,7 +11,7 @@ crate-type = ["cdylib"]
 bytes = "1"
 config = { path = "../config-internal" }
 peppylib = { path = "../peppylib" }
-pmi = { path = "../pmi-internal" }
+pmi = { path = "../pmi-internal", features = ["zenoh", "build_zenoh"] }
 pythonize = { version = "0.28" }
 pyo3 = { version = "0.28", features = ["extension-module", "abi3-py311"] }
 pyo3-async-runtimes = { version = "0.28", features = ["tokio-runtime"] }
@@ -22,4 +22,5 @@ tokio = { version = "1.47", features = ["rt-multi-thread"] }
 tokio-util = "0.7"
 
 [build-dependencies]
+build-helpers = { path = "../build-helpers-internal" }
 pyo3-build-config = "0.28"

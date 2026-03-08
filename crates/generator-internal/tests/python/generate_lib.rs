@@ -15,7 +15,7 @@ const PEPPY_JSON5_CONFIG: &str = r#"{
     tag: "0.1.0",
     language: "python"
   },
-  build: {
+  process: {
     add_cmd: ["uv", "sync"],
     start_cmd: ["uv", "run", "test_node"]
   },
@@ -98,7 +98,7 @@ fn generate_peppygen_lib_minimal_config() {
         tag: "0.1.0",
         language: "python"
       },
-      build: {
+      process: {
         add_cmd: ["uv", "sync"],
         start_cmd: ["uv", "run", "minimal_node"]
       }
@@ -114,6 +114,7 @@ fn generate_peppygen_lib_minimal_config() {
         Vec::new(),
         "test-hash",
         &helpers::test_peppy_dirs(),
+        Default::default(),
     )
     .expect("failed to generate library for minimal config");
 
@@ -134,6 +135,7 @@ fn generate_peppygen_lib_missing_config() {
         Vec::new(),
         "test-hash",
         &helpers::test_peppy_dirs(),
+        Default::default(),
     );
     assert!(result.is_err(), "should fail when peppy.json5 is missing");
 }
@@ -154,7 +156,7 @@ fn generate_peppygen_python_lib_exposed_and_subscribed_topics() {
             tag: "0.1.0",
             language: "python"
           }},
-          build: {{
+          process: {{
             add_cmd: ["uv", "sync"],
             start_cmd: ["uv", "run", "{EXPOSED_NODE_NAME}"]
           }},
@@ -183,6 +185,7 @@ fn generate_peppygen_python_lib_exposed_and_subscribed_topics() {
         Vec::new(),
         "test-hash",
         &helpers::test_peppy_dirs(),
+        Default::default(),
     )
     .expect("failed to generate peppygen lib for exposed node");
 
@@ -206,7 +209,7 @@ fn generate_peppygen_python_lib_exposed_and_subscribed_topics() {
             tag: "0.1.0",
             language: "python"
           }},
-          build: {{
+          process: {{
             add_cmd: ["uv", "sync"],
             start_cmd: ["uv", "run", "{SUBSCRIBER_NODE_NAME}"]
           }}
@@ -242,6 +245,7 @@ fn generate_peppygen_python_lib_exposed_and_subscribed_topics() {
         subscribed_interfaces,
         "test-hash",
         &helpers::test_peppy_dirs(),
+        Default::default(),
     )
     .expect("failed to generate peppygen lib for subscriber node");
 
@@ -271,7 +275,7 @@ fn generate_peppygen_python_lib_exposed_and_subscribed_services() {
             tag: "0.1.0",
             language: "python"
           }},
-          build: {{
+          process: {{
             add_cmd: ["uv", "sync"],
             start_cmd: ["uv", "run", "{EXPOSED_NODE_NAME}"]
           }},
@@ -303,6 +307,7 @@ fn generate_peppygen_python_lib_exposed_and_subscribed_services() {
         Vec::new(),
         "test-hash",
         &helpers::test_peppy_dirs(),
+        Default::default(),
     )
     .expect("failed to generate peppygen lib for exposed node");
 
@@ -326,7 +331,7 @@ fn generate_peppygen_python_lib_exposed_and_subscribed_services() {
             tag: "0.1.0",
             language: "python"
           }},
-          build: {{
+          process: {{
             add_cmd: ["uv", "sync"],
             start_cmd: ["uv", "run", "{SUBSCRIBER_NODE_NAME}"]
           }}
@@ -364,6 +369,7 @@ fn generate_peppygen_python_lib_exposed_and_subscribed_services() {
         subscribed_interfaces,
         "test-hash",
         &helpers::test_peppy_dirs(),
+        Default::default(),
     )
     .expect("failed to generate peppygen lib for subscriber node");
 
@@ -400,7 +406,7 @@ fn generate_peppygen_python_lib_exposed_and_subscribed_actions() {
             tag: "0.1.0",
             language: "python"
           }},
-          build: {{
+          process: {{
             add_cmd: ["uv", "sync"],
             start_cmd: ["uv", "run", "{EXPOSED_NODE_NAME}"]
           }},
@@ -444,6 +450,7 @@ fn generate_peppygen_python_lib_exposed_and_subscribed_actions() {
         Vec::new(),
         "test-hash",
         &helpers::test_peppy_dirs(),
+        Default::default(),
     )
     .expect("failed to generate peppygen lib for exposed node");
 
@@ -467,7 +474,7 @@ fn generate_peppygen_python_lib_exposed_and_subscribed_actions() {
             tag: "0.1.0",
             language: "python"
           }},
-          build: {{
+          process: {{
             add_cmd: ["uv", "sync"],
             start_cmd: ["uv", "run", "{SUBSCRIBER_NODE_NAME}"]
           }}
@@ -516,6 +523,7 @@ fn generate_peppygen_python_lib_exposed_and_subscribed_actions() {
         subscribed_interfaces,
         "test-hash",
         &helpers::test_peppy_dirs(),
+        Default::default(),
     )
     .expect("failed to generate peppygen lib for subscriber node");
 

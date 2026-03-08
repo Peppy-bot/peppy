@@ -30,8 +30,10 @@ pub enum Error {
     },
 
     #[error(
-        "Path {path} is not accessible inside the Lima VM. Lima auto-mounts the home directory (~). \
-         Move your project files under your home directory, or set PEPPY_APPTAINER_DIR to a path under ~."
+        "Path {path} is not accessible inside the Lima VM. Lima only mounts the home \
+         directory (~) and explicitly configured mount paths into the guest. Ensure all \
+         file paths are under your home directory, or configure them via \
+         container.mount_paths in peppy.json5."
     )]
     PathNotAccessibleInVm { path: String },
 
@@ -43,4 +45,13 @@ pub enum Error {
 
     #[error("Configuration error: {0}")]
     ConfigurationError(String),
+
+    #[error(
+        "Fakeroot support requires `{binary}` with setuid-root permissions.\n\
+         Install the `uidmap` package:\n\n  \
+         sudo apt-get install uidmap    # Debian/Ubuntu\n  \
+         sudo dnf install shadow-utils  # Fedora/RHEL\n\n\
+         Details: {details}"
+    )]
+    FakerootDepsNotFound { binary: String, details: String },
 }

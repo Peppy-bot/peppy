@@ -28,26 +28,6 @@ or
 ```sh
 peppy node add --ref main https://github.com/Peppy-bot/example_nodes.git/rust/fake_uvc_camera
 ```
-<Aside type="caution">
-The build may fail here if you don't have the required `ffmpeg` libraries installed on your system. 
-To install them, run:
-
-<Tabs>
-  <TabItem label="Ubuntu/Debian">
-  ```bash
-  sudo apt update
-  sudo apt install pkg-config ffmpeg libavdevice-dev libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libdav1d-dev libswresample-dev libavfilter-dev clang libclang-dev llvm-dev
-  ```
-  </TabItem>
-  <TabItem label="macOS">
-  ```bash
-  brew install ffmpeg
-  ```
-  </TabItem>
-</Tabs>
-
-After installing, attempt to add the node again.
-</Aside>
   </TabItem>
 </Tabs>
 

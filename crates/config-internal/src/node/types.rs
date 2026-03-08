@@ -60,7 +60,10 @@ impl Toolchain {
 pub struct NodeConfig {
     pub schema_version: SchemaVersion,
     pub manifest: Manifest,
-    pub build: Build,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub process: Option<Process>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub container: Option<ContainerConfig>,
     // TODO: Rename `parameters` to `arguments` when it's given in a NodeConfig, the `parameters` name is only used in DeploymentInstance
     #[serde(default)]
     pub parameters: NodeArguments,
@@ -562,19 +565,72 @@ pub struct Manifest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Build {
+pub struct Process {
     // Command to run when right before the node is added to the node stack
     pub add_cmd: Option<Vec<String>>,
     // Command to launch the node, e.g., ["./target/release/my_node"]
     pub start_cmd: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub container: Option<ContainerConfig>,
+}
+
+/// Top-level system directories that cannot be used as mount sources.
+///
+/// These paths are rejected by Lima 2.0+ as guest mountPoints, and using them
+/// as bind-mount sources in Apptainer is almost always a mistake (mounting an
+/// entire system directory into a container). Users should use subdirectories
+/// instead (e.g., `/tmp/my_app` rather than `/tmp`).
+///
+/// NOTE: This list is duplicated in `containers-internal/src/apptainer/lima.rs`
+/// (which cannot depend on this crate). Keep both in sync.
+const BLOCKED_MOUNT_PATHS: &[&str] = &[
+    "/", "/bin", "/dev", "/etc", "/home", "/opt", "/sbin", "/tmp", "/usr", "/var",
+];
+
+/// Format the blocked mount paths as a comma-separated display string.
+fn blocked_mount_paths_display() -> String {
+    BLOCKED_MOUNT_PATHS.join(", ")
+}
+
+/// Check whether a path is a blocked top-level system mount.
+///
+/// Only exact top-level matches are blocked — subdirectories like `/tmp/my_app`
+/// are allowed. Also handles macOS `/private/X` equivalents (e.g., `/private/tmp`
+/// maps to `/tmp`).
+fn is_blocked_mount_source(path: &str) -> bool {
+    if BLOCKED_MOUNT_PATHS.contains(&path) {
+        return true;
+    }
+    // macOS: /private/tmp -> /tmp, /private/var -> /var
+    if let Some(stripped) = path.strip_prefix("/private") {
+        return BLOCKED_MOUNT_PATHS.contains(&stripped);
+    }
+    false
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ContainerConfig {
     pub def_file: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mount_paths: Option<Vec<String>>,
+}
+
+impl ContainerConfig {
+    /// Validate mount_paths, rejecting top-level system directories as mount sources.
+    ///
+    /// Returns `Err((invalid_path, blocked_list_display))` on the first invalid path found.
+    pub fn validate(&self) -> Result<(), (String, String)> {
+        let Some(mount_paths) = &self.mount_paths else {
+            return Ok(());
+        };
+        for mount in mount_paths {
+            // Parse "host_path:container_path[:options]" — only validate the source (host) path.
+            let src = mount.split(':').next().unwrap_or(mount);
+            if is_blocked_mount_source(src) {
+                return Err((mount.clone(), blocked_mount_paths_display()));
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

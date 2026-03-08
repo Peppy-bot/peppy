@@ -1,15 +1,8 @@
-use std::fs::File;
 use std::path::PathBuf;
 use std::process::Command;
 
 fn main() {
-    // Embed the git tag if provided (set by build_release.sh via PEPPY_GIT_TAG env var)
-    if let Ok(git_tag) = std::env::var("PEPPY_GIT_TAG")
-        && !git_tag.is_empty()
-    {
-        println!("cargo:rustc-env=PEPPY_GIT_TAG={}", git_tag);
-    }
-    println!("cargo:rerun-if-env-changed=PEPPY_GIT_TAG");
+    build_helpers::embed_git_tag();
 
     check_pixi_installed();
     // pixi is installed, configure Python path if not already set
@@ -33,13 +26,9 @@ ERROR: pixi is not installed or not found in PATH
 
 pixi is required to build the Python bindings for peppylib.
 
-To install pixi, run one of the following commands:
+To install pixi, run:
 
-  Linux/macOS:
     curl -fsSL https://pixi.sh/install.sh | bash
-
-  Windows:
-    powershell -ExecutionPolicy ByPass -c "irm https://pixi.sh/install.ps1 | iex"
 
 For more information, visit: https://pixi.sh
 ================================================================================
@@ -63,13 +52,9 @@ ERROR: uv is not installed or not found in PATH
 
 uv is required to build the Python bindings for peppylib.
 
-To install uv, run one of the following commands:
+To install uv, run:
 
-  Linux/macOS:
     curl -LsSf https://astral.sh/uv/install.sh | sh
-
-  Windows:
-    powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
 
 For more information, visit: https://docs.astral.sh/uv/
 ================================================================================
@@ -96,7 +81,7 @@ fn configure_python_from_pixi() {
     // Serialize concurrent pixi invocations to avoid "Text file busy" races
     // when multiple build scripts run pixi on the same environment.
     let lock_path = manifest_dir.join(".pixi/.build.lock");
-    let _pixi_lock = acquire_pixi_lock(&lock_path);
+    let _pixi_lock = build_helpers::acquire_file_lock(&lock_path);
 
     let output = Command::new("pixi")
         .args(["run", "--manifest-path"])
@@ -126,22 +111,4 @@ fn configure_python_from_pixi() {
     unsafe {
         std::env::set_var("PYO3_PYTHON", &python_path);
     }
-}
-
-fn acquire_pixi_lock(lock_path: &std::path::Path) -> File {
-    let lock_dir = lock_path
-        .parent()
-        .expect("pixi lock path should include a parent directory");
-    std::fs::create_dir_all(lock_dir).expect("Failed to create pixi lock directory");
-
-    let lock_file = File::options()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(lock_path)
-        .expect("Failed to open pixi lock file");
-
-    lock_file.lock().expect("Failed to acquire pixi build lock");
-    lock_file
 }

@@ -1,4 +1,4 @@
-pub const DAEMON_NODE_TOPIC_NAME: &str = "command";
+pub const CORE_NODE_TOPIC_NAME: &str = "command";
 pub const NODE_CONFIG_FILE: &str = "peppy.json5";
 pub const RUNTIME_CONFIG_VAR_NAME: &str = "PEPPY_RUNTIME_CONFIG";
 /// The peppy output directory relative to node_dir (contains generated libraries).
@@ -100,6 +100,14 @@ impl PeppyDirs {
     /// Temporary download directory for HTTP-sourced node archives.
     pub fn http_downloads_dir(&self) -> PathBuf {
         self.root.join("http_downloads")
+    }
+
+    /// Temporary working directory for operations that may involve containers.
+    ///
+    /// On macOS with Lima, temp directories must be under `$HOME` to be
+    /// visible inside the guest VM. Use this instead of `std::env::temp_dir()`.
+    pub fn tmp_dir(&self) -> PathBuf {
+        self.root.join("tmp")
     }
 
     /// Shared Rust crate cache directory for a given cache key.

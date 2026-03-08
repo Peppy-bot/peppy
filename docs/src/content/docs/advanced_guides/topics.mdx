@@ -24,7 +24,7 @@ Each topic defines a `name`, a `qos_profile`, and a `message_format`:
     tag: "0.1.0",
     language: "rust",
   },
-  build: {
+  process: {
     add_cmd: ["cargo", "build", "--release"],
     start_cmd: ["./target/release/uvc_camera"]
   },
@@ -140,7 +140,7 @@ A node that receives messages declares its subscriptions under `interfaces.subsc
     tag: "0.1.0",
     language: "rust",
   },
-  build: {
+  process: {
     add_cmd: ["cargo", "build", "--release"],
     start_cmd: ["./target/release/web_video_stream"]
   },
@@ -183,7 +183,7 @@ fn main() -> Result<()> {
     NodeBuilder::new().run(|_args: Parameters, node_runner| async move {
         let (instance_id, frame) = uvc_camera_video_stream::on_next_message_received(
             &node_runner,
-            None, // target_daemon_node (None = any)
+            None, // target_core_node (None = any)
             None, // target_instance_id (None = any)
         )
         .await?;
@@ -200,7 +200,7 @@ fn main() -> Result<()> {
 
 The `on_next_message_received` function takes:
 - `node_runner` — the node runner reference.
-- `target_daemon_node` — optionally filter messages from a specific daemon node, or `None` for any.
+- `target_core_node` — optionally filter messages from a specific core node, or `None` for any.
 - `target_instance_id` — optionally filter messages from a specific instance, or `None` for any.
 
 It returns a tuple of:

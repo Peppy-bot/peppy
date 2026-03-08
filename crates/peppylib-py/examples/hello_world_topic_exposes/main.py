@@ -11,7 +11,7 @@ async def main():
 
     # Those properties are found in the peppy_launcher.json5 `deployments` array
     node_name = "hello_node"
-    daemon_node = f"{generate_name()}_daemon"
+    core_node = f"{generate_name()}_core"
     instance_id = f"{generate_name()}_emitter"
 
     # Create a messenger for the sending node.
@@ -28,10 +28,10 @@ async def main():
 
     payload = b"Hello world"
 
-    print(f"Sending payload as {instance_id} with daemon node {daemon_node}...")
+    print(f"Sending payload as {instance_id} with core node {core_node}...")
     await TopicMessenger.emit(
         sender_handle,
-        daemon_node,
+        core_node,
         instance_id,
         node_name,
         topic_name,

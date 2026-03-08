@@ -66,6 +66,23 @@ impl RuffFacade {
     }
 
     fn bundled_ruff_binary() -> std::io::Result<PathBuf> {
+        use std::sync::OnceLock;
+
+        // Ensure the embedded binary is extracted to disk exactly once per process.
+        // Multiple test threads share the same PID, so without this guard they race
+        // on the same temp file and hit ENOENT / ETXTBSY on Linux.
+        static EXTRACTED: OnceLock<std::result::Result<PathBuf, String>> = OnceLock::new();
+
+        let result = EXTRACTED
+            .get_or_init(|| Self::extract_bundled_ruff_binary().map_err(|e| e.to_string()));
+
+        match result {
+            Ok(path) => Ok(path.clone()),
+            Err(msg) => Err(std::io::Error::other(msg.clone())),
+        }
+    }
+
+    fn extract_bundled_ruff_binary() -> std::io::Result<PathBuf> {
         mod embedded {
             include!(concat!(env!("OUT_DIR"), "/embedded_ruff.rs"));
         }

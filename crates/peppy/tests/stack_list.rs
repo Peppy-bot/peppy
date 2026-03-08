@@ -22,7 +22,7 @@ fn make_consumer_depend_on_provider(
     let mut provider_cfg = NodeConfigParser::from_path(provider_peppy_json5)
         .expect("provider peppy.json5 should read");
 
-    provider_cfg.build.add_cmd = None;
+    provider_cfg.process.as_mut().unwrap().add_cmd = None;
 
     let exposes = provider_cfg
         .interfaces
@@ -48,7 +48,7 @@ fn make_consumer_depend_on_provider(
     let mut consumer_cfg = NodeConfigParser::from_path(consumer_peppy_json5)
         .expect("consumer peppy.json5 should read");
 
-    consumer_cfg.build.add_cmd = None;
+    consumer_cfg.process.as_mut().unwrap().add_cmd = None;
 
     consumer_cfg.interfaces.subscribes_to = Some(SubscribesTo {
         topics: Some(vec![SubscribedTopic {
@@ -79,10 +79,10 @@ async fn node_list_command_succeeds() {
         .await
         .expect("failed to create serve emulation");
     let shared_messenger = serve.messenger();
-    let daemon_node_name = serve.daemon_node_name().to_string();
+    let core_node_name = serve.core_node_name().to_string();
     assert!(
-        !daemon_node_name.is_empty(),
-        "daemon_node_name should not be empty"
+        !core_node_name.is_empty(),
+        "core_node_name should not be empty"
     );
 
     // Create a temp directory for the nodes
@@ -111,6 +111,7 @@ async fn node_list_command_succeeds() {
             node_name: NodeName::new(provider_name).expect("valid node name"),
             to_dir: None,
             toolchain: Toolchain::Cargo,
+            with_container: false,
         },
     }
     .execute(&node_ctx)
@@ -121,6 +122,7 @@ async fn node_list_command_succeeds() {
             node_name: NodeName::new(consumer_name).expect("valid node name"),
             to_dir: None,
             toolchain: Toolchain::Cargo,
+            with_container: false,
         },
     }
     .execute(&node_ctx)
@@ -158,7 +160,8 @@ async fn node_list_command_succeeds() {
             start: false,
             args: Vec::new(),
             instance_id: None,
-            timeout: 60,
+            idle_timeout: 60,
+            max_timeout: 3600,
             force: false,
         },
     }
@@ -173,7 +176,8 @@ async fn node_list_command_succeeds() {
             start: false,
             args: Vec::new(),
             instance_id: None,
-            timeout: 60,
+            idle_timeout: 60,
+            max_timeout: 3600,
             force: false,
         },
     }
@@ -223,10 +227,10 @@ async fn node_list_command_with_dot_representation_succeeds() {
         .await
         .expect("failed to create serve emulation");
     let shared_messenger = serve.messenger();
-    let daemon_node_name = serve.daemon_node_name().to_string();
+    let core_node_name = serve.core_node_name().to_string();
     assert!(
-        !daemon_node_name.is_empty(),
-        "daemon_node_name should not be empty"
+        !core_node_name.is_empty(),
+        "core_node_name should not be empty"
     );
 
     // Create a temp directory for the nodes
@@ -255,6 +259,7 @@ async fn node_list_command_with_dot_representation_succeeds() {
             node_name: NodeName::new(provider_name).expect("valid node name"),
             to_dir: None,
             toolchain: Toolchain::Cargo,
+            with_container: false,
         },
     }
     .execute(&node_ctx)
@@ -265,6 +270,7 @@ async fn node_list_command_with_dot_representation_succeeds() {
             node_name: NodeName::new(consumer_name).expect("valid node name"),
             to_dir: None,
             toolchain: Toolchain::Cargo,
+            with_container: false,
         },
     }
     .execute(&node_ctx)
@@ -300,7 +306,8 @@ async fn node_list_command_with_dot_representation_succeeds() {
             start: false,
             args: Vec::new(),
             instance_id: None,
-            timeout: 60,
+            idle_timeout: 60,
+            max_timeout: 3600,
             force: false,
         },
     }
@@ -314,7 +321,8 @@ async fn node_list_command_with_dot_representation_succeeds() {
             start: false,
             args: Vec::new(),
             instance_id: None,
-            timeout: 60,
+            idle_timeout: 60,
+            max_timeout: 3600,
             force: false,
         },
     }

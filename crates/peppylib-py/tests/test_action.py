@@ -11,7 +11,7 @@ import pytest
 
 from peppylib import ActionMessenger, MessengerHandle, QoSProfile, ZenohdInstance
 
-DAEMON_NODE = "test_daemon"
+CORE_NODE = "test_core"
 INSTANCE_ID = "test_instance"
 NODE_NAME = "test_node"
 ACTION_NAME = "test_action"
@@ -32,7 +32,7 @@ async def test_action_messenger_communication():
         # Expose the action server
         action = await ActionMessenger.expose(
             server_handle,
-            DAEMON_NODE,
+            CORE_NODE,
             INSTANCE_ID,
             NODE_NAME,
             ACTION_NAME,
@@ -59,11 +59,11 @@ async def test_action_messenger_communication():
         # Client: send goal
         goal_handle = await ActionMessenger.send_goal(
             client_handle,
-            DAEMON_NODE,
+            CORE_NODE,
             INSTANCE_ID,
             NODE_NAME,
             ACTION_NAME,
-            DAEMON_NODE,
+            CORE_NODE,
             INSTANCE_ID,
             GOAL_PAYLOAD,
             QoSProfile.Reliable,
@@ -104,7 +104,7 @@ async def test_cancel_goal_concurrent_with_feedback():
 
         action = await ActionMessenger.expose(
             server_handle,
-            DAEMON_NODE,
+            CORE_NODE,
             INSTANCE_ID,
             NODE_NAME,
             ACTION_NAME,
@@ -125,11 +125,11 @@ async def test_cancel_goal_concurrent_with_feedback():
 
         goal_handle = await ActionMessenger.send_goal(
             client_handle,
-            DAEMON_NODE,
+            CORE_NODE,
             INSTANCE_ID,
             NODE_NAME,
             ACTION_NAME,
-            DAEMON_NODE,
+            CORE_NODE,
             INSTANCE_ID,
             GOAL_PAYLOAD,
             QoSProfile.Reliable,
@@ -162,11 +162,11 @@ async def test_send_goal_rejects_invalid_timeout():
         with pytest.raises(ValueError, match="goal_timeout_secs"):
             await ActionMessenger.send_goal(
                 client_handle,
-                DAEMON_NODE,
+                CORE_NODE,
                 INSTANCE_ID,
                 NODE_NAME,
                 ACTION_NAME,
-                DAEMON_NODE,
+                CORE_NODE,
                 INSTANCE_ID,
                 GOAL_PAYLOAD,
                 QoSProfile.Reliable,
@@ -175,7 +175,7 @@ async def test_send_goal_rejects_invalid_timeout():
 
 
 @pytest.mark.asyncio
-async def test_send_goal_honors_target_daemon_node():
+async def test_send_goal_honors_target_core_node():
     """send_goal should route to the explicit target daemon when provided."""
     async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
         server_handle = await MessengerHandle.from_host_port(router.host, router.port)
@@ -183,7 +183,7 @@ async def test_send_goal_honors_target_daemon_node():
 
         await ActionMessenger.expose(
             server_handle,
-            DAEMON_NODE,
+            CORE_NODE,
             INSTANCE_ID,
             NODE_NAME,
             ACTION_NAME,
@@ -194,11 +194,11 @@ async def test_send_goal_honors_target_daemon_node():
         with pytest.raises(ConnectionError):
             await ActionMessenger.send_goal(
                 client_handle,
-                DAEMON_NODE,
+                CORE_NODE,
                 INSTANCE_ID,
                 NODE_NAME,
                 ACTION_NAME,
-                "wrong_daemon",
+                "wrong_core_node",
                 INSTANCE_ID,
                 GOAL_PAYLOAD,
                 QoSProfile.Reliable,

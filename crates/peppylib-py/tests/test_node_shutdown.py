@@ -14,7 +14,7 @@ from peppylib.services import ShutdownService
 
 from common import TEST_INSTANCE_ID, TEST_NODE_NAME
 
-TEST_DAEMON_NODE_NAME = "test_daemon_node"
+TEST_CORE_NODE_NAME = "test_core_node"
 CALLER_INSTANCE_ID = "caller_instance"
 
 
@@ -27,7 +27,7 @@ async def test_shutdown_node():
         # Start the shutdown service directly
         task, receiver = await ShutdownService.listen(
             messenger,
-            TEST_DAEMON_NODE_NAME,
+            TEST_CORE_NODE_NAME,
             TEST_INSTANCE_ID,
             TEST_NODE_NAME,
         )
@@ -40,11 +40,11 @@ async def test_shutdown_node():
 
         response = await ServiceMessenger.poll(
             messenger,
-            TEST_DAEMON_NODE_NAME,
+            TEST_CORE_NODE_NAME,
             CALLER_INSTANCE_ID,
             TEST_NODE_NAME,
             SHUTDOWN_SERVICE,
-            TEST_DAEMON_NODE_NAME,
+            TEST_CORE_NODE_NAME,
             TEST_INSTANCE_ID,
             request_payload,
             2.0,

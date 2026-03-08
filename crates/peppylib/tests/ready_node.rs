@@ -1,7 +1,7 @@
 mod common;
 
 use common::{
-    CALLER_INSTANCE_ID, TEST_DAEMON_NODE_NAME, TEST_INSTANCE_ID, TEST_NODE_NAME, get_client_server,
+    CALLER_INSTANCE_ID, TEST_CORE_NODE_NAME, TEST_INSTANCE_ID, TEST_NODE_NAME, get_client_server,
 };
 use peppylib::{
     messaging::{MessengerHandle, ServiceMessenger},
@@ -19,7 +19,7 @@ async fn ready_node() {
     let server_handle = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
     let ready_task = listen_for_node_ready(
         &server_handle,
-        TEST_DAEMON_NODE_NAME,
+        TEST_CORE_NODE_NAME,
         TEST_INSTANCE_ID,
         TEST_NODE_NAME,
     )
@@ -32,28 +32,28 @@ async fn ready_node() {
     let request_payload = Payload::from_static(b"ready");
 
     // The ready service should accept all valid targeting modes:
-    // - specific daemon + specific instance
-    // - specific daemon + broadcast instance
-    // - broadcast daemon + specific instance
-    // - full broadcast (daemon + instance)
+    // - specific core node + specific instance
+    // - specific core node + broadcast instance
+    // - broadcast core node + specific instance
+    // - full broadcast (core node + instance)
     let target_combinations = [
         (
-            Some(client.daemon_node_name.as_str()),
+            Some(client.core_node_name.as_str()),
             Some(client.instance_id.as_str()),
         ),
-        (Some(client.daemon_node_name.as_str()), None),
+        (Some(client.core_node_name.as_str()), None),
         (None, Some(client.instance_id.as_str())),
         (None, None),
     ];
 
-    for (target_daemon_node, target_instance_id) in target_combinations {
+    for (target_core_node, target_instance_id) in target_combinations {
         let response = ServiceMessenger::poll(
             &client.caller_handle,
-            &client.daemon_node_name,
+            &client.core_node_name,
             CALLER_INSTANCE_ID,
             TEST_NODE_NAME,
             peppylib::messaging::NODE_READY_SERVICE,
-            target_daemon_node,
+            target_core_node,
             target_instance_id,
             request_payload.clone(),
             Duration::from_secs(2),
@@ -62,7 +62,7 @@ async fn ready_node() {
         .expect("caller should receive response");
 
         assert_eq!(response.payload(), &request_payload);
-        assert_eq!(response.daemon_node(), client.daemon_node_name);
+        assert_eq!(response.core_node(), client.core_node_name);
         assert_eq!(response.instance_id(), client.instance_id);
     }
 

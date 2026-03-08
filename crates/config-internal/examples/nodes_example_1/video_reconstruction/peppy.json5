@@ -7,14 +7,11 @@
     tag: "0.1.0",
     language: "rust",
   },
-  build: {
-    add_cmd: [
-      "cargo",
-      "build",
-      "--release"
-    ],
-    start_cmd: [
-      "./target/release/video_reconstruction"
+  container: {
+    def_file: "apptainer.def",
+    mount_paths: [
+      // host_path:container_path:options
+      "/tmp/video_reconstruction:/tmp/video_reconstruction:rw"
     ]
   },
   parameters: {

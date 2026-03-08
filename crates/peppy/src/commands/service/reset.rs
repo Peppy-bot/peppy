@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use daemon_node::encoding::NodeResetRequest;
+use core_node::encoding::NodeResetRequest;
 use tracing::info;
 
 use crate::commands::Command;
@@ -20,27 +20,22 @@ impl Command for ResetCommand {
 }
 
 async fn reset_async(ctx: &Arc<AppContext>) -> Result<()> {
-    let daemon_state = ctx.read_daemon_state().map_err(|e| {
-        Error::ExecutionFailed(format!(
-            "Failed to read daemon state. Is the peppy daemon running? Error: {}",
-            e
-        ))
-    })?;
-    let daemon_node_name = daemon_state.daemon_node_name;
+    let daemon_state = ctx.read_daemon_state()?;
+    let core_node_name = daemon_state.core_node_name;
 
     ctx.connect().await?;
     let messenger_handle = ctx
         .messenger_handle()
         .ok_or_else(|| Error::ExecutionFailed("Failed to connect to daemon".to_string()))?;
 
-    info!("Resetting node stack on daemon '{}'...", daemon_node_name);
+    info!("Resetting node stack on daemon '{}'...", core_node_name);
 
     let response = NodeResetRequest::new()
         .poll(
             messenger_handle,
-            &daemon_node_name,
+            &core_node_name,
             CALLER_INSTANCE_ID,
-            &daemon_node_name,
+            &core_node_name,
             REQUEST_TIMEOUT,
         )
         .await

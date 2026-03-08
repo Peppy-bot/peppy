@@ -1,4 +1,4 @@
-use daemon_node::encoding::NodeStopRequest;
+use core_node::encoding::NodeStopRequest;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::info;
@@ -14,17 +14,12 @@ pub fn stop_node(ctx: &Arc<AppContext>, instance_id: String) -> Result<()> {
 }
 
 async fn stop_node_async(ctx: &Arc<AppContext>, instance_id: String) -> Result<()> {
-    let daemon_state = ctx.read_daemon_state().map_err(|e| {
-        Error::ExecutionFailed(format!(
-            "Failed to read daemon state. Is the peppy daemon running? Error: {}",
-            e
-        ))
-    })?;
-    let daemon_node_name = daemon_state.daemon_node_name;
+    let daemon_state = ctx.read_daemon_state()?;
+    let core_node_name = daemon_state.core_node_name;
 
     info!(
         "Calling node_stop for instance_id '{}' on daemon '{}'...",
-        instance_id, daemon_node_name
+        instance_id, core_node_name
     );
 
     ctx.connect().await?;
@@ -36,10 +31,10 @@ async fn stop_node_async(ctx: &Arc<AppContext>, instance_id: String) -> Result<(
     let stop_response = stop_request
         .poll(
             messenger_handle,
-            &daemon_node_name,
+            &core_node_name,
             CALLER_INSTANCE_ID,
-            &daemon_node_name,
-            &daemon_node_name,
+            &core_node_name,
+            &core_node_name,
             REQUEST_TIMEOUT,
         )
         .await

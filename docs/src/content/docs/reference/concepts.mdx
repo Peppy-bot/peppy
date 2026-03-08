@@ -26,9 +26,9 @@ The manifest defines a node's identity:
 
 A node is uniquely identified by its `name:tag` combination.
 
-### Build
+### Process
 
-The build section defines how to build and launch the node:
+The process section defines how to prepare and launch the node:
 
 | Field | Description |
 |-------|-------------|
@@ -72,7 +72,7 @@ The **Node Stack** is the central data structure that manages all active nodes i
 1. **Dependency Management**: Tracks which nodes depend on which other nodes
 2. **Interface Validation**: Ensures nodes expose the interfaces their dependents require
 3. **Instance Lifecycle**: Manages the creation and removal of node instances
-4. **Root Node**: Always contains a root node (the daemon node) that cannot be removed
+4. **Root Node**: Always contains a root node (the core node) that cannot be removed
 
 ### How Dependencies Work
 
@@ -88,19 +88,24 @@ The node stack can be visualized in multiple formats:
 - **DOT format**: For Graphviz visualization of the dependency graph
 - **Serialized graph**: JSON representation for programmatic access
 
-## The Daemon Node
+## The Core Node
 
-The **Daemon Node** is a special node that serves as the root of the node stack and is always present. It is responsible for:
+The **Core Node** is a special node that serves as the root of the node stack and is always present. It is responsible for:
 
-- **Dependency Creation**: When a node subscribes to an interface, the daemon node creates a dependency on the node that exposes that interface
+- **Dependency Creation**: When a node subscribes to an interface, the core node creates a dependency on the node that exposes that interface
 - **Stack Management**: Managing the lifecycle of all other nodes in the system
-- **System Coordination**: Acting as the central coordinator for the entire PeppyOS runtime
+- **System Coordination**: Acting as the central coordinator for the local PeppyOS runtime
+
+Each PeppyOS runtime has exactly one core node that manages its local DAG of nodes. 
+In a distributed deployment, multiple runtimes — each with their own core node — can run on separate machines. 
+The core nodes operate independently, managing their local node stacks without a centralized controller. 
+Nodes communicate across runtimes through the shared messaging layer, enabling a fully decentralized system where each core node is responsible only for its own set of nodes.
 
 ## Summary
 
 ```
 Node Stack
-├── Daemon Node (always present)
+├── Core Node (always present)
 │   └── Instance (always a single instance)
 │
 └── Other Nodes

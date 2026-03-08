@@ -1,6 +1,5 @@
 mod apptainer_build {
     use std::env;
-    use std::io::Read;
     use std::path::{Path, PathBuf};
     use std::process::Command;
 
@@ -100,37 +99,11 @@ mod apptainer_build {
     }
 
     // -----------------------------------------------------------------------
-    // Cache directories
+    // Cache helpers
     // -----------------------------------------------------------------------
-
-    fn cache_root() -> PathBuf {
-        let user_home = env::var("HOME").expect("HOME environment variable not set");
-        let root = PathBuf::from(user_home).join(".peppy/tmp");
-        if !root.exists() {
-            std::fs::create_dir_all(&root).expect("Failed to create peppy build cache root");
-        }
-        root
-    }
-
-    fn get_apptainer_cache_dir(version: &str, arch: &str) -> PathBuf {
-        let cache_dir = cache_root().join(format!("apptainer-{}-{}", version, arch));
-        if !cache_dir.exists() {
-            std::fs::create_dir_all(&cache_dir)
-                .expect("Failed to create apptainer cache directory");
-        }
-        cache_dir
-    }
 
     fn apptainer_cache_sentinel_path(cache_dir: &Path, version: &str) -> PathBuf {
         cache_dir.join(format!(".peppy-version-{}", version))
-    }
-
-    fn get_lima_cache_dir(version: &str, os: &str, arch: &str) -> PathBuf {
-        let cache_dir = cache_root().join(format!("lima-{}-{}-{}", version, os, arch));
-        if !cache_dir.exists() {
-            std::fs::create_dir_all(&cache_dir).expect("Failed to create lima cache directory");
-        }
-        cache_dir
     }
 
     /// LIMA_HOME for the build-time VM instance.
@@ -141,67 +114,13 @@ mod apptainer_build {
     fn get_lima_build_home() -> PathBuf {
         let user_home = env::var("HOME").expect("HOME environment variable not set");
         let home = PathBuf::from(user_home).join(".peppy/lima-build");
-        if !home.exists() {
-            std::fs::create_dir_all(&home).expect("Failed to create lima build data directory");
-        }
+        std::fs::create_dir_all(&home).expect("Failed to create lima build data directory");
         home
     }
 
     // -----------------------------------------------------------------------
     // Lima download and extraction (macOS only)
     // -----------------------------------------------------------------------
-
-    fn file_sha256_hex(path: &Path) -> Option<String> {
-        use sha2::{Digest, Sha256};
-
-        let mut file = match std::fs::File::open(path) {
-            Ok(f) => f,
-            Err(e) => {
-                println!(
-                    "cargo:warning=Failed to open {:?} for SHA-256 verification: {}",
-                    path, e
-                );
-                return None;
-            }
-        };
-
-        let mut hasher = Sha256::new();
-        let mut buffer = [0_u8; 8192];
-        loop {
-            let n = match file.read(&mut buffer) {
-                Ok(n) => n,
-                Err(e) => {
-                    println!(
-                        "cargo:warning=Failed to read {:?} for SHA-256 verification: {}",
-                        path, e
-                    );
-                    return None;
-                }
-            };
-            if n == 0 {
-                break;
-            }
-            hasher.update(&buffer[..n]);
-        }
-
-        Some(format!("{:x}", hasher.finalize()))
-    }
-
-    fn verify_download_sha256(path: &Path, expected_sha256: &str, label: &str) -> bool {
-        let Some(actual_sha256) = file_sha256_hex(path) else {
-            return false;
-        };
-
-        if actual_sha256.eq_ignore_ascii_case(expected_sha256) {
-            true
-        } else {
-            println!(
-                "cargo:warning={} SHA-256 mismatch for {:?}: expected {}, got {}",
-                label, path, expected_sha256, actual_sha256
-            );
-            false
-        }
-    }
 
     /// Download the Lima release archive to `dest`.
     fn download_lima_archive(
@@ -219,7 +138,7 @@ mod apptainer_build {
 
         match status {
             Ok(s) if s.success() => {
-                if !verify_download_sha256(dest, expected_sha256, "Lima archive") {
+                if !build_helpers::verify_sha256(dest, expected_sha256, "Lima archive") {
                     std::fs::remove_file(dest).ok();
                     return false;
                 }
@@ -274,7 +193,7 @@ mod apptainer_build {
     /// Download and cache the Lima installation. Returns the path to the cache
     /// directory containing `bin/limactl` on success.
     fn ensure_lima_cached(version: &str, os: &str, arch: &str) -> Option<PathBuf> {
-        let cache_dir = get_lima_cache_dir(version, os, arch);
+        let cache_dir = build_helpers::cache_dir(&format!("lima-{version}-{os}-{arch}"));
         let cached_limactl = cache_dir.join("bin/limactl");
 
         if cached_limactl.exists() {
@@ -298,7 +217,8 @@ mod apptainer_build {
             return None;
         };
 
-        let archive_path = cache_root().join(format!("lima-{}-{}-{}.tar.gz", version, os, arch));
+        let downloads_dir = build_helpers::cache_dir("downloads");
+        let archive_path = downloads_dir.join(format!("lima-{}-{}-{}.tar.gz", version, os, arch));
         if !download_lima_archive(&archive_path, version, os, arch, expected_sha256) {
             return None;
         }
@@ -341,7 +261,7 @@ mod apptainer_build {
 
         match status {
             Ok(s) if s.success() => {
-                if !verify_download_sha256(dest, expected_sha256, "Apptainer RPM") {
+                if !build_helpers::verify_sha256(dest, expected_sha256, "Apptainer RPM") {
                     std::fs::remove_file(dest).ok();
                     return false;
                 }
@@ -365,24 +285,24 @@ mod apptainer_build {
     }
 
     /// Download and cache the main apptainer RPM. Returns the path to the
-    /// cached RPM file on success.
+    /// cached RPM file on success, or `None` if no pre-built RPM is available
+    /// for this architecture.
     fn ensure_apptainer_rpm_cached(version: &str, release: &str, arch: &str) -> Option<PathBuf> {
         let filename = apptainer_rpm_filename(arch);
-        let cached_rpm = cache_root().join(&filename);
+        let downloads_dir = build_helpers::cache_dir("downloads");
+        let cached_rpm = downloads_dir.join(&filename);
 
         if cached_rpm.exists()
             && let Some(expected_sha256) = apptainer_rpm_sha256(arch)
         {
-            if verify_download_sha256(&cached_rpm, expected_sha256, "Cached Apptainer RPM") {
+            if build_helpers::verify_sha256(&cached_rpm, expected_sha256, "Cached Apptainer RPM") {
                 println!(
                     "cargo:warning=Using cached Apptainer RPM from {:?}",
                     cached_rpm
                 );
                 return Some(cached_rpm);
             }
-            println!(
-                "cargo:warning=Cached Apptainer RPM failed verification, re-downloading..."
-            );
+            println!("cargo:warning=Cached Apptainer RPM failed verification, re-downloading...");
             std::fs::remove_file(&cached_rpm).ok();
         }
 
@@ -391,13 +311,7 @@ mod apptainer_build {
             version, arch
         );
 
-        let Some(expected_sha256) = apptainer_rpm_sha256(arch) else {
-            println!(
-                "cargo:warning=Missing pinned SHA-256 for Apptainer {} {} RPM; refusing download",
-                version, arch
-            );
-            return None;
-        };
+        let expected_sha256 = apptainer_rpm_sha256(arch)?;
 
         if !download_apptainer_rpm(&cached_rpm, version, release, arch, expected_sha256) {
             return None;
@@ -680,7 +594,7 @@ fi
         }
     }
 
-    /// Install apptainer via Lima VM (macOS).
+    /// Install apptainer via Lima VM (macOS) from RPMs.
     ///
     /// Copies the downloaded RPM and vendored dependency RPMs into the Lima
     /// guest, extracts them there, and copies the result back to the host.
@@ -851,10 +765,15 @@ bash {guest_vendor}/{install_script_name} {guest_install_dir} {arch}"#,
         }
 
         // 4) Copy the result back to the host via tar pipe
-        if install_dir.exists() {
-            std::fs::remove_dir_all(install_dir).ok();
+        copy_lima_result_to_host(lima, guest_install_dir, install_dir)
+    }
+
+    /// Copy a directory from the Lima guest to the host via tar pipe.
+    fn copy_lima_result_to_host(lima: &LimaConfig, guest_dir: &str, host_dir: &Path) -> bool {
+        if host_dir.exists() {
+            std::fs::remove_dir_all(host_dir).ok();
         }
-        std::fs::create_dir_all(install_dir).expect("Failed to create apptainer install directory");
+        std::fs::create_dir_all(host_dir).expect("Failed to create host install directory");
 
         let tar_pipe = Command::new("bash")
             .arg("-c")
@@ -863,8 +782,8 @@ bash {guest_vendor}/{install_script_name} {guest_install_dir} {arch}"#,
                 lima.lima_home.display(),
                 lima.limactl.display(),
                 lima.instance,
-                guest_install_dir,
-                install_dir.display(),
+                guest_dir,
+                host_dir.display(),
             ))
             .output();
         match &tar_pipe {
@@ -872,7 +791,7 @@ bash {guest_vendor}/{install_script_name} {guest_install_dir} {arch}"#,
             Ok(o) => {
                 let stderr = String::from_utf8_lossy(&o.stderr);
                 println!(
-                    "cargo:warning=Failed to copy apptainer installation from Lima VM (exit: {}): {}",
+                    "cargo:warning=Failed to copy installation from Lima VM (exit: {}): {}",
                     o.status, stderr
                 );
                 return false;
@@ -883,22 +802,182 @@ bash {guest_vendor}/{install_script_name} {guest_install_dir} {arch}"#,
             }
         }
 
-        // 5) Clean up guest temp files
+        // Clean up guest temp files
         let _ = lima
             .lima_command()
-            .args([
-                "shell",
-                lima.instance,
-                "--",
-                "rm",
-                "-rf",
-                guest_vendor,
-                guest_install_dir,
-            ])
+            .args(["shell", lima.instance, "--", "rm", "-rf", guest_dir])
             .status();
 
         true
     }
+
+    // -----------------------------------------------------------------------
+    // Build apptainer from source (fallback when no pre-built RPM exists)
+    // -----------------------------------------------------------------------
+
+    /// Build apptainer from source on the local host (native Linux builds).
+    ///
+    /// Downloads the source tarball from GitHub, builds with `mconfig` + `make`,
+    /// and installs to `install_dir`. Requires Go, make, gcc, libseccomp-dev,
+    /// and pkg-config to be available on the host.
+    fn build_apptainer_from_source(version: &str, install_dir: &Path) -> bool {
+        println!(
+            "cargo:warning=Building apptainer {} from source (requires Go, make, gcc, libseccomp-dev)...",
+            version
+        );
+
+        let source_cache = build_helpers::cache_dir("apptainer-source");
+        let tarball_url = format!(
+            "https://github.com/apptainer/apptainer/releases/download/v{version}/apptainer-{version}.tar.gz"
+        );
+        let tarball_path = source_cache.join(format!("apptainer-{version}.tar.gz"));
+        let source_dir = source_cache.join(format!("apptainer-{version}"));
+
+        // Clean previous source directory
+        if source_dir.exists() {
+            std::fs::remove_dir_all(&source_dir).ok();
+        }
+
+        // Download source tarball
+        if !build_helpers::run_command(
+            Command::new("curl")
+                .args(["-fsSL", &tarball_url, "-o"])
+                .arg(&tarball_path),
+            &format!("download apptainer {version} source tarball"),
+        ) {
+            return false;
+        }
+
+        // Extract source tarball
+        if !build_helpers::run_command(
+            Command::new("tar")
+                .args(["-xzf"])
+                .arg(&tarball_path)
+                .arg("-C")
+                .arg(&source_cache),
+            "extract apptainer source tarball",
+        ) {
+            return false;
+        }
+
+        // Clean up tarball
+        std::fs::remove_file(&tarball_path).ok();
+
+        // Start fresh install directory
+        if install_dir.exists() {
+            std::fs::remove_dir_all(install_dir).ok();
+        }
+        std::fs::create_dir_all(install_dir).expect("Failed to create apptainer install directory");
+
+        // Configure: ./mconfig --without-suid --prefix=<install_dir>
+        if !build_helpers::run_command(
+            Command::new("./mconfig")
+                .current_dir(&source_dir)
+                .arg("--without-suid")
+                .arg(format!("--prefix={}", install_dir.display())),
+            "configure apptainer build",
+        ) {
+            std::fs::remove_dir_all(&source_dir).ok();
+            return false;
+        }
+
+        // Build: make -C builddir
+        if !build_helpers::run_command(
+            Command::new("make")
+                .current_dir(&source_dir)
+                .args(["-C", "builddir", "-j"]),
+            "compile apptainer",
+        ) {
+            std::fs::remove_dir_all(&source_dir).ok();
+            return false;
+        }
+
+        // Install: make -C builddir install
+        if !build_helpers::run_command(
+            Command::new("make")
+                .current_dir(&source_dir)
+                .args(["-C", "builddir", "install"]),
+            "install apptainer",
+        ) {
+            std::fs::remove_dir_all(&source_dir).ok();
+            return false;
+        }
+
+        // Clean up source directory
+        std::fs::remove_dir_all(&source_dir).ok();
+
+        true
+    }
+
+    /// Build apptainer from source inside a Lima VM (macOS builds for Linux targets).
+    ///
+    /// Downloads and builds apptainer inside the VM, then copies the result
+    /// back to the host.
+    fn build_apptainer_from_source_via_lima(
+        lima: &LimaConfig,
+        version: &str,
+        install_dir: &Path,
+    ) -> bool {
+        if !ensure_lima_instance(lima, LIMA_TEMPLATE) {
+            println!(
+                "cargo:warning=Could not ensure a running Lima instance for apptainer source build"
+            );
+            return false;
+        }
+
+        println!(
+            "cargo:warning=Building apptainer {} from source inside Lima VM (this may take several minutes)...",
+            version
+        );
+
+        let guest_install_dir = "/tmp/peppy-apptainer-source-install";
+        let build_script = format!(
+            r#"set -eu
+sudo apt-get update -qq
+sudo apt-get install -y -qq golang-go libseccomp-dev make gcc pkg-config squashfs-tools cryptsetup > /dev/null 2>&1
+cd /tmp
+rm -rf apptainer-{version} apptainer-{version}.tar.gz {guest_install_dir}
+curl -fsSL https://github.com/apptainer/apptainer/releases/download/v{version}/apptainer-{version}.tar.gz -o apptainer-{version}.tar.gz
+tar -xzf apptainer-{version}.tar.gz
+cd apptainer-{version}
+./mconfig --without-suid --prefix={guest_install_dir}
+make -C builddir -j
+make -C builddir install
+rm -rf /tmp/apptainer-{version} /tmp/apptainer-{version}.tar.gz"#,
+            version = version,
+            guest_install_dir = guest_install_dir,
+        );
+
+        let run = lima
+            .lima_command()
+            .args(["shell", lima.instance, "--", "bash", "-c", &build_script])
+            .output();
+        match &run {
+            Ok(o) if o.status.success() => {}
+            Ok(o) => {
+                let stderr = String::from_utf8_lossy(&o.stderr);
+                let stdout = String::from_utf8_lossy(&o.stdout);
+                println!(
+                    "cargo:warning=Apptainer source build failed inside Lima VM (exit: {}): {} {}",
+                    o.status, stderr, stdout
+                );
+                return false;
+            }
+            Err(e) => {
+                println!(
+                    "cargo:warning=Failed to run apptainer source build via limactl shell: {}",
+                    e
+                );
+                return false;
+            }
+        }
+
+        copy_lima_result_to_host(lima, guest_install_dir, install_dir)
+    }
+
+    // -----------------------------------------------------------------------
+    // Utilities
+    // -----------------------------------------------------------------------
 
     fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
         if !dst.exists() {
@@ -922,10 +1001,14 @@ bash {guest_vendor}/{install_script_name} {guest_install_dir} {arch}"#,
         Ok(())
     }
 
+    // -----------------------------------------------------------------------
+    // Main entry point
+    // -----------------------------------------------------------------------
+
     pub fn run() {
         println!("cargo:rerun-if-changed=build.rs");
         println!(
-            "cargo:rerun-if-changed=vendor/{}-install-unprivileged.sh",
+            "cargo:rerun-if-changed=vendor/apptainer-{}-install-unprivileged.sh",
             APPTAINER_VERSION
         );
         println!("cargo:rerun-if-changed=vendor/x86_64/");
@@ -935,11 +1018,10 @@ bash {guest_vendor}/{install_script_name} {guest_install_dir} {arch}"#,
 
         let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
 
-        // Emit these unconditionally so that `env!("LIMA_INSTANCE")` and
-        // `env!("LIMA_TEMPLATE")` in lima.rs always compile, even when
-        // build.rs early-returns (e.g. on unsupported targets or download failures).
         println!("cargo:rustc-env=LIMA_INSTANCE={}", LIMA_INSTANCE);
         println!("cargo:rustc-env=LIMA_TEMPLATE={}", LIMA_TEMPLATE);
+        println!("cargo:rustc-env=APPTAINER_VERSION={}", APPTAINER_VERSION);
+        println!("cargo:rustc-env=LIMA_VERSION={}", LIMA_VERSION);
 
         // On macOS, apptainer is Linux-only and runs inside a Lima VM.
         // We download and bundle Lima ourselves — no `brew install lima` required.
@@ -979,10 +1061,10 @@ bash {guest_vendor}/{install_script_name} {guest_install_dir} {arch}"#,
             let lima_cache_dir = match ensure_lima_cached(LIMA_VERSION, "Darwin", "arm64") {
                 Some(dir) => dir,
                 None => {
-                    println!(
-                        "cargo:warning=Could not download Lima; apptainer will not be bundled"
+                    panic!(
+                        "Could not download Lima {}. Lima is required for macOS builds.",
+                        LIMA_VERSION
                     );
-                    return;
                 }
             };
 
@@ -998,11 +1080,7 @@ bash {guest_vendor}/{install_script_name} {guest_install_dir} {arch}"#,
                 std::fs::remove_dir_all(&out_lima_dir).ok();
             }
             if let Err(e) = copy_dir_recursive(&lima_cache_dir, &out_lima_dir) {
-                println!(
-                    "cargo:warning=Failed to copy Lima installation to OUT_DIR: {}",
-                    e
-                );
-                return;
+                panic!("Failed to copy Lima installation to OUT_DIR: {}", e);
             }
             println!(
                 "cargo:rustc-env=LIMA_INSTALL_DIR={}",
@@ -1019,26 +1097,10 @@ bash {guest_vendor}/{install_script_name} {guest_install_dir} {arch}"#,
         };
 
         // ------------------------------------------------------------------
-        // Step 1.5: Download and cache the main Apptainer RPM
+        // Step 2: Install apptainer (from RPM or built from source)
         // ------------------------------------------------------------------
-        let apptainer_rpm = match ensure_apptainer_rpm_cached(
-            APPTAINER_VERSION,
-            APPTAINER_RELEASE,
-            &arch,
-        ) {
-            Some(path) => path,
-            None => {
-                println!(
-                    "cargo:warning=Could not download Apptainer RPM; apptainer will not be bundled"
-                );
-                return;
-            }
-        };
-
-        // ------------------------------------------------------------------
-        // Step 2: Install apptainer from downloaded RPM + vendor dependency RPMs
-        // ------------------------------------------------------------------
-        let cache_dir = get_apptainer_cache_dir(APPTAINER_VERSION, &arch);
+        let cache_dir =
+            build_helpers::cache_dir(&format!("apptainer-{}-{}", APPTAINER_VERSION, &arch));
         let out_install_dir = PathBuf::from(&out_dir).join("apptainer-install");
 
         // Check if we have a fully completed cached installation.
@@ -1051,7 +1113,10 @@ bash {guest_vendor}/{install_script_name} {guest_install_dir} {arch}"#,
                 "cargo:warning=Using cached apptainer installation from {:?}",
                 cache_dir
             );
-        } else {
+        } else if let Some(apptainer_rpm) =
+            ensure_apptainer_rpm_cached(APPTAINER_VERSION, APPTAINER_RELEASE, &arch)
+        {
+            // Pre-built RPM available — install from RPMs
             println!(
                 "cargo:warning=Installing apptainer {} from RPMs{}...",
                 APPTAINER_VERSION,
@@ -1077,50 +1142,73 @@ bash {guest_vendor}/{install_script_name} {guest_install_dir} {arch}"#,
                 )
             };
 
-            if !success {
-                println!(
-                    "cargo:warning=Could not install apptainer; apptainer will not be bundled"
-                );
-                return;
-            }
+            assert!(
+                success,
+                "Failed to install apptainer {} from RPMs for {}",
+                APPTAINER_VERSION, arch
+            );
 
-            // Verify the install produced a binary
-            if !cached_bin.exists() {
-                println!(
-                    "cargo:warning=Apptainer install completed but bin/apptainer not found in {:?}",
-                    cache_dir
-                );
-                return;
-            }
+            assert!(
+                cached_bin.exists(),
+                "Apptainer install completed but bin/apptainer not found in {:?}",
+                cache_dir
+            );
 
-            if let Err(e) =
-                std::fs::write(&cache_sentinel, format!("version={}\n", APPTAINER_VERSION))
-            {
-                println!(
-                    "cargo:warning=Apptainer install completed but failed to write cache sentinel {:?}: {}",
-                    cache_sentinel, e
-                );
-                return;
-            }
+            std::fs::write(&cache_sentinel, format!("version={}\n", APPTAINER_VERSION))
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "Failed to write apptainer cache sentinel {:?}: {}",
+                        cache_sentinel, e
+                    )
+                });
+        } else {
+            // No pre-built RPM for this architecture — build from source
+            println!(
+                "cargo:warning=No pre-built apptainer RPM for {}, building from source...",
+                arch
+            );
+
+            let success = if let Some(ref lima) = lima_config {
+                build_apptainer_from_source_via_lima(lima, APPTAINER_VERSION, &cache_dir)
+            } else {
+                build_apptainer_from_source(APPTAINER_VERSION, &cache_dir)
+            };
+
+            assert!(
+                success,
+                "Failed to build apptainer {} from source for {}. \
+                 Ensure Go, make, gcc, libseccomp-dev, and pkg-config are installed.",
+                APPTAINER_VERSION, arch
+            );
+
+            assert!(
+                cached_bin.exists(),
+                "Apptainer source build completed but bin/apptainer not found in {:?}",
+                cache_dir
+            );
+
+            std::fs::write(&cache_sentinel, format!("version={}\n", APPTAINER_VERSION))
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "Failed to write apptainer cache sentinel {:?}: {}",
+                        cache_sentinel, e
+                    )
+                });
         }
 
-        // Copy cached apptainer installation to OUT_DIR
+        // ------------------------------------------------------------------
+        // Step 3: Copy cached apptainer installation to OUT_DIR
+        // ------------------------------------------------------------------
         if out_install_dir.exists() {
             std::fs::remove_dir_all(&out_install_dir).ok();
         }
-        if let Err(e) = copy_dir_recursive(&cache_dir, &out_install_dir) {
-            println!(
-                "cargo:warning=Failed to copy apptainer installation to OUT_DIR: {}",
-                e
-            );
-            return;
-        }
+        copy_dir_recursive(&cache_dir, &out_install_dir)
+            .unwrap_or_else(|e| panic!("Failed to copy apptainer installation to OUT_DIR: {}", e));
 
         println!(
             "cargo:rustc-env=APPTAINER_INSTALL_DIR={}",
             out_install_dir.display()
         );
-        println!("cargo:rustc-env=APPTAINER_VERSION={}", APPTAINER_VERSION);
     }
 }
 

@@ -112,7 +112,7 @@ fn generate_request_id() -> String {
     format!("{:x}", result)[..16].to_string() // Use first 16 hex chars for compactness
 }
 
-/// Formats an instance ID as a bound instance segment (appears right after DAEMON_NODE in key expressions)
+/// Formats an instance ID as a bound instance segment (appears right after CORE_NODE in key expressions)
 fn format_bound_instance_segment(instance_id: &str) -> Option<String> {
     (instance_id != INSTANCE_ID_WILDCARD).then(|| instance_id.to_string())
 }
@@ -165,18 +165,18 @@ impl MessengerHandle {
     #[allow(clippy::too_many_arguments)]
     async fn subscribe_to_topic(
         &self,
-        as_daemon_node: &str,
+        as_core_node: &str,
         as_instance_id: &str,
         to_node_name: &str,
         to_topic: &str,
-        to_daemon_node: Option<&str>,
+        to_core_node: Option<&str>,
         to_instance_id: Option<&str>,
         qos: QoSProfile,
     ) -> Result<PmiSubscription> {
-        let to_daemon_node = to_daemon_node.unwrap_or("*");
+        let to_core_node = to_core_node.unwrap_or("*");
         let to_instance_id = to_instance_id.unwrap_or("*");
         let key_expr = format!(
-            "{as_daemon_node}/{to_daemon_node}/{as_instance_id}/{to_instance_id}/topic/{to_node_name}/{to_topic}"
+            "{as_core_node}/{to_core_node}/{as_instance_id}/{to_instance_id}/topic/{to_node_name}/{to_topic}"
         );
         let subscription = {
             let messenger = self.messenger.lock().await;
@@ -189,7 +189,7 @@ impl MessengerHandle {
 
     async fn emit_topic_message(
         &self,
-        as_daemon_node: &str,
+        as_core_node: &str,
         as_instance_id: &str,
         as_node_name: &str,
         as_topic_name: &str,
@@ -198,7 +198,7 @@ impl MessengerHandle {
     ) -> Result<()> {
         let key_expr = format!(
             "*/{}/*/{}/topic/{}/{}",
-            as_daemon_node, as_instance_id, as_node_name, as_topic_name
+            as_core_node, as_instance_id, as_node_name, as_topic_name
         );
         let msg = PmiMessage::new(&key_expr, payload.into_inner());
 
@@ -211,32 +211,32 @@ impl MessengerHandle {
 
     async fn expose_service(
         &self,
-        bound_daemon_node: &str,
+        bound_core_node: &str,
         as_instance_id: &str,
         as_node_name: &str,
         as_service_name: &str,
     ) -> Result<ServiceEndpoint> {
         let service_root = format!("service/{as_node_name}/{as_service_name}");
-        self.create_service_endpoint(bound_daemon_node, service_root, as_instance_id)
+        self.create_service_endpoint(bound_core_node, service_root, as_instance_id)
             .await
     }
 
     async fn create_service_endpoint(
         &self,
-        bound_daemon_node: &str,
+        bound_core_node: &str,
         service_root: String,
         as_instance_id: &str,
     ) -> Result<ServiceEndpoint> {
-        // Format: target_daemon/caller_daemon/target_instance/caller_instance/service_root/request/id
+        // Format: target_core_node/caller_core_node/target_instance/caller_instance/service_root/request/id
         // We need 4 subscription patterns to match all valid request combinations:
         let patterns = [
-            // 1. Specific daemon, specific instance
-            format!("{bound_daemon_node}/*/{as_instance_id}/*/{service_root}/request/**"),
-            // 2. Specific daemon, broadcast instance
-            format!("{bound_daemon_node}/*/{BROADCAST_MARKER}/*/{service_root}/request/**"),
-            // 3. Broadcast daemon, specific instance
+            // 1. Specific core node, specific instance
+            format!("{bound_core_node}/*/{as_instance_id}/*/{service_root}/request/**"),
+            // 2. Specific core node, broadcast instance
+            format!("{bound_core_node}/*/{BROADCAST_MARKER}/*/{service_root}/request/**"),
+            // 3. Broadcast core node, specific instance
             format!("{BROADCAST_MARKER}/*/{as_instance_id}/*/{service_root}/request/**"),
-            // 4. Broadcast daemon, broadcast instance
+            // 4. Broadcast core node, broadcast instance
             format!("{BROADCAST_MARKER}/*/{BROADCAST_MARKER}/*/{service_root}/request/**"),
         ];
 
@@ -265,7 +265,7 @@ impl MessengerHandle {
         Ok(ServiceEndpoint::new(
             Arc::clone(&self.messenger),
             [sub0, sub1, sub2, sub3],
-            bound_daemon_node.to_string(),
+            bound_core_node.to_string(),
             service_root,
             as_instance_id.to_string(),
         ))
@@ -275,11 +275,11 @@ impl MessengerHandle {
     async fn poll_service(
         &self,
         message_type: &str,
-        bound_daemon_node: &str,
+        bound_core_node: &str,
         as_instance_id: &str,
         target_node_name: &str,
         target_service_name: &str,
-        target_daemon_node: Option<&str>,
+        target_core_node: Option<&str>,
         target_instance_id: Option<&str>,
         request_payload: Payload,
         response_timeout: impl Into<Option<Duration>>,
@@ -300,10 +300,10 @@ impl MessengerHandle {
 
         // If no target specified, use BROADCAST_MARKER for broadcast requests
         // This allows Zenoh subscription patterns to filter at the key expression level
-        let (effective_target_daemon, effective_target_instance) =
-            match (target_daemon_node, target_instance_id.as_deref()) {
-                (Some(daemon), Some(instance)) => (daemon.to_string(), instance.to_string()),
-                (Some(daemon), None) => (daemon.to_string(), BROADCAST_MARKER.to_string()),
+        let (effective_target_core_node, effective_target_instance) =
+            match (target_core_node, target_instance_id.as_deref()) {
+                (Some(core_node), Some(instance)) => (core_node.to_string(), instance.to_string()),
+                (Some(core_node), None) => (core_node.to_string(), BROADCAST_MARKER.to_string()),
                 (None, Some(instance)) => (BROADCAST_MARKER.to_string(), instance.to_string()),
                 (None, None) => (BROADCAST_MARKER.to_string(), BROADCAST_MARKER.to_string()),
             };
@@ -313,25 +313,25 @@ impl MessengerHandle {
             format_bound_instance_segment(&effective_target_instance);
         let request_id = generate_request_id();
 
-        // Format: target_daemon/caller_daemon/target_instance/caller_instance/service_root/request/id
-        let target_daemon = target_bound_instance_segment
+        // Format: target_core_node/caller_core_node/target_instance/caller_instance/service_root/request/id
+        let target_core_node = target_bound_instance_segment
             .as_ref()
-            .map(|_| effective_target_daemon.as_str())
+            .map(|_| effective_target_core_node.as_str())
             .unwrap_or(BROADCAST_MARKER);
         let target_instance = target_bound_instance_segment
             .as_deref()
             .unwrap_or(BROADCAST_MARKER);
         let request_topic = format!(
             "{}/{}/{}/{}/{}/request/{request_id}",
-            target_daemon,
-            bound_daemon_node,
+            target_core_node,
+            bound_core_node,
             target_instance,
             caller_target_instance_segment,
             service_root
         );
 
-        // Response topic format: caller_daemon/responder_daemon/caller_instance/responder_instance/service_root/response/request_id
-        // Always subscribe with wildcards for responder daemon and instance.
+        // Response topic format: caller_core_node/responder_core_node/caller_instance/responder_instance/service_root/response/request_id
+        // Always subscribe with wildcards for responder core node and instance.
         // The request_id (UUID) uniquely identifies our response, so wildcards
         // are safe and — crucially — keep the subscriber pattern consistent
         // across different targeting modes, avoiding Zenoh routing-table
@@ -339,7 +339,7 @@ impl MessengerHandle {
         // with varying target specificity.
         let response_topic = format!(
             "{}/*/{}/*/{}/response/{request_id}",
-            bound_daemon_node, caller_bound_instance_segment, service_root
+            bound_core_node, caller_bound_instance_segment, service_root
         );
 
         let mut response_subscription = {
@@ -447,7 +447,7 @@ impl MessengerHandle {
 
     async fn expose_action(
         &self,
-        bound_daemon_node: &str,
+        bound_core_node: &str,
         as_node_name: &str,
         as_action_name: &str,
         as_instance_id: &str,
@@ -461,17 +461,17 @@ impl MessengerHandle {
         let bound_instance_segment = format_bound_instance_segment(as_instance_id)
             .unwrap_or_else(|| as_instance_id.to_string());
         let feedback_topic_suffix = format!(
-            "*/{bound_daemon_node}/*/{bound_instance_segment}/{action_root}/feedback/{as_instance_id}"
+            "*/{bound_core_node}/*/{bound_instance_segment}/{action_root}/feedback/{as_instance_id}"
         );
 
         let goal_service = self
-            .create_service_endpoint(bound_daemon_node, goal_service_root, as_instance_id)
+            .create_service_endpoint(bound_core_node, goal_service_root, as_instance_id)
             .await?;
         let cancel_service = self
-            .create_service_endpoint(bound_daemon_node, cancel_service_root, as_instance_id)
+            .create_service_endpoint(bound_core_node, cancel_service_root, as_instance_id)
             .await?;
         let result_service = self
-            .create_service_endpoint(bound_daemon_node, result_service_root, as_instance_id)
+            .create_service_endpoint(bound_core_node, result_service_root, as_instance_id)
             .await?;
 
         let feedback_publisher = TopicPublisher::new(

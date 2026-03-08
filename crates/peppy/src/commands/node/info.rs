@@ -1,5 +1,5 @@
 use config::AnyType;
-use daemon_node::encoding::{NodeInfoRequest, NodeInfoResponse};
+use core_node::encoding::{NodeInfoRequest, NodeInfoResponse};
 use peppylib::MessengerHandle;
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -21,13 +21,8 @@ async fn node_info_async(
     source: String,
     git_ref: Option<String>,
 ) -> Result<()> {
-    let daemon_state = ctx.read_daemon_state().map_err(|e| {
-        Error::ExecutionFailed(format!(
-            "Failed to read daemon state. Is the peppy daemon running? Error: {}",
-            e
-        ))
-    })?;
-    let daemon_node_name = daemon_state.daemon_node_name.clone();
+    let daemon_state = ctx.read_daemon_state()?;
+    let core_node_name = daemon_state.core_node_name.clone();
 
     let node_source = parse_node_source(&source, git_ref)?;
 
@@ -42,9 +37,9 @@ async fn node_info_async(
     let response = request
         .poll(
             &messenger,
-            &daemon_node_name,
+            &core_node_name,
             CALLER_INSTANCE_ID,
-            &daemon_node_name,
+            &core_node_name,
             REQUEST_TIMEOUT,
         )
         .await
@@ -76,10 +71,15 @@ fn print_node_info(response: &NodeInfoResponse) {
     }
 
     // Commands
-    if let Some(add_cmd) = &config.build.add_cmd {
-        println!("Add cmd:   {}", add_cmd.join(" "));
+    if let Some(build) = &config.process {
+        if let Some(add_cmd) = &build.add_cmd {
+            println!("Add cmd:   {}", add_cmd.join(" "));
+        }
+        println!("Start cmd: {}", build.start_cmd.join(" "));
     }
-    println!("Start cmd: {}", config.build.start_cmd.join(" "));
+    if let Some(container) = &config.container {
+        println!("Container: {}", container.def_file);
+    }
 
     // Node stack status
     println!();

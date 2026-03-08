@@ -55,7 +55,7 @@ mod tests {
                     tag: "0.1.0",
                     language: "rust"
                 },
-                build: {
+                process: {
                     start_cmd: ["./target/release/uvc_camera"]
                 }
             }"#,

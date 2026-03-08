@@ -42,12 +42,12 @@ pub fn build_exposed_service(
             "Request",
             &[
                 ("instance_id", "str"),
-                ("daemon_node", "str"),
+                ("core_node", "str"),
                 ("data", "RequestData"),
             ],
         );
     } else {
-        builder.dataclass("Request", &[("instance_id", "str"), ("daemon_node", "str")]);
+        builder.dataclass("Request", &[("instance_id", "str"), ("core_node", "str")]);
     }
 
     // Service name constant
@@ -82,11 +82,11 @@ pub fn build_exposed_service(
     builder.blank_line();
     if has_request {
         builder.line(&format!(
-            "async def _handle_request_payload(payload: bytes, handler: {handler_type}, daemon_node: str, instance_id: str) -> bytes:"
+            "async def _handle_request_payload(payload: bytes, handler: {handler_type}, core_node: str, instance_id: str) -> bytes:"
         ));
     } else {
         builder.line(&format!(
-            "async def _handle_request_payload(handler: {handler_type}, daemon_node: str, instance_id: str) -> bytes:"
+            "async def _handle_request_payload(handler: {handler_type}, core_node: str, instance_id: str) -> bytes:"
         ));
     }
     builder.indent();
@@ -94,10 +94,10 @@ pub fn build_exposed_service(
     if has_request {
         builder.line("request_data = _deserialize_request(payload)");
         builder.line(
-            "request = Request(instance_id=instance_id, daemon_node=daemon_node, data=request_data)",
+            "request = Request(instance_id=instance_id, core_node=core_node, data=request_data)",
         );
     } else {
-        builder.line("request = Request(instance_id=instance_id, daemon_node=daemon_node)");
+        builder.line("request = Request(instance_id=instance_id, core_node=core_node)");
     }
 
     if let Some((resp_fmt, resp_info)) = service
@@ -145,7 +145,7 @@ pub fn build_exposed_service(
     builder.line("endpoint = await peppylib.ServiceMessenger.listen(");
     builder.indent();
     builder.line("node_runner.messenger(),");
-    builder.line("node_runner.bound_daemon_node(),");
+    builder.line("node_runner.bound_core_node(),");
     builder.line("node_runner.bound_instance_id(),");
     builder.line("node_runner.node_name(),");
     builder.line("SERVICE_NAME,");
@@ -159,14 +159,13 @@ pub fn build_exposed_service(
     if has_request {
         builder.line("payload = message.payload");
     }
-    builder.line("daemon_node = message.daemon_node");
+    builder.line("core_node = message.core_node");
     builder.line("instance_id = message.instance_id");
     if has_request {
-        builder.line(
-            "return await _handle_request_payload(payload, handler, daemon_node, instance_id)",
-        );
+        builder
+            .line("return await _handle_request_payload(payload, handler, core_node, instance_id)");
     } else {
-        builder.line("return await _handle_request_payload(handler, daemon_node, instance_id)");
+        builder.line("return await _handle_request_payload(handler, core_node, instance_id)");
     }
     builder.dedent();
 
@@ -217,7 +216,7 @@ pub fn build_subscribed_service(
         builder.dataclass(
             "Response",
             &[
-                ("daemon_node", "str"),
+                ("core_node", "str"),
                 ("instance_id", "str"),
                 ("data", "ResponseData"),
             ],
@@ -239,7 +238,7 @@ pub fn build_subscribed_service(
 
     // poll async function
     builder.add_import("import peppylib");
-    // Always needed: poll() signature uses Optional[str] for target_daemon_node/target_instance_id
+    // Always needed: poll() signature uses Optional[str] for target_core_node/target_instance_id
     builder.add_import("from typing import Optional");
     builder.blank_line();
 
@@ -253,11 +252,11 @@ pub fn build_subscribed_service(
 
     let signature = if has_request {
         format!(
-            "async def poll(node_runner: peppylib.NodeRunner, request: Request, timeout: float, target_daemon_node: Optional[str] = None, target_instance_id: Optional[str] = None){return_type}:"
+            "async def poll(node_runner: peppylib.NodeRunner, request: Request, timeout: float, target_core_node: Optional[str] = None, target_instance_id: Optional[str] = None){return_type}:"
         )
     } else {
         format!(
-            "async def poll(node_runner: peppylib.NodeRunner, timeout: float, target_daemon_node: Optional[str] = None, target_instance_id: Optional[str] = None){return_type}:"
+            "async def poll(node_runner: peppylib.NodeRunner, timeout: float, target_core_node: Optional[str] = None, target_instance_id: Optional[str] = None){return_type}:"
         )
     };
     builder.line(&signature);
@@ -291,11 +290,11 @@ pub fn build_subscribed_service(
     }
     builder.indent();
     builder.line("node_runner.messenger(),");
-    builder.line("node_runner.bound_daemon_node(),");
+    builder.line("node_runner.bound_core_node(),");
     builder.line("node_runner.bound_instance_id(),");
     builder.line("NODE_NAME,");
     builder.line("SERVICE_NAME,");
-    builder.line("target_daemon_node,");
+    builder.line("target_core_node,");
     builder.line("target_instance_id,");
     builder.line("request_payload,");
     builder.line("timeout,");
@@ -306,7 +305,7 @@ pub fn build_subscribed_service(
     if has_response {
         builder.line("payload = response_message.payload");
         builder.line("response_data = _deserialize_response(payload)");
-        builder.line("return Response(daemon_node=response_message.daemon_node, instance_id=response_message.instance_id, data=response_data)");
+        builder.line("return Response(core_node=response_message.core_node, instance_id=response_message.instance_id, data=response_data)");
     }
 
     builder.dedent();

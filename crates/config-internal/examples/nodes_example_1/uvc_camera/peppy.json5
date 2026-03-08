@@ -12,22 +12,8 @@
       "usb",
     ],
   },
-  build: {
-    container: {
-      def_file: "apptainer.def"
-    },
-    add_cmd: [
-      "${PEPPY_CONTAINER_ENGINE}",
-      "build",
-      "--fakeroot",
-      "${PEPPY_NODE_NAME}_${PEPPY_NODE_TAG}.sif",
-      "apptainer.def"
-    ],
-    start_cmd: [
-      "${PEPPY_CONTAINER_ENGINE}",
-      "run",
-      "${PEPPY_NODE_NAME}_${PEPPY_NODE_TAG}.sif",
-    ]
+  container: {
+    def_file: "apptainer.def"
   },
   // Expected parameter types to start the node
   parameters: {

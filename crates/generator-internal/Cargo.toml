@@ -19,11 +19,14 @@ indexmap = "2.2"
 rust-embed = { version = "8", features = ["include-exclude"] }
 
 [build-dependencies]
+build-helpers = { path = "../build-helpers-internal" }
 sha2 = "0.10"
+zip = { version = "8", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 bytes = "1"
 config = { path = "../config-internal", features = ["test_helpers"] }
+pmi = { path = "../pmi-internal", features = ["zenoh", "build_zenoh"] }
 serde_json5 = "0.2.1"
 tempfile = "3.10"
 peppylib = { path = "../peppylib" }

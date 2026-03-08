@@ -8,7 +8,7 @@ use node_stack::LaunchPlan;
 use tempfile::tempdir;
 
 use crate::helpers::config_common::{
-    daemon_node_config, deployment, init_test_data_dir, write_config,
+    core_node_config, deployment, init_test_data_dir, write_config,
 };
 use crate::helpers::http::{create_http_bundle, sha256_checksum};
 
@@ -22,7 +22,7 @@ fn http_bundle_is_downloaded_and_resolved() {
     let manifest_content = r#"{
             schema_version: 1,
             manifest: { name: "uvc_camera", tag: "1.2.3", language: "rust" },
-            build: { start_cmd: ["uvc_camera"] }
+            process: { start_cmd: ["uvc_camera"] }
         }"#;
     let bundle_bytes = create_http_bundle(temp_dir.path(), "uvc_camera.tar.zst", manifest_content);
     let sha256 = sha256_checksum(&bundle_bytes);
@@ -46,12 +46,12 @@ fn http_bundle_is_downloaded_and_resolved() {
         launcher_config,
     );
 
-    let plan = LaunchPlan::from_launch_file(daemon_node_config(), &launch_file, &peppy_dirs)
-        .expect("plan");
+    let plan =
+        LaunchPlan::from_launch_file(core_node_config(), &launch_file, &peppy_dirs).expect("plan");
     let stack = plan.node_stack();
     let report = plan.report();
 
-    assert_eq!(stack.len(), 2, "daemon + uvc_camera");
+    assert_eq!(stack.len(), 2, "core node + uvc_camera");
     assert!(stack.contains("uvc_camera", "1.2.3"));
 
     let deployment = report
@@ -77,7 +77,7 @@ fn http_bundle_is_cloned_and_same_tag_updates_code() {
     let manifest_v1 = r#"{
             schema_version: 1,
             manifest: { name: "uvc_camera", tag: "1.0.0", language: "rust" },
-            build: { start_cmd: ["run_v1"] }
+            process: { start_cmd: ["run_v1"] }
         }"#;
     let bundle_bytes_v1 = create_http_bundle(temp_dir.path(), "uvc_camera.tar.zst", manifest_v1);
     let checksum_v1 = sha256_checksum(&bundle_bytes_v1);
@@ -85,7 +85,7 @@ fn http_bundle_is_cloned_and_same_tag_updates_code() {
     let manifest_v2 = r#"{
             schema_version: 1,
             manifest: { name: "uvc_camera", tag: "1.0.0", language: "rust" },
-            build: { start_cmd: ["run_v2"] }
+            process: { start_cmd: ["run_v2"] }
         }"#;
     let bundle_bytes_v2 = create_http_bundle(temp_dir.path(), "uvc_camera.tar.zst", manifest_v2);
     let checksum_v2 = sha256_checksum(&bundle_bytes_v2);
@@ -113,9 +113,9 @@ fn http_bundle_is_cloned_and_same_tag_updates_code() {
         launcher_config,
     );
 
-    let plan = LaunchPlan::from_launch_file(daemon_node_config(), &launch_file, &peppy_dirs)
-        .expect("plan");
-    assert_eq!(plan.node_stack().len(), 2, "daemon + uvc_camera");
+    let plan =
+        LaunchPlan::from_launch_file(core_node_config(), &launch_file, &peppy_dirs).expect("plan");
+    assert_eq!(plan.node_stack().len(), 2, "core node + uvc_camera");
     let planned = plan
         .report()
         .find_deployment_by_name("uvc_camera")
@@ -124,7 +124,9 @@ fn http_bundle_is_cloned_and_same_tag_updates_code() {
     let start_cmd_v1 = planned
         .node()
         .expect("resolved node config")
-        .build
+        .process
+        .as_ref()
+        .unwrap()
         .start_cmd
         .clone();
     assert_eq!(start_cmd_v1, vec!["run_v1".to_string()]);
@@ -137,9 +139,9 @@ fn http_bundle_is_cloned_and_same_tag_updates_code() {
     let launcher_config = PeppyLauncher { deployments };
     write_config(launch_file.clone(), launcher_config);
 
-    let plan = LaunchPlan::from_launch_file(daemon_node_config(), &launch_file, &peppy_dirs)
-        .expect("plan");
-    assert_eq!(plan.node_stack().len(), 2, "daemon + uvc_camera");
+    let plan =
+        LaunchPlan::from_launch_file(core_node_config(), &launch_file, &peppy_dirs).expect("plan");
+    assert_eq!(plan.node_stack().len(), 2, "core node + uvc_camera");
     let planned = plan
         .report()
         .find_deployment_by_name("uvc_camera")
@@ -151,7 +153,9 @@ fn http_bundle_is_cloned_and_same_tag_updates_code() {
     let start_cmd_v2 = planned
         .node()
         .expect("resolved node config after update")
-        .build
+        .process
+        .as_ref()
+        .unwrap()
         .start_cmd
         .clone();
 

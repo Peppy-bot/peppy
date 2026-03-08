@@ -14,7 +14,7 @@ from peppylib.services import NodeReadyService
 
 from common import TEST_INSTANCE_ID, TEST_NODE_NAME
 
-TEST_DAEMON_NODE_NAME = "test_daemon_node"
+TEST_CORE_NODE_NAME = "test_core_node"
 CALLER_INSTANCE_ID = "caller_instance"
 
 
@@ -22,10 +22,10 @@ CALLER_INSTANCE_ID = "caller_instance"
 async def test_ready_node():
     """Ready service accepts all valid targeting modes and echoes back the payload.
     The test validates four targeting combinations:
-    - specific daemon + specific instance
-    - specific daemon + broadcast instance
-    - broadcast daemon + specific instance
-    - full broadcast (daemon + instance)
+    - specific core node + specific instance
+    - specific core node + broadcast instance
+    - broadcast core node + specific instance
+    - full broadcast (core node + instance)
     """
     async with await ZenohdInstance.start_ephemeral("127.0.0.1") as router:
         messenger = await MessengerHandle.from_host_port(router.host, router.port)
@@ -33,7 +33,7 @@ async def test_ready_node():
         # Start the ready service directly
         task = await NodeReadyService.listen(
             messenger,
-            TEST_DAEMON_NODE_NAME,
+            TEST_CORE_NODE_NAME,
             TEST_INSTANCE_ID,
             TEST_NODE_NAME,
         )
@@ -45,8 +45,8 @@ async def test_ready_node():
 
         # The ready service should accept all valid targeting modes
         target_combinations = [
-            ("specific+specific", TEST_DAEMON_NODE_NAME, TEST_INSTANCE_ID),
-            ("specific+broadcast", TEST_DAEMON_NODE_NAME, None),
+            ("specific+specific", TEST_CORE_NODE_NAME, TEST_INSTANCE_ID),
+            ("specific+broadcast", TEST_CORE_NODE_NAME, None),
             ("broadcast+specific", None, TEST_INSTANCE_ID),
             ("broadcast+broadcast", None, None),
         ]
@@ -56,18 +56,18 @@ async def test_ready_node():
         # rapidly creates/drops wildcard subscribers (the response
         # subscription in poll_service) interleaved with put() calls to
         # varying key prefixes. A fresh session avoids this interference.
-        for label, target_daemon_node, target_instance_id in target_combinations:
+        for label, target_core_node, target_instance_id in target_combinations:
             poll_messenger = await MessengerHandle.from_host_port(
                 router.host, router.port
             )
             try:
                 response = await ServiceMessenger.poll(
                     poll_messenger,
-                    TEST_DAEMON_NODE_NAME,
+                    TEST_CORE_NODE_NAME,
                     CALLER_INSTANCE_ID,
                     TEST_NODE_NAME,
                     NODE_READY_SERVICE,
-                    target_daemon_node,
+                    target_core_node,
                     target_instance_id,
                     request_payload,
                     2.0,
@@ -76,7 +76,7 @@ async def test_ready_node():
                 pytest.fail(f"[{label}] poll failed: {exc}")
 
             assert response.payload == request_payload
-            assert response.daemon_node == TEST_DAEMON_NODE_NAME
+            assert response.core_node == TEST_CORE_NODE_NAME
             assert response.instance_id == TEST_INSTANCE_ID
 
         # The ready task should still be running

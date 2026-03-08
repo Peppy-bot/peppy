@@ -5,7 +5,7 @@ use node_stack::{LaunchPlan, NodeStackError};
 use tempfile::{TempDir, tempdir};
 
 use crate::helpers::config_common::{
-    daemon_node_config, deployment, init_test_data_dir, write_config, write_config_str,
+    core_node_config, deployment, init_test_data_dir, write_config, write_config_str,
 };
 use crate::helpers::git::{create_simple_git_repo, push_git_commit};
 
@@ -16,7 +16,7 @@ fn git_repo_is_cloned_and_resolved() {
     let manifest_content = r#"{
             schema_version: 1,
             manifest: { name: "uvc_camera", tag: "1.2.3", language: "rust" },
-            build: { start_cmd: ["uvc_camera"] }
+            process: { start_cmd: ["uvc_camera"] }
         }"#;
     let remote = create_simple_git_repo(manifest_content, "1.2.3");
 
@@ -33,12 +33,12 @@ fn git_repo_is_cloned_and_resolved() {
         launcher_config,
     );
 
-    let plan = LaunchPlan::from_launch_file(daemon_node_config(), &launch_file, &peppy_dirs)
-        .expect("plan");
+    let plan =
+        LaunchPlan::from_launch_file(core_node_config(), &launch_file, &peppy_dirs).expect("plan");
     let stack = plan.node_stack();
     let report = plan.report();
 
-    assert_eq!(stack.len(), 2, "daemon + uvc_camera");
+    assert_eq!(stack.len(), 2, "core node + uvc_camera");
     assert!(stack.contains("uvc_camera", "1.2.3"));
 
     let deployment = report
@@ -85,14 +85,14 @@ fn git_repo_missing_tag_is_unresolvable() {
         write_config_str(project_root.join("peppy_launcher.json5"), &launcher_content);
 
     let plan =
-        LaunchPlan::from_launch_file(daemon_node_config(), launch_file, &peppy_dirs).expect("plan");
+        LaunchPlan::from_launch_file(core_node_config(), launch_file, &peppy_dirs).expect("plan");
     let stack = plan.node_stack();
     let report = plan.report();
 
     assert_eq!(
         stack.len(),
         1,
-        "node stack should contain only the daemon node"
+        "node stack should contain only the core node"
     );
 
     let lidar_deployment = report
@@ -138,7 +138,7 @@ fn git_repo_is_cloned_and_same_tag_updates_code() {
     let manifest_v1 = r#"{
             schema_version: 1,
             manifest: { name: "uvc_camera", tag: "1.0.0", language: "rust" },
-            build: { start_cmd: ["run_v1"] }
+            process: { start_cmd: ["run_v1"] }
         }"#;
     let remote = create_simple_git_repo(manifest_v1, "1.0.0");
 
@@ -155,9 +155,9 @@ fn git_repo_is_cloned_and_same_tag_updates_code() {
         launcher_config,
     );
 
-    let plan = LaunchPlan::from_launch_file(daemon_node_config(), &launch_file, &peppy_dirs)
-        .expect("plan");
-    assert_eq!(plan.node_stack().len(), 2, "daemon + uvc_camera");
+    let plan =
+        LaunchPlan::from_launch_file(core_node_config(), &launch_file, &peppy_dirs).expect("plan");
+    assert_eq!(plan.node_stack().len(), 2, "core node + uvc_camera");
     let deployment = plan
         .report()
         .find_deployment_by_name("uvc_camera")
@@ -166,7 +166,9 @@ fn git_repo_is_cloned_and_same_tag_updates_code() {
     let start_cmd_v1 = deployment
         .node()
         .expect("resolved node config")
-        .build
+        .process
+        .as_ref()
+        .unwrap()
         .start_cmd
         .clone();
     assert_eq!(start_cmd_v1, vec!["run_v1".to_string()]);
@@ -175,7 +177,7 @@ fn git_repo_is_cloned_and_same_tag_updates_code() {
     let manifest_v2 = r#"{
             schema_version: 1,
             manifest: { name: "uvc_camera", tag: "1.0.0", language: "rust" },
-            build: { start_cmd: ["run_v2"] }
+            process: { start_cmd: ["run_v2"] }
         }"#;
 
     let commit_id = push_git_commit(
@@ -193,9 +195,9 @@ fn git_repo_is_cloned_and_same_tag_updates_code() {
     repo.tag("1.0.0", &commit, &signature, "tag", true)
         .expect("retag commit");
 
-    let plan = LaunchPlan::from_launch_file(daemon_node_config(), &launch_file, &peppy_dirs)
-        .expect("plan");
-    assert_eq!(plan.node_stack().len(), 2, "daemon + uvc_camera");
+    let plan =
+        LaunchPlan::from_launch_file(core_node_config(), &launch_file, &peppy_dirs).expect("plan");
+    assert_eq!(plan.node_stack().len(), 2, "core node + uvc_camera");
     let deployment = plan
         .report()
         .find_deployment_by_name("uvc_camera")
@@ -207,7 +209,9 @@ fn git_repo_is_cloned_and_same_tag_updates_code() {
     let start_cmd_v2 = deployment
         .node()
         .expect("resolved node config after update")
-        .build
+        .process
+        .as_ref()
+        .unwrap()
         .start_cmd
         .clone();
 

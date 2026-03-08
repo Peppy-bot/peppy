@@ -5,10 +5,10 @@ edition.workspace = true
 autotests = false
 
 [dependencies]
-pmi = { path = "../pmi-internal", features = ["zenoh"] }
+pmi = { path = "../pmi-internal", features = ["zenoh", "build_zenoh"] }
 config = { path = "../config-internal" }
 peppylib = { path = "../peppylib" }
-daemon-node = { path = "../daemon-node-internal" }
+core-node = { path = "../core-node-internal" }
 node-stack = { path = "../node-stack-internal" }
 bytes = "1"
 serde = { version = "1", features = ["derive"] }
@@ -33,6 +33,9 @@ names-generator2 = "0.2.1"
 rand = "0.10"
 crossterm = "0.29"
 tempfile = { version = "3.8", optional = true }
+
+[build-dependencies]
+build-helpers = { path = "../build-helpers-internal" }
 
 [features]
 default = ["test-support"]

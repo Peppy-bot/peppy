@@ -18,6 +18,9 @@ tempfile = "3"
 # Optional deps
 zenoh = { version = "1.5", optional = true }
 
+[build-dependencies]
+build-helpers = { path = "../build-helpers-internal" }
+
 [dev-dependencies]
 tokio = { version = "1.47", features = [
     "sync",
@@ -31,6 +34,6 @@ serde_json5 = "0.2"
 [features]
 default = ["zenoh"]
 # Feature to enable zenoh messaging backend
-zenoh = ["dep:zenoh", "build_zenoh"]
-# Feature to enable building zenoh from source
-build_zenoh = []
+zenoh = ["dep:zenoh"]
+# Feature to download the pre-built zenohd binary from GitHub releases
+build_zenoh = ["zenoh"]

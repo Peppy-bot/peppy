@@ -5,68 +5,27 @@ from __future__ import annotations
 import os
 import tarfile
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from functions.build import (
-    SUPPORTED_TRIPLES,
-    detect_host_triple,
+    build_and_package,
     find_build_dir,
     find_peppy_binary,
     find_zenohd_binary,
     package_release,
 )
-from functions.cli import ReleaseError
+from functions.cli import RELEASE_TRIPLES, ReleaseError
 
 
-def test_supported_platform_targets_contains_expected_values() -> None:
-    expected = {
+def test_release_triples_contains_expected_values() -> None:
+    expected = (
         "aarch64-apple-darwin",
         "x86_64-unknown-linux-gnu",
-        "x86_64-unknown-linux-musl",
         "aarch64-unknown-linux-gnu",
-        "aarch64-unknown-linux-musl",
-        "armv7-unknown-linux-gnueabihf",
-        "arm-unknown-linux-gnueabihf",
-    }
-    assert SUPPORTED_TRIPLES == expected
-
-
-def test_detect_host_platform_returns_supported_target() -> None:
-    rustc_output = "rustc 1.82.0 (abc123 2025-01-01)\nbinary: rustc\nhost: aarch64-apple-darwin\nrelease: 1.82.0\n"
-    with patch("functions.build.subprocess.run") as mock_run:
-        mock_run.return_value.returncode = 0
-        mock_run.return_value.stdout = rustc_output
-        triple = detect_host_triple()
-    assert triple == "aarch64-apple-darwin"
-
-
-def test_detect_host_platform_rejects_unsupported_target() -> None:
-    rustc_output = (
-        "rustc 1.82.0\nbinary: rustc\nhost: wasm32-unknown-unknown\nrelease: 1.82.0\n"
     )
-    with patch("functions.build.subprocess.run") as mock_run:
-        mock_run.return_value.returncode = 0
-        mock_run.return_value.stdout = rustc_output
-        with pytest.raises(ReleaseError, match="unsupported host target"):
-            detect_host_triple()
-
-
-def test_detect_host_platform_raises_on_rustc_failure() -> None:
-    with patch("functions.build.subprocess.run") as mock_run:
-        mock_run.return_value.returncode = 1
-        mock_run.return_value.stderr = "command not found"
-        with pytest.raises(ReleaseError, match="failed to run"):
-            detect_host_triple()
-
-
-def test_detect_host_platform_raises_without_host_line() -> None:
-    with patch("functions.build.subprocess.run") as mock_run:
-        mock_run.return_value.returncode = 0
-        mock_run.return_value.stdout = "rustc 1.82.0\nbinary: rustc\n"
-        with pytest.raises(ReleaseError, match="could not determine"):
-            detect_host_triple()
+    assert RELEASE_TRIPLES == expected
 
 
 def test_find_peppy_binary_primary_path(tmp_path: Path) -> None:
@@ -121,7 +80,7 @@ def test_find_zenohd_binary_found(tmp_path: Path) -> None:
     assert result == zenohd_path
 
 
-def test_find_zenohd_binary_not_found(tmp_path: Path) -> None:
+def test_find_zenohd_binary_not_found_raises(tmp_path: Path) -> None:
     triple = "aarch64-apple-darwin"
     build_dir = tmp_path / "target" / triple / "release" / "build"
     build_dir.mkdir(parents=True)
@@ -172,13 +131,11 @@ def test_package_release_creates_valid_tarball(tmp_path: Path) -> None:
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
 
-    # Create fake binaries
     peppy_bin = tmp_path / "peppy"
     peppy_bin.write_bytes(b"peppy binary")
     zenohd_bin = tmp_path / "zenohd"
     zenohd_bin.write_bytes(b"zenohd binary")
 
-    # Create fake dependency dirs
     apptainer_dir = tmp_path / "apptainer-install"
     apptainer_dir.mkdir()
     (apptainer_dir / "bin" / "apptainer").parent.mkdir(parents=True)
@@ -197,13 +154,9 @@ def test_package_release_creates_valid_tarball(tmp_path: Path) -> None:
 
     assert artifact.asset_name == f"peppy-{triple}.tgz"
     assert artifact.asset_path.exists()
-    assert artifact.host_triple == triple
+    assert artifact.target_triple == triple
 
-    # Verify tarball contents
     with tarfile.open(artifact.asset_path, "r:gz") as tar:
-        names = sorted(tar.getnames())
-        assert "./bin" in names or "./bin/peppy" in names
-        # Check that essential files are present
         member_names = {m.name for m in tar.getmembers()}
         assert any("bin/peppy" in n for n in member_names)
         assert any("bin/zenohd" in n for n in member_names)
@@ -240,14 +193,7 @@ def test_package_release_creates_tarball_without_lima(tmp_path: Path) -> None:
 
 
 def test_package_release_tarball_matches_install_sh(tmp_path: Path) -> None:
-    """Verify the tarball layout matches what install.sh expects.
-
-    install.sh does: tar -xzf archive -C $TEMP_DIR, then expects:
-      $TEMP_DIR/bin/peppy
-      $TEMP_DIR/bin/zenohd          (optional)
-      $TEMP_DIR/bin/apptainer/...   (optional)
-      $TEMP_DIR/bin/lima/...        (optional, macOS only)
-    """
+    """Verify the tarball layout matches what install.sh expects."""
     triple = "aarch64-apple-darwin"
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
@@ -273,7 +219,6 @@ def test_package_release_tarball_matches_install_sh(tmp_path: Path) -> None:
             triple, repo_root, peppy_bin, zenohd_bin, apptainer_dir, lima_dir
         )
 
-    # Simulate what install.sh does: extract and check expected paths
     extract_dir = tmp_path / "extracted"
     extract_dir.mkdir()
     with tarfile.open(artifact.asset_path, "r:gz") as tar:
@@ -310,3 +255,62 @@ def test_package_release_respects_peppy_dist_dir(tmp_path: Path) -> None:
         )
 
     assert artifact.asset_path.parent == custom_dist
+
+
+def test_build_and_package_rejects_unsupported_triple(tmp_path: Path) -> None:
+    with pytest.raises(ReleaseError, match="unsupported target"):
+        build_and_package("v0.1.0", "wasm32-unknown-unknown", tmp_path)
+
+
+@patch("functions.build.package_release")
+@patch("functions.build.find_build_dir")
+@patch("functions.build.find_zenohd_binary")
+@patch("functions.build.find_peppy_binary")
+@patch("functions.build.cargo_build")
+def test_build_and_package_native_calls_cargo_build(
+    mock_cargo: MagicMock,
+    mock_peppy: MagicMock,
+    mock_zenohd: MagicMock,
+    mock_build_dir: MagicMock,
+    mock_package: MagicMock,
+    tmp_path: Path,
+) -> None:
+    mock_peppy.return_value = tmp_path / "peppy"
+    mock_zenohd.return_value = tmp_path / "zenohd"
+    mock_build_dir.return_value = tmp_path / "apptainer"
+    mock_package.return_value = MagicMock()
+
+    build_and_package("v0.1.0", "aarch64-unknown-linux-gnu", tmp_path)
+
+    mock_cargo.assert_called_once_with(
+        "v0.1.0", "aarch64-unknown-linux-gnu", tmp_path
+    )
+
+
+@patch("functions.build.package_release")
+@patch("functions.build.find_build_dir")
+@patch("functions.build.find_zenohd_binary")
+@patch("functions.build.find_peppy_binary")
+@patch("functions.lima.cargo_build_in_lima")
+def test_build_and_package_with_lima_calls_lima_build(
+    mock_lima_build: MagicMock,
+    mock_peppy: MagicMock,
+    mock_zenohd: MagicMock,
+    mock_build_dir: MagicMock,
+    mock_package: MagicMock,
+    tmp_path: Path,
+) -> None:
+    limactl = tmp_path / "limactl"
+    limactl.write_bytes(b"fake")
+    mock_peppy.return_value = tmp_path / "peppy"
+    mock_zenohd.return_value = tmp_path / "zenohd"
+    mock_build_dir.return_value = tmp_path / "apptainer"
+    mock_package.return_value = MagicMock()
+
+    build_and_package(
+        "v0.1.0", "x86_64-unknown-linux-gnu", tmp_path, limactl=limactl
+    )
+
+    mock_lima_build.assert_called_once_with(
+        limactl, "v0.1.0", "x86_64-unknown-linux-gnu", tmp_path
+    )

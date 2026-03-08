@@ -5,26 +5,26 @@ use tokio::sync::Mutex;
 
 pub const CALLER_INSTANCE_ID: &str = "caller_instance";
 
-pub const TEST_DAEMON_NODE_NAME: &str = "test_daemon_node";
+pub const TEST_CORE_NODE_NAME: &str = "test_core_node";
 pub const TEST_NODE_NAME: &str = "test_node";
 pub const TEST_INSTANCE_ID: &str = "test_instance";
 
 /// Client for sending requests to a test node.
-pub struct DaemonNodeClient {
+pub struct CoreNodeClient {
     pub caller_handle: MessengerHandle,
-    pub daemon_node_name: String,
+    pub core_node_name: String,
     pub instance_id: String,
 }
 
 /// Creates a shared mock messenger and returns a client with a MessengerHandle.
-pub async fn get_client_server() -> (DaemonNodeClient, Arc<Mutex<Messenger>>) {
+pub async fn get_client_server() -> (CoreNodeClient, Arc<Mutex<Messenger>>) {
     let shared_messenger = create_mock_messenger().await;
 
     let caller_handle = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
 
-    let client = DaemonNodeClient {
+    let client = CoreNodeClient {
         caller_handle,
-        daemon_node_name: TEST_DAEMON_NODE_NAME.to_string(),
+        core_node_name: TEST_CORE_NODE_NAME.to_string(),
         instance_id: TEST_INSTANCE_ID.to_string(),
     };
 

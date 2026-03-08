@@ -257,9 +257,9 @@ impl PyNodeRunner {
         self.cached_messenger.clone()
     }
 
-    /// Get the daemon node this instance is bound to.
-    fn bound_daemon_node(&self) -> &str {
-        self.inner.processor().bound_daemon_node()
+    /// Get the core node this instance is bound to.
+    fn bound_core_node(&self) -> &str {
+        self.inner.processor().bound_core_node()
     }
 
     /// Get the instance ID this node is bound to.

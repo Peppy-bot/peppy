@@ -1,4 +1,4 @@
-use daemon_node::encoding::{
+use core_node::encoding::{
     NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAddResult, NodeInfoRequest,
     NodeInfoResponse, NodeSource,
 };
@@ -8,12 +8,19 @@ use std::sync::Arc;
 use std::time::Duration;
 use tracing::info;
 
+use super::TimeoutConfig;
 use super::env::caller_env_overrides;
 use super::source::parse_node_source;
 use super::start::start_instance_async;
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 use crate::terminal::ScrollingOutput;
+
+/// Options for starting a node instance immediately after adding it.
+pub(crate) struct StartAfterAddOptions {
+    pub args: Vec<(String, String)>,
+    pub instance_id: Option<String>,
+}
 
 const CALLER_INSTANCE_ID: &str = "peppy-cli";
 // Timeout for the goal to be accepted (should be fast)
@@ -33,47 +40,34 @@ fn validate_git_ref(git_ref: Option<&str>) -> Result<Option<String>> {
     Ok(git_ref.map(str::to_owned))
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn add_node(
     ctx: &Arc<AppContext>,
     source: String,
     git_ref: Option<String>,
-    run: bool,
-    args: Vec<(String, String)>,
-    instance_id: Option<String>,
-    timeout_secs: u64,
+    start_options: Option<StartAfterAddOptions>,
+    timeouts: TimeoutConfig,
     force: bool,
 ) -> Result<()> {
     crate::commands::block_on(add_node_async(
         ctx,
         source,
         git_ref,
-        run,
-        args,
-        instance_id,
-        timeout_secs,
+        start_options,
+        timeouts,
         force,
     ))
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn add_node_async(
     ctx: &Arc<AppContext>,
     source: String,
     git_ref: Option<String>,
-    run: bool,
-    args: Vec<(String, String)>,
-    instance_id: Option<String>,
-    timeout_secs: u64,
+    start_options: Option<StartAfterAddOptions>,
+    timeouts: TimeoutConfig,
     force: bool,
 ) -> Result<()> {
-    let daemon_state = ctx.read_daemon_state().map_err(|e| {
-        Error::ExecutionFailed(format!(
-            "Failed to read daemon state. Is the peppy daemon running? Error: {}",
-            e
-        ))
-    })?;
-    let daemon_node_name = daemon_state.daemon_node_name.clone();
+    let daemon_state = ctx.read_daemon_state()?;
+    let core_node_name = daemon_state.core_node_name.clone();
     let git_hash = daemon_state.git_hash.clone();
 
     // Validate git_ref and parse the source into a NodeSource
@@ -82,13 +76,13 @@ async fn add_node_async(
 
     info!(
         "Running `add_cmd` for '{}' on daemon '{}'...",
-        source, daemon_node_name
+        source, core_node_name
     );
 
     // Use a separate connection to check for existing instances before connecting with the main handle.
     // This avoids interfering with the action messenger used for send_goal.
     let pre_add_node_info = if !force {
-        fetch_node_info(&daemon_state, &daemon_node_name, node_source.clone())
+        fetch_node_info(&daemon_state, &core_node_name, node_source.clone())
             .await
             .ok()
     } else {
@@ -115,14 +109,15 @@ async fn add_node_async(
         .ok_or_else(|| Error::ExecutionFailed("Failed to connect to daemon".to_string()))?;
 
     // Create and send the goal to start the add action
-    let add_goal = NodeAddGoal::from_source(node_source, git_hash, timeout_secs)
+    // Pass max timeout as the goal timeout for daemon-side busy reporting
+    let add_goal = NodeAddGoal::from_source(node_source, git_hash, timeouts.max_secs)
         .with_env_vars(caller_env_overrides());
     let mut action_handle = add_goal
         .send_goal(
             messenger_handle,
-            &daemon_node_name,
+            &core_node_name,
             CALLER_INSTANCE_ID,
-            Some(&daemon_node_name),
+            Some(&core_node_name),
             None,
             GOAL_TIMEOUT,
         )
@@ -149,24 +144,33 @@ async fn add_node_async(
     const SCROLLING_OUTPUT_LINES: usize = 10;
     let mut scrolling_output = ScrollingOutput::new(SCROLLING_OUTPUT_LINES);
 
-    let result_timeout = Duration::from_secs(timeout_secs);
-    let deadline = tokio::time::Instant::now() + result_timeout;
+    let idle_timeout = Duration::from_secs(timeouts.idle_secs);
+    let absolute_deadline = tokio::time::Instant::now() + Duration::from_secs(timeouts.max_secs);
+    let mut last_activity = tokio::time::Instant::now();
     let add_result = loop {
         // Drain feedback so the publisher doesn't block on a full channel.
         loop {
             let now = tokio::time::Instant::now();
-            if now >= deadline {
+            if now >= absolute_deadline {
                 scrolling_output.clear();
                 return Err(Error::ExecutionFailed(format!(
-                    "Timeout waiting for node_add result after {} seconds. \
-                     Use --timeout <seconds> to increase the timeout.",
-                    timeout_secs
+                    "Timeout: max timeout of {}s exceeded. \
+                     Use --max-timeout <seconds> to increase.",
+                    timeouts.max_secs
                 )));
             }
-            let remaining = deadline - now;
-            let drain_timeout = Duration::from_millis(50).min(remaining);
+            if now.duration_since(last_activity) >= idle_timeout {
+                scrolling_output.clear();
+                return Err(Error::ExecutionFailed(format!(
+                    "Timeout: no output received for {}s. \
+                     Use --idle-timeout <seconds> to increase.",
+                    timeouts.idle_secs
+                )));
+            }
+            let drain_timeout = Duration::from_millis(50);
             match tokio::time::timeout(drain_timeout, action_handle.on_next_feedback()).await {
                 Ok(Ok(msg)) => {
+                    last_activity = tokio::time::Instant::now();
                     let payload = msg.payload();
                     if let Ok(feedback) = NodeAddFeedback::decode(payload.as_ref()) {
                         scrolling_output.add_line(&feedback.line, feedback.is_stderr());
@@ -178,16 +182,23 @@ async fn add_node_async(
         }
 
         let now = tokio::time::Instant::now();
-        if now >= deadline {
+        if now >= absolute_deadline {
             scrolling_output.clear();
             return Err(Error::ExecutionFailed(format!(
-                "Timeout waiting for node_add result after {} seconds. \
-                 Use --timeout <seconds> to increase the timeout.",
-                timeout_secs
+                "Timeout: max timeout of {}s exceeded. \
+                 Use --max-timeout <seconds> to increase.",
+                timeouts.max_secs
             )));
         }
-        let remaining = deadline - now;
-        let poll_timeout = Duration::from_millis(200).min(remaining);
+        if now.duration_since(last_activity) >= idle_timeout {
+            scrolling_output.clear();
+            return Err(Error::ExecutionFailed(format!(
+                "Timeout: no output received for {}s. \
+                 Use --idle-timeout <seconds> to increase.",
+                timeouts.idle_secs
+            )));
+        }
+        let poll_timeout = Duration::from_millis(200);
         match ActionMessenger::request_result(messenger_handle, &action_handle, poll_timeout).await
         {
             Ok(msg) => {
@@ -242,9 +253,9 @@ async fn add_node_async(
         add_result.snapshot_path.to_string_lossy()
     );
 
-    if !run {
+    let Some(start_options) = start_options else {
         return Ok(());
-    }
+    };
 
     let node_name = add_result.node_name.as_deref().ok_or_else(|| {
         Error::ExecutionFailed(
@@ -259,12 +270,12 @@ async fn add_node_async(
 
     start_instance_async(
         messenger_handle,
-        &daemon_node_name,
+        &core_node_name,
         node_name,
         node_tag,
-        &args,
-        instance_id,
-        timeout_secs,
+        &start_options.args,
+        start_options.instance_id,
+        &timeouts,
     )
     .await?;
 
@@ -275,7 +286,7 @@ async fn add_node_async(
 /// This includes the node config, whether it's in the node stack, and running instance names.
 async fn fetch_node_info(
     daemon_state: &crate::daemon_state::DaemonState,
-    daemon_node_name: &str,
+    core_node_name: &str,
     node_source: NodeSource,
 ) -> Result<NodeInfoResponse> {
     // Create a completely fresh connection for this check to avoid
@@ -296,9 +307,9 @@ async fn fetch_node_info(
     request
         .poll(
             &messenger,
-            daemon_node_name,
+            core_node_name,
             CALLER_INSTANCE_ID,
-            daemon_node_name,
+            core_node_name,
             INFO_REQUEST_TIMEOUT,
         )
         .await

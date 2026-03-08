@@ -30,7 +30,7 @@ pub const STUB_NODE_CONFIG: &str = r#"{
     tag: "0.1.0",
     language: "rust"
   },
-  build: {
+  process: {
     start_cmd: ["./target/release/generated_node"]
   }
 }
@@ -81,6 +81,7 @@ pub fn init_cargo_user_node(to_dir: impl AsRef<Path>) {
             .arg("--vcs")
             .arg("none")
             .current_dir(crate_dir)
+            .stdin(Stdio::null())
             .output()
             .expect("failed to invoke cargo init for user node");
     }
@@ -213,6 +214,7 @@ pub fn compile_project(dir: impl AsRef<Path>) {
         .env("CARGO_NET_OFFLINE", "true")
         .env("CARGO_TARGET_DIR", &target_dir)
         .current_dir(dir)
+        .stdin(Stdio::null())
         .output()
         .expect("failed to invoke cargo build on generated crate");
     assert!(
@@ -277,8 +279,15 @@ pub fn run_generate_peppygen_lib_test(
 
     // Generate the library
     let peppy_dirs = PeppyDirs::default();
-    generate_peppygen_lib(language, node_dir, Vec::new(), "test-hash", &peppy_dirs)
-        .expect("failed to generate library");
+    generate_peppygen_lib(
+        language,
+        node_dir,
+        Vec::new(),
+        "test-hash",
+        &peppy_dirs,
+        Default::default(),
+    )
+    .expect("failed to generate library");
 
     // Verify the generated library structure exists
     let peppygen_dir = node_dir.join(PEPPYGEN_OUTPUT_PATH);
@@ -312,9 +321,9 @@ pub fn run_generate_peppygen_lib_test(
 /// Context for waiting on service reachability in tests.
 pub struct WaitContext<'a> {
     pub messenger: &'a MessengerHandle,
-    pub bound_daemon_node: &'a str,
+    pub bound_core_node: &'a str,
     pub caller_instance_id: &'a str,
-    pub target_daemon_node: Option<&'a str>,
+    pub target_core_node: Option<&'a str>,
 }
 
 pub async fn wait_for_service_reachable_or_exit(
@@ -345,11 +354,11 @@ pub async fn wait_for_service_reachable_or_exit(
 
         let reachable = ServiceMessenger::is_reachable(
             ctx.messenger,
-            ctx.bound_daemon_node,
+            ctx.bound_core_node,
             ctx.caller_instance_id,
             target_node_name,
             target_service_name,
-            ctx.target_daemon_node,
+            ctx.target_core_node,
             target_instance_id,
         )
         .await
@@ -400,11 +409,11 @@ pub async fn wait_for_action_service_reachable_or_exit(
 
         let reachable = ActionMessenger::is_reachable(
             ctx.messenger,
-            ctx.bound_daemon_node,
+            ctx.bound_core_node,
             ctx.caller_instance_id,
             target_node_name,
             target_service_name,
-            ctx.target_daemon_node,
+            ctx.target_core_node,
             target_instance_id,
         )
         .await
@@ -465,21 +474,21 @@ pub async fn wait_for_health_service_reachable_or_exit(
 
 pub async fn send_shutdown(
     messenger: &MessengerHandle,
-    bound_daemon_node: &str,
+    bound_core_node: &str,
     sender_instance_id: &str,
     target_node_name: &str,
-    target_daemon_node: Option<&str>,
+    target_core_node: Option<&str>,
     target_instance_id: &str,
     timeout: Duration,
 ) {
     let payload = peppylib::types::Payload::from_static(b"shutdown");
     ServiceMessenger::poll(
         messenger,
-        bound_daemon_node,
+        bound_core_node,
         sender_instance_id,
         target_node_name,
         SHUTDOWN_SERVICE,
-        target_daemon_node,
+        target_core_node,
         Some(target_instance_id),
         payload,
         timeout,
@@ -487,8 +496,8 @@ pub async fn send_shutdown(
     .await
     .unwrap_or_else(|err| {
         panic!(
-            "failed to send shutdown to node={} instance={} (project daemon={}): {}",
-            target_node_name, target_instance_id, bound_daemon_node, err
+            "failed to send shutdown to node={} instance={} (project core node={}): {}",
+            target_node_name, target_instance_id, bound_core_node, err
         )
     });
 }
@@ -497,21 +506,21 @@ pub async fn send_shutdown(
 /// (e.g., the process has already exited).
 pub async fn try_send_shutdown(
     messenger: &MessengerHandle,
-    bound_daemon_node: &str,
+    bound_core_node: &str,
     sender_instance_id: &str,
     target_node_name: &str,
-    target_daemon_node: Option<&str>,
+    target_core_node: Option<&str>,
     target_instance_id: &str,
     timeout: Duration,
 ) {
     let payload = peppylib::types::Payload::from_static(b"shutdown");
     let _ = ServiceMessenger::poll(
         messenger,
-        bound_daemon_node,
+        bound_core_node,
         sender_instance_id,
         target_node_name,
         SHUTDOWN_SERVICE,
-        target_daemon_node,
+        target_core_node,
         Some(target_instance_id),
         payload,
         timeout,
@@ -530,7 +539,7 @@ pub const STUB_PYTHON_NODE_CONFIG: &str = r#"{
     tag: "0.1.0",
     language: "python"
   },
-  build: {
+  process: {
     start_cmd: ["uv", "run", "python", "main.py"]
   }
 }
@@ -565,6 +574,7 @@ pub fn init_python_project_venv(dir: impl AsRef<Path>) {
     let output = Command::new("uv")
         .arg("sync")
         .current_dir(dir.as_ref())
+        .stdin(Stdio::null())
         .output()
         .expect("failed to invoke uv sync on Python project");
     assert!(

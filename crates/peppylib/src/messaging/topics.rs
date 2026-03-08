@@ -36,21 +36,21 @@ impl TopicMessenger {
     #[allow(clippy::too_many_arguments)]
     pub async fn subscribe(
         messenger: &MessengerHandle,
-        as_daemon_node: &str,
+        as_core_node: &str,
         as_instance_id: &str,
         to_node_name: &str,
         to_topic: &str,
-        to_daemon_node: Option<&str>,
+        to_core_node: Option<&str>,
         to_instance_id: Option<&str>,
         qos: QoSProfile,
     ) -> Result<Subscription> {
         let subscription = messenger
             .subscribe_to_topic(
-                as_daemon_node,
+                as_core_node,
                 as_instance_id,
                 to_node_name,
                 to_topic,
-                to_daemon_node,
+                to_core_node,
                 to_instance_id,
                 qos,
             )
@@ -58,10 +58,10 @@ impl TopicMessenger {
         Ok(Subscription::new(subscription))
     }
 
-    /// Publishes a payload to a topic on the specified daemon node.
+    /// Publishes a payload to a topic on the specified core node.
     pub async fn emit(
         messenger: &MessengerHandle,
-        as_daemon_node: &str,
+        as_core_node: &str,
         as_instance_id: &str,
         as_node_name: &str,
         as_topic_name: &str,
@@ -70,7 +70,7 @@ impl TopicMessenger {
     ) -> Result<()> {
         messenger
             .emit_topic_message(
-                as_daemon_node,
+                as_core_node,
                 as_instance_id,
                 as_node_name,
                 as_topic_name,

@@ -17,7 +17,7 @@ use std::{fs, time::Duration};
 use tempfile::TempDir;
 
 // --- Common test constants
-const TEST_DAEMON_NODE: &str = "test_daemon";
+const TEST_CORE_NODE: &str = "test_core";
 const SUBSCRIBER_NODE_NAME: &str = "subscriber_node";
 const SUBSCRIBER_INSTANCE_ID: &str = "subscriber_instance";
 const SHUTDOWN_SENDER_INSTANCE_ID: &str = "test_shutdown_sender";
@@ -119,7 +119,11 @@ async fn services_communication_no_target_instance_id() {
         .unwrap();
     let output_config = copy_config_to_output(&user_node_subscriber, &output_dir_subscriber);
     generator
-        .build(&output_dir_subscriber, &test_peppy_dirs())
+        .build(
+            &output_dir_subscriber,
+            &test_peppy_dirs(),
+            Default::default(),
+        )
         .unwrap();
     fs::remove_file(output_config).unwrap();
     config::fingerprint::create_codegen_fingerprint(
@@ -135,7 +139,7 @@ async fn services_communication_no_target_instance_id() {
             arguments: Default::default(),
         },
         SUBSCRIBER_NODE_NAME,
-        TEST_DAEMON_NODE,
+        TEST_CORE_NODE,
     )
     .unwrap();
     let subscriber_runtime_config_path = temp_dir_subscriber.path().join("peppy_runtime.json5");
@@ -179,7 +183,7 @@ if __name__ == "__main__":
     generator.add_exposed_service(&exposed_service).unwrap();
     let output_config = copy_config_to_output(&user_node_exposer, &output_dir_exposer);
     generator
-        .build(&output_dir_exposer, &test_peppy_dirs())
+        .build(&output_dir_exposer, &test_peppy_dirs(), Default::default())
         .unwrap();
     fs::remove_file(output_config).unwrap();
     config::fingerprint::create_codegen_fingerprint(
@@ -195,7 +199,7 @@ if __name__ == "__main__":
             arguments: Default::default(),
         },
         UVC_CAMERA_NODE_NAME,
-        TEST_DAEMON_NODE,
+        TEST_CORE_NODE,
     )
     .unwrap();
     let exposer_runtime_config_path = temp_dir_exposer.path().join("peppy_runtime.json5");
@@ -258,9 +262,9 @@ if __name__ == "__main__":
         .expect("failed to create messenger for test control");
     let ctx = WaitContext {
         messenger: &messenger,
-        bound_daemon_node: TEST_DAEMON_NODE,
+        bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_daemon_node: Some(TEST_DAEMON_NODE),
+        target_core_node: Some(TEST_CORE_NODE),
     };
 
     // Spawn exposer first so it's ready to handle requests
@@ -307,20 +311,20 @@ if __name__ == "__main__":
     // The subscriber may have already exited after completing the request.
     try_send_shutdown(
         &messenger,
-        TEST_DAEMON_NODE,
+        TEST_CORE_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
         SUBSCRIBER_NODE_NAME,
-        Some(TEST_DAEMON_NODE),
+        Some(TEST_CORE_NODE),
         subscriber_instance_id,
         Duration::from_secs(5),
     )
     .await;
     send_shutdown(
         &messenger,
-        TEST_DAEMON_NODE,
+        TEST_CORE_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
         UVC_CAMERA_NODE_NAME,
-        Some(TEST_DAEMON_NODE),
+        Some(TEST_CORE_NODE),
         exposer_instance_id,
         Duration::from_secs(5),
     )
@@ -407,7 +411,11 @@ async fn services_communication_exposed_service_without_request_body() {
         .unwrap();
     let output_config = copy_config_to_output(&user_node_subscriber, &output_dir_subscriber);
     generator
-        .build(&output_dir_subscriber, &test_peppy_dirs())
+        .build(
+            &output_dir_subscriber,
+            &test_peppy_dirs(),
+            Default::default(),
+        )
         .unwrap();
     fs::remove_file(output_config).unwrap();
     config::fingerprint::create_codegen_fingerprint(
@@ -423,7 +431,7 @@ async fn services_communication_exposed_service_without_request_body() {
             arguments: Default::default(),
         },
         SUBSCRIBER_NODE_NAME,
-        TEST_DAEMON_NODE,
+        TEST_CORE_NODE,
     )
     .unwrap();
     let subscriber_runtime_config_path = temp_dir_subscriber.path().join("peppy_runtime.json5");
@@ -466,7 +474,7 @@ if __name__ == "__main__":
     generator.add_exposed_service(&exposed_service).unwrap();
     let output_config = copy_config_to_output(&user_node_exposer, &output_dir_exposer);
     generator
-        .build(&output_dir_exposer, &test_peppy_dirs())
+        .build(&output_dir_exposer, &test_peppy_dirs(), Default::default())
         .unwrap();
     fs::remove_file(output_config).unwrap();
     config::fingerprint::create_codegen_fingerprint(
@@ -482,7 +490,7 @@ if __name__ == "__main__":
             arguments: Default::default(),
         },
         UVC_CAMERA_NODE_NAME,
-        TEST_DAEMON_NODE,
+        TEST_CORE_NODE,
     )
     .unwrap();
     let exposer_runtime_config_path = temp_dir_exposer.path().join("peppy_runtime.json5");
@@ -529,9 +537,9 @@ if __name__ == "__main__":
         .expect("failed to create messenger for test control");
     let ctx = WaitContext {
         messenger: &messenger,
-        bound_daemon_node: TEST_DAEMON_NODE,
+        bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_daemon_node: Some(TEST_DAEMON_NODE),
+        target_core_node: Some(TEST_CORE_NODE),
     };
 
     // Spawn exposer first so it's ready to handle requests
@@ -574,20 +582,20 @@ if __name__ == "__main__":
 
     send_shutdown(
         &messenger,
-        TEST_DAEMON_NODE,
+        TEST_CORE_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
         SUBSCRIBER_NODE_NAME,
-        Some(TEST_DAEMON_NODE),
+        Some(TEST_CORE_NODE),
         subscriber_instance_id,
         Duration::from_secs(5),
     )
     .await;
     send_shutdown(
         &messenger,
-        TEST_DAEMON_NODE,
+        TEST_CORE_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
         UVC_CAMERA_NODE_NAME,
-        Some(TEST_DAEMON_NODE),
+        Some(TEST_CORE_NODE),
         exposer_instance_id,
         Duration::from_secs(5),
     )
@@ -675,7 +683,11 @@ async fn services_communication_multiple_exposed_instances_same_service_not_targ
         .unwrap();
     let output_config = copy_config_to_output(&user_node_subscriber, &output_dir_subscriber);
     generator
-        .build(&output_dir_subscriber, &test_peppy_dirs())
+        .build(
+            &output_dir_subscriber,
+            &test_peppy_dirs(),
+            Default::default(),
+        )
         .unwrap();
     fs::remove_file(output_config).unwrap();
     config::fingerprint::create_codegen_fingerprint(
@@ -691,7 +703,7 @@ async fn services_communication_multiple_exposed_instances_same_service_not_targ
             arguments: Default::default(),
         },
         SUBSCRIBER_NODE_NAME,
-        TEST_DAEMON_NODE,
+        TEST_CORE_NODE,
     )
     .unwrap();
     let subscriber_runtime_config_path = temp_dir_subscriber.path().join("peppy_runtime.json5");
@@ -735,7 +747,7 @@ if __name__ == "__main__":
     generator.add_exposed_service(&exposed_service).unwrap();
     let output_config = copy_config_to_output(&user_node_exposer1, &output_dir_exposer1);
     generator
-        .build(&output_dir_exposer1, &test_peppy_dirs())
+        .build(&output_dir_exposer1, &test_peppy_dirs(), Default::default())
         .unwrap();
     fs::remove_file(output_config).unwrap();
     config::fingerprint::create_codegen_fingerprint(
@@ -751,7 +763,7 @@ if __name__ == "__main__":
             arguments: Default::default(),
         },
         UVC_CAMERA_NODE_NAME,
-        TEST_DAEMON_NODE,
+        TEST_CORE_NODE,
     )
     .unwrap();
     let exposer1_runtime_config_path = temp_dir_exposer1.path().join("peppy_runtime.json5");
@@ -799,7 +811,7 @@ if __name__ == "__main__":
     generator.add_exposed_service(&exposed_service2).unwrap();
     let output_config = copy_config_to_output(&user_node_exposer2, &output_dir_exposer2);
     generator
-        .build(&output_dir_exposer2, &test_peppy_dirs())
+        .build(&output_dir_exposer2, &test_peppy_dirs(), Default::default())
         .unwrap();
     fs::remove_file(output_config).unwrap();
     config::fingerprint::create_codegen_fingerprint(
@@ -815,7 +827,7 @@ if __name__ == "__main__":
             arguments: Default::default(),
         },
         UVC_CAMERA_NODE_NAME,
-        TEST_DAEMON_NODE,
+        TEST_CORE_NODE,
     )
     .unwrap();
     let exposer2_runtime_config_path = temp_dir_exposer2.path().join("peppy_runtime.json5");
@@ -871,9 +883,9 @@ if __name__ == "__main__":
         .expect("failed to create messenger for test control");
     let ctx = WaitContext {
         messenger: &messenger,
-        bound_daemon_node: TEST_DAEMON_NODE,
+        bound_core_node: TEST_CORE_NODE,
         caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
-        target_daemon_node: Some(TEST_DAEMON_NODE),
+        target_core_node: Some(TEST_CORE_NODE),
     };
 
     // Spawn both exposers first so they're ready to handle requests
@@ -953,30 +965,30 @@ if __name__ == "__main__":
 
     send_shutdown(
         &messenger,
-        TEST_DAEMON_NODE,
+        TEST_CORE_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
         SUBSCRIBER_NODE_NAME,
-        Some(TEST_DAEMON_NODE),
+        Some(TEST_CORE_NODE),
         subscriber_instance_id,
         Duration::from_secs(5),
     )
     .await;
     send_shutdown(
         &messenger,
-        TEST_DAEMON_NODE,
+        TEST_CORE_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
         UVC_CAMERA_NODE_NAME,
-        Some(TEST_DAEMON_NODE),
+        Some(TEST_CORE_NODE),
         exposer1_instance_id,
         Duration::from_secs(5),
     )
     .await;
     send_shutdown(
         &messenger,
-        TEST_DAEMON_NODE,
+        TEST_CORE_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
         UVC_CAMERA_NODE_NAME,
-        Some(TEST_DAEMON_NODE),
+        Some(TEST_CORE_NODE),
         exposer2_instance_id,
         Duration::from_secs(5),
     )

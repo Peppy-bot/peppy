@@ -10,7 +10,7 @@
       "brain"
     ],
   },
-  build: {
+  process: {
     add_cmd: [
       "cargo",
       "build",

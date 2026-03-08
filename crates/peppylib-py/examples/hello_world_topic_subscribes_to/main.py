@@ -13,7 +13,7 @@ async def main():
 
     # Those properties are found in the peppy_launcher.json5 `deployments` array
     node_name = "hello_node"
-    daemon_node = f"{generate_name()}_daemon"
+    core_node = f"{generate_name()}_core"
     instance_id = f"{generate_name()}_receiver"
 
     # Create a messenger for the receiving node.
@@ -30,7 +30,7 @@ async def main():
 
     subscription = await TopicMessenger.subscribe(
         receiver_handle,
-        daemon_node,
+        core_node,
         instance_id,
         node_name,
         topic_name,
@@ -61,7 +61,7 @@ async def main():
                 timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 print(
                     f"[{timestamp}] Received `{payload}` from instance_id `{maybe_msg.instance_id}` "
-                    f"and daemon_node `{maybe_msg.daemon_node}` with key_expr `{maybe_msg.key_expr}`"
+                    f"and core_node `{maybe_msg.core_node}` with key_expr `{maybe_msg.key_expr}`"
                 )
             else:
                 print("Subscription closed by sender.")

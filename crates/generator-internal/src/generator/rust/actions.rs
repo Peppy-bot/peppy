@@ -1,5 +1,5 @@
 use super::deserialization::build_deserialize_fn;
-use super::serialization::{MessageEncodingSpec, build_serialize_payload};
+use super::serialization::MessageEncodingSpec;
 use super::services::{
     ServiceResponseSpec, build_response_payload_tokens, build_result_expr_from_values,
     build_return_type_from_params, deserialize_fields_from_format,
@@ -61,7 +61,7 @@ pub fn build_action_expose_method(
         pub async fn expose(node_runner: &crate::NodeRunner) -> crate::Result<Self> {
             let action = peppylib::ActionMessenger::expose(
                 node_runner.messenger(),
-                node_runner.processor().bound_daemon_node(),
+                node_runner.processor().bound_core_node(),
                 node_runner.processor().bound_instance_id(),
                 node_runner.processor().node_name(),
                 ACTION_NAME,
@@ -87,21 +87,21 @@ pub fn build_action_handle_method(
         quote! {
             let message = request_context.message();
             let payload = message.payload();
-            let daemon_node = message.daemon_node().to_string();
+            let core_node = message.core_node().to_string();
             let instance_id = message.instance_id().to_string();
             #helper_name(
                 payload.as_ref(),
                 &handler,
-                daemon_node,
+                core_node,
                 instance_id,
             )
         }
     } else {
         quote! {
             let message = request_context.message();
-            let daemon_node = message.daemon_node().to_string();
+            let core_node = message.core_node().to_string();
             let instance_id = message.instance_id().to_string();
-            #helper_name(&handler, daemon_node, instance_id)
+            #helper_name(&handler, core_node, instance_id)
         }
     };
 
@@ -149,9 +149,9 @@ pub fn build_action_payload_handler(
         .unwrap_or_else(|| quote!(()));
 
     let request_construction = if request_data_struct.is_some() {
-        quote!(let request = #request_struct { instance_id, daemon_node, data: request_data };)
+        quote!(let request = #request_struct { instance_id, core_node, data: request_data };)
     } else {
-        quote!(let request = #request_struct { instance_id, daemon_node };)
+        quote!(let request = #request_struct { instance_id, core_node };)
     };
 
     let response_serialization = if let Some(spec) = response_spec {
@@ -189,7 +189,7 @@ pub fn build_action_payload_handler(
             fn #handler_name<F>(
                 payload: &[u8],
                 handler: &F,
-                daemon_node: String,
+                core_node: String,
                 instance_id: String,
             ) -> crate::Result<peppylib::Payload>
             where
@@ -207,7 +207,7 @@ pub fn build_action_payload_handler(
         Ok(quote! {
             fn #handler_name<F>(
                 handler: &F,
-                daemon_node: String,
+                core_node: String,
                 instance_id: String,
             ) -> crate::Result<peppylib::Payload>
             where
@@ -259,58 +259,20 @@ pub fn build_action_feedback_emit(
     encoding: Option<&MessageEncodingSpec>,
     label: &str,
 ) -> TokenStream {
-    let mut method_param_tokens = Vec::new();
-    let instance_id_ident = Ident::new("instance_id", Span::call_site());
-    for param in params {
-        if param.ident == instance_id_ident {
-            continue;
-        }
-        let ident = &param.ident;
-        let ty = &param.ty;
-        method_param_tokens.push(quote!(#ident: #ty));
-    }
-
-    let method_signature = if method_param_tokens.is_empty() {
-        quote!(&self)
-    } else {
-        quote!(&self, #(#method_param_tokens),*)
-    };
+    use super::topics::{EmitMethodSpec, build_emit_method};
 
     let label_literal = Literal::string(label);
+    let method_ident = Ident::new("emit_feedback", Span::call_site());
 
-    match encoding {
-        Some(spec) => {
-            let error_context = quote!(format!("{} {}", #label_literal, ACTION_NAME));
-            let serialize_block =
-                build_serialize_payload(&spec.builder_type, &[], &spec.assignments, &error_context);
-
-            quote! {
-                #[allow(clippy::too_many_arguments)]
-                pub async fn emit_feedback(#method_signature) -> crate::Result<()> {
-                    let payload = #serialize_block;
-                    self.feedback_publisher.publish(payload).await?;
-                    Ok(())
-                }
-            }
-        }
-        None => {
-            let ignore_params: Vec<TokenStream> = params
-                .iter()
-                .map(|param| {
-                    let ident = &param.ident;
-                    quote!(let _ = #ident;)
-                })
-                .collect();
-
-            quote! {
-                #[allow(clippy::too_many_arguments)]
-                pub async fn emit_feedback(#method_signature) -> crate::Result<()> {
-                    #(#ignore_params)*
-                    Err(crate::Error::MessageFormatUnavailable {
-                        context: format!("{} {}", #label_literal, ACTION_NAME),
-                    })
-                }
-            }
-        }
-    }
+    build_emit_method(EmitMethodSpec {
+        method_name: &method_ident,
+        params,
+        encoding,
+        receiver: quote!(&self),
+        publish_body: quote! {
+            self.feedback_publisher.publish(payload).await?;
+        },
+        error_context: quote!(format!("{} {}", #label_literal, ACTION_NAME)),
+        suppress_unused: Vec::new(),
+    })
 }
