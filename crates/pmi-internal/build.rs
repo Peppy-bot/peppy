@@ -248,25 +248,18 @@ mod zenoh_build {
                 let extract_dir = cache_dir.join("zenoh-extract");
                 std::fs::create_dir_all(&extract_dir).ok();
 
-                let status = Command::new("unzip")
-                    .args([
-                        "-o",
-                        "-j",
-                        zip_path.to_str().unwrap(),
-                        "zenohd",
-                        "-d",
-                        extract_dir.to_str().unwrap(),
-                    ])
-                    .status()
-                    .expect("Failed to execute unzip");
-
-                assert!(status.success(), "Failed to extract zenohd from zip");
-
+                let file = std::fs::File::open(&zip_path).expect("Failed to open zenoh zip");
+                let mut archive =
+                    zip::ZipArchive::new(file).expect("Failed to read zenoh zip");
+                let mut entry = archive
+                    .by_name("zenohd")
+                    .expect("zenohd not found in zip");
+                let mut buf = Vec::with_capacity(entry.size() as usize);
+                std::io::Read::read_to_end(&mut entry, &mut buf)
+                    .expect("Failed to read zenohd from zip");
                 let extracted_binary = extract_dir.join("zenohd");
-                assert!(
-                    extracted_binary.exists(),
-                    "zenohd binary not found in extracted zip"
-                );
+                std::fs::write(&extracted_binary, &buf)
+                    .expect("Failed to write extracted zenohd");
 
                 // Cache the binary
                 std::fs::copy(&extracted_binary, &cached_zenoh_path)
