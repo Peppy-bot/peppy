@@ -2860,6 +2860,7 @@ dependencies = [
  "tokio",
  "tracing",
  "zenoh",
+ "zip",
 ]
 
 [[package]]
