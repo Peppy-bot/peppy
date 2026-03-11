@@ -8,4 +8,4 @@
 
  1. Reads the `peppy.json5`
  2. Exposes the node to the `peppy` daemon that responds with an acknoledgement
- 3. If a `subscribes_to` section is defined, poll the `peppy` daemon to resolve the expected input type of the `topic`/`services`/`nodes`.
+ 3. If a `consumes` section is defined, poll the `peppy` daemon to resolve the expected input type of the `topic`/`services`/`nodes`.

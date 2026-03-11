@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use config::consts::PEPPYGEN_OUTPUT_PATH;
 use config::node::{
-    ExposedTopic, Name as ConfigName, NodeConfigParser, SubscribedTopic, SubscribesTo, Toolchain,
+    ExposedTopic, Name as ConfigName, NodeConfigParser, ConsumedTopic, Consumes, Toolchain,
 };
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands, NodeName};
@@ -50,10 +50,10 @@ fn make_consumer_depend_on_provider(
 
     consumer_cfg.process.as_mut().unwrap().add_cmd = None;
 
-    consumer_cfg.interfaces.subscribes_to = Some(SubscribesTo {
-        topics: Some(vec![SubscribedTopic {
+    consumer_cfg.interfaces.consumes = Some(Consumes {
+        topics: Some(vec![ConsumedTopic {
             id: ConfigName::new(format!("{consumer_name}_{topic_name}"))
-                .expect("subscribed topic id should be valid"),
+                .expect("consumed topic id should be valid"),
             node: provider_name.to_string(),
             name: topic_name.to_string(),
             tag: "0.1.0".to_string(),

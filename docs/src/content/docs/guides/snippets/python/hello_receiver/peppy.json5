@@ -17,7 +17,7 @@
     ]
   },
   interfaces: {
-    subscribes_to: {
+    consumes: {
       topics: [
         {
           id: "hello_world_param_subscriber", // subscriber_id, up to you to decide

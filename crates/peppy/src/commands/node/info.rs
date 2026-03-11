@@ -99,8 +99,8 @@ fn print_node_info(response: &NodeInfoResponse) {
         println!("Status:    Not in node stack");
     }
 
-    // Dependencies (extracted from subscribes_to interfaces)
-    if let Some(subscribes) = config.interfaces.subscribes_to.as_ref() {
+    // Dependencies (extracted from consumes interfaces)
+    if let Some(subscribes) = config.interfaces.consumes.as_ref() {
         let mut dependencies: BTreeSet<&str> = BTreeSet::new();
 
         if let Some(topics) = &subscribes.topics {
@@ -171,14 +171,14 @@ fn print_node_info(response: &NodeInfoResponse) {
         }
     }
 
-    if let Some(subscribes) = config.interfaces.subscribes_to.as_ref() {
+    if let Some(subscribes) = config.interfaces.consumes.as_ref() {
         let has_content = subscribes.topics.as_ref().is_some_and(|t| !t.is_empty())
             || subscribes.services.as_ref().is_some_and(|s| !s.is_empty())
             || subscribes.actions.as_ref().is_some_and(|a| !a.is_empty());
 
         if has_content {
             println!();
-            println!("Subscribed Interfaces");
+            println!("Consumed Interfaces");
             println!("{}", "-".repeat(50));
 
             if let Some(topics) = &subscribes.topics

@@ -255,42 +255,42 @@ fn sanitize_python_module_name(raw: &str) -> String {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum ModuleCategory {
     ExposedTopics,
-    SubscribedTopics,
+    ConsumedTopics,
     ExposedServices,
-    SubscribedServices,
+    ConsumedServices,
     ExposedActions,
-    SubscribedActions,
+    ConsumedActions,
 }
 
 impl ModuleCategory {
     const ALL: [Self; 6] = [
         Self::ExposedTopics,
-        Self::SubscribedTopics,
+        Self::ConsumedTopics,
         Self::ExposedServices,
-        Self::SubscribedServices,
+        Self::ConsumedServices,
         Self::ExposedActions,
-        Self::SubscribedActions,
+        Self::ConsumedActions,
     ];
 
     fn from_kind(kind: InterfaceKind) -> Self {
         match kind {
             InterfaceKind::ExposedTopic => Self::ExposedTopics,
-            InterfaceKind::SubscribedTopic => Self::SubscribedTopics,
+            InterfaceKind::ConsumedTopic => Self::ConsumedTopics,
             InterfaceKind::ExposedService => Self::ExposedServices,
-            InterfaceKind::SubscribedService => Self::SubscribedServices,
+            InterfaceKind::ConsumedService => Self::ConsumedServices,
             InterfaceKind::ExposedAction => Self::ExposedActions,
-            InterfaceKind::SubscribedAction => Self::SubscribedActions,
+            InterfaceKind::ConsumedAction => Self::ConsumedActions,
         }
     }
 
     fn dir_name(self) -> &'static str {
         match self {
             Self::ExposedTopics => "exposed_topics",
-            Self::SubscribedTopics => "subscribed_topics",
+            Self::ConsumedTopics => "consumed_topics",
             Self::ExposedServices => "exposed_services",
-            Self::SubscribedServices => "subscribed_services",
+            Self::ConsumedServices => "consumed_services",
             Self::ExposedActions => "exposed_actions",
-            Self::SubscribedActions => "subscribed_actions",
+            Self::ConsumedActions => "consumed_actions",
         }
     }
 }

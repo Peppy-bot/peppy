@@ -5,7 +5,7 @@ use super::serialization;
 use super::type_mapping::{collect_fields_from_format, qos_profile_python, uses_optional};
 use crate::error::Result;
 use crate::generator::naming::sanitize_component;
-use config::node::{ExposedTopic, MessageFormat, SubscribedTopic};
+use config::node::{ExposedTopic, MessageFormat, ConsumedTopic};
 
 pub(crate) fn capnp_loader_fn_name(schema_info: &PythonSchemaInfo) -> String {
     format!("_{}_capnp", schema_info.file_stem)
@@ -126,8 +126,8 @@ pub fn build_exposed_topic(
 }
 
 /// Generates Python code for a subscribed (receiving) topic.
-pub fn build_subscribed_topic(
-    topic: &SubscribedTopic,
+pub fn build_consumed_topic(
+    topic: &ConsumedTopic,
     arguments: &MessageFormat,
     schema_info: &PythonSchemaInfo,
 ) -> Result<String> {
@@ -196,8 +196,8 @@ pub fn build_subscribed_topic(
     Ok(builder.build())
 }
 
-/// Returns the module label for a subscribed topic artifact.
-pub fn subscribed_topic_module_label(topic: &SubscribedTopic) -> String {
+/// Returns the module label for a consumed topic artifact.
+pub fn consumed_topic_module_label(topic: &ConsumedTopic) -> String {
     let node_component = sanitize_component(&topic.node);
     let topic_component = sanitize_component(&topic.name);
 

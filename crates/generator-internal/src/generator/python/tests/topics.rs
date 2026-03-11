@@ -1,5 +1,5 @@
 use super::*;
-use config::node::{ExposedTopic, MessageFormat, PeppygenLanguage, SubscribedTopic};
+use config::node::{ExposedTopic, MessageFormat, PeppygenLanguage, ConsumedTopic};
 
 const EXPOSED_TOPIC_EXAMPLE: &str = r#"
 {
@@ -151,7 +151,7 @@ fn parse_exposed_topic(example: &str) -> ExposedTopic {
     serde_json5::from_str(example).unwrap()
 }
 
-fn parse_subscribed_topic(example: &str) -> SubscribedTopic {
+fn parse_consumed_topic(example: &str) -> ConsumedTopic {
     serde_json5::from_str(example).unwrap()
 }
 
@@ -382,12 +382,12 @@ fn expose_topic_rejects_fixed_string_array() {
 /// In the case of a topic, a "subscribed" topic is an entity that expects to receive messages
 /// from another entity.
 #[test]
-fn subscribed_to_topic() {
-    let topic = parse_subscribed_topic(SUBSCRIBED_TOPIC_EXAMPLE1);
+fn consumed_topic() {
+    let topic = parse_consumed_topic(SUBSCRIBED_TOPIC_EXAMPLE1);
     let format = parse_message_format(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE1);
 
     let mut generator = PythonGenerator::new();
-    generator.add_subscribed_topic(&topic, format).unwrap();
+    generator.add_consumed_topic(&topic, format).unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
         artifacts.len(),
@@ -497,12 +497,12 @@ fn subscribed_to_topic() {
 }
 
 #[test]
-fn subscribed_topic_escapes_python_keyword_fields() {
-    let topic = parse_subscribed_topic(SUBSCRIBED_TOPIC_EXAMPLE_KEYWORDS);
+fn consumed_topic_escapes_python_keyword_fields() {
+    let topic = parse_consumed_topic(SUBSCRIBED_TOPIC_EXAMPLE_KEYWORDS);
     let format = parse_message_format(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE_KEYWORDS);
 
     let mut generator = PythonGenerator::new();
-    generator.add_subscribed_topic(&topic, format).unwrap();
+    generator.add_consumed_topic(&topic, format).unwrap();
     let rendered = render_artifacts(generator.into_artifacts())
         .into_iter()
         .next()
@@ -520,19 +520,19 @@ fn subscribed_topic_escapes_python_keyword_fields() {
 }
 
 #[test]
-fn subscribed_to_two_topics_same_node() {
-    let video_topic = parse_subscribed_topic(SUBSCRIBED_TOPIC_EXAMPLE1);
+fn consumed_two_topics_same_node() {
+    let video_topic = parse_consumed_topic(SUBSCRIBED_TOPIC_EXAMPLE1);
     let video_format = parse_message_format(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE1);
 
-    let sound_topic = parse_subscribed_topic(SUBSCRIBED_TOPIC_EXAMPLE2);
+    let sound_topic = parse_consumed_topic(SUBSCRIBED_TOPIC_EXAMPLE2);
     let sound_format = parse_message_format(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE2);
 
     let mut generator = PythonGenerator::new();
     generator
-        .add_subscribed_topic(&video_topic, video_format)
+        .add_consumed_topic(&video_topic, video_format)
         .unwrap();
     generator
-        .add_subscribed_topic(&sound_topic, sound_format)
+        .add_consumed_topic(&sound_topic, sound_format)
         .unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(

@@ -18,7 +18,7 @@ fn service_dependency_resolved_when_dependency_added_first() {
               start_cmd: ["brain"]
             },
             interfaces: {
-                subscribes_to: {
+                consumes: {
                     services: [
                         {
                           id: "reset_sensor_sub",
@@ -127,7 +127,7 @@ fn service_dependency_fails_when_dependency_is_missing() {
               start_cmd: ["brain"]
             },
             interfaces: {
-                subscribes_to: {
+                consumes: {
                     services: [
                         {
                           id: "reset_sensor_sub",
@@ -175,7 +175,7 @@ fn service_dependency_fails_when_service_not_exposed_by_dependency() {
               start_cmd: ["brain"]
             },
             interfaces: {
-                subscribes_to: {
+                consumes: {
                     services: [
                         {
                           id: "reset_sensor_sub",

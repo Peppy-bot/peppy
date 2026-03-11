@@ -6,7 +6,7 @@ use crate::helpers::{
 use config::consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME};
 use config::runtime::NodeInstance;
 use config::{
-    node::{ExposedTopic, MessageFormat, SubscribedTopic},
+    node::{ExposedTopic, MessageFormat, ConsumedTopic},
     peppy_config::Name,
     runtime::RuntimeConfig,
 };
@@ -82,14 +82,14 @@ async fn topics_communication() {
     // --- Subscriber project
     let subscriber_instance_id = SUBSCRIBER_INSTANCE_ID;
     let temp_dir_proj2 = TempDir::new().unwrap();
-    let subscribed_topic: SubscribedTopic =
+    let consumed_topic: ConsumedTopic =
         serde_json5::from_str(SUBSCRIBED_TOPIC_EXAMPLE).unwrap();
     let subscribed_format: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE).unwrap();
     let (mut generator, subscriber_dir, user_node_subscriber, peppy_node_config_path) =
         init_test_env::<generator::RustGenerator>(&temp_dir_proj2, STUB_NODE_CONFIG);
     generator
-        .add_subscribed_topic(&subscribed_topic, subscribed_format)
+        .add_consumed_topic(&consumed_topic, subscribed_format)
         .unwrap();
     let output_config = copy_config_to_output(&user_node_subscriber, &subscriber_dir);
     generator
@@ -121,7 +121,7 @@ async fn topics_communication() {
     // TODO: An exit signal should be sent to the subscriber to terminate the process
     let subscriber_main = r#"
 use peppygen::NodeBuilder;
-use peppygen::subscribed_topics::uvc_camera_video_stream::on_next_message_received;
+use peppygen::consumed_topics::uvc_camera_video_stream::on_next_message_received;
 use peppygen::Result;
 
 fn main() -> Result<()> {

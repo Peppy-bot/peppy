@@ -285,7 +285,7 @@ async fn listen_for_node_sync_missing_dependency_fails() {
                     services: [],
                     actions: [],
                 },
-                subscribes_to: {
+                consumes: {
                     topics: [
                         {
                             id: "camera_front",
@@ -358,7 +358,7 @@ async fn listen_for_node_sync_multiple_missing_dependencies_fails() {
                     services: [],
                     actions: [],
                 },
-                subscribes_to: {
+                consumes: {
                     topics: [
                         {
                             id: "camera_front",
@@ -487,7 +487,7 @@ async fn listen_for_node_sync_generates_rust_interfaces() {
                     services: [],
                     actions: [],
                 },
-                subscribes_to: {
+                consumes: {
                     topics: [],
                 },
             },
@@ -561,7 +561,7 @@ async fn listen_for_node_sync_generates_rust_interfaces() {
                     services: [],
                     actions: [],
                 },
-                subscribes_to: {
+                consumes: {
                     topics: [
                         {
                           id: "camera_front",
@@ -629,8 +629,8 @@ async fn listen_for_node_sync_generates_rust_interfaces() {
     let brain_lib_rs = fs::read_to_string(&brain_lib_rs_path).expect("failed to read lib.rs");
     // The generated code should include standard peppygen modules
     assert!(
-        brain_lib_rs.contains("pub mod subscribed_topics"),
-        "lib.rs should contain subscribed_topics module, got:\n{}",
+        brain_lib_rs.contains("pub mod consumed_topics"),
+        "lib.rs should contain consumed_topics module, got:\n{}",
         brain_lib_rs
     );
     assert!(
@@ -639,19 +639,19 @@ async fn listen_for_node_sync_generates_rust_interfaces() {
         brain_lib_rs
     );
 
-    let subscribed_topic_path = brain_peppygen_dir
+    let consumed_topic_path = brain_peppygen_dir
         .join("src")
-        .join("subscribed_topics")
+        .join("consumed_topics")
         .join("uvc_camera_video_stream.rs");
     assert!(
-        subscribed_topic_path.exists(),
+        consumed_topic_path.exists(),
         "peppygen uvc_camera_video_stream.rs should exist at {}",
-        subscribed_topic_path.display()
+        consumed_topic_path.display()
     );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_sync_generates_rust_subscribed_service_interfaces() {
+async fn listen_for_node_sync_generates_rust_consumed_service_interfaces() {
     let started_core_node = start_core_node_with_mock_messenger().await;
 
     let uvc_camera_node_dir = tempdir().expect("failed to create temp node directory");
@@ -752,7 +752,7 @@ async fn listen_for_node_sync_generates_rust_subscribed_service_interfaces() {
                     services: [],
                     actions: [],
                 },
-                subscribes_to: {
+                consumes: {
                     services: [
                         {
                           id: "uvc_camera_enable_camera",
@@ -791,19 +791,19 @@ async fn listen_for_node_sync_generates_rust_subscribed_service_interfaces() {
         brain_peppygen_dir.display()
     );
 
-    let subscribed_service_path = brain_peppygen_dir
+    let consumed_service_path = brain_peppygen_dir
         .join("src")
-        .join("subscribed_services")
+        .join("consumed_services")
         .join("uvc_camera_enable_camera.rs");
     assert!(
-        subscribed_service_path.exists(),
+        consumed_service_path.exists(),
         "peppygen uvc_camera_enable_camera.rs should exist at {}",
-        subscribed_service_path.display()
+        consumed_service_path.display()
     );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_sync_generates_rust_subscribed_topic_interfaces() {
+async fn listen_for_node_sync_generates_rust_consumed_topic_interfaces() {
     let started_core_node = start_core_node_with_mock_messenger().await;
 
     let uvc_camera_node_dir = tempdir().expect("failed to create temp node directory");
@@ -906,7 +906,7 @@ async fn listen_for_node_sync_generates_rust_subscribed_topic_interfaces() {
                     services: [],
                     actions: [],
                 },
-                subscribes_to: {
+                consumes: {
                     topics: [
                         {
                           id: "camera_front",
@@ -945,19 +945,19 @@ async fn listen_for_node_sync_generates_rust_subscribed_topic_interfaces() {
         brain_peppygen_dir.display()
     );
 
-    let subscribed_topic_path = brain_peppygen_dir
+    let consumed_topic_path = brain_peppygen_dir
         .join("src")
-        .join("subscribed_topics")
+        .join("consumed_topics")
         .join("uvc_camera_video_stream.rs");
     assert!(
-        subscribed_topic_path.exists(),
+        consumed_topic_path.exists(),
         "peppygen uvc_camera_video_stream.rs should exist at {}",
-        subscribed_topic_path.display()
+        consumed_topic_path.display()
     );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_sync_generates_rust_subscribed_action_interfaces() {
+async fn listen_for_node_sync_generates_rust_consumed_action_interfaces() {
     let started_core_node = start_core_node_with_mock_messenger().await;
 
     let action_server_node_dir = tempdir().expect("failed to create temp node directory");
@@ -1066,7 +1066,7 @@ async fn listen_for_node_sync_generates_rust_subscribed_action_interfaces() {
                     services: [],
                     actions: [],
                 },
-                subscribes_to: {
+                consumes: {
                     actions: [
                         {
                           id: "brain_move_arm",
@@ -1106,14 +1106,14 @@ async fn listen_for_node_sync_generates_rust_subscribed_action_interfaces() {
         controller_peppygen_dir.display()
     );
 
-    let subscribed_action_path = controller_peppygen_dir
+    let consumed_action_path = controller_peppygen_dir
         .join("src")
-        .join("subscribed_actions")
+        .join("consumed_actions")
         .join("brain_move_arm.rs");
     assert!(
-        subscribed_action_path.exists(),
+        consumed_action_path.exists(),
         "peppygen brain_move_arm.rs should exist at {}",
-        subscribed_action_path.display()
+        consumed_action_path.display()
     );
 }
 

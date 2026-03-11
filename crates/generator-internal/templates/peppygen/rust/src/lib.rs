@@ -4,9 +4,9 @@ pub mod capnp;
 pub mod exposed_actions;
 pub mod exposed_services;
 pub mod exposed_topics;
-pub mod subscribed_actions;
-pub mod subscribed_services;
-pub mod subscribed_topics;
+pub mod consumed_actions;
+pub mod consumed_services;
+pub mod consumed_topics;
 
 pub use parameters::Parameters;
 pub use peppylib::config::QoSProfile;

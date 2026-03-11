@@ -19,7 +19,7 @@
     video_duration_seconds: "u32"
   },
   interfaces: {
-    subscribes_to: {
+    consumes: {
       topics: [
         {
           id: "camera_stream",

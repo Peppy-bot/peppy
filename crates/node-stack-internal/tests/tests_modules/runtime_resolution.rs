@@ -754,7 +754,7 @@ fn node_stack_wires_dependencies_for_dependants() {
               start_cmd: ["brain"]
             },
             interfaces: {
-                subscribes_to: {
+                consumes: {
                     services: [
                         {
                           id: "reset_sensor_sub",
@@ -800,7 +800,7 @@ fn dependency_fails_when_node_name_mismatches() {
               start_cmd: ["brain"]
             },
             interfaces: {
-                subscribes_to: {
+                consumes: {
                     services: [
                         {
                           id: "reset_sensor_sub",
@@ -891,7 +891,7 @@ fn dependency_fails_when_node_tag_mismatches() {
               start_cmd: ["brain"]
             },
             interfaces: {
-                subscribes_to: {
+                consumes: {
                     services: [
                         {
                           id: "reset_sensor_sub",
@@ -1003,7 +1003,7 @@ fn overwriting_existing_node_fails_if_node_has_dependencies() {
               start_cmd: ["brain"]
             },
             interfaces: {
-                subscribes_to: {
+                consumes: {
                     services: [
                         {
                           id: "reset_sensor_sub",
@@ -1186,7 +1186,7 @@ fn updating_start_cmd_succeeds_even_when_node_has_dependents() {
               start_cmd: ["brain"]
             },
             interfaces: {
-                subscribes_to: {
+                consumes: {
                     services: [
                         {
                           id: "reset_sensor_sub",

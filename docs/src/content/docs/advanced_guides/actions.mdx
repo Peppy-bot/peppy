@@ -98,7 +98,7 @@ Each action defines a `goal_service`, a `feedback_topic`, and a `result_service`
         }
       ],
     },
-    subscribes_to: {
+    consumes: {
       topics: [],
       services: [],
       actions: [],
@@ -206,9 +206,9 @@ loop {
 }
 ```
 
-## Subscribing to an action
+## Consuming an action
 
-A node that sends goals declares its subscriptions under `interfaces.subscribes_to.actions`:
+A node that sends goals declares what it consumes under `interfaces.consumes.actions`:
 
 ```json5
 {
@@ -223,12 +223,12 @@ A node that sends goals declares its subscriptions under `interfaces.subscribes_
     start_cmd: ["./target/release/controller"]
   },
   interfaces: {
-    subscribes_to: {
+    consumes: {
       topics: [],
       services: [],
       actions: [
         {
-          id: "brain_move_arm",  // Your chosen identifier for this subscription
+          id: "brain_move_arm",  // Your chosen identifier for this consumed action
           node: "brain",          // Target node name
           name: "move_arm",       // Action name on that node
           tag: "0.1.0",           // Target node tag/version
@@ -245,11 +245,11 @@ The `node add` and `node sync` commands require the target node to already be in
 
 ### Firing a goal
 
-The code generator creates a module for each subscribed action under `peppygen::subscribed_actions`.
+The code generator creates a module for each consumed action under `peppygen::consumed_actions`.
 Use `fire_goal` to send a goal, then listen for feedback and request the result:
 
 ```rust
-use peppygen::subscribed_actions::brain_move_arm;
+use peppygen::consumed_actions::brain_move_arm;
 use peppygen::{NodeBuilder, Parameters, QoSProfile, Result};
 use std::time::Duration;
 

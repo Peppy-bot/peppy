@@ -8,6 +8,6 @@ pub use parse::NodeConfigParser;
 pub use types::{
     ArrayKind, ArraySchema, CallbackNameError, ContainerConfig, ExposedAction, ExposedService,
     ExposedTopic, InterfaceKind, Interfaces, Manifest, MessageFormat, Name, NodeConfig,
-    PeppygenLanguage, PrimitiveSchema, Process, QoSProfile, SchemaType, SubscribedAction,
-    SubscribedService, SubscribedTopic, SubscribesTo, Toolchain, TypeToken,
+    PeppygenLanguage, PrimitiveSchema, Process, QoSProfile, SchemaType, ConsumedAction,
+    ConsumedService, ConsumedTopic, Consumes, Toolchain, TypeToken,
 };

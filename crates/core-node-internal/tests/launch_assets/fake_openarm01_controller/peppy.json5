@@ -98,7 +98,7 @@
         }
       ],
     },
-    subscribes_to: {
+    consumes: {
       topics: [],
       services: [],
       actions: [],

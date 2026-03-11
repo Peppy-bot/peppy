@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use peppygen::subscribed_topics::hello_world_param_message_stream;
+use peppygen::consumed_topics::hello_world_param_message_stream;
 use peppygen::{NodeBuilder, NodeRunner, Parameters, Result};
 
 fn main() -> Result<()> {

@@ -7,11 +7,11 @@ use crate::helpers::{
 use config::consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME};
 use config::runtime::NodeInstance;
 use config::{
-    node::{ExposedAction, ExposedService, MessageFormat, SubscribedAction},
+    node::{ExposedAction, ExposedService, MessageFormat, ConsumedAction},
     peppy_config::Name,
     runtime::RuntimeConfig,
 };
-use generator::{LanguageGenerator, SubscribedActionMessage};
+use generator::{LanguageGenerator, ConsumedActionMessage};
 use std::path::Path;
 use std::{fs, time::Duration};
 use tempfile::TempDir;
@@ -140,7 +140,7 @@ async fn actions_communication() {
     // --- Subscriber (client) project
     let subscriber_instance_id = SUBSCRIBER_INSTANCE_ID;
     let temp_dir_subscriber = TempDir::new().unwrap();
-    let subscribed_action: SubscribedAction =
+    let consumed_action: ConsumedAction =
         serde_json5::from_str(SUBSCRIBED_ACTION_EXAMPLE).unwrap();
     let goal_request_format: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_FORMAT).unwrap();
@@ -150,7 +150,7 @@ async fn actions_communication() {
         serde_json5::from_str(SUBSCRIBED_ACTION_FEEDBACK_FORMAT).unwrap();
     let result_response_format: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_ACTION_RESULT_FORMAT).unwrap();
-    let action_messages = SubscribedActionMessage {
+    let action_messages = ConsumedActionMessage {
         goal_request: Some(goal_request_format),
         goal_response: Some(goal_response_format),
         feedback: Some(feedback_format),
@@ -162,7 +162,7 @@ async fn actions_communication() {
     let flow_done_service: ExposedService =
         serde_json5::from_str(EXPOSED_ACTION_FLOW_DONE_SERVICE_EXAMPLE).unwrap();
     generator
-        .add_subscribed_action(&subscribed_action, &action_messages)
+        .add_consumed_action(&consumed_action, &action_messages)
         .unwrap();
     generator.add_exposed_service(&flow_done_service).unwrap();
     let output_config = copy_config_to_output(&user_node_subscriber, &output_dir_subscriber);
@@ -200,7 +200,7 @@ async fn actions_communication() {
 import asyncio
 from peppygen import NodeBuilder, QoSProfile
 from peppygen.exposed_services import move_arm_flow_done
-from peppygen.subscribed_actions import brain_move_arm
+from peppygen.consumed_actions import brain_move_arm
 
 async def run_subscriber(node_runner):
     request = brain_move_arm.GoalRequest(arm_id=7, desired_position=[10, 20, 30])
@@ -472,7 +472,7 @@ async fn actions_communication_cancel_goal() {
     // --- Subscriber (client) project
     let subscriber_instance_id = SUBSCRIBER_INSTANCE_ID;
     let temp_dir_subscriber = TempDir::new().unwrap();
-    let subscribed_action: SubscribedAction =
+    let consumed_action: ConsumedAction =
         serde_json5::from_str(SUBSCRIBED_ACTION_EXAMPLE).unwrap();
     let goal_request_format: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_FORMAT).unwrap();
@@ -482,7 +482,7 @@ async fn actions_communication_cancel_goal() {
         serde_json5::from_str(SUBSCRIBED_ACTION_FEEDBACK_FORMAT).unwrap();
     let result_response_format: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_ACTION_RESULT_FORMAT).unwrap();
-    let action_messages = SubscribedActionMessage {
+    let action_messages = ConsumedActionMessage {
         goal_request: Some(goal_request_format),
         goal_response: Some(goal_response_format),
         feedback: Some(feedback_format),
@@ -494,7 +494,7 @@ async fn actions_communication_cancel_goal() {
     let flow_done_service: ExposedService =
         serde_json5::from_str(EXPOSED_ACTION_CANCEL_FLOW_DONE_SERVICE_EXAMPLE).unwrap();
     generator
-        .add_subscribed_action(&subscribed_action, &action_messages)
+        .add_consumed_action(&consumed_action, &action_messages)
         .unwrap();
     generator.add_exposed_service(&flow_done_service).unwrap();
     let output_config = copy_config_to_output(&user_node_subscriber, &output_dir_subscriber);
@@ -532,7 +532,7 @@ async fn actions_communication_cancel_goal() {
 import asyncio
 from peppygen import NodeBuilder, QoSProfile
 from peppygen.exposed_services import move_arm_cancel_flow_done
-from peppygen.subscribed_actions import brain_move_arm
+from peppygen.consumed_actions import brain_move_arm
 
 async def run_subscriber(node_runner):
     request = brain_move_arm.GoalRequest(arm_id=7, desired_position=[10, 20, 30])

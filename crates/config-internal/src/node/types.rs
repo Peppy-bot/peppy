@@ -379,13 +379,13 @@ pub struct Exposes {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
-pub struct SubscribesTo {
+pub struct Consumes {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub topics: Option<Vec<SubscribedTopic>>,
+    pub topics: Option<Vec<ConsumedTopic>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub services: Option<Vec<SubscribedService>>,
+    pub services: Option<Vec<ConsumedService>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub actions: Option<Vec<SubscribedAction>>,
+    pub actions: Option<Vec<ConsumedAction>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
@@ -435,11 +435,11 @@ pub struct ExposedAction {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct SubscribedTopic {
+pub struct ConsumedTopic {
     pub id: Name,
-    #[serde(deserialize_with = "deserialize_subscribed_topic_node")]
+    #[serde(deserialize_with = "deserialize_consumed_topic_node")]
     pub node: String,
-    #[serde(deserialize_with = "deserialize_subscribed_topic_name")]
+    #[serde(deserialize_with = "deserialize_consumed_topic_name")]
     pub name: String,
     #[serde(default)]
     pub tag: String,
@@ -447,10 +447,10 @@ pub struct SubscribedTopic {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct SubscribedService {
+pub struct ConsumedService {
     pub id: Name,
-    /// A subscribed service has to specify to which node it wants to connect to
-    #[serde(deserialize_with = "deserialize_subscribed_service_node")]
+    /// A consumed service has to specify to which node it wants to connect to
+    #[serde(deserialize_with = "deserialize_consumed_service_node")]
     pub node: String,
     #[serde(default)]
     pub name: String,
@@ -460,7 +460,7 @@ pub struct SubscribedService {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct SubscribedAction {
+pub struct ConsumedAction {
     pub id: Name,
     #[serde(default)]
     pub node: String,
@@ -491,25 +491,25 @@ impl Default for ActionServiceEndpoint {
     }
 }
 
-fn deserialize_subscribed_topic_node<'de, D>(deserializer: D) -> Result<String, D::Error>
+fn deserialize_consumed_topic_node<'de, D>(deserializer: D) -> Result<String, D::Error>
 where
     D: Deserializer<'de>,
 {
-    deserialize_non_empty_identifier(deserializer, "SubscribedTopic.node")
+    deserialize_non_empty_identifier(deserializer, "ConsumedTopic.node")
 }
 
-fn deserialize_subscribed_topic_name<'de, D>(deserializer: D) -> Result<String, D::Error>
+fn deserialize_consumed_topic_name<'de, D>(deserializer: D) -> Result<String, D::Error>
 where
     D: Deserializer<'de>,
 {
-    deserialize_non_empty_identifier(deserializer, "SubscribedTopic.name")
+    deserialize_non_empty_identifier(deserializer, "ConsumedTopic.name")
 }
 
-fn deserialize_subscribed_service_node<'de, D>(deserializer: D) -> Result<String, D::Error>
+fn deserialize_consumed_service_node<'de, D>(deserializer: D) -> Result<String, D::Error>
 where
     D: Deserializer<'de>,
 {
-    deserialize_non_empty_identifier(deserializer, "SubscribedService.node")
+    deserialize_non_empty_identifier(deserializer, "ConsumedService.node")
 }
 
 fn deserialize_non_empty_identifier<'de, D>(
@@ -639,7 +639,7 @@ pub struct Interfaces {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub exposes: Option<Exposes>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub subscribes_to: Option<SubscribesTo>,
+    pub consumes: Option<Consumes>,
 }
 
 #[cfg(test)]
@@ -658,57 +658,57 @@ mod tests {
     }
 
     #[test]
-    fn subscribed_topic_node_is_required() {
+    fn consumed_topic_node_is_required() {
         let valid = r#"{ id: "camera_stream", node: "uvc_camera", name: "video_stream" }"#;
-        let topic: SubscribedTopic =
+        let topic: ConsumedTopic =
             serde_json5::from_str(valid).expect("valid topic should parse");
         assert_eq!(topic.node, "uvc_camera");
         assert_eq!(topic.name, "video_stream");
 
         let without_node = r#"{ id: "camera_stream", name: "video_stream" }"#;
-        assert!(serde_json5::from_str::<SubscribedTopic>(without_node).is_err());
+        assert!(serde_json5::from_str::<ConsumedTopic>(without_node).is_err());
 
         let missing_node = r#"{ id: "camera_stream", node: "", name: "video_stream" }"#;
-        assert!(serde_json5::from_str::<SubscribedTopic>(missing_node).is_err());
+        assert!(serde_json5::from_str::<ConsumedTopic>(missing_node).is_err());
 
         let missing_name = r#"{ id: "camera_stream", node: "uvc_camera", name: "" }"#;
-        assert!(serde_json5::from_str::<SubscribedTopic>(missing_name).is_err());
+        assert!(serde_json5::from_str::<ConsumedTopic>(missing_name).is_err());
 
         let whitespace_only = r#"{ id: "camera_stream", node: "   ", name: "video_stream" }"#;
-        assert!(serde_json5::from_str::<SubscribedTopic>(whitespace_only).is_err());
+        assert!(serde_json5::from_str::<ConsumedTopic>(whitespace_only).is_err());
 
         let punctuation_only = r#"{ id: "camera_stream", node: "--", name: "video_stream" }"#;
-        assert!(serde_json5::from_str::<SubscribedTopic>(punctuation_only).is_err());
+        assert!(serde_json5::from_str::<ConsumedTopic>(punctuation_only).is_err());
 
         let missing_field = r#"{ id: "camera_stream", node: "uvc_camera" }"#;
-        assert!(serde_json5::from_str::<SubscribedTopic>(missing_field).is_err());
+        assert!(serde_json5::from_str::<ConsumedTopic>(missing_field).is_err());
 
         let trimmed = r#"{ id: "camera_stream", node: " uvc_camera ", name: " video_stream " }"#;
-        let topic: SubscribedTopic =
+        let topic: ConsumedTopic =
             serde_json5::from_str(trimmed).expect("whitespace should be trimmed");
         assert_eq!(topic.node, "uvc_camera");
         assert_eq!(topic.name, "video_stream");
     }
 
     #[test]
-    fn subscribed_service_node_is_required() {
+    fn consumed_service_node_is_required() {
         let with_node =
             r#"{ id: "enable_camera", node: "uvc_camera", name: "enable_camera", tag: "0.1.0" }"#;
-        let service: SubscribedService =
+        let service: ConsumedService =
             serde_json5::from_str(with_node).expect("service with node should parse");
         assert_eq!(service.node, "uvc_camera");
 
         let trimmed = r#"{ id: "enable_camera", node: "  uvc_camera  ", name: "enable_camera", tag: "0.1.0" }"#;
-        let service: SubscribedService =
+        let service: ConsumedService =
             serde_json5::from_str(trimmed).expect("whitespace should be trimmed");
         assert_eq!(service.node, "uvc_camera");
 
         let without_node = r#"{ id: "enable_camera", name: "enable_camera", tag: "0.1.0" }"#;
-        assert!(serde_json5::from_str::<SubscribedService>(without_node).is_err());
+        assert!(serde_json5::from_str::<ConsumedService>(without_node).is_err());
 
         let blank_node =
             r#"{ id: "enable_camera", node: "   ", name: "enable_camera", tag: "0.1.0" }"#;
-        assert!(serde_json5::from_str::<SubscribedService>(blank_node).is_err());
+        assert!(serde_json5::from_str::<ConsumedService>(blank_node).is_err());
     }
 
     #[test]

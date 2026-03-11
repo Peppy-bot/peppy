@@ -16,7 +16,7 @@ fn write_peppy_json5(dir: &std::path::Path, content: &str) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn node_info_shows_dependencies_from_subscribed_interfaces() {
+async fn node_info_shows_dependencies_from_consumed_interfaces() {
     const NODE_NAME: &str = "consumer_node";
     const NODE_TAG: &str = "0.1.0";
 
@@ -25,7 +25,7 @@ async fn node_info_shows_dependencies_from_subscribed_interfaces() {
         .expect("failed to create serve emulation");
     let core_node_name = serve.core_node_name().to_string();
 
-    // Create a node directory with dependencies (subscribes_to interfaces)
+    // Create a node directory with dependencies (consumes interfaces)
     let node_dir = tempfile::tempdir().expect("failed to create temp node dir");
     let peppy_json5 = format!(
         r#"{{
@@ -39,7 +39,7 @@ async fn node_info_shows_dependencies_from_subscribed_interfaces() {
                 start_cmd: ["sleep", "10"]
             }},
             interfaces: {{
-                subscribes_to: {{
+                consumes: {{
                     topics: [
                         {{ id: "camera_feed", node: "camera_node", name: "video_stream" }},
                         {{ id: "lidar_data", node: "lidar_node", name: "point_cloud" }},
@@ -84,25 +84,25 @@ async fn node_info_shows_dependencies_from_subscribed_interfaces() {
     assert_eq!(info_response.config.manifest.name.as_str(), NODE_NAME);
     assert_eq!(info_response.config.manifest.tag, NODE_TAG);
 
-    // Verify subscribed interfaces exist
+    // Verify consumed interfaces exist
     let subscribes = info_response
         .config
         .interfaces
-        .subscribes_to
+        .consumes
         .as_ref()
-        .expect("subscribes_to should exist");
+        .expect("consumes should exist");
 
     // Verify topics
     let topics = subscribes.topics.as_ref().expect("topics should exist");
-    assert_eq!(topics.len(), 3, "should have 3 subscribed topics");
+    assert_eq!(topics.len(), 3, "should have 3 consumed topics");
 
     // Verify services
     let services = subscribes.services.as_ref().expect("services should exist");
-    assert_eq!(services.len(), 1, "should have 1 subscribed service");
+    assert_eq!(services.len(), 1, "should have 1 consumed service");
 
     // Verify actions
     let actions = subscribes.actions.as_ref().expect("actions should exist");
-    assert_eq!(actions.len(), 1, "should have 1 subscribed action");
+    assert_eq!(actions.len(), 1, "should have 1 consumed action");
 
     // Extract dependencies (unique node names) - this mirrors what print_node_info does
     let mut dependencies: BTreeSet<&str> = BTreeSet::new();
@@ -152,7 +152,7 @@ async fn node_info_shows_dependencies_from_subscribed_interfaces() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn node_info_no_dependencies_when_no_subscribes() {
+async fn node_info_no_dependencies_when_no_consumes() {
     const NODE_NAME: &str = "standalone_node";
     const NODE_TAG: &str = "0.1.0";
 
@@ -223,13 +223,13 @@ async fn node_info_no_dependencies_when_no_subscribes() {
         "should have exposed topics"
     );
 
-    // Verify no subscribes_to (no dependencies)
+    // Verify no consumes (no dependencies)
     assert!(
-        info_response.config.interfaces.subscribes_to.is_none()
+        info_response.config.interfaces.consumes.is_none()
             || info_response
                 .config
                 .interfaces
-                .subscribes_to
+                .consumes
                 .as_ref()
                 .is_some_and(|s| {
                     s.topics.as_ref().is_none_or(|t| t.is_empty())

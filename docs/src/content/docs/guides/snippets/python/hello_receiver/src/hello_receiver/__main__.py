@@ -2,7 +2,7 @@ import asyncio
 
 from peppygen import NodeBuilder, NodeRunner
 from peppygen.parameters import Parameters
-from peppygen.subscribed_topics import hello_world_param_message_stream
+from peppygen.consumed_topics import hello_world_param_message_stream
 
 
 async def setup(_params: Parameters, node_runner: NodeRunner) -> list[asyncio.Task]:

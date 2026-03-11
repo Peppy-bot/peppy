@@ -21,7 +21,7 @@ use crate::common::start_core_node_with_mock_messenger;
 struct NodeConfigOptions<'a> {
     add_cmd: &'a [&'a str],
     start_cmd: &'a [&'a str],
-    subscribes_to_uvc_camera: bool,
+    consumes_uvc_camera: bool,
     exposes_camera_stream: bool,
 }
 
@@ -30,7 +30,7 @@ impl Default for NodeConfigOptions<'_> {
         Self {
             add_cmd: &["true"],
             start_cmd: &[],
-            subscribes_to_uvc_camera: false,
+            consumes_uvc_camera: false,
             exposes_camera_stream: false,
         }
     }
@@ -106,7 +106,7 @@ fn write_node_config(
     node_tag: &str,
     git_hash: &str,
     start_cmd: &[&str],
-    subscribes_to_uvc_camera: bool,
+    consumes_uvc_camera: bool,
     exposes_camera_stream: bool,
 ) -> PathBuf {
     write_node_config_with_options(
@@ -116,7 +116,7 @@ fn write_node_config(
         git_hash,
         NodeConfigOptions {
             start_cmd,
-            subscribes_to_uvc_camera,
+            consumes_uvc_camera,
             exposes_camera_stream,
             ..Default::default()
         },
@@ -133,7 +133,7 @@ fn write_node_config_with_options(
     let NodeConfigOptions {
         add_cmd,
         start_cmd,
-        subscribes_to_uvc_camera,
+        consumes_uvc_camera,
         exposes_camera_stream,
     } = options;
     let node_dir = nodes_directory.join(node_name);
@@ -165,10 +165,10 @@ fn write_node_config_with_options(
         ""
     };
 
-    let subscribes_to = if subscribes_to_uvc_camera {
+    let consumes = if consumes_uvc_camera {
         r#"
         interfaces: {
-          subscribes_to: {
+          consumes: {
             topics: [
               { id: "camera_stream", node: "uvc_camera", tag: "0.1.0", name: "camera_stream" }
             ]
@@ -195,7 +195,7 @@ fn write_node_config_with_options(
                 start_cmd: [{start_cmd_json5}]
               }},
               {exposes}
-              {subscribes_to}
+              {consumes}
             }}"#
         ),
     )

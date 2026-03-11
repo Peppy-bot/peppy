@@ -18,7 +18,7 @@ fn action_dependency_resolved_when_dependency_added_first() {
               start_cmd: ["brain"]
             },
             interfaces: {
-                subscribes_to: {
+                consumes: {
                     actions: [
                         {
                           id: "move_right_arm_sub",
@@ -149,7 +149,7 @@ fn action_dependency_fails_when_dependency_is_missing() {
               start_cmd: ["brain"]
             },
             interfaces: {
-                subscribes_to: {
+                consumes: {
                     actions: [
                         {
                           id: "move_right_arm_sub",
@@ -197,7 +197,7 @@ fn action_dependency_fails_when_action_not_exposed_by_dependency() {
               start_cmd: ["brain"]
             },
             interfaces: {
-                subscribes_to: {
+                consumes: {
                     actions: [
                         {
                           id: "move_right_arm_sub",

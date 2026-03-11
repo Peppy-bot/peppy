@@ -1,5 +1,5 @@
 use super::*;
-use config::node::{ExposedAction, MessageFormat, SubscribedAction};
+use config::node::{ExposedAction, MessageFormat, ConsumedAction};
 use std::collections::HashMap;
 
 // --- Exposes examples
@@ -572,8 +572,8 @@ fn expose_two_actions() {
 }
 
 #[test]
-fn subscribed_to_action() {
-    let action: SubscribedAction = serde_json5::from_str(SUBSCRIBED_ACTION_EXAMPLE1).unwrap();
+fn consumed_action() {
+    let action: ConsumedAction = serde_json5::from_str(SUBSCRIBED_ACTION_EXAMPLE1).unwrap();
     let goal_request_format: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_FORMAT1).unwrap();
     let goal_response_format: MessageFormat =
@@ -582,7 +582,7 @@ fn subscribed_to_action() {
         serde_json5::from_str(SUBSCRIBED_ACTION_FEEDBACK_FORMAT1).unwrap();
     let result_response_format: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_ACTION_RESULT_RESPONSE_FORMAT1).unwrap();
-    let format = SubscribedActionMessage {
+    let format = ConsumedActionMessage {
         goal_request: Some(goal_request_format),
         goal_response: Some(goal_response_format),
         feedback: Some(feedback_format),
@@ -591,7 +591,7 @@ fn subscribed_to_action() {
     };
 
     let mut generator = PythonGenerator::new();
-    generator.add_subscribed_action(&action, &format).unwrap();
+    generator.add_consumed_action(&action, &format).unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
         artifacts.len(),
@@ -748,8 +748,8 @@ fn subscribed_to_action() {
 }
 
 #[test]
-fn subscribed_to_two_actions_same_node() {
-    let move_arm_action: SubscribedAction =
+fn consumed_two_actions_same_node() {
+    let move_arm_action: ConsumedAction =
         serde_json5::from_str(SUBSCRIBED_ACTION_EXAMPLE1).unwrap();
     let move_arm_goal_request: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_FORMAT1).unwrap();
@@ -759,7 +759,7 @@ fn subscribed_to_two_actions_same_node() {
         serde_json5::from_str(SUBSCRIBED_ACTION_FEEDBACK_FORMAT1).unwrap();
     let move_arm_result_response: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_ACTION_RESULT_RESPONSE_FORMAT1).unwrap();
-    let move_arm_messages = SubscribedActionMessage {
+    let move_arm_messages = ConsumedActionMessage {
         goal_request: Some(move_arm_goal_request),
         goal_response: Some(move_arm_goal_response),
         feedback: Some(move_arm_feedback),
@@ -767,7 +767,7 @@ fn subscribed_to_two_actions_same_node() {
         result_response: Some(move_arm_result_response),
     };
 
-    let mut rotate_action: SubscribedAction =
+    let mut rotate_action: ConsumedAction =
         serde_json5::from_str(SUBSCRIBED_ACTION_EXAMPLE2).unwrap();
     // Reuse the same upstream node so both subscriptions target the same source.
     rotate_action.node = move_arm_action.node.clone();
@@ -777,7 +777,7 @@ fn subscribed_to_two_actions_same_node() {
         serde_json5::from_str(SUBSCRIBED_ACTION_FEEDBACK_FORMAT2).unwrap();
     let rotate_result_response: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_ACTION_RESULT_RESPONSE_FORMAT2).unwrap();
-    let rotate_messages = SubscribedActionMessage {
+    let rotate_messages = ConsumedActionMessage {
         goal_request: None,
         goal_response: Some(rotate_goal_response),
         feedback: Some(rotate_feedback),
@@ -787,10 +787,10 @@ fn subscribed_to_two_actions_same_node() {
 
     let mut generator = PythonGenerator::new();
     generator
-        .add_subscribed_action(&move_arm_action, &move_arm_messages)
+        .add_consumed_action(&move_arm_action, &move_arm_messages)
         .unwrap();
     generator
-        .add_subscribed_action(&rotate_action, &rotate_messages)
+        .add_consumed_action(&rotate_action, &rotate_messages)
         .unwrap();
 
     let artifacts: Vec<_> = generator.into_artifacts();
@@ -894,14 +894,14 @@ fn subscribed_to_two_actions_same_node() {
 }
 
 #[test]
-fn subscribed_action_without_response_payload() {
-    let action: SubscribedAction = serde_json5::from_str(SUBSCRIBED_ACTION_EXAMPLE1).unwrap();
+fn consumed_action_without_response_payload() {
+    let action: ConsumedAction = serde_json5::from_str(SUBSCRIBED_ACTION_EXAMPLE1).unwrap();
     let goal_request_format: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_FORMAT1).unwrap();
     let feedback_format: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_ACTION_FEEDBACK_FORMAT1).unwrap();
 
-    let format = SubscribedActionMessage {
+    let format = ConsumedActionMessage {
         goal_request: Some(goal_request_format),
         goal_response: None,
         feedback: Some(feedback_format),
@@ -911,8 +911,8 @@ fn subscribed_action_without_response_payload() {
 
     let mut generator = PythonGenerator::new();
     generator
-        .add_subscribed_action(&action, &format)
-        .expect("generator should allow subscribed actions with empty response payloads");
+        .add_consumed_action(&action, &format)
+        .expect("generator should allow consumed actions with empty response payloads");
     let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
         artifacts.len(),
@@ -982,12 +982,12 @@ fn subscribed_action_without_response_payload() {
 }
 
 #[test]
-fn subscribed_action_without_feedback() {
-    let action: SubscribedAction = serde_json5::from_str(SUBSCRIBED_ACTION_EXAMPLE1).unwrap();
+fn consumed_action_without_feedback() {
+    let action: ConsumedAction = serde_json5::from_str(SUBSCRIBED_ACTION_EXAMPLE1).unwrap();
     let goal_request_format: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_FORMAT1).unwrap();
 
-    let format = SubscribedActionMessage {
+    let format = ConsumedActionMessage {
         goal_request: Some(goal_request_format),
         goal_response: None,
         feedback: None,
@@ -997,8 +997,8 @@ fn subscribed_action_without_feedback() {
 
     let mut generator = PythonGenerator::new();
     generator
-        .add_subscribed_action(&action, &format)
-        .expect("generator should allow subscribed actions without feedback payloads");
+        .add_consumed_action(&action, &format)
+        .expect("generator should allow consumed actions without feedback payloads");
     let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(artifacts.len(), 1, "expected single generated artifact");
 

@@ -209,7 +209,7 @@ fn interfaces_match(a: &Interfaces, b: &Interfaces) -> bool {
 }
 
 pub fn collect_dependency_specs(node: &NodeConfig) -> Vec<DependencySpec> {
-    let Some(subscriptions) = node.interfaces.subscribes_to.as_ref() else {
+    let Some(subscriptions) = node.interfaces.consumes.as_ref() else {
         return Vec::new();
     };
 

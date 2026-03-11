@@ -3,18 +3,18 @@ use super::serialization::{MessageEncodingSpec, build_serialize_payload};
 use super::services::deserialize_fields_from_format;
 use crate::error::Result;
 use config::encoding::{CapnpSchemaArtifacts, FunctionParam};
-use config::node::{ExposedTopic, QoSProfile, SubscribedTopic};
+use config::node::{ExposedTopic, QoSProfile, ConsumedTopic};
 use proc_macro2::{Ident, Literal, TokenStream};
 use quote::quote;
 
-pub struct SubscribedTopicCallbackSpec<'a> {
+pub struct ConsumedTopicCallbackSpec<'a> {
     pub fn_name: &'a Ident,
     pub helper_fn_ident: &'a Ident,
     pub args_struct_ident: &'a Ident,
     pub params: &'a [FunctionParam],
     pub artifacts: &'a CapnpSchemaArtifacts,
     pub encoding: &'a MessageEncodingSpec,
-    pub topic: &'a SubscribedTopic,
+    pub topic: &'a ConsumedTopic,
     pub struct_prefix: &'a str,
 }
 
@@ -143,8 +143,8 @@ pub fn build_topic_emit(
     })
 }
 
-pub fn build_subscribed_topic_callback(spec: SubscribedTopicCallbackSpec) -> Result<TokenStream> {
-    let SubscribedTopicCallbackSpec {
+pub fn build_consumed_topic_callback(spec: ConsumedTopicCallbackSpec) -> Result<TokenStream> {
+    let ConsumedTopicCallbackSpec {
         fn_name,
         helper_fn_ident,
         args_struct_ident,

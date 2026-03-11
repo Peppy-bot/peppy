@@ -7,11 +7,11 @@ use crate::helpers::{
 use config::consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME};
 use config::runtime::NodeInstance;
 use config::{
-    node::{ExposedAction, MessageFormat, SubscribedAction},
+    node::{ExposedAction, MessageFormat, ConsumedAction},
     peppy_config::Name,
     runtime::RuntimeConfig,
 };
-use generator::{LanguageGenerator, SubscribedActionMessage};
+use generator::{LanguageGenerator, ConsumedActionMessage};
 use std::path::Path;
 use std::{fs, time::Duration};
 use tempfile::TempDir;
@@ -128,7 +128,7 @@ async fn actions_communication() {
     // --- Subscriber (client) project
     let subscriber_instance_id = SUBSCRIBER_INSTANCE_ID;
     let temp_dir_subscriber = TempDir::new().unwrap();
-    let subscribed_action: SubscribedAction =
+    let consumed_action: ConsumedAction =
         serde_json5::from_str(SUBSCRIBED_ACTION_EXAMPLE).unwrap();
     let goal_request_format: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_FORMAT).unwrap();
@@ -138,7 +138,7 @@ async fn actions_communication() {
         serde_json5::from_str(SUBSCRIBED_ACTION_FEEDBACK_FORMAT).unwrap();
     let result_response_format: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_ACTION_RESULT_FORMAT).unwrap();
-    let action_messages = SubscribedActionMessage {
+    let action_messages = ConsumedActionMessage {
         goal_request: Some(goal_request_format),
         goal_response: Some(goal_response_format),
         feedback: Some(feedback_format),
@@ -148,7 +148,7 @@ async fn actions_communication() {
     let (mut generator, output_dir_subscriber, user_node_subscriber, peppy_node_config_path) =
         init_test_env::<generator::RustGenerator>(&temp_dir_subscriber, STUB_NODE_CONFIG);
     generator
-        .add_subscribed_action(&subscribed_action, &action_messages)
+        .add_consumed_action(&consumed_action, &action_messages)
         .unwrap();
     let output_config = copy_config_to_output(&user_node_subscriber, &output_dir_subscriber);
     generator
@@ -182,7 +182,7 @@ async fn actions_communication() {
 
     init_cargo_user_node(&user_node_subscriber);
     let subscriber_main = r#"
-use peppygen::subscribed_actions::brain_move_arm;
+use peppygen::consumed_actions::brain_move_arm;
 use peppygen::NodeBuilder;
 use peppygen::Result;
 use std::time::Duration;
@@ -522,7 +522,7 @@ async fn actions_communication_cancel_goal() {
     // --- Subscriber (client) project
     let subscriber_instance_id = SUBSCRIBER_INSTANCE_ID;
     let temp_dir_subscriber = TempDir::new().unwrap();
-    let subscribed_action: SubscribedAction =
+    let consumed_action: ConsumedAction =
         serde_json5::from_str(SUBSCRIBED_ACTION_EXAMPLE).unwrap();
     let goal_request_format: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_FORMAT).unwrap();
@@ -532,7 +532,7 @@ async fn actions_communication_cancel_goal() {
         serde_json5::from_str(SUBSCRIBED_ACTION_FEEDBACK_FORMAT).unwrap();
     let result_response_format: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_ACTION_RESULT_FORMAT).unwrap();
-    let action_messages = SubscribedActionMessage {
+    let action_messages = ConsumedActionMessage {
         goal_request: Some(goal_request_format),
         goal_response: Some(goal_response_format),
         feedback: Some(feedback_format),
@@ -542,7 +542,7 @@ async fn actions_communication_cancel_goal() {
     let (mut generator, output_dir_subscriber, user_node_subscriber, peppy_node_config_path) =
         init_test_env::<generator::RustGenerator>(&temp_dir_subscriber, STUB_NODE_CONFIG);
     generator
-        .add_subscribed_action(&subscribed_action, &action_messages)
+        .add_consumed_action(&consumed_action, &action_messages)
         .unwrap();
     let output_config = copy_config_to_output(&user_node_subscriber, &output_dir_subscriber);
     generator
@@ -576,7 +576,7 @@ async fn actions_communication_cancel_goal() {
 
     init_cargo_user_node(&user_node_subscriber);
     let subscriber_main = r#"
-use peppygen::subscribed_actions::brain_move_arm;
+use peppygen::consumed_actions::brain_move_arm;
 use peppygen::NodeBuilder;
 use peppygen::Result;
 use std::time::Duration;

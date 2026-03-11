@@ -6,9 +6,9 @@ use super::topics::{capnp_loader_fn_name, emit_capnp_loader_fn, emit_capnp_pream
 use super::type_mapping::{collect_fields_from_format, uses_optional};
 use crate::error::{Error, Result};
 use crate::generator::types::{
-    SubscribedActionMessage, cancel_action_response_format, non_empty_message_format,
+    ConsumedActionMessage, cancel_action_response_format, non_empty_message_format,
 };
-use config::node::{ExposedAction, MessageFormat, SubscribedAction};
+use config::node::{ExposedAction, MessageFormat, ConsumedAction};
 
 // ---------------------------------------------------------------------------
 // Exposed actions
@@ -461,9 +461,9 @@ fn emit_handler_response_body(
 // ---------------------------------------------------------------------------
 
 /// Generates Python code for a subscribed (client-side) action.
-pub fn build_subscribed_action(
-    action: &SubscribedAction,
-    messages: &SubscribedActionMessage,
+pub fn build_consumed_action(
+    action: &ConsumedAction,
+    messages: &ConsumedActionMessage,
     goal_request_schema_info: Option<&PythonSchemaInfo>,
     goal_response_schema_info: Option<&PythonSchemaInfo>,
     cancel_response_schema_info: Option<&PythonSchemaInfo>,

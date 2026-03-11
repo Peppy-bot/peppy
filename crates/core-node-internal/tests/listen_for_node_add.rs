@@ -851,7 +851,7 @@ async fn listen_for_node_add_dependency_not_resolved() {
             start_cmd: ["sleep", "10"],
         },
         interfaces: {
-            subscribes_to: {
+            consumes: {
                 topics: [
                     {
                         id: "sensor_input",
@@ -1088,7 +1088,7 @@ async fn listen_for_node_add_same_node_same_tags_fails_when_node_has_dependents(
                 start_cmd: ["sleep", "10"]
             }},
             interfaces: {{
-                subscribes_to: {{
+                consumes: {{
                     services: [
                         {{
                           id: "reset_sensor_sub",
@@ -2313,7 +2313,7 @@ async fn listen_for_node_add_fails_runs_add_cmd_on_missing_node_dependency() {
           start_cmd: ["sleep", "10"]
         },
         interfaces: {
-          subscribes_to: {
+          consumes: {
             topics: [
               {
                 id: "camera_stream",
@@ -2447,7 +2447,7 @@ async fn listen_for_node_add_fails_on_missing_interface_even_when_dependency_exi
           start_cmd: ["sleep", "10"]
         },
         interfaces: {
-          subscribes_to: {
+          consumes: {
             topics: [
               {
                 id: "camera_stream",

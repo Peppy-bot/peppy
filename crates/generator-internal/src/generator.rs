@@ -20,14 +20,14 @@ use types::{DeploymentInterface, InterfaceVariant, LanguageGenerator};
 /// Generate an interface library for the given language from a node directory.
 ///
 /// This function reads the `peppy.json5` configuration file from the `node_dir`,
-/// extracts the exposed interfaces, combines them with the provided subscribed interfaces,
+/// extracts the exposed interfaces, combines them with the provided consumed interfaces,
 /// and generates a library for the specified programming language.
 /// The library is generated at `node_dir/.peppy/libs/peppygen`.
 ///
 /// # Arguments
 /// * `language` - The language to generate for (Rust or Python)
 /// * `node_dir` - Path to the node directory containing `peppy.json5`
-/// * `subscribed_interfaces` - Subscribed interfaces with resolved message formats from dependency nodes
+/// * `consumed_interfaces` - Consumed interfaces with resolved message formats from dependency nodes
 ///
 /// # Errors
 /// Returns an error if:
@@ -37,7 +37,7 @@ use types::{DeploymentInterface, InterfaceVariant, LanguageGenerator};
 pub fn generate_peppygen_lib(
     language: PeppygenLanguage,
     node_dir: impl AsRef<Path>,
-    subscribed_interfaces: Vec<DeploymentInterface>,
+    consumed_interfaces: Vec<DeploymentInterface>,
     git_hash: &str,
     peppy_dirs: &PeppyDirs,
     deploy_mode: common::CrateDeployMode,
@@ -57,8 +57,8 @@ pub fn generate_peppygen_lib(
         .map_err(|e| Error::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e)))?;
 
     let mut interfaces = collect_exposed_interfaces(&node_config);
-    // Add the subscribed interfaces with resolved message formats
-    interfaces.extend(subscribed_interfaces);
+    // Add the consumed interfaces with resolved message formats
+    interfaces.extend(consumed_interfaces);
 
     // Create the output directory
     let output_dir = node_dir.join(config::consts::PEPPYGEN_OUTPUT_PATH);
