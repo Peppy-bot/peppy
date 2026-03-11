@@ -256,12 +256,15 @@ EOF
         fi
 
         # Check 2: AppArmor user namespace restriction (Ubuntu 24.04+)
+        # Install a per-binary AppArmor profile that grants only Apptainer's
+        # starter binary the userns permission.
         if [ -f /proc/sys/kernel/apparmor_restrict_unprivileged_userns ] && \
-           [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns)" = "1" ]; then
-            SUDO_FIXES="${SUDO_FIXES}sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 && "
-            SUDO_FIXES="${SUDO_FIXES}mkdir -p /etc/sysctl.d && "
-            SUDO_FIXES="${SUDO_FIXES}printf 'kernel.apparmor_restrict_unprivileged_userns=0\n' >> /etc/sysctl.d/99-peppy-userns.conf && "
-            SUDO_FIX_LABELS="${SUDO_FIX_LABELS}  - Disable AppArmor user namespace restriction\n"
+           [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns)" = "1" ] && \
+           [ ! -f /etc/apparmor.d/peppy-apptainer ]; then
+            STARTER_PATH="$PEPPY_BIN_DIR/apptainer/$(uname -m)/libexec/apptainer/libexec/starter"
+            SUDO_FIXES="${SUDO_FIXES}printf 'abi <abi/4.0>,\ninclude <tunables/global>\n\nprofile peppy-apptainer ${STARTER_PATH} flags=(unconfined) {\n  userns,\n}\n' > /etc/apparmor.d/peppy-apptainer && "
+            SUDO_FIXES="${SUDO_FIXES}apparmor_parser -r /etc/apparmor.d/peppy-apptainer && "
+            SUDO_FIX_LABELS="${SUDO_FIX_LABELS}  - Install AppArmor profile for Apptainer user namespaces\n"
         fi
 
         # Check 3: newuidmap / newgidmap with setuid bit

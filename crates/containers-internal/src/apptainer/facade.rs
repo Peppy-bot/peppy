@@ -111,6 +111,45 @@ pub(crate) fn check_fakeroot_deps(search_dirs: &[PathBuf]) -> Result<()> {
     Ok(())
 }
 
+/// Check whether AppArmor's unprivileged user namespace restriction is active
+/// (Ubuntu 24.04+) and no per-binary profile has been installed for Apptainer's
+/// `starter` binary.
+///
+/// When `kernel.apparmor_restrict_unprivileged_userns=1`, unprivileged processes
+/// cannot create user namespaces unless their AppArmor profile grants `userns`.
+/// Without a profile, `apptainer build --fakeroot` fails with
+/// "Failed to create mount namespace".
+#[cfg(target_os = "linux")]
+pub(crate) fn check_apparmor_userns(_apptainer_dir: &Path) -> Result<()> {
+    let sysctl = std::fs::read_to_string("/proc/sys/kernel/apparmor_restrict_unprivileged_userns");
+    let restricted = matches!(&sysctl, Ok(v) if v.trim() == "1");
+    if !restricted {
+        return Ok(());
+    }
+
+    // Check if the peppy-apptainer AppArmor profile is already installed.
+    if Path::new("/etc/apparmor.d/peppy-apptainer").exists() {
+        return Ok(());
+    }
+
+    // Use a glob pattern so the profile covers the starter binary regardless
+    // of the exact installation path (production ~/.peppy/bin/apptainer/...,
+    // development cargo build output, etc.).
+    let fix_command = "\
+         sudo tee /etc/apparmor.d/peppy-apptainer > /dev/null << 'EOF'\n\
+         abi <abi/4.0>,\n\
+         include <tunables/global>\n\
+         \n\
+         profile peppy-apptainer @{HOME}/**/libexec/apptainer/libexec/starter flags=(unconfined) {\n\
+         \x20 userns,\n\
+         }\n\
+         EOF\n\
+         sudo apparmor_parser -r /etc/apparmor.d/peppy-apptainer"
+        .to_string();
+
+    Err(Error::AppArmorUsernsRestricted { fix_command })
+}
+
 impl Apptainer {
     /// Creates a new `Apptainer` by resolving the apptainer installation directory.
     ///
@@ -180,6 +219,7 @@ impl Apptainer {
                         .map(PathBuf::from)
                         .collect();
                     check_fakeroot_deps(&search_dirs)?;
+                    check_apparmor_userns(&self.apptainer_dir)?;
                 }
                 Ok(())
             }

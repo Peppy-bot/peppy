@@ -249,17 +249,13 @@ mod zenoh_build {
                 std::fs::create_dir_all(&extract_dir).ok();
 
                 let file = std::fs::File::open(&zip_path).expect("Failed to open zenoh zip");
-                let mut archive =
-                    zip::ZipArchive::new(file).expect("Failed to read zenoh zip");
-                let mut entry = archive
-                    .by_name("zenohd")
-                    .expect("zenohd not found in zip");
+                let mut archive = zip::ZipArchive::new(file).expect("Failed to read zenoh zip");
+                let mut entry = archive.by_name("zenohd").expect("zenohd not found in zip");
                 let mut buf = Vec::with_capacity(entry.size() as usize);
                 std::io::Read::read_to_end(&mut entry, &mut buf)
                     .expect("Failed to read zenohd from zip");
                 let extracted_binary = extract_dir.join("zenohd");
-                std::fs::write(&extracted_binary, &buf)
-                    .expect("Failed to write extracted zenohd");
+                std::fs::write(&extracted_binary, &buf).expect("Failed to write extracted zenohd");
 
                 // Cache the binary
                 std::fs::copy(&extracted_binary, &cached_zenoh_path)
@@ -294,6 +290,18 @@ mod zenoh_build {
                         release_tag, target, target
                     ),
                 }
+            }
+
+            // Ensure the binary is executable (std::fs::write / std::fs::copy do not
+            // preserve the execute bit from the zip archive).
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(
+                    &zenoh_binary_path,
+                    std::fs::Permissions::from_mode(0o755),
+                )
+                .expect("Failed to set zenohd executable permission");
             }
 
             println!("cargo:rustc-env=ZENOHD_BINARY_PATH={}", zenoh_binary_path);
