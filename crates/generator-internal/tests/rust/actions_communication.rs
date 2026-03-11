@@ -303,6 +303,27 @@ fn main() -> Result<()> {
     NodeBuilder::new().run(|_parameters: peppygen::Parameters, node_runner| async move {
         let mut action = move_arm::ActionHandle::expose(&node_runner).await?;
 
+        // Set up handshake service listeners BEFORE handling the goal so their
+        // Zenoh subscriptions are active when the subscriber starts polling
+        // immediately after fire_goal returns. Messages are buffered in the
+        // subscription channels until handle_next_request reads them.
+        let mut feedback_ready_service = peppygen::ServiceMessenger::listen(
+            node_runner.messenger(),
+            node_runner.processor().bound_core_node(),
+            node_runner.processor().bound_instance_id(),
+            node_runner.processor().node_name(),
+            FEEDBACK_READY_SERVICE,
+        )
+        .await?;
+        let mut feedback_received_service = peppygen::ServiceMessenger::listen(
+            node_runner.messenger(),
+            node_runner.processor().bound_core_node(),
+            node_runner.processor().bound_instance_id(),
+            node_runner.processor().node_name(),
+            FEEDBACK_RECEIVED_SERVICE,
+        )
+        .await?;
+
         action.handle_goal_next_request(|request| -> Result<move_arm::GoalResponse> {
             println!(
                 "server received goal arm_id={} desired={:?}",
@@ -313,27 +334,11 @@ fn main() -> Result<()> {
         })
         .await?;
 
-        let mut feedback_ready_service = peppygen::ServiceMessenger::listen(
-            node_runner.messenger(),
-            node_runner.processor().bound_core_node(),
-            node_runner.processor().bound_instance_id(),
-            node_runner.processor().node_name(),
-            FEEDBACK_READY_SERVICE,
-        )
-        .await?;
         feedback_ready_service
             .handle_next_request(|_request| async move { Ok(Vec::<u8>::new().into()) })
             .await?;
         println!("server received feedback-ready handshake");
 
-        let mut feedback_received_service = peppygen::ServiceMessenger::listen(
-            node_runner.messenger(),
-            node_runner.processor().bound_core_node(),
-            node_runner.processor().bound_instance_id(),
-            node_runner.processor().node_name(),
-            FEEDBACK_RECEIVED_SERVICE,
-        )
-        .await?;
         let feedback_received = Arc::new(AtomicBool::new(false));
         let feedback_received_flag = Arc::clone(&feedback_received);
         let feedback_received_task = tokio::spawn(async move {
