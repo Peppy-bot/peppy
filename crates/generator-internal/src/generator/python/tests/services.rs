@@ -1,5 +1,5 @@
 use super::*;
-use config::node::{ExposedService, MessageFormat, ConsumedService};
+use config::node::{ConsumedService, ExposedService, MessageFormat};
 
 const EXPOSED_SERVICE_EXAMPLE: &str = r#"
 {

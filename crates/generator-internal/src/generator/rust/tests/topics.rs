@@ -1,5 +1,5 @@
 use super::*;
-use config::node::{ExposedTopic, MessageFormat, PeppygenLanguage, ConsumedTopic};
+use config::node::{ConsumedTopic, ExposedTopic, MessageFormat, PeppygenLanguage};
 use std::process::{Command, Stdio};
 
 const EXPOSED_TOPIC_EXAMPLE: &str = r#"

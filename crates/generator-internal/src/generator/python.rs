@@ -15,15 +15,15 @@ mod type_mapping;
 
 use super::naming::{module_name_from_components, resolve_schema_file_stem, to_camel_case};
 use super::types::{
-    CapnpSchema, InterfaceArtifact, InterfaceKind, LanguageGenerator, ConsumedActionMessage,
+    CapnpSchema, ConsumedActionMessage, InterfaceArtifact, InterfaceKind, LanguageGenerator,
     cancel_action_response_format, non_empty_message_format, validate_fixed_length_array_items,
     validate_message_format_field_names,
 };
 use crate::error::Result;
 use config::encoding::MessageFormatMapper;
 use config::node::{
-    ExposedAction, ExposedService, ExposedTopic, MessageFormat, PeppygenLanguage, ConsumedAction,
-    ConsumedService, ConsumedTopic,
+    ConsumedAction, ConsumedService, ConsumedTopic, ExposedAction, ExposedService, ExposedTopic,
+    MessageFormat, PeppygenLanguage,
 };
 use std::collections::HashMap;
 use std::path::Path;

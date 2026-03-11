@@ -20,14 +20,10 @@
   },
   parameters: {},
   interfaces: {
-    exposes: {
-      topics: [],
-      services: [],
-      actions: [],
-    },
-    consumes: {
-      // The brain receives the inputs from the camera
-      topics: [
+    // The brain receives the inputs from the camera
+    topics: {
+      exposes: [],
+      consumes: [
         {
           id: "camera_front",
           node: "fake_uvc_camera",
@@ -35,7 +31,10 @@
           tag: "0.1.0",
         }
       ],
-      services: [
+    },
+    services: {
+      exposes: [],
+      consumes: [
         {
           id: "video_info",
           node: "fake_uvc_camera",
@@ -43,8 +42,11 @@
           tag: "0.1.0",
         }
       ],
-      // And emit actions for the controller to take
-      actions: [
+    },
+    // And emit actions for the controller to take
+    actions: {
+      exposes: [],
+      consumes: [
         {
           id: "move_right_arm_action",
           node: "fake_openarm01_controller",
@@ -57,7 +59,7 @@
           name: "move_left_arm",
           tag: "0.1.0",
         }
-      ]
+      ],
     },
   }
 }

@@ -36,8 +36,8 @@
     },
   },
   interfaces: {
-    exposes: {
-      topics: [
+    topics: {
+      exposes: [
         {
           name: "video_stream",
           qos_profile: "sensor_data",
@@ -57,7 +57,9 @@
           },
         }
       ],
-      services: [
+    },
+    services: {
+      exposes: [
         {
           name: "video_stream_info",
           response_message_format: {
@@ -68,6 +70,6 @@
           },
         },
       ],
-    }
+    },
   }
 }

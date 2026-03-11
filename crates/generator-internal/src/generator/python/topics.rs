@@ -5,7 +5,7 @@ use super::serialization;
 use super::type_mapping::{collect_fields_from_format, qos_profile_python, uses_optional};
 use crate::error::Result;
 use crate::generator::naming::sanitize_component;
-use config::node::{ExposedTopic, MessageFormat, ConsumedTopic};
+use config::node::{ConsumedTopic, ExposedTopic, MessageFormat};
 
 pub(crate) fn capnp_loader_fn_name(schema_info: &PythonSchemaInfo) -> String {
     format!("_{}_capnp", schema_info.file_stem)

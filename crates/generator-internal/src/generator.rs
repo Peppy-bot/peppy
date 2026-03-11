@@ -104,29 +104,33 @@ pub fn generate_peppygen_lib(
 fn collect_exposed_interfaces(config: &config::node::NodeConfig) -> Vec<DeploymentInterface> {
     let mut interfaces = Vec::new();
 
-    if let Some(exposes) = &config.interfaces.exposes {
-        if let Some(topics) = &exposes.topics {
-            for topic in topics {
-                interfaces.push(DeploymentInterface::new(InterfaceVariant::ExposedTopic(
-                    topic.clone(),
-                )));
-            }
+    if let Some(topics) = &config.interfaces.topics
+        && let Some(exposed) = &topics.exposes
+    {
+        for topic in exposed {
+            interfaces.push(DeploymentInterface::new(InterfaceVariant::ExposedTopic(
+                topic.clone(),
+            )));
         }
+    }
 
-        if let Some(services) = &exposes.services {
-            for service in services {
-                interfaces.push(DeploymentInterface::new(InterfaceVariant::ExposedService(
-                    service.clone(),
-                )));
-            }
+    if let Some(services) = &config.interfaces.services
+        && let Some(exposed) = &services.exposes
+    {
+        for service in exposed {
+            interfaces.push(DeploymentInterface::new(InterfaceVariant::ExposedService(
+                service.clone(),
+            )));
         }
+    }
 
-        if let Some(actions) = &exposes.actions {
-            for action in actions {
-                interfaces.push(DeploymentInterface::new(InterfaceVariant::ExposedAction(
-                    action.clone(),
-                )));
-            }
+    if let Some(actions) = &config.interfaces.actions
+        && let Some(exposed) = &actions.exposes
+    {
+        for action in exposed {
+            interfaces.push(DeploymentInterface::new(InterfaceVariant::ExposedAction(
+                action.clone(),
+            )));
         }
     }
 

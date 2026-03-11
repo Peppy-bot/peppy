@@ -31,15 +31,17 @@ Each node is only aware of the interfaces it exposes and the ones it consumes, a
         start_cmd: ["uv", "run", "controller"]
       },
       interfaces: {
-        exposes: {
-          topics: [],
-          services: [],
-          actions: [],
+        topics: {
+          exposes: [],
+          consumes: [],
         },
-        consumes: {
-          topics: [],
-          services: [],
-          actions: [],
+        services: {
+          exposes: [],
+          consumes: [],
+        },
+        actions: {
+          exposes: [],
+          consumes: [],
         },
       }
     }
@@ -59,15 +61,17 @@ Each node is only aware of the interfaces it exposes and the ones it consumes, a
         start_cmd: ["./target/release/controller"]
       },
       interfaces: {
-        exposes: {
-          topics: [],
-          services: [],
-          actions: [],
+        topics: {
+          exposes: [],
+          consumes: [],
         },
-        consumes: {
-          topics: [],
-          services: [],
-          actions: [],
+        services: {
+          exposes: [],
+          consumes: [],
+        },
+        actions: {
+          exposes: [],
+          consumes: [],
         },
       }
     }
@@ -75,7 +79,7 @@ Each node is only aware of the interfaces it exposes and the ones it consumes, a
   </TabItem>
 </Tabs>
 
-Here we have `interfaces` with `exposes` and `consumes` containing topics, services, and actions. These interfaces define the dependencies between nodes.
+Here we have `interfaces` organized by kind (`topics`, `services`, `actions`), each containing `exposes` and `consumes` lists. These interfaces define the dependencies between nodes.
 
 ## Topics, Services & Actions
 

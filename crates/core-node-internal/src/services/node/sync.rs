@@ -3,7 +3,7 @@ use crate::encoding::{NodeSyncRequest, NodeSyncResponse};
 use crate::names;
 use config::consts::PeppyDirs;
 use config::node::NodeConfigParser;
-use generator::{DeploymentInterface, InterfaceVariant, ConsumedActionMessage};
+use generator::{ConsumedActionMessage, DeploymentInterface, InterfaceVariant};
 use node_stack::NodeStack;
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::types::Payload;
@@ -298,32 +298,28 @@ pub fn collect_consumed_interfaces(
 ) -> Vec<DeploymentInterface> {
     let mut interfaces = Vec::new();
 
-    let Some(consumes) = &node_config.interfaces.consumes else {
-        return interfaces;
-    };
-
     // Collect consumed topics
-    if let Some(topics) = &consumes.topics {
-        for consumed_topic in topics {
+    if let Some(topic_interfaces) = &node_config.interfaces.topics
+        && let Some(consumed_topics) = &topic_interfaces.consumes
+    {
+        for consumed_topic in consumed_topics {
             // Find the dependency node in the stack
             if let Some(dependency_entity) =
                 node_stack.find(&consumed_topic.node, &consumed_topic.tag)
             {
                 // Find the exposed topic with the matching name
-                if let Some(exposes) = &dependency_entity.config().interfaces.exposes
-                    && let Some(exposed_topics) = &exposes.topics
+                if let Some(dep_topics) = &dependency_entity.config().interfaces.topics
+                    && let Some(exposed_topics) = &dep_topics.exposes
                     && let Some(exposed_topic) = exposed_topics
                         .iter()
                         .find(|t| t.name.trim() == consumed_topic.name.trim())
                 {
                     // Get the message format from the exposed topic
                     if let Some(message_format) = &exposed_topic.message_format {
-                        interfaces.push(DeploymentInterface::new(
-                            InterfaceVariant::ConsumedTopic(
-                                consumed_topic.clone(),
-                                message_format.clone(),
-                            ),
-                        ));
+                        interfaces.push(DeploymentInterface::new(InterfaceVariant::ConsumedTopic(
+                            consumed_topic.clone(),
+                            message_format.clone(),
+                        )));
                     }
                 }
             }
@@ -331,47 +327,49 @@ pub fn collect_consumed_interfaces(
     }
 
     // Collect consumed services
-    if let Some(services) = &consumes.services {
-        for consumed_service in services {
+    if let Some(service_interfaces) = &node_config.interfaces.services
+        && let Some(consumed_services) = &service_interfaces.consumes
+    {
+        for consumed_service in consumed_services {
             // Find the dependency node in the stack
             if let Some(dependency_entity) =
                 node_stack.find(&consumed_service.node, &consumed_service.tag)
             {
                 // Find the exposed service with the matching name
-                if let Some(exposes) = &dependency_entity.config().interfaces.exposes
-                    && let Some(exposed_services) = &exposes.services
+                if let Some(dep_services) = &dependency_entity.config().interfaces.services
+                    && let Some(exposed_services) = &dep_services.exposes
                     && let Some(exposed_service) = exposed_services
                         .iter()
                         .find(|s| s.name.trim() == consumed_service.name.trim())
                 {
-                    interfaces.push(DeploymentInterface::new(
-                        InterfaceVariant::ConsumedService(
-                            consumed_service.clone(),
-                            exposed_service
-                                .request_message_format
-                                .clone()
-                                .unwrap_or_default(),
-                            exposed_service
-                                .response_message_format
-                                .clone()
-                                .unwrap_or_default(),
-                        ),
-                    ));
+                    interfaces.push(DeploymentInterface::new(InterfaceVariant::ConsumedService(
+                        consumed_service.clone(),
+                        exposed_service
+                            .request_message_format
+                            .clone()
+                            .unwrap_or_default(),
+                        exposed_service
+                            .response_message_format
+                            .clone()
+                            .unwrap_or_default(),
+                    )));
                 }
             }
         }
     }
 
     // Collect consumed actions
-    if let Some(actions) = &consumes.actions {
-        for consumed_action in actions {
+    if let Some(action_interfaces) = &node_config.interfaces.actions
+        && let Some(consumed_actions) = &action_interfaces.consumes
+    {
+        for consumed_action in consumed_actions {
             // Find the dependency node in the stack
             if let Some(dependency_entity) =
                 node_stack.find(&consumed_action.node, &consumed_action.tag)
             {
                 // Find the exposed action with the matching name
-                if let Some(exposes) = &dependency_entity.config().interfaces.exposes
-                    && let Some(exposed_actions) = &exposes.actions
+                if let Some(dep_actions) = &dependency_entity.config().interfaces.actions
+                    && let Some(exposed_actions) = &dep_actions.exposes
                     && let Some(exposed_action) = exposed_actions
                         .iter()
                         .find(|a| a.name.trim() == consumed_action.name.trim())
@@ -400,12 +398,10 @@ pub fn collect_consumed_interfaces(
                             .and_then(|s| s.response_message_format.clone()),
                     };
 
-                    interfaces.push(DeploymentInterface::new(
-                        InterfaceVariant::ConsumedAction(
-                            consumed_action.clone(),
-                            action_message,
-                        ),
-                    ));
+                    interfaces.push(DeploymentInterface::new(InterfaceVariant::ConsumedAction(
+                        consumed_action.clone(),
+                        action_message,
+                    )));
                 }
             }
         }

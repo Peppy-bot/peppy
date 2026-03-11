@@ -1,5 +1,5 @@
 use super::*;
-use config::node::{ExposedAction, MessageFormat, ConsumedAction};
+use config::node::{ConsumedAction, ExposedAction, MessageFormat};
 use std::collections::HashMap;
 
 // --- Exposes examples

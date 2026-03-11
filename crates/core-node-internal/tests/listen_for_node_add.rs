@@ -851,8 +851,8 @@ async fn listen_for_node_add_dependency_not_resolved() {
             start_cmd: ["sleep", "10"],
         },
         interfaces: {
-            consumes: {
-                topics: [
+            topics: {
+                consumes: [
                     {
                         id: "sensor_input",
                         node: "non_existent_node",
@@ -967,8 +967,8 @@ async fn listen_for_node_add_same_node_same_tags_overwrites_when_no_dependents()
                 start_cmd: ["sleep", "10"]
             }},
             interfaces: {{
-                exposes: {{
-                    topics: [{{ name: "/example" }}]
+                topics: {{
+                    exposes: [{{ name: "/example" }}]
                 }}
             }}
         }}"#
@@ -1016,9 +1016,9 @@ async fn listen_for_node_add_same_node_same_tags_overwrites_when_no_dependents()
         entity
             .config()
             .interfaces
-            .exposes
+            .topics
             .as_ref()
-            .and_then(|exposes| exposes.topics.as_ref())
+            .and_then(|t| t.exposes.as_ref())
             .is_some_and(|topics| topics.iter().any(|topic| topic.name == "/example")),
         "node should have updated interfaces from the overwritten config"
     );
@@ -1050,8 +1050,8 @@ async fn listen_for_node_add_same_node_same_tags_fails_when_node_has_dependents(
                 start_cmd: ["sleep", "10"]
             }},
             interfaces: {{
-                exposes: {{
-                    services: [
+                services: {{
+                    exposes: [
                         {{ name: "reset_sensor" }}
                     ]
                 }}
@@ -1088,8 +1088,8 @@ async fn listen_for_node_add_same_node_same_tags_fails_when_node_has_dependents(
                 start_cmd: ["sleep", "10"]
             }},
             interfaces: {{
-                consumes: {{
-                    services: [
+                services: {{
+                    consumes: [
                         {{
                           id: "reset_sensor_sub",
                           node: "{DEPENDENCY_NODE_NAME}",
@@ -1138,8 +1138,8 @@ async fn listen_for_node_add_same_node_same_tags_fails_when_node_has_dependents(
                 start_cmd: ["sleep", "10"]
             }},
             interfaces: {{
-                exposes: {{
-                    services: [
+                services: {{
+                    exposes: [
                         {{ name: "new_service" }}
                     ]
                 }}
@@ -2040,8 +2040,8 @@ async fn node_add_same_node_shutdown_existing_instances() {
                 start_cmd: ["sleep", "10"]
             }},
             interfaces: {{
-                exposes: {{
-                    topics: [{{ name: "/example" }}]
+                topics: {{
+                    exposes: [{{ name: "/example" }}]
                 }}
             }}
         }}"#
@@ -2313,8 +2313,8 @@ async fn listen_for_node_add_fails_runs_add_cmd_on_missing_node_dependency() {
           start_cmd: ["sleep", "10"]
         },
         interfaces: {
-          consumes: {
-            topics: [
+          topics: {
+            consumes: [
               {
                 id: "camera_stream",
                 node: "fake_uvc_camera",
@@ -2399,8 +2399,8 @@ async fn listen_for_node_add_fails_on_missing_interface_even_when_dependency_exi
                 start_cmd: ["sleep", "10"]
             }},
             interfaces: {{
-                exposes: {{
-                    topics: [{{ name: "wrong_topic_name" }}]
+                topics: {{
+                    exposes: [{{ name: "wrong_topic_name" }}]
                 }}
             }}
         }}"#
@@ -2447,8 +2447,8 @@ async fn listen_for_node_add_fails_on_missing_interface_even_when_dependency_exi
           start_cmd: ["sleep", "10"]
         },
         interfaces: {
-          consumes: {
-            topics: [
+          topics: {
+            consumes: [
               {
                 id: "camera_stream",
                 node: "DEPENDENCY_NODE_NAME",

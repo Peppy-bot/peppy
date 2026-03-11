@@ -3,7 +3,7 @@ use super::serialization::{MessageEncodingSpec, build_serialize_payload};
 use super::services::deserialize_fields_from_format;
 use crate::error::Result;
 use config::encoding::{CapnpSchemaArtifacts, FunctionParam};
-use config::node::{ExposedTopic, QoSProfile, ConsumedTopic};
+use config::node::{ConsumedTopic, ExposedTopic, QoSProfile};
 use proc_macro2::{Ident, Literal, TokenStream};
 use quote::quote;
 

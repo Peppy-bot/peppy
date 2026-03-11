@@ -12,7 +12,7 @@ Use services for operations that need a result, such as querying a node's state,
 
 ## Exposing a service
 
-A node that handles service requests declares its services under `interfaces.exposes.services` in its `peppy.json5`.
+A node that handles service requests declares its services under `interfaces.services.exposes` in its `peppy.json5`.
 Each service defines a `name`, an optional `request_message_format`, and an optional `response_message_format`:
 
 ```json5
@@ -28,9 +28,8 @@ Each service defines a `name`, an optional `request_message_format`, and an opti
     start_cmd: ["./target/release/uvc_camera"]
   },
   interfaces: {
-    exposes: {
-      topics: [],
-      services: [
+    services: {
+      exposes: [
         {
           name: "enable_camera",
           request_message_format: {
@@ -54,12 +53,6 @@ Each service defines a `name`, an optional `request_message_format`, and an opti
           },
         },
       ],
-      actions: [],
-    },
-    consumes: {
-      topics: [],
-      services: [],
-      actions: [],
     },
   }
 }
@@ -143,7 +136,7 @@ tokio::spawn(async move {
 
 ## Consuming a service
 
-A node that calls a service declares what it consumes under `interfaces.consumes.services`:
+A node that calls a service declares what it consumes under `interfaces.services.consumes`:
 
 ```json5
 {
@@ -158,9 +151,8 @@ A node that calls a service declares what it consumes under `interfaces.consumes
     start_cmd: ["./target/release/robot_brain"]
   },
   interfaces: {
-    consumes: {
-      topics: [],
-      services: [
+    services: {
+      consumes: [
         {
           id: "uvc_camera_enable_camera",  // Your chosen identifier for this consumed service
           node: "uvc_camera",               // Target node name
@@ -168,7 +160,6 @@ A node that calls a service declares what it consumes under `interfaces.consumes
           tag: "0.1.0",                     // Target node tag/version
         },
       ],
-      actions: [],
     },
   }
 }

@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use config::consts::PEPPYGEN_OUTPUT_PATH;
 use config::node::{
-    ExposedTopic, Name as ConfigName, NodeConfigParser, ConsumedTopic, Consumes, Toolchain,
+    ConsumedTopic, ExposedTopic, Name as ConfigName, NodeConfigParser, Toolchain, TopicInterfaces,
 };
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands, NodeName};
@@ -24,13 +24,13 @@ fn make_consumer_depend_on_provider(
 
     provider_cfg.process.as_mut().unwrap().add_cmd = None;
 
-    let exposes = provider_cfg
+    let topic_ifaces = provider_cfg
         .interfaces
-        .exposes
+        .topics
         .get_or_insert_with(Default::default);
-    let topics = exposes.topics.get_or_insert_with(Vec::new);
-    if !topics.iter().any(|topic| topic.name == topic_name) {
-        topics.push(ExposedTopic {
+    let exposed = topic_ifaces.exposes.get_or_insert_with(Vec::new);
+    if !exposed.iter().any(|topic| topic.name == topic_name) {
+        exposed.push(ExposedTopic {
             name: topic_name.to_string(),
             ..Default::default()
         });
@@ -50,8 +50,8 @@ fn make_consumer_depend_on_provider(
 
     consumer_cfg.process.as_mut().unwrap().add_cmd = None;
 
-    consumer_cfg.interfaces.consumes = Some(Consumes {
-        topics: Some(vec![ConsumedTopic {
+    consumer_cfg.interfaces.topics = Some(TopicInterfaces {
+        consumes: Some(vec![ConsumedTopic {
             id: ConfigName::new(format!("{consumer_name}_{topic_name}"))
                 .expect("consumed topic id should be valid"),
             node: provider_name.to_string(),

@@ -18,8 +18,8 @@ fn topic_dependency_resolved_when_dependency_added_first() {
               start_cmd: ["brain"]
             },
             interfaces: {
-                consumes: {
-                    topics: [
+                topics: {
+                    consumes: [
                         {
                           id: "lidar_object_sub",
                           node: "lidar",
@@ -45,8 +45,8 @@ fn topic_dependency_resolved_when_dependency_added_first() {
               start_cmd: ["lidar"]
             },
             interfaces: {
-                exposes: {
-                    topics: [
+                topics: {
+                    exposes: [
                         {
                           name: "push_lidar_object",
                           qos_profile: "sensor_data",
@@ -126,8 +126,8 @@ fn topic_dependency_fails_when_dependency_is_missing() {
               start_cmd: ["brain"]
             },
             interfaces: {
-                consumes: {
-                    topics: [
+                topics: {
+                    consumes: [
                         {
                           id: "lidar_object_sub",
                           node: "lidar",
@@ -174,8 +174,8 @@ fn topic_dependency_fails_when_topic_not_exposed_by_dependency() {
               start_cmd: ["brain"]
             },
             interfaces: {
-                consumes: {
-                    topics: [
+                topics: {
+                    consumes: [
                         {
                           id: "lidar_object_sub",
                           node: "lidar",
@@ -202,8 +202,8 @@ fn topic_dependency_fails_when_topic_not_exposed_by_dependency() {
               start_cmd: ["lidar"]
             },
             interfaces: {
-                exposes: {
-                    topics: [
+                topics: {
+                    exposes: [
                         {
                           name: "push_camera_frame",
                           qos_profile: "sensor_data",

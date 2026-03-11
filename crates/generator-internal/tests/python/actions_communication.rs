@@ -7,11 +7,11 @@ use crate::helpers::{
 use config::consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME};
 use config::runtime::NodeInstance;
 use config::{
-    node::{ExposedAction, ExposedService, MessageFormat, ConsumedAction},
+    node::{ConsumedAction, ExposedAction, ExposedService, MessageFormat},
     peppy_config::Name,
     runtime::RuntimeConfig,
 };
-use generator::{LanguageGenerator, ConsumedActionMessage};
+use generator::{ConsumedActionMessage, LanguageGenerator};
 use std::path::Path;
 use std::{fs, time::Duration};
 use tempfile::TempDir;
@@ -140,8 +140,7 @@ async fn actions_communication() {
     // --- Subscriber (client) project
     let subscriber_instance_id = SUBSCRIBER_INSTANCE_ID;
     let temp_dir_subscriber = TempDir::new().unwrap();
-    let consumed_action: ConsumedAction =
-        serde_json5::from_str(SUBSCRIBED_ACTION_EXAMPLE).unwrap();
+    let consumed_action: ConsumedAction = serde_json5::from_str(SUBSCRIBED_ACTION_EXAMPLE).unwrap();
     let goal_request_format: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_FORMAT).unwrap();
     let goal_response_format: MessageFormat =
@@ -472,8 +471,7 @@ async fn actions_communication_cancel_goal() {
     // --- Subscriber (client) project
     let subscriber_instance_id = SUBSCRIBER_INSTANCE_ID;
     let temp_dir_subscriber = TempDir::new().unwrap();
-    let consumed_action: ConsumedAction =
-        serde_json5::from_str(SUBSCRIBED_ACTION_EXAMPLE).unwrap();
+    let consumed_action: ConsumedAction = serde_json5::from_str(SUBSCRIBED_ACTION_EXAMPLE).unwrap();
     let goal_request_format: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_FORMAT).unwrap();
     let goal_response_format: MessageFormat =

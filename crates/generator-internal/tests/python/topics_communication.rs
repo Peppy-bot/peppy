@@ -6,7 +6,7 @@ use crate::helpers::{
 use config::consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME};
 use config::runtime::NodeInstance;
 use config::{
-    node::{ExposedService, ExposedTopic, MessageFormat, ConsumedTopic},
+    node::{ConsumedTopic, ExposedService, ExposedTopic, MessageFormat},
     peppy_config::Name,
     runtime::RuntimeConfig,
 };
@@ -88,8 +88,7 @@ async fn topics_communication() {
     // --- Subscriber project
     let subscriber_instance_id = SUBSCRIBER_INSTANCE_ID;
     let temp_dir_proj2 = TempDir::new().unwrap();
-    let consumed_topic: ConsumedTopic =
-        serde_json5::from_str(SUBSCRIBED_TOPIC_EXAMPLE).unwrap();
+    let consumed_topic: ConsumedTopic = serde_json5::from_str(SUBSCRIBED_TOPIC_EXAMPLE).unwrap();
     let subscribed_format: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE).unwrap();
     let frame_received_service: ExposedService =

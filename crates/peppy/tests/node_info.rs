@@ -39,16 +39,20 @@ async fn node_info_shows_dependencies_from_consumed_interfaces() {
                 start_cmd: ["sleep", "10"]
             }},
             interfaces: {{
-                consumes: {{
-                    topics: [
+                topics: {{
+                    consumes: [
                         {{ id: "camera_feed", node: "camera_node", name: "video_stream" }},
                         {{ id: "lidar_data", node: "lidar_node", name: "point_cloud" }},
                         {{ id: "other_camera", node: "camera_node", name: "depth_stream" }}
-                    ],
-                    services: [
+                    ]
+                }},
+                services: {{
+                    consumes: [
                         {{ id: "config_service", node: "config_node", name: "get_config" }}
-                    ],
-                    actions: [
+                    ]
+                }},
+                actions: {{
+                    consumes: [
                         {{ id: "navigate", node: "navigation_node", name: "go_to_pose" }}
                     ]
                 }}
@@ -85,23 +89,31 @@ async fn node_info_shows_dependencies_from_consumed_interfaces() {
     assert_eq!(info_response.config.manifest.tag, NODE_TAG);
 
     // Verify consumed interfaces exist
-    let subscribes = info_response
+    let topics = info_response
         .config
         .interfaces
-        .consumes
+        .topics
         .as_ref()
-        .expect("consumes should exist");
-
-    // Verify topics
-    let topics = subscribes.topics.as_ref().expect("topics should exist");
+        .and_then(|t| t.consumes.as_ref())
+        .expect("consumed topics should exist");
     assert_eq!(topics.len(), 3, "should have 3 consumed topics");
 
-    // Verify services
-    let services = subscribes.services.as_ref().expect("services should exist");
+    let services = info_response
+        .config
+        .interfaces
+        .services
+        .as_ref()
+        .and_then(|s| s.consumes.as_ref())
+        .expect("consumed services should exist");
     assert_eq!(services.len(), 1, "should have 1 consumed service");
 
-    // Verify actions
-    let actions = subscribes.actions.as_ref().expect("actions should exist");
+    let actions = info_response
+        .config
+        .interfaces
+        .actions
+        .as_ref()
+        .and_then(|a| a.consumes.as_ref())
+        .expect("consumed actions should exist");
     assert_eq!(actions.len(), 1, "should have 1 consumed action");
 
     // Extract dependencies (unique node names) - this mirrors what print_node_info does
@@ -175,8 +187,8 @@ async fn node_info_no_dependencies_when_no_consumes() {
                 start_cmd: ["sleep", "10"]
             }},
             interfaces: {{
-                exposes: {{
-                    topics: [
+                topics: {{
+                    exposes: [
                         {{ name: "output_data", qos_profile: "standard" }}
                     ]
                 }}
@@ -212,30 +224,39 @@ async fn node_info_no_dependencies_when_no_consumes() {
     assert_eq!(info_response.config.manifest.name.as_str(), NODE_NAME);
 
     // Verify exposes exists
-    let exposes = info_response
+    let exposed_topics = info_response
         .config
         .interfaces
-        .exposes
+        .topics
         .as_ref()
-        .expect("exposes should exist");
-    assert!(
-        exposes.topics.as_ref().is_some_and(|t| !t.is_empty()),
-        "should have exposed topics"
-    );
+        .and_then(|t| t.exposes.as_ref())
+        .expect("exposed topics should exist");
+    assert!(!exposed_topics.is_empty(), "should have exposed topics");
 
     // Verify no consumes (no dependencies)
+    let no_consumed_topics = info_response
+        .config
+        .interfaces
+        .topics
+        .as_ref()
+        .and_then(|t| t.consumes.as_ref())
+        .is_none_or(|t| t.is_empty());
+    let no_consumed_services = info_response
+        .config
+        .interfaces
+        .services
+        .as_ref()
+        .and_then(|s| s.consumes.as_ref())
+        .is_none_or(|s| s.is_empty());
+    let no_consumed_actions = info_response
+        .config
+        .interfaces
+        .actions
+        .as_ref()
+        .and_then(|a| a.consumes.as_ref())
+        .is_none_or(|a| a.is_empty());
     assert!(
-        info_response.config.interfaces.consumes.is_none()
-            || info_response
-                .config
-                .interfaces
-                .consumes
-                .as_ref()
-                .is_some_and(|s| {
-                    s.topics.as_ref().is_none_or(|t| t.is_empty())
-                        && s.services.as_ref().is_none_or(|sv| sv.is_empty())
-                        && s.actions.as_ref().is_none_or(|a| a.is_empty())
-                }),
+        no_consumed_topics && no_consumed_services && no_consumed_actions,
         "standalone node should have no dependencies"
     );
 }

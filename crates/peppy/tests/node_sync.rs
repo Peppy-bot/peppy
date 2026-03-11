@@ -11,8 +11,8 @@ use peppy::context::AppContext;
 fn add_exposed_topic(peppy_json5: &Path) {
     let mut cfg = NodeConfigParser::from_path(peppy_json5).expect("peppy.json5 should read");
 
-    let exposes = cfg.interfaces.exposes.get_or_insert_with(Default::default);
-    let topics = exposes.topics.get_or_insert_with(Vec::new);
+    let topic_ifaces = cfg.interfaces.topics.get_or_insert_with(Default::default);
+    let topics = topic_ifaces.exposes.get_or_insert_with(Vec::new);
     let message_format: MessageFormat = serde_json::from_value(serde_json::json!({
         "timestamp": "time",
         "message": "string",

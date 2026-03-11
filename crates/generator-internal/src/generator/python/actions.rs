@@ -8,7 +8,7 @@ use crate::error::{Error, Result};
 use crate::generator::types::{
     ConsumedActionMessage, cancel_action_response_format, non_empty_message_format,
 };
-use config::node::{ExposedAction, MessageFormat, ConsumedAction};
+use config::node::{ConsumedAction, ExposedAction, MessageFormat};
 
 // ---------------------------------------------------------------------------
 // Exposed actions

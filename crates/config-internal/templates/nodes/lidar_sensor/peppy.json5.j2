@@ -34,8 +34,8 @@
     }
   },
   interfaces: {
-    exposes: {
-      topics: [
+    topics: {
+      exposes: [
         {
           name: "push_lidar_object",
           qos_profile: "sensor_data",
@@ -54,7 +54,9 @@
           },
         }
       ],
-      services: [
+    },
+    services: {
+      exposes: [
         {
           name: "enable_camera",
           request_message_format: {
@@ -73,11 +75,6 @@
           },
         },
       ],
-    },
-    consumes: {
-      topics: [],
-      services: [],
-      actions: [],
     },
   }
 }

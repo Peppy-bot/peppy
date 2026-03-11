@@ -1,6 +1,6 @@
 use super::*;
 
-use config::node::{ExposedAction, ConsumedAction};
+use config::node::{ConsumedAction, ExposedAction};
 use std::process::{Command, Stdio};
 use std::{collections::HashMap, fs};
 
@@ -1016,8 +1016,8 @@ fn clippy_single_exposed_action_empty_goal_request() {
         consumed_actions_mod.exists(),
         "Expected consumed_actions module file so `peppygen::consumed_actions::<action>` resolves"
     );
-    let consumed_actions_contents = fs::read_to_string(&consumed_actions_mod)
-        .expect("failed to read consumed_actions module");
+    let consumed_actions_contents =
+        fs::read_to_string(&consumed_actions_mod).expect("failed to read consumed_actions module");
     assert_contains_all(
         &consumed_actions_contents,
         &[
@@ -1151,8 +1151,8 @@ fn compile_lib_with_exposed_and_consumed_actions() {
         consumed_actions_mod.exists(),
         "Expected consumed_actions module file so `peppygen::consumed_actions::<action>` resolves"
     );
-    let consumed_actions_contents = fs::read_to_string(&consumed_actions_mod)
-        .expect("failed to read consumed_actions module");
+    let consumed_actions_contents =
+        fs::read_to_string(&consumed_actions_mod).expect("failed to read consumed_actions module");
     assert_contains_all(
         &consumed_actions_contents,
         &[

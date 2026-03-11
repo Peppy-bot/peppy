@@ -5,7 +5,7 @@ use super::serialization;
 use super::topics::{capnp_loader_fn_name, emit_capnp_loader_fn, emit_capnp_preamble};
 use crate::error::Result;
 use crate::generator::types::non_empty_message_format;
-use config::node::{ExposedService, MessageFormat, ConsumedService};
+use config::node::{ConsumedService, ExposedService, MessageFormat};
 
 /// Generates Python code for an exposed (handler) service.
 pub fn build_exposed_service(

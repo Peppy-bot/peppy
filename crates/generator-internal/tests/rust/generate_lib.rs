@@ -1,9 +1,9 @@
 use config::{
     consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH, PEPPYLIB_OUTPUT_PATH},
-    node::{MessageFormat, PeppygenLanguage, ConsumedAction, ConsumedService, ConsumedTopic},
+    node::{ConsumedAction, ConsumedService, ConsumedTopic, MessageFormat, PeppygenLanguage},
 };
 use generator::generate_peppygen_lib;
-use generator::{DeploymentInterface, InterfaceVariant, ConsumedActionMessage};
+use generator::{ConsumedActionMessage, DeploymentInterface, InterfaceVariant};
 use std::fs;
 use tempfile::TempDir;
 
@@ -20,8 +20,8 @@ const PEPPY_JSON5_CONFIG: &str = r#"{
     start_cmd: ["./target/release/test_node"]
   },
   interfaces: {
-    exposes: {
-      topics: [
+    topics: {
+      exposes: [
         {
           name: "test_topic",
           qos_profile: "sensor_data",
@@ -30,8 +30,10 @@ const PEPPY_JSON5_CONFIG: &str = r#"{
             timestamp: "time"
           }
         }
-      ],
-      services: [
+      ]
+    },
+    services: {
+      exposes: [
         {
           name: "test_service",
           request_message_format: {
@@ -239,8 +241,8 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_topics() {
             start_cmd: ["./target/debug/{EXPOSED_NODE_NAME}"]
           }},
           interfaces: {{
-            exposes: {{
-              topics: [
+            topics: {{
+              exposes: [
                 {{
                   name: "test_topic",
                   qos_profile: "sensor_data",
@@ -356,8 +358,8 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_services() {
             start_cmd: ["./target/debug/{EXPOSED_NODE_NAME}"]
           }},
           interfaces: {{
-            exposes: {{
-              services: [
+            services: {{
+              exposes: [
                 {{
                   name: "test_service",
                   request_message_format: {{
@@ -434,9 +436,11 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_services() {
         serde_json5::from_str(r#"{ output: "string", success: "bool" }"#)
             .expect("failed to parse response format");
 
-    let consumed_interfaces = vec![DeploymentInterface::new(
-        InterfaceVariant::ConsumedService(consumed_service, request_format, response_format),
-    )];
+    let consumed_interfaces = vec![DeploymentInterface::new(InterfaceVariant::ConsumedService(
+        consumed_service,
+        request_format,
+        response_format,
+    ))];
 
     generate_peppygen_lib(
         PeppygenLanguage::Rust,
@@ -485,8 +489,8 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_actions() {
             start_cmd: ["./target/debug/{EXPOSED_NODE_NAME}"]
           }},
           interfaces: {{
-            exposes: {{
-              actions: [
+            actions: {{
+              exposes: [
                 {{
                   name: "test_action",
                   goal_service: {{
@@ -586,9 +590,10 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_actions() {
         result_response: Some(result_response_format),
     };
 
-    let consumed_interfaces = vec![DeploymentInterface::new(
-        InterfaceVariant::ConsumedAction(consumed_action, action_messages),
-    )];
+    let consumed_interfaces = vec![DeploymentInterface::new(InterfaceVariant::ConsumedAction(
+        consumed_action,
+        action_messages,
+    ))];
 
     generate_peppygen_lib(
         PeppygenLanguage::Rust,

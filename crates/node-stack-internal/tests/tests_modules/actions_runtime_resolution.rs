@@ -18,8 +18,8 @@ fn action_dependency_resolved_when_dependency_added_first() {
               start_cmd: ["brain"]
             },
             interfaces: {
-                consumes: {
-                    actions: [
+                actions: {
+                    consumes: [
                         {
                           id: "move_right_arm_sub",
                           node: "controller",
@@ -45,8 +45,8 @@ fn action_dependency_resolved_when_dependency_added_first() {
               start_cmd: ["controller"]
             },
             interfaces: {
-                exposes: {
-                    actions: [
+                actions: {
+                    exposes: [
                         {
                           name: "move_right_arm",
                           goal_service: {
@@ -58,8 +58,8 @@ fn action_dependency_resolved_when_dependency_added_first() {
                                 $length: 3
                               }
                             },
-                            response_message_format: { 
-                              accepted: "bool" 
+                            response_message_format: {
+                              accepted: "bool"
                             }
                           },
                           feedback_topic: {
@@ -149,8 +149,8 @@ fn action_dependency_fails_when_dependency_is_missing() {
               start_cmd: ["brain"]
             },
             interfaces: {
-                consumes: {
-                    actions: [
+                actions: {
+                    consumes: [
                         {
                           id: "move_right_arm_sub",
                           node: "controller",
@@ -197,8 +197,8 @@ fn action_dependency_fails_when_action_not_exposed_by_dependency() {
               start_cmd: ["brain"]
             },
             interfaces: {
-                consumes: {
-                    actions: [
+                actions: {
+                    consumes: [
                         {
                           id: "move_right_arm_sub",
                           node: "controller",
@@ -225,8 +225,8 @@ fn action_dependency_fails_when_action_not_exposed_by_dependency() {
               start_cmd: ["controller"]
             },
             interfaces: {
-                exposes: {
-                    actions: [
+                actions: {
+                    exposes: [
                         {
                           name: "move_left_arm",
                           goal_service: {

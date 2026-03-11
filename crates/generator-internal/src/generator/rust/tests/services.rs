@@ -1,7 +1,7 @@
 use std::process::{Command, Stdio};
 
 use super::*;
-use config::node::{ExposedService, PeppygenLanguage, ConsumedService};
+use config::node::{ConsumedService, ExposedService, PeppygenLanguage};
 
 const EXPOSED_SERVICE_EXAMPLE: &str = r#"
 {

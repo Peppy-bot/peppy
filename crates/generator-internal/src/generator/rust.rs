@@ -15,7 +15,7 @@ mod type_mapping;
 pub use parameters::{generate_parameters_struct, validate_parameter_schema};
 
 use super::types::{
-    CapnpSchema, InterfaceArtifact, InterfaceKind, LanguageGenerator, ConsumedActionMessage,
+    CapnpSchema, ConsumedActionMessage, InterfaceArtifact, InterfaceKind, LanguageGenerator,
     cancel_action_response_format, non_empty_message_format,
 };
 use crate::error::Result;
@@ -24,8 +24,8 @@ use crate::generator::naming::{
 };
 use config::encoding::{CapnpSchemaArtifacts, FunctionParam};
 use config::node::{
-    ExposedAction, ExposedService, ExposedTopic, MessageFormat, ConsumedAction,
-    ConsumedService, ConsumedTopic,
+    ConsumedAction, ConsumedService, ConsumedTopic, ExposedAction, ExposedService, ExposedTopic,
+    MessageFormat,
 };
 use indexmap::IndexMap;
 use proc_macro2::{Ident, Literal, Span, TokenStream};

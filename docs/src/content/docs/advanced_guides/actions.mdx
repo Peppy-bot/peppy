@@ -36,7 +36,7 @@ Client                              Server
 
 ## Exposing an action
 
-A node that handles action goals declares its actions under `interfaces.exposes.actions` in its `peppy.json5`.
+A node that handles action goals declares its actions under `interfaces.actions.exposes` in its `peppy.json5`.
 Each action defines a `goal_service`, a `feedback_topic`, and a `result_service`:
 
 ```json5
@@ -52,10 +52,8 @@ Each action defines a `goal_service`, a `feedback_topic`, and a `result_service`
     start_cmd: ["./target/release/brain"]
   },
   interfaces: {
-    exposes: {
-      topics: [],
-      services: [],
-      actions: [
+    actions: {
+      exposes: [
         {
           name: "move_arm",
           goal_service: {
@@ -97,11 +95,6 @@ Each action defines a `goal_service`, a `feedback_topic`, and a `result_service`
           }
         }
       ],
-    },
-    consumes: {
-      topics: [],
-      services: [],
-      actions: [],
     },
   }
 }
@@ -208,7 +201,7 @@ loop {
 
 ## Consuming an action
 
-A node that sends goals declares what it consumes under `interfaces.consumes.actions`:
+A node that sends goals declares what it consumes under `interfaces.actions.consumes`:
 
 ```json5
 {
@@ -223,10 +216,8 @@ A node that sends goals declares what it consumes under `interfaces.consumes.act
     start_cmd: ["./target/release/controller"]
   },
   interfaces: {
-    consumes: {
-      topics: [],
-      services: [],
-      actions: [
+    actions: {
+      consumes: [
         {
           id: "brain_move_arm",  // Your chosen identifier for this consumed action
           node: "brain",          // Target node name

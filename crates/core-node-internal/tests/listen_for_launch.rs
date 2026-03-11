@@ -151,32 +151,33 @@ fn write_node_config_with_options(
         .collect::<Vec<_>>()
         .join(", ");
 
-    let exposes = if exposes_camera_stream {
-        r#"
-        interfaces: {
-          exposes: {
-            topics: [
-              { name: "camera_stream" }
-            ]
-          }
-        }
-        "#
+    let exposes_topics = if exposes_camera_stream {
+        r#"exposes: [
+                  { name: "camera_stream" }
+                ],"#
     } else {
         ""
     };
 
-    let consumes = if consumes_uvc_camera {
-        r#"
-        interfaces: {
-          consumes: {
-            topics: [
-              { id: "camera_stream", node: "uvc_camera", tag: "0.1.0", name: "camera_stream" }
-            ]
-          }
-        }
-        "#
+    let consumes_topics = if consumes_uvc_camera {
+        r#"consumes: [
+                  { id: "camera_stream", node: "uvc_camera", tag: "0.1.0", name: "camera_stream" }
+                ],"#
     } else {
         ""
+    };
+
+    let interfaces = if exposes_camera_stream || consumes_uvc_camera {
+        format!(
+            r#"interfaces: {{
+                topics: {{
+                  {exposes_topics}
+                  {consumes_topics}
+                }}
+              }}"#
+        )
+    } else {
+        String::new()
     };
 
     let node_config_path = node_dir.join(NODE_CONFIG_FILE);
@@ -194,8 +195,7 @@ fn write_node_config_with_options(
                 add_cmd: [{add_cmd_json5}],
                 start_cmd: [{start_cmd_json5}]
               }},
-              {exposes}
-              {consumes}
+              {interfaces}
             }}"#
         ),
     )
@@ -240,8 +240,8 @@ fn create_uvc_camera_repo(to_path: &Path, node_tag: &str) -> PathBuf {
                 start_cmd: ["sleep", "60"]
               }},
               interfaces: {{
-                exposes: {{
-                  topics: [
+                topics: {{
+                  exposes: [
                     {{ name: "camera_stream" }}
                   ]
                 }}

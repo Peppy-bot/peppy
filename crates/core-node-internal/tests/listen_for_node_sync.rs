@@ -280,13 +280,9 @@ async fn listen_for_node_sync_missing_dependency_fails() {
             },
             parameters: {},
             interfaces: {
-                exposes: {
-                    topics: [],
-                    services: [],
-                    actions: [],
-                },
-                consumes: {
-                    topics: [
+                topics: {
+                    exposes: [],
+                    consumes: [
                         {
                             id: "camera_front",
                             node: "uvc_camera",
@@ -294,6 +290,12 @@ async fn listen_for_node_sync_missing_dependency_fails() {
                             tag: "0.1.0",
                         }
                     ],
+                },
+                services: {
+                    exposes: [],
+                },
+                actions: {
+                    exposes: [],
                 },
             },
         }
@@ -353,13 +355,9 @@ async fn listen_for_node_sync_multiple_missing_dependencies_fails() {
             },
             parameters: {},
             interfaces: {
-                exposes: {
-                    topics: [],
-                    services: [],
-                    actions: [],
-                },
-                consumes: {
-                    topics: [
+                topics: {
+                    exposes: [],
+                    consumes: [
                         {
                             id: "camera_front",
                             node: "uvc_camera",
@@ -385,6 +383,12 @@ async fn listen_for_node_sync_multiple_missing_dependencies_fails() {
                             tag: "2.0.0",
                         }
                     ],
+                },
+                services: {
+                    exposes: [],
+                },
+                actions: {
+                    exposes: [],
                 },
             },
         }
@@ -463,8 +467,8 @@ async fn listen_for_node_sync_generates_rust_interfaces() {
             },
             parameters: {},
             interfaces: {
-                exposes: {
-                    topics: [
+                topics: {
+                    exposes: [
                       {
                         name: "video_stream",
                         qos_profile: "sensor_data",
@@ -484,11 +488,13 @@ async fn listen_for_node_sync_generates_rust_interfaces() {
                         },
                       }
                     ],
-                    services: [],
-                    actions: [],
+                    consumes: [],
                 },
-                consumes: {
-                    topics: [],
+                services: {
+                    exposes: [],
+                },
+                actions: {
+                    exposes: [],
                 },
             },
         }
@@ -556,13 +562,9 @@ async fn listen_for_node_sync_generates_rust_interfaces() {
             },
             parameters: {},
             interfaces: {
-                exposes: {
-                    topics: [],
-                    services: [],
-                    actions: [],
-                },
-                consumes: {
-                    topics: [
+                topics: {
+                    exposes: [],
+                    consumes: [
                         {
                           id: "camera_front",
                           node: "uvc_camera",
@@ -570,6 +572,12 @@ async fn listen_for_node_sync_generates_rust_interfaces() {
                           tag: "0.1.0",
                         }
                     ],
+                },
+                services: {
+                    exposes: [],
+                },
+                actions: {
+                    exposes: [],
                 },
             },
         }
@@ -672,9 +680,11 @@ async fn listen_for_node_sync_generates_rust_consumed_service_interfaces() {
             },
             parameters: {},
             interfaces: {
-                exposes: {
-                    topics: [],
-                    services: [
+                topics: {
+                    exposes: [],
+                },
+                services: {
+                    exposes: [
                       {
                         name: "enable_camera",
                         request_message_format: {
@@ -682,7 +692,9 @@ async fn listen_for_node_sync_generates_rust_consumed_service_interfaces() {
                         },
                       }
                     ],
-                    actions: [],
+                },
+                actions: {
+                    exposes: [],
                 },
             },
         }
@@ -747,13 +759,12 @@ async fn listen_for_node_sync_generates_rust_consumed_service_interfaces() {
             },
             parameters: {},
             interfaces: {
-                exposes: {
-                    topics: [],
-                    services: [],
-                    actions: [],
+                topics: {
+                    exposes: [],
                 },
-                consumes: {
-                    services: [
+                services: {
+                    exposes: [],
+                    consumes: [
                         {
                           id: "uvc_camera_enable_camera",
                           node: "uvc_camera",
@@ -761,6 +772,9 @@ async fn listen_for_node_sync_generates_rust_consumed_service_interfaces() {
                           tag: "0.1.0",
                         }
                     ],
+                },
+                actions: {
+                    exposes: [],
                 },
             },
         }
@@ -824,8 +838,8 @@ async fn listen_for_node_sync_generates_rust_consumed_topic_interfaces() {
             },
             parameters: {},
             interfaces: {
-                exposes: {
-                    topics: [
+                topics: {
+                    exposes: [
                       {
                         name: "video_stream",
                         qos_profile: "sensor_data",
@@ -835,8 +849,12 @@ async fn listen_for_node_sync_generates_rust_consumed_topic_interfaces() {
                         },
                       }
                     ],
-                    services: [],
-                    actions: [],
+                },
+                services: {
+                    exposes: [],
+                },
+                actions: {
+                    exposes: [],
                 },
             },
         }
@@ -901,13 +919,9 @@ async fn listen_for_node_sync_generates_rust_consumed_topic_interfaces() {
             },
             parameters: {},
             interfaces: {
-                exposes: {
-                    topics: [],
-                    services: [],
-                    actions: [],
-                },
-                consumes: {
-                    topics: [
+                topics: {
+                    exposes: [],
+                    consumes: [
                         {
                           id: "camera_front",
                           node: "uvc_camera",
@@ -915,6 +929,12 @@ async fn listen_for_node_sync_generates_rust_consumed_topic_interfaces() {
                           tag: "0.1.0",
                         }
                     ],
+                },
+                services: {
+                    exposes: [],
+                },
+                actions: {
+                    exposes: [],
                 },
             },
         }
@@ -978,10 +998,14 @@ async fn listen_for_node_sync_generates_rust_consumed_action_interfaces() {
             },
             parameters: {},
             interfaces: {
-                exposes: {
-                    topics: [],
-                    services: [],
-                    actions: [
+                topics: {
+                    exposes: [],
+                },
+                services: {
+                    exposes: [],
+                },
+                actions: {
+                    exposes: [
                       {
                         name: "move_arm",
                         goal_service: {
@@ -1061,13 +1085,15 @@ async fn listen_for_node_sync_generates_rust_consumed_action_interfaces() {
             },
             parameters: {},
             interfaces: {
-                exposes: {
-                    topics: [],
-                    services: [],
-                    actions: [],
+                topics: {
+                    exposes: [],
                 },
-                consumes: {
-                    actions: [
+                services: {
+                    exposes: [],
+                },
+                actions: {
+                    exposes: [],
+                    consumes: [
                         {
                           id: "brain_move_arm",
                           node: "brain",

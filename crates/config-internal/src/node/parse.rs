@@ -84,8 +84,8 @@ mod tests {
                 start_cmd: ["./target/release/camera_driver"],
             },
             interfaces: {
-                exposes: {
-                    topics: [
+                topics: {
+                    exposes: [
                         { name: "/camera/image_raw" }
                     ]
                 }
@@ -102,7 +102,7 @@ mod tests {
             config.process.as_ref().unwrap().start_cmd,
             vec!["./target/release/camera_driver"]
         );
-        assert!(config.interfaces.exposes.is_some());
+        assert!(config.interfaces.topics.is_some());
     }
 
     #[test]

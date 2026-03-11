@@ -2,8 +2,8 @@ use crate::error::{Error, Result};
 use crate::generator::common::CrateDeployMode;
 use config::consts::PeppyDirs;
 use config::node::{
-    ExposedAction, ExposedService, ExposedTopic, MessageFormat, PeppygenLanguage, PrimitiveSchema,
-    SchemaType, ConsumedAction, ConsumedService, ConsumedTopic, TypeToken,
+    ConsumedAction, ConsumedService, ConsumedTopic, ExposedAction, ExposedService, ExposedTopic,
+    MessageFormat, PeppygenLanguage, PrimitiveSchema, SchemaType, TypeToken,
 };
 use indexmap::IndexMap;
 use std::path::Path;
@@ -93,11 +93,8 @@ pub trait LanguageGenerator {
     fn add_exposed_topic(&mut self, topic: &ExposedTopic) -> Result<()>;
     fn add_exposed_service(&mut self, service: &ExposedService) -> Result<()>;
     fn add_exposed_action(&mut self, action: &ExposedAction) -> Result<()>;
-    fn add_consumed_topic(
-        &mut self,
-        topic: &ConsumedTopic,
-        arguments: MessageFormat,
-    ) -> Result<()>;
+    fn add_consumed_topic(&mut self, topic: &ConsumedTopic, arguments: MessageFormat)
+    -> Result<()>;
     fn add_consumed_service(
         &mut self,
         service: &ConsumedService,

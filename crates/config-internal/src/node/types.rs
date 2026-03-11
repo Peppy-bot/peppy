@@ -368,24 +368,29 @@ impl SchemaType {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
-pub struct Exposes {
+pub struct TopicInterfaces {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub topics: Option<Vec<ExposedTopic>>,
+    pub exposes: Option<Vec<ExposedTopic>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub services: Option<Vec<ExposedService>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub actions: Option<Vec<ExposedAction>>,
+    pub consumes: Option<Vec<ConsumedTopic>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
-pub struct Consumes {
+pub struct ServiceInterfaces {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub topics: Option<Vec<ConsumedTopic>>,
+    pub exposes: Option<Vec<ExposedService>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub services: Option<Vec<ConsumedService>>,
+    pub consumes: Option<Vec<ConsumedService>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct ActionInterfaces {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub actions: Option<Vec<ConsumedAction>>,
+    pub exposes: Option<Vec<ExposedAction>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub consumes: Option<Vec<ConsumedAction>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
@@ -637,9 +642,11 @@ impl ContainerConfig {
 #[serde(deny_unknown_fields)]
 pub struct Interfaces {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub exposes: Option<Exposes>,
+    pub topics: Option<TopicInterfaces>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub consumes: Option<Consumes>,
+    pub services: Option<ServiceInterfaces>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub actions: Option<ActionInterfaces>,
 }
 
 #[cfg(test)]
@@ -660,8 +667,7 @@ mod tests {
     #[test]
     fn consumed_topic_node_is_required() {
         let valid = r#"{ id: "camera_stream", node: "uvc_camera", name: "video_stream" }"#;
-        let topic: ConsumedTopic =
-            serde_json5::from_str(valid).expect("valid topic should parse");
+        let topic: ConsumedTopic = serde_json5::from_str(valid).expect("valid topic should parse");
         assert_eq!(topic.node, "uvc_camera");
         assert_eq!(topic.name, "video_stream");
 
