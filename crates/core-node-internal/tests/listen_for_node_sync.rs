@@ -281,7 +281,6 @@ async fn listen_for_node_sync_missing_dependency_fails() {
             parameters: {},
             interfaces: {
                 topics: {
-                    emits: [],
                     expects: [
                         {
                             id: "camera_front",
@@ -290,12 +289,6 @@ async fn listen_for_node_sync_missing_dependency_fails() {
                             tag: "0.1.0",
                         }
                     ],
-                },
-                services: {
-                    exposes: [],
-                },
-                actions: {
-                    exposes: [],
                 },
             },
         }
@@ -356,7 +349,6 @@ async fn listen_for_node_sync_multiple_missing_dependencies_fails() {
             parameters: {},
             interfaces: {
                 topics: {
-                    emits: [],
                     expects: [
                         {
                             id: "camera_front",
@@ -383,12 +375,6 @@ async fn listen_for_node_sync_multiple_missing_dependencies_fails() {
                             tag: "2.0.0",
                         }
                     ],
-                },
-                services: {
-                    exposes: [],
-                },
-                actions: {
-                    exposes: [],
                 },
             },
         }
@@ -488,13 +474,6 @@ async fn listen_for_node_sync_generates_rust_interfaces() {
                         },
                       }
                     ],
-                    expects: [],
-                },
-                services: {
-                    exposes: [],
-                },
-                actions: {
-                    exposes: [],
                 },
             },
         }
@@ -563,7 +542,6 @@ async fn listen_for_node_sync_generates_rust_interfaces() {
             parameters: {},
             interfaces: {
                 topics: {
-                    emits: [],
                     expects: [
                         {
                           id: "camera_front",
@@ -572,12 +550,6 @@ async fn listen_for_node_sync_generates_rust_interfaces() {
                           tag: "0.1.0",
                         }
                     ],
-                },
-                services: {
-                    exposes: [],
-                },
-                actions: {
-                    exposes: [],
                 },
             },
         }
@@ -680,9 +652,6 @@ async fn listen_for_node_sync_generates_rust_consumed_service_interfaces() {
             },
             parameters: {},
             interfaces: {
-                topics: {
-                    emits: [],
-                },
                 services: {
                     exposes: [
                       {
@@ -692,9 +661,6 @@ async fn listen_for_node_sync_generates_rust_consumed_service_interfaces() {
                         },
                       }
                     ],
-                },
-                actions: {
-                    exposes: [],
                 },
             },
         }
@@ -759,11 +725,7 @@ async fn listen_for_node_sync_generates_rust_consumed_service_interfaces() {
             },
             parameters: {},
             interfaces: {
-                topics: {
-                    emits: [],
-                },
                 services: {
-                    exposes: [],
                     consumes: [
                         {
                           id: "uvc_camera_enable_camera",
@@ -772,9 +734,6 @@ async fn listen_for_node_sync_generates_rust_consumed_service_interfaces() {
                           tag: "0.1.0",
                         }
                     ],
-                },
-                actions: {
-                    exposes: [],
                 },
             },
         }
@@ -850,12 +809,6 @@ async fn listen_for_node_sync_generates_rust_expected_topic_interfaces() {
                       }
                     ],
                 },
-                services: {
-                    exposes: [],
-                },
-                actions: {
-                    exposes: [],
-                },
             },
         }
         "#,
@@ -920,7 +873,6 @@ async fn listen_for_node_sync_generates_rust_expected_topic_interfaces() {
             parameters: {},
             interfaces: {
                 topics: {
-                    emits: [],
                     expects: [
                         {
                           id: "camera_front",
@@ -929,12 +881,6 @@ async fn listen_for_node_sync_generates_rust_expected_topic_interfaces() {
                           tag: "0.1.0",
                         }
                     ],
-                },
-                services: {
-                    exposes: [],
-                },
-                actions: {
-                    exposes: [],
                 },
             },
         }
@@ -998,12 +944,6 @@ async fn listen_for_node_sync_generates_rust_consumed_action_interfaces() {
             },
             parameters: {},
             interfaces: {
-                topics: {
-                    emits: [],
-                },
-                services: {
-                    exposes: [],
-                },
                 actions: {
                     exposes: [
                       {
@@ -1085,14 +1025,7 @@ async fn listen_for_node_sync_generates_rust_consumed_action_interfaces() {
             },
             parameters: {},
             interfaces: {
-                topics: {
-                    emits: [],
-                },
-                services: {
-                    exposes: [],
-                },
                 actions: {
-                    exposes: [],
                     consumes: [
                         {
                           id: "brain_move_arm",

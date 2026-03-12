@@ -22,7 +22,6 @@
   interfaces: {
     // The brain receives the inputs from the camera
     topics: {
-      emits: [],
       expects: [
         {
           id: "camera_front",
@@ -33,7 +32,6 @@
       ],
     },
     services: {
-      exposes: [],
       consumes: [
         {
           id: "video_info",
@@ -45,7 +43,6 @@
     },
     // And emit actions for the controller to take
     actions: {
-      exposes: [],
       consumes: [
         {
           id: "move_right_arm_action",

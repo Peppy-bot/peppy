@@ -20,14 +20,6 @@
   },
   parameters: {},
   interfaces: {
-    topics: {
-      emits: [],
-      expects: [],
-    },
-    services: {
-      exposes: [],
-      consumes: [],
-    },
     actions: {
       exposes: [
         {
@@ -103,7 +95,6 @@
           }
         }
       ],
-      consumes: [],
     },
   }
 }
