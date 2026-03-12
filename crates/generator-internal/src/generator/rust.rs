@@ -24,7 +24,7 @@ use crate::generator::naming::{
 };
 use config::encoding::{CapnpSchemaArtifacts, FunctionParam};
 use config::node::{
-    ConsumedAction, ConsumedService, EmittedTopic, ExposedAction, ExposedService, ExpectedTopic,
+    ConsumedAction, ConsumedService, EmittedTopic, ExpectedTopic, ExposedAction, ExposedService,
     MessageFormat,
 };
 use indexmap::IndexMap;

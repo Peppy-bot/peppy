@@ -686,8 +686,7 @@ fn consumed_two_actions_same_node() {
         result_response: Some(move_arm_result_response),
     };
 
-    let rotate_action: ConsumedAction =
-        serde_json5::from_str(SUBSCRIBED_ACTION_EXAMPLE2).unwrap();
+    let rotate_action: ConsumedAction = serde_json5::from_str(SUBSCRIBED_ACTION_EXAMPLE2).unwrap();
     // Both subscriptions target the same source node ("brain").
     let rotate_goal_response: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_RESPONSE_FORMAT2).unwrap();

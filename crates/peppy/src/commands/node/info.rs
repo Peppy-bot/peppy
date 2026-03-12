@@ -239,11 +239,7 @@ fn print_node_info(response: &NodeInfoResponse) {
             {
                 println!("Expected Topics:");
                 for topic in topics {
-                    println!(
-                        "  - {} (from node: {})",
-                        topic.name,
-                        topic.local_node_id
-                    );
+                    println!("  - {} (from node: {})", topic.name, topic.local_node_id);
                 }
             }
 
@@ -258,8 +254,7 @@ fn print_node_info(response: &NodeInfoResponse) {
                 for service in services {
                     println!(
                         "  - {} (from node: {})",
-                        service.name,
-                        service.local_node_id
+                        service.name, service.local_node_id
                     );
                 }
             }
@@ -273,11 +268,7 @@ fn print_node_info(response: &NodeInfoResponse) {
             {
                 println!("Actions:");
                 for action in actions {
-                    println!(
-                        "  - {} (from node: {})",
-                        action.name,
-                        action.local_node_id
-                    );
+                    println!("  - {} (from node: {})", action.name, action.local_node_id);
                 }
             }
         }

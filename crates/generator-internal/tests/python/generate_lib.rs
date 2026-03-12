@@ -358,12 +358,14 @@ fn generate_peppygen_python_lib_exposed_and_consumed_services() {
         serde_json5::from_str(r#"{ output: "string", success: "bool" }"#)
             .expect("failed to parse response format");
 
-    let consumed_interfaces = vec![DeploymentInterface::new(InterfaceVariant::ConsumedService {
-        service: consumed_service,
-        request_format,
-        response_format,
-        dependency_node_name: String::from(EXPOSED_NODE_NAME),
-    })];
+    let consumed_interfaces = vec![DeploymentInterface::new(
+        InterfaceVariant::ConsumedService {
+            service: consumed_service,
+            request_format,
+            response_format,
+            dependency_node_name: String::from(EXPOSED_NODE_NAME),
+        },
+    )];
 
     generate_peppygen_lib(
         PeppygenLanguage::Python,

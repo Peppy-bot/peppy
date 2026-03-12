@@ -2,7 +2,7 @@ use crate::error::{Error, Result};
 use crate::generator::common::CrateDeployMode;
 use config::consts::PeppyDirs;
 use config::node::{
-    ConsumedAction, ConsumedService, EmittedTopic, ExposedAction, ExposedService, ExpectedTopic,
+    ConsumedAction, ConsumedService, EmittedTopic, ExpectedTopic, ExposedAction, ExposedService,
     MessageFormat, PeppygenLanguage, PrimitiveSchema, SchemaType, TypeToken,
 };
 use indexmap::IndexMap;

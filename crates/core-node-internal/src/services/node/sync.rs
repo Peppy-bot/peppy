@@ -337,11 +337,13 @@ pub fn collect_consumed_interfaces(
                         .find(|t| t.name.trim() == expected_topic.name.trim())
                 {
                     if let Some(message_format) = &emitted_topic.message_format {
-                        interfaces.push(DeploymentInterface::new(InterfaceVariant::ExpectedTopic {
-                            topic: expected_topic.clone(),
-                            message_format: message_format.clone(),
-                            dependency_node_name: dep_name.clone(),
-                        }));
+                        interfaces.push(DeploymentInterface::new(
+                            InterfaceVariant::ExpectedTopic {
+                                topic: expected_topic.clone(),
+                                message_format: message_format.clone(),
+                                dependency_node_name: dep_name.clone(),
+                            },
+                        ));
                     }
                 }
             }
@@ -420,13 +422,11 @@ pub fn collect_consumed_interfaces(
                             .and_then(|s| s.response_message_format.clone()),
                     };
 
-                    interfaces.push(DeploymentInterface::new(
-                        InterfaceVariant::ConsumedAction {
-                            action: consumed_action.clone(),
-                            messages: action_message,
-                            dependency_node_name: dep_name.clone(),
-                        },
-                    ));
+                    interfaces.push(DeploymentInterface::new(InterfaceVariant::ConsumedAction {
+                        action: consumed_action.clone(),
+                        messages: action_message,
+                        dependency_node_name: dep_name.clone(),
+                    }));
                 }
             }
         }

@@ -433,12 +433,14 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_services() {
         serde_json5::from_str(r#"{ output: "string", success: "bool" }"#)
             .expect("failed to parse response format");
 
-    let consumed_interfaces = vec![DeploymentInterface::new(InterfaceVariant::ConsumedService {
-        service: consumed_service,
-        request_format,
-        response_format,
-        dependency_node_name: EXPOSED_NODE_NAME.to_string(),
-    })];
+    let consumed_interfaces = vec![DeploymentInterface::new(
+        InterfaceVariant::ConsumedService {
+            service: consumed_service,
+            request_format,
+            response_format,
+            dependency_node_name: EXPOSED_NODE_NAME.to_string(),
+        },
+    )];
 
     generate_peppygen_lib(
         PeppygenLanguage::Rust,

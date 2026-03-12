@@ -711,10 +711,9 @@ mod tests {
 
     #[test]
     fn consumed_service_local_node_id_is_required() {
-        let with_local_node_id =
-            r#"{ local_node_id: "uvc_camera", name: "enable_camera" }"#;
-        let service: ConsumedService =
-            serde_json5::from_str(with_local_node_id).expect("service with local_node_id should parse");
+        let with_local_node_id = r#"{ local_node_id: "uvc_camera", name: "enable_camera" }"#;
+        let service: ConsumedService = serde_json5::from_str(with_local_node_id)
+            .expect("service with local_node_id should parse");
         assert_eq!(service.local_node_id, "uvc_camera");
 
         let trimmed = r#"{ local_node_id: "  uvc_camera  ", name: "enable_camera" }"#;
@@ -725,8 +724,7 @@ mod tests {
         let without_local_node_id = r#"{ name: "enable_camera" }"#;
         assert!(serde_json5::from_str::<ConsumedService>(without_local_node_id).is_err());
 
-        let blank_local_node_id =
-            r#"{ local_node_id: "   ", name: "enable_camera" }"#;
+        let blank_local_node_id = r#"{ local_node_id: "   ", name: "enable_camera" }"#;
         assert!(serde_json5::from_str::<ConsumedService>(blank_local_node_id).is_err());
     }
 

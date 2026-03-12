@@ -22,7 +22,7 @@ use super::types::{
 use crate::error::Result;
 use config::encoding::MessageFormatMapper;
 use config::node::{
-    ConsumedAction, ConsumedService, EmittedTopic, ExposedAction, ExposedService, ExpectedTopic,
+    ConsumedAction, ConsumedService, EmittedTopic, ExpectedTopic, ExposedAction, ExposedService,
     MessageFormat, PeppygenLanguage,
 };
 use std::collections::HashMap;

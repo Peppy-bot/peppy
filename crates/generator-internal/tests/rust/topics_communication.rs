@@ -6,7 +6,7 @@ use crate::helpers::{
 use config::consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME};
 use config::runtime::NodeInstance;
 use config::{
-    node::{ExpectedTopic, EmittedTopic, MessageFormat},
+    node::{EmittedTopic, ExpectedTopic, MessageFormat},
     peppy_config::Name,
     runtime::RuntimeConfig,
 };
