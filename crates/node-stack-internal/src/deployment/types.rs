@@ -255,67 +255,66 @@ pub fn validate_dependency_specs(
         };
 
         // Find the local_id for this dependency
-        if let Some(depends_on) = &config.manifest.depends_on {
-            if let Some(dep) = depends_on
+        if let Some(depends_on) = &config.manifest.depends_on
+            && let Some(dep) = depends_on
                 .nodes
                 .iter()
                 .find(|d| d.name.as_str() == spec.node_name && d.tag == spec.node_tag)
-            {
-                resolved_deps.insert(
-                    dep.local_id.clone(),
-                    (spec.node_name, spec.node_tag, dependency_config),
-                );
-            }
+        {
+            resolved_deps.insert(
+                dep.local_id.clone(),
+                (spec.node_name, spec.node_tag, dependency_config),
+            );
         }
     }
 
     // Phase 2: Validate consumed interfaces reference valid local_node_ids
     // and that the dependency exposes the required interface
-    if let Some(topics) = &config.interfaces.topics {
-        if let Some(expected) = &topics.expects {
-            for topic in expected {
-                validate_consumed_interface(
-                    &topic.local_node_id,
-                    &topic.name,
-                    InterfaceKind::Topic,
-                    &resolved_deps,
-                    dependant_name,
-                    dependant_tag,
-                    &mut errors,
-                );
-            }
+    if let Some(topics) = &config.interfaces.topics
+        && let Some(expected) = &topics.expects
+    {
+        for topic in expected {
+            validate_consumed_interface(
+                &topic.local_node_id,
+                &topic.name,
+                InterfaceKind::Topic,
+                &resolved_deps,
+                dependant_name,
+                dependant_tag,
+                &mut errors,
+            );
         }
     }
 
-    if let Some(services) = &config.interfaces.services {
-        if let Some(consumed) = &services.consumes {
-            for service in consumed {
-                validate_consumed_interface(
-                    &service.local_node_id,
-                    &service.name,
-                    InterfaceKind::Service,
-                    &resolved_deps,
-                    dependant_name,
-                    dependant_tag,
-                    &mut errors,
-                );
-            }
+    if let Some(services) = &config.interfaces.services
+        && let Some(consumed) = &services.consumes
+    {
+        for service in consumed {
+            validate_consumed_interface(
+                &service.local_node_id,
+                &service.name,
+                InterfaceKind::Service,
+                &resolved_deps,
+                dependant_name,
+                dependant_tag,
+                &mut errors,
+            );
         }
     }
 
-    if let Some(actions) = &config.interfaces.actions {
-        if let Some(consumed) = &actions.consumes {
-            for action in consumed {
-                validate_consumed_interface(
-                    &action.local_node_id,
-                    &action.name,
-                    InterfaceKind::Action,
-                    &resolved_deps,
-                    dependant_name,
-                    dependant_tag,
-                    &mut errors,
-                );
-            }
+    if let Some(actions) = &config.interfaces.actions
+        && let Some(consumed) = &actions.consumes
+    {
+        for action in consumed {
+            validate_consumed_interface(
+                &action.local_node_id,
+                &action.name,
+                InterfaceKind::Action,
+                &resolved_deps,
+                dependant_name,
+                dependant_tag,
+                &mut errors,
+            );
         }
     }
 
