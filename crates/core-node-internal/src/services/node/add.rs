@@ -1,5 +1,5 @@
 use super::super::stack::STACK_LAUNCH_GIT_HASH;
-use super::sync::{collect_subscribed_interfaces, generate_peppygen_for_node};
+use super::sync::{collect_consumed_interfaces, generate_peppygen_for_node};
 use super::{
     checkout_repo_ref, extract_tar_zst, generate_random_id, is_supported_http_archive,
     sanitize_repo_path, write_error_to_log,
@@ -1494,11 +1494,11 @@ async fn process_node_add(
     } else {
         generator::CrateDeployMode::Symlink
     };
-    let subscribed_interfaces = collect_subscribed_interfaces(&node_config, &ctx.node_stack);
+    let consumed_interfaces = collect_consumed_interfaces(&node_config, &ctx.node_stack);
     if let Err(e) = generate_peppygen_for_node(
         language,
         &working_dir,
-        subscribed_interfaces,
+        consumed_interfaces,
         &goal.git_hash,
         &ctx.peppy_dirs,
         deploy_mode,

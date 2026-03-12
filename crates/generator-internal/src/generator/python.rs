@@ -15,15 +15,15 @@ mod type_mapping;
 
 use super::naming::{module_name_from_components, resolve_schema_file_stem, to_camel_case};
 use super::types::{
-    CapnpSchema, InterfaceArtifact, InterfaceKind, LanguageGenerator, SubscribedActionMessage,
+    CapnpSchema, ConsumedActionMessage, InterfaceArtifact, InterfaceKind, LanguageGenerator,
     cancel_action_response_format, non_empty_message_format, validate_fixed_length_array_items,
     validate_message_format_field_names,
 };
 use crate::error::Result;
 use config::encoding::MessageFormatMapper;
 use config::node::{
-    ExposedAction, ExposedService, ExposedTopic, MessageFormat, PeppygenLanguage, SubscribedAction,
-    SubscribedService, SubscribedTopic,
+    ConsumedAction, ConsumedService, EmittedTopic, ExposedAction, ExposedService, ExpectedTopic,
+    MessageFormat, PeppygenLanguage,
 };
 use std::collections::HashMap;
 use std::path::Path;
@@ -109,17 +109,17 @@ impl LanguageGenerator for PythonGenerator {
         PythonGenerator::push_section(self, section);
     }
 
-    fn add_exposed_topic(&mut self, topic: &ExposedTopic) -> Result<()> {
+    fn add_emitted_topic(&mut self, topic: &EmittedTopic) -> Result<()> {
         let schema_info = topic
             .message_format
             .as_ref()
             .map(|fmt| self.register_schema(&topic.name, fmt))
             .transpose()?;
 
-        let code = topics::build_exposed_topic(topic, schema_info.as_ref())?;
+        let code = topics::build_emitted_topic(topic, schema_info.as_ref())?;
         self.push_section(InterfaceArtifact::from_kind(
             &topic.name,
-            InterfaceKind::ExposedTopic,
+            InterfaceKind::EmittedTopic,
             code,
         ));
         Ok(())
@@ -209,25 +209,25 @@ impl LanguageGenerator for PythonGenerator {
         Ok(())
     }
 
-    fn add_subscribed_topic(
+    fn add_expected_topic(
         &mut self,
-        topic: &SubscribedTopic,
+        topic: &ExpectedTopic,
         arguments: MessageFormat,
     ) -> Result<()> {
         let schema_info = self.register_schema(&topic.name, &arguments)?;
-        let code = topics::build_subscribed_topic(topic, &arguments, &schema_info)?;
-        let module_label = topics::subscribed_topic_module_label(topic);
+        let code = topics::build_expected_topic(topic, &arguments, &schema_info)?;
+        let module_label = topics::expected_topic_module_label(topic);
         self.push_section(InterfaceArtifact::from_kind(
             &module_label,
-            InterfaceKind::SubscribedTopic,
+            InterfaceKind::ExpectedTopic,
             code,
         ));
         Ok(())
     }
 
-    fn add_subscribed_service(
+    fn add_consumed_service(
         &mut self,
-        service: &SubscribedService,
+        service: &ConsumedService,
         request_arguments: &MessageFormat,
         response_arguments: &MessageFormat,
     ) -> Result<()> {
@@ -239,7 +239,7 @@ impl LanguageGenerator for PythonGenerator {
             .map(|fmt| self.register_schema(&format!("{}_response", service.name), fmt))
             .transpose()?;
 
-        let code = services::build_subscribed_service(
+        let code = services::build_consumed_service(
             service,
             request_arguments,
             response_arguments,
@@ -249,16 +249,16 @@ impl LanguageGenerator for PythonGenerator {
         let module_label = module_name_from_components(&service.node, &service.name);
         self.push_section(InterfaceArtifact::from_kind(
             &module_label,
-            InterfaceKind::SubscribedService,
+            InterfaceKind::ConsumedService,
             code,
         ));
         Ok(())
     }
 
-    fn add_subscribed_action(
+    fn add_consumed_action(
         &mut self,
-        action: &SubscribedAction,
-        messages: &SubscribedActionMessage,
+        action: &ConsumedAction,
+        messages: &ConsumedActionMessage,
     ) -> Result<()> {
         let goal_request_schema_info = messages
             .goal_request
@@ -293,7 +293,7 @@ impl LanguageGenerator for PythonGenerator {
             .map(|fmt| self.register_schema(&format!("{}_result_response", action.name), fmt))
             .transpose()?;
 
-        let code = actions::build_subscribed_action(
+        let code = actions::build_consumed_action(
             action,
             messages,
             goal_request_schema_info.as_ref(),
@@ -305,7 +305,7 @@ impl LanguageGenerator for PythonGenerator {
         let module_label = module_name_from_components(&action.node, &action.name);
         self.push_section(InterfaceArtifact::from_kind(
             &module_label,
-            InterfaceKind::SubscribedAction,
+            InterfaceKind::ConsumedAction,
             code,
         ));
         Ok(())

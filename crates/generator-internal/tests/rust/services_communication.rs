@@ -6,7 +6,7 @@ use crate::helpers::{
 use config::consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME};
 use config::runtime::NodeInstance;
 use config::{
-    node::{ExposedService, MessageFormat, SubscribedService},
+    node::{ConsumedService, ExposedService, MessageFormat},
     peppy_config::Name,
     runtime::RuntimeConfig,
 };
@@ -101,7 +101,7 @@ async fn services_communication_no_target_instance_id() {
     // --- Subscriber (client) project
     let subscriber_instance_id = "the_subscriber";
     let temp_dir_subscriber = TempDir::new().unwrap();
-    let subscribed_service: SubscribedService =
+    let consumed_service: ConsumedService =
         serde_json5::from_str(SUBSCRIBED_SERVICE_EXAMPLE).unwrap();
     let subscribed_request_format: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_SERVICE_REQUEST_FORMAT_EXAMPLE).unwrap();
@@ -110,8 +110,8 @@ async fn services_communication_no_target_instance_id() {
     let (mut generator, output_dir_subscriber, user_node_subscriber, peppy_node_config_path) =
         init_test_env::<generator::RustGenerator>(&temp_dir_subscriber, STUB_NODE_CONFIG);
     generator
-        .add_subscribed_service(
-            &subscribed_service,
+        .add_consumed_service(
+            &consumed_service,
             &subscribed_request_format,
             &subscribed_response_format,
         )
@@ -148,7 +148,7 @@ async fn services_communication_no_target_instance_id() {
 
     init_cargo_user_node(&user_node_subscriber);
     let subscriber_main = r#"
-use peppygen::subscribed_services::uvc_camera_enable_camera;
+use peppygen::consumed_services::uvc_camera_enable_camera;
 use peppygen::NodeBuilder;
 use peppygen::Result;
 use std::time::Duration;
@@ -379,7 +379,7 @@ async fn services_communication_exposed_service_without_request_body() {
     // --- Subscriber (client) project
     let subscriber_instance_id = "the_subscriber";
     let temp_dir_subscriber = TempDir::new().unwrap();
-    let subscribed_service: SubscribedService =
+    let consumed_service: ConsumedService =
         serde_json5::from_str(SUBSCRIBED_SERVICE_NO_REQUEST_EXAMPLE).unwrap();
     let subscribed_request_format: MessageFormat =
         serde_json5::from_str(EMPTY_MESSAGE_FORMAT).expect("empty request format should parse");
@@ -388,8 +388,8 @@ async fn services_communication_exposed_service_without_request_body() {
     let (mut generator, output_dir_subscriber, user_node_subscriber, peppy_node_config_path) =
         init_test_env::<generator::RustGenerator>(&temp_dir_subscriber, STUB_NODE_CONFIG);
     generator
-        .add_subscribed_service(
-            &subscribed_service,
+        .add_consumed_service(
+            &consumed_service,
             &subscribed_request_format,
             &subscribed_response_format,
         )
@@ -426,7 +426,7 @@ async fn services_communication_exposed_service_without_request_body() {
 
     init_cargo_user_node(&user_node_subscriber);
     let subscriber_main = r#"
-use peppygen::subscribed_services::uvc_camera_get_system_status;
+use peppygen::consumed_services::uvc_camera_get_system_status;
 use peppygen::NodeBuilder;
 use peppygen::Result;
 use std::time::Duration;
@@ -644,7 +644,7 @@ async fn services_communication_multiple_exposed_instances_same_service_not_targ
     // --- Subscriber (client) project
     let subscriber_instance_id = SUBSCRIBER_INSTANCE_ID;
     let temp_dir_subscriber = TempDir::new().unwrap();
-    let subscribed_service: SubscribedService =
+    let consumed_service: ConsumedService =
         serde_json5::from_str(SUBSCRIBED_SERVICE_EXAMPLE).unwrap();
     let subscribed_request_format: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_SERVICE_REQUEST_FORMAT_EXAMPLE).unwrap();
@@ -653,8 +653,8 @@ async fn services_communication_multiple_exposed_instances_same_service_not_targ
     let (mut generator, output_dir_subscriber, user_node_subscriber, peppy_node_config_path) =
         init_test_env::<generator::RustGenerator>(&temp_dir_subscriber, STUB_NODE_CONFIG);
     generator
-        .add_subscribed_service(
-            &subscribed_service,
+        .add_consumed_service(
+            &consumed_service,
             &subscribed_request_format,
             &subscribed_response_format,
         )
@@ -691,7 +691,7 @@ async fn services_communication_multiple_exposed_instances_same_service_not_targ
 
     init_cargo_user_node(&user_node_subscriber);
     let subscriber_main = r#"
-use peppygen::subscribed_services::uvc_camera_enable_camera;
+use peppygen::consumed_services::uvc_camera_enable_camera;
 use peppygen::NodeBuilder;
 use peppygen::Result;
 use std::time::Duration;

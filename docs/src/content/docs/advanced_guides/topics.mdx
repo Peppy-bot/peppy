@@ -6,14 +6,14 @@ sidebar:
 ---
 
 Topics implement a **publish-subscribe** communication pattern between nodes.
-A node *exposes* a topic to publish messages, and other nodes *subscribe* to that topic to receive them.
+A node *emits* a topic to publish messages, and other nodes *expect* that topic to receive them.
 
 Use topics for continuous, unidirectional data streams such as sensor readings, camera frames, state updates, or any information that flows over time.
-Multiple subscribers can listen to the same topic simultaneously.
+Multiple consumers can listen to the same topic simultaneously.
 
-## Exposing a topic
+## Emitting a topic
 
-A node that publishes messages declares its topics under `interfaces.exposes.topics` in its `peppy.json5`.
+A node that publishes messages declares its topics under `interfaces.topics.emits` in its `peppy.json5`.
 Each topic defines a `name`, a `qos_profile`, and a `message_format`:
 
 ```json5
@@ -29,8 +29,8 @@ Each topic defines a `name`, a `qos_profile`, and a `message_format`:
     start_cmd: ["./target/release/uvc_camera"]
   },
   interfaces: {
-    exposes: {
-      topics: [
+    topics: {
+      emits: [
         {
           name: "video_stream",
           qos_profile: "sensor_data",
@@ -50,13 +50,6 @@ Each topic defines a `name`, a `qos_profile`, and a `message_format`:
           }
         }
       ],
-      services: [],
-      actions: [],
-    },
-    subscribes_to: {
-      topics: [],
-      services: [],
-      actions: [],
     },
   }
 }
@@ -68,11 +61,11 @@ The `qos_profile` controls delivery guarantees. Available profiles are:
 
 ### Publishing messages
 
-After running `peppy node sync`, the code generator creates a module for each exposed topic under `peppygen::exposed_topics`.
+After running `peppy node sync`, the code generator creates a module for each emitted topic under `peppygen::emitted_topics`.
 Use `emit` to publish a message:
 
 ```rust
-use peppygen::exposed_topics::video_stream;
+use peppygen::emitted_topics::video_stream;
 use peppygen::{NodeBuilder, Parameters, Result};
 use std::time::Duration;
 
@@ -123,14 +116,14 @@ For a topic with a simple message format:
 the `emit` call takes a single `String` argument:
 
 ```rust
-use peppygen::exposed_topics::message_stream;
+use peppygen::emitted_topics::message_stream;
 
 message_stream::emit(&node_runner, "hello world".to_owned()).await?;
 ```
 
-## Subscribing to a topic
+## Expecting a topic
 
-A node that receives messages declares its subscriptions under `interfaces.subscribes_to.topics`:
+A node that receives messages declares what it expects under `interfaces.topics.expects`:
 
 ```json5
 {
@@ -145,17 +138,15 @@ A node that receives messages declares its subscriptions under `interfaces.subsc
     start_cmd: ["./target/release/web_video_stream"]
   },
   interfaces: {
-    subscribes_to: {
-      topics: [
+    topics: {
+      expects: [
         {
-          id: "camera_frame",        // Your chosen identifier for this subscription
+          id: "camera_frame",        // Your chosen identifier for this expected topic
           node: "uvc_camera",        // Target node name
           name: "video_stream",      // Topic name on that node
           tag: "0.1.0",              // Target node tag/version
         },
       ],
-      services: [],
-      actions: [],
     },
   }
 }
@@ -171,12 +162,12 @@ Error: `web_video_stream:0.1.0` depends on `uvc_camera:0.1.0`, but it does not e
 
 ### Receiving messages
 
-The code generator creates a module for each subscribed topic under `peppygen::subscribed_topics`.
-The module name is `<node>_<topic_name>` based on the subscription `id` field — in this case `uvc_camera_video_stream`.
+The code generator creates a module for each expected topic under `peppygen::expected_topics`.
+The module name is `<node>_<topic_name>` based on the `id` field — in this case `uvc_camera_video_stream`.
 Use `on_next_message_received` to wait for the next message:
 
 ```rust
-use peppygen::subscribed_topics::uvc_camera_video_stream;
+use peppygen::expected_topics::uvc_camera_video_stream;
 use peppygen::{NodeBuilder, Parameters, Result};
 
 fn main() -> Result<()> {
@@ -215,7 +206,7 @@ Each message is processed in a separate task so that the receive loop is not blo
 
 ```rust
 use std::sync::Arc;
-use peppygen::subscribed_topics::uvc_camera_video_stream;
+use peppygen::expected_topics::uvc_camera_video_stream;
 use peppygen::{NodeBuilder, NodeRunner, Parameters, Result};
 
 fn main() -> Result<()> {

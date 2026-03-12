@@ -3,22 +3,22 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use config::node::{ExposedTopic, MessageFormat, NodeConfigParser, QoSProfile, Toolchain};
+use config::node::{EmittedTopic, MessageFormat, NodeConfigParser, QoSProfile, Toolchain};
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands, NodeInitBuilder, NodeName};
 use peppy::context::AppContext;
 
-fn add_exposed_topic(peppy_json5: &Path) {
+fn add_emitted_topic(peppy_json5: &Path) {
     let mut cfg = NodeConfigParser::from_path(peppy_json5).expect("peppy.json5 should read");
 
-    let exposes = cfg.interfaces.exposes.get_or_insert_with(Default::default);
-    let topics = exposes.topics.get_or_insert_with(Vec::new);
+    let topic_ifaces = cfg.interfaces.topics.get_or_insert_with(Default::default);
+    let topics = topic_ifaces.emits.get_or_insert_with(Vec::new);
     let message_format: MessageFormat = serde_json::from_value(serde_json::json!({
         "timestamp": "time",
         "message": "string",
     }))
     .expect("message format should deserialize");
-    topics.push(ExposedTopic {
+    topics.push(EmittedTopic {
         name: "goodbye_world".to_string(),
         qos_profile: QoSProfile::Standard,
         message_format: Some(message_format),
@@ -91,7 +91,7 @@ async fn node_sync_rust_command_succeeds() {
 
     // Change peppy.json5 to force a new fingerprint.
     // This simulates a developer changing their node interface definitions and needing to re-sync.
-    add_exposed_topic(&peppy_json5_path);
+    add_emitted_topic(&peppy_json5_path);
 
     let expected_fingerprint =
         config::runtime::RuntimeConfig::generate_peppy_config_fingerprint(&peppy_json5_path)
@@ -132,7 +132,7 @@ async fn node_sync_rust_command_succeeds() {
     // Verify that the `goodbye_world` topic code was generated
     let goodbye_world_topic_path = node_path
         .join(config::consts::PEPPYGEN_OUTPUT_PATH)
-        .join("src/exposed_topics/goodbye_world.rs");
+        .join("src/emitted_topics/goodbye_world.rs");
     assert!(
         goodbye_world_topic_path.exists(),
         "goodbye_world topic should be generated at {}",
@@ -208,7 +208,7 @@ async fn node_sync_python_command_succeeds() {
     );
 
     // Change peppy.json5 to force a new fingerprint.
-    add_exposed_topic(&peppy_json5_path);
+    add_emitted_topic(&peppy_json5_path);
 
     let expected_fingerprint =
         config::runtime::RuntimeConfig::generate_peppy_config_fingerprint(&peppy_json5_path)
@@ -249,7 +249,7 @@ async fn node_sync_python_command_succeeds() {
     // Verify that the `goodbye_world` topic Python code was generated
     let goodbye_world_topic_path = node_path
         .join(config::consts::PEPPYGEN_OUTPUT_PATH)
-        .join("peppygen/exposed_topics/goodbye_world.py");
+        .join("peppygen/emitted_topics/goodbye_world.py");
     assert!(
         goodbye_world_topic_path.exists(),
         "goodbye_world topic should be generated at {}",

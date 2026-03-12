@@ -90,6 +90,7 @@ impl CoreNode {
                 tag: CORE_NODE_TAG.to_string(),
                 language: PeppygenLanguage::Rust,
                 labels: None,
+                depends_on: None,
             },
             process: Some(Process {
                 add_cmd: None,

@@ -19,8 +19,8 @@
     video_duration_seconds: "u32"
   },
   interfaces: {
-    subscribes_to: {
-      topics: [
+    topics: {
+      expects: [
         {
           id: "camera_stream",
           node: "uvc_camera",
@@ -28,14 +28,16 @@
           name: "video_stream",
         },
       ],
-      services: [
+    },
+    services: {
+      consumes: [
         {
           id: "camera_info",
           node: "uvc_camera",
           tag: "0.1.0",
           name: "video_stream_info",
         },
-      ]
+      ],
     },
   }
 }

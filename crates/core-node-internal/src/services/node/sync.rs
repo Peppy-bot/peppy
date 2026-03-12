@@ -3,7 +3,7 @@ use crate::encoding::{NodeSyncRequest, NodeSyncResponse};
 use crate::names;
 use config::consts::PeppyDirs;
 use config::node::NodeConfigParser;
-use generator::{DeploymentInterface, InterfaceVariant, SubscribedActionMessage};
+use generator::{ConsumedActionMessage, DeploymentInterface, InterfaceVariant};
 use node_stack::NodeStack;
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::types::Payload;
@@ -151,9 +151,9 @@ async fn handle_node_sync_request_inner(
         .encode();
     }
 
-    // Validate dependencies before generation and collect subscribed interfaces
+    // Validate dependencies before generation and collect consumed interfaces
     let node_config_path = request.node_root_dir.join(config::consts::NODE_CONFIG_FILE);
-    let (subscribed_interfaces, language) = if !node_config_path.exists() {
+    let (consumed_interfaces, language) = if !node_config_path.exists() {
         return NodeSyncResponse::failure(format!(
             "Node config file does not exist: {}",
             node_config_path.display()
@@ -236,8 +236,8 @@ async fn handle_node_sync_request_inner(
                     .encode();
                 }
 
-                // Collect subscribed interfaces with resolved message formats
-                let interfaces = collect_subscribed_interfaces(&node_config, node_stack);
+                // Collect consumed interfaces with resolved message formats
+                let interfaces = collect_consumed_interfaces(&node_config, node_stack);
                 let language = node_config.manifest.language;
                 (interfaces, language)
             }
@@ -258,7 +258,7 @@ async fn handle_node_sync_request_inner(
         generate_peppygen_for_node(
             language,
             &node_root_dir,
-            subscribed_interfaces,
+            consumed_interfaces,
             &git_hash,
             &peppy_dirs,
             generator::CrateDeployMode::default(),
@@ -290,94 +290,92 @@ async fn handle_node_sync_request_inner(
     NodeSyncResponse::success().encode()
 }
 
-/// Collects subscribed interfaces from a node config and resolves their message formats
+/// Collects consumed interfaces from a node config and resolves their message formats
 /// by looking up the exposed interfaces from dependency nodes in the node stack.
-pub fn collect_subscribed_interfaces(
+pub fn collect_consumed_interfaces(
     node_config: &config::node::NodeConfig,
     node_stack: &NodeStack,
 ) -> Vec<DeploymentInterface> {
     let mut interfaces = Vec::new();
 
-    let Some(subscribes_to) = &node_config.interfaces.subscribes_to else {
-        return interfaces;
-    };
-
-    // Collect subscribed topics
-    if let Some(topics) = &subscribes_to.topics {
-        for subscribed_topic in topics {
+    // Collect expected topics
+    if let Some(topic_interfaces) = &node_config.interfaces.topics
+        && let Some(expected_topics) = &topic_interfaces.expects
+    {
+        for expected_topic in expected_topics {
             // Find the dependency node in the stack
             if let Some(dependency_entity) =
-                node_stack.find(&subscribed_topic.node, &subscribed_topic.tag)
+                node_stack.find(&expected_topic.node, &expected_topic.tag)
             {
-                // Find the exposed topic with the matching name
-                if let Some(exposes) = &dependency_entity.config().interfaces.exposes
-                    && let Some(exposed_topics) = &exposes.topics
-                    && let Some(exposed_topic) = exposed_topics
+                // Find the emitted topic with the matching name
+                if let Some(dep_topics) = &dependency_entity.config().interfaces.topics
+                    && let Some(emitted_topics) = &dep_topics.emits
+                    && let Some(emitted_topic) = emitted_topics
                         .iter()
-                        .find(|t| t.name.trim() == subscribed_topic.name.trim())
+                        .find(|t| t.name.trim() == expected_topic.name.trim())
                 {
-                    // Get the message format from the exposed topic
-                    if let Some(message_format) = &exposed_topic.message_format {
-                        interfaces.push(DeploymentInterface::new(
-                            InterfaceVariant::SubscribedTopic(
-                                subscribed_topic.clone(),
-                                message_format.clone(),
-                            ),
-                        ));
+                    // Get the message format from the emitted topic
+                    if let Some(message_format) = &emitted_topic.message_format {
+                        interfaces.push(DeploymentInterface::new(InterfaceVariant::ExpectedTopic(
+                            expected_topic.clone(),
+                            message_format.clone(),
+                        )));
                     }
                 }
             }
         }
     }
 
-    // Collect subscribed services
-    if let Some(services) = &subscribes_to.services {
-        for subscribed_service in services {
+    // Collect consumed services
+    if let Some(service_interfaces) = &node_config.interfaces.services
+        && let Some(consumed_services) = &service_interfaces.consumes
+    {
+        for consumed_service in consumed_services {
             // Find the dependency node in the stack
             if let Some(dependency_entity) =
-                node_stack.find(&subscribed_service.node, &subscribed_service.tag)
+                node_stack.find(&consumed_service.node, &consumed_service.tag)
             {
                 // Find the exposed service with the matching name
-                if let Some(exposes) = &dependency_entity.config().interfaces.exposes
-                    && let Some(exposed_services) = &exposes.services
+                if let Some(dep_services) = &dependency_entity.config().interfaces.services
+                    && let Some(exposed_services) = &dep_services.exposes
                     && let Some(exposed_service) = exposed_services
                         .iter()
-                        .find(|s| s.name.trim() == subscribed_service.name.trim())
+                        .find(|s| s.name.trim() == consumed_service.name.trim())
                 {
-                    interfaces.push(DeploymentInterface::new(
-                        InterfaceVariant::SubscribedService(
-                            subscribed_service.clone(),
-                            exposed_service
-                                .request_message_format
-                                .clone()
-                                .unwrap_or_default(),
-                            exposed_service
-                                .response_message_format
-                                .clone()
-                                .unwrap_or_default(),
-                        ),
-                    ));
+                    interfaces.push(DeploymentInterface::new(InterfaceVariant::ConsumedService(
+                        consumed_service.clone(),
+                        exposed_service
+                            .request_message_format
+                            .clone()
+                            .unwrap_or_default(),
+                        exposed_service
+                            .response_message_format
+                            .clone()
+                            .unwrap_or_default(),
+                    )));
                 }
             }
         }
     }
 
-    // Collect subscribed actions
-    if let Some(actions) = &subscribes_to.actions {
-        for subscribed_action in actions {
+    // Collect consumed actions
+    if let Some(action_interfaces) = &node_config.interfaces.actions
+        && let Some(consumed_actions) = &action_interfaces.consumes
+    {
+        for consumed_action in consumed_actions {
             // Find the dependency node in the stack
             if let Some(dependency_entity) =
-                node_stack.find(&subscribed_action.node, &subscribed_action.tag)
+                node_stack.find(&consumed_action.node, &consumed_action.tag)
             {
                 // Find the exposed action with the matching name
-                if let Some(exposes) = &dependency_entity.config().interfaces.exposes
-                    && let Some(exposed_actions) = &exposes.actions
+                if let Some(dep_actions) = &dependency_entity.config().interfaces.actions
+                    && let Some(exposed_actions) = &dep_actions.exposes
                     && let Some(exposed_action) = exposed_actions
                         .iter()
-                        .find(|a| a.name.trim() == subscribed_action.name.trim())
+                        .find(|a| a.name.trim() == consumed_action.name.trim())
                 {
-                    // Build the SubscribedActionMessage from exposed action endpoints
-                    let action_message = SubscribedActionMessage {
+                    // Build the ConsumedActionMessage from exposed action endpoints
+                    let action_message = ConsumedActionMessage {
                         goal_request: exposed_action
                             .goal_service
                             .as_ref()
@@ -400,12 +398,10 @@ pub fn collect_subscribed_interfaces(
                             .and_then(|s| s.response_message_format.clone()),
                     };
 
-                    interfaces.push(DeploymentInterface::new(
-                        InterfaceVariant::SubscribedAction(
-                            subscribed_action.clone(),
-                            action_message,
-                        ),
-                    ));
+                    interfaces.push(DeploymentInterface::new(InterfaceVariant::ConsumedAction(
+                        consumed_action.clone(),
+                        action_message,
+                    )));
                 }
             }
         }
@@ -417,15 +413,15 @@ pub fn collect_subscribed_interfaces(
 /// Generates the peppygen library for a node.
 ///
 /// This function takes the pre-collected data and generates the peppygen
-/// library in the node directory. Use `collect_subscribed_interfaces` to
-/// gather the subscribed interfaces before calling this function.
+/// library in the node directory. Use `collect_consumed_interfaces` to
+/// gather the consumed interfaces before calling this function.
 ///
 /// This function is designed to be called from within `spawn_blocking` contexts
 /// where the data has already been extracted and can be moved into the closure.
 pub fn generate_peppygen_for_node(
     language: config::node::PeppygenLanguage,
     node_dir: impl AsRef<std::path::Path>,
-    subscribed_interfaces: Vec<DeploymentInterface>,
+    consumed_interfaces: Vec<DeploymentInterface>,
     git_hash: &str,
     peppy_dirs: &PeppyDirs,
     deploy_mode: generator::CrateDeployMode,
@@ -433,7 +429,7 @@ pub fn generate_peppygen_for_node(
     generator::generate_peppygen_lib(
         language,
         node_dir,
-        subscribed_interfaces,
+        consumed_interfaces,
         git_hash,
         peppy_dirs,
         deploy_mode,

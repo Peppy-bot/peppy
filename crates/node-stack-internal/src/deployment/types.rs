@@ -209,14 +209,12 @@ fn interfaces_match(a: &Interfaces, b: &Interfaces) -> bool {
 }
 
 pub fn collect_dependency_specs(node: &NodeConfig) -> Vec<DependencySpec> {
-    let Some(subscriptions) = node.interfaces.subscribes_to.as_ref() else {
-        return Vec::new();
-    };
-
     let mut specs: HashMap<(String, String), HashSet<InterfaceRequirement>> = HashMap::new();
 
-    if let Some(topics) = subscriptions.topics.as_ref() {
-        for topic in topics {
+    if let Some(topics) = node.interfaces.topics.as_ref()
+        && let Some(consumed) = topics.expects.as_ref()
+    {
+        for topic in consumed {
             let node_name = topic.node.trim();
             if node_name.is_empty() {
                 continue;
@@ -236,8 +234,10 @@ pub fn collect_dependency_specs(node: &NodeConfig) -> Vec<DependencySpec> {
         }
     }
 
-    if let Some(services) = subscriptions.services.as_ref() {
-        for service in services {
+    if let Some(services) = node.interfaces.services.as_ref()
+        && let Some(consumed) = services.consumes.as_ref()
+    {
+        for service in consumed {
             let node_name = service.node.trim();
             if node_name.is_empty() {
                 continue;
@@ -257,8 +257,10 @@ pub fn collect_dependency_specs(node: &NodeConfig) -> Vec<DependencySpec> {
         }
     }
 
-    if let Some(actions) = subscriptions.actions.as_ref() {
-        for action in actions {
+    if let Some(actions) = node.interfaces.actions.as_ref()
+        && let Some(consumed) = actions.consumes.as_ref()
+    {
+        for action in consumed {
             let node_name = action.node.trim();
             if node_name.is_empty() {
                 continue;
@@ -331,26 +333,37 @@ pub fn validate_dependency_specs(
 }
 
 pub fn exposes_interface(node: &NodeConfig, requirement: &InterfaceRequirement) -> bool {
-    let Some(exposes) = node.interfaces.exposes.as_ref() else {
-        return false;
-    };
-
     match requirement.kind() {
-        InterfaceKind::Topic => exposes.topics.as_ref().is_some_and(|topics| {
-            topics
-                .iter()
-                .any(|topic| topic.name.trim() == requirement.name())
-        }),
-        InterfaceKind::Service => exposes.services.as_ref().is_some_and(|services| {
-            services
-                .iter()
-                .any(|service| service.name.trim() == requirement.name())
-        }),
-        InterfaceKind::Action => exposes.actions.as_ref().is_some_and(|actions| {
-            actions
-                .iter()
-                .any(|action| action.name.trim() == requirement.name())
-        }),
+        InterfaceKind::Topic => node
+            .interfaces
+            .topics
+            .as_ref()
+            .and_then(|t| t.emits.as_ref())
+            .is_some_and(|topics| {
+                topics
+                    .iter()
+                    .any(|topic| topic.name.trim() == requirement.name())
+            }),
+        InterfaceKind::Service => node
+            .interfaces
+            .services
+            .as_ref()
+            .and_then(|s| s.exposes.as_ref())
+            .is_some_and(|services| {
+                services
+                    .iter()
+                    .any(|service| service.name.trim() == requirement.name())
+            }),
+        InterfaceKind::Action => node
+            .interfaces
+            .actions
+            .as_ref()
+            .and_then(|a| a.exposes.as_ref())
+            .is_some_and(|actions| {
+                actions
+                    .iter()
+                    .any(|action| action.name.trim() == requirement.name())
+            }),
     }
 }
 

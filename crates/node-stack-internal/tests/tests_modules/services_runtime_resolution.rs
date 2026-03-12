@@ -18,8 +18,8 @@ fn service_dependency_resolved_when_dependency_added_first() {
               start_cmd: ["brain"]
             },
             interfaces: {
-                subscribes_to: {
-                    services: [
+                services: {
+                    consumes: [
                         {
                           id: "reset_sensor_sub",
                           node: "lidar",
@@ -45,8 +45,8 @@ fn service_dependency_resolved_when_dependency_added_first() {
               start_cmd: ["lidar"]
             },
             interfaces: {
-                exposes: {
-                    services: [
+                services: {
+                    exposes: [
                         {
                           name: "reset_sensor",
                           request_message_format: {
@@ -127,8 +127,8 @@ fn service_dependency_fails_when_dependency_is_missing() {
               start_cmd: ["brain"]
             },
             interfaces: {
-                subscribes_to: {
-                    services: [
+                services: {
+                    consumes: [
                         {
                           id: "reset_sensor_sub",
                           node: "lidar",
@@ -175,8 +175,8 @@ fn service_dependency_fails_when_service_not_exposed_by_dependency() {
               start_cmd: ["brain"]
             },
             interfaces: {
-                subscribes_to: {
-                    services: [
+                services: {
+                    consumes: [
                         {
                           id: "reset_sensor_sub",
                           node: "lidar",
@@ -203,8 +203,8 @@ fn service_dependency_fails_when_service_not_exposed_by_dependency() {
               start_cmd: ["lidar"]
             },
             interfaces: {
-                exposes: {
-                    services: [
+                services: {
+                    exposes: [
                         {
                           name: "calibrate_sensor",
                           request_message_format: {

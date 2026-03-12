@@ -1,7 +1,7 @@
 use super::*;
-use config::node::{ExposedTopic, MessageFormat, PeppygenLanguage, SubscribedTopic};
+use config::node::{ExpectedTopic, EmittedTopic, MessageFormat, PeppygenLanguage};
 
-const EXPOSED_TOPIC_EXAMPLE: &str = r#"
+const EMITTED_TOPIC_EXAMPLE: &str = r#"
 {
   name: "video_stream",
   qos_profile: "sensor_data",
@@ -22,7 +22,7 @@ const EXPOSED_TOPIC_EXAMPLE: &str = r#"
 }
 "#;
 
-const EXPOSED_TOPIC_EXAMPLE2: &str = r#"
+const EMITTED_TOPIC_EXAMPLE2: &str = r#"
 {
   name: "push_lidar_object",
   qos_profile: "sensor_data",
@@ -42,7 +42,7 @@ const EXPOSED_TOPIC_EXAMPLE2: &str = r#"
 }
 "#;
 
-const EXPOSED_TOPIC_WITH_PYTHON_KEYWORD_FIELDS: &str = r#"
+const EMITTED_TOPIC_WITH_PYTHON_KEYWORD_FIELDS: &str = r#"
 {
   name: "keyword_topic",
   qos_profile: "standard",
@@ -53,7 +53,7 @@ const EXPOSED_TOPIC_WITH_PYTHON_KEYWORD_FIELDS: &str = r#"
 }
 "#;
 
-const EXPOSED_TOPIC_RESERVED_FIELD_EXAMPLE: &str = r#"
+const EMITTED_TOPIC_RESERVED_FIELD_EXAMPLE: &str = r#"
 {
   name: "robot_state",
   qos_profile: "standard",
@@ -64,7 +64,7 @@ const EXPOSED_TOPIC_RESERVED_FIELD_EXAMPLE: &str = r#"
 }
 "#;
 
-const EXPOSED_TOPIC_FIXED_STRING_ARRAY_EXAMPLE: &str = r#"
+const EMITTED_TOPIC_FIXED_STRING_ARRAY_EXAMPLE: &str = r#"
 {
   name: "labels",
   qos_profile: "standard",
@@ -147,11 +147,11 @@ const SUBSCRIBED_TOPIC_FORMAT_EXAMPLE_KEYWORDS: &str = r#"
 }
 "#;
 
-fn parse_exposed_topic(example: &str) -> ExposedTopic {
+fn parse_emitted_topic(example: &str) -> EmittedTopic {
     serde_json5::from_str(example).unwrap()
 }
 
-fn parse_subscribed_topic(example: &str) -> SubscribedTopic {
+fn parse_expected_topic(example: &str) -> ExpectedTopic {
     serde_json5::from_str(example).unwrap()
 }
 
@@ -161,11 +161,11 @@ fn parse_message_format(example: &str) -> MessageFormat {
 
 /// In the case of a topic, an "exposed" topic is an entity that emits messages.
 #[test]
-fn expose_topic() {
-    let topic = parse_exposed_topic(EXPOSED_TOPIC_EXAMPLE);
+fn emit_topic() {
+    let topic = parse_emitted_topic(EMITTED_TOPIC_EXAMPLE);
 
     let mut generator = PythonGenerator::new();
-    generator.add_exposed_topic(&topic).unwrap();
+    generator.add_emitted_topic(&topic).unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
         artifacts.len(),
@@ -257,13 +257,13 @@ fn expose_topic() {
 }
 
 #[test]
-fn expose_two_topics() {
-    let topic1 = parse_exposed_topic(EXPOSED_TOPIC_EXAMPLE);
-    let topic2 = parse_exposed_topic(EXPOSED_TOPIC_EXAMPLE2);
+fn emit_two_topics() {
+    let topic1 = parse_emitted_topic(EMITTED_TOPIC_EXAMPLE);
+    let topic2 = parse_emitted_topic(EMITTED_TOPIC_EXAMPLE2);
 
     let mut generator = PythonGenerator::new();
-    generator.add_exposed_topic(&topic1).unwrap();
-    generator.add_exposed_topic(&topic2).unwrap();
+    generator.add_emitted_topic(&topic1).unwrap();
+    generator.add_emitted_topic(&topic2).unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
         artifacts.len(),
@@ -311,11 +311,11 @@ fn expose_two_topics() {
 }
 
 #[test]
-fn expose_topic_escapes_python_keyword_fields() {
-    let topic = parse_exposed_topic(EXPOSED_TOPIC_WITH_PYTHON_KEYWORD_FIELDS);
+fn emit_topic_escapes_python_keyword_fields() {
+    let topic = parse_emitted_topic(EMITTED_TOPIC_WITH_PYTHON_KEYWORD_FIELDS);
 
     let mut generator = PythonGenerator::new();
-    generator.add_exposed_topic(&topic).unwrap();
+    generator.add_emitted_topic(&topic).unwrap();
     let rendered = render_artifacts(generator.into_artifacts())
         .into_iter()
         .next()
@@ -334,13 +334,13 @@ fn expose_topic_escapes_python_keyword_fields() {
 }
 
 #[test]
-fn expose_topic_rejects_reserved_message_field_name() {
+fn emit_topic_rejects_reserved_message_field_name() {
     use crate::error::Error;
 
-    let topic = parse_exposed_topic(EXPOSED_TOPIC_RESERVED_FIELD_EXAMPLE);
+    let topic = parse_emitted_topic(EMITTED_TOPIC_RESERVED_FIELD_EXAMPLE);
 
     let mut generator = PythonGenerator::new();
-    let err = generator.add_exposed_topic(&topic).unwrap_err();
+    let err = generator.add_emitted_topic(&topic).unwrap_err();
 
     match err {
         Error::UnauthorizedMessageFieldName {
@@ -357,13 +357,13 @@ fn expose_topic_rejects_reserved_message_field_name() {
 }
 
 #[test]
-fn expose_topic_rejects_fixed_string_array() {
+fn emit_topic_rejects_fixed_string_array() {
     use crate::error::Error;
 
-    let topic = parse_exposed_topic(EXPOSED_TOPIC_FIXED_STRING_ARRAY_EXAMPLE);
+    let topic = parse_emitted_topic(EMITTED_TOPIC_FIXED_STRING_ARRAY_EXAMPLE);
 
     let mut generator = PythonGenerator::new();
-    let err = generator.add_exposed_topic(&topic).unwrap_err();
+    let err = generator.add_emitted_topic(&topic).unwrap_err();
 
     match err {
         Error::UnsupportedFixedArrayItemType {
@@ -382,12 +382,12 @@ fn expose_topic_rejects_fixed_string_array() {
 /// In the case of a topic, a "subscribed" topic is an entity that expects to receive messages
 /// from another entity.
 #[test]
-fn subscribed_to_topic() {
-    let topic = parse_subscribed_topic(SUBSCRIBED_TOPIC_EXAMPLE1);
+fn expected_topic() {
+    let topic = parse_expected_topic(SUBSCRIBED_TOPIC_EXAMPLE1);
     let format = parse_message_format(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE1);
 
     let mut generator = PythonGenerator::new();
-    generator.add_subscribed_topic(&topic, format).unwrap();
+    generator.add_expected_topic(&topic, format).unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
         artifacts.len(),
@@ -497,12 +497,12 @@ fn subscribed_to_topic() {
 }
 
 #[test]
-fn subscribed_topic_escapes_python_keyword_fields() {
-    let topic = parse_subscribed_topic(SUBSCRIBED_TOPIC_EXAMPLE_KEYWORDS);
+fn expected_topic_escapes_python_keyword_fields() {
+    let topic = parse_expected_topic(SUBSCRIBED_TOPIC_EXAMPLE_KEYWORDS);
     let format = parse_message_format(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE_KEYWORDS);
 
     let mut generator = PythonGenerator::new();
-    generator.add_subscribed_topic(&topic, format).unwrap();
+    generator.add_expected_topic(&topic, format).unwrap();
     let rendered = render_artifacts(generator.into_artifacts())
         .into_iter()
         .next()
@@ -520,19 +520,19 @@ fn subscribed_topic_escapes_python_keyword_fields() {
 }
 
 #[test]
-fn subscribed_to_two_topics_same_node() {
-    let video_topic = parse_subscribed_topic(SUBSCRIBED_TOPIC_EXAMPLE1);
+fn expected_two_topics_same_node() {
+    let video_topic = parse_expected_topic(SUBSCRIBED_TOPIC_EXAMPLE1);
     let video_format = parse_message_format(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE1);
 
-    let sound_topic = parse_subscribed_topic(SUBSCRIBED_TOPIC_EXAMPLE2);
+    let sound_topic = parse_expected_topic(SUBSCRIBED_TOPIC_EXAMPLE2);
     let sound_format = parse_message_format(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE2);
 
     let mut generator = PythonGenerator::new();
     generator
-        .add_subscribed_topic(&video_topic, video_format)
+        .add_expected_topic(&video_topic, video_format)
         .unwrap();
     generator
-        .add_subscribed_topic(&sound_topic, sound_format)
+        .add_expected_topic(&sound_topic, sound_format)
         .unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(

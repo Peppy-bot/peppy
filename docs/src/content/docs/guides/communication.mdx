@@ -14,7 +14,7 @@ import helloReceiverPython from './snippets/python/hello_receiver/src/hello_rece
 import helloReceiverPythonConfig from './snippets/python/hello_receiver/peppy.json5?raw';
 
 A node by itself isn't very useful without the ability to communicate with other nodes in the node stack.
-Each node is only aware of the interfaces it exposes and the ones it subscribes to, as defined in its `peppy.json5` configuration. For example:
+Each node is only aware of the interfaces it exposes and the ones it consumes, as defined in its `peppy.json5` configuration. For example:
 
 <Tabs>
   <TabItem label="Python">
@@ -31,15 +31,17 @@ Each node is only aware of the interfaces it exposes and the ones it subscribes 
         start_cmd: ["uv", "run", "controller"]
       },
       interfaces: {
-        exposes: {
-          topics: [],
-          services: [],
-          actions: [],
+        topics: {
+          emits: [],
+          expects: [],
         },
-        subscribes_to: {
-          topics: [],
-          services: [],
-          actions: [],
+        services: {
+          exposes: [],
+          consumes: [],
+        },
+        actions: {
+          exposes: [],
+          consumes: [],
         },
       }
     }
@@ -59,15 +61,17 @@ Each node is only aware of the interfaces it exposes and the ones it subscribes 
         start_cmd: ["./target/release/controller"]
       },
       interfaces: {
-        exposes: {
-          topics: [],
-          services: [],
-          actions: [],
+        topics: {
+          emits: [],
+          expects: [],
         },
-        subscribes_to: {
-          topics: [],
-          services: [],
-          actions: [],
+        services: {
+          exposes: [],
+          consumes: [],
+        },
+        actions: {
+          exposes: [],
+          consumes: [],
         },
       }
     }
@@ -75,7 +79,7 @@ Each node is only aware of the interfaces it exposes and the ones it subscribes 
   </TabItem>
 </Tabs>
 
-Here we have `interfaces` with `exposes` and `subscribes_to` containing topics, services, and actions. These interfaces define the dependencies between nodes.
+Here we have `interfaces` organized by kind (`topics`, `services`, `actions`). Topics use `emits` and `expects` lists, while services and actions use `exposes` and `consumes` lists. These interfaces define the dependencies between nodes.
 
 ## Topics, Services & Actions
 
@@ -95,9 +99,9 @@ PeppyOS provides three primary communication patterns for nodes to exchange data
   Actions are processed serially by a node: two requests to the same action cannot run in parallel.
   For example, a `move_arm` action that moves a robot's arm can only perform one movement at a time.
 
-## Subscribed interfaces
+## Consumed interfaces
 
-In our `hello_world_param` node, we've already exposed a topic. Let's try to make this topic communicate with another node.
+In our `hello_world_param` node, we've already emitted a topic. Let's try to make this topic communicate with another node.
 
 We first need to initialize the `hello_receiver` node in a new folder:
 
@@ -162,7 +166,7 @@ Make sure `hello_world_param` is already in the node stack, otherwise you might 
 ```sh
 Error: `hello_receiver:0.1.0 depends on `hello_world_param:0.1.0`, but it does not exist in the stack
 ```
-The `node add` and `node sync` both require the subscribed nodes to be present in the node stack to 
+The `node add` and `node sync` both require the consumed nodes to be present in the node stack to 
 generate the proper interfaces for the programming language they are written in.
 :::
 

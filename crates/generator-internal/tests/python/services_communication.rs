@@ -7,7 +7,7 @@ use crate::helpers::{
 use config::consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME};
 use config::runtime::NodeInstance;
 use config::{
-    node::{ExposedService, MessageFormat, SubscribedService},
+    node::{ConsumedService, ExposedService, MessageFormat},
     peppy_config::Name,
     runtime::RuntimeConfig,
 };
@@ -102,7 +102,7 @@ async fn services_communication_no_target_instance_id() {
     // --- Subscriber (client) project
     let subscriber_instance_id = "the_subscriber";
     let temp_dir_subscriber = TempDir::new().unwrap();
-    let subscribed_service: SubscribedService =
+    let consumed_service: ConsumedService =
         serde_json5::from_str(SUBSCRIBED_SERVICE_EXAMPLE).unwrap();
     let subscribed_request_format: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_SERVICE_REQUEST_FORMAT_EXAMPLE).unwrap();
@@ -111,8 +111,8 @@ async fn services_communication_no_target_instance_id() {
     let (mut generator, output_dir_subscriber, user_node_subscriber, peppy_node_config_path) =
         init_test_env::<generator::PythonGenerator>(&temp_dir_subscriber, STUB_PYTHON_NODE_CONFIG);
     generator
-        .add_subscribed_service(
-            &subscribed_service,
+        .add_consumed_service(
+            &consumed_service,
             &subscribed_request_format,
             &subscribed_response_format,
         )
@@ -151,7 +151,7 @@ async fn services_communication_no_target_instance_id() {
     let subscriber_main = r#"
 import asyncio
 from peppygen import NodeBuilder
-from peppygen.subscribed_services import uvc_camera_enable_camera
+from peppygen.consumed_services import uvc_camera_enable_camera
 
 async def poll_service(node_runner):
     request = uvc_camera_enable_camera.Request(enable=True)
@@ -394,7 +394,7 @@ async fn services_communication_exposed_service_without_request_body() {
     // --- Subscriber (client) project
     let subscriber_instance_id = "the_subscriber";
     let temp_dir_subscriber = TempDir::new().unwrap();
-    let subscribed_service: SubscribedService =
+    let consumed_service: ConsumedService =
         serde_json5::from_str(SUBSCRIBED_SERVICE_NO_REQUEST_EXAMPLE).unwrap();
     let subscribed_request_format: MessageFormat =
         serde_json5::from_str(EMPTY_MESSAGE_FORMAT).expect("empty request format should parse");
@@ -403,8 +403,8 @@ async fn services_communication_exposed_service_without_request_body() {
     let (mut generator, output_dir_subscriber, user_node_subscriber, peppy_node_config_path) =
         init_test_env::<generator::PythonGenerator>(&temp_dir_subscriber, STUB_PYTHON_NODE_CONFIG);
     generator
-        .add_subscribed_service(
-            &subscribed_service,
+        .add_consumed_service(
+            &consumed_service,
             &subscribed_request_format,
             &subscribed_response_format,
         )
@@ -443,7 +443,7 @@ async fn services_communication_exposed_service_without_request_body() {
     let subscriber_main = r#"
 import asyncio
 from peppygen import NodeBuilder
-from peppygen.subscribed_services import uvc_camera_get_system_status
+from peppygen.consumed_services import uvc_camera_get_system_status
 
 async def poll_service(node_runner):
     response = await uvc_camera_get_system_status.poll(node_runner, 5.0, None, None)
@@ -666,7 +666,7 @@ async fn services_communication_multiple_exposed_instances_same_service_not_targ
     // --- Subscriber (client) project
     let subscriber_instance_id = SUBSCRIBER_INSTANCE_ID;
     let temp_dir_subscriber = TempDir::new().unwrap();
-    let subscribed_service: SubscribedService =
+    let consumed_service: ConsumedService =
         serde_json5::from_str(SUBSCRIBED_SERVICE_EXAMPLE).unwrap();
     let subscribed_request_format: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_SERVICE_REQUEST_FORMAT_EXAMPLE).unwrap();
@@ -675,8 +675,8 @@ async fn services_communication_multiple_exposed_instances_same_service_not_targ
     let (mut generator, output_dir_subscriber, user_node_subscriber, peppy_node_config_path) =
         init_test_env::<generator::PythonGenerator>(&temp_dir_subscriber, STUB_PYTHON_NODE_CONFIG);
     generator
-        .add_subscribed_service(
-            &subscribed_service,
+        .add_consumed_service(
+            &consumed_service,
             &subscribed_request_format,
             &subscribed_response_format,
         )
@@ -715,7 +715,7 @@ async fn services_communication_multiple_exposed_instances_same_service_not_targ
     let subscriber_main = r#"
 import asyncio
 from peppygen import NodeBuilder
-from peppygen.subscribed_services import uvc_camera_enable_camera
+from peppygen.consumed_services import uvc_camera_enable_camera
 
 async def poll_service(node_runner):
     request = uvc_camera_enable_camera.Request(enable=True)

@@ -6,7 +6,7 @@ use crate::helpers::{
 use config::consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME};
 use config::runtime::NodeInstance;
 use config::{
-    node::{ExposedService, ExposedTopic, MessageFormat, SubscribedTopic},
+    node::{ExpectedTopic, ExposedService, EmittedTopic, MessageFormat},
     peppy_config::Name,
     runtime::RuntimeConfig,
 };
@@ -29,8 +29,8 @@ const EXPOSED_FRAME_RECEIVED_SERVICE_EXAMPLE: &str = r#"
 }
 "#;
 
-// --- Topics exposes and its corresponding subscriber
-const EXPOSED_TOPIC_EXAMPLE: &str = r#"
+// --- Topics emitted and its corresponding subscriber
+const EMITTED_TOPIC_EXAMPLE: &str = r#"
 {
   name: "video_stream",
   qos_profile: "sensor_data",
@@ -88,8 +88,7 @@ async fn topics_communication() {
     // --- Subscriber project
     let subscriber_instance_id = SUBSCRIBER_INSTANCE_ID;
     let temp_dir_proj2 = TempDir::new().unwrap();
-    let subscribed_topic: SubscribedTopic =
-        serde_json5::from_str(SUBSCRIBED_TOPIC_EXAMPLE).unwrap();
+    let expected_topic: ExpectedTopic = serde_json5::from_str(SUBSCRIBED_TOPIC_EXAMPLE).unwrap();
     let subscribed_format: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE).unwrap();
     let frame_received_service: ExposedService =
@@ -97,7 +96,7 @@ async fn topics_communication() {
     let (mut generator, subscriber_dir, user_node_subscriber, peppy_node_config_path) =
         init_test_env::<generator::PythonGenerator>(&temp_dir_proj2, STUB_PYTHON_NODE_CONFIG);
     generator
-        .add_subscribed_topic(&subscribed_topic, subscribed_format)
+        .add_expected_topic(&expected_topic, subscribed_format)
         .unwrap();
     generator
         .add_exposed_service(&frame_received_service)
@@ -133,7 +132,7 @@ async fn topics_communication() {
 import asyncio
 from peppygen import NodeBuilder
 from peppygen.exposed_services import frame_received_ack
-from peppygen.subscribed_topics import uvc_camera_video_stream
+from peppygen.expected_topics import uvc_camera_video_stream
 
 async def receive_frames(node_runner, frame_received):
     print("subscriber: about to subscribe", flush=True)
@@ -167,13 +166,13 @@ if __name__ == "__main__":
     // --- Exposer project
     let exposer_instance_id = EXPOSER_INSTANCE_ID;
     let temp_dir_proj1 = TempDir::new().unwrap();
-    let exposed_topic: ExposedTopic = serde_json5::from_str(EXPOSED_TOPIC_EXAMPLE).unwrap();
+    let emitted_topic: EmittedTopic = serde_json5::from_str(EMITTED_TOPIC_EXAMPLE).unwrap();
     let (mut generator, exposer_dir, user_node_exposer, peppy_node_config_path) =
         init_test_env::<generator::PythonGenerator>(&temp_dir_proj1, STUB_PYTHON_NODE_CONFIG);
     let exposer_parameters: config::NodeArguments =
         serde_json5::from_str(r#"{ frequency: "f64" }"#).unwrap();
     generator.set_parameters(exposer_parameters.clone());
-    generator.add_exposed_topic(&exposed_topic).unwrap();
+    generator.add_emitted_topic(&emitted_topic).unwrap();
     let output_config = copy_config_to_output(&user_node_exposer, &exposer_dir);
     generator
         .build(&exposer_dir, &test_peppy_dirs(), Default::default())
@@ -215,7 +214,7 @@ if __name__ == "__main__":
 import asyncio
 import time
 from peppygen import NodeBuilder
-from peppygen.exposed_topics import video_stream
+from peppygen.emitted_topics import video_stream
 
 async def setup(parameters, node_runner) -> list[asyncio.Task]:
     frequency_hz = parameters.frequency

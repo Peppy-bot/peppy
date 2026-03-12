@@ -1,6 +1,6 @@
 use super::*;
 
-use config::node::{ExposedAction, SubscribedAction};
+use config::node::{ConsumedAction, ExposedAction};
 use std::process::{Command, Stdio};
 use std::{collections::HashMap, fs};
 
@@ -514,8 +514,8 @@ fn expose_two_actions() {
 }
 
 #[test]
-fn subscribed_to_action() {
-    let action: SubscribedAction = serde_json5::from_str(SUBSCRIBED_ACTION_EXAMPLE1).unwrap();
+fn consumed_action() {
+    let action: ConsumedAction = serde_json5::from_str(SUBSCRIBED_ACTION_EXAMPLE1).unwrap();
     let goal_request_format: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_FORMAT1).unwrap();
     let goal_response_format: MessageFormat =
@@ -524,7 +524,7 @@ fn subscribed_to_action() {
         serde_json5::from_str(SUBSCRIBED_ACTION_FEEDBACK_FORMAT1).unwrap();
     let result_response_format: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_ACTION_RESULT_RESPONSE_FORMAT1).unwrap();
-    let format = SubscribedActionMessage {
+    let format = ConsumedActionMessage {
         goal_request: Some(goal_request_format),
         goal_response: Some(goal_response_format),
         feedback: Some(feedback_format),
@@ -533,7 +533,7 @@ fn subscribed_to_action() {
     };
 
     let mut generator = RustGenerator::new();
-    generator.add_subscribed_action(&action, &format).unwrap();
+    generator.add_consumed_action(&action, &format).unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
         artifacts.len(),
@@ -669,8 +669,8 @@ fn subscribed_to_action() {
 }
 
 #[test]
-fn subscribed_to_two_actions_same_node() {
-    let move_arm_action: SubscribedAction =
+fn consumed_two_actions_same_node() {
+    let move_arm_action: ConsumedAction =
         serde_json5::from_str(SUBSCRIBED_ACTION_EXAMPLE1).unwrap();
     let move_arm_goal_request: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_FORMAT1).unwrap();
@@ -680,7 +680,7 @@ fn subscribed_to_two_actions_same_node() {
         serde_json5::from_str(SUBSCRIBED_ACTION_FEEDBACK_FORMAT1).unwrap();
     let move_arm_result_response: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_ACTION_RESULT_RESPONSE_FORMAT1).unwrap();
-    let move_arm_messages = SubscribedActionMessage {
+    let move_arm_messages = ConsumedActionMessage {
         goal_request: Some(move_arm_goal_request),
         goal_response: Some(move_arm_goal_response),
         feedback: Some(move_arm_feedback),
@@ -688,7 +688,7 @@ fn subscribed_to_two_actions_same_node() {
         result_response: Some(move_arm_result_response),
     };
 
-    let mut rotate_action: SubscribedAction =
+    let mut rotate_action: ConsumedAction =
         serde_json5::from_str(SUBSCRIBED_ACTION_EXAMPLE2).unwrap();
     // Reuse the same upstream node so both subscriptions target the same source.
     rotate_action.node = move_arm_action.node.clone();
@@ -698,7 +698,7 @@ fn subscribed_to_two_actions_same_node() {
         serde_json5::from_str(SUBSCRIBED_ACTION_FEEDBACK_FORMAT2).unwrap();
     let rotate_result_response: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_ACTION_RESULT_RESPONSE_FORMAT2).unwrap();
-    let rotate_messages = SubscribedActionMessage {
+    let rotate_messages = ConsumedActionMessage {
         goal_request: None,
         goal_response: Some(rotate_goal_response),
         feedback: Some(rotate_feedback),
@@ -708,10 +708,10 @@ fn subscribed_to_two_actions_same_node() {
 
     let mut generator = RustGenerator::new();
     generator
-        .add_subscribed_action(&move_arm_action, &move_arm_messages)
+        .add_consumed_action(&move_arm_action, &move_arm_messages)
         .unwrap();
     generator
-        .add_subscribed_action(&rotate_action, &rotate_messages)
+        .add_consumed_action(&rotate_action, &rotate_messages)
         .unwrap();
 
     let artifacts: Vec<_> = generator.into_artifacts();
@@ -821,14 +821,14 @@ fn subscribed_to_two_actions_same_node() {
 }
 
 #[test]
-fn subscribed_action_without_response_payload() {
-    let action: SubscribedAction = serde_json5::from_str(SUBSCRIBED_ACTION_EXAMPLE1).unwrap();
+fn consumed_action_without_response_payload() {
+    let action: ConsumedAction = serde_json5::from_str(SUBSCRIBED_ACTION_EXAMPLE1).unwrap();
     let goal_request_format: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_FORMAT1).unwrap();
     let feedback_format: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_ACTION_FEEDBACK_FORMAT1).unwrap();
 
-    let format = SubscribedActionMessage {
+    let format = ConsumedActionMessage {
         goal_request: Some(goal_request_format),
         goal_response: None,
         feedback: Some(feedback_format),
@@ -838,8 +838,8 @@ fn subscribed_action_without_response_payload() {
 
     let mut generator = RustGenerator::new();
     generator
-        .add_subscribed_action(&action, &format)
-        .expect("generator should allow subscribed actions with empty response payloads");
+        .add_consumed_action(&action, &format)
+        .expect("generator should allow consumed actions with empty response payloads");
     let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
         artifacts.len(),
@@ -871,12 +871,12 @@ fn subscribed_action_without_response_payload() {
 }
 
 #[test]
-fn subscribed_action_without_feedback() {
-    let action: SubscribedAction = serde_json5::from_str(SUBSCRIBED_ACTION_EXAMPLE1).unwrap();
+fn consumed_action_without_feedback() {
+    let action: ConsumedAction = serde_json5::from_str(SUBSCRIBED_ACTION_EXAMPLE1).unwrap();
     let goal_request_format: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_FORMAT1).unwrap();
 
-    let format = SubscribedActionMessage {
+    let format = ConsumedActionMessage {
         goal_request: Some(goal_request_format),
         goal_response: None,
         feedback: None,
@@ -886,8 +886,8 @@ fn subscribed_action_without_feedback() {
 
     let mut generator = RustGenerator::new();
     generator
-        .add_subscribed_action(&action, &format)
-        .expect("generator should allow subscribed actions without feedback payloads");
+        .add_consumed_action(&action, &format)
+        .expect("generator should allow consumed actions without feedback payloads");
     let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(artifacts.len(), 1, "expected single generated artifact");
 
@@ -929,47 +929,47 @@ fn clippy_single_exposed_action_empty_goal_request() {
     let action: ExposedAction =
         serde_json5::from_str(EXPOSED_ACTION_EXAMPLE_EMPTY_GOAL_REQUEST).unwrap();
 
-    let subscribed_action1: SubscribedAction =
+    let consumed_action1: ConsumedAction =
         serde_json5::from_str(SUBSCRIBED_ACTION_EXAMPLE1).unwrap();
-    let subscribed_action1_goal_request: MessageFormat =
+    let consumed_action1_goal_request: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_FORMAT1).unwrap();
-    let subscribed_action1_goal_response: MessageFormat =
+    let consumed_action1_goal_response: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_RESPONSE_FORMAT1).unwrap();
-    let subscribed_action1_feedback: MessageFormat =
+    let consumed_action1_feedback: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_ACTION_FEEDBACK_FORMAT1).unwrap();
-    let subscribed_action1_result_response: MessageFormat =
+    let consumed_action1_result_response: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_ACTION_RESULT_RESPONSE_FORMAT1).unwrap();
-    let subscribed_action1_messages = SubscribedActionMessage {
-        goal_request: Some(subscribed_action1_goal_request),
-        goal_response: Some(subscribed_action1_goal_response),
-        feedback: Some(subscribed_action1_feedback),
+    let consumed_action1_messages = ConsumedActionMessage {
+        goal_request: Some(consumed_action1_goal_request),
+        goal_response: Some(consumed_action1_goal_response),
+        feedback: Some(consumed_action1_feedback),
         result_request: None,
-        result_response: Some(subscribed_action1_result_response),
+        result_response: Some(consumed_action1_result_response),
     };
 
-    let subscribed_action2: SubscribedAction =
+    let consumed_action2: ConsumedAction =
         serde_json5::from_str(SUBSCRIBED_ACTION_EXAMPLE2).unwrap();
-    let subscribed_action2_goal_response: MessageFormat =
+    let consumed_action2_goal_response: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_RESPONSE_FORMAT2).unwrap();
-    let subscribed_action2_feedback: MessageFormat =
+    let consumed_action2_feedback: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_ACTION_FEEDBACK_FORMAT2).unwrap();
-    let subscribed_action2_result_response: MessageFormat =
+    let consumed_action2_result_response: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_ACTION_RESULT_RESPONSE_FORMAT2).unwrap();
-    let subscribed_action2_messages = SubscribedActionMessage {
+    let consumed_action2_messages = ConsumedActionMessage {
         goal_request: None,
-        goal_response: Some(subscribed_action2_goal_response),
-        feedback: Some(subscribed_action2_feedback),
+        goal_response: Some(consumed_action2_goal_response),
+        feedback: Some(consumed_action2_feedback),
         result_request: None,
-        result_response: Some(subscribed_action2_result_response),
+        result_response: Some(consumed_action2_result_response),
     };
 
     let (mut generator, output_dir, user_node, _) = init_test_env::<RustGenerator>(&temp_dir);
     generator.add_exposed_action(&action).unwrap();
     generator
-        .add_subscribed_action(&subscribed_action1, &subscribed_action1_messages)
+        .add_consumed_action(&consumed_action1, &consumed_action1_messages)
         .unwrap();
     generator
-        .add_subscribed_action(&subscribed_action2, &subscribed_action2_messages)
+        .add_consumed_action(&consumed_action2, &consumed_action2_messages)
         .unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);
     generator
@@ -1011,15 +1011,15 @@ fn clippy_single_exposed_action_empty_goal_request() {
         fs::read_to_string(&exposed_actions_mod).expect("failed to read exposed_actions module");
     assert_contains_all(&exposed_actions_contents, &["pub mod move_arm;"]);
 
-    let subscribed_actions_mod = output_dir.join("src/subscribed_actions.rs");
+    let consumed_actions_mod = output_dir.join("src/consumed_actions.rs");
     assert!(
-        subscribed_actions_mod.exists(),
-        "Expected subscribed_actions module file so `peppygen::subscribed_actions::<action>` resolves"
+        consumed_actions_mod.exists(),
+        "Expected consumed_actions module file so `peppygen::consumed_actions::<action>` resolves"
     );
-    let subscribed_actions_contents = fs::read_to_string(&subscribed_actions_mod)
-        .expect("failed to read subscribed_actions module");
+    let consumed_actions_contents =
+        fs::read_to_string(&consumed_actions_mod).expect("failed to read consumed_actions module");
     assert_contains_all(
-        &subscribed_actions_contents,
+        &consumed_actions_contents,
         &[
             "pub mod brain_move_arm;",
             "pub mod controller_rotate_servo_clockwise;",
@@ -1029,53 +1029,53 @@ fn clippy_single_exposed_action_empty_goal_request() {
 
 /// This is a long running test
 #[test]
-fn compile_lib_with_exposed_and_subscribed_actions() {
+fn compile_lib_with_exposed_and_consumed_actions() {
     let temp_dir = TempDir::new().unwrap();
     let action1: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
     let action2: ExposedAction = serde_json5::from_str(EXPOSED_ACTION_EXAMPLE2).unwrap();
 
-    let subscribed_action1: SubscribedAction =
+    let consumed_action1: ConsumedAction =
         serde_json5::from_str(SUBSCRIBED_ACTION_EXAMPLE1).unwrap();
-    let subscribed_action1_goal_request: MessageFormat =
+    let consumed_action1_goal_request: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_FORMAT1).unwrap();
-    let subscribed_action1_goal_response: MessageFormat =
+    let consumed_action1_goal_response: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_RESPONSE_FORMAT1).unwrap();
-    let subscribed_action1_feedback: MessageFormat =
+    let consumed_action1_feedback: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_ACTION_FEEDBACK_FORMAT1).unwrap();
-    let subscribed_action1_result_response: MessageFormat =
+    let consumed_action1_result_response: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_ACTION_RESULT_RESPONSE_FORMAT1).unwrap();
-    let subscribed_action1_messages = SubscribedActionMessage {
-        goal_request: Some(subscribed_action1_goal_request),
-        goal_response: Some(subscribed_action1_goal_response),
-        feedback: Some(subscribed_action1_feedback),
+    let consumed_action1_messages = ConsumedActionMessage {
+        goal_request: Some(consumed_action1_goal_request),
+        goal_response: Some(consumed_action1_goal_response),
+        feedback: Some(consumed_action1_feedback),
         result_request: None,
-        result_response: Some(subscribed_action1_result_response),
+        result_response: Some(consumed_action1_result_response),
     };
 
-    let subscribed_action2: SubscribedAction =
+    let consumed_action2: ConsumedAction =
         serde_json5::from_str(SUBSCRIBED_ACTION_EXAMPLE2).unwrap();
-    let subscribed_action2_goal_response: MessageFormat =
+    let consumed_action2_goal_response: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_RESPONSE_FORMAT2).unwrap();
-    let subscribed_action2_feedback: MessageFormat =
+    let consumed_action2_feedback: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_ACTION_FEEDBACK_FORMAT2).unwrap();
-    let subscribed_action2_result_response: MessageFormat =
+    let consumed_action2_result_response: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_ACTION_RESULT_RESPONSE_FORMAT2).unwrap();
-    let subscribed_action2_messages = SubscribedActionMessage {
+    let consumed_action2_messages = ConsumedActionMessage {
         goal_request: None,
-        goal_response: Some(subscribed_action2_goal_response),
-        feedback: Some(subscribed_action2_feedback),
+        goal_response: Some(consumed_action2_goal_response),
+        feedback: Some(consumed_action2_feedback),
         result_request: None,
-        result_response: Some(subscribed_action2_result_response),
+        result_response: Some(consumed_action2_result_response),
     };
 
     let (mut generator, output_dir, user_node, _) = init_test_env::<RustGenerator>(&temp_dir);
     generator.add_exposed_action(&action1).unwrap();
     generator.add_exposed_action(&action2).unwrap();
     generator
-        .add_subscribed_action(&subscribed_action1, &subscribed_action1_messages)
+        .add_consumed_action(&consumed_action1, &consumed_action1_messages)
         .unwrap();
     generator
-        .add_subscribed_action(&subscribed_action2, &subscribed_action2_messages)
+        .add_consumed_action(&consumed_action2, &consumed_action2_messages)
         .unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);
     generator
@@ -1131,7 +1131,7 @@ fn compile_lib_with_exposed_and_subscribed_actions() {
     let lib_contents = fs::read_to_string(&lib_rs).expect("failed to read generated lib.rs");
     assert_contains_all(
         &lib_contents,
-        &["pub mod exposed_actions;", "pub mod subscribed_actions;"],
+        &["pub mod exposed_actions;", "pub mod consumed_actions;"],
     );
 
     let exposed_actions_mod = output_dir.join("src/exposed_actions.rs");
@@ -1146,15 +1146,15 @@ fn compile_lib_with_exposed_and_subscribed_actions() {
         &["pub mod move_arm;", "pub mod rotate_servo_clockwise;"],
     );
 
-    let subscribed_actions_mod = output_dir.join("src/subscribed_actions.rs");
+    let consumed_actions_mod = output_dir.join("src/consumed_actions.rs");
     assert!(
-        subscribed_actions_mod.exists(),
-        "Expected subscribed_actions module file so `peppygen::subscribed_actions::<action>` resolves"
+        consumed_actions_mod.exists(),
+        "Expected consumed_actions module file so `peppygen::consumed_actions::<action>` resolves"
     );
-    let subscribed_actions_contents = fs::read_to_string(&subscribed_actions_mod)
-        .expect("failed to read subscribed_actions module");
+    let consumed_actions_contents =
+        fs::read_to_string(&consumed_actions_mod).expect("failed to read consumed_actions module");
     assert_contains_all(
-        &subscribed_actions_contents,
+        &consumed_actions_contents,
         &[
             "pub mod brain_move_arm;",
             "pub mod controller_rotate_servo_clockwise;",
@@ -1173,27 +1173,27 @@ fn compile_lib_with_exposed_and_subscribed_actions() {
         "Expected generated rotate_servo_clockwise action module at {:?}",
         expose_rotate_path
     );
-    let subscribed_brain_path = output_dir.join("src/subscribed_actions/brain_move_arm.rs");
+    let subscribed_brain_path = output_dir.join("src/consumed_actions/brain_move_arm.rs");
     assert!(
         subscribed_brain_path.exists(),
-        "Expected brain_move_arm subscribed action module at {:?}",
+        "Expected brain_move_arm consumed action module at {:?}",
         subscribed_brain_path
     );
     let subscribed_controller_path =
-        output_dir.join("src/subscribed_actions/controller_rotate_servo_clockwise.rs");
+        output_dir.join("src/consumed_actions/controller_rotate_servo_clockwise.rs");
     assert!(
         subscribed_controller_path.exists(),
-        "Expected controller_rotate_servo_clockwise subscribed action module at {:?}",
+        "Expected controller_rotate_servo_clockwise consumed action module at {:?}",
         subscribed_controller_path
     );
 }
 
-/// Checks for clippy warnings when there is a subscribed action with an empty goal request.
+/// Checks for clippy warnings when there is a consumed action with an empty goal request.
 #[test]
-fn clippy_subscribed_action_empty_goal_request() {
+fn clippy_consumed_action_empty_goal_request() {
     let temp_dir = TempDir::new().unwrap();
 
-    let subscribed_action: SubscribedAction = serde_json5::from_str(
+    let consumed_action: ConsumedAction = serde_json5::from_str(
         r#"
         {
           id: "robot_calibrate",
@@ -1206,7 +1206,7 @@ fn clippy_subscribed_action_empty_goal_request() {
     .unwrap();
     let goal_response_format: MessageFormat =
         serde_json5::from_str(r#"{ accepted: "bool" }"#).unwrap();
-    let action_messages = SubscribedActionMessage {
+    let action_messages = ConsumedActionMessage {
         goal_request: None,
         goal_response: Some(goal_response_format),
         feedback: None,
@@ -1216,7 +1216,7 @@ fn clippy_subscribed_action_empty_goal_request() {
 
     let (mut generator, output_dir, user_node, _) = init_test_env::<RustGenerator>(&temp_dir);
     generator
-        .add_subscribed_action(&subscribed_action, &action_messages)
+        .add_consumed_action(&consumed_action, &action_messages)
         .unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);
     generator

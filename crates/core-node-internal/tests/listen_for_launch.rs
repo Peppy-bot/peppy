@@ -21,8 +21,8 @@ use crate::common::start_core_node_with_mock_messenger;
 struct NodeConfigOptions<'a> {
     add_cmd: &'a [&'a str],
     start_cmd: &'a [&'a str],
-    subscribes_to_uvc_camera: bool,
-    exposes_camera_stream: bool,
+    expects_uvc_camera: bool,
+    emits_camera_stream: bool,
 }
 
 impl Default for NodeConfigOptions<'_> {
@@ -30,8 +30,8 @@ impl Default for NodeConfigOptions<'_> {
         Self {
             add_cmd: &["true"],
             start_cmd: &[],
-            subscribes_to_uvc_camera: false,
-            exposes_camera_stream: false,
+            expects_uvc_camera: false,
+            emits_camera_stream: false,
         }
     }
 }
@@ -106,8 +106,8 @@ fn write_node_config(
     node_tag: &str,
     git_hash: &str,
     start_cmd: &[&str],
-    subscribes_to_uvc_camera: bool,
-    exposes_camera_stream: bool,
+    expects_uvc_camera: bool,
+    emits_camera_stream: bool,
 ) -> PathBuf {
     write_node_config_with_options(
         nodes_directory,
@@ -116,8 +116,8 @@ fn write_node_config(
         git_hash,
         NodeConfigOptions {
             start_cmd,
-            subscribes_to_uvc_camera,
-            exposes_camera_stream,
+            expects_uvc_camera,
+            emits_camera_stream,
             ..Default::default()
         },
     )
@@ -133,8 +133,8 @@ fn write_node_config_with_options(
     let NodeConfigOptions {
         add_cmd,
         start_cmd,
-        subscribes_to_uvc_camera,
-        exposes_camera_stream,
+        expects_uvc_camera,
+        emits_camera_stream,
     } = options;
     let node_dir = nodes_directory.join(node_name);
     fs::create_dir_all(&node_dir).expect("failed to create node directory");
@@ -151,32 +151,33 @@ fn write_node_config_with_options(
         .collect::<Vec<_>>()
         .join(", ");
 
-    let exposes = if exposes_camera_stream {
-        r#"
-        interfaces: {
-          exposes: {
-            topics: [
-              { name: "camera_stream" }
-            ]
-          }
-        }
-        "#
+    let emits_topics = if emits_camera_stream {
+        r#"emits: [
+                  { name: "camera_stream" }
+                ],"#
     } else {
         ""
     };
 
-    let subscribes_to = if subscribes_to_uvc_camera {
-        r#"
-        interfaces: {
-          subscribes_to: {
-            topics: [
-              { id: "camera_stream", node: "uvc_camera", tag: "0.1.0", name: "camera_stream" }
-            ]
-          }
-        }
-        "#
+    let expects_topics = if expects_uvc_camera {
+        r#"expects: [
+                  { id: "camera_stream", node: "uvc_camera", tag: "0.1.0", name: "camera_stream" }
+                ],"#
     } else {
         ""
+    };
+
+    let interfaces = if emits_camera_stream || expects_uvc_camera {
+        format!(
+            r#"interfaces: {{
+                topics: {{
+                  {emits_topics}
+                  {expects_topics}
+                }}
+              }}"#
+        )
+    } else {
+        String::new()
     };
 
     let node_config_path = node_dir.join(NODE_CONFIG_FILE);
@@ -194,8 +195,7 @@ fn write_node_config_with_options(
                 add_cmd: [{add_cmd_json5}],
                 start_cmd: [{start_cmd_json5}]
               }},
-              {exposes}
-              {subscribes_to}
+              {interfaces}
             }}"#
         ),
     )
@@ -240,8 +240,8 @@ fn create_uvc_camera_repo(to_path: &Path, node_tag: &str) -> PathBuf {
                 start_cmd: ["sleep", "60"]
               }},
               interfaces: {{
-                exposes: {{
-                  topics: [
+                topics: {{
+                  emits: [
                     {{ name: "camera_stream" }}
                   ]
                 }}
@@ -855,7 +855,7 @@ async fn listen_for_launch_configuration_launch_config_dependency_errors_are_rej
         "test-hash",
         &["sleep", "60"],
         false,
-        // Intentionally do NOT expose camera_stream so dependency validation fails.
+        // Intentionally do NOT emit camera_stream so dependency validation fails.
         false,
     );
     let _brain_path = write_node_config(

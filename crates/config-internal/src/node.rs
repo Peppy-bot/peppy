@@ -6,8 +6,9 @@ mod types;
 pub use create::NodeConfigCreator;
 pub use parse::NodeConfigParser;
 pub use types::{
-    ArrayKind, ArraySchema, CallbackNameError, ContainerConfig, ExposedAction, ExposedService,
-    ExposedTopic, InterfaceKind, Interfaces, Manifest, MessageFormat, Name, NodeConfig,
-    PeppygenLanguage, PrimitiveSchema, Process, QoSProfile, SchemaType, SubscribedAction,
-    SubscribedService, SubscribedTopic, SubscribesTo, Toolchain, TypeToken,
+    ActionInterfaces, ArrayKind, ArraySchema, CallbackNameError, ConsumedAction, ConsumedService,
+    ContainerConfig, DependsOn, EmittedTopic, ExposedAction, ExposedService, ExpectedTopic,
+    InterfaceKind, Interfaces, Manifest, MessageFormat, Name, NodeConfig, NodeDependency,
+    PeppygenLanguage, PrimitiveSchema, Process, QoSProfile, SchemaType, ServiceInterfaces,
+    Toolchain, TopicInterfaces, TypeToken,
 };

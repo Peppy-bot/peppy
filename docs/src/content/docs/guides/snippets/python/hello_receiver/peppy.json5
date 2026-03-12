@@ -17,8 +17,8 @@
     ]
   },
   interfaces: {
-    subscribes_to: {
-      topics: [
+    topics: {
+      expects: [
         {
           id: "hello_world_param_subscriber", // subscriber_id, up to you to decide
           node: "hello_world_param", // Will look for that node name

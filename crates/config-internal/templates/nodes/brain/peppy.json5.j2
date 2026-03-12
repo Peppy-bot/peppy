@@ -19,13 +19,8 @@
   },
   parameters: {},
   interfaces: {
-    exposes: {
-      topics: [],
-      services: [],
-      actions: [],
-    },
-    subscribes_to: {
-      topics: [
+    topics: {
+      expects: [
         {
           id: "camera_stream",
           node: "{{ uvc_camera_node_name }}",
@@ -39,8 +34,9 @@
           name: "push_lidar_object"
         }
       ],
-      services: [],
-      actions: [
+    },
+    actions: {
+      consumes: [
         {
           id: "move_right_arm_action",
           node: "{{ controller_node_name }}", // Will look for that node name

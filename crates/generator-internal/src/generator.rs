@@ -20,14 +20,14 @@ use types::{DeploymentInterface, InterfaceVariant, LanguageGenerator};
 /// Generate an interface library for the given language from a node directory.
 ///
 /// This function reads the `peppy.json5` configuration file from the `node_dir`,
-/// extracts the exposed interfaces, combines them with the provided subscribed interfaces,
+/// extracts the exposed interfaces, combines them with the provided consumed interfaces,
 /// and generates a library for the specified programming language.
 /// The library is generated at `node_dir/.peppy/libs/peppygen`.
 ///
 /// # Arguments
 /// * `language` - The language to generate for (Rust or Python)
 /// * `node_dir` - Path to the node directory containing `peppy.json5`
-/// * `subscribed_interfaces` - Subscribed interfaces with resolved message formats from dependency nodes
+/// * `consumed_interfaces` - Consumed interfaces with resolved message formats from dependency nodes
 ///
 /// # Errors
 /// Returns an error if:
@@ -37,7 +37,7 @@ use types::{DeploymentInterface, InterfaceVariant, LanguageGenerator};
 pub fn generate_peppygen_lib(
     language: PeppygenLanguage,
     node_dir: impl AsRef<Path>,
-    subscribed_interfaces: Vec<DeploymentInterface>,
+    consumed_interfaces: Vec<DeploymentInterface>,
     git_hash: &str,
     peppy_dirs: &PeppyDirs,
     deploy_mode: common::CrateDeployMode,
@@ -57,8 +57,8 @@ pub fn generate_peppygen_lib(
         .map_err(|e| Error::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e)))?;
 
     let mut interfaces = collect_exposed_interfaces(&node_config);
-    // Add the subscribed interfaces with resolved message formats
-    interfaces.extend(subscribed_interfaces);
+    // Add the consumed interfaces with resolved message formats
+    interfaces.extend(consumed_interfaces);
 
     // Create the output directory
     let output_dir = node_dir.join(config::consts::PEPPYGEN_OUTPUT_PATH);
@@ -104,29 +104,33 @@ pub fn generate_peppygen_lib(
 fn collect_exposed_interfaces(config: &config::node::NodeConfig) -> Vec<DeploymentInterface> {
     let mut interfaces = Vec::new();
 
-    if let Some(exposes) = &config.interfaces.exposes {
-        if let Some(topics) = &exposes.topics {
-            for topic in topics {
-                interfaces.push(DeploymentInterface::new(InterfaceVariant::ExposedTopic(
-                    topic.clone(),
-                )));
-            }
+    if let Some(topics) = &config.interfaces.topics
+        && let Some(emitted) = &topics.emits
+    {
+        for topic in emitted {
+            interfaces.push(DeploymentInterface::new(InterfaceVariant::EmittedTopic(
+                topic.clone(),
+            )));
         }
+    }
 
-        if let Some(services) = &exposes.services {
-            for service in services {
-                interfaces.push(DeploymentInterface::new(InterfaceVariant::ExposedService(
-                    service.clone(),
-                )));
-            }
+    if let Some(services) = &config.interfaces.services
+        && let Some(exposed) = &services.exposes
+    {
+        for service in exposed {
+            interfaces.push(DeploymentInterface::new(InterfaceVariant::ExposedService(
+                service.clone(),
+            )));
         }
+    }
 
-        if let Some(actions) = &exposes.actions {
-            for action in actions {
-                interfaces.push(DeploymentInterface::new(InterfaceVariant::ExposedAction(
-                    action.clone(),
-                )));
-            }
+    if let Some(actions) = &config.interfaces.actions
+        && let Some(exposed) = &actions.exposes
+    {
+        for action in exposed {
+            interfaces.push(DeploymentInterface::new(InterfaceVariant::ExposedAction(
+                action.clone(),
+            )));
         }
     }
 

@@ -1,10 +1,10 @@
 use crate::helpers;
 use config::{
     consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH},
-    node::{MessageFormat, PeppygenLanguage, SubscribedAction, SubscribedService, SubscribedTopic},
+    node::{ConsumedAction, ConsumedService, ExpectedTopic, MessageFormat, PeppygenLanguage},
 };
 use generator::generate_peppygen_lib;
-use generator::{DeploymentInterface, InterfaceVariant, SubscribedActionMessage};
+use generator::{ConsumedActionMessage, DeploymentInterface, InterfaceVariant};
 use std::fs;
 use tempfile::TempDir;
 
@@ -20,8 +20,8 @@ const PEPPY_JSON5_CONFIG: &str = r#"{
     start_cmd: ["uv", "run", "test_node"]
   },
   interfaces: {
-    exposes: {
-      topics: [
+    topics: {
+      emits: [
         {
           name: "test_topic",
           qos_profile: "sensor_data",
@@ -30,8 +30,10 @@ const PEPPY_JSON5_CONFIG: &str = r#"{
             timestamp: "time"
           }
         }
-      ],
-      services: [
+      ]
+    },
+    services: {
+      exposes: [
         {
           name: "test_service",
           request_message_format: {
@@ -68,12 +70,12 @@ fn generate_peppygen_lib_uv() {
         init_py.display()
     );
 
-    // Check that exposed topics module was generated
-    let exposed_topics_dir = peppygen_dir.join("peppygen/exposed_topics");
+    // Check that emitted topics module was generated
+    let emitted_topics_dir = peppygen_dir.join("peppygen/emitted_topics");
     assert!(
-        exposed_topics_dir.exists(),
-        "exposed_topics directory should exist at {}",
-        exposed_topics_dir.display()
+        emitted_topics_dir.exists(),
+        "emitted_topics directory should exist at {}",
+        emitted_topics_dir.display()
     );
 
     // Check that exposed services module was generated
@@ -141,7 +143,7 @@ fn generate_peppygen_lib_missing_config() {
 }
 
 #[test]
-fn generate_peppygen_python_lib_exposed_and_subscribed_topics() {
+fn generate_peppygen_python_lib_emitted_and_expected_topics() {
     const EXPOSED_NODE_NAME: &str = "topic_exposer";
     const SUBSCRIBER_NODE_NAME: &str = "topic_subscriber";
 
@@ -161,8 +163,8 @@ fn generate_peppygen_python_lib_exposed_and_subscribed_topics() {
             start_cmd: ["uv", "run", "{EXPOSED_NODE_NAME}"]
           }},
           interfaces: {{
-            exposes: {{
-              topics: [
+            topics: {{
+              emits: [
                 {{
                   name: "test_topic",
                   qos_profile: "sensor_data",
@@ -192,9 +194,9 @@ fn generate_peppygen_python_lib_exposed_and_subscribed_topics() {
     let exposed_peppygen_dir = exposed_node_dir.join(PEPPYGEN_OUTPUT_PATH);
     assert!(
         exposed_peppygen_dir
-            .join("peppygen/exposed_topics/test_topic.py")
+            .join("peppygen/emitted_topics/test_topic.py")
             .exists(),
-        "exposed topic module should exist in peppygen package at {}",
+        "emitted topic module should exist in peppygen package at {}",
         exposed_peppygen_dir.display()
     );
 
@@ -221,7 +223,7 @@ fn generate_peppygen_python_lib_exposed_and_subscribed_topics() {
     )
     .expect("failed to write subscriber peppy.json5");
 
-    let subscribed_topic: SubscribedTopic = serde_json5::from_str(&format!(
+    let expected_topic: ExpectedTopic = serde_json5::from_str(&format!(
         r#"{{
           id: "test_topic_sub",
           node: "{EXPOSED_NODE_NAME}",
@@ -229,20 +231,20 @@ fn generate_peppygen_python_lib_exposed_and_subscribed_topics() {
           tag: "0.1.0"
         }}"#
     ))
-    .expect("failed to parse subscribed topic");
+    .expect("failed to parse expected topic");
 
     let subscribed_format: MessageFormat =
         serde_json5::from_str(r#"{ value: "u32" }"#).expect("failed to parse topic format");
 
-    let subscribed_interfaces = vec![DeploymentInterface::new(InterfaceVariant::SubscribedTopic(
-        subscribed_topic,
+    let expected_interfaces = vec![DeploymentInterface::new(InterfaceVariant::ExpectedTopic(
+        expected_topic,
         subscribed_format,
     ))];
 
     generate_peppygen_lib(
         PeppygenLanguage::Python,
         subscriber_node_dir,
-        subscribed_interfaces,
+        expected_interfaces,
         "test-hash",
         &helpers::test_peppy_dirs(),
         Default::default(),
@@ -252,15 +254,15 @@ fn generate_peppygen_python_lib_exposed_and_subscribed_topics() {
     let subscriber_peppygen_dir = subscriber_node_dir.join(PEPPYGEN_OUTPUT_PATH);
     assert!(
         subscriber_peppygen_dir
-            .join("peppygen/subscribed_topics/topic_exposer_test_topic.py")
+            .join("peppygen/expected_topics/topic_exposer_test_topic.py")
             .exists(),
-        "subscribed topic module should exist in peppygen package at {}",
+        "expected topic module should exist in peppygen package at {}",
         subscriber_peppygen_dir.display()
     );
 }
 
 #[test]
-fn generate_peppygen_python_lib_exposed_and_subscribed_services() {
+fn generate_peppygen_python_lib_exposed_and_consumed_services() {
     const EXPOSED_NODE_NAME: &str = "service_exposer";
     const SUBSCRIBER_NODE_NAME: &str = "service_subscriber";
 
@@ -280,8 +282,8 @@ fn generate_peppygen_python_lib_exposed_and_subscribed_services() {
             start_cmd: ["uv", "run", "{EXPOSED_NODE_NAME}"]
           }},
           interfaces: {{
-            exposes: {{
-              services: [
+            services: {{
+              exposes: [
                 {{
                   name: "test_service",
                   request_message_format: {{
@@ -343,7 +345,7 @@ fn generate_peppygen_python_lib_exposed_and_subscribed_services() {
     )
     .expect("failed to write subscriber peppy.json5");
 
-    let subscribed_service: SubscribedService = serde_json5::from_str(&format!(
+    let consumed_service: ConsumedService = serde_json5::from_str(&format!(
         r#"{{
           id: "test_service_sub",
           node: "{EXPOSED_NODE_NAME}",
@@ -351,7 +353,7 @@ fn generate_peppygen_python_lib_exposed_and_subscribed_services() {
           tag: "0.1.0"
         }}"#
     ))
-    .expect("failed to parse subscribed service");
+    .expect("failed to parse consumed service");
 
     let request_format: MessageFormat =
         serde_json5::from_str(r#"{ input: "string" }"#).expect("failed to parse request format");
@@ -359,14 +361,16 @@ fn generate_peppygen_python_lib_exposed_and_subscribed_services() {
         serde_json5::from_str(r#"{ output: "string", success: "bool" }"#)
             .expect("failed to parse response format");
 
-    let subscribed_interfaces = vec![DeploymentInterface::new(
-        InterfaceVariant::SubscribedService(subscribed_service, request_format, response_format),
-    )];
+    let consumed_interfaces = vec![DeploymentInterface::new(InterfaceVariant::ConsumedService(
+        consumed_service,
+        request_format,
+        response_format,
+    ))];
 
     generate_peppygen_lib(
         PeppygenLanguage::Python,
         subscriber_node_dir,
-        subscribed_interfaces,
+        consumed_interfaces,
         "test-hash",
         &helpers::test_peppy_dirs(),
         Default::default(),
@@ -374,24 +378,24 @@ fn generate_peppygen_python_lib_exposed_and_subscribed_services() {
     .expect("failed to generate peppygen lib for subscriber node");
 
     let subscriber_peppygen_dir = subscriber_node_dir.join(PEPPYGEN_OUTPUT_PATH);
-    let subscribed_service_module_path = subscriber_peppygen_dir
-        .join("peppygen/subscribed_services/service_exposer_test_service.py");
+    let consumed_service_module_path =
+        subscriber_peppygen_dir.join("peppygen/consumed_services/service_exposer_test_service.py");
     assert!(
-        subscribed_service_module_path.exists(),
-        "subscribed service module should exist in peppygen package at {}",
+        consumed_service_module_path.exists(),
+        "consumed service module should exist in peppygen package at {}",
         subscriber_peppygen_dir.display()
     );
 
-    let subscribed_service_code = fs::read_to_string(&subscribed_service_module_path)
-        .expect("failed to read subscribed service module");
+    let consumed_service_code = fs::read_to_string(&consumed_service_module_path)
+        .expect("failed to read consumed service module");
     assert!(
-        subscribed_service_code.contains("async def poll("),
-        "subscribed service module should define a poll() function"
+        consumed_service_code.contains("async def poll("),
+        "consumed service module should define a poll() function"
     );
 }
 
 #[test]
-fn generate_peppygen_python_lib_exposed_and_subscribed_actions() {
+fn generate_peppygen_python_lib_exposed_and_consumed_actions() {
     const EXPOSED_NODE_NAME: &str = "action_exposer";
     const SUBSCRIBER_NODE_NAME: &str = "action_subscriber";
 
@@ -411,8 +415,8 @@ fn generate_peppygen_python_lib_exposed_and_subscribed_actions() {
             start_cmd: ["uv", "run", "{EXPOSED_NODE_NAME}"]
           }},
           interfaces: {{
-            exposes: {{
-              actions: [
+            actions: {{
+              exposes: [
                 {{
                   name: "test_action",
                   goal_service: {{
@@ -486,7 +490,7 @@ fn generate_peppygen_python_lib_exposed_and_subscribed_actions() {
     )
     .expect("failed to write subscriber peppy.json5");
 
-    let subscribed_action: SubscribedAction = serde_json5::from_str(&format!(
+    let consumed_action: ConsumedAction = serde_json5::from_str(&format!(
         r#"{{
           id: "test_action_sub",
           node: "{EXPOSED_NODE_NAME}",
@@ -494,7 +498,7 @@ fn generate_peppygen_python_lib_exposed_and_subscribed_actions() {
           tag: "0.1.0"
         }}"#
     ))
-    .expect("failed to parse subscribed action");
+    .expect("failed to parse consumed action");
 
     let goal_request_format: MessageFormat =
         serde_json5::from_str(r#"{ value: "u32" }"#).expect("failed to parse goal request format");
@@ -505,7 +509,7 @@ fn generate_peppygen_python_lib_exposed_and_subscribed_actions() {
     let result_response_format: MessageFormat = serde_json5::from_str(r#"{ success: "bool" }"#)
         .expect("failed to parse result response format");
 
-    let action_messages = SubscribedActionMessage {
+    let action_messages = ConsumedActionMessage {
         goal_request: Some(goal_request_format),
         goal_response: Some(goal_response_format),
         feedback: Some(feedback_format),
@@ -513,14 +517,15 @@ fn generate_peppygen_python_lib_exposed_and_subscribed_actions() {
         result_response: Some(result_response_format),
     };
 
-    let subscribed_interfaces = vec![DeploymentInterface::new(
-        InterfaceVariant::SubscribedAction(subscribed_action, action_messages),
-    )];
+    let consumed_interfaces = vec![DeploymentInterface::new(InterfaceVariant::ConsumedAction(
+        consumed_action,
+        action_messages,
+    ))];
 
     generate_peppygen_lib(
         PeppygenLanguage::Python,
         subscriber_node_dir,
-        subscribed_interfaces,
+        consumed_interfaces,
         "test-hash",
         &helpers::test_peppy_dirs(),
         Default::default(),
@@ -530,9 +535,9 @@ fn generate_peppygen_python_lib_exposed_and_subscribed_actions() {
     let subscriber_peppygen_dir = subscriber_node_dir.join(PEPPYGEN_OUTPUT_PATH);
     assert!(
         subscriber_peppygen_dir
-            .join("peppygen/subscribed_actions/action_exposer_test_action.py")
+            .join("peppygen/consumed_actions/action_exposer_test_action.py")
             .exists(),
-        "subscribed action module should exist in peppygen package at {}",
+        "consumed action module should exist in peppygen package at {}",
         subscriber_peppygen_dir.display()
     );
 }

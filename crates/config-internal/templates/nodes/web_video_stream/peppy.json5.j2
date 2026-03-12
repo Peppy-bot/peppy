@@ -28,8 +28,8 @@
     },
   },
   interfaces: {
-    subscribes_to: {
-      topics: [
+    topics: {
+      expects: [
         {
           id: "camera_stream",
           node: "{{ uvc_camera_node_name }}",
@@ -37,11 +37,6 @@
           name: "video_stream"
         }
       ],
-    },
-    exposes: {
-      topics: [],
-      services: [],
-      actions: [],
     },
   }
 }

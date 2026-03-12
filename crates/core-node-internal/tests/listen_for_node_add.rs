@@ -851,8 +851,8 @@ async fn listen_for_node_add_dependency_not_resolved() {
             start_cmd: ["sleep", "10"],
         },
         interfaces: {
-            subscribes_to: {
-                topics: [
+            topics: {
+                expects: [
                     {
                         id: "sensor_input",
                         node: "non_existent_node",
@@ -967,8 +967,8 @@ async fn listen_for_node_add_same_node_same_tags_overwrites_when_no_dependents()
                 start_cmd: ["sleep", "10"]
             }},
             interfaces: {{
-                exposes: {{
-                    topics: [{{ name: "/example" }}]
+                topics: {{
+                    emits: [{{ name: "/example" }}]
                 }}
             }}
         }}"#
@@ -1016,9 +1016,9 @@ async fn listen_for_node_add_same_node_same_tags_overwrites_when_no_dependents()
         entity
             .config()
             .interfaces
-            .exposes
+            .topics
             .as_ref()
-            .and_then(|exposes| exposes.topics.as_ref())
+            .and_then(|t| t.emits.as_ref())
             .is_some_and(|topics| topics.iter().any(|topic| topic.name == "/example")),
         "node should have updated interfaces from the overwritten config"
     );
@@ -1050,8 +1050,8 @@ async fn listen_for_node_add_same_node_same_tags_fails_when_node_has_dependents(
                 start_cmd: ["sleep", "10"]
             }},
             interfaces: {{
-                exposes: {{
-                    services: [
+                services: {{
+                    exposes: [
                         {{ name: "reset_sensor" }}
                     ]
                 }}
@@ -1088,8 +1088,8 @@ async fn listen_for_node_add_same_node_same_tags_fails_when_node_has_dependents(
                 start_cmd: ["sleep", "10"]
             }},
             interfaces: {{
-                subscribes_to: {{
-                    services: [
+                services: {{
+                    consumes: [
                         {{
                           id: "reset_sensor_sub",
                           node: "{DEPENDENCY_NODE_NAME}",
@@ -1138,8 +1138,8 @@ async fn listen_for_node_add_same_node_same_tags_fails_when_node_has_dependents(
                 start_cmd: ["sleep", "10"]
             }},
             interfaces: {{
-                exposes: {{
-                    services: [
+                services: {{
+                    exposes: [
                         {{ name: "new_service" }}
                     ]
                 }}
@@ -2040,8 +2040,8 @@ async fn node_add_same_node_shutdown_existing_instances() {
                 start_cmd: ["sleep", "10"]
             }},
             interfaces: {{
-                exposes: {{
-                    topics: [{{ name: "/example" }}]
+                topics: {{
+                    emits: [{{ name: "/example" }}]
                 }}
             }}
         }}"#
@@ -2313,8 +2313,8 @@ async fn listen_for_node_add_fails_runs_add_cmd_on_missing_node_dependency() {
           start_cmd: ["sleep", "10"]
         },
         interfaces: {
-          subscribes_to: {
-            topics: [
+          topics: {
+            expects: [
               {
                 id: "camera_stream",
                 node: "fake_uvc_camera",
@@ -2371,7 +2371,7 @@ async fn listen_for_node_add_fails_runs_add_cmd_on_missing_node_dependency() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_add_fails_on_missing_interface_even_when_dependency_exists() {
-    // The dependency node (fake_uvc_camera:0.1.0) exists in the stack but exposes a
+    // The dependency node (fake_uvc_camera:0.1.0) exists in the stack but emits a
     // DIFFERENT topic name than what the dependent node subscribes to. The node add should
     // fail with a MissingInterface error BEFORE running add_cmd. This mimics the real
     // scenario where `fake_uvc_camera` is added first, but `fake_video_reconstruction`
@@ -2384,7 +2384,7 @@ async fn listen_for_node_add_fails_on_missing_interface_even_when_dependency_exi
     let started_core_node = start_core_node_with_mock_messenger().await;
     let node_stack = started_core_node.node_stack.clone();
 
-    // Step 1: Add the dependency node that exposes a topic with a DIFFERENT name
+    // Step 1: Add the dependency node that emits a topic with a DIFFERENT name
     // than what the dependent node will subscribe to.
     let dep_source_dir = tempfile::tempdir().expect("failed to create temp dep source dir");
     let dep_peppy_json5 = format!(
@@ -2399,8 +2399,8 @@ async fn listen_for_node_add_fails_on_missing_interface_even_when_dependency_exi
                 start_cmd: ["sleep", "10"]
             }},
             interfaces: {{
-                exposes: {{
-                    topics: [{{ name: "wrong_topic_name" }}]
+                topics: {{
+                    emits: [{{ name: "wrong_topic_name" }}]
                 }}
             }}
         }}"#
@@ -2430,7 +2430,7 @@ async fn listen_for_node_add_fails_on_missing_interface_even_when_dependency_exi
     assert_eq!(node_stack.len(), 2, "root + dependency");
 
     // Step 2: Add the dependent node that subscribes to a topic name that the
-    // dependency does NOT expose (node name+tag matches, but interface doesn't).
+    // dependency does NOT emit (node name+tag matches, but interface doesn't).
     let target_source_dir = tempfile::tempdir().expect("failed to create temp target source dir");
     let marker_dir = tempfile::tempdir().expect("failed to create temp marker dir");
     let marker_path = marker_dir.path().join(ADD_CMD_MARKER_FILE);
@@ -2447,8 +2447,8 @@ async fn listen_for_node_add_fails_on_missing_interface_even_when_dependency_exi
           start_cmd: ["sleep", "10"]
         },
         interfaces: {
-          subscribes_to: {
-            topics: [
+          topics: {
+            expects: [
               {
                 id: "camera_stream",
                 node: "DEPENDENCY_NODE_NAME",

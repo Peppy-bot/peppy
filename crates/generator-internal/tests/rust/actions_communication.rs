@@ -7,11 +7,11 @@ use crate::helpers::{
 use config::consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME};
 use config::runtime::NodeInstance;
 use config::{
-    node::{ExposedAction, MessageFormat, SubscribedAction},
+    node::{ConsumedAction, ExposedAction, MessageFormat},
     peppy_config::Name,
     runtime::RuntimeConfig,
 };
-use generator::{LanguageGenerator, SubscribedActionMessage};
+use generator::{ConsumedActionMessage, LanguageGenerator};
 use std::path::Path;
 use std::{fs, time::Duration};
 use tempfile::TempDir;
@@ -128,8 +128,7 @@ async fn actions_communication() {
     // --- Subscriber (client) project
     let subscriber_instance_id = SUBSCRIBER_INSTANCE_ID;
     let temp_dir_subscriber = TempDir::new().unwrap();
-    let subscribed_action: SubscribedAction =
-        serde_json5::from_str(SUBSCRIBED_ACTION_EXAMPLE).unwrap();
+    let consumed_action: ConsumedAction = serde_json5::from_str(SUBSCRIBED_ACTION_EXAMPLE).unwrap();
     let goal_request_format: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_FORMAT).unwrap();
     let goal_response_format: MessageFormat =
@@ -138,7 +137,7 @@ async fn actions_communication() {
         serde_json5::from_str(SUBSCRIBED_ACTION_FEEDBACK_FORMAT).unwrap();
     let result_response_format: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_ACTION_RESULT_FORMAT).unwrap();
-    let action_messages = SubscribedActionMessage {
+    let action_messages = ConsumedActionMessage {
         goal_request: Some(goal_request_format),
         goal_response: Some(goal_response_format),
         feedback: Some(feedback_format),
@@ -148,7 +147,7 @@ async fn actions_communication() {
     let (mut generator, output_dir_subscriber, user_node_subscriber, peppy_node_config_path) =
         init_test_env::<generator::RustGenerator>(&temp_dir_subscriber, STUB_NODE_CONFIG);
     generator
-        .add_subscribed_action(&subscribed_action, &action_messages)
+        .add_consumed_action(&consumed_action, &action_messages)
         .unwrap();
     let output_config = copy_config_to_output(&user_node_subscriber, &output_dir_subscriber);
     generator
@@ -182,7 +181,7 @@ async fn actions_communication() {
 
     init_cargo_user_node(&user_node_subscriber);
     let subscriber_main = r#"
-use peppygen::subscribed_actions::brain_move_arm;
+use peppygen::consumed_actions::brain_move_arm;
 use peppygen::NodeBuilder;
 use peppygen::Result;
 use std::time::Duration;
@@ -304,6 +303,27 @@ fn main() -> Result<()> {
     NodeBuilder::new().run(|_parameters: peppygen::Parameters, node_runner| async move {
         let mut action = move_arm::ActionHandle::expose(&node_runner).await?;
 
+        // Set up handshake service listeners BEFORE handling the goal so their
+        // Zenoh subscriptions are active when the subscriber starts polling
+        // immediately after fire_goal returns. Messages are buffered in the
+        // subscription channels until handle_next_request reads them.
+        let mut feedback_ready_service = peppygen::ServiceMessenger::listen(
+            node_runner.messenger(),
+            node_runner.processor().bound_core_node(),
+            node_runner.processor().bound_instance_id(),
+            node_runner.processor().node_name(),
+            FEEDBACK_READY_SERVICE,
+        )
+        .await?;
+        let mut feedback_received_service = peppygen::ServiceMessenger::listen(
+            node_runner.messenger(),
+            node_runner.processor().bound_core_node(),
+            node_runner.processor().bound_instance_id(),
+            node_runner.processor().node_name(),
+            FEEDBACK_RECEIVED_SERVICE,
+        )
+        .await?;
+
         action.handle_goal_next_request(|request| -> Result<move_arm::GoalResponse> {
             println!(
                 "server received goal arm_id={} desired={:?}",
@@ -314,27 +334,11 @@ fn main() -> Result<()> {
         })
         .await?;
 
-        let mut feedback_ready_service = peppygen::ServiceMessenger::listen(
-            node_runner.messenger(),
-            node_runner.processor().bound_core_node(),
-            node_runner.processor().bound_instance_id(),
-            node_runner.processor().node_name(),
-            FEEDBACK_READY_SERVICE,
-        )
-        .await?;
         feedback_ready_service
             .handle_next_request(|_request| async move { Ok(Vec::<u8>::new().into()) })
             .await?;
         println!("server received feedback-ready handshake");
 
-        let mut feedback_received_service = peppygen::ServiceMessenger::listen(
-            node_runner.messenger(),
-            node_runner.processor().bound_core_node(),
-            node_runner.processor().bound_instance_id(),
-            node_runner.processor().node_name(),
-            FEEDBACK_RECEIVED_SERVICE,
-        )
-        .await?;
         let feedback_received = Arc::new(AtomicBool::new(false));
         let feedback_received_flag = Arc::clone(&feedback_received);
         let feedback_received_task = tokio::spawn(async move {
@@ -522,8 +526,7 @@ async fn actions_communication_cancel_goal() {
     // --- Subscriber (client) project
     let subscriber_instance_id = SUBSCRIBER_INSTANCE_ID;
     let temp_dir_subscriber = TempDir::new().unwrap();
-    let subscribed_action: SubscribedAction =
-        serde_json5::from_str(SUBSCRIBED_ACTION_EXAMPLE).unwrap();
+    let consumed_action: ConsumedAction = serde_json5::from_str(SUBSCRIBED_ACTION_EXAMPLE).unwrap();
     let goal_request_format: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_FORMAT).unwrap();
     let goal_response_format: MessageFormat =
@@ -532,7 +535,7 @@ async fn actions_communication_cancel_goal() {
         serde_json5::from_str(SUBSCRIBED_ACTION_FEEDBACK_FORMAT).unwrap();
     let result_response_format: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_ACTION_RESULT_FORMAT).unwrap();
-    let action_messages = SubscribedActionMessage {
+    let action_messages = ConsumedActionMessage {
         goal_request: Some(goal_request_format),
         goal_response: Some(goal_response_format),
         feedback: Some(feedback_format),
@@ -542,7 +545,7 @@ async fn actions_communication_cancel_goal() {
     let (mut generator, output_dir_subscriber, user_node_subscriber, peppy_node_config_path) =
         init_test_env::<generator::RustGenerator>(&temp_dir_subscriber, STUB_NODE_CONFIG);
     generator
-        .add_subscribed_action(&subscribed_action, &action_messages)
+        .add_consumed_action(&consumed_action, &action_messages)
         .unwrap();
     let output_config = copy_config_to_output(&user_node_subscriber, &output_dir_subscriber);
     generator
@@ -576,7 +579,7 @@ async fn actions_communication_cancel_goal() {
 
     init_cargo_user_node(&user_node_subscriber);
     let subscriber_main = r#"
-use peppygen::subscribed_actions::brain_move_arm;
+use peppygen::consumed_actions::brain_move_arm;
 use peppygen::NodeBuilder;
 use peppygen::Result;
 use std::time::Duration;

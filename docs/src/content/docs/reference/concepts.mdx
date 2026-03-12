@@ -5,14 +5,14 @@ description: The different concepts of PeppyOS
 
 ## Node
 
-A **Node** is the fundamental unit of computation in PeppyOS. It represents a runnable application or service that can expose interfaces (topics, services, actions) and subscribe to interfaces from other nodes.
+A **Node** is the fundamental unit of computation in PeppyOS. It represents a runnable application or service that can expose interfaces (topics, services, actions) and consume interfaces from other nodes.
 
 A node is defined by its **configuration** file (`peppy.json5`) which includes:
 
 - **Manifest**: The node's identity
 - **Build**: Commands to build and launch the node
 - **Parameters**: Configuration values passed to the node
-- **Interfaces**: What the node exposes and subscribes to
+- **Interfaces**: What the node exposes and consumes
 
 ### Manifest
 
@@ -45,7 +45,7 @@ Nodes communicate through three types of interfaces:
 | **Service** | Request/response communication for synchronous calls |
 | **Action** | Long-running tasks with feedback and cancellation support |
 
-A node can **expose** interfaces (make them available to others) and **subscribe** to interfaces from other nodes.
+A node can **expose** interfaces (make them available to others) and **consume** interfaces from other nodes.
 
 ## Node Instance
 
@@ -65,7 +65,7 @@ For nodes running on remote systems (e.g., embedded devices), the PID may not be
 The **Node Stack** is the central data structure that manages all active nodes in the system. It maintains a directed acyclic graph (DAG) where:
 
 - **Vertices** are node entities
-- **Edges** represent dependency relationships, pointing from a dependent node to its dependency. These edges are derived from interface connections between nodes (exposers and subscribers).
+- **Edges** represent dependency relationships, pointing from a dependent node to its dependency. These edges are derived from interface connections between nodes (exposers and consumers).
 
 ### Key Responsibilities
 
@@ -92,7 +92,7 @@ The node stack can be visualized in multiple formats:
 
 The **Core Node** is a special node that serves as the root of the node stack and is always present. It is responsible for:
 
-- **Dependency Creation**: When a node subscribes to an interface, the core node creates a dependency on the node that exposes that interface
+- **Dependency Creation**: When a node consumes an interface, the core node creates a dependency on the node that exposes that interface
 - **Stack Management**: Managing the lifecycle of all other nodes in the system
 - **System Coordination**: Acting as the central coordinator for the local PeppyOS runtime
 

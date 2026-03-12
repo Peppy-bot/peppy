@@ -5,7 +5,7 @@ use super::serialization;
 use super::type_mapping::{collect_fields_from_format, qos_profile_python, uses_optional};
 use crate::error::Result;
 use crate::generator::naming::sanitize_component;
-use config::node::{ExposedTopic, MessageFormat, SubscribedTopic};
+use config::node::{EmittedTopic, ExpectedTopic, MessageFormat};
 
 pub(crate) fn capnp_loader_fn_name(schema_info: &PythonSchemaInfo) -> String {
     format!("_{}_capnp", schema_info.file_stem)
@@ -51,9 +51,9 @@ pub(crate) fn emit_capnp_schema_loader(
     emit_capnp_loader_fn(builder, schema_info);
 }
 
-/// Generates Python code for an exposed (publishing) topic.
-pub fn build_exposed_topic(
-    topic: &ExposedTopic,
+/// Generates Python code for an emitted (publishing) topic.
+pub fn build_emitted_topic(
+    topic: &EmittedTopic,
     schema_info: Option<&PythonSchemaInfo>,
 ) -> Result<String> {
     let mut builder = PythonCodeBuilder::new();
@@ -125,9 +125,9 @@ pub fn build_exposed_topic(
     Ok(builder.build())
 }
 
-/// Generates Python code for a subscribed (receiving) topic.
-pub fn build_subscribed_topic(
-    topic: &SubscribedTopic,
+/// Generates Python code for an expected (receiving) topic.
+pub fn build_expected_topic(
+    topic: &ExpectedTopic,
     arguments: &MessageFormat,
     schema_info: &PythonSchemaInfo,
 ) -> Result<String> {
@@ -196,8 +196,8 @@ pub fn build_subscribed_topic(
     Ok(builder.build())
 }
 
-/// Returns the module label for a subscribed topic artifact.
-pub fn subscribed_topic_module_label(topic: &SubscribedTopic) -> String {
+/// Returns the module label for an expected topic artifact.
+pub fn expected_topic_module_label(topic: &ExpectedTopic) -> String {
     let node_component = sanitize_component(&topic.node);
     let topic_component = sanitize_component(&topic.name);
 

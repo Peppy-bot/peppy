@@ -28,10 +28,10 @@ test = "maturin develop && pytest tests/ -v"
 zenoh-simple = "cargo run --manifest-path ../peppylib/examples/zenohd_simple/Cargo.toml"
 
 topic-exposes = "maturin develop && python examples/hello_world_topic_exposes/main.py"
-topic-subscribes = "maturin develop && python examples/hello_world_topic_subscribes_to/main.py"
+topic-consumes = "maturin develop && python examples/hello_world_topic_consumes/main.py"
 
 service-exposes = "maturin develop && python examples/hello_world_service_exposes/main.py"
-service-subscribes = "maturin develop && python examples/hello_world_service_subscribes_to/main.py"
+service-consumes = "maturin develop && python examples/hello_world_service_consumes/main.py"
 
 action-exposes = "maturin develop && python examples/hello_world_action_exposes/main.py"
-action-subscribes = "maturin develop && python examples/hello_world_action_subscribes_to/main.py"
+action-consumes = "maturin develop && python examples/hello_world_action_consumes/main.py"
