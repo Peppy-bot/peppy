@@ -69,10 +69,8 @@ const EXPOSED_ACTION_EXAMPLE: &str = r#"
 
 const SUBSCRIBED_ACTION_EXAMPLE: &str = r#"
 {
-  id: "brain_move_arm",
-  node: "brain",
+  local_node_id: "brain_move_arm",
   name: "move_arm",
-  tag: "0.1.0",
 }
 "#;
 
@@ -147,7 +145,7 @@ async fn actions_communication() {
     let (mut generator, output_dir_subscriber, user_node_subscriber, peppy_node_config_path) =
         init_test_env::<generator::RustGenerator>(&temp_dir_subscriber, STUB_NODE_CONFIG);
     generator
-        .add_consumed_action(&consumed_action, &action_messages)
+        .add_consumed_action(&consumed_action, &action_messages, "brain")
         .unwrap();
     let output_config = copy_config_to_output(&user_node_subscriber, &output_dir_subscriber);
     generator
@@ -545,7 +543,7 @@ async fn actions_communication_cancel_goal() {
     let (mut generator, output_dir_subscriber, user_node_subscriber, peppy_node_config_path) =
         init_test_env::<generator::RustGenerator>(&temp_dir_subscriber, STUB_NODE_CONFIG);
     generator
-        .add_consumed_action(&consumed_action, &action_messages)
+        .add_consumed_action(&consumed_action, &action_messages, "brain")
         .unwrap();
     let output_config = copy_config_to_output(&user_node_subscriber, &output_dir_subscriber);
     generator

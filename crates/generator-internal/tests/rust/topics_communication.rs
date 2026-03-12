@@ -47,10 +47,8 @@ const EMITTED_TOPIC_EXAMPLE: &str = r#"
 
 const SUBSCRIBED_TOPIC_EXAMPLE: &str = r#"
 {
-  id: "camera_frame",
-  node: "uvc_camera",
+  local_node_id: "uvc_camera_video_stream",
   name: "video_stream",
-  tag: "0.1.0"
 }
 "#;
 
@@ -88,7 +86,7 @@ async fn topics_communication() {
     let (mut generator, subscriber_dir, user_node_subscriber, peppy_node_config_path) =
         init_test_env::<generator::RustGenerator>(&temp_dir_proj2, STUB_NODE_CONFIG);
     generator
-        .add_expected_topic(&expected_topic, subscribed_format)
+        .add_expected_topic(&expected_topic, subscribed_format, "uvc_camera")
         .unwrap();
     let output_config = copy_config_to_output(&user_node_subscriber, &subscriber_dir);
     generator

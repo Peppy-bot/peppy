@@ -469,6 +469,7 @@ pub fn build_consumed_action(
     cancel_response_schema_info: Option<&PythonSchemaInfo>,
     feedback_schema_info: Option<&PythonSchemaInfo>,
     result_response_schema_info: Option<&PythonSchemaInfo>,
+    dependency_node_name: &str,
 ) -> Result<String> {
     let mut builder = PythonCodeBuilder::new();
 
@@ -501,7 +502,7 @@ pub fn build_consumed_action(
     }
 
     // Constants
-    builder.line(&format!("TARGET_NODE_NAME = \"{}\"", action.node));
+    builder.line(&format!("TARGET_NODE_NAME = \"{}\"", dependency_node_name));
     builder.line(&format!("TARGET_ACTION_NAME = \"{}\"", action.name));
     builder.blank_line();
 

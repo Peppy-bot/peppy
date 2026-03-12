@@ -42,10 +42,8 @@ const EXPOSED_SERVICE_EXAMPLE: &str = r#"
 
 const SUBSCRIBED_SERVICE_EXAMPLE: &str = r#"
 {
-  id: "uvc_camera_enable_camera",
-  node: "uvc_camera",
+  local_node_id: "uvc_camera_enable_camera",
   name: "enable_camera",
-  tag: "0.1.0"
 }
 "#;
 
@@ -79,10 +77,8 @@ const EXPOSED_SERVICE_NO_REQUEST_EXAMPLE: &str = r#"
 
 const SUBSCRIBED_SERVICE_NO_REQUEST_EXAMPLE: &str = r#"
 {
-  id: "uvc_camera_get_system_status",
-  node: "uvc_camera",
+  local_node_id: "uvc_camera_get_system_status",
   name: "get_system_status",
-  tag: "0.1.0"
 }
 "#;
 
@@ -115,6 +111,7 @@ async fn services_communication_no_target_instance_id() {
             &consumed_service,
             &subscribed_request_format,
             &subscribed_response_format,
+            "uvc_camera",
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node_subscriber, &output_dir_subscriber);
@@ -407,6 +404,7 @@ async fn services_communication_exposed_service_without_request_body() {
             &consumed_service,
             &subscribed_request_format,
             &subscribed_response_format,
+            "uvc_camera",
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node_subscriber, &output_dir_subscriber);
@@ -679,6 +677,7 @@ async fn services_communication_multiple_exposed_instances_same_service_not_targ
             &consumed_service,
             &subscribed_request_format,
             &subscribed_response_format,
+            "uvc_camera",
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node_subscriber, &output_dir_subscriber);

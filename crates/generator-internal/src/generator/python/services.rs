@@ -182,6 +182,7 @@ pub fn build_consumed_service(
     response_arguments: &MessageFormat,
     request_schema_info: Option<&PythonSchemaInfo>,
     response_schema_info: Option<&PythonSchemaInfo>,
+    dependency_node_name: &str,
 ) -> Result<String> {
     let mut builder = PythonCodeBuilder::new();
 
@@ -200,7 +201,7 @@ pub fn build_consumed_service(
     }
 
     // Constants
-    builder.line(&format!("NODE_NAME = \"{}\"", service.node));
+    builder.line(&format!("NODE_NAME = \"{}\"", dependency_node_name));
     builder.line(&format!("SERVICE_NAME = \"{}\"", service.name));
     builder.blank_line();
 

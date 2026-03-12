@@ -441,38 +441,28 @@ pub struct ExposedAction {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExpectedTopic {
-    pub id: Name,
-    #[serde(deserialize_with = "deserialize_expected_topic_node")]
-    pub node: String,
+    #[serde(deserialize_with = "deserialize_expected_topic_local_node_id")]
+    pub local_node_id: String,
     #[serde(deserialize_with = "deserialize_expected_topic_name")]
     pub name: String,
-    #[serde(default)]
-    pub tag: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConsumedService {
-    pub id: Name,
-    /// A consumed service has to specify to which node it wants to connect to
-    #[serde(deserialize_with = "deserialize_consumed_service_node")]
-    pub node: String,
+    #[serde(deserialize_with = "deserialize_consumed_service_local_node_id")]
+    pub local_node_id: String,
     #[serde(default)]
     pub name: String,
-    #[serde(default)]
-    pub tag: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConsumedAction {
-    pub id: Name,
-    #[serde(default)]
-    pub node: String,
+    #[serde(deserialize_with = "deserialize_consumed_action_local_node_id")]
+    pub local_node_id: String,
     #[serde(default)]
     pub name: String,
-    #[serde(default)]
-    pub tag: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -496,11 +486,11 @@ impl Default for ActionServiceEndpoint {
     }
 }
 
-fn deserialize_expected_topic_node<'de, D>(deserializer: D) -> Result<String, D::Error>
+fn deserialize_expected_topic_local_node_id<'de, D>(deserializer: D) -> Result<String, D::Error>
 where
     D: Deserializer<'de>,
 {
-    deserialize_non_empty_identifier(deserializer, "ExpectedTopic.node")
+    deserialize_non_empty_identifier(deserializer, "ExpectedTopic.local_node_id")
 }
 
 fn deserialize_expected_topic_name<'de, D>(deserializer: D) -> Result<String, D::Error>
@@ -510,11 +500,18 @@ where
     deserialize_non_empty_identifier(deserializer, "ExpectedTopic.name")
 }
 
-fn deserialize_consumed_service_node<'de, D>(deserializer: D) -> Result<String, D::Error>
+fn deserialize_consumed_service_local_node_id<'de, D>(deserializer: D) -> Result<String, D::Error>
 where
     D: Deserializer<'de>,
 {
-    deserialize_non_empty_identifier(deserializer, "ConsumedService.node")
+    deserialize_non_empty_identifier(deserializer, "ConsumedService.local_node_id")
+}
+
+fn deserialize_consumed_action_local_node_id<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_non_empty_identifier(deserializer, "ConsumedAction.local_node_id")
 }
 
 fn deserialize_non_empty_identifier<'de, D>(
@@ -681,56 +678,56 @@ mod tests {
     }
 
     #[test]
-    fn expected_topic_node_is_required() {
-        let valid = r#"{ id: "camera_stream", node: "uvc_camera", name: "video_stream" }"#;
+    fn expected_topic_local_node_id_is_required() {
+        let valid = r#"{ local_node_id: "uvc_camera", name: "video_stream" }"#;
         let topic: ExpectedTopic = serde_json5::from_str(valid).expect("valid topic should parse");
-        assert_eq!(topic.node, "uvc_camera");
+        assert_eq!(topic.local_node_id, "uvc_camera");
         assert_eq!(topic.name, "video_stream");
 
-        let without_node = r#"{ id: "camera_stream", name: "video_stream" }"#;
-        assert!(serde_json5::from_str::<ExpectedTopic>(without_node).is_err());
+        let without_local_node_id = r#"{ name: "video_stream" }"#;
+        assert!(serde_json5::from_str::<ExpectedTopic>(without_local_node_id).is_err());
 
-        let missing_node = r#"{ id: "camera_stream", node: "", name: "video_stream" }"#;
-        assert!(serde_json5::from_str::<ExpectedTopic>(missing_node).is_err());
+        let empty_local_node_id = r#"{ local_node_id: "", name: "video_stream" }"#;
+        assert!(serde_json5::from_str::<ExpectedTopic>(empty_local_node_id).is_err());
 
-        let missing_name = r#"{ id: "camera_stream", node: "uvc_camera", name: "" }"#;
+        let missing_name = r#"{ local_node_id: "uvc_camera", name: "" }"#;
         assert!(serde_json5::from_str::<ExpectedTopic>(missing_name).is_err());
 
-        let whitespace_only = r#"{ id: "camera_stream", node: "   ", name: "video_stream" }"#;
+        let whitespace_only = r#"{ local_node_id: "   ", name: "video_stream" }"#;
         assert!(serde_json5::from_str::<ExpectedTopic>(whitespace_only).is_err());
 
-        let punctuation_only = r#"{ id: "camera_stream", node: "--", name: "video_stream" }"#;
+        let punctuation_only = r#"{ local_node_id: "--", name: "video_stream" }"#;
         assert!(serde_json5::from_str::<ExpectedTopic>(punctuation_only).is_err());
 
-        let missing_field = r#"{ id: "camera_stream", node: "uvc_camera" }"#;
-        assert!(serde_json5::from_str::<ExpectedTopic>(missing_field).is_err());
+        let missing_name_field = r#"{ local_node_id: "uvc_camera" }"#;
+        assert!(serde_json5::from_str::<ExpectedTopic>(missing_name_field).is_err());
 
-        let trimmed = r#"{ id: "camera_stream", node: " uvc_camera ", name: " video_stream " }"#;
+        let trimmed = r#"{ local_node_id: " uvc_camera ", name: " video_stream " }"#;
         let topic: ExpectedTopic =
             serde_json5::from_str(trimmed).expect("whitespace should be trimmed");
-        assert_eq!(topic.node, "uvc_camera");
+        assert_eq!(topic.local_node_id, "uvc_camera");
         assert_eq!(topic.name, "video_stream");
     }
 
     #[test]
-    fn consumed_service_node_is_required() {
-        let with_node =
-            r#"{ id: "enable_camera", node: "uvc_camera", name: "enable_camera", tag: "0.1.0" }"#;
+    fn consumed_service_local_node_id_is_required() {
+        let with_local_node_id =
+            r#"{ local_node_id: "uvc_camera", name: "enable_camera" }"#;
         let service: ConsumedService =
-            serde_json5::from_str(with_node).expect("service with node should parse");
-        assert_eq!(service.node, "uvc_camera");
+            serde_json5::from_str(with_local_node_id).expect("service with local_node_id should parse");
+        assert_eq!(service.local_node_id, "uvc_camera");
 
-        let trimmed = r#"{ id: "enable_camera", node: "  uvc_camera  ", name: "enable_camera", tag: "0.1.0" }"#;
+        let trimmed = r#"{ local_node_id: "  uvc_camera  ", name: "enable_camera" }"#;
         let service: ConsumedService =
             serde_json5::from_str(trimmed).expect("whitespace should be trimmed");
-        assert_eq!(service.node, "uvc_camera");
+        assert_eq!(service.local_node_id, "uvc_camera");
 
-        let without_node = r#"{ id: "enable_camera", name: "enable_camera", tag: "0.1.0" }"#;
-        assert!(serde_json5::from_str::<ConsumedService>(without_node).is_err());
+        let without_local_node_id = r#"{ name: "enable_camera" }"#;
+        assert!(serde_json5::from_str::<ConsumedService>(without_local_node_id).is_err());
 
-        let blank_node =
-            r#"{ id: "enable_camera", node: "   ", name: "enable_camera", tag: "0.1.0" }"#;
-        assert!(serde_json5::from_str::<ConsumedService>(blank_node).is_err());
+        let blank_local_node_id =
+            r#"{ local_node_id: "   ", name: "enable_camera" }"#;
+        assert!(serde_json5::from_str::<ConsumedService>(blank_local_node_id).is_err());
     }
 
     #[test]

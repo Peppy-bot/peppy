@@ -33,7 +33,15 @@ async fn node_info_shows_dependencies_from_consumed_interfaces() {
             manifest: {{
                 name: "{NODE_NAME}",
                 tag: "{NODE_TAG}",
-                language: "rust"
+                language: "rust",
+                depends_on: {{
+                    nodes: [
+                        {{ name: "camera_node", tag: "0.1.0", local_id: "camera_node" }},
+                        {{ name: "lidar_node", tag: "0.1.0", local_id: "lidar_node" }},
+                        {{ name: "config_node", tag: "0.1.0", local_id: "config_node" }},
+                        {{ name: "navigation_node", tag: "0.1.0", local_id: "navigation_node" }}
+                    ]
+                }}
             }},
             process: {{
                 start_cmd: ["sleep", "10"]
@@ -41,19 +49,19 @@ async fn node_info_shows_dependencies_from_consumed_interfaces() {
             interfaces: {{
                 topics: {{
                     expects: [
-                        {{ id: "camera_feed", node: "camera_node", name: "video_stream" }},
-                        {{ id: "lidar_data", node: "lidar_node", name: "point_cloud" }},
-                        {{ id: "other_camera", node: "camera_node", name: "depth_stream" }}
+                        {{ local_node_id: "camera_node", name: "video_stream" }},
+                        {{ local_node_id: "lidar_node", name: "point_cloud" }},
+                        {{ local_node_id: "camera_node", name: "depth_stream" }}
                     ]
                 }},
                 services: {{
                     consumes: [
-                        {{ id: "config_service", node: "config_node", name: "get_config" }}
+                        {{ local_node_id: "config_node", name: "get_config" }}
                     ]
                 }},
                 actions: {{
                     consumes: [
-                        {{ id: "navigate", node: "navigation_node", name: "go_to_pose" }}
+                        {{ local_node_id: "navigation_node", name: "go_to_pose" }}
                     ]
                 }}
             }}
@@ -116,17 +124,17 @@ async fn node_info_shows_dependencies_from_consumed_interfaces() {
         .expect("consumed actions should exist");
     assert_eq!(actions.len(), 1, "should have 1 consumed action");
 
-    // Extract dependencies (unique node names) - this mirrors what print_node_info does
+    // Extract dependencies (unique local_node_id values) - this mirrors what print_node_info does
     let mut dependencies: BTreeSet<&str> = BTreeSet::new();
     for topic in topics {
-        dependencies.insert(&topic.node);
+        dependencies.insert(&topic.local_node_id);
     }
     for service in services {
-        dependencies.insert(&service.node);
+        dependencies.insert(&service.local_node_id);
     }
     for action in actions {
-        if !action.node.is_empty() {
-            dependencies.insert(&action.node);
+        if !action.local_node_id.is_empty() {
+            dependencies.insert(&action.local_node_id);
         }
     }
 

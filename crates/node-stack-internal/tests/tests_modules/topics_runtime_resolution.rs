@@ -13,6 +13,11 @@ fn topic_dependency_resolved_when_dependency_added_first() {
               name: "brain",
               tag: "1.0.0",
               language: "rust",
+              depends_on: {
+                nodes: [
+                  { name: "lidar", tag: "1.0.0", local_id: "lidar" }
+                ]
+              },
             },
             process: {
               start_cmd: ["brain"]
@@ -21,10 +26,8 @@ fn topic_dependency_resolved_when_dependency_added_first() {
                 topics: {
                     expects: [
                         {
-                          id: "lidar_object_sub",
-                          node: "lidar",
-                          name: "push_lidar_object",
-                          tag: "1.0.0"
+                          local_node_id: "lidar",
+                          name: "push_lidar_object"
                         }
                     ]
                 }
@@ -121,6 +124,11 @@ fn topic_dependency_fails_when_dependency_is_missing() {
               name: "brain",
               tag: "1.0.0",
               language: "rust",
+              depends_on: {
+                nodes: [
+                  { name: "lidar", tag: "1.0.0", local_id: "lidar" }
+                ]
+              },
             },
             process: {
               start_cmd: ["brain"]
@@ -129,10 +137,8 @@ fn topic_dependency_fails_when_dependency_is_missing() {
                 topics: {
                     expects: [
                         {
-                          id: "lidar_object_sub",
-                          node: "lidar",
-                          name: "push_lidar_object",
-                          tag: "1.0.0"
+                          local_node_id: "lidar",
+                          name: "push_lidar_object"
                         }
                     ]
                 }
@@ -169,6 +175,11 @@ fn topic_dependency_fails_when_topic_not_exposed_by_dependency() {
               name: "brain",
               tag: "1.0.0",
               language: "rust",
+              depends_on: {
+                nodes: [
+                  { name: "lidar", tag: "1.0.0", local_id: "lidar" }
+                ]
+              },
             },
             process: {
               start_cmd: ["brain"]
@@ -177,10 +188,8 @@ fn topic_dependency_fails_when_topic_not_exposed_by_dependency() {
                 topics: {
                     expects: [
                         {
-                          id: "lidar_object_sub",
-                          node: "lidar",
-                          name: "push_lidar_object",
-                          tag: "1.0.0"
+                          local_node_id: "lidar",
+                          name: "push_lidar_object"
                         }
                     ]
                 }

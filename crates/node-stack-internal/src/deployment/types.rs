@@ -10,7 +10,7 @@ use petgraph::{
 use rand::rng;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     path::{Path, PathBuf},
     sync::{Arc, RwLock},
 };
@@ -171,7 +171,7 @@ impl From<&NodeEntity> for NodeKey {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct InterfaceRequirement {
+pub(crate) struct InterfaceRequirement {
     kind: InterfaceKind,
     name: String,
 }
@@ -184,20 +184,19 @@ impl InterfaceRequirement {
         }
     }
 
-    pub fn kind(&self) -> InterfaceKind {
+    fn kind(&self) -> InterfaceKind {
         self.kind
     }
 
-    pub fn name(&self) -> &str {
+    fn name(&self) -> &str {
         &self.name
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct DependencySpec {
     pub node_name: String,
     pub node_tag: String,
-    pub interface: InterfaceRequirement,
 }
 
 /// Compares two Interfaces structs by serializing them to JSON.
@@ -209,87 +208,16 @@ fn interfaces_match(a: &Interfaces, b: &Interfaces) -> bool {
 }
 
 pub fn collect_dependency_specs(node: &NodeConfig) -> Vec<DependencySpec> {
-    let mut specs: HashMap<(String, String), HashSet<InterfaceRequirement>> = HashMap::new();
+    let Some(depends_on) = &node.manifest.depends_on else {
+        return Vec::new();
+    };
 
-    if let Some(topics) = node.interfaces.topics.as_ref()
-        && let Some(consumed) = topics.expects.as_ref()
-    {
-        for topic in consumed {
-            let node_name = topic.node.trim();
-            if node_name.is_empty() {
-                continue;
-            }
-
-            let interface_name = topic.name.trim();
-            if interface_name.is_empty() {
-                continue;
-            }
-
-            let requirement = InterfaceRequirement::new(InterfaceKind::Topic, interface_name);
-            let tag = topic.tag.trim().to_owned();
-            specs
-                .entry((node_name.to_owned(), tag))
-                .or_default()
-                .insert(requirement);
-        }
-    }
-
-    if let Some(services) = node.interfaces.services.as_ref()
-        && let Some(consumed) = services.consumes.as_ref()
-    {
-        for service in consumed {
-            let node_name = service.node.trim();
-            if node_name.is_empty() {
-                continue;
-            }
-
-            let interface_name = service.name.trim();
-            if interface_name.is_empty() {
-                continue;
-            }
-
-            let requirement = InterfaceRequirement::new(InterfaceKind::Service, interface_name);
-            let tag = service.tag.trim().to_owned();
-            specs
-                .entry((node_name.to_owned(), tag))
-                .or_default()
-                .insert(requirement);
-        }
-    }
-
-    if let Some(actions) = node.interfaces.actions.as_ref()
-        && let Some(consumed) = actions.consumes.as_ref()
-    {
-        for action in consumed {
-            let node_name = action.node.trim();
-            if node_name.is_empty() {
-                continue;
-            }
-
-            let interface_name = action.name.trim();
-            if interface_name.is_empty() {
-                continue;
-            }
-
-            let requirement = InterfaceRequirement::new(InterfaceKind::Action, interface_name);
-            let tag = action.tag.trim().to_owned();
-            specs
-                .entry((node_name.to_owned(), tag))
-                .or_default()
-                .insert(requirement);
-        }
-    }
-
-    specs
-        .into_iter()
-        .flat_map(|((name, tag), requirements)| {
-            requirements
-                .into_iter()
-                .map(move |interface| DependencySpec {
-                    node_name: name.clone(),
-                    node_tag: tag.clone(),
-                    interface,
-                })
+    depends_on
+        .nodes
+        .iter()
+        .map(|dep| DependencySpec {
+            node_name: dep.name.as_str().to_owned(),
+            node_tag: dep.tag.clone(),
         })
         .collect()
 }
@@ -298,6 +226,11 @@ pub fn collect_dependency_specs(node: &NodeConfig) -> Vec<DependencySpec> {
 ///
 /// Uses the provided `resolve` closure to look up a dependency's `NodeConfig` by name and tag.
 /// Returns a list of all validation errors found (empty if all dependencies are satisfied).
+///
+/// Validation is two-phase:
+/// 1. **Node existence**: Each entry in `manifest.depends_on.nodes` must resolve to an existing node.
+/// 2. **Interface exposure**: Each consumed/expected interface must reference a valid `local_node_id`
+///    that maps to a dependency which exposes the required interface.
 pub fn validate_dependency_specs(
     config: &NodeConfig,
     dependant_name: &str,
@@ -306,6 +239,10 @@ pub fn validate_dependency_specs(
 ) -> Vec<crate::error::Error> {
     let mut errors = Vec::new();
 
+    // Build local_id → (name, tag, resolved_config) lookup from depends_on.nodes
+    let mut resolved_deps: HashMap<String, (String, String, NodeConfig)> = HashMap::new();
+
+    // Phase 1: Validate all declared dependency nodes exist
     for spec in collect_dependency_specs(config) {
         let Some(dependency_config) = resolve(&spec.node_name, &spec.node_tag) else {
             errors.push(crate::error::Error::MissingDependency {
@@ -317,22 +254,107 @@ pub fn validate_dependency_specs(
             continue;
         };
 
-        if !exposes_interface(&dependency_config, &spec.interface) {
-            errors.push(crate::error::Error::MissingInterface {
-                dependant: dependant_name.to_owned(),
-                dependant_tag: dependant_tag.to_owned(),
-                dependency: spec.node_name,
-                dependency_tag: spec.node_tag,
-                interface_kind: format!("{:?}", spec.interface.kind()),
-                interface_name: spec.interface.name().to_owned(),
-            });
+        // Find the local_id for this dependency
+        if let Some(depends_on) = &config.manifest.depends_on {
+            if let Some(dep) = depends_on
+                .nodes
+                .iter()
+                .find(|d| d.name.as_str() == spec.node_name && d.tag == spec.node_tag)
+            {
+                resolved_deps.insert(
+                    dep.local_id.clone(),
+                    (spec.node_name, spec.node_tag, dependency_config),
+                );
+            }
+        }
+    }
+
+    // Phase 2: Validate consumed interfaces reference valid local_node_ids
+    // and that the dependency exposes the required interface
+    if let Some(topics) = &config.interfaces.topics {
+        if let Some(expected) = &topics.expects {
+            for topic in expected {
+                validate_consumed_interface(
+                    &topic.local_node_id,
+                    &topic.name,
+                    InterfaceKind::Topic,
+                    &resolved_deps,
+                    dependant_name,
+                    dependant_tag,
+                    &mut errors,
+                );
+            }
+        }
+    }
+
+    if let Some(services) = &config.interfaces.services {
+        if let Some(consumed) = &services.consumes {
+            for service in consumed {
+                validate_consumed_interface(
+                    &service.local_node_id,
+                    &service.name,
+                    InterfaceKind::Service,
+                    &resolved_deps,
+                    dependant_name,
+                    dependant_tag,
+                    &mut errors,
+                );
+            }
+        }
+    }
+
+    if let Some(actions) = &config.interfaces.actions {
+        if let Some(consumed) = &actions.consumes {
+            for action in consumed {
+                validate_consumed_interface(
+                    &action.local_node_id,
+                    &action.name,
+                    InterfaceKind::Action,
+                    &resolved_deps,
+                    dependant_name,
+                    dependant_tag,
+                    &mut errors,
+                );
+            }
         }
     }
 
     errors
 }
 
-pub fn exposes_interface(node: &NodeConfig, requirement: &InterfaceRequirement) -> bool {
+/// Validates that a consumed interface's `local_node_id` resolves to a dependency
+/// that exposes the required interface.
+fn validate_consumed_interface(
+    local_node_id: &str,
+    interface_name: &str,
+    kind: InterfaceKind,
+    resolved_deps: &HashMap<String, (String, String, NodeConfig)>,
+    dependant_name: &str,
+    dependant_tag: &str,
+    errors: &mut Vec<crate::error::Error>,
+) {
+    let Some((dep_name, dep_tag, dep_config)) = resolved_deps.get(local_node_id) else {
+        // The local_node_id doesn't map to any resolved dependency — either
+        // the dependency itself was missing (already reported in phase 1)
+        // or the local_node_id is invalid. Skip silently since phase 1 covers
+        // missing dependencies.
+        return;
+    };
+
+    let requirement = InterfaceRequirement::new(kind, interface_name);
+    if !exposes_interface(dep_config, &requirement) {
+        errors.push(crate::error::Error::MissingInterface {
+            dependant: dependant_name.to_owned(),
+            dependant_tag: dependant_tag.to_owned(),
+            dependency: dep_name.clone(),
+            dependency_tag: dep_tag.clone(),
+            interface_kind: format!("{:?}", kind),
+            interface_name: interface_name.to_owned(),
+        });
+    }
+}
+
+pub(crate) fn exposes_interface(node: &NodeConfig, requirement: &InterfaceRequirement) -> bool {
     match requirement.kind() {
         InterfaceKind::Topic => node
             .interfaces
@@ -488,15 +510,10 @@ impl NodeStackInner {
             .pending_requirements
             .entry(requirement.key.clone())
             .or_default();
-        if entry.iter().any(|pending| {
-            pending.dependant == dependant && pending.interface == requirement.interface
-        }) {
+        if entry.iter().any(|pending| pending.dependant == dependant) {
             return;
         }
-        entry.push(PendingRequirement {
-            dependant,
-            interface: requirement.interface,
-        });
+        entry.push(PendingRequirement { dependant });
     }
 
     fn try_attach_requirement(
@@ -507,22 +524,15 @@ impl NodeStackInner {
         let Some(&dependency_index) = self.key_to_index.get(&requirement.key) else {
             return false;
         };
-        let Some(dependency_node) = self.graph.node_weight(dependency_index) else {
-            return false;
-        };
 
-        if exposes_interface(dependency_node.config(), &requirement.interface) {
-            if self
-                .graph
-                .find_edge(dependant_index, dependency_index)
-                .is_none()
-            {
-                self.graph.add_edge(dependant_index, dependency_index, ());
-            }
-            true
-        } else {
-            false
+        if self
+            .graph
+            .find_edge(dependant_index, dependency_index)
+            .is_none()
+        {
+            self.graph.add_edge(dependant_index, dependency_index, ());
         }
+        true
     }
 
     fn resolve_pending_requirements(&mut self, key: &NodeKey) {
@@ -536,10 +546,7 @@ impl NodeStackInner {
 
         let mut remaining = Vec::new();
         for requirement in pending.drain(..) {
-            let dependency_requirement = DependencyRequirement {
-                key: key.clone(),
-                interface: requirement.interface.clone(),
-            };
+            let dependency_requirement = DependencyRequirement { key: key.clone() };
             if !self.try_attach_requirement(requirement.dependant, &dependency_requirement) {
                 remaining.push(requirement);
             }
@@ -881,16 +888,14 @@ impl NodeStackInner {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct DependencyRequirement {
     key: NodeKey,
-    interface: InterfaceRequirement,
 }
 
 #[derive(Clone, Debug)]
 struct PendingRequirement {
     dependant: NodeIndex,
-    interface: InterfaceRequirement,
 }
 
 fn dependency_requirements(node: &NodeConfig) -> Vec<DependencyRequirement> {
@@ -898,7 +903,6 @@ fn dependency_requirements(node: &NodeConfig) -> Vec<DependencyRequirement> {
         .into_iter()
         .map(|spec| DependencyRequirement {
             key: NodeKey::new(&spec.node_name, &spec.node_tag),
-            interface: spec.interface,
         })
         .collect()
 }

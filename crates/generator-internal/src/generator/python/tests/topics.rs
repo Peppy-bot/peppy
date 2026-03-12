@@ -80,10 +80,8 @@ const EMITTED_TOPIC_FIXED_STRING_ARRAY_EXAMPLE: &str = r#"
 
 const SUBSCRIBED_TOPIC_EXAMPLE1: &str = r#"
 {
-    id: "video_stream",
-    node: "uvc_camera",
+    local_node_id: "uvc_camera_video_stream",
     name: "video_stream",
-    tag: "0.1.0"
 }
 "#;
 
@@ -106,19 +104,15 @@ const SUBSCRIBED_TOPIC_FORMAT_EXAMPLE1: &str = r#"
 
 const SUBSCRIBED_TOPIC_EXAMPLE2: &str = r#"
 {
-    id: "sound",
-    node: "uvc_camera",
+    local_node_id: "uvc_camera_sound",
     name: "sound",
-    tag: "0.1.0"
 }
 "#;
 
 const SUBSCRIBED_TOPIC_EXAMPLE_KEYWORDS: &str = r#"
 {
-    id: "keyword_topic",
-    node: "keyword_source",
+    local_node_id: "keyword_source_keyword_topic",
     name: "keyword_topic",
-    tag: "0.1.0"
 }
 "#;
 
@@ -387,7 +381,9 @@ fn expected_topic() {
     let format = parse_message_format(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE1);
 
     let mut generator = PythonGenerator::new();
-    generator.add_expected_topic(&topic, format).unwrap();
+    generator
+        .add_expected_topic(&topic, format, "uvc_camera")
+        .unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
         artifacts.len(),
@@ -502,7 +498,9 @@ fn expected_topic_escapes_python_keyword_fields() {
     let format = parse_message_format(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE_KEYWORDS);
 
     let mut generator = PythonGenerator::new();
-    generator.add_expected_topic(&topic, format).unwrap();
+    generator
+        .add_expected_topic(&topic, format, "keyword_source")
+        .unwrap();
     let rendered = render_artifacts(generator.into_artifacts())
         .into_iter()
         .next()
@@ -529,10 +527,10 @@ fn expected_two_topics_same_node() {
 
     let mut generator = PythonGenerator::new();
     generator
-        .add_expected_topic(&video_topic, video_format)
+        .add_expected_topic(&video_topic, video_format, "uvc_camera")
         .unwrap();
     generator
-        .add_expected_topic(&sound_topic, sound_format)
+        .add_expected_topic(&sound_topic, sound_format, "uvc_camera")
         .unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(

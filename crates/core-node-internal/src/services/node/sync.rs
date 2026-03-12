@@ -290,6 +290,28 @@ async fn handle_node_sync_request_inner(
     NodeSyncResponse::success().encode()
 }
 
+/// Builds a lookup from `local_id` → `(dep_name, dep_tag)` using the node's `depends_on.nodes`.
+fn build_dependency_lookup(
+    config: &config::node::NodeConfig,
+) -> std::collections::HashMap<String, (String, String)> {
+    config
+        .manifest
+        .depends_on
+        .as_ref()
+        .map(|d| {
+            d.nodes
+                .iter()
+                .map(|n| {
+                    (
+                        n.local_id.clone(),
+                        (n.name.as_str().to_string(), n.tag.clone()),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Collects consumed interfaces from a node config and resolves their message formats
 /// by looking up the exposed interfaces from dependency nodes in the node stack.
 pub fn collect_consumed_interfaces(
@@ -297,29 +319,29 @@ pub fn collect_consumed_interfaces(
     node_stack: &NodeStack,
 ) -> Vec<DeploymentInterface> {
     let mut interfaces = Vec::new();
+    let dep_lookup = build_dependency_lookup(node_config);
 
     // Collect expected topics
     if let Some(topic_interfaces) = &node_config.interfaces.topics
         && let Some(expected_topics) = &topic_interfaces.expects
     {
         for expected_topic in expected_topics {
-            // Find the dependency node in the stack
-            if let Some(dependency_entity) =
-                node_stack.find(&expected_topic.node, &expected_topic.tag)
-            {
-                // Find the emitted topic with the matching name
+            let Some((dep_name, dep_tag)) = dep_lookup.get(&expected_topic.local_node_id) else {
+                continue;
+            };
+            if let Some(dependency_entity) = node_stack.find(dep_name, dep_tag) {
                 if let Some(dep_topics) = &dependency_entity.config().interfaces.topics
                     && let Some(emitted_topics) = &dep_topics.emits
                     && let Some(emitted_topic) = emitted_topics
                         .iter()
                         .find(|t| t.name.trim() == expected_topic.name.trim())
                 {
-                    // Get the message format from the emitted topic
                     if let Some(message_format) = &emitted_topic.message_format {
-                        interfaces.push(DeploymentInterface::new(InterfaceVariant::ExpectedTopic(
-                            expected_topic.clone(),
-                            message_format.clone(),
-                        )));
+                        interfaces.push(DeploymentInterface::new(InterfaceVariant::ExpectedTopic {
+                            topic: expected_topic.clone(),
+                            message_format: message_format.clone(),
+                            dependency_node_name: dep_name.clone(),
+                        }));
                     }
                 }
             }
@@ -331,28 +353,30 @@ pub fn collect_consumed_interfaces(
         && let Some(consumed_services) = &service_interfaces.consumes
     {
         for consumed_service in consumed_services {
-            // Find the dependency node in the stack
-            if let Some(dependency_entity) =
-                node_stack.find(&consumed_service.node, &consumed_service.tag)
-            {
-                // Find the exposed service with the matching name
+            let Some((dep_name, dep_tag)) = dep_lookup.get(&consumed_service.local_node_id) else {
+                continue;
+            };
+            if let Some(dependency_entity) = node_stack.find(dep_name, dep_tag) {
                 if let Some(dep_services) = &dependency_entity.config().interfaces.services
                     && let Some(exposed_services) = &dep_services.exposes
                     && let Some(exposed_service) = exposed_services
                         .iter()
                         .find(|s| s.name.trim() == consumed_service.name.trim())
                 {
-                    interfaces.push(DeploymentInterface::new(InterfaceVariant::ConsumedService(
-                        consumed_service.clone(),
-                        exposed_service
-                            .request_message_format
-                            .clone()
-                            .unwrap_or_default(),
-                        exposed_service
-                            .response_message_format
-                            .clone()
-                            .unwrap_or_default(),
-                    )));
+                    interfaces.push(DeploymentInterface::new(
+                        InterfaceVariant::ConsumedService {
+                            service: consumed_service.clone(),
+                            request_format: exposed_service
+                                .request_message_format
+                                .clone()
+                                .unwrap_or_default(),
+                            response_format: exposed_service
+                                .response_message_format
+                                .clone()
+                                .unwrap_or_default(),
+                            dependency_node_name: dep_name.clone(),
+                        },
+                    ));
                 }
             }
         }
@@ -363,18 +387,16 @@ pub fn collect_consumed_interfaces(
         && let Some(consumed_actions) = &action_interfaces.consumes
     {
         for consumed_action in consumed_actions {
-            // Find the dependency node in the stack
-            if let Some(dependency_entity) =
-                node_stack.find(&consumed_action.node, &consumed_action.tag)
-            {
-                // Find the exposed action with the matching name
+            let Some((dep_name, dep_tag)) = dep_lookup.get(&consumed_action.local_node_id) else {
+                continue;
+            };
+            if let Some(dependency_entity) = node_stack.find(dep_name, dep_tag) {
                 if let Some(dep_actions) = &dependency_entity.config().interfaces.actions
                     && let Some(exposed_actions) = &dep_actions.exposes
                     && let Some(exposed_action) = exposed_actions
                         .iter()
                         .find(|a| a.name.trim() == consumed_action.name.trim())
                 {
-                    // Build the ConsumedActionMessage from exposed action endpoints
                     let action_message = ConsumedActionMessage {
                         goal_request: exposed_action
                             .goal_service
@@ -398,10 +420,13 @@ pub fn collect_consumed_interfaces(
                             .and_then(|s| s.response_message_format.clone()),
                     };
 
-                    interfaces.push(DeploymentInterface::new(InterfaceVariant::ConsumedAction(
-                        consumed_action.clone(),
-                        action_message,
-                    )));
+                    interfaces.push(DeploymentInterface::new(
+                        InterfaceVariant::ConsumedAction {
+                            action: consumed_action.clone(),
+                            messages: action_message,
+                            dependency_node_name: dep_name.clone(),
+                        },
+                    ));
                 }
             }
         }

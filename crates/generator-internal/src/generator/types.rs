@@ -33,9 +33,22 @@ pub enum InterfaceVariant {
     EmittedTopic(EmittedTopic),
     ExposedService(ExposedService),
     ExposedAction(ExposedAction),
-    ExpectedTopic(ExpectedTopic, MessageFormat),
-    ConsumedService(ConsumedService, MessageFormat, MessageFormat),
-    ConsumedAction(ConsumedAction, ConsumedActionMessage),
+    ExpectedTopic {
+        topic: ExpectedTopic,
+        message_format: MessageFormat,
+        dependency_node_name: String,
+    },
+    ConsumedService {
+        service: ConsumedService,
+        request_format: MessageFormat,
+        response_format: MessageFormat,
+        dependency_node_name: String,
+    },
+    ConsumedAction {
+        action: ConsumedAction,
+        messages: ConsumedActionMessage,
+        dependency_node_name: String,
+    },
 }
 
 /// Maps a deployment interface to the message format required to bind it.
@@ -93,18 +106,24 @@ pub trait LanguageGenerator {
     fn add_emitted_topic(&mut self, topic: &EmittedTopic) -> Result<()>;
     fn add_exposed_service(&mut self, service: &ExposedService) -> Result<()>;
     fn add_exposed_action(&mut self, action: &ExposedAction) -> Result<()>;
-    fn add_expected_topic(&mut self, topic: &ExpectedTopic, arguments: MessageFormat)
-    -> Result<()>;
+    fn add_expected_topic(
+        &mut self,
+        topic: &ExpectedTopic,
+        arguments: MessageFormat,
+        dependency_node_name: &str,
+    ) -> Result<()>;
     fn add_consumed_service(
         &mut self,
         service: &ConsumedService,
         request_arguments: &MessageFormat,
         response_arguments: &MessageFormat,
+        dependency_node_name: &str,
     ) -> Result<()>;
     fn add_consumed_action(
         &mut self,
         action: &ConsumedAction,
         messages: &ConsumedActionMessage,
+        dependency_node_name: &str,
     ) -> Result<()>;
     /// Finalizes the builder and return a path to the library
     fn build(
@@ -121,15 +140,27 @@ impl DeploymentInterface {
             InterfaceVariant::EmittedTopic(topic) => backend.add_emitted_topic(topic),
             InterfaceVariant::ExposedService(service) => backend.add_exposed_service(service),
             InterfaceVariant::ExposedAction(action) => backend.add_exposed_action(action),
-            InterfaceVariant::ExpectedTopic(topic, format) => {
-                backend.add_expected_topic(topic, format.clone())
-            }
-            InterfaceVariant::ConsumedService(service, request_arguments, response_arguments) => {
-                backend.add_consumed_service(service, request_arguments, response_arguments)
-            }
-            InterfaceVariant::ConsumedAction(action, messages) => {
-                backend.add_consumed_action(action, messages)
-            }
+            InterfaceVariant::ExpectedTopic {
+                topic,
+                message_format,
+                dependency_node_name,
+            } => backend.add_expected_topic(topic, message_format.clone(), dependency_node_name),
+            InterfaceVariant::ConsumedService {
+                service,
+                request_format,
+                response_format,
+                dependency_node_name,
+            } => backend.add_consumed_service(
+                service,
+                request_format,
+                response_format,
+                dependency_node_name,
+            ),
+            InterfaceVariant::ConsumedAction {
+                action,
+                messages,
+                dependency_node_name,
+            } => backend.add_consumed_action(action, messages, dependency_node_name),
         }
     }
 }

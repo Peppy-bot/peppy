@@ -81,10 +81,8 @@ const EXPOSED_ACTION_EXAMPLE: &str = r#"
 
 const SUBSCRIBED_ACTION_EXAMPLE: &str = r#"
 {
-  id: "brain_move_arm",
-  node: "brain",
+  local_node_id: "brain_move_arm",
   name: "move_arm",
-  tag: "0.1.0",
 }
 "#;
 
@@ -161,7 +159,7 @@ async fn actions_communication() {
     let flow_done_service: ExposedService =
         serde_json5::from_str(EXPOSED_ACTION_FLOW_DONE_SERVICE_EXAMPLE).unwrap();
     generator
-        .add_consumed_action(&consumed_action, &action_messages)
+        .add_consumed_action(&consumed_action, &action_messages, "brain")
         .unwrap();
     generator.add_exposed_service(&flow_done_service).unwrap();
     let output_config = copy_config_to_output(&user_node_subscriber, &output_dir_subscriber);
@@ -492,7 +490,7 @@ async fn actions_communication_cancel_goal() {
     let flow_done_service: ExposedService =
         serde_json5::from_str(EXPOSED_ACTION_CANCEL_FLOW_DONE_SERVICE_EXAMPLE).unwrap();
     generator
-        .add_consumed_action(&consumed_action, &action_messages)
+        .add_consumed_action(&consumed_action, &action_messages, "brain")
         .unwrap();
     generator.add_exposed_service(&flow_done_service).unwrap();
     let output_config = copy_config_to_output(&user_node_subscriber, &output_dir_subscriber);

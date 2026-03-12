@@ -302,10 +302,8 @@ fn generate_peppygen_rust_lib_emitted_and_expected_topics() {
 
     let expected_topic: ExpectedTopic = serde_json5::from_str(&format!(
         r#"{{
-          id: "test_topic_sub",
-          node: "{EXPOSED_NODE_NAME}",
+          local_node_id: "{EXPOSED_NODE_NAME}_test_topic",
           name: "test_topic",
-          tag: "0.1.0"
         }}"#
     ))
     .expect("failed to parse expected topic");
@@ -313,10 +311,11 @@ fn generate_peppygen_rust_lib_emitted_and_expected_topics() {
     let subscribed_format: MessageFormat =
         serde_json5::from_str(r#"{ value: "u32" }"#).expect("failed to parse topic format");
 
-    let expected_interfaces = vec![DeploymentInterface::new(InterfaceVariant::ExpectedTopic(
-        expected_topic,
-        subscribed_format,
-    ))];
+    let expected_interfaces = vec![DeploymentInterface::new(InterfaceVariant::ExpectedTopic {
+        topic: expected_topic,
+        message_format: subscribed_format,
+        dependency_node_name: EXPOSED_NODE_NAME.to_string(),
+    })];
 
     generate_peppygen_lib(
         PeppygenLanguage::Rust,
@@ -422,10 +421,8 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_services() {
 
     let consumed_service: ConsumedService = serde_json5::from_str(&format!(
         r#"{{
-          id: "test_service_sub",
-          node: "{EXPOSED_NODE_NAME}",
+          local_node_id: "{EXPOSED_NODE_NAME}_test_service",
           name: "test_service",
-          tag: "0.1.0"
         }}"#
     ))
     .expect("failed to parse consumed service");
@@ -436,11 +433,12 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_services() {
         serde_json5::from_str(r#"{ output: "string", success: "bool" }"#)
             .expect("failed to parse response format");
 
-    let consumed_interfaces = vec![DeploymentInterface::new(InterfaceVariant::ConsumedService(
-        consumed_service,
+    let consumed_interfaces = vec![DeploymentInterface::new(InterfaceVariant::ConsumedService {
+        service: consumed_service,
         request_format,
         response_format,
-    ))];
+        dependency_node_name: EXPOSED_NODE_NAME.to_string(),
+    })];
 
     generate_peppygen_lib(
         PeppygenLanguage::Rust,
@@ -565,10 +563,8 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_actions() {
 
     let consumed_action: ConsumedAction = serde_json5::from_str(&format!(
         r#"{{
-          id: "test_action_sub",
-          node: "{EXPOSED_NODE_NAME}",
+          local_node_id: "{EXPOSED_NODE_NAME}_test_action",
           name: "test_action",
-          tag: "0.1.0"
         }}"#
     ))
     .expect("failed to parse consumed action");
@@ -590,10 +586,11 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_actions() {
         result_response: Some(result_response_format),
     };
 
-    let consumed_interfaces = vec![DeploymentInterface::new(InterfaceVariant::ConsumedAction(
-        consumed_action,
-        action_messages,
-    ))];
+    let consumed_interfaces = vec![DeploymentInterface::new(InterfaceVariant::ConsumedAction {
+        action: consumed_action,
+        messages: action_messages,
+        dependency_node_name: EXPOSED_NODE_NAME.to_string(),
+    })];
 
     generate_peppygen_lib(
         PeppygenLanguage::Rust,

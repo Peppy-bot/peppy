@@ -273,6 +273,11 @@ async fn listen_for_node_sync_missing_dependency_fails() {
                 tag: "0.1.0",
                 language: "rust",
                 labels: ["brain"],
+                depends_on: {
+                    nodes: [
+                        { name: "uvc_camera", tag: "0.1.0", local_id: "uvc_camera" }
+                    ]
+                },
             },
             process: {
                 add_cmd: ["cargo", "build", "--release"],
@@ -284,10 +289,8 @@ async fn listen_for_node_sync_missing_dependency_fails() {
                     emits: [],
                     expects: [
                         {
-                            id: "camera_front",
-                            node: "uvc_camera",
+                            local_node_id: "uvc_camera",
                             name: "video_stream",
-                            tag: "0.1.0",
                         }
                     ],
                 },
@@ -348,6 +351,13 @@ async fn listen_for_node_sync_multiple_missing_dependencies_fails() {
                 tag: "0.1.0",
                 language: "rust",
                 labels: ["brain"],
+                depends_on: {
+                    nodes: [
+                        { name: "uvc_camera", tag: "0.1.0", local_id: "uvc_camera" },
+                        { name: "lidar_sensor", tag: "1.0.0", local_id: "lidar_sensor" },
+                        { name: "gps_module", tag: "2.0.0", local_id: "gps_module" },
+                    ]
+                },
             },
             process: {
                 add_cmd: ["cargo", "build", "--release"],
@@ -359,28 +369,20 @@ async fn listen_for_node_sync_multiple_missing_dependencies_fails() {
                     emits: [],
                     expects: [
                         {
-                            id: "camera_front",
-                            node: "uvc_camera",
+                            local_node_id: "uvc_camera",
                             name: "video_stream",
-                            tag: "0.1.0",
                         },
                         {
-                            id: "camera_back",
-                            node: "uvc_camera",
+                            local_node_id: "uvc_camera",
                             name: "video_stream_rear",
-                            tag: "0.1.0",
                         },
                         {
-                            id: "lidar_data",
-                            node: "lidar_sensor",
+                            local_node_id: "lidar_sensor",
                             name: "point_cloud",
-                            tag: "1.0.0",
                         },
                         {
-                            id: "gps_position",
-                            node: "gps_module",
+                            local_node_id: "gps_module",
                             name: "location",
-                            tag: "2.0.0",
                         }
                     ],
                 },
@@ -555,6 +557,11 @@ async fn listen_for_node_sync_generates_rust_interfaces() {
                 tag: "0.1.0",
                 language: "rust",
                 labels: ["brain"],
+                depends_on: {
+                    nodes: [
+                        { name: "uvc_camera", tag: "0.1.0", local_id: "uvc_camera" }
+                    ]
+                },
             },
             process: {
                 add_cmd: ["true"],
@@ -566,10 +573,8 @@ async fn listen_for_node_sync_generates_rust_interfaces() {
                     emits: [],
                     expects: [
                         {
-                          id: "camera_front",
-                          node: "uvc_camera",
+                          local_node_id: "uvc_camera",
                           name: "video_stream",
-                          tag: "0.1.0",
                         }
                     ],
                 },
@@ -752,6 +757,11 @@ async fn listen_for_node_sync_generates_rust_consumed_service_interfaces() {
                 tag: "0.1.0",
                 language: "rust",
                 labels: ["brain"],
+                depends_on: {
+                    nodes: [
+                        { name: "uvc_camera", tag: "0.1.0", local_id: "uvc_camera" }
+                    ]
+                },
             },
             process: {
                 add_cmd: ["true"],
@@ -766,10 +776,8 @@ async fn listen_for_node_sync_generates_rust_consumed_service_interfaces() {
                     exposes: [],
                     consumes: [
                         {
-                          id: "uvc_camera_enable_camera",
-                          node: "uvc_camera",
+                          local_node_id: "uvc_camera",
                           name: "enable_camera",
-                          tag: "0.1.0",
                         }
                     ],
                 },
@@ -912,6 +920,11 @@ async fn listen_for_node_sync_generates_rust_expected_topic_interfaces() {
                 tag: "0.1.0",
                 language: "rust",
                 labels: ["brain"],
+                depends_on: {
+                    nodes: [
+                        { name: "uvc_camera", tag: "0.1.0", local_id: "uvc_camera" }
+                    ]
+                },
             },
             process: {
                 add_cmd: ["true"],
@@ -923,10 +936,8 @@ async fn listen_for_node_sync_generates_rust_expected_topic_interfaces() {
                     emits: [],
                     expects: [
                         {
-                          id: "camera_front",
-                          node: "uvc_camera",
+                          local_node_id: "uvc_camera",
                           name: "video_stream",
-                          tag: "0.1.0",
                         }
                     ],
                 },
@@ -1078,6 +1089,11 @@ async fn listen_for_node_sync_generates_rust_consumed_action_interfaces() {
                 tag: "0.1.0",
                 language: "rust",
                 labels: ["controller"],
+                depends_on: {
+                    nodes: [
+                        { name: "brain", tag: "0.1.0", local_id: "brain" }
+                    ]
+                },
             },
             process: {
                 add_cmd: ["true"],
@@ -1095,10 +1111,8 @@ async fn listen_for_node_sync_generates_rust_consumed_action_interfaces() {
                     exposes: [],
                     consumes: [
                         {
-                          id: "brain_move_arm",
-                          node: "brain",
+                          local_node_id: "brain",
                           name: "move_arm",
-                          tag: "0.1.0",
                         }
                     ],
                 },
