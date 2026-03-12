@@ -41,7 +41,7 @@ const EXPOSED_SERVICE_EXAMPLE3: &str = r#"
 
 const SUBSCRIBED_SERVICE_EXAMPLE1: &str = r#"
 {
-  local_node_id: "uvc_camera_enable_camera",
+  local_node_id: "uvc_camera",
   name: "enable_camera",
 }
 "#;
@@ -77,7 +77,7 @@ const SUBSCRIBED_SERVICE_RESPONSE_OPTIONAL_SCALAR_AND_BYTES: &str = r#"
 
 const SUBSCRIBED_SERVICE_EXAMPLE2: &str = r#"
 {
-    local_node_id: "uvc_camera_get_camera_info",
+    local_node_id: "uvc_camera",
     name: "get_camera_info",
 }
 "#;
@@ -520,7 +520,7 @@ fn consumed_service_without_response_payload() {
     let service: ConsumedService = serde_json5::from_str(
         r#"
         {
-            local_node_id: "uvc_camera_get_camera_info",
+            local_node_id: "uvc_camera",
             name: "get_camera_info",
         }
         "#,

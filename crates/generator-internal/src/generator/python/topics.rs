@@ -4,7 +4,6 @@ use super::deserialization;
 use super::serialization;
 use super::type_mapping::{collect_fields_from_format, qos_profile_python, uses_optional};
 use crate::error::Result;
-use crate::generator::naming::sanitize_component;
 use config::node::{EmittedTopic, ExpectedTopic, MessageFormat};
 
 pub(crate) fn capnp_loader_fn_name(schema_info: &PythonSchemaInfo) -> String {
@@ -195,17 +194,4 @@ pub fn build_expected_topic(
     builder.dedent();
 
     Ok(builder.build())
-}
-
-/// Returns the module label for an expected topic artifact.
-pub fn expected_topic_module_label(topic: &ExpectedTopic, dependency_node_name: &str) -> String {
-    let node_component = sanitize_component(dependency_node_name);
-    let topic_component = sanitize_component(&topic.name);
-
-    match (node_component.is_empty(), topic_component.is_empty()) {
-        (false, false) => format!("{node_component}_{topic_component}"),
-        (false, true) => node_component,
-        (true, false) => topic_component,
-        (true, true) => String::from("topic"),
-    }
 }

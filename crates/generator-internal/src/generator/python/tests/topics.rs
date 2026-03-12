@@ -80,7 +80,7 @@ const EMITTED_TOPIC_FIXED_STRING_ARRAY_EXAMPLE: &str = r#"
 
 const SUBSCRIBED_TOPIC_EXAMPLE1: &str = r#"
 {
-    local_node_id: "uvc_camera_video_stream",
+    local_node_id: "uvc_camera",
     name: "video_stream",
 }
 "#;
@@ -104,14 +104,14 @@ const SUBSCRIBED_TOPIC_FORMAT_EXAMPLE1: &str = r#"
 
 const SUBSCRIBED_TOPIC_EXAMPLE2: &str = r#"
 {
-    local_node_id: "uvc_camera_sound",
+    local_node_id: "uvc_camera",
     name: "sound",
 }
 "#;
 
 const SUBSCRIBED_TOPIC_EXAMPLE_KEYWORDS: &str = r#"
 {
-    local_node_id: "keyword_source_keyword_topic",
+    local_node_id: "keyword_source",
     name: "keyword_topic",
 }
 "#;

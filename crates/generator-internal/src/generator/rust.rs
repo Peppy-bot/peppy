@@ -937,14 +937,14 @@ impl LanguageGenerator for RustGenerator {
         arguments: MessageFormat,
         dependency_node_name: &str,
     ) -> Result<()> {
-        let node_name = dependency_node_name;
+        let node_name = topic.local_node_id.as_str();
 
         let node_component = sanitize_component(node_name);
         let topic_component = sanitize_component(topic.name.as_str());
 
         debug_assert!(
             !node_component.is_empty(),
-            "dependency_node_name should be validated as non-empty"
+            "ExpectedTopic.local_node_id should be validated as non-empty"
         );
         debug_assert!(
             !topic_component.is_empty(),
@@ -1271,7 +1271,7 @@ impl LanguageGenerator for RustGenerator {
             all_tokens.push(deserialize_fn);
         }
 
-        let mut module_name = module_name_from_components(dependency_node_name, &service.name);
+        let mut module_name = module_name_from_components(&service.local_node_id, &service.name);
         if module_name.is_empty() {
             module_name = method_label
                 .strip_prefix("poll_")
@@ -1437,7 +1437,7 @@ impl LanguageGenerator for RustGenerator {
             #( #items )*
         };
         let rendered = render_tokens(tokens);
-        let module_label = module_name_from_components(dependency_node_name, &action.name);
+        let module_label = module_name_from_components(&action.local_node_id, &action.name);
         self.push_section(InterfaceArtifact::from_kind(
             &module_label,
             InterfaceKind::ConsumedAction,

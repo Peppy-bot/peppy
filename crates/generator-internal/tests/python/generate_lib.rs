@@ -225,7 +225,7 @@ fn generate_peppygen_python_lib_emitted_and_expected_topics() {
 
     let expected_topic: ExpectedTopic = serde_json5::from_str(&format!(
         r#"{{
-          local_node_id: "{EXPOSED_NODE_NAME}_test_topic",
+          local_node_id: "{EXPOSED_NODE_NAME}",
           name: "test_topic",
         }}"#
     ))
@@ -346,7 +346,7 @@ fn generate_peppygen_python_lib_exposed_and_consumed_services() {
 
     let consumed_service: ConsumedService = serde_json5::from_str(&format!(
         r#"{{
-          local_node_id: "{EXPOSED_NODE_NAME}_test_service",
+          local_node_id: "{EXPOSED_NODE_NAME}",
           name: "test_service",
         }}"#
     ))
@@ -492,7 +492,7 @@ fn generate_peppygen_python_lib_exposed_and_consumed_actions() {
 
     let consumed_action: ConsumedAction = serde_json5::from_str(&format!(
         r#"{{
-          local_node_id: "{EXPOSED_NODE_NAME}_test_action",
+          local_node_id: "{EXPOSED_NODE_NAME}",
           name: "test_action",
         }}"#
     ))

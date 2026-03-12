@@ -15,7 +15,6 @@ use peppy::context::AppContext;
 fn make_consumer_depend_on_provider(
     provider_peppy_json5: &Path,
     consumer_peppy_json5: &Path,
-    consumer_name: &str,
     provider_name: &str,
 ) {
     let topic_name = "stack_list_topic";
@@ -154,7 +153,6 @@ async fn node_list_command_succeeds() {
     make_consumer_depend_on_provider(
         &provider_peppy_json5,
         &consumer_peppy_json5,
-        consumer_name,
         provider_name,
     );
 
@@ -301,7 +299,6 @@ async fn node_list_command_with_dot_representation_succeeds() {
     make_consumer_depend_on_provider(
         &provider_peppy_json5,
         &consumer_peppy_json5,
-        consumer_name,
         provider_name,
     );
 

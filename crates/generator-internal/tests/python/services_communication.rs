@@ -42,7 +42,7 @@ const EXPOSED_SERVICE_EXAMPLE: &str = r#"
 
 const SUBSCRIBED_SERVICE_EXAMPLE: &str = r#"
 {
-  local_node_id: "uvc_camera_enable_camera",
+  local_node_id: "uvc_camera",
   name: "enable_camera",
 }
 "#;
@@ -77,7 +77,7 @@ const EXPOSED_SERVICE_NO_REQUEST_EXAMPLE: &str = r#"
 
 const SUBSCRIBED_SERVICE_NO_REQUEST_EXAMPLE: &str = r#"
 {
-  local_node_id: "uvc_camera_get_system_status",
+  local_node_id: "uvc_camera",
   name: "get_system_status",
 }
 "#;

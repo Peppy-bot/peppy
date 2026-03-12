@@ -89,7 +89,7 @@ const EMITTED_TOPIC_FIXED_STRING_ARRAY_EXAMPLE: &str = r#"
 
 const SUBSCRIBED_TOPIC_EXAMPLE1: &str = r#"
 {
-    local_node_id: "uvc_camera_video_stream",
+    local_node_id: "uvc_camera",
     name: "video_stream",
 }
 "#;
@@ -113,14 +113,14 @@ const SUBSCRIBED_TOPIC_FORMAT_EXAMPLE1: &str = r#"
 
 const SUBSCRIBED_TOPIC_EXAMPLE2: &str = r#"
 {
-    local_node_id: "uvc_camera_sound",
+    local_node_id: "uvc_camera",
     name: "sound",
 }
 "#;
 
 const SUBSCRIBED_TOPIC_EXAMPLE_KEYWORDS: &str = r#"
 {
-    local_node_id: "keyword_source_keyword_topic",
+    local_node_id: "keyword_source",
     name: "keyword_topic",
 }
 "#;
@@ -443,7 +443,7 @@ fn clippy_single_emitted_topic_empty_format() {
     let consumed_action1: ConsumedAction = serde_json5::from_str(
         r#"
         {
-          local_node_id: "brain_move_arm",
+          local_node_id: "brain",
           name: "move_arm",
         }
         "#,
@@ -452,7 +452,7 @@ fn clippy_single_emitted_topic_empty_format() {
     let consumed_action2: ConsumedAction = serde_json5::from_str(
         r#"
         {
-          local_node_id: "controller_rotate_servo",
+          local_node_id: "controller",
           name: "rotate_servo_clockwise",
         }
         "#,

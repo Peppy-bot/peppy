@@ -69,7 +69,7 @@ const EXPOSED_ACTION_EXAMPLE: &str = r#"
 
 const SUBSCRIBED_ACTION_EXAMPLE: &str = r#"
 {
-  local_node_id: "brain_move_arm",
+  local_node_id: "brain",
   name: "move_arm",
 }
 "#;
