@@ -40,7 +40,7 @@ async fn node_info_shows_dependencies_from_consumed_interfaces() {
             }},
             interfaces: {{
                 topics: {{
-                    consumes: [
+                    expects: [
                         {{ id: "camera_feed", node: "camera_node", name: "video_stream" }},
                         {{ id: "lidar_data", node: "lidar_node", name: "point_cloud" }},
                         {{ id: "other_camera", node: "camera_node", name: "depth_stream" }}
@@ -94,7 +94,7 @@ async fn node_info_shows_dependencies_from_consumed_interfaces() {
         .interfaces
         .topics
         .as_ref()
-        .and_then(|t| t.consumes.as_ref())
+        .and_then(|t| t.expects.as_ref())
         .expect("consumed topics should exist");
     assert_eq!(topics.len(), 3, "should have 3 consumed topics");
 
@@ -188,7 +188,7 @@ async fn node_info_no_dependencies_when_no_consumes() {
             }},
             interfaces: {{
                 topics: {{
-                    exposes: [
+                    emits: [
                         {{ name: "output_data", qos_profile: "standard" }}
                     ]
                 }}
@@ -223,23 +223,23 @@ async fn node_info_no_dependencies_when_no_consumes() {
     // Verify basic info
     assert_eq!(info_response.config.manifest.name.as_str(), NODE_NAME);
 
-    // Verify exposes exists
-    let exposed_topics = info_response
+    // Verify emits exists
+    let emitted_topics = info_response
         .config
         .interfaces
         .topics
         .as_ref()
-        .and_then(|t| t.exposes.as_ref())
-        .expect("exposed topics should exist");
-    assert!(!exposed_topics.is_empty(), "should have exposed topics");
+        .and_then(|t| t.emits.as_ref())
+        .expect("emitted topics should exist");
+    assert!(!emitted_topics.is_empty(), "should have emitted topics");
 
-    // Verify no consumes (no dependencies)
-    let no_consumed_topics = info_response
+    // Verify no expects (no dependencies)
+    let no_expected_topics = info_response
         .config
         .interfaces
         .topics
         .as_ref()
-        .and_then(|t| t.consumes.as_ref())
+        .and_then(|t| t.expects.as_ref())
         .is_none_or(|t| t.is_empty());
     let no_consumed_services = info_response
         .config
@@ -256,7 +256,7 @@ async fn node_info_no_dependencies_when_no_consumes() {
         .and_then(|a| a.consumes.as_ref())
         .is_none_or(|a| a.is_empty());
     assert!(
-        no_consumed_topics && no_consumed_services && no_consumed_actions,
+        no_expected_topics && no_consumed_services && no_consumed_actions,
         "standalone node should have no dependencies"
     );
 }

@@ -2,7 +2,7 @@ use crate::error::{Error, Result};
 use crate::generator::common::CrateDeployMode;
 use config::consts::PeppyDirs;
 use config::node::{
-    ConsumedAction, ConsumedService, ConsumedTopic, ExposedAction, ExposedService, ExposedTopic,
+    ConsumedAction, ConsumedService, EmittedTopic, ExposedAction, ExposedService, ExpectedTopic,
     MessageFormat, PeppygenLanguage, PrimitiveSchema, SchemaType, TypeToken,
 };
 use indexmap::IndexMap;
@@ -10,10 +10,10 @@ use std::path::Path;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InterfaceKind {
-    ExposedTopic,
+    EmittedTopic,
     ExposedService,
     ExposedAction,
-    ConsumedTopic,
+    ExpectedTopic,
     ConsumedService,
     ConsumedAction,
 }
@@ -30,10 +30,10 @@ pub struct ConsumedActionMessage {
 /// Describes a concrete subscriber/exposer interface that a deployment requires.
 #[derive(Debug, Clone)]
 pub enum InterfaceVariant {
-    ExposedTopic(ExposedTopic),
+    EmittedTopic(EmittedTopic),
     ExposedService(ExposedService),
     ExposedAction(ExposedAction),
-    ConsumedTopic(ConsumedTopic, MessageFormat),
+    ExpectedTopic(ExpectedTopic, MessageFormat),
     ConsumedService(ConsumedService, MessageFormat, MessageFormat),
     ConsumedAction(ConsumedAction, ConsumedActionMessage),
 }
@@ -90,10 +90,10 @@ impl InterfaceArtifact {
 /// Collects deployment interfaces and produces generated artifacts when finalized.
 pub trait LanguageGenerator {
     fn push_section(&mut self, section: InterfaceArtifact);
-    fn add_exposed_topic(&mut self, topic: &ExposedTopic) -> Result<()>;
+    fn add_emitted_topic(&mut self, topic: &EmittedTopic) -> Result<()>;
     fn add_exposed_service(&mut self, service: &ExposedService) -> Result<()>;
     fn add_exposed_action(&mut self, action: &ExposedAction) -> Result<()>;
-    fn add_consumed_topic(&mut self, topic: &ConsumedTopic, arguments: MessageFormat)
+    fn add_expected_topic(&mut self, topic: &ExpectedTopic, arguments: MessageFormat)
     -> Result<()>;
     fn add_consumed_service(
         &mut self,
@@ -118,11 +118,11 @@ pub trait LanguageGenerator {
 impl DeploymentInterface {
     pub fn register_with<B: LanguageGenerator + ?Sized>(&self, backend: &mut B) -> Result<()> {
         match self.interface() {
-            InterfaceVariant::ExposedTopic(topic) => backend.add_exposed_topic(topic),
+            InterfaceVariant::EmittedTopic(topic) => backend.add_emitted_topic(topic),
             InterfaceVariant::ExposedService(service) => backend.add_exposed_service(service),
             InterfaceVariant::ExposedAction(action) => backend.add_exposed_action(action),
-            InterfaceVariant::ConsumedTopic(topic, format) => {
-                backend.add_consumed_topic(topic, format.clone())
+            InterfaceVariant::ExpectedTopic(topic, format) => {
+                backend.add_expected_topic(topic, format.clone())
             }
             InterfaceVariant::ConsumedService(service, request_arguments, response_arguments) => {
                 backend.add_consumed_service(service, request_arguments, response_arguments)

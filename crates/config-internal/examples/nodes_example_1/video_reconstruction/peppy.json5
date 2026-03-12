@@ -20,7 +20,7 @@
   },
   interfaces: {
     topics: {
-      consumes: [
+      expects: [
         {
           id: "camera_stream",
           node: "uvc_camera",

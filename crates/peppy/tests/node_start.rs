@@ -272,7 +272,7 @@ async fn node_run_command_with_args_succeeds() {
   },
   interfaces: {
     topics: {
-      exposes: [
+      emits: [
         {
           name: "hello_world",
           qos_profile: "sensor_data",

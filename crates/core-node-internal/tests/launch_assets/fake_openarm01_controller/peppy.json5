@@ -21,8 +21,8 @@
   parameters: {},
   interfaces: {
     topics: {
-      exposes: [],
-      consumes: [],
+      emits: [],
+      expects: [],
     },
     services: {
       exposes: [],

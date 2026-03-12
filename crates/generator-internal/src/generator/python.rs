@@ -22,7 +22,7 @@ use super::types::{
 use crate::error::Result;
 use config::encoding::MessageFormatMapper;
 use config::node::{
-    ConsumedAction, ConsumedService, ConsumedTopic, ExposedAction, ExposedService, ExposedTopic,
+    ConsumedAction, ConsumedService, EmittedTopic, ExposedAction, ExposedService, ExpectedTopic,
     MessageFormat, PeppygenLanguage,
 };
 use std::collections::HashMap;
@@ -109,17 +109,17 @@ impl LanguageGenerator for PythonGenerator {
         PythonGenerator::push_section(self, section);
     }
 
-    fn add_exposed_topic(&mut self, topic: &ExposedTopic) -> Result<()> {
+    fn add_emitted_topic(&mut self, topic: &EmittedTopic) -> Result<()> {
         let schema_info = topic
             .message_format
             .as_ref()
             .map(|fmt| self.register_schema(&topic.name, fmt))
             .transpose()?;
 
-        let code = topics::build_exposed_topic(topic, schema_info.as_ref())?;
+        let code = topics::build_emitted_topic(topic, schema_info.as_ref())?;
         self.push_section(InterfaceArtifact::from_kind(
             &topic.name,
-            InterfaceKind::ExposedTopic,
+            InterfaceKind::EmittedTopic,
             code,
         ));
         Ok(())
@@ -209,17 +209,17 @@ impl LanguageGenerator for PythonGenerator {
         Ok(())
     }
 
-    fn add_consumed_topic(
+    fn add_expected_topic(
         &mut self,
-        topic: &ConsumedTopic,
+        topic: &ExpectedTopic,
         arguments: MessageFormat,
     ) -> Result<()> {
         let schema_info = self.register_schema(&topic.name, &arguments)?;
-        let code = topics::build_consumed_topic(topic, &arguments, &schema_info)?;
-        let module_label = topics::consumed_topic_module_label(topic);
+        let code = topics::build_expected_topic(topic, &arguments, &schema_info)?;
+        let module_label = topics::expected_topic_module_label(topic);
         self.push_section(InterfaceArtifact::from_kind(
             &module_label,
-            InterfaceKind::ConsumedTopic,
+            InterfaceKind::ExpectedTopic,
             code,
         ));
         Ok(())

@@ -298,26 +298,26 @@ pub fn collect_consumed_interfaces(
 ) -> Vec<DeploymentInterface> {
     let mut interfaces = Vec::new();
 
-    // Collect consumed topics
+    // Collect expected topics
     if let Some(topic_interfaces) = &node_config.interfaces.topics
-        && let Some(consumed_topics) = &topic_interfaces.consumes
+        && let Some(expected_topics) = &topic_interfaces.expects
     {
-        for consumed_topic in consumed_topics {
+        for expected_topic in expected_topics {
             // Find the dependency node in the stack
             if let Some(dependency_entity) =
-                node_stack.find(&consumed_topic.node, &consumed_topic.tag)
+                node_stack.find(&expected_topic.node, &expected_topic.tag)
             {
-                // Find the exposed topic with the matching name
+                // Find the emitted topic with the matching name
                 if let Some(dep_topics) = &dependency_entity.config().interfaces.topics
-                    && let Some(exposed_topics) = &dep_topics.exposes
-                    && let Some(exposed_topic) = exposed_topics
+                    && let Some(emitted_topics) = &dep_topics.emits
+                    && let Some(emitted_topic) = emitted_topics
                         .iter()
-                        .find(|t| t.name.trim() == consumed_topic.name.trim())
+                        .find(|t| t.name.trim() == expected_topic.name.trim())
                 {
-                    // Get the message format from the exposed topic
-                    if let Some(message_format) = &exposed_topic.message_format {
-                        interfaces.push(DeploymentInterface::new(InterfaceVariant::ConsumedTopic(
-                            consumed_topic.clone(),
+                    // Get the message format from the emitted topic
+                    if let Some(message_format) = &emitted_topic.message_format {
+                        interfaces.push(DeploymentInterface::new(InterfaceVariant::ExpectedTopic(
+                            expected_topic.clone(),
                             message_format.clone(),
                         )));
                     }

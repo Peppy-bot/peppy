@@ -37,7 +37,7 @@
   },
   interfaces: {
     topics: {
-      exposes: [
+      emits: [
         {
           name: "video_stream",
           qos_profile: "sensor_data",

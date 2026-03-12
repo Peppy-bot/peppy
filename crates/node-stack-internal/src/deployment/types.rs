@@ -212,7 +212,7 @@ pub fn collect_dependency_specs(node: &NodeConfig) -> Vec<DependencySpec> {
     let mut specs: HashMap<(String, String), HashSet<InterfaceRequirement>> = HashMap::new();
 
     if let Some(topics) = node.interfaces.topics.as_ref()
-        && let Some(consumed) = topics.consumes.as_ref()
+        && let Some(consumed) = topics.expects.as_ref()
     {
         for topic in consumed {
             let node_name = topic.node.trim();
@@ -338,7 +338,7 @@ pub fn exposes_interface(node: &NodeConfig, requirement: &InterfaceRequirement) 
             .interfaces
             .topics
             .as_ref()
-            .and_then(|t| t.exposes.as_ref())
+            .and_then(|t| t.emits.as_ref())
             .is_some_and(|topics| {
                 topics
                     .iter()

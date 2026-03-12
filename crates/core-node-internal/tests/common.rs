@@ -605,7 +605,7 @@ fn main() -> Result<()> {
   }},
   interfaces: {{
     topics: {{
-      exposes: [
+      emits: [
         {{
           name: "hello_world",
           qos_profile: "sensor_data",

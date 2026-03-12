@@ -32,8 +32,8 @@ Each node is only aware of the interfaces it exposes and the ones it consumes, a
       },
       interfaces: {
         topics: {
-          exposes: [],
-          consumes: [],
+          emits: [],
+          expects: [],
         },
         services: {
           exposes: [],
@@ -62,8 +62,8 @@ Each node is only aware of the interfaces it exposes and the ones it consumes, a
       },
       interfaces: {
         topics: {
-          exposes: [],
-          consumes: [],
+          emits: [],
+          expects: [],
         },
         services: {
           exposes: [],
@@ -79,7 +79,7 @@ Each node is only aware of the interfaces it exposes and the ones it consumes, a
   </TabItem>
 </Tabs>
 
-Here we have `interfaces` organized by kind (`topics`, `services`, `actions`), each containing `exposes` and `consumes` lists. These interfaces define the dependencies between nodes.
+Here we have `interfaces` organized by kind (`topics`, `services`, `actions`). Topics use `emits` and `expects` lists, while services and actions use `exposes` and `consumes` lists. These interfaces define the dependencies between nodes.
 
 ## Topics, Services & Actions
 
@@ -101,7 +101,7 @@ PeppyOS provides three primary communication patterns for nodes to exchange data
 
 ## Consumed interfaces
 
-In our `hello_world_param` node, we've already exposed a topic. Let's try to make this topic communicate with another node.
+In our `hello_world_param` node, we've already emitted a topic. Let's try to make this topic communicate with another node.
 
 We first need to initialize the `hello_receiver` node in a new folder:
 

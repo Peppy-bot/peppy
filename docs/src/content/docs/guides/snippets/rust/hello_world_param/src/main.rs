@@ -16,7 +16,7 @@ async fn emit_hello_world_loop(runner: Arc<NodeRunner>, token: CancellationToken
                 counter += 1;
                 let message = format!("hello {name} count {counter}");
                 println!("{message}");
-                if let Err(e) = peppygen::exposed_topics::message_stream::emit(&runner, message).await {
+                if let Err(e) = peppygen::emitted_topics::message_stream::emit(&runner, message).await {
                     eprintln!("Failed to emit hello world: {e}");
                 }
             }

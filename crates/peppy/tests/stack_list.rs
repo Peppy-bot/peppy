@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use config::consts::PEPPYGEN_OUTPUT_PATH;
 use config::node::{
-    ConsumedTopic, ExposedTopic, Name as ConfigName, NodeConfigParser, Toolchain, TopicInterfaces,
+    EmittedTopic, ExpectedTopic, Name as ConfigName, NodeConfigParser, Toolchain, TopicInterfaces,
 };
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands, NodeName};
@@ -28,9 +28,9 @@ fn make_consumer_depend_on_provider(
         .interfaces
         .topics
         .get_or_insert_with(Default::default);
-    let exposed = topic_ifaces.exposes.get_or_insert_with(Vec::new);
+    let exposed = topic_ifaces.emits.get_or_insert_with(Vec::new);
     if !exposed.iter().any(|topic| topic.name == topic_name) {
-        exposed.push(ExposedTopic {
+        exposed.push(EmittedTopic {
             name: topic_name.to_string(),
             ..Default::default()
         });
@@ -51,7 +51,7 @@ fn make_consumer_depend_on_provider(
     consumer_cfg.process.as_mut().unwrap().add_cmd = None;
 
     consumer_cfg.interfaces.topics = Some(TopicInterfaces {
-        consumes: Some(vec![ConsumedTopic {
+        expects: Some(vec![ExpectedTopic {
             id: ConfigName::new(format!("{consumer_name}_{topic_name}"))
                 .expect("consumed topic id should be valid"),
             node: provider_name.to_string(),

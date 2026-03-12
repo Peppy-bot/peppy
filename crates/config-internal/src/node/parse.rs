@@ -85,7 +85,7 @@ mod tests {
             },
             interfaces: {
                 topics: {
-                    exposes: [
+                    emits: [
                         { name: "/camera/image_raw" }
                     ]
                 }

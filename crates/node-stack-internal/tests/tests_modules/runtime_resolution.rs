@@ -472,7 +472,7 @@ fn spawning_multiple_instances_on_same_entity() {
 
 #[test]
 fn adding_same_entity_with_different_interfaces_overwrites_when_no_dependents() {
-    // First config: exposes a topic
+    // First config: emits a topic
     let config_with_topic: config::node::NodeConfig = serde_json5::from_str(
         r#"{
             schema_version: 1,
@@ -486,7 +486,7 @@ fn adding_same_entity_with_different_interfaces_overwrites_when_no_dependents() 
             },
             interfaces: {
                 topics: {
-                    exposes: [
+                    emits: [
                         {
                           name: "data_stream",
                           qos_profile: "sensor_data"
@@ -498,7 +498,7 @@ fn adding_same_entity_with_different_interfaces_overwrites_when_no_dependents() 
     )
     .expect("valid node config");
 
-    // Second config: same name and tag but exposes a topic AND a service
+    // Second config: same name and tag but emits a topic AND exposes a service
     let config_with_topic_and_service: config::node::NodeConfig = serde_json5::from_str(
         r#"{
             schema_version: 1,
@@ -512,7 +512,7 @@ fn adding_same_entity_with_different_interfaces_overwrites_when_no_dependents() 
             },
             interfaces: {
                 topics: {
-                    exposes: [
+                    emits: [
                         {
                           name: "data_stream",
                           qos_profile: "sensor_data"
@@ -575,7 +575,7 @@ fn adding_same_entity_with_different_interfaces_overwrites_when_no_dependents() 
 
 #[test]
 fn adding_same_name_with_different_tag_and_different_interfaces_succeeds() {
-    // First config: version 1.0.0 exposes a topic
+    // First config: version 1.0.0 emits a topic
     let config_v1: config::node::NodeConfig = serde_json5::from_str(
         r#"{
             schema_version: 1,
@@ -589,7 +589,7 @@ fn adding_same_name_with_different_tag_and_different_interfaces_succeeds() {
             },
             interfaces: {
                 topics: {
-                    exposes: [
+                    emits: [
                         {
                           name: "data_stream",
                           qos_profile: "sensor_data"
@@ -601,7 +601,7 @@ fn adding_same_name_with_different_tag_and_different_interfaces_succeeds() {
     )
     .expect("valid node config");
 
-    // Second config: version 2.0.0 exposes a topic AND a service (different interfaces are allowed with different tag)
+    // Second config: version 2.0.0 emits a topic AND exposes a service (different interfaces are allowed with different tag)
     let config_v2: config::node::NodeConfig = serde_json5::from_str(
         r#"{
             schema_version: 1,
@@ -615,7 +615,7 @@ fn adding_same_name_with_different_tag_and_different_interfaces_succeeds() {
             },
             interfaces: {
                 topics: {
-                    exposes: [
+                    emits: [
                         {
                           name: "data_stream",
                           qos_profile: "sensor_data"

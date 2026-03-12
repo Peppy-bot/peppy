@@ -370,9 +370,9 @@ impl SchemaType {
 #[serde(deny_unknown_fields)]
 pub struct TopicInterfaces {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub exposes: Option<Vec<ExposedTopic>>,
+    pub emits: Option<Vec<EmittedTopic>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub consumes: Option<Vec<ConsumedTopic>>,
+    pub expects: Option<Vec<ExpectedTopic>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -405,7 +405,7 @@ pub enum QoSProfile {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
-pub struct ExposedTopic {
+pub struct EmittedTopic {
     #[serde(default)]
     pub name: String,
     #[serde(default)]
@@ -440,11 +440,11 @@ pub struct ExposedAction {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ConsumedTopic {
+pub struct ExpectedTopic {
     pub id: Name,
-    #[serde(deserialize_with = "deserialize_consumed_topic_node")]
+    #[serde(deserialize_with = "deserialize_expected_topic_node")]
     pub node: String,
-    #[serde(deserialize_with = "deserialize_consumed_topic_name")]
+    #[serde(deserialize_with = "deserialize_expected_topic_name")]
     pub name: String,
     #[serde(default)]
     pub tag: String,
@@ -496,18 +496,18 @@ impl Default for ActionServiceEndpoint {
     }
 }
 
-fn deserialize_consumed_topic_node<'de, D>(deserializer: D) -> Result<String, D::Error>
+fn deserialize_expected_topic_node<'de, D>(deserializer: D) -> Result<String, D::Error>
 where
     D: Deserializer<'de>,
 {
-    deserialize_non_empty_identifier(deserializer, "ConsumedTopic.node")
+    deserialize_non_empty_identifier(deserializer, "ExpectedTopic.node")
 }
 
-fn deserialize_consumed_topic_name<'de, D>(deserializer: D) -> Result<String, D::Error>
+fn deserialize_expected_topic_name<'de, D>(deserializer: D) -> Result<String, D::Error>
 where
     D: Deserializer<'de>,
 {
-    deserialize_non_empty_identifier(deserializer, "ConsumedTopic.name")
+    deserialize_non_empty_identifier(deserializer, "ExpectedTopic.name")
 }
 
 fn deserialize_consumed_service_node<'de, D>(deserializer: D) -> Result<String, D::Error>
@@ -665,32 +665,32 @@ mod tests {
     }
 
     #[test]
-    fn consumed_topic_node_is_required() {
+    fn expected_topic_node_is_required() {
         let valid = r#"{ id: "camera_stream", node: "uvc_camera", name: "video_stream" }"#;
-        let topic: ConsumedTopic = serde_json5::from_str(valid).expect("valid topic should parse");
+        let topic: ExpectedTopic = serde_json5::from_str(valid).expect("valid topic should parse");
         assert_eq!(topic.node, "uvc_camera");
         assert_eq!(topic.name, "video_stream");
 
         let without_node = r#"{ id: "camera_stream", name: "video_stream" }"#;
-        assert!(serde_json5::from_str::<ConsumedTopic>(without_node).is_err());
+        assert!(serde_json5::from_str::<ExpectedTopic>(without_node).is_err());
 
         let missing_node = r#"{ id: "camera_stream", node: "", name: "video_stream" }"#;
-        assert!(serde_json5::from_str::<ConsumedTopic>(missing_node).is_err());
+        assert!(serde_json5::from_str::<ExpectedTopic>(missing_node).is_err());
 
         let missing_name = r#"{ id: "camera_stream", node: "uvc_camera", name: "" }"#;
-        assert!(serde_json5::from_str::<ConsumedTopic>(missing_name).is_err());
+        assert!(serde_json5::from_str::<ExpectedTopic>(missing_name).is_err());
 
         let whitespace_only = r#"{ id: "camera_stream", node: "   ", name: "video_stream" }"#;
-        assert!(serde_json5::from_str::<ConsumedTopic>(whitespace_only).is_err());
+        assert!(serde_json5::from_str::<ExpectedTopic>(whitespace_only).is_err());
 
         let punctuation_only = r#"{ id: "camera_stream", node: "--", name: "video_stream" }"#;
-        assert!(serde_json5::from_str::<ConsumedTopic>(punctuation_only).is_err());
+        assert!(serde_json5::from_str::<ExpectedTopic>(punctuation_only).is_err());
 
         let missing_field = r#"{ id: "camera_stream", node: "uvc_camera" }"#;
-        assert!(serde_json5::from_str::<ConsumedTopic>(missing_field).is_err());
+        assert!(serde_json5::from_str::<ExpectedTopic>(missing_field).is_err());
 
         let trimmed = r#"{ id: "camera_stream", node: " uvc_camera ", name: " video_stream " }"#;
-        let topic: ConsumedTopic =
+        let topic: ExpectedTopic =
             serde_json5::from_str(trimmed).expect("whitespace should be trimmed");
         assert_eq!(topic.node, "uvc_camera");
         assert_eq!(topic.name, "video_stream");

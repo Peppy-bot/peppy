@@ -22,8 +22,8 @@
   interfaces: {
     // The brain receives the inputs from the camera
     topics: {
-      exposes: [],
-      consumes: [
+      emits: [],
+      expects: [
         {
           id: "camera_front",
           node: "fake_uvc_camera",

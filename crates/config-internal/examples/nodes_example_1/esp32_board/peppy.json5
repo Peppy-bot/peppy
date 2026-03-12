@@ -32,7 +32,7 @@
   interfaces: {
     // `peppylib_no_std` will help expose this topic
     topics: {
-      exposes: [
+      emits: [
         {
           name: "actuator",
           qos_profile: "sensor_data",

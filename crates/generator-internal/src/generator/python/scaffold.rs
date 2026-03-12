@@ -254,8 +254,8 @@ fn sanitize_python_module_name(raw: &str) -> String {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum ModuleCategory {
-    ExposedTopics,
-    ConsumedTopics,
+    EmittedTopics,
+    ExpectedTopics,
     ExposedServices,
     ConsumedServices,
     ExposedActions,
@@ -264,8 +264,8 @@ enum ModuleCategory {
 
 impl ModuleCategory {
     const ALL: [Self; 6] = [
-        Self::ExposedTopics,
-        Self::ConsumedTopics,
+        Self::EmittedTopics,
+        Self::ExpectedTopics,
         Self::ExposedServices,
         Self::ConsumedServices,
         Self::ExposedActions,
@@ -274,8 +274,8 @@ impl ModuleCategory {
 
     fn from_kind(kind: InterfaceKind) -> Self {
         match kind {
-            InterfaceKind::ExposedTopic => Self::ExposedTopics,
-            InterfaceKind::ConsumedTopic => Self::ConsumedTopics,
+            InterfaceKind::EmittedTopic => Self::EmittedTopics,
+            InterfaceKind::ExpectedTopic => Self::ExpectedTopics,
             InterfaceKind::ExposedService => Self::ExposedServices,
             InterfaceKind::ConsumedService => Self::ConsumedServices,
             InterfaceKind::ExposedAction => Self::ExposedActions,
@@ -285,8 +285,8 @@ impl ModuleCategory {
 
     fn dir_name(self) -> &'static str {
         match self {
-            Self::ExposedTopics => "exposed_topics",
-            Self::ConsumedTopics => "consumed_topics",
+            Self::EmittedTopics => "emitted_topics",
+            Self::ExpectedTopics => "expected_topics",
             Self::ExposedServices => "exposed_services",
             Self::ConsumedServices => "consumed_services",
             Self::ExposedActions => "exposed_actions",
@@ -312,7 +312,7 @@ mod tests {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let artifact = InterfaceArtifact::from_kind(
             "class",
-            InterfaceKind::ExposedTopic,
+            InterfaceKind::EmittedTopic,
             String::from("x = 1\n"),
         );
 

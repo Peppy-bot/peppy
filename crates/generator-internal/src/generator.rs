@@ -105,10 +105,10 @@ fn collect_exposed_interfaces(config: &config::node::NodeConfig) -> Vec<Deployme
     let mut interfaces = Vec::new();
 
     if let Some(topics) = &config.interfaces.topics
-        && let Some(exposed) = &topics.exposes
+        && let Some(emitted) = &topics.emits
     {
-        for topic in exposed {
-            interfaces.push(DeploymentInterface::new(InterfaceVariant::ExposedTopic(
+        for topic in emitted {
+            interfaces.push(DeploymentInterface::new(InterfaceVariant::EmittedTopic(
                 topic.clone(),
             )));
         }

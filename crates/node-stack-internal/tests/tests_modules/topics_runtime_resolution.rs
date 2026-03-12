@@ -19,7 +19,7 @@ fn topic_dependency_resolved_when_dependency_added_first() {
             },
             interfaces: {
                 topics: {
-                    consumes: [
+                    expects: [
                         {
                           id: "lidar_object_sub",
                           node: "lidar",
@@ -46,7 +46,7 @@ fn topic_dependency_resolved_when_dependency_added_first() {
             },
             interfaces: {
                 topics: {
-                    exposes: [
+                    emits: [
                         {
                           name: "push_lidar_object",
                           qos_profile: "sensor_data",
@@ -127,7 +127,7 @@ fn topic_dependency_fails_when_dependency_is_missing() {
             },
             interfaces: {
                 topics: {
-                    consumes: [
+                    expects: [
                         {
                           id: "lidar_object_sub",
                           node: "lidar",
@@ -175,7 +175,7 @@ fn topic_dependency_fails_when_topic_not_exposed_by_dependency() {
             },
             interfaces: {
                 topics: {
-                    consumes: [
+                    expects: [
                         {
                           id: "lidar_object_sub",
                           node: "lidar",
@@ -189,7 +189,7 @@ fn topic_dependency_fails_when_topic_not_exposed_by_dependency() {
     )
     .expect("valid dependent node config");
 
-    // This node has the correct name but exposes a different topic
+    // This node has the correct name but emits a different topic
     let dependency_wrong_topic: config::node::NodeConfig = serde_json5::from_str(
         r#"{
             schema_version: 1,
@@ -203,7 +203,7 @@ fn topic_dependency_fails_when_topic_not_exposed_by_dependency() {
             },
             interfaces: {
                 topics: {
-                    exposes: [
+                    emits: [
                         {
                           name: "push_camera_frame",
                           qos_profile: "sensor_data",
@@ -227,7 +227,7 @@ fn topic_dependency_fails_when_topic_not_exposed_by_dependency() {
         .expect("lidar has no dependencies");
     assert_eq!(stack.len(), 2, "stack should have core node + lidar");
 
-    // Adding brain should fail because lidar doesn't expose "push_lidar_object"
+    // Adding brain should fail because lidar doesn't emit "push_lidar_object"
     let result = stack.push_config(dependent, false, PathBuf::from("/tmp"));
     let Err(NodeStackError::MissingInterface {
         dependency,
