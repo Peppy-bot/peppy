@@ -560,12 +560,28 @@ fn default_action_service_qos_profile() -> QoSProfile {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct NodeDependency {
+    pub name: Name,
+    pub tag: String,
+    pub local_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DependsOn {
+    pub nodes: Vec<NodeDependency>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Manifest {
     pub name: Name,
     pub tag: String,
     pub language: PeppygenLanguage,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub labels: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub depends_on: Option<DependsOn>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -887,5 +903,52 @@ mod tests {
 
         let parsed: Result<MessageFormat, _> = serde_json5::from_str(json5);
         assert!(parsed.is_err(), "array items cannot contain arrays");
+    }
+
+    #[test]
+    fn manifest_with_depends_on() {
+        let json5 = r#"{
+            name: "slam",
+            tag: "0.1.0",
+            language: "rust",
+            depends_on: {
+                nodes: [
+                    { name: "lidar_driver", tag: "0.1.0", local_id: "lidar" },
+                    { name: "nav_system", tag: "0.1.0", local_id: "navigation" }
+                ]
+            }
+        }"#;
+        let manifest: Manifest = serde_json5::from_str(json5).expect("should parse");
+        let deps = manifest.depends_on.expect("depends_on should be Some");
+        assert_eq!(deps.nodes.len(), 2);
+        assert_eq!(deps.nodes[0].name.as_str(), "lidar_driver");
+        assert_eq!(deps.nodes[0].tag, "0.1.0");
+        assert_eq!(deps.nodes[0].local_id, "lidar");
+        assert_eq!(deps.nodes[1].name.as_str(), "nav_system");
+        assert_eq!(deps.nodes[1].local_id, "navigation");
+    }
+
+    #[test]
+    fn manifest_without_depends_on() {
+        let json5 = r#"{
+            name: "simple_node",
+            tag: "0.1.0",
+            language: "rust"
+        }"#;
+        let manifest: Manifest = serde_json5::from_str(json5).expect("should parse");
+        assert!(manifest.depends_on.is_none());
+    }
+
+    #[test]
+    fn depends_on_rejects_unknown_fields() {
+        let json5 = r#"{
+            name: "node",
+            tag: "0.1.0",
+            language: "rust",
+            depends_on: {
+                nodes: [{ name: "dep", tag: "0.1.0", local_id: "d", extra: "bad" }]
+            }
+        }"#;
+        assert!(serde_json5::from_str::<Manifest>(json5).is_err());
     }
 }
