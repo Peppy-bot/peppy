@@ -256,10 +256,7 @@ pub fn validate_dependency_specs(
                 });
                 continue;
             };
-            resolved_deps.insert(
-                dep.local_id.clone(),
-                (dep_name, dep_tag, dependency_config),
-            );
+            resolved_deps.insert(dep.local_id.clone(), (dep_name, dep_tag, dependency_config));
         }
     }
 

@@ -337,13 +337,11 @@ pub fn collect_consumed_interfaces(
                     .find(|t| t.name.trim() == expected_topic.name.trim())
                 && let Some(message_format) = &emitted_topic.message_format
             {
-                interfaces.push(DeploymentInterface::new(
-                    InterfaceVariant::ExpectedTopic {
-                        topic: expected_topic.clone(),
-                        message_format: message_format.clone(),
-                        dependency_node_name: dep_name.clone(),
-                    },
-                ));
+                interfaces.push(DeploymentInterface::new(InterfaceVariant::ExpectedTopic {
+                    topic: expected_topic.clone(),
+                    message_format: message_format.clone(),
+                    dependency_node_name: dep_name.clone(),
+                }));
             }
         }
     }

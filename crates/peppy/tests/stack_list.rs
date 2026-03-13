@@ -150,11 +150,7 @@ async fn node_list_command_succeeds() {
     );
 
     // Make the consumer depend on the provider by subscribing to a topic exposed by the provider.
-    make_consumer_depend_on_provider(
-        &provider_peppy_json5,
-        &consumer_peppy_json5,
-        provider_name,
-    );
+    make_consumer_depend_on_provider(&provider_peppy_json5, &consumer_peppy_json5, provider_name);
 
     // Add the provider
     NodeCommand {
@@ -296,11 +292,7 @@ async fn node_list_command_with_dot_representation_succeeds() {
         consumer_peppy_json5.display()
     );
 
-    make_consumer_depend_on_provider(
-        &provider_peppy_json5,
-        &consumer_peppy_json5,
-        provider_name,
-    );
+    make_consumer_depend_on_provider(&provider_peppy_json5, &consumer_peppy_json5, provider_name);
 
     NodeCommand {
         command: NodeCommands::Add {
