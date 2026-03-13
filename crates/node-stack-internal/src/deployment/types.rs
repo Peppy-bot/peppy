@@ -243,27 +243,22 @@ pub fn validate_dependency_specs(
     let mut resolved_deps: HashMap<String, (String, String, NodeConfig)> = HashMap::new();
 
     // Phase 1: Validate all declared dependency nodes exist
-    for spec in collect_dependency_specs(config) {
-        let Some(dependency_config) = resolve(&spec.node_name, &spec.node_tag) else {
-            errors.push(crate::error::Error::MissingDependency {
-                dependant: dependant_name.to_owned(),
-                dependant_tag: dependant_tag.to_owned(),
-                dependency: spec.node_name,
-                dependency_tag: spec.node_tag,
-            });
-            continue;
-        };
-
-        // Find the local_id for this dependency
-        if let Some(depends_on) = &config.manifest.depends_on
-            && let Some(dep) = depends_on
-                .nodes
-                .iter()
-                .find(|d| d.name.as_str() == spec.node_name && d.tag == spec.node_tag)
-        {
+    if let Some(depends_on) = &config.manifest.depends_on {
+        for dep in &depends_on.nodes {
+            let dep_name = dep.name.as_str().to_owned();
+            let dep_tag = dep.tag.clone();
+            let Some(dependency_config) = resolve(&dep_name, &dep_tag) else {
+                errors.push(crate::error::Error::MissingDependency {
+                    dependant: dependant_name.to_owned(),
+                    dependant_tag: dependant_tag.to_owned(),
+                    dependency: dep_name,
+                    dependency_tag: dep_tag,
+                });
+                continue;
+            };
             resolved_deps.insert(
                 dep.local_id.clone(),
-                (spec.node_name, spec.node_tag, dependency_config),
+                (dep_name, dep_tag, dependency_config),
             );
         }
     }
