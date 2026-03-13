@@ -180,18 +180,13 @@ use peppygen::NodeBuilder;
 use peppygen::Result;
 use std::time::Duration;
 
-const TARGET_NODE_NAME: &str = "brain";
-const TARGET_INSTANCE_ID: &str = "exposer_instance";
-const FEEDBACK_READY_SERVICE: &str = "move_arm_feedback_ready";
-const FEEDBACK_RECEIVED_SERVICE: &str = "move_arm_feedback_received";
-
 fn main() -> Result<()> {
     NodeBuilder::new().run(|_parameters: peppygen::Parameters, node_runner| async move {
         let request = brain_move_arm::GoalRequest {
             arm_id: 7,
             desired_position: [10, 20, 30],
         };
-        let mut goal = brain_move_arm::ActionHandle::fire_goal(
+        let mut action_handle = brain_move_arm::ActionHandle::fire_goal(
             &node_runner,
             Duration::from_secs(5),
             None,
@@ -199,40 +194,13 @@ fn main() -> Result<()> {
             request,
             peppygen::QoSProfile::SensorData,
         ).await?;
-        println!("goal accepted={}", goal.data.accepted);
+        println!("goal accepted={}", action_handle.data.accepted);
 
-        let feedback_wait = goal.on_next_feedback_message();
-        let notify_feedback_ready = peppygen::ServiceMessenger::poll(
-            node_runner.messenger(),
-            node_runner.processor().bound_core_node(),
-            node_runner.processor().bound_instance_id(),
-            TARGET_NODE_NAME,
-            FEEDBACK_READY_SERVICE,
-            Some(node_runner.processor().bound_core_node()),
-            Some(TARGET_INSTANCE_ID),
-            Vec::<u8>::new().into(),
-            Duration::from_secs(5),
-        );
-        let (feedback, ready_response) = tokio::join!(feedback_wait, notify_feedback_ready);
-        ready_response?;
-        let feedback = feedback?;
+        let feedback = action_handle.on_next_feedback_message().await?;
         assert_eq!(feedback.new_position, [7, 31, 43], "unexpected feedback message");
         println!("feedback message received new_position={:?}", feedback.new_position);
 
-        peppygen::ServiceMessenger::poll(
-            node_runner.messenger(),
-            node_runner.processor().bound_core_node(),
-            node_runner.processor().bound_instance_id(),
-            TARGET_NODE_NAME,
-            FEEDBACK_RECEIVED_SERVICE,
-            Some(node_runner.processor().bound_core_node()),
-            Some(TARGET_INSTANCE_ID),
-            Vec::<u8>::new().into(),
-            Duration::from_secs(5),
-        )
-        .await?;
-
-        let result = goal.get_result(Duration::from_secs(5)).await?;
+        let result = action_handle.get_result(Duration::from_secs(5)).await?;
         println!(
             "result success={} error={:?} final_position={:?}",
             result.data.success,
@@ -285,38 +253,10 @@ fn main() -> Result<()> {
 use peppygen::exposed_actions::move_arm;
 use peppygen::NodeBuilder;
 use peppygen::Result;
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-};
-
-const FEEDBACK_READY_SERVICE: &str = "move_arm_feedback_ready";
-const FEEDBACK_RECEIVED_SERVICE: &str = "move_arm_feedback_received";
 
 fn main() -> Result<()> {
     NodeBuilder::new().run(|_parameters: peppygen::Parameters, node_runner| async move {
         let mut action = move_arm::ActionHandle::expose(&node_runner).await?;
-
-        // Set up handshake service listeners BEFORE handling the goal so their
-        // Zenoh subscriptions are active when the consumer starts polling
-        // immediately after fire_goal returns. Messages are buffered in the
-        // subscription channels until handle_next_request reads them.
-        let mut feedback_ready_service = peppygen::ServiceMessenger::listen(
-            node_runner.messenger(),
-            node_runner.processor().bound_core_node(),
-            node_runner.processor().bound_instance_id(),
-            node_runner.processor().node_name(),
-            FEEDBACK_READY_SERVICE,
-        )
-        .await?;
-        let mut feedback_received_service = peppygen::ServiceMessenger::listen(
-            node_runner.messenger(),
-            node_runner.processor().bound_core_node(),
-            node_runner.processor().bound_instance_id(),
-            node_runner.processor().node_name(),
-            FEEDBACK_RECEIVED_SERVICE,
-        )
-        .await?;
 
         action.handle_goal_next_request(|request| -> Result<move_arm::GoalResponse> {
             println!(
@@ -328,34 +268,9 @@ fn main() -> Result<()> {
         })
         .await?;
 
-        feedback_ready_service
-            .handle_next_request(|_request| async move { Ok(Vec::<u8>::new().into()) })
-            .await?;
-        println!("server received feedback-ready handshake");
-
-        let feedback_received = Arc::new(AtomicBool::new(false));
-        let feedback_received_flag = Arc::clone(&feedback_received);
-        let feedback_received_task = tokio::spawn(async move {
-            feedback_received_service
-                .handle_next_request(|_request| async move { Ok(Vec::<u8>::new().into()) })
-                .await?;
-            feedback_received_flag.store(true, Ordering::Release);
-            Ok::<(), peppygen::Error>(())
-        });
-
         let feedback_message = [7, 31, 43];
-        let mut feedback_logged = false;
-        while !feedback_received.load(Ordering::Acquire) {
-            action.emit_feedback(feedback_message).await?;
-            if !feedback_logged {
-                println!("server emitted feedback message {:?}", feedback_message);
-                feedback_logged = true;
-            }
-            tokio::task::yield_now().await;
-        }
-        feedback_received_task
-            .await
-            .expect("feedback ack task should not panic")?;
+        action.emit_feedback(feedback_message).await?;
+        println!("server emitted feedback message {:?}", feedback_message);
 
         let final_position = [98, 4, 26];
         action.handle_result_next_request(|_request| -> Result<move_arm::ResultResponse> {
@@ -583,7 +498,7 @@ fn main() -> Result<()> {
             arm_id: 7,
             desired_position: [10, 20, 30],
         };
-        let goal = brain_move_arm::ActionHandle::fire_goal(
+        let action_handle = brain_move_arm::ActionHandle::fire_goal(
             &node_runner,
             Duration::from_secs(5),
             None,
@@ -591,9 +506,9 @@ fn main() -> Result<()> {
             request,
             peppygen::QoSProfile::SensorData,
         ).await?;
-        println!("goal accepted={}", goal.data.accepted);
+        println!("goal accepted={}", action_handle.data.accepted);
 
-        let cancel_response = goal.cancel_goal(Duration::from_secs(5)).await?;
+        let cancel_response = action_handle.cancel_goal(Duration::from_secs(5)).await?;
         let error_msg = cancel_response.data.error_message.as_deref().unwrap_or("<none>");
         println!(
             "cancel accepted={} error={}",
