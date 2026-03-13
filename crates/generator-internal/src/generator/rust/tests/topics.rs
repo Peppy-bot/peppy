@@ -434,6 +434,80 @@ fn expected_two_topics_same_node() {
     }
 }
 
+#[test]
+fn external_expected_topic() {
+    let format = parse_message_format(
+        r#"
+        {
+            linear_x: "f64",
+            angular_z: "f64",
+        }
+        "#,
+    );
+
+    let mut generator = RustGenerator::new();
+    generator
+        .add_external_expected_topic("cmd_vel", format)
+        .unwrap();
+    let artifacts = render_artifacts(generator.into_artifacts());
+    assert_eq!(
+        artifacts.len(),
+        1,
+        "expected a single generated artifact, got {}",
+        artifacts.len()
+    );
+    let rendered = artifacts.into_iter().next().expect("artifact is present");
+
+    // Generated struct
+    assert_contains_all(
+        &rendered,
+        &[
+            "pub struct Message",
+            "pub linear_x: f64",
+            "pub angular_z: f64",
+        ],
+    );
+
+    // Subscriber function signature
+    assert_contains_all(
+        &rendered,
+        &[
+            "pub async fn on_next_message_received(",
+            "core_node_target: Option<&str>",
+            "instance_id_target: Option<&str>",
+            "-> crate::Result<(String, Message)>",
+        ],
+    );
+
+    // External subscribe: uses subscribe_external, no node_name
+    assert_contains_all(
+        &rendered,
+        &[
+            "let topic_name = \"cmd_vel\";",
+            "peppylib::TopicMessenger::subscribe_external(",
+        ],
+    );
+    assert!(
+        !rendered.contains("let node_name"),
+        "external topic should not have a node_name variable"
+    );
+
+    // Deserialization
+    assert_contains_all(
+        &rendered,
+        &["fn deseralize_payload(", "capnp::serialize::read_message"],
+    );
+
+    // Error variants
+    assert_contains_all(
+        &rendered,
+        &[
+            "crate::Error::TopicSubscribe",
+            "crate::Error::SubscriptionClosed",
+        ],
+    );
+}
+
 /// Checks for clippy warnings when there is only one emitted topic with an empty message format.
 #[test]
 fn clippy_single_emitted_topic_empty_format() {

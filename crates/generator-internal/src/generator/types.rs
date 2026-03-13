@@ -49,6 +49,10 @@ pub enum InterfaceVariant {
         messages: ConsumedActionMessage,
         dependency_node_name: String,
     },
+    ExternalExpectedTopic {
+        name: String,
+        message_format: MessageFormat,
+    },
 }
 
 /// Maps a deployment interface to the message format required to bind it.
@@ -112,6 +116,11 @@ pub trait LanguageGenerator {
         arguments: MessageFormat,
         dependency_node_name: &str,
     ) -> Result<()>;
+    fn add_external_expected_topic(
+        &mut self,
+        name: &str,
+        message_format: MessageFormat,
+    ) -> Result<()>;
     fn add_consumed_service(
         &mut self,
         service: &ConsumedService,
@@ -161,6 +170,10 @@ impl DeploymentInterface {
                 messages,
                 dependency_node_name,
             } => backend.add_consumed_action(action, messages, dependency_node_name),
+            InterfaceVariant::ExternalExpectedTopic {
+                name,
+                message_format,
+            } => backend.add_external_expected_topic(name, message_format.clone()),
         }
     }
 }

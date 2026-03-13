@@ -18,7 +18,7 @@ use super::types::{
     CapnpSchema, ConsumedActionMessage, InterfaceArtifact, InterfaceKind, LanguageGenerator,
     cancel_action_response_format, non_empty_message_format,
 };
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::generator::naming::{
     non_empty_str, resolve_schema_file_stem, sanitize_component, to_camel_case,
 };
@@ -937,10 +937,19 @@ impl LanguageGenerator for RustGenerator {
         arguments: MessageFormat,
         dependency_node_name: &str,
     ) -> Result<()> {
-        let node_name = topic.local_node_id.as_str();
+        let ExpectedTopic::Linked {
+            local_node_id,
+            name,
+        } = topic
+        else {
+            return Err(Error::InvariantViolation {
+                context: "add_expected_topic called with ExpectedTopic::External; use add_external_expected_topic instead".into(),
+            });
+        };
+        let node_name = local_node_id.as_str();
 
         let node_component = sanitize_component(node_name);
-        let topic_component = sanitize_component(topic.name.as_str());
+        let topic_component = sanitize_component(name.as_str());
 
         debug_assert!(
             !node_component.is_empty(),
@@ -958,7 +967,7 @@ impl LanguageGenerator for RustGenerator {
             struct_prefix = String::from("Topic");
         }
 
-        let mut module_label = format!("{}_{}", node_name, topic.name.as_str());
+        let mut module_label = format!("{}_{}", node_name, name.as_str());
         if module_label.trim().is_empty() {
             module_label = String::from("topic");
         }
@@ -1018,6 +1027,95 @@ impl LanguageGenerator for RustGenerator {
             struct_prefix: &message_struct_name,
             dependency_node_name,
         })?;
+        let mut items = context.into_tokens();
+        items.push(method_tokens);
+
+        let tokens: TokenStream = quote! {
+            #( #items )*
+        };
+        let rendered = render_tokens(tokens);
+
+        self.push_section(InterfaceArtifact::from_kind(
+            &module_label,
+            InterfaceKind::ExpectedTopic,
+            rendered,
+        ));
+
+        Ok(())
+    }
+
+    fn add_external_expected_topic(&mut self, name: &str, arguments: MessageFormat) -> Result<()> {
+        let topic_component = sanitize_component(name);
+
+        debug_assert!(
+            !topic_component.is_empty(),
+            "External expected topic name should be validated as non-empty"
+        );
+
+        let mut struct_prefix = to_camel_case(&topic_component);
+        if struct_prefix.is_empty() {
+            struct_prefix = String::from("Topic");
+        }
+
+        let mut module_label = name.trim().to_string();
+        if module_label.is_empty() {
+            module_label = String::from("topic");
+        }
+        let mut module_component = sanitize_component(&module_label);
+        if module_component.is_empty() {
+            module_component = String::from("topic");
+        }
+
+        let schema_key = if !topic_component.is_empty() {
+            format!("on_next_{topic_component}_message")
+        } else {
+            format!("{module_component}_message")
+        };
+
+        let format_artifacts = map_message_format(&schema_key, Some(&arguments))?
+            .expect("message encoding spec should exist when message format is provided");
+
+        let mut context = GenerationContext::default();
+        let message_struct_name = String::from("Message");
+        let params = collect_function_params(
+            Some(&format_artifacts),
+            None,
+            &message_struct_name,
+            &mut context,
+            None,
+        )?;
+        let encoding_params = params.clone();
+
+        let args_struct_ident = Ident::new(&message_struct_name, Span::call_site());
+        let args_fields: Vec<(Ident, TokenStream)> = params
+            .iter()
+            .map(|param| (param.ident.clone(), param.ty.clone()))
+            .collect();
+        context.add_struct(args_struct_ident.clone(), args_fields);
+
+        let callback_fn_ident = Ident::new("on_next_message_received", Span::call_site());
+        let helper_fn_ident = Ident::new("deseralize_payload", Span::call_site());
+
+        let encoding = self
+            .prepare_message_encoding(
+                &schema_key,
+                &struct_prefix,
+                Some(&format_artifacts),
+                &encoding_params,
+            )?
+            .expect("message encoding spec should exist when message format is provided");
+        let method_tokens = topics::build_external_expected_topic_callback(
+            topics::ExternalExpectedTopicCallbackSpec {
+                fn_name: &callback_fn_ident,
+                helper_fn_ident: &helper_fn_ident,
+                args_struct_ident: &args_struct_ident,
+                params: &params,
+                artifacts: &format_artifacts,
+                encoding: &encoding,
+                topic_name: name,
+                struct_prefix: &message_struct_name,
+            },
+        )?;
         let mut items = context.into_tokens();
         items.push(method_tokens);
 

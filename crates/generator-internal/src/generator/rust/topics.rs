@@ -156,7 +156,7 @@ pub fn build_expected_topic_callback(spec: ExpectedTopicCallbackSpec) -> Result<
         struct_prefix,
         dependency_node_name,
     } = spec;
-    let topic_literal = Literal::string(topic.name.as_str());
+    let topic_literal = Literal::string(topic.name());
     let node_name_literal = Literal::string(dependency_node_name);
     let reader_type = &encoding.reader_type;
     let context_literal = Literal::string(struct_prefix);
@@ -211,6 +211,103 @@ pub fn build_expected_topic_callback(spec: ExpectedTopicCallbackSpec) -> Result<
                     crate::Error::TopicSubscribe {
                         topic_name: topic_name.to_string(),
                         node_name: node_name.to_string(),
+                        source_msg: source.to_string(),
+                    }
+                })?;
+                subscription
+                    .on_next_message()
+                    .await
+                    .ok_or_else(|| crate::Error::SubscriptionClosed {
+                        topic_name: topic_name.to_string(),
+                    })?
+            };
+
+            let payload = message.payload();
+            let instance_id = message.instance_id().to_string();
+            let message = #helper_fn_ident(payload.as_ref())?;
+            Ok((instance_id, message))
+        }
+
+        #helper_fn_tokens
+    })
+}
+
+pub struct ExternalExpectedTopicCallbackSpec<'a> {
+    pub fn_name: &'a Ident,
+    pub helper_fn_ident: &'a Ident,
+    pub args_struct_ident: &'a Ident,
+    pub params: &'a [FunctionParam],
+    pub artifacts: &'a CapnpSchemaArtifacts,
+    pub encoding: &'a MessageEncodingSpec,
+    pub topic_name: &'a str,
+    pub struct_prefix: &'a str,
+}
+
+pub fn build_external_expected_topic_callback(
+    spec: ExternalExpectedTopicCallbackSpec,
+) -> Result<TokenStream> {
+    let ExternalExpectedTopicCallbackSpec {
+        fn_name,
+        helper_fn_ident,
+        args_struct_ident,
+        params,
+        artifacts,
+        encoding,
+        topic_name,
+        struct_prefix,
+    } = spec;
+    let topic_literal = Literal::string(topic_name);
+    let reader_type = &encoding.reader_type;
+    let context_literal = Literal::string(struct_prefix);
+    let context_expr = quote!(String::from(#context_literal));
+
+    let (field_statements, value_idents) = deserialize_fields_from_format(
+        artifacts.message_format(),
+        params,
+        struct_prefix,
+        &context_expr,
+    )?;
+    let field_inits: Vec<TokenStream> = params
+        .iter()
+        .zip(value_idents.iter())
+        .map(|(param, value_ident)| {
+            let field_ident = &param.ident;
+            quote!(#field_ident: #value_ident)
+        })
+        .collect();
+
+    let helper_fn_tokens = build_deserialize_fn(
+        helper_fn_ident,
+        reader_type,
+        &context_expr,
+        &quote!(#args_struct_ident),
+        &field_statements,
+        &quote!(#args_struct_ident { #( #field_inits ),* }),
+    );
+
+    Ok(quote! {
+        pub async fn #fn_name(
+            node_runner: &crate::NodeRunner,
+            core_node_target: Option<&str>,
+            instance_id_target: Option<&str>,
+        ) -> crate::Result<(String, #args_struct_ident)> {
+            let topic_name = #topic_literal;
+            let qos = peppylib::config::QoSProfile::Standard;
+
+            let message = {
+                let subscription_future = peppylib::TopicMessenger::subscribe_external(
+                    node_runner.messenger(),
+                    node_runner.processor().bound_core_node(),
+                    node_runner.processor().bound_instance_id(),
+                    topic_name,
+                    core_node_target,
+                    instance_id_target,
+                    qos,
+                );
+                let mut subscription = subscription_future.await.map_err(|source| {
+                    crate::Error::TopicSubscribe {
+                        topic_name: topic_name.to_string(),
+                        node_name: String::new(),
                         source_msg: source.to_string(),
                     }
                 })?;

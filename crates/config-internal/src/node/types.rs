@@ -439,12 +439,27 @@ pub struct ExposedAction {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ExpectedTopic {
-    #[serde(deserialize_with = "deserialize_expected_topic_local_node_id")]
-    pub local_node_id: String,
-    #[serde(deserialize_with = "deserialize_expected_topic_name")]
-    pub name: String,
+#[serde(untagged)]
+pub enum ExpectedTopic {
+    Linked {
+        #[serde(deserialize_with = "deserialize_expected_topic_local_node_id")]
+        local_node_id: String,
+        #[serde(deserialize_with = "deserialize_expected_topic_name")]
+        name: String,
+    },
+    External {
+        #[serde(deserialize_with = "deserialize_expected_topic_name")]
+        name: String,
+        message_format: MessageFormat,
+    },
+}
+
+impl ExpectedTopic {
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Linked { name, .. } | Self::External { name, .. } => name,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -678,14 +693,18 @@ mod tests {
     }
 
     #[test]
-    fn expected_topic_local_node_id_is_required() {
+    fn expected_topic_linked_local_node_id_is_required() {
         let valid = r#"{ local_node_id: "uvc_camera", name: "video_stream" }"#;
         let topic: ExpectedTopic = serde_json5::from_str(valid).expect("valid topic should parse");
-        assert_eq!(topic.local_node_id, "uvc_camera");
-        assert_eq!(topic.name, "video_stream");
-
-        let without_local_node_id = r#"{ name: "video_stream" }"#;
-        assert!(serde_json5::from_str::<ExpectedTopic>(without_local_node_id).is_err());
+        let ExpectedTopic::Linked {
+            local_node_id,
+            name,
+        } = &topic
+        else {
+            panic!("expected Linked variant");
+        };
+        assert_eq!(local_node_id, "uvc_camera");
+        assert_eq!(name, "video_stream");
 
         let empty_local_node_id = r#"{ local_node_id: "", name: "video_stream" }"#;
         assert!(serde_json5::from_str::<ExpectedTopic>(empty_local_node_id).is_err());
@@ -705,8 +724,58 @@ mod tests {
         let trimmed = r#"{ local_node_id: " uvc_camera ", name: " video_stream " }"#;
         let topic: ExpectedTopic =
             serde_json5::from_str(trimmed).expect("whitespace should be trimmed");
-        assert_eq!(topic.local_node_id, "uvc_camera");
-        assert_eq!(topic.name, "video_stream");
+        let ExpectedTopic::Linked {
+            local_node_id,
+            name,
+        } = &topic
+        else {
+            panic!("expected Linked variant");
+        };
+        assert_eq!(local_node_id, "uvc_camera");
+        assert_eq!(name, "video_stream");
+    }
+
+    #[test]
+    fn expected_topic_external_requires_name_and_message_format() {
+        let valid = r#"{ name: "cmd_vel", message_format: { linear_x: "f64", angular_z: "f64" } }"#;
+        let topic: ExpectedTopic =
+            serde_json5::from_str(valid).expect("valid external topic should parse");
+        let ExpectedTopic::External {
+            name,
+            message_format,
+        } = &topic
+        else {
+            panic!("expected External variant, got: {:?}", topic);
+        };
+        assert_eq!(name, "cmd_vel");
+        assert_eq!(message_format.0.len(), 2);
+        assert_eq!(topic.name(), "cmd_vel");
+
+        // name-only without message_format is an error (matches neither variant)
+        let name_only = r#"{ name: "cmd_vel" }"#;
+        assert!(
+            serde_json5::from_str::<ExpectedTopic>(name_only).is_err(),
+            "name-only (no local_node_id, no message_format) should fail"
+        );
+
+        // External with empty name should fail
+        let empty_name = r#"{ name: "", message_format: { linear_x: "f64", angular_z: "f64" } }"#;
+        assert!(serde_json5::from_str::<ExpectedTopic>(empty_name).is_err());
+    }
+
+    #[test]
+    fn expected_topic_mixed_linked_and_external() {
+        let json = r#"[
+            { local_node_id: "camera", name: "video_stream" },
+            { name: "cmd_vel", message_format: { linear_x: "f64", angular_z: "f64" } }
+        ]"#;
+        let topics: Vec<ExpectedTopic> =
+            serde_json5::from_str(json).expect("mixed array should parse");
+        assert_eq!(topics.len(), 2);
+        assert!(matches!(&topics[0], ExpectedTopic::Linked { .. }));
+        assert!(matches!(&topics[1], ExpectedTopic::External { .. }));
+        assert_eq!(topics[0].name(), "video_stream");
+        assert_eq!(topics[1].name(), "cmd_vel");
     }
 
     #[test]

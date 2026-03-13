@@ -127,7 +127,9 @@ async fn node_info_shows_dependencies_from_consumed_interfaces() {
     // Extract dependencies (unique local_node_id values) - this mirrors what print_node_info does
     let mut dependencies: BTreeSet<&str> = BTreeSet::new();
     for topic in topics {
-        dependencies.insert(&topic.local_node_id);
+        if let config::node::ExpectedTopic::Linked { local_node_id, .. } = topic {
+            dependencies.insert(local_node_id);
+        }
     }
     for service in services {
         dependencies.insert(&service.local_node_id);

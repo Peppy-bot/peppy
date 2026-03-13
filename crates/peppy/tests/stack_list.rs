@@ -59,7 +59,7 @@ fn make_consumer_depend_on_provider(
     });
 
     consumer_cfg.interfaces.topics = Some(TopicInterfaces {
-        expects: Some(vec![ExpectedTopic {
+        expects: Some(vec![ExpectedTopic::Linked {
             local_node_id: provider_name.to_string(),
             name: topic_name.to_string(),
         }]),

@@ -326,22 +326,41 @@ pub fn collect_consumed_interfaces(
         && let Some(expected_topics) = &topic_interfaces.expects
     {
         for expected_topic in expected_topics {
-            let Some((dep_name, dep_tag)) = dep_lookup.get(&expected_topic.local_node_id) else {
-                continue;
-            };
-            if let Some(dependency_entity) = node_stack.find(dep_name, dep_tag)
-                && let Some(dep_topics) = &dependency_entity.config().interfaces.topics
-                && let Some(emitted_topics) = &dep_topics.emits
-                && let Some(emitted_topic) = emitted_topics
-                    .iter()
-                    .find(|t| t.name.trim() == expected_topic.name.trim())
-                && let Some(message_format) = &emitted_topic.message_format
-            {
-                interfaces.push(DeploymentInterface::new(InterfaceVariant::ExpectedTopic {
-                    topic: expected_topic.clone(),
-                    message_format: message_format.clone(),
-                    dependency_node_name: dep_name.clone(),
-                }));
+            match expected_topic {
+                config::node::ExpectedTopic::Linked {
+                    local_node_id,
+                    name,
+                } => {
+                    let Some((dep_name, dep_tag)) = dep_lookup.get(local_node_id.as_str()) else {
+                        continue;
+                    };
+                    if let Some(dependency_entity) = node_stack.find(dep_name, dep_tag)
+                        && let Some(dep_topics) = &dependency_entity.config().interfaces.topics
+                        && let Some(emitted_topics) = &dep_topics.emits
+                        && let Some(emitted_topic) =
+                            emitted_topics.iter().find(|t| t.name.trim() == name.trim())
+                        && let Some(message_format) = &emitted_topic.message_format
+                    {
+                        interfaces.push(DeploymentInterface::new(
+                            InterfaceVariant::ExpectedTopic {
+                                topic: expected_topic.clone(),
+                                message_format: message_format.clone(),
+                                dependency_node_name: dep_name.clone(),
+                            },
+                        ));
+                    }
+                }
+                config::node::ExpectedTopic::External {
+                    name,
+                    message_format,
+                } => {
+                    interfaces.push(DeploymentInterface::new(
+                        InterfaceVariant::ExternalExpectedTopic {
+                            name: name.clone(),
+                            message_format: message_format.clone(),
+                        },
+                    ));
+                }
             }
         }
     }

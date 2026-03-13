@@ -19,7 +19,7 @@ use super::types::{
     cancel_action_response_format, non_empty_message_format, validate_fixed_length_array_items,
     validate_message_format_field_names,
 };
-use crate::error::Result;
+use crate::error::{Error, Result};
 use config::encoding::MessageFormatMapper;
 use config::node::{
     ConsumedAction, ConsumedService, EmittedTopic, ExpectedTopic, ExposedAction, ExposedService,
@@ -215,10 +215,31 @@ impl LanguageGenerator for PythonGenerator {
         arguments: MessageFormat,
         dependency_node_name: &str,
     ) -> Result<()> {
-        let schema_info = self.register_schema(&topic.name, &arguments)?;
+        let ExpectedTopic::Linked {
+            local_node_id,
+            name,
+        } = topic
+        else {
+            return Err(Error::InvariantViolation {
+                context: "add_expected_topic called with ExpectedTopic::External; use add_external_expected_topic instead".into(),
+            });
+        };
+        let schema_info = self.register_schema(name, &arguments)?;
         let code =
             topics::build_expected_topic(topic, &arguments, &schema_info, dependency_node_name)?;
-        let module_label = module_name_from_components(&topic.local_node_id, &topic.name);
+        let module_label = module_name_from_components(local_node_id, name);
+        self.push_section(InterfaceArtifact::from_kind(
+            &module_label,
+            InterfaceKind::ExpectedTopic,
+            code,
+        ));
+        Ok(())
+    }
+
+    fn add_external_expected_topic(&mut self, name: &str, arguments: MessageFormat) -> Result<()> {
+        let schema_info = self.register_schema(name, &arguments)?;
+        let code = topics::build_external_expected_topic(name, &arguments, &schema_info)?;
+        let module_label = name.trim().to_string();
         self.push_section(InterfaceArtifact::from_kind(
             &module_label,
             InterfaceKind::ExpectedTopic,

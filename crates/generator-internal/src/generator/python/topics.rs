@@ -172,13 +172,71 @@ pub fn build_expected_topic(
     builder.line("async def on_next_message_received(node_runner: peppylib.NodeRunner, core_node_target: Optional[str] = None, instance_id_target: Optional[str] = None) -> Tuple[str, Message]:");
     builder.indent();
     builder.line(&format!("node_name = \"{}\"", dependency_node_name));
-    builder.line(&format!("topic_name = \"{}\"", topic.name));
+    builder.line(&format!("topic_name = \"{}\"", topic.name()));
     builder.line("subscription = await peppylib.TopicMessenger.subscribe(");
     builder.indent();
     builder.line("node_runner.messenger(),");
     builder.line("node_runner.bound_core_node(),");
     builder.line("node_runner.bound_instance_id(),");
     builder.line("node_name,");
+    builder.line("topic_name,");
+    builder.line("core_node_target,");
+    builder.line("instance_id_target,");
+    builder.line("peppylib.QoSProfile.Standard,");
+    builder.dedent();
+    builder.line(")");
+    builder.line("raw_message = await subscription.on_next_message()");
+    builder.line("payload = raw_message.payload");
+    builder.line("instance_id = raw_message.instance_id");
+    builder.line("message = _deserialize_payload(payload)");
+    builder.line("return instance_id, message");
+
+    builder.dedent();
+
+    Ok(builder.build())
+}
+
+pub fn build_external_expected_topic(
+    topic_name: &str,
+    arguments: &MessageFormat,
+    schema_info: &PythonSchemaInfo,
+) -> Result<String> {
+    let mut builder = PythonCodeBuilder::new();
+    let mut nested_classes = Vec::new();
+
+    let fields = collect_fields_from_format(arguments, "Message", &mut nested_classes)?;
+
+    builder.add_import("from typing import Optional, Tuple");
+
+    emit_capnp_schema_loader(&mut builder, schema_info);
+    emit_nested_classes(&mut builder, &nested_classes);
+
+    let field_refs: Vec<(&str, &str)> = fields
+        .iter()
+        .map(|f| (f.name.as_str(), f.type_str.as_str()))
+        .collect();
+    builder.dataclass("Message", &field_refs);
+
+    let loader_fn_name = capnp_loader_fn_name(schema_info);
+    deserialization::build_deserialize_fn(
+        &mut builder,
+        schema_info,
+        arguments,
+        "Message",
+        &format!("{loader_fn_name}()"),
+        "_deserialize_payload",
+    );
+
+    builder.add_import("import peppylib");
+    builder.blank_line();
+    builder.line("async def on_next_message_received(node_runner: peppylib.NodeRunner, core_node_target: Optional[str] = None, instance_id_target: Optional[str] = None) -> Tuple[str, Message]:");
+    builder.indent();
+    builder.line(&format!("topic_name = \"{}\"", topic_name));
+    builder.line("subscription = await peppylib.TopicMessenger.subscribe_external(");
+    builder.indent();
+    builder.line("node_runner.messenger(),");
+    builder.line("node_runner.bound_core_node(),");
+    builder.line("node_runner.bound_instance_id(),");
     builder.line("topic_name,");
     builder.line("core_node_target,");
     builder.line("instance_id_target,");
