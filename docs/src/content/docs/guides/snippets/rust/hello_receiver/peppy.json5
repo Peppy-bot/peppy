@@ -4,6 +4,11 @@
     name: "hello_receiver",
     tag: "0.1.0",
     language: "rust",
+    depends_on: {
+      nodes: [
+        { name: "hello_world_param", tag: "0.1.0", local_id: "hello_world_param" },
+      ]
+    },
   },
   process: {
     add_cmd: [
@@ -19,10 +24,8 @@
     topics: {
       expects: [
         {
-          id: "hello_world_param_subscriber", // subscriber_id, up to you to decide
-          node: "hello_world_param", // Will look for that node name
-          tag: "0.1.0", // On that particular tag/version
-          name: "message_stream", // With this topic name
+          local_node_id: "hello_world_param",
+          name: "message_stream",
         }
       ],
     }

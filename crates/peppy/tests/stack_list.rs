@@ -4,7 +4,8 @@ use std::sync::Arc;
 
 use config::consts::PEPPYGEN_OUTPUT_PATH;
 use config::node::{
-    EmittedTopic, ExpectedTopic, Name as ConfigName, NodeConfigParser, Toolchain, TopicInterfaces,
+    DependsOn, EmittedTopic, ExpectedTopic, Name as ConfigName, NodeConfigParser, NodeDependency,
+    Toolchain, TopicInterfaces,
 };
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands, NodeName};
@@ -14,7 +15,6 @@ use peppy::context::AppContext;
 fn make_consumer_depend_on_provider(
     provider_peppy_json5: &Path,
     consumer_peppy_json5: &Path,
-    consumer_name: &str,
     provider_name: &str,
 ) {
     let topic_name = "stack_list_topic";
@@ -50,13 +50,18 @@ fn make_consumer_depend_on_provider(
 
     consumer_cfg.process.as_mut().unwrap().add_cmd = None;
 
+    consumer_cfg.manifest.depends_on = Some(DependsOn {
+        nodes: vec![NodeDependency {
+            name: ConfigName::new(provider_name).expect("valid provider name"),
+            tag: "0.1.0".to_string(),
+            local_id: provider_name.to_string(),
+        }],
+    });
+
     consumer_cfg.interfaces.topics = Some(TopicInterfaces {
         expects: Some(vec![ExpectedTopic {
-            id: ConfigName::new(format!("{consumer_name}_{topic_name}"))
-                .expect("consumed topic id should be valid"),
-            node: provider_name.to_string(),
+            local_node_id: provider_name.to_string(),
             name: topic_name.to_string(),
-            tag: "0.1.0".to_string(),
         }]),
         ..Default::default()
     });
@@ -145,12 +150,7 @@ async fn node_list_command_succeeds() {
     );
 
     // Make the consumer depend on the provider by subscribing to a topic exposed by the provider.
-    make_consumer_depend_on_provider(
-        &provider_peppy_json5,
-        &consumer_peppy_json5,
-        consumer_name,
-        provider_name,
-    );
+    make_consumer_depend_on_provider(&provider_peppy_json5, &consumer_peppy_json5, provider_name);
 
     // Add the provider
     NodeCommand {
@@ -292,12 +292,7 @@ async fn node_list_command_with_dot_representation_succeeds() {
         consumer_peppy_json5.display()
     );
 
-    make_consumer_depend_on_provider(
-        &provider_peppy_json5,
-        &consumer_peppy_json5,
-        consumer_name,
-        provider_name,
-    );
+    make_consumer_depend_on_provider(&provider_peppy_json5, &consumer_peppy_json5, provider_name);
 
     NodeCommand {
         command: NodeCommands::Add {

@@ -24,7 +24,7 @@ use crate::generator::naming::{
 };
 use config::encoding::{CapnpSchemaArtifacts, FunctionParam};
 use config::node::{
-    ConsumedAction, ConsumedService, EmittedTopic, ExposedAction, ExposedService, ExpectedTopic,
+    ConsumedAction, ConsumedService, EmittedTopic, ExpectedTopic, ExposedAction, ExposedService,
     MessageFormat,
 };
 use indexmap::IndexMap;
@@ -935,15 +935,16 @@ impl LanguageGenerator for RustGenerator {
         &mut self,
         topic: &ExpectedTopic,
         arguments: MessageFormat,
+        dependency_node_name: &str,
     ) -> Result<()> {
-        let node_name = topic.node.as_str();
+        let node_name = topic.local_node_id.as_str();
 
         let node_component = sanitize_component(node_name);
         let topic_component = sanitize_component(topic.name.as_str());
 
         debug_assert!(
             !node_component.is_empty(),
-            "ExpectedTopic.node should be validated as non-empty"
+            "ExpectedTopic.local_node_id should be validated as non-empty"
         );
         debug_assert!(
             !topic_component.is_empty(),
@@ -1015,6 +1016,7 @@ impl LanguageGenerator for RustGenerator {
             encoding: &encoding,
             topic,
             struct_prefix: &message_struct_name,
+            dependency_node_name,
         })?;
         let mut items = context.into_tokens();
         items.push(method_tokens);
@@ -1038,6 +1040,7 @@ impl LanguageGenerator for RustGenerator {
         service: &ConsumedService,
         request_arguments: &MessageFormat,
         response_arguments: &MessageFormat,
+        dependency_node_name: &str,
     ) -> Result<()> {
         let request_arguments = non_empty_message_format(Some(request_arguments));
         let response_arguments = non_empty_message_format(Some(response_arguments));
@@ -1059,7 +1062,7 @@ impl LanguageGenerator for RustGenerator {
             let mut components = Vec::with_capacity(3);
             components.push(String::from("poll"));
 
-            let node_ident = prefixed_ident("", Some(service.node.as_str()), "node");
+            let node_ident = prefixed_ident("", Some(dependency_node_name), "node");
             components.push(node_ident.to_string());
 
             components.push(service_name_component.clone());
@@ -1234,7 +1237,7 @@ impl LanguageGenerator for RustGenerator {
 
         let mut service_tokens = context.into_tokens();
         let service_name_literal = Literal::string(service.name.as_str());
-        let node_name_literal = Literal::string(service.node.as_str());
+        let node_name_literal = Literal::string(dependency_node_name);
 
         let constants_tokens = quote! {
             const NODE_NAME: &str = #node_name_literal;
@@ -1268,7 +1271,7 @@ impl LanguageGenerator for RustGenerator {
             all_tokens.push(deserialize_fn);
         }
 
-        let mut module_name = module_name_from_components(&service.node, &service.name);
+        let mut module_name = module_name_from_components(&service.local_node_id, &service.name);
         if module_name.is_empty() {
             module_name = method_label
                 .strip_prefix("poll_")
@@ -1294,8 +1297,9 @@ impl LanguageGenerator for RustGenerator {
         &mut self,
         action: &ConsumedAction,
         messages: &ConsumedActionMessage,
+        dependency_node_name: &str,
     ) -> Result<()> {
-        let node_component = sanitize_component(action.node.as_str());
+        let node_component = sanitize_component(dependency_node_name);
         let action_component = sanitize_component(action.name.as_str());
         let base_component = match (node_component.is_empty(), action_component.is_empty()) {
             (true, true) => "action".to_string(),
@@ -1310,7 +1314,7 @@ impl LanguageGenerator for RustGenerator {
         let mut methods: Vec<TokenStream> = Vec::new();
         let mut helper_items: Vec<TokenStream> = Vec::new();
 
-        let node_name_literal = Literal::string(action.node.as_str());
+        let node_name_literal = Literal::string(dependency_node_name);
         let action_name_literal = Literal::string(action.name.as_str());
         let constants_tokens = quote! {
             const TARGET_NODE_NAME: &str = #node_name_literal;
@@ -1433,7 +1437,7 @@ impl LanguageGenerator for RustGenerator {
             #( #items )*
         };
         let rendered = render_tokens(tokens);
-        let module_label = module_name_from_components(&action.node, &action.name);
+        let module_label = module_name_from_components(&action.local_node_id, &action.name);
         self.push_section(InterfaceArtifact::from_kind(
             &module_label,
             InterfaceKind::ConsumedAction,

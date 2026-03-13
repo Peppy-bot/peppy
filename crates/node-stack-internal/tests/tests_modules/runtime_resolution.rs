@@ -753,6 +753,11 @@ fn node_stack_wires_dependencies_for_dependants() {
               name: "brain",
               tag: "1.0.0",
               language: "rust",
+              depends_on: {
+                nodes: [
+                  { name: "lidar", tag: "1.0.0", local_id: "lidar" }
+                ]
+              },
             },
             process: {
               start_cmd: ["brain"]
@@ -761,10 +766,8 @@ fn node_stack_wires_dependencies_for_dependants() {
                 services: {
                     consumes: [
                         {
-                          id: "reset_sensor_sub",
-                          node: "lidar",
-                          name: "reset_sensor",
-                          tag: "1.0.0"
+                          local_node_id: "lidar",
+                          name: "reset_sensor"
                         }
                     ]
                 }
@@ -799,6 +802,11 @@ fn dependency_fails_when_node_name_mismatches() {
               name: "brain",
               tag: "1.0.0",
               language: "rust",
+              depends_on: {
+                nodes: [
+                  { name: "uvc_camera", tag: "1.0.0", local_id: "uvc_camera" }
+                ]
+              },
             },
             process: {
               start_cmd: ["brain"]
@@ -807,10 +815,8 @@ fn dependency_fails_when_node_name_mismatches() {
                 services: {
                     consumes: [
                         {
-                          id: "reset_sensor_sub",
-                          node: "uvc_camera",
-                          name: "reset_sensor",
-                          tag: "1.0.0"
+                          local_node_id: "uvc_camera",
+                          name: "reset_sensor"
                         }
                     ]
                 }
@@ -890,6 +896,11 @@ fn dependency_fails_when_node_tag_mismatches() {
               name: "brain",
               tag: "1.0.0",
               language: "rust",
+              depends_on: {
+                nodes: [
+                  { name: "lidar", tag: "1.0.0", local_id: "lidar" }
+                ]
+              },
             },
             process: {
               start_cmd: ["brain"]
@@ -898,10 +909,8 @@ fn dependency_fails_when_node_tag_mismatches() {
                 services: {
                     consumes: [
                         {
-                          id: "reset_sensor_sub",
-                          node: "lidar",
-                          name: "reset_sensor",
-                          tag: "1.0.0"
+                          local_node_id: "lidar",
+                          name: "reset_sensor"
                         }
                     ]
                 }
@@ -1002,6 +1011,11 @@ fn overwriting_existing_node_fails_if_node_has_dependencies() {
               name: "brain",
               tag: "1.0.0",
               language: "rust",
+              depends_on: {
+                nodes: [
+                  { name: "lidar", tag: "1.0.0", local_id: "lidar" }
+                ]
+              },
             },
             process: {
               start_cmd: ["brain"]
@@ -1010,10 +1024,8 @@ fn overwriting_existing_node_fails_if_node_has_dependencies() {
                 services: {
                     consumes: [
                         {
-                          id: "reset_sensor_sub",
-                          node: "lidar",
-                          name: "reset_sensor",
-                          tag: "1.0.0"
+                          local_node_id: "lidar",
+                          name: "reset_sensor"
                         }
                     ]
                 }
@@ -1185,6 +1197,11 @@ fn updating_start_cmd_succeeds_even_when_node_has_dependents() {
               name: "brain",
               tag: "1.0.0",
               language: "rust",
+              depends_on: {
+                nodes: [
+                  { name: "lidar", tag: "1.0.0", local_id: "lidar" }
+                ]
+              },
             },
             process: {
               start_cmd: ["brain"]
@@ -1193,10 +1210,8 @@ fn updating_start_cmd_succeeds_even_when_node_has_dependents() {
                 services: {
                     consumes: [
                         {
-                          id: "reset_sensor_sub",
-                          node: "lidar",
-                          name: "reset_sensor",
-                          tag: "1.0.0"
+                          local_node_id: "lidar",
+                          name: "reset_sensor"
                         }
                     ]
                 }

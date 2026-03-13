@@ -846,6 +846,11 @@ async fn listen_for_node_add_dependency_not_resolved() {
             name: "consumer_node",
             tag: "1.0.0",
             language: "rust",
+            depends_on: {
+                nodes: [
+                    { name: "non_existent_node", tag: "1.0.0", local_id: "non_existent_node" }
+                ]
+            },
         },
         process: {
             start_cmd: ["sleep", "10"],
@@ -854,10 +859,8 @@ async fn listen_for_node_add_dependency_not_resolved() {
             topics: {
                 expects: [
                     {
-                        id: "sensor_input",
-                        node: "non_existent_node",
-                        name: "sensor_data",
-                        tag: "1.0.0"
+                        local_node_id: "non_existent_node",
+                        name: "sensor_data"
                     }
                 ]
             }
@@ -1083,6 +1086,11 @@ async fn listen_for_node_add_same_node_same_tags_fails_when_node_has_dependents(
                 name: "{DEPENDENT_NODE_NAME}",
                 tag: "{DEPENDENT_NODE_TAG}",
                 language: "rust",
+                depends_on: {{
+                    nodes: [
+                        {{ name: "{DEPENDENCY_NODE_NAME}", tag: "{DEPENDENCY_NODE_TAG}", local_id: "{DEPENDENCY_NODE_NAME}" }}
+                    ]
+                }},
             }},
             process: {{
                 start_cmd: ["sleep", "10"]
@@ -1091,10 +1099,8 @@ async fn listen_for_node_add_same_node_same_tags_fails_when_node_has_dependents(
                 services: {{
                     consumes: [
                         {{
-                          id: "reset_sensor_sub",
-                          node: "{DEPENDENCY_NODE_NAME}",
-                          name: "reset_sensor",
-                          tag: "{DEPENDENCY_NODE_TAG}"
+                          local_node_id: "{DEPENDENCY_NODE_NAME}",
+                          name: "reset_sensor"
                         }}
                     ]
                 }}
@@ -2307,6 +2313,11 @@ async fn listen_for_node_add_fails_runs_add_cmd_on_missing_node_dependency() {
           name: "TARGET_NODE_NAME",
           tag: "TARGET_NODE_TAG",
           language: "rust",
+          depends_on: {
+            nodes: [
+              { name: "fake_uvc_camera", tag: "0.1.0", local_id: "fake_uvc_camera" }
+            ]
+          },
         },
         process: {
           add_cmd: ["sh", "-c", "touch MARKER_PATH && exit 1"],
@@ -2316,9 +2327,7 @@ async fn listen_for_node_add_fails_runs_add_cmd_on_missing_node_dependency() {
           topics: {
             expects: [
               {
-                id: "camera_stream",
-                node: "fake_uvc_camera",
-                tag: "0.1.0",
+                local_node_id: "fake_uvc_camera",
                 name: "video_stream"
               },
             ],
@@ -2441,6 +2450,11 @@ async fn listen_for_node_add_fails_on_missing_interface_even_when_dependency_exi
           name: "TARGET_NODE_NAME",
           tag: "TARGET_NODE_TAG",
           language: "rust",
+          depends_on: {
+            nodes: [
+              { name: "DEPENDENCY_NODE_NAME", tag: "DEPENDENCY_NODE_TAG", local_id: "DEPENDENCY_NODE_NAME" }
+            ]
+          },
         },
         process: {
           add_cmd: ["sh", "-c", "touch MARKER_PATH && exit 1"],
@@ -2450,9 +2464,7 @@ async fn listen_for_node_add_fails_on_missing_interface_even_when_dependency_exi
           topics: {
             expects: [
               {
-                id: "camera_stream",
-                node: "DEPENDENCY_NODE_NAME",
-                tag: "DEPENDENCY_NODE_TAG",
+                local_node_id: "DEPENDENCY_NODE_NAME",
                 name: "video_stream"
               },
             ],

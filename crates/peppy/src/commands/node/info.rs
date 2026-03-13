@@ -107,22 +107,22 @@ fn print_node_info(response: &NodeInfoResponse) {
             && let Some(expected) = &topics.expects
         {
             for topic in expected {
-                dependencies.insert(&topic.node);
+                dependencies.insert(&topic.local_node_id);
             }
         }
         if let Some(services) = &config.interfaces.services
             && let Some(consumed) = &services.consumes
         {
             for service in consumed {
-                dependencies.insert(&service.node);
+                dependencies.insert(&service.local_node_id);
             }
         }
         if let Some(actions) = &config.interfaces.actions
             && let Some(consumed) = &actions.consumes
         {
             for action in consumed {
-                if !action.node.is_empty() {
-                    dependencies.insert(&action.node);
+                if !action.local_node_id.is_empty() {
+                    dependencies.insert(&action.local_node_id);
                 }
             }
         }
@@ -239,12 +239,7 @@ fn print_node_info(response: &NodeInfoResponse) {
             {
                 println!("Expected Topics:");
                 for topic in topics {
-                    println!(
-                        "  - {} (from {}:{})",
-                        topic.id.as_str(),
-                        topic.node,
-                        topic.name
-                    );
+                    println!("  - {} (from node: {})", topic.name, topic.local_node_id);
                 }
             }
 
@@ -258,10 +253,8 @@ fn print_node_info(response: &NodeInfoResponse) {
                 println!("Services:");
                 for service in services {
                     println!(
-                        "  - {} (from {}:{})",
-                        service.id.as_str(),
-                        service.node,
-                        service.name
+                        "  - {} (from node: {})",
+                        service.name, service.local_node_id
                     );
                 }
             }
@@ -275,12 +268,7 @@ fn print_node_info(response: &NodeInfoResponse) {
             {
                 println!("Actions:");
                 for action in actions {
-                    println!(
-                        "  - {} (from {}:{})",
-                        action.id.as_str(),
-                        action.node,
-                        action.name
-                    );
+                    println!("  - {} (from node: {})", action.name, action.local_node_id);
                 }
             }
         }

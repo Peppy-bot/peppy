@@ -18,12 +18,12 @@ use tempfile::TempDir;
 
 // --- Common test constants
 const TEST_CORE_NODE: &str = "test_core";
-const SUBSCRIBER_NODE_NAME: &str = "subscriber_node";
-const SUBSCRIBER_INSTANCE_ID: &str = "subscriber_instance";
+const CONSUMER_NODE_NAME: &str = "consumer_node";
+const CONSUMER_INSTANCE_ID: &str = "consumer_instance";
 const SHUTDOWN_SENDER_INSTANCE_ID: &str = "test_shutdown_sender";
 const UVC_CAMERA_NODE_NAME: &str = "uvc_camera";
 
-// --- Services exposes and its corresponding subscriber
+// --- Services exposes and its corresponding consumer
 const EXPOSED_SERVICE_EXAMPLE: &str = r#"
 {
   name: "enable_camera",
@@ -40,22 +40,20 @@ const EXPOSED_SERVICE_EXAMPLE: &str = r#"
 }
 "#;
 
-const SUBSCRIBED_SERVICE_EXAMPLE: &str = r#"
+const CONSUMED_SERVICE_EXAMPLE: &str = r#"
 {
-  id: "uvc_camera_enable_camera",
-  node: "uvc_camera",
+  local_node_id: "uvc_camera",
   name: "enable_camera",
-  tag: "0.1.0"
 }
 "#;
 
-const SUBSCRIBED_SERVICE_REQUEST_FORMAT_EXAMPLE: &str = r#"
+const CONSUMED_SERVICE_REQUEST_FORMAT_EXAMPLE: &str = r#"
 {
   enable: "bool"
 }
 "#;
 
-const SUBSCRIBED_SERVICE_RESPONSE_FORMAT_EXAMPLE: &str = r#"
+const CONSUMED_SERVICE_RESPONSE_FORMAT_EXAMPLE: &str = r#"
 {
     enabled: "bool",
     error_msg: {
@@ -77,16 +75,14 @@ const EXPOSED_SERVICE_NO_REQUEST_EXAMPLE: &str = r#"
 }
 "#;
 
-const SUBSCRIBED_SERVICE_NO_REQUEST_EXAMPLE: &str = r#"
+const CONSUMED_SERVICE_NO_REQUEST_EXAMPLE: &str = r#"
 {
-  id: "uvc_camera_get_system_status",
-  node: "uvc_camera",
+  local_node_id: "uvc_camera",
   name: "get_system_status",
-  tag: "0.1.0"
 }
 "#;
 
-const SUBSCRIBED_SERVICE_NO_REQUEST_RESPONSE_FORMAT_EXAMPLE: &str = r#"
+const CONSUMED_SERVICE_NO_REQUEST_RESPONSE_FORMAT_EXAMPLE: &str = r#"
 {
   healthy: "bool"
 }
@@ -99,31 +95,28 @@ async fn services_communication_no_target_instance_id() {
         .expect("failed to start zenoh router for test");
     let (router_host, router_port) = (instance.host.clone(), instance.port);
 
-    // --- Subscriber (client) project
-    let subscriber_instance_id = "the_subscriber";
-    let temp_dir_subscriber = TempDir::new().unwrap();
+    // --- Consumer (client) project
+    let consumer_instance_id = "the_consumer";
+    let temp_dir_consumer = TempDir::new().unwrap();
     let consumed_service: ConsumedService =
-        serde_json5::from_str(SUBSCRIBED_SERVICE_EXAMPLE).unwrap();
-    let subscribed_request_format: MessageFormat =
-        serde_json5::from_str(SUBSCRIBED_SERVICE_REQUEST_FORMAT_EXAMPLE).unwrap();
-    let subscribed_response_format: MessageFormat =
-        serde_json5::from_str(SUBSCRIBED_SERVICE_RESPONSE_FORMAT_EXAMPLE).unwrap();
-    let (mut generator, output_dir_subscriber, user_node_subscriber, peppy_node_config_path) =
-        init_test_env::<generator::PythonGenerator>(&temp_dir_subscriber, STUB_PYTHON_NODE_CONFIG);
+        serde_json5::from_str(CONSUMED_SERVICE_EXAMPLE).unwrap();
+    let consumed_request_format: MessageFormat =
+        serde_json5::from_str(CONSUMED_SERVICE_REQUEST_FORMAT_EXAMPLE).unwrap();
+    let consumed_response_format: MessageFormat =
+        serde_json5::from_str(CONSUMED_SERVICE_RESPONSE_FORMAT_EXAMPLE).unwrap();
+    let (mut generator, output_dir_consumer, user_node_consumer, peppy_node_config_path) =
+        init_test_env::<generator::PythonGenerator>(&temp_dir_consumer, STUB_PYTHON_NODE_CONFIG);
     generator
         .add_consumed_service(
             &consumed_service,
-            &subscribed_request_format,
-            &subscribed_response_format,
+            &consumed_request_format,
+            &consumed_response_format,
+            "uvc_camera",
         )
         .unwrap();
-    let output_config = copy_config_to_output(&user_node_subscriber, &output_dir_subscriber);
+    let output_config = copy_config_to_output(&user_node_consumer, &output_dir_consumer);
     generator
-        .build(
-            &output_dir_subscriber,
-            &test_peppy_dirs(),
-            Default::default(),
-        )
+        .build(&output_dir_consumer, &test_peppy_dirs(), Default::default())
         .unwrap();
     fs::remove_file(output_config).unwrap();
     config::fingerprint::create_codegen_fingerprint(
@@ -131,24 +124,24 @@ async fn services_communication_no_target_instance_id() {
         Path::new(PEPPYGEN_OUTPUT_PATH),
     );
 
-    let subscriber_runtime_config = RuntimeConfig::new(
+    let consumer_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
         NodeInstance {
-            instance_id: Name::new(subscriber_instance_id).unwrap(),
+            instance_id: Name::new(consumer_instance_id).unwrap(),
             arguments: Default::default(),
         },
-        SUBSCRIBER_NODE_NAME,
+        CONSUMER_NODE_NAME,
         TEST_CORE_NODE,
     )
     .unwrap();
-    let subscriber_runtime_config_path = temp_dir_subscriber.path().join("peppy_runtime.json5");
-    subscriber_runtime_config
-        .save_json5_launch_config(&subscriber_runtime_config_path)
+    let consumer_runtime_config_path = temp_dir_consumer.path().join("peppy_runtime.json5");
+    consumer_runtime_config
+        .save_json5_launch_config(&consumer_runtime_config_path)
         .unwrap();
 
-    init_python_user_node(&user_node_subscriber);
-    let subscriber_main = r#"
+    init_python_user_node(&user_node_consumer);
+    let consumer_main = r#"
 import asyncio
 from peppygen import NodeBuilder
 from peppygen.consumed_services import uvc_camera_enable_camera
@@ -171,8 +164,8 @@ def main():
 if __name__ == "__main__":
     main()
 "#;
-    let main_file = user_node_subscriber.join("main.py");
-    fs::write(main_file, subscriber_main).expect("failed to write subscriber main.py");
+    let main_file = user_node_consumer.join("main.py");
+    fs::write(main_file, consumer_main).expect("failed to write consumer main.py");
 
     // --- Exposer (server) project
     let exposer_instance_id = "the_exposer";
@@ -239,23 +232,22 @@ if __name__ == "__main__":
     fs::write(main_file, exposer_main).expect("failed to write exposer main.py");
 
     println!(
-        "User node subscriber PEPPY_RUNTIME_CONFIG=\"{}\"",
-        &subscriber_runtime_config_path.display()
+        "User node consumer PEPPY_RUNTIME_CONFIG=\"{}\"",
+        &consumer_runtime_config_path.display()
     );
-    println!("User node subscriber = {}", user_node_subscriber.display());
+    println!("User node consumer = {}", user_node_consumer.display());
     println!(
         "User node exposer PEPPY_RUNTIME_CONFIG=\"{}\"",
         &exposer_runtime_config_path.display()
     );
     println!("User node exposer = {}", user_node_exposer.display());
 
-    init_python_project_venv(&user_node_subscriber);
+    init_python_project_venv(&user_node_consumer);
     init_python_project_venv(&user_node_exposer);
 
     let user_node_exposer_runtime_config_str =
         exposer_runtime_config_path.to_str().unwrap().to_owned();
-    let user_node_subscriber_config_str =
-        subscriber_runtime_config_path.to_str().unwrap().to_owned();
+    let user_node_consumer_config_str = consumer_runtime_config_path.to_str().unwrap().to_owned();
 
     let messenger = peppylib::MessengerHandle::from_host_port(&router_host, router_port)
         .await
@@ -286,17 +278,17 @@ if __name__ == "__main__":
     )
     .await;
 
-    let mut subscriber_child = spawn_python_run(
-        &user_node_subscriber,
-        &[(RUNTIME_CONFIG_VAR_NAME, &user_node_subscriber_config_str)],
+    let mut consumer_child = spawn_python_run(
+        &user_node_consumer,
+        &[(RUNTIME_CONFIG_VAR_NAME, &user_node_consumer_config_str)],
     );
 
     wait_for_health_service_reachable_or_exit(
         &ctx,
-        SUBSCRIBER_NODE_NAME,
-        subscriber_instance_id,
-        &mut subscriber_child,
-        &user_node_subscriber,
+        CONSUMER_NODE_NAME,
+        consumer_instance_id,
+        &mut consumer_child,
+        &user_node_consumer,
     )
     .await;
     wait_for_health_service_reachable_or_exit(
@@ -308,14 +300,14 @@ if __name__ == "__main__":
     )
     .await;
 
-    // The subscriber may have already exited after completing the request.
+    // The consumer may have already exited after completing the request.
     try_send_shutdown(
         &messenger,
         TEST_CORE_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
-        SUBSCRIBER_NODE_NAME,
+        CONSUMER_NODE_NAME,
         Some(TEST_CORE_NODE),
-        subscriber_instance_id,
+        consumer_instance_id,
         Duration::from_secs(5),
     )
     .await;
@@ -330,10 +322,10 @@ if __name__ == "__main__":
     )
     .await;
 
-    let subscriber_output = wait_for_child(
-        &mut subscriber_child,
+    let consumer_output = wait_for_child(
+        &mut consumer_child,
         Some(Duration::from_secs(10)),
-        &user_node_subscriber,
+        &user_node_consumer,
     );
     let exposer_output = wait_for_child(
         &mut exposer_child,
@@ -341,25 +333,25 @@ if __name__ == "__main__":
         &user_node_exposer,
     );
 
-    let subscriber_stdout = String::from_utf8_lossy(&subscriber_output.stdout).into_owned();
-    let subscriber_stderr = String::from_utf8_lossy(&subscriber_output.stderr).into_owned();
+    let consumer_stdout = String::from_utf8_lossy(&consumer_output.stdout).into_owned();
+    let consumer_stderr = String::from_utf8_lossy(&consumer_output.stderr).into_owned();
     assert!(
-        subscriber_output.status.success(),
-        "subscriber process failed with status: {:?}\nstdout:\n{}\nstderr:\n{}",
-        subscriber_output.status.code(),
-        subscriber_stdout,
-        subscriber_stderr
+        consumer_output.status.success(),
+        "consumer process failed with status: {:?}\nstdout:\n{}\nstderr:\n{}",
+        consumer_output.status.code(),
+        consumer_stdout,
+        consumer_stderr
     );
-    let expected_subscriber_log = format!(
+    let expected_consumer_log = format!(
         "enable_camera result: service_id={} enabled=True error=handled",
         exposer_instance_id
     );
     assert!(
-        subscriber_stdout.contains(&expected_subscriber_log),
-        "subscriber did not receive expected service response (expected log: {}).\nstdout:\n{}\nstderr:\n{}",
-        expected_subscriber_log,
-        subscriber_stdout,
-        subscriber_stderr
+        consumer_stdout.contains(&expected_consumer_log),
+        "consumer did not receive expected service response (expected log: {}).\nstdout:\n{}\nstderr:\n{}",
+        expected_consumer_log,
+        consumer_stdout,
+        consumer_stderr
     );
 
     let exposer_stdout = String::from_utf8_lossy(&exposer_output.stdout).into_owned();
@@ -373,7 +365,7 @@ if __name__ == "__main__":
     );
     let expected_request_log = format!(
         "received enable_camera request from {}: enable = True",
-        subscriber_instance_id
+        consumer_instance_id
     );
     assert!(
         exposer_stdout.contains(&expected_request_log)
@@ -391,31 +383,28 @@ async fn services_communication_exposed_service_without_request_body() {
         .expect("failed to start zenoh router for test");
     let (router_host, router_port) = (instance.host.clone(), instance.port);
 
-    // --- Subscriber (client) project
-    let subscriber_instance_id = "the_subscriber";
-    let temp_dir_subscriber = TempDir::new().unwrap();
+    // --- Consumer (client) project
+    let consumer_instance_id = "the_consumer";
+    let temp_dir_consumer = TempDir::new().unwrap();
     let consumed_service: ConsumedService =
-        serde_json5::from_str(SUBSCRIBED_SERVICE_NO_REQUEST_EXAMPLE).unwrap();
-    let subscribed_request_format: MessageFormat =
+        serde_json5::from_str(CONSUMED_SERVICE_NO_REQUEST_EXAMPLE).unwrap();
+    let consumed_request_format: MessageFormat =
         serde_json5::from_str(EMPTY_MESSAGE_FORMAT).expect("empty request format should parse");
-    let subscribed_response_format: MessageFormat =
-        serde_json5::from_str(SUBSCRIBED_SERVICE_NO_REQUEST_RESPONSE_FORMAT_EXAMPLE).unwrap();
-    let (mut generator, output_dir_subscriber, user_node_subscriber, peppy_node_config_path) =
-        init_test_env::<generator::PythonGenerator>(&temp_dir_subscriber, STUB_PYTHON_NODE_CONFIG);
+    let consumed_response_format: MessageFormat =
+        serde_json5::from_str(CONSUMED_SERVICE_NO_REQUEST_RESPONSE_FORMAT_EXAMPLE).unwrap();
+    let (mut generator, output_dir_consumer, user_node_consumer, peppy_node_config_path) =
+        init_test_env::<generator::PythonGenerator>(&temp_dir_consumer, STUB_PYTHON_NODE_CONFIG);
     generator
         .add_consumed_service(
             &consumed_service,
-            &subscribed_request_format,
-            &subscribed_response_format,
+            &consumed_request_format,
+            &consumed_response_format,
+            "uvc_camera",
         )
         .unwrap();
-    let output_config = copy_config_to_output(&user_node_subscriber, &output_dir_subscriber);
+    let output_config = copy_config_to_output(&user_node_consumer, &output_dir_consumer);
     generator
-        .build(
-            &output_dir_subscriber,
-            &test_peppy_dirs(),
-            Default::default(),
-        )
+        .build(&output_dir_consumer, &test_peppy_dirs(), Default::default())
         .unwrap();
     fs::remove_file(output_config).unwrap();
     config::fingerprint::create_codegen_fingerprint(
@@ -423,24 +412,24 @@ async fn services_communication_exposed_service_without_request_body() {
         Path::new(PEPPYGEN_OUTPUT_PATH),
     );
 
-    let subscriber_runtime_config = RuntimeConfig::new(
+    let consumer_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
         NodeInstance {
-            instance_id: Name::new(subscriber_instance_id).unwrap(),
+            instance_id: Name::new(consumer_instance_id).unwrap(),
             arguments: Default::default(),
         },
-        SUBSCRIBER_NODE_NAME,
+        CONSUMER_NODE_NAME,
         TEST_CORE_NODE,
     )
     .unwrap();
-    let subscriber_runtime_config_path = temp_dir_subscriber.path().join("peppy_runtime.json5");
-    subscriber_runtime_config
-        .save_json5_launch_config(&subscriber_runtime_config_path)
+    let consumer_runtime_config_path = temp_dir_consumer.path().join("peppy_runtime.json5");
+    consumer_runtime_config
+        .save_json5_launch_config(&consumer_runtime_config_path)
         .unwrap();
 
-    init_python_user_node(&user_node_subscriber);
-    let subscriber_main = r#"
+    init_python_user_node(&user_node_consumer);
+    let consumer_main = r#"
 import asyncio
 from peppygen import NodeBuilder
 from peppygen.consumed_services import uvc_camera_get_system_status
@@ -461,8 +450,8 @@ def main():
 if __name__ == "__main__":
     main()
 "#;
-    let main_file = user_node_subscriber.join("main.py");
-    fs::write(main_file, subscriber_main).expect("failed to write subscriber main.py");
+    let main_file = user_node_consumer.join("main.py");
+    fs::write(main_file, consumer_main).expect("failed to write consumer main.py");
 
     // --- Exposer (server) project
     let exposer_instance_id = "the_exposer";
@@ -526,11 +515,11 @@ if __name__ == "__main__":
     let main_file = user_node_exposer.join("main.py");
     fs::write(main_file, exposer_main).expect("failed to write exposer main.py");
 
-    init_python_project_venv(&user_node_subscriber);
+    init_python_project_venv(&user_node_consumer);
     init_python_project_venv(&user_node_exposer);
 
     let exposer_runtime_config_str = exposer_runtime_config_path.to_str().unwrap().to_owned();
-    let subscriber_runtime_config_str = subscriber_runtime_config_path.to_str().unwrap().to_owned();
+    let consumer_runtime_config_str = consumer_runtime_config_path.to_str().unwrap().to_owned();
 
     let messenger = peppylib::MessengerHandle::from_host_port(&router_host, router_port)
         .await
@@ -558,17 +547,17 @@ if __name__ == "__main__":
     )
     .await;
 
-    let mut subscriber_child = spawn_python_run(
-        &user_node_subscriber,
-        &[(RUNTIME_CONFIG_VAR_NAME, &subscriber_runtime_config_str)],
+    let mut consumer_child = spawn_python_run(
+        &user_node_consumer,
+        &[(RUNTIME_CONFIG_VAR_NAME, &consumer_runtime_config_str)],
     );
 
     wait_for_health_service_reachable_or_exit(
         &ctx,
-        SUBSCRIBER_NODE_NAME,
-        subscriber_instance_id,
-        &mut subscriber_child,
-        &user_node_subscriber,
+        CONSUMER_NODE_NAME,
+        consumer_instance_id,
+        &mut consumer_child,
+        &user_node_consumer,
     )
     .await;
     wait_for_health_service_reachable_or_exit(
@@ -584,9 +573,9 @@ if __name__ == "__main__":
         &messenger,
         TEST_CORE_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
-        SUBSCRIBER_NODE_NAME,
+        CONSUMER_NODE_NAME,
         Some(TEST_CORE_NODE),
-        subscriber_instance_id,
+        consumer_instance_id,
         Duration::from_secs(5),
     )
     .await;
@@ -601,10 +590,10 @@ if __name__ == "__main__":
     )
     .await;
 
-    let subscriber_output = wait_for_child(
-        &mut subscriber_child,
+    let consumer_output = wait_for_child(
+        &mut consumer_child,
         Some(Duration::from_secs(10)),
-        &user_node_subscriber,
+        &user_node_consumer,
     );
     let exposer_output = wait_for_child(
         &mut exposer_child,
@@ -612,25 +601,25 @@ if __name__ == "__main__":
         &user_node_exposer,
     );
 
-    let subscriber_stdout = String::from_utf8_lossy(&subscriber_output.stdout).into_owned();
-    let subscriber_stderr = String::from_utf8_lossy(&subscriber_output.stderr).into_owned();
+    let consumer_stdout = String::from_utf8_lossy(&consumer_output.stdout).into_owned();
+    let consumer_stderr = String::from_utf8_lossy(&consumer_output.stderr).into_owned();
     assert!(
-        subscriber_output.status.success(),
-        "subscriber process failed with status: {:?}\nstdout:\n{}\nstderr:\n{}",
-        subscriber_output.status.code(),
-        subscriber_stdout,
-        subscriber_stderr
+        consumer_output.status.success(),
+        "consumer process failed with status: {:?}\nstdout:\n{}\nstderr:\n{}",
+        consumer_output.status.code(),
+        consumer_stdout,
+        consumer_stderr
     );
-    let expected_subscriber_log = format!(
+    let expected_consumer_log = format!(
         "get_system_status result: service_id={} healthy=True",
         exposer_instance_id
     );
     assert!(
-        subscriber_stdout.contains(&expected_subscriber_log),
-        "subscriber did not receive expected service response (expected log: {}).\nstdout:\n{}\nstderr:\n{}",
-        expected_subscriber_log,
-        subscriber_stdout,
-        subscriber_stderr
+        consumer_stdout.contains(&expected_consumer_log),
+        "consumer did not receive expected service response (expected log: {}).\nstdout:\n{}\nstderr:\n{}",
+        expected_consumer_log,
+        consumer_stdout,
+        consumer_stderr
     );
 
     let exposer_stdout = String::from_utf8_lossy(&exposer_output.stdout).into_owned();
@@ -644,7 +633,7 @@ if __name__ == "__main__":
     );
     let expected_request_log = format!(
         "received get_system_status request from {}",
-        subscriber_instance_id
+        consumer_instance_id
     );
     assert!(
         exposer_stdout.contains(&expected_request_log)
@@ -655,7 +644,7 @@ if __name__ == "__main__":
     );
 }
 
-/// If there are multiple services of the same name and the subscriber does not specify an instance_id, it's the first service that responds that connects with the subscriber
+/// If there are multiple services of the same name and the consumer does not specify an instance_id, it's the first service that responds that connects with the consumer
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn services_communication_multiple_exposed_instances_same_service_not_target_instance_id() {
     let instance = pmi::ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
@@ -663,31 +652,28 @@ async fn services_communication_multiple_exposed_instances_same_service_not_targ
         .expect("failed to start zenoh router for test");
     let (router_host, router_port) = (instance.host.clone(), instance.port);
 
-    // --- Subscriber (client) project
-    let subscriber_instance_id = SUBSCRIBER_INSTANCE_ID;
-    let temp_dir_subscriber = TempDir::new().unwrap();
+    // --- Consumer (client) project
+    let consumer_instance_id = CONSUMER_INSTANCE_ID;
+    let temp_dir_consumer = TempDir::new().unwrap();
     let consumed_service: ConsumedService =
-        serde_json5::from_str(SUBSCRIBED_SERVICE_EXAMPLE).unwrap();
-    let subscribed_request_format: MessageFormat =
-        serde_json5::from_str(SUBSCRIBED_SERVICE_REQUEST_FORMAT_EXAMPLE).unwrap();
-    let subscribed_response_format: MessageFormat =
-        serde_json5::from_str(SUBSCRIBED_SERVICE_RESPONSE_FORMAT_EXAMPLE).unwrap();
-    let (mut generator, output_dir_subscriber, user_node_subscriber, peppy_node_config_path) =
-        init_test_env::<generator::PythonGenerator>(&temp_dir_subscriber, STUB_PYTHON_NODE_CONFIG);
+        serde_json5::from_str(CONSUMED_SERVICE_EXAMPLE).unwrap();
+    let consumed_request_format: MessageFormat =
+        serde_json5::from_str(CONSUMED_SERVICE_REQUEST_FORMAT_EXAMPLE).unwrap();
+    let consumed_response_format: MessageFormat =
+        serde_json5::from_str(CONSUMED_SERVICE_RESPONSE_FORMAT_EXAMPLE).unwrap();
+    let (mut generator, output_dir_consumer, user_node_consumer, peppy_node_config_path) =
+        init_test_env::<generator::PythonGenerator>(&temp_dir_consumer, STUB_PYTHON_NODE_CONFIG);
     generator
         .add_consumed_service(
             &consumed_service,
-            &subscribed_request_format,
-            &subscribed_response_format,
+            &consumed_request_format,
+            &consumed_response_format,
+            "uvc_camera",
         )
         .unwrap();
-    let output_config = copy_config_to_output(&user_node_subscriber, &output_dir_subscriber);
+    let output_config = copy_config_to_output(&user_node_consumer, &output_dir_consumer);
     generator
-        .build(
-            &output_dir_subscriber,
-            &test_peppy_dirs(),
-            Default::default(),
-        )
+        .build(&output_dir_consumer, &test_peppy_dirs(), Default::default())
         .unwrap();
     fs::remove_file(output_config).unwrap();
     config::fingerprint::create_codegen_fingerprint(
@@ -695,24 +681,24 @@ async fn services_communication_multiple_exposed_instances_same_service_not_targ
         Path::new(PEPPYGEN_OUTPUT_PATH),
     );
 
-    let subscriber_runtime_config = RuntimeConfig::new(
+    let consumer_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
         NodeInstance {
-            instance_id: Name::new(subscriber_instance_id).unwrap(),
+            instance_id: Name::new(consumer_instance_id).unwrap(),
             arguments: Default::default(),
         },
-        SUBSCRIBER_NODE_NAME,
+        CONSUMER_NODE_NAME,
         TEST_CORE_NODE,
     )
     .unwrap();
-    let subscriber_runtime_config_path = temp_dir_subscriber.path().join("peppy_runtime.json5");
-    subscriber_runtime_config
-        .save_json5_launch_config(&subscriber_runtime_config_path)
+    let consumer_runtime_config_path = temp_dir_consumer.path().join("peppy_runtime.json5");
+    consumer_runtime_config
+        .save_json5_launch_config(&consumer_runtime_config_path)
         .unwrap();
 
-    init_python_user_node(&user_node_subscriber);
-    let subscriber_main = r#"
+    init_python_user_node(&user_node_consumer);
+    let consumer_main = r#"
 import asyncio
 from peppygen import NodeBuilder
 from peppygen.consumed_services import uvc_camera_enable_camera
@@ -735,8 +721,8 @@ def main():
 if __name__ == "__main__":
     main()
 "#;
-    let main_file = user_node_subscriber.join("main.py");
-    fs::write(main_file, subscriber_main).expect("failed to write subscriber main.py");
+    let main_file = user_node_consumer.join("main.py");
+    fs::write(main_file, consumer_main).expect("failed to write consumer main.py");
 
     // --- Exposer 1
     let exposer1_instance_id = "exposer1_instance";
@@ -870,13 +856,13 @@ if __name__ == "__main__":
     fs::write(main_file, exposer2_main).expect("failed to write exposer main 2");
 
     // Install dependencies for all projects
-    init_python_project_venv(&user_node_subscriber);
+    init_python_project_venv(&user_node_consumer);
     init_python_project_venv(&user_node_exposer1);
     init_python_project_venv(&user_node_exposer2);
 
     let exposer1_runtime_config_str = exposer1_runtime_config_path.to_str().unwrap().to_owned();
     let exposer2_runtime_config_str = exposer2_runtime_config_path.to_str().unwrap().to_owned();
-    let subscriber_runtime_config_str = subscriber_runtime_config_path.to_str().unwrap().to_owned();
+    let consumer_runtime_config_str = consumer_runtime_config_path.to_str().unwrap().to_owned();
 
     let messenger = peppylib::MessengerHandle::from_host_port(&router_host, router_port)
         .await
@@ -917,12 +903,12 @@ if __name__ == "__main__":
     )
     .await;
 
-    // Verify broadcast reachability before spawning the subscriber.
+    // Verify broadcast reachability before spawning the consumer.
     // The targeted probes above confirm each exposer individually, but the
     // broadcast subscription pattern may not be fully propagated in the
     // Zenoh routing table yet. This probe exercises the broadcast path,
     // ensuring both exposers' broadcast subscriptions are active before the
-    // subscriber sends its broadcast poll.
+    // consumer sends its broadcast poll.
     wait_for_service_reachable_or_exit(
         &ctx,
         UVC_CAMERA_NODE_NAME,
@@ -933,17 +919,17 @@ if __name__ == "__main__":
     )
     .await;
 
-    let mut subscriber_child = spawn_python_run(
-        &user_node_subscriber,
-        &[(RUNTIME_CONFIG_VAR_NAME, &subscriber_runtime_config_str)],
+    let mut consumer_child = spawn_python_run(
+        &user_node_consumer,
+        &[(RUNTIME_CONFIG_VAR_NAME, &consumer_runtime_config_str)],
     );
 
     wait_for_health_service_reachable_or_exit(
         &ctx,
-        SUBSCRIBER_NODE_NAME,
-        subscriber_instance_id,
-        &mut subscriber_child,
-        &user_node_subscriber,
+        CONSUMER_NODE_NAME,
+        consumer_instance_id,
+        &mut consumer_child,
+        &user_node_consumer,
     )
     .await;
     wait_for_health_service_reachable_or_exit(
@@ -967,9 +953,9 @@ if __name__ == "__main__":
         &messenger,
         TEST_CORE_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
-        SUBSCRIBER_NODE_NAME,
+        CONSUMER_NODE_NAME,
         Some(TEST_CORE_NODE),
-        subscriber_instance_id,
+        consumer_instance_id,
         Duration::from_secs(5),
     )
     .await;
@@ -994,10 +980,10 @@ if __name__ == "__main__":
     )
     .await;
 
-    let subscriber_output = wait_for_child(
-        &mut subscriber_child,
+    let consumer_output = wait_for_child(
+        &mut consumer_child,
         Some(Duration::from_secs(10)),
-        &user_node_subscriber,
+        &user_node_consumer,
     );
     let exposer_output1 = wait_for_child(
         &mut exposer1_child,
@@ -1010,14 +996,14 @@ if __name__ == "__main__":
         &user_node_exposer2,
     );
 
-    let subscriber_stdout = String::from_utf8_lossy(&subscriber_output.stdout).into_owned();
-    let subscriber_stderr = String::from_utf8_lossy(&subscriber_output.stderr).into_owned();
+    let consumer_stdout = String::from_utf8_lossy(&consumer_output.stdout).into_owned();
+    let consumer_stderr = String::from_utf8_lossy(&consumer_output.stderr).into_owned();
     assert!(
-        subscriber_output.status.success(),
-        "subscriber process failed with status: {:?}\nstdout:\n{}\nstderr:\n{}",
-        subscriber_output.status.code(),
-        subscriber_stdout,
-        subscriber_stderr
+        consumer_output.status.success(),
+        "consumer process failed with status: {:?}\nstdout:\n{}\nstderr:\n{}",
+        consumer_output.status.code(),
+        consumer_stdout,
+        consumer_stderr
     );
 
     let exposer1_stdout = String::from_utf8_lossy(&exposer_output1.stdout).into_owned();
@@ -1028,7 +1014,7 @@ if __name__ == "__main__":
     // Both exposers should have received the request
     let expected_request_log = format!(
         "received enable_camera request for {}: True",
-        subscriber_instance_id
+        consumer_instance_id
     );
     assert!(
         exposer1_stdout.contains(&expected_request_log)
@@ -1046,11 +1032,11 @@ if __name__ == "__main__":
         exposer2_stderr
     );
 
-    // Subscriber should have received a response from exposer1 (the faster responder)
+    // Consumer should have received a response from exposer1 (the faster responder)
     assert!(
-        subscriber_stdout.contains("enable_camera result: enabled=True error=handled"),
-        "subscriber should have received response from exposer1 (the faster responder), not exposer2.\nstdout:\n{}\nstderr:\n{}",
-        subscriber_stdout,
-        subscriber_stderr
+        consumer_stdout.contains("enable_camera result: enabled=True error=handled"),
+        "consumer should have received response from exposer1 (the faster responder), not exposer2.\nstdout:\n{}\nstderr:\n{}",
+        consumer_stdout,
+        consumer_stderr
     );
 }

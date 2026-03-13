@@ -22,7 +22,7 @@ use super::types::{
 use crate::error::Result;
 use config::encoding::MessageFormatMapper;
 use config::node::{
-    ConsumedAction, ConsumedService, EmittedTopic, ExposedAction, ExposedService, ExpectedTopic,
+    ConsumedAction, ConsumedService, EmittedTopic, ExpectedTopic, ExposedAction, ExposedService,
     MessageFormat, PeppygenLanguage,
 };
 use std::collections::HashMap;
@@ -213,10 +213,12 @@ impl LanguageGenerator for PythonGenerator {
         &mut self,
         topic: &ExpectedTopic,
         arguments: MessageFormat,
+        dependency_node_name: &str,
     ) -> Result<()> {
         let schema_info = self.register_schema(&topic.name, &arguments)?;
-        let code = topics::build_expected_topic(topic, &arguments, &schema_info)?;
-        let module_label = topics::expected_topic_module_label(topic);
+        let code =
+            topics::build_expected_topic(topic, &arguments, &schema_info, dependency_node_name)?;
+        let module_label = module_name_from_components(&topic.local_node_id, &topic.name);
         self.push_section(InterfaceArtifact::from_kind(
             &module_label,
             InterfaceKind::ExpectedTopic,
@@ -230,6 +232,7 @@ impl LanguageGenerator for PythonGenerator {
         service: &ConsumedService,
         request_arguments: &MessageFormat,
         response_arguments: &MessageFormat,
+        dependency_node_name: &str,
     ) -> Result<()> {
         let request_schema_info = non_empty_message_format(Some(request_arguments))
             .map(|fmt| self.register_schema(&format!("{}_request", service.name), fmt))
@@ -245,8 +248,9 @@ impl LanguageGenerator for PythonGenerator {
             response_arguments,
             request_schema_info.as_ref(),
             response_schema_info.as_ref(),
+            dependency_node_name,
         )?;
-        let module_label = module_name_from_components(&service.node, &service.name);
+        let module_label = module_name_from_components(&service.local_node_id, &service.name);
         self.push_section(InterfaceArtifact::from_kind(
             &module_label,
             InterfaceKind::ConsumedService,
@@ -259,6 +263,7 @@ impl LanguageGenerator for PythonGenerator {
         &mut self,
         action: &ConsumedAction,
         messages: &ConsumedActionMessage,
+        dependency_node_name: &str,
     ) -> Result<()> {
         let goal_request_schema_info = messages
             .goal_request
@@ -296,13 +301,16 @@ impl LanguageGenerator for PythonGenerator {
         let code = actions::build_consumed_action(
             action,
             messages,
-            goal_request_schema_info.as_ref(),
-            goal_response_schema_info.as_ref(),
-            cancel_response_schema_info.as_ref(),
-            feedback_schema_info.as_ref(),
-            result_response_schema_info.as_ref(),
+            actions::ConsumedActionSchemaInfo {
+                goal_request: goal_request_schema_info.as_ref(),
+                goal_response: goal_response_schema_info.as_ref(),
+                cancel_response: cancel_response_schema_info.as_ref(),
+                feedback: feedback_schema_info.as_ref(),
+                result_response: result_response_schema_info.as_ref(),
+            },
+            dependency_node_name,
         )?;
-        let module_label = module_name_from_components(&action.node, &action.name);
+        let module_label = module_name_from_components(&action.local_node_id, &action.name);
         self.push_section(InterfaceArtifact::from_kind(
             &module_label,
             InterfaceKind::ConsumedAction,

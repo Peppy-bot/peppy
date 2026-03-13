@@ -4,7 +4,6 @@ use super::deserialization;
 use super::serialization;
 use super::type_mapping::{collect_fields_from_format, qos_profile_python, uses_optional};
 use crate::error::Result;
-use crate::generator::naming::sanitize_component;
 use config::node::{EmittedTopic, ExpectedTopic, MessageFormat};
 
 pub(crate) fn capnp_loader_fn_name(schema_info: &PythonSchemaInfo) -> String {
@@ -130,6 +129,7 @@ pub fn build_expected_topic(
     topic: &ExpectedTopic,
     arguments: &MessageFormat,
     schema_info: &PythonSchemaInfo,
+    dependency_node_name: &str,
 ) -> Result<String> {
     let mut builder = PythonCodeBuilder::new();
     let mut nested_classes = Vec::new();
@@ -171,7 +171,7 @@ pub fn build_expected_topic(
     builder.blank_line();
     builder.line("async def on_next_message_received(node_runner: peppylib.NodeRunner, core_node_target: Optional[str] = None, instance_id_target: Optional[str] = None) -> Tuple[str, Message]:");
     builder.indent();
-    builder.line(&format!("node_name = \"{}\"", topic.node));
+    builder.line(&format!("node_name = \"{}\"", dependency_node_name));
     builder.line(&format!("topic_name = \"{}\"", topic.name));
     builder.line("subscription = await peppylib.TopicMessenger.subscribe(");
     builder.indent();
@@ -194,17 +194,4 @@ pub fn build_expected_topic(
     builder.dedent();
 
     Ok(builder.build())
-}
-
-/// Returns the module label for an expected topic artifact.
-pub fn expected_topic_module_label(topic: &ExpectedTopic) -> String {
-    let node_component = sanitize_component(&topic.node);
-    let topic_component = sanitize_component(&topic.name);
-
-    match (node_component.is_empty(), topic_component.is_empty()) {
-        (false, false) => format!("{node_component}_{topic_component}"),
-        (false, true) => node_component,
-        (true, false) => topic_component,
-        (true, true) => String::from("topic"),
-    }
 }

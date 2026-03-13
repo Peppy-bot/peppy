@@ -161,7 +161,7 @@ fn write_node_config_with_options(
 
     let expects_topics = if expects_uvc_camera {
         r#"expects: [
-                  { id: "camera_stream", node: "uvc_camera", tag: "0.1.0", name: "camera_stream" }
+                  { local_node_id: "uvc_camera", name: "camera_stream" }
                 ],"#
     } else {
         ""
@@ -180,6 +180,16 @@ fn write_node_config_with_options(
         String::new()
     };
 
+    let depends_on = if expects_uvc_camera {
+        r#"depends_on: {
+                    nodes: [
+                        { name: "uvc_camera", tag: "0.1.0", local_id: "uvc_camera" }
+                    ]
+                },"#
+    } else {
+        ""
+    };
+
     let node_config_path = node_dir.join(NODE_CONFIG_FILE);
     fs::write(
         &node_config_path,
@@ -190,6 +200,7 @@ fn write_node_config_with_options(
                 name: "{node_name}",
                 tag: "{node_tag}",
                 language: "rust",
+                {depends_on}
               }},
               process: {{
                 add_cmd: [{add_cmd_json5}],

@@ -43,10 +43,8 @@ const EXPOSED_SERVICE_EXAMPLE3: &str = r#"
 
 const SUBSCRIBED_SERVICE_EXAMPLE1: &str = r#"
 {
-  id: "uvc_camera_enable_camera",
-  node: "uvc_camera",
+  local_node_id: "uvc_camera",
   name: "enable_camera",
-  tag: "0.1.0"
 }
 "#;
 
@@ -77,10 +75,8 @@ const SUBSCRIBED_SERVICE_RESPONSE_OPTIONAL_SCALAR: &str = r#"
 
 const SUBSCRIBED_SERVICE_EXAMPLE2: &str = r#"
 {
-    id: "uvc_camera_get_camera_info",
-    node: "uvc_camera",
+    local_node_id: "uvc_camera",
     name: "get_camera_info",
-    tag: "0.1.0"
 }
 "#;
 // No request body for the second consumed service
@@ -238,7 +234,7 @@ fn consumed_service() {
 
     let mut generator = RustGenerator::new();
     generator
-        .add_consumed_service(&service, &request_format, &response_format)
+        .add_consumed_service(&service, &request_format, &response_format, "uvc_camera")
         .unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
@@ -309,10 +305,10 @@ fn consumed_two_services_same_node() {
 
     let mut generator = RustGenerator::new();
     generator
-        .add_consumed_service(&service1, &request_format1, &response_format1)
+        .add_consumed_service(&service1, &request_format1, &response_format1, "uvc_camera")
         .unwrap();
     generator
-        .add_consumed_service(&service2, &empty_format, &response_format2)
+        .add_consumed_service(&service2, &empty_format, &response_format2, "uvc_camera")
         .unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
@@ -342,10 +338,8 @@ fn consumed_two_services_same_node() {
 fn consumed_service_without_response_payload() {
     let service = r#"
         {
-            id: "uvc_camera_get_camera_info",
-            node: "uvc_camera",
+            local_node_id: "uvc_camera",
             name: "get_camera_info",
-            tag: "0.1.0"
         }
         "#;
     let service: ConsumedService = serde_json5::from_str(service).unwrap();
@@ -353,7 +347,7 @@ fn consumed_service_without_response_payload() {
 
     let mut generator = RustGenerator::new();
     generator
-        .add_consumed_service(&service, &empty_format, &empty_format)
+        .add_consumed_service(&service, &empty_format, &empty_format, "uvc_camera")
         .expect("generator should allow services without response format");
 
     let artifacts = render_artifacts(generator.into_artifacts());
@@ -378,7 +372,7 @@ fn consumed_service_rejects_optional_scalar_response_field() {
 
     let mut generator = RustGenerator::new();
     let err = generator
-        .add_consumed_service(&service, &empty_format, &response_format)
+        .add_consumed_service(&service, &empty_format, &response_format, "uvc_camera")
         .unwrap_err();
 
     match err {
@@ -404,10 +398,8 @@ fn clippy_single_exposed_service_without_request_body() {
     let consumed_action1: ConsumedAction = serde_json5::from_str(
         r#"
         {
-          id: "brain_move_arm",
-          node: "brain",
+          local_node_id: "brain",
           name: "move_arm",
-          tag: "0.1.0"
         }
         "#,
     )
@@ -415,10 +407,8 @@ fn clippy_single_exposed_service_without_request_body() {
     let consumed_action2: ConsumedAction = serde_json5::from_str(
         r#"
         {
-          id: "controller_rotate_servo",
-          node: "controller",
+          local_node_id: "controller",
           name: "rotate_servo_clockwise",
-          tag: "0.1.0"
         }
         "#,
     )
@@ -436,10 +426,10 @@ fn clippy_single_exposed_service_without_request_body() {
     let (mut generator, output_dir, user_node, _) = init_test_env::<RustGenerator>(&temp_dir);
     generator.add_exposed_service(&exposed_service).unwrap();
     generator
-        .add_consumed_action(&consumed_action1, &action_messages)
+        .add_consumed_action(&consumed_action1, &action_messages, "brain")
         .unwrap();
     generator
-        .add_consumed_action(&consumed_action2, &action_messages)
+        .add_consumed_action(&consumed_action2, &action_messages, "controller")
         .unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);
     generator
@@ -520,6 +510,7 @@ fn compile_lib_with_exposed_and_consumed_services() {
             &consumed_service1,
             &consumed_service_request1,
             &consumed_service_response1,
+            "uvc_camera",
         )
         .unwrap();
     generator
@@ -527,6 +518,7 @@ fn compile_lib_with_exposed_and_consumed_services() {
             &consumed_service2,
             &empty_format,
             &consumed_service_response2,
+            "uvc_camera",
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);
@@ -627,10 +619,8 @@ fn clippy_consumed_service_empty_request_format() {
     let consumed_service: ConsumedService = serde_json5::from_str(
         r#"
         {
-          id: "sensor_get_status",
-          node: "sensor",
+          local_node_id: "sensor",
           name: "get_status",
-          tag: "0.1.0"
         }
         "#,
     )
@@ -640,7 +630,7 @@ fn clippy_consumed_service_empty_request_format() {
 
     let (mut generator, output_dir, user_node, _) = init_test_env::<RustGenerator>(&temp_dir);
     generator
-        .add_consumed_service(&consumed_service, &empty_format, &response_format)
+        .add_consumed_service(&consumed_service, &empty_format, &response_format, "sensor")
         .unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);
     generator
@@ -682,10 +672,8 @@ fn clippy_consumed_service_empty_response_format() {
     let consumed_service: ConsumedService = serde_json5::from_str(
         r#"
         {
-          id: "sensor_trigger_action",
-          node: "sensor",
+          local_node_id: "sensor",
           name: "trigger_action",
-          tag: "0.1.0"
         }
         "#,
     )
@@ -695,7 +683,7 @@ fn clippy_consumed_service_empty_response_format() {
 
     let (mut generator, output_dir, user_node, _) = init_test_env::<RustGenerator>(&temp_dir);
     generator
-        .add_consumed_service(&consumed_service, &request_format, &empty_format)
+        .add_consumed_service(&consumed_service, &request_format, &empty_format, "sensor")
         .unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);
     generator

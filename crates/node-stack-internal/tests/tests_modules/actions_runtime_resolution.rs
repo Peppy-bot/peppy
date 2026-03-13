@@ -13,6 +13,11 @@ fn action_dependency_resolved_when_dependency_added_first() {
               name: "brain",
               tag: "1.0.0",
               language: "rust",
+              depends_on: {
+                nodes: [
+                  { name: "controller", tag: "1.0.0", local_id: "controller" }
+                ]
+              },
             },
             process: {
               start_cmd: ["brain"]
@@ -21,10 +26,8 @@ fn action_dependency_resolved_when_dependency_added_first() {
                 actions: {
                     consumes: [
                         {
-                          id: "move_right_arm_sub",
-                          node: "controller",
-                          name: "move_right_arm",
-                          tag: "1.0.0"
+                          local_node_id: "controller",
+                          name: "move_right_arm"
                         }
                     ]
                 }
@@ -144,6 +147,11 @@ fn action_dependency_fails_when_dependency_is_missing() {
               name: "brain",
               tag: "1.0.0",
               language: "rust",
+              depends_on: {
+                nodes: [
+                  { name: "controller", tag: "1.0.0", local_id: "controller" }
+                ]
+              },
             },
             process: {
               start_cmd: ["brain"]
@@ -152,10 +160,8 @@ fn action_dependency_fails_when_dependency_is_missing() {
                 actions: {
                     consumes: [
                         {
-                          id: "move_right_arm_sub",
-                          node: "controller",
-                          name: "move_right_arm",
-                          tag: "1.0.0"
+                          local_node_id: "controller",
+                          name: "move_right_arm"
                         }
                     ]
                 }
@@ -192,6 +198,11 @@ fn action_dependency_fails_when_action_not_exposed_by_dependency() {
               name: "brain",
               tag: "1.0.0",
               language: "rust",
+              depends_on: {
+                nodes: [
+                  { name: "controller", tag: "1.0.0", local_id: "controller" }
+                ]
+              },
             },
             process: {
               start_cmd: ["brain"]
@@ -200,10 +211,8 @@ fn action_dependency_fails_when_action_not_exposed_by_dependency() {
                 actions: {
                     consumes: [
                         {
-                          id: "move_right_arm_sub",
-                          node: "controller",
-                          name: "move_right_arm",
-                          tag: "1.0.0"
+                          local_node_id: "controller",
+                          name: "move_right_arm"
                         }
                     ]
                 }

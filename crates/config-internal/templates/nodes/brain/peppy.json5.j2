@@ -9,6 +9,13 @@
     labels: [
       "brain"
     ],
+    depends_on: {
+      nodes: [
+        { name: "{{ uvc_camera_node_name }}", tag: "0.1.0", local_id: "uvc_camera" },
+        { name: "{{ lidar_sensor_node_name }}", tag: "0.1.0", local_id: "lidar_sensor" },
+        { name: "{{ controller_node_name }}", tag: "0.1.0", local_id: "controller" },
+      ]
+    },
   },
   process: {
     start_cmd: [
@@ -22,15 +29,11 @@
     topics: {
       expects: [
         {
-          id: "camera_stream",
-          node: "{{ uvc_camera_node_name }}",
-          tag: "0.1.0",
+          local_node_id: "uvc_camera",
           name: "video_stream"
         },
         {
-          id: "lidar_object_push",
-          node: "{{ lidar_sensor_node_name }}",
-          tag: "0.1.0",
+          local_node_id: "lidar_sensor",
           name: "push_lidar_object"
         }
       ],
@@ -38,10 +41,8 @@
     actions: {
       consumes: [
         {
-          id: "move_right_arm_action",
-          node: "{{ controller_node_name }}", // Will look for that node name
-          tag: "0.1.0", // On that particular tag/version
-          name: "move_right_arm", // With this action name
+          local_node_id: "controller",
+          name: "move_right_arm",
         }
       ],
     },

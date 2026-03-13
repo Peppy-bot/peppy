@@ -16,6 +16,7 @@ pub struct ExpectedTopicCallbackSpec<'a> {
     pub encoding: &'a MessageEncodingSpec,
     pub topic: &'a ExpectedTopic,
     pub struct_prefix: &'a str,
+    pub dependency_node_name: &'a str,
 }
 
 /// Specification for building an emit-style method (topic emit or action feedback emit).
@@ -153,9 +154,10 @@ pub fn build_expected_topic_callback(spec: ExpectedTopicCallbackSpec) -> Result<
         encoding,
         topic,
         struct_prefix,
+        dependency_node_name,
     } = spec;
     let topic_literal = Literal::string(topic.name.as_str());
-    let node_name_literal = Literal::string(topic.node.as_str());
+    let node_name_literal = Literal::string(dependency_node_name);
     let reader_type = &encoding.reader_type;
     let context_literal = Literal::string(struct_prefix);
     let context_expr = quote!(String::from(#context_literal));

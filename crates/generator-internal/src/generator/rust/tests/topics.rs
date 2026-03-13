@@ -1,5 +1,5 @@
 use super::*;
-use config::node::{ExpectedTopic, EmittedTopic, MessageFormat, PeppygenLanguage};
+use config::node::{EmittedTopic, ExpectedTopic, MessageFormat, PeppygenLanguage};
 use std::process::{Command, Stdio};
 
 const EMITTED_TOPIC_EXAMPLE: &str = r#"
@@ -89,10 +89,8 @@ const EMITTED_TOPIC_FIXED_STRING_ARRAY_EXAMPLE: &str = r#"
 
 const SUBSCRIBED_TOPIC_EXAMPLE1: &str = r#"
 {
-    id: "video_stream",
-    node: "uvc_camera",
+    local_node_id: "uvc_camera",
     name: "video_stream",
-    tag: "0.1.0"
 }
 "#;
 
@@ -115,19 +113,15 @@ const SUBSCRIBED_TOPIC_FORMAT_EXAMPLE1: &str = r#"
 
 const SUBSCRIBED_TOPIC_EXAMPLE2: &str = r#"
 {
-    id: "sound",
-    node: "uvc_camera",
+    local_node_id: "uvc_camera",
     name: "sound",
-    tag: "0.1.0"
 }
 "#;
 
 const SUBSCRIBED_TOPIC_EXAMPLE_KEYWORDS: &str = r#"
 {
-    id: "keyword_topic",
-    node: "keyword_source",
+    local_node_id: "keyword_source",
     name: "keyword_topic",
-    tag: "0.1.0"
 }
 "#;
 
@@ -322,7 +316,9 @@ fn expected_topic() {
     let format = parse_message_format(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE1);
 
     let mut generator = RustGenerator::new();
-    generator.add_expected_topic(&topic, format).unwrap();
+    generator
+        .add_expected_topic(&topic, format, "uvc_camera")
+        .unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
         artifacts.len(),
@@ -385,7 +381,9 @@ fn expected_topic_escapes_rust_keyword_fields() {
     let format = parse_message_format(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE_KEYWORDS);
 
     let mut generator = RustGenerator::new();
-    generator.add_expected_topic(&topic, format).unwrap();
+    generator
+        .add_expected_topic(&topic, format, "keyword_source")
+        .unwrap();
     let rendered = render_artifacts(generator.into_artifacts())
         .into_iter()
         .next()
@@ -413,10 +411,10 @@ fn expected_two_topics_same_node() {
 
     let mut generator = RustGenerator::new();
     generator
-        .add_expected_topic(&video_topic, video_format)
+        .add_expected_topic(&video_topic, video_format, "uvc_camera")
         .unwrap();
     generator
-        .add_expected_topic(&sound_topic, sound_format)
+        .add_expected_topic(&sound_topic, sound_format, "uvc_camera")
         .unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
@@ -445,10 +443,8 @@ fn clippy_single_emitted_topic_empty_format() {
     let consumed_action1: ConsumedAction = serde_json5::from_str(
         r#"
         {
-          id: "brain_move_arm",
-          node: "brain",
+          local_node_id: "brain",
           name: "move_arm",
-          tag: "0.1.0"
         }
         "#,
     )
@@ -456,10 +452,8 @@ fn clippy_single_emitted_topic_empty_format() {
     let consumed_action2: ConsumedAction = serde_json5::from_str(
         r#"
         {
-          id: "controller_rotate_servo",
-          node: "controller",
+          local_node_id: "controller",
           name: "rotate_servo_clockwise",
-          tag: "0.1.0"
         }
         "#,
     )
@@ -477,10 +471,10 @@ fn clippy_single_emitted_topic_empty_format() {
     let (mut generator, output_dir, user_node, _) = init_test_env::<RustGenerator>(&temp_dir);
     generator.add_emitted_topic(&emitted_topic).unwrap();
     generator
-        .add_consumed_action(&consumed_action1, &action_messages)
+        .add_consumed_action(&consumed_action1, &action_messages, "brain")
         .unwrap();
     generator
-        .add_consumed_action(&consumed_action2, &action_messages)
+        .add_consumed_action(&consumed_action2, &action_messages, "controller")
         .unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);
     generator
@@ -544,10 +538,10 @@ fn compile_lib_with_emitted_and_expected_topics() {
     generator.add_emitted_topic(&emitted_topic1).unwrap();
     generator.add_emitted_topic(&emitted_topic2).unwrap();
     generator
-        .add_expected_topic(&expected_topic1, subscribed_format1)
+        .add_expected_topic(&expected_topic1, subscribed_format1, "uvc_camera")
         .unwrap();
     generator
-        .add_expected_topic(&expected_topic2, subscribed_format2)
+        .add_expected_topic(&expected_topic2, subscribed_format2, "uvc_camera")
         .unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);
     generator
