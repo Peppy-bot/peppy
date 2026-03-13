@@ -123,7 +123,8 @@ message_stream::emit(&node_runner, "hello world".to_owned()).await?;
 
 ## Expecting a topic
 
-A node that receives messages declares what it expects under `interfaces.topics.expects`:
+A node that receives messages declares what it expects under `interfaces.topics.expects`.
+Dependencies are declared in `manifest.depends_on` and referenced by `local_node_id` in the interface:
 
 ```json5
 {
@@ -132,6 +133,11 @@ A node that receives messages declares what it expects under `interfaces.topics.
     name: "web_video_stream",
     tag: "0.1.0",
     language: "rust",
+    depends_on: {
+      nodes: [
+        { name: "uvc_camera", tag: "0.1.0", local_id: "uvc_camera" },
+      ]
+    },
   },
   process: {
     add_cmd: ["cargo", "build", "--release"],
@@ -141,10 +147,8 @@ A node that receives messages declares what it expects under `interfaces.topics.
     topics: {
       expects: [
         {
-          id: "camera_frame",        // Your chosen identifier for this expected topic
-          node: "uvc_camera",        // Target node name
-          name: "video_stream",      // Topic name on that node
-          tag: "0.1.0",              // Target node tag/version
+          local_node_id: "uvc_camera",  // References depends_on.nodes[].local_id
+          name: "video_stream",         // Topic name on that node
         },
       ],
     },
@@ -163,7 +167,7 @@ Error: `web_video_stream:0.1.0` depends on `uvc_camera:0.1.0`, but it does not e
 ### Receiving messages
 
 The code generator creates a module for each expected topic under `peppygen::expected_topics`.
-The module name is `<node>_<topic_name>` based on the `id` field — in this case `uvc_camera_video_stream`.
+The module name is `<local_node_id>_<topic_name>` based on the `local_node_id` field — in this case `uvc_camera_video_stream`.
 Use `on_next_message_received` to wait for the next message:
 
 ```rust
