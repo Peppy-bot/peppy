@@ -130,8 +130,8 @@ fn main() -> Result<()> {
         );
         Ok(())
     })
-    }
- "#;
+}
+"#;
     let main_file = user_node_receiver.join("src").join("main.rs");
     fs::write(main_file, receiver_main).expect("failed to write main file");
 
@@ -218,8 +218,8 @@ fn main() -> Result<()> {
 
         Ok(())
     })
-    }
- "#;
+}
+"#;
 
     let main_file = user_node_emitter.join("src").join("main.rs");
     fs::write(main_file, emitter_main).expect("failed to write main file");
@@ -227,9 +227,6 @@ fn main() -> Result<()> {
     let user_node_receiver_config_str = receiver_runtime_config_path.to_str().unwrap().to_owned();
     let user_node_emitter_runtime_config_str =
         emitter_runtime_config_path.to_str().unwrap().to_owned();
-
-    println!("user_node_receiver = {}", user_node_receiver.display());
-    println!("user_node_emitter = {}", user_node_emitter.display());
 
     compile_project(&user_node_receiver);
     compile_project(&user_node_emitter);

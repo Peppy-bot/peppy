@@ -18,8 +18,8 @@ use tempfile::TempDir;
 
 // --- Common test constants
 const TEST_CORE_NODE: &str = "test_core";
-const SUBSCRIBER_NODE_NAME: &str = "subscriber_node";
-const SUBSCRIBER_INSTANCE_ID: &str = "subscriber_instance";
+const CONSUMER_NODE_NAME: &str = "consumer_node";
+const CONSUMER_INSTANCE_ID: &str = "consumer_instance";
 const EXPOSER_INSTANCE_ID: &str = "exposer_instance";
 const SHUTDOWN_SENDER_INSTANCE_ID: &str = "test_shutdown_sender";
 const BRAIN_NODE_NAME: &str = "brain";
@@ -67,14 +67,14 @@ const EXPOSED_ACTION_EXAMPLE: &str = r#"
 }
 "#;
 
-const SUBSCRIBED_ACTION_EXAMPLE: &str = r#"
+const CONSUMED_ACTION_EXAMPLE: &str = r#"
 {
   local_node_id: "brain",
   name: "move_arm",
 }
 "#;
 
-const SUBSCRIBED_ACTION_FEEDBACK_FORMAT: &str = r#"
+const CONSUMED_ACTION_FEEDBACK_FORMAT: &str = r#"
 {
   new_position: {
     $type: "array",
@@ -84,7 +84,7 @@ const SUBSCRIBED_ACTION_FEEDBACK_FORMAT: &str = r#"
 }
 "#;
 
-const SUBSCRIBED_ACTION_RESULT_FORMAT: &str = r#"
+const CONSUMED_ACTION_RESULT_FORMAT: &str = r#"
 {
   success: "bool",
   error_msg: {
@@ -99,7 +99,7 @@ const SUBSCRIBED_ACTION_RESULT_FORMAT: &str = r#"
 }
 "#;
 
-const SUBSCRIBED_ACTION_GOAL_FORMAT: &str = r#"
+const CONSUMED_ACTION_GOAL_FORMAT: &str = r#"
 {
   arm_id: "u16",
   desired_position: {
@@ -110,7 +110,7 @@ const SUBSCRIBED_ACTION_GOAL_FORMAT: &str = r#"
 }
 "#;
 
-const SUBSCRIBED_ACTION_GOAL_RESPONSE_FORMAT: &str = r#"
+const CONSUMED_ACTION_GOAL_RESPONSE_FORMAT: &str = r#"
 {
   accepted: "bool"
 }
@@ -123,18 +123,18 @@ async fn actions_communication() {
         .expect("failed to start zenoh router for test");
     let (router_host, router_port) = (instance.host.clone(), instance.port);
 
-    // --- Subscriber (client) project
-    let subscriber_instance_id = SUBSCRIBER_INSTANCE_ID;
-    let temp_dir_subscriber = TempDir::new().unwrap();
-    let consumed_action: ConsumedAction = serde_json5::from_str(SUBSCRIBED_ACTION_EXAMPLE).unwrap();
+    // --- Consumer (client) project
+    let consumer_instance_id = CONSUMER_INSTANCE_ID;
+    let temp_dir_consumer = TempDir::new().unwrap();
+    let consumed_action: ConsumedAction = serde_json5::from_str(CONSUMED_ACTION_EXAMPLE).unwrap();
     let goal_request_format: MessageFormat =
-        serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_FORMAT).unwrap();
+        serde_json5::from_str(CONSUMED_ACTION_GOAL_FORMAT).unwrap();
     let goal_response_format: MessageFormat =
-        serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_RESPONSE_FORMAT).unwrap();
+        serde_json5::from_str(CONSUMED_ACTION_GOAL_RESPONSE_FORMAT).unwrap();
     let feedback_format: MessageFormat =
-        serde_json5::from_str(SUBSCRIBED_ACTION_FEEDBACK_FORMAT).unwrap();
+        serde_json5::from_str(CONSUMED_ACTION_FEEDBACK_FORMAT).unwrap();
     let result_response_format: MessageFormat =
-        serde_json5::from_str(SUBSCRIBED_ACTION_RESULT_FORMAT).unwrap();
+        serde_json5::from_str(CONSUMED_ACTION_RESULT_FORMAT).unwrap();
     let action_messages = ConsumedActionMessage {
         goal_request: Some(goal_request_format),
         goal_response: Some(goal_response_format),
@@ -142,18 +142,14 @@ async fn actions_communication() {
         result_request: None,
         result_response: Some(result_response_format),
     };
-    let (mut generator, output_dir_subscriber, user_node_subscriber, peppy_node_config_path) =
-        init_test_env::<generator::RustGenerator>(&temp_dir_subscriber, STUB_NODE_CONFIG);
+    let (mut generator, output_dir_consumer, user_node_consumer, peppy_node_config_path) =
+        init_test_env::<generator::RustGenerator>(&temp_dir_consumer, STUB_NODE_CONFIG);
     generator
         .add_consumed_action(&consumed_action, &action_messages, "brain")
         .unwrap();
-    let output_config = copy_config_to_output(&user_node_subscriber, &output_dir_subscriber);
+    let output_config = copy_config_to_output(&user_node_consumer, &output_dir_consumer);
     generator
-        .build(
-            &output_dir_subscriber,
-            &test_peppy_dirs(),
-            Default::default(),
-        )
+        .build(&output_dir_consumer, &test_peppy_dirs(), Default::default())
         .unwrap();
     fs::remove_file(output_config).unwrap();
     config::fingerprint::create_codegen_fingerprint(
@@ -161,24 +157,24 @@ async fn actions_communication() {
         Path::new(PEPPYGEN_OUTPUT_PATH),
     );
 
-    let subscriber_runtime_config = RuntimeConfig::new(
+    let consumer_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
         NodeInstance {
-            instance_id: Name::new(subscriber_instance_id).unwrap(),
+            instance_id: Name::new(consumer_instance_id).unwrap(),
             arguments: Default::default(),
         },
-        SUBSCRIBER_NODE_NAME,
+        CONSUMER_NODE_NAME,
         TEST_CORE_NODE,
     )
     .unwrap();
-    let subscriber_runtime_config_path = temp_dir_subscriber.path().join("peppy_runtime.json5");
-    subscriber_runtime_config
-        .save_json5_launch_config(&subscriber_runtime_config_path)
+    let consumer_runtime_config_path = temp_dir_consumer.path().join("peppy_runtime.json5");
+    consumer_runtime_config
+        .save_json5_launch_config(&consumer_runtime_config_path)
         .unwrap();
 
-    init_cargo_user_node(&user_node_subscriber);
-    let subscriber_main = r#"
+    init_cargo_user_node(&user_node_consumer);
+    let consumer_main = r#"
 use peppygen::consumed_actions::brain_move_arm;
 use peppygen::NodeBuilder;
 use peppygen::Result;
@@ -248,8 +244,8 @@ fn main() -> Result<()> {
     })
 }
 "#;
-    let main_file = user_node_subscriber.join("src").join("main.rs");
-    fs::write(main_file, subscriber_main).expect("failed to write subscriber main");
+    let main_file = user_node_consumer.join("src").join("main.rs");
+    fs::write(main_file, consumer_main).expect("failed to write consumer main");
 
     // --- Exposer (server) project
     let exposer_instance_id = EXPOSER_INSTANCE_ID;
@@ -275,7 +271,7 @@ fn main() -> Result<()> {
             instance_id: Name::new(exposer_instance_id).unwrap(),
             arguments: Default::default(),
         },
-        BRAIN_NODE_NAME, // Must match the node name expected by the subscriber
+        BRAIN_NODE_NAME, // Must match the node name expected by the consumer
         TEST_CORE_NODE,
     )
     .unwrap();
@@ -302,7 +298,7 @@ fn main() -> Result<()> {
         let mut action = move_arm::ActionHandle::expose(&node_runner).await?;
 
         // Set up handshake service listeners BEFORE handling the goal so their
-        // Zenoh subscriptions are active when the subscriber starts polling
+        // Zenoh subscriptions are active when the consumer starts polling
         // immediately after fire_goal returns. Messages are buffered in the
         // subscription channels until handle_next_request reads them.
         let mut feedback_ready_service = peppygen::ServiceMessenger::listen(
@@ -382,11 +378,14 @@ fn main() -> Result<()> {
     let main_file = user_node_exposer.join("src").join("main.rs");
     fs::write(main_file, exposer_main).expect("failed to write exposer main");
 
-    compile_project(&user_node_subscriber);
+    println!("user_node_consumer = {}", user_node_consumer.display());
+    println!("user_node_exposer = {}", user_node_exposer.display());
+
+    compile_project(&user_node_consumer);
     compile_project(&user_node_exposer);
 
     let exposer_runtime_config_str = exposer_runtime_config_path.to_str().unwrap().to_owned();
-    let subscriber_runtime_config_str = subscriber_runtime_config_path.to_str().unwrap().to_owned();
+    let consumer_runtime_config_str = consumer_runtime_config_path.to_str().unwrap().to_owned();
 
     let messenger = peppylib::MessengerHandle::from_host_port(&router_host, router_port)
         .await
@@ -414,9 +413,9 @@ fn main() -> Result<()> {
     )
     .await;
 
-    let mut subscriber_child = spawn_cargo_run(
-        &user_node_subscriber,
-        &[(RUNTIME_CONFIG_VAR_NAME, &subscriber_runtime_config_str)],
+    let mut consumer_child = spawn_cargo_run(
+        &user_node_consumer,
+        &[(RUNTIME_CONFIG_VAR_NAME, &consumer_runtime_config_str)],
     );
 
     let ctx = WaitContext {
@@ -427,10 +426,10 @@ fn main() -> Result<()> {
     };
     wait_for_health_service_reachable_or_exit(
         &ctx,
-        SUBSCRIBER_NODE_NAME,
-        subscriber_instance_id,
-        &mut subscriber_child,
-        &user_node_subscriber,
+        CONSUMER_NODE_NAME,
+        consumer_instance_id,
+        &mut consumer_child,
+        &user_node_consumer,
     )
     .await;
     wait_for_health_service_reachable_or_exit(
@@ -446,9 +445,9 @@ fn main() -> Result<()> {
         &messenger,
         TEST_CORE_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
-        SUBSCRIBER_NODE_NAME,
+        CONSUMER_NODE_NAME,
         Some(TEST_CORE_NODE),
-        subscriber_instance_id,
+        consumer_instance_id,
         Duration::from_secs(5),
     )
     .await;
@@ -464,10 +463,10 @@ fn main() -> Result<()> {
     .await;
 
     // Wait for both processes to exit
-    let subscriber_output = wait_for_child(
-        &mut subscriber_child,
+    let consumer_output = wait_for_child(
+        &mut consumer_child,
         Some(Duration::from_secs(10)),
-        &user_node_subscriber,
+        &user_node_consumer,
     );
     let exposer_output = wait_for_child(
         &mut exposer_child,
@@ -475,23 +474,23 @@ fn main() -> Result<()> {
         &user_node_exposer,
     );
 
-    let subscriber_stdout = String::from_utf8_lossy(&subscriber_output.stdout).into_owned();
-    let subscriber_stderr = String::from_utf8_lossy(&subscriber_output.stderr).into_owned();
+    let consumer_stdout = String::from_utf8_lossy(&consumer_output.stdout).into_owned();
+    let consumer_stderr = String::from_utf8_lossy(&consumer_output.stderr).into_owned();
     assert!(
-        subscriber_output.status.success(),
-        "subscriber cargo run failed with status: {:?}\nstdout:\n{}\nstderr:\n{}",
-        subscriber_output.status.code(),
-        subscriber_stdout,
-        subscriber_stderr
+        consumer_output.status.success(),
+        "consumer cargo run failed with status: {:?}\nstdout:\n{}\nstderr:\n{}",
+        consumer_output.status.code(),
+        consumer_stdout,
+        consumer_stderr
     );
     assert!(
-        subscriber_stdout.contains("goal accepted=true")
-            && subscriber_stdout.contains("feedback message received new_position=[7, 31, 43]")
-            && subscriber_stdout
+        consumer_stdout.contains("goal accepted=true")
+            && consumer_stdout.contains("feedback message received new_position=[7, 31, 43]")
+            && consumer_stdout
                 .contains("result success=true error=None final_position=[98, 4, 26]"),
-        "subscriber did not complete the action flow.\nstdout:\n{}\nstderr:\n{}",
-        subscriber_stdout,
-        subscriber_stderr
+        "consumer did not complete the action flow.\nstdout:\n{}\nstderr:\n{}",
+        consumer_stdout,
+        consumer_stderr
     );
 
     let exposer_stdout = String::from_utf8_lossy(&exposer_output.stdout).into_owned();
@@ -521,18 +520,18 @@ async fn actions_communication_cancel_goal() {
         .expect("failed to start zenoh router for test");
     let (router_host, router_port) = (instance.host.clone(), instance.port);
 
-    // --- Subscriber (client) project
-    let subscriber_instance_id = SUBSCRIBER_INSTANCE_ID;
-    let temp_dir_subscriber = TempDir::new().unwrap();
-    let consumed_action: ConsumedAction = serde_json5::from_str(SUBSCRIBED_ACTION_EXAMPLE).unwrap();
+    // --- Consumer (client) project
+    let consumer_instance_id = CONSUMER_INSTANCE_ID;
+    let temp_dir_consumer = TempDir::new().unwrap();
+    let consumed_action: ConsumedAction = serde_json5::from_str(CONSUMED_ACTION_EXAMPLE).unwrap();
     let goal_request_format: MessageFormat =
-        serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_FORMAT).unwrap();
+        serde_json5::from_str(CONSUMED_ACTION_GOAL_FORMAT).unwrap();
     let goal_response_format: MessageFormat =
-        serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_RESPONSE_FORMAT).unwrap();
+        serde_json5::from_str(CONSUMED_ACTION_GOAL_RESPONSE_FORMAT).unwrap();
     let feedback_format: MessageFormat =
-        serde_json5::from_str(SUBSCRIBED_ACTION_FEEDBACK_FORMAT).unwrap();
+        serde_json5::from_str(CONSUMED_ACTION_FEEDBACK_FORMAT).unwrap();
     let result_response_format: MessageFormat =
-        serde_json5::from_str(SUBSCRIBED_ACTION_RESULT_FORMAT).unwrap();
+        serde_json5::from_str(CONSUMED_ACTION_RESULT_FORMAT).unwrap();
     let action_messages = ConsumedActionMessage {
         goal_request: Some(goal_request_format),
         goal_response: Some(goal_response_format),
@@ -540,18 +539,14 @@ async fn actions_communication_cancel_goal() {
         result_request: None,
         result_response: Some(result_response_format),
     };
-    let (mut generator, output_dir_subscriber, user_node_subscriber, peppy_node_config_path) =
-        init_test_env::<generator::RustGenerator>(&temp_dir_subscriber, STUB_NODE_CONFIG);
+    let (mut generator, output_dir_consumer, user_node_consumer, peppy_node_config_path) =
+        init_test_env::<generator::RustGenerator>(&temp_dir_consumer, STUB_NODE_CONFIG);
     generator
         .add_consumed_action(&consumed_action, &action_messages, "brain")
         .unwrap();
-    let output_config = copy_config_to_output(&user_node_subscriber, &output_dir_subscriber);
+    let output_config = copy_config_to_output(&user_node_consumer, &output_dir_consumer);
     generator
-        .build(
-            &output_dir_subscriber,
-            &test_peppy_dirs(),
-            Default::default(),
-        )
+        .build(&output_dir_consumer, &test_peppy_dirs(), Default::default())
         .unwrap();
     fs::remove_file(output_config).unwrap();
     config::fingerprint::create_codegen_fingerprint(
@@ -559,24 +554,24 @@ async fn actions_communication_cancel_goal() {
         Path::new(PEPPYGEN_OUTPUT_PATH),
     );
 
-    let subscriber_runtime_config = RuntimeConfig::new(
+    let consumer_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
         NodeInstance {
-            instance_id: Name::new(subscriber_instance_id).unwrap(),
+            instance_id: Name::new(consumer_instance_id).unwrap(),
             arguments: Default::default(),
         },
-        SUBSCRIBER_NODE_NAME,
+        CONSUMER_NODE_NAME,
         TEST_CORE_NODE,
     )
     .unwrap();
-    let subscriber_runtime_config_path = temp_dir_subscriber.path().join("peppy_runtime.json5");
-    subscriber_runtime_config
-        .save_json5_launch_config(&subscriber_runtime_config_path)
+    let consumer_runtime_config_path = temp_dir_consumer.path().join("peppy_runtime.json5");
+    consumer_runtime_config
+        .save_json5_launch_config(&consumer_runtime_config_path)
         .unwrap();
 
-    init_cargo_user_node(&user_node_subscriber);
-    let subscriber_main = r#"
+    init_cargo_user_node(&user_node_consumer);
+    let consumer_main = r#"
 use peppygen::consumed_actions::brain_move_arm;
 use peppygen::NodeBuilder;
 use peppygen::Result;
@@ -610,8 +605,8 @@ fn main() -> Result<()> {
     })
 }
 "#;
-    let main_file = user_node_subscriber.join("src").join("main.rs");
-    fs::write(main_file, subscriber_main).expect("failed to write subscriber main");
+    let main_file = user_node_consumer.join("src").join("main.rs");
+    fs::write(main_file, consumer_main).expect("failed to write consumer main");
 
     // --- Exposer (server) project
     let exposer_instance_id = EXPOSER_INSTANCE_ID;
@@ -637,7 +632,7 @@ fn main() -> Result<()> {
             instance_id: Name::new(exposer_instance_id).unwrap(),
             arguments: Default::default(),
         },
-        BRAIN_NODE_NAME, // Must match the node name expected by the subscriber
+        BRAIN_NODE_NAME, // Must match the node name expected by the consumer
         TEST_CORE_NODE,
     )
     .unwrap();
@@ -687,11 +682,11 @@ fn main() -> Result<()> {
     let main_file = user_node_exposer.join("src").join("main.rs");
     fs::write(main_file, exposer_main).expect("failed to write exposer main");
 
-    compile_project(&user_node_subscriber);
+    compile_project(&user_node_consumer);
     compile_project(&user_node_exposer);
 
     let exposer_runtime_config_str = exposer_runtime_config_path.to_str().unwrap().to_owned();
-    let subscriber_runtime_config_str = subscriber_runtime_config_path.to_str().unwrap().to_owned();
+    let consumer_runtime_config_str = consumer_runtime_config_path.to_str().unwrap().to_owned();
 
     let messenger = peppylib::MessengerHandle::from_host_port(&router_host, router_port)
         .await
@@ -719,9 +714,9 @@ fn main() -> Result<()> {
     )
     .await;
 
-    let mut subscriber_child = spawn_cargo_run(
-        &user_node_subscriber,
-        &[(RUNTIME_CONFIG_VAR_NAME, &subscriber_runtime_config_str)],
+    let mut consumer_child = spawn_cargo_run(
+        &user_node_consumer,
+        &[(RUNTIME_CONFIG_VAR_NAME, &consumer_runtime_config_str)],
     );
 
     let ctx = WaitContext {
@@ -732,10 +727,10 @@ fn main() -> Result<()> {
     };
     wait_for_health_service_reachable_or_exit(
         &ctx,
-        SUBSCRIBER_NODE_NAME,
-        subscriber_instance_id,
-        &mut subscriber_child,
-        &user_node_subscriber,
+        CONSUMER_NODE_NAME,
+        consumer_instance_id,
+        &mut consumer_child,
+        &user_node_consumer,
     )
     .await;
     wait_for_health_service_reachable_or_exit(
@@ -751,9 +746,9 @@ fn main() -> Result<()> {
         &messenger,
         TEST_CORE_NODE,
         SHUTDOWN_SENDER_INSTANCE_ID,
-        SUBSCRIBER_NODE_NAME,
+        CONSUMER_NODE_NAME,
         Some(TEST_CORE_NODE),
-        subscriber_instance_id,
+        consumer_instance_id,
         Duration::from_secs(5),
     )
     .await;
@@ -769,10 +764,10 @@ fn main() -> Result<()> {
     .await;
 
     // Wait for both processes to exit
-    let subscriber_output = wait_for_child(
-        &mut subscriber_child,
+    let consumer_output = wait_for_child(
+        &mut consumer_child,
         Some(Duration::from_secs(10)),
-        &user_node_subscriber,
+        &user_node_consumer,
     );
     let exposer_output = wait_for_child(
         &mut exposer_child,
@@ -780,21 +775,21 @@ fn main() -> Result<()> {
         &user_node_exposer,
     );
 
-    let subscriber_stdout = String::from_utf8_lossy(&subscriber_output.stdout).into_owned();
-    let subscriber_stderr = String::from_utf8_lossy(&subscriber_output.stderr).into_owned();
+    let consumer_stdout = String::from_utf8_lossy(&consumer_output.stdout).into_owned();
+    let consumer_stderr = String::from_utf8_lossy(&consumer_output.stderr).into_owned();
     assert!(
-        subscriber_output.status.success(),
-        "subscriber cargo run failed with status: {:?}\nstdout:\n{}\nstderr:\n{}",
-        subscriber_output.status.code(),
-        subscriber_stdout,
-        subscriber_stderr
+        consumer_output.status.success(),
+        "consumer cargo run failed with status: {:?}\nstdout:\n{}\nstderr:\n{}",
+        consumer_output.status.code(),
+        consumer_stdout,
+        consumer_stderr
     );
     assert!(
-        subscriber_stdout.contains("goal accepted=true")
-            && subscriber_stdout.contains("cancel accepted=false error=goal cancelled by server"),
-        "subscriber did not complete the cancel flow.\nstdout:\n{}\nstderr:\n{}",
-        subscriber_stdout,
-        subscriber_stderr
+        consumer_stdout.contains("goal accepted=true")
+            && consumer_stdout.contains("cancel accepted=false error=goal cancelled by server"),
+        "consumer did not complete the cancel flow.\nstdout:\n{}\nstderr:\n{}",
+        consumer_stdout,
+        consumer_stderr
     );
 
     let exposer_stdout = String::from_utf8_lossy(&exposer_output.stdout).into_owned();

@@ -145,7 +145,7 @@ fn generate_peppygen_lib_missing_config() {
 #[test]
 fn generate_peppygen_python_lib_emitted_and_expected_topics() {
     const EXPOSED_NODE_NAME: &str = "topic_exposer";
-    const SUBSCRIBER_NODE_NAME: &str = "topic_subscriber";
+    const CONSUMER_NODE_NAME: &str = "topic_consumer";
 
     let exposed_dir = TempDir::new().expect("failed to create temp directory");
     let exposed_node_dir = exposed_dir.path();
@@ -200,28 +200,25 @@ fn generate_peppygen_python_lib_emitted_and_expected_topics() {
         exposed_peppygen_dir.display()
     );
 
-    let subscriber_dir = TempDir::new().expect("failed to create temp directory");
-    let subscriber_node_dir = subscriber_dir.path();
+    let consumer_dir = TempDir::new().expect("failed to create temp directory");
+    let consumer_node_dir = consumer_dir.path();
 
-    let subscriber_config = format!(
+    let consumer_config = format!(
         r#"{{
           schema_version: 1,
           manifest: {{
-            name: "{SUBSCRIBER_NODE_NAME}",
+            name: "{CONSUMER_NODE_NAME}",
             tag: "0.1.0",
             language: "python"
           }},
           process: {{
             add_cmd: ["uv", "sync"],
-            start_cmd: ["uv", "run", "{SUBSCRIBER_NODE_NAME}"]
+            start_cmd: ["uv", "run", "{CONSUMER_NODE_NAME}"]
           }}
         }}"#
     );
-    fs::write(
-        subscriber_node_dir.join(NODE_CONFIG_FILE),
-        subscriber_config,
-    )
-    .expect("failed to write subscriber peppy.json5");
+    fs::write(consumer_node_dir.join(NODE_CONFIG_FILE), consumer_config)
+        .expect("failed to write consumer peppy.json5");
 
     let expected_topic: ExpectedTopic = serde_json5::from_str(&format!(
         r#"{{
@@ -231,39 +228,39 @@ fn generate_peppygen_python_lib_emitted_and_expected_topics() {
     ))
     .expect("failed to parse expected topic");
 
-    let subscribed_format: MessageFormat =
+    let consumed_format: MessageFormat =
         serde_json5::from_str(r#"{ value: "u32" }"#).expect("failed to parse topic format");
 
     let expected_interfaces = vec![DeploymentInterface::new(InterfaceVariant::ExpectedTopic {
         topic: expected_topic,
-        message_format: subscribed_format,
+        message_format: consumed_format,
         dependency_node_name: String::from(EXPOSED_NODE_NAME),
     })];
 
     generate_peppygen_lib(
         PeppygenLanguage::Python,
-        subscriber_node_dir,
+        consumer_node_dir,
         expected_interfaces,
         "test-hash",
         &helpers::test_peppy_dirs(),
         Default::default(),
     )
-    .expect("failed to generate peppygen lib for subscriber node");
+    .expect("failed to generate peppygen lib for consumer node");
 
-    let subscriber_peppygen_dir = subscriber_node_dir.join(PEPPYGEN_OUTPUT_PATH);
+    let consumer_peppygen_dir = consumer_node_dir.join(PEPPYGEN_OUTPUT_PATH);
     assert!(
-        subscriber_peppygen_dir
+        consumer_peppygen_dir
             .join("peppygen/expected_topics/topic_exposer_test_topic.py")
             .exists(),
         "expected topic module should exist in peppygen package at {}",
-        subscriber_peppygen_dir.display()
+        consumer_peppygen_dir.display()
     );
 }
 
 #[test]
 fn generate_peppygen_python_lib_exposed_and_consumed_services() {
     const EXPOSED_NODE_NAME: &str = "service_exposer";
-    const SUBSCRIBER_NODE_NAME: &str = "service_subscriber";
+    const CONSUMER_NODE_NAME: &str = "service_consumer";
 
     let exposed_dir = TempDir::new().expect("failed to create temp directory");
     let exposed_node_dir = exposed_dir.path();
@@ -321,28 +318,25 @@ fn generate_peppygen_python_lib_exposed_and_consumed_services() {
         exposed_peppygen_dir.display()
     );
 
-    let subscriber_dir = TempDir::new().expect("failed to create temp directory");
-    let subscriber_node_dir = subscriber_dir.path();
+    let consumer_dir = TempDir::new().expect("failed to create temp directory");
+    let consumer_node_dir = consumer_dir.path();
 
-    let subscriber_config = format!(
+    let consumer_config = format!(
         r#"{{
           schema_version: 1,
           manifest: {{
-            name: "{SUBSCRIBER_NODE_NAME}",
+            name: "{CONSUMER_NODE_NAME}",
             tag: "0.1.0",
             language: "python"
           }},
           process: {{
             add_cmd: ["uv", "sync"],
-            start_cmd: ["uv", "run", "{SUBSCRIBER_NODE_NAME}"]
+            start_cmd: ["uv", "run", "{CONSUMER_NODE_NAME}"]
           }}
         }}"#
     );
-    fs::write(
-        subscriber_node_dir.join(NODE_CONFIG_FILE),
-        subscriber_config,
-    )
-    .expect("failed to write subscriber peppy.json5");
+    fs::write(consumer_node_dir.join(NODE_CONFIG_FILE), consumer_config)
+        .expect("failed to write consumer peppy.json5");
 
     let consumed_service: ConsumedService = serde_json5::from_str(&format!(
         r#"{{
@@ -369,21 +363,21 @@ fn generate_peppygen_python_lib_exposed_and_consumed_services() {
 
     generate_peppygen_lib(
         PeppygenLanguage::Python,
-        subscriber_node_dir,
+        consumer_node_dir,
         consumed_interfaces,
         "test-hash",
         &helpers::test_peppy_dirs(),
         Default::default(),
     )
-    .expect("failed to generate peppygen lib for subscriber node");
+    .expect("failed to generate peppygen lib for consumer node");
 
-    let subscriber_peppygen_dir = subscriber_node_dir.join(PEPPYGEN_OUTPUT_PATH);
+    let consumer_peppygen_dir = consumer_node_dir.join(PEPPYGEN_OUTPUT_PATH);
     let consumed_service_module_path =
-        subscriber_peppygen_dir.join("peppygen/consumed_services/service_exposer_test_service.py");
+        consumer_peppygen_dir.join("peppygen/consumed_services/service_exposer_test_service.py");
     assert!(
         consumed_service_module_path.exists(),
         "consumed service module should exist in peppygen package at {}",
-        subscriber_peppygen_dir.display()
+        consumer_peppygen_dir.display()
     );
 
     let consumed_service_code = fs::read_to_string(&consumed_service_module_path)
@@ -397,7 +391,7 @@ fn generate_peppygen_python_lib_exposed_and_consumed_services() {
 #[test]
 fn generate_peppygen_python_lib_exposed_and_consumed_actions() {
     const EXPOSED_NODE_NAME: &str = "action_exposer";
-    const SUBSCRIBER_NODE_NAME: &str = "action_subscriber";
+    const CONSUMER_NODE_NAME: &str = "action_consumer";
 
     let exposed_dir = TempDir::new().expect("failed to create temp directory");
     let exposed_node_dir = exposed_dir.path();
@@ -467,28 +461,25 @@ fn generate_peppygen_python_lib_exposed_and_consumed_actions() {
         exposed_peppygen_dir.display()
     );
 
-    let subscriber_dir = TempDir::new().expect("failed to create temp directory");
-    let subscriber_node_dir = subscriber_dir.path();
+    let consumer_dir = TempDir::new().expect("failed to create temp directory");
+    let consumer_node_dir = consumer_dir.path();
 
-    let subscriber_config = format!(
+    let consumer_config = format!(
         r#"{{
           schema_version: 1,
           manifest: {{
-            name: "{SUBSCRIBER_NODE_NAME}",
+            name: "{CONSUMER_NODE_NAME}",
             tag: "0.1.0",
             language: "python"
           }},
           process: {{
             add_cmd: ["uv", "sync"],
-            start_cmd: ["uv", "run", "{SUBSCRIBER_NODE_NAME}"]
+            start_cmd: ["uv", "run", "{CONSUMER_NODE_NAME}"]
           }}
         }}"#
     );
-    fs::write(
-        subscriber_node_dir.join(NODE_CONFIG_FILE),
-        subscriber_config,
-    )
-    .expect("failed to write subscriber peppy.json5");
+    fs::write(consumer_node_dir.join(NODE_CONFIG_FILE), consumer_config)
+        .expect("failed to write consumer peppy.json5");
 
     let consumed_action: ConsumedAction = serde_json5::from_str(&format!(
         r#"{{
@@ -523,20 +514,20 @@ fn generate_peppygen_python_lib_exposed_and_consumed_actions() {
 
     generate_peppygen_lib(
         PeppygenLanguage::Python,
-        subscriber_node_dir,
+        consumer_node_dir,
         consumed_interfaces,
         "test-hash",
         &helpers::test_peppy_dirs(),
         Default::default(),
     )
-    .expect("failed to generate peppygen lib for subscriber node");
+    .expect("failed to generate peppygen lib for consumer node");
 
-    let subscriber_peppygen_dir = subscriber_node_dir.join(PEPPYGEN_OUTPUT_PATH);
+    let consumer_peppygen_dir = consumer_node_dir.join(PEPPYGEN_OUTPUT_PATH);
     assert!(
-        subscriber_peppygen_dir
+        consumer_peppygen_dir
             .join("peppygen/consumed_actions/action_exposer_test_action.py")
             .exists(),
         "consumed action module should exist in peppygen package at {}",
-        subscriber_peppygen_dir.display()
+        consumer_peppygen_dir.display()
     );
 }
