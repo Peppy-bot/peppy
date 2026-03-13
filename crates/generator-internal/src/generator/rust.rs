@@ -937,19 +937,15 @@ impl LanguageGenerator for RustGenerator {
         arguments: MessageFormat,
         dependency_node_name: &str,
     ) -> Result<()> {
-        let ExpectedTopic::Linked {
-            local_node_id,
-            name,
-        } = topic
-        else {
+        let ExpectedTopic::Linked(linked) = topic else {
             return Err(Error::InvariantViolation {
                 context: "add_expected_topic called with ExpectedTopic::External; use add_external_expected_topic instead".into(),
             });
         };
-        let node_name = local_node_id.as_str();
+        let node_name = linked.local_node_id.as_str();
 
         let node_component = sanitize_component(node_name);
-        let topic_component = sanitize_component(name.as_str());
+        let topic_component = sanitize_component(linked.name.as_str());
 
         debug_assert!(
             !node_component.is_empty(),
@@ -967,7 +963,7 @@ impl LanguageGenerator for RustGenerator {
             struct_prefix = String::from("Topic");
         }
 
-        let mut module_label = format!("{}_{}", node_name, name.as_str());
+        let mut module_label = format!("{}_{}", node_name, linked.name.as_str());
         if module_label.trim().is_empty() {
             module_label = String::from("topic");
         }

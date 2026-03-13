@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use config::consts::PEPPYGEN_OUTPUT_PATH;
 use config::node::{
-    DependsOn, EmittedTopic, ExpectedTopic, Name as ConfigName, NodeConfigParser, NodeDependency,
-    Toolchain, TopicInterfaces,
+    DependsOn, EmittedTopic, ExpectedTopic, LinkedExpectedTopic, Name as ConfigName,
+    NodeConfigParser, NodeDependency, Toolchain, TopicInterfaces,
 };
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands, NodeName};
@@ -59,10 +59,10 @@ fn make_consumer_depend_on_provider(
     });
 
     consumer_cfg.interfaces.topics = Some(TopicInterfaces {
-        expects: Some(vec![ExpectedTopic::Linked {
+        expects: Some(vec![ExpectedTopic::Linked(LinkedExpectedTopic {
             local_node_id: provider_name.to_string(),
             name: topic_name.to_string(),
-        }]),
+        })]),
         ..Default::default()
     });
 

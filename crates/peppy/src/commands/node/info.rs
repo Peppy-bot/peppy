@@ -107,8 +107,8 @@ fn print_node_info(response: &NodeInfoResponse) {
             && let Some(expected) = &topics.expects
         {
             for topic in expected {
-                if let config::node::ExpectedTopic::Linked { local_node_id, .. } = topic {
-                    dependencies.insert(local_node_id);
+                if let config::node::ExpectedTopic::Linked(linked) = topic {
+                    dependencies.insert(&linked.local_node_id);
                 }
             }
         }
@@ -242,14 +242,11 @@ fn print_node_info(response: &NodeInfoResponse) {
                 println!("Expected Topics:");
                 for topic in topics {
                     match topic {
-                        config::node::ExpectedTopic::Linked {
-                            local_node_id,
-                            name,
-                        } => {
-                            println!("  - {} (from node: {})", name, local_node_id);
+                        config::node::ExpectedTopic::Linked(linked) => {
+                            println!("  - {} (from node: {})", linked.name, linked.local_node_id);
                         }
-                        config::node::ExpectedTopic::External { name, .. } => {
-                            println!("  - {} (external)", name);
+                        config::node::ExpectedTopic::External(external) => {
+                            println!("  - {} (external)", external.name);
                         }
                     }
                 }

@@ -266,14 +266,10 @@ pub fn validate_dependency_specs(
         && let Some(expected) = &topics.expects
     {
         for topic in expected {
-            if let config::node::ExpectedTopic::Linked {
-                local_node_id,
-                name,
-            } = topic
-            {
+            if let config::node::ExpectedTopic::Linked(linked) = topic {
                 validate_consumed_interface(
-                    local_node_id,
-                    name,
+                    &linked.local_node_id,
+                    &linked.name,
                     InterfaceKind::Topic,
                     &resolved_deps,
                     dependant_name,

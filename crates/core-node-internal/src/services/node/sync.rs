@@ -327,18 +327,17 @@ pub fn collect_consumed_interfaces(
     {
         for expected_topic in expected_topics {
             match expected_topic {
-                config::node::ExpectedTopic::Linked {
-                    local_node_id,
-                    name,
-                } => {
-                    let Some((dep_name, dep_tag)) = dep_lookup.get(local_node_id.as_str()) else {
+                config::node::ExpectedTopic::Linked(linked) => {
+                    let Some((dep_name, dep_tag)) = dep_lookup.get(linked.local_node_id.as_str())
+                    else {
                         continue;
                     };
                     if let Some(dependency_entity) = node_stack.find(dep_name, dep_tag)
                         && let Some(dep_topics) = &dependency_entity.config().interfaces.topics
                         && let Some(emitted_topics) = &dep_topics.emits
-                        && let Some(emitted_topic) =
-                            emitted_topics.iter().find(|t| t.name.trim() == name.trim())
+                        && let Some(emitted_topic) = emitted_topics
+                            .iter()
+                            .find(|t| t.name.trim() == linked.name.trim())
                         && let Some(message_format) = &emitted_topic.message_format
                     {
                         interfaces.push(DeploymentInterface::new(
@@ -350,14 +349,11 @@ pub fn collect_consumed_interfaces(
                         ));
                     }
                 }
-                config::node::ExpectedTopic::External {
-                    name,
-                    message_format,
-                } => {
+                config::node::ExpectedTopic::External(external) => {
                     interfaces.push(DeploymentInterface::new(
                         InterfaceVariant::ExternalExpectedTopic {
-                            name: name.clone(),
-                            message_format: message_format.clone(),
+                            name: external.name.clone(),
+                            message_format: external.message_format.clone(),
                         },
                     ));
                 }

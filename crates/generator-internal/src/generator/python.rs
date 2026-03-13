@@ -215,19 +215,15 @@ impl LanguageGenerator for PythonGenerator {
         arguments: MessageFormat,
         dependency_node_name: &str,
     ) -> Result<()> {
-        let ExpectedTopic::Linked {
-            local_node_id,
-            name,
-        } = topic
-        else {
+        let ExpectedTopic::Linked(linked) = topic else {
             return Err(Error::InvariantViolation {
                 context: "add_expected_topic called with ExpectedTopic::External; use add_external_expected_topic instead".into(),
             });
         };
-        let schema_info = self.register_schema(name, &arguments)?;
+        let schema_info = self.register_schema(&linked.name, &arguments)?;
         let code =
             topics::build_expected_topic(topic, &arguments, &schema_info, dependency_node_name)?;
-        let module_label = module_name_from_components(local_node_id, name);
+        let module_label = module_name_from_components(&linked.local_node_id, &linked.name);
         self.push_section(InterfaceArtifact::from_kind(
             &module_label,
             InterfaceKind::ExpectedTopic,

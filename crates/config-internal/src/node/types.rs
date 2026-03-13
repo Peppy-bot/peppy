@@ -439,25 +439,34 @@ pub struct ExposedAction {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LinkedExpectedTopic {
+    #[serde(deserialize_with = "deserialize_expected_topic_local_node_id")]
+    pub local_node_id: String,
+    #[serde(deserialize_with = "deserialize_expected_topic_name")]
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExternalExpectedTopic {
+    #[serde(deserialize_with = "deserialize_expected_topic_name")]
+    pub name: String,
+    pub message_format: MessageFormat,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ExpectedTopic {
-    Linked {
-        #[serde(deserialize_with = "deserialize_expected_topic_local_node_id")]
-        local_node_id: String,
-        #[serde(deserialize_with = "deserialize_expected_topic_name")]
-        name: String,
-    },
-    External {
-        #[serde(deserialize_with = "deserialize_expected_topic_name")]
-        name: String,
-        message_format: MessageFormat,
-    },
+    Linked(LinkedExpectedTopic),
+    External(ExternalExpectedTopic),
 }
 
 impl ExpectedTopic {
     pub fn name(&self) -> &str {
         match self {
-            Self::Linked { name, .. } | Self::External { name, .. } => name,
+            Self::Linked(t) => &t.name,
+            Self::External(t) => &t.name,
         }
     }
 }
@@ -696,10 +705,10 @@ mod tests {
     fn expected_topic_linked_local_node_id_is_required() {
         let valid = r#"{ local_node_id: "uvc_camera", name: "video_stream" }"#;
         let topic: ExpectedTopic = serde_json5::from_str(valid).expect("valid topic should parse");
-        let ExpectedTopic::Linked {
+        let ExpectedTopic::Linked(LinkedExpectedTopic {
             local_node_id,
             name,
-        } = &topic
+        }) = &topic
         else {
             panic!("expected Linked variant");
         };
@@ -724,10 +733,10 @@ mod tests {
         let trimmed = r#"{ local_node_id: " uvc_camera ", name: " video_stream " }"#;
         let topic: ExpectedTopic =
             serde_json5::from_str(trimmed).expect("whitespace should be trimmed");
-        let ExpectedTopic::Linked {
+        let ExpectedTopic::Linked(LinkedExpectedTopic {
             local_node_id,
             name,
-        } = &topic
+        }) = &topic
         else {
             panic!("expected Linked variant");
         };
@@ -740,10 +749,10 @@ mod tests {
         let valid = r#"{ name: "cmd_vel", message_format: { linear_x: "f64", angular_z: "f64" } }"#;
         let topic: ExpectedTopic =
             serde_json5::from_str(valid).expect("valid external topic should parse");
-        let ExpectedTopic::External {
+        let ExpectedTopic::External(ExternalExpectedTopic {
             name,
             message_format,
-        } = &topic
+        }) = &topic
         else {
             panic!("expected External variant, got: {:?}", topic);
         };
@@ -772,10 +781,35 @@ mod tests {
         let topics: Vec<ExpectedTopic> =
             serde_json5::from_str(json).expect("mixed array should parse");
         assert_eq!(topics.len(), 2);
-        assert!(matches!(&topics[0], ExpectedTopic::Linked { .. }));
-        assert!(matches!(&topics[1], ExpectedTopic::External { .. }));
+        assert!(matches!(&topics[0], ExpectedTopic::Linked(_)));
+        assert!(matches!(&topics[1], ExpectedTopic::External(_)));
         assert_eq!(topics[0].name(), "video_stream");
         assert_eq!(topics[1].name(), "cmd_vel");
+    }
+
+    #[test]
+    fn expected_topic_rejects_unknown_fields() {
+        // Linked with extra message_format should fail (not silently drop it)
+        let linked_with_extra = r#"{
+            local_node_id: "camera",
+            name: "video_stream",
+            message_format: { x: "f64" }
+        }"#;
+        assert!(
+            serde_json5::from_str::<ExpectedTopic>(linked_with_extra).is_err(),
+            "linked topic with extra message_format should be rejected"
+        );
+
+        // External with extra local_node_id should fail (not silently drop it)
+        let external_with_extra = r#"{
+            local_node_id: "camera",
+            name: "cmd_vel",
+            message_format: { linear_x: "f64" }
+        }"#;
+        assert!(
+            serde_json5::from_str::<ExpectedTopic>(external_with_extra).is_err(),
+            "external topic with extra local_node_id should be rejected"
+        );
     }
 
     #[test]
