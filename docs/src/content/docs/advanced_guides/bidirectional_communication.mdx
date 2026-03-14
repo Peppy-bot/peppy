@@ -238,6 +238,27 @@ fn compute_next_target(current: &[f64; 3]) -> [f64; 3] {
 | Module name | `<local_node_id>_<topic_name>` | `<topic_name>` |
 | Subscribes to | A specific publisher node | Any node emitting that topic |
 
+## Why only topics?
+
+PeppyOS has three communication patterns — topics, services, and actions — but only topics support external (dependency-free) subscriptions. The reason is how each pattern flows data:
+
+| | Topics | Services | Actions |
+|---|---|---|---|
+| Pattern | Publish-subscribe | Request-response | Goal-feedback-result |
+| Data flow | One-way: publisher → subscriber | Two-way: request then response | Multi-step: goal, feedback, result |
+| Initiator | Publisher pushes; subscriber listens passively | Consumer actively calls the exposer | Consumer orchestrates the full lifecycle |
+| Coupling | None — subscriber does not call the publisher | Inherent — consumer targets a specific service | Inherent — built on services, same constraint |
+| External variant? | Yes — passive listening needs no dependency | No — calling requires a target node | No — same as services |
+
+A topic subscriber is **passive**: it declares a message format and waits for data to arrive, without knowing or addressing the publisher.
+That is why removing `depends_on` works — there is nothing to call.
+
+[Services](/advanced_guides/services) and [actions](/advanced_guides/actions) are **caller-driven**: the consumer actively invokes a specific service on a specific node.
+Even without a config dependency, the consumer would still need to target that node at runtime, reintroducing the coupling that external expected topics are designed to avoid.
+
+In the robot arm example, `robot_arm` passively listens for `joint_commands` from any source — it never calls `arm_controller`.
+If it needed to call a service on `arm_controller` instead, it would need `depends_on`, creating the circular dependency that external expected topics exist to prevent.
+
 ## When to use external expected topics
 
 Use external expected topics when:
