@@ -33,7 +33,7 @@ Each node is only aware of the interfaces it exposes and the ones it consumes, a
       interfaces: {
         topics: {
           emits: [],
-          expects: [],
+          consumes: [],
         },
         services: {
           exposes: [],
@@ -63,7 +63,7 @@ Each node is only aware of the interfaces it exposes and the ones it consumes, a
       interfaces: {
         topics: {
           emits: [],
-          expects: [],
+          consumes: [],
         },
         services: {
           exposes: [],
@@ -79,7 +79,7 @@ Each node is only aware of the interfaces it exposes and the ones it consumes, a
   </TabItem>
 </Tabs>
 
-Here we have `interfaces` organized by kind (`topics`, `services`, `actions`). Topics use `emits` and `expects` lists, while services and actions use `exposes` and `consumes` lists. These interfaces define the dependencies between nodes.
+Here we have `interfaces` organized by kind (`topics`, `services`, `actions`). Topics use `emits` and `consumes` lists, as do services and actions, which use `exposes` and `consumes` lists. These interfaces define the dependencies between nodes.
 
 ## Topics, Services & Actions
 

@@ -160,7 +160,7 @@ fn write_node_config_with_options(
     };
 
     let expects_topics = if expects_uvc_camera {
-        r#"expects: [
+        r#"consumes: [
                   { local_node_id: "uvc_camera", name: "camera_stream" }
                 ],"#
     } else {

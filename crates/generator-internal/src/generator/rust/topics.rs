@@ -3,18 +3,18 @@ use super::serialization::{MessageEncodingSpec, build_serialize_payload};
 use super::services::deserialize_fields_from_format;
 use crate::error::Result;
 use config::encoding::{CapnpSchemaArtifacts, FunctionParam};
-use config::node::{EmittedTopic, ExpectedTopic, QoSProfile};
+use config::node::{ConsumedTopic, EmittedTopic, QoSProfile};
 use proc_macro2::{Ident, Literal, TokenStream};
 use quote::quote;
 
-pub struct ExpectedTopicCallbackSpec<'a> {
+pub struct ConsumedTopicCallbackSpec<'a> {
     pub fn_name: &'a Ident,
     pub helper_fn_ident: &'a Ident,
     pub args_struct_ident: &'a Ident,
     pub params: &'a [FunctionParam],
     pub artifacts: &'a CapnpSchemaArtifacts,
     pub encoding: &'a MessageEncodingSpec,
-    pub topic: &'a ExpectedTopic,
+    pub topic: &'a ConsumedTopic,
     pub struct_prefix: &'a str,
     pub dependency_node_name: &'a str,
 }
@@ -144,8 +144,8 @@ pub fn build_topic_emit(
     })
 }
 
-pub fn build_expected_topic_callback(spec: ExpectedTopicCallbackSpec) -> Result<TokenStream> {
-    let ExpectedTopicCallbackSpec {
+pub fn build_consumed_topic_callback(spec: ConsumedTopicCallbackSpec) -> Result<TokenStream> {
+    let ConsumedTopicCallbackSpec {
         fn_name,
         helper_fn_ident,
         args_struct_ident,
@@ -232,7 +232,7 @@ pub fn build_expected_topic_callback(spec: ExpectedTopicCallbackSpec) -> Result<
     })
 }
 
-pub struct ExternalExpectedTopicCallbackSpec<'a> {
+pub struct ExternalConsumedTopicCallbackSpec<'a> {
     pub fn_name: &'a Ident,
     pub helper_fn_ident: &'a Ident,
     pub args_struct_ident: &'a Ident,
@@ -243,10 +243,10 @@ pub struct ExternalExpectedTopicCallbackSpec<'a> {
     pub struct_prefix: &'a str,
 }
 
-pub fn build_external_expected_topic_callback(
-    spec: ExternalExpectedTopicCallbackSpec,
+pub fn build_external_consumed_topic_callback(
+    spec: ExternalConsumedTopicCallbackSpec,
 ) -> Result<TokenStream> {
-    let ExternalExpectedTopicCallbackSpec {
+    let ExternalConsumedTopicCallbackSpec {
         fn_name,
         helper_fn_ident,
         args_struct_ident,

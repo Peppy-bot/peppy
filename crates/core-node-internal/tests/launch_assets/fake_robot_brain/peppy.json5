@@ -29,7 +29,7 @@
     // The brain receives the inputs from the camera
     topics: {
       emits: [],
-      expects: [
+      consumes: [
         {
           local_node_id: "fake_uvc_camera",
           name: "video_stream",

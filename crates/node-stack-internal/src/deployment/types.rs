@@ -263,10 +263,10 @@ pub fn validate_dependency_specs(
     // Phase 2: Validate consumed interfaces reference valid local_node_ids
     // and that the dependency exposes the required interface
     if let Some(topics) = &config.interfaces.topics
-        && let Some(expected) = &topics.expects
+        && let Some(expected) = &topics.consumes
     {
         for topic in expected {
-            if let config::node::ExpectedTopic::Linked(linked) = topic {
+            if let config::node::ConsumedTopic::Linked(linked) = topic {
                 validate_consumed_interface(
                     &linked.local_node_id,
                     &linked.name,

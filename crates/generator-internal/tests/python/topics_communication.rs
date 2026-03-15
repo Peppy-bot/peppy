@@ -6,7 +6,7 @@ use crate::helpers::{
 use config::consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME};
 use config::runtime::NodeInstance;
 use config::{
-    node::{EmittedTopic, ExpectedTopic, ExposedService, MessageFormat},
+    node::{EmittedTopic, ConsumedTopic, ExposedService, MessageFormat},
     peppy_config::Name,
     runtime::RuntimeConfig,
 };
@@ -86,7 +86,7 @@ async fn topics_communication() {
     // --- Receiver project
     let receiver_instance_id = RECEIVER_INSTANCE_ID;
     let temp_dir_proj2 = TempDir::new().unwrap();
-    let expected_topic: ExpectedTopic = serde_json5::from_str(SUBSCRIBED_TOPIC_EXAMPLE).unwrap();
+    let consumed_topic: ConsumedTopic = serde_json5::from_str(SUBSCRIBED_TOPIC_EXAMPLE).unwrap();
     let subscribed_format: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE).unwrap();
     let frame_received_service: ExposedService =
@@ -94,7 +94,7 @@ async fn topics_communication() {
     let (mut generator, receiver_dir, user_node_receiver, peppy_node_config_path) =
         init_test_env::<generator::PythonGenerator>(&temp_dir_proj2, STUB_PYTHON_NODE_CONFIG);
     generator
-        .add_expected_topic(&expected_topic, subscribed_format, "uvc_camera")
+        .add_consumed_topic(&consumed_topic, subscribed_format, "uvc_camera")
         .unwrap();
     generator
         .add_exposed_service(&frame_received_service)
@@ -130,7 +130,7 @@ async fn topics_communication() {
 import asyncio
 from peppygen import NodeBuilder
 from peppygen.exposed_services import frame_received_ack
-from peppygen.expected_topics import uvc_camera_video_stream
+from peppygen.consumed_topics import uvc_camera_video_stream
 
 async def receive_frames(node_runner, frame_received):
     print("receiver: about to subscribe", flush=True)

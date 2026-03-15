@@ -24,7 +24,7 @@ use crate::generator::naming::{
 };
 use config::encoding::{CapnpSchemaArtifacts, FunctionParam};
 use config::node::{
-    ConsumedAction, ConsumedService, EmittedTopic, ExpectedTopic, ExposedAction, ExposedService,
+    ConsumedAction, ConsumedService, ConsumedTopic, EmittedTopic, ExposedAction, ExposedService,
     MessageFormat,
 };
 use indexmap::IndexMap;
@@ -47,7 +47,7 @@ use services::{
     ExposedServiceMethodSpec, ServiceResponseSpec, build_exposed_service_method,
     build_request_struct_with_name_and_impl, deserialize_fields_from_format,
 };
-use topics::{ExpectedTopicCallbackSpec, build_expected_topic_callback, build_topic_emit};
+use topics::{ConsumedTopicCallbackSpec, build_consumed_topic_callback, build_topic_emit};
 use type_mapping::{render_tokens, unused_params_stmt};
 
 /// Rust-specific implementation of the interface generator.
@@ -931,15 +931,15 @@ impl LanguageGenerator for RustGenerator {
         Ok(())
     }
 
-    fn add_expected_topic(
+    fn add_consumed_topic(
         &mut self,
-        topic: &ExpectedTopic,
+        topic: &ConsumedTopic,
         arguments: MessageFormat,
         dependency_node_name: &str,
     ) -> Result<()> {
-        let ExpectedTopic::Linked(linked) = topic else {
+        let ConsumedTopic::Linked(linked) = topic else {
             return Err(Error::InvariantViolation {
-                context: "add_expected_topic called with ExpectedTopic::External; use add_external_expected_topic instead".into(),
+                context: "add_consumed_topic called with ConsumedTopic::External; use add_external_consumed_topic instead".into(),
             });
         };
         let node_name = linked.local_node_id.as_str();
@@ -949,11 +949,11 @@ impl LanguageGenerator for RustGenerator {
 
         debug_assert!(
             !node_component.is_empty(),
-            "ExpectedTopic.local_node_id should be validated as non-empty"
+            "ConsumedTopic.local_node_id should be validated as non-empty"
         );
         debug_assert!(
             !topic_component.is_empty(),
-            "ExpectedTopic.name should be validated as non-empty"
+            "ConsumedTopic.name should be validated as non-empty"
         );
 
         let node_prefix = to_camel_case(&node_component);
@@ -1012,7 +1012,7 @@ impl LanguageGenerator for RustGenerator {
                 &encoding_params,
             )?
             .expect("message encoding spec should exist when message format is provided");
-        let method_tokens = build_expected_topic_callback(ExpectedTopicCallbackSpec {
+        let method_tokens = build_consumed_topic_callback(ConsumedTopicCallbackSpec {
             fn_name: &callback_fn_ident,
             helper_fn_ident: &helper_fn_ident,
             args_struct_ident: &args_struct_ident,
@@ -1033,19 +1033,19 @@ impl LanguageGenerator for RustGenerator {
 
         self.push_section(InterfaceArtifact::from_kind(
             &module_label,
-            InterfaceKind::ExpectedTopic,
+            InterfaceKind::ConsumedTopic,
             rendered,
         ));
 
         Ok(())
     }
 
-    fn add_external_expected_topic(&mut self, name: &str, arguments: MessageFormat) -> Result<()> {
+    fn add_external_consumed_topic(&mut self, name: &str, arguments: MessageFormat) -> Result<()> {
         let topic_component = sanitize_component(name);
 
         debug_assert!(
             !topic_component.is_empty(),
-            "External expected topic name should be validated as non-empty"
+            "External consumed topic name should be validated as non-empty"
         );
 
         let mut struct_prefix = to_camel_case(&topic_component);
@@ -1100,8 +1100,8 @@ impl LanguageGenerator for RustGenerator {
                 &encoding_params,
             )?
             .expect("message encoding spec should exist when message format is provided");
-        let method_tokens = topics::build_external_expected_topic_callback(
-            topics::ExternalExpectedTopicCallbackSpec {
+        let method_tokens = topics::build_external_consumed_topic_callback(
+            topics::ExternalConsumedTopicCallbackSpec {
                 fn_name: &callback_fn_ident,
                 helper_fn_ident: &helper_fn_ident,
                 args_struct_ident: &args_struct_ident,
@@ -1122,7 +1122,7 @@ impl LanguageGenerator for RustGenerator {
 
         self.push_section(InterfaceArtifact::from_kind(
             &module_label,
-            InterfaceKind::ExpectedTopic,
+            InterfaceKind::ConsumedTopic,
             rendered,
         ));
 

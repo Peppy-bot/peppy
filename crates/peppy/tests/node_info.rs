@@ -48,7 +48,7 @@ async fn node_info_shows_dependencies_from_consumed_interfaces() {
             }},
             interfaces: {{
                 topics: {{
-                    expects: [
+                    consumes: [
                         {{ local_node_id: "camera_node", name: "video_stream" }},
                         {{ local_node_id: "lidar_node", name: "point_cloud" }},
                         {{ local_node_id: "camera_node", name: "depth_stream" }}
@@ -102,7 +102,7 @@ async fn node_info_shows_dependencies_from_consumed_interfaces() {
         .interfaces
         .topics
         .as_ref()
-        .and_then(|t| t.expects.as_ref())
+        .and_then(|t| t.consumes.as_ref())
         .expect("consumed topics should exist");
     assert_eq!(topics.len(), 3, "should have 3 consumed topics");
 
@@ -127,7 +127,7 @@ async fn node_info_shows_dependencies_from_consumed_interfaces() {
     // Extract dependencies (unique local_node_id values) - this mirrors what print_node_info does
     let mut dependencies: BTreeSet<&str> = BTreeSet::new();
     for topic in topics {
-        if let config::node::ExpectedTopic::Linked(linked) = topic {
+        if let config::node::ConsumedTopic::Linked(linked) = topic {
             dependencies.insert(&linked.local_node_id);
         }
     }
@@ -244,12 +244,12 @@ async fn node_info_no_dependencies_when_no_consumes() {
     assert!(!emitted_topics.is_empty(), "should have emitted topics");
 
     // Verify no expects (no dependencies)
-    let no_expected_topics = info_response
+    let no_consumed_topics = info_response
         .config
         .interfaces
         .topics
         .as_ref()
-        .and_then(|t| t.expects.as_ref())
+        .and_then(|t| t.consumes.as_ref())
         .is_none_or(|t| t.is_empty());
     let no_consumed_services = info_response
         .config
@@ -266,7 +266,7 @@ async fn node_info_no_dependencies_when_no_consumes() {
         .and_then(|a| a.consumes.as_ref())
         .is_none_or(|a| a.is_empty());
     assert!(
-        no_expected_topics && no_consumed_services && no_consumed_actions,
+        no_consumed_topics && no_consumed_services && no_consumed_actions,
         "standalone node should have no dependencies"
     );
 }

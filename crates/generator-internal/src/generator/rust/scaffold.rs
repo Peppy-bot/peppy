@@ -306,7 +306,7 @@ fn deploy_rust_crates_to_shared_cache(
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum ModuleCategory {
     EmittedTopics,
-    ExpectedTopics,
+    ConsumedTopics,
     ExposedServices,
     ConsumedServices,
     ExposedActions,
@@ -316,7 +316,7 @@ enum ModuleCategory {
 impl ModuleCategory {
     const ALL: [Self; 6] = [
         Self::EmittedTopics,
-        Self::ExpectedTopics,
+        Self::ConsumedTopics,
         Self::ExposedServices,
         Self::ConsumedServices,
         Self::ExposedActions,
@@ -326,7 +326,7 @@ impl ModuleCategory {
     fn from_kind(kind: InterfaceKind) -> Self {
         match kind {
             InterfaceKind::EmittedTopic => Self::EmittedTopics,
-            InterfaceKind::ExpectedTopic => Self::ExpectedTopics,
+            InterfaceKind::ConsumedTopic => Self::ConsumedTopics,
             InterfaceKind::ExposedService => Self::ExposedServices,
             InterfaceKind::ConsumedService => Self::ConsumedServices,
             InterfaceKind::ExposedAction => Self::ExposedActions,
@@ -337,7 +337,7 @@ impl ModuleCategory {
     fn struct_name(self) -> &'static str {
         match self {
             Self::EmittedTopics => "EmittedTopics",
-            Self::ExpectedTopics => "ExpectedTopics",
+            Self::ConsumedTopics => "ConsumedTopics",
             Self::ExposedServices => "ExposedServices",
             Self::ConsumedServices => "ConsumedServices",
             Self::ExposedActions => "ExposedActions",
@@ -348,7 +348,7 @@ impl ModuleCategory {
     fn module_file_name(self) -> &'static str {
         match self {
             Self::EmittedTopics => "emitted_topics",
-            Self::ExpectedTopics => "expected_topics",
+            Self::ConsumedTopics => "consumed_topics",
             Self::ExposedServices => "exposed_services",
             Self::ConsumedServices => "consumed_services",
             Self::ExposedActions => "exposed_actions",
@@ -359,7 +359,7 @@ impl ModuleCategory {
     fn doc_label(self) -> &'static str {
         match self {
             Self::EmittedTopics => "emitted topics",
-            Self::ExpectedTopics => "expected topics",
+            Self::ConsumedTopics => "consumed topics",
             Self::ExposedServices => "exposed services",
             Self::ConsumedServices => "consumed services",
             Self::ExposedActions => "exposed actions",

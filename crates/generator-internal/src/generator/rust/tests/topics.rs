@@ -1,5 +1,5 @@
 use super::*;
-use config::node::{EmittedTopic, ExpectedTopic, MessageFormat, PeppygenLanguage};
+use config::node::{EmittedTopic, ConsumedTopic, MessageFormat, PeppygenLanguage};
 use std::process::{Command, Stdio};
 
 const EMITTED_TOPIC_EXAMPLE: &str = r#"
@@ -154,7 +154,7 @@ fn parse_emitted_topic(example: &str) -> EmittedTopic {
     serde_json5::from_str(example).unwrap()
 }
 
-fn parse_expected_topic(example: &str) -> ExpectedTopic {
+fn parse_consumed_topic(example: &str) -> ConsumedTopic {
     serde_json5::from_str(example).unwrap()
 }
 
@@ -311,13 +311,13 @@ fn emit_topic_rejects_fixed_string_array() {
 
 /// In the case of a topic, a "subscribed" topic is an entity expects to receive messages from another entity
 #[test]
-fn expected_topic() {
-    let topic = parse_expected_topic(SUBSCRIBED_TOPIC_EXAMPLE1);
+fn consumed_topic() {
+    let topic = parse_consumed_topic(SUBSCRIBED_TOPIC_EXAMPLE1);
     let format = parse_message_format(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE1);
 
     let mut generator = RustGenerator::new();
     generator
-        .add_expected_topic(&topic, format, "uvc_camera")
+        .add_consumed_topic(&topic, format, "uvc_camera")
         .unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
@@ -376,13 +376,13 @@ fn expected_topic() {
 }
 
 #[test]
-fn expected_topic_escapes_rust_keyword_fields() {
-    let topic = parse_expected_topic(SUBSCRIBED_TOPIC_EXAMPLE_KEYWORDS);
+fn consumed_topic_escapes_rust_keyword_fields() {
+    let topic = parse_consumed_topic(SUBSCRIBED_TOPIC_EXAMPLE_KEYWORDS);
     let format = parse_message_format(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE_KEYWORDS);
 
     let mut generator = RustGenerator::new();
     generator
-        .add_expected_topic(&topic, format, "keyword_source")
+        .add_consumed_topic(&topic, format, "keyword_source")
         .unwrap();
     let rendered = render_artifacts(generator.into_artifacts())
         .into_iter()
@@ -402,19 +402,19 @@ fn expected_topic_escapes_rust_keyword_fields() {
 }
 
 #[test]
-fn expected_two_topics_same_node() {
-    let video_topic = parse_expected_topic(SUBSCRIBED_TOPIC_EXAMPLE1);
+fn consumed_two_topics_same_node() {
+    let video_topic = parse_consumed_topic(SUBSCRIBED_TOPIC_EXAMPLE1);
     let video_format = parse_message_format(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE1);
 
-    let sound_topic = parse_expected_topic(SUBSCRIBED_TOPIC_EXAMPLE2);
+    let sound_topic = parse_consumed_topic(SUBSCRIBED_TOPIC_EXAMPLE2);
     let sound_format = parse_message_format(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE2);
 
     let mut generator = RustGenerator::new();
     generator
-        .add_expected_topic(&video_topic, video_format, "uvc_camera")
+        .add_consumed_topic(&video_topic, video_format, "uvc_camera")
         .unwrap();
     generator
-        .add_expected_topic(&sound_topic, sound_format, "uvc_camera")
+        .add_consumed_topic(&sound_topic, sound_format, "uvc_camera")
         .unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
@@ -435,7 +435,7 @@ fn expected_two_topics_same_node() {
 }
 
 #[test]
-fn external_expected_topic() {
+fn external_consumed_topic() {
     let format = parse_message_format(
         r#"
         {
@@ -447,7 +447,7 @@ fn external_expected_topic() {
 
     let mut generator = RustGenerator::new();
     generator
-        .add_external_expected_topic("cmd_vel", format)
+        .add_external_consumed_topic("cmd_vel", format)
         .unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
@@ -599,23 +599,23 @@ fn clippy_single_emitted_topic_empty_format() {
 
 /// This is a long running test that verifies the generated code compiles and passes clippy
 #[test]
-fn compile_lib_with_emitted_and_expected_topics() {
+fn compile_lib_with_emitted_and_consumed_topics() {
     let temp_dir = TempDir::new().unwrap();
     let emitted_topic1 = parse_emitted_topic(EMITTED_TOPIC_EXAMPLE);
     let emitted_topic2 = parse_emitted_topic(EMITTED_TOPIC_EXAMPLE2);
-    let expected_topic1 = parse_expected_topic(SUBSCRIBED_TOPIC_EXAMPLE1);
+    let consumed_topic1 = parse_consumed_topic(SUBSCRIBED_TOPIC_EXAMPLE1);
     let subscribed_format1 = parse_message_format(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE1);
-    let expected_topic2 = parse_expected_topic(SUBSCRIBED_TOPIC_EXAMPLE2);
+    let consumed_topic2 = parse_consumed_topic(SUBSCRIBED_TOPIC_EXAMPLE2);
     let subscribed_format2 = parse_message_format(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE2);
 
     let (mut generator, output_dir, user_node, _) = init_test_env::<RustGenerator>(&temp_dir);
     generator.add_emitted_topic(&emitted_topic1).unwrap();
     generator.add_emitted_topic(&emitted_topic2).unwrap();
     generator
-        .add_expected_topic(&expected_topic1, subscribed_format1, "uvc_camera")
+        .add_consumed_topic(&consumed_topic1, subscribed_format1, "uvc_camera")
         .unwrap();
     generator
-        .add_expected_topic(&expected_topic2, subscribed_format2, "uvc_camera")
+        .add_consumed_topic(&consumed_topic2, subscribed_format2, "uvc_camera")
         .unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);
     generator
@@ -677,7 +677,7 @@ fn compile_lib_with_emitted_and_expected_topics() {
         std::fs::read_to_string(output_dir.join("src/lib.rs")).expect("failed to read lib.rs");
     assert_contains_all(
         &lib_contents,
-        &["pub mod emitted_topics;", "pub mod expected_topics;"],
+        &["pub mod emitted_topics;", "pub mod consumed_topics;"],
     );
 
     // Verify expected module files exist
@@ -695,13 +695,13 @@ fn compile_lib_with_emitted_and_expected_topics() {
     );
     assert!(
         output_dir
-            .join("src/expected_topics/uvc_camera_video_stream.rs")
+            .join("src/consumed_topics/uvc_camera_video_stream.rs")
             .exists(),
         "Expected uvc_camera_video_stream subscriber module"
     );
     assert!(
         output_dir
-            .join("src/expected_topics/uvc_camera_sound.rs")
+            .join("src/consumed_topics/uvc_camera_sound.rs")
             .exists(),
         "Expected uvc_camera_sound subscriber module"
     );

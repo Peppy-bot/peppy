@@ -372,7 +372,7 @@ pub struct TopicInterfaces {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub emits: Option<Vec<EmittedTopic>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub expects: Option<Vec<ExpectedTopic>>,
+    pub consumes: Option<Vec<ConsumedTopic>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -440,29 +440,29 @@ pub struct ExposedAction {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct LinkedExpectedTopic {
-    #[serde(deserialize_with = "deserialize_expected_topic_local_node_id")]
+pub struct LinkedConsumedTopic {
+    #[serde(deserialize_with = "deserialize_consumed_topic_local_node_id")]
     pub local_node_id: String,
-    #[serde(deserialize_with = "deserialize_expected_topic_name")]
+    #[serde(deserialize_with = "deserialize_consumed_topic_name")]
     pub name: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ExternalExpectedTopic {
-    #[serde(deserialize_with = "deserialize_expected_topic_name")]
+pub struct ExternalConsumedTopic {
+    #[serde(deserialize_with = "deserialize_consumed_topic_name")]
     pub name: String,
     pub message_format: MessageFormat,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
-pub enum ExpectedTopic {
-    Linked(LinkedExpectedTopic),
-    External(ExternalExpectedTopic),
+pub enum ConsumedTopic {
+    Linked(LinkedConsumedTopic),
+    External(ExternalConsumedTopic),
 }
 
-impl ExpectedTopic {
+impl ConsumedTopic {
     pub fn name(&self) -> &str {
         match self {
             Self::Linked(t) => &t.name,
@@ -510,18 +510,18 @@ impl Default for ActionServiceEndpoint {
     }
 }
 
-fn deserialize_expected_topic_local_node_id<'de, D>(deserializer: D) -> Result<String, D::Error>
+fn deserialize_consumed_topic_local_node_id<'de, D>(deserializer: D) -> Result<String, D::Error>
 where
     D: Deserializer<'de>,
 {
-    deserialize_non_empty_identifier(deserializer, "ExpectedTopic.local_node_id")
+    deserialize_non_empty_identifier(deserializer, "ConsumedTopic.local_node_id")
 }
 
-fn deserialize_expected_topic_name<'de, D>(deserializer: D) -> Result<String, D::Error>
+fn deserialize_consumed_topic_name<'de, D>(deserializer: D) -> Result<String, D::Error>
 where
     D: Deserializer<'de>,
 {
-    deserialize_non_empty_identifier(deserializer, "ExpectedTopic.name")
+    deserialize_non_empty_identifier(deserializer, "ConsumedTopic.name")
 }
 
 fn deserialize_consumed_service_local_node_id<'de, D>(deserializer: D) -> Result<String, D::Error>
@@ -702,10 +702,10 @@ mod tests {
     }
 
     #[test]
-    fn expected_topic_linked_local_node_id_is_required() {
+    fn consumed_topic_linked_local_node_id_is_required() {
         let valid = r#"{ local_node_id: "uvc_camera", name: "video_stream" }"#;
-        let topic: ExpectedTopic = serde_json5::from_str(valid).expect("valid topic should parse");
-        let ExpectedTopic::Linked(LinkedExpectedTopic {
+        let topic: ConsumedTopic = serde_json5::from_str(valid).expect("valid topic should parse");
+        let ConsumedTopic::Linked(LinkedConsumedTopic {
             local_node_id,
             name,
         }) = &topic
@@ -716,24 +716,24 @@ mod tests {
         assert_eq!(name, "video_stream");
 
         let empty_local_node_id = r#"{ local_node_id: "", name: "video_stream" }"#;
-        assert!(serde_json5::from_str::<ExpectedTopic>(empty_local_node_id).is_err());
+        assert!(serde_json5::from_str::<ConsumedTopic>(empty_local_node_id).is_err());
 
         let missing_name = r#"{ local_node_id: "uvc_camera", name: "" }"#;
-        assert!(serde_json5::from_str::<ExpectedTopic>(missing_name).is_err());
+        assert!(serde_json5::from_str::<ConsumedTopic>(missing_name).is_err());
 
         let whitespace_only = r#"{ local_node_id: "   ", name: "video_stream" }"#;
-        assert!(serde_json5::from_str::<ExpectedTopic>(whitespace_only).is_err());
+        assert!(serde_json5::from_str::<ConsumedTopic>(whitespace_only).is_err());
 
         let punctuation_only = r#"{ local_node_id: "--", name: "video_stream" }"#;
-        assert!(serde_json5::from_str::<ExpectedTopic>(punctuation_only).is_err());
+        assert!(serde_json5::from_str::<ConsumedTopic>(punctuation_only).is_err());
 
         let missing_name_field = r#"{ local_node_id: "uvc_camera" }"#;
-        assert!(serde_json5::from_str::<ExpectedTopic>(missing_name_field).is_err());
+        assert!(serde_json5::from_str::<ConsumedTopic>(missing_name_field).is_err());
 
         let trimmed = r#"{ local_node_id: " uvc_camera ", name: " video_stream " }"#;
-        let topic: ExpectedTopic =
+        let topic: ConsumedTopic =
             serde_json5::from_str(trimmed).expect("whitespace should be trimmed");
-        let ExpectedTopic::Linked(LinkedExpectedTopic {
+        let ConsumedTopic::Linked(LinkedConsumedTopic {
             local_node_id,
             name,
         }) = &topic
@@ -745,11 +745,11 @@ mod tests {
     }
 
     #[test]
-    fn expected_topic_external_requires_name_and_message_format() {
+    fn consumed_topic_external_requires_name_and_message_format() {
         let valid = r#"{ name: "cmd_vel", message_format: { linear_x: "f64", angular_z: "f64" } }"#;
-        let topic: ExpectedTopic =
+        let topic: ConsumedTopic =
             serde_json5::from_str(valid).expect("valid external topic should parse");
-        let ExpectedTopic::External(ExternalExpectedTopic {
+        let ConsumedTopic::External(ExternalConsumedTopic {
             name,
             message_format,
         }) = &topic
@@ -763,32 +763,32 @@ mod tests {
         // name-only without message_format is an error (matches neither variant)
         let name_only = r#"{ name: "cmd_vel" }"#;
         assert!(
-            serde_json5::from_str::<ExpectedTopic>(name_only).is_err(),
+            serde_json5::from_str::<ConsumedTopic>(name_only).is_err(),
             "name-only (no local_node_id, no message_format) should fail"
         );
 
         // External with empty name should fail
         let empty_name = r#"{ name: "", message_format: { linear_x: "f64", angular_z: "f64" } }"#;
-        assert!(serde_json5::from_str::<ExpectedTopic>(empty_name).is_err());
+        assert!(serde_json5::from_str::<ConsumedTopic>(empty_name).is_err());
     }
 
     #[test]
-    fn expected_topic_mixed_linked_and_external() {
+    fn consumed_topic_mixed_linked_and_external() {
         let json = r#"[
             { local_node_id: "camera", name: "video_stream" },
             { name: "cmd_vel", message_format: { linear_x: "f64", angular_z: "f64" } }
         ]"#;
-        let topics: Vec<ExpectedTopic> =
+        let topics: Vec<ConsumedTopic> =
             serde_json5::from_str(json).expect("mixed array should parse");
         assert_eq!(topics.len(), 2);
-        assert!(matches!(&topics[0], ExpectedTopic::Linked(_)));
-        assert!(matches!(&topics[1], ExpectedTopic::External(_)));
+        assert!(matches!(&topics[0], ConsumedTopic::Linked(_)));
+        assert!(matches!(&topics[1], ConsumedTopic::External(_)));
         assert_eq!(topics[0].name(), "video_stream");
         assert_eq!(topics[1].name(), "cmd_vel");
     }
 
     #[test]
-    fn expected_topic_rejects_unknown_fields() {
+    fn consumed_topic_rejects_unknown_fields() {
         // Linked with extra message_format should fail (not silently drop it)
         let linked_with_extra = r#"{
             local_node_id: "camera",
@@ -796,7 +796,7 @@ mod tests {
             message_format: { x: "f64" }
         }"#;
         assert!(
-            serde_json5::from_str::<ExpectedTopic>(linked_with_extra).is_err(),
+            serde_json5::from_str::<ConsumedTopic>(linked_with_extra).is_err(),
             "linked topic with extra message_format should be rejected"
         );
 
@@ -807,7 +807,7 @@ mod tests {
             message_format: { linear_x: "f64" }
         }"#;
         assert!(
-            serde_json5::from_str::<ExpectedTopic>(external_with_extra).is_err(),
+            serde_json5::from_str::<ConsumedTopic>(external_with_extra).is_err(),
             "external topic with extra local_node_id should be rejected"
         );
     }

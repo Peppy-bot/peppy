@@ -1,5 +1,5 @@
 use super::*;
-use config::node::{EmittedTopic, ExpectedTopic, MessageFormat, PeppygenLanguage};
+use config::node::{EmittedTopic, ConsumedTopic, MessageFormat, PeppygenLanguage};
 
 const EMITTED_TOPIC_EXAMPLE: &str = r#"
 {
@@ -145,7 +145,7 @@ fn parse_emitted_topic(example: &str) -> EmittedTopic {
     serde_json5::from_str(example).unwrap()
 }
 
-fn parse_expected_topic(example: &str) -> ExpectedTopic {
+fn parse_consumed_topic(example: &str) -> ConsumedTopic {
     serde_json5::from_str(example).unwrap()
 }
 
@@ -376,13 +376,13 @@ fn emit_topic_rejects_fixed_string_array() {
 /// In the case of a topic, a "subscribed" topic is an entity that expects to receive messages
 /// from another entity.
 #[test]
-fn expected_topic() {
-    let topic = parse_expected_topic(SUBSCRIBED_TOPIC_EXAMPLE1);
+fn consumed_topic() {
+    let topic = parse_consumed_topic(SUBSCRIBED_TOPIC_EXAMPLE1);
     let format = parse_message_format(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE1);
 
     let mut generator = PythonGenerator::new();
     generator
-        .add_expected_topic(&topic, format, "uvc_camera")
+        .add_consumed_topic(&topic, format, "uvc_camera")
         .unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
@@ -493,13 +493,13 @@ fn expected_topic() {
 }
 
 #[test]
-fn expected_topic_escapes_python_keyword_fields() {
-    let topic = parse_expected_topic(SUBSCRIBED_TOPIC_EXAMPLE_KEYWORDS);
+fn consumed_topic_escapes_python_keyword_fields() {
+    let topic = parse_consumed_topic(SUBSCRIBED_TOPIC_EXAMPLE_KEYWORDS);
     let format = parse_message_format(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE_KEYWORDS);
 
     let mut generator = PythonGenerator::new();
     generator
-        .add_expected_topic(&topic, format, "keyword_source")
+        .add_consumed_topic(&topic, format, "keyword_source")
         .unwrap();
     let rendered = render_artifacts(generator.into_artifacts())
         .into_iter()
@@ -518,19 +518,19 @@ fn expected_topic_escapes_python_keyword_fields() {
 }
 
 #[test]
-fn expected_two_topics_same_node() {
-    let video_topic = parse_expected_topic(SUBSCRIBED_TOPIC_EXAMPLE1);
+fn consumed_two_topics_same_node() {
+    let video_topic = parse_consumed_topic(SUBSCRIBED_TOPIC_EXAMPLE1);
     let video_format = parse_message_format(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE1);
 
-    let sound_topic = parse_expected_topic(SUBSCRIBED_TOPIC_EXAMPLE2);
+    let sound_topic = parse_consumed_topic(SUBSCRIBED_TOPIC_EXAMPLE2);
     let sound_format = parse_message_format(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE2);
 
     let mut generator = PythonGenerator::new();
     generator
-        .add_expected_topic(&video_topic, video_format, "uvc_camera")
+        .add_consumed_topic(&video_topic, video_format, "uvc_camera")
         .unwrap();
     generator
-        .add_expected_topic(&sound_topic, sound_format, "uvc_camera")
+        .add_consumed_topic(&sound_topic, sound_format, "uvc_camera")
         .unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
@@ -582,7 +582,7 @@ fn expected_two_topics_same_node() {
 }
 
 #[test]
-fn external_expected_topic() {
+fn external_consumed_topic() {
     let format = parse_message_format(
         r#"
         {
@@ -594,7 +594,7 @@ fn external_expected_topic() {
 
     let mut generator = PythonGenerator::new();
     generator
-        .add_external_expected_topic("cmd_vel", format)
+        .add_external_consumed_topic("cmd_vel", format)
         .unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(

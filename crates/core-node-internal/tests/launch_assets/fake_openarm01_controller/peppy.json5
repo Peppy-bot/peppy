@@ -22,7 +22,7 @@
   interfaces: {
     topics: {
       emits: [],
-      expects: [],
+      consumes: [],
     },
     services: {
       exposes: [],

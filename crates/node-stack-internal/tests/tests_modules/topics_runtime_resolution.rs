@@ -24,7 +24,7 @@ fn topic_dependency_resolved_when_dependency_added_first() {
             },
             interfaces: {
                 topics: {
-                    expects: [
+                    consumes: [
                         {
                           local_node_id: "lidar",
                           name: "push_lidar_object"
@@ -135,7 +135,7 @@ fn topic_dependency_fails_when_dependency_is_missing() {
             },
             interfaces: {
                 topics: {
-                    expects: [
+                    consumes: [
                         {
                           local_node_id: "lidar",
                           name: "push_lidar_object"
@@ -186,7 +186,7 @@ fn topic_dependency_fails_when_topic_not_exposed_by_dependency() {
             },
             interfaces: {
                 topics: {
-                    expects: [
+                    consumes: [
                         {
                           local_node_id: "lidar",
                           name: "push_lidar_object"

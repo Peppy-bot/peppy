@@ -321,13 +321,13 @@ pub fn collect_consumed_interfaces(
     let mut interfaces = Vec::new();
     let dep_lookup = build_dependency_lookup(node_config);
 
-    // Collect expected topics
+    // Collect consumed topics
     if let Some(topic_interfaces) = &node_config.interfaces.topics
-        && let Some(expected_topics) = &topic_interfaces.expects
+        && let Some(consumed_topics) = &topic_interfaces.consumes
     {
-        for expected_topic in expected_topics {
-            match expected_topic {
-                config::node::ExpectedTopic::Linked(linked) => {
+        for consumed_topic in consumed_topics {
+            match consumed_topic {
+                config::node::ConsumedTopic::Linked(linked) => {
                     let Some((dep_name, dep_tag)) = dep_lookup.get(linked.local_node_id.as_str())
                     else {
                         continue;
@@ -341,17 +341,17 @@ pub fn collect_consumed_interfaces(
                         && let Some(message_format) = &emitted_topic.message_format
                     {
                         interfaces.push(DeploymentInterface::new(
-                            InterfaceVariant::ExpectedTopic {
-                                topic: expected_topic.clone(),
+                            InterfaceVariant::ConsumedTopic {
+                                topic: consumed_topic.clone(),
                                 message_format: message_format.clone(),
                                 dependency_node_name: dep_name.clone(),
                             },
                         ));
                     }
                 }
-                config::node::ExpectedTopic::External(external) => {
+                config::node::ConsumedTopic::External(external) => {
                     interfaces.push(DeploymentInterface::new(
-                        InterfaceVariant::ExternalExpectedTopic {
+                        InterfaceVariant::ExternalConsumedTopic {
                             name: external.name.clone(),
                             message_format: external.message_format.clone(),
                         },

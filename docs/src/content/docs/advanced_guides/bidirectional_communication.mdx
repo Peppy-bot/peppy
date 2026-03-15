@@ -1,6 +1,6 @@
 ---
 title: Bidirectional communication
-description: How to use external expected topics for bidirectional data flow between nodes
+description: How to use external consumed topics for bidirectional data flow between nodes
 sidebar:
   order: 4
 ---
@@ -10,7 +10,7 @@ import { Tabs, TabItem } from '@astrojs/starlight/components';
 In a standard PeppyOS setup, a node subscribes to topics from its declared dependencies using `local_node_id`.
 This creates a directed graph: if `arm_controller` depends on `robot_arm`, it can expect topics from `robot_arm` — but not the other way around, since that would create a circular dependency.
 
-**External expected topics** solve this by letting a node subscribe to a topic *without* declaring a dependency on the publisher.
+**External consumed topics** solve this by letting a node subscribe to a topic *without* declaring a dependency on the publisher.
 The subscriber defines the `message_format` inline and receives messages from any node that emits a matching topic.
 
 ## Example: robot arm control loop
@@ -23,19 +23,19 @@ Consider a robot arm that needs bidirectional communication between two nodes:
 ```
 arm_controller                                  robot_arm
       │                                              │
-      │─── emits: joint_commands ───────────────────>│  expects: joint_commands (external)
+      │─── emits: joint_commands ───────────────────>│  consumes: joint_commands (external)
       │                                              │
-      │  expects: joint_states (linked) <────────────│  emits: joint_states
+      │  consumes: joint_states (linked) <───────────│  emits: joint_states
       │                                              │
 ```
 
-`arm_controller` depends on `robot_arm` to expect its `joint_states` topic — that's a standard linked expected topic.
+`arm_controller` depends on `robot_arm` to consume its `joint_states` topic — that's a standard linked consumed topic.
 `robot_arm` needs to receive `joint_commands`, but it cannot depend on `arm_controller` (circular dependency).
-Instead, it declares `joint_commands` as an **external expected topic**.
+Instead, it declares `joint_commands` as an **external consumed topic**.
 
-## Configuring external expected topics
+## Configuring external consumed topics
 
-An external expected topic has a `name` and an inline `message_format`, but no `local_node_id`:
+An external consumed topic has a `name` and an inline `message_format`, but no `local_node_id`:
 
 <Tabs>
   <TabItem label="Python">
@@ -73,9 +73,9 @@ An external expected topic has a `name` and an inline `message_format`, but no `
               }
             }
           ],
-          expects: [
+          consumes: [
             {
-              // No local_node_id — this is an external expected topic
+              // No local_node_id — this is an external consumed topic
               name: "joint_commands",
               message_format: {
                 target_positions: {
@@ -127,9 +127,9 @@ An external expected topic has a `name` and an inline `message_format`, but no `
               }
             }
           ],
-          expects: [
+          consumes: [
             {
-              // No local_node_id — this is an external expected topic
+              // No local_node_id — this is an external consumed topic
               name: "joint_commands",
               message_format: {
                 target_positions: {
@@ -148,7 +148,7 @@ An external expected topic has a `name` and an inline `message_format`, but no `
   </TabItem>
 </Tabs>
 
-Compare this with the `arm_controller` node, which uses a standard linked expected topic:
+Compare this with the `arm_controller` node, which uses a standard linked consumed topic:
 
 <Tabs>
   <TabItem label="Python">
@@ -185,7 +185,7 @@ Compare this with the `arm_controller` node, which uses a standard linked expect
               }
             }
           ],
-          expects: [
+          consumes: [
             {
               local_node_id: "robot_arm",  // Linked — references depends_on
               name: "joint_states",
@@ -230,7 +230,7 @@ Compare this with the `arm_controller` node, which uses a standard linked expect
               }
             }
           ],
-          expects: [
+          consumes: [
             {
               local_node_id: "robot_arm",  // Linked — references depends_on
               name: "joint_states",
@@ -244,13 +244,13 @@ Compare this with the `arm_controller` node, which uses a standard linked expect
 </Tabs>
 
 :::note
-The `message_format` of an external expected topic is defined inline by the subscriber.
-For linked expected topics, the format is resolved automatically from the dependency's configuration — which is why only `local_node_id` and `name` are needed.
+The `message_format` of an external consumed topic is defined inline by the subscriber.
+For linked consumed topics, the format is resolved automatically from the dependency's configuration — which is why only `local_node_id` and `name` are needed.
 :::
 
 ## Receiving external messages
 
-After running `peppy node sync`, the code generator creates a module for each external expected topic under `peppygen.expected_topics` (Python) / `peppygen::expected_topics` (Rust).
+After running `peppy node sync`, the code generator creates a module for each external consumed topic under `peppygen.consumed_topics` (Python) / `peppygen::consumed_topics` (Rust).
 The module name is the **topic name only** (e.g. `joint_commands`), since there is no source node to prefix it with.
 
 <Tabs>
@@ -261,7 +261,7 @@ The module name is the **topic name only** (e.g. `joint_commands`), since there 
 
     from peppygen import NodeBuilder, NodeRunner
     from peppygen.parameters import Parameters
-    from peppygen.expected_topics import joint_commands
+    from peppygen.consumed_topics import joint_commands
     from peppygen.emitted_topics import joint_states
 
 
@@ -299,7 +299,7 @@ The module name is the **topic name only** (e.g. `joint_commands`), since there 
   </TabItem>
   <TabItem label="Rust">
     ```rust title="src/main.rs"
-    use peppygen::expected_topics::joint_commands;
+    use peppygen::consumed_topics::joint_commands;
     use peppygen::emitted_topics::joint_states;
     use peppygen::{NodeBuilder, Parameters, Result};
 
@@ -339,7 +339,7 @@ The module name is the **topic name only** (e.g. `joint_commands`), since there 
   </TabItem>
 </Tabs>
 
-The API is identical to linked expected topics — the only difference is where the `message_format` comes from (inline vs. resolved from the dependency).
+The API is identical to linked consumed topics — the only difference is where the `message_format` comes from (inline vs. resolved from the dependency).
 
 On the other side, the `arm_controller` uses a standard linked topic. Notice the module name includes the node prefix (`robot_arm_joint_states`):
 
@@ -350,7 +350,7 @@ On the other side, the `arm_controller` uses a standard linked topic. Notice the
 
     from peppygen import NodeBuilder, NodeRunner
     from peppygen.parameters import Parameters
-    from peppygen.expected_topics import robot_arm_joint_states
+    from peppygen.consumed_topics import robot_arm_joint_states
     from peppygen.emitted_topics import joint_commands
 
 
@@ -390,7 +390,7 @@ On the other side, the `arm_controller` uses a standard linked topic. Notice the
   </TabItem>
   <TabItem label="Rust">
     ```rust title="src/main.rs"
-    use peppygen::expected_topics::robot_arm_joint_states;
+    use peppygen::consumed_topics::robot_arm_joint_states;
     use peppygen::emitted_topics::joint_commands;
     use peppygen::{NodeBuilder, Parameters, Result};
 
@@ -432,7 +432,7 @@ On the other side, the `arm_controller` uses a standard linked topic. Notice the
   </TabItem>
 </Tabs>
 
-## Linked vs. external expected topics
+## Linked vs. external consumed topics
 
 | | Linked | External |
 |---|---|---|
@@ -458,17 +458,17 @@ A topic subscriber is **passive**: it declares a message format and waits for da
 That is why removing `depends_on` works — there is nothing to call.
 
 [Services](/advanced_guides/services) and [actions](/advanced_guides/actions) are **caller-driven**: the consumer actively invokes a specific service on a specific node.
-Even without a config dependency, the consumer would still need to target that node at runtime, reintroducing the coupling that external expected topics are designed to avoid.
+Even without a config dependency, the consumer would still need to target that node at runtime, reintroducing the coupling that external consumed topics are designed to avoid.
 
 In the robot arm example, `robot_arm` passively listens for `joint_commands` from any source — it never calls `arm_controller`.
-If it needed to call a service on `arm_controller` instead, it would need `depends_on`, creating the circular dependency that external expected topics exist to prevent.
+If it needed to call a service on `arm_controller` instead, it would need `depends_on`, creating the circular dependency that external consumed topics exist to prevent.
 
-## When to use external expected topics
+## When to use external consumed topics
 
-Use external expected topics when:
+Use external consumed topics when:
 
 - **Bidirectional communication** — two nodes need to exchange data and a direct dependency would create a cycle.
 - **Loose coupling** — the subscriber should not care which specific node publishes the data. For instance, a `robot_arm` node that accepts commands from any controller (teleoperation, autonomous planner, calibration script).
 - **Non-DAG communication** — the publisher is not part of the node stack, or the relationship between publisher and subscriber is not a natural dependency.
 
-For all other cases, prefer linked expected topics — they enforce explicit dependencies and let PeppyOS resolve message formats automatically.
+For all other cases, prefer linked consumed topics — they enforce explicit dependencies and let PeppyOS resolve message formats automatically.

@@ -2,7 +2,7 @@ use crate::error::{Error, Result};
 use crate::generator::common::CrateDeployMode;
 use config::consts::PeppyDirs;
 use config::node::{
-    ConsumedAction, ConsumedService, EmittedTopic, ExpectedTopic, ExposedAction, ExposedService,
+    ConsumedAction, ConsumedService, ConsumedTopic, EmittedTopic, ExposedAction, ExposedService,
     MessageFormat, PeppygenLanguage, PrimitiveSchema, SchemaType, TypeToken,
 };
 use indexmap::IndexMap;
@@ -13,7 +13,7 @@ pub enum InterfaceKind {
     EmittedTopic,
     ExposedService,
     ExposedAction,
-    ExpectedTopic,
+    ConsumedTopic,
     ConsumedService,
     ConsumedAction,
 }
@@ -33,8 +33,8 @@ pub enum InterfaceVariant {
     EmittedTopic(EmittedTopic),
     ExposedService(ExposedService),
     ExposedAction(ExposedAction),
-    ExpectedTopic {
-        topic: ExpectedTopic,
+    ConsumedTopic {
+        topic: ConsumedTopic,
         message_format: MessageFormat,
         dependency_node_name: String,
     },
@@ -49,7 +49,7 @@ pub enum InterfaceVariant {
         messages: ConsumedActionMessage,
         dependency_node_name: String,
     },
-    ExternalExpectedTopic {
+    ExternalConsumedTopic {
         name: String,
         message_format: MessageFormat,
     },
@@ -110,13 +110,13 @@ pub trait LanguageGenerator {
     fn add_emitted_topic(&mut self, topic: &EmittedTopic) -> Result<()>;
     fn add_exposed_service(&mut self, service: &ExposedService) -> Result<()>;
     fn add_exposed_action(&mut self, action: &ExposedAction) -> Result<()>;
-    fn add_expected_topic(
+    fn add_consumed_topic(
         &mut self,
-        topic: &ExpectedTopic,
+        topic: &ConsumedTopic,
         arguments: MessageFormat,
         dependency_node_name: &str,
     ) -> Result<()>;
-    fn add_external_expected_topic(
+    fn add_external_consumed_topic(
         &mut self,
         name: &str,
         message_format: MessageFormat,
@@ -149,11 +149,11 @@ impl DeploymentInterface {
             InterfaceVariant::EmittedTopic(topic) => backend.add_emitted_topic(topic),
             InterfaceVariant::ExposedService(service) => backend.add_exposed_service(service),
             InterfaceVariant::ExposedAction(action) => backend.add_exposed_action(action),
-            InterfaceVariant::ExpectedTopic {
+            InterfaceVariant::ConsumedTopic {
                 topic,
                 message_format,
                 dependency_node_name,
-            } => backend.add_expected_topic(topic, message_format.clone(), dependency_node_name),
+            } => backend.add_consumed_topic(topic, message_format.clone(), dependency_node_name),
             InterfaceVariant::ConsumedService {
                 service,
                 request_format,
@@ -170,10 +170,10 @@ impl DeploymentInterface {
                 messages,
                 dependency_node_name,
             } => backend.add_consumed_action(action, messages, dependency_node_name),
-            InterfaceVariant::ExternalExpectedTopic {
+            InterfaceVariant::ExternalConsumedTopic {
                 name,
                 message_format,
-            } => backend.add_external_expected_topic(name, message_format.clone()),
+            } => backend.add_external_consumed_topic(name, message_format.clone()),
         }
     }
 }

@@ -4,7 +4,7 @@ use super::deserialization;
 use super::serialization;
 use super::type_mapping::{collect_fields_from_format, qos_profile_python, uses_optional};
 use crate::error::Result;
-use config::node::{EmittedTopic, ExpectedTopic, MessageFormat};
+use config::node::{ConsumedTopic, EmittedTopic, MessageFormat};
 
 pub(crate) fn capnp_loader_fn_name(schema_info: &PythonSchemaInfo) -> String {
     format!("_{}_capnp", schema_info.file_stem)
@@ -125,8 +125,8 @@ pub fn build_emitted_topic(
 }
 
 /// Generates Python code for an expected (receiving) topic.
-pub fn build_expected_topic(
-    topic: &ExpectedTopic,
+pub fn build_consumed_topic(
+    topic: &ConsumedTopic,
     arguments: &MessageFormat,
     schema_info: &PythonSchemaInfo,
     dependency_node_name: &str,
@@ -196,7 +196,7 @@ pub fn build_expected_topic(
     Ok(builder.build())
 }
 
-pub fn build_external_expected_topic(
+pub fn build_external_consumed_topic(
     topic_name: &str,
     arguments: &MessageFormat,
     schema_info: &PythonSchemaInfo,
