@@ -7,4 +7,4 @@ sidebar:
 
 This guide covers the installation of PeppyOS and introduces you to creating nodes so you can understand how the system operates.
 
-PeppyOS runs on Linux and macOS.
+PeppyOS runs on Linux (x86_64/aarch64) and macOS (aarch64).
