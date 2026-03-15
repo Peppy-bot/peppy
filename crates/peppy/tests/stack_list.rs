@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use config::consts::PEPPYGEN_OUTPUT_PATH;
 use config::node::{
-    DependsOn, EmittedTopic, ConsumedTopic, LinkedConsumedTopic, Name as ConfigName,
+    ConsumedTopic, DependsOn, EmittedTopic, LinkedConsumedTopic, Name as ConfigName,
     NodeConfigParser, NodeDependency, Toolchain, TopicInterfaces,
 };
 use peppy::commands::Command;

@@ -1,5 +1,5 @@
 use super::*;
-use config::node::{EmittedTopic, ConsumedTopic, MessageFormat, PeppygenLanguage};
+use config::node::{ConsumedTopic, EmittedTopic, MessageFormat, PeppygenLanguage};
 
 const EMITTED_TOPIC_EXAMPLE: &str = r#"
 {
