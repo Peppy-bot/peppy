@@ -257,7 +257,7 @@ pub fn build_external_consumed_topic_callback(
             let qos = peppylib::config::QoSProfile::Standard;
 
             let message = {
-                let subscription_future = peppylib::TopicMessenger::subscribe_external(
+                let subscription_future = peppylib::TopicMessenger::consume_external(
                     node_runner.messenger(),
                     node_runner.processor().bound_core_node(),
                     node_runner.processor().bound_instance_id(),
