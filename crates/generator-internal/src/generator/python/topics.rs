@@ -209,7 +209,7 @@ fn build_consumed_topic_inner(
         builder.dedent();
         builder.line(")");
     } else {
-        builder.line("subscription = await peppylib.TopicMessenger.subscribe_external(");
+        builder.line("subscription = await peppylib.TopicMessenger.consume_external(");
         builder.indent();
         builder.line("node_runner.messenger(),");
         builder.line("node_runner.bound_core_node(),");

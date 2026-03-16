@@ -58,12 +58,12 @@ impl TopicMessenger {
         Ok(Subscription::new(subscription))
     }
 
-    /// Subscribes to a topic from any node (external/unlinked topics).
+    /// Consumes a topic from any node (external/unlinked topics).
     ///
     /// Unlike [`subscribe`], this does not target a specific publisher node.
     /// Internally uses a wildcard for the node name, so messages from any
     /// node publishing on the given topic will be received.
-    pub async fn subscribe_external(
+    pub async fn consume_external(
         messenger: &MessengerHandle,
         as_core_node: &str,
         as_instance_id: &str,
@@ -130,11 +130,11 @@ impl TopicPublisher {
     }
 
     pub async fn publish(&self, payload: Payload) -> Result<()> {
-        self.publish_on(self.topic.clone(), payload).await
+        self.publish_on(&self.topic, payload).await
     }
 
-    async fn publish_on(&self, topic: String, payload: Payload) -> Result<()> {
-        let message = PmiMessage::new(&topic, payload.into_inner());
+    async fn publish_on(&self, topic: &str, payload: Payload) -> Result<()> {
+        let message = PmiMessage::new(topic, payload.into_inner());
         let mut messenger = self.messenger.lock().await;
         messenger
             .publish(message, self.qos)

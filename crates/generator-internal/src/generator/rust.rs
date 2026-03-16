@@ -1053,20 +1053,8 @@ impl LanguageGenerator for RustGenerator {
             struct_prefix = String::from("Topic");
         }
 
-        let mut module_label = name.trim().to_string();
-        if module_label.is_empty() {
-            module_label = String::from("topic");
-        }
-        let mut module_component = sanitize_component(&module_label);
-        if module_component.is_empty() {
-            module_component = String::from("topic");
-        }
-
-        let schema_key = if !topic_component.is_empty() {
-            format!("on_next_{topic_component}_message")
-        } else {
-            format!("{module_component}_message")
-        };
+        let module_label = name.trim().to_string();
+        let schema_key = format!("on_next_{topic_component}_message");
 
         let format_artifacts = map_message_format(&schema_key, Some(&arguments))?
             .expect("message encoding spec should exist when message format is provided");

@@ -479,12 +479,12 @@ fn external_consumed_topic() {
         ],
     );
 
-    // External subscribe: uses subscribe_external, no node_name
+    // External subscribe: uses consume_external, no node_name
     assert_contains_all(
         &rendered,
         &[
             "let topic_name = \"cmd_vel\";",
-            "peppylib::TopicMessenger::subscribe_external(",
+            "peppylib::TopicMessenger::consume_external(",
         ],
     );
     assert!(
