@@ -199,12 +199,8 @@ pub struct DependencySpec {
     pub node_tag: String,
 }
 
-/// Compares two Interfaces structs by serializing them to JSON.
-/// Returns true if both serialize to the same JSON representation.
 fn interfaces_match(a: &Interfaces, b: &Interfaces) -> bool {
-    let a_json = serde_json::to_string(a).unwrap_or_default();
-    let b_json = serde_json::to_string(b).unwrap_or_default();
-    a_json == b_json
+    a == b
 }
 
 pub fn collect_dependency_specs(node: &NodeConfig) -> Vec<DependencySpec> {
@@ -1135,3 +1131,4 @@ impl NodeStack {
         guard.to_serialized_graph()
     }
 }
+

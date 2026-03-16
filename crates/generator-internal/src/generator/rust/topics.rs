@@ -158,33 +158,14 @@ pub fn build_consumed_topic_callback(spec: ConsumedTopicCallbackSpec) -> Result<
     } = spec;
     let topic_literal = Literal::string(topic.name());
     let node_name_literal = Literal::string(dependency_node_name);
-    let reader_type = &encoding.reader_type;
-    let context_literal = Literal::string(struct_prefix);
-    let context_expr = quote!(String::from(#context_literal));
-
-    let (field_statements, value_idents) = deserialize_fields_from_format(
-        artifacts.message_format(),
-        params,
-        struct_prefix,
-        &context_expr,
-    )?;
-    let field_inits: Vec<TokenStream> = params
-        .iter()
-        .zip(value_idents.iter())
-        .map(|(param, value_ident)| {
-            let field_ident = &param.ident;
-            quote!(#field_ident: #value_ident)
-        })
-        .collect();
-
-    let helper_fn_tokens = build_deserialize_fn(
+    let helper_fn_tokens = build_topic_deserialize_helper(
         helper_fn_ident,
-        reader_type,
-        &context_expr,
-        &quote!(#args_struct_ident),
-        &field_statements,
-        &quote!(#args_struct_ident { #( #field_inits ),* }),
-    );
+        args_struct_ident,
+        params,
+        artifacts,
+        encoding,
+        struct_prefix,
+    )?;
 
     Ok(quote! {
         pub async fn #fn_name(
@@ -257,33 +238,14 @@ pub fn build_external_consumed_topic_callback(
         struct_prefix,
     } = spec;
     let topic_literal = Literal::string(topic_name);
-    let reader_type = &encoding.reader_type;
-    let context_literal = Literal::string(struct_prefix);
-    let context_expr = quote!(String::from(#context_literal));
-
-    let (field_statements, value_idents) = deserialize_fields_from_format(
-        artifacts.message_format(),
-        params,
-        struct_prefix,
-        &context_expr,
-    )?;
-    let field_inits: Vec<TokenStream> = params
-        .iter()
-        .zip(value_idents.iter())
-        .map(|(param, value_ident)| {
-            let field_ident = &param.ident;
-            quote!(#field_ident: #value_ident)
-        })
-        .collect();
-
-    let helper_fn_tokens = build_deserialize_fn(
+    let helper_fn_tokens = build_topic_deserialize_helper(
         helper_fn_ident,
-        reader_type,
-        &context_expr,
-        &quote!(#args_struct_ident),
-        &field_statements,
-        &quote!(#args_struct_ident { #( #field_inits ),* }),
-    );
+        args_struct_ident,
+        params,
+        artifacts,
+        encoding,
+        struct_prefix,
+    )?;
 
     Ok(quote! {
         pub async fn #fn_name(
@@ -329,6 +291,43 @@ pub fn build_external_consumed_topic_callback(
     })
 }
 
+fn build_topic_deserialize_helper(
+    helper_fn_ident: &Ident,
+    args_struct_ident: &Ident,
+    params: &[FunctionParam],
+    artifacts: &CapnpSchemaArtifacts,
+    encoding: &MessageEncodingSpec,
+    struct_prefix: &str,
+) -> Result<TokenStream> {
+    let reader_type = &encoding.reader_type;
+    let context_literal = Literal::string(struct_prefix);
+    let context_expr = quote!(String::from(#context_literal));
+
+    let (field_statements, value_idents) = deserialize_fields_from_format(
+        artifacts.message_format(),
+        params,
+        struct_prefix,
+        &context_expr,
+    )?;
+    let field_inits: Vec<TokenStream> = params
+        .iter()
+        .zip(value_idents.iter())
+        .map(|(param, value_ident)| {
+            let field_ident = &param.ident;
+            quote!(#field_ident: #value_ident)
+        })
+        .collect();
+
+    Ok(build_deserialize_fn(
+        helper_fn_ident,
+        reader_type,
+        &context_expr,
+        &quote!(#args_struct_ident),
+        &field_statements,
+        &quote!(#args_struct_ident { #( #field_inits ),* }),
+    ))
+}
+
 pub fn qos_profile_tokens(profile: &QoSProfile) -> TokenStream {
     let variant = match profile {
         QoSProfile::Standard => "Standard",
@@ -339,3 +338,6 @@ pub fn qos_profile_tokens(profile: &QoSProfile) -> TokenStream {
     let variant_ident = Ident::new(variant, proc_macro2::Span::call_site());
     quote!(peppylib::config::QoSProfile::#variant_ident)
 }
+
+
+
