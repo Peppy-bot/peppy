@@ -1131,4 +1131,3 @@ impl NodeStack {
         guard.to_serialized_graph()
     }
 }
-

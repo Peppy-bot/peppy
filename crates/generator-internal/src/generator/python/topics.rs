@@ -131,7 +131,12 @@ pub fn build_consumed_topic(
     schema_info: &PythonSchemaInfo,
     dependency_node_name: &str,
 ) -> Result<String> {
-    build_consumed_topic_inner(topic.name(), arguments, schema_info, Some(dependency_node_name))
+    build_consumed_topic_inner(
+        topic.name(),
+        arguments,
+        schema_info,
+        Some(dependency_node_name),
+    )
 }
 
 pub fn build_external_consumed_topic(
