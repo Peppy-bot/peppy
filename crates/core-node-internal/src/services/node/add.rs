@@ -1334,14 +1334,6 @@ async fn shutdown_existing_instances(
         return Ok(());
     }
 
-    if !ctx.node_stack.dependents_of(node_name, node_tag).is_empty() {
-        let err = node_stack::NodeStackError::CannotOverwriteNodeWithDependents {
-            node_name: node_name.to_string(),
-            node_tag: node_tag.to_string(),
-        };
-        return Err(err.to_string());
-    }
-
     let instances = entity
         .instances()
         .iter()
@@ -1448,6 +1440,24 @@ async fn process_node_add(
             write_error_to_log(&ctx.log_file, &msg);
             return NodeAddResult::failure(&ctx.log_path, msg);
         }
+    }
+
+    // Reject early if changing the interfaces would break nodes that depend on this one.
+    // Checked here, before the build, so we fail fast without wasting the build or
+    // stopping any running instances.
+    if ctx
+        .node_stack
+        .would_overwrite_break_dependents(&node_name, &node_tag, &node_config.interfaces)
+    {
+        let msg = format!(
+            "Failed to add node config: {}",
+            node_stack::NodeStackError::CannotOverwriteNodeWithDependents {
+                node_name: node_name.clone(),
+                node_tag: node_tag.clone(),
+            }
+        );
+        write_error_to_log(&ctx.log_file, &msg);
+        return NodeAddResult::failure(&ctx.log_path, msg);
     }
 
     // Copy the node folder to a temporary working directory.

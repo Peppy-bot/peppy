@@ -2784,3 +2784,393 @@ async fn listen_for_node_add_logs_error_on_spawn_failure() {
         "node should not be added when add_cmd fails"
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn node_add_same_node_with_running_instance_and_dependents_succeeds() {
+    use peppylib::messaging::{MessengerHandle, SHUTDOWN_SERVICE, ServiceMessenger};
+    use std::sync::Arc;
+    use tokio::sync::{Mutex, Notify, oneshot};
+
+    const DEPENDENCY_NODE_NAME: &str = "lidar_dep";
+    const DEPENDENCY_NODE_TAG: &str = "1.0.0";
+    const DEPENDENT_NODE_NAME: &str = "brain_dep";
+    const DEPENDENT_NODE_TAG: &str = "1.0.0";
+    const INSTANCE_ID: &str = "lidar_dep_instance";
+
+    let started_core_node = start_core_node_with_mock_messenger().await;
+    let node_stack = started_core_node.node_stack.clone();
+
+    let dependency_source_dir_v1 = tempfile::tempdir().expect("failed to create temp source dir");
+    let dependency_source_dir_v2 = tempfile::tempdir().expect("failed to create temp source dir");
+    let dependent_source_dir = tempfile::tempdir().expect("failed to create temp source dir");
+
+    let dependency_peppy_json5 = format!(
+        r#"{{
+            schema_version: 1,
+            manifest: {{
+                name: "{DEPENDENCY_NODE_NAME}",
+                tag: "{DEPENDENCY_NODE_TAG}",
+                language: "rust",
+            }},
+            process: {{
+                start_cmd: ["sleep", "10"]
+            }},
+            interfaces: {{
+                services: {{
+                    exposes: [
+                        {{ name: "reset_sensor" }}
+                    ]
+                }}
+            }}
+        }}"#
+    );
+    write_peppy_json5(dependency_source_dir_v1.path(), &dependency_peppy_json5);
+
+    let dependency_add_v1 = send_node_add_and_wait(
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        dependency_source_dir_v1.path(),
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        None,
+    )
+    .await
+    .expect("dependency node_add v1 should complete");
+    assert!(
+        dependency_add_v1.success,
+        "dependency node_add v1 should succeed: {:?}",
+        dependency_add_v1.error_message
+    );
+
+    let dependent_peppy_json5 = format!(
+        r#"{{
+            schema_version: 1,
+            manifest: {{
+                name: "{DEPENDENT_NODE_NAME}",
+                tag: "{DEPENDENT_NODE_TAG}",
+                language: "rust",
+                depends_on: {{
+                    nodes: [
+                        {{ name: "{DEPENDENCY_NODE_NAME}", tag: "{DEPENDENCY_NODE_TAG}", local_id: "{DEPENDENCY_NODE_NAME}" }}
+                    ]
+                }},
+            }},
+            process: {{
+                start_cmd: ["sleep", "10"]
+            }},
+            interfaces: {{
+                services: {{
+                    consumes: [
+                        {{
+                          local_node_id: "{DEPENDENCY_NODE_NAME}",
+                          name: "reset_sensor"
+                        }}
+                    ]
+                }}
+            }}
+        }}"#
+    );
+    write_peppy_json5(dependent_source_dir.path(), &dependent_peppy_json5);
+
+    let dependent_add = send_node_add_and_wait(
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        dependent_source_dir.path(),
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        None,
+    )
+    .await
+    .expect("dependent node_add should complete");
+    assert!(
+        dependent_add.success,
+        "dependent node_add should succeed: {:?}",
+        dependent_add.error_message
+    );
+
+    // Add a fake running instance to the dependency node
+    let instance_id = config::node::Name::new(INSTANCE_ID).expect("valid instance id");
+    node_stack
+        .add_instance(
+            DEPENDENCY_NODE_NAME,
+            DEPENDENCY_NODE_TAG,
+            Some(&instance_id),
+            None,
+        )
+        .expect("add_instance should succeed");
+
+    // Mock the shutdown service for the running instance
+    let instance_messenger =
+        MessengerHandle::from_shared(Arc::clone(&started_core_node.shared_messenger));
+    let (called_tx, called_rx) = oneshot::channel::<()>();
+    let called_tx = Arc::new(Mutex::new(Some(called_tx)));
+    let allow_shutdown = Arc::new(Notify::new());
+    let allow_shutdown_clone = Arc::clone(&allow_shutdown);
+    let mut shutdown_endpoint = ServiceMessenger::listen(
+        &instance_messenger,
+        &started_core_node.core_node_name,
+        INSTANCE_ID,
+        DEPENDENCY_NODE_NAME,
+        SHUTDOWN_SERVICE,
+    )
+    .await
+    .expect("failed to expose shutdown service");
+    let _shutdown_task = AbortOnDrop(peppylib::runtime::spawn({
+        let called_tx = Arc::clone(&called_tx);
+        async move {
+            shutdown_endpoint
+                .handle_requests(move |context| {
+                    let called_tx = Arc::clone(&called_tx);
+                    let allow_shutdown_clone = Arc::clone(&allow_shutdown_clone);
+                    async move {
+                        let payload = context.message().payload();
+                        if let Some(tx) = called_tx.lock().await.take() {
+                            let _ = tx.send(());
+                        }
+                        allow_shutdown_clone.notified().await;
+                        Ok(payload)
+                    }
+                })
+                .await
+        }
+    }));
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Re-add the dependency with the same interface
+    write_peppy_json5(dependency_source_dir_v2.path(), &dependency_peppy_json5);
+
+    let caller_handle = started_core_node.caller_handle.clone();
+    let core_node_name = started_core_node.core_node_name.clone();
+    let source_path_v2 = dependency_source_dir_v2.path().to_path_buf();
+    let add_task = tokio::spawn(async move {
+        send_node_add_and_wait(
+            &caller_handle,
+            &core_node_name,
+            &source_path_v2,
+            GOAL_TIMEOUT,
+            RESULT_TIMEOUT,
+            None,
+        )
+        .await
+    });
+
+    // Wait for shutdown to be requested, then allow it to complete
+    tokio::time::timeout(Duration::from_secs(5), called_rx)
+        .await
+        .expect("shutdown request should arrive within timeout")
+        .expect("shutdown channel should not be dropped");
+    allow_shutdown.notify_one();
+
+    let add_v2 = add_task
+        .await
+        .expect("node_add re-add task should join")
+        .expect("node_add re-add request should complete");
+
+    assert!(
+        add_v2.success,
+        "re-adding a node with same interface should succeed even when dependents exist, got: {:?}",
+        add_v2.error_message
+    );
+
+    let entity_v2 = node_stack
+        .find(DEPENDENCY_NODE_NAME, DEPENDENCY_NODE_TAG)
+        .expect("dependency should still exist after re-add");
+    assert_eq!(
+        entity_v2.instances().len(),
+        0,
+        "running instance should have been stopped"
+    );
+    assert!(
+        node_stack.contains(DEPENDENT_NODE_NAME, DEPENDENT_NODE_TAG),
+        "dependent node should still be in the stack"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn node_add_same_node_changing_interface_with_running_instance_and_dependents_fails() {
+    // The early dependency check fires BEFORE the build and before any instance is stopped.
+    // When the overwrite is rejected, the running instance remains untouched.
+    const DEPENDENCY_NODE_NAME: &str = "lidar_iface";
+    const DEPENDENCY_NODE_TAG: &str = "1.0.0";
+    const DEPENDENT_NODE_NAME: &str = "brain_iface";
+    const DEPENDENT_NODE_TAG: &str = "1.0.0";
+    const INSTANCE_ID: &str = "lidar_iface_instance";
+
+    let started_core_node = start_core_node_with_mock_messenger().await;
+    let node_stack = started_core_node.node_stack.clone();
+
+    let dependency_source_dir_v1 = tempfile::tempdir().expect("failed to create temp source dir");
+    let dependency_source_dir_v2 = tempfile::tempdir().expect("failed to create temp source dir");
+    let dependent_source_dir = tempfile::tempdir().expect("failed to create temp source dir");
+
+    let dependency_peppy_json5_v1 = format!(
+        r#"{{
+            schema_version: 1,
+            manifest: {{
+                name: "{DEPENDENCY_NODE_NAME}",
+                tag: "{DEPENDENCY_NODE_TAG}",
+                language: "rust",
+            }},
+            process: {{
+                start_cmd: ["sleep", "10"]
+            }},
+            interfaces: {{
+                services: {{
+                    exposes: [
+                        {{ name: "reset_sensor" }}
+                    ]
+                }}
+            }}
+        }}"#
+    );
+    write_peppy_json5(dependency_source_dir_v1.path(), &dependency_peppy_json5_v1);
+
+    let dependency_add_v1 = send_node_add_and_wait(
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        dependency_source_dir_v1.path(),
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        None,
+    )
+    .await
+    .expect("dependency node_add v1 should complete");
+    assert!(
+        dependency_add_v1.success,
+        "dependency node_add v1 should succeed: {:?}",
+        dependency_add_v1.error_message
+    );
+
+    let dependent_peppy_json5 = format!(
+        r#"{{
+            schema_version: 1,
+            manifest: {{
+                name: "{DEPENDENT_NODE_NAME}",
+                tag: "{DEPENDENT_NODE_TAG}",
+                language: "rust",
+                depends_on: {{
+                    nodes: [
+                        {{ name: "{DEPENDENCY_NODE_NAME}", tag: "{DEPENDENCY_NODE_TAG}", local_id: "{DEPENDENCY_NODE_NAME}" }}
+                    ]
+                }},
+            }},
+            process: {{
+                start_cmd: ["sleep", "10"]
+            }},
+            interfaces: {{
+                services: {{
+                    consumes: [
+                        {{
+                          local_node_id: "{DEPENDENCY_NODE_NAME}",
+                          name: "reset_sensor"
+                        }}
+                    ]
+                }}
+            }}
+        }}"#
+    );
+    write_peppy_json5(dependent_source_dir.path(), &dependent_peppy_json5);
+
+    let dependent_add = send_node_add_and_wait(
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        dependent_source_dir.path(),
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        None,
+    )
+    .await
+    .expect("dependent node_add should complete");
+    assert!(
+        dependent_add.success,
+        "dependent node_add should succeed: {:?}",
+        dependent_add.error_message
+    );
+
+    let snapshot_v1 = node_stack
+        .find(DEPENDENCY_NODE_NAME, DEPENDENCY_NODE_TAG)
+        .expect("dependency should exist")
+        .root_path()
+        .to_path_buf();
+
+    // Add a fake running instance to the dependency node
+    let instance_id = config::node::Name::new(INSTANCE_ID).expect("valid instance id");
+    node_stack
+        .add_instance(
+            DEPENDENCY_NODE_NAME,
+            DEPENDENCY_NODE_TAG,
+            Some(&instance_id),
+            None,
+        )
+        .expect("add_instance should succeed");
+
+    // Try to overwrite with a different interface (new_service instead of reset_sensor).
+    // The early check fires before the build so no shutdown request is sent.
+    let dependency_peppy_json5_v2 = format!(
+        r#"{{
+            schema_version: 1,
+            manifest: {{
+                name: "{DEPENDENCY_NODE_NAME}",
+                tag: "{DEPENDENCY_NODE_TAG}",
+                language: "rust",
+            }},
+            process: {{
+                start_cmd: ["sleep", "10"]
+            }},
+            interfaces: {{
+                services: {{
+                    exposes: [
+                        {{ name: "new_service" }}
+                    ]
+                }}
+            }}
+        }}"#
+    );
+    write_peppy_json5(dependency_source_dir_v2.path(), &dependency_peppy_json5_v2);
+
+    let add_v2 = send_node_add_and_wait(
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        dependency_source_dir_v2.path(),
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        None,
+    )
+    .await
+    .expect("node_add overwrite request should complete");
+
+    assert!(
+        !add_v2.success,
+        "overwriting with a changed interface should fail when dependents exist"
+    );
+    assert!(
+        add_v2
+            .error_message
+            .as_ref()
+            .map(|msg| msg.contains("Cannot overwrite node"))
+            .unwrap_or(false),
+        "error should indicate the overwrite is blocked: {:?}",
+        add_v2.error_message
+    );
+
+    // Old config must be preserved, snapshot path unchanged
+    let entity_after = node_stack
+        .find(DEPENDENCY_NODE_NAME, DEPENDENCY_NODE_TAG)
+        .expect("dependency should still exist after failed overwrite");
+    assert_eq!(
+        entity_after.root_path(),
+        snapshot_v1.as_path(),
+        "snapshot path should be unchanged after failed overwrite"
+    );
+    // The early check fired before shutdown — the running instance must still be alive
+    assert_eq!(
+        entity_after.instances().len(),
+        1,
+        "running instance should NOT have been stopped when the overwrite was rejected early"
+    );
+    assert!(
+        node_stack.contains(DEPENDENT_NODE_NAME, DEPENDENT_NODE_TAG),
+        "dependent node should still be in the stack after failed overwrite"
+    );
+}
