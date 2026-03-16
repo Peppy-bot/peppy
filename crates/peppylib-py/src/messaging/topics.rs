@@ -114,11 +114,11 @@ impl PyTopicMessenger {
         })
     }
 
-    /// Subscribe to a topic from any node (external/unlinked topics).
+    /// Consume a topic from any node (external/unlinked topics).
     #[staticmethod]
     #[pyo3(signature = (messenger, as_core_node, as_instance_id, to_topic, to_core_node, to_instance_id, qos))]
     #[allow(clippy::too_many_arguments)]
-    fn subscribe_external<'py>(
+    fn consume_external<'py>(
         py: Python<'py>,
         messenger: &PyMessengerHandle,
         as_core_node: String,
@@ -130,7 +130,7 @@ impl PyTopicMessenger {
     ) -> PyResult<Bound<'py, PyAny>> {
         let handle = messenger.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let subscription = TopicMessenger::subscribe_external(
+            let subscription = TopicMessenger::consume_external(
                 &handle,
                 &as_core_node,
                 &as_instance_id,
