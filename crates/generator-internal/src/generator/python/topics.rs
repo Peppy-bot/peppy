@@ -226,4 +226,3 @@ fn build_consumed_topic_inner(
 
     Ok(builder.build())
 }
-

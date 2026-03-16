@@ -338,6 +338,3 @@ pub fn qos_profile_tokens(profile: &QoSProfile) -> TokenStream {
     let variant_ident = Ident::new(variant, proc_macro2::Span::call_site());
     quote!(peppylib::config::QoSProfile::#variant_ident)
 }
-
-
-

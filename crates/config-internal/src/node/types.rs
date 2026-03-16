@@ -1050,10 +1050,3 @@ mod tests {
         assert!(serde_json5::from_str::<Manifest>(json5).is_err());
     }
 }
-
-
-
-
-
-
-

@@ -130,11 +130,11 @@ impl TopicPublisher {
     }
 
     pub async fn publish(&self, payload: Payload) -> Result<()> {
-        self.publish_on(self.topic.clone(), payload).await
+        self.publish_on(&self.topic, payload).await
     }
 
-    async fn publish_on(&self, topic: String, payload: Payload) -> Result<()> {
-        let message = PmiMessage::new(&topic, payload.into_inner());
+    async fn publish_on(&self, topic: &str, payload: Payload) -> Result<()> {
+        let message = PmiMessage::new(topic, payload.into_inner());
         let mut messenger = self.messenger.lock().await;
         messenger
             .publish(message, self.qos)
