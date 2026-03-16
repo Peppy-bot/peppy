@@ -21,8 +21,8 @@ pytest-asyncio = ">=1.3"
 patchelf = ">=0.17.2.4"
 
 [tasks]
-dev = "maturin develop"
-release = "maturin develop --release"
+dev = "maturin develop --locked"
+release = "maturin develop --release --locked"
 cross-linux-release = "maturin build --zig --release --target aarch64-unknown-linux-gnu"
 test = "maturin develop && pytest tests/ -v"
 zenoh-simple = "cargo run --manifest-path ../peppylib/examples/zenohd_simple/Cargo.toml"

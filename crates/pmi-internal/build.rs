@@ -177,9 +177,6 @@ mod zenoh_build {
             println!("cargo:rerun-if-changed=build.rs");
             println!("cargo:rerun-if-changed=Cargo.toml");
             println!("cargo:rerun-if-changed=zenoh-checksums.toml");
-            if let Some(lockfile_path) = find_cargo_lock(Path::new(&manifest_dir)) {
-                println!("cargo:rerun-if-changed={}", lockfile_path.display());
-            }
 
             // Load and validate checksums
             let checksums_path = PathBuf::from(&manifest_dir).join("zenoh-checksums.toml");

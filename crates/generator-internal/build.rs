@@ -224,6 +224,55 @@ mod peppylib_build {
         }
     }
 
+    /// Returns true if maturin needs to run: the native `.so` is absent or older
+    /// than any peppylib-py source file (`src/**`, `peppylib/**/*.py`, `pixi.lock`).
+    ///
+    /// Used to skip `maturin develop` when only unrelated inputs
+    /// (e.g. `pmi-internal/Cargo.toml` watched by `rust_crates_build`) changed.
+    fn so_needs_rebuild(peppylib_py_dir: &Path, peppylib_dir: &Path) -> bool {
+        // Use the newest existing platform-suffixed .so as the reference timestamp.
+        let so_mtime = std::fs::read_dir(peppylib_dir).ok().and_then(|d| {
+            d.filter_map(|e| e.ok())
+                .filter(|e| {
+                    let n = e.file_name();
+                    let s = n.to_string_lossy();
+                    s.starts_with("_peppylib.abi3.") && s.ends_with(".so")
+                })
+                .filter_map(|e| e.metadata().ok()?.modified().ok())
+                .max()
+        });
+        let Some(so_mtime) = so_mtime else {
+            return true;
+        };
+
+        let newer = |path: &Path| {
+            std::fs::metadata(path)
+                .and_then(|m| m.modified())
+                .map_or(false, |t| t > so_mtime)
+        };
+
+        let src_dir = peppylib_py_dir.join("src");
+        if src_dir.is_dir() && super::walkdir(&src_dir).iter().any(|f| newer(f)) {
+            return true;
+        }
+
+        let py_dir = peppylib_py_dir.join("peppylib");
+        if py_dir.is_dir() {
+            let changed = super::walkdir(&py_dir)
+                .into_iter()
+                .filter(|f| {
+                    !f.components().any(|c| c.as_os_str() == "__pycache__")
+                        && f.extension().is_some_and(|e| e == "py")
+                })
+                .any(|f| newer(&f));
+            if changed {
+                return true;
+            }
+        }
+
+        newer(&peppylib_py_dir.join("pixi.lock"))
+    }
+
     fn register_rerun_triggers(peppylib_py_dir: &Path) {
         println!("cargo:rerun-if-changed=../peppylib-py/Cargo.toml");
         let src_dir = peppylib_py_dir.join("src");
@@ -377,16 +426,23 @@ mod peppylib_build {
                  Using existing .so files."
             );
         } else {
-            build_native_so(
-                &peppylib_py_dir,
-                &peppylib_dir,
-                &so_path,
-                pixi_task,
-                &target_dir,
-            );
+            // Only invoke maturin when peppylib-py-specific sources have changed.
+            // The build script may also be triggered by `rust_crates_build` inputs
+            // (e.g. pmi-internal/Cargo.toml), which don't affect the Python extension.
+            if !so_needs_rebuild(&peppylib_py_dir, &peppylib_dir) {
+                println!("cargo:warning=Skipping peppylib-py build (sources unchanged).");
+            } else {
+                build_native_so(
+                    &peppylib_py_dir,
+                    &peppylib_dir,
+                    &so_path,
+                    pixi_task,
+                    &target_dir,
+                );
 
-            #[cfg(target_os = "macos")]
-            cross_compile_linux_so(&peppylib_py_dir, &target_dir, &peppylib_dir);
+                #[cfg(target_os = "macos")]
+                cross_compile_linux_so(&peppylib_py_dir, &target_dir, &peppylib_dir);
+            }
         }
 
         // Guard against partial rebuilds leaving an unsuffixed .so behind
