@@ -174,7 +174,7 @@ pub enum TypeToken {
 // Derives above keep serde logic concise; `TypeToken` handles mapping of known strings.
 
 // Common wrapper for dynamic message formats in topics/services
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct MessageFormat(pub IndexMap<String, SchemaType>);
 
 fn is_false(value: &bool) -> bool {
@@ -366,7 +366,7 @@ impl SchemaType {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct TopicInterfaces {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -375,7 +375,7 @@ pub struct TopicInterfaces {
     pub consumes: Option<Vec<ConsumedTopic>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ServiceInterfaces {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -384,7 +384,7 @@ pub struct ServiceInterfaces {
     pub consumes: Option<Vec<ConsumedService>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ActionInterfaces {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -403,7 +403,7 @@ pub enum QoSProfile {
     Critical,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct EmittedTopic {
     #[serde(default)]
@@ -414,7 +414,7 @@ pub struct EmittedTopic {
     pub message_format: Option<MessageFormat>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ExposedService {
     #[serde(default)]
@@ -425,7 +425,7 @@ pub struct ExposedService {
     pub response_message_format: Option<MessageFormat>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ExposedAction {
     #[serde(default)]
@@ -438,7 +438,7 @@ pub struct ExposedAction {
     pub result_service: Option<ActionServiceEndpoint>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct LinkedConsumedTopic {
     #[serde(deserialize_with = "deserialize_consumed_topic_local_node_id")]
@@ -447,7 +447,7 @@ pub struct LinkedConsumedTopic {
     pub name: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ExternalConsumedTopic {
     #[serde(deserialize_with = "deserialize_consumed_topic_name")]
@@ -455,7 +455,7 @@ pub struct ExternalConsumedTopic {
     pub message_format: MessageFormat,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(untagged)]
 pub enum ConsumedTopic {
     Linked(LinkedConsumedTopic),
@@ -471,7 +471,7 @@ impl ConsumedTopic {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ConsumedService {
     #[serde(deserialize_with = "deserialize_consumed_service_local_node_id")]
@@ -480,7 +480,7 @@ pub struct ConsumedService {
     pub name: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ConsumedAction {
     #[serde(deserialize_with = "deserialize_consumed_action_local_node_id")]
@@ -489,7 +489,7 @@ pub struct ConsumedAction {
     pub name: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ActionServiceEndpoint {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -562,7 +562,7 @@ fn validate_non_empty_identifier(raw: &str, label: &'static str) -> Result<Strin
     Ok(trimmed.to_string())
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ActionTopicEndpoint {
     #[serde(skip_serializing_if = "Option::is_none", rename = "type")]
@@ -675,7 +675,7 @@ impl ContainerConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Interfaces {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1050,3 +1050,10 @@ mod tests {
         assert!(serde_json5::from_str::<Manifest>(json5).is_err());
     }
 }
+
+
+
+
+
+
+

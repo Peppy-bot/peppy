@@ -17,7 +17,6 @@ ureq = "3.1"
 httptest = "0.16.3"
 rand = "0.10"
 names-generator2 = "0.2.1"
-serde_json = "1.0"
 
 
 [dev-dependencies]
@@ -25,3 +24,4 @@ serde_json5 = "0.2.1"
 tempfile = "3.10"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
