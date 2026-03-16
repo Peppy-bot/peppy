@@ -199,12 +199,8 @@ pub struct DependencySpec {
     pub node_tag: String,
 }
 
-/// Compares two Interfaces structs by serializing them to JSON.
-/// Returns true if both serialize to the same JSON representation.
 fn interfaces_match(a: &Interfaces, b: &Interfaces) -> bool {
-    let a_json = serde_json::to_string(a).unwrap_or_default();
-    let b_json = serde_json::to_string(b).unwrap_or_default();
-    a_json == b_json
+    a == b
 }
 
 pub fn collect_dependency_specs(node: &NodeConfig) -> Vec<DependencySpec> {
@@ -263,18 +259,20 @@ pub fn validate_dependency_specs(
     // Phase 2: Validate consumed interfaces reference valid local_node_ids
     // and that the dependency exposes the required interface
     if let Some(topics) = &config.interfaces.topics
-        && let Some(expected) = &topics.expects
+        && let Some(expected) = &topics.consumes
     {
         for topic in expected {
-            validate_consumed_interface(
-                &topic.local_node_id,
-                &topic.name,
-                InterfaceKind::Topic,
-                &resolved_deps,
-                dependant_name,
-                dependant_tag,
-                &mut errors,
-            );
+            if let config::node::ConsumedTopic::Linked(linked) = topic {
+                validate_consumed_interface(
+                    &linked.local_node_id,
+                    &linked.name,
+                    InterfaceKind::Topic,
+                    &resolved_deps,
+                    dependant_name,
+                    dependant_tag,
+                    &mut errors,
+                );
+            }
         }
     }
 
@@ -1133,3 +1131,4 @@ impl NodeStack {
         guard.to_serialized_graph()
     }
 }
+

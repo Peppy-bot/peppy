@@ -126,6 +126,9 @@ function releaseHtmlEntryType() {
 // https://astro.build/config
 export default defineConfig({
 	site: 'https://docs.peppy.bot',
+	redirects: {
+		'/': '/guides/getting_started/',
+	},
 	integrations: [
 		releaseHtmlEntryType(),
 		starlight({

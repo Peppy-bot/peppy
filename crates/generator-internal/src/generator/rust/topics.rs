@@ -3,18 +3,18 @@ use super::serialization::{MessageEncodingSpec, build_serialize_payload};
 use super::services::deserialize_fields_from_format;
 use crate::error::Result;
 use config::encoding::{CapnpSchemaArtifacts, FunctionParam};
-use config::node::{EmittedTopic, ExpectedTopic, QoSProfile};
+use config::node::{ConsumedTopic, EmittedTopic, QoSProfile};
 use proc_macro2::{Ident, Literal, TokenStream};
 use quote::quote;
 
-pub struct ExpectedTopicCallbackSpec<'a> {
+pub struct ConsumedTopicCallbackSpec<'a> {
     pub fn_name: &'a Ident,
     pub helper_fn_ident: &'a Ident,
     pub args_struct_ident: &'a Ident,
     pub params: &'a [FunctionParam],
     pub artifacts: &'a CapnpSchemaArtifacts,
     pub encoding: &'a MessageEncodingSpec,
-    pub topic: &'a ExpectedTopic,
+    pub topic: &'a ConsumedTopic,
     pub struct_prefix: &'a str,
     pub dependency_node_name: &'a str,
 }
@@ -144,8 +144,8 @@ pub fn build_topic_emit(
     })
 }
 
-pub fn build_expected_topic_callback(spec: ExpectedTopicCallbackSpec) -> Result<TokenStream> {
-    let ExpectedTopicCallbackSpec {
+pub fn build_consumed_topic_callback(spec: ConsumedTopicCallbackSpec) -> Result<TokenStream> {
+    let ConsumedTopicCallbackSpec {
         fn_name,
         helper_fn_ident,
         args_struct_ident,
@@ -156,35 +156,16 @@ pub fn build_expected_topic_callback(spec: ExpectedTopicCallbackSpec) -> Result<
         struct_prefix,
         dependency_node_name,
     } = spec;
-    let topic_literal = Literal::string(topic.name.as_str());
+    let topic_literal = Literal::string(topic.name());
     let node_name_literal = Literal::string(dependency_node_name);
-    let reader_type = &encoding.reader_type;
-    let context_literal = Literal::string(struct_prefix);
-    let context_expr = quote!(String::from(#context_literal));
-
-    let (field_statements, value_idents) = deserialize_fields_from_format(
-        artifacts.message_format(),
-        params,
-        struct_prefix,
-        &context_expr,
-    )?;
-    let field_inits: Vec<TokenStream> = params
-        .iter()
-        .zip(value_idents.iter())
-        .map(|(param, value_ident)| {
-            let field_ident = &param.ident;
-            quote!(#field_ident: #value_ident)
-        })
-        .collect();
-
-    let helper_fn_tokens = build_deserialize_fn(
+    let helper_fn_tokens = build_topic_deserialize_helper(
         helper_fn_ident,
-        reader_type,
-        &context_expr,
-        &quote!(#args_struct_ident),
-        &field_statements,
-        &quote!(#args_struct_ident { #( #field_inits ),* }),
-    );
+        args_struct_ident,
+        params,
+        artifacts,
+        encoding,
+        struct_prefix,
+    )?;
 
     Ok(quote! {
         pub async fn #fn_name(
@@ -232,6 +213,121 @@ pub fn build_expected_topic_callback(spec: ExpectedTopicCallbackSpec) -> Result<
     })
 }
 
+pub struct ExternalConsumedTopicCallbackSpec<'a> {
+    pub fn_name: &'a Ident,
+    pub helper_fn_ident: &'a Ident,
+    pub args_struct_ident: &'a Ident,
+    pub params: &'a [FunctionParam],
+    pub artifacts: &'a CapnpSchemaArtifacts,
+    pub encoding: &'a MessageEncodingSpec,
+    pub topic_name: &'a str,
+    pub struct_prefix: &'a str,
+}
+
+pub fn build_external_consumed_topic_callback(
+    spec: ExternalConsumedTopicCallbackSpec,
+) -> Result<TokenStream> {
+    let ExternalConsumedTopicCallbackSpec {
+        fn_name,
+        helper_fn_ident,
+        args_struct_ident,
+        params,
+        artifacts,
+        encoding,
+        topic_name,
+        struct_prefix,
+    } = spec;
+    let topic_literal = Literal::string(topic_name);
+    let helper_fn_tokens = build_topic_deserialize_helper(
+        helper_fn_ident,
+        args_struct_ident,
+        params,
+        artifacts,
+        encoding,
+        struct_prefix,
+    )?;
+
+    Ok(quote! {
+        pub async fn #fn_name(
+            node_runner: &crate::NodeRunner,
+            core_node_target: Option<&str>,
+            instance_id_target: Option<&str>,
+        ) -> crate::Result<(String, #args_struct_ident)> {
+            let topic_name = #topic_literal;
+            let qos = peppylib::config::QoSProfile::Standard;
+
+            let message = {
+                let subscription_future = peppylib::TopicMessenger::consume_external(
+                    node_runner.messenger(),
+                    node_runner.processor().bound_core_node(),
+                    node_runner.processor().bound_instance_id(),
+                    topic_name,
+                    core_node_target,
+                    instance_id_target,
+                    qos,
+                );
+                let mut subscription = subscription_future.await.map_err(|source| {
+                    crate::Error::TopicSubscribe {
+                        topic_name: topic_name.to_string(),
+                        node_name: String::new(),
+                        source_msg: source.to_string(),
+                    }
+                })?;
+                subscription
+                    .on_next_message()
+                    .await
+                    .ok_or_else(|| crate::Error::SubscriptionClosed {
+                        topic_name: topic_name.to_string(),
+                    })?
+            };
+
+            let payload = message.payload();
+            let instance_id = message.instance_id().to_string();
+            let message = #helper_fn_ident(payload.as_ref())?;
+            Ok((instance_id, message))
+        }
+
+        #helper_fn_tokens
+    })
+}
+
+fn build_topic_deserialize_helper(
+    helper_fn_ident: &Ident,
+    args_struct_ident: &Ident,
+    params: &[FunctionParam],
+    artifacts: &CapnpSchemaArtifacts,
+    encoding: &MessageEncodingSpec,
+    struct_prefix: &str,
+) -> Result<TokenStream> {
+    let reader_type = &encoding.reader_type;
+    let context_literal = Literal::string(struct_prefix);
+    let context_expr = quote!(String::from(#context_literal));
+
+    let (field_statements, value_idents) = deserialize_fields_from_format(
+        artifacts.message_format(),
+        params,
+        struct_prefix,
+        &context_expr,
+    )?;
+    let field_inits: Vec<TokenStream> = params
+        .iter()
+        .zip(value_idents.iter())
+        .map(|(param, value_ident)| {
+            let field_ident = &param.ident;
+            quote!(#field_ident: #value_ident)
+        })
+        .collect();
+
+    Ok(build_deserialize_fn(
+        helper_fn_ident,
+        reader_type,
+        &context_expr,
+        &quote!(#args_struct_ident),
+        &field_statements,
+        &quote!(#args_struct_ident { #( #field_inits ),* }),
+    ))
+}
+
 pub fn qos_profile_tokens(profile: &QoSProfile) -> TokenStream {
     let variant = match profile {
         QoSProfile::Standard => "Standard",
@@ -242,3 +338,6 @@ pub fn qos_profile_tokens(profile: &QoSProfile) -> TokenStream {
     let variant_ident = Ident::new(variant, proc_macro2::Span::call_site());
     quote!(peppylib::config::QoSProfile::#variant_ident)
 }
+
+
+

@@ -255,7 +255,7 @@ fn sanitize_python_module_name(raw: &str) -> String {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum ModuleCategory {
     EmittedTopics,
-    ExpectedTopics,
+    ConsumedTopics,
     ExposedServices,
     ConsumedServices,
     ExposedActions,
@@ -265,7 +265,7 @@ enum ModuleCategory {
 impl ModuleCategory {
     const ALL: [Self; 6] = [
         Self::EmittedTopics,
-        Self::ExpectedTopics,
+        Self::ConsumedTopics,
         Self::ExposedServices,
         Self::ConsumedServices,
         Self::ExposedActions,
@@ -275,7 +275,7 @@ impl ModuleCategory {
     fn from_kind(kind: InterfaceKind) -> Self {
         match kind {
             InterfaceKind::EmittedTopic => Self::EmittedTopics,
-            InterfaceKind::ExpectedTopic => Self::ExpectedTopics,
+            InterfaceKind::ConsumedTopic => Self::ConsumedTopics,
             InterfaceKind::ExposedService => Self::ExposedServices,
             InterfaceKind::ConsumedService => Self::ConsumedServices,
             InterfaceKind::ExposedAction => Self::ExposedActions,
@@ -286,7 +286,7 @@ impl ModuleCategory {
     fn dir_name(self) -> &'static str {
         match self {
             Self::EmittedTopics => "emitted_topics",
-            Self::ExpectedTopics => "expected_topics",
+            Self::ConsumedTopics => "consumed_topics",
             Self::ExposedServices => "exposed_services",
             Self::ConsumedServices => "consumed_services",
             Self::ExposedActions => "exposed_actions",

@@ -25,7 +25,7 @@
   },
   interfaces: {
     topics: {
-      expects: [
+      consumes: [
         {
           local_node_id: "uvc_camera",
           name: "video_stream",

@@ -1,7 +1,7 @@
 use crate::helpers;
 use config::{
     consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH},
-    node::{ConsumedAction, ConsumedService, ExpectedTopic, MessageFormat, PeppygenLanguage},
+    node::{ConsumedAction, ConsumedService, ConsumedTopic, MessageFormat, PeppygenLanguage},
 };
 use generator::generate_peppygen_lib;
 use generator::{ConsumedActionMessage, DeploymentInterface, InterfaceVariant};
@@ -143,7 +143,7 @@ fn generate_peppygen_lib_missing_config() {
 }
 
 #[test]
-fn generate_peppygen_python_lib_emitted_and_expected_topics() {
+fn generate_peppygen_python_lib_emitted_and_consumed_topics() {
     const EXPOSED_NODE_NAME: &str = "topic_exposer";
     const CONSUMER_NODE_NAME: &str = "topic_consumer";
 
@@ -220,19 +220,19 @@ fn generate_peppygen_python_lib_emitted_and_expected_topics() {
     fs::write(consumer_node_dir.join(NODE_CONFIG_FILE), consumer_config)
         .expect("failed to write consumer peppy.json5");
 
-    let expected_topic: ExpectedTopic = serde_json5::from_str(&format!(
+    let consumed_topic: ConsumedTopic = serde_json5::from_str(&format!(
         r#"{{
           local_node_id: "{EXPOSED_NODE_NAME}",
           name: "test_topic",
         }}"#
     ))
-    .expect("failed to parse expected topic");
+    .expect("failed to parse consumed topic");
 
     let consumed_format: MessageFormat =
         serde_json5::from_str(r#"{ value: "u32" }"#).expect("failed to parse topic format");
 
-    let expected_interfaces = vec![DeploymentInterface::new(InterfaceVariant::ExpectedTopic {
-        topic: expected_topic,
+    let expected_interfaces = vec![DeploymentInterface::new(InterfaceVariant::ConsumedTopic {
+        topic: consumed_topic,
         message_format: consumed_format,
         dependency_node_name: String::from(EXPOSED_NODE_NAME),
     })];
@@ -250,9 +250,9 @@ fn generate_peppygen_python_lib_emitted_and_expected_topics() {
     let consumer_peppygen_dir = consumer_node_dir.join(PEPPYGEN_OUTPUT_PATH);
     assert!(
         consumer_peppygen_dir
-            .join("peppygen/expected_topics/topic_exposer_test_topic.py")
+            .join("peppygen/consumed_topics/topic_exposer_test_topic.py")
             .exists(),
-        "expected topic module should exist in peppygen package at {}",
+        "consumed topic module should exist in peppygen package at {}",
         consumer_peppygen_dir.display()
     );
 }

@@ -174,7 +174,7 @@ pub enum TypeToken {
 // Derives above keep serde logic concise; `TypeToken` handles mapping of known strings.
 
 // Common wrapper for dynamic message formats in topics/services
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct MessageFormat(pub IndexMap<String, SchemaType>);
 
 fn is_false(value: &bool) -> bool {
@@ -366,16 +366,16 @@ impl SchemaType {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct TopicInterfaces {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub emits: Option<Vec<EmittedTopic>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub expects: Option<Vec<ExpectedTopic>>,
+    pub consumes: Option<Vec<ConsumedTopic>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ServiceInterfaces {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -384,7 +384,7 @@ pub struct ServiceInterfaces {
     pub consumes: Option<Vec<ConsumedService>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ActionInterfaces {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -403,7 +403,7 @@ pub enum QoSProfile {
     Critical,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct EmittedTopic {
     #[serde(default)]
@@ -414,7 +414,7 @@ pub struct EmittedTopic {
     pub message_format: Option<MessageFormat>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ExposedService {
     #[serde(default)]
@@ -425,7 +425,7 @@ pub struct ExposedService {
     pub response_message_format: Option<MessageFormat>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ExposedAction {
     #[serde(default)]
@@ -438,16 +438,40 @@ pub struct ExposedAction {
     pub result_service: Option<ActionServiceEndpoint>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct ExpectedTopic {
-    #[serde(deserialize_with = "deserialize_expected_topic_local_node_id")]
+pub struct LinkedConsumedTopic {
+    #[serde(deserialize_with = "deserialize_consumed_topic_local_node_id")]
     pub local_node_id: String,
-    #[serde(deserialize_with = "deserialize_expected_topic_name")]
+    #[serde(deserialize_with = "deserialize_consumed_topic_name")]
     pub name: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ExternalConsumedTopic {
+    #[serde(deserialize_with = "deserialize_consumed_topic_name")]
+    pub name: String,
+    pub message_format: MessageFormat,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum ConsumedTopic {
+    Linked(LinkedConsumedTopic),
+    External(ExternalConsumedTopic),
+}
+
+impl ConsumedTopic {
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Linked(t) => &t.name,
+            Self::External(t) => &t.name,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ConsumedService {
     #[serde(deserialize_with = "deserialize_consumed_service_local_node_id")]
@@ -456,7 +480,7 @@ pub struct ConsumedService {
     pub name: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ConsumedAction {
     #[serde(deserialize_with = "deserialize_consumed_action_local_node_id")]
@@ -465,7 +489,7 @@ pub struct ConsumedAction {
     pub name: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ActionServiceEndpoint {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -486,18 +510,18 @@ impl Default for ActionServiceEndpoint {
     }
 }
 
-fn deserialize_expected_topic_local_node_id<'de, D>(deserializer: D) -> Result<String, D::Error>
+fn deserialize_consumed_topic_local_node_id<'de, D>(deserializer: D) -> Result<String, D::Error>
 where
     D: Deserializer<'de>,
 {
-    deserialize_non_empty_identifier(deserializer, "ExpectedTopic.local_node_id")
+    deserialize_non_empty_identifier(deserializer, "ConsumedTopic.local_node_id")
 }
 
-fn deserialize_expected_topic_name<'de, D>(deserializer: D) -> Result<String, D::Error>
+fn deserialize_consumed_topic_name<'de, D>(deserializer: D) -> Result<String, D::Error>
 where
     D: Deserializer<'de>,
 {
-    deserialize_non_empty_identifier(deserializer, "ExpectedTopic.name")
+    deserialize_non_empty_identifier(deserializer, "ConsumedTopic.name")
 }
 
 fn deserialize_consumed_service_local_node_id<'de, D>(deserializer: D) -> Result<String, D::Error>
@@ -538,7 +562,7 @@ fn validate_non_empty_identifier(raw: &str, label: &'static str) -> Result<Strin
     Ok(trimmed.to_string())
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ActionTopicEndpoint {
     #[serde(skip_serializing_if = "Option::is_none", rename = "type")]
@@ -651,7 +675,7 @@ impl ContainerConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Interfaces {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -678,35 +702,114 @@ mod tests {
     }
 
     #[test]
-    fn expected_topic_local_node_id_is_required() {
+    fn consumed_topic_linked_local_node_id_is_required() {
         let valid = r#"{ local_node_id: "uvc_camera", name: "video_stream" }"#;
-        let topic: ExpectedTopic = serde_json5::from_str(valid).expect("valid topic should parse");
-        assert_eq!(topic.local_node_id, "uvc_camera");
-        assert_eq!(topic.name, "video_stream");
-
-        let without_local_node_id = r#"{ name: "video_stream" }"#;
-        assert!(serde_json5::from_str::<ExpectedTopic>(without_local_node_id).is_err());
+        let topic: ConsumedTopic = serde_json5::from_str(valid).expect("valid topic should parse");
+        let ConsumedTopic::Linked(LinkedConsumedTopic {
+            local_node_id,
+            name,
+        }) = &topic
+        else {
+            panic!("expected Linked variant");
+        };
+        assert_eq!(local_node_id, "uvc_camera");
+        assert_eq!(name, "video_stream");
 
         let empty_local_node_id = r#"{ local_node_id: "", name: "video_stream" }"#;
-        assert!(serde_json5::from_str::<ExpectedTopic>(empty_local_node_id).is_err());
+        assert!(serde_json5::from_str::<ConsumedTopic>(empty_local_node_id).is_err());
 
         let missing_name = r#"{ local_node_id: "uvc_camera", name: "" }"#;
-        assert!(serde_json5::from_str::<ExpectedTopic>(missing_name).is_err());
+        assert!(serde_json5::from_str::<ConsumedTopic>(missing_name).is_err());
 
         let whitespace_only = r#"{ local_node_id: "   ", name: "video_stream" }"#;
-        assert!(serde_json5::from_str::<ExpectedTopic>(whitespace_only).is_err());
+        assert!(serde_json5::from_str::<ConsumedTopic>(whitespace_only).is_err());
 
         let punctuation_only = r#"{ local_node_id: "--", name: "video_stream" }"#;
-        assert!(serde_json5::from_str::<ExpectedTopic>(punctuation_only).is_err());
+        assert!(serde_json5::from_str::<ConsumedTopic>(punctuation_only).is_err());
 
         let missing_name_field = r#"{ local_node_id: "uvc_camera" }"#;
-        assert!(serde_json5::from_str::<ExpectedTopic>(missing_name_field).is_err());
+        assert!(serde_json5::from_str::<ConsumedTopic>(missing_name_field).is_err());
 
         let trimmed = r#"{ local_node_id: " uvc_camera ", name: " video_stream " }"#;
-        let topic: ExpectedTopic =
+        let topic: ConsumedTopic =
             serde_json5::from_str(trimmed).expect("whitespace should be trimmed");
-        assert_eq!(topic.local_node_id, "uvc_camera");
-        assert_eq!(topic.name, "video_stream");
+        let ConsumedTopic::Linked(LinkedConsumedTopic {
+            local_node_id,
+            name,
+        }) = &topic
+        else {
+            panic!("expected Linked variant");
+        };
+        assert_eq!(local_node_id, "uvc_camera");
+        assert_eq!(name, "video_stream");
+    }
+
+    #[test]
+    fn consumed_topic_external_requires_name_and_message_format() {
+        let valid = r#"{ name: "cmd_vel", message_format: { linear_x: "f64", angular_z: "f64" } }"#;
+        let topic: ConsumedTopic =
+            serde_json5::from_str(valid).expect("valid external topic should parse");
+        let ConsumedTopic::External(ExternalConsumedTopic {
+            name,
+            message_format,
+        }) = &topic
+        else {
+            panic!("expected External variant, got: {:?}", topic);
+        };
+        assert_eq!(name, "cmd_vel");
+        assert_eq!(message_format.0.len(), 2);
+        assert_eq!(topic.name(), "cmd_vel");
+
+        // name-only without message_format is an error (matches neither variant)
+        let name_only = r#"{ name: "cmd_vel" }"#;
+        assert!(
+            serde_json5::from_str::<ConsumedTopic>(name_only).is_err(),
+            "name-only (no local_node_id, no message_format) should fail"
+        );
+
+        // External with empty name should fail
+        let empty_name = r#"{ name: "", message_format: { linear_x: "f64", angular_z: "f64" } }"#;
+        assert!(serde_json5::from_str::<ConsumedTopic>(empty_name).is_err());
+    }
+
+    #[test]
+    fn consumed_topic_mixed_linked_and_external() {
+        let json = r#"[
+            { local_node_id: "camera", name: "video_stream" },
+            { name: "cmd_vel", message_format: { linear_x: "f64", angular_z: "f64" } }
+        ]"#;
+        let topics: Vec<ConsumedTopic> =
+            serde_json5::from_str(json).expect("mixed array should parse");
+        assert_eq!(topics.len(), 2);
+        assert!(matches!(&topics[0], ConsumedTopic::Linked(_)));
+        assert!(matches!(&topics[1], ConsumedTopic::External(_)));
+        assert_eq!(topics[0].name(), "video_stream");
+        assert_eq!(topics[1].name(), "cmd_vel");
+    }
+
+    #[test]
+    fn consumed_topic_rejects_unknown_fields() {
+        // Linked with extra message_format should fail (not silently drop it)
+        let linked_with_extra = r#"{
+            local_node_id: "camera",
+            name: "video_stream",
+            message_format: { x: "f64" }
+        }"#;
+        assert!(
+            serde_json5::from_str::<ConsumedTopic>(linked_with_extra).is_err(),
+            "linked topic with extra message_format should be rejected"
+        );
+
+        // External with extra local_node_id should fail (not silently drop it)
+        let external_with_extra = r#"{
+            local_node_id: "camera",
+            name: "cmd_vel",
+            message_format: { linear_x: "f64" }
+        }"#;
+        assert!(
+            serde_json5::from_str::<ConsumedTopic>(external_with_extra).is_err(),
+            "external topic with extra local_node_id should be rejected"
+        );
     }
 
     #[test]
@@ -947,3 +1050,10 @@ mod tests {
         assert!(serde_json5::from_str::<Manifest>(json5).is_err());
     }
 }
+
+
+
+
+
+
+

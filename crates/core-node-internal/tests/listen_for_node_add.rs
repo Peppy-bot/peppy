@@ -857,7 +857,7 @@ async fn listen_for_node_add_dependency_not_resolved() {
         },
         interfaces: {
             topics: {
-                expects: [
+                consumes: [
                     {
                         local_node_id: "non_existent_node",
                         name: "sensor_data"
@@ -2325,7 +2325,7 @@ async fn listen_for_node_add_fails_runs_add_cmd_on_missing_node_dependency() {
         },
         interfaces: {
           topics: {
-            expects: [
+            consumes: [
               {
                 local_node_id: "fake_uvc_camera",
                 name: "video_stream"
@@ -2462,7 +2462,7 @@ async fn listen_for_node_add_fails_on_missing_interface_even_when_dependency_exi
         },
         interfaces: {
           topics: {
-            expects: [
+            consumes: [
               {
                 local_node_id: "DEPENDENCY_NODE_NAME",
                 name: "video_stream"

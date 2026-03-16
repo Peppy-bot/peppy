@@ -19,10 +19,10 @@ use super::types::{
     cancel_action_response_format, non_empty_message_format, validate_fixed_length_array_items,
     validate_message_format_field_names,
 };
-use crate::error::Result;
+use crate::error::{Error, Result};
 use config::encoding::MessageFormatMapper;
 use config::node::{
-    ConsumedAction, ConsumedService, EmittedTopic, ExpectedTopic, ExposedAction, ExposedService,
+    ConsumedAction, ConsumedService, ConsumedTopic, EmittedTopic, ExposedAction, ExposedService,
     MessageFormat, PeppygenLanguage,
 };
 use std::collections::HashMap;
@@ -209,19 +209,36 @@ impl LanguageGenerator for PythonGenerator {
         Ok(())
     }
 
-    fn add_expected_topic(
+    fn add_consumed_topic(
         &mut self,
-        topic: &ExpectedTopic,
+        topic: &ConsumedTopic,
         arguments: MessageFormat,
         dependency_node_name: &str,
     ) -> Result<()> {
-        let schema_info = self.register_schema(&topic.name, &arguments)?;
+        let ConsumedTopic::Linked(linked) = topic else {
+            return Err(Error::InvariantViolation {
+                context: "add_consumed_topic called with ConsumedTopic::External; use add_external_consumed_topic instead".into(),
+            });
+        };
+        let schema_info = self.register_schema(&linked.name, &arguments)?;
         let code =
-            topics::build_expected_topic(topic, &arguments, &schema_info, dependency_node_name)?;
-        let module_label = module_name_from_components(&topic.local_node_id, &topic.name);
+            topics::build_consumed_topic(topic, &arguments, &schema_info, dependency_node_name)?;
+        let module_label = module_name_from_components(&linked.local_node_id, &linked.name);
         self.push_section(InterfaceArtifact::from_kind(
             &module_label,
-            InterfaceKind::ExpectedTopic,
+            InterfaceKind::ConsumedTopic,
+            code,
+        ));
+        Ok(())
+    }
+
+    fn add_external_consumed_topic(&mut self, name: &str, arguments: MessageFormat) -> Result<()> {
+        let schema_info = self.register_schema(name, &arguments)?;
+        let code = topics::build_external_consumed_topic(name, &arguments, &schema_info)?;
+        let module_label = name.trim().to_string();
+        self.push_section(InterfaceArtifact::from_kind(
+            &module_label,
+            InterfaceKind::ConsumedTopic,
             code,
         ));
         Ok(())

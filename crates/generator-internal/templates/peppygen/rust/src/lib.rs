@@ -2,7 +2,7 @@ pub mod parameters;
 
 pub mod capnp;
 pub mod emitted_topics;
-pub mod expected_topics;
+pub mod consumed_topics;
 pub mod exposed_actions;
 pub mod exposed_services;
 pub mod consumed_actions;

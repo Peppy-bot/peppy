@@ -104,10 +104,12 @@ fn print_node_info(response: &NodeInfoResponse) {
         let mut dependencies: BTreeSet<&str> = BTreeSet::new();
 
         if let Some(topics) = &config.interfaces.topics
-            && let Some(expected) = &topics.expects
+            && let Some(expected) = &topics.consumes
         {
             for topic in expected {
-                dependencies.insert(&topic.local_node_id);
+                if let config::node::ConsumedTopic::Linked(linked) = topic {
+                    dependencies.insert(&linked.local_node_id);
+                }
             }
         }
         if let Some(services) = &config.interfaces.services
@@ -210,7 +212,7 @@ fn print_node_info(response: &NodeInfoResponse) {
             .interfaces
             .topics
             .as_ref()
-            .and_then(|t| t.expects.as_ref())
+            .and_then(|t| t.consumes.as_ref())
             .is_some_and(|t| !t.is_empty())
             || config
                 .interfaces
@@ -234,12 +236,19 @@ fn print_node_info(response: &NodeInfoResponse) {
                 .interfaces
                 .topics
                 .as_ref()
-                .and_then(|t| t.expects.as_ref())
+                .and_then(|t| t.consumes.as_ref())
                 && !topics.is_empty()
             {
-                println!("Expected Topics:");
+                println!("Consumed Topics:");
                 for topic in topics {
-                    println!("  - {} (from node: {})", topic.name, topic.local_node_id);
+                    match topic {
+                        config::node::ConsumedTopic::Linked(linked) => {
+                            println!("  - {} (from node: {})", linked.name, linked.local_node_id);
+                        }
+                        config::node::ConsumedTopic::External(external) => {
+                            println!("  - {} (external)", external.name);
+                        }
+                    }
                 }
             }
 

@@ -1,5 +1,5 @@
 use super::*;
-use config::node::{EmittedTopic, ExpectedTopic, MessageFormat, PeppygenLanguage};
+use config::node::{ConsumedTopic, EmittedTopic, MessageFormat, PeppygenLanguage};
 
 const EMITTED_TOPIC_EXAMPLE: &str = r#"
 {
@@ -145,7 +145,7 @@ fn parse_emitted_topic(example: &str) -> EmittedTopic {
     serde_json5::from_str(example).unwrap()
 }
 
-fn parse_expected_topic(example: &str) -> ExpectedTopic {
+fn parse_consumed_topic(example: &str) -> ConsumedTopic {
     serde_json5::from_str(example).unwrap()
 }
 
@@ -376,13 +376,13 @@ fn emit_topic_rejects_fixed_string_array() {
 /// In the case of a topic, a "subscribed" topic is an entity that expects to receive messages
 /// from another entity.
 #[test]
-fn expected_topic() {
-    let topic = parse_expected_topic(SUBSCRIBED_TOPIC_EXAMPLE1);
+fn consumed_topic() {
+    let topic = parse_consumed_topic(SUBSCRIBED_TOPIC_EXAMPLE1);
     let format = parse_message_format(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE1);
 
     let mut generator = PythonGenerator::new();
     generator
-        .add_expected_topic(&topic, format, "uvc_camera")
+        .add_consumed_topic(&topic, format, "uvc_camera")
         .unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
@@ -493,13 +493,13 @@ fn expected_topic() {
 }
 
 #[test]
-fn expected_topic_escapes_python_keyword_fields() {
-    let topic = parse_expected_topic(SUBSCRIBED_TOPIC_EXAMPLE_KEYWORDS);
+fn consumed_topic_escapes_python_keyword_fields() {
+    let topic = parse_consumed_topic(SUBSCRIBED_TOPIC_EXAMPLE_KEYWORDS);
     let format = parse_message_format(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE_KEYWORDS);
 
     let mut generator = PythonGenerator::new();
     generator
-        .add_expected_topic(&topic, format, "keyword_source")
+        .add_consumed_topic(&topic, format, "keyword_source")
         .unwrap();
     let rendered = render_artifacts(generator.into_artifacts())
         .into_iter()
@@ -518,19 +518,19 @@ fn expected_topic_escapes_python_keyword_fields() {
 }
 
 #[test]
-fn expected_two_topics_same_node() {
-    let video_topic = parse_expected_topic(SUBSCRIBED_TOPIC_EXAMPLE1);
+fn consumed_two_topics_same_node() {
+    let video_topic = parse_consumed_topic(SUBSCRIBED_TOPIC_EXAMPLE1);
     let video_format = parse_message_format(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE1);
 
-    let sound_topic = parse_expected_topic(SUBSCRIBED_TOPIC_EXAMPLE2);
+    let sound_topic = parse_consumed_topic(SUBSCRIBED_TOPIC_EXAMPLE2);
     let sound_format = parse_message_format(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE2);
 
     let mut generator = PythonGenerator::new();
     generator
-        .add_expected_topic(&video_topic, video_format, "uvc_camera")
+        .add_consumed_topic(&video_topic, video_format, "uvc_camera")
         .unwrap();
     generator
-        .add_expected_topic(&sound_topic, sound_format, "uvc_camera")
+        .add_consumed_topic(&sound_topic, sound_format, "uvc_camera")
         .unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
@@ -578,5 +578,92 @@ fn expected_two_topics_same_node() {
     assert!(
         !sound_rendered.contains("video_stream"),
         "sound artifact should not reference video_stream"
+    );
+}
+
+#[test]
+fn external_consumed_topic() {
+    let format = parse_message_format(
+        r#"
+        {
+            linear_x: "f64",
+            angular_z: "f64",
+        }
+        "#,
+    );
+
+    let mut generator = PythonGenerator::new();
+    generator
+        .add_external_consumed_topic("cmd_vel", format)
+        .unwrap();
+    let artifacts = render_artifacts(generator.into_artifacts());
+    assert_eq!(
+        artifacts.len(),
+        1,
+        "expected a single generated artifact, got {}",
+        artifacts.len()
+    );
+    let rendered = artifacts.into_iter().next().expect("artifact is present");
+
+    // Imports
+    assert_contains_all(
+        &rendered,
+        &[
+            "import capnp",
+            "import peppylib",
+            "from dataclasses import dataclass",
+            "from typing import Optional, Tuple",
+        ],
+    );
+
+    // Generated dataclass
+    assert_contains_all(
+        &rendered,
+        &[
+            "@dataclass",
+            "class Message:",
+            "linear_x: float",
+            "angular_z: float",
+        ],
+    );
+
+    // _deserialize_payload helper function
+    assert_contains_all(
+        &rendered,
+        &["def _deserialize_payload(payload: bytes) -> Message:"],
+    );
+
+    // Subscriber function signature
+    assert_contains_all(
+        &rendered,
+        &[
+            "async def on_next_message_received(",
+            "node_runner: peppylib.NodeRunner",
+            "core_node_target: Optional[str] = None",
+            "instance_id_target: Optional[str] = None",
+            ") -> Tuple[str, Message]:",
+        ],
+    );
+
+    // External subscribe: uses consume_external, no node_name
+    assert_contains_all(
+        &rendered,
+        &["\"cmd_vel\"", "peppylib.TopicMessenger.consume_external("],
+    );
+    assert!(
+        !rendered.contains("node_name"),
+        "external topic should not have a node_name variable"
+    );
+
+    // on_next_message_received body
+    assert_contains_all(
+        &rendered,
+        &[
+            "raw_message = await subscription.on_next_message()",
+            "payload = raw_message.payload",
+            "instance_id = raw_message.instance_id",
+            "message = _deserialize_payload(payload)",
+            "return instance_id, message",
+        ],
     );
 }

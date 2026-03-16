@@ -22,7 +22,7 @@
   },
   interfaces: {
     topics: {
-      expects: [
+      consumes: [
         {
           local_node_id: "hello_world_param",
           name: "message_stream",

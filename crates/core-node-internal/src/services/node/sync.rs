@@ -321,27 +321,42 @@ pub fn collect_consumed_interfaces(
     let mut interfaces = Vec::new();
     let dep_lookup = build_dependency_lookup(node_config);
 
-    // Collect expected topics
+    // Collect consumed topics
     if let Some(topic_interfaces) = &node_config.interfaces.topics
-        && let Some(expected_topics) = &topic_interfaces.expects
+        && let Some(consumed_topics) = &topic_interfaces.consumes
     {
-        for expected_topic in expected_topics {
-            let Some((dep_name, dep_tag)) = dep_lookup.get(&expected_topic.local_node_id) else {
-                continue;
-            };
-            if let Some(dependency_entity) = node_stack.find(dep_name, dep_tag)
-                && let Some(dep_topics) = &dependency_entity.config().interfaces.topics
-                && let Some(emitted_topics) = &dep_topics.emits
-                && let Some(emitted_topic) = emitted_topics
-                    .iter()
-                    .find(|t| t.name.trim() == expected_topic.name.trim())
-                && let Some(message_format) = &emitted_topic.message_format
-            {
-                interfaces.push(DeploymentInterface::new(InterfaceVariant::ExpectedTopic {
-                    topic: expected_topic.clone(),
-                    message_format: message_format.clone(),
-                    dependency_node_name: dep_name.clone(),
-                }));
+        for consumed_topic in consumed_topics {
+            match consumed_topic {
+                config::node::ConsumedTopic::Linked(linked) => {
+                    let Some((dep_name, dep_tag)) = dep_lookup.get(linked.local_node_id.as_str())
+                    else {
+                        continue;
+                    };
+                    if let Some(dependency_entity) = node_stack.find(dep_name, dep_tag)
+                        && let Some(dep_topics) = &dependency_entity.config().interfaces.topics
+                        && let Some(emitted_topics) = &dep_topics.emits
+                        && let Some(emitted_topic) = emitted_topics
+                            .iter()
+                            .find(|t| t.name.trim() == linked.name.trim())
+                        && let Some(message_format) = &emitted_topic.message_format
+                    {
+                        interfaces.push(DeploymentInterface::new(
+                            InterfaceVariant::ConsumedTopic {
+                                topic: consumed_topic.clone(),
+                                message_format: message_format.clone(),
+                                dependency_node_name: dep_name.clone(),
+                            },
+                        ));
+                    }
+                }
+                config::node::ConsumedTopic::External(external) => {
+                    interfaces.push(DeploymentInterface::new(
+                        InterfaceVariant::ExternalConsumedTopic {
+                            name: external.name.clone(),
+                            message_format: external.message_format.clone(),
+                        },
+                    ));
+                }
             }
         }
     }
