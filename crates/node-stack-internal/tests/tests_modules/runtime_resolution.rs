@@ -254,7 +254,7 @@ fn remove_instance_from_entity_with_multiple_instances() {
 }
 
 #[test]
-fn remove_last_instance_removes_entity() {
+fn remove_last_instance_keeps_entity_in_graph() {
     let config: config::node::NodeConfig = serde_json5::from_str(
         r#"{
             schema_version: 1,
@@ -294,11 +294,15 @@ fn remove_last_instance_removes_entity() {
         .expect("should succeed");
     assert!(removed, "instance should be removed");
 
-    // Entity should be gone, but core node remains
-    assert_eq!(stack.len(), 1, "stack should only have the core node");
-    assert!(
-        stack.find("sensor", "1.0.0").is_none(),
-        "entity should not exist"
+    // Entity stays in the graph with 0 instances; dependency edges are preserved
+    assert_eq!(stack.len(), 2, "stack should still have root + entity");
+    let entity = stack
+        .find("sensor", "1.0.0")
+        .expect("entity should still exist");
+    assert_eq!(
+        entity.instances().len(),
+        0,
+        "entity should have no instances"
     );
 }
 

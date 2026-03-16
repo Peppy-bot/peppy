@@ -15,9 +15,7 @@ use config::node::{NodeConfig, NodeConfigParser};
 use futures::FutureExt;
 use git2::Repository;
 use node_stack::{NodeStack, validate_dependency_specs};
-use peppylib::messaging::{
-    ActionCreation, SHUTDOWN_SERVICE, ServiceMessenger, ServiceRequestContext, TopicPublisher,
-};
+use peppylib::messaging::{ActionCreation, ServiceRequestContext, TopicPublisher};
 use peppylib::types::Payload;
 use peppylib::{ActionMessenger, MessengerHandle, PeppyResult};
 use std::fs::File;
@@ -34,7 +32,6 @@ use ureq::Error as HttpError;
 use zstd::stream::write::Encoder as ZstdEncoder;
 
 use super::STDERR_TAIL_LINES;
-const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub async fn listen_for_node_add(
     messenger: &MessengerHandle,
@@ -1347,43 +1344,16 @@ async fn shutdown_existing_instances(
             instance_id_str, node_name, node_tag
         );
 
-        ServiceMessenger::poll(
+        super::stop::stop_instance(
             &ctx.messenger,
             &ctx.bound_core_node,
             &ctx.core_instance_id,
+            &ctx.node_stack,
             node_name,
-            SHUTDOWN_SERVICE,
-            Some(&ctx.bound_core_node),
-            Some(&instance_id_str),
-            Payload::from_static(b"shutdown"),
-            SHUTDOWN_TIMEOUT,
+            node_tag,
+            &instance_id,
         )
-        .await
-        .map_err(|e| {
-            format!(
-                "Failed to shutdown node instance '{}': {}",
-                instance_id_str, e
-            )
-        })?;
-
-        match ctx
-            .node_stack
-            .remove_instance(node_name, node_tag, &instance_id)
-        {
-            Ok(true) => {}
-            Ok(false) => {
-                return Err(format!(
-                    "Node instance '{}' not found in node stack",
-                    instance_id_str
-                ));
-            }
-            Err(e) => {
-                return Err(format!(
-                    "Failed to remove node instance '{}' from node stack: {}",
-                    instance_id_str, e
-                ));
-            }
-        }
+        .await?;
 
         if let Ok(payload) =
             NodeAddFeedback::stdout(format!("{instance_id_str} has been stopped")).encode()
@@ -1440,24 +1410,6 @@ async fn process_node_add(
             write_error_to_log(&ctx.log_file, &msg);
             return NodeAddResult::failure(&ctx.log_path, msg);
         }
-    }
-
-    // Reject early if changing the interfaces would break nodes that depend on this one.
-    // Checked here, before the build, so we fail fast without wasting the build or
-    // stopping any running instances.
-    if ctx
-        .node_stack
-        .would_overwrite_break_dependents(&node_name, &node_tag, &node_config.interfaces)
-    {
-        let msg = format!(
-            "Failed to add node config: {}",
-            node_stack::NodeStackError::CannotOverwriteNodeWithDependents {
-                node_name: node_name.clone(),
-                node_tag: node_tag.clone(),
-            }
-        );
-        write_error_to_log(&ctx.log_file, &msg);
-        return NodeAddResult::failure(&ctx.log_path, msg);
     }
 
     // Copy the node folder to a temporary working directory.

@@ -117,11 +117,6 @@ impl NodeEntity {
             false
         }
     }
-
-    /// Returns the number of instances
-    fn instance_count(&self) -> usize {
-        self.instances.len()
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -759,20 +754,12 @@ impl NodeStackInner {
             return Ok(false);
         };
 
-        let should_remove_entity = {
-            let Some(entity) = self.graph.node_weight_mut(index) else {
-                return Ok(false);
-            };
-
-            if !entity.remove_instance(instance_id) {
-                return Ok(false);
-            }
-
-            entity.instance_count() == 0
+        let Some(entity) = self.graph.node_weight_mut(index) else {
+            return Ok(false);
         };
 
-        if should_remove_entity {
-            self.remove_entity(&key);
+        if !entity.remove_instance(instance_id) {
+            return Ok(false);
         }
 
         Ok(true)
@@ -1014,41 +1001,6 @@ impl NodeStack {
         guard.dependents_of(&NodeKey::new(name, tag))
     }
 
-    /// Returns true if overwriting `name:tag` with a config whose interfaces are
-    /// `new_interfaces` would be blocked by `push_config` — i.e., the interfaces
-    /// differ from the existing entity's AND at least one other node depends on it.
-    ///
-    /// Use this for an early, pre-build check so callers can fail fast without
-    /// spending time on a build that `push_config` would reject anyway.
-    pub fn would_overwrite_break_dependents(
-        &self,
-        name: &str,
-        tag: &str,
-        new_interfaces: &Interfaces,
-    ) -> bool {
-        let guard = self.shared.read().expect("node stack poisoned");
-        let key = NodeKey::new(name, tag);
-        let Some(&index) = guard.key_to_index.get(&key) else {
-            return false;
-        };
-        let interfaces_changed = guard
-            .graph
-            .node_weight(index)
-            .is_some_and(|entity| !interfaces_match(&entity.config().interfaces, new_interfaces));
-        if !interfaces_changed {
-            return false;
-        }
-        guard
-            .graph
-            .neighbors_directed(index, Direction::Incoming)
-            .next()
-            .is_some()
-            || guard
-                .pending_requirements
-                .get(&key)
-                .is_some_and(|requirements| !requirements.is_empty())
-    }
-
     /// Removes an instance from an entity. If the entity has no instances left, removes the entity.
     /// Returns Ok(true) if the instance was found and removed, Ok(false) if not found.
     /// Returns Err(CannotModifyRootNode) if trying to modify the root node.
@@ -1166,4 +1118,3 @@ impl NodeStack {
         guard.to_serialized_graph()
     }
 }
-

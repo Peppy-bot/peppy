@@ -134,88 +134,97 @@ async fn handle_node_stop_request_inner(
     }
 
     let node_tag = entity.config().manifest.tag.clone();
-    let node_config = entity.config().clone();
-    let node_root_path = entity.root_path().to_path_buf();
 
-    // Send a shutdown request to the node
-    debug!(
-        "Sending shutdown request to node instance '{}'",
-        request.instance_id
-    );
-
-    let shutdown_result = ServiceMessenger::poll(
+    // Send shutdown signal and remove instance
+    if let Err(e) = stop_instance(
         messenger,
         core_node_node,
         core_instance_id,
-        node_name.as_str(),
+        &node_stack,
+        &node_name,
+        &node_tag,
+        &instance_id,
+    )
+    .await
+    {
+        debug!(
+            "Failed to shutdown node instance '{}': {}",
+            request.instance_id, e
+        );
+        return NodeStopResponse::failure(e).encode();
+    }
+
+    // Verify the process has actually terminated (if we have a PID)
+    if let Some(pid) = pid {
+        if !wait_for_process_termination(pid).await {
+            return NodeStopResponse::failure(format!(
+                "Process {} for node instance '{}' did not terminate within timeout",
+                pid, request.instance_id
+            ))
+            .encode();
+        }
+        debug!(
+            "Process {} for node instance '{}' has terminated",
+            pid, request.instance_id
+        );
+    }
+
+    NodeStopResponse::success().encode()
+}
+
+/// Sends a `SHUTDOWN_SERVICE` signal to a running node instance and removes it from the
+/// node stack. The entity remains in the graph with zero instances, preserving dependency
+/// edges so that a subsequent `push_config` call can correctly validate interface changes
+/// against dependents.
+pub(super) async fn stop_instance(
+    messenger: &MessengerHandle,
+    core_node_node: &str,
+    core_instance_id: &str,
+    node_stack: &Arc<NodeStack>,
+    node_name: &str,
+    node_tag: &str,
+    instance_id: &Name,
+) -> std::result::Result<(), String> {
+    let instance_id_str = instance_id.as_str();
+
+    debug!(
+        "Sending shutdown request to node instance '{}'",
+        instance_id_str
+    );
+
+    ServiceMessenger::poll(
+        messenger,
+        core_node_node,
+        core_instance_id,
+        node_name,
         SHUTDOWN_SERVICE,
         Some(core_node_node),
-        Some(&request.instance_id),
+        Some(instance_id_str),
         Payload::from_static(b"shutdown"),
         SHUTDOWN_TIMEOUT,
     )
-    .await;
-
-    match shutdown_result {
-        Ok(_) => {
-            debug!(
-                "Node instance '{}' shutdown acknowledged",
-                request.instance_id
-            );
-
-            // Verify the process has actually terminated (if we have a PID)
-            if let Some(pid) = pid {
-                if !wait_for_process_termination(pid).await {
-                    return NodeStopResponse::failure(format!(
-                        "Process {} for node instance '{}' did not terminate within timeout",
-                        pid, request.instance_id
-                    ))
-                    .encode();
-                }
-                debug!(
-                    "Process {} for node instance '{}' has terminated",
-                    pid, request.instance_id
-                );
-            }
-
-            match node_stack.remove_instance(&node_name, &node_tag, &instance_id) {
-                Ok(true) => {}
-                Ok(false) => {
-                    return NodeStopResponse::failure(format!(
-                        "Node instance '{}' not found in node stack",
-                        request.instance_id
-                    ))
-                    .encode();
-                }
-                Err(e) => {
-                    return NodeStopResponse::failure(format!(
-                        "Failed to remove node instance '{}' from node stack: {}",
-                        request.instance_id, e
-                    ))
-                    .encode();
-                }
-            }
-
-            // `remove_instance` may remove the entity entirely if it was the last instance.
-            // Re-push the config so the node remains in the stack with 0 instances.
-            if let Err(e) = node_stack.push_config(node_config, false, node_root_path) {
-                return NodeStopResponse::failure(format!(
-                    "Failed to keep node config for '{}:{}' in node stack: {}",
-                    node_name, node_tag, e
-                ))
-                .encode();
-            }
-
-            NodeStopResponse::success().encode()
+    .await
+    .map_err(|e| {
+        crate::error::Error::ShutdownInstanceFailed {
+            instance_id: instance_id_str.to_owned(),
+            reason: e.to_string(),
         }
+        .to_string()
+    })?;
+
+    debug!("Node instance '{}' shutdown acknowledged", instance_id_str);
+
+    match node_stack.remove_instance(node_name, node_tag, instance_id) {
+        Ok(_) => {}
         Err(e) => {
-            debug!(
-                "Failed to shutdown node instance '{}': {}",
-                request.instance_id, e
-            );
-            NodeStopResponse::failure(format!("Failed to shutdown node: {}", e)).encode()
+            return Err(format!(
+                "Failed to remove node instance '{}' from node stack: {}",
+                instance_id_str, e
+            ));
         }
     }
+
+    Ok(())
 }
 
 /// Waits for a process to terminate, polling at regular intervals.

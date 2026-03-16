@@ -131,13 +131,10 @@ async fn handle_node_remove_request_inner(
     for entity in matching_entities {
         let node_tag = entity.config().manifest.tag.clone();
         let node_name = entity.config().manifest.name.as_str().to_owned();
-        if entity.instances().is_empty() {
-            config_targets.push(ConfigRemovalTarget {
-                node_name,
-                node_tag,
-            });
-            continue;
-        }
+        config_targets.push(ConfigRemovalTarget {
+            node_name: node_name.clone(),
+            node_tag: node_tag.clone(),
+        });
         for instance in entity.instances() {
             targets.push(RemovalTarget {
                 node_name: node_name.clone(),

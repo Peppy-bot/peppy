@@ -47,4 +47,8 @@ pub enum Error {
     // -- templates
     #[error("template rendering error: {0}")]
     Template(#[from] askama::Error),
+
+    // -- node operations
+    #[error("failed to shutdown node instance '{instance_id}': {reason}")]
+    ShutdownInstanceFailed { instance_id: String, reason: String },
 }
