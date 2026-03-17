@@ -22,8 +22,7 @@ pub struct FSNodeConfigIndex {
 impl FSNodeConfigIndex {
     /// Build the node index by scanning `from_dir` recursively.
     pub fn new(from_dir: impl AsRef<Path>) -> Result<Self> {
-        let from_dir = from_dir.as_ref().to_path_buf();
-        let state = Self::load_initial_state(&from_dir);
+        let state = Self::load_initial_state(from_dir.as_ref());
         Ok(Self { state })
     }
 
@@ -45,7 +44,7 @@ impl FSNodeConfigIndex {
             NODE_CONFIG_FILE,
             from_dir
         );
-        let mut state: NodeIndexState = HashMap::new();
+        let mut state: NodeIndexState = HashMap::with_capacity(config_files.len());
         for path in config_files {
             match NodeConfigParser::from_path(&path) {
                 Ok(cfg) => {

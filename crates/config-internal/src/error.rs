@@ -69,6 +69,12 @@ pub enum StructuredError {
     EmptyName,
 }
 
+impl StructuredError {
+    pub(crate) fn json5_message(&self) -> String {
+        serde_json5::to_string(self).unwrap_or_else(|_| "serialization error".to_string())
+    }
+}
+
 impl From<serde_json5::Error> for ParsingError {
     fn from(err: serde_json5::Error) -> Self {
         match err {
