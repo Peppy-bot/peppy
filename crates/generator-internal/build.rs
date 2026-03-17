@@ -248,7 +248,7 @@ mod peppylib_build {
         let newer = |path: &Path| {
             std::fs::metadata(path)
                 .and_then(|m| m.modified())
-                .map_or(false, |t| t > so_mtime)
+                .is_ok_and(|t| t > so_mtime)
         };
 
         let src_dir = peppylib_py_dir.join("src");

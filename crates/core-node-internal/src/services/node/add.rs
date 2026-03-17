@@ -935,6 +935,25 @@ fn resolve_http_source_blocking(
     })
 }
 
+/// Derives a label for the log filename from the NodeSource without network I/O.
+/// For Fs sources, reads the local config to get `{name}_{tag}` (fast, local I/O only).
+/// For Git/Http sources, returns a UUID since the node name/tag are unknown before cloning.
+fn log_label_from_source(source: &NodeSource) -> String {
+    match source {
+        NodeSource::Fs(path) => {
+            let config_path = path.join(NODE_CONFIG_FILE);
+            if let Ok(config) = NodeConfigParser::from_path(&config_path) {
+                return format!("{}_{}", config.manifest.name.as_str(), config.manifest.tag);
+            }
+            path.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown")
+                .to_string()
+        }
+        NodeSource::Git { .. } | NodeSource::Http { .. } => generate_random_id(),
+    }
+}
+
 async fn resolve_node_add_source(
     goal: &NodeAddGoal,
     peppy_dirs: &PeppyDirs,
@@ -1175,27 +1194,10 @@ async fn handle_goal_request(
         };
     }
 
-    let mut resolved = match resolve_node_add_source(&goal, &action_context.peppy_dirs).await {
-        Ok(resolved) => resolved,
-        Err(error_msg) => {
-            let mut state_guard = state.lock().await;
-            *state_guard = NodeAddActionState::Rejected;
-            let response = NodeAddGoalResponse::rejected(&error_msg);
-            return response
-                .encode()
-                .map_err(|e| peppylib::PeppyError::InvalidServiceRequest {
-                    identifier: "node_add_goal".to_string(),
-                    reason: format!("Failed to encode response: {}", e),
-                });
-        }
-    };
-
-    let mut checkout_cleanup = CleanupDir::new(resolved.cleanup_dir.take());
-
     match &goal.source {
-        NodeSource::Fs(_) => debug!(
+        NodeSource::Fs(path) => debug!(
             "Received `node_add` goal from {sender_instance_id}, source={}",
-            resolved.source_path.display()
+            path.display()
         ),
         NodeSource::Git {
             repo_url,
@@ -1211,10 +1213,9 @@ async fn handle_goal_request(
         ),
     }
 
-    let node_name = resolved.node_config.manifest.name.as_str().to_owned();
-    let node_tag = resolved.node_config.manifest.tag.clone();
-
-    // Create log file with timestamp-based filename
+    // Create the log file *before* source resolution so that clone/download
+    // progress and any errors are captured in the log from the very start.
+    let log_label = log_label_from_source(&goal.source);
     let log_dir = action_context.peppy_dirs.logs_dir_add();
     if let Err(e) = std::fs::create_dir_all(&log_dir) {
         let error_msg = format!("Failed to create logs directory: {}", e);
@@ -1231,7 +1232,7 @@ async fn handle_goal_request(
     }
 
     let timestamp = Local::now().format("%Y%m%d_%H%M%S_%3f");
-    let log_filename = format!("{}_{}_{}.log", node_name, node_tag, timestamp);
+    let log_filename = format!("{}_{}.log", log_label, timestamp);
     let log_path = log_dir.join(&log_filename);
     let log_file = match File::create(&log_path) {
         Ok(file) => Arc::new(StdMutex::new(file)),
@@ -1253,16 +1254,14 @@ async fn handle_goal_request(
     debug!("Created log file for node add: {}", log_path.display());
 
     // Process the add operation in a separate task to not block goal response.
+    // Source resolution (git clone, HTTP download) runs inside the task so the
+    // goal response is returned immediately without risking a goal timeout.
     // Panics are caught via catch_unwind so the state always transitions to
     // Completed — without this, a panic silently aborts the task and leaves
     // the state stuck on Running, causing clients to time out.
     let state_clone = Arc::clone(&state);
     let feedback_publisher_clone = feedback_publisher.clone();
     let log_path_clone = log_path.clone();
-    let source_path = resolved.source_path.clone();
-    let verify_codegen_fingerprint = resolved.verify_codegen_fingerprint;
-    let cleanup_dir = checkout_cleanup.take();
-    let node_config = resolved.node_config;
     tokio::spawn(async move {
         let NodeAddActionContext {
             node_stack,
@@ -1273,24 +1272,54 @@ async fn handle_goal_request(
         } = action_context;
         let log_file_for_panic = log_file.clone();
         let log_path_for_panic = log_path_clone.clone();
-        let ctx = ProcessNodeAddContext {
-            messenger,
-            bound_core_node,
-            core_instance_id,
-            node_stack,
-            peppy_dirs,
-            feedback_publisher: feedback_publisher_clone,
-            log_file,
-            log_path: log_path_clone,
-        };
-        let result = match AssertUnwindSafe(process_node_add(
-            goal,
-            node_config,
-            source_path,
-            verify_codegen_fingerprint,
-            cleanup_dir,
-            ctx,
-        ))
+
+        let result = match AssertUnwindSafe(async {
+            // Resolve source (git clone, HTTP download, or local config check).
+            let mut resolved = match resolve_node_add_source(&goal, &peppy_dirs).await {
+                Ok(r) => r,
+                Err(error_msg) => {
+                    write_error_to_log(&log_file, &error_msg);
+                    return NodeAddResult::failure(&log_path_clone, error_msg);
+                }
+            };
+
+            let cleanup_dir = resolved.cleanup_dir.take();
+            let source_path = resolved.source_path.clone();
+            let verify_codegen_fingerprint = resolved.verify_codegen_fingerprint;
+            let node_config = resolved.node_config;
+
+            // Rename log file to the canonical {name}_{tag}_{timestamp}.log format
+            // now that we know the node name and tag from the resolved config.
+            let node_name = node_config.manifest.name.as_str();
+            let node_tag = &node_config.manifest.tag;
+            let canonical_filename = format!("{}_{}_{}.log", node_name, node_tag, timestamp);
+            let canonical_log_path = log_dir.join(&canonical_filename);
+            let log_path_clone = if std::fs::rename(&log_path_clone, &canonical_log_path).is_ok() {
+                canonical_log_path
+            } else {
+                log_path_clone
+            };
+
+            let ctx = ProcessNodeAddContext {
+                messenger,
+                bound_core_node,
+                core_instance_id,
+                node_stack,
+                peppy_dirs,
+                feedback_publisher: feedback_publisher_clone,
+                log_file,
+                log_path: log_path_clone,
+            };
+            process_node_add(
+                goal,
+                node_config,
+                source_path,
+                verify_codegen_fingerprint,
+                cleanup_dir,
+                ctx,
+            )
+            .await
+        })
         .catch_unwind()
         .await
         {

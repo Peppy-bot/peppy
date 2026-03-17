@@ -697,6 +697,74 @@ async fn listen_for_launch_configuration_succeed() {
         1,
         "robot_brain should have 1 instance"
     );
+
+    // Each deployed node should have an add log entry with a valid path and not marked as failed.
+    assert_eq!(
+        result.node_add_logs.len(),
+        2,
+        "should have 2 add log entries (uvc_camera and robot_brain)"
+    );
+    assert!(
+        result
+            .node_add_logs
+            .iter()
+            .all(|e| !e.log_path.as_os_str().is_empty()),
+        "all add log paths should be non-empty, got: {:?}",
+        result
+            .node_add_logs
+            .iter()
+            .map(|e| &e.log_path)
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        result.node_add_logs.iter().all(|e| !e.failed),
+        "no add log entry should be marked failed, got: {:?}",
+        result
+            .node_add_logs
+            .iter()
+            .filter(|e| e.failed)
+            .map(|e| &e.node_label)
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        result.node_add_logs.iter().all(|e| e.log_path.exists()),
+        "all add log files should exist on disk, missing: {:?}",
+        result
+            .node_add_logs
+            .iter()
+            .filter(|e| !e.log_path.exists())
+            .map(|e| &e.log_path)
+            .collect::<Vec<_>>()
+    );
+
+    // Each started instance should have a start log entry with a valid path and not marked as failed.
+    assert_eq!(
+        result.node_start_logs.len(),
+        3,
+        "should have 3 start log entries (camera_front, camera_rear, main_robot_brain)"
+    );
+    assert!(
+        result
+            .node_start_logs
+            .iter()
+            .all(|e| !e.log_path.as_os_str().is_empty()),
+        "all start log paths should be non-empty, got: {:?}",
+        result
+            .node_start_logs
+            .iter()
+            .map(|e| &e.log_path)
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        result.node_start_logs.iter().all(|e| !e.failed),
+        "no start log entry should be marked failed, got: {:?}",
+        result
+            .node_start_logs
+            .iter()
+            .filter(|e| e.failed)
+            .map(|e| &e.instance_id)
+            .collect::<Vec<_>>()
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1179,6 +1247,14 @@ async fn listen_for_launch_configuration_fails_when_add_cmd_fails_and_restores_s
 
     assert!(!result.success, "launch should fail because add_cmd fails");
 
+    let error_message = result
+        .error_message
+        .expect("error_message should be set on add_cmd failure");
+    assert!(
+        error_message.contains("failing_node:0.1.0"),
+        "error message should contain the node name:tag, got: {error_message}"
+    );
+
     assert!(
         node_stack.contains("existing_node", NODE_TAG),
         "stack should be restored on add_cmd failure"
@@ -1186,6 +1262,124 @@ async fn listen_for_launch_configuration_fails_when_add_cmd_fails_and_restores_s
     assert!(
         !node_stack.contains("failing_node", NODE_TAG),
         "failing_node should not be present after failed launch"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_launch_configuration_fails_when_start_cmd_exits_with_error() {
+    const NODE_NAME: &str = "failing_start_node";
+    const NODE_TAG: &str = "0.1.0";
+    const INSTANCE_ID: &str = "fs1";
+
+    let started_core_node = start_core_node_with_mock_messenger().await;
+    let node_stack = started_core_node.node_stack.clone();
+
+    let nodes_dir = tempdir().expect("failed to create temp nodes directory");
+
+    // Seed stack with an existing node so we can verify rollback.
+    let existing_path = write_node_config(
+        nodes_dir.path(),
+        "existing_node",
+        NODE_TAG,
+        "test-hash",
+        &["sleep", "60"],
+        false,
+        false,
+    );
+    let existing_config = NodeConfigParser::from_path(existing_path.join(NODE_CONFIG_FILE))
+        .expect("existing node config should parse");
+    node_stack
+        .push_config(existing_config, false, &existing_path)
+        .expect("should seed stack");
+
+    // Node whose start_cmd exits immediately with a non-zero status.
+    let _failing_node_path = write_node_config_with_options(
+        nodes_dir.path(),
+        NODE_NAME,
+        NODE_TAG,
+        "test-hash",
+        NodeConfigOptions {
+            add_cmd: &["true"],
+            start_cmd: &["false"], // exits immediately with status 1
+            ..Default::default()
+        },
+    );
+
+    let launcher_json5 = format!(
+        r#"{{ deployments: [ {{ source: {{ local: "./{NODE_NAME}" }}, instances: [ {{ instance_id: "{INSTANCE_ID}" }} ] }} ] }}"#
+    );
+    let launch_file_path = nodes_dir.path().join("peppy_launcher.json5");
+    fs::write(&launch_file_path, &launcher_json5).expect("failed to write launch file");
+
+    let (_goal_response, result) = send_node_launch_and_wait(
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        &launch_file_path,
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+    )
+    .await
+    .expect("launch should complete");
+
+    assert!(
+        !result.success,
+        "launch should fail because start_cmd exits with error"
+    );
+
+    let error_message = result
+        .error_message
+        .expect("error_message should be set on start_cmd failure");
+    assert!(
+        error_message.contains(&format!("{}:{}", NODE_NAME, NODE_TAG)),
+        "error message should contain the node name:tag, got: {error_message}"
+    );
+    assert!(
+        error_message.contains(INSTANCE_ID),
+        "error message should contain the instance ID, got: {error_message}"
+    );
+
+    assert!(
+        node_stack.contains("existing_node", NODE_TAG),
+        "stack should be restored on start_cmd failure"
+    );
+    assert!(
+        !node_stack.contains(NODE_NAME, NODE_TAG),
+        "{NODE_NAME} should not be present after failed launch"
+    );
+
+    // The node was successfully added before the start failed, so we expect one add log entry.
+    assert_eq!(
+        result.node_add_logs.len(),
+        1,
+        "should have 1 add log entry for the node that was added before start failed"
+    );
+    assert!(
+        !result.node_add_logs[0].failed,
+        "add log entry should not be marked failed (add succeeded)"
+    );
+    assert_eq!(
+        result.node_add_logs[0].node_label,
+        format!("{}:{}", NODE_NAME, NODE_TAG)
+    );
+
+    // The failed start should produce one start log entry marked as failed.
+    assert_eq!(
+        result.node_start_logs.len(),
+        1,
+        "should have 1 start log entry for the failed instance"
+    );
+    assert!(
+        result.node_start_logs[0].failed,
+        "start log entry should be marked failed"
+    );
+    assert_eq!(result.node_start_logs[0].instance_id, INSTANCE_ID);
+    assert_eq!(
+        result.node_start_logs[0].node_label,
+        format!("{}:{}", NODE_NAME, NODE_TAG)
+    );
+    assert!(
+        !result.node_start_logs[0].log_path.as_os_str().is_empty(),
+        "start log path should be non-empty"
     );
 }
 
