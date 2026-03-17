@@ -117,11 +117,6 @@ impl NodeEntity {
             false
         }
     }
-
-    /// Returns the number of instances
-    fn instance_count(&self) -> usize {
-        self.instances.len()
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -759,20 +754,12 @@ impl NodeStackInner {
             return Ok(false);
         };
 
-        let should_remove_entity = {
-            let Some(entity) = self.graph.node_weight_mut(index) else {
-                return Ok(false);
-            };
-
-            if !entity.remove_instance(instance_id) {
-                return Ok(false);
-            }
-
-            entity.instance_count() == 0
+        let Some(entity) = self.graph.node_weight_mut(index) else {
+            return Ok(false);
         };
 
-        if should_remove_entity {
-            self.remove_entity(&key);
+        if !entity.remove_instance(instance_id) {
+            return Ok(false);
         }
 
         Ok(true)
