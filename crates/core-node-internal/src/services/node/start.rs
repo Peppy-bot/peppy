@@ -1,3 +1,4 @@
+use super::super::action_loop::{ActionResult, ActionState, GoalHandler, run_action_loop};
 use super::{
     FeedbackLine, FeedbackStream, create_action_log_file, extract_tar_zst, push_stderr_line,
     write_error_to_log,
@@ -15,7 +16,7 @@ use node_stack::{NodeEntity, NodeStack};
 use peppylib::encoding::health::NodeHealthRequest;
 use peppylib::encoding::ready::NodeReadyRequest;
 use peppylib::messaging::{
-    ActionCreation, NODE_HEALTH_SERVICE, NODE_READY_SERVICE, ServiceRequestContext, TopicPublisher,
+    NODE_HEALTH_SERVICE, NODE_READY_SERVICE, ServiceRequestContext, TopicPublisher,
 };
 use peppylib::types::Payload;
 use peppylib::{ActionMessenger, MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
@@ -83,20 +84,58 @@ pub async fn listen_for_node_start(
     )
     .await?;
 
-    let action_context = NodeStartActionContext {
-        node_stack,
-        messenger: messenger.clone(),
-        core_node_name: core_node_name.to_string(),
-        caller_instance_id: instance_id.to_string(),
-        node_startup_timeout: config.node_startup_timeout,
-        node_start_health_timeout: config.node_start_health_timeout,
-        peppy_dirs: config.peppy_dirs,
+    let handler = NodeStartGoalHandler {
+        context: NodeStartActionContext {
+            node_stack,
+            messenger: messenger.clone(),
+            core_node_name: core_node_name.to_string(),
+            caller_instance_id: instance_id.to_string(),
+            node_startup_timeout: config.node_startup_timeout,
+            node_start_health_timeout: config.node_start_health_timeout,
+            peppy_dirs: config.peppy_dirs,
+        },
+        running_since: Arc::new(Mutex::new(None)),
     };
 
-    let handle =
-        tokio::spawn(async move { run_node_start_action_loop(action, action_context).await });
+    let handle = tokio::spawn(async move { run_action_loop(action, handler).await });
 
     Ok(handle)
+}
+
+impl ActionResult for NodeStartResult {
+    fn identifier() -> &'static str {
+        "node_start_result"
+    }
+
+    fn encode_result(&self) -> crate::Result<Payload> {
+        self.encode()
+    }
+}
+
+#[derive(Clone)]
+struct NodeStartGoalHandler {
+    context: NodeStartActionContext,
+    running_since: Arc<Mutex<Option<(Instant, u64)>>>,
+}
+
+impl GoalHandler for NodeStartGoalHandler {
+    type Result = NodeStartResult;
+
+    async fn handle_goal(
+        &self,
+        context: ServiceRequestContext,
+        feedback_publisher: TopicPublisher,
+        state: Arc<Mutex<ActionState<NodeStartResult>>>,
+    ) -> PeppyResult<Payload> {
+        handle_goal_request(
+            context,
+            feedback_publisher,
+            state,
+            self.context.clone(),
+            Arc::clone(&self.running_since),
+        )
+        .await
+    }
 }
 
 /// Validates that all required parameters from the schema are present in the provided arguments.
@@ -153,27 +192,6 @@ fn collect_all_required_paths(schema_value: &AnyType, path: &str, missing: &mut 
             missing.push(path.to_string());
         }
     }
-}
-
-/// State for tracking the current node start action.
-#[derive(Default)]
-enum NodeStartActionState {
-    /// No action is currently running.
-    #[default]
-    Idle,
-    /// The goal was rejected (invalid payload, missing parameters, etc.)
-    /// and no actual work was started. The server should reset to Idle
-    /// and be ready to accept the next goal.
-    Rejected,
-    /// An action is currently running.
-    Running {
-        started_at: Instant,
-        timeout_secs: u64,
-    },
-    /// The action completed and the result is ready to be sent.
-    Completed { result: NodeStartResult },
-    /// The result has been sent to the requester.
-    ResultSent { result: NodeStartResult },
 }
 
 #[derive(Clone)]
@@ -326,142 +344,12 @@ where
     })
 }
 
-async fn run_node_start_action_loop(
-    mut action: ActionCreation,
-    action_context: NodeStartActionContext,
-) -> Result<()> {
-    let state = Arc::new(Mutex::new(NodeStartActionState::default()));
-
-    loop {
-        let goal_result = action
-            .goal_service
-            .handle_next_request({
-                let feedback_publisher = &action.feedback_publisher;
-                let state = Arc::clone(&state);
-                let action_context = action_context.clone();
-                move |context| {
-                    let feedback_publisher = feedback_publisher.clone();
-                    let state = Arc::clone(&state);
-                    let action_context = action_context.clone();
-                    async move {
-                        handle_goal_request(context, feedback_publisher, state, action_context)
-                            .await
-                    }
-                }
-            })
-            .await;
-
-        match goal_result {
-            Ok(true) => {
-                // If the goal was rejected (invalid payload, etc.), reset to Idle
-                // and continue waiting for the next goal without entering the inner loop.
-                {
-                    let mut state_guard = state.lock().await;
-                    if matches!(*state_guard, NodeStartActionState::Rejected) {
-                        *state_guard = NodeStartActionState::Idle;
-                        continue;
-                    }
-                }
-
-                loop {
-                    tokio::select! {
-                        cancel_result = action.cancel_service.handle_next_request({
-                            let state = Arc::clone(&state);
-                            move |context| {
-                                let state = Arc::clone(&state);
-                                async move { handle_cancel_request(context, state).await }
-                            }
-                        }) => {
-                            match cancel_result {
-                                Ok(true) => {}
-                                Ok(false) => return Ok(()),
-                                Err(e) => {
-                                    debug!("Cancel service error: {}", e);
-                                    return Err(e.into());
-                                }
-                            }
-                        }
-                        result_result = action.result_service.handle_next_request({
-                            let state = Arc::clone(&state);
-                            move |context| {
-                                let state = Arc::clone(&state);
-                                async move { handle_result_request(context, state).await }
-                            }
-                        }) => {
-                            match result_result {
-                                Ok(true) => {
-                                    let mut state_guard = state.lock().await;
-                                    if matches!(*state_guard, NodeStartActionState::ResultSent { .. }) {
-                                        *state_guard = NodeStartActionState::default();
-                                        break;
-                                    }
-                                }
-                                Ok(false) => return Ok(()),
-                                Err(e) => {
-                                    debug!("Result service error: {}", e);
-                                    return Err(e.into());
-                                }
-                            }
-                        }
-                        // Listen for new goals in case the client abandoned the current action
-                        // (e.g., accepted but never polled for result). This prevents one
-                        // abandoned action from blocking all subsequent requests.
-                        goal_result = action.goal_service.handle_next_request({
-                            let feedback_publisher = &action.feedback_publisher;
-                            let state = Arc::clone(&state);
-                            let action_context = action_context.clone();
-                            move |context| {
-                                let feedback_publisher = feedback_publisher.clone();
-                                let state = Arc::clone(&state);
-                                let action_context = action_context.clone();
-                                async move {
-                                    handle_goal_request(
-                                        context,
-                                        feedback_publisher,
-                                        state,
-                                        action_context,
-                                    )
-                                    .await
-                                }
-                            }
-                        }) => {
-                            match goal_result {
-                                Ok(true) => {
-                                    // A new goal was received. If it was rejected, reset to Idle.
-                                    let mut state_guard = state.lock().await;
-                                    if matches!(*state_guard, NodeStartActionState::Rejected) {
-                                        *state_guard = NodeStartActionState::Idle;
-                                    }
-                                    // Continue in inner loop - the new goal will be processed
-                                    // and its result will be available for polling.
-                                }
-                                Ok(false) => return Ok(()),
-                                Err(e) => {
-                                    debug!("Goal service error in inner loop: {}", e);
-                                    return Err(e.into());
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            Ok(false) => {
-                debug!("Goal service closed");
-                return Ok(());
-            }
-            Err(e) => {
-                debug!("Goal service error: {}", e);
-                return Err(e.into());
-            }
-        }
-    }
-}
-
 async fn handle_goal_request(
     context: ServiceRequestContext,
     feedback_publisher: TopicPublisher,
-    state: Arc<Mutex<NodeStartActionState>>,
+    state: Arc<Mutex<ActionState<NodeStartResult>>>,
     action_context: NodeStartActionContext,
+    running_since: Arc<Mutex<Option<(Instant, u64)>>>,
 ) -> PeppyResult<Payload> {
     let sender_instance_id = context.message().instance_id().to_string();
     let payload = context.message().payload();
@@ -481,14 +369,15 @@ async fn handle_goal_request(
 
     {
         let mut state_guard = state.lock().await;
-        if let NodeStartActionState::Running {
-            started_at,
-            timeout_secs,
-        } = *state_guard
-        {
-            let remaining = Duration::from_secs(timeout_secs)
-                .saturating_sub(started_at.elapsed())
-                .as_secs();
+        if matches!(*state_guard, ActionState::Running) {
+            let running_guard = running_since.lock().await;
+            let remaining = running_guard
+                .map(|(started_at, timeout_secs)| {
+                    Duration::from_secs(timeout_secs)
+                        .saturating_sub(started_at.elapsed())
+                        .as_secs()
+                })
+                .unwrap_or(0);
             let response = NodeStartGoalResponse::rejected(format!(
                 "action already in progress (times out in {remaining}s)"
             ));
@@ -499,10 +388,8 @@ async fn handle_goal_request(
                     reason: format!("Failed to encode response: {}", e),
                 });
         }
-        *state_guard = NodeStartActionState::Running {
-            started_at: Instant::now(),
-            timeout_secs: goal.timeout_secs,
-        };
+        *state_guard = ActionState::Running;
+        *running_since.lock().await = Some((Instant::now(), goal.timeout_secs));
     }
 
     // Parse runtime config to get instance_id for log file naming
@@ -511,7 +398,7 @@ async fn handle_goal_request(
         Err(e) => {
             let error_msg = format!("Failed to parse PEPPY_RUNTIME_CONFIG: {}", e);
             let mut state_guard = state.lock().await;
-            *state_guard = NodeStartActionState::Rejected;
+            *state_guard = ActionState::Rejected;
             let response = NodeStartGoalResponse::rejected(&error_msg);
             return response
                 .encode()
@@ -540,7 +427,7 @@ async fn handle_goal_request(
         Err(error_msg) => {
             debug!("{}", error_msg);
             let mut state_guard = state.lock().await;
-            *state_guard = NodeStartActionState::Rejected;
+            *state_guard = ActionState::Rejected;
             let response = NodeStartGoalResponse::rejected(&error_msg);
             return response
                 .encode()
@@ -582,7 +469,7 @@ async fn handle_goal_request(
                 }
             };
         let mut state_guard = state_clone.lock().await;
-        *state_guard = NodeStartActionState::Completed { result };
+        *state_guard = ActionState::Completed { result };
     });
 
     let response = NodeStartGoalResponse::accepted(&log_path);
@@ -927,71 +814,6 @@ async fn process_node_start(
             feedback_sync.flush_or_warn(instance_id_str).await;
             publish_enabled.store(false, Ordering::Relaxed);
             result
-        }
-    }
-}
-
-async fn handle_cancel_request(
-    _context: ServiceRequestContext,
-    state: Arc<Mutex<NodeStartActionState>>,
-) -> PeppyResult<Payload> {
-    let state_guard = state.lock().await;
-    if matches!(*state_guard, NodeStartActionState::Running { .. }) {
-        Ok(Payload::from_static(
-            b"cancel acknowledged (operation cannot be interrupted)",
-        ))
-    } else {
-        Ok(Payload::from_static(
-            b"cancel acknowledged (no operation in progress)",
-        ))
-    }
-}
-
-async fn handle_result_request(
-    _context: ServiceRequestContext,
-    state: Arc<Mutex<NodeStartActionState>>,
-) -> PeppyResult<Payload> {
-    let mut state_guard = state.lock().await;
-
-    match std::mem::replace(&mut *state_guard, NodeStartActionState::Idle) {
-        NodeStartActionState::Running {
-            started_at,
-            timeout_secs,
-        } => {
-            *state_guard = NodeStartActionState::Running {
-                started_at,
-                timeout_secs,
-            };
-            Ok(Payload::from_static(
-                b"result pending: operation still in progress",
-            ))
-        }
-        NodeStartActionState::Completed { result } => {
-            let payload =
-                result
-                    .encode()
-                    .map_err(|e| peppylib::PeppyError::InvalidServiceRequest {
-                        identifier: "node_start_result".to_string(),
-                        reason: format!("Failed to encode result: {}", e),
-                    })?;
-            *state_guard = NodeStartActionState::ResultSent { result };
-            Ok(payload)
-        }
-        NodeStartActionState::ResultSent { result } => {
-            let payload =
-                result
-                    .encode()
-                    .map_err(|e| peppylib::PeppyError::InvalidServiceRequest {
-                        identifier: "node_start_result".to_string(),
-                        reason: format!("Failed to encode result: {}", e),
-                    })?;
-            *state_guard = NodeStartActionState::ResultSent { result };
-            Ok(payload)
-        }
-        NodeStartActionState::Idle | NodeStartActionState::Rejected => {
-            // Rejected state is normally reset to Idle before result polling,
-            // but handle it the same way for robustness.
-            Ok(Payload::from_static(b"result pending: no result available"))
         }
     }
 }
