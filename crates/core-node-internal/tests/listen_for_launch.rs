@@ -697,6 +697,64 @@ async fn listen_for_launch_configuration_succeed() {
         1,
         "robot_brain should have 1 instance"
     );
+
+    // Each deployed node should have an add log entry with a valid path and not marked as failed.
+    assert_eq!(
+        result.node_add_logs.len(),
+        2,
+        "should have 2 add log entries (uvc_camera and robot_brain)"
+    );
+    assert!(
+        result
+            .node_add_logs
+            .iter()
+            .all(|e| !e.log_path.as_os_str().is_empty()),
+        "all add log paths should be non-empty, got: {:?}",
+        result
+            .node_add_logs
+            .iter()
+            .map(|e| &e.log_path)
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        result.node_add_logs.iter().all(|e| !e.failed),
+        "no add log entry should be marked failed, got: {:?}",
+        result
+            .node_add_logs
+            .iter()
+            .filter(|e| e.failed)
+            .map(|e| &e.node_label)
+            .collect::<Vec<_>>()
+    );
+
+    // Each started instance should have a start log entry with a valid path and not marked as failed.
+    assert_eq!(
+        result.node_start_logs.len(),
+        3,
+        "should have 3 start log entries (camera_front, camera_rear, main_robot_brain)"
+    );
+    assert!(
+        result
+            .node_start_logs
+            .iter()
+            .all(|e| !e.log_path.as_os_str().is_empty()),
+        "all start log paths should be non-empty, got: {:?}",
+        result
+            .node_start_logs
+            .iter()
+            .map(|e| &e.log_path)
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        result.node_start_logs.iter().all(|e| !e.failed),
+        "no start log entry should be marked failed, got: {:?}",
+        result
+            .node_start_logs
+            .iter()
+            .filter(|e| e.failed)
+            .map(|e| &e.instance_id)
+            .collect::<Vec<_>>()
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1277,6 +1335,41 @@ async fn listen_for_launch_configuration_fails_when_start_cmd_exits_with_error()
     assert!(
         !node_stack.contains(NODE_NAME, NODE_TAG),
         "{NODE_NAME} should not be present after failed launch"
+    );
+
+    // The node was successfully added before the start failed, so we expect one add log entry.
+    assert_eq!(
+        result.node_add_logs.len(),
+        1,
+        "should have 1 add log entry for the node that was added before start failed"
+    );
+    assert!(
+        !result.node_add_logs[0].failed,
+        "add log entry should not be marked failed (add succeeded)"
+    );
+    assert_eq!(
+        result.node_add_logs[0].node_label,
+        format!("{}:{}", NODE_NAME, NODE_TAG)
+    );
+
+    // The failed start should produce one start log entry marked as failed.
+    assert_eq!(
+        result.node_start_logs.len(),
+        1,
+        "should have 1 start log entry for the failed instance"
+    );
+    assert!(
+        result.node_start_logs[0].failed,
+        "start log entry should be marked failed"
+    );
+    assert_eq!(result.node_start_logs[0].instance_id, INSTANCE_ID);
+    assert_eq!(
+        result.node_start_logs[0].node_label,
+        format!("{}:{}", NODE_NAME, NODE_TAG)
+    );
+    assert!(
+        !result.node_start_logs[0].log_path.as_os_str().is_empty(),
+        "start log path should be non-empty"
     );
 }
 

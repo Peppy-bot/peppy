@@ -267,12 +267,33 @@ impl LaunchFeedback {
     }
 }
 
+/// Per-node add log entry carried in `LaunchResult`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NodeAddLogEntry {
+    /// Node label in "name:tag" format.
+    pub node_label: String,
+    pub log_path: PathBuf,
+    pub failed: bool,
+}
+
+/// Per-node start log entry carried in `LaunchResult`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NodeStartLogEntry {
+    pub instance_id: String,
+    /// Node label in "name:tag" format.
+    pub node_label: String,
+    pub log_path: PathBuf,
+    pub failed: bool,
+}
+
 /// Result message for the Launch action.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LaunchResult {
     pub success: bool,
     pub log_path: PathBuf,
     pub error_message: Option<String>,
+    pub node_add_logs: Vec<NodeAddLogEntry>,
+    pub node_start_logs: Vec<NodeStartLogEntry>,
 }
 
 impl LaunchResult {
@@ -281,6 +302,8 @@ impl LaunchResult {
             success,
             log_path: log_path.into(),
             error_message,
+            node_add_logs: Vec::new(),
+            node_start_logs: Vec::new(),
         }
     }
 
@@ -292,6 +315,16 @@ impl LaunchResult {
         Self::new(false, log_path, Some(error_message.into()))
     }
 
+    pub fn with_node_logs(
+        mut self,
+        add_logs: Vec<NodeAddLogEntry>,
+        start_logs: Vec<NodeStartLogEntry>,
+    ) -> Self {
+        self.node_add_logs = add_logs;
+        self.node_start_logs = start_logs;
+        self
+    }
+
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
@@ -300,6 +333,27 @@ impl LaunchResult {
             result.set_log_path(self.log_path.to_string_lossy().as_ref());
             if let Some(ref error_message) = self.error_message {
                 result.set_error_message(error_message);
+            }
+
+            let mut add_logs = result
+                .reborrow()
+                .init_node_add_logs(self.node_add_logs.len() as u32);
+            for (i, entry) in self.node_add_logs.iter().enumerate() {
+                let mut e = add_logs.reborrow().get(i as u32);
+                e.set_node_label(&entry.node_label);
+                e.set_log_path(entry.log_path.to_string_lossy().as_ref());
+                e.set_failed(entry.failed);
+            }
+
+            let mut start_logs = result
+                .reborrow()
+                .init_node_start_logs(self.node_start_logs.len() as u32);
+            for (i, entry) in self.node_start_logs.iter().enumerate() {
+                let mut e = start_logs.reborrow().get(i as u32);
+                e.set_instance_id(&entry.instance_id);
+                e.set_node_label(&entry.node_label);
+                e.set_log_path(entry.log_path.to_string_lossy().as_ref());
+                e.set_failed(entry.failed);
             }
         }
         encode_message(&builder)
@@ -315,10 +369,36 @@ impl LaunchResult {
             Some(error_message_str.to_owned())
         };
         let log_path = PathBuf::from(result.get_log_path()?.to_str()?);
+
+        let add_logs_reader = result.get_node_add_logs()?;
+        let mut node_add_logs = Vec::with_capacity(add_logs_reader.len() as usize);
+        for i in 0..add_logs_reader.len() {
+            let e = add_logs_reader.get(i);
+            node_add_logs.push(NodeAddLogEntry {
+                node_label: e.get_node_label()?.to_str()?.to_owned(),
+                log_path: PathBuf::from(e.get_log_path()?.to_str()?),
+                failed: e.get_failed(),
+            });
+        }
+
+        let start_logs_reader = result.get_node_start_logs()?;
+        let mut node_start_logs = Vec::with_capacity(start_logs_reader.len() as usize);
+        for i in 0..start_logs_reader.len() {
+            let e = start_logs_reader.get(i);
+            node_start_logs.push(NodeStartLogEntry {
+                instance_id: e.get_instance_id()?.to_str()?.to_owned(),
+                node_label: e.get_node_label()?.to_str()?.to_owned(),
+                log_path: PathBuf::from(e.get_log_path()?.to_str()?),
+                failed: e.get_failed(),
+            });
+        }
+
         Ok(Self {
             success: result.get_success(),
             log_path,
             error_message,
+            node_add_logs,
+            node_start_logs,
         })
     }
 

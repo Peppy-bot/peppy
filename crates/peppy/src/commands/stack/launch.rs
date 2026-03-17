@@ -5,6 +5,7 @@ use std::time::Duration;
 use config::peppy_config::PeppyLauncherParser;
 use core_node::encoding::{
     LaunchFeedback, LaunchFeedbackStep, LaunchGoal, LaunchGoalResponse, LaunchResult,
+    NodeAddLogEntry, NodeStartLogEntry,
 };
 use peppylib::{ActionMessenger, PeppyError};
 use tracing::info;
@@ -23,6 +24,37 @@ const MAX_TIMEOUT: Duration = Duration::from_secs(7200);
 const FEEDBACK_DRAIN_TIMEOUT: Duration = Duration::from_millis(50);
 const RESULT_POLL_TIMEOUT: Duration = Duration::from_millis(200);
 const SCROLLING_OUTPUT_LINES: usize = 10;
+
+fn display_node_log_files(add_logs: &[NodeAddLogEntry], start_logs: &[NodeStartLogEntry]) {
+    if add_logs.is_empty() && start_logs.is_empty() {
+        return;
+    }
+    println!("Node log files:");
+    if !add_logs.is_empty() {
+        println!("  Add:");
+        for e in add_logs {
+            println!("    `{}`: {}", e.node_label, e.log_path.display());
+        }
+    }
+    if !start_logs.is_empty() {
+        println!("  Start:");
+        for e in start_logs {
+            let marker = if e.failed { " [FAILED]" } else { "" };
+            let line = format!(
+                "    {} (`{}`){}: {}",
+                e.instance_id,
+                e.node_label,
+                marker,
+                e.log_path.display()
+            );
+            if e.failed {
+                eprintln!("{line}");
+            } else {
+                println!("{line}");
+            }
+        }
+    }
+}
 
 fn handle_feedback(
     feedback: &LaunchFeedback,
@@ -235,6 +267,8 @@ async fn launch_async(
                         if let Some(output) = scrolling_output.as_mut() {
                             output.clear();
                         }
+
+                        display_node_log_files(&result.node_add_logs, &result.node_start_logs);
 
                         if !result.success {
                             let error_msg = result

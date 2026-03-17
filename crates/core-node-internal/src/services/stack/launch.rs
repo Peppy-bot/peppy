@@ -1,8 +1,8 @@
 use crate::Result;
 use crate::encoding::{
     LaunchFeedback, LaunchFeedbackStep, LaunchGoal, LaunchGoalResponse, LaunchResult,
-    NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAddResult, NodeSource,
-    NodeStartFeedback, NodeStartGoal, NodeStartGoalResponse, NodeStartResult,
+    NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAddLogEntry, NodeAddResult, NodeSource,
+    NodeStartFeedback, NodeStartGoal, NodeStartGoalResponse, NodeStartLogEntry, NodeStartResult,
 };
 use crate::names;
 use crate::services::node::resolve_node_config;
@@ -214,12 +214,16 @@ async fn run_node_add_and_forward_feedback(
     goal_timeout: Duration,
     idle_timeout: Duration,
     max_timeout: Duration,
-) -> std::result::Result<NodeAddResult, String> {
-    let goal_payload = node_add_goal
+) -> (std::result::Result<NodeAddResult, String>, Option<PathBuf>) {
+    let goal_payload = match node_add_goal
         .encode()
-        .map_err(|e| format!("failed to encode node_add goal: {e}"))?;
+        .map_err(|e| format!("failed to encode node_add goal: {e}"))
+    {
+        Ok(p) => p,
+        Err(e) => return (Err(e), None),
+    };
 
-    let mut action_handle = ActionMessenger::send_goal(
+    let mut action_handle = match ActionMessenger::send_goal(
         &ctx.messenger,
         &ctx.bound_core_node,
         &ctx.core_instance_id,
@@ -232,17 +236,30 @@ async fn run_node_add_and_forward_feedback(
         goal_timeout,
     )
     .await
-    .map_err(|e| format!("failed to send node_add goal: {e}"))?;
+    .map_err(|e| format!("failed to send node_add goal: {e}"))
+    {
+        Ok(h) => h,
+        Err(e) => return (Err(e), None),
+    };
 
     let goal_response_payload = action_handle.goal_response().payload();
-    let goal_response = NodeAddGoalResponse::decode(&goal_response_payload)
-        .map_err(|e| format!("failed to decode node_add goal response: {e}"))?;
+    let goal_response = match NodeAddGoalResponse::decode(&goal_response_payload)
+        .map_err(|e| format!("failed to decode node_add goal response: {e}"))
+    {
+        Ok(r) => r,
+        Err(e) => return (Err(e), None),
+    };
 
     if !goal_response.accepted {
-        return Err(goal_response
-            .rejection_reason
-            .unwrap_or_else(|| "node_add goal rejected".to_string()));
+        return (
+            Err(goal_response
+                .rejection_reason
+                .unwrap_or_else(|| "node_add goal rejected".to_string())),
+            None,
+        );
     }
+
+    let node_log_path = Some(goal_response.log_path.clone());
 
     let absolute_deadline = tokio::time::Instant::now() + max_timeout;
     let mut last_activity = tokio::time::Instant::now();
@@ -252,13 +269,19 @@ async fn run_node_add_and_forward_feedback(
         loop {
             let now = tokio::time::Instant::now();
             if now >= absolute_deadline {
-                return Err("timeout waiting for node_add result: max timeout exceeded".to_string());
+                return (
+                    Err("timeout waiting for node_add result: max timeout exceeded".to_string()),
+                    node_log_path,
+                );
             }
             if now.duration_since(last_activity) >= idle_timeout {
-                return Err(format!(
-                    "timeout waiting for node_add result: no output received for {}s",
-                    idle_timeout.as_secs()
-                ));
+                return (
+                    Err(format!(
+                        "timeout waiting for node_add result: no output received for {}s",
+                        idle_timeout.as_secs()
+                    )),
+                    node_log_path,
+                );
             }
             let drain_timeout = Duration::from_millis(50);
             match tokio::time::timeout(drain_timeout, action_handle.on_next_feedback()).await {
@@ -281,13 +304,19 @@ async fn run_node_add_and_forward_feedback(
 
         let now = tokio::time::Instant::now();
         if now >= absolute_deadline {
-            return Err("timeout waiting for node_add result: max timeout exceeded".to_string());
+            return (
+                Err("timeout waiting for node_add result: max timeout exceeded".to_string()),
+                node_log_path,
+            );
         }
         if now.duration_since(last_activity) >= idle_timeout {
-            return Err(format!(
-                "timeout waiting for node_add result: no output received for {}s",
-                idle_timeout.as_secs()
-            ));
+            return (
+                Err(format!(
+                    "timeout waiting for node_add result: no output received for {}s",
+                    idle_timeout.as_secs()
+                )),
+                node_log_path,
+            );
         }
         let poll_timeout = Duration::from_millis(200);
 
@@ -317,20 +346,28 @@ async fn run_node_add_and_forward_feedback(
                                 publish_feedback(ctx, launch_feedback).await;
                             }
                         }
-                        return Ok(result);
+                        return (Ok(result), node_log_path);
                     }
                     Err(err) => {
                         let pending = std::str::from_utf8(payload.as_ref())
                             .map(|text| text.starts_with("result pending"))
                             .unwrap_or(false);
                         if !pending {
-                            return Err(format!("failed to decode node_add result: {err}"));
+                            return (
+                                Err(format!("failed to decode node_add result: {err}")),
+                                node_log_path,
+                            );
                         }
                     }
                 }
             }
             Err(peppylib::PeppyError::ActionResultTimeout { .. }) => {}
-            Err(err) => return Err(format!("failed to get node_add result: {err}")),
+            Err(err) => {
+                return (
+                    Err(format!("failed to get node_add result: {err}")),
+                    node_log_path,
+                );
+            }
         }
 
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -343,12 +380,19 @@ async fn run_node_start_and_forward_feedback(
     goal_timeout: Duration,
     idle_timeout: Duration,
     max_timeout: Duration,
-) -> std::result::Result<NodeStartResult, String> {
-    let goal_payload = node_start_goal
+) -> (
+    std::result::Result<NodeStartResult, String>,
+    Option<PathBuf>,
+) {
+    let goal_payload = match node_start_goal
         .encode()
-        .map_err(|e| format!("failed to encode node_start goal: {e}"))?;
+        .map_err(|e| format!("failed to encode node_start goal: {e}"))
+    {
+        Ok(p) => p,
+        Err(e) => return (Err(e), None),
+    };
 
-    let mut action_handle = ActionMessenger::send_goal(
+    let mut action_handle = match ActionMessenger::send_goal(
         &ctx.messenger,
         &ctx.bound_core_node,
         &ctx.core_instance_id,
@@ -361,17 +405,30 @@ async fn run_node_start_and_forward_feedback(
         goal_timeout,
     )
     .await
-    .map_err(|e| format!("failed to send node_start goal: {e}"))?;
+    .map_err(|e| format!("failed to send node_start goal: {e}"))
+    {
+        Ok(h) => h,
+        Err(e) => return (Err(e), None),
+    };
 
     let goal_response_payload = action_handle.goal_response().payload();
-    let goal_response = NodeStartGoalResponse::decode(&goal_response_payload)
-        .map_err(|e| format!("failed to decode node_start goal response: {e}"))?;
+    let goal_response = match NodeStartGoalResponse::decode(&goal_response_payload)
+        .map_err(|e| format!("failed to decode node_start goal response: {e}"))
+    {
+        Ok(r) => r,
+        Err(e) => return (Err(e), None),
+    };
 
     if !goal_response.accepted {
-        return Err(goal_response
-            .rejection_reason
-            .unwrap_or_else(|| "node_start goal rejected".to_string()));
+        return (
+            Err(goal_response
+                .rejection_reason
+                .unwrap_or_else(|| "node_start goal rejected".to_string())),
+            None,
+        );
     }
+
+    let node_log_path = Some(goal_response.log_path.clone());
 
     let absolute_deadline = tokio::time::Instant::now() + max_timeout;
     let mut last_activity = tokio::time::Instant::now();
@@ -381,15 +438,19 @@ async fn run_node_start_and_forward_feedback(
         loop {
             let now = tokio::time::Instant::now();
             if now >= absolute_deadline {
-                return Err(
-                    "timeout waiting for node_start result: max timeout exceeded".to_string(),
+                return (
+                    Err("timeout waiting for node_start result: max timeout exceeded".to_string()),
+                    node_log_path,
                 );
             }
             if now.duration_since(last_activity) >= idle_timeout {
-                return Err(format!(
-                    "timeout waiting for node_start result: no output received for {}s",
-                    idle_timeout.as_secs()
-                ));
+                return (
+                    Err(format!(
+                        "timeout waiting for node_start result: no output received for {}s",
+                        idle_timeout.as_secs()
+                    )),
+                    node_log_path,
+                );
             }
             let drain_timeout = Duration::from_millis(50);
             match tokio::time::timeout(drain_timeout, action_handle.on_next_feedback()).await {
@@ -412,13 +473,19 @@ async fn run_node_start_and_forward_feedback(
 
         let now = tokio::time::Instant::now();
         if now >= absolute_deadline {
-            return Err("timeout waiting for node_start result: max timeout exceeded".to_string());
+            return (
+                Err("timeout waiting for node_start result: max timeout exceeded".to_string()),
+                node_log_path,
+            );
         }
         if now.duration_since(last_activity) >= idle_timeout {
-            return Err(format!(
-                "timeout waiting for node_start result: no output received for {}s",
-                idle_timeout.as_secs()
-            ));
+            return (
+                Err(format!(
+                    "timeout waiting for node_start result: no output received for {}s",
+                    idle_timeout.as_secs()
+                )),
+                node_log_path,
+            );
         }
         let poll_timeout = Duration::from_millis(200);
 
@@ -448,20 +515,28 @@ async fn run_node_start_and_forward_feedback(
                                 publish_feedback(ctx, launch_feedback).await;
                             }
                         }
-                        return Ok(result);
+                        return (Ok(result), node_log_path);
                     }
                     Err(err) => {
                         let pending = std::str::from_utf8(payload.as_ref())
                             .map(|text| text.starts_with("result pending"))
                             .unwrap_or(false);
                         if !pending {
-                            return Err(format!("failed to decode node_start result: {err}"));
+                            return (
+                                Err(format!("failed to decode node_start result: {err}")),
+                                node_log_path,
+                            );
                         }
                     }
                 }
             }
             Err(peppylib::PeppyError::ActionResultTimeout { .. }) => {}
-            Err(err) => return Err(format!("failed to get node_start result: {err}")),
+            Err(err) => {
+                return (
+                    Err(format!("failed to get node_start result: {err}")),
+                    node_log_path,
+                );
+            }
         }
 
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -842,6 +917,7 @@ async fn add_nodes_to_stack(
     ordered: &[NodeKey],
     planned_by_key: &HashMap<NodeKey, PlannedDeployment>,
     backup_stack: &NodeStack,
+    add_log_paths: &mut Vec<NodeAddLogEntry>,
 ) -> std::result::Result<(), LaunchResult> {
     publish_stdout(
         ctx,
@@ -889,15 +965,25 @@ async fn add_nodes_to_stack(
         }
         .with_env_vars(ctx.env_vars.clone());
 
-        match run_node_add_and_forward_feedback(
+        let (result, log_path) = run_node_add_and_forward_feedback(
             ctx,
             &node_add_goal,
             goal_timeout,
             idle_timeout,
             max_timeout,
         )
-        .await
-        {
+        .await;
+
+        let failed = result.as_ref().map(|r| !r.success).unwrap_or(true);
+        if let Some(path) = log_path {
+            add_log_paths.push(NodeAddLogEntry {
+                node_label: key.label(),
+                log_path: path,
+                failed,
+            });
+        }
+
+        match result {
             Ok(result) => {
                 if !result.success {
                     let inner = result
@@ -923,6 +1009,7 @@ async fn start_node_instances(
     ordered: &[NodeKey],
     planned_by_key: &HashMap<NodeKey, PlannedDeployment>,
     backup_stack: &NodeStack,
+    start_log_paths: &mut Vec<NodeStartLogEntry>,
 ) -> std::result::Result<(), LaunchResult> {
     publish_stdout(ctx, "Starting nodes...", LaunchFeedbackStep::LauncherStep).await;
 
@@ -989,15 +1076,26 @@ async fn start_node_instances(
             )
             .with_env_vars(ctx.env_vars.clone());
 
-            match run_node_start_and_forward_feedback(
+            let (result, log_path) = run_node_start_and_forward_feedback(
                 ctx,
                 &node_start_goal,
                 goal_timeout,
                 idle_timeout,
                 max_timeout,
             )
-            .await
-            {
+            .await;
+
+            let failed = result.as_ref().map(|r| !r.success).unwrap_or(true);
+            if let Some(path) = log_path {
+                start_log_paths.push(NodeStartLogEntry {
+                    instance_id: instance_id.to_string(),
+                    node_label: key.label(),
+                    log_path: path,
+                    failed,
+                });
+            }
+
+            match result {
                 Ok(result) => {
                     if !result.success {
                         let inner = result
@@ -1330,22 +1428,47 @@ async fn process_launch(goal: LaunchGoal, ctx: ProcessLaunchContext) -> LaunchRe
         .map(|item| (NodeKey::new(&item.node_name, &item.node_tag), item))
         .collect();
 
+    let mut add_log_paths: Vec<NodeAddLogEntry> = Vec::new();
+    let mut start_log_paths: Vec<NodeStartLogEntry> = Vec::new();
+
     // Step 5: Add nodes in dependency order
-    if let Err(launch_result) =
-        add_nodes_to_stack(&ctx, &ordered, &planned_by_key, &backup_stack).await
-    {
+    let add_result = add_nodes_to_stack(
+        &ctx,
+        &ordered,
+        &planned_by_key,
+        &backup_stack,
+        &mut add_log_paths,
+    )
+    .await;
+
+    // Step 6: Start instances in dependency order (only if add succeeded)
+    let start_result = if add_result.is_ok() {
+        Some(
+            start_node_instances(
+                &ctx,
+                &ordered,
+                &planned_by_key,
+                &backup_stack,
+                &mut start_log_paths,
+            )
+            .await,
+        )
+    } else {
+        None
+    };
+
+    if let Err(mut launch_result) = add_result {
+        launch_result.node_add_logs = add_log_paths;
         return launch_result;
     }
-
-    // Step 6: Start instances in dependency order
-    if let Err(launch_result) =
-        start_node_instances(&ctx, &ordered, &planned_by_key, &backup_stack).await
-    {
+    if let Some(Err(mut launch_result)) = start_result {
+        launch_result.node_add_logs = add_log_paths;
+        launch_result.node_start_logs = start_log_paths;
         return launch_result;
     }
 
     publish_stdout(&ctx, "Launch complete", LaunchFeedbackStep::LauncherStep).await;
-    LaunchResult::success(&ctx.log_path)
+    LaunchResult::success(&ctx.log_path).with_node_logs(add_log_paths, start_log_paths)
 }
 
 async fn handle_cancel_request(
