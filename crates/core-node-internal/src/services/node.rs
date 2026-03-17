@@ -18,6 +18,7 @@ pub use init::listen_for_node_init;
 use rand::RngExt;
 pub use remove::listen_for_node_remove;
 pub use start::{NodeStartServiceConfig, listen_for_node_start};
+use std::collections::VecDeque;
 use std::fs::File;
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
@@ -30,6 +31,27 @@ use zstd::stream::read::Decoder;
 /// Maximum number of stderr lines to retain for error diagnostics.
 /// Used by both the `add` (container build) and `start` (node run) services.
 const STDERR_TAIL_LINES: usize = 20;
+
+#[derive(Clone, Copy)]
+enum FeedbackStream {
+    Stdout,
+    Stderr,
+}
+
+struct FeedbackLine {
+    stream: FeedbackStream,
+    line: String,
+}
+
+/// Pushes a line into a bounded ring buffer of stderr output.
+/// When the buffer is full, the oldest line is dropped.
+fn push_stderr_line(buffer: &Arc<StdMutex<VecDeque<String>>>, line: &str) {
+    let mut guard = buffer.lock().expect("stderr buffer lock poisoned");
+    if guard.len() == STDERR_TAIL_LINES {
+        guard.pop_front();
+    }
+    guard.push_back(line.to_string());
+}
 
 /// Extract a human-readable message from a panic payload.
 /// Used by spawned task handlers to convert panics into failure results.
@@ -95,6 +117,23 @@ fn write_error_to_log(log_file: &Arc<StdMutex<File>>, error_msg: &str) {
         let _ = writeln!(file, "[{}] [error] {}", timestamp, error_msg);
         let _ = file.flush();
     }
+}
+
+/// Creates a log file inside `log_dir` with the given filename.
+///
+/// Creates the directory tree if it doesn't exist. Returns the log file
+/// handle (wrapped for concurrent access) and its path.
+fn create_action_log_file(
+    log_dir: &Path,
+    log_filename: &str,
+) -> std::result::Result<(Arc<StdMutex<File>>, PathBuf), String> {
+    std::fs::create_dir_all(log_dir)
+        .map_err(|e| format!("Failed to create logs directory: {}", e))?;
+
+    let log_path = log_dir.join(log_filename);
+    let file = File::create(&log_path).map_err(|e| format!("Failed to create log file: {}", e))?;
+
+    Ok((Arc::new(StdMutex::new(file)), log_path))
 }
 
 static SCCACHE_AVAILABLE: OnceLock<bool> = OnceLock::new();

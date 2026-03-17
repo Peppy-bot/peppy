@@ -31,7 +31,9 @@ use tracing::debug;
 use ureq::Error as HttpError;
 use zstd::stream::write::Encoder as ZstdEncoder;
 
-use super::STDERR_TAIL_LINES;
+use super::{
+    FeedbackLine, FeedbackStream, STDERR_TAIL_LINES, create_action_log_file, push_stderr_line,
+};
 
 pub async fn listen_for_node_add(
     messenger: &MessengerHandle,
@@ -167,17 +169,6 @@ fn copy_dir_recursive(src: &Path, dest: &Path) -> Result<Vec<String>> {
     Ok(excluded)
 }
 
-#[derive(Clone, Copy)]
-enum FeedbackStream {
-    Stdout,
-    Stderr,
-}
-
-struct FeedbackLine {
-    stream: FeedbackStream,
-    line: String,
-}
-
 fn spawn_output_reader<R: Read + Send + 'static>(
     reader: R,
     feedback_tx: mpsc::UnboundedSender<FeedbackLine>,
@@ -204,6 +195,93 @@ fn spawn_output_reader<R: Read + Send + 'static>(
             });
         }
     })
+}
+
+/// Streams stdout/stderr from a spawned child process to both the feedback
+/// publisher and the log file. Optionally collects the last [`STDERR_TAIL_LINES`]
+/// lines of stderr for error diagnostics.
+///
+/// Returns the process exit status and (if `collect_stderr_tail` is true) the
+/// collected stderr tail lines.
+async fn stream_child_output(
+    mut child: std::process::Child,
+    feedback_publisher: &TopicPublisher,
+    log_file: Arc<StdMutex<File>>,
+    collect_stderr_tail: bool,
+) -> std::result::Result<(std::process::ExitStatus, Vec<String>), String> {
+    let (feedback_tx, mut feedback_rx) = mpsc::unbounded_channel::<FeedbackLine>();
+    let feedback_publisher = feedback_publisher.clone();
+
+    let stderr_tail: Option<Arc<StdMutex<std::collections::VecDeque<String>>>> =
+        if collect_stderr_tail {
+            Some(Arc::new(StdMutex::new(
+                std::collections::VecDeque::with_capacity(STDERR_TAIL_LINES),
+            )))
+        } else {
+            None
+        };
+    let stderr_tail_writer = stderr_tail.clone();
+
+    let publisher_handle = tokio::spawn(async move {
+        while let Some(line) = feedback_rx.recv().await {
+            if matches!(line.stream, FeedbackStream::Stderr)
+                && let Some(ref buffer) = stderr_tail_writer
+            {
+                push_stderr_line(buffer, &line.line);
+            }
+
+            let feedback = match line.stream {
+                FeedbackStream::Stdout => NodeAddFeedback::stdout(&line.line),
+                FeedbackStream::Stderr => NodeAddFeedback::stderr(&line.line),
+            };
+            if let Ok(payload) = feedback.encode() {
+                let _ = feedback_publisher.publish(payload).await;
+            }
+        }
+    });
+
+    let mut reader_handles = Vec::new();
+
+    if let Some(stdout) = child.stdout.take() {
+        reader_handles.push(spawn_output_reader(
+            stdout,
+            feedback_tx.clone(),
+            FeedbackStream::Stdout,
+            Arc::clone(&log_file),
+        ));
+    }
+
+    if let Some(stderr) = child.stderr.take() {
+        reader_handles.push(spawn_output_reader(
+            stderr,
+            feedback_tx.clone(),
+            FeedbackStream::Stderr,
+            Arc::clone(&log_file),
+        ));
+    }
+
+    // Drop our sender so the publisher task finishes once readers are done.
+    drop(feedback_tx);
+
+    let status = tokio::task::spawn_blocking(move || child.wait())
+        .await
+        .map_err(|e| format!("failed to wait for process: {}", e))?
+        .map_err(|e| format!("failed to wait for process: {}", e))?;
+
+    for handle in reader_handles {
+        let _ = handle.await;
+    }
+    let _ = publisher_handle.await;
+
+    let tail_lines = match stderr_tail {
+        Some(ref tail) => tail
+            .lock()
+            .map(|t| t.iter().cloned().collect::<Vec<_>>())
+            .unwrap_or_default(),
+        None => Vec::new(),
+    };
+
+    Ok((status, tail_lines))
 }
 
 /// Expands `${VAR}` references in a string using the provided environment variables.
@@ -278,57 +356,11 @@ async fn run_add_cmd_with_streaming(
     for (key, value) in env_vars {
         command.env(key, value);
     }
-    let mut child = command
+    let child = command
         .spawn()
         .map_err(|e| format!("failed to execute add_cmd: {}", e))?;
 
-    let (feedback_tx, mut feedback_rx) = mpsc::unbounded_channel::<FeedbackLine>();
-    let feedback_publisher = feedback_publisher.clone();
-    let publisher_handle = tokio::spawn(async move {
-        while let Some(line) = feedback_rx.recv().await {
-            let feedback = match line.stream {
-                FeedbackStream::Stdout => NodeAddFeedback::stdout(&line.line),
-                FeedbackStream::Stderr => NodeAddFeedback::stderr(&line.line),
-            };
-            if let Ok(payload) = feedback.encode() {
-                let _ = feedback_publisher.publish(payload).await;
-            }
-        }
-    });
-
-    let mut reader_handles = Vec::new();
-
-    // Stream stdout
-    if let Some(stdout) = child.stdout.take() {
-        reader_handles.push(spawn_output_reader(
-            stdout,
-            feedback_tx.clone(),
-            FeedbackStream::Stdout,
-            Arc::clone(&log_file),
-        ));
-    }
-
-    // Stream stderr
-    if let Some(stderr) = child.stderr.take() {
-        reader_handles.push(spawn_output_reader(
-            stderr,
-            feedback_tx.clone(),
-            FeedbackStream::Stderr,
-            Arc::clone(&log_file),
-        ));
-    }
-
-    // Wait for the process to complete
-    let status = tokio::task::spawn_blocking(move || child.wait())
-        .await
-        .map_err(|e| format!("failed to wait for add_cmd: {}", e))?
-        .map_err(|e| format!("failed to wait for add_cmd: {}", e))?;
-
-    for handle in reader_handles {
-        let _ = handle.await;
-    }
-    drop(feedback_tx);
-    let _ = publisher_handle.await;
+    let (status, _) = stream_child_output(child, feedback_publisher, log_file, false).await?;
 
     if !status.success() {
         return Err(format!("add_cmd failed with status {}", status));
@@ -476,88 +508,19 @@ async fn build_container_image(
     cmd.stderr(Stdio::piped());
     cmd.stdin(Stdio::null());
 
-    let mut child = cmd
+    let child = cmd
         .spawn()
         .map_err(|e| std::io::Error::other(format!("Failed to spawn apptainer build: {}", e)))?;
 
-    // Stream stdout and stderr to the log file and CLI, mirroring
-    // the pattern from `run_add_cmd_with_streaming`.
-    let (feedback_tx, mut feedback_rx) = mpsc::unbounded_channel::<FeedbackLine>();
-    let feedback_publisher = feedback_publisher.clone();
-
-    // Collect stderr lines in a ring buffer so we can include them in the error
-    // message if the build fails.
-    let stderr_tail: Arc<StdMutex<std::collections::VecDeque<String>>> = Arc::new(StdMutex::new(
-        std::collections::VecDeque::with_capacity(STDERR_TAIL_LINES),
-    ));
-    let stderr_tail_writer = Arc::clone(&stderr_tail);
-
-    let publisher_handle = tokio::spawn(async move {
-        while let Some(line) = feedback_rx.recv().await {
-            // Track recent stderr lines for diagnostics on failure.
-            if matches!(line.stream, FeedbackStream::Stderr)
-                && let Ok(mut tail) = stderr_tail_writer.lock()
-            {
-                if tail.len() == STDERR_TAIL_LINES {
-                    tail.pop_front();
-                }
-                tail.push_back(line.line.clone());
-            }
-
-            let feedback = match line.stream {
-                FeedbackStream::Stdout => NodeAddFeedback::stdout(&line.line),
-                FeedbackStream::Stderr => NodeAddFeedback::stderr(&line.line),
-            };
-            if let Ok(payload) = feedback.encode() {
-                let _ = feedback_publisher.publish(payload).await;
-            }
-        }
-    });
-
-    let mut reader_handles = Vec::new();
-
-    if let Some(stdout) = child.stdout.take() {
-        reader_handles.push(spawn_output_reader(
-            stdout,
-            feedback_tx.clone(),
-            FeedbackStream::Stdout,
-            Arc::clone(&log_file),
-        ));
-    }
-
-    if let Some(stderr) = child.stderr.take() {
-        reader_handles.push(spawn_output_reader(
-            stderr,
-            feedback_tx.clone(),
-            FeedbackStream::Stderr,
-            Arc::clone(&log_file),
-        ));
-    }
-
-    // Drop our sender so the publisher task can finish once readers are done.
-    drop(feedback_tx);
-
-    let status = tokio::task::spawn_blocking(move || child.wait())
+    let (status, stderr_tail) = stream_child_output(child, feedback_publisher, log_file, true)
         .await
-        .map_err(|e| std::io::Error::other(format!("failed to wait for apptainer build: {}", e)))?
-        .map_err(|e| std::io::Error::other(format!("failed to wait for apptainer build: {}", e)))?;
-
-    // Wait for readers + publisher to drain before inspecting stderr_tail.
-    for handle in reader_handles {
-        let _ = handle.await;
-    }
-    let _ = publisher_handle.await;
+        .map_err(std::io::Error::other)?;
 
     if !status.success() {
-        let tail = stderr_tail
-            .lock()
-            .map(|t| t.iter().cloned().collect::<Vec<_>>())
-            .unwrap_or_default();
-
         let mut msg = format!("apptainer build failed with status {}", status);
-        if !tail.is_empty() {
+        if !stderr_tail.is_empty() {
             msg.push_str("\n\n--- stderr (last lines) ---\n");
-            msg.push_str(&tail.join("\n"));
+            msg.push_str(&stderr_tail.join("\n"));
         }
         return Err(std::io::Error::other(msg).into());
     }
@@ -658,11 +621,7 @@ struct NodeAddActionContext {
 }
 
 struct ProcessNodeAddContext {
-    messenger: MessengerHandle,
-    bound_core_node: String,
-    core_instance_id: String,
-    node_stack: Arc<NodeStack>,
-    peppy_dirs: PeppyDirs,
+    action: NodeAddActionContext,
     feedback_publisher: TopicPublisher,
     log_file: Arc<StdMutex<File>>,
     log_path: PathBuf,
@@ -1145,6 +1104,16 @@ async fn run_node_add_action_loop(
     }
 }
 
+/// Encodes a rejected goal response, mapping encoding errors to `PeppyError`.
+fn encode_rejected_goal(reason: impl Into<String>) -> PeppyResult<Payload> {
+    NodeAddGoalResponse::rejected(reason).encode().map_err(|e| {
+        peppylib::PeppyError::InvalidServiceRequest {
+            identifier: "node_add_goal".to_string(),
+            reason: format!("Failed to encode response: {}", e),
+        }
+    })
+}
+
 async fn handle_goal_request(
     context: ServiceRequestContext,
     feedback_publisher: TopicPublisher,
@@ -1156,15 +1125,7 @@ async fn handle_goal_request(
 
     let goal = match NodeAddGoal::decode(payload.as_ref()) {
         Ok(g) => g,
-        Err(e) => {
-            let response = NodeAddGoalResponse::rejected(format!("invalid payload: {}", e));
-            return response
-                .encode()
-                .map_err(|e| peppylib::PeppyError::InvalidServiceRequest {
-                    identifier: "node_add_goal".to_string(),
-                    reason: format!("Failed to encode response: {}", e),
-                });
-        }
+        Err(e) => return encode_rejected_goal(format!("invalid payload: {}", e)),
     };
 
     // Check if already running and mark as running if not
@@ -1178,15 +1139,9 @@ async fn handle_goal_request(
             let remaining = Duration::from_secs(timeout_secs)
                 .saturating_sub(started_at.elapsed())
                 .as_secs();
-            let response = NodeAddGoalResponse::rejected(format!(
+            return encode_rejected_goal(format!(
                 "action already in progress (times out in {remaining}s)"
             ));
-            return response
-                .encode()
-                .map_err(|e| peppylib::PeppyError::InvalidServiceRequest {
-                    identifier: "node_add_goal".to_string(),
-                    reason: format!("Failed to encode response: {}", e),
-                });
         }
         *state_guard = NodeAddActionState::Running {
             started_at: Instant::now(),
@@ -1217,37 +1172,15 @@ async fn handle_goal_request(
     // progress and any errors are captured in the log from the very start.
     let log_label = log_label_from_source(&goal.source);
     let log_dir = action_context.peppy_dirs.logs_dir_add();
-    if let Err(e) = std::fs::create_dir_all(&log_dir) {
-        let error_msg = format!("Failed to create logs directory: {}", e);
-        debug!("Failed to create logs directory {:?}: {}", log_dir, e);
-        let mut state_guard = state.lock().await;
-        *state_guard = NodeAddActionState::Rejected;
-        let response = NodeAddGoalResponse::rejected(&error_msg);
-        return response
-            .encode()
-            .map_err(|e| peppylib::PeppyError::InvalidServiceRequest {
-                identifier: "node_add_goal".to_string(),
-                reason: format!("Failed to encode response: {}", e),
-            });
-    }
-
     let timestamp = Local::now().format("%Y%m%d_%H%M%S_%3f");
     let log_filename = format!("{}_{}.log", log_label, timestamp);
-    let log_path = log_dir.join(&log_filename);
-    let log_file = match File::create(&log_path) {
-        Ok(file) => Arc::new(StdMutex::new(file)),
-        Err(e) => {
-            let error_msg = format!("Failed to create log file: {}", e);
-            debug!("Failed to create log file {:?}: {}", log_path, e);
+    let (log_file, log_path) = match create_action_log_file(&log_dir, &log_filename) {
+        Ok(result) => result,
+        Err(error_msg) => {
+            debug!("{}", error_msg);
             let mut state_guard = state.lock().await;
             *state_guard = NodeAddActionState::Rejected;
-            let response = NodeAddGoalResponse::rejected(&error_msg);
-            return response
-                .encode()
-                .map_err(|e| peppylib::PeppyError::InvalidServiceRequest {
-                    identifier: "node_add_goal".to_string(),
-                    reason: format!("Failed to encode response: {}", e),
-                });
+            return encode_rejected_goal(error_msg);
         }
     };
 
@@ -1263,25 +1196,19 @@ async fn handle_goal_request(
     let feedback_publisher_clone = feedback_publisher.clone();
     let log_path_clone = log_path.clone();
     tokio::spawn(async move {
-        let NodeAddActionContext {
-            node_stack,
-            messenger,
-            bound_core_node,
-            core_instance_id,
-            peppy_dirs,
-        } = action_context;
         let log_file_for_panic = log_file.clone();
         let log_path_for_panic = log_path_clone.clone();
 
         let result = match AssertUnwindSafe(async {
             // Resolve source (git clone, HTTP download, or local config check).
-            let mut resolved = match resolve_node_add_source(&goal, &peppy_dirs).await {
-                Ok(r) => r,
-                Err(error_msg) => {
-                    write_error_to_log(&log_file, &error_msg);
-                    return NodeAddResult::failure(&log_path_clone, error_msg);
-                }
-            };
+            let mut resolved =
+                match resolve_node_add_source(&goal, &action_context.peppy_dirs).await {
+                    Ok(r) => r,
+                    Err(error_msg) => {
+                        write_error_to_log(&log_file, &error_msg);
+                        return NodeAddResult::failure(&log_path_clone, error_msg);
+                    }
+                };
 
             let cleanup_dir = resolved.cleanup_dir.take();
             let source_path = resolved.source_path.clone();
@@ -1301,11 +1228,7 @@ async fn handle_goal_request(
             };
 
             let ctx = ProcessNodeAddContext {
-                messenger,
-                bound_core_node,
-                core_instance_id,
-                node_stack,
-                peppy_dirs,
+                action: action_context,
                 feedback_publisher: feedback_publisher_clone,
                 log_file,
                 log_path: log_path_clone,
@@ -1352,7 +1275,7 @@ async fn shutdown_existing_instances(
     node_tag: &str,
     ctx: &ProcessNodeAddContext,
 ) -> std::result::Result<(), String> {
-    let Some(entity) = ctx.node_stack.find(node_name, node_tag) else {
+    let Some(entity) = ctx.action.node_stack.find(node_name, node_tag) else {
         return Ok(());
     };
 
@@ -1374,10 +1297,10 @@ async fn shutdown_existing_instances(
         );
 
         super::stop::stop_instance(
-            &ctx.messenger,
-            &ctx.bound_core_node,
-            &ctx.core_instance_id,
-            &ctx.node_stack,
+            &ctx.action.messenger,
+            &ctx.action.bound_core_node,
+            &ctx.action.core_instance_id,
+            &ctx.action.node_stack,
             node_name,
             node_tag,
             &instance_id,
@@ -1423,6 +1346,7 @@ async fn process_node_add(
     let _cleanup_guard = CleanupDir::new(cleanup_dir);
 
     let previous_snapshot_path = ctx
+        .action
         .node_stack
         .find(&node_name, &node_tag)
         .map(|entity| entity.root_path().to_path_buf());
@@ -1443,7 +1367,7 @@ async fn process_node_add(
 
     // Copy the node folder to a temporary working directory.
     let (working_dir, excluded_dirs) =
-        match copy_node_to_temp_dir(&source_path, &ctx.peppy_dirs.tmp_dir()) {
+        match copy_node_to_temp_dir(&source_path, &ctx.action.peppy_dirs.tmp_dir()) {
             Ok(result) => result,
             Err(e) => {
                 let msg = format!("Failed to copy node folder: {}", e);
@@ -1468,7 +1392,10 @@ async fn process_node_add(
     // interfaces before running add_cmd. This prevents confusing build failures when
     // peppygen is generated with incomplete interfaces due to missing dependencies.
     let dep_errors = validate_dependency_specs(&node_config, &node_name, &node_tag, |name, tag| {
-        ctx.node_stack.find(name, tag).map(|e| e.config().clone())
+        ctx.action
+            .node_stack
+            .find(name, tag)
+            .map(|e| e.config().clone())
     });
     if let Some(err) = dep_errors.into_iter().next() {
         let msg = format!("Failed to add node config: {}", err);
@@ -1485,13 +1412,13 @@ async fn process_node_add(
     } else {
         generator::CrateDeployMode::Symlink
     };
-    let consumed_interfaces = collect_consumed_interfaces(&node_config, &ctx.node_stack);
+    let consumed_interfaces = collect_consumed_interfaces(&node_config, &ctx.action.node_stack);
     if let Err(e) = generate_peppygen_for_node(
         language,
         &working_dir,
         consumed_interfaces,
         &goal.git_hash,
-        &ctx.peppy_dirs,
+        &ctx.action.peppy_dirs,
         deploy_mode,
     ) {
         let msg = format!("Failed to generate peppygen library: {}", e);
@@ -1516,7 +1443,7 @@ async fn process_node_add(
             write_error_to_log(&ctx.log_file, &msg);
             return NodeAddResult::failure(&ctx.log_path, msg);
         }
-        match move_sif_to_storage(&working_dir, &node_name, &node_tag, &ctx.peppy_dirs) {
+        match move_sif_to_storage(&working_dir, &node_name, &node_tag, &ctx.action.peppy_dirs) {
             Ok(path) => path,
             Err(e) => {
                 let msg = format!("Failed to store container image: {}", e);
@@ -1543,7 +1470,7 @@ async fn process_node_add(
             write_error_to_log(&ctx.log_file, &msg);
             return NodeAddResult::failure(&ctx.log_path, msg);
         }
-        match archive_dir_to_storage(&working_dir, &node_name, &node_tag, &ctx.peppy_dirs) {
+        match archive_dir_to_storage(&working_dir, &node_name, &node_tag, &ctx.action.peppy_dirs) {
             Ok(path) => path,
             Err(e) => {
                 let msg = format!("Failed to archive node: {}", e);
@@ -1565,6 +1492,7 @@ async fn process_node_add(
 
     // Add the node config to the stack
     if let Err(e) = ctx
+        .action
         .node_stack
         .push_config(node_config, false, &snapshot_path)
     {
@@ -1578,7 +1506,7 @@ async fn process_node_add(
     if let Some(previous_snapshot_path) = previous_snapshot_path
         && previous_snapshot_path != snapshot_path
     {
-        let storage_dir = ctx.peppy_dirs.added_nodes_dir();
+        let storage_dir = ctx.action.peppy_dirs.added_nodes_dir();
         if previous_snapshot_path.starts_with(&storage_dir) {
             if previous_snapshot_path.is_dir() {
                 std::fs::remove_dir_all(&previous_snapshot_path).ok();

@@ -1,4 +1,7 @@
-use super::{STDERR_TAIL_LINES, extract_tar_zst, write_error_to_log};
+use super::{
+    FeedbackLine, FeedbackStream, create_action_log_file, extract_tar_zst, push_stderr_line,
+    write_error_to_log,
+};
 use crate::Result;
 use crate::encoding::{NodeStartFeedback, NodeStartGoal, NodeStartGoalResponse, NodeStartResult};
 use crate::names;
@@ -173,17 +176,6 @@ enum NodeStartActionState {
     ResultSent { result: NodeStartResult },
 }
 
-#[derive(Clone, Copy)]
-enum FeedbackStream {
-    Stdout,
-    Stderr,
-}
-
-struct FeedbackLine {
-    stream: FeedbackStream,
-    line: String,
-}
-
 #[derive(Clone)]
 struct FeedbackSync {
     read_count: Arc<AtomicU64>,
@@ -281,14 +273,6 @@ impl FeedbackSync {
             }
         }
     }
-}
-
-fn push_stderr_line(buffer: &Arc<StdMutex<VecDeque<String>>>, line: &str) {
-    let mut guard = buffer.lock().expect("stderr buffer lock poisoned");
-    if guard.len() == STDERR_TAIL_LINES {
-        guard.pop_front();
-    }
-    guard.push_back(line.to_string());
 }
 
 fn spawn_output_reader<R>(
@@ -550,26 +534,11 @@ async fn handle_goal_request(
 
     // Create log file for stdout/stderr
     let log_dir = action_context.peppy_dirs.logs_dir_start();
-    if let Err(e) = std::fs::create_dir_all(&log_dir) {
-        let error_msg = format!("Failed to create logs directory: {}", e);
-        debug!("Failed to create logs directory {:?}: {}", log_dir, e);
-        let mut state_guard = state.lock().await;
-        *state_guard = NodeStartActionState::Rejected;
-        let response = NodeStartGoalResponse::rejected(&error_msg);
-        return response
-            .encode()
-            .map_err(|e| peppylib::PeppyError::InvalidServiceRequest {
-                identifier: "node_start_goal".to_string(),
-                reason: format!("Failed to encode response: {}", e),
-            });
-    }
-
-    let log_path = log_dir.join(format!("{}.log", instance_id_str));
-    let log_file = match File::create(&log_path) {
-        Ok(file) => Arc::new(StdMutex::new(file)),
-        Err(e) => {
-            let error_msg = format!("Failed to create log file: {}", e);
-            debug!("Failed to create log file {:?}: {}", log_path, e);
+    let log_filename = format!("{}.log", instance_id_str);
+    let (log_file, log_path) = match create_action_log_file(&log_dir, &log_filename) {
+        Ok(result) => result,
+        Err(error_msg) => {
+            debug!("{}", error_msg);
             let mut state_guard = state.lock().await;
             *state_guard = NodeStartActionState::Rejected;
             let response = NodeStartGoalResponse::rejected(&error_msg);
