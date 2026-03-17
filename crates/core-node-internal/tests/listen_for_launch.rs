@@ -726,6 +726,16 @@ async fn listen_for_launch_configuration_succeed() {
             .map(|e| &e.node_label)
             .collect::<Vec<_>>()
     );
+    assert!(
+        result.node_add_logs.iter().all(|e| e.log_path.exists()),
+        "all add log files should exist on disk, missing: {:?}",
+        result
+            .node_add_logs
+            .iter()
+            .filter(|e| !e.log_path.exists())
+            .map(|e| &e.log_path)
+            .collect::<Vec<_>>()
+    );
 
     // Each started instance should have a start log entry with a valid path and not marked as failed.
     assert_eq!(

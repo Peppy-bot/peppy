@@ -346,7 +346,10 @@ async fn run_node_add_and_forward_feedback(
                                 publish_feedback(ctx, launch_feedback).await;
                             }
                         }
-                        return (Ok(result), node_log_path);
+                        // Use the result's log_path (post-rename) instead of the
+                        // goal response path which still has the pre-rename hash name.
+                        let final_log_path = Some(result.log_path.clone());
+                        return (Ok(result), final_log_path);
                     }
                     Err(err) => {
                         let pending = std::str::from_utf8(payload.as_ref())
