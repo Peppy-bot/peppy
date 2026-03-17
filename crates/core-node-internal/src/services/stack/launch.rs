@@ -900,14 +900,16 @@ async fn add_nodes_to_stack(
         {
             Ok(result) => {
                 if !result.success {
-                    let reason = result
+                    let inner = result
                         .error_message
                         .unwrap_or_else(|| "node_add failed".to_string());
+                    let reason = format!("failed to add node {}: {}", key.label(), inner);
                     return Err(restore_stack(ctx, backup_stack, reason).await);
                 }
             }
             Err(err) => {
-                return Err(restore_stack(ctx, backup_stack, err).await);
+                let reason = format!("failed to add node {}: {}", key.label(), err);
+                return Err(restore_stack(ctx, backup_stack, reason).await);
             }
         }
     }
@@ -998,14 +1000,26 @@ async fn start_node_instances(
             {
                 Ok(result) => {
                     if !result.success {
-                        let reason = result
+                        let inner = result
                             .error_message
                             .unwrap_or_else(|| "node_start failed".to_string());
+                        let reason = format!(
+                            "failed to start node {} instance {}: {}",
+                            key.label(),
+                            instance_id,
+                            inner
+                        );
                         return Err(restore_stack(ctx, backup_stack, reason).await);
                     }
                 }
                 Err(err) => {
-                    return Err(restore_stack(ctx, backup_stack, err).await);
+                    let reason = format!(
+                        "failed to start node {} instance {}: {}",
+                        key.label(),
+                        instance_id,
+                        err
+                    );
+                    return Err(restore_stack(ctx, backup_stack, reason).await);
                 }
             }
         }
