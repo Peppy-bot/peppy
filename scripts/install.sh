@@ -317,10 +317,8 @@ EOF
                     exit 1
                     ;;
                 esac
-            elif [ -z "${PEPPY_FORCE_REINSTALL:-}" ]; then
-                echo "error: cannot prompt for confirmation (stdin is not a terminal)." >&2
-                echo "       Set PEPPY_FORCE_REINSTALL=1 to apply fixes automatically." >&2
-                exit 1
+            else
+                echo "Proceeding automatically (non-interactive mode)."
             fi
 
             # Strip trailing " && " and execute everything under one sudo invocation
