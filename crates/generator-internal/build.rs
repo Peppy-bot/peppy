@@ -225,10 +225,8 @@ mod peppylib_build {
     }
 
     /// Returns true if maturin needs to run: the native `.so` is absent or older
-    /// than any peppylib-py source file (`src/**`, `peppylib/**/*.py`, `pixi.lock`).
-    ///
-    /// Used to skip `maturin develop` when only unrelated inputs
-    /// (e.g. `pmi-internal/Cargo.toml` watched by `rust_crates_build`) changed.
+    /// than any source file in peppylib-py (`src/**`, `peppylib/**/*.py`, `pixi.lock`)
+    /// or its dependency crates (`peppylib`, `config-internal`, `pmi-internal`).
     fn so_needs_rebuild(peppylib_py_dir: &Path, peppylib_dir: &Path) -> bool {
         // Use the newest existing platform-suffixed .so as the reference timestamp.
         let so_mtime = std::fs::read_dir(peppylib_dir).ok().and_then(|d| {
@@ -266,6 +264,15 @@ mod peppylib_build {
                 })
                 .any(|f| newer(&f));
             if changed {
+                return true;
+            }
+        }
+
+        // Check dependency crate sources that are compiled into the .so
+        let crates_root = peppylib_py_dir.join("..");
+        for dep_crate in &["peppylib", "config-internal", "pmi-internal"] {
+            let dep_src = crates_root.join(dep_crate).join("src");
+            if dep_src.is_dir() && super::walkdir(&dep_src).iter().any(|f| newer(f)) {
                 return true;
             }
         }
@@ -426,9 +433,8 @@ mod peppylib_build {
                  Using existing .so files."
             );
         } else {
-            // Only invoke maturin when peppylib-py-specific sources have changed.
-            // The build script may also be triggered by `rust_crates_build` inputs
-            // (e.g. pmi-internal/Cargo.toml), which don't affect the Python extension.
+            // Only invoke maturin when peppylib-py or its dependency crate sources
+            // have changed.
             if !so_needs_rebuild(&peppylib_py_dir, &peppylib_dir) {
                 println!("cargo:warning=Skipping peppylib-py build (sources unchanged).");
             } else {
