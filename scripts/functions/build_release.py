@@ -36,9 +36,11 @@ from .cli import (
 )
 from .github import (
     build_github_client,
+    delete_release,
     github_api,
     github_repo_slug,
     parse_release_response,
+    publish_release,
     replace_and_upload_asset,
 )
 from .lima import ensure_lima_vm, ensure_rust_in_vm, find_limactl
@@ -108,6 +110,7 @@ def _build_release_payload(
         "tag_name": tag,
         "name": title,
         "target_commitish": target_commitish,
+        "draft": True,
     }
     if generate_notes:
         data["generate_release_notes"] = True
@@ -232,11 +235,11 @@ def _run_full() -> None:
     slug = github_repo_slug()
     client = build_github_client(token)
 
-    # Create the GitHub release
+    # Create a draft release (invisible until all uploads succeed)
     payload = _build_release_payload(
         tag, title, target_commitish, generate_notes, notes_body
     )
-    console.print(f"Creating GitHub release [bold]{slug.full}@{tag}[/bold]...")
+    console.print(f"Creating draft release [bold]{slug.full}@{tag}[/bold]...")
     release_response = github_api(
         client,
         "POST",
@@ -245,13 +248,30 @@ def _run_full() -> None:
     )
     info = parse_release_response(release_response)
 
-    # Upload all artifacts
-    for artifact in artifacts:
-        replace_and_upload_asset(
-            client, info.release_id, artifact.asset_name, artifact.asset_path, slug
-        )
+    # Upload all artifacts, then publish. Clean up the draft on any failure.
+    try:
+        for artifact in artifacts:
+            replace_and_upload_asset(
+                client, info.release_id, artifact.asset_name, artifact.asset_path, slug
+            )
 
-    # Fetch and write release notes for docs
+        console.print("Publishing release...")
+        publish_release(client, info.release_id, slug)
+    except Exception:
+        console.print("[red]Upload or publish failed. Cleaning up draft release...[/red]")
+        try:
+            delete_release(client, info.release_id, slug)
+            console.print("[yellow]Draft release deleted.[/yellow]")
+        except Exception as cleanup_err:
+            console.print(
+                f"[red]WARNING: Failed to delete draft release "
+                f"(id={info.release_id}): {cleanup_err}[/red]\n"
+                f"[red]Manual cleanup required: "
+                f"https://github.com/{slug.full}/releases[/red]"
+            )
+        raise
+
+    # Fetch and write release notes for docs (only after publish succeeds)
     console.print("Fetching release notes...")
     body_html = fetch_release_body_html(client, info.release_id, slug)
     release_details = github_api(

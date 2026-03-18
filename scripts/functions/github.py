@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import os
+import random
 import re
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -15,6 +17,11 @@ from .cli import ReleaseError, console
 
 _API_VERSION = "2022-11-28"
 _DEFAULT_ACCEPT = "application/vnd.github+json"
+
+_UPLOAD_TIMEOUT = 600.0
+_UPLOAD_MAX_ATTEMPTS = 3
+_UPLOAD_RETRY_BASE_DELAY = 5.0
+_RETRYABLE_STATUS_CODES = frozenset({502, 503, 504})
 
 _GIT_REMOTE_PATTERNS: list[tuple[str, str]] = [
     ("git@github.com:", "git@github.com:"),
@@ -125,16 +132,30 @@ def github_api(
         ) from e
 
 
+def _is_retryable(exc: Exception) -> bool:
+    """Return True if the exception is transient and worth retrying."""
+    if isinstance(exc, (httpx.TimeoutException, httpx.ConnectError)):
+        return True
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code in _RETRYABLE_STATUS_CODES
+    return False
+
+
 def github_upload_asset(
     client: httpx.Client,
     release_id: int,
     asset_name: str,
     asset_path: Path,
     slug: RepoSlug,
+    *,
+    timeout: float = _UPLOAD_TIMEOUT,
+    max_attempts: int = _UPLOAD_MAX_ATTEMPTS,
 ) -> dict[str, Any]:
-    """Upload a binary asset to a GitHub release.
+    """Upload a binary asset to a GitHub release with retry on transient failures.
 
     Uses the uploads.github.com endpoint with application/octet-stream.
+    Retries on timeouts, connection errors, and HTTP 502/503/504.
+    Cleans up partial uploads before each retry to avoid 422 conflicts.
     Returns the parsed JSON response from the upload.
     """
     upload_url = (
@@ -145,26 +166,44 @@ def github_upload_asset(
     with open(asset_path, "rb") as f:
         data = f.read()
 
-    try:
-        response = client.post(
-            upload_url,
-            content=data,
-            headers={
-                "Accept": _DEFAULT_ACCEPT,
-                "Content-Type": "application/octet-stream",
-            },
-        )
-        response.raise_for_status()
-    except httpx.HTTPStatusError as e:
-        body_preview = e.response.text[:2000] if e.response.text else "(empty)"
-        raise ReleaseError(
-            f"failed to upload asset '{asset_name}': "
-            f"HTTP {e.response.status_code}\n{body_preview}"
-        ) from e
-    except httpx.RequestError as e:
-        raise ReleaseError(f"failed to upload asset '{asset_name}': {e}") from e
+    last_exc: Exception | None = None
+    for attempt in range(max_attempts):
+        if attempt > 0:
+            delete_asset_if_exists(client, release_id, asset_name, slug)
+            delay = _UPLOAD_RETRY_BASE_DELAY * (2 ** (attempt - 1)) + random.random()
+            console.print(
+                f"[yellow]Upload attempt {attempt} failed ({last_exc}), "
+                f"retrying in {delay:.0f}s...[/yellow]"
+            )
+            time.sleep(delay)
 
-    return response.json()
+        try:
+            response = client.post(
+                upload_url,
+                content=data,
+                headers={
+                    "Accept": _DEFAULT_ACCEPT,
+                    "Content-Type": "application/octet-stream",
+                },
+                timeout=httpx.Timeout(timeout),
+            )
+            response.raise_for_status()
+            return response.json()
+        except (httpx.HTTPStatusError, httpx.RequestError) as e:
+            if not _is_retryable(e) or attempt == max_attempts - 1:
+                if isinstance(e, httpx.HTTPStatusError):
+                    body_preview = e.response.text[:2000] if e.response.text else "(empty)"
+                    raise ReleaseError(
+                        f"failed to upload asset '{asset_name}': "
+                        f"HTTP {e.response.status_code}\n{body_preview}"
+                    ) from e
+                raise ReleaseError(
+                    f"failed to upload asset '{asset_name}': {e}"
+                ) from e
+            last_exc = e
+
+    # Unreachable, but satisfies type checker
+    raise ReleaseError(f"failed to upload asset '{asset_name}': max retries exceeded")
 
 
 def github_repo_slug() -> RepoSlug:
@@ -273,3 +312,23 @@ def replace_and_upload_asset(
     delete_asset_if_exists(client, release_id, asset_name, slug)
     console.print(f"Uploading [bold]{asset_name}[/bold]...")
     github_upload_asset(client, release_id, asset_name, asset_path, slug)
+
+
+def delete_release(
+    client: httpx.Client,
+    release_id: int,
+    slug: RepoSlug,
+) -> None:
+    """Delete a GitHub release by ID. Used to clean up draft releases on failure."""
+    url = f"https://api.github.com/repos/{slug.full}/releases/{release_id}"
+    github_api(client, "DELETE", url)
+
+
+def publish_release(
+    client: httpx.Client,
+    release_id: int,
+    slug: RepoSlug,
+) -> dict[str, Any] | list[Any]:
+    """Publish a draft release by setting draft=False."""
+    url = f"https://api.github.com/repos/{slug.full}/releases/{release_id}"
+    return github_api(client, "PATCH", url, json_data={"draft": False})

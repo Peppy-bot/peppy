@@ -29,6 +29,7 @@ def test_build_release_payload_auto_generated_notes() -> None:
         "tag_name": "v0.1.0",
         "name": "Release v0.1.0",
         "target_commitish": "main",
+        "draft": True,
         "generate_release_notes": True,
     }
 
@@ -45,6 +46,7 @@ def test_build_release_payload_manual_notes() -> None:
         "tag_name": "v0.2.0",
         "name": "Release v0.2.0",
         "target_commitish": "main",
+        "draft": True,
         "body": "## Changes\n- Fixed bug\n",
     }
 
@@ -58,6 +60,7 @@ def test_build_release_payload_empty_notes_body() -> None:
         notes_body=None,
     )
     assert payload["body"] == ""
+    assert payload["draft"] is True
 
 
 @patch("functions.build_release._build_all_targets")
@@ -177,8 +180,50 @@ def test_build_all_targets_on_macos_builds_three(
     mock_ensure_rust.assert_called_once()
 
 
+def _setup_run_full_mocks(
+    tmp_path: Path,
+    *,
+    mock_repo_root: MagicMock,
+    mock_prompt: MagicMock,
+    mock_prompt_yn: MagicMock,
+    mock_targets: MagicMock,
+    mock_build_all: MagicMock,
+    mock_slug: MagicMock,
+    mock_client: MagicMock,
+    mock_api: MagicMock,
+    mock_parse: MagicMock,
+) -> None:
+    """Common setup for _run_full integration tests."""
+    from functions.github import ReleaseInfo, RepoSlug
+
+    mock_repo_root.return_value = tmp_path
+    mock_prompt.side_effect = ["v0.1.0", "Release v0.1.0", "First release"]
+    mock_prompt_yn.return_value = True
+    mock_targets.return_value = [
+        "aarch64-apple-darwin",
+        "x86_64-unknown-linux-gnu",
+        "aarch64-unknown-linux-gnu",
+    ]
+    mock_build_all.return_value = [
+        BuildArtifact("peppy-a.tgz", tmp_path / "a.tgz", "aarch64-apple-darwin"),
+        BuildArtifact("peppy-b.tgz", tmp_path / "b.tgz", "x86_64-unknown-linux-gnu"),
+        BuildArtifact("peppy-c.tgz", tmp_path / "c.tgz", "aarch64-unknown-linux-gnu"),
+    ]
+    mock_slug.return_value = RepoSlug(owner="test-owner", repo="test-repo")
+    mock_client.return_value = MagicMock()
+    mock_api.return_value = {
+        "id": 1,
+        "html_url": "https://github.com/test/releases/tag/v0.1.0",
+    }
+    mock_parse.return_value = ReleaseInfo(
+        release_id=1,
+        html_url="https://github.com/test/releases/tag/v0.1.0",
+    )
+
+
 @patch("functions.build_release.generate_release_notes_file")
 @patch("functions.build_release.fetch_release_body_html", return_value="<p>notes</p>")
+@patch("functions.build_release.publish_release")
 @patch("functions.build_release.replace_and_upload_asset")
 @patch("functions.build_release.parse_release_response")
 @patch("functions.build_release.github_api")
@@ -210,38 +255,152 @@ def test_run_full_uploads_all_artifacts(
     mock_api: MagicMock,
     mock_parse: MagicMock,
     mock_upload: MagicMock,
+    mock_publish: MagicMock,
     mock_fetch_html: MagicMock,
     mock_gen_notes: MagicMock,
     tmp_path: Path,
 ) -> None:
-    from functions.github import ReleaseInfo, RepoSlug
-
-    mock_repo_root.return_value = tmp_path
-    mock_prompt.side_effect = ["v0.1.0", "Release v0.1.0", "First release"]
-    mock_prompt_yn.return_value = True
-    mock_targets.return_value = [
-        "aarch64-apple-darwin",
-        "x86_64-unknown-linux-gnu",
-        "aarch64-unknown-linux-gnu",
-    ]
-    mock_build_all.return_value = [
-        BuildArtifact("peppy-a.tgz", tmp_path / "a.tgz", "aarch64-apple-darwin"),
-        BuildArtifact("peppy-b.tgz", tmp_path / "b.tgz", "x86_64-unknown-linux-gnu"),
-        BuildArtifact("peppy-c.tgz", tmp_path / "c.tgz", "aarch64-unknown-linux-gnu"),
-    ]
-    mock_slug.return_value = RepoSlug(owner="test-owner", repo="test-repo")
-    mock_client.return_value = MagicMock()
-    mock_api.return_value = {
-        "id": 1,
-        "html_url": "https://github.com/test/releases/tag/v0.1.0",
-    }
-    mock_parse.return_value = ReleaseInfo(
-        release_id=1,
-        html_url="https://github.com/test/releases/tag/v0.1.0",
+    _setup_run_full_mocks(
+        tmp_path,
+        mock_repo_root=mock_repo_root,
+        mock_prompt=mock_prompt,
+        mock_prompt_yn=mock_prompt_yn,
+        mock_targets=mock_targets,
+        mock_build_all=mock_build_all,
+        mock_slug=mock_slug,
+        mock_client=mock_client,
+        mock_api=mock_api,
+        mock_parse=mock_parse,
     )
 
     _run_full()
 
     mock_validate.assert_called_once()
     assert mock_upload.call_count == 3
+    mock_publish.assert_called_once_with(mock_client.return_value, 1, mock_slug.return_value)
     mock_gen_notes.assert_called_once()
+
+    # Verify the release is created as a draft
+    create_call = mock_api.call_args_list[0]
+    payload = create_call.kwargs.get("json_data") or create_call[1].get("json_data")
+    assert payload["draft"] is True
+
+
+@patch("functions.build_release.delete_release")
+@patch("functions.build_release.publish_release")
+@patch("functions.build_release.replace_and_upload_asset")
+@patch("functions.build_release.parse_release_response")
+@patch("functions.build_release.github_api")
+@patch("functions.build_release.build_github_client")
+@patch("functions.build_release.github_repo_slug")
+@patch("functions.build_release._build_all_targets")
+@patch("functions.build_release.get_targets_for_platform")
+@patch("functions.build_release.prompt_yn")
+@patch("functions.build_release.prompt")
+@patch("functions.build_release.has_uncommitted_changes", return_value=False)
+@patch("functions.build_release.get_current_branch", return_value="main")
+@patch("functions.build_release.get_repo_root")
+@patch(
+    "functions.build_release.validate_release_environment", return_value="test-token"
+)
+@patch("functions.build_release.is_macos_arm64", return_value=True)
+def test_run_full_cleans_up_draft_on_upload_failure(
+    mock_platform: MagicMock,
+    mock_validate: MagicMock,
+    mock_repo_root: MagicMock,
+    mock_branch: MagicMock,
+    mock_uncommitted: MagicMock,
+    mock_prompt: MagicMock,
+    mock_prompt_yn: MagicMock,
+    mock_targets: MagicMock,
+    mock_build_all: MagicMock,
+    mock_slug: MagicMock,
+    mock_client: MagicMock,
+    mock_api: MagicMock,
+    mock_parse: MagicMock,
+    mock_upload: MagicMock,
+    mock_publish: MagicMock,
+    mock_delete_release: MagicMock,
+    tmp_path: Path,
+) -> None:
+    _setup_run_full_mocks(
+        tmp_path,
+        mock_repo_root=mock_repo_root,
+        mock_prompt=mock_prompt,
+        mock_prompt_yn=mock_prompt_yn,
+        mock_targets=mock_targets,
+        mock_build_all=mock_build_all,
+        mock_slug=mock_slug,
+        mock_client=mock_client,
+        mock_api=mock_api,
+        mock_parse=mock_parse,
+    )
+    mock_upload.side_effect = [None, ReleaseError("upload timeout"), None]
+
+    with pytest.raises(ReleaseError, match="upload timeout"):
+        _run_full()
+
+    mock_delete_release.assert_called_once_with(
+        mock_client.return_value, 1, mock_slug.return_value
+    )
+    mock_publish.assert_not_called()
+
+
+@patch("functions.build_release.delete_release")
+@patch("functions.build_release.publish_release")
+@patch("functions.build_release.replace_and_upload_asset")
+@patch("functions.build_release.parse_release_response")
+@patch("functions.build_release.github_api")
+@patch("functions.build_release.build_github_client")
+@patch("functions.build_release.github_repo_slug")
+@patch("functions.build_release._build_all_targets")
+@patch("functions.build_release.get_targets_for_platform")
+@patch("functions.build_release.prompt_yn")
+@patch("functions.build_release.prompt")
+@patch("functions.build_release.has_uncommitted_changes", return_value=False)
+@patch("functions.build_release.get_current_branch", return_value="main")
+@patch("functions.build_release.get_repo_root")
+@patch(
+    "functions.build_release.validate_release_environment", return_value="test-token"
+)
+@patch("functions.build_release.is_macos_arm64", return_value=True)
+def test_run_full_warns_on_cleanup_failure(
+    mock_platform: MagicMock,
+    mock_validate: MagicMock,
+    mock_repo_root: MagicMock,
+    mock_branch: MagicMock,
+    mock_uncommitted: MagicMock,
+    mock_prompt: MagicMock,
+    mock_prompt_yn: MagicMock,
+    mock_targets: MagicMock,
+    mock_build_all: MagicMock,
+    mock_slug: MagicMock,
+    mock_client: MagicMock,
+    mock_api: MagicMock,
+    mock_parse: MagicMock,
+    mock_upload: MagicMock,
+    mock_publish: MagicMock,
+    mock_delete_release: MagicMock,
+    tmp_path: Path,
+) -> None:
+    _setup_run_full_mocks(
+        tmp_path,
+        mock_repo_root=mock_repo_root,
+        mock_prompt=mock_prompt,
+        mock_prompt_yn=mock_prompt_yn,
+        mock_targets=mock_targets,
+        mock_build_all=mock_build_all,
+        mock_slug=mock_slug,
+        mock_client=mock_client,
+        mock_api=mock_api,
+        mock_parse=mock_parse,
+    )
+    mock_upload.side_effect = ReleaseError("upload timeout")
+    mock_delete_release.side_effect = ReleaseError("cleanup failed")
+
+    # Original error is re-raised, not the cleanup error
+    with pytest.raises(ReleaseError, match="upload timeout"):
+        _run_full()
+
+    mock_delete_release.assert_called_once()
+    mock_publish.assert_not_called()
