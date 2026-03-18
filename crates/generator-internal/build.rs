@@ -212,15 +212,40 @@ mod peppylib_build {
         buf
     }
 
-    /// Ensures the `aarch64-unknown-linux-gnu` Rust target is installed.
+    /// A Linux cross-compilation target for peppylib.
     #[cfg(target_os = "macos")]
-    fn ensure_linux_rust_target() {
+    struct LinuxCrossTarget {
+        /// The Rust target triple (e.g. "aarch64-unknown-linux-gnu").
+        target_triple: &'static str,
+        /// The pixi task name for this target.
+        pixi_task: &'static str,
+        /// The platform suffix for the output .so file (e.g. "linux-aarch64").
+        platform_suffix: &'static str,
+    }
+
+    #[cfg(target_os = "macos")]
+    const LINUX_CROSS_TARGETS: &[LinuxCrossTarget] = &[
+        LinuxCrossTarget {
+            target_triple: "aarch64-unknown-linux-gnu",
+            pixi_task: "cross-linux-aarch64-release",
+            platform_suffix: "linux-aarch64",
+        },
+        LinuxCrossTarget {
+            target_triple: "x86_64-unknown-linux-gnu",
+            pixi_task: "cross-linux-x86_64-release",
+            platform_suffix: "linux-x86_64",
+        },
+    ];
+
+    /// Ensures the given Rust target is installed via rustup.
+    #[cfg(target_os = "macos")]
+    fn ensure_linux_rust_target(target_triple: &str) {
         let status = Command::new("rustup")
-            .args(["target", "add", "aarch64-unknown-linux-gnu"])
+            .args(["target", "add", target_triple])
             .status()
             .expect("failed to run rustup target add");
         if !status.success() {
-            panic!("rustup target add aarch64-unknown-linux-gnu failed");
+            panic!("rustup target add {target_triple} failed");
         }
     }
 
@@ -355,29 +380,34 @@ mod peppylib_build {
         });
     }
 
-    /// Cross-compiles the Linux `.so` via maturin + zig.
+    /// Cross-compiles a Linux `.so` via maturin + zig for the given target.
     ///
     /// Always uses release mode — the cross-compiled `.so` is a container deployment
     /// artifact that never needs debug symbols, and debug builds are ~4x larger.
     #[cfg(target_os = "macos")]
-    fn cross_compile_linux_so(peppylib_py_dir: &Path, target_dir: &Path, peppylib_dir: &Path) {
-        let cross_pixi_task = "cross-linux-release";
-
+    fn cross_compile_linux_so(
+        target: &LinuxCrossTarget,
+        peppylib_py_dir: &Path,
+        target_dir: &Path,
+        peppylib_dir: &Path,
+    ) {
         println!(
-            "cargo:warning=Cross-compiling peppylib-py for linux-aarch64 via pixi ({cross_pixi_task})…"
+            "cargo:warning=Cross-compiling peppylib-py for {} via pixi ({})…",
+            target.platform_suffix, target.pixi_task
         );
 
-        ensure_linux_rust_target();
-        run_pixi_task(peppylib_py_dir, cross_pixi_task, target_dir);
+        ensure_linux_rust_target(target.target_triple);
+        run_pixi_task(peppylib_py_dir, target.pixi_task, target_dir);
 
         let wheels_dir = target_dir.join("wheels");
         let linux_so_bytes = extract_so_from_wheel(&wheels_dir);
 
-        let linux_so_path = peppylib_dir.join("_peppylib.abi3.linux-aarch64.so");
+        let linux_so_path =
+            peppylib_dir.join(format!("_peppylib.abi3.{}.so", target.platform_suffix));
         std::fs::write(&linux_so_path, &linux_so_bytes)
             .unwrap_or_else(|e| panic!("failed to write linux .so to {:?}: {e}", linux_so_path));
 
-        // Clean up wheel files to avoid stale artifacts
+        // Clean up wheel files to avoid stale artifacts between targets
         std::fs::remove_dir_all(&wheels_dir).ok();
     }
 
@@ -447,7 +477,9 @@ mod peppylib_build {
                 );
 
                 #[cfg(target_os = "macos")]
-                cross_compile_linux_so(&peppylib_py_dir, &target_dir, &peppylib_dir);
+                for target in LINUX_CROSS_TARGETS {
+                    cross_compile_linux_so(target, &peppylib_py_dir, &target_dir, &peppylib_dir);
+                }
             }
         }
 
