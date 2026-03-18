@@ -1960,6 +1960,11 @@ async fn listen_for_node_start_logs_error_on_spawn_failure() {
         "error should mention start failure, got: {}",
         error_msg
     );
+    assert!(
+        error_msg.contains("nonexistent_binary_peppy_test_xyz"),
+        "error should include the command that failed, got: {}",
+        error_msg
+    );
 
     // The log file should exist and contain the error — not be empty
     let log_path = &start_response.goal_response.log_path;
@@ -1978,6 +1983,11 @@ async fn listen_for_node_start_logs_error_on_spawn_failure() {
     assert!(
         log_content.contains("Failed to start node"),
         "log file should contain the failure message, got:\n{}",
+        log_content
+    );
+    assert!(
+        log_content.contains("nonexistent_binary_peppy_test_xyz"),
+        "log file should contain the command that failed, got:\n{}",
         log_content
     );
 }
