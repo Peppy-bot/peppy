@@ -180,9 +180,9 @@ EOF
         echo "         Installing will stop the daemon and wipe '${PEPPY_HOME}' before proceeding."
         echo ""
 
-        if [ -t 0 ]; then
+        if [ -t 0 ] || [ -e /dev/tty ]; then
             printf "Do you want to continue? [y/N] "
-            read -r REPLY
+            read -r REPLY </dev/tty
             case "$REPLY" in
             [Yy] | [Yy][Ee][Ss]) ;;
             *)
@@ -191,7 +191,7 @@ EOF
                 ;;
             esac
         elif [ -z "${PEPPY_FORCE_REINSTALL:-}" ]; then
-            echo "error: cannot prompt for confirmation (stdin is not a terminal)." >&2
+            echo "error: cannot prompt for confirmation (no terminal available)." >&2
             echo "       Set PEPPY_FORCE_REINSTALL=1 to skip this check." >&2
             exit 1
         fi
