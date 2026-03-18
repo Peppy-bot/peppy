@@ -211,13 +211,15 @@ def _setup_run_full_mocks(
     ]
     mock_slug.return_value = RepoSlug(owner="test-owner", repo="test-repo")
     mock_client.return_value = MagicMock()
-    mock_api.return_value = {
-        "id": 1,
-        "html_url": "https://github.com/test/releases/tag/v0.1.0",
-    }
+    # First call: POST creates draft (GitHub assigns a temporary untagged URL).
+    # Second call: GET fetches published release details (real tag URL).
+    mock_api.side_effect = [
+        {"id": 1, "html_url": "https://github.com/test/releases/tag/untagged-abc123"},
+        {"id": 1, "html_url": "https://github.com/test/releases/tag/v0.1.0"},
+    ]
     mock_parse.return_value = ReleaseInfo(
         release_id=1,
-        html_url="https://github.com/test/releases/tag/v0.1.0",
+        html_url="https://github.com/test/releases/tag/untagged-abc123",
     )
 
 
@@ -259,6 +261,7 @@ def test_run_full_uploads_all_artifacts(
     mock_fetch_html: MagicMock,
     mock_gen_notes: MagicMock,
     tmp_path: Path,
+    capfd: pytest.CaptureFixture[str],
 ) -> None:
     _setup_run_full_mocks(
         tmp_path,
@@ -284,6 +287,11 @@ def test_run_full_uploads_all_artifacts(
     create_call = mock_api.call_args_list[0]
     payload = create_call.kwargs.get("json_data") or create_call[1].get("json_data")
     assert payload["draft"] is True
+
+    # The displayed URL must be the published release URL, not the draft's untagged URL
+    captured = capfd.readouterr()
+    assert "releases/tag/v0.1.0" in captured.err
+    assert "untagged" not in captured.err
 
 
 @patch("functions.build_release.delete_release")

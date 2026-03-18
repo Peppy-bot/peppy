@@ -290,7 +290,7 @@ def _run_full() -> None:
     generate_release_notes_file(notes_input, releases_dir)
 
     # Final output
-    release_url = info.html_url or f"https://github.com/{slug.full}/releases/tag/{tag}"
+    release_url = release_details.get("html_url") or f"https://github.com/{slug.full}/releases/tag/{tag}"
     console.print(f"\n[green]Release created:[/green] {release_url}")
     console.print(
         "[red]Do not forget to commit the new release note[/red] "
