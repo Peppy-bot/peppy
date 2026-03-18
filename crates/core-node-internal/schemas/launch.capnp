@@ -44,6 +44,26 @@ struct LaunchFeedback {
     step @2 :LaunchFeedbackStep;
 }
 
+struct NodeAddLog {
+    # Node label in "name:tag" format
+    nodeLabel @0 :Text;
+    # Path to the node add log file
+    logPath @1 :Text;
+    # Whether the add operation failed
+    failed @2 :Bool;
+}
+
+struct NodeStartLog {
+    # Instance ID
+    instanceId @0 :Text;
+    # Node label in "name:tag" format
+    nodeLabel @1 :Text;
+    # Path to the node start log file
+    logPath @2 :Text;
+    # Whether the start operation failed
+    failed @3 :Bool;
+}
+
 struct LaunchResult {
     # Whether the launch was successful
     success @0 :Bool;
@@ -51,4 +71,8 @@ struct LaunchResult {
     logPath @1 :Text;
     # Error message if failed (empty if successful)
     errorMessage @2 :Text;
+    # Per-node add log entries
+    nodeAddLogs @3 :List(NodeAddLog);
+    # Per-node start log entries
+    nodeStartLogs @4 :List(NodeStartLog);
 }

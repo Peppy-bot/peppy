@@ -1,9 +1,9 @@
 use config::{
     consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH, PEPPYLIB_OUTPUT_PATH},
-    node::{MessageFormat, PeppygenLanguage, SubscribedAction, SubscribedService, SubscribedTopic},
+    node::{ConsumedAction, ConsumedService, ConsumedTopic, MessageFormat, PeppygenLanguage},
 };
 use generator::generate_peppygen_lib;
-use generator::{DeploymentInterface, InterfaceVariant, SubscribedActionMessage};
+use generator::{ConsumedActionMessage, DeploymentInterface, InterfaceVariant};
 use std::fs;
 use tempfile::TempDir;
 
@@ -20,8 +20,8 @@ const PEPPY_JSON5_CONFIG: &str = r#"{
     start_cmd: ["./target/release/test_node"]
   },
   interfaces: {
-    exposes: {
-      topics: [
+    topics: {
+      emits: [
         {
           name: "test_topic",
           qos_profile: "sensor_data",
@@ -30,8 +30,10 @@ const PEPPY_JSON5_CONFIG: &str = r#"{
             timestamp: "time"
           }
         }
-      ],
-      services: [
+      ]
+    },
+    services: {
+      exposes: [
         {
           name: "test_service",
           request_message_format: {
@@ -106,12 +108,12 @@ fn generate_peppygen_lib_cargo() {
         lib_rs.display()
     );
 
-    // Check that exposed topics module was generated
-    let exposed_topics_dir = peppygen_dir.join("src/exposed_topics");
+    // Check that emitted topics module was generated
+    let emitted_topics_dir = peppygen_dir.join("src/emitted_topics");
     assert!(
-        exposed_topics_dir.exists(),
-        "exposed_topics directory should exist at {}",
-        exposed_topics_dir.display()
+        emitted_topics_dir.exists(),
+        "emitted_topics directory should exist at {}",
+        emitted_topics_dir.display()
     );
 
     // Check that exposed services module was generated
@@ -220,9 +222,9 @@ fn generate_peppygen_lib_missing_config() {
 }
 
 #[test]
-fn generate_peppygen_rust_lib_exposed_and_subscribed_topics() {
+fn generate_peppygen_rust_lib_emitted_and_consumed_topics() {
     const EXPOSED_NODE_NAME: &str = "topic_exposer";
-    const SUBSCRIBER_NODE_NAME: &str = "topic_subscriber";
+    const CONSUMER_NODE_NAME: &str = "topic_consumer";
 
     let exposed_dir = TempDir::new().expect("failed to create temp directory");
     let exposed_node_dir = exposed_dir.path();
@@ -239,8 +241,8 @@ fn generate_peppygen_rust_lib_exposed_and_subscribed_topics() {
             start_cmd: ["./target/debug/{EXPOSED_NODE_NAME}"]
           }},
           interfaces: {{
-            exposes: {{
-              topics: [
+            topics: {{
+              emits: [
                 {{
                   name: "test_topic",
                   qos_profile: "sensor_data",
@@ -270,76 +272,72 @@ fn generate_peppygen_rust_lib_exposed_and_subscribed_topics() {
     let exposed_peppygen_dir = exposed_node_dir.join(PEPPYGEN_OUTPUT_PATH);
     assert!(
         exposed_peppygen_dir
-            .join("src/exposed_topics/test_topic.rs")
+            .join("src/emitted_topics/test_topic.rs")
             .exists(),
-        "exposed topic module should exist in peppygen crate at {}",
+        "emitted topic module should exist in peppygen crate at {}",
         exposed_peppygen_dir.display()
     );
 
-    let subscriber_dir = TempDir::new().expect("failed to create temp directory");
-    let subscriber_node_dir = subscriber_dir.path();
+    let consumer_dir = TempDir::new().expect("failed to create temp directory");
+    let consumer_node_dir = consumer_dir.path();
 
-    let subscriber_config = format!(
+    let consumer_config = format!(
         r#"{{
           schema_version: 1,
           manifest: {{
-            name: "{SUBSCRIBER_NODE_NAME}",
+            name: "{CONSUMER_NODE_NAME}",
             tag: "0.1.0",
             language: "rust"
           }},
           process: {{
-            start_cmd: ["./target/debug/{SUBSCRIBER_NODE_NAME}"]
+            start_cmd: ["./target/debug/{CONSUMER_NODE_NAME}"]
           }}
         }}"#
     );
-    fs::write(
-        subscriber_node_dir.join(NODE_CONFIG_FILE),
-        subscriber_config,
-    )
-    .expect("failed to write subscriber peppy.json5");
+    fs::write(consumer_node_dir.join(NODE_CONFIG_FILE), consumer_config)
+        .expect("failed to write consumer peppy.json5");
 
-    let subscribed_topic: SubscribedTopic = serde_json5::from_str(&format!(
+    let consumed_topic: ConsumedTopic = serde_json5::from_str(&format!(
         r#"{{
-          id: "test_topic_sub",
-          node: "{EXPOSED_NODE_NAME}",
+          local_node_id: "{EXPOSED_NODE_NAME}",
           name: "test_topic",
-          tag: "0.1.0"
         }}"#
     ))
-    .expect("failed to parse subscribed topic");
+    .expect("failed to parse consumed topic");
 
-    let subscribed_format: MessageFormat =
+    let consumed_format: MessageFormat =
         serde_json5::from_str(r#"{ value: "u32" }"#).expect("failed to parse topic format");
 
-    let subscribed_interfaces = vec![DeploymentInterface::new(InterfaceVariant::SubscribedTopic(
-        subscribed_topic,
-        subscribed_format,
-    ))];
+    let expected_interfaces = vec![DeploymentInterface::new(InterfaceVariant::ConsumedTopic {
+        topic: consumed_topic,
+        message_format: consumed_format,
+        dependency_node_name: EXPOSED_NODE_NAME.to_string(),
+    })];
 
     generate_peppygen_lib(
         PeppygenLanguage::Rust,
-        subscriber_node_dir,
-        subscribed_interfaces,
+        consumer_node_dir,
+        expected_interfaces,
         "test-hash",
         &helpers::test_peppy_dirs(),
         Default::default(),
     )
-    .expect("failed to generate peppygen lib for subscriber node");
+    .expect("failed to generate peppygen lib for consumer node");
 
-    let subscriber_peppygen_dir = subscriber_node_dir.join(PEPPYGEN_OUTPUT_PATH);
+    let consumer_peppygen_dir = consumer_node_dir.join(PEPPYGEN_OUTPUT_PATH);
     assert!(
-        subscriber_peppygen_dir
-            .join("src/subscribed_topics/topic_exposer_test_topic.rs")
+        consumer_peppygen_dir
+            .join("src/consumed_topics/topic_exposer_test_topic.rs")
             .exists(),
-        "subscribed topic module should exist in peppygen crate at {}",
-        subscriber_peppygen_dir.display()
+        "consumed topic module should exist in peppygen crate at {}",
+        consumer_peppygen_dir.display()
     );
 }
 
 #[test]
-fn generate_peppygen_rust_lib_exposed_and_subscribed_services() {
+fn generate_peppygen_rust_lib_exposed_and_consumed_services() {
     const EXPOSED_NODE_NAME: &str = "service_exposer";
-    const SUBSCRIBER_NODE_NAME: &str = "service_subscriber";
+    const CONSUMER_NODE_NAME: &str = "service_consumer";
 
     let exposed_dir = TempDir::new().expect("failed to create temp directory");
     let exposed_node_dir = exposed_dir.path();
@@ -356,8 +354,8 @@ fn generate_peppygen_rust_lib_exposed_and_subscribed_services() {
             start_cmd: ["./target/debug/{EXPOSED_NODE_NAME}"]
           }},
           interfaces: {{
-            exposes: {{
-              services: [
+            services: {{
+              exposes: [
                 {{
                   name: "test_service",
                   request_message_format: {{
@@ -396,37 +394,32 @@ fn generate_peppygen_rust_lib_exposed_and_subscribed_services() {
         exposed_peppygen_dir.display()
     );
 
-    let subscriber_dir = TempDir::new().expect("failed to create temp directory");
-    let subscriber_node_dir = subscriber_dir.path();
+    let consumer_dir = TempDir::new().expect("failed to create temp directory");
+    let consumer_node_dir = consumer_dir.path();
 
-    let subscriber_config = format!(
+    let consumer_config = format!(
         r#"{{
           schema_version: 1,
           manifest: {{
-            name: "{SUBSCRIBER_NODE_NAME}",
+            name: "{CONSUMER_NODE_NAME}",
             tag: "0.1.0",
             language: "rust"
           }},
           process: {{
-            start_cmd: ["./target/debug/{SUBSCRIBER_NODE_NAME}"]
+            start_cmd: ["./target/debug/{CONSUMER_NODE_NAME}"]
           }}
         }}"#
     );
-    fs::write(
-        subscriber_node_dir.join(NODE_CONFIG_FILE),
-        subscriber_config,
-    )
-    .expect("failed to write subscriber peppy.json5");
+    fs::write(consumer_node_dir.join(NODE_CONFIG_FILE), consumer_config)
+        .expect("failed to write consumer peppy.json5");
 
-    let subscribed_service: SubscribedService = serde_json5::from_str(&format!(
+    let consumed_service: ConsumedService = serde_json5::from_str(&format!(
         r#"{{
-          id: "test_service_sub",
-          node: "{EXPOSED_NODE_NAME}",
+          local_node_id: "{EXPOSED_NODE_NAME}",
           name: "test_service",
-          tag: "0.1.0"
         }}"#
     ))
-    .expect("failed to parse subscribed service");
+    .expect("failed to parse consumed service");
 
     let request_format: MessageFormat =
         serde_json5::from_str(r#"{ input: "string" }"#).expect("failed to parse request format");
@@ -434,41 +427,46 @@ fn generate_peppygen_rust_lib_exposed_and_subscribed_services() {
         serde_json5::from_str(r#"{ output: "string", success: "bool" }"#)
             .expect("failed to parse response format");
 
-    let subscribed_interfaces = vec![DeploymentInterface::new(
-        InterfaceVariant::SubscribedService(subscribed_service, request_format, response_format),
+    let consumed_interfaces = vec![DeploymentInterface::new(
+        InterfaceVariant::ConsumedService {
+            service: consumed_service,
+            request_format,
+            response_format,
+            dependency_node_name: EXPOSED_NODE_NAME.to_string(),
+        },
     )];
 
     generate_peppygen_lib(
         PeppygenLanguage::Rust,
-        subscriber_node_dir,
-        subscribed_interfaces,
+        consumer_node_dir,
+        consumed_interfaces,
         "test-hash",
         &helpers::test_peppy_dirs(),
         Default::default(),
     )
-    .expect("failed to generate peppygen lib for subscriber node");
+    .expect("failed to generate peppygen lib for consumer node");
 
-    let subscriber_peppygen_dir = subscriber_node_dir.join(PEPPYGEN_OUTPUT_PATH);
-    let subscribed_service_module_path =
-        subscriber_peppygen_dir.join("src/subscribed_services/service_exposer_test_service.rs");
+    let consumer_peppygen_dir = consumer_node_dir.join(PEPPYGEN_OUTPUT_PATH);
+    let consumed_service_module_path =
+        consumer_peppygen_dir.join("src/consumed_services/service_exposer_test_service.rs");
     assert!(
-        subscribed_service_module_path.exists(),
-        "subscribed service module should exist in peppygen crate at {}",
-        subscriber_peppygen_dir.display()
+        consumed_service_module_path.exists(),
+        "consumed service module should exist in peppygen crate at {}",
+        consumer_peppygen_dir.display()
     );
 
-    let subscribed_service_code = fs::read_to_string(&subscribed_service_module_path)
-        .expect("failed to read subscribed service module");
+    let consumed_service_code = fs::read_to_string(&consumed_service_module_path)
+        .expect("failed to read consumed service module");
     assert!(
-        subscribed_service_code.contains("pub async fn poll("),
-        "subscribed service module should define a poll() function"
+        consumed_service_code.contains("pub async fn poll("),
+        "consumed service module should define a poll() function"
     );
 }
 
 #[test]
-fn generate_peppygen_rust_lib_exposed_and_subscribed_actions() {
+fn generate_peppygen_rust_lib_exposed_and_consumed_actions() {
     const EXPOSED_NODE_NAME: &str = "action_exposer";
-    const SUBSCRIBER_NODE_NAME: &str = "action_subscriber";
+    const CONSUMER_NODE_NAME: &str = "action_consumer";
 
     let exposed_dir = TempDir::new().expect("failed to create temp directory");
     let exposed_node_dir = exposed_dir.path();
@@ -485,8 +483,8 @@ fn generate_peppygen_rust_lib_exposed_and_subscribed_actions() {
             start_cmd: ["./target/debug/{EXPOSED_NODE_NAME}"]
           }},
           interfaces: {{
-            exposes: {{
-              actions: [
+            actions: {{
+              exposes: [
                 {{
                   name: "test_action",
                   goal_service: {{
@@ -537,37 +535,32 @@ fn generate_peppygen_rust_lib_exposed_and_subscribed_actions() {
         exposed_peppygen_dir.display()
     );
 
-    let subscriber_dir = TempDir::new().expect("failed to create temp directory");
-    let subscriber_node_dir = subscriber_dir.path();
+    let consumer_dir = TempDir::new().expect("failed to create temp directory");
+    let consumer_node_dir = consumer_dir.path();
 
-    let subscriber_config = format!(
+    let consumer_config = format!(
         r#"{{
           schema_version: 1,
           manifest: {{
-            name: "{SUBSCRIBER_NODE_NAME}",
+            name: "{CONSUMER_NODE_NAME}",
             tag: "0.1.0",
             language: "rust"
           }},
           process: {{
-            start_cmd: ["./target/debug/{SUBSCRIBER_NODE_NAME}"]
+            start_cmd: ["./target/debug/{CONSUMER_NODE_NAME}"]
           }}
         }}"#
     );
-    fs::write(
-        subscriber_node_dir.join(NODE_CONFIG_FILE),
-        subscriber_config,
-    )
-    .expect("failed to write subscriber peppy.json5");
+    fs::write(consumer_node_dir.join(NODE_CONFIG_FILE), consumer_config)
+        .expect("failed to write consumer peppy.json5");
 
-    let subscribed_action: SubscribedAction = serde_json5::from_str(&format!(
+    let consumed_action: ConsumedAction = serde_json5::from_str(&format!(
         r#"{{
-          id: "test_action_sub",
-          node: "{EXPOSED_NODE_NAME}",
+          local_node_id: "{EXPOSED_NODE_NAME}",
           name: "test_action",
-          tag: "0.1.0"
         }}"#
     ))
-    .expect("failed to parse subscribed action");
+    .expect("failed to parse consumed action");
 
     let goal_request_format: MessageFormat =
         serde_json5::from_str(r#"{ value: "u32" }"#).expect("failed to parse goal request format");
@@ -578,7 +571,7 @@ fn generate_peppygen_rust_lib_exposed_and_subscribed_actions() {
     let result_response_format: MessageFormat = serde_json5::from_str(r#"{ success: "bool" }"#)
         .expect("failed to parse result response format");
 
-    let action_messages = SubscribedActionMessage {
+    let action_messages = ConsumedActionMessage {
         goal_request: Some(goal_request_format),
         goal_response: Some(goal_response_format),
         feedback: Some(feedback_format),
@@ -586,26 +579,28 @@ fn generate_peppygen_rust_lib_exposed_and_subscribed_actions() {
         result_response: Some(result_response_format),
     };
 
-    let subscribed_interfaces = vec![DeploymentInterface::new(
-        InterfaceVariant::SubscribedAction(subscribed_action, action_messages),
-    )];
+    let consumed_interfaces = vec![DeploymentInterface::new(InterfaceVariant::ConsumedAction {
+        action: consumed_action,
+        messages: action_messages,
+        dependency_node_name: EXPOSED_NODE_NAME.to_string(),
+    })];
 
     generate_peppygen_lib(
         PeppygenLanguage::Rust,
-        subscriber_node_dir,
-        subscribed_interfaces,
+        consumer_node_dir,
+        consumed_interfaces,
         "test-hash",
         &helpers::test_peppy_dirs(),
         Default::default(),
     )
-    .expect("failed to generate peppygen lib for subscriber node");
+    .expect("failed to generate peppygen lib for consumer node");
 
-    let subscriber_peppygen_dir = subscriber_node_dir.join(PEPPYGEN_OUTPUT_PATH);
+    let consumer_peppygen_dir = consumer_node_dir.join(PEPPYGEN_OUTPUT_PATH);
     assert!(
-        subscriber_peppygen_dir
-            .join("src/subscribed_actions/action_exposer_test_action.rs")
+        consumer_peppygen_dir
+            .join("src/consumed_actions/action_exposer_test_action.rs")
             .exists(),
-        "subscribed action module should exist in peppygen crate at {}",
-        subscriber_peppygen_dir.display()
+        "consumed action module should exist in peppygen crate at {}",
+        consumer_peppygen_dir.display()
     );
 }

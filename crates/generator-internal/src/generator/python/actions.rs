@@ -6,9 +6,9 @@ use super::topics::{capnp_loader_fn_name, emit_capnp_loader_fn, emit_capnp_pream
 use super::type_mapping::{collect_fields_from_format, uses_optional};
 use crate::error::{Error, Result};
 use crate::generator::types::{
-    SubscribedActionMessage, cancel_action_response_format, non_empty_message_format,
+    ConsumedActionMessage, cancel_action_response_format, non_empty_message_format,
 };
-use config::node::{ExposedAction, MessageFormat, SubscribedAction};
+use config::node::{ConsumedAction, ExposedAction, MessageFormat};
 
 // ---------------------------------------------------------------------------
 // Exposed actions
@@ -460,15 +460,20 @@ fn emit_handler_response_body(
 // Subscribed actions
 // ---------------------------------------------------------------------------
 
+pub struct ConsumedActionSchemaInfo<'a> {
+    pub goal_request: Option<&'a PythonSchemaInfo>,
+    pub goal_response: Option<&'a PythonSchemaInfo>,
+    pub cancel_response: Option<&'a PythonSchemaInfo>,
+    pub feedback: Option<&'a PythonSchemaInfo>,
+    pub result_response: Option<&'a PythonSchemaInfo>,
+}
+
 /// Generates Python code for a subscribed (client-side) action.
-pub fn build_subscribed_action(
-    action: &SubscribedAction,
-    messages: &SubscribedActionMessage,
-    goal_request_schema_info: Option<&PythonSchemaInfo>,
-    goal_response_schema_info: Option<&PythonSchemaInfo>,
-    cancel_response_schema_info: Option<&PythonSchemaInfo>,
-    feedback_schema_info: Option<&PythonSchemaInfo>,
-    result_response_schema_info: Option<&PythonSchemaInfo>,
+pub fn build_consumed_action(
+    action: &ConsumedAction,
+    messages: &ConsumedActionMessage,
+    schema_info: ConsumedActionSchemaInfo<'_>,
+    dependency_node_name: &str,
 ) -> Result<String> {
     let mut builder = PythonCodeBuilder::new();
 
@@ -478,21 +483,21 @@ pub fn build_subscribed_action(
     let result_response_format = non_empty_message_format(messages.result_response.as_ref());
 
     // Capnp preamble and loader functions
-    let any_schema = goal_request_schema_info.is_some()
-        || goal_response_schema_info.is_some()
-        || cancel_response_schema_info.is_some()
-        || feedback_schema_info.is_some()
-        || result_response_schema_info.is_some();
+    let any_schema = schema_info.goal_request.is_some()
+        || schema_info.goal_response.is_some()
+        || schema_info.cancel_response.is_some()
+        || schema_info.feedback.is_some()
+        || schema_info.result_response.is_some();
 
     if any_schema {
         emit_capnp_preamble(&mut builder);
     }
     for info in [
-        goal_request_schema_info,
-        goal_response_schema_info,
-        cancel_response_schema_info,
-        feedback_schema_info,
-        result_response_schema_info,
+        schema_info.goal_request,
+        schema_info.goal_response,
+        schema_info.cancel_response,
+        schema_info.feedback,
+        schema_info.result_response,
     ]
     .into_iter()
     .flatten()
@@ -501,7 +506,7 @@ pub fn build_subscribed_action(
     }
 
     // Constants
-    builder.line(&format!("TARGET_NODE_NAME = \"{}\"", action.node));
+    builder.line(&format!("TARGET_NODE_NAME = \"{}\"", dependency_node_name));
     builder.line(&format!("TARGET_ACTION_NAME = \"{}\"", action.name));
     builder.blank_line();
 
@@ -555,7 +560,7 @@ pub fn build_subscribed_action(
     // ---------------------------------------------------------------
 
     // _deserialize_goal_response
-    if let Some((fmt, info)) = goal_response_format.zip(goal_response_schema_info) {
+    if let Some((fmt, info)) = goal_response_format.zip(schema_info.goal_response) {
         let loader_fn_name = capnp_loader_fn_name(info);
         deserialization::build_deserialize_fn(
             &mut builder,
@@ -568,7 +573,7 @@ pub fn build_subscribed_action(
     }
 
     // _deserialize_cancel_response
-    if let Some(info) = cancel_response_schema_info {
+    if let Some(info) = schema_info.cancel_response {
         let loader_fn_name = capnp_loader_fn_name(info);
         deserialization::build_deserialize_fn(
             &mut builder,
@@ -581,7 +586,7 @@ pub fn build_subscribed_action(
     }
 
     // _deserialize_feedback_payload
-    if let Some((fmt, info)) = feedback_format.zip(feedback_schema_info) {
+    if let Some((fmt, info)) = feedback_format.zip(schema_info.feedback) {
         let loader_fn_name = capnp_loader_fn_name(info);
         deserialization::build_deserialize_fn(
             &mut builder,
@@ -594,7 +599,7 @@ pub fn build_subscribed_action(
     }
 
     // _deserialize_result_response
-    if let Some((fmt, info)) = result_response_format.zip(result_response_schema_info) {
+    if let Some((fmt, info)) = result_response_format.zip(schema_info.result_response) {
         let loader_fn_name = capnp_loader_fn_name(info);
         deserialization::build_deserialize_fn(
             &mut builder,
@@ -632,7 +637,7 @@ pub fn build_subscribed_action(
     builder.indent();
 
     // Serialize request payload
-    if let Some((fmt, info)) = goal_request_format.zip(goal_request_schema_info) {
+    if let Some((fmt, info)) = goal_request_format.zip(schema_info.goal_request) {
         let loader_fn_name = capnp_loader_fn_name(info);
         builder.line(&format!(
             "capnp_msg = {loader_fn_name}().{}.new_message()",
@@ -703,7 +708,7 @@ pub fn build_subscribed_action(
         builder.line("async def on_next_feedback_message(self) -> FeedbackMessage:");
         builder.indent();
         builder.line("feedback = await self._inner.on_next_feedback()");
-        if feedback_schema_info.is_some() {
+        if schema_info.feedback.is_some() {
             builder.line("payload = feedback.payload");
             builder.line("return _deserialize_feedback_payload(payload)");
         } else {

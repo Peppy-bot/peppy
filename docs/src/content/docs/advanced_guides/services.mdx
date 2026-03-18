@@ -6,13 +6,13 @@ sidebar:
 ---
 
 Services implement a **request-response** communication pattern between nodes.
-A node *exposes* a service to handle incoming requests, and other nodes *subscribe* to that service to send requests and receive responses.
+A node *exposes* a service to handle incoming requests, and other nodes *consume* that service to send requests and receive responses.
 
 Use services for operations that need a result, such as querying a node's state, toggling a feature, or triggering a one-time computation.
 
 ## Exposing a service
 
-A node that handles service requests declares its services under `interfaces.exposes.services` in its `peppy.json5`.
+A node that handles service requests declares its services under `interfaces.services.exposes` in its `peppy.json5`.
 Each service defines a `name`, an optional `request_message_format`, and an optional `response_message_format`:
 
 ```json5
@@ -28,9 +28,8 @@ Each service defines a `name`, an optional `request_message_format`, and an opti
     start_cmd: ["./target/release/uvc_camera"]
   },
   interfaces: {
-    exposes: {
-      topics: [],
-      services: [
+    services: {
+      exposes: [
         {
           name: "enable_camera",
           request_message_format: {
@@ -54,12 +53,6 @@ Each service defines a `name`, an optional `request_message_format`, and an opti
           },
         },
       ],
-      actions: [],
-    },
-    subscribes_to: {
-      topics: [],
-      services: [],
-      actions: [],
     },
   }
 }
@@ -141,9 +134,10 @@ tokio::spawn(async move {
 });
 ```
 
-## Subscribing to a service
+## Consuming a service
 
-A node that calls a service declares its subscriptions under `interfaces.subscribes_to.services`:
+A node that calls a service declares what it consumes under `interfaces.services.consumes`.
+Dependencies are declared in `manifest.depends_on` and referenced by `local_node_id` in the interface:
 
 ```json5
 {
@@ -152,23 +146,24 @@ A node that calls a service declares its subscriptions under `interfaces.subscri
     name: "robot_brain",
     tag: "0.1.0",
     language: "rust",
+    depends_on: {
+      nodes: [
+        { name: "uvc_camera", tag: "0.1.0", local_id: "uvc_camera" },
+      ]
+    },
   },
   process: {
     add_cmd: ["cargo", "build", "--release"],
     start_cmd: ["./target/release/robot_brain"]
   },
   interfaces: {
-    subscribes_to: {
-      topics: [],
-      services: [
+    services: {
+      consumes: [
         {
-          id: "uvc_camera_enable_camera",  // Your chosen identifier for this subscription
-          node: "uvc_camera",               // Target node name
-          name: "enable_camera",            // Service name on that node
-          tag: "0.1.0",                     // Target node tag/version
+          local_node_id: "uvc_camera",  // References depends_on.nodes[].local_id
+          name: "enable_camera",        // Service name on that node
         },
       ],
-      actions: [],
     },
   }
 }
@@ -184,11 +179,11 @@ Error: `robot_brain:0.1.0` depends on `uvc_camera:0.1.0`, but it does not exist 
 
 ### Calling a service
 
-The code generator creates a module for each subscribed service under `peppygen::subscribed_services`.
+The code generator creates a module for each consumed service under `peppygen::consumed_services`.
 Use `poll` to send a request and wait for a response:
 
 ```rust
-use peppygen::subscribed_services::uvc_camera_enable_camera;
+use peppygen::consumed_services::uvc_camera_enable_camera;
 use peppygen::{NodeBuilder, Parameters, Result};
 use std::time::Duration;
 
@@ -230,7 +225,7 @@ The response contains:
 For a service without a request body, `poll` does not take a request argument:
 
 ```rust
-use peppygen::subscribed_services::uvc_camera_get_camera_info;
+use peppygen::consumed_services::uvc_camera_get_camera_info;
 
 let response = uvc_camera_get_camera_info::poll(
     &node_runner,

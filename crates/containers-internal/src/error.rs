@@ -54,4 +54,11 @@ pub enum Error {
          Details: {details}"
     )]
     FakerootDepsNotFound { binary: String, details: String },
+
+    #[error(
+        "AppArmor is blocking unprivileged user namespaces required by Apptainer.\n\
+         Create a per-binary AppArmor profile to allow it:\n\n\
+         {fix_command}\n"
+    )]
+    AppArmorUsernsRestricted { fix_command: String },
 }

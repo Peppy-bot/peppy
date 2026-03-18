@@ -1,8 +1,8 @@
 use super::*;
-use config::node::{ExposedTopic, MessageFormat, PeppygenLanguage, SubscribedTopic};
+use config::node::{ConsumedTopic, EmittedTopic, MessageFormat, PeppygenLanguage};
 use std::process::{Command, Stdio};
 
-const EXPOSED_TOPIC_EXAMPLE: &str = r#"
+const EMITTED_TOPIC_EXAMPLE: &str = r#"
 {
   name: "video_stream",
   qos_profile: "sensor_data",
@@ -23,7 +23,7 @@ const EXPOSED_TOPIC_EXAMPLE: &str = r#"
 }
 "#;
 
-const EXPOSED_TOPIC_EXAMPLE_EMPTY_FORMAT: &str = r#"
+const EMITTED_TOPIC_EXAMPLE_EMPTY_FORMAT: &str = r#"
 {
   name: "video_stream",
   qos_profile: "sensor_data",
@@ -31,7 +31,7 @@ const EXPOSED_TOPIC_EXAMPLE_EMPTY_FORMAT: &str = r#"
 }
 "#;
 
-const EXPOSED_TOPIC_EXAMPLE2: &str = r#"
+const EMITTED_TOPIC_EXAMPLE2: &str = r#"
 {
   name: "push_lidar_object", // The name of the topic inside the `lidar_sensor` node
   qos_profile: "sensor_data",
@@ -51,7 +51,7 @@ const EXPOSED_TOPIC_EXAMPLE2: &str = r#"
 }
 "#;
 
-const EXPOSED_TOPIC_KEYWORD_FIELDS_EXAMPLE: &str = r#"
+const EMITTED_TOPIC_KEYWORD_FIELDS_EXAMPLE: &str = r#"
 {
   name: "keyword_topic",
   qos_profile: "standard",
@@ -62,7 +62,7 @@ const EXPOSED_TOPIC_KEYWORD_FIELDS_EXAMPLE: &str = r#"
 }
 "#;
 
-const EXPOSED_TOPIC_RESERVED_FIELD_EXAMPLE: &str = r#"
+const EMITTED_TOPIC_RESERVED_FIELD_EXAMPLE: &str = r#"
 {
   name: "robot_state",
   qos_profile: "standard",
@@ -73,7 +73,7 @@ const EXPOSED_TOPIC_RESERVED_FIELD_EXAMPLE: &str = r#"
 }
 "#;
 
-const EXPOSED_TOPIC_FIXED_STRING_ARRAY_EXAMPLE: &str = r#"
+const EMITTED_TOPIC_FIXED_STRING_ARRAY_EXAMPLE: &str = r#"
 {
   name: "labels",
   qos_profile: "standard",
@@ -89,10 +89,8 @@ const EXPOSED_TOPIC_FIXED_STRING_ARRAY_EXAMPLE: &str = r#"
 
 const SUBSCRIBED_TOPIC_EXAMPLE1: &str = r#"
 {
-    id: "video_stream",
-    node: "uvc_camera",
+    local_node_id: "uvc_camera",
     name: "video_stream",
-    tag: "0.1.0"
 }
 "#;
 
@@ -115,19 +113,15 @@ const SUBSCRIBED_TOPIC_FORMAT_EXAMPLE1: &str = r#"
 
 const SUBSCRIBED_TOPIC_EXAMPLE2: &str = r#"
 {
-    id: "sound",
-    node: "uvc_camera",
+    local_node_id: "uvc_camera",
     name: "sound",
-    tag: "0.1.0"
 }
 "#;
 
 const SUBSCRIBED_TOPIC_EXAMPLE_KEYWORDS: &str = r#"
 {
-    id: "keyword_topic",
-    node: "keyword_source",
+    local_node_id: "keyword_source",
     name: "keyword_topic",
-    tag: "0.1.0"
 }
 "#;
 
@@ -156,11 +150,11 @@ const SUBSCRIBED_TOPIC_FORMAT_EXAMPLE_KEYWORDS: &str = r#"
 }
 "#;
 
-fn parse_exposed_topic(example: &str) -> ExposedTopic {
+fn parse_emitted_topic(example: &str) -> EmittedTopic {
     serde_json5::from_str(example).unwrap()
 }
 
-fn parse_subscribed_topic(example: &str) -> SubscribedTopic {
+fn parse_consumed_topic(example: &str) -> ConsumedTopic {
     serde_json5::from_str(example).unwrap()
 }
 
@@ -168,13 +162,13 @@ fn parse_message_format(example: &str) -> MessageFormat {
     serde_json5::from_str(example).unwrap()
 }
 
-/// In the case of a topic, an "exposed" topic is an entity that emits messages
+/// In the case of a topic, an "emitted" topic is an entity that emits messages
 #[test]
-fn expose_topic() {
-    let topic = parse_exposed_topic(EXPOSED_TOPIC_EXAMPLE);
+fn emit_topic() {
+    let topic = parse_emitted_topic(EMITTED_TOPIC_EXAMPLE);
 
     let mut generator = RustGenerator::new();
-    generator.add_exposed_topic(&topic).unwrap();
+    generator.add_emitted_topic(&topic).unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
         artifacts.len(),
@@ -226,13 +220,13 @@ fn expose_topic() {
 }
 
 #[test]
-fn expose_two_topics() {
-    let topic1 = parse_exposed_topic(EXPOSED_TOPIC_EXAMPLE);
-    let topic2 = parse_exposed_topic(EXPOSED_TOPIC_EXAMPLE2);
+fn emit_two_topics() {
+    let topic1 = parse_emitted_topic(EMITTED_TOPIC_EXAMPLE);
+    let topic2 = parse_emitted_topic(EMITTED_TOPIC_EXAMPLE2);
 
     let mut generator = RustGenerator::new();
-    generator.add_exposed_topic(&topic1).unwrap();
-    generator.add_exposed_topic(&topic2).unwrap();
+    generator.add_emitted_topic(&topic1).unwrap();
+    generator.add_emitted_topic(&topic2).unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
         artifacts.len(),
@@ -247,11 +241,11 @@ fn expose_two_topics() {
 }
 
 #[test]
-fn expose_topic_escapes_rust_keyword_fields() {
-    let topic = parse_exposed_topic(EXPOSED_TOPIC_KEYWORD_FIELDS_EXAMPLE);
+fn emit_topic_escapes_rust_keyword_fields() {
+    let topic = parse_emitted_topic(EMITTED_TOPIC_KEYWORD_FIELDS_EXAMPLE);
 
     let mut generator = RustGenerator::new();
-    generator.add_exposed_topic(&topic).unwrap();
+    generator.add_emitted_topic(&topic).unwrap();
     let rendered = render_artifacts(generator.into_artifacts())
         .into_iter()
         .next()
@@ -270,13 +264,13 @@ fn expose_topic_escapes_rust_keyword_fields() {
 }
 
 #[test]
-fn expose_topic_rejects_reserved_message_field_name() {
+fn emit_topic_rejects_reserved_message_field_name() {
     use crate::error::Error;
 
-    let topic = parse_exposed_topic(EXPOSED_TOPIC_RESERVED_FIELD_EXAMPLE);
+    let topic = parse_emitted_topic(EMITTED_TOPIC_RESERVED_FIELD_EXAMPLE);
     let mut generator = RustGenerator::new();
 
-    let err = generator.add_exposed_topic(&topic).unwrap_err();
+    let err = generator.add_emitted_topic(&topic).unwrap_err();
 
     match err {
         Error::UnauthorizedMessageFieldName {
@@ -293,13 +287,13 @@ fn expose_topic_rejects_reserved_message_field_name() {
 }
 
 #[test]
-fn expose_topic_rejects_fixed_string_array() {
+fn emit_topic_rejects_fixed_string_array() {
     use crate::error::Error;
 
-    let topic = parse_exposed_topic(EXPOSED_TOPIC_FIXED_STRING_ARRAY_EXAMPLE);
+    let topic = parse_emitted_topic(EMITTED_TOPIC_FIXED_STRING_ARRAY_EXAMPLE);
     let mut generator = RustGenerator::new();
 
-    let err = generator.add_exposed_topic(&topic).unwrap_err();
+    let err = generator.add_emitted_topic(&topic).unwrap_err();
 
     match err {
         Error::UnsupportedFixedArrayItemType {
@@ -317,12 +311,14 @@ fn expose_topic_rejects_fixed_string_array() {
 
 /// In the case of a topic, a "subscribed" topic is an entity expects to receive messages from another entity
 #[test]
-fn subscribed_to_topic() {
-    let topic = parse_subscribed_topic(SUBSCRIBED_TOPIC_EXAMPLE1);
+fn consumed_topic() {
+    let topic = parse_consumed_topic(SUBSCRIBED_TOPIC_EXAMPLE1);
     let format = parse_message_format(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE1);
 
     let mut generator = RustGenerator::new();
-    generator.add_subscribed_topic(&topic, format).unwrap();
+    generator
+        .add_consumed_topic(&topic, format, "uvc_camera")
+        .unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
         artifacts.len(),
@@ -380,12 +376,14 @@ fn subscribed_to_topic() {
 }
 
 #[test]
-fn subscribed_topic_escapes_rust_keyword_fields() {
-    let topic = parse_subscribed_topic(SUBSCRIBED_TOPIC_EXAMPLE_KEYWORDS);
+fn consumed_topic_escapes_rust_keyword_fields() {
+    let topic = parse_consumed_topic(SUBSCRIBED_TOPIC_EXAMPLE_KEYWORDS);
     let format = parse_message_format(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE_KEYWORDS);
 
     let mut generator = RustGenerator::new();
-    generator.add_subscribed_topic(&topic, format).unwrap();
+    generator
+        .add_consumed_topic(&topic, format, "keyword_source")
+        .unwrap();
     let rendered = render_artifacts(generator.into_artifacts())
         .into_iter()
         .next()
@@ -404,19 +402,19 @@ fn subscribed_topic_escapes_rust_keyword_fields() {
 }
 
 #[test]
-fn subscribed_to_two_topics_same_node() {
-    let video_topic = parse_subscribed_topic(SUBSCRIBED_TOPIC_EXAMPLE1);
+fn consumed_two_topics_same_node() {
+    let video_topic = parse_consumed_topic(SUBSCRIBED_TOPIC_EXAMPLE1);
     let video_format = parse_message_format(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE1);
 
-    let sound_topic = parse_subscribed_topic(SUBSCRIBED_TOPIC_EXAMPLE2);
+    let sound_topic = parse_consumed_topic(SUBSCRIBED_TOPIC_EXAMPLE2);
     let sound_format = parse_message_format(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE2);
 
     let mut generator = RustGenerator::new();
     generator
-        .add_subscribed_topic(&video_topic, video_format)
+        .add_consumed_topic(&video_topic, video_format, "uvc_camera")
         .unwrap();
     generator
-        .add_subscribed_topic(&sound_topic, sound_format)
+        .add_consumed_topic(&sound_topic, sound_format, "uvc_camera")
         .unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
@@ -436,37 +434,107 @@ fn subscribed_to_two_topics_same_node() {
     }
 }
 
-/// Checks for clippy warnings when there is only one exposed topic with an empty message format.
 #[test]
-fn clippy_single_exposed_topic_empty_format() {
-    let temp_dir = TempDir::new().unwrap();
-    let exposed_topic = parse_exposed_topic(EXPOSED_TOPIC_EXAMPLE_EMPTY_FORMAT);
-
-    let subscribed_action1: SubscribedAction = serde_json5::from_str(
+fn external_consumed_topic() {
+    let format = parse_message_format(
         r#"
         {
-          id: "brain_move_arm",
-          node: "brain",
+            linear_x: "f64",
+            angular_z: "f64",
+        }
+        "#,
+    );
+
+    let mut generator = RustGenerator::new();
+    generator
+        .add_external_consumed_topic("cmd_vel", format)
+        .unwrap();
+    let artifacts = render_artifacts(generator.into_artifacts());
+    assert_eq!(
+        artifacts.len(),
+        1,
+        "expected a single generated artifact, got {}",
+        artifacts.len()
+    );
+    let rendered = artifacts.into_iter().next().expect("artifact is present");
+
+    // Generated struct
+    assert_contains_all(
+        &rendered,
+        &[
+            "pub struct Message",
+            "pub linear_x: f64",
+            "pub angular_z: f64",
+        ],
+    );
+
+    // Subscriber function signature
+    assert_contains_all(
+        &rendered,
+        &[
+            "pub async fn on_next_message_received(",
+            "core_node_target: Option<&str>",
+            "instance_id_target: Option<&str>",
+            "-> crate::Result<(String, Message)>",
+        ],
+    );
+
+    // External subscribe: uses consume_external, no node_name
+    assert_contains_all(
+        &rendered,
+        &[
+            "let topic_name = \"cmd_vel\";",
+            "peppylib::TopicMessenger::consume_external(",
+        ],
+    );
+    assert!(
+        !rendered.contains("let node_name"),
+        "external topic should not have a node_name variable"
+    );
+
+    // Deserialization
+    assert_contains_all(
+        &rendered,
+        &["fn deseralize_payload(", "capnp::serialize::read_message"],
+    );
+
+    // Error variants
+    assert_contains_all(
+        &rendered,
+        &[
+            "crate::Error::TopicSubscribe",
+            "crate::Error::SubscriptionClosed",
+        ],
+    );
+}
+
+/// Checks for clippy warnings when there is only one emitted topic with an empty message format.
+#[test]
+fn clippy_single_emitted_topic_empty_format() {
+    let temp_dir = TempDir::new().unwrap();
+    let emitted_topic = parse_emitted_topic(EMITTED_TOPIC_EXAMPLE_EMPTY_FORMAT);
+
+    let consumed_action1: ConsumedAction = serde_json5::from_str(
+        r#"
+        {
+          local_node_id: "brain",
           name: "move_arm",
-          tag: "0.1.0"
         }
         "#,
     )
     .unwrap();
-    let subscribed_action2: SubscribedAction = serde_json5::from_str(
+    let consumed_action2: ConsumedAction = serde_json5::from_str(
         r#"
         {
-          id: "controller_rotate_servo",
-          node: "controller",
+          local_node_id: "controller",
           name: "rotate_servo_clockwise",
-          tag: "0.1.0"
         }
         "#,
     )
     .unwrap();
     let goal_response_format: MessageFormat =
         serde_json5::from_str(r#"{ accepted: "bool" }"#).unwrap();
-    let action_messages = SubscribedActionMessage {
+    let action_messages = ConsumedActionMessage {
         goal_request: None,
         goal_response: Some(goal_response_format),
         feedback: None,
@@ -475,12 +543,12 @@ fn clippy_single_exposed_topic_empty_format() {
     };
 
     let (mut generator, output_dir, user_node, _) = init_test_env::<RustGenerator>(&temp_dir);
-    generator.add_exposed_topic(&exposed_topic).unwrap();
+    generator.add_emitted_topic(&emitted_topic).unwrap();
     generator
-        .add_subscribed_action(&subscribed_action1, &action_messages)
+        .add_consumed_action(&consumed_action1, &action_messages, "brain")
         .unwrap();
     generator
-        .add_subscribed_action(&subscribed_action2, &action_messages)
+        .add_consumed_action(&consumed_action2, &action_messages, "controller")
         .unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);
     generator
@@ -513,15 +581,15 @@ fn clippy_single_exposed_topic_empty_format() {
         String::from_utf8_lossy(&clippy_output.stderr)
     );
 
-    let exposed_topics_contents = std::fs::read_to_string(output_dir.join("src/exposed_topics.rs"))
-        .expect("failed to read exposed_topics module");
-    assert_contains_all(&exposed_topics_contents, &["pub mod video_stream;"]);
+    let emitted_topics_contents = std::fs::read_to_string(output_dir.join("src/emitted_topics.rs"))
+        .expect("failed to read emitted_topics module");
+    assert_contains_all(&emitted_topics_contents, &["pub mod video_stream;"]);
 
-    let subscribed_actions_contents =
-        std::fs::read_to_string(output_dir.join("src/subscribed_actions.rs"))
-            .expect("failed to read subscribed_actions module");
+    let consumed_actions_contents =
+        std::fs::read_to_string(output_dir.join("src/consumed_actions.rs"))
+            .expect("failed to read consumed_actions module");
     assert_contains_all(
-        &subscribed_actions_contents,
+        &consumed_actions_contents,
         &[
             "pub mod brain_move_arm;",
             "pub mod controller_rotate_servo_clockwise;",
@@ -531,23 +599,23 @@ fn clippy_single_exposed_topic_empty_format() {
 
 /// This is a long running test that verifies the generated code compiles and passes clippy
 #[test]
-fn compile_lib_with_exposed_and_subscribed_topics() {
+fn compile_lib_with_emitted_and_consumed_topics() {
     let temp_dir = TempDir::new().unwrap();
-    let exposed_topic1 = parse_exposed_topic(EXPOSED_TOPIC_EXAMPLE);
-    let exposed_topic2 = parse_exposed_topic(EXPOSED_TOPIC_EXAMPLE2);
-    let subscribed_topic1 = parse_subscribed_topic(SUBSCRIBED_TOPIC_EXAMPLE1);
+    let emitted_topic1 = parse_emitted_topic(EMITTED_TOPIC_EXAMPLE);
+    let emitted_topic2 = parse_emitted_topic(EMITTED_TOPIC_EXAMPLE2);
+    let consumed_topic1 = parse_consumed_topic(SUBSCRIBED_TOPIC_EXAMPLE1);
     let subscribed_format1 = parse_message_format(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE1);
-    let subscribed_topic2 = parse_subscribed_topic(SUBSCRIBED_TOPIC_EXAMPLE2);
+    let consumed_topic2 = parse_consumed_topic(SUBSCRIBED_TOPIC_EXAMPLE2);
     let subscribed_format2 = parse_message_format(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE2);
 
     let (mut generator, output_dir, user_node, _) = init_test_env::<RustGenerator>(&temp_dir);
-    generator.add_exposed_topic(&exposed_topic1).unwrap();
-    generator.add_exposed_topic(&exposed_topic2).unwrap();
+    generator.add_emitted_topic(&emitted_topic1).unwrap();
+    generator.add_emitted_topic(&emitted_topic2).unwrap();
     generator
-        .add_subscribed_topic(&subscribed_topic1, subscribed_format1)
+        .add_consumed_topic(&consumed_topic1, subscribed_format1, "uvc_camera")
         .unwrap();
     generator
-        .add_subscribed_topic(&subscribed_topic2, subscribed_format2)
+        .add_consumed_topic(&consumed_topic2, subscribed_format2, "uvc_camera")
         .unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);
     generator
@@ -609,31 +677,31 @@ fn compile_lib_with_exposed_and_subscribed_topics() {
         std::fs::read_to_string(output_dir.join("src/lib.rs")).expect("failed to read lib.rs");
     assert_contains_all(
         &lib_contents,
-        &["pub mod exposed_topics;", "pub mod subscribed_topics;"],
+        &["pub mod emitted_topics;", "pub mod consumed_topics;"],
     );
 
     // Verify expected module files exist
     assert!(
         output_dir
-            .join("src/exposed_topics/video_stream.rs")
+            .join("src/emitted_topics/video_stream.rs")
             .exists(),
         "Expected video_stream module"
     );
     assert!(
         output_dir
-            .join("src/exposed_topics/push_lidar_object.rs")
+            .join("src/emitted_topics/push_lidar_object.rs")
             .exists(),
         "Expected push_lidar_object module"
     );
     assert!(
         output_dir
-            .join("src/subscribed_topics/uvc_camera_video_stream.rs")
+            .join("src/consumed_topics/uvc_camera_video_stream.rs")
             .exists(),
         "Expected uvc_camera_video_stream subscriber module"
     );
     assert!(
         output_dir
-            .join("src/subscribed_topics/uvc_camera_sound.rs")
+            .join("src/consumed_topics/uvc_camera_sound.rs")
             .exists(),
         "Expected uvc_camera_sound subscriber module"
     );

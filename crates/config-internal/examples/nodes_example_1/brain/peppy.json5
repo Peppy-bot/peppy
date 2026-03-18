@@ -9,6 +9,12 @@
     labels: [
       "brain"
     ],
+    depends_on: {
+      nodes: [
+        { name: "uvc_camera", tag: "0.1.0", local_id: "uvc_camera" },
+        { name: "controller", tag: "0.1.0", local_id: "controller" },
+      ]
+    },
   },
   process: {
     add_cmd: [
@@ -22,42 +28,33 @@
   },
   parameters: {},
   interfaces: {
-    exposes: {
-      topics: [],
-      services: [],
-      actions: [],
-    },
-    subscribes_to: {
-      topics: [
+    topics: {
+      consumes: [
         {
-          id: "camera_stream",
-          node: "uvc_camera",
+          local_node_id: "uvc_camera",
           name: "video_stream",
-          tag: "0.1.0",
         }
       ],
-      services: [
+    },
+    services: {
+      consumes: [
         {
-          id: "video_info",
-          node: "uvc_camera",
+          local_node_id: "uvc_camera",
           name: "video_stream_info",
-          tag: "0.1.0",
         }
       ],
-      actions: [
+    },
+    actions: {
+      consumes: [
         {
-          id: "move_right_arm_action",
-          node: "controller",
+          local_node_id: "controller",
           name: "move_right_arm",
-          tag: "0.1.0",
         },
         {
-          id: "move_left_arm_action",
-          node: "controller",
+          local_node_id: "controller",
           name: "move_left_arm",
-          tag: "0.1.0",
         }
-      ]
+      ],
     },
   }
 }

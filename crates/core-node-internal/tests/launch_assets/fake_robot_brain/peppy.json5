@@ -8,6 +8,12 @@
     labels: [
       "brain"
     ],
+    depends_on: {
+      nodes: [
+        { name: "fake_uvc_camera", tag: "0.1.0", local_id: "fake_uvc_camera" },
+        { name: "fake_openarm01_controller", tag: "0.1.0", local_id: "fake_openarm01_controller" },
+      ]
+    },
   },
   process: {
     add_cmd: [
@@ -20,44 +26,38 @@
   },
   parameters: {},
   interfaces: {
-    exposes: {
-      topics: [],
-      services: [],
-      actions: [],
-    },
-    subscribes_to: {
-      // The brain receives the inputs from the camera
-      topics: [
+    // The brain receives the inputs from the camera
+    topics: {
+      emits: [],
+      consumes: [
         {
-          id: "camera_front",
-          node: "fake_uvc_camera",
+          local_node_id: "fake_uvc_camera",
           name: "video_stream",
-          tag: "0.1.0",
         }
       ],
-      services: [
+    },
+    services: {
+      exposes: [],
+      consumes: [
         {
-          id: "video_info",
-          node: "fake_uvc_camera",
+          local_node_id: "fake_uvc_camera",
           name: "video_stream_info",
-          tag: "0.1.0",
         }
       ],
-      // And emit actions for the controller to take
-      actions: [
+    },
+    // And emit actions for the controller to take
+    actions: {
+      exposes: [],
+      consumes: [
         {
-          id: "move_right_arm_action",
-          node: "fake_openarm01_controller",
+          local_node_id: "fake_openarm01_controller",
           name: "move_right_arm",
-          tag: "0.1.0",
         },
         {
-          id: "move_left_arm_action",
-          node: "fake_openarm01_controller",
+          local_node_id: "fake_openarm01_controller",
           name: "move_left_arm",
-          tag: "0.1.0",
         }
-      ]
+      ],
     },
   }
 }

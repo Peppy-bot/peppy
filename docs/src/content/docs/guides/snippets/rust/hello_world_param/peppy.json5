@@ -19,8 +19,8 @@
     name: "string",
   },
   interfaces: {
-    exposes: {
-      topics: [
+    topics: {
+      emits: [
         {
           name: "message_stream",
           qos_profile: "sensor_data",

@@ -2,24 +2,24 @@ use crate::error::{Error, Result};
 use crate::generator::common::CrateDeployMode;
 use config::consts::PeppyDirs;
 use config::node::{
-    ExposedAction, ExposedService, ExposedTopic, MessageFormat, PeppygenLanguage, PrimitiveSchema,
-    SchemaType, SubscribedAction, SubscribedService, SubscribedTopic, TypeToken,
+    ConsumedAction, ConsumedService, ConsumedTopic, EmittedTopic, ExposedAction, ExposedService,
+    MessageFormat, PeppygenLanguage, PrimitiveSchema, SchemaType, TypeToken,
 };
 use indexmap::IndexMap;
 use std::path::Path;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InterfaceKind {
-    ExposedTopic,
+    EmittedTopic,
     ExposedService,
     ExposedAction,
-    SubscribedTopic,
-    SubscribedService,
-    SubscribedAction,
+    ConsumedTopic,
+    ConsumedService,
+    ConsumedAction,
 }
 
 #[derive(Debug, Clone)]
-pub struct SubscribedActionMessage {
+pub struct ConsumedActionMessage {
     pub goal_request: Option<MessageFormat>,
     pub goal_response: Option<MessageFormat>,
     pub feedback: Option<MessageFormat>,
@@ -30,12 +30,29 @@ pub struct SubscribedActionMessage {
 /// Describes a concrete subscriber/exposer interface that a deployment requires.
 #[derive(Debug, Clone)]
 pub enum InterfaceVariant {
-    ExposedTopic(ExposedTopic),
+    EmittedTopic(EmittedTopic),
     ExposedService(ExposedService),
     ExposedAction(ExposedAction),
-    SubscribedTopic(SubscribedTopic, MessageFormat),
-    SubscribedService(SubscribedService, MessageFormat, MessageFormat),
-    SubscribedAction(SubscribedAction, SubscribedActionMessage),
+    ConsumedTopic {
+        topic: ConsumedTopic,
+        message_format: MessageFormat,
+        dependency_node_name: String,
+    },
+    ConsumedService {
+        service: ConsumedService,
+        request_format: MessageFormat,
+        response_format: MessageFormat,
+        dependency_node_name: String,
+    },
+    ConsumedAction {
+        action: ConsumedAction,
+        messages: ConsumedActionMessage,
+        dependency_node_name: String,
+    },
+    ExternalConsumedTopic {
+        name: String,
+        message_format: MessageFormat,
+    },
 }
 
 /// Maps a deployment interface to the message format required to bind it.
@@ -90,24 +107,32 @@ impl InterfaceArtifact {
 /// Collects deployment interfaces and produces generated artifacts when finalized.
 pub trait LanguageGenerator {
     fn push_section(&mut self, section: InterfaceArtifact);
-    fn add_exposed_topic(&mut self, topic: &ExposedTopic) -> Result<()>;
+    fn add_emitted_topic(&mut self, topic: &EmittedTopic) -> Result<()>;
     fn add_exposed_service(&mut self, service: &ExposedService) -> Result<()>;
     fn add_exposed_action(&mut self, action: &ExposedAction) -> Result<()>;
-    fn add_subscribed_topic(
+    fn add_consumed_topic(
         &mut self,
-        topic: &SubscribedTopic,
+        topic: &ConsumedTopic,
         arguments: MessageFormat,
+        dependency_node_name: &str,
     ) -> Result<()>;
-    fn add_subscribed_service(
+    fn add_external_consumed_topic(
         &mut self,
-        service: &SubscribedService,
+        name: &str,
+        message_format: MessageFormat,
+    ) -> Result<()>;
+    fn add_consumed_service(
+        &mut self,
+        service: &ConsumedService,
         request_arguments: &MessageFormat,
         response_arguments: &MessageFormat,
+        dependency_node_name: &str,
     ) -> Result<()>;
-    fn add_subscribed_action(
+    fn add_consumed_action(
         &mut self,
-        action: &SubscribedAction,
-        messages: &SubscribedActionMessage,
+        action: &ConsumedAction,
+        messages: &ConsumedActionMessage,
+        dependency_node_name: &str,
     ) -> Result<()>;
     /// Finalizes the builder and return a path to the library
     fn build(
@@ -121,18 +146,34 @@ pub trait LanguageGenerator {
 impl DeploymentInterface {
     pub fn register_with<B: LanguageGenerator + ?Sized>(&self, backend: &mut B) -> Result<()> {
         match self.interface() {
-            InterfaceVariant::ExposedTopic(topic) => backend.add_exposed_topic(topic),
+            InterfaceVariant::EmittedTopic(topic) => backend.add_emitted_topic(topic),
             InterfaceVariant::ExposedService(service) => backend.add_exposed_service(service),
             InterfaceVariant::ExposedAction(action) => backend.add_exposed_action(action),
-            InterfaceVariant::SubscribedTopic(topic, format) => {
-                backend.add_subscribed_topic(topic, format.clone())
-            }
-            InterfaceVariant::SubscribedService(service, request_arguments, response_arguments) => {
-                backend.add_subscribed_service(service, request_arguments, response_arguments)
-            }
-            InterfaceVariant::SubscribedAction(action, messages) => {
-                backend.add_subscribed_action(action, messages)
-            }
+            InterfaceVariant::ConsumedTopic {
+                topic,
+                message_format,
+                dependency_node_name,
+            } => backend.add_consumed_topic(topic, message_format.clone(), dependency_node_name),
+            InterfaceVariant::ConsumedService {
+                service,
+                request_format,
+                response_format,
+                dependency_node_name,
+            } => backend.add_consumed_service(
+                service,
+                request_format,
+                response_format,
+                dependency_node_name,
+            ),
+            InterfaceVariant::ConsumedAction {
+                action,
+                messages,
+                dependency_node_name,
+            } => backend.add_consumed_action(action, messages, dependency_node_name),
+            InterfaceVariant::ExternalConsumedTopic {
+                name,
+                message_format,
+            } => backend.add_external_consumed_topic(name, message_format.clone()),
         }
     }
 }

@@ -13,18 +13,21 @@ fn action_dependency_resolved_when_dependency_added_first() {
               name: "brain",
               tag: "1.0.0",
               language: "rust",
+              depends_on: {
+                nodes: [
+                  { name: "controller", tag: "1.0.0", local_id: "controller" }
+                ]
+              },
             },
             process: {
               start_cmd: ["brain"]
             },
             interfaces: {
-                subscribes_to: {
-                    actions: [
+                actions: {
+                    consumes: [
                         {
-                          id: "move_right_arm_sub",
-                          node: "controller",
-                          name: "move_right_arm",
-                          tag: "1.0.0"
+                          local_node_id: "controller",
+                          name: "move_right_arm"
                         }
                     ]
                 }
@@ -45,8 +48,8 @@ fn action_dependency_resolved_when_dependency_added_first() {
               start_cmd: ["controller"]
             },
             interfaces: {
-                exposes: {
-                    actions: [
+                actions: {
+                    exposes: [
                         {
                           name: "move_right_arm",
                           goal_service: {
@@ -58,8 +61,8 @@ fn action_dependency_resolved_when_dependency_added_first() {
                                 $length: 3
                               }
                             },
-                            response_message_format: { 
-                              accepted: "bool" 
+                            response_message_format: {
+                              accepted: "bool"
                             }
                           },
                           feedback_topic: {
@@ -144,18 +147,21 @@ fn action_dependency_fails_when_dependency_is_missing() {
               name: "brain",
               tag: "1.0.0",
               language: "rust",
+              depends_on: {
+                nodes: [
+                  { name: "controller", tag: "1.0.0", local_id: "controller" }
+                ]
+              },
             },
             process: {
               start_cmd: ["brain"]
             },
             interfaces: {
-                subscribes_to: {
-                    actions: [
+                actions: {
+                    consumes: [
                         {
-                          id: "move_right_arm_sub",
-                          node: "controller",
-                          name: "move_right_arm",
-                          tag: "1.0.0"
+                          local_node_id: "controller",
+                          name: "move_right_arm"
                         }
                     ]
                 }
@@ -192,18 +198,21 @@ fn action_dependency_fails_when_action_not_exposed_by_dependency() {
               name: "brain",
               tag: "1.0.0",
               language: "rust",
+              depends_on: {
+                nodes: [
+                  { name: "controller", tag: "1.0.0", local_id: "controller" }
+                ]
+              },
             },
             process: {
               start_cmd: ["brain"]
             },
             interfaces: {
-                subscribes_to: {
-                    actions: [
+                actions: {
+                    consumes: [
                         {
-                          id: "move_right_arm_sub",
-                          node: "controller",
-                          name: "move_right_arm",
-                          tag: "1.0.0"
+                          local_node_id: "controller",
+                          name: "move_right_arm"
                         }
                     ]
                 }
@@ -225,8 +234,8 @@ fn action_dependency_fails_when_action_not_exposed_by_dependency() {
               start_cmd: ["controller"]
             },
             interfaces: {
-                exposes: {
-                    actions: [
+                actions: {
+                    exposes: [
                         {
                           name: "move_left_arm",
                           goal_service: {

@@ -15,17 +15,17 @@ mod type_mapping;
 pub use parameters::{generate_parameters_struct, validate_parameter_schema};
 
 use super::types::{
-    CapnpSchema, InterfaceArtifact, InterfaceKind, LanguageGenerator, SubscribedActionMessage,
+    CapnpSchema, ConsumedActionMessage, InterfaceArtifact, InterfaceKind, LanguageGenerator,
     cancel_action_response_format, non_empty_message_format,
 };
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::generator::naming::{
     non_empty_str, resolve_schema_file_stem, sanitize_component, to_camel_case,
 };
 use config::encoding::{CapnpSchemaArtifacts, FunctionParam};
 use config::node::{
-    ExposedAction, ExposedService, ExposedTopic, MessageFormat, SubscribedAction,
-    SubscribedService, SubscribedTopic,
+    ConsumedAction, ConsumedService, ConsumedTopic, EmittedTopic, ExposedAction, ExposedService,
+    MessageFormat,
 };
 use indexmap::IndexMap;
 use proc_macro2::{Ident, Literal, Span, TokenStream};
@@ -47,7 +47,7 @@ use services::{
     ExposedServiceMethodSpec, ServiceResponseSpec, build_exposed_service_method,
     build_request_struct_with_name_and_impl, deserialize_fields_from_format,
 };
-use topics::{SubscribedTopicCallbackSpec, build_subscribed_topic_callback, build_topic_emit};
+use topics::{ConsumedTopicCallbackSpec, build_consumed_topic_callback, build_topic_emit};
 use type_mapping::{render_tokens, unused_params_stmt};
 
 /// Rust-specific implementation of the interface generator.
@@ -118,8 +118,8 @@ impl RustGenerator {
         }))
     }
 
-    /// Builds the fire_goal method for subscribed actions using ActionMessenger::send_goal
-    fn build_subscribed_action_fire_goal_method(
+    /// Builds the fire_goal method for consumed actions using ActionMessenger::send_goal
+    fn build_consumed_action_fire_goal_method(
         &mut self,
         context: &mut GenerationContext,
         action_struct_name: &str,
@@ -276,14 +276,14 @@ impl RustGenerator {
         Ok((method_tokens, helper_items, has_goal_response_data))
     }
 
-    /// Builds a subscribed action response method (cancel_goal or get_result).
+    /// Builds a consumed action response method (cancel_goal or get_result).
     ///
     /// Both follow the same structure: register response artifacts, build a deserializer,
     /// and generate a method that calls the appropriate ActionMessenger function.
-    fn build_subscribed_action_response_method(
+    fn build_consumed_action_response_method(
         &mut self,
         context: &mut GenerationContext,
-        spec: SubscribedActionResponseMethodSpec<'_>,
+        spec: ConsumedActionResponseMethodSpec<'_>,
     ) -> Result<(TokenStream, Vec<TokenStream>)> {
         let response_data_ident = Ident::new(spec.data_struct_name, Span::call_site());
         let response_ident = Ident::new(spec.response_struct_name, Span::call_site());
@@ -369,8 +369,8 @@ impl RustGenerator {
         Ok((method_tokens, helper_items))
     }
 
-    /// Builds the on_next_feedback_message method for subscribed actions
-    fn build_subscribed_action_feedback_method(
+    /// Builds the on_next_feedback_message method for consumed actions
+    fn build_consumed_action_feedback_method(
         &mut self,
         context: &mut GenerationContext,
         format: &MessageFormat,
@@ -454,9 +454,9 @@ impl RustGenerator {
     }
 }
 
-/// Describes the parameterizable parts of a subscribed action response method
+/// Describes the parameterizable parts of a consumed action response method
 /// (cancel_goal or get_result).
-struct SubscribedActionResponseMethodSpec<'a> {
+struct ConsumedActionResponseMethodSpec<'a> {
     action_struct_name: &'a str,
     method_name: &'a str,
     response_struct_name: &'a str,
@@ -494,7 +494,7 @@ impl LanguageGenerator for RustGenerator {
         }
     }
 
-    fn add_exposed_topic(&mut self, topic: &ExposedTopic) -> Result<()> {
+    fn add_emitted_topic(&mut self, topic: &EmittedTopic) -> Result<()> {
         let fn_name = prefixed_ident("", non_empty_str(topic.name.as_str()), "topic");
         let fn_name_str = fn_name.to_string();
 
@@ -539,7 +539,7 @@ impl LanguageGenerator for RustGenerator {
 
         self.push_section(InterfaceArtifact::from_kind(
             &module_label,
-            InterfaceKind::ExposedTopic,
+            InterfaceKind::EmittedTopic,
             rendered,
         ));
         Ok(())
@@ -931,23 +931,29 @@ impl LanguageGenerator for RustGenerator {
         Ok(())
     }
 
-    fn add_subscribed_topic(
+    fn add_consumed_topic(
         &mut self,
-        topic: &SubscribedTopic,
+        topic: &ConsumedTopic,
         arguments: MessageFormat,
+        dependency_node_name: &str,
     ) -> Result<()> {
-        let node_name = topic.node.as_str();
+        let ConsumedTopic::Linked(linked) = topic else {
+            return Err(Error::InvariantViolation {
+                context: "add_consumed_topic called with ConsumedTopic::External; use add_external_consumed_topic instead".into(),
+            });
+        };
+        let node_name = linked.local_node_id.as_str();
 
         let node_component = sanitize_component(node_name);
-        let topic_component = sanitize_component(topic.name.as_str());
+        let topic_component = sanitize_component(linked.name.as_str());
 
         debug_assert!(
             !node_component.is_empty(),
-            "SubscribedTopic.node should be validated as non-empty"
+            "ConsumedTopic.local_node_id should be validated as non-empty"
         );
         debug_assert!(
             !topic_component.is_empty(),
-            "SubscribedTopic.name should be validated as non-empty"
+            "ConsumedTopic.name should be validated as non-empty"
         );
 
         let node_prefix = to_camel_case(&node_component);
@@ -957,7 +963,7 @@ impl LanguageGenerator for RustGenerator {
             struct_prefix = String::from("Topic");
         }
 
-        let mut module_label = format!("{}_{}", node_name, topic.name.as_str());
+        let mut module_label = format!("{}_{}", node_name, linked.name.as_str());
         if module_label.trim().is_empty() {
             module_label = String::from("topic");
         }
@@ -1006,7 +1012,7 @@ impl LanguageGenerator for RustGenerator {
                 &encoding_params,
             )?
             .expect("message encoding spec should exist when message format is provided");
-        let method_tokens = build_subscribed_topic_callback(SubscribedTopicCallbackSpec {
+        let method_tokens = build_consumed_topic_callback(ConsumedTopicCallbackSpec {
             fn_name: &callback_fn_ident,
             helper_fn_ident: &helper_fn_ident,
             args_struct_ident: &args_struct_ident,
@@ -1015,6 +1021,7 @@ impl LanguageGenerator for RustGenerator {
             encoding: &encoding,
             topic,
             struct_prefix: &message_struct_name,
+            dependency_node_name,
         })?;
         let mut items = context.into_tokens();
         items.push(method_tokens);
@@ -1026,18 +1033,96 @@ impl LanguageGenerator for RustGenerator {
 
         self.push_section(InterfaceArtifact::from_kind(
             &module_label,
-            InterfaceKind::SubscribedTopic,
+            InterfaceKind::ConsumedTopic,
             rendered,
         ));
 
         Ok(())
     }
 
-    fn add_subscribed_service(
+    fn add_external_consumed_topic(&mut self, name: &str, arguments: MessageFormat) -> Result<()> {
+        let topic_component = sanitize_component(name);
+
+        debug_assert!(
+            !topic_component.is_empty(),
+            "External consumed topic name should be validated as non-empty"
+        );
+
+        let mut struct_prefix = to_camel_case(&topic_component);
+        if struct_prefix.is_empty() {
+            struct_prefix = String::from("Topic");
+        }
+
+        let module_label = name.trim().to_string();
+        let schema_key = format!("on_next_{topic_component}_message");
+
+        let format_artifacts = map_message_format(&schema_key, Some(&arguments))?
+            .expect("message encoding spec should exist when message format is provided");
+
+        let mut context = GenerationContext::default();
+        let message_struct_name = String::from("Message");
+        let params = collect_function_params(
+            Some(&format_artifacts),
+            None,
+            &message_struct_name,
+            &mut context,
+            None,
+        )?;
+        let encoding_params = params.clone();
+
+        let args_struct_ident = Ident::new(&message_struct_name, Span::call_site());
+        let args_fields: Vec<(Ident, TokenStream)> = params
+            .iter()
+            .map(|param| (param.ident.clone(), param.ty.clone()))
+            .collect();
+        context.add_struct(args_struct_ident.clone(), args_fields);
+
+        let callback_fn_ident = Ident::new("on_next_message_received", Span::call_site());
+        let helper_fn_ident = Ident::new("deseralize_payload", Span::call_site());
+
+        let encoding = self
+            .prepare_message_encoding(
+                &schema_key,
+                &struct_prefix,
+                Some(&format_artifacts),
+                &encoding_params,
+            )?
+            .expect("message encoding spec should exist when message format is provided");
+        let method_tokens = topics::build_external_consumed_topic_callback(
+            topics::ExternalConsumedTopicCallbackSpec {
+                fn_name: &callback_fn_ident,
+                helper_fn_ident: &helper_fn_ident,
+                args_struct_ident: &args_struct_ident,
+                params: &params,
+                artifacts: &format_artifacts,
+                encoding: &encoding,
+                topic_name: name,
+                struct_prefix: &message_struct_name,
+            },
+        )?;
+        let mut items = context.into_tokens();
+        items.push(method_tokens);
+
+        let tokens: TokenStream = quote! {
+            #( #items )*
+        };
+        let rendered = render_tokens(tokens);
+
+        self.push_section(InterfaceArtifact::from_kind(
+            &module_label,
+            InterfaceKind::ConsumedTopic,
+            rendered,
+        ));
+
+        Ok(())
+    }
+
+    fn add_consumed_service(
         &mut self,
-        service: &SubscribedService,
+        service: &ConsumedService,
         request_arguments: &MessageFormat,
         response_arguments: &MessageFormat,
+        dependency_node_name: &str,
     ) -> Result<()> {
         let request_arguments = non_empty_message_format(Some(request_arguments));
         let response_arguments = non_empty_message_format(Some(response_arguments));
@@ -1059,7 +1144,7 @@ impl LanguageGenerator for RustGenerator {
             let mut components = Vec::with_capacity(3);
             components.push(String::from("poll"));
 
-            let node_ident = prefixed_ident("", Some(service.node.as_str()), "node");
+            let node_ident = prefixed_ident("", Some(dependency_node_name), "node");
             components.push(node_ident.to_string());
 
             components.push(service_name_component.clone());
@@ -1234,7 +1319,7 @@ impl LanguageGenerator for RustGenerator {
 
         let mut service_tokens = context.into_tokens();
         let service_name_literal = Literal::string(service.name.as_str());
-        let node_name_literal = Literal::string(service.node.as_str());
+        let node_name_literal = Literal::string(dependency_node_name);
 
         let constants_tokens = quote! {
             const NODE_NAME: &str = #node_name_literal;
@@ -1268,7 +1353,7 @@ impl LanguageGenerator for RustGenerator {
             all_tokens.push(deserialize_fn);
         }
 
-        let mut module_name = module_name_from_components(&service.node, &service.name);
+        let mut module_name = module_name_from_components(&service.local_node_id, &service.name);
         if module_name.is_empty() {
             module_name = method_label
                 .strip_prefix("poll_")
@@ -1284,18 +1369,19 @@ impl LanguageGenerator for RustGenerator {
 
         self.push_section(InterfaceArtifact::from_kind(
             &module_name,
-            InterfaceKind::SubscribedService,
+            InterfaceKind::ConsumedService,
             rendered,
         ));
         Ok(())
     }
 
-    fn add_subscribed_action(
+    fn add_consumed_action(
         &mut self,
-        action: &SubscribedAction,
-        messages: &SubscribedActionMessage,
+        action: &ConsumedAction,
+        messages: &ConsumedActionMessage,
+        dependency_node_name: &str,
     ) -> Result<()> {
-        let node_component = sanitize_component(action.node.as_str());
+        let node_component = sanitize_component(dependency_node_name);
         let action_component = sanitize_component(action.name.as_str());
         let base_component = match (node_component.is_empty(), action_component.is_empty()) {
             (true, true) => "action".to_string(),
@@ -1310,7 +1396,7 @@ impl LanguageGenerator for RustGenerator {
         let mut methods: Vec<TokenStream> = Vec::new();
         let mut helper_items: Vec<TokenStream> = Vec::new();
 
-        let node_name_literal = Literal::string(action.node.as_str());
+        let node_name_literal = Literal::string(dependency_node_name);
         let action_name_literal = Literal::string(action.name.as_str());
         let constants_tokens = quote! {
             const TARGET_NODE_NAME: &str = #node_name_literal;
@@ -1324,7 +1410,7 @@ impl LanguageGenerator for RustGenerator {
 
         let goal_schema_key = format!("{action_struct_name}_fire_goal");
         let (goal_method, mut goal_helpers, has_goal_response_data) = self
-            .build_subscribed_action_fire_goal_method(
+            .build_consumed_action_fire_goal_method(
                 &mut context,
                 &action_struct_name,
                 goal_request_format,
@@ -1339,9 +1425,9 @@ impl LanguageGenerator for RustGenerator {
         let cancel_artifacts =
             map_message_format(&cancel_schema_key, Some(&cancel_response_format))?
                 .expect("cancel response format should yield artifacts");
-        let (cancel_method, mut cancel_helpers) = self.build_subscribed_action_response_method(
+        let (cancel_method, mut cancel_helpers) = self.build_consumed_action_response_method(
             &mut context,
-            SubscribedActionResponseMethodSpec {
+            ConsumedActionResponseMethodSpec {
                 action_struct_name: &action_struct_name,
                 method_name: "cancel_goal",
                 response_struct_name: "CancelResponse",
@@ -1364,7 +1450,7 @@ impl LanguageGenerator for RustGenerator {
 
         if let Some(feedback_format) = feedback_format {
             let (feedback_method, mut feedback_helpers) = self
-                .build_subscribed_action_feedback_method(
+                .build_consumed_action_feedback_method(
                     &mut context,
                     feedback_format,
                     &action_struct_name,
@@ -1378,9 +1464,9 @@ impl LanguageGenerator for RustGenerator {
             &format!("{result_schema_key}_response"),
             result_response_format,
         )?;
-        let (result_method, mut result_helpers) = self.build_subscribed_action_response_method(
+        let (result_method, mut result_helpers) = self.build_consumed_action_response_method(
             &mut context,
-            SubscribedActionResponseMethodSpec {
+            ConsumedActionResponseMethodSpec {
                 action_struct_name: &action_struct_name,
                 method_name: "get_result",
                 response_struct_name: "ResultResponse",
@@ -1433,10 +1519,10 @@ impl LanguageGenerator for RustGenerator {
             #( #items )*
         };
         let rendered = render_tokens(tokens);
-        let module_label = module_name_from_components(&action.node, &action.name);
+        let module_label = module_name_from_components(&action.local_node_id, &action.name);
         self.push_section(InterfaceArtifact::from_kind(
             &module_label,
-            InterfaceKind::SubscribedAction,
+            InterfaceKind::ConsumedAction,
             rendered,
         ));
         Ok(())

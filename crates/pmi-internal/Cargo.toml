@@ -16,10 +16,11 @@ derive_more = { version = "2", features = ["from"] }
 tempfile = "3"
 
 # Optional deps
-zenoh = { version = "1.5", optional = true }
+zenoh = { version = "=1.7.2", optional = true }
 
 [build-dependencies]
 build-helpers = { path = "../build-helpers-internal" }
+zip = { version = "8", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 tokio = { version = "1.47", features = [

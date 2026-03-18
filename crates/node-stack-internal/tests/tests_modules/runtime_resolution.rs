@@ -254,7 +254,7 @@ fn remove_instance_from_entity_with_multiple_instances() {
 }
 
 #[test]
-fn remove_last_instance_removes_entity() {
+fn remove_last_instance_keeps_entity_in_graph() {
     let config: config::node::NodeConfig = serde_json5::from_str(
         r#"{
             schema_version: 1,
@@ -294,11 +294,15 @@ fn remove_last_instance_removes_entity() {
         .expect("should succeed");
     assert!(removed, "instance should be removed");
 
-    // Entity should be gone, but core node remains
-    assert_eq!(stack.len(), 1, "stack should only have the core node");
-    assert!(
-        stack.find("sensor", "1.0.0").is_none(),
-        "entity should not exist"
+    // Entity stays in the graph with 0 instances; dependency edges are preserved
+    assert_eq!(stack.len(), 2, "stack should still have root + entity");
+    let entity = stack
+        .find("sensor", "1.0.0")
+        .expect("entity should still exist");
+    assert_eq!(
+        entity.instances().len(),
+        0,
+        "entity should have no instances"
     );
 }
 
@@ -472,7 +476,7 @@ fn spawning_multiple_instances_on_same_entity() {
 
 #[test]
 fn adding_same_entity_with_different_interfaces_overwrites_when_no_dependents() {
-    // First config: exposes a topic
+    // First config: emits a topic
     let config_with_topic: config::node::NodeConfig = serde_json5::from_str(
         r#"{
             schema_version: 1,
@@ -485,8 +489,8 @@ fn adding_same_entity_with_different_interfaces_overwrites_when_no_dependents() 
               start_cmd: ["sensor"]
             },
             interfaces: {
-                exposes: {
-                    topics: [
+                topics: {
+                    emits: [
                         {
                           name: "data_stream",
                           qos_profile: "sensor_data"
@@ -498,7 +502,7 @@ fn adding_same_entity_with_different_interfaces_overwrites_when_no_dependents() 
     )
     .expect("valid node config");
 
-    // Second config: same name and tag but exposes a topic AND a service
+    // Second config: same name and tag but emits a topic AND exposes a service
     let config_with_topic_and_service: config::node::NodeConfig = serde_json5::from_str(
         r#"{
             schema_version: 1,
@@ -511,14 +515,16 @@ fn adding_same_entity_with_different_interfaces_overwrites_when_no_dependents() 
               start_cmd: ["sensor"]
             },
             interfaces: {
-                exposes: {
-                    topics: [
+                topics: {
+                    emits: [
                         {
                           name: "data_stream",
                           qos_profile: "sensor_data"
                         }
-                    ],
-                    services: [
+                    ]
+                },
+                services: {
+                    exposes: [
                         {
                           name: "calibrate"
                         }
@@ -563,17 +569,17 @@ fn adding_same_entity_with_different_interfaces_overwrites_when_no_dependents() 
         entity
             .config()
             .interfaces
-            .exposes
+            .services
             .as_ref()
-            .and_then(|exposes| exposes.services.as_ref())
-            .is_some_and(|services| services.iter().any(|s| s.name == "calibrate")),
+            .and_then(|services| services.exposes.as_ref())
+            .is_some_and(|exposes| exposes.iter().any(|s| s.name == "calibrate")),
         "entity should have updated interfaces from the overwritten config"
     );
 }
 
 #[test]
 fn adding_same_name_with_different_tag_and_different_interfaces_succeeds() {
-    // First config: version 1.0.0 exposes a topic
+    // First config: version 1.0.0 emits a topic
     let config_v1: config::node::NodeConfig = serde_json5::from_str(
         r#"{
             schema_version: 1,
@@ -586,8 +592,8 @@ fn adding_same_name_with_different_tag_and_different_interfaces_succeeds() {
               start_cmd: ["sensor"]
             },
             interfaces: {
-                exposes: {
-                    topics: [
+                topics: {
+                    emits: [
                         {
                           name: "data_stream",
                           qos_profile: "sensor_data"
@@ -599,7 +605,7 @@ fn adding_same_name_with_different_tag_and_different_interfaces_succeeds() {
     )
     .expect("valid node config");
 
-    // Second config: version 2.0.0 exposes a topic AND a service (different interfaces are allowed with different tag)
+    // Second config: version 2.0.0 emits a topic AND exposes a service (different interfaces are allowed with different tag)
     let config_v2: config::node::NodeConfig = serde_json5::from_str(
         r#"{
             schema_version: 1,
@@ -612,14 +618,16 @@ fn adding_same_name_with_different_tag_and_different_interfaces_succeeds() {
               start_cmd: ["sensor"]
             },
             interfaces: {
-                exposes: {
-                    topics: [
+                topics: {
+                    emits: [
                         {
                           name: "data_stream",
                           qos_profile: "sensor_data"
                         }
-                    ],
-                    services: [
+                    ]
+                },
+                services: {
+                    exposes: [
                         {
                           name: "calibrate"
                         }
@@ -732,8 +740,8 @@ fn node_stack_wires_dependencies_for_dependants() {
               start_cmd: ["lidar"]
             },
             interfaces: {
-                exposes: {
-                    services: [
+                services: {
+                    exposes: [
                         { name: "reset_sensor" }
                     ]
                 }
@@ -749,18 +757,21 @@ fn node_stack_wires_dependencies_for_dependants() {
               name: "brain",
               tag: "1.0.0",
               language: "rust",
+              depends_on: {
+                nodes: [
+                  { name: "lidar", tag: "1.0.0", local_id: "lidar" }
+                ]
+              },
             },
             process: {
               start_cmd: ["brain"]
             },
             interfaces: {
-                subscribes_to: {
-                    services: [
+                services: {
+                    consumes: [
                         {
-                          id: "reset_sensor_sub",
-                          node: "lidar",
-                          name: "reset_sensor",
-                          tag: "1.0.0"
+                          local_node_id: "lidar",
+                          name: "reset_sensor"
                         }
                     ]
                 }
@@ -795,18 +806,21 @@ fn dependency_fails_when_node_name_mismatches() {
               name: "brain",
               tag: "1.0.0",
               language: "rust",
+              depends_on: {
+                nodes: [
+                  { name: "uvc_camera", tag: "1.0.0", local_id: "uvc_camera" }
+                ]
+              },
             },
             process: {
               start_cmd: ["brain"]
             },
             interfaces: {
-                subscribes_to: {
-                    services: [
+                services: {
+                    consumes: [
                         {
-                          id: "reset_sensor_sub",
-                          node: "uvc_camera",
-                          name: "reset_sensor",
-                          tag: "1.0.0"
+                          local_node_id: "uvc_camera",
+                          name: "reset_sensor"
                         }
                     ]
                 }
@@ -827,8 +841,8 @@ fn dependency_fails_when_node_name_mismatches() {
               start_cmd: ["lidar"]
             },
             interfaces: {
-                exposes: {
-                    services: [
+                services: {
+                    exposes: [
                         {
                           name: "reset_sensor",
                           request_message_format: {
@@ -886,18 +900,21 @@ fn dependency_fails_when_node_tag_mismatches() {
               name: "brain",
               tag: "1.0.0",
               language: "rust",
+              depends_on: {
+                nodes: [
+                  { name: "lidar", tag: "1.0.0", local_id: "lidar" }
+                ]
+              },
             },
             process: {
               start_cmd: ["brain"]
             },
             interfaces: {
-                subscribes_to: {
-                    services: [
+                services: {
+                    consumes: [
                         {
-                          id: "reset_sensor_sub",
-                          node: "lidar",
-                          name: "reset_sensor",
-                          tag: "1.0.0"
+                          local_node_id: "lidar",
+                          name: "reset_sensor"
                         }
                     ]
                 }
@@ -918,8 +935,8 @@ fn dependency_fails_when_node_tag_mismatches() {
               start_cmd: ["lidar"]
             },
             interfaces: {
-                exposes: {
-                    services: [
+                services: {
+                    exposes: [
                         {
                           name: "reset_sensor",
                           request_message_format: {
@@ -981,8 +998,8 @@ fn overwriting_existing_node_fails_if_node_has_dependencies() {
               start_cmd: ["lidar"]
             },
             interfaces: {
-                exposes: {
-                    services: [
+                services: {
+                    exposes: [
                         { name: "reset_sensor" }
                     ]
                 }
@@ -998,18 +1015,21 @@ fn overwriting_existing_node_fails_if_node_has_dependencies() {
               name: "brain",
               tag: "1.0.0",
               language: "rust",
+              depends_on: {
+                nodes: [
+                  { name: "lidar", tag: "1.0.0", local_id: "lidar" }
+                ]
+              },
             },
             process: {
               start_cmd: ["brain"]
             },
             interfaces: {
-                subscribes_to: {
-                    services: [
+                services: {
+                    consumes: [
                         {
-                          id: "reset_sensor_sub",
-                          node: "lidar",
-                          name: "reset_sensor",
-                          tag: "1.0.0"
+                          local_node_id: "lidar",
+                          name: "reset_sensor"
                         }
                     ]
                 }
@@ -1030,8 +1050,8 @@ fn overwriting_existing_node_fails_if_node_has_dependencies() {
               start_cmd: ["lidar"]
             },
             interfaces: {
-                exposes: {
-                    services: [
+                services: {
+                    exposes: [
                         { name: "new_service" }
                     ]
                 }
@@ -1164,8 +1184,8 @@ fn updating_start_cmd_succeeds_even_when_node_has_dependents() {
               start_cmd: ["./old_lidar"]
             },
             interfaces: {
-                exposes: {
-                    services: [
+                services: {
+                    exposes: [
                         { name: "reset_sensor" }
                     ]
                 }
@@ -1181,18 +1201,21 @@ fn updating_start_cmd_succeeds_even_when_node_has_dependents() {
               name: "brain",
               tag: "1.0.0",
               language: "rust",
+              depends_on: {
+                nodes: [
+                  { name: "lidar", tag: "1.0.0", local_id: "lidar" }
+                ]
+              },
             },
             process: {
               start_cmd: ["brain"]
             },
             interfaces: {
-                subscribes_to: {
-                    services: [
+                services: {
+                    consumes: [
                         {
-                          id: "reset_sensor_sub",
-                          node: "lidar",
-                          name: "reset_sensor",
-                          tag: "1.0.0"
+                          local_node_id: "lidar",
+                          name: "reset_sensor"
                         }
                     ]
                 }
@@ -1214,8 +1237,8 @@ fn updating_start_cmd_succeeds_even_when_node_has_dependents() {
               start_cmd: ["./new_lidar"]
             },
             interfaces: {
-                exposes: {
-                    services: [
+                services: {
+                    exposes: [
                         { name: "reset_sensor" }
                     ]
                 }

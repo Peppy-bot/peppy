@@ -5,7 +5,7 @@ use super::serialization;
 use super::topics::{capnp_loader_fn_name, emit_capnp_loader_fn, emit_capnp_preamble};
 use crate::error::Result;
 use crate::generator::types::non_empty_message_format;
-use config::node::{ExposedService, MessageFormat, SubscribedService};
+use config::node::{ConsumedService, ExposedService, MessageFormat};
 
 /// Generates Python code for an exposed (handler) service.
 pub fn build_exposed_service(
@@ -176,12 +176,13 @@ pub fn build_exposed_service(
 }
 
 /// Generates Python code for a subscribed (polling) service.
-pub fn build_subscribed_service(
-    service: &SubscribedService,
+pub fn build_consumed_service(
+    service: &ConsumedService,
     request_arguments: &MessageFormat,
     response_arguments: &MessageFormat,
     request_schema_info: Option<&PythonSchemaInfo>,
     response_schema_info: Option<&PythonSchemaInfo>,
+    dependency_node_name: &str,
 ) -> Result<String> {
     let mut builder = PythonCodeBuilder::new();
 
@@ -200,7 +201,7 @@ pub fn build_subscribed_service(
     }
 
     // Constants
-    builder.line(&format!("NODE_NAME = \"{}\"", service.node));
+    builder.line(&format!("NODE_NAME = \"{}\"", dependency_node_name));
     builder.line(&format!("SERVICE_NAME = \"{}\"", service.name));
     builder.blank_line();
 

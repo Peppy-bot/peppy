@@ -271,8 +271,8 @@ async fn node_run_command_with_args_succeeds() {
     enabled: "bool"
   },
   interfaces: {
-    exposes: {
-      topics: [
+    topics: {
+      emits: [
         {
           name: "hello_world",
           qos_profile: "sensor_data",

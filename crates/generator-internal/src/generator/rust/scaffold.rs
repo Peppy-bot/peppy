@@ -305,65 +305,65 @@ fn deploy_rust_crates_to_shared_cache(
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum ModuleCategory {
-    ExposedTopics,
-    SubscribedTopics,
+    EmittedTopics,
+    ConsumedTopics,
     ExposedServices,
-    SubscribedServices,
+    ConsumedServices,
     ExposedActions,
-    SubscribedActions,
+    ConsumedActions,
 }
 
 impl ModuleCategory {
     const ALL: [Self; 6] = [
-        Self::ExposedTopics,
-        Self::SubscribedTopics,
+        Self::EmittedTopics,
+        Self::ConsumedTopics,
         Self::ExposedServices,
-        Self::SubscribedServices,
+        Self::ConsumedServices,
         Self::ExposedActions,
-        Self::SubscribedActions,
+        Self::ConsumedActions,
     ];
 
     fn from_kind(kind: InterfaceKind) -> Self {
         match kind {
-            InterfaceKind::ExposedTopic => Self::ExposedTopics,
-            InterfaceKind::SubscribedTopic => Self::SubscribedTopics,
+            InterfaceKind::EmittedTopic => Self::EmittedTopics,
+            InterfaceKind::ConsumedTopic => Self::ConsumedTopics,
             InterfaceKind::ExposedService => Self::ExposedServices,
-            InterfaceKind::SubscribedService => Self::SubscribedServices,
+            InterfaceKind::ConsumedService => Self::ConsumedServices,
             InterfaceKind::ExposedAction => Self::ExposedActions,
-            InterfaceKind::SubscribedAction => Self::SubscribedActions,
+            InterfaceKind::ConsumedAction => Self::ConsumedActions,
         }
     }
 
     fn struct_name(self) -> &'static str {
         match self {
-            Self::ExposedTopics => "ExposedTopics",
-            Self::SubscribedTopics => "SubscribedTopics",
+            Self::EmittedTopics => "EmittedTopics",
+            Self::ConsumedTopics => "ConsumedTopics",
             Self::ExposedServices => "ExposedServices",
-            Self::SubscribedServices => "SubscribedServices",
+            Self::ConsumedServices => "ConsumedServices",
             Self::ExposedActions => "ExposedActions",
-            Self::SubscribedActions => "SubscribedActions",
+            Self::ConsumedActions => "ConsumedActions",
         }
     }
 
     fn module_file_name(self) -> &'static str {
         match self {
-            Self::ExposedTopics => "exposed_topics",
-            Self::SubscribedTopics => "subscribed_topics",
+            Self::EmittedTopics => "emitted_topics",
+            Self::ConsumedTopics => "consumed_topics",
             Self::ExposedServices => "exposed_services",
-            Self::SubscribedServices => "subscribed_services",
+            Self::ConsumedServices => "consumed_services",
             Self::ExposedActions => "exposed_actions",
-            Self::SubscribedActions => "subscribed_actions",
+            Self::ConsumedActions => "consumed_actions",
         }
     }
 
     fn doc_label(self) -> &'static str {
         match self {
-            Self::ExposedTopics => "exposed topics",
-            Self::SubscribedTopics => "subscribed topics",
+            Self::EmittedTopics => "emitted topics",
+            Self::ConsumedTopics => "consumed topics",
             Self::ExposedServices => "exposed services",
-            Self::SubscribedServices => "subscribed services",
+            Self::ConsumedServices => "consumed services",
             Self::ExposedActions => "exposed actions",
-            Self::SubscribedActions => "subscribed actions",
+            Self::ConsumedActions => "consumed actions",
         }
     }
 }

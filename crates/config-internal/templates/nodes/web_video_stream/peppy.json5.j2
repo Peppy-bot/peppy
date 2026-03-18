@@ -4,6 +4,11 @@
     name: "{{ node_name }}",
     tag: "0.1.0",
     language: "rust",
+    depends_on: {
+      nodes: [
+        { name: "{{ uvc_camera_node_name }}", tag: "0.1.0", local_id: "uvc_camera" },
+      ]
+    },
   },
   process: {
     start_cmd: [
@@ -28,20 +33,13 @@
     },
   },
   interfaces: {
-    subscribes_to: {
-      topics: [
+    topics: {
+      consumes: [
         {
-          id: "camera_stream",
-          node: "{{ uvc_camera_node_name }}",
-          tag: "0.1.0",
+          local_node_id: "uvc_camera",
           name: "video_stream"
         }
       ],
-    },
-    exposes: {
-      topics: [],
-      services: [],
-      actions: [],
     },
   }
 }

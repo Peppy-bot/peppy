@@ -1,5 +1,5 @@
 use super::*;
-use config::node::{ExposedService, MessageFormat, SubscribedService};
+use config::node::{ConsumedService, ExposedService, MessageFormat};
 
 const EXPOSED_SERVICE_EXAMPLE: &str = r#"
 {
@@ -41,10 +41,8 @@ const EXPOSED_SERVICE_EXAMPLE3: &str = r#"
 
 const SUBSCRIBED_SERVICE_EXAMPLE1: &str = r#"
 {
-  id: "uvc_camera_enable_camera",
-  node: "uvc_camera",
+  local_node_id: "uvc_camera",
   name: "enable_camera",
-  tag: "0.1.0"
 }
 "#;
 
@@ -79,14 +77,12 @@ const SUBSCRIBED_SERVICE_RESPONSE_OPTIONAL_SCALAR_AND_BYTES: &str = r#"
 
 const SUBSCRIBED_SERVICE_EXAMPLE2: &str = r#"
 {
-    id: "uvc_camera_get_camera_info",
-    node: "uvc_camera",
+    local_node_id: "uvc_camera",
     name: "get_camera_info",
-    tag: "0.1.0"
 }
 "#;
 
-// No request body for the second subscribed service.
+// No request body for the second consumed service.
 const SUBSCRIBED_SERVICE_RESPONSE_EXAMPLE2: &str = r#"
 {
     card_type: "string",
@@ -322,8 +318,8 @@ fn expose_two_services() {
 /// In the case of a service, a "subscribed" service is an entity that connects to another
 /// entity to call its service.
 #[test]
-fn subscribed_to_service() {
-    let service: SubscribedService = serde_json5::from_str(SUBSCRIBED_SERVICE_EXAMPLE1).unwrap();
+fn consumed_service() {
+    let service: ConsumedService = serde_json5::from_str(SUBSCRIBED_SERVICE_EXAMPLE1).unwrap();
     let request_format: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_SERVICE_REQUEST_EXAMPLE1).unwrap();
     let response_format: MessageFormat =
@@ -331,7 +327,7 @@ fn subscribed_to_service() {
 
     let mut generator = PythonGenerator::new();
     generator
-        .add_subscribed_service(&service, &request_format, &response_format)
+        .add_consumed_service(&service, &request_format, &response_format, "uvc_camera")
         .unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
@@ -418,15 +414,15 @@ fn subscribed_to_service() {
 }
 
 #[test]
-fn subscribed_service_optional_scalar_and_bytes_use_has_checks() {
-    let service: SubscribedService = serde_json5::from_str(SUBSCRIBED_SERVICE_EXAMPLE1).unwrap();
+fn consumed_service_optional_scalar_and_bytes_use_has_checks() {
+    let service: ConsumedService = serde_json5::from_str(SUBSCRIBED_SERVICE_EXAMPLE1).unwrap();
     let request_format: MessageFormat = serde_json5::from_str(EMPTY_MESSAGE_FORMAT).unwrap();
     let response_format: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_SERVICE_RESPONSE_OPTIONAL_SCALAR_AND_BYTES).unwrap();
 
     let mut generator = PythonGenerator::new();
     generator
-        .add_subscribed_service(&service, &request_format, &response_format)
+        .add_consumed_service(&service, &request_format, &response_format, "uvc_camera")
         .unwrap();
     let rendered = render_artifacts(generator.into_artifacts())
         .into_iter()
@@ -447,25 +443,25 @@ fn subscribed_service_optional_scalar_and_bytes_use_has_checks() {
 }
 
 #[test]
-fn subscribed_to_two_services_same_node() {
-    let service1: SubscribedService = serde_json5::from_str(SUBSCRIBED_SERVICE_EXAMPLE1).unwrap();
+fn consumed_two_services_same_node() {
+    let service1: ConsumedService = serde_json5::from_str(SUBSCRIBED_SERVICE_EXAMPLE1).unwrap();
     let request_format1: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_SERVICE_REQUEST_EXAMPLE1).unwrap();
     let response_format1: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_SERVICE_RESPONSE_EXAMPLE1).unwrap();
 
     // Second service pointing to the same node
-    let service2: SubscribedService = serde_json5::from_str(SUBSCRIBED_SERVICE_EXAMPLE2).unwrap();
+    let service2: ConsumedService = serde_json5::from_str(SUBSCRIBED_SERVICE_EXAMPLE2).unwrap();
     let empty_format: MessageFormat = serde_json5::from_str(EMPTY_MESSAGE_FORMAT).unwrap();
     let response_format2: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_SERVICE_RESPONSE_EXAMPLE2).unwrap();
 
     let mut generator = PythonGenerator::new();
     generator
-        .add_subscribed_service(&service1, &request_format1, &response_format1)
+        .add_consumed_service(&service1, &request_format1, &response_format1, "uvc_camera")
         .unwrap();
     generator
-        .add_subscribed_service(&service2, &empty_format, &response_format2)
+        .add_consumed_service(&service2, &empty_format, &response_format2, "uvc_camera")
         .unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
@@ -520,14 +516,12 @@ fn subscribed_to_two_services_same_node() {
 }
 
 #[test]
-fn subscribed_service_without_response_payload() {
-    let service: SubscribedService = serde_json5::from_str(
+fn consumed_service_without_response_payload() {
+    let service: ConsumedService = serde_json5::from_str(
         r#"
         {
-            id: "uvc_camera_get_camera_info",
-            node: "uvc_camera",
+            local_node_id: "uvc_camera",
             name: "get_camera_info",
-            tag: "0.1.0"
         }
         "#,
     )
@@ -536,7 +530,7 @@ fn subscribed_service_without_response_payload() {
 
     let mut generator = PythonGenerator::new();
     generator
-        .add_subscribed_service(&service, &empty_format, &empty_format)
+        .add_consumed_service(&service, &empty_format, &empty_format, "uvc_camera")
         .expect("generator should allow services without response format");
 
     let artifacts = render_artifacts(generator.into_artifacts());

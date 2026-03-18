@@ -22,10 +22,8 @@
   },
   parameters: {},
   interfaces: {
-    exposes: {
-      topics: [],
-      services: [],
-      actions: [
+    actions: {
+      exposes: [
         {
           // The controller exposes this action to the brain
           name: "move_right_arm",
@@ -101,11 +99,6 @@
           }
         }
       ],
-    },
-    subscribes_to: {
-      topics: [],
-      services: [],
-      actions: [],
     },
   }
 }

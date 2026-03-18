@@ -15,15 +15,15 @@ mod type_mapping;
 
 use super::naming::{module_name_from_components, resolve_schema_file_stem, to_camel_case};
 use super::types::{
-    CapnpSchema, InterfaceArtifact, InterfaceKind, LanguageGenerator, SubscribedActionMessage,
+    CapnpSchema, ConsumedActionMessage, InterfaceArtifact, InterfaceKind, LanguageGenerator,
     cancel_action_response_format, non_empty_message_format, validate_fixed_length_array_items,
     validate_message_format_field_names,
 };
-use crate::error::Result;
+use crate::error::{Error, Result};
 use config::encoding::MessageFormatMapper;
 use config::node::{
-    ExposedAction, ExposedService, ExposedTopic, MessageFormat, PeppygenLanguage, SubscribedAction,
-    SubscribedService, SubscribedTopic,
+    ConsumedAction, ConsumedService, ConsumedTopic, EmittedTopic, ExposedAction, ExposedService,
+    MessageFormat, PeppygenLanguage,
 };
 use std::collections::HashMap;
 use std::path::Path;
@@ -102,6 +102,17 @@ impl PythonGenerator {
             struct_name,
         })
     }
+
+    fn register_optional_schema(
+        &mut self,
+        schema_key: impl AsRef<str>,
+        format: Option<&MessageFormat>,
+    ) -> Result<Option<PythonSchemaInfo>> {
+        format
+            .filter(|format| !format.0.is_empty())
+            .map(|format| self.register_schema(schema_key.as_ref(), format))
+            .transpose()
+    }
 }
 
 impl LanguageGenerator for PythonGenerator {
@@ -109,36 +120,31 @@ impl LanguageGenerator for PythonGenerator {
         PythonGenerator::push_section(self, section);
     }
 
-    fn add_exposed_topic(&mut self, topic: &ExposedTopic) -> Result<()> {
+    fn add_emitted_topic(&mut self, topic: &EmittedTopic) -> Result<()> {
         let schema_info = topic
             .message_format
             .as_ref()
             .map(|fmt| self.register_schema(&topic.name, fmt))
             .transpose()?;
 
-        let code = topics::build_exposed_topic(topic, schema_info.as_ref())?;
+        let code = topics::build_emitted_topic(topic, schema_info.as_ref())?;
         self.push_section(InterfaceArtifact::from_kind(
             &topic.name,
-            InterfaceKind::ExposedTopic,
+            InterfaceKind::EmittedTopic,
             code,
         ));
         Ok(())
     }
 
     fn add_exposed_service(&mut self, service: &ExposedService) -> Result<()> {
-        let request_schema_info = service
-            .request_message_format
-            .as_ref()
-            .filter(|fmt| !fmt.0.is_empty())
-            .map(|fmt| self.register_schema(&format!("{}_request", service.name), fmt))
-            .transpose()?;
-
-        let response_schema_info = service
-            .response_message_format
-            .as_ref()
-            .filter(|fmt| !fmt.0.is_empty())
-            .map(|fmt| self.register_schema(&format!("{}_response", service.name), fmt))
-            .transpose()?;
+        let request_schema_info = self.register_optional_schema(
+            format!("{}_request", service.name),
+            service.request_message_format.as_ref(),
+        )?;
+        let response_schema_info = self.register_optional_schema(
+            format!("{}_response", service.name),
+            service.response_message_format.as_ref(),
+        )?;
 
         let code = services::build_exposed_service(
             service,
@@ -154,21 +160,20 @@ impl LanguageGenerator for PythonGenerator {
     }
 
     fn add_exposed_action(&mut self, action: &ExposedAction) -> Result<()> {
-        let goal_request_schema_info = action
-            .goal_service
-            .as_ref()
-            .and_then(|gs| gs.request_message_format.as_ref())
-            .filter(|fmt| !fmt.0.is_empty())
-            .map(|fmt| self.register_schema(&format!("{}_goal_request", action.name), fmt))
-            .transpose()?;
-
-        let goal_response_schema_info = action
-            .goal_service
-            .as_ref()
-            .and_then(|gs| gs.response_message_format.as_ref())
-            .filter(|fmt| !fmt.0.is_empty())
-            .map(|fmt| self.register_schema(&format!("{}_goal_response", action.name), fmt))
-            .transpose()?;
+        let goal_request_schema_info = self.register_optional_schema(
+            format!("{}_goal_request", action.name),
+            action
+                .goal_service
+                .as_ref()
+                .and_then(|goal_service| goal_service.request_message_format.as_ref()),
+        )?;
+        let goal_response_schema_info = self.register_optional_schema(
+            format!("{}_goal_response", action.name),
+            action
+                .goal_service
+                .as_ref()
+                .and_then(|goal_service| goal_service.response_message_format.as_ref()),
+        )?;
 
         let cancel_response_schema_info = if action.goal_service.is_some() {
             let cancel_format = cancel_action_response_format();
@@ -177,21 +182,20 @@ impl LanguageGenerator for PythonGenerator {
             None
         };
 
-        let result_response_schema_info = action
-            .result_service
-            .as_ref()
-            .and_then(|rs| rs.response_message_format.as_ref())
-            .filter(|fmt| !fmt.0.is_empty())
-            .map(|fmt| self.register_schema(&format!("{}_result_response", action.name), fmt))
-            .transpose()?;
-
-        let feedback_schema_info = action
-            .feedback_topic
-            .as_ref()
-            .and_then(|ft| ft.message_format.as_ref())
-            .filter(|fmt| !fmt.0.is_empty())
-            .map(|fmt| self.register_schema(&format!("{}_feedback", action.name), fmt))
-            .transpose()?;
+        let result_response_schema_info = self.register_optional_schema(
+            format!("{}_result_response", action.name),
+            action
+                .result_service
+                .as_ref()
+                .and_then(|result_service| result_service.response_message_format.as_ref()),
+        )?;
+        let feedback_schema_info = self.register_optional_schema(
+            format!("{}_feedback", action.name),
+            action
+                .feedback_topic
+                .as_ref()
+                .and_then(|feedback_topic| feedback_topic.message_format.as_ref()),
+        )?;
 
         let code = actions::build_exposed_action(
             action,
@@ -209,103 +213,119 @@ impl LanguageGenerator for PythonGenerator {
         Ok(())
     }
 
-    fn add_subscribed_topic(
+    fn add_consumed_topic(
         &mut self,
-        topic: &SubscribedTopic,
+        topic: &ConsumedTopic,
         arguments: MessageFormat,
+        dependency_node_name: &str,
     ) -> Result<()> {
-        let schema_info = self.register_schema(&topic.name, &arguments)?;
-        let code = topics::build_subscribed_topic(topic, &arguments, &schema_info)?;
-        let module_label = topics::subscribed_topic_module_label(topic);
+        let ConsumedTopic::Linked(linked) = topic else {
+            return Err(Error::InvariantViolation {
+                context: "add_consumed_topic called with ConsumedTopic::External; use add_external_consumed_topic instead".into(),
+            });
+        };
+        let schema_info = self.register_schema(&linked.name, &arguments)?;
+        let code =
+            topics::build_consumed_topic(topic, &arguments, &schema_info, dependency_node_name)?;
+        let module_label = module_name_from_components(&linked.local_node_id, &linked.name);
         self.push_section(InterfaceArtifact::from_kind(
             &module_label,
-            InterfaceKind::SubscribedTopic,
+            InterfaceKind::ConsumedTopic,
             code,
         ));
         Ok(())
     }
 
-    fn add_subscribed_service(
+    fn add_external_consumed_topic(&mut self, name: &str, arguments: MessageFormat) -> Result<()> {
+        let schema_info = self.register_schema(name, &arguments)?;
+        let code = topics::build_external_consumed_topic(name, &arguments, &schema_info)?;
+        let module_label = name.trim().to_string();
+        self.push_section(InterfaceArtifact::from_kind(
+            &module_label,
+            InterfaceKind::ConsumedTopic,
+            code,
+        ));
+        Ok(())
+    }
+
+    fn add_consumed_service(
         &mut self,
-        service: &SubscribedService,
+        service: &ConsumedService,
         request_arguments: &MessageFormat,
         response_arguments: &MessageFormat,
+        dependency_node_name: &str,
     ) -> Result<()> {
-        let request_schema_info = non_empty_message_format(Some(request_arguments))
-            .map(|fmt| self.register_schema(&format!("{}_request", service.name), fmt))
-            .transpose()?;
+        let request_schema_info = self.register_optional_schema(
+            format!("{}_request", service.name),
+            non_empty_message_format(Some(request_arguments)),
+        )?;
+        let response_schema_info = self.register_optional_schema(
+            format!("{}_response", service.name),
+            non_empty_message_format(Some(response_arguments)),
+        )?;
 
-        let response_schema_info = non_empty_message_format(Some(response_arguments))
-            .map(|fmt| self.register_schema(&format!("{}_response", service.name), fmt))
-            .transpose()?;
-
-        let code = services::build_subscribed_service(
+        let code = services::build_consumed_service(
             service,
             request_arguments,
             response_arguments,
             request_schema_info.as_ref(),
             response_schema_info.as_ref(),
+            dependency_node_name,
         )?;
-        let module_label = module_name_from_components(&service.node, &service.name);
+        let module_label = module_name_from_components(&service.local_node_id, &service.name);
         self.push_section(InterfaceArtifact::from_kind(
             &module_label,
-            InterfaceKind::SubscribedService,
+            InterfaceKind::ConsumedService,
             code,
         ));
         Ok(())
     }
 
-    fn add_subscribed_action(
+    fn add_consumed_action(
         &mut self,
-        action: &SubscribedAction,
-        messages: &SubscribedActionMessage,
+        action: &ConsumedAction,
+        messages: &ConsumedActionMessage,
+        dependency_node_name: &str,
     ) -> Result<()> {
-        let goal_request_schema_info = messages
-            .goal_request
-            .as_ref()
-            .filter(|fmt| !fmt.0.is_empty())
-            .map(|fmt| self.register_schema(&format!("{}_goal_request", action.name), fmt))
-            .transpose()?;
-
-        let goal_response_schema_info = messages
-            .goal_response
-            .as_ref()
-            .filter(|fmt| !fmt.0.is_empty())
-            .map(|fmt| self.register_schema(&format!("{}_goal_response", action.name), fmt))
-            .transpose()?;
+        let goal_request_schema_info = self.register_optional_schema(
+            format!("{}_goal_request", action.name),
+            messages.goal_request.as_ref(),
+        )?;
+        let goal_response_schema_info = self.register_optional_schema(
+            format!("{}_goal_response", action.name),
+            messages.goal_response.as_ref(),
+        )?;
 
         let cancel_format = cancel_action_response_format();
         let cancel_response_schema_info = Some(
             self.register_schema(&format!("{}_cancel_response", action.name), &cancel_format)?,
         );
 
-        let feedback_schema_info = messages
-            .feedback
-            .as_ref()
-            .filter(|fmt| !fmt.0.is_empty())
-            .map(|fmt| self.register_schema(&format!("{}_feedback", action.name), fmt))
-            .transpose()?;
+        let feedback_schema_info = self.register_optional_schema(
+            format!("{}_feedback", action.name),
+            messages.feedback.as_ref(),
+        )?;
+        let result_response_schema_info = self.register_optional_schema(
+            format!("{}_result_response", action.name),
+            messages.result_response.as_ref(),
+        )?;
 
-        let result_response_schema_info = messages
-            .result_response
-            .as_ref()
-            .filter(|fmt| !fmt.0.is_empty())
-            .map(|fmt| self.register_schema(&format!("{}_result_response", action.name), fmt))
-            .transpose()?;
-
-        let code = actions::build_subscribed_action(
+        let code = actions::build_consumed_action(
             action,
             messages,
-            goal_request_schema_info.as_ref(),
-            goal_response_schema_info.as_ref(),
-            cancel_response_schema_info.as_ref(),
-            feedback_schema_info.as_ref(),
-            result_response_schema_info.as_ref(),
+            actions::ConsumedActionSchemaInfo {
+                goal_request: goal_request_schema_info.as_ref(),
+                goal_response: goal_response_schema_info.as_ref(),
+                cancel_response: cancel_response_schema_info.as_ref(),
+                feedback: feedback_schema_info.as_ref(),
+                result_response: result_response_schema_info.as_ref(),
+            },
+            dependency_node_name,
         )?;
-        let module_label = module_name_from_components(&action.node, &action.name);
+        let module_label = module_name_from_components(&action.local_node_id, &action.name);
         self.push_section(InterfaceArtifact::from_kind(
             &module_label,
-            InterfaceKind::SubscribedAction,
+            InterfaceKind::ConsumedAction,
             code,
         ));
         Ok(())

@@ -1,7 +1,7 @@
 use super::*;
-use config::node::{ExposedTopic, MessageFormat, PeppygenLanguage, SubscribedTopic};
+use config::node::{ConsumedTopic, EmittedTopic, MessageFormat, PeppygenLanguage};
 
-const EXPOSED_TOPIC_EXAMPLE: &str = r#"
+const EMITTED_TOPIC_EXAMPLE: &str = r#"
 {
   name: "video_stream",
   qos_profile: "sensor_data",
@@ -22,7 +22,7 @@ const EXPOSED_TOPIC_EXAMPLE: &str = r#"
 }
 "#;
 
-const EXPOSED_TOPIC_EXAMPLE2: &str = r#"
+const EMITTED_TOPIC_EXAMPLE2: &str = r#"
 {
   name: "push_lidar_object",
   qos_profile: "sensor_data",
@@ -42,7 +42,7 @@ const EXPOSED_TOPIC_EXAMPLE2: &str = r#"
 }
 "#;
 
-const EXPOSED_TOPIC_WITH_PYTHON_KEYWORD_FIELDS: &str = r#"
+const EMITTED_TOPIC_WITH_PYTHON_KEYWORD_FIELDS: &str = r#"
 {
   name: "keyword_topic",
   qos_profile: "standard",
@@ -53,7 +53,7 @@ const EXPOSED_TOPIC_WITH_PYTHON_KEYWORD_FIELDS: &str = r#"
 }
 "#;
 
-const EXPOSED_TOPIC_RESERVED_FIELD_EXAMPLE: &str = r#"
+const EMITTED_TOPIC_RESERVED_FIELD_EXAMPLE: &str = r#"
 {
   name: "robot_state",
   qos_profile: "standard",
@@ -64,7 +64,7 @@ const EXPOSED_TOPIC_RESERVED_FIELD_EXAMPLE: &str = r#"
 }
 "#;
 
-const EXPOSED_TOPIC_FIXED_STRING_ARRAY_EXAMPLE: &str = r#"
+const EMITTED_TOPIC_FIXED_STRING_ARRAY_EXAMPLE: &str = r#"
 {
   name: "labels",
   qos_profile: "standard",
@@ -80,10 +80,8 @@ const EXPOSED_TOPIC_FIXED_STRING_ARRAY_EXAMPLE: &str = r#"
 
 const SUBSCRIBED_TOPIC_EXAMPLE1: &str = r#"
 {
-    id: "video_stream",
-    node: "uvc_camera",
+    local_node_id: "uvc_camera",
     name: "video_stream",
-    tag: "0.1.0"
 }
 "#;
 
@@ -106,19 +104,15 @@ const SUBSCRIBED_TOPIC_FORMAT_EXAMPLE1: &str = r#"
 
 const SUBSCRIBED_TOPIC_EXAMPLE2: &str = r#"
 {
-    id: "sound",
-    node: "uvc_camera",
+    local_node_id: "uvc_camera",
     name: "sound",
-    tag: "0.1.0"
 }
 "#;
 
 const SUBSCRIBED_TOPIC_EXAMPLE_KEYWORDS: &str = r#"
 {
-    id: "keyword_topic",
-    node: "keyword_source",
+    local_node_id: "keyword_source",
     name: "keyword_topic",
-    tag: "0.1.0"
 }
 "#;
 
@@ -147,11 +141,11 @@ const SUBSCRIBED_TOPIC_FORMAT_EXAMPLE_KEYWORDS: &str = r#"
 }
 "#;
 
-fn parse_exposed_topic(example: &str) -> ExposedTopic {
+fn parse_emitted_topic(example: &str) -> EmittedTopic {
     serde_json5::from_str(example).unwrap()
 }
 
-fn parse_subscribed_topic(example: &str) -> SubscribedTopic {
+fn parse_consumed_topic(example: &str) -> ConsumedTopic {
     serde_json5::from_str(example).unwrap()
 }
 
@@ -161,11 +155,11 @@ fn parse_message_format(example: &str) -> MessageFormat {
 
 /// In the case of a topic, an "exposed" topic is an entity that emits messages.
 #[test]
-fn expose_topic() {
-    let topic = parse_exposed_topic(EXPOSED_TOPIC_EXAMPLE);
+fn emit_topic() {
+    let topic = parse_emitted_topic(EMITTED_TOPIC_EXAMPLE);
 
     let mut generator = PythonGenerator::new();
-    generator.add_exposed_topic(&topic).unwrap();
+    generator.add_emitted_topic(&topic).unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
         artifacts.len(),
@@ -257,13 +251,13 @@ fn expose_topic() {
 }
 
 #[test]
-fn expose_two_topics() {
-    let topic1 = parse_exposed_topic(EXPOSED_TOPIC_EXAMPLE);
-    let topic2 = parse_exposed_topic(EXPOSED_TOPIC_EXAMPLE2);
+fn emit_two_topics() {
+    let topic1 = parse_emitted_topic(EMITTED_TOPIC_EXAMPLE);
+    let topic2 = parse_emitted_topic(EMITTED_TOPIC_EXAMPLE2);
 
     let mut generator = PythonGenerator::new();
-    generator.add_exposed_topic(&topic1).unwrap();
-    generator.add_exposed_topic(&topic2).unwrap();
+    generator.add_emitted_topic(&topic1).unwrap();
+    generator.add_emitted_topic(&topic2).unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
         artifacts.len(),
@@ -311,11 +305,11 @@ fn expose_two_topics() {
 }
 
 #[test]
-fn expose_topic_escapes_python_keyword_fields() {
-    let topic = parse_exposed_topic(EXPOSED_TOPIC_WITH_PYTHON_KEYWORD_FIELDS);
+fn emit_topic_escapes_python_keyword_fields() {
+    let topic = parse_emitted_topic(EMITTED_TOPIC_WITH_PYTHON_KEYWORD_FIELDS);
 
     let mut generator = PythonGenerator::new();
-    generator.add_exposed_topic(&topic).unwrap();
+    generator.add_emitted_topic(&topic).unwrap();
     let rendered = render_artifacts(generator.into_artifacts())
         .into_iter()
         .next()
@@ -334,13 +328,13 @@ fn expose_topic_escapes_python_keyword_fields() {
 }
 
 #[test]
-fn expose_topic_rejects_reserved_message_field_name() {
+fn emit_topic_rejects_reserved_message_field_name() {
     use crate::error::Error;
 
-    let topic = parse_exposed_topic(EXPOSED_TOPIC_RESERVED_FIELD_EXAMPLE);
+    let topic = parse_emitted_topic(EMITTED_TOPIC_RESERVED_FIELD_EXAMPLE);
 
     let mut generator = PythonGenerator::new();
-    let err = generator.add_exposed_topic(&topic).unwrap_err();
+    let err = generator.add_emitted_topic(&topic).unwrap_err();
 
     match err {
         Error::UnauthorizedMessageFieldName {
@@ -357,13 +351,13 @@ fn expose_topic_rejects_reserved_message_field_name() {
 }
 
 #[test]
-fn expose_topic_rejects_fixed_string_array() {
+fn emit_topic_rejects_fixed_string_array() {
     use crate::error::Error;
 
-    let topic = parse_exposed_topic(EXPOSED_TOPIC_FIXED_STRING_ARRAY_EXAMPLE);
+    let topic = parse_emitted_topic(EMITTED_TOPIC_FIXED_STRING_ARRAY_EXAMPLE);
 
     let mut generator = PythonGenerator::new();
-    let err = generator.add_exposed_topic(&topic).unwrap_err();
+    let err = generator.add_emitted_topic(&topic).unwrap_err();
 
     match err {
         Error::UnsupportedFixedArrayItemType {
@@ -382,12 +376,14 @@ fn expose_topic_rejects_fixed_string_array() {
 /// In the case of a topic, a "subscribed" topic is an entity that expects to receive messages
 /// from another entity.
 #[test]
-fn subscribed_to_topic() {
-    let topic = parse_subscribed_topic(SUBSCRIBED_TOPIC_EXAMPLE1);
+fn consumed_topic() {
+    let topic = parse_consumed_topic(SUBSCRIBED_TOPIC_EXAMPLE1);
     let format = parse_message_format(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE1);
 
     let mut generator = PythonGenerator::new();
-    generator.add_subscribed_topic(&topic, format).unwrap();
+    generator
+        .add_consumed_topic(&topic, format, "uvc_camera")
+        .unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
         artifacts.len(),
@@ -497,12 +493,14 @@ fn subscribed_to_topic() {
 }
 
 #[test]
-fn subscribed_topic_escapes_python_keyword_fields() {
-    let topic = parse_subscribed_topic(SUBSCRIBED_TOPIC_EXAMPLE_KEYWORDS);
+fn consumed_topic_escapes_python_keyword_fields() {
+    let topic = parse_consumed_topic(SUBSCRIBED_TOPIC_EXAMPLE_KEYWORDS);
     let format = parse_message_format(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE_KEYWORDS);
 
     let mut generator = PythonGenerator::new();
-    generator.add_subscribed_topic(&topic, format).unwrap();
+    generator
+        .add_consumed_topic(&topic, format, "keyword_source")
+        .unwrap();
     let rendered = render_artifacts(generator.into_artifacts())
         .into_iter()
         .next()
@@ -520,19 +518,19 @@ fn subscribed_topic_escapes_python_keyword_fields() {
 }
 
 #[test]
-fn subscribed_to_two_topics_same_node() {
-    let video_topic = parse_subscribed_topic(SUBSCRIBED_TOPIC_EXAMPLE1);
+fn consumed_two_topics_same_node() {
+    let video_topic = parse_consumed_topic(SUBSCRIBED_TOPIC_EXAMPLE1);
     let video_format = parse_message_format(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE1);
 
-    let sound_topic = parse_subscribed_topic(SUBSCRIBED_TOPIC_EXAMPLE2);
+    let sound_topic = parse_consumed_topic(SUBSCRIBED_TOPIC_EXAMPLE2);
     let sound_format = parse_message_format(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE2);
 
     let mut generator = PythonGenerator::new();
     generator
-        .add_subscribed_topic(&video_topic, video_format)
+        .add_consumed_topic(&video_topic, video_format, "uvc_camera")
         .unwrap();
     generator
-        .add_subscribed_topic(&sound_topic, sound_format)
+        .add_consumed_topic(&sound_topic, sound_format, "uvc_camera")
         .unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
@@ -580,5 +578,92 @@ fn subscribed_to_two_topics_same_node() {
     assert!(
         !sound_rendered.contains("video_stream"),
         "sound artifact should not reference video_stream"
+    );
+}
+
+#[test]
+fn external_consumed_topic() {
+    let format = parse_message_format(
+        r#"
+        {
+            linear_x: "f64",
+            angular_z: "f64",
+        }
+        "#,
+    );
+
+    let mut generator = PythonGenerator::new();
+    generator
+        .add_external_consumed_topic("cmd_vel", format)
+        .unwrap();
+    let artifacts = render_artifacts(generator.into_artifacts());
+    assert_eq!(
+        artifacts.len(),
+        1,
+        "expected a single generated artifact, got {}",
+        artifacts.len()
+    );
+    let rendered = artifacts.into_iter().next().expect("artifact is present");
+
+    // Imports
+    assert_contains_all(
+        &rendered,
+        &[
+            "import capnp",
+            "import peppylib",
+            "from dataclasses import dataclass",
+            "from typing import Optional, Tuple",
+        ],
+    );
+
+    // Generated dataclass
+    assert_contains_all(
+        &rendered,
+        &[
+            "@dataclass",
+            "class Message:",
+            "linear_x: float",
+            "angular_z: float",
+        ],
+    );
+
+    // _deserialize_payload helper function
+    assert_contains_all(
+        &rendered,
+        &["def _deserialize_payload(payload: bytes) -> Message:"],
+    );
+
+    // Subscriber function signature
+    assert_contains_all(
+        &rendered,
+        &[
+            "async def on_next_message_received(",
+            "node_runner: peppylib.NodeRunner",
+            "core_node_target: Optional[str] = None",
+            "instance_id_target: Optional[str] = None",
+            ") -> Tuple[str, Message]:",
+        ],
+    );
+
+    // External subscribe: uses consume_external, no node_name
+    assert_contains_all(
+        &rendered,
+        &["\"cmd_vel\"", "peppylib.TopicMessenger.consume_external("],
+    );
+    assert!(
+        !rendered.contains("node_name"),
+        "external topic should not have a node_name variable"
+    );
+
+    // on_next_message_received body
+    assert_contains_all(
+        &rendered,
+        &[
+            "raw_message = await subscription.on_next_message()",
+            "payload = raw_message.payload",
+            "instance_id = raw_message.instance_id",
+            "message = _deserialize_payload(payload)",
+            "return instance_id, message",
+        ],
     );
 }

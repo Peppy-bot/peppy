@@ -1,6 +1,8 @@
 use super::types::NodeConfig;
-use crate::error::{ParsingError, Result};
-use std::fs;
+use crate::{
+    error::{ParsingError, Result},
+    parsing::read_non_empty_file,
+};
 use std::path::Path;
 
 /// Parser responsible for extracting configuration from JSON5 documents
@@ -9,14 +11,8 @@ pub struct NodeConfigParser;
 impl NodeConfigParser {
     pub fn from_path(file: impl AsRef<Path>) -> Result<NodeConfig> {
         let path = file.as_ref();
-        let content = fs::read_to_string(path)
-            .map_err(|_| ParsingError::CannotRead(path.display().to_string()))?;
-
-        if content.trim().is_empty() {
-            Err(ParsingError::EmptyContent(path.display().to_string()).into())
-        } else {
-            Self::from_content(&content)
-        }
+        let content = read_non_empty_file(path)?;
+        Self::from_content(&content)
     }
 
     /// Takes a JSON5 content as parameter
@@ -84,8 +80,8 @@ mod tests {
                 start_cmd: ["./target/release/camera_driver"],
             },
             interfaces: {
-                exposes: {
-                    topics: [
+                topics: {
+                    emits: [
                         { name: "/camera/image_raw" }
                     ]
                 }
@@ -102,7 +98,7 @@ mod tests {
             config.process.as_ref().unwrap().start_cmd,
             vec!["./target/release/camera_driver"]
         );
-        assert!(config.interfaces.exposes.is_some());
+        assert!(config.interfaces.topics.is_some());
     }
 
     #[test]

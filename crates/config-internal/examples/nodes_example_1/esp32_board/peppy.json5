@@ -30,9 +30,9 @@
   // no_std can't accept dynamic parameters, they won't have any effect
   parameters: {},
   interfaces: {
-    exposes: {
-      // `peppylib_no_std` will help expose this topic
-      topics: [
+    // `peppylib_no_std` will help expose this topic
+    topics: {
+      emits: [
         {
           name: "actuator",
           qos_profile: "sensor_data",

@@ -273,6 +273,11 @@ async fn listen_for_node_sync_missing_dependency_fails() {
                 tag: "0.1.0",
                 language: "rust",
                 labels: ["brain"],
+                depends_on: {
+                    nodes: [
+                        { name: "uvc_camera", tag: "0.1.0", local_id: "uvc_camera" }
+                    ]
+                },
             },
             process: {
                 add_cmd: ["cargo", "build", "--release"],
@@ -280,20 +285,20 @@ async fn listen_for_node_sync_missing_dependency_fails() {
             },
             parameters: {},
             interfaces: {
-                exposes: {
-                    topics: [],
-                    services: [],
-                    actions: [],
-                },
-                subscribes_to: {
-                    topics: [
+                topics: {
+                    emits: [],
+                    consumes: [
                         {
-                            id: "camera_front",
-                            node: "uvc_camera",
+                            local_node_id: "uvc_camera",
                             name: "video_stream",
-                            tag: "0.1.0",
                         }
                     ],
+                },
+                services: {
+                    exposes: [],
+                },
+                actions: {
+                    exposes: [],
                 },
             },
         }
@@ -346,6 +351,13 @@ async fn listen_for_node_sync_multiple_missing_dependencies_fails() {
                 tag: "0.1.0",
                 language: "rust",
                 labels: ["brain"],
+                depends_on: {
+                    nodes: [
+                        { name: "uvc_camera", tag: "0.1.0", local_id: "uvc_camera" },
+                        { name: "lidar_sensor", tag: "1.0.0", local_id: "lidar_sensor" },
+                        { name: "gps_module", tag: "2.0.0", local_id: "gps_module" },
+                    ]
+                },
             },
             process: {
                 add_cmd: ["cargo", "build", "--release"],
@@ -353,38 +365,32 @@ async fn listen_for_node_sync_multiple_missing_dependencies_fails() {
             },
             parameters: {},
             interfaces: {
-                exposes: {
-                    topics: [],
-                    services: [],
-                    actions: [],
-                },
-                subscribes_to: {
-                    topics: [
+                topics: {
+                    emits: [],
+                    consumes: [
                         {
-                            id: "camera_front",
-                            node: "uvc_camera",
+                            local_node_id: "uvc_camera",
                             name: "video_stream",
-                            tag: "0.1.0",
                         },
                         {
-                            id: "camera_back",
-                            node: "uvc_camera",
+                            local_node_id: "uvc_camera",
                             name: "video_stream_rear",
-                            tag: "0.1.0",
                         },
                         {
-                            id: "lidar_data",
-                            node: "lidar_sensor",
+                            local_node_id: "lidar_sensor",
                             name: "point_cloud",
-                            tag: "1.0.0",
                         },
                         {
-                            id: "gps_position",
-                            node: "gps_module",
+                            local_node_id: "gps_module",
                             name: "location",
-                            tag: "2.0.0",
                         }
                     ],
+                },
+                services: {
+                    exposes: [],
+                },
+                actions: {
+                    exposes: [],
                 },
             },
         }
@@ -463,8 +469,8 @@ async fn listen_for_node_sync_generates_rust_interfaces() {
             },
             parameters: {},
             interfaces: {
-                exposes: {
-                    topics: [
+                topics: {
+                    emits: [
                       {
                         name: "video_stream",
                         qos_profile: "sensor_data",
@@ -484,11 +490,13 @@ async fn listen_for_node_sync_generates_rust_interfaces() {
                         },
                       }
                     ],
-                    services: [],
-                    actions: [],
+                    consumes: [],
                 },
-                subscribes_to: {
-                    topics: [],
+                services: {
+                    exposes: [],
+                },
+                actions: {
+                    exposes: [],
                 },
             },
         }
@@ -549,6 +557,11 @@ async fn listen_for_node_sync_generates_rust_interfaces() {
                 tag: "0.1.0",
                 language: "rust",
                 labels: ["brain"],
+                depends_on: {
+                    nodes: [
+                        { name: "uvc_camera", tag: "0.1.0", local_id: "uvc_camera" }
+                    ]
+                },
             },
             process: {
                 add_cmd: ["true"],
@@ -556,20 +569,20 @@ async fn listen_for_node_sync_generates_rust_interfaces() {
             },
             parameters: {},
             interfaces: {
-                exposes: {
-                    topics: [],
-                    services: [],
-                    actions: [],
-                },
-                subscribes_to: {
-                    topics: [
+                topics: {
+                    emits: [],
+                    consumes: [
                         {
-                          id: "camera_front",
-                          node: "uvc_camera",
+                          local_node_id: "uvc_camera",
                           name: "video_stream",
-                          tag: "0.1.0",
                         }
                     ],
+                },
+                services: {
+                    exposes: [],
+                },
+                actions: {
+                    exposes: [],
                 },
             },
         }
@@ -629,8 +642,8 @@ async fn listen_for_node_sync_generates_rust_interfaces() {
     let brain_lib_rs = fs::read_to_string(&brain_lib_rs_path).expect("failed to read lib.rs");
     // The generated code should include standard peppygen modules
     assert!(
-        brain_lib_rs.contains("pub mod subscribed_topics"),
-        "lib.rs should contain subscribed_topics module, got:\n{}",
+        brain_lib_rs.contains("pub mod consumed_topics"),
+        "lib.rs should contain consumed_topics module, got:\n{}",
         brain_lib_rs
     );
     assert!(
@@ -639,19 +652,19 @@ async fn listen_for_node_sync_generates_rust_interfaces() {
         brain_lib_rs
     );
 
-    let subscribed_topic_path = brain_peppygen_dir
+    let consumed_topic_path = brain_peppygen_dir
         .join("src")
-        .join("subscribed_topics")
+        .join("consumed_topics")
         .join("uvc_camera_video_stream.rs");
     assert!(
-        subscribed_topic_path.exists(),
+        consumed_topic_path.exists(),
         "peppygen uvc_camera_video_stream.rs should exist at {}",
-        subscribed_topic_path.display()
+        consumed_topic_path.display()
     );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_sync_generates_rust_subscribed_service_interfaces() {
+async fn listen_for_node_sync_generates_rust_consumed_service_interfaces() {
     let started_core_node = start_core_node_with_mock_messenger().await;
 
     let uvc_camera_node_dir = tempdir().expect("failed to create temp node directory");
@@ -672,9 +685,11 @@ async fn listen_for_node_sync_generates_rust_subscribed_service_interfaces() {
             },
             parameters: {},
             interfaces: {
-                exposes: {
-                    topics: [],
-                    services: [
+                topics: {
+                    emits: [],
+                },
+                services: {
+                    exposes: [
                       {
                         name: "enable_camera",
                         request_message_format: {
@@ -682,7 +697,9 @@ async fn listen_for_node_sync_generates_rust_subscribed_service_interfaces() {
                         },
                       }
                     ],
-                    actions: [],
+                },
+                actions: {
+                    exposes: [],
                 },
             },
         }
@@ -740,6 +757,11 @@ async fn listen_for_node_sync_generates_rust_subscribed_service_interfaces() {
                 tag: "0.1.0",
                 language: "rust",
                 labels: ["brain"],
+                depends_on: {
+                    nodes: [
+                        { name: "uvc_camera", tag: "0.1.0", local_id: "uvc_camera" }
+                    ]
+                },
             },
             process: {
                 add_cmd: ["true"],
@@ -747,20 +769,20 @@ async fn listen_for_node_sync_generates_rust_subscribed_service_interfaces() {
             },
             parameters: {},
             interfaces: {
-                exposes: {
-                    topics: [],
-                    services: [],
-                    actions: [],
+                topics: {
+                    emits: [],
                 },
-                subscribes_to: {
-                    services: [
+                services: {
+                    exposes: [],
+                    consumes: [
                         {
-                          id: "uvc_camera_enable_camera",
-                          node: "uvc_camera",
+                          local_node_id: "uvc_camera",
                           name: "enable_camera",
-                          tag: "0.1.0",
                         }
                     ],
+                },
+                actions: {
+                    exposes: [],
                 },
             },
         }
@@ -791,19 +813,19 @@ async fn listen_for_node_sync_generates_rust_subscribed_service_interfaces() {
         brain_peppygen_dir.display()
     );
 
-    let subscribed_service_path = brain_peppygen_dir
+    let consumed_service_path = brain_peppygen_dir
         .join("src")
-        .join("subscribed_services")
+        .join("consumed_services")
         .join("uvc_camera_enable_camera.rs");
     assert!(
-        subscribed_service_path.exists(),
+        consumed_service_path.exists(),
         "peppygen uvc_camera_enable_camera.rs should exist at {}",
-        subscribed_service_path.display()
+        consumed_service_path.display()
     );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_sync_generates_rust_subscribed_topic_interfaces() {
+async fn listen_for_node_sync_generates_rust_consumed_topic_interfaces() {
     let started_core_node = start_core_node_with_mock_messenger().await;
 
     let uvc_camera_node_dir = tempdir().expect("failed to create temp node directory");
@@ -824,8 +846,8 @@ async fn listen_for_node_sync_generates_rust_subscribed_topic_interfaces() {
             },
             parameters: {},
             interfaces: {
-                exposes: {
-                    topics: [
+                topics: {
+                    emits: [
                       {
                         name: "video_stream",
                         qos_profile: "sensor_data",
@@ -835,8 +857,12 @@ async fn listen_for_node_sync_generates_rust_subscribed_topic_interfaces() {
                         },
                       }
                     ],
-                    services: [],
-                    actions: [],
+                },
+                services: {
+                    exposes: [],
+                },
+                actions: {
+                    exposes: [],
                 },
             },
         }
@@ -894,6 +920,11 @@ async fn listen_for_node_sync_generates_rust_subscribed_topic_interfaces() {
                 tag: "0.1.0",
                 language: "rust",
                 labels: ["brain"],
+                depends_on: {
+                    nodes: [
+                        { name: "uvc_camera", tag: "0.1.0", local_id: "uvc_camera" }
+                    ]
+                },
             },
             process: {
                 add_cmd: ["true"],
@@ -901,20 +932,20 @@ async fn listen_for_node_sync_generates_rust_subscribed_topic_interfaces() {
             },
             parameters: {},
             interfaces: {
-                exposes: {
-                    topics: [],
-                    services: [],
-                    actions: [],
-                },
-                subscribes_to: {
-                    topics: [
+                topics: {
+                    emits: [],
+                    consumes: [
                         {
-                          id: "camera_front",
-                          node: "uvc_camera",
+                          local_node_id: "uvc_camera",
                           name: "video_stream",
-                          tag: "0.1.0",
                         }
                     ],
+                },
+                services: {
+                    exposes: [],
+                },
+                actions: {
+                    exposes: [],
                 },
             },
         }
@@ -945,19 +976,19 @@ async fn listen_for_node_sync_generates_rust_subscribed_topic_interfaces() {
         brain_peppygen_dir.display()
     );
 
-    let subscribed_topic_path = brain_peppygen_dir
+    let consumed_topic_path = brain_peppygen_dir
         .join("src")
-        .join("subscribed_topics")
+        .join("consumed_topics")
         .join("uvc_camera_video_stream.rs");
     assert!(
-        subscribed_topic_path.exists(),
+        consumed_topic_path.exists(),
         "peppygen uvc_camera_video_stream.rs should exist at {}",
-        subscribed_topic_path.display()
+        consumed_topic_path.display()
     );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_sync_generates_rust_subscribed_action_interfaces() {
+async fn listen_for_node_sync_generates_rust_consumed_action_interfaces() {
     let started_core_node = start_core_node_with_mock_messenger().await;
 
     let action_server_node_dir = tempdir().expect("failed to create temp node directory");
@@ -978,10 +1009,14 @@ async fn listen_for_node_sync_generates_rust_subscribed_action_interfaces() {
             },
             parameters: {},
             interfaces: {
-                exposes: {
-                    topics: [],
-                    services: [],
-                    actions: [
+                topics: {
+                    emits: [],
+                },
+                services: {
+                    exposes: [],
+                },
+                actions: {
+                    exposes: [
                       {
                         name: "move_arm",
                         goal_service: {
@@ -1054,6 +1089,11 @@ async fn listen_for_node_sync_generates_rust_subscribed_action_interfaces() {
                 tag: "0.1.0",
                 language: "rust",
                 labels: ["controller"],
+                depends_on: {
+                    nodes: [
+                        { name: "brain", tag: "0.1.0", local_id: "brain" }
+                    ]
+                },
             },
             process: {
                 add_cmd: ["true"],
@@ -1061,18 +1101,18 @@ async fn listen_for_node_sync_generates_rust_subscribed_action_interfaces() {
             },
             parameters: {},
             interfaces: {
-                exposes: {
-                    topics: [],
-                    services: [],
-                    actions: [],
+                topics: {
+                    emits: [],
                 },
-                subscribes_to: {
-                    actions: [
+                services: {
+                    exposes: [],
+                },
+                actions: {
+                    exposes: [],
+                    consumes: [
                         {
-                          id: "brain_move_arm",
-                          node: "brain",
+                          local_node_id: "brain",
                           name: "move_arm",
-                          tag: "0.1.0",
                         }
                     ],
                 },
@@ -1106,14 +1146,14 @@ async fn listen_for_node_sync_generates_rust_subscribed_action_interfaces() {
         controller_peppygen_dir.display()
     );
 
-    let subscribed_action_path = controller_peppygen_dir
+    let consumed_action_path = controller_peppygen_dir
         .join("src")
-        .join("subscribed_actions")
+        .join("consumed_actions")
         .join("brain_move_arm.rs");
     assert!(
-        subscribed_action_path.exists(),
+        consumed_action_path.exists(),
         "peppygen brain_move_arm.rs should exist at {}",
-        subscribed_action_path.display()
+        consumed_action_path.display()
     );
 }
 

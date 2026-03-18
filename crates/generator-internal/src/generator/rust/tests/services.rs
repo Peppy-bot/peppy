@@ -1,7 +1,7 @@
 use std::process::{Command, Stdio};
 
 use super::*;
-use config::node::{ExposedService, PeppygenLanguage, SubscribedService};
+use config::node::{ConsumedService, ExposedService, PeppygenLanguage};
 
 const EXPOSED_SERVICE_EXAMPLE: &str = r#"
 {
@@ -43,10 +43,8 @@ const EXPOSED_SERVICE_EXAMPLE3: &str = r#"
 
 const SUBSCRIBED_SERVICE_EXAMPLE1: &str = r#"
 {
-  id: "uvc_camera_enable_camera",
-  node: "uvc_camera",
+  local_node_id: "uvc_camera",
   name: "enable_camera",
-  tag: "0.1.0"
 }
 "#;
 
@@ -77,13 +75,11 @@ const SUBSCRIBED_SERVICE_RESPONSE_OPTIONAL_SCALAR: &str = r#"
 
 const SUBSCRIBED_SERVICE_EXAMPLE2: &str = r#"
 {
-    id: "uvc_camera_get_camera_info",
-    node: "uvc_camera",
+    local_node_id: "uvc_camera",
     name: "get_camera_info",
-    tag: "0.1.0"
 }
 "#;
-// No request body for the second subscribed service
+// No request body for the second consumed service
 const SUBSCRIBED_SERVICE_RESPONSE_EXAMPLE2: &str = r#"
 {
     card_type: "string",
@@ -229,8 +225,8 @@ fn expose_two_services() {
 
 /// In the case of a service, a "subscribed" service is an entity expects to connect to another entity
 #[test]
-fn subscribed_to_service() {
-    let service: SubscribedService = serde_json5::from_str(SUBSCRIBED_SERVICE_EXAMPLE1).unwrap();
+fn consumed_service() {
+    let service: ConsumedService = serde_json5::from_str(SUBSCRIBED_SERVICE_EXAMPLE1).unwrap();
     let request_format: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_SERVICE_REQUEST_EXAMPLE1).unwrap();
     let response_format: MessageFormat =
@@ -238,7 +234,7 @@ fn subscribed_to_service() {
 
     let mut generator = RustGenerator::new();
     generator
-        .add_subscribed_service(&service, &request_format, &response_format)
+        .add_consumed_service(&service, &request_format, &response_format, "uvc_camera")
         .unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
@@ -294,25 +290,25 @@ fn subscribed_to_service() {
 }
 
 #[test]
-fn subscribed_to_two_services_same_node() {
-    let service1: SubscribedService = serde_json5::from_str(SUBSCRIBED_SERVICE_EXAMPLE1).unwrap();
+fn consumed_two_services_same_node() {
+    let service1: ConsumedService = serde_json5::from_str(SUBSCRIBED_SERVICE_EXAMPLE1).unwrap();
     let request_format1: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_SERVICE_REQUEST_EXAMPLE1).unwrap();
     let response_format1: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_SERVICE_RESPONSE_EXAMPLE1).unwrap();
 
     // Second service pointing to the same node
-    let service2: SubscribedService = serde_json5::from_str(SUBSCRIBED_SERVICE_EXAMPLE2).unwrap();
+    let service2: ConsumedService = serde_json5::from_str(SUBSCRIBED_SERVICE_EXAMPLE2).unwrap();
     let empty_format: MessageFormat = serde_json5::from_str(EMPTY_MESSAGE_FORMAT).unwrap();
     let response_format2: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_SERVICE_RESPONSE_EXAMPLE2).unwrap();
 
     let mut generator = RustGenerator::new();
     generator
-        .add_subscribed_service(&service1, &request_format1, &response_format1)
+        .add_consumed_service(&service1, &request_format1, &response_format1, "uvc_camera")
         .unwrap();
     generator
-        .add_subscribed_service(&service2, &empty_format, &response_format2)
+        .add_consumed_service(&service2, &empty_format, &response_format2, "uvc_camera")
         .unwrap();
     let artifacts = render_artifacts(generator.into_artifacts());
     assert_eq!(
@@ -339,21 +335,19 @@ fn subscribed_to_two_services_same_node() {
 }
 
 #[test]
-fn subscribed_service_without_response_payload() {
+fn consumed_service_without_response_payload() {
     let service = r#"
         {
-            id: "uvc_camera_get_camera_info",
-            node: "uvc_camera",
+            local_node_id: "uvc_camera",
             name: "get_camera_info",
-            tag: "0.1.0"
         }
         "#;
-    let service: SubscribedService = serde_json5::from_str(service).unwrap();
+    let service: ConsumedService = serde_json5::from_str(service).unwrap();
     let empty_format: MessageFormat = serde_json5::from_str(EMPTY_MESSAGE_FORMAT).unwrap();
 
     let mut generator = RustGenerator::new();
     generator
-        .add_subscribed_service(&service, &empty_format, &empty_format)
+        .add_consumed_service(&service, &empty_format, &empty_format, "uvc_camera")
         .expect("generator should allow services without response format");
 
     let artifacts = render_artifacts(generator.into_artifacts());
@@ -368,17 +362,17 @@ fn subscribed_service_without_response_payload() {
 }
 
 #[test]
-fn subscribed_service_rejects_optional_scalar_response_field() {
+fn consumed_service_rejects_optional_scalar_response_field() {
     use crate::error::Error;
 
-    let service: SubscribedService = serde_json5::from_str(SUBSCRIBED_SERVICE_EXAMPLE1).unwrap();
+    let service: ConsumedService = serde_json5::from_str(SUBSCRIBED_SERVICE_EXAMPLE1).unwrap();
     let empty_format: MessageFormat = serde_json5::from_str(EMPTY_MESSAGE_FORMAT).unwrap();
     let response_format: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_SERVICE_RESPONSE_OPTIONAL_SCALAR).unwrap();
 
     let mut generator = RustGenerator::new();
     let err = generator
-        .add_subscribed_service(&service, &empty_format, &response_format)
+        .add_consumed_service(&service, &empty_format, &response_format, "uvc_camera")
         .unwrap_err();
 
     match err {
@@ -401,31 +395,27 @@ fn clippy_single_exposed_service_without_request_body() {
     let temp_dir = TempDir::new().unwrap();
     let exposed_service: ExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE3).unwrap();
 
-    let subscribed_action1: SubscribedAction = serde_json5::from_str(
+    let consumed_action1: ConsumedAction = serde_json5::from_str(
         r#"
         {
-          id: "brain_move_arm",
-          node: "brain",
+          local_node_id: "brain",
           name: "move_arm",
-          tag: "0.1.0"
         }
         "#,
     )
     .unwrap();
-    let subscribed_action2: SubscribedAction = serde_json5::from_str(
+    let consumed_action2: ConsumedAction = serde_json5::from_str(
         r#"
         {
-          id: "controller_rotate_servo",
-          node: "controller",
+          local_node_id: "controller",
           name: "rotate_servo_clockwise",
-          tag: "0.1.0"
         }
         "#,
     )
     .unwrap();
     let goal_response_format: MessageFormat =
         serde_json5::from_str(r#"{ accepted: "bool" }"#).unwrap();
-    let action_messages = SubscribedActionMessage {
+    let action_messages = ConsumedActionMessage {
         goal_request: None,
         goal_response: Some(goal_response_format),
         feedback: None,
@@ -436,10 +426,10 @@ fn clippy_single_exposed_service_without_request_body() {
     let (mut generator, output_dir, user_node, _) = init_test_env::<RustGenerator>(&temp_dir);
     generator.add_exposed_service(&exposed_service).unwrap();
     generator
-        .add_subscribed_action(&subscribed_action1, &action_messages)
+        .add_consumed_action(&consumed_action1, &action_messages, "brain")
         .unwrap();
     generator
-        .add_subscribed_action(&subscribed_action2, &action_messages)
+        .add_consumed_action(&consumed_action2, &action_messages, "controller")
         .unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);
     generator
@@ -477,11 +467,11 @@ fn clippy_single_exposed_service_without_request_body() {
             .expect("failed to read exposed_services module");
     assert_contains_all(&exposed_services_contents, &["pub mod get_system_status;"]);
 
-    let subscribed_actions_contents =
-        std::fs::read_to_string(output_dir.join("src/subscribed_actions.rs"))
-            .expect("failed to read subscribed_actions module");
+    let consumed_actions_contents =
+        std::fs::read_to_string(output_dir.join("src/consumed_actions.rs"))
+            .expect("failed to read consumed_actions module");
     assert_contains_all(
-        &subscribed_actions_contents,
+        &consumed_actions_contents,
         &[
             "pub mod brain_move_arm;",
             "pub mod controller_rotate_servo_clockwise;",
@@ -491,23 +481,23 @@ fn clippy_single_exposed_service_without_request_body() {
 
 /// This is a long running test that verifies the generated code compiles and passes clippy
 #[test]
-fn compile_lib_with_exposed_and_subscribed_services() {
+fn compile_lib_with_exposed_and_consumed_services() {
     let temp_dir = TempDir::new().unwrap();
     let exposed_service1: ExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE).unwrap();
     let exposed_service2: ExposedService = serde_json5::from_str(EXPOSED_SERVICE_EXAMPLE2).unwrap();
 
-    let subscribed_service1: SubscribedService =
+    let consumed_service1: ConsumedService =
         serde_json5::from_str(SUBSCRIBED_SERVICE_EXAMPLE1).unwrap();
 
-    let subscribed_service_request1: MessageFormat =
+    let consumed_service_request1: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_SERVICE_REQUEST_EXAMPLE1).unwrap();
-    let subscribed_service_response1: MessageFormat =
+    let consumed_service_response1: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_SERVICE_RESPONSE_EXAMPLE1).unwrap();
 
     // Second service pointing to the same node
-    let subscribed_service2: SubscribedService =
+    let consumed_service2: ConsumedService =
         serde_json5::from_str(SUBSCRIBED_SERVICE_EXAMPLE2).unwrap();
-    let subscribed_service_response2: MessageFormat =
+    let consumed_service_response2: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_SERVICE_RESPONSE_EXAMPLE2).unwrap();
 
     let empty_format: MessageFormat = serde_json5::from_str(EMPTY_MESSAGE_FORMAT).unwrap();
@@ -516,17 +506,19 @@ fn compile_lib_with_exposed_and_subscribed_services() {
     generator.add_exposed_service(&exposed_service1).unwrap();
     generator.add_exposed_service(&exposed_service2).unwrap();
     generator
-        .add_subscribed_service(
-            &subscribed_service1,
-            &subscribed_service_request1,
-            &subscribed_service_response1,
+        .add_consumed_service(
+            &consumed_service1,
+            &consumed_service_request1,
+            &consumed_service_response1,
+            "uvc_camera",
         )
         .unwrap();
     generator
-        .add_subscribed_service(
-            &subscribed_service2,
+        .add_consumed_service(
+            &consumed_service2,
             &empty_format,
-            &subscribed_service_response2,
+            &consumed_service_response2,
+            "uvc_camera",
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);
@@ -589,7 +581,7 @@ fn compile_lib_with_exposed_and_subscribed_services() {
         std::fs::read_to_string(output_dir.join("src/lib.rs")).expect("failed to read lib.rs");
     assert_contains_all(
         &lib_contents,
-        &["pub mod exposed_services;", "pub mod subscribed_services;"],
+        &["pub mod exposed_services;", "pub mod consumed_services;"],
     );
 
     // Verify expected module files exist
@@ -607,30 +599,28 @@ fn compile_lib_with_exposed_and_subscribed_services() {
     );
     assert!(
         output_dir
-            .join("src/subscribed_services/uvc_camera_enable_camera.rs")
+            .join("src/consumed_services/uvc_camera_enable_camera.rs")
             .exists(),
         "Expected uvc_camera_enable_camera subscriber module"
     );
     assert!(
         output_dir
-            .join("src/subscribed_services/uvc_camera_get_camera_info.rs")
+            .join("src/consumed_services/uvc_camera_get_camera_info.rs")
             .exists(),
         "Expected uvc_camera_get_camera_info subscriber module"
     );
 }
 
-/// Checks for clippy warnings when there is a subscribed service with an empty request format.
+/// Checks for clippy warnings when there is a consumed service with an empty request format.
 #[test]
-fn clippy_subscribed_service_empty_request_format() {
+fn clippy_consumed_service_empty_request_format() {
     let temp_dir = TempDir::new().unwrap();
 
-    let subscribed_service: SubscribedService = serde_json5::from_str(
+    let consumed_service: ConsumedService = serde_json5::from_str(
         r#"
         {
-          id: "sensor_get_status",
-          node: "sensor",
+          local_node_id: "sensor",
           name: "get_status",
-          tag: "0.1.0"
         }
         "#,
     )
@@ -640,7 +630,7 @@ fn clippy_subscribed_service_empty_request_format() {
 
     let (mut generator, output_dir, user_node, _) = init_test_env::<RustGenerator>(&temp_dir);
     generator
-        .add_subscribed_service(&subscribed_service, &empty_format, &response_format)
+        .add_consumed_service(&consumed_service, &empty_format, &response_format, "sensor")
         .unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);
     generator
@@ -674,18 +664,16 @@ fn clippy_subscribed_service_empty_request_format() {
     );
 }
 
-/// Checks for clippy warnings when there is a subscribed service with an empty response format.
+/// Checks for clippy warnings when there is a consumed service with an empty response format.
 #[test]
-fn clippy_subscribed_service_empty_response_format() {
+fn clippy_consumed_service_empty_response_format() {
     let temp_dir = TempDir::new().unwrap();
 
-    let subscribed_service: SubscribedService = serde_json5::from_str(
+    let consumed_service: ConsumedService = serde_json5::from_str(
         r#"
         {
-          id: "sensor_trigger_action",
-          node: "sensor",
+          local_node_id: "sensor",
           name: "trigger_action",
-          tag: "0.1.0"
         }
         "#,
     )
@@ -695,7 +683,7 @@ fn clippy_subscribed_service_empty_response_format() {
 
     let (mut generator, output_dir, user_node, _) = init_test_env::<RustGenerator>(&temp_dir);
     generator
-        .add_subscribed_service(&subscribed_service, &request_format, &empty_format)
+        .add_consumed_service(&consumed_service, &request_format, &empty_format, "sensor")
         .unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);
     generator

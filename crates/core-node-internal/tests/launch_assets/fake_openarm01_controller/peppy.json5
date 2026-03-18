@@ -20,10 +20,16 @@
   },
   parameters: {},
   interfaces: {
-    exposes: {
-      topics: [],
-      services: [],
-      actions: [
+    topics: {
+      emits: [],
+      consumes: [],
+    },
+    services: {
+      exposes: [],
+      consumes: [],
+    },
+    actions: {
+      exposes: [
         {
           name: "move_right_arm",
           goal_service: {
@@ -97,11 +103,7 @@
           }
         }
       ],
-    },
-    subscribes_to: {
-      topics: [],
-      services: [],
-      actions: [],
+      consumes: [],
     },
   }
 }

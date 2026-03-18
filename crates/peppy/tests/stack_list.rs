@@ -4,7 +4,8 @@ use std::sync::Arc;
 
 use config::consts::PEPPYGEN_OUTPUT_PATH;
 use config::node::{
-    ExposedTopic, Name as ConfigName, NodeConfigParser, SubscribedTopic, SubscribesTo, Toolchain,
+    ConsumedTopic, DependsOn, EmittedTopic, LinkedConsumedTopic, Name as ConfigName,
+    NodeConfigParser, NodeDependency, Toolchain, TopicInterfaces,
 };
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands, NodeName};
@@ -14,7 +15,6 @@ use peppy::context::AppContext;
 fn make_consumer_depend_on_provider(
     provider_peppy_json5: &Path,
     consumer_peppy_json5: &Path,
-    consumer_name: &str,
     provider_name: &str,
 ) {
     let topic_name = "stack_list_topic";
@@ -24,13 +24,13 @@ fn make_consumer_depend_on_provider(
 
     provider_cfg.process.as_mut().unwrap().add_cmd = None;
 
-    let exposes = provider_cfg
+    let topic_ifaces = provider_cfg
         .interfaces
-        .exposes
+        .topics
         .get_or_insert_with(Default::default);
-    let topics = exposes.topics.get_or_insert_with(Vec::new);
-    if !topics.iter().any(|topic| topic.name == topic_name) {
-        topics.push(ExposedTopic {
+    let exposed = topic_ifaces.emits.get_or_insert_with(Vec::new);
+    if !exposed.iter().any(|topic| topic.name == topic_name) {
+        exposed.push(EmittedTopic {
             name: topic_name.to_string(),
             ..Default::default()
         });
@@ -50,14 +50,19 @@ fn make_consumer_depend_on_provider(
 
     consumer_cfg.process.as_mut().unwrap().add_cmd = None;
 
-    consumer_cfg.interfaces.subscribes_to = Some(SubscribesTo {
-        topics: Some(vec![SubscribedTopic {
-            id: ConfigName::new(format!("{consumer_name}_{topic_name}"))
-                .expect("subscribed topic id should be valid"),
-            node: provider_name.to_string(),
-            name: topic_name.to_string(),
+    consumer_cfg.manifest.depends_on = Some(DependsOn {
+        nodes: vec![NodeDependency {
+            name: ConfigName::new(provider_name).expect("valid provider name"),
             tag: "0.1.0".to_string(),
-        }]),
+            local_id: provider_name.to_string(),
+        }],
+    });
+
+    consumer_cfg.interfaces.topics = Some(TopicInterfaces {
+        consumes: Some(vec![ConsumedTopic::Linked(LinkedConsumedTopic {
+            local_node_id: provider_name.to_string(),
+            name: topic_name.to_string(),
+        })]),
         ..Default::default()
     });
 
@@ -145,12 +150,7 @@ async fn node_list_command_succeeds() {
     );
 
     // Make the consumer depend on the provider by subscribing to a topic exposed by the provider.
-    make_consumer_depend_on_provider(
-        &provider_peppy_json5,
-        &consumer_peppy_json5,
-        consumer_name,
-        provider_name,
-    );
+    make_consumer_depend_on_provider(&provider_peppy_json5, &consumer_peppy_json5, provider_name);
 
     // Add the provider
     NodeCommand {
@@ -292,12 +292,7 @@ async fn node_list_command_with_dot_representation_succeeds() {
         consumer_peppy_json5.display()
     );
 
-    make_consumer_depend_on_provider(
-        &provider_peppy_json5,
-        &consumer_peppy_json5,
-        consumer_name,
-        provider_name,
-    );
+    make_consumer_depend_on_provider(&provider_peppy_json5, &consumer_peppy_json5, provider_name);
 
     NodeCommand {
         command: NodeCommands::Add {

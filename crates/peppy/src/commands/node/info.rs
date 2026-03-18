@@ -99,24 +99,32 @@ fn print_node_info(response: &NodeInfoResponse) {
         println!("Status:    Not in node stack");
     }
 
-    // Dependencies (extracted from subscribes_to interfaces)
-    if let Some(subscribes) = config.interfaces.subscribes_to.as_ref() {
+    // Dependencies (extracted from consumes interfaces)
+    {
         let mut dependencies: BTreeSet<&str> = BTreeSet::new();
 
-        if let Some(topics) = &subscribes.topics {
-            for topic in topics {
-                dependencies.insert(&topic.node);
+        if let Some(topics) = &config.interfaces.topics
+            && let Some(expected) = &topics.consumes
+        {
+            for topic in expected {
+                if let config::node::ConsumedTopic::Linked(linked) = topic {
+                    dependencies.insert(&linked.local_node_id);
+                }
             }
         }
-        if let Some(services) = &subscribes.services {
-            for service in services {
-                dependencies.insert(&service.node);
+        if let Some(services) = &config.interfaces.services
+            && let Some(consumed) = &services.consumes
+        {
+            for service in consumed {
+                dependencies.insert(&service.local_node_id);
             }
         }
-        if let Some(actions) = &subscribes.actions {
-            for action in actions {
-                if !action.node.is_empty() {
-                    dependencies.insert(&action.node);
+        if let Some(actions) = &config.interfaces.actions
+            && let Some(consumed) = &actions.consumes
+        {
+            for action in consumed {
+                if !action.local_node_id.is_empty() {
+                    dependencies.insert(&action.local_node_id);
                 }
             }
         }
@@ -131,27 +139,50 @@ fn print_node_info(response: &NodeInfoResponse) {
         }
     }
 
-    // Interfaces
-    if let Some(interfaces) = config.interfaces.exposes.as_ref() {
-        let has_content = interfaces.topics.as_ref().is_some_and(|t| !t.is_empty())
-            || interfaces.services.as_ref().is_some_and(|s| !s.is_empty())
-            || interfaces.actions.as_ref().is_some_and(|a| !a.is_empty());
+    // Exposed Interfaces
+    {
+        let has_content = config
+            .interfaces
+            .topics
+            .as_ref()
+            .and_then(|t| t.emits.as_ref())
+            .is_some_and(|t| !t.is_empty())
+            || config
+                .interfaces
+                .services
+                .as_ref()
+                .and_then(|s| s.exposes.as_ref())
+                .is_some_and(|s| !s.is_empty())
+            || config
+                .interfaces
+                .actions
+                .as_ref()
+                .and_then(|a| a.exposes.as_ref())
+                .is_some_and(|a| !a.is_empty());
 
         if has_content {
             println!();
             println!("Exposed Interfaces");
             println!("{}", "-".repeat(50));
 
-            if let Some(topics) = &interfaces.topics
+            if let Some(topics) = config
+                .interfaces
+                .topics
+                .as_ref()
+                .and_then(|t| t.emits.as_ref())
                 && !topics.is_empty()
             {
-                println!("Topics:");
+                println!("Emitted Topics:");
                 for topic in topics {
                     println!("  - {} (qos: {:?})", topic.name, topic.qos_profile);
                 }
             }
 
-            if let Some(services) = &interfaces.services
+            if let Some(services) = config
+                .interfaces
+                .services
+                .as_ref()
+                .and_then(|s| s.exposes.as_ref())
                 && !services.is_empty()
             {
                 println!("Services:");
@@ -160,7 +191,11 @@ fn print_node_info(response: &NodeInfoResponse) {
                 }
             }
 
-            if let Some(actions) = &interfaces.actions
+            if let Some(actions) = config
+                .interfaces
+                .actions
+                .as_ref()
+                .and_then(|a| a.exposes.as_ref())
                 && !actions.is_empty()
             {
                 println!("Actions:");
@@ -171,55 +206,78 @@ fn print_node_info(response: &NodeInfoResponse) {
         }
     }
 
-    if let Some(subscribes) = config.interfaces.subscribes_to.as_ref() {
-        let has_content = subscribes.topics.as_ref().is_some_and(|t| !t.is_empty())
-            || subscribes.services.as_ref().is_some_and(|s| !s.is_empty())
-            || subscribes.actions.as_ref().is_some_and(|a| !a.is_empty());
+    // Consumed Interfaces
+    {
+        let has_content = config
+            .interfaces
+            .topics
+            .as_ref()
+            .and_then(|t| t.consumes.as_ref())
+            .is_some_and(|t| !t.is_empty())
+            || config
+                .interfaces
+                .services
+                .as_ref()
+                .and_then(|s| s.consumes.as_ref())
+                .is_some_and(|s| !s.is_empty())
+            || config
+                .interfaces
+                .actions
+                .as_ref()
+                .and_then(|a| a.consumes.as_ref())
+                .is_some_and(|a| !a.is_empty());
 
         if has_content {
             println!();
-            println!("Subscribed Interfaces");
+            println!("Consumed Interfaces");
             println!("{}", "-".repeat(50));
 
-            if let Some(topics) = &subscribes.topics
+            if let Some(topics) = config
+                .interfaces
+                .topics
+                .as_ref()
+                .and_then(|t| t.consumes.as_ref())
                 && !topics.is_empty()
             {
-                println!("Topics:");
+                println!("Consumed Topics:");
                 for topic in topics {
-                    println!(
-                        "  - {} (from {}:{})",
-                        topic.id.as_str(),
-                        topic.node,
-                        topic.name
-                    );
+                    match topic {
+                        config::node::ConsumedTopic::Linked(linked) => {
+                            println!("  - {} (from node: {})", linked.name, linked.local_node_id);
+                        }
+                        config::node::ConsumedTopic::External(external) => {
+                            println!("  - {} (external)", external.name);
+                        }
+                    }
                 }
             }
 
-            if let Some(services) = &subscribes.services
+            if let Some(services) = config
+                .interfaces
+                .services
+                .as_ref()
+                .and_then(|s| s.consumes.as_ref())
                 && !services.is_empty()
             {
                 println!("Services:");
                 for service in services {
                     println!(
-                        "  - {} (from {}:{})",
-                        service.id.as_str(),
-                        service.node,
-                        service.name
+                        "  - {} (from node: {})",
+                        service.name, service.local_node_id
                     );
                 }
             }
 
-            if let Some(actions) = &subscribes.actions
+            if let Some(actions) = config
+                .interfaces
+                .actions
+                .as_ref()
+                .and_then(|a| a.consumes.as_ref())
                 && !actions.is_empty()
             {
                 println!("Actions:");
                 for action in actions {
-                    println!(
-                        "  - {} (from {}:{})",
-                        action.id.as_str(),
-                        action.node,
-                        action.name
-                    );
+                    println!("  - {} (from node: {})", action.name, action.local_node_id);
                 }
             }
         }

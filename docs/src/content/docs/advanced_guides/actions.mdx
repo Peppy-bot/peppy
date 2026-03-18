@@ -36,7 +36,7 @@ Client                              Server
 
 ## Exposing an action
 
-A node that handles action goals declares its actions under `interfaces.exposes.actions` in its `peppy.json5`.
+A node that handles action goals declares its actions under `interfaces.actions.exposes` in its `peppy.json5`.
 Each action defines a `goal_service`, a `feedback_topic`, and a `result_service`:
 
 ```json5
@@ -52,10 +52,8 @@ Each action defines a `goal_service`, a `feedback_topic`, and a `result_service`
     start_cmd: ["./target/release/brain"]
   },
   interfaces: {
-    exposes: {
-      topics: [],
-      services: [],
-      actions: [
+    actions: {
+      exposes: [
         {
           name: "move_arm",
           goal_service: {
@@ -97,11 +95,6 @@ Each action defines a `goal_service`, a `feedback_topic`, and a `result_service`
           }
         }
       ],
-    },
-    subscribes_to: {
-      topics: [],
-      services: [],
-      actions: [],
     },
   }
 }
@@ -206,9 +199,10 @@ loop {
 }
 ```
 
-## Subscribing to an action
+## Consuming an action
 
-A node that sends goals declares its subscriptions under `interfaces.subscribes_to.actions`:
+A node that sends goals declares what it consumes under `interfaces.actions.consumes`.
+Dependencies are declared in `manifest.depends_on` and referenced by `local_node_id` in the interface:
 
 ```json5
 {
@@ -217,21 +211,22 @@ A node that sends goals declares its subscriptions under `interfaces.subscribes_
     name: "controller",
     tag: "0.1.0",
     language: "rust",
+    depends_on: {
+      nodes: [
+        { name: "brain", tag: "0.1.0", local_id: "brain" },
+      ]
+    },
   },
   process: {
     add_cmd: ["cargo", "build", "--release"],
     start_cmd: ["./target/release/controller"]
   },
   interfaces: {
-    subscribes_to: {
-      topics: [],
-      services: [],
-      actions: [
+    actions: {
+      consumes: [
         {
-          id: "brain_move_arm",  // Your chosen identifier for this subscription
-          node: "brain",          // Target node name
-          name: "move_arm",       // Action name on that node
-          tag: "0.1.0",           // Target node tag/version
+          local_node_id: "brain",  // References depends_on.nodes[].local_id
+          name: "move_arm",        // Action name on that node
         },
       ],
     },
@@ -245,11 +240,11 @@ The `node add` and `node sync` commands require the target node to already be in
 
 ### Firing a goal
 
-The code generator creates a module for each subscribed action under `peppygen::subscribed_actions`.
+The code generator creates a module for each consumed action under `peppygen::consumed_actions`.
 Use `fire_goal` to send a goal, then listen for feedback and request the result:
 
 ```rust
-use peppygen::subscribed_actions::brain_move_arm;
+use peppygen::consumed_actions::brain_move_arm;
 use peppygen::{NodeBuilder, Parameters, QoSProfile, Result};
 use std::time::Duration;
 
