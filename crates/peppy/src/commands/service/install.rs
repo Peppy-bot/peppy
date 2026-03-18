@@ -44,30 +44,16 @@ impl Command for UninstallCommand {
 }
 
 pub fn stop_peppy_daemon() -> Result<()> {
-    let kind = ServiceManagerKind::native()?;
+    let (manager, kind) = create_service_manager()?;
     let label: ServiceLabel = service_label(kind).parse()?;
-    let mut manager = TypedServiceManager::target(kind);
-    let manager_level = preferred_service_level(kind);
-    if manager.level() != manager_level {
-        manager
-            .set_level(manager_level)
-            .map_err(|e| Error::ExecutionFailed(e.to_string()))?;
-    }
     manager
         .stop(ServiceStopCtx { label })
         .map_err(|e| Error::ExecutionFailed(e.to_string()))
 }
 
 pub fn uninstall_peppy_daemon() -> Result<()> {
-    let kind = ServiceManagerKind::native()?;
+    let (manager, kind) = create_service_manager()?;
     let label: ServiceLabel = service_label(kind).parse()?;
-    let mut manager = TypedServiceManager::target(kind);
-    let manager_level = preferred_service_level(kind);
-    if manager.level() != manager_level {
-        manager
-            .set_level(manager_level)
-            .map_err(|e| Error::ExecutionFailed(e.to_string()))?;
-    }
     manager
         .uninstall(ServiceUninstallCtx { label })
         .map_err(|e| Error::ExecutionFailed(e.to_string()))
@@ -92,13 +78,9 @@ pub fn install_peppy_daemon(service_dir_override: Option<PathBuf>) -> Result<Pat
         return write_service_definition(kind, &dir, &ctx);
     }
 
-    let mut manager = TypedServiceManager::target(kind);
+    let (manager, kind) = create_service_manager()?;
     let manager_level = preferred_service_level(kind);
-    if manager.level() != manager_level {
-        manager
-            .set_level(manager_level)
-            .map_err(|e| Error::ExecutionFailed(e.to_string()))?;
-    }
+
     manager
         .install(ctx)
         .map_err(|e| Error::ExecutionFailed(e.to_string()))?;
@@ -212,6 +194,25 @@ fn default_service_path_with_level(
     }
 }
 
+fn create_service_manager() -> Result<(TypedServiceManager, ServiceManagerKind)> {
+    let kind = ServiceManagerKind::native()?;
+    let manager_level = preferred_service_level(kind);
+
+    #[cfg(target_os = "linux")]
+    if matches!(kind, ServiceManagerKind::Systemd) && matches!(manager_level, ServiceLevel::User) {
+        ensure_systemd_user_env()?;
+    }
+
+    let mut manager = TypedServiceManager::target(kind);
+    if manager.level() != manager_level {
+        manager
+            .set_level(manager_level)
+            .map_err(|e| Error::ExecutionFailed(e.to_string()))?;
+    }
+
+    Ok((manager, kind))
+}
+
 fn preferred_service_level(kind: ServiceManagerKind) -> ServiceLevel {
     match kind {
         ServiceManagerKind::Systemd | ServiceManagerKind::Launchd => {
@@ -233,6 +234,50 @@ fn is_root() -> bool {
 
     #[cfg(not(unix))]
     false
+}
+
+/// Ensures the environment variables needed by `systemctl --user` are present.
+/// On SSH sessions and minimal installs, `XDG_RUNTIME_DIR` and
+/// `DBUS_SESSION_BUS_ADDRESS` may be missing, causing
+/// "Failed to connect to bus: No medium found".
+#[cfg(target_os = "linux")]
+fn ensure_systemd_user_env() -> Result<()> {
+    use std::env;
+
+    let uid = unsafe { libc::getuid() };
+    let runtime_dir = format!("/run/user/{uid}");
+
+    if env::var("XDG_RUNTIME_DIR").is_err() {
+        if !Path::new(&runtime_dir).exists() {
+            return Err(Error::ExecutionFailed(format!(
+                "User runtime directory {runtime_dir} does not exist.\n\
+                 The systemd user session is not active.\n\
+                 Try: loginctl enable-linger $USER\n\
+                 Or ensure 'dbus-user-session' is installed: sudo apt install dbus-user-session"
+            )));
+        }
+        // SAFETY: called during single-threaded CLI startup, before tokio runtime.
+        unsafe {
+            env::set_var("XDG_RUNTIME_DIR", &runtime_dir);
+        }
+    }
+
+    let xdg = env::var("XDG_RUNTIME_DIR").unwrap_or(runtime_dir);
+    let bus_path = format!("{xdg}/bus");
+    if env::var("DBUS_SESSION_BUS_ADDRESS").is_err() {
+        if !Path::new(&bus_path).exists() {
+            return Err(Error::ExecutionFailed(format!(
+                "D-Bus session bus socket not found at {bus_path}.\n\
+                 Try: sudo apt install dbus-user-session && loginctl enable-linger $USER\n\
+                 Then log out and back in, or reboot."
+            )));
+        }
+        unsafe {
+            env::set_var("DBUS_SESSION_BUS_ADDRESS", format!("unix:path={bus_path}"));
+        }
+    }
+
+    Ok(())
 }
 
 fn systemd_user_unit_dir() -> Result<PathBuf> {
