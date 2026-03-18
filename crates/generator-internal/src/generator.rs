@@ -14,7 +14,7 @@ use config::{
 };
 use python::PythonGenerator;
 use rust::RustGenerator;
-use std::{fs, path::Path};
+use std::{fs, io::ErrorKind, path::Path};
 use types::{DeploymentInterface, InterfaceVariant, LanguageGenerator};
 
 /// Generate an interface library for the given language from a node directory.
@@ -47,7 +47,7 @@ pub fn generate_peppygen_lib(
 
     let peppy_dir = node_dir.join(config::consts::PEPPY_OUTPUT_DIR);
     std::fs::create_dir_all(&peppy_dir)?;
-    std::fs::write(peppy_dir.join("git.hash"), git_hash)?;
+    write_if_changed(&peppy_dir.join("git.hash"), git_hash.as_bytes())?;
 
     if !node_config_path.exists() {
         return Err(Error::NodeNotFound(node_dir.display().to_string()));
@@ -56,7 +56,7 @@ pub fn generate_peppygen_lib(
     let node_config = NodeConfigParser::from_path(&node_config_path)
         .map_err(|e| Error::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e)))?;
 
-    let mut interfaces = collect_exposed_interfaces(&node_config);
+    let mut interfaces = collect_exposed_interfaces(&node_config, consumed_interfaces.len());
     // Add the consumed interfaces with resolved message formats
     interfaces.extend(consumed_interfaces);
 
@@ -101,40 +101,81 @@ pub fn generate_peppygen_lib(
 }
 
 /// Collects all exposed interfaces from a NodeConfig into DeploymentInterface instances.
-fn collect_exposed_interfaces(config: &config::node::NodeConfig) -> Vec<DeploymentInterface> {
-    let mut interfaces = Vec::new();
+fn collect_exposed_interfaces(
+    config: &config::node::NodeConfig,
+    extra_capacity: usize,
+) -> Vec<DeploymentInterface> {
+    let mut interfaces =
+        Vec::with_capacity(count_exposed_interfaces(config).saturating_add(extra_capacity));
 
-    if let Some(topics) = &config.interfaces.topics
-        && let Some(emitted) = &topics.emits
-    {
-        for topic in emitted {
-            interfaces.push(DeploymentInterface::new(InterfaceVariant::EmittedTopic(
-                topic.clone(),
-            )));
-        }
-    }
-
-    if let Some(services) = &config.interfaces.services
-        && let Some(exposed) = &services.exposes
-    {
-        for service in exposed {
-            interfaces.push(DeploymentInterface::new(InterfaceVariant::ExposedService(
-                service.clone(),
-            )));
-        }
-    }
-
-    if let Some(actions) = &config.interfaces.actions
-        && let Some(exposed) = &actions.exposes
-    {
-        for action in exposed {
-            interfaces.push(DeploymentInterface::new(InterfaceVariant::ExposedAction(
-                action.clone(),
-            )));
-        }
-    }
+    push_interfaces(
+        &mut interfaces,
+        config
+            .interfaces
+            .topics
+            .as_ref()
+            .and_then(|topics| topics.emits.as_deref()),
+        InterfaceVariant::EmittedTopic,
+    );
+    push_interfaces(
+        &mut interfaces,
+        config
+            .interfaces
+            .services
+            .as_ref()
+            .and_then(|services| services.exposes.as_deref()),
+        InterfaceVariant::ExposedService,
+    );
+    push_interfaces(
+        &mut interfaces,
+        config
+            .interfaces
+            .actions
+            .as_ref()
+            .and_then(|actions| actions.exposes.as_deref()),
+        InterfaceVariant::ExposedAction,
+    );
 
     interfaces
+}
+
+fn count_exposed_interfaces(config: &config::node::NodeConfig) -> usize {
+    config
+        .interfaces
+        .topics
+        .as_ref()
+        .and_then(|topics| topics.emits.as_ref())
+        .map_or(0, Vec::len)
+        + config
+            .interfaces
+            .services
+            .as_ref()
+            .and_then(|services| services.exposes.as_ref())
+            .map_or(0, Vec::len)
+        + config
+            .interfaces
+            .actions
+            .as_ref()
+            .and_then(|actions| actions.exposes.as_ref())
+            .map_or(0, Vec::len)
+}
+
+fn push_interfaces<T, F>(interfaces: &mut Vec<DeploymentInterface>, items: Option<&[T]>, wrap: F)
+where
+    T: Clone,
+    F: Fn(T) -> InterfaceVariant,
+{
+    let Some(items) = items else {
+        return;
+    };
+
+    interfaces.extend(
+        items
+            .iter()
+            .cloned()
+            .map(wrap)
+            .map(DeploymentInterface::new),
+    );
 }
 
 fn generate_with_backend<B>(
@@ -147,9 +188,9 @@ fn generate_with_backend<B>(
 where
     B: LanguageGenerator,
 {
-    for interface in interfaces {
-        interface.register_with(&mut backend)?;
-    }
+    interfaces
+        .iter()
+        .try_for_each(|interface| interface.register_with(&mut backend))?;
     backend.build(output_dir, peppy_dirs, deploy_mode)
 }
 
@@ -158,13 +199,17 @@ where
 /// If the Cargo.toml doesn't exist, it creates a new one with the node name.
 /// If it exists, it ensures both dependencies are present while preserving formatting.
 fn ensure_node_cargo_toml(node_dir: &Path, node_name: &str) -> Result<()> {
-    use std::io::ErrorKind;
-    use toml_edit::{DocumentMut, InlineTable, Item, Table, value};
+    use toml_edit::{DocumentMut, Item, Table, value};
 
     let cargo_toml_path = node_dir.join("Cargo.toml");
 
-    let mut doc: DocumentMut = if cargo_toml_path.exists() {
-        let contents = fs::read_to_string(&cargo_toml_path)?;
+    let existing_contents = match fs::read_to_string(&cargo_toml_path) {
+        Ok(contents) => Some(contents),
+        Err(error) if error.kind() == ErrorKind::NotFound => None,
+        Err(error) => return Err(error.into()),
+    };
+
+    let mut doc: DocumentMut = if let Some(contents) = existing_contents.as_deref() {
         contents.parse().map_err(|e| {
             Error::Io(std::io::Error::new(
                 ErrorKind::InvalidData,
@@ -192,18 +237,43 @@ fn ensure_node_cargo_toml(node_dir: &Path, node_name: &str) -> Result<()> {
     }
 
     if let Some(dependencies) = doc.get_mut("dependencies").and_then(|d| d.as_table_mut()) {
-        let mut peppygen_dep = InlineTable::new();
-        peppygen_dep.insert("path", config::consts::PEPPYGEN_OUTPUT_PATH.into());
-        dependencies.insert("peppygen", toml_edit::value(peppygen_dep));
-
-        let mut peppylib_dep = InlineTable::new();
-        peppylib_dep.insert("path", config::consts::PEPPYLIB_OUTPUT_PATH.into());
-        dependencies.insert("peppylib", toml_edit::value(peppylib_dep));
+        set_path_dependency(
+            dependencies,
+            "peppygen",
+            config::consts::PEPPYGEN_OUTPUT_PATH,
+        );
+        set_path_dependency(
+            dependencies,
+            "peppylib",
+            config::consts::PEPPYLIB_OUTPUT_PATH,
+        );
     }
 
-    fs::write(&cargo_toml_path, doc.to_string())?;
+    let rendered = doc.to_string();
+    write_if_changed(&cargo_toml_path, rendered.as_bytes())?;
 
     Ok(())
+}
+
+fn set_path_dependency(dependencies: &mut toml_edit::Table, name: &str, path: &str) {
+    let mut dependency = toml_edit::InlineTable::new();
+    dependency.insert("path", path.into());
+    dependencies.insert(name, toml_edit::value(dependency));
+}
+
+fn write_if_changed(path: &Path, contents: &[u8]) -> Result<()> {
+    match fs::read(path) {
+        Ok(existing) if existing == contents => Ok(()),
+        Ok(_) => {
+            fs::write(path, contents)?;
+            Ok(())
+        }
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            fs::write(path, contents)?;
+            Ok(())
+        }
+        Err(error) => Err(error.into()),
+    }
 }
 
 #[cfg(test)]
