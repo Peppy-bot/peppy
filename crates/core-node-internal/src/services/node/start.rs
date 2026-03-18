@@ -60,11 +60,11 @@ pub(crate) struct NodeStartActionContext {
     pub(crate) peppy_dirs: PeppyDirs,
 }
 
-pub(crate) struct ProcessNodeStartContext {
-    pub(crate) action: NodeStartActionContext,
-    pub(crate) feedback_tx: mpsc::UnboundedSender<FeedbackLine>,
-    pub(crate) log_file: Arc<StdMutex<File>>,
-    pub(crate) sender_instance_id: String,
+struct ProcessNodeStartContext {
+    action: NodeStartActionContext,
+    feedback_tx: mpsc::UnboundedSender<FeedbackLine>,
+    log_file: Arc<StdMutex<File>>,
+    sender_instance_id: String,
 }
 
 pub async fn listen_for_node_start(
@@ -344,6 +344,45 @@ where
     })
 }
 
+/// Runs the node-start pipeline: calls [`process_node_start`] and catches panics.
+///
+/// The caller is responsible for creating the log file and feedback channel.
+///
+/// This is the shared implementation used by both the action-server path
+/// ([`handle_goal_request`]) and the direct-call path from `stack_launch`.
+pub(crate) async fn run_node_start(
+    goal: NodeStartGoal,
+    runtime_config: RuntimeConfig,
+    action_context: NodeStartActionContext,
+    feedback_tx: mpsc::UnboundedSender<FeedbackLine>,
+    log_file: Arc<StdMutex<File>>,
+    sender_instance_id: String,
+) -> NodeStartResult {
+    let log_file_for_panic = log_file.clone();
+
+    let process_context = ProcessNodeStartContext {
+        action: action_context,
+        feedback_tx,
+        log_file,
+        sender_instance_id,
+    };
+    match AssertUnwindSafe(process_node_start(goal, runtime_config, process_context))
+        .catch_unwind()
+        .await
+    {
+        Ok(result) => result,
+        Err(panic_payload) => {
+            let msg = format!(
+                "node_start task panicked: {}",
+                super::panic_message(&*panic_payload)
+            );
+            tracing::error!("{}", msg);
+            write_error_to_log(&log_file_for_panic, &msg);
+            NodeStartResult::failure(msg)
+        }
+    }
+}
+
 async fn handle_goal_request(
     context: ServiceRequestContext,
     feedback_publisher: TopicPublisher,
@@ -445,8 +484,6 @@ async fn handle_goal_request(
     // the state stuck on Running, causing clients to time out.
     let state_clone = Arc::clone(&state);
     tokio::spawn(async move {
-        let log_file_for_panic = log_file.clone();
-
         // Create a channel for feedback and spawn a consumer that encodes
         // FeedbackLine values as NodeStartFeedback and publishes to the topic.
         let (feedback_tx, mut feedback_rx) = mpsc::unbounded_channel::<FeedbackLine>();
@@ -463,28 +500,16 @@ async fn handle_goal_request(
             }
         });
 
-        let process_context = ProcessNodeStartContext {
-            action: action_context,
+        let result = run_node_start(
+            goal,
+            runtime_config,
+            action_context,
             feedback_tx,
             log_file,
             sender_instance_id,
-        };
-        let result =
-            match AssertUnwindSafe(process_node_start(goal, runtime_config, process_context))
-                .catch_unwind()
-                .await
-            {
-                Ok(result) => result,
-                Err(panic_payload) => {
-                    let msg = format!(
-                        "node_start task panicked: {}",
-                        super::panic_message(&*panic_payload)
-                    );
-                    tracing::error!("{}", msg);
-                    write_error_to_log(&log_file_for_panic, &msg);
-                    NodeStartResult::failure(msg)
-                }
-            };
+        )
+        .await;
+
         let mut state_guard = state_clone.lock().await;
         *state_guard = ActionState::Completed { result };
     });
@@ -498,7 +523,7 @@ async fn handle_goal_request(
         })
 }
 
-pub(crate) async fn process_node_start(
+async fn process_node_start(
     goal: NodeStartGoal,
     runtime_config: RuntimeConfig,
     ctx: ProcessNodeStartContext,

@@ -10,10 +10,7 @@ mod templates;
 use crate::encoding::NodeSource;
 use crate::{Error, Result};
 pub use add::listen_for_node_add;
-pub(crate) use add::{
-    NodeAddActionContext, ProcessNodeAddContext, log_label_from_source, process_node_add,
-    resolve_node_add_source,
-};
+pub(crate) use add::{NodeAddActionContext, log_label_from_source, run_node_add};
 use chrono::Local;
 use config::node::{NodeConfig, PeppygenLanguage};
 use git2::{Repository, build::CheckoutBuilder};
@@ -21,7 +18,7 @@ pub use info::listen_for_node_info;
 pub use init::listen_for_node_init;
 use rand::RngExt;
 pub use remove::listen_for_node_remove;
-pub(crate) use start::{NodeStartActionContext, ProcessNodeStartContext, process_node_start};
+pub(crate) use start::{NodeStartActionContext, run_node_start};
 pub use start::{NodeStartServiceConfig, listen_for_node_start};
 use std::collections::VecDeque;
 use std::fs::File;
@@ -60,7 +57,7 @@ fn push_stderr_line(buffer: &Arc<StdMutex<VecDeque<String>>>, line: &str) {
 
 /// Extract a human-readable message from a panic payload.
 /// Used by spawned task handlers to convert panics into failure results.
-pub(crate) fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
     if let Some(s) = payload.downcast_ref::<&str>() {
         (*s).to_string()
     } else if let Some(s) = payload.downcast_ref::<String>() {

@@ -7,15 +7,13 @@ use crate::names;
 use crate::services::action_loop::{ActionResult, ActionState, GoalHandler, run_action_loop};
 use crate::services::node::{
     FeedbackLine, FeedbackStream, NodeAddActionContext, NodeStartActionContext,
-    ProcessNodeAddContext, ProcessNodeStartContext, create_action_log_file, log_label_from_source,
-    panic_message, process_node_add, process_node_start, resolve_node_add_source,
-    resolve_node_config, write_error_to_log,
+    create_action_log_file, log_label_from_source, resolve_node_config, run_node_add,
+    run_node_start, write_error_to_log,
 };
 use chrono::Local;
 use config::consts::{DEFAULT_MESSAGING_HOST, DEFAULT_MESSAGING_PORT, PeppyDirs};
 use config::peppy_config::{Deployment, DeploymentSource, PeppyLauncherParser};
 use config::runtime::RuntimeConfig;
-use futures::FutureExt;
 use node_stack::NodeStack;
 use peppylib::messaging::{ServiceRequestContext, TopicPublisher};
 use peppylib::types::Payload;
@@ -23,7 +21,6 @@ use peppylib::{ActionMessenger, MessengerHandle, PeppyResult};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::File;
 use std::io::Write;
-use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
@@ -269,7 +266,7 @@ fn spawn_feedback_forwarder(
     (feedback_tx, handle)
 }
 
-async fn run_node_add(
+async fn add_node_directly(
     ctx: &ProcessLaunchContext,
     node_add_goal: NodeAddGoal,
 ) -> (std::result::Result<NodeAddResult, String>, Option<PathBuf>) {
@@ -289,74 +286,28 @@ async fn run_node_add(
         &ctx.log_file,
     );
 
-    let log_file_for_panic = log_file.clone();
+    let action_context = NodeAddActionContext {
+        node_stack: Arc::clone(&ctx.node_stack),
+        messenger: ctx.messenger.clone(),
+        bound_core_node: ctx.bound_core_node.clone(),
+        core_instance_id: ctx.core_instance_id.clone(),
+        peppy_dirs: ctx.peppy_dirs.clone(),
+    };
+
     let log_file_for_timeout = log_file.clone();
-    let log_path_for_panic = log_path.clone();
     let log_path_for_timeout = log_path.clone();
     let max_timeout = Duration::from_secs(ctx.max_timeout_secs);
 
-    let result = match tokio::time::timeout(max_timeout, async {
-        match AssertUnwindSafe(async {
-            // Resolve source (git clone, HTTP download, or local config check).
-            let mut resolved = match resolve_node_add_source(&node_add_goal, &ctx.peppy_dirs).await
-            {
-                Ok(r) => r,
-                Err(error_msg) => {
-                    write_error_to_log(&log_file, &error_msg);
-                    return NodeAddResult::failure(&log_path, error_msg);
-                }
-            };
-
-            let cleanup_dir = resolved.cleanup_dir.take();
-            let source_path = resolved.source_path.clone();
-            let verify_codegen_fingerprint = resolved.verify_codegen_fingerprint;
-            let node_config = resolved.node_config;
-
-            // Rename log file to canonical {name}_{tag}_{timestamp}.log format.
-            let node_name = node_config.manifest.name.as_str();
-            let node_tag = &node_config.manifest.tag;
-            let canonical_filename = format!("{}_{}_{}.log", node_name, node_tag, timestamp);
-            let canonical_log_path = log_dir.join(&canonical_filename);
-            let final_log_path = if std::fs::rename(&log_path, &canonical_log_path).is_ok() {
-                canonical_log_path
-            } else {
-                log_path.clone()
-            };
-
-            let add_ctx = ProcessNodeAddContext {
-                action: NodeAddActionContext {
-                    node_stack: Arc::clone(&ctx.node_stack),
-                    messenger: ctx.messenger.clone(),
-                    bound_core_node: ctx.bound_core_node.clone(),
-                    core_instance_id: ctx.core_instance_id.clone(),
-                    peppy_dirs: ctx.peppy_dirs.clone(),
-                },
-                feedback_tx,
-                log_file,
-                log_path: final_log_path,
-            };
-            process_node_add(
-                node_add_goal,
-                node_config,
-                source_path,
-                verify_codegen_fingerprint,
-                cleanup_dir,
-                add_ctx,
-            )
-            .await
-        })
-        .catch_unwind()
-        .await
-        {
-            Ok(result) => result,
-            Err(panic_payload) => {
-                let msg = format!("node_add task panicked: {}", panic_message(&*panic_payload));
-                tracing::error!("{}", msg);
-                write_error_to_log(&log_file_for_panic, &msg);
-                NodeAddResult::failure(log_path_for_panic, msg)
-            }
-        }
-    })
+    let result = match tokio::time::timeout(
+        max_timeout,
+        run_node_add(
+            node_add_goal,
+            action_context,
+            feedback_tx,
+            log_file,
+            log_path,
+        ),
+    )
     .await
     {
         Ok(result) => result,
@@ -381,7 +332,7 @@ async fn run_node_add(
     }
 }
 
-async fn run_node_start(
+async fn start_node_directly(
     ctx: &ProcessLaunchContext,
     node_start_goal: NodeStartGoal,
     runtime_config: RuntimeConfig,
@@ -397,54 +348,41 @@ async fn run_node_start(
         &ctx.log_file,
     );
 
-    let log_file_for_panic = log_file.clone();
+    let action_context = NodeStartActionContext {
+        node_stack: Arc::clone(&ctx.node_stack),
+        messenger: ctx.messenger.clone(),
+        core_node_name: ctx.bound_core_node.clone(),
+        caller_instance_id: ctx.core_instance_id.clone(),
+        node_startup_timeout: ctx.timeouts.node_startup,
+        node_start_health_timeout: ctx.timeouts.node_start_health,
+        peppy_dirs: ctx.peppy_dirs.clone(),
+    };
+
+    let log_file_for_timeout = log_file.clone();
     let max_timeout = Duration::from_secs(ctx.max_timeout_secs);
 
-    let result = match tokio::time::timeout(max_timeout, async {
-        match AssertUnwindSafe(async {
-            let start_ctx = ProcessNodeStartContext {
-                action: NodeStartActionContext {
-                    node_stack: Arc::clone(&ctx.node_stack),
-                    messenger: ctx.messenger.clone(),
-                    core_node_name: ctx.bound_core_node.clone(),
-                    caller_instance_id: ctx.core_instance_id.clone(),
-                    node_startup_timeout: ctx.timeouts.node_startup,
-                    node_start_health_timeout: ctx.timeouts.node_start_health,
-                    peppy_dirs: ctx.peppy_dirs.clone(),
-                },
-                feedback_tx,
-                log_file,
-                sender_instance_id: ctx.core_instance_id.clone(),
-            };
-            process_node_start(node_start_goal, runtime_config, start_ctx).await
-        })
-        .catch_unwind()
-        .await
-        {
-            Ok(result) => result,
-            Err(panic_payload) => {
-                let msg = format!(
-                    "node_start task panicked: {}",
-                    panic_message(&*panic_payload)
-                );
-                tracing::error!("{}", msg);
-                write_error_to_log(&log_file_for_panic, &msg);
-                NodeStartResult::failure(msg)
-            }
-        }
-    })
+    let result = match tokio::time::timeout(
+        max_timeout,
+        run_node_start(
+            node_start_goal,
+            runtime_config,
+            action_context,
+            feedback_tx,
+            log_file,
+            ctx.core_instance_id.clone(),
+        ),
+    )
     .await
     {
         Ok(result) => result,
         Err(_) => {
-            write_error_to_log(&log_file_for_panic, "max timeout exceeded");
+            write_error_to_log(&log_file_for_timeout, "max timeout exceeded");
             NodeStartResult::failure("timeout: max timeout exceeded")
         }
     };
 
-    // Don't await forwarder_handle — the node process is still running and
-    // output readers keep the internal channel alive. The forwarder continues
-    // draining feedback in the background.
+    // Don't await _forwarder_handle — the node process is still running and
+    // output readers keep the internal channel alive.
 
     let node_log_path = Some(log_path);
     if result.success {
@@ -876,7 +814,7 @@ async fn add_nodes_to_stack(
         }
         .with_env_vars(ctx.env_vars.clone());
 
-        let (result, log_path) = run_node_add(ctx, node_add_goal).await;
+        let (result, log_path) = add_node_directly(ctx, node_add_goal).await;
 
         let failed = result.as_ref().map(|r| !r.success).unwrap_or(true);
         if let Some(path) = log_path {
@@ -987,7 +925,7 @@ async fn start_node_instances(
             };
 
             let (result, log_path) =
-                run_node_start(ctx, node_start_goal, runtime_config, log_path, log_file).await;
+                start_node_directly(ctx, node_start_goal, runtime_config, log_path, log_file).await;
 
             let failed = result.as_ref().map(|r| !r.success).unwrap_or(true);
             if let Some(path) = log_path {

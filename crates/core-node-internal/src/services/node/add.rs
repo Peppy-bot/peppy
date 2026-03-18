@@ -601,11 +601,11 @@ impl Drop for CleanupDir {
     }
 }
 
-pub(crate) struct ResolvedNodeAddSource {
-    pub(crate) source_path: PathBuf,
-    pub(crate) node_config: NodeConfig,
-    pub(crate) verify_codegen_fingerprint: bool,
-    pub(crate) cleanup_dir: Option<PathBuf>,
+struct ResolvedNodeAddSource {
+    source_path: PathBuf,
+    node_config: NodeConfig,
+    verify_codegen_fingerprint: bool,
+    cleanup_dir: Option<PathBuf>,
 }
 
 #[derive(Clone)]
@@ -617,11 +617,11 @@ pub(crate) struct NodeAddActionContext {
     pub(crate) peppy_dirs: PeppyDirs,
 }
 
-pub(crate) struct ProcessNodeAddContext {
-    pub(crate) action: NodeAddActionContext,
-    pub(crate) feedback_tx: mpsc::UnboundedSender<FeedbackLine>,
-    pub(crate) log_file: Arc<StdMutex<File>>,
-    pub(crate) log_path: PathBuf,
+struct ProcessNodeAddContext {
+    action: NodeAddActionContext,
+    feedback_tx: mpsc::UnboundedSender<FeedbackLine>,
+    log_file: Arc<StdMutex<File>>,
+    log_path: PathBuf,
 }
 
 async fn resolve_git_source(
@@ -910,7 +910,7 @@ pub(crate) fn log_label_from_source(source: &NodeSource) -> String {
     }
 }
 
-pub(crate) async fn resolve_node_add_source(
+async fn resolve_node_add_source(
     goal: &NodeAddGoal,
     peppy_dirs: &PeppyDirs,
 ) -> std::result::Result<ResolvedNodeAddSource, String> {
@@ -955,6 +955,86 @@ fn encode_rejected_goal(reason: impl Into<String>) -> PeppyResult<Payload> {
             reason: format!("Failed to encode response: {}", e),
         }
     })
+}
+
+/// Runs the full node-add pipeline: resolves the source, renames the log file
+/// to its canonical form, calls [`process_node_add`], and catches panics.
+///
+/// The caller is responsible for creating the log file (so the action-server
+/// path can include its path in the goal response before spawning this).
+///
+/// This is the shared implementation used by both the action-server path
+/// ([`handle_goal_request`]) and the direct-call path from `stack_launch`.
+pub(crate) async fn run_node_add(
+    goal: NodeAddGoal,
+    action_context: NodeAddActionContext,
+    feedback_tx: mpsc::UnboundedSender<FeedbackLine>,
+    log_file: Arc<StdMutex<File>>,
+    log_path: PathBuf,
+) -> NodeAddResult {
+    let log_dir = action_context.peppy_dirs.logs_dir_add();
+    let timestamp = Local::now().format("%Y%m%d_%H%M%S_%3f");
+
+    let log_file_for_panic = log_file.clone();
+    let log_path_for_panic = log_path.clone();
+
+    match AssertUnwindSafe(async {
+        // Resolve source (git clone, HTTP download, or local config check).
+        let mut resolved = match resolve_node_add_source(&goal, &action_context.peppy_dirs).await {
+            Ok(r) => r,
+            Err(error_msg) => {
+                write_error_to_log(&log_file, &error_msg);
+                return NodeAddResult::failure(&log_path, error_msg);
+            }
+        };
+
+        let cleanup_dir = resolved.cleanup_dir.take();
+        let source_path = resolved.source_path.clone();
+        let verify_codegen_fingerprint = resolved.verify_codegen_fingerprint;
+        let node_config = resolved.node_config;
+
+        // Rename log file to the canonical {name}_{tag}_{timestamp}.log format
+        // now that we know the node name and tag from the resolved config.
+        let node_name = node_config.manifest.name.as_str();
+        let node_tag = &node_config.manifest.tag;
+        let canonical_filename = format!("{}_{}_{}.log", node_name, node_tag, timestamp);
+        let canonical_log_path = log_dir.join(&canonical_filename);
+        let log_path = if std::fs::rename(&log_path, &canonical_log_path).is_ok() {
+            canonical_log_path
+        } else {
+            log_path
+        };
+
+        let ctx = ProcessNodeAddContext {
+            action: action_context,
+            feedback_tx,
+            log_file,
+            log_path,
+        };
+        process_node_add(
+            goal,
+            node_config,
+            source_path,
+            verify_codegen_fingerprint,
+            cleanup_dir,
+            ctx,
+        )
+        .await
+    })
+    .catch_unwind()
+    .await
+    {
+        Ok(result) => result,
+        Err(panic_payload) => {
+            let msg = format!(
+                "node_add task panicked: {}",
+                super::panic_message(&*panic_payload)
+            );
+            tracing::error!("{}", msg);
+            write_error_to_log(&log_file_for_panic, &msg);
+            NodeAddResult::failure(log_path_for_panic, msg)
+        }
+    }
 }
 
 async fn handle_goal_request(
@@ -1030,17 +1110,9 @@ async fn handle_goal_request(
     debug!("Created log file for node add: {}", log_path.display());
 
     // Process the add operation in a separate task to not block goal response.
-    // Source resolution (git clone, HTTP download) runs inside the task so the
-    // goal response is returned immediately without risking a goal timeout.
-    // Panics are caught via catch_unwind so the state always transitions to
-    // Completed — without this, a panic silently aborts the task and leaves
-    // the state stuck on Running, causing clients to time out.
     let state_clone = Arc::clone(&state);
     let log_path_clone = log_path.clone();
     tokio::spawn(async move {
-        let log_file_for_panic = log_file.clone();
-        let log_path_for_panic = log_path_clone.clone();
-
         // Create a channel for feedback and spawn a consumer that encodes
         // FeedbackLine values as NodeAddFeedback and publishes to the topic.
         let (feedback_tx, mut feedback_rx) = mpsc::unbounded_channel::<FeedbackLine>();
@@ -1057,64 +1129,9 @@ async fn handle_goal_request(
             }
         });
 
-        let result = match AssertUnwindSafe(async {
-            // Resolve source (git clone, HTTP download, or local config check).
-            let mut resolved =
-                match resolve_node_add_source(&goal, &action_context.peppy_dirs).await {
-                    Ok(r) => r,
-                    Err(error_msg) => {
-                        write_error_to_log(&log_file, &error_msg);
-                        return NodeAddResult::failure(&log_path_clone, error_msg);
-                    }
-                };
+        let result =
+            run_node_add(goal, action_context, feedback_tx, log_file, log_path_clone).await;
 
-            let cleanup_dir = resolved.cleanup_dir.take();
-            let source_path = resolved.source_path.clone();
-            let verify_codegen_fingerprint = resolved.verify_codegen_fingerprint;
-            let node_config = resolved.node_config;
-
-            // Rename log file to the canonical {name}_{tag}_{timestamp}.log format
-            // now that we know the node name and tag from the resolved config.
-            let node_name = node_config.manifest.name.as_str();
-            let node_tag = &node_config.manifest.tag;
-            let canonical_filename = format!("{}_{}_{}.log", node_name, node_tag, timestamp);
-            let canonical_log_path = log_dir.join(&canonical_filename);
-            let log_path_clone = if std::fs::rename(&log_path_clone, &canonical_log_path).is_ok() {
-                canonical_log_path
-            } else {
-                log_path_clone
-            };
-
-            let ctx = ProcessNodeAddContext {
-                action: action_context,
-                feedback_tx,
-                log_file,
-                log_path: log_path_clone,
-            };
-            process_node_add(
-                goal,
-                node_config,
-                source_path,
-                verify_codegen_fingerprint,
-                cleanup_dir,
-                ctx,
-            )
-            .await
-        })
-        .catch_unwind()
-        .await
-        {
-            Ok(result) => result,
-            Err(panic_payload) => {
-                let msg = format!(
-                    "node_add task panicked: {}",
-                    super::panic_message(&*panic_payload)
-                );
-                tracing::error!("{}", msg);
-                write_error_to_log(&log_file_for_panic, &msg);
-                NodeAddResult::failure(log_path_for_panic, msg)
-            }
-        };
         // Wait for the feedback consumer to drain before completing.
         let _ = consumer_handle.await;
         let mut state_guard = state_clone.lock().await;
@@ -1176,7 +1193,7 @@ async fn shutdown_existing_instances(
     Ok(())
 }
 
-pub(crate) async fn process_node_add(
+async fn process_node_add(
     goal: NodeAddGoal,
     node_config: NodeConfig,
     source_path: PathBuf,
