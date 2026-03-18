@@ -38,7 +38,7 @@ When `--ref` is used during `peppy node add`, it corresponds to the git tag/rele
 
 Now that this node is added, we can start it:
 ```sh
-peppy node start fake_uvc_camera:0.1.0 device.physical="/dev/device1" device.sim="the_camera" device.priority="physical" video.encoding="rgb" video.frame_rate=30 video.resolution.width=1280 video.resolution.height=720
+peppy node start fake_uvc_camera:0.1.0 device_path="/dev/video1" video.encoding="rgb" video.frame_rate=30 video.resolution.width=1280 video.resolution.height=720
 ```
 
 and inspect its logs:

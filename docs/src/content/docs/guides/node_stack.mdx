@@ -9,7 +9,7 @@ import { Tabs, TabItem } from '@astrojs/starlight/components';
 The **node stack** is the central registry that manages all your nodes and their relationships in PeppyOS. Think of it as a directed graph where:
 
 - **Nodes** are registered configurations that can have multiple running instances
-- **Edges** represent dependencies between nodes (e.g., when one node expects another's topics)
+- **Edges** represent explicit dependencies declared via `depends_on` in the node manifest
 
 When you add a node to the stack, PeppyOS validates that all its dependencies are satisfied—ensuring that any topics, services, or actions your node relies on are provided by other nodes already in the stack. This dependency validation prevents runtime errors and helps you understand how your nodes interconnect.
 
