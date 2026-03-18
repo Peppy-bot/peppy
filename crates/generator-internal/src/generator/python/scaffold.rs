@@ -356,6 +356,32 @@ mod tests {
         );
     }
 
+    /// All release platforms must have their `.so` embedded. This test catches
+    /// regressions where a new target is added to the release pipeline but the
+    /// cross-compilation step is missing or broken. Only enforced on macOS where
+    /// all release builds (including cross-compilation) originate.
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn embedded_peppylib_contains_all_release_platform_sos() {
+        let required = [
+            "_peppylib.abi3.macos-aarch64.so",
+            "_peppylib.abi3.linux-aarch64.so",
+            "_peppylib.abi3.linux-x86_64.so",
+        ];
+
+        let embedded: Vec<String> = EmbeddedPeppylibPy::iter()
+            .filter(|f| f.as_ref().ends_with(".so"))
+            .map(|f| f.as_ref().to_string())
+            .collect();
+
+        for expected in &required {
+            assert!(
+                embedded.iter().any(|f| f.ends_with(expected)),
+                "missing required .so: {expected}, found: {embedded:?}"
+            );
+        }
+    }
+
     #[test]
     fn is_platform_so_identifies_suffixed_files() {
         assert!(is_platform_so("_peppylib.abi3.macos-aarch64.so"));
