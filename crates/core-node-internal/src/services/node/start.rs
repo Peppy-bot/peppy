@@ -1075,7 +1075,10 @@ pub fn start_node(
         command.env("PYTHONUNBUFFERED", "1");
     }
 
-    command.spawn()
+    command.spawn().map_err(|e| {
+        let full_cmd = build.start_cmd.join(" ");
+        std::io::Error::other(format!("failed to execute start_cmd `{}`: {}", full_cmd, e))
+    })
 }
 
 /// Describes a bind mount for a container node.
@@ -1227,7 +1230,13 @@ fn start_container_node(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    command.spawn()
+    command.spawn().map_err(|e| {
+        std::io::Error::other(format!(
+            "failed to execute apptainer run for `{}`: {}",
+            sif_path.display(),
+            e
+        ))
+    })
 }
 
 struct NodeSignalTarget<'a> {

@@ -345,12 +345,13 @@ async fn run_add_cmd_with_streaming(
         program, args, working_dir
     );
 
+    let full_cmd = std::iter::once(program.as_str())
+        .chain(args.iter().map(String::as_str))
+        .collect::<Vec<_>>()
+        .join(" ");
+
     // Log the command being executed to the log file before attempting to spawn
     {
-        let full_cmd = std::iter::once(program.as_str())
-            .chain(args.iter().map(String::as_str))
-            .collect::<Vec<_>>()
-            .join(" ");
         if let Ok(mut file) = log_file.lock() {
             let timestamp = Local::now().format("%Y-%m-%dT%H:%M:%S%.3f");
             let _ = writeln!(
@@ -374,12 +375,15 @@ async fn run_add_cmd_with_streaming(
     }
     let child = command
         .spawn()
-        .map_err(|e| format!("failed to execute add_cmd: {}", e))?;
+        .map_err(|e| format!("failed to execute add_cmd `{}`: {}", full_cmd, e))?;
 
     let (status, _) = stream_child_output(child, feedback_tx, log_file, false).await?;
 
     if !status.success() {
-        return Err(format!("add_cmd failed with status {}", status));
+        return Err(format!(
+            "add_cmd `{}` failed with status {}",
+            full_cmd, status
+        ));
     }
 
     debug!("add_cmd completed successfully");

@@ -1497,6 +1497,15 @@ async fn listen_for_node_add_cmd_failure_fails_add() {
         "error message should mention add_cmd failure, got: {:?}",
         add_result.error_message
     );
+    assert!(
+        add_result
+            .error_message
+            .as_ref()
+            .map(|msg| msg.contains("this_command_does_not_exist_12345"))
+            .unwrap_or(false),
+        "error message should include the command that failed, got: {:?}",
+        add_result.error_message
+    );
 
     // Node should not be in the stack
     assert!(
@@ -1555,6 +1564,15 @@ async fn listen_for_node_add_cmd_nonzero_exit_fails_add() {
             .map(|msg| msg.contains("add_cmd failed"))
             .unwrap_or(false),
         "error message should mention add_cmd failure, got: {:?}",
+        add_result.error_message
+    );
+    assert!(
+        add_result
+            .error_message
+            .as_ref()
+            .map(|msg| msg.contains("exit 1"))
+            .unwrap_or(false),
+        "error message should include the command that failed, got: {:?}",
         add_result.error_message
     );
 
@@ -2777,6 +2795,11 @@ async fn listen_for_node_add_logs_error_on_spawn_failure() {
         "error should mention add_cmd failure, got: {}",
         error_msg
     );
+    assert!(
+        error_msg.contains("nonexistent_binary_peppy_test_xyz"),
+        "error should include the command that failed, got: {}",
+        error_msg
+    );
 
     // The log file should exist and contain the error
     assert!(
@@ -2799,6 +2822,11 @@ async fn listen_for_node_add_logs_error_on_spawn_failure() {
     assert!(
         log_content.contains("add_cmd failed"),
         "log file should contain the failure message, got:\n{}",
+        log_content
+    );
+    assert!(
+        log_content.contains("nonexistent_binary_peppy_test_xyz"),
+        "log file should contain the command that failed, got:\n{}",
         log_content
     );
 
