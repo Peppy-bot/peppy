@@ -1,3 +1,4 @@
+mod action_loop;
 mod info;
 mod node;
 mod ping;
@@ -175,6 +176,10 @@ impl CoreNode {
                 self.node_name(),
                 Arc::clone(&self.node_stack),
                 self.peppy_dirs.clone(),
+                stack::StackLaunchTimeouts {
+                    node_startup: self.node_startup_timeout,
+                    node_start_health: self.node_start_health_timeout,
+                },
             )
             .await?,
             stack::listen_for_stack_list(

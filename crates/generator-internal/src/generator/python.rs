@@ -102,6 +102,17 @@ impl PythonGenerator {
             struct_name,
         })
     }
+
+    fn register_optional_schema(
+        &mut self,
+        schema_key: impl AsRef<str>,
+        format: Option<&MessageFormat>,
+    ) -> Result<Option<PythonSchemaInfo>> {
+        format
+            .filter(|format| !format.0.is_empty())
+            .map(|format| self.register_schema(schema_key.as_ref(), format))
+            .transpose()
+    }
 }
 
 impl LanguageGenerator for PythonGenerator {
@@ -126,19 +137,14 @@ impl LanguageGenerator for PythonGenerator {
     }
 
     fn add_exposed_service(&mut self, service: &ExposedService) -> Result<()> {
-        let request_schema_info = service
-            .request_message_format
-            .as_ref()
-            .filter(|fmt| !fmt.0.is_empty())
-            .map(|fmt| self.register_schema(&format!("{}_request", service.name), fmt))
-            .transpose()?;
-
-        let response_schema_info = service
-            .response_message_format
-            .as_ref()
-            .filter(|fmt| !fmt.0.is_empty())
-            .map(|fmt| self.register_schema(&format!("{}_response", service.name), fmt))
-            .transpose()?;
+        let request_schema_info = self.register_optional_schema(
+            format!("{}_request", service.name),
+            service.request_message_format.as_ref(),
+        )?;
+        let response_schema_info = self.register_optional_schema(
+            format!("{}_response", service.name),
+            service.response_message_format.as_ref(),
+        )?;
 
         let code = services::build_exposed_service(
             service,
@@ -154,21 +160,20 @@ impl LanguageGenerator for PythonGenerator {
     }
 
     fn add_exposed_action(&mut self, action: &ExposedAction) -> Result<()> {
-        let goal_request_schema_info = action
-            .goal_service
-            .as_ref()
-            .and_then(|gs| gs.request_message_format.as_ref())
-            .filter(|fmt| !fmt.0.is_empty())
-            .map(|fmt| self.register_schema(&format!("{}_goal_request", action.name), fmt))
-            .transpose()?;
-
-        let goal_response_schema_info = action
-            .goal_service
-            .as_ref()
-            .and_then(|gs| gs.response_message_format.as_ref())
-            .filter(|fmt| !fmt.0.is_empty())
-            .map(|fmt| self.register_schema(&format!("{}_goal_response", action.name), fmt))
-            .transpose()?;
+        let goal_request_schema_info = self.register_optional_schema(
+            format!("{}_goal_request", action.name),
+            action
+                .goal_service
+                .as_ref()
+                .and_then(|goal_service| goal_service.request_message_format.as_ref()),
+        )?;
+        let goal_response_schema_info = self.register_optional_schema(
+            format!("{}_goal_response", action.name),
+            action
+                .goal_service
+                .as_ref()
+                .and_then(|goal_service| goal_service.response_message_format.as_ref()),
+        )?;
 
         let cancel_response_schema_info = if action.goal_service.is_some() {
             let cancel_format = cancel_action_response_format();
@@ -177,21 +182,20 @@ impl LanguageGenerator for PythonGenerator {
             None
         };
 
-        let result_response_schema_info = action
-            .result_service
-            .as_ref()
-            .and_then(|rs| rs.response_message_format.as_ref())
-            .filter(|fmt| !fmt.0.is_empty())
-            .map(|fmt| self.register_schema(&format!("{}_result_response", action.name), fmt))
-            .transpose()?;
-
-        let feedback_schema_info = action
-            .feedback_topic
-            .as_ref()
-            .and_then(|ft| ft.message_format.as_ref())
-            .filter(|fmt| !fmt.0.is_empty())
-            .map(|fmt| self.register_schema(&format!("{}_feedback", action.name), fmt))
-            .transpose()?;
+        let result_response_schema_info = self.register_optional_schema(
+            format!("{}_result_response", action.name),
+            action
+                .result_service
+                .as_ref()
+                .and_then(|result_service| result_service.response_message_format.as_ref()),
+        )?;
+        let feedback_schema_info = self.register_optional_schema(
+            format!("{}_feedback", action.name),
+            action
+                .feedback_topic
+                .as_ref()
+                .and_then(|feedback_topic| feedback_topic.message_format.as_ref()),
+        )?;
 
         let code = actions::build_exposed_action(
             action,
@@ -251,13 +255,14 @@ impl LanguageGenerator for PythonGenerator {
         response_arguments: &MessageFormat,
         dependency_node_name: &str,
     ) -> Result<()> {
-        let request_schema_info = non_empty_message_format(Some(request_arguments))
-            .map(|fmt| self.register_schema(&format!("{}_request", service.name), fmt))
-            .transpose()?;
-
-        let response_schema_info = non_empty_message_format(Some(response_arguments))
-            .map(|fmt| self.register_schema(&format!("{}_response", service.name), fmt))
-            .transpose()?;
+        let request_schema_info = self.register_optional_schema(
+            format!("{}_request", service.name),
+            non_empty_message_format(Some(request_arguments)),
+        )?;
+        let response_schema_info = self.register_optional_schema(
+            format!("{}_response", service.name),
+            non_empty_message_format(Some(response_arguments)),
+        )?;
 
         let code = services::build_consumed_service(
             service,
@@ -282,38 +287,28 @@ impl LanguageGenerator for PythonGenerator {
         messages: &ConsumedActionMessage,
         dependency_node_name: &str,
     ) -> Result<()> {
-        let goal_request_schema_info = messages
-            .goal_request
-            .as_ref()
-            .filter(|fmt| !fmt.0.is_empty())
-            .map(|fmt| self.register_schema(&format!("{}_goal_request", action.name), fmt))
-            .transpose()?;
-
-        let goal_response_schema_info = messages
-            .goal_response
-            .as_ref()
-            .filter(|fmt| !fmt.0.is_empty())
-            .map(|fmt| self.register_schema(&format!("{}_goal_response", action.name), fmt))
-            .transpose()?;
+        let goal_request_schema_info = self.register_optional_schema(
+            format!("{}_goal_request", action.name),
+            messages.goal_request.as_ref(),
+        )?;
+        let goal_response_schema_info = self.register_optional_schema(
+            format!("{}_goal_response", action.name),
+            messages.goal_response.as_ref(),
+        )?;
 
         let cancel_format = cancel_action_response_format();
         let cancel_response_schema_info = Some(
             self.register_schema(&format!("{}_cancel_response", action.name), &cancel_format)?,
         );
 
-        let feedback_schema_info = messages
-            .feedback
-            .as_ref()
-            .filter(|fmt| !fmt.0.is_empty())
-            .map(|fmt| self.register_schema(&format!("{}_feedback", action.name), fmt))
-            .transpose()?;
-
-        let result_response_schema_info = messages
-            .result_response
-            .as_ref()
-            .filter(|fmt| !fmt.0.is_empty())
-            .map(|fmt| self.register_schema(&format!("{}_result_response", action.name), fmt))
-            .transpose()?;
+        let feedback_schema_info = self.register_optional_schema(
+            format!("{}_feedback", action.name),
+            messages.feedback.as_ref(),
+        )?;
+        let result_response_schema_info = self.register_optional_schema(
+            format!("{}_result_response", action.name),
+            messages.result_response.as_ref(),
+        )?;
 
         let code = actions::build_consumed_action(
             action,

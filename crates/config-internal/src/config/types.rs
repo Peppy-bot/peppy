@@ -44,14 +44,12 @@ where
     D: Deserializer<'de>,
 {
     let instances = Vec::<DeploymentInstance>::deserialize(deserializer)?;
-    let mut seen = HashSet::new();
+    let mut seen = HashSet::with_capacity(instances.len());
     for instance in &instances {
-        let id = instance.instance_id.as_str();
-        if !seen.insert(id.to_owned()) {
-            let err = crate::error::StructuredError::DuplicateName(id.to_owned());
-            let msg =
-                serde_json5::to_string(&err).unwrap_or_else(|_| "serialization error".to_string());
-            return Err(de::Error::custom(msg));
+        let id = instance.instance_id.to_string();
+        if !seen.insert(id.clone()) {
+            let err = crate::error::StructuredError::DuplicateName(id);
+            return Err(de::Error::custom(err.json5_message()));
         }
     }
     Ok(instances)
@@ -89,8 +87,7 @@ where
     E: de::Error,
 {
     let err = crate::error::StructuredError::InvalidDeploymentSource(detail.into());
-    let msg = serde_json5::to_string(&err).unwrap_or_else(|_| "serialization error".to_string());
-    de::Error::custom(msg)
+    de::Error::custom(err.json5_message())
 }
 
 fn trim_non_empty<E>(value: String, empty_error: &'static str) -> Result<String, E>
@@ -270,9 +267,7 @@ impl<'de> Deserialize<'de> for Name {
                 }
                 _ => return de::Error::custom(err.to_string()),
             };
-            let msg = serde_json5::to_string(&structured)
-                .unwrap_or_else(|_| "serialization error".to_string());
-            de::Error::custom(msg)
+            de::Error::custom(structured.json5_message())
         })
     }
 }

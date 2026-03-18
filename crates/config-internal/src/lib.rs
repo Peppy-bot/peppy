@@ -2,6 +2,7 @@ mod common;
 mod config;
 mod error;
 mod node_index;
+mod parsing;
 
 pub mod consts;
 pub mod encoding;

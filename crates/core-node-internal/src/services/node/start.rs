@@ -1,4 +1,8 @@
-use super::{STDERR_TAIL_LINES, extract_tar_zst, write_error_to_log};
+use super::super::action_loop::{ActionResult, ActionState, GoalHandler, run_action_loop};
+use super::{
+    FeedbackLine, FeedbackStream, create_action_log_file, extract_tar_zst, push_stderr_line,
+    write_error_to_log,
+};
 use crate::Result;
 use crate::encoding::{NodeStartFeedback, NodeStartGoal, NodeStartGoalResponse, NodeStartResult};
 use crate::names;
@@ -12,7 +16,7 @@ use node_stack::{NodeEntity, NodeStack};
 use peppylib::encoding::health::NodeHealthRequest;
 use peppylib::encoding::ready::NodeReadyRequest;
 use peppylib::messaging::{
-    ActionCreation, NODE_HEALTH_SERVICE, NODE_READY_SERVICE, ServiceRequestContext, TopicPublisher,
+    NODE_HEALTH_SERVICE, NODE_READY_SERVICE, ServiceRequestContext, TopicPublisher,
 };
 use peppylib::types::Payload;
 use peppylib::{ActionMessenger, MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
@@ -46,19 +50,19 @@ pub struct NodeStartServiceConfig {
 }
 
 #[derive(Clone)]
-struct NodeStartActionContext {
-    node_stack: Arc<NodeStack>,
-    messenger: MessengerHandle,
-    core_node_name: String,
-    caller_instance_id: String,
-    node_startup_timeout: Duration,
-    node_start_health_timeout: Duration,
-    peppy_dirs: PeppyDirs,
+pub(crate) struct NodeStartActionContext {
+    pub(crate) node_stack: Arc<NodeStack>,
+    pub(crate) messenger: MessengerHandle,
+    pub(crate) core_node_name: String,
+    pub(crate) caller_instance_id: String,
+    pub(crate) node_startup_timeout: Duration,
+    pub(crate) node_start_health_timeout: Duration,
+    pub(crate) peppy_dirs: PeppyDirs,
 }
 
 struct ProcessNodeStartContext {
     action: NodeStartActionContext,
-    feedback_publisher: TopicPublisher,
+    feedback_tx: mpsc::UnboundedSender<FeedbackLine>,
     log_file: Arc<StdMutex<File>>,
     sender_instance_id: String,
 }
@@ -80,20 +84,58 @@ pub async fn listen_for_node_start(
     )
     .await?;
 
-    let action_context = NodeStartActionContext {
-        node_stack,
-        messenger: messenger.clone(),
-        core_node_name: core_node_name.to_string(),
-        caller_instance_id: instance_id.to_string(),
-        node_startup_timeout: config.node_startup_timeout,
-        node_start_health_timeout: config.node_start_health_timeout,
-        peppy_dirs: config.peppy_dirs,
+    let handler = NodeStartGoalHandler {
+        context: NodeStartActionContext {
+            node_stack,
+            messenger: messenger.clone(),
+            core_node_name: core_node_name.to_string(),
+            caller_instance_id: instance_id.to_string(),
+            node_startup_timeout: config.node_startup_timeout,
+            node_start_health_timeout: config.node_start_health_timeout,
+            peppy_dirs: config.peppy_dirs,
+        },
+        running_since: Arc::new(Mutex::new(None)),
     };
 
-    let handle =
-        tokio::spawn(async move { run_node_start_action_loop(action, action_context).await });
+    let handle = tokio::spawn(async move { run_action_loop(action, handler).await });
 
     Ok(handle)
+}
+
+impl ActionResult for NodeStartResult {
+    fn identifier() -> &'static str {
+        "node_start_result"
+    }
+
+    fn encode_result(&self) -> crate::Result<Payload> {
+        self.encode()
+    }
+}
+
+#[derive(Clone)]
+struct NodeStartGoalHandler {
+    context: NodeStartActionContext,
+    running_since: Arc<Mutex<Option<(Instant, u64)>>>,
+}
+
+impl GoalHandler for NodeStartGoalHandler {
+    type Result = NodeStartResult;
+
+    async fn handle_goal(
+        &self,
+        context: ServiceRequestContext,
+        feedback_publisher: TopicPublisher,
+        state: Arc<Mutex<ActionState<NodeStartResult>>>,
+    ) -> PeppyResult<Payload> {
+        handle_goal_request(
+            context,
+            feedback_publisher,
+            state,
+            self.context.clone(),
+            Arc::clone(&self.running_since),
+        )
+        .await
+    }
 }
 
 /// Validates that all required parameters from the schema are present in the provided arguments.
@@ -150,38 +192,6 @@ fn collect_all_required_paths(schema_value: &AnyType, path: &str, missing: &mut 
             missing.push(path.to_string());
         }
     }
-}
-
-/// State for tracking the current node start action.
-#[derive(Default)]
-enum NodeStartActionState {
-    /// No action is currently running.
-    #[default]
-    Idle,
-    /// The goal was rejected (invalid payload, missing parameters, etc.)
-    /// and no actual work was started. The server should reset to Idle
-    /// and be ready to accept the next goal.
-    Rejected,
-    /// An action is currently running.
-    Running {
-        started_at: Instant,
-        timeout_secs: u64,
-    },
-    /// The action completed and the result is ready to be sent.
-    Completed { result: NodeStartResult },
-    /// The result has been sent to the requester.
-    ResultSent { result: NodeStartResult },
-}
-
-#[derive(Clone, Copy)]
-enum FeedbackStream {
-    Stdout,
-    Stderr,
-}
-
-struct FeedbackLine {
-    stream: FeedbackStream,
-    line: String,
 }
 
 #[derive(Clone)]
@@ -283,14 +293,6 @@ impl FeedbackSync {
     }
 }
 
-fn push_stderr_line(buffer: &Arc<StdMutex<VecDeque<String>>>, line: &str) {
-    let mut guard = buffer.lock().expect("stderr buffer lock poisoned");
-    if guard.len() == STDERR_TAIL_LINES {
-        guard.pop_front();
-    }
-    guard.push_back(line.to_string());
-}
-
 fn spawn_output_reader<R>(
     reader: R,
     feedback_tx: mpsc::UnboundedSender<FeedbackLine>,
@@ -342,133 +344,41 @@ where
     })
 }
 
-async fn run_node_start_action_loop(
-    mut action: ActionCreation,
+/// Runs the node-start pipeline: calls [`process_node_start`] and catches panics.
+///
+/// The caller is responsible for creating the log file and feedback channel.
+///
+/// This is the shared implementation used by both the action-server path
+/// ([`handle_goal_request`]) and the direct-call path from `stack_launch`.
+pub(crate) async fn run_node_start(
+    goal: NodeStartGoal,
+    runtime_config: RuntimeConfig,
     action_context: NodeStartActionContext,
-) -> Result<()> {
-    let state = Arc::new(Mutex::new(NodeStartActionState::default()));
+    feedback_tx: mpsc::UnboundedSender<FeedbackLine>,
+    log_file: Arc<StdMutex<File>>,
+    sender_instance_id: String,
+) -> NodeStartResult {
+    let log_file_for_panic = log_file.clone();
 
-    loop {
-        let goal_result = action
-            .goal_service
-            .handle_next_request({
-                let feedback_publisher = &action.feedback_publisher;
-                let state = Arc::clone(&state);
-                let action_context = action_context.clone();
-                move |context| {
-                    let feedback_publisher = feedback_publisher.clone();
-                    let state = Arc::clone(&state);
-                    let action_context = action_context.clone();
-                    async move {
-                        handle_goal_request(context, feedback_publisher, state, action_context)
-                            .await
-                    }
-                }
-            })
-            .await;
-
-        match goal_result {
-            Ok(true) => {
-                // If the goal was rejected (invalid payload, etc.), reset to Idle
-                // and continue waiting for the next goal without entering the inner loop.
-                {
-                    let mut state_guard = state.lock().await;
-                    if matches!(*state_guard, NodeStartActionState::Rejected) {
-                        *state_guard = NodeStartActionState::Idle;
-                        continue;
-                    }
-                }
-
-                loop {
-                    tokio::select! {
-                        cancel_result = action.cancel_service.handle_next_request({
-                            let state = Arc::clone(&state);
-                            move |context| {
-                                let state = Arc::clone(&state);
-                                async move { handle_cancel_request(context, state).await }
-                            }
-                        }) => {
-                            match cancel_result {
-                                Ok(true) => {}
-                                Ok(false) => return Ok(()),
-                                Err(e) => {
-                                    debug!("Cancel service error: {}", e);
-                                    return Err(e.into());
-                                }
-                            }
-                        }
-                        result_result = action.result_service.handle_next_request({
-                            let state = Arc::clone(&state);
-                            move |context| {
-                                let state = Arc::clone(&state);
-                                async move { handle_result_request(context, state).await }
-                            }
-                        }) => {
-                            match result_result {
-                                Ok(true) => {
-                                    let mut state_guard = state.lock().await;
-                                    if matches!(*state_guard, NodeStartActionState::ResultSent { .. }) {
-                                        *state_guard = NodeStartActionState::default();
-                                        break;
-                                    }
-                                }
-                                Ok(false) => return Ok(()),
-                                Err(e) => {
-                                    debug!("Result service error: {}", e);
-                                    return Err(e.into());
-                                }
-                            }
-                        }
-                        // Listen for new goals in case the client abandoned the current action
-                        // (e.g., accepted but never polled for result). This prevents one
-                        // abandoned action from blocking all subsequent requests.
-                        goal_result = action.goal_service.handle_next_request({
-                            let feedback_publisher = &action.feedback_publisher;
-                            let state = Arc::clone(&state);
-                            let action_context = action_context.clone();
-                            move |context| {
-                                let feedback_publisher = feedback_publisher.clone();
-                                let state = Arc::clone(&state);
-                                let action_context = action_context.clone();
-                                async move {
-                                    handle_goal_request(
-                                        context,
-                                        feedback_publisher,
-                                        state,
-                                        action_context,
-                                    )
-                                    .await
-                                }
-                            }
-                        }) => {
-                            match goal_result {
-                                Ok(true) => {
-                                    // A new goal was received. If it was rejected, reset to Idle.
-                                    let mut state_guard = state.lock().await;
-                                    if matches!(*state_guard, NodeStartActionState::Rejected) {
-                                        *state_guard = NodeStartActionState::Idle;
-                                    }
-                                    // Continue in inner loop - the new goal will be processed
-                                    // and its result will be available for polling.
-                                }
-                                Ok(false) => return Ok(()),
-                                Err(e) => {
-                                    debug!("Goal service error in inner loop: {}", e);
-                                    return Err(e.into());
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            Ok(false) => {
-                debug!("Goal service closed");
-                return Ok(());
-            }
-            Err(e) => {
-                debug!("Goal service error: {}", e);
-                return Err(e.into());
-            }
+    let process_context = ProcessNodeStartContext {
+        action: action_context,
+        feedback_tx,
+        log_file,
+        sender_instance_id,
+    };
+    match AssertUnwindSafe(process_node_start(goal, runtime_config, process_context))
+        .catch_unwind()
+        .await
+    {
+        Ok(result) => result,
+        Err(panic_payload) => {
+            let msg = format!(
+                "node_start task panicked: {}",
+                super::panic_message(&*panic_payload)
+            );
+            tracing::error!("{}", msg);
+            write_error_to_log(&log_file_for_panic, &msg);
+            NodeStartResult::failure(msg)
         }
     }
 }
@@ -476,8 +386,9 @@ async fn run_node_start_action_loop(
 async fn handle_goal_request(
     context: ServiceRequestContext,
     feedback_publisher: TopicPublisher,
-    state: Arc<Mutex<NodeStartActionState>>,
+    state: Arc<Mutex<ActionState<NodeStartResult>>>,
     action_context: NodeStartActionContext,
+    running_since: Arc<Mutex<Option<(Instant, u64)>>>,
 ) -> PeppyResult<Payload> {
     let sender_instance_id = context.message().instance_id().to_string();
     let payload = context.message().payload();
@@ -497,14 +408,15 @@ async fn handle_goal_request(
 
     {
         let mut state_guard = state.lock().await;
-        if let NodeStartActionState::Running {
-            started_at,
-            timeout_secs,
-        } = *state_guard
-        {
-            let remaining = Duration::from_secs(timeout_secs)
-                .saturating_sub(started_at.elapsed())
-                .as_secs();
+        if matches!(*state_guard, ActionState::Running) {
+            let running_guard = running_since.lock().await;
+            let remaining = running_guard
+                .map(|(started_at, timeout_secs)| {
+                    Duration::from_secs(timeout_secs)
+                        .saturating_sub(started_at.elapsed())
+                        .as_secs()
+                })
+                .unwrap_or(0);
             let response = NodeStartGoalResponse::rejected(format!(
                 "action already in progress (times out in {remaining}s)"
             ));
@@ -515,10 +427,8 @@ async fn handle_goal_request(
                     reason: format!("Failed to encode response: {}", e),
                 });
         }
-        *state_guard = NodeStartActionState::Running {
-            started_at: Instant::now(),
-            timeout_secs: goal.timeout_secs,
-        };
+        *state_guard = ActionState::Running;
+        *running_since.lock().await = Some((Instant::now(), goal.timeout_secs));
     }
 
     // Parse runtime config to get instance_id for log file naming
@@ -527,7 +437,7 @@ async fn handle_goal_request(
         Err(e) => {
             let error_msg = format!("Failed to parse PEPPY_RUNTIME_CONFIG: {}", e);
             let mut state_guard = state.lock().await;
-            *state_guard = NodeStartActionState::Rejected;
+            *state_guard = ActionState::Rejected;
             let response = NodeStartGoalResponse::rejected(&error_msg);
             return response
                 .encode()
@@ -550,28 +460,13 @@ async fn handle_goal_request(
 
     // Create log file for stdout/stderr
     let log_dir = action_context.peppy_dirs.logs_dir_start();
-    if let Err(e) = std::fs::create_dir_all(&log_dir) {
-        let error_msg = format!("Failed to create logs directory: {}", e);
-        debug!("Failed to create logs directory {:?}: {}", log_dir, e);
-        let mut state_guard = state.lock().await;
-        *state_guard = NodeStartActionState::Rejected;
-        let response = NodeStartGoalResponse::rejected(&error_msg);
-        return response
-            .encode()
-            .map_err(|e| peppylib::PeppyError::InvalidServiceRequest {
-                identifier: "node_start_goal".to_string(),
-                reason: format!("Failed to encode response: {}", e),
-            });
-    }
-
-    let log_path = log_dir.join(format!("{}.log", instance_id_str));
-    let log_file = match File::create(&log_path) {
-        Ok(file) => Arc::new(StdMutex::new(file)),
-        Err(e) => {
-            let error_msg = format!("Failed to create log file: {}", e);
-            debug!("Failed to create log file {:?}: {}", log_path, e);
+    let log_filename = format!("{}.log", instance_id_str);
+    let (log_file, log_path) = match create_action_log_file(&log_dir, &log_filename) {
+        Ok(result) => result,
+        Err(error_msg) => {
+            debug!("{}", error_msg);
             let mut state_guard = state.lock().await;
-            *state_guard = NodeStartActionState::Rejected;
+            *state_guard = ActionState::Rejected;
             let response = NodeStartGoalResponse::rejected(&error_msg);
             return response
                 .encode()
@@ -589,31 +484,34 @@ async fn handle_goal_request(
     // the state stuck on Running, causing clients to time out.
     let state_clone = Arc::clone(&state);
     tokio::spawn(async move {
-        let log_file_for_panic = log_file.clone();
-        let process_context = ProcessNodeStartContext {
-            action: action_context,
-            feedback_publisher,
+        // Create a channel for feedback and spawn a consumer that encodes
+        // FeedbackLine values as NodeStartFeedback and publishes to the topic.
+        let (feedback_tx, mut feedback_rx) = mpsc::unbounded_channel::<FeedbackLine>();
+        let feedback_publisher_for_consumer = feedback_publisher.clone();
+        let _consumer_handle = tokio::spawn(async move {
+            while let Some(line) = feedback_rx.recv().await {
+                let feedback = match line.stream {
+                    FeedbackStream::Stdout => NodeStartFeedback::stdout(&line.line),
+                    FeedbackStream::Stderr => NodeStartFeedback::stderr(&line.line),
+                };
+                if let Ok(payload) = feedback.encode() {
+                    let _ = feedback_publisher_for_consumer.publish(payload).await;
+                }
+            }
+        });
+
+        let result = run_node_start(
+            goal,
+            runtime_config,
+            action_context,
+            feedback_tx,
             log_file,
             sender_instance_id,
-        };
-        let result =
-            match AssertUnwindSafe(process_node_start(goal, runtime_config, process_context))
-                .catch_unwind()
-                .await
-            {
-                Ok(result) => result,
-                Err(panic_payload) => {
-                    let msg = format!(
-                        "node_start task panicked: {}",
-                        super::panic_message(&*panic_payload)
-                    );
-                    tracing::error!("{}", msg);
-                    write_error_to_log(&log_file_for_panic, &msg);
-                    NodeStartResult::failure(msg)
-                }
-            };
+        )
+        .await;
+
         let mut state_guard = state_clone.lock().await;
-        *state_guard = NodeStartActionState::Completed { result };
+        *state_guard = ActionState::Completed { result };
     });
 
     let response = NodeStartGoalResponse::accepted(&log_path);
@@ -673,11 +571,11 @@ async fn process_node_start(
 
     let sccache_injected =
         super::inject_rust_build_env(&mut env_vars, entity.config().manifest.language);
-    if sccache_injected
-        && let Ok(payload) =
-            NodeStartFeedback::stdout("Using sccache for Rust compilation").encode()
-    {
-        let _ = ctx.feedback_publisher.publish(payload).await;
+    if sccache_injected {
+        let _ = ctx.feedback_tx.send(FeedbackLine {
+            stream: FeedbackStream::Stdout,
+            line: "Using sccache for Rust compilation".to_string(),
+        });
     }
     super::inject_node_runtime_env(
         &mut env_vars,
@@ -810,17 +708,14 @@ async fn process_node_start(
     let stderr_buffer = Arc::new(StdMutex::new(VecDeque::new()));
 
     let (feedback_tx, mut feedback_rx) = mpsc::unbounded_channel::<FeedbackLine>();
-    let feedback_publisher = ctx.feedback_publisher.clone();
+    let external_feedback_tx = ctx.feedback_tx.clone();
     let feedback_sync_publisher = feedback_sync.clone();
     tokio::spawn(async move {
         while let Some(line) = feedback_rx.recv().await {
-            let feedback = match line.stream {
-                FeedbackStream::Stdout => NodeStartFeedback::stdout(&line.line),
-                FeedbackStream::Stderr => NodeStartFeedback::stderr(&line.line),
-            };
-            if let Ok(payload) = feedback.encode() {
-                let _ = feedback_publisher.publish(payload).await;
-            }
+            let _ = external_feedback_tx.send(FeedbackLine {
+                stream: line.stream,
+                line: line.line,
+            });
             feedback_sync_publisher.increment_published();
         }
     });
@@ -958,71 +853,6 @@ async fn process_node_start(
             feedback_sync.flush_or_warn(instance_id_str).await;
             publish_enabled.store(false, Ordering::Relaxed);
             result
-        }
-    }
-}
-
-async fn handle_cancel_request(
-    _context: ServiceRequestContext,
-    state: Arc<Mutex<NodeStartActionState>>,
-) -> PeppyResult<Payload> {
-    let state_guard = state.lock().await;
-    if matches!(*state_guard, NodeStartActionState::Running { .. }) {
-        Ok(Payload::from_static(
-            b"cancel acknowledged (operation cannot be interrupted)",
-        ))
-    } else {
-        Ok(Payload::from_static(
-            b"cancel acknowledged (no operation in progress)",
-        ))
-    }
-}
-
-async fn handle_result_request(
-    _context: ServiceRequestContext,
-    state: Arc<Mutex<NodeStartActionState>>,
-) -> PeppyResult<Payload> {
-    let mut state_guard = state.lock().await;
-
-    match std::mem::replace(&mut *state_guard, NodeStartActionState::Idle) {
-        NodeStartActionState::Running {
-            started_at,
-            timeout_secs,
-        } => {
-            *state_guard = NodeStartActionState::Running {
-                started_at,
-                timeout_secs,
-            };
-            Ok(Payload::from_static(
-                b"result pending: operation still in progress",
-            ))
-        }
-        NodeStartActionState::Completed { result } => {
-            let payload =
-                result
-                    .encode()
-                    .map_err(|e| peppylib::PeppyError::InvalidServiceRequest {
-                        identifier: "node_start_result".to_string(),
-                        reason: format!("Failed to encode result: {}", e),
-                    })?;
-            *state_guard = NodeStartActionState::ResultSent { result };
-            Ok(payload)
-        }
-        NodeStartActionState::ResultSent { result } => {
-            let payload =
-                result
-                    .encode()
-                    .map_err(|e| peppylib::PeppyError::InvalidServiceRequest {
-                        identifier: "node_start_result".to_string(),
-                        reason: format!("Failed to encode result: {}", e),
-                    })?;
-            *state_guard = NodeStartActionState::ResultSent { result };
-            Ok(payload)
-        }
-        NodeStartActionState::Idle | NodeStartActionState::Rejected => {
-            // Rejected state is normally reset to Idle before result polling,
-            // but handle it the same way for robustness.
-            Ok(Payload::from_static(b"result pending: no result available"))
         }
     }
 }

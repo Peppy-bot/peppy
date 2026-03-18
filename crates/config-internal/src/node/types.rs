@@ -38,10 +38,12 @@ impl FromStr for Toolchain {
     type Err = ParsingError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_lowercase().as_str() {
-            "cargo" => Ok(Toolchain::Cargo),
-            "uv" => Ok(Toolchain::Uv),
-            _ => Err(ParsingError::InvalidToolchain(s.to_owned())),
+        if s.eq_ignore_ascii_case("cargo") {
+            Ok(Toolchain::Cargo)
+        } else if s.eq_ignore_ascii_case("uv") {
+            Ok(Toolchain::Uv)
+        } else {
+            Err(ParsingError::InvalidToolchain(s.to_owned()))
         }
     }
 }
@@ -97,10 +99,9 @@ impl TryFrom<String> for Name {
 
     fn try_from(value: String) -> Result<Self, Self::Error> {
         if value.is_empty() {
-            let err = crate::error::StructuredError::EmptyName;
-            let msg =
-                serde_json5::to_string(&err).unwrap_or_else(|_| "serialization error".to_string());
-            return Err(ParsingError::Structured(msg));
+            return Err(ParsingError::Structured(
+                crate::error::StructuredError::EmptyName.json5_message(),
+            ));
         }
         if value.chars().all(Name::is_valid_char) {
             return Ok(Name(value));
@@ -109,9 +110,7 @@ impl TryFrom<String> for Name {
             name: value,
             allowed: ALLOWED_CONFIG_CHARS.to_string(),
         };
-        let msg =
-            serde_json5::to_string(&err).unwrap_or_else(|_| "serialization error".to_string());
-        Err(ParsingError::Structured(msg))
+        Err(ParsingError::Structured(err.json5_message()))
     }
 }
 
