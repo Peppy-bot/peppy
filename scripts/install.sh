@@ -299,6 +299,28 @@ EOF
             SUDO_FIX_LABELS="${SUDO_FIX_LABELS}  - Install uidmap package (provides newuidmap/newgidmap)\n"
         fi
 
+        # Check 4: dbus-user-session (required for systemctl --user / D-Bus user bus)
+        if command -v dpkg >/dev/null 2>&1; then
+            if ! dpkg -s dbus-user-session >/dev/null 2>&1; then
+                SUDO_FIXES="${SUDO_FIXES}apt-get update -qq && apt-get install -y -qq dbus-user-session && "
+                SUDO_FIX_LABELS="${SUDO_FIX_LABELS}  - Install dbus-user-session (required for peppy background service)\n"
+            fi
+        fi
+
+        # Check 5: loginctl enable-linger (keeps systemd user session alive after logout)
+        CURRENT_USER="$(id -un)"
+        LINGER_ENABLED=false
+        if command -v loginctl >/dev/null 2>&1; then
+            LINGER_VAL="$(loginctl show-user "$CURRENT_USER" -p Linger --value 2>/dev/null || echo "no")"
+            if [ "$LINGER_VAL" = "yes" ]; then
+                LINGER_ENABLED=true
+            fi
+        fi
+        if ! $LINGER_ENABLED; then
+            SUDO_FIXES="${SUDO_FIXES}loginctl enable-linger ${CURRENT_USER} && "
+            SUDO_FIX_LABELS="${SUDO_FIX_LABELS}  - Enable lingering for user ${CURRENT_USER} (keeps peppy daemon running after logout)\n"
+        fi
+
         # Prompt once for all fixes
         if [ -n "$SUDO_FIXES" ]; then
             echo ""
