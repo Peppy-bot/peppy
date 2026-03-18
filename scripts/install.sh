@@ -503,18 +503,20 @@ EOF
 
         SERVICE_INSTALL_OUTPUT=""
         if ! SERVICE_INSTALL_OUTPUT=$("$PEPPY_BIN_DIR/peppy" service install 2>&1); then
+            flush_progress_line
             case "$SERVICE_INSTALL_OUTPUT" in
             *"Permission denied"* | *"permission denied"* | *"os error 13"*)
-                echo "warning: failed to install the peppy background service (permission denied; try: 'sudo $PEPPY_BIN_DIR/peppy service install')" >&2
+                echo "error: failed to install the peppy background service (permission denied; try: 'sudo $PEPPY_BIN_DIR/peppy service install')" >&2
                 ;;
             *)
-                echo "warning: failed to install the peppy background service (try: '$PEPPY_BIN_DIR/peppy service install')" >&2
+                echo "error: failed to install the peppy background service (try: '$PEPPY_BIN_DIR/peppy service install')" >&2
                 ;;
             esac
 
             if [ -n "${PEPPY_DEBUG:-}" ] && [ -n "${SERVICE_INSTALL_OUTPUT-}" ]; then
                 echo "$SERVICE_INSTALL_OUTPUT" >&2
             fi
+            exit 1
         fi
     else
         flush_progress_line
