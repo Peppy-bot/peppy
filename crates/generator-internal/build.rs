@@ -463,11 +463,11 @@ mod peppylib_build {
                  Using existing .so files."
             );
         } else {
+            let sources_changed = so_needs_rebuild(&peppylib_py_dir, &peppylib_dir);
+
             // Only invoke maturin when peppylib-py or its dependency crate sources
             // have changed.
-            if !so_needs_rebuild(&peppylib_py_dir, &peppylib_dir) {
-                println!("cargo:warning=Skipping peppylib-py build (sources unchanged).");
-            } else {
+            if sources_changed {
                 build_native_so(
                     &peppylib_py_dir,
                     &peppylib_dir,
@@ -475,9 +475,17 @@ mod peppylib_build {
                     pixi_task,
                     &target_dir,
                 );
+            } else {
+                println!("cargo:warning=Skipping peppylib-py native build (sources unchanged).");
+            }
 
-                #[cfg(target_os = "macos")]
-                for target in LINUX_CROSS_TARGETS {
+            // Cross-compile for each Linux target if sources changed OR if
+            // the target's .so is missing (e.g. a new platform was added).
+            #[cfg(target_os = "macos")]
+            for target in LINUX_CROSS_TARGETS {
+                let target_so =
+                    peppylib_dir.join(format!("_peppylib.abi3.{}.so", target.platform_suffix));
+                if sources_changed || !target_so.exists() {
                     cross_compile_linux_so(target, &peppylib_py_dir, &target_dir, &peppylib_dir);
                 }
             }
