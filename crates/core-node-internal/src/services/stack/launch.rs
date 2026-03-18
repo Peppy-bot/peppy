@@ -1,16 +1,21 @@
 use crate::Result;
 use crate::encoding::{
-    LaunchFeedback, LaunchFeedbackStep, LaunchGoal, LaunchGoalResponse, LaunchResult,
-    NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAddLogEntry, NodeAddResult, NodeSource,
-    NodeStartFeedback, NodeStartGoal, NodeStartGoalResponse, NodeStartLogEntry, NodeStartResult,
+    LaunchFeedback, LaunchFeedbackStep, LaunchGoal, LaunchGoalResponse, LaunchResult, NodeAddGoal,
+    NodeAddLogEntry, NodeAddResult, NodeSource, NodeStartGoal, NodeStartLogEntry, NodeStartResult,
 };
 use crate::names;
 use crate::services::action_loop::{ActionResult, ActionState, GoalHandler, run_action_loop};
-use crate::services::node::resolve_node_config;
+use crate::services::node::{
+    FeedbackLine, FeedbackStream, NodeAddActionContext, NodeStartActionContext,
+    ProcessNodeAddContext, ProcessNodeStartContext, create_action_log_file, log_label_from_source,
+    panic_message, process_node_add, process_node_start, resolve_node_add_source,
+    resolve_node_config, write_error_to_log,
+};
 use chrono::Local;
 use config::consts::{DEFAULT_MESSAGING_HOST, DEFAULT_MESSAGING_PORT, PeppyDirs};
 use config::peppy_config::{Deployment, DeploymentSource, PeppyLauncherParser};
 use config::runtime::RuntimeConfig;
+use futures::FutureExt;
 use node_stack::NodeStack;
 use peppylib::messaging::{ServiceRequestContext, TopicPublisher};
 use peppylib::types::Payload;
@@ -18,12 +23,19 @@ use peppylib::{ActionMessenger, MessengerHandle, PeppyResult};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::File;
 use std::io::Write;
+use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinHandle;
 use tracing::debug;
+
+#[derive(Clone, Copy)]
+pub struct StackLaunchTimeouts {
+    pub node_startup: Duration,
+    pub node_start_health: Duration,
+}
 
 pub async fn listen_for_stack_launch(
     messenger: &MessengerHandle,
@@ -32,6 +44,7 @@ pub async fn listen_for_stack_launch(
     node_name: &str,
     node_stack: Arc<NodeStack>,
     peppy_dirs: PeppyDirs,
+    timeouts: StackLaunchTimeouts,
 ) -> Result<JoinHandle<Result<()>>> {
     let action = ActionMessenger::expose(
         messenger,
@@ -49,6 +62,7 @@ pub async fn listen_for_stack_launch(
             bound_core_node: core_node_name.to_string(),
             core_instance_id: instance_id.to_string(),
             peppy_dirs,
+            timeouts,
         },
     };
 
@@ -90,12 +104,12 @@ struct ProcessLaunchContext {
     bound_core_node: String,
     core_instance_id: String,
     node_stack: Arc<NodeStack>,
+    peppy_dirs: PeppyDirs,
     feedback_publisher: TopicPublisher,
     log_file: Arc<StdMutex<File>>,
     log_path: PathBuf,
     env_vars: Vec<(String, String)>,
-    node_add_idle_timeout_secs: u64,
-    node_start_idle_timeout_secs: u64,
+    timeouts: StackLaunchTimeouts,
     max_timeout_secs: u64,
 }
 
@@ -106,6 +120,7 @@ struct LaunchActionContext {
     bound_core_node: String,
     core_instance_id: String,
     peppy_dirs: PeppyDirs,
+    timeouts: StackLaunchTimeouts,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -216,301 +231,231 @@ async fn publish_stderr(
     publish_feedback(ctx, LaunchFeedback::stderr(line, step)).await;
 }
 
-struct ActionForwardingTimeouts {
-    goal_timeout: Duration,
-    idle_timeout: Duration,
-    max_timeout: Duration,
-}
-
-type DecodeGoalResponseFn =
-    fn(&[u8]) -> std::result::Result<(bool, PathBuf, Option<String>), String>;
-type DecodeFeedbackFn = fn(&[u8]) -> Option<(bool, String)>;
-type DecodeResultFn<R> = fn(&[u8]) -> std::result::Result<R, crate::Error>;
-type ExtractFinalLogPathFn<R> = fn(&R) -> Option<PathBuf>;
-
-struct ActionForwardingHooks<R> {
-    decode_goal_response: DecodeGoalResponseFn,
-    decode_feedback: DecodeFeedbackFn,
-    decode_result: DecodeResultFn<R>,
-    extract_final_log_path: Option<ExtractFinalLogPathFn<R>>,
-}
-
-/// Sends an action goal, forwards feedback to the launch publisher, and polls for the result.
+/// Spawns a feedback forwarding task that reads `FeedbackLine` values from the
+/// channel and publishes them as `LaunchFeedback` to the launch feedback topic.
 ///
-/// This is the shared implementation behind `run_node_add_and_forward_feedback` and
-/// `run_node_start_and_forward_feedback`. The type-specific behavior is injected via closures:
-/// - `decode_feedback`: decodes a feedback payload into `(is_stdout, line)`
-/// - `decode_result`: decodes a result payload
-/// - `extract_final_log_path`: optionally extracts the final log path from a successful result
-async fn run_action_and_forward_feedback<R>(
-    ctx: &ProcessLaunchContext,
-    action_name: &str,
+/// Returns the sender end (to pass into the process context) and a join handle
+/// for the consumer task. Drop the sender to signal completion, then await the
+/// handle to drain remaining messages.
+fn spawn_feedback_forwarder(
+    feedback_publisher: &TopicPublisher,
     step: LaunchFeedbackStep,
-    goal_payload: Payload,
-    timeouts: ActionForwardingTimeouts,
-    hooks: ActionForwardingHooks<R>,
-) -> (std::result::Result<R, String>, Option<PathBuf>) {
-    let ActionForwardingTimeouts {
-        goal_timeout,
-        idle_timeout,
-        max_timeout,
-    } = timeouts;
-    let ActionForwardingHooks {
-        decode_goal_response,
-        decode_feedback,
-        decode_result,
-        extract_final_log_path,
-    } = hooks;
+    log_file: &Arc<StdMutex<File>>,
+) -> (mpsc::UnboundedSender<FeedbackLine>, JoinHandle<()>) {
+    let (feedback_tx, mut feedback_rx) = mpsc::unbounded_channel::<FeedbackLine>();
+    let publisher = feedback_publisher.clone();
+    let log_file = Arc::clone(log_file);
+    let handle = tokio::spawn(async move {
+        while let Some(line) = feedback_rx.recv().await {
+            // Write to the launch log file
+            if let Ok(mut file) = log_file.lock() {
+                let timestamp = Local::now().format("%Y-%m-%dT%H:%M:%S%.3f");
+                let stream_label = match line.stream {
+                    FeedbackStream::Stdout => "stdout",
+                    FeedbackStream::Stderr => "stderr",
+                };
+                let _ = writeln!(file, "[{}] [{}] {}", timestamp, stream_label, line.line);
+            }
 
-    let mut action_handle = match ActionMessenger::send_goal(
-        &ctx.messenger,
-        &ctx.bound_core_node,
-        &ctx.core_instance_id,
-        &ctx.bound_core_node,
-        action_name,
-        None,
-        None,
-        goal_payload,
-        config::node::QoSProfile::default(),
-        goal_timeout,
-    )
-    .await
-    .map_err(|e| format!("failed to send {action_name} goal: {e}"))
-    {
-        Ok(h) => h,
-        Err(e) => return (Err(e), None),
-    };
+            let launch_feedback = match line.stream {
+                FeedbackStream::Stdout => LaunchFeedback::stdout(&line.line, step.clone()),
+                FeedbackStream::Stderr => LaunchFeedback::stderr(&line.line, step.clone()),
+            };
+            if let Ok(payload) = launch_feedback.encode() {
+                let _ = publisher.publish(payload).await;
+            }
+        }
+    });
+    (feedback_tx, handle)
+}
 
-    let goal_response_payload = action_handle.goal_response().payload();
-    let (accepted, log_path, rejection_reason) = match decode_goal_response(&goal_response_payload)
-    {
+async fn run_node_add(
+    ctx: &ProcessLaunchContext,
+    node_add_goal: NodeAddGoal,
+) -> (std::result::Result<NodeAddResult, String>, Option<PathBuf>) {
+    // Create log file before source resolution so clone/download output is captured.
+    let log_label = log_label_from_source(&node_add_goal.source);
+    let log_dir = ctx.peppy_dirs.logs_dir_add();
+    let timestamp = Local::now().format("%Y%m%d_%H%M%S_%3f");
+    let log_filename = format!("{}_{}.log", log_label, timestamp);
+    let (log_file, log_path) = match create_action_log_file(&log_dir, &log_filename) {
         Ok(r) => r,
         Err(e) => return (Err(e), None),
     };
 
-    if !accepted {
-        return (
-            Err(rejection_reason.unwrap_or_else(|| format!("{action_name} goal rejected"))),
-            None,
-        );
-    }
-
-    let node_log_path = Some(log_path);
-
-    let forward = |payload: &[u8]| -> Option<LaunchFeedback> {
-        let (is_stdout, line) = decode_feedback(payload)?;
-        Some(if is_stdout {
-            LaunchFeedback::stdout(line, step.clone())
-        } else {
-            LaunchFeedback::stderr(line, step.clone())
-        })
-    };
-
-    let absolute_deadline = tokio::time::Instant::now() + max_timeout;
-    let mut last_activity = tokio::time::Instant::now();
-
-    loop {
-        // Drain feedback so the publisher doesn't block on a full channel.
-        loop {
-            let now = tokio::time::Instant::now();
-            if now >= absolute_deadline {
-                return (
-                    Err(format!(
-                        "timeout waiting for {action_name} result: max timeout exceeded"
-                    )),
-                    node_log_path,
-                );
-            }
-            if now.duration_since(last_activity) >= idle_timeout {
-                return (
-                    Err(format!(
-                        "timeout waiting for {action_name} result: no output received for {}s",
-                        idle_timeout.as_secs()
-                    )),
-                    node_log_path,
-                );
-            }
-            let drain_timeout = Duration::from_millis(50);
-            match tokio::time::timeout(drain_timeout, action_handle.on_next_feedback()).await {
-                Ok(Ok(msg)) => {
-                    last_activity = tokio::time::Instant::now();
-                    let payload = msg.payload();
-                    if let Some(launch_feedback) = forward(&payload) {
-                        publish_feedback(ctx, launch_feedback).await;
-                    }
-                }
-                Ok(Err(_)) => break,
-                Err(_) => break,
-            }
-        }
-
-        let now = tokio::time::Instant::now();
-        if now >= absolute_deadline {
-            return (
-                Err(format!(
-                    "timeout waiting for {action_name} result: max timeout exceeded"
-                )),
-                node_log_path,
-            );
-        }
-        if now.duration_since(last_activity) >= idle_timeout {
-            return (
-                Err(format!(
-                    "timeout waiting for {action_name} result: no output received for {}s",
-                    idle_timeout.as_secs()
-                )),
-                node_log_path,
-            );
-        }
-        let poll_timeout = Duration::from_millis(200);
-
-        match ActionMessenger::request_result(&ctx.messenger, &action_handle, poll_timeout).await {
-            Ok(msg) => {
-                let payload = msg.payload();
-                match decode_result(&payload) {
-                    Ok(result) => {
-                        // Drain any remaining feedback that may have arrived while polling.
-                        loop {
-                            let Ok(Some(msg)) = action_handle.try_next_feedback() else {
-                                break;
-                            };
-                            let payload = msg.payload();
-                            if let Some(launch_feedback) = forward(&payload) {
-                                publish_feedback(ctx, launch_feedback).await;
-                            }
-                        }
-                        let final_log_path = extract_final_log_path
-                            .and_then(|f| f(&result))
-                            .or(node_log_path);
-                        return (Ok(result), final_log_path);
-                    }
-                    Err(err) => {
-                        let pending = std::str::from_utf8(payload.as_ref())
-                            .map(|text| text.starts_with("result pending"))
-                            .unwrap_or(false);
-                        if !pending {
-                            return (
-                                Err(format!("failed to decode {action_name} result: {err}")),
-                                node_log_path,
-                            );
-                        }
-                    }
-                }
-            }
-            Err(peppylib::PeppyError::ActionResultTimeout { .. }) => {}
-            Err(err) => {
-                return (
-                    Err(format!("failed to get {action_name} result: {err}")),
-                    node_log_path,
-                );
-            }
-        }
-
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-}
-
-fn decode_node_add_goal_response(
-    data: &[u8],
-) -> std::result::Result<(bool, PathBuf, Option<String>), String> {
-    NodeAddGoalResponse::decode(data)
-        .map(|r| (r.accepted, r.log_path, r.rejection_reason))
-        .map_err(|e| format!("failed to decode node_add goal response: {e}"))
-}
-
-fn decode_node_add_feedback(data: &[u8]) -> Option<(bool, String)> {
-    NodeAddFeedback::decode(data)
-        .ok()
-        .map(|f| (f.is_stdout(), f.line))
-}
-
-fn extract_node_add_log_path(result: &NodeAddResult) -> Option<PathBuf> {
-    Some(result.log_path.clone())
-}
-
-fn decode_node_start_goal_response(
-    data: &[u8],
-) -> std::result::Result<(bool, PathBuf, Option<String>), String> {
-    NodeStartGoalResponse::decode(data)
-        .map(|r| (r.accepted, r.log_path, r.rejection_reason))
-        .map_err(|e| format!("failed to decode node_start goal response: {e}"))
-}
-
-fn decode_node_start_feedback(data: &[u8]) -> Option<(bool, String)> {
-    NodeStartFeedback::decode(data)
-        .ok()
-        .map(|f| (f.is_stdout(), f.line))
-}
-
-async fn run_node_add_and_forward_feedback(
-    ctx: &ProcessLaunchContext,
-    node_add_goal: &NodeAddGoal,
-    goal_timeout: Duration,
-    idle_timeout: Duration,
-    max_timeout: Duration,
-) -> (std::result::Result<NodeAddResult, String>, Option<PathBuf>) {
-    let goal_payload = match node_add_goal
-        .encode()
-        .map_err(|e| format!("failed to encode node_add goal: {e}"))
-    {
-        Ok(p) => p,
-        Err(e) => return (Err(e), None),
-    };
-    run_action_and_forward_feedback(
-        ctx,
-        names::NODE_ADD_ACTION,
+    let (feedback_tx, forwarder_handle) = spawn_feedback_forwarder(
+        &ctx.feedback_publisher,
         LaunchFeedbackStep::AddingNode,
-        goal_payload,
-        ActionForwardingTimeouts {
-            goal_timeout,
-            idle_timeout,
-            max_timeout,
-        },
-        ActionForwardingHooks {
-            decode_goal_response: decode_node_add_goal_response,
-            decode_feedback: decode_node_add_feedback,
-            decode_result: NodeAddResult::decode,
-            extract_final_log_path: Some(extract_node_add_log_path),
-        },
-    )
+        &ctx.log_file,
+    );
+
+    let log_file_for_panic = log_file.clone();
+    let log_file_for_timeout = log_file.clone();
+    let log_path_for_panic = log_path.clone();
+    let log_path_for_timeout = log_path.clone();
+    let max_timeout = Duration::from_secs(ctx.max_timeout_secs);
+
+    let result = match tokio::time::timeout(max_timeout, async {
+        match AssertUnwindSafe(async {
+            // Resolve source (git clone, HTTP download, or local config check).
+            let mut resolved = match resolve_node_add_source(&node_add_goal, &ctx.peppy_dirs).await
+            {
+                Ok(r) => r,
+                Err(error_msg) => {
+                    write_error_to_log(&log_file, &error_msg);
+                    return NodeAddResult::failure(&log_path, error_msg);
+                }
+            };
+
+            let cleanup_dir = resolved.cleanup_dir.take();
+            let source_path = resolved.source_path.clone();
+            let verify_codegen_fingerprint = resolved.verify_codegen_fingerprint;
+            let node_config = resolved.node_config;
+
+            // Rename log file to canonical {name}_{tag}_{timestamp}.log format.
+            let node_name = node_config.manifest.name.as_str();
+            let node_tag = &node_config.manifest.tag;
+            let canonical_filename = format!("{}_{}_{}.log", node_name, node_tag, timestamp);
+            let canonical_log_path = log_dir.join(&canonical_filename);
+            let final_log_path = if std::fs::rename(&log_path, &canonical_log_path).is_ok() {
+                canonical_log_path
+            } else {
+                log_path.clone()
+            };
+
+            let add_ctx = ProcessNodeAddContext {
+                action: NodeAddActionContext {
+                    node_stack: Arc::clone(&ctx.node_stack),
+                    messenger: ctx.messenger.clone(),
+                    bound_core_node: ctx.bound_core_node.clone(),
+                    core_instance_id: ctx.core_instance_id.clone(),
+                    peppy_dirs: ctx.peppy_dirs.clone(),
+                },
+                feedback_tx,
+                log_file,
+                log_path: final_log_path,
+            };
+            process_node_add(
+                node_add_goal,
+                node_config,
+                source_path,
+                verify_codegen_fingerprint,
+                cleanup_dir,
+                add_ctx,
+            )
+            .await
+        })
+        .catch_unwind()
+        .await
+        {
+            Ok(result) => result,
+            Err(panic_payload) => {
+                let msg = format!("node_add task panicked: {}", panic_message(&*panic_payload));
+                tracing::error!("{}", msg);
+                write_error_to_log(&log_file_for_panic, &msg);
+                NodeAddResult::failure(log_path_for_panic, msg)
+            }
+        }
+    })
     .await
+    {
+        Ok(result) => result,
+        Err(_) => {
+            write_error_to_log(&log_file_for_timeout, "max timeout exceeded");
+            NodeAddResult::failure(&log_path_for_timeout, "timeout: max timeout exceeded")
+        }
+    };
+
+    // Wait for feedback forwarder to drain.
+    let _ = forwarder_handle.await;
+
+    let final_log_path = Some(result.log_path.clone());
+    if result.success {
+        (Ok(result), final_log_path)
+    } else {
+        let err = result
+            .error_message
+            .clone()
+            .unwrap_or_else(|| "node_add failed".to_string());
+        (Err(err), final_log_path)
+    }
 }
 
-async fn run_node_start_and_forward_feedback(
+async fn run_node_start(
     ctx: &ProcessLaunchContext,
-    node_start_goal: &NodeStartGoal,
-    goal_timeout: Duration,
-    idle_timeout: Duration,
-    max_timeout: Duration,
+    node_start_goal: NodeStartGoal,
+    runtime_config: RuntimeConfig,
+    log_path: PathBuf,
+    log_file: Arc<StdMutex<File>>,
 ) -> (
     std::result::Result<NodeStartResult, String>,
     Option<PathBuf>,
 ) {
-    let goal_payload = match node_start_goal
-        .encode()
-        .map_err(|e| format!("failed to encode node_start goal: {e}"))
-    {
-        Ok(p) => p,
-        Err(e) => return (Err(e), None),
-    };
-    run_action_and_forward_feedback(
-        ctx,
-        names::NODE_START_ACTION,
+    let (feedback_tx, _forwarder_handle) = spawn_feedback_forwarder(
+        &ctx.feedback_publisher,
         LaunchFeedbackStep::StartingNode,
-        goal_payload,
-        ActionForwardingTimeouts {
-            goal_timeout,
-            idle_timeout,
-            max_timeout,
-        },
-        ActionForwardingHooks {
-            decode_goal_response: decode_node_start_goal_response,
-            decode_feedback: decode_node_start_feedback,
-            decode_result: NodeStartResult::decode,
-            extract_final_log_path: None,
-        },
-    )
+        &ctx.log_file,
+    );
+
+    let log_file_for_panic = log_file.clone();
+    let max_timeout = Duration::from_secs(ctx.max_timeout_secs);
+
+    let result = match tokio::time::timeout(max_timeout, async {
+        match AssertUnwindSafe(async {
+            let start_ctx = ProcessNodeStartContext {
+                action: NodeStartActionContext {
+                    node_stack: Arc::clone(&ctx.node_stack),
+                    messenger: ctx.messenger.clone(),
+                    core_node_name: ctx.bound_core_node.clone(),
+                    caller_instance_id: ctx.core_instance_id.clone(),
+                    node_startup_timeout: ctx.timeouts.node_startup,
+                    node_start_health_timeout: ctx.timeouts.node_start_health,
+                    peppy_dirs: ctx.peppy_dirs.clone(),
+                },
+                feedback_tx,
+                log_file,
+                sender_instance_id: ctx.core_instance_id.clone(),
+            };
+            process_node_start(node_start_goal, runtime_config, start_ctx).await
+        })
+        .catch_unwind()
+        .await
+        {
+            Ok(result) => result,
+            Err(panic_payload) => {
+                let msg = format!(
+                    "node_start task panicked: {}",
+                    panic_message(&*panic_payload)
+                );
+                tracing::error!("{}", msg);
+                write_error_to_log(&log_file_for_panic, &msg);
+                NodeStartResult::failure(msg)
+            }
+        }
+    })
     .await
+    {
+        Ok(result) => result,
+        Err(_) => {
+            write_error_to_log(&log_file_for_panic, "max timeout exceeded");
+            NodeStartResult::failure("timeout: max timeout exceeded")
+        }
+    };
+
+    // Don't await forwarder_handle — the node process is still running and
+    // output readers keep the internal channel alive. The forwarder continues
+    // draining feedback in the background.
+
+    let node_log_path = Some(log_path);
+    if result.success {
+        (Ok(result), node_log_path)
+    } else {
+        let err = result
+            .error_message
+            .clone()
+            .unwrap_or_else(|| "node_start failed".to_string());
+        (Err(err), node_log_path)
+    }
 }
 
 async fn restore_stack(
@@ -896,10 +841,6 @@ async fn add_nodes_to_stack(
     )
     .await;
 
-    let idle_timeout = Duration::from_secs(ctx.node_add_idle_timeout_secs);
-    let max_timeout = Duration::from_secs(ctx.max_timeout_secs);
-    let goal_timeout = Duration::from_secs(30);
-
     for key in ordered {
         let Some(item) = planned_by_key.get(key) else {
             continue;
@@ -935,14 +876,7 @@ async fn add_nodes_to_stack(
         }
         .with_env_vars(ctx.env_vars.clone());
 
-        let (result, log_path) = run_node_add_and_forward_feedback(
-            ctx,
-            &node_add_goal,
-            goal_timeout,
-            idle_timeout,
-            max_timeout,
-        )
-        .await;
+        let (result, log_path) = run_node_add(ctx, node_add_goal).await;
 
         let failed = result.as_ref().map(|r| !r.success).unwrap_or(true);
         if let Some(path) = log_path {
@@ -982,10 +916,6 @@ async fn start_node_instances(
     start_log_paths: &mut Vec<NodeStartLogEntry>,
 ) -> std::result::Result<(), LaunchResult> {
     publish_stdout(ctx, "Starting nodes...", LaunchFeedbackStep::LauncherStep).await;
-
-    let idle_timeout = Duration::from_secs(ctx.node_start_idle_timeout_secs);
-    let max_timeout = Duration::from_secs(ctx.max_timeout_secs);
-    let goal_timeout = Duration::from_secs(30);
 
     // Compute runtime config host/port.
     let (messaging_host, messaging_port) = ctx
@@ -1046,14 +976,18 @@ async fn start_node_instances(
             )
             .with_env_vars(ctx.env_vars.clone());
 
-            let (result, log_path) = run_node_start_and_forward_feedback(
-                ctx,
-                &node_start_goal,
-                goal_timeout,
-                idle_timeout,
-                max_timeout,
-            )
-            .await;
+            // Create log file for this node start
+            let log_dir = ctx.peppy_dirs.logs_dir_start();
+            let log_filename = format!("{}.log", instance_id);
+            let (log_file, log_path) = match create_action_log_file(&log_dir, &log_filename) {
+                Ok(r) => r,
+                Err(e) => {
+                    return Err(restore_stack(ctx, backup_stack, e).await);
+                }
+            };
+
+            let (result, log_path) =
+                run_node_start(ctx, node_start_goal, runtime_config, log_path, log_file).await;
 
             let failed = result.as_ref().map(|r| !r.success).unwrap_or(true);
             if let Some(path) = log_path {
@@ -1184,23 +1118,22 @@ async fn handle_goal_request(
             bound_core_node,
             core_instance_id,
             node_stack,
-            ..
+            peppy_dirs,
+            timeouts,
         } = action_context;
         let env_vars = goal.env_vars.clone();
-        let node_add_idle_timeout_secs = goal.node_add_idle_timeout_secs;
-        let node_start_idle_timeout_secs = goal.node_start_idle_timeout_secs;
         let max_timeout_secs = goal.max_timeout_secs;
         let ctx = ProcessLaunchContext {
             messenger,
             bound_core_node,
             core_instance_id,
             node_stack,
+            peppy_dirs,
             feedback_publisher,
             log_file,
             log_path: log_path_clone.clone(),
             env_vars,
-            node_add_idle_timeout_secs,
-            node_start_idle_timeout_secs,
+            timeouts,
             max_timeout_secs,
         };
         let result = process_launch(goal, ctx).await;

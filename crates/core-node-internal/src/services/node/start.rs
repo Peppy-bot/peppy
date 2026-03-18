@@ -50,21 +50,21 @@ pub struct NodeStartServiceConfig {
 }
 
 #[derive(Clone)]
-struct NodeStartActionContext {
-    node_stack: Arc<NodeStack>,
-    messenger: MessengerHandle,
-    core_node_name: String,
-    caller_instance_id: String,
-    node_startup_timeout: Duration,
-    node_start_health_timeout: Duration,
-    peppy_dirs: PeppyDirs,
+pub(crate) struct NodeStartActionContext {
+    pub(crate) node_stack: Arc<NodeStack>,
+    pub(crate) messenger: MessengerHandle,
+    pub(crate) core_node_name: String,
+    pub(crate) caller_instance_id: String,
+    pub(crate) node_startup_timeout: Duration,
+    pub(crate) node_start_health_timeout: Duration,
+    pub(crate) peppy_dirs: PeppyDirs,
 }
 
-struct ProcessNodeStartContext {
-    action: NodeStartActionContext,
-    feedback_publisher: TopicPublisher,
-    log_file: Arc<StdMutex<File>>,
-    sender_instance_id: String,
+pub(crate) struct ProcessNodeStartContext {
+    pub(crate) action: NodeStartActionContext,
+    pub(crate) feedback_tx: mpsc::UnboundedSender<FeedbackLine>,
+    pub(crate) log_file: Arc<StdMutex<File>>,
+    pub(crate) sender_instance_id: String,
 }
 
 pub async fn listen_for_node_start(
@@ -446,9 +446,26 @@ async fn handle_goal_request(
     let state_clone = Arc::clone(&state);
     tokio::spawn(async move {
         let log_file_for_panic = log_file.clone();
+
+        // Create a channel for feedback and spawn a consumer that encodes
+        // FeedbackLine values as NodeStartFeedback and publishes to the topic.
+        let (feedback_tx, mut feedback_rx) = mpsc::unbounded_channel::<FeedbackLine>();
+        let feedback_publisher_for_consumer = feedback_publisher.clone();
+        let _consumer_handle = tokio::spawn(async move {
+            while let Some(line) = feedback_rx.recv().await {
+                let feedback = match line.stream {
+                    FeedbackStream::Stdout => NodeStartFeedback::stdout(&line.line),
+                    FeedbackStream::Stderr => NodeStartFeedback::stderr(&line.line),
+                };
+                if let Ok(payload) = feedback.encode() {
+                    let _ = feedback_publisher_for_consumer.publish(payload).await;
+                }
+            }
+        });
+
         let process_context = ProcessNodeStartContext {
             action: action_context,
-            feedback_publisher,
+            feedback_tx,
             log_file,
             sender_instance_id,
         };
@@ -481,7 +498,7 @@ async fn handle_goal_request(
         })
 }
 
-async fn process_node_start(
+pub(crate) async fn process_node_start(
     goal: NodeStartGoal,
     runtime_config: RuntimeConfig,
     ctx: ProcessNodeStartContext,
@@ -529,11 +546,11 @@ async fn process_node_start(
 
     let sccache_injected =
         super::inject_rust_build_env(&mut env_vars, entity.config().manifest.language);
-    if sccache_injected
-        && let Ok(payload) =
-            NodeStartFeedback::stdout("Using sccache for Rust compilation").encode()
-    {
-        let _ = ctx.feedback_publisher.publish(payload).await;
+    if sccache_injected {
+        let _ = ctx.feedback_tx.send(FeedbackLine {
+            stream: FeedbackStream::Stdout,
+            line: "Using sccache for Rust compilation".to_string(),
+        });
     }
     super::inject_node_runtime_env(
         &mut env_vars,
@@ -666,17 +683,14 @@ async fn process_node_start(
     let stderr_buffer = Arc::new(StdMutex::new(VecDeque::new()));
 
     let (feedback_tx, mut feedback_rx) = mpsc::unbounded_channel::<FeedbackLine>();
-    let feedback_publisher = ctx.feedback_publisher.clone();
+    let external_feedback_tx = ctx.feedback_tx.clone();
     let feedback_sync_publisher = feedback_sync.clone();
     tokio::spawn(async move {
         while let Some(line) = feedback_rx.recv().await {
-            let feedback = match line.stream {
-                FeedbackStream::Stdout => NodeStartFeedback::stdout(&line.line),
-                FeedbackStream::Stderr => NodeStartFeedback::stderr(&line.line),
-            };
-            if let Ok(payload) = feedback.encode() {
-                let _ = feedback_publisher.publish(payload).await;
-            }
+            let _ = external_feedback_tx.send(FeedbackLine {
+                stream: line.stream,
+                line: line.line,
+            });
             feedback_sync_publisher.increment_published();
         }
     });

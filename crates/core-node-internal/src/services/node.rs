@@ -10,6 +10,10 @@ mod templates;
 use crate::encoding::NodeSource;
 use crate::{Error, Result};
 pub use add::listen_for_node_add;
+pub(crate) use add::{
+    NodeAddActionContext, ProcessNodeAddContext, log_label_from_source, process_node_add,
+    resolve_node_add_source,
+};
 use chrono::Local;
 use config::node::{NodeConfig, PeppygenLanguage};
 use git2::{Repository, build::CheckoutBuilder};
@@ -17,6 +21,7 @@ pub use info::listen_for_node_info;
 pub use init::listen_for_node_init;
 use rand::RngExt;
 pub use remove::listen_for_node_remove;
+pub(crate) use start::{NodeStartActionContext, ProcessNodeStartContext, process_node_start};
 pub use start::{NodeStartServiceConfig, listen_for_node_start};
 use std::collections::VecDeque;
 use std::fs::File;
@@ -33,14 +38,14 @@ use zstd::stream::read::Decoder;
 const STDERR_TAIL_LINES: usize = 20;
 
 #[derive(Clone, Copy)]
-enum FeedbackStream {
+pub(crate) enum FeedbackStream {
     Stdout,
     Stderr,
 }
 
-struct FeedbackLine {
-    stream: FeedbackStream,
-    line: String,
+pub(crate) struct FeedbackLine {
+    pub(crate) stream: FeedbackStream,
+    pub(crate) line: String,
 }
 
 /// Pushes a line into a bounded ring buffer of stderr output.
@@ -55,7 +60,7 @@ fn push_stderr_line(buffer: &Arc<StdMutex<VecDeque<String>>>, line: &str) {
 
 /// Extract a human-readable message from a panic payload.
 /// Used by spawned task handlers to convert panics into failure results.
-fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+pub(crate) fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
     if let Some(s) = payload.downcast_ref::<&str>() {
         (*s).to_string()
     } else if let Some(s) = payload.downcast_ref::<String>() {
@@ -111,7 +116,7 @@ fn validate_goal_env_vars(env_vars: &[(String, String)]) -> Result<Vec<(String, 
 ///
 /// Best-effort: silently ignores lock/write failures since the error is also
 /// returned in the result encoding.
-fn write_error_to_log(log_file: &Arc<StdMutex<File>>, error_msg: &str) {
+pub(crate) fn write_error_to_log(log_file: &Arc<StdMutex<File>>, error_msg: &str) {
     if let Ok(mut file) = log_file.lock() {
         let timestamp = Local::now().format("%Y-%m-%dT%H:%M:%S%.3f");
         let _ = writeln!(file, "[{}] [error] {}", timestamp, error_msg);
@@ -123,7 +128,7 @@ fn write_error_to_log(log_file: &Arc<StdMutex<File>>, error_msg: &str) {
 ///
 /// Creates the directory tree if it doesn't exist. Returns the log file
 /// handle (wrapped for concurrent access) and its path.
-fn create_action_log_file(
+pub(crate) fn create_action_log_file(
     log_dir: &Path,
     log_filename: &str,
 ) -> std::result::Result<(Arc<StdMutex<File>>, PathBuf), String> {

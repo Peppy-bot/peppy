@@ -209,6 +209,7 @@ fn spawn_output_reader<R: Read + Send + 'static>(
     feedback_tx: mpsc::UnboundedSender<FeedbackLine>,
     stream: FeedbackStream,
     log_file: Arc<StdMutex<File>>,
+    stderr_tail: Option<Arc<StdMutex<std::collections::VecDeque<String>>>>,
 ) -> JoinHandle<()> {
     let stream_prefix = match stream {
         FeedbackStream::Stdout => "stdout",
@@ -222,6 +223,10 @@ fn spawn_output_reader<R: Read + Send + 'static>(
             if let Ok(mut file) = log_file.lock() {
                 let timestamp = Local::now().format("%Y-%m-%dT%H:%M:%S%.3f");
                 let _ = writeln!(file, "[{}] [{}] {}", timestamp, stream_prefix, line);
+            }
+
+            if let Some(ref buffer) = stderr_tail {
+                push_stderr_line(buffer, &line);
             }
 
             let _ = feedback_tx.send(FeedbackLine {
@@ -240,13 +245,10 @@ fn spawn_output_reader<R: Read + Send + 'static>(
 /// collected stderr tail lines.
 async fn stream_child_output(
     mut child: std::process::Child,
-    feedback_publisher: &TopicPublisher,
+    feedback_tx: &mpsc::UnboundedSender<FeedbackLine>,
     log_file: Arc<StdMutex<File>>,
     collect_stderr_tail: bool,
 ) -> std::result::Result<(std::process::ExitStatus, Vec<String>), String> {
-    let (feedback_tx, mut feedback_rx) = mpsc::unbounded_channel::<FeedbackLine>();
-    let feedback_publisher = feedback_publisher.clone();
-
     let stderr_tail: Option<Arc<StdMutex<std::collections::VecDeque<String>>>> =
         if collect_stderr_tail {
             Some(Arc::new(StdMutex::new(
@@ -255,25 +257,6 @@ async fn stream_child_output(
         } else {
             None
         };
-    let stderr_tail_writer = stderr_tail.clone();
-
-    let publisher_handle = tokio::spawn(async move {
-        while let Some(line) = feedback_rx.recv().await {
-            if matches!(line.stream, FeedbackStream::Stderr)
-                && let Some(ref buffer) = stderr_tail_writer
-            {
-                push_stderr_line(buffer, &line.line);
-            }
-
-            let feedback = match line.stream {
-                FeedbackStream::Stdout => NodeAddFeedback::stdout(&line.line),
-                FeedbackStream::Stderr => NodeAddFeedback::stderr(&line.line),
-            };
-            if let Ok(payload) = feedback.encode() {
-                let _ = feedback_publisher.publish(payload).await;
-            }
-        }
-    });
 
     let mut reader_handles = Vec::new();
 
@@ -283,6 +266,7 @@ async fn stream_child_output(
             feedback_tx.clone(),
             FeedbackStream::Stdout,
             Arc::clone(&log_file),
+            None,
         ));
     }
 
@@ -292,11 +276,9 @@ async fn stream_child_output(
             feedback_tx.clone(),
             FeedbackStream::Stderr,
             Arc::clone(&log_file),
+            stderr_tail.clone(),
         ));
     }
-
-    // Drop our sender so the publisher task finishes once readers are done.
-    drop(feedback_tx);
 
     let status = tokio::task::spawn_blocking(move || child.wait())
         .await
@@ -306,7 +288,6 @@ async fn stream_child_output(
     for handle in reader_handles {
         let _ = handle.await;
     }
-    let _ = publisher_handle.await;
 
     let tail_lines = match stderr_tail {
         Some(ref tail) => tail
@@ -337,7 +318,7 @@ async fn run_add_cmd_with_streaming(
     add_cmd: Option<&Vec<String>>,
     working_dir: &Path,
     env_vars: &[(String, String)],
-    feedback_publisher: &TopicPublisher,
+    feedback_tx: &mpsc::UnboundedSender<FeedbackLine>,
     log_file: Arc<StdMutex<File>>,
 ) -> std::result::Result<(), String> {
     let Some(cmd) = add_cmd else {
@@ -395,7 +376,7 @@ async fn run_add_cmd_with_streaming(
         .spawn()
         .map_err(|e| format!("failed to execute add_cmd: {}", e))?;
 
-    let (status, _) = stream_child_output(child, feedback_publisher, log_file, false).await?;
+    let (status, _) = stream_child_output(child, feedback_tx, log_file, false).await?;
 
     if !status.success() {
         return Err(format!("add_cmd failed with status {}", status));
@@ -513,7 +494,7 @@ async fn build_container_image(
     node_name: &str,
     node_tag: &str,
     def_file: &str,
-    feedback_publisher: &TopicPublisher,
+    feedback_tx: &mpsc::UnboundedSender<FeedbackLine>,
     log_file: Arc<StdMutex<File>>,
 ) -> Result<()> {
     let apptainer = tokio::task::spawn_blocking(containers::Apptainer::new)
@@ -547,7 +528,7 @@ async fn build_container_image(
         .spawn()
         .map_err(|e| std::io::Error::other(format!("Failed to spawn apptainer build: {}", e)))?;
 
-    let (status, stderr_tail) = stream_child_output(child, feedback_publisher, log_file, true)
+    let (status, stderr_tail) = stream_child_output(child, feedback_tx, log_file, true)
         .await
         .map_err(std::io::Error::other)?;
 
@@ -620,27 +601,27 @@ impl Drop for CleanupDir {
     }
 }
 
-struct ResolvedNodeAddSource {
-    source_path: PathBuf,
-    node_config: NodeConfig,
-    verify_codegen_fingerprint: bool,
-    cleanup_dir: Option<PathBuf>,
+pub(crate) struct ResolvedNodeAddSource {
+    pub(crate) source_path: PathBuf,
+    pub(crate) node_config: NodeConfig,
+    pub(crate) verify_codegen_fingerprint: bool,
+    pub(crate) cleanup_dir: Option<PathBuf>,
 }
 
 #[derive(Clone)]
-struct NodeAddActionContext {
-    node_stack: Arc<NodeStack>,
-    messenger: MessengerHandle,
-    bound_core_node: String,
-    core_instance_id: String,
-    peppy_dirs: PeppyDirs,
+pub(crate) struct NodeAddActionContext {
+    pub(crate) node_stack: Arc<NodeStack>,
+    pub(crate) messenger: MessengerHandle,
+    pub(crate) bound_core_node: String,
+    pub(crate) core_instance_id: String,
+    pub(crate) peppy_dirs: PeppyDirs,
 }
 
-struct ProcessNodeAddContext {
-    action: NodeAddActionContext,
-    feedback_publisher: TopicPublisher,
-    log_file: Arc<StdMutex<File>>,
-    log_path: PathBuf,
+pub(crate) struct ProcessNodeAddContext {
+    pub(crate) action: NodeAddActionContext,
+    pub(crate) feedback_tx: mpsc::UnboundedSender<FeedbackLine>,
+    pub(crate) log_file: Arc<StdMutex<File>>,
+    pub(crate) log_path: PathBuf,
 }
 
 async fn resolve_git_source(
@@ -913,7 +894,7 @@ fn resolve_http_source_blocking(
 /// Derives a label for the log filename from the NodeSource without network I/O.
 /// For Fs sources, reads the local config to get `{name}_{tag}` (fast, local I/O only).
 /// For Git/Http sources, returns a UUID since the node name/tag are unknown before cloning.
-fn log_label_from_source(source: &NodeSource) -> String {
+pub(crate) fn log_label_from_source(source: &NodeSource) -> String {
     match source {
         NodeSource::Fs(path) => {
             let config_path = path.join(NODE_CONFIG_FILE);
@@ -929,7 +910,7 @@ fn log_label_from_source(source: &NodeSource) -> String {
     }
 }
 
-async fn resolve_node_add_source(
+pub(crate) async fn resolve_node_add_source(
     goal: &NodeAddGoal,
     peppy_dirs: &PeppyDirs,
 ) -> std::result::Result<ResolvedNodeAddSource, String> {
@@ -1055,11 +1036,26 @@ async fn handle_goal_request(
     // Completed — without this, a panic silently aborts the task and leaves
     // the state stuck on Running, causing clients to time out.
     let state_clone = Arc::clone(&state);
-    let feedback_publisher_clone = feedback_publisher.clone();
     let log_path_clone = log_path.clone();
     tokio::spawn(async move {
         let log_file_for_panic = log_file.clone();
         let log_path_for_panic = log_path_clone.clone();
+
+        // Create a channel for feedback and spawn a consumer that encodes
+        // FeedbackLine values as NodeAddFeedback and publishes to the topic.
+        let (feedback_tx, mut feedback_rx) = mpsc::unbounded_channel::<FeedbackLine>();
+        let feedback_publisher_for_consumer = feedback_publisher.clone();
+        let consumer_handle = tokio::spawn(async move {
+            while let Some(line) = feedback_rx.recv().await {
+                let feedback = match line.stream {
+                    FeedbackStream::Stdout => NodeAddFeedback::stdout(&line.line),
+                    FeedbackStream::Stderr => NodeAddFeedback::stderr(&line.line),
+                };
+                if let Ok(payload) = feedback.encode() {
+                    let _ = feedback_publisher_for_consumer.publish(payload).await;
+                }
+            }
+        });
 
         let result = match AssertUnwindSafe(async {
             // Resolve source (git clone, HTTP download, or local config check).
@@ -1091,7 +1087,7 @@ async fn handle_goal_request(
 
             let ctx = ProcessNodeAddContext {
                 action: action_context,
-                feedback_publisher: feedback_publisher_clone,
+                feedback_tx,
                 log_file,
                 log_path: log_path_clone,
             };
@@ -1119,6 +1115,8 @@ async fn handle_goal_request(
                 NodeAddResult::failure(log_path_for_panic, msg)
             }
         };
+        // Wait for the feedback consumer to drain before completing.
+        let _ = consumer_handle.await;
         let mut state_guard = state_clone.lock().await;
         *state_guard = ActionState::Completed { result };
     });
@@ -1169,17 +1167,16 @@ async fn shutdown_existing_instances(
         )
         .await?;
 
-        if let Ok(payload) =
-            NodeAddFeedback::stdout(format!("{instance_id_str} has been stopped")).encode()
-        {
-            let _ = ctx.feedback_publisher.publish(payload).await;
-        }
+        let _ = ctx.feedback_tx.send(FeedbackLine {
+            stream: FeedbackStream::Stdout,
+            line: format!("{instance_id_str} has been stopped"),
+        });
     }
 
     Ok(())
 }
 
-async fn process_node_add(
+pub(crate) async fn process_node_add(
     goal: NodeAddGoal,
     node_config: NodeConfig,
     source_path: PathBuf,
@@ -1199,10 +1196,11 @@ async fn process_node_add(
     let node_tag = node_config.manifest.tag.clone();
     let sccache_injected =
         super::inject_rust_build_env(&mut env_vars, node_config.manifest.language);
-    if sccache_injected
-        && let Ok(payload) = NodeAddFeedback::stdout("Using sccache for Rust compilation").encode()
-    {
-        let _ = ctx.feedback_publisher.publish(payload).await;
+    if sccache_injected {
+        let _ = ctx.feedback_tx.send(FeedbackLine {
+            stream: FeedbackStream::Stdout,
+            line: "Using sccache for Rust compilation".to_string(),
+        });
     }
     super::inject_node_runtime_env(&mut env_vars, &node_name, &node_tag);
     let _cleanup_guard = CleanupDir::new(cleanup_dir);
@@ -1241,13 +1239,13 @@ async fn process_node_add(
     let working_dir_cleanup = CleanupDir::new(Some(working_dir.clone()));
 
     if !excluded_dirs.is_empty() {
-        let msg = format!(
-            "Excluded directories from copy: {}",
-            excluded_dirs.join(", ")
-        );
-        if let Ok(payload) = NodeAddFeedback::stdout(&msg).encode() {
-            let _ = ctx.feedback_publisher.publish(payload).await;
-        }
+        let _ = ctx.feedback_tx.send(FeedbackLine {
+            stream: FeedbackStream::Stdout,
+            line: format!(
+                "Excluded directories from copy: {}",
+                excluded_dirs.join(", ")
+            ),
+        });
     }
 
     // Validate that all dependency nodes exist in the stack and expose the required
@@ -1296,7 +1294,7 @@ async fn process_node_add(
             &node_name,
             &node_tag,
             &container.def_file,
-            &ctx.feedback_publisher,
+            &ctx.feedback_tx,
             Arc::clone(&ctx.log_file),
         )
         .await
@@ -1323,7 +1321,7 @@ async fn process_node_add(
             add_cmd,
             &working_dir,
             &env_vars,
-            &ctx.feedback_publisher,
+            &ctx.feedback_tx,
             Arc::clone(&ctx.log_file),
         )
         .await
