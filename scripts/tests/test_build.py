@@ -222,7 +222,7 @@ def test_package_release_tarball_matches_install_sh(tmp_path: Path) -> None:
     extract_dir = tmp_path / "extracted"
     extract_dir.mkdir()
     with tarfile.open(artifact.asset_path, "r:gz") as tar:
-        tar.extractall(extract_dir)
+        tar.extractall(extract_dir, filter="data")
 
     assert (extract_dir / "bin" / "peppy").is_file()
     assert (extract_dir / "bin" / "zenohd").is_file()
