@@ -33,3 +33,7 @@ def test_install_skips_loginctl_without_systemd() -> None:
         "install.sh called sudo despite running as root.\n"
         f"Output:\n{combined}"
     )
+    assert "you need either 'curl' or 'wget'" not in combined, (
+        "install.sh failed to auto-install curl.\n"
+        f"Output:\n{combined}"
+    )

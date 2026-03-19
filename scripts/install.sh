@@ -323,6 +323,25 @@ EOF
             SUDO_FIX_LABELS="${SUDO_FIX_LABELS}  - Enable lingering for user ${CURRENT_USER} (keeps peppy daemon running after logout)\n"
         fi
 
+        # Check 6: curl or wget (required to download the release archive)
+        if [ -z "${ARCHIVE_PATH-}" ] && ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
+            if command -v apt-get >/dev/null 2>&1; then
+                SUDO_FIXES="${SUDO_FIXES}apt-get update -qq && apt-get install -y -qq curl && "
+            elif command -v dnf >/dev/null 2>&1; then
+                SUDO_FIXES="${SUDO_FIXES}dnf install -y curl && "
+            elif command -v pacman >/dev/null 2>&1; then
+                SUDO_FIXES="${SUDO_FIXES}pacman -S --noconfirm curl && "
+            else
+                echo "" >&2
+                echo "error: curl or wget is required but not found." >&2
+                echo "       No supported package manager detected (apt-get, dnf, pacman)." >&2
+                echo "       Install curl or wget manually and re-run this script." >&2
+                echo "" >&2
+                exit 1
+            fi
+            SUDO_FIX_LABELS="${SUDO_FIX_LABELS}  - Install curl (required to download peppy)\n"
+        fi
+
         # Prompt once for all fixes
         if [ -n "$SUDO_FIXES" ]; then
             echo ""
