@@ -309,16 +309,37 @@ EOF
 
         # Check 5: loginctl enable-linger (keeps systemd user session alive after logout)
         CURRENT_USER="$(id -un)"
+        HAS_LOGINCTL=false
         LINGER_ENABLED=false
         if command -v loginctl >/dev/null 2>&1; then
+            HAS_LOGINCTL=true
             LINGER_VAL="$(loginctl show-user "$CURRENT_USER" -p Linger --value 2>/dev/null || echo "no")"
             if [ "$LINGER_VAL" = "yes" ]; then
                 LINGER_ENABLED=true
             fi
         fi
-        if ! $LINGER_ENABLED; then
+        if $HAS_LOGINCTL && ! $LINGER_ENABLED; then
             SUDO_FIXES="${SUDO_FIXES}loginctl enable-linger ${CURRENT_USER} && "
             SUDO_FIX_LABELS="${SUDO_FIX_LABELS}  - Enable lingering for user ${CURRENT_USER} (keeps peppy daemon running after logout)\n"
+        fi
+
+        # Check 6: curl or wget (required to download the release archive)
+        if [ -z "${ARCHIVE_PATH-}" ] && ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
+            if command -v apt-get >/dev/null 2>&1; then
+                SUDO_FIXES="${SUDO_FIXES}apt-get update -qq && apt-get install -y -qq curl && "
+            elif command -v dnf >/dev/null 2>&1; then
+                SUDO_FIXES="${SUDO_FIXES}dnf install -y curl && "
+            elif command -v pacman >/dev/null 2>&1; then
+                SUDO_FIXES="${SUDO_FIXES}pacman -S --noconfirm curl && "
+            else
+                echo "" >&2
+                echo "error: curl or wget is required but not found." >&2
+                echo "       No supported package manager detected (apt-get, dnf, pacman)." >&2
+                echo "       Install curl or wget manually and re-run this script." >&2
+                echo "" >&2
+                exit 1
+            fi
+            SUDO_FIX_LABELS="${SUDO_FIX_LABELS}  - Install curl (required to download peppy)\n"
         fi
 
         # Prompt once for all fixes
@@ -345,9 +366,22 @@ EOF
 
             # Strip trailing " && " and execute everything under one sudo invocation
             SUDO_FIXES="${SUDO_FIXES% && }"
-            if ! sudo sh -c "$SUDO_FIXES"; then
+            if [ "$(id -u)" -eq 0 ]; then
+                if ! sh -c "$SUDO_FIXES"; then
+                    echo "" >&2
+                    echo "error: failed to apply system fixes." >&2
+                    exit 1
+                fi
+            elif command -v sudo >/dev/null 2>&1; then
+                if ! sudo sh -c "$SUDO_FIXES"; then
+                    echo "" >&2
+                    echo "error: failed to apply system fixes." >&2
+                    exit 1
+                fi
+            else
                 echo "" >&2
-                echo "error: failed to apply system fixes." >&2
+                echo "error: sudo is required to apply system fixes (not running as root)." >&2
+                echo "       Either run this script as root or install sudo." >&2
                 exit 1
             fi
             echo "System dependencies configured successfully."
