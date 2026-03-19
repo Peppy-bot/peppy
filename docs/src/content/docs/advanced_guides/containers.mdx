@@ -242,6 +242,49 @@ PeppyOS runs the `.sif` image with `apptainer run`. Environment variables such a
 
 The container executes the `%runscript` section, which runs the compiled binary (Rust) or the Python module entry point.
 
+## Mounting host directories
+
+By default, a container is isolated from the host filesystem. Use `mount_paths` to bind-mount host directories into the running container — useful for sharing datasets, persisting output, or exposing device files.
+
+Add a `mount_paths` array to the `container` block in `peppy.json5`:
+
+```json5 title="peppy.json5"
+{
+  schema_version: 1,
+  manifest: {
+    name: "my_node",
+    tag: "0.1.0",
+    language: "python",
+  },
+  container: {
+    def_file: "apptainer.def",
+    mount_paths: [
+      "/data/models:/opt/models:ro",
+      "/tmp/my_node_output:/output:rw"
+    ]
+  },
+  interfaces: {}
+}
+```
+
+Each entry follows the format `host_path:container_path[:options]`:
+
+| Format | Example | Behaviour |
+|--------|---------|-----------|
+| `host_path` | `"/data/models"` | Mounted at the same path inside the container |
+| `host_path:container_path` | `"/data/models:/opt/models"` | Mounted at a different path inside the container |
+| `host_path:container_path:options` | `"/data/models:/opt/models:ro"` | Mounted with explicit options (`ro` for read-only, `rw` for read-write) |
+
+PeppyOS creates any missing parent directories on the host automatically before starting the container.
+
+:::note
+Top-level system directories such as `/`, `/tmp`, `/var`, `/etc`, `/dev`, `/usr`, `/home`, `/opt`, `/bin`, and `/sbin` cannot be used as mount sources. Subdirectories of these paths are fine — for example, `/tmp/my_app_data` is allowed but `/tmp` is not.
+:::
+
+:::note
+On macOS, PeppyOS automatically configures the Lima VM to make mounted paths accessible inside the guest. No extra setup is needed — paths outside your home directory are handled transparently.
+:::
+
 ## macOS support
 
 On macOS, Apptainer is not natively available. PeppyOS bundles a [Lima](https://lima-vm.io/) virtual machine that runs Apptainer inside a lightweight Linux guest.
