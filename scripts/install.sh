@@ -309,14 +309,16 @@ EOF
 
         # Check 5: loginctl enable-linger (keeps systemd user session alive after logout)
         CURRENT_USER="$(id -un)"
+        HAS_LOGINCTL=false
         LINGER_ENABLED=false
         if command -v loginctl >/dev/null 2>&1; then
+            HAS_LOGINCTL=true
             LINGER_VAL="$(loginctl show-user "$CURRENT_USER" -p Linger --value 2>/dev/null || echo "no")"
             if [ "$LINGER_VAL" = "yes" ]; then
                 LINGER_ENABLED=true
             fi
         fi
-        if ! $LINGER_ENABLED; then
+        if $HAS_LOGINCTL && ! $LINGER_ENABLED; then
             SUDO_FIXES="${SUDO_FIXES}loginctl enable-linger ${CURRENT_USER} && "
             SUDO_FIX_LABELS="${SUDO_FIX_LABELS}  - Enable lingering for user ${CURRENT_USER} (keeps peppy daemon running after logout)\n"
         fi
@@ -345,9 +347,22 @@ EOF
 
             # Strip trailing " && " and execute everything under one sudo invocation
             SUDO_FIXES="${SUDO_FIXES% && }"
-            if ! sudo sh -c "$SUDO_FIXES"; then
+            if [ "$(id -u)" -eq 0 ]; then
+                if ! sh -c "$SUDO_FIXES"; then
+                    echo "" >&2
+                    echo "error: failed to apply system fixes." >&2
+                    exit 1
+                fi
+            elif command -v sudo >/dev/null 2>&1; then
+                if ! sudo sh -c "$SUDO_FIXES"; then
+                    echo "" >&2
+                    echo "error: failed to apply system fixes." >&2
+                    exit 1
+                fi
+            else
                 echo "" >&2
-                echo "error: failed to apply system fixes." >&2
+                echo "error: sudo is required to apply system fixes (not running as root)." >&2
+                echo "       Either run this script as root or install sudo." >&2
                 exit 1
             fi
             echo "System dependencies configured successfully."
