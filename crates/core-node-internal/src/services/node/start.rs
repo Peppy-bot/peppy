@@ -625,12 +625,24 @@ async fn process_node_start(
     // Spawn the node process:
     // - Container nodes: apptainer run <sif>
     // - Process nodes: execute start_cmd
-    let mount_paths = entity
+    let raw_mount_paths = entity
         .config()
         .container
         .as_ref()
         .and_then(|c| c.mount_paths.as_deref())
         .unwrap_or_default();
+
+    // Resolve ${parameters:...} references in mount paths using runtime arguments.
+    let resolved_mount_paths = match resolve_mount_path_parameters(
+        raw_mount_paths,
+        &runtime_config.node_instance.arguments,
+    ) {
+        Ok(paths) => paths,
+        Err(msg) => {
+            write_error_to_log(&ctx.log_file, &msg);
+            return NodeStartResult::failure(msg);
+        }
+    };
 
     let mut child = if is_container {
         let mut apptainer = match tokio::task::spawn_blocking(containers::Apptainer::new).await {
@@ -672,7 +684,7 @@ async fn process_node_start(
             &instance_dir,
             &runtime_config_json5,
             &env_vars,
-            mount_paths,
+            &resolved_mount_paths,
             &ctx.log_file,
             &ctx.action.peppy_dirs,
         ) {
@@ -1081,6 +1093,63 @@ pub fn start_node(
     })
 }
 
+/// Replaces `${parameters:...}` tokens in mount paths with actual argument values.
+///
+/// Each `${parameters:<dot.path>}` is resolved against the runtime `arguments`.
+/// Only `AnyType::String` values are accepted — other types produce an error.
+///
+/// After resolution, the source (host) portion of each mount path is validated
+/// against the blocked system directories list.
+fn resolve_mount_path_parameters(
+    mount_paths: &[String],
+    arguments: &NodeArguments,
+) -> std::result::Result<Vec<String>, String> {
+    let mut resolved = Vec::with_capacity(mount_paths.len());
+    for mount in mount_paths {
+        let mut result = String::with_capacity(mount.len());
+        let mut remaining: &str = mount;
+
+        while let Some(start) = remaining.find("${parameters:") {
+            result.push_str(&remaining[..start]);
+            let after_prefix = &remaining[start + "${parameters:".len()..];
+            let end = after_prefix
+                .find('}')
+                .ok_or_else(|| format!("Unclosed parameter reference in mount path: {mount}"))?;
+            let dot_path = &after_prefix[..end];
+
+            match config::resolve_parameter_path(arguments, dot_path) {
+                Some(AnyType::String(value)) => {
+                    result.push_str(value);
+                }
+                Some(other) => {
+                    return Err(format!(
+                        "Parameter `{dot_path}` in mount path must be a string, got {}",
+                        other.type_name()
+                    ));
+                }
+                None => {
+                    return Err(format!(
+                        "Parameter `{dot_path}` referenced in mount path not found in arguments"
+                    ));
+                }
+            }
+            remaining = &after_prefix[end + 1..];
+        }
+        result.push_str(remaining);
+
+        // Validate the resolved source path against blocked system directories.
+        let src = result.split(':').next().unwrap_or(&result);
+        if config::node::is_blocked_mount_source(src) {
+            return Err(format!(
+                "Resolved mount path `{result}` uses a blocked system directory `{src}` as source — use a subdirectory instead"
+            ));
+        }
+
+        resolved.push(result);
+    }
+    Ok(resolved)
+}
+
 /// Describes a bind mount for a container node.
 struct ContainerBind {
     src: String,
@@ -1417,5 +1486,53 @@ mod tests {
         assert_eq!(binds[2].src, "/dev/ttyUSB0");
         assert!(binds[2].dest.is_none());
         assert!(binds[2].opts.is_none());
+    }
+
+    #[test]
+    fn test_resolve_mount_path_parameters_simple() {
+        let mount_paths = vec!["${parameters:device_path}:/dev/video0:rw".to_string()];
+        let mut arguments = NodeArguments::new();
+        arguments.insert(
+            "device_path".to_string(),
+            AnyType::String("/dev/video0".to_string()),
+        );
+
+        let resolved = resolve_mount_path_parameters(&mount_paths, &arguments).unwrap();
+        assert_eq!(resolved, vec!["/dev/video0:/dev/video0:rw"]);
+    }
+
+    #[test]
+    fn test_resolve_mount_path_parameters_nested() {
+        let mount_paths = vec!["${parameters:video.device_path}:/dev/video0:rw".to_string()];
+        let mut video = std::collections::BTreeMap::new();
+        video.insert(
+            "device_path".to_string(),
+            AnyType::String("/dev/video1".to_string()),
+        );
+        let mut arguments = NodeArguments::new();
+        arguments.insert("video".to_string(), AnyType::Object(video));
+
+        let resolved = resolve_mount_path_parameters(&mount_paths, &arguments).unwrap();
+        assert_eq!(resolved, vec!["/dev/video1:/dev/video0:rw"]);
+    }
+
+    #[test]
+    fn test_resolve_mount_path_parameters_passthrough() {
+        let mount_paths = vec!["/data/models:/opt/models:ro".to_string()];
+        let arguments = NodeArguments::new();
+
+        let resolved = resolve_mount_path_parameters(&mount_paths, &arguments).unwrap();
+        assert_eq!(resolved, vec!["/data/models:/opt/models:ro"]);
+    }
+
+    #[test]
+    fn test_resolve_mount_path_parameters_rejects_blocked_path() {
+        let mount_paths = vec!["${parameters:path}:/container:rw".to_string()];
+        let mut arguments = NodeArguments::new();
+        arguments.insert("path".to_string(), AnyType::String("/tmp".to_string()));
+
+        let result = resolve_mount_path_parameters(&mount_paths, &arguments);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("blocked system directory"));
     }
 }
