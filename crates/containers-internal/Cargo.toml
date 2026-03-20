@@ -11,6 +11,7 @@ thiserror = "2.0"
 tracing = "0.1"
 
 [dev-dependencies]
+config = { path = "../config-internal", features = ["test_helpers"] }
 tempfile = "3"
 
 [build-dependencies]

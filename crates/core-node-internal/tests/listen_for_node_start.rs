@@ -6,9 +6,11 @@ use common::{
     start_core_node_with_health_timeout, start_core_node_with_mock_messenger,
     start_core_node_with_real_messenger, write_peppy_json5,
 };
+use config::consts::DEFAULT_ALPINE_BASE_IMAGE;
 use config::node::Name as NodeName;
 use config::peppy_config::Name;
 use config::runtime::{NodeInstance, RuntimeConfig};
+use config::test_helpers::container_build_lock;
 use core_node::encoding::NodeStartFeedback;
 use peppylib::messaging::MessengerHandle;
 use peppylib::services::health::listen_for_node_health;
@@ -1414,7 +1416,7 @@ async fn listen_for_node_start_with_container_success() {
     let apptainer_def = format!(
         r#"
 Bootstrap: docker
-From: alpine:3.20
+From: {DEFAULT_ALPINE_BASE_IMAGE}
 
 %labels
     Name {TARGET_NODE_NAME}
@@ -1431,7 +1433,9 @@ From: alpine:3.20
     std::fs::write(source_dir.path().join("apptainer.def"), &apptainer_def)
         .expect("failed to write apptainer definition");
 
-    // Add the node first (container add flow)
+    // Add the node first (container add flow).
+    // Acquire cross-process lock to serialize ECR Public image pulls.
+    let _build_lock = container_build_lock();
     let add_response = send_node_add_and_wait(
         &started.caller_handle,
         &started.core_node_name,
@@ -1442,6 +1446,7 @@ From: alpine:3.20
     )
     .await
     .expect("node_add should succeed");
+    drop(_build_lock);
 
     assert!(
         add_response.success,
@@ -1627,7 +1632,7 @@ async fn listen_for_node_start_with_container_creates_missing_mount_dir() {
     let apptainer_def = format!(
         r#"
 Bootstrap: docker
-From: alpine:3.20
+From: {DEFAULT_ALPINE_BASE_IMAGE}
 
 %labels
     Name {TARGET_NODE_NAME}
@@ -1643,7 +1648,9 @@ From: alpine:3.20
     std::fs::write(source_dir.path().join("apptainer.def"), &apptainer_def)
         .expect("failed to write apptainer definition");
 
-    // Add the node first (container add flow)
+    // Add the node first (container add flow).
+    // Acquire cross-process lock to serialize ECR Public image pulls.
+    let _build_lock = container_build_lock();
     let add_response = send_node_add_and_wait(
         &started.caller_handle,
         &started.core_node_name,
@@ -1654,6 +1661,7 @@ From: alpine:3.20
     )
     .await
     .expect("node_add should succeed");
+    drop(_build_lock);
 
     assert!(
         add_response.success,
@@ -1772,7 +1780,7 @@ async fn listen_for_node_start_container_failure_includes_stderr_in_error() {
     let apptainer_def = format!(
         r#"
 Bootstrap: docker
-From: alpine:3.20
+From: {DEFAULT_ALPINE_BASE_IMAGE}
 
 %labels
     Name {TARGET_NODE_NAME}
@@ -1786,7 +1794,9 @@ From: alpine:3.20
     std::fs::write(source_dir.path().join("apptainer.def"), &apptainer_def)
         .expect("failed to write apptainer definition");
 
-    // Add the node first (builds the .sif image)
+    // Add the node first (builds the .sif image).
+    // Acquire cross-process lock to serialize ECR Public image pulls.
+    let _build_lock = container_build_lock();
     let add_response = send_node_add_and_wait(
         &started.caller_handle,
         &started.core_node_name,
@@ -1797,6 +1807,7 @@ From: alpine:3.20
     )
     .await
     .expect("node_add should succeed");
+    drop(_build_lock);
 
     assert!(
         add_response.success,

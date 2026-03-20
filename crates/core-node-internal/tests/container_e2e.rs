@@ -8,6 +8,7 @@ use config::node::Name as NodeName;
 use config::node::Toolchain;
 use config::peppy_config::Name;
 use config::runtime::{NodeInstance, RuntimeConfig};
+use config::test_helpers::container_build_lock;
 use core_node::encoding::NodeInitRequest;
 use std::time::Duration;
 use tempfile::tempdir;
@@ -85,7 +86,9 @@ async fn container_e2e_rust_init_add_start() {
         "init should generate apptainer.def"
     );
 
-    // Step 2: Add the node (builds the container image)
+    // Step 2: Add the node (builds the container image).
+    // Acquire cross-process lock to serialize ECR Public image pulls.
+    let _build_lock = container_build_lock();
     let add_response = send_node_add_and_wait(
         &started.caller_handle,
         &started.core_node_name,
@@ -96,6 +99,7 @@ async fn container_e2e_rust_init_add_start() {
     )
     .await
     .expect("node_add request should complete");
+    drop(_build_lock);
 
     assert!(
         add_response.success,
@@ -240,7 +244,9 @@ async fn container_e2e_python_init_add_start() {
         "init should generate apptainer.def"
     );
 
-    // Step 2: Add the node (builds the container image)
+    // Step 2: Add the node (builds the container image).
+    // Acquire cross-process lock to serialize ECR Public image pulls.
+    let _build_lock = container_build_lock();
     let add_response = send_node_add_and_wait(
         &started.caller_handle,
         &started.core_node_name,
@@ -251,6 +257,7 @@ async fn container_e2e_python_init_add_start() {
     )
     .await
     .expect("node_add request should complete");
+    drop(_build_lock);
 
     assert!(
         add_response.success,
