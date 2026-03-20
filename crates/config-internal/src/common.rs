@@ -218,6 +218,86 @@ impl std::error::Error for TypeMismatch {}
 // Node arguments with open-ended structure
 pub type NodeArguments = BTreeMap<String, AnyType>;
 
+/// Collect all leaf dot-paths from a parameter schema.
+///
+/// For example, `{ device_path: "string", video: { fps: "u16" } }` yields
+/// `{"device_path", "video.fps"}`.
+pub fn parameter_leaf_paths(
+    parameters: &BTreeMap<String, AnyType>,
+) -> std::collections::BTreeSet<String> {
+    let mut acc = std::collections::BTreeSet::new();
+    for_each_parameter_leaf_path(parameters, |path| {
+        acc.insert(path.to_owned());
+    });
+    acc
+}
+
+/// Visit every leaf dot-path in a parameter schema, invoking `visit` for each.
+pub fn for_each_parameter_leaf_path(
+    parameters: &BTreeMap<String, AnyType>,
+    mut visit: impl FnMut(&str),
+) {
+    let mut path = String::new();
+    for (key, value) in parameters {
+        path.clear();
+        path.push_str(key);
+        visit_parameter_leaf_paths(value, &mut path, &mut visit);
+    }
+}
+
+fn visit_parameter_leaf_paths(value: &AnyType, path: &mut String, visit: &mut dyn FnMut(&str)) {
+    match value {
+        AnyType::Object(map) if !map.is_empty() => {
+            if is_array_parameter_schema(map) {
+                visit(path.as_str());
+                return;
+            }
+
+            for (child_key, child_value) in map {
+                let original_len = path.len();
+                path.push('.');
+                path.push_str(child_key);
+                visit_parameter_leaf_paths(child_value, path, visit);
+                path.truncate(original_len);
+            }
+        }
+        _ => {
+            visit(path.as_str());
+        }
+    }
+}
+
+pub fn is_array_parameter_schema(map: &BTreeMap<String, AnyType>) -> bool {
+    matches!(
+        map.get("type"),
+        Some(AnyType::String(kind)) if kind.eq_ignore_ascii_case("array")
+    )
+}
+
+/// Resolve a dot-path (e.g., `"video.device_path"`) against a `NodeArguments` map,
+/// returning the leaf `AnyType` value if found.
+///
+/// Descends into `AnyType::Object` values at each segment boundary.
+pub fn resolve_parameter_path<'a>(
+    parameters: &'a NodeArguments,
+    dot_path: &str,
+) -> Option<&'a AnyType> {
+    let mut segments = dot_path.split('.');
+    let first = segments.next()?;
+    let mut current = parameters.get(first)?;
+
+    for segment in segments {
+        match current {
+            AnyType::Object(map) => {
+                current = map.get(segment)?;
+            }
+            _ => return None,
+        }
+    }
+
+    Some(current)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -396,5 +476,65 @@ mod tests {
             format!("{}", err),
             "type mismatch at `config.timeout`: expected `u32`, got `string`"
         );
+    }
+
+    #[test]
+    fn resolve_parameter_path_simple() {
+        let mut params = BTreeMap::new();
+        params.insert(
+            "device_path".to_string(),
+            AnyType::String("string".to_string()),
+        );
+        assert_eq!(
+            resolve_parameter_path(&params, "device_path"),
+            Some(&AnyType::String("string".to_string()))
+        );
+    }
+
+    #[test]
+    fn resolve_parameter_path_nested() {
+        let mut video = BTreeMap::new();
+        video.insert(
+            "device_path".to_string(),
+            AnyType::String("string".to_string()),
+        );
+        video.insert("fps".to_string(), AnyType::String("u16".to_string()));
+        let mut params = BTreeMap::new();
+        params.insert("video".to_string(), AnyType::Object(video));
+        assert_eq!(
+            resolve_parameter_path(&params, "video.device_path"),
+            Some(&AnyType::String("string".to_string()))
+        );
+        assert_eq!(
+            resolve_parameter_path(&params, "video.fps"),
+            Some(&AnyType::String("u16".to_string()))
+        );
+    }
+
+    #[test]
+    fn resolve_parameter_path_not_found() {
+        let mut params = BTreeMap::new();
+        params.insert(
+            "device_path".to_string(),
+            AnyType::String("string".to_string()),
+        );
+        assert_eq!(resolve_parameter_path(&params, "nonexistent"), None);
+        assert_eq!(resolve_parameter_path(&params, "device_path.nested"), None);
+    }
+
+    #[test]
+    fn parameter_leaf_paths_flat_and_nested() {
+        let mut video = BTreeMap::new();
+        video.insert("fps".to_string(), AnyType::String("u16".to_string()));
+        video.insert("device".to_string(), AnyType::String("string".to_string()));
+        let mut params = BTreeMap::new();
+        params.insert("name".to_string(), AnyType::String("string".to_string()));
+        params.insert("video".to_string(), AnyType::Object(video));
+
+        let paths = parameter_leaf_paths(&params);
+        assert!(paths.contains("name"));
+        assert!(paths.contains("video.device"));
+        assert!(paths.contains("video.fps"));
+        assert_eq!(paths.len(), 3);
     }
 }

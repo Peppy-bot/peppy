@@ -51,6 +51,7 @@ pub struct PythonPeppyJson5<'a> {
 pub struct ApptainerRustDef<'a> {
     pub node_name: &'a str,
     pub tag: &'a str,
+    pub base_image: &'a str,
 }
 
 #[derive(Template)]
@@ -58,6 +59,7 @@ pub struct ApptainerRustDef<'a> {
 pub struct ApptainerPythonDef<'a> {
     pub node_name: &'a str,
     pub tag: &'a str,
+    pub base_image: &'a str,
 }
 
 /// Copies all embedded static files under the given prefix
@@ -118,6 +120,7 @@ pub fn apply_rust_templates(node_name: &str, node_dir: &Path, with_container: bo
         let apptainer_def = ApptainerRustDef {
             node_name,
             tag: "0.1.0",
+            base_image: config::consts::DEFAULT_UBUNTU_BASE_IMAGE,
         };
         std::fs::write(node_dir.join("apptainer.def"), apptainer_def.render()?)?;
     }
@@ -177,6 +180,7 @@ if __name__ == "__main__":
         let apptainer_def = ApptainerPythonDef {
             node_name,
             tag: "0.1.0",
+            base_image: config::consts::DEFAULT_UBUNTU_BASE_IMAGE,
         };
         std::fs::write(node_dir.join("apptainer.def"), apptainer_def.render()?)?;
     }

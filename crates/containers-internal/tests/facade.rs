@@ -1,3 +1,5 @@
+use config::consts::DEFAULT_ALPINE_BASE_IMAGE;
+use config::test_helpers::container_build_lock;
 use containers::Apptainer;
 use std::fs;
 use std::path::PathBuf;
@@ -41,17 +43,24 @@ fn build_alpine_container() -> Option<(Apptainer, TempDir, PathBuf)> {
     let def_path = tmp_dir.path().join("test.def");
     fs::write(
         &def_path,
-        "\
+        format!(
+            "\
 Bootstrap: docker
-From: alpine:3.20
+From: {DEFAULT_ALPINE_BASE_IMAGE}
 
 %runscript
     echo peppy-test-ok
-",
+"
+        ),
     )
     .expect("should be able to write .def file");
 
     let sif_path = tmp_dir.path().join("test.sif");
+
+    // Serialize container builds across test binaries to avoid ECR Public
+    // burst rate limits (1 req/sec unauthenticated).
+    let _build_lock = container_build_lock();
+
     let mut cmd = match facade.build(&sif_path, &def_path).into_std_command() {
         Ok(c) => c,
         Err(e) => {

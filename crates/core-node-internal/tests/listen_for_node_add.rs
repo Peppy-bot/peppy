@@ -4,7 +4,9 @@ use common::{
     AbortOnDrop, CALLER_INSTANCE_ID, NodeAddSource, TEST_GIT_HASH, send_node_add_and_wait,
     send_node_add_and_wait_with_env, start_core_node_with_mock_messenger, write_peppy_json5,
 };
-use config::consts::{NODE_CONFIG_FILE, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH};
+use config::consts::{
+    DEFAULT_ALPINE_BASE_IMAGE, NODE_CONFIG_FILE, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH,
+};
 use config::node::QoSProfile;
 use config::test_helpers;
 use core_node::encoding::{NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse};
@@ -296,7 +298,7 @@ async fn listen_for_node_add_with_container_success() {
     let apptainer_def = format!(
         r#"
 Bootstrap: docker
-From: alpine:3.20
+From: {DEFAULT_ALPINE_BASE_IMAGE}
 
 %labels
     Name {TARGET_NODE_NAME}
@@ -309,6 +311,8 @@ From: alpine:3.20
     std::fs::write(source_dir.path().join("apptainer.def"), &apptainer_def)
         .expect("failed to write apptainer definition");
 
+    // Acquire cross-process lock to serialize ECR Public image pulls.
+    let _build_lock = config::test_helpers::container_build_lock();
     let add_result = send_node_add_and_wait(
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
@@ -319,6 +323,7 @@ From: alpine:3.20
     )
     .await
     .expect("node_add request should succeed");
+    drop(_build_lock);
 
     assert!(
         add_result.success,
