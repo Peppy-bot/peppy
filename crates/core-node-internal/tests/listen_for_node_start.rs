@@ -10,7 +10,6 @@ use config::consts::DEFAULT_ALPINE_BASE_IMAGE;
 use config::node::Name as NodeName;
 use config::peppy_config::Name;
 use config::runtime::{NodeInstance, RuntimeConfig};
-use config::test_helpers::container_build_lock;
 use core_node::encoding::NodeStartFeedback;
 use peppylib::messaging::MessengerHandle;
 use peppylib::services::health::listen_for_node_health;
@@ -1434,8 +1433,6 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
         .expect("failed to write apptainer definition");
 
     // Add the node first (container add flow).
-    // Acquire cross-process lock to serialize ECR Public image pulls.
-    let _build_lock = container_build_lock();
     let add_response = send_node_add_and_wait(
         &started.caller_handle,
         &started.core_node_name,
@@ -1446,7 +1443,6 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
     )
     .await
     .expect("node_add should succeed");
-    drop(_build_lock);
 
     assert!(
         add_response.success,
@@ -1649,8 +1645,6 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
         .expect("failed to write apptainer definition");
 
     // Add the node first (container add flow).
-    // Acquire cross-process lock to serialize ECR Public image pulls.
-    let _build_lock = container_build_lock();
     let add_response = send_node_add_and_wait(
         &started.caller_handle,
         &started.core_node_name,
@@ -1661,7 +1655,6 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
     )
     .await
     .expect("node_add should succeed");
-    drop(_build_lock);
 
     assert!(
         add_response.success,
@@ -1795,8 +1788,6 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
         .expect("failed to write apptainer definition");
 
     // Add the node first (builds the .sif image).
-    // Acquire cross-process lock to serialize ECR Public image pulls.
-    let _build_lock = container_build_lock();
     let add_response = send_node_add_and_wait(
         &started.caller_handle,
         &started.core_node_name,
@@ -1807,7 +1798,6 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
     )
     .await
     .expect("node_add should succeed");
-    drop(_build_lock);
 
     assert!(
         add_response.success,
