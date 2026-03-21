@@ -6,7 +6,7 @@
 # which already contains the apptainer RPM extracted (usr/bin/apptainer, etc.)
 # and a "tmp/" directory with extracted dependency RPMs.
 #
-# Based on install-unprivileged.sh from the Apptainer project.
+# Based on install-unprivileged.sh from the Apptainer project (adapted for setuid mode).
 # https://github.com/apptainer/apptainer
 
 set -euo pipefail
@@ -87,6 +87,11 @@ rm -rf tmp
 
 # -----------------------------------------------------------------------
 # Phase 5: Create wrappers for libexec/apptainer/bin scripts
+#
+# starter and starter-suid are kept as real ELF binaries (not wrapped):
+# - starter-suid needs its setuid bit preserved (Linux ignores setuid on scripts)
+# - LD_LIBRARY_PATH is stripped by the kernel for setuid binaries
+# - Both link against system libc/libseccomp and do not need vendored libs
 # -----------------------------------------------------------------------
 mkdir -p libexec/apptainer/libexec
 
@@ -108,6 +113,10 @@ WRAPPER
 chmod +x libexec/apptainer/bin/.wrapper
 
 for TOOL in libexec/apptainer/bin/*; do
+    BASENAME="${TOOL##*/}"
+    if [ "$BASENAME" = "starter" ] || [ "$BASENAME" = "starter-suid" ]; then
+        continue
+    fi
     mv "$TOOL" libexec/apptainer/libexec
     ln -s .wrapper "$TOOL"
 done

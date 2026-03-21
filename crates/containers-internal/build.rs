@@ -460,13 +460,13 @@ fi
                 let stderr = String::from_utf8_lossy(&o.stderr);
                 let stdout = String::from_utf8_lossy(&o.stdout);
                 println!(
-                    "cargo:warning=install-unprivileged.sh failed (exit: {}): {} {}",
+                    "cargo:warning=install.sh failed (exit: {}): {} {}",
                     o.status, stderr, stdout
                 );
                 false
             }
             Err(e) => {
-                println!("cargo:warning=Failed to run install-unprivileged.sh: {}", e);
+                println!("cargo:warning=Failed to run install.sh: {}", e);
                 false
             }
         }
@@ -870,11 +870,10 @@ bash {guest_vendor}/{install_script_name} {guest_install_dir} {arch}"#,
         }
         std::fs::create_dir_all(install_dir).expect("Failed to create apptainer install directory");
 
-        // Configure: ./mconfig --without-suid --prefix=<install_dir>
+        // Configure: ./mconfig --prefix=<install_dir>
         if !build_helpers::run_command(
             Command::new("./mconfig")
                 .current_dir(&source_dir)
-                .arg("--without-suid")
                 .arg(format!("--prefix={}", install_dir.display())),
             "configure apptainer build",
         ) {
@@ -941,7 +940,7 @@ rm -rf apptainer-{version} apptainer-{version}.tar.gz {guest_install_dir}
 curl -fsSL https://github.com/apptainer/apptainer/releases/download/v{version}/apptainer-{version}.tar.gz -o apptainer-{version}.tar.gz
 tar -xzf apptainer-{version}.tar.gz
 cd apptainer-{version}
-./mconfig --without-suid --prefix={guest_install_dir}
+./mconfig --prefix={guest_install_dir}
 make -C builddir -j
 make -C builddir install
 rm -rf /tmp/apptainer-{version} /tmp/apptainer-{version}.tar.gz"#,
@@ -1009,7 +1008,7 @@ rm -rf /tmp/apptainer-{version} /tmp/apptainer-{version}.tar.gz"#,
     pub fn run() {
         println!("cargo:rerun-if-changed=build.rs");
         println!(
-            "cargo:rerun-if-changed=vendor/apptainer-{}-install-unprivileged.sh",
+            "cargo:rerun-if-changed=vendor/apptainer-{}-install.sh",
             APPTAINER_VERSION
         );
         println!("cargo:rerun-if-changed=vendor/x86_64/");
@@ -1050,10 +1049,8 @@ rm -rf /tmp/apptainer-{version} /tmp/apptainer-{version}.tar.gz"#,
         let manifest_dir = env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set");
         let vendor_base = PathBuf::from(&manifest_dir).join("vendor");
         let dep_dir = vendor_base.join(&arch);
-        let install_script = vendor_base.join(format!(
-            "apptainer-{}-install-unprivileged.sh",
-            APPTAINER_VERSION
-        ));
+        let install_script =
+            vendor_base.join(format!("apptainer-{}-install.sh", APPTAINER_VERSION));
 
         // ------------------------------------------------------------------
         // Step 1 (macOS only): Download and cache Lima

@@ -39,7 +39,7 @@ pub(crate) enum Backend {
 /// Handle for the Apptainer container runtime.
 ///
 /// Apptainer is installed as a portable, relocatable directory tree (created by
-/// `install-unprivileged.sh`) rather than a single binary. This type resolves
+/// `install.sh`) rather than a single binary. This type resolves
 /// the installation directory and provides command-builder methods for common
 /// apptainer operations.
 ///
@@ -61,93 +61,6 @@ pub struct Apptainer {
     /// Host paths registered via `ensure_host_mounts()` that are accessible
     /// in the Lima VM even though they are outside `$HOME`.
     pub(crate) extra_mounts: Vec<PathBuf>,
-}
-
-/// Search for a binary by name in the given directories (typically from `$PATH`).
-#[cfg(target_os = "linux")]
-pub(crate) fn find_binary(name: &str, search_dirs: &[PathBuf]) -> Option<PathBuf> {
-    search_dirs
-        .iter()
-        .map(|dir| dir.join(name))
-        .find(|path| path.is_file())
-}
-
-/// Check that fakeroot dependencies (`newuidmap`, `newgidmap`) are available
-/// and have setuid-root permissions.
-///
-/// `apptainer build --fakeroot` requires these binaries from the `uidmap`
-/// (Debian/Ubuntu) or `shadow-utils` (Fedora/RHEL) package.  They must be
-/// installed with the setuid bit set (mode `4755`).
-#[cfg(target_os = "linux")]
-pub(crate) fn check_fakeroot_deps(search_dirs: &[PathBuf]) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-
-    for binary in &["newuidmap", "newgidmap"] {
-        let path = find_binary(binary, search_dirs).ok_or_else(|| Error::FakerootDepsNotFound {
-            binary: (*binary).to_string(),
-            details: format!(
-                "`{binary}` not found on PATH. \
-                     Install the `uidmap` (Debian/Ubuntu) or `shadow-utils` (Fedora/RHEL) package."
-            ),
-        })?;
-
-        let metadata = std::fs::metadata(&path).map_err(|e| Error::FakerootDepsNotFound {
-            binary: (*binary).to_string(),
-            details: format!("failed to stat `{}`: {e}", path.display()),
-        })?;
-
-        let mode = metadata.permissions().mode();
-        if mode & 0o4000 == 0 {
-            return Err(Error::FakerootDepsNotFound {
-                binary: (*binary).to_string(),
-                details: format!(
-                    "`{binary}` found at {} but missing setuid bit (mode: {mode:#o}). \
-                     The binary must be installed with setuid-root permissions.",
-                    path.display()
-                ),
-            });
-        }
-    }
-    Ok(())
-}
-
-/// Check whether AppArmor's unprivileged user namespace restriction is active
-/// (Ubuntu 24.04+) and no per-binary profile has been installed for Apptainer's
-/// `starter` binary.
-///
-/// When `kernel.apparmor_restrict_unprivileged_userns=1`, unprivileged processes
-/// cannot create user namespaces unless their AppArmor profile grants `userns`.
-/// Without a profile, `apptainer build --fakeroot` fails with
-/// "Failed to create mount namespace".
-#[cfg(target_os = "linux")]
-pub(crate) fn check_apparmor_userns(_apptainer_dir: &Path) -> Result<()> {
-    let sysctl = std::fs::read_to_string("/proc/sys/kernel/apparmor_restrict_unprivileged_userns");
-    let restricted = matches!(&sysctl, Ok(v) if v.trim() == "1");
-    if !restricted {
-        return Ok(());
-    }
-
-    // Check if the peppy-apptainer AppArmor profile is already installed.
-    if Path::new("/etc/apparmor.d/peppy-apptainer").exists() {
-        return Ok(());
-    }
-
-    // Use a glob pattern so the profile covers the starter binary regardless
-    // of the exact installation path (production ~/.peppy/bin/apptainer/...,
-    // development cargo build output, etc.).
-    let fix_command = "\
-         sudo tee /etc/apparmor.d/peppy-apptainer > /dev/null << 'EOF'\n\
-         abi <abi/4.0>,\n\
-         include <tunables/global>\n\
-         \n\
-         profile peppy-apptainer @{HOME}/**/libexec/apptainer/libexec/starter flags=(unconfined) {\n\
-         \x20 userns,\n\
-         }\n\
-         EOF\n\
-         sudo apparmor_parser -r /etc/apparmor.d/peppy-apptainer"
-        .to_string();
-
-    Err(Error::AppArmorUsernsRestricted { fix_command })
 }
 
 impl Apptainer {
@@ -210,19 +123,7 @@ impl Apptainer {
     /// on first run.
     fn ensure_ready(&mut self) -> Result<()> {
         match &mut self.backend {
-            Backend::Native { .. } => {
-                #[cfg(target_os = "linux")]
-                {
-                    let search_dirs: Vec<PathBuf> = std::env::var("PATH")
-                        .unwrap_or_default()
-                        .split(':')
-                        .map(PathBuf::from)
-                        .collect();
-                    check_fakeroot_deps(&search_dirs)?;
-                    check_apparmor_userns(&self.apptainer_dir)?;
-                }
-                Ok(())
-            }
+            Backend::Native { .. } => Ok(()),
             Backend::Lima {
                 limactl_path,
                 lima_home,

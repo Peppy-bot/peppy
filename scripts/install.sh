@@ -246,60 +246,16 @@ EOF
         SUDO_FIXES=""
         SUDO_FIX_LABELS=""
 
-        # Check 1: unprivileged user namespaces
-        if [ -f /proc/sys/kernel/unprivileged_userns_clone ] && \
-           [ "$(cat /proc/sys/kernel/unprivileged_userns_clone)" = "0" ]; then
-            SUDO_FIXES="${SUDO_FIXES}sysctl -w kernel.unprivileged_userns_clone=1 && "
-            SUDO_FIXES="${SUDO_FIXES}mkdir -p /etc/sysctl.d && "
-            SUDO_FIXES="${SUDO_FIXES}printf 'kernel.unprivileged_userns_clone=1\n' >> /etc/sysctl.d/99-peppy-userns.conf && "
-            SUDO_FIX_LABELS="${SUDO_FIX_LABELS}  - Enable unprivileged user namespaces\n"
+        # Check 1: Apptainer starter-suid setuid permissions
+        # The starter-suid binary must be owned by root with mode 4755 so that
+        # Apptainer can create user namespaces with real GID preservation.
+        STARTER_SUID="$PEPPY_BIN_DIR/apptainer/$(uname -m)/libexec/apptainer/bin/starter-suid"
+        if [ -f "$STARTER_SUID" ]; then
+            SUDO_FIXES="${SUDO_FIXES}chown root:root '$STARTER_SUID' && chmod 4755 '$STARTER_SUID' && "
+            SUDO_FIX_LABELS="${SUDO_FIX_LABELS}  - Set setuid permissions on Apptainer starter binary\n"
         fi
 
-        # Check 2: AppArmor user namespace restriction (Ubuntu 24.04+)
-        # Install a per-binary AppArmor profile that grants only Apptainer's
-        # starter binary the userns permission.
-        if [ -f /proc/sys/kernel/apparmor_restrict_unprivileged_userns ] && \
-           [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns)" = "1" ] && \
-           [ ! -f /etc/apparmor.d/peppy-apptainer ]; then
-            STARTER_PATH="$PEPPY_BIN_DIR/apptainer/$(uname -m)/libexec/apptainer/libexec/starter"
-            SUDO_FIXES="${SUDO_FIXES}printf 'abi <abi/4.0>,\ninclude <tunables/global>\n\nprofile peppy-apptainer ${STARTER_PATH} flags=(unconfined) {\n  userns,\n}\n' > /etc/apparmor.d/peppy-apptainer && "
-            SUDO_FIXES="${SUDO_FIXES}apparmor_parser -r /etc/apparmor.d/peppy-apptainer && "
-            SUDO_FIX_LABELS="${SUDO_FIX_LABELS}  - Install AppArmor profile for Apptainer user namespaces\n"
-        fi
-
-        # Check 3: newuidmap / newgidmap with setuid bit
-        UIDMAP_MISSING=false
-        if ! command -v newuidmap >/dev/null 2>&1 || ! command -v newgidmap >/dev/null 2>&1; then
-            UIDMAP_MISSING=true
-        else
-            # Found on PATH — verify setuid bit (leading 4 in octal permissions)
-            NUIDMAP_PATH="$(command -v newuidmap)"
-            NGIDMAP_PATH="$(command -v newgidmap)"
-            NUIDMAP_PERMS="$(stat -c '%a' "$NUIDMAP_PATH" 2>/dev/null || stat -f '%Lp' "$NUIDMAP_PATH" 2>/dev/null)"
-            NGIDMAP_PERMS="$(stat -c '%a' "$NGIDMAP_PATH" 2>/dev/null || stat -f '%Lp' "$NGIDMAP_PATH" 2>/dev/null)"
-            case "$NUIDMAP_PERMS" in 4*) ;; *) UIDMAP_MISSING=true ;; esac
-            case "$NGIDMAP_PERMS" in 4*) ;; *) UIDMAP_MISSING=true ;; esac
-        fi
-
-        if $UIDMAP_MISSING; then
-            if command -v apt-get >/dev/null 2>&1; then
-                SUDO_FIXES="${SUDO_FIXES}apt-get update -qq && apt-get install -y -qq uidmap && "
-            elif command -v dnf >/dev/null 2>&1; then
-                SUDO_FIXES="${SUDO_FIXES}dnf install -y shadow-utils && "
-            elif command -v pacman >/dev/null 2>&1; then
-                SUDO_FIXES="${SUDO_FIXES}pacman -S --noconfirm shadow && "
-            else
-                echo "" >&2
-                echo "error: newuidmap/newgidmap (from the uidmap package) are required but not found." >&2
-                echo "       No supported package manager detected (apt-get, dnf, pacman)." >&2
-                echo "       Install them manually and re-run this script." >&2
-                echo "" >&2
-                exit 1
-            fi
-            SUDO_FIX_LABELS="${SUDO_FIX_LABELS}  - Install uidmap package (provides newuidmap/newgidmap)\n"
-        fi
-
-        # Check 4: dbus-user-session (required for systemctl --user / D-Bus user bus)
+        # Check 2: dbus-user-session (required for systemctl --user / D-Bus user bus)
         if command -v dpkg >/dev/null 2>&1; then
             if ! dpkg -s dbus-user-session >/dev/null 2>&1; then
                 SUDO_FIXES="${SUDO_FIXES}apt-get update -qq && apt-get install -y -qq dbus-user-session && "
@@ -307,7 +263,7 @@ EOF
             fi
         fi
 
-        # Check 5: loginctl enable-linger (keeps systemd user session alive after logout)
+        # Check 3: loginctl enable-linger (keeps systemd user session alive after logout)
         CURRENT_USER="$(id -un)"
         HAS_LOGINCTL=false
         LINGER_ENABLED=false
@@ -323,7 +279,7 @@ EOF
             SUDO_FIX_LABELS="${SUDO_FIX_LABELS}  - Enable lingering for user ${CURRENT_USER} (keeps peppy daemon running after logout)\n"
         fi
 
-        # Check 6: curl or wget (required to download the release archive)
+        # Check 4: curl or wget (required to download the release archive)
         if [ -z "${ARCHIVE_PATH-}" ] && ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
             if command -v apt-get >/dev/null 2>&1; then
                 SUDO_FIXES="${SUDO_FIXES}apt-get update -qq && apt-get install -y -qq curl && "
