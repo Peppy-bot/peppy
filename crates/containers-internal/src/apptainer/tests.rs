@@ -149,6 +149,26 @@ fn test_env_flag_format() {
 }
 
 #[test]
+fn test_lima_shell_extra_args_does_not_affect_build_args() {
+    let facade = Apptainer::new()
+        .expect("Apptainer::new() should succeed — apptainer is bundled at compile time");
+
+    let cmd = facade
+        .run("image.sif")
+        .lima_shell_extra_args(&["--timeout".to_string(), "30".to_string()]);
+    let args = cmd.build_args().expect("build_args should succeed");
+
+    // lima_shell_extra_args are passed to limactl, not to apptainer,
+    // so they should NOT appear in build_args output.
+    assert_eq!(args[0], "run");
+    assert!(
+        !args.contains(&"--timeout".to_string()),
+        "lima_shell_extra_args should not appear in apptainer args: {:?}",
+        args
+    );
+}
+
+#[test]
 fn test_raw_flag_passthrough() {
     let facade = Apptainer::new()
         .expect("Apptainer::new() should succeed — apptainer is bundled at compile time");

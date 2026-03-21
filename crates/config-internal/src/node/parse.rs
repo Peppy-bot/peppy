@@ -443,4 +443,88 @@ mod tests {
         let mount_paths = config.container.unwrap().mount_paths.unwrap();
         assert_eq!(mount_paths, vec!["${parameters:path}:/container/data:rw"]);
     }
+
+    #[test]
+    fn test_container_config_extra_args_default_to_none() {
+        let json5 = r#"{
+            schema_version: 1,
+            manifest: {
+                name: "container_node",
+                tag: "0.1.0",
+                language: "rust",
+            },
+            container: {
+                def_file: "apptainer.def",
+            },
+        }"#;
+        let config = NodeConfigParser::from_content(json5).unwrap();
+        let container = config.container.as_ref().unwrap();
+        assert!(container.apptainer_build_extra_args.is_none());
+        assert!(container.apptainer_run_extra_args.is_none());
+        assert!(container.lima_shell_extra_args.is_none());
+    }
+
+    #[test]
+    fn test_container_config_parses_extra_args() {
+        let json5 = r#"{
+            schema_version: 1,
+            manifest: {
+                name: "container_node",
+                tag: "0.1.0",
+                language: "rust",
+            },
+            container: {
+                def_file: "apptainer.def",
+                apptainer_build_extra_args: ["--no-setgroups", "--force"],
+                apptainer_run_extra_args: ["--no-setgroups"],
+                lima_shell_extra_args: ["--timeout", "30"],
+            },
+        }"#;
+        let config = NodeConfigParser::from_content(json5).unwrap();
+        let container = config.container.as_ref().unwrap();
+        assert_eq!(
+            container.apptainer_build_extra_args.as_deref().unwrap(),
+            &["--no-setgroups", "--force"]
+        );
+        assert_eq!(
+            container.apptainer_run_extra_args.as_deref().unwrap(),
+            &["--no-setgroups"]
+        );
+        assert_eq!(
+            container.lima_shell_extra_args.as_deref().unwrap(),
+            &["--timeout", "30"]
+        );
+    }
+
+    #[test]
+    fn test_container_config_parses_empty_extra_args() {
+        let json5 = r#"{
+            schema_version: 1,
+            manifest: {
+                name: "container_node",
+                tag: "0.1.0",
+                language: "rust",
+            },
+            container: {
+                def_file: "apptainer.def",
+                apptainer_build_extra_args: [],
+                apptainer_run_extra_args: [],
+                lima_shell_extra_args: [],
+            },
+        }"#;
+        let config = NodeConfigParser::from_content(json5).unwrap();
+        let container = config.container.as_ref().unwrap();
+        assert_eq!(
+            container.apptainer_build_extra_args.as_deref().unwrap(),
+            &[] as &[String]
+        );
+        assert_eq!(
+            container.apptainer_run_extra_args.as_deref().unwrap(),
+            &[] as &[String]
+        );
+        assert_eq!(
+            container.lima_shell_extra_args.as_deref().unwrap(),
+            &[] as &[String]
+        );
+    }
 }

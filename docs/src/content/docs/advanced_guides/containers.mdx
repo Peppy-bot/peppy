@@ -341,6 +341,39 @@ Only parameters of type `"string"` can be referenced in mount paths. Numeric or 
 Blocked system directory validation (e.g., rejecting `/tmp` as a mount source) is applied to the resolved path at runtime, not at parse time.
 :::
 
+## Extra runtime arguments
+
+You can pass additional command-line arguments directly to Apptainer or Lima using `apptainer_build_extra_args`, `apptainer_run_extra_args`, and `lima_shell_extra_args` in the `container` block.
+
+```json5 title="peppy.json5"
+{
+  schema_version: 1,
+  manifest: {
+    name: "my_node",
+    tag: "0.1.0",
+    language: "python",
+  },
+  container: {
+    def_file: "apptainer.def",
+    apptainer_build_extra_args: ["--no-setgroups"],
+    apptainer_run_extra_args: ["--no-setgroups"],
+  },
+  interfaces: {}
+}
+```
+
+| Field                        | Purpose                                                                |
+|------------------------------|------------------------------------------------------------------------|
+| `apptainer_build_extra_args` | Extra flags appended to `apptainer build` (e.g., `["--no-setgroups"]`) |
+| `apptainer_run_extra_args`   | Extra flags appended to `apptainer run` (e.g., `["--no-setgroups"]`)   |
+| `lima_shell_extra_args`      | Extra flags passed to `limactl shell` on macOS (ignored on Linux)      |
+
+All fields are optional and default to an empty list when omitted.
+
+:::note
+These arguments are passed verbatim — no validation is performed beyond basic string checks. Incorrect flags will cause Apptainer or Lima to fail at build or start time.
+:::
+
 ## macOS support
 
 On macOS, Apptainer is not natively available. PeppyOS bundles a [Lima](https://lima-vm.io/) virtual machine that runs Apptainer inside a lightweight Linux guest.

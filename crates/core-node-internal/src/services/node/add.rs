@@ -493,14 +493,18 @@ fn move_sif_to_storage(
 ///
 /// The resulting `.sif` file is left in `working_dir` for
 /// [`move_sif_to_storage`] to relocate.
-async fn build_container_image(
-    working_dir: &Path,
-    node_name: &str,
-    node_tag: &str,
-    def_file: &str,
-    feedback_tx: &mpsc::UnboundedSender<FeedbackLine>,
+struct ContainerBuildContext<'a> {
+    working_dir: &'a Path,
+    node_name: &'a str,
+    node_tag: &'a str,
+    def_file: &'a str,
+    apptainer_build_extra_args: &'a [String],
+    lima_shell_extra_args: &'a [String],
+    feedback_tx: &'a mpsc::UnboundedSender<FeedbackLine>,
     log_file: Arc<StdMutex<File>>,
-) -> Result<()> {
+}
+
+async fn build_container_image(ctx: ContainerBuildContext<'_>) -> Result<()> {
     let apptainer = tokio::task::spawn_blocking(containers::Apptainer::new)
         .await
         .map_err(|e| std::io::Error::other(format!("Apptainer initialization task failed: {}", e)))?
@@ -511,19 +515,23 @@ async fn build_container_image(
             )
         })?;
 
-    let sif_name = format!("{}_{}.sif", node_name, node_tag);
-    let output_path = working_dir.join(&sif_name);
-    let def_path = working_dir.join(def_file);
+    let sif_name = format!("{}_{}.sif", ctx.node_name, ctx.node_tag);
+    let output_path = ctx.working_dir.join(&sif_name);
+    let def_path = ctx.working_dir.join(ctx.def_file);
 
-    let mut cmd = apptainer
-        .build(&output_path, &def_path)
-        .fakeroot()
+    let mut cmd_builder = apptainer.build(&output_path, &def_path).fakeroot();
+    for arg in ctx.apptainer_build_extra_args {
+        cmd_builder = cmd_builder.raw_flag(arg);
+    }
+    cmd_builder = cmd_builder.lima_shell_extra_args(ctx.lima_shell_extra_args);
+
+    let mut cmd = cmd_builder
         .into_std_command()
         .map_err(|e| std::io::Error::other(format!("Failed to build apptainer command: {}", e)))?;
 
     // Set the working directory so `%files . /opt/{name}` in the .def file
     // copies from the node's source directory, not the daemon's cwd.
-    cmd.current_dir(working_dir);
+    cmd.current_dir(ctx.working_dir);
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
     cmd.stdin(Stdio::null());
@@ -532,7 +540,7 @@ async fn build_container_image(
         .spawn()
         .map_err(|e| std::io::Error::other(format!("Failed to spawn apptainer build: {}", e)))?;
 
-    let (status, stderr_tail) = stream_child_output(child, feedback_tx, log_file, true)
+    let (status, stderr_tail) = stream_child_output(child, ctx.feedback_tx, ctx.log_file, true)
         .await
         .map_err(std::io::Error::other)?;
 
@@ -1310,14 +1318,24 @@ async fn process_node_add(
     let snapshot_path = if let Some(container) = &node_config.container {
         // Container nodes: use the Apptainer facade to build the .sif image from
         // the definition file, then move it to storage.
-        if let Err(e) = build_container_image(
-            &working_dir,
-            &node_name,
-            &node_tag,
-            &container.def_file,
-            &ctx.feedback_tx,
-            Arc::clone(&ctx.log_file),
-        )
+        let apptainer_build_extra_args = container
+            .apptainer_build_extra_args
+            .as_deref()
+            .unwrap_or_default();
+        let lima_shell_extra_args = container
+            .lima_shell_extra_args
+            .as_deref()
+            .unwrap_or_default();
+        if let Err(e) = build_container_image(ContainerBuildContext {
+            working_dir: &working_dir,
+            node_name: &node_name,
+            node_tag: &node_tag,
+            def_file: &container.def_file,
+            apptainer_build_extra_args,
+            lima_shell_extra_args,
+            feedback_tx: &ctx.feedback_tx,
+            log_file: Arc::clone(&ctx.log_file),
+        })
         .await
         {
             let msg = format!("Failed to build container image: {}", e);

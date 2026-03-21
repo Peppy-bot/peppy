@@ -625,11 +625,15 @@ async fn process_node_start(
     // Spawn the node process:
     // - Container nodes: apptainer run <sif>
     // - Process nodes: execute start_cmd
-    let raw_mount_paths = entity
-        .config()
-        .container
-        .as_ref()
+    let container_config = entity.config().container.as_ref();
+    let raw_mount_paths = container_config
         .and_then(|c| c.mount_paths.as_deref())
+        .unwrap_or_default();
+    let apptainer_run_extra_args = container_config
+        .and_then(|c| c.apptainer_run_extra_args.as_deref())
+        .unwrap_or_default();
+    let lima_shell_extra_args = container_config
+        .and_then(|c| c.lima_shell_extra_args.as_deref())
         .unwrap_or_default();
 
     // Resolve ${parameters:...} references in mount paths using runtime arguments.
@@ -685,6 +689,8 @@ async fn process_node_start(
             &runtime_config_json5,
             &env_vars,
             &resolved_mount_paths,
+            apptainer_run_extra_args,
+            lima_shell_extra_args,
             &ctx.log_file,
             &ctx.action.peppy_dirs,
         ) {
@@ -1214,6 +1220,8 @@ fn start_container_node(
     runtime_config_json5: &str,
     env_vars: &[(String, String)],
     mount_paths: &[String],
+    apptainer_run_extra_args: &[String],
+    lima_shell_extra_args: &[String],
     log_file: &Arc<StdMutex<File>>,
     peppy_dirs: &PeppyDirs,
 ) -> std::io::Result<Child> {
@@ -1254,6 +1262,10 @@ fn start_container_node(
     // container via --env flags (not host-side process env) so they are
     // visible inside the container.
     let mut apptainer_cmd = apptainer.run(sif_str);
+    for arg in apptainer_run_extra_args {
+        apptainer_cmd = apptainer_cmd.raw_flag(arg);
+    }
+    apptainer_cmd = apptainer_cmd.lima_shell_extra_args(lima_shell_extra_args);
     for (key, value) in env_vars {
         // Apptainer manages HOME itself; passing it via --env triggers a warning.
         if key.eq_ignore_ascii_case("HOME") {

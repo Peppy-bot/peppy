@@ -349,7 +349,7 @@ impl Apptainer {
     }
 
     pub fn version(&self) -> Result<String> {
-        let mut cmd = self.command(&["--version"])?;
+        let mut cmd = self.command(&["--version"], &[])?;
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
         let output = cmd.output().map_err(Error::from)?;
         if !output.status.success() {
@@ -394,6 +394,7 @@ impl Apptainer {
             },
             flags: Vec::new(),
             bind_mounts: Vec::new(),
+            lima_shell_extra_args: Vec::new(),
         }
     }
 
@@ -410,6 +411,7 @@ impl Apptainer {
             },
             flags: Vec::new(),
             bind_mounts: Vec::new(),
+            lima_shell_extra_args: Vec::new(),
         }
     }
 
@@ -425,6 +427,7 @@ impl Apptainer {
             },
             flags: Vec::new(),
             bind_mounts: Vec::new(),
+            lima_shell_extra_args: Vec::new(),
         }
     }
 
@@ -497,7 +500,7 @@ impl Apptainer {
     /// On Linux: runs `{apptainer_bin} <args...>` directly.
     /// On macOS: runs `{limactl} shell peppy -- {guest_apptainer_bin} <args...>` to
     /// execute inside the Lima VM using the synced guest-side binary.
-    fn command(&self, args: &[&str]) -> Result<Command> {
+    fn command(&self, args: &[&str], lima_shell_extra_args: &[String]) -> Result<Command> {
         match &self.backend {
             Backend::Native { apptainer_bin } => {
                 let mut cmd = Command::new(apptainer_bin);
@@ -512,7 +515,11 @@ impl Apptainer {
             } => {
                 let mut cmd = Command::new(limactl_path);
                 cmd.env("LIMA_HOME", lima_home);
-                cmd.arg("shell").arg(lima::LIMA_INSTANCE).arg("--");
+                cmd.arg("shell").arg(lima::LIMA_INSTANCE);
+                for arg in lima_shell_extra_args {
+                    cmd.arg(arg);
+                }
+                cmd.arg("--");
                 cmd.arg(apptainer_bin);
                 cmd.args(args);
                 Ok(cmd)
@@ -639,6 +646,7 @@ pub struct ApptainerCommand<'a> {
     kind: CommandKind,
     flags: Vec<String>,
     bind_mounts: Vec<BindMount>,
+    lima_shell_extra_args: Vec<String>,
 }
 
 impl<'a> ApptainerCommand<'a> {
@@ -707,6 +715,15 @@ impl<'a> ApptainerCommand<'a> {
         self
     }
 
+    /// Add extra arguments passed to `limactl shell` (before the `--` separator).
+    ///
+    /// These are only effective when running under the Lima backend (macOS).
+    /// On Linux (native backend) they are silently ignored.
+    pub fn lima_shell_extra_args(mut self, args: &[String]) -> Self {
+        self.lima_shell_extra_args.extend(args.iter().cloned());
+        self
+    }
+
     // -----------------------------------------------------------------------
     // Generic flag / args
     // -----------------------------------------------------------------------
@@ -750,7 +767,9 @@ impl<'a> ApptainerCommand<'a> {
     pub fn spawn(self) -> Result<Child> {
         let args = self.build_args()?;
         let str_args: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-        let mut cmd = self.facade.command(&str_args)?;
+        let mut cmd = self
+            .facade
+            .command(&str_args, &self.lima_shell_extra_args)?;
         cmd.spawn().map_err(Error::from)
     }
 
@@ -765,7 +784,7 @@ impl<'a> ApptainerCommand<'a> {
     pub fn into_std_command(self) -> Result<Command> {
         let args = self.build_args()?;
         let str_args: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-        self.facade.command(&str_args)
+        self.facade.command(&str_args, &self.lima_shell_extra_args)
     }
 
     /// Run the command to completion and return its captured output.
@@ -774,7 +793,9 @@ impl<'a> ApptainerCommand<'a> {
     pub fn output(self) -> Result<Output> {
         let args = self.build_args()?;
         let str_args: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-        let mut cmd = self.facade.command(&str_args)?;
+        let mut cmd = self
+            .facade
+            .command(&str_args, &self.lima_shell_extra_args)?;
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
         cmd.output().map_err(Error::from)
     }
