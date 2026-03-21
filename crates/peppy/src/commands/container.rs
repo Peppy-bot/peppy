@@ -103,7 +103,7 @@ fn setup() -> Result<()> {
     }
     println!();
 
-    let script = status.fix_script.as_deref().unwrap();
+    let script = status.fix_script.as_deref().expect("fix_script is Some when is_ok() is false");
 
     // Check if we're in an interactive terminal
     if std::io::stdin().is_terminal() {
@@ -123,10 +123,6 @@ fn setup() -> Result<()> {
         }
     }
 
-    // Build a single sudo sh -c command from the fix script
-    // The script already contains sudo prefixes, so strip them for the sh -c
-    // invocation. Actually, the script has individual sudo calls, so we run it
-    // directly.
     let exit_status = std::process::Command::new("sh")
         .arg("-c")
         .arg(script)
