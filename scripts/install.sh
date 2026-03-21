@@ -593,9 +593,17 @@ EOF
                 echo "Proceeding automatically (non-interactive mode)."
                 SUDO_FIXES="${SUDO_FIXES% && }"
                 if [ "$(id -u)" -eq 0 ]; then
-                    sh -c "$SUDO_FIXES" || echo "warning: failed to apply Apptainer fixes. Run 'peppy container setup' later." >&2
+                    if sh -c "$SUDO_FIXES"; then
+                        echo "Apptainer setuid configured successfully."
+                    else
+                        echo "warning: failed to apply Apptainer fixes. Run 'peppy container setup' later." >&2
+                    fi
                 elif command -v sudo >/dev/null 2>&1; then
-                    sudo sh -c "$SUDO_FIXES" || echo "warning: failed to apply Apptainer fixes. Run 'peppy container setup' later." >&2
+                    if sudo sh -c "$SUDO_FIXES"; then
+                        echo "Apptainer setuid configured successfully."
+                    else
+                        echo "warning: failed to apply Apptainer fixes. Run 'peppy container setup' later." >&2
+                    fi
                 else
                     echo "warning: sudo not available to configure Apptainer setuid. Run 'peppy container setup' later." >&2
                 fi
