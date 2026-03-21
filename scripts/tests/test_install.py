@@ -63,6 +63,7 @@ def _create_fake_archive(directory: Path, *, with_apptainer: bool = False) -> Pa
 # Lima VM helpers
 # ---------------------------------------------------------------------------
 
+
 def _lima_env() -> dict[str, str]:
     """Environment with LIMA_HOME pointing to a test-specific directory."""
     lima_home = Path.home() / ".peppy" / "lima-test-install"
@@ -73,7 +74,16 @@ def _lima_env() -> dict[str, str]:
 def _lima_shell(script: str, *, timeout: int = 120) -> subprocess.CompletedProcess[str]:
     """Run a bash script inside the test Lima VM."""
     return subprocess.run(
-        ["limactl", "shell", "--workdir=/tmp", _LIMA_INSTANCE, "--", "bash", "-c", script],
+        [
+            "limactl",
+            "shell",
+            "--workdir=/tmp",
+            _LIMA_INSTANCE,
+            "--",
+            "bash",
+            "-c",
+            script,
+        ],
         env=_lima_env(),
         capture_output=True,
         text=True,
@@ -90,10 +100,14 @@ def lima_vm():
     if sys.platform == "linux" and shutil.which("qemu-img") is None:
         pytest.fail(
             "QEMU is required to run Lima VMs on Linux. "
-            "Install it via: sudo apt install qemu-utils qemu-system-x86"
+            "Install it via: sudo apt install qemu-utils qemu-system"
         )
 
-    if sys.platform == "linux" and os.path.exists("/dev/kvm") and not os.access("/dev/kvm", os.R_OK | os.W_OK):
+    if (
+        sys.platform == "linux"
+        and os.path.exists("/dev/kvm")
+        and not os.access("/dev/kvm", os.R_OK | os.W_OK)
+    ):
         pytest.fail(
             "KVM is not accessible (permission denied on /dev/kvm). "
             "Add your user to the kvm group: sudo usermod -aG kvm $(whoami) && newgrp kvm"
@@ -113,14 +127,17 @@ def lima_vm():
     def _start_lima_vm(extra_args: list[str] | None = None) -> None:
         """Start a new Lima VM, converting failures to pytest.fail()."""
         cmd = [
-            "limactl", "start",
+            "limactl",
+            "start",
             *(extra_args or []),
             f"--name={_LIMA_INSTANCE}",
             "--tty=false",
             "--mount-writable",
             "template:ubuntu-24.04",
         ]
-        result = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=300)
+        result = subprocess.run(
+            cmd, env=env, capture_output=True, text=True, timeout=300
+        )
         if result.returncode != 0:
             pytest.fail(
                 f"limactl start failed (exit {result.returncode}):\n{result.stderr}"
@@ -197,6 +214,7 @@ def _setup_lima_guest(tmp_path: Path, *, test_name: str) -> str:
 # Tests
 # ---------------------------------------------------------------------------
 
+
 def test_install(lima_vm, tmp_path: Path) -> None:
     """Run install.sh in the Lima VM and verify success."""
     home = _setup_lima_guest(tmp_path, test_name="test_install")
@@ -217,9 +235,7 @@ def test_install(lima_vm, tmp_path: Path) -> None:
     )
 
     # Verify the installed binary is executable and runs
-    check = _lima_shell(
-        f"test -x {home}/bin/peppy && {home}/bin/peppy"
-    )
+    check = _lima_shell(f"test -x {home}/bin/peppy && {home}/bin/peppy")
     assert check.returncode == 0, (
         f"peppy binary should be executable and runnable"
         f"\n--- stdout ---\n{check.stdout}\n--- stderr ---\n{check.stderr}"
@@ -276,9 +292,7 @@ def test_no_root_install_missing_dbus(lima_vm, tmp_path: Path) -> None:
     output = result.stdout + result.stderr
     diagnostic = f"\n--- stdout ---\n{result.stdout}\n--- stderr ---\n{result.stderr}"
 
-    assert result.returncode != 0, (
-        f"install.sh should have failed{diagnostic}"
-    )
+    assert result.returncode != 0, f"install.sh should have failed{diagnostic}"
     assert "dbus-user-session" in output, (
         f"error should mention dbus-user-session{diagnostic}"
     )
