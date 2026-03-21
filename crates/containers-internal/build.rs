@@ -580,29 +580,30 @@ rm -rf /tmp/apptainer-{version} /tmp/apptainer-{version}.tar.gz"#,
         let suid_path = starter_suid.display();
         let conf_path = conf.display();
 
-        let mut cmd = format!(
-            "sudo chown root:root '{suid_path}' && sudo chmod 4755 '{suid_path}' && \
-             sudo chown root:root '{conf_path}'"
+        let mut script = format!(
+            "sudo chown root:root '{suid_path}' \\\n  \
+             && sudo chmod 4755 '{suid_path}' \\\n  \
+             && sudo chown root:root '{conf_path}'"
         );
 
         if apparmor_restricted && !apparmor_ok {
-            cmd.push_str(&format!(
-                " && sudo tee /etc/apparmor.d/peppy-apptainer > /dev/null <<'EOF'\n\
-                 abi <abi/4.0>,\n\
+            script.push_str(&format!(
+                " \\\n  \
+                 && echo 'abi <abi/4.0>,\n\
                  include <tunables/global>\n\
                  \n\
                  profile peppy-apptainer {suid_path} flags=(unconfined) {{\n\
                  \x20 userns,\n\
-                 }}\n\
-                 EOF\n\
-                 sudo apparmor_parser -r /etc/apparmor.d/peppy-apptainer"
+                 }}' | sudo tee /etc/apparmor.d/peppy-apptainer > /dev/null \\\n  \
+                 && sudo apparmor_parser -r /etc/apparmor.d/peppy-apptainer"
             ));
         }
 
         panic!(
             "\n\n\
              Apptainer's setuid mode is not fully configured.\n\n\
-             Run this once:\n\n  {cmd}\n"
+             Run this once:\n\n\
+             {script}\n"
         );
     }
 
