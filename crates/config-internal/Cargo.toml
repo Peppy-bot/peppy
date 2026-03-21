@@ -19,7 +19,6 @@ sha2 = "0.10"
 tempfile = "3.8"
 indexmap = { version = "2.2", features = ["serde"] }
 git2 = { version = "0.20", optional = true }
-fs2 = { version = "0.4", optional = true }
 dirs = "6"
 
 [build-dependencies]
@@ -29,4 +28,4 @@ build-helpers = { path = "../build-helpers-internal" }
 
 [features]
 default = []
-test_helpers = ["git2", "fs2"]
+test_helpers = ["git2"]

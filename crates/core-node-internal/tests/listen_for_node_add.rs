@@ -311,8 +311,6 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
     std::fs::write(source_dir.path().join("apptainer.def"), &apptainer_def)
         .expect("failed to write apptainer definition");
 
-    // Acquire cross-process lock to serialize ECR Public image pulls.
-    let _build_lock = config::test_helpers::container_build_lock();
     let add_result = send_node_add_and_wait(
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
@@ -323,7 +321,6 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
     )
     .await
     .expect("node_add request should succeed");
-    drop(_build_lock);
 
     assert!(
         add_result.success,
