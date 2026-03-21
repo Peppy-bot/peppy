@@ -530,84 +530,6 @@ rm -rf /tmp/apptainer-{version} /tmp/apptainer-{version}.tar.gz"#,
     }
 
     // -----------------------------------------------------------------------
-    // Setuid check
-    // -----------------------------------------------------------------------
-
-    /// Check that Apptainer's setuid mode prerequisites are met:
-    ///
-    /// - `starter-suid`: root-owned with mode 4755
-    /// - `etc/apptainer/apptainer.conf`: root-owned
-    /// - AppArmor profile installed (Ubuntu 24.04+ with restricted userns)
-    ///
-    /// Panics with a single copy-pasteable `sudo` command if anything is missing.
-    fn check_starter_suid(install_dir: &Path) {
-        use std::os::unix::fs::MetadataExt;
-
-        let starter_suid = install_dir.join("libexec/apptainer/bin/starter-suid");
-        let conf = install_dir.join("etc/apptainer/apptainer.conf");
-
-        if !starter_suid.exists() {
-            panic!(
-                "starter-suid not found at {}. Rebuild with: rm -rf '{}'",
-                starter_suid.display(),
-                install_dir.display()
-            );
-        }
-
-        let suid_meta = std::fs::metadata(&starter_suid).expect("Failed to stat starter-suid");
-        let suid_ok = suid_meta.uid() == 0 && (suid_meta.mode() & 0o4000) != 0;
-
-        let conf_ok = conf.metadata().map(|m| m.uid() == 0).unwrap_or(false);
-
-        let apparmor_restricted =
-            std::fs::read_to_string("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
-                .map(|v| v.trim() == "1")
-                .unwrap_or(false);
-
-        let apparmor_ok = if apparmor_restricted {
-            // Check that the profile exists AND targets the correct binary path.
-            std::fs::read_to_string("/etc/apparmor.d/peppy-apptainer")
-                .map(|content| content.contains("starter-suid"))
-                .unwrap_or(false)
-        } else {
-            true
-        };
-
-        if suid_ok && conf_ok && apparmor_ok {
-            return;
-        }
-
-        let suid_path = starter_suid.display();
-        let conf_path = conf.display();
-
-        let mut script = format!(
-            "sudo chown root:root '{suid_path}' \\\n  \
-             && sudo chmod 4755 '{suid_path}' \\\n  \
-             && sudo chown root:root '{conf_path}'"
-        );
-
-        if apparmor_restricted && !apparmor_ok {
-            script.push_str(&format!(
-                " \\\n  \
-                 && echo 'abi <abi/4.0>,\n\
-                 include <tunables/global>\n\
-                 \n\
-                 profile peppy-apptainer {suid_path} flags=(unconfined) {{\n\
-                 \x20 userns,\n\
-                 }}' | sudo tee /etc/apparmor.d/peppy-apptainer > /dev/null \\\n  \
-                 && sudo apparmor_parser -r /etc/apparmor.d/peppy-apptainer"
-            ));
-        }
-
-        panic!(
-            "\n\n\
-             Apptainer's setuid mode is not fully configured.\n\n\
-             Run this once:\n\n\
-             {script}\n"
-        );
-    }
-
-    // -----------------------------------------------------------------------
     // Main entry point
     // -----------------------------------------------------------------------
 
@@ -735,11 +657,6 @@ rm -rf /tmp/apptainer-{version} /tmp/apptainer-{version}.tar.gz"#,
                         cache_sentinel, e
                     )
                 });
-        }
-
-        // Verify starter-suid has the setuid bit (Linux only).
-        if !use_lima {
-            check_starter_suid(&cache_dir);
         }
 
         // Point APPTAINER_INSTALL_DIR directly at the cache dir. We must NOT
