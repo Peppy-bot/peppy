@@ -56,6 +56,8 @@ pub enum ParsingError {
         "Invalid mount path `{0}`: top-level system directories ({1}) cannot be used as mount sources — use a subdirectory instead (e.g., /tmp/my_app)"
     )]
     InvalidMountPath(String, String),
+    #[error("Invalid parameter reference `${{parameters:{0}}}` in mount path: {1}")]
+    InvalidMountPathParameterRef(String, String),
 
     #[error("{0}")]
     Structured(String),

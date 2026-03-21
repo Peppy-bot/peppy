@@ -85,7 +85,7 @@ async fn container_e2e_rust_init_add_start() {
         "init should generate apptainer.def"
     );
 
-    // Step 2: Add the node (builds the container image)
+    // Step 2: Add the node (builds the container image).
     let add_response = send_node_add_and_wait(
         &started.caller_handle,
         &started.core_node_name,
@@ -240,7 +240,7 @@ async fn container_e2e_python_init_add_start() {
         "init should generate apptainer.def"
     );
 
-    // Step 2: Add the node (builds the container image)
+    // Step 2: Add the node (builds the container image).
     let add_response = send_node_add_and_wait(
         &started.caller_handle,
         &started.core_node_name,

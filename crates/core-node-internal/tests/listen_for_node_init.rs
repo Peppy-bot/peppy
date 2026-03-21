@@ -1,7 +1,9 @@
 mod common;
 
 use common::{CALLER_INSTANCE_ID, start_core_node_with_mock_messenger};
-use config::consts::{NODE_CONFIG_FILE, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH};
+use config::consts::{
+    DEFAULT_UBUNTU_BASE_IMAGE, NODE_CONFIG_FILE, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH,
+};
 use config::node::Toolchain;
 use config::test_helpers::assert_contains_all;
 use core_node::encoding::NodeInitRequest;
@@ -214,7 +216,13 @@ async fn listen_for_node_init_rust_container_success() {
     );
     let apptainer_def =
         fs::read_to_string(&apptainer_def_path).expect("failed to read generated apptainer.def");
-    assert_contains_all(&apptainer_def, &["Bootstrap: docker", "From: ubuntu:24.04"]);
+    assert_contains_all(
+        &apptainer_def,
+        &[
+            "Bootstrap: docker",
+            &format!("From: {DEFAULT_UBUNTU_BASE_IMAGE}"),
+        ],
+    );
 
     let node_config =
         fs::read_to_string(&node_config_path).expect("failed to read generated peppy.json5");
@@ -434,7 +442,13 @@ async fn listen_for_node_init_python_container_success() {
     );
     let apptainer_def =
         fs::read_to_string(&apptainer_def_path).expect("failed to read generated apptainer.def");
-    assert_contains_all(&apptainer_def, &["Bootstrap: docker", "From: ubuntu:24.04"]);
+    assert_contains_all(
+        &apptainer_def,
+        &[
+            "Bootstrap: docker",
+            &format!("From: {DEFAULT_UBUNTU_BASE_IMAGE}"),
+        ],
+    );
 
     let node_config =
         fs::read_to_string(&node_config_path).expect("failed to read generated peppy.json5");

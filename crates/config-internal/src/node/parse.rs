@@ -34,6 +34,13 @@ impl NodeConfigParser {
             return Err(ParsingError::InvalidMountPath(path, blocked_list).into());
         }
 
+        // Validate ${parameters:...} references in mount paths.
+        if let Some(container) = &config.container
+            && let Err((ref_path, reason)) = container.validate_parameter_refs(&config.parameters)
+        {
+            return Err(ParsingError::InvalidMountPathParameterRef(ref_path, reason).into());
+        }
+
         Ok(config)
     }
 }
@@ -297,5 +304,143 @@ mod tests {
         }"#;
         let config = NodeConfigParser::from_content(json5).expect("no mount_paths should be valid");
         assert!(config.container.unwrap().mount_paths.is_none());
+    }
+
+    #[test]
+    fn test_container_mount_path_with_parameter_ref() {
+        let json5 = r#"{
+            schema_version: 1,
+            manifest: {
+                name: "camera_node",
+                tag: "0.1.0",
+                language: "rust",
+            },
+            container: {
+                def_file: "apptainer.def",
+                mount_paths: ["${parameters:device_path}:/dev/video0:rw"],
+            },
+            parameters: {
+                device_path: "string",
+            },
+        }"#;
+        let config = NodeConfigParser::from_content(json5)
+            .expect("parameter ref in mount path should parse");
+        let mount_paths = config.container.unwrap().mount_paths.unwrap();
+        assert_eq!(
+            mount_paths,
+            vec!["${parameters:device_path}:/dev/video0:rw"]
+        );
+    }
+
+    #[test]
+    fn test_container_mount_path_with_nested_parameter_ref() {
+        let json5 = r#"{
+            schema_version: 1,
+            manifest: {
+                name: "camera_node",
+                tag: "0.1.0",
+                language: "rust",
+            },
+            container: {
+                def_file: "apptainer.def",
+                mount_paths: ["${parameters:video.device_path}:/dev/video0:rw"],
+            },
+            parameters: {
+                video: {
+                    device_path: "string",
+                    frame_rate: "u16",
+                },
+            },
+        }"#;
+        let config = NodeConfigParser::from_content(json5)
+            .expect("nested parameter ref in mount path should parse");
+        let mount_paths = config.container.unwrap().mount_paths.unwrap();
+        assert_eq!(
+            mount_paths,
+            vec!["${parameters:video.device_path}:/dev/video0:rw"]
+        );
+    }
+
+    #[test]
+    fn test_container_mount_path_rejects_unknown_parameter_ref() {
+        let json5 = r#"{
+            schema_version: 1,
+            manifest: {
+                name: "bad_ref_node",
+                tag: "0.1.0",
+                language: "rust",
+            },
+            container: {
+                def_file: "apptainer.def",
+                mount_paths: ["${parameters:nonexistent}:/data:rw"],
+            },
+            parameters: {
+                device_path: "string",
+            },
+        }"#;
+        let result = NodeConfigParser::from_content(json5);
+        assert!(
+            matches!(
+                result.as_ref().unwrap_err(),
+                Error::Parsing(ParsingError::InvalidMountPathParameterRef(ref_path, _))
+                    if ref_path == "nonexistent"
+            ),
+            "expected InvalidMountPathParameterRef error, got: {:?}",
+            result.unwrap_err()
+        );
+    }
+
+    #[test]
+    fn test_container_mount_path_rejects_non_string_parameter_ref() {
+        let json5 = r#"{
+            schema_version: 1,
+            manifest: {
+                name: "bad_type_node",
+                tag: "0.1.0",
+                language: "rust",
+            },
+            container: {
+                def_file: "apptainer.def",
+                mount_paths: ["${parameters:frame_rate}:/data:rw"],
+            },
+            parameters: {
+                frame_rate: "u16",
+            },
+        }"#;
+        let result = NodeConfigParser::from_content(json5);
+        assert!(
+            matches!(
+                result.as_ref().unwrap_err(),
+                Error::Parsing(ParsingError::InvalidMountPathParameterRef(ref_path, reason))
+                    if ref_path == "frame_rate" && reason.contains("string")
+            ),
+            "expected InvalidMountPathParameterRef error about string type, got: {:?}",
+            result.unwrap_err()
+        );
+    }
+
+    #[test]
+    fn test_container_mount_path_skips_blocked_check_for_parameter_ref() {
+        // A mount path whose source is a parameter reference should NOT be rejected
+        // at parse time, even though the resolved value might be a blocked path.
+        let json5 = r#"{
+            schema_version: 1,
+            manifest: {
+                name: "dynamic_mount_node",
+                tag: "0.1.0",
+                language: "rust",
+            },
+            container: {
+                def_file: "apptainer.def",
+                mount_paths: ["${parameters:path}:/container/data:rw"],
+            },
+            parameters: {
+                path: "string",
+            },
+        }"#;
+        let config = NodeConfigParser::from_content(json5)
+            .expect("parameter ref source should skip blocked-path check at parse time");
+        let mount_paths = config.container.unwrap().mount_paths.unwrap();
+        assert_eq!(mount_paths, vec!["${parameters:path}:/container/data:rw"]);
     }
 }

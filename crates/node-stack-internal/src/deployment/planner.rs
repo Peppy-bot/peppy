@@ -9,7 +9,10 @@ use crate::error::{Error, Result};
 use config::consts::PeppyDirs;
 use config::node::NodeConfig;
 use config::peppy_config::{Deployment, DeploymentSource, PeppyLauncher, PeppyLauncherParser};
-use config::{AnyType, FSNodeConfigIndex, TypeMismatch};
+use config::{
+    AnyType, FSNodeConfigIndex, TypeMismatch, for_each_parameter_leaf_path,
+    is_array_parameter_schema, parameter_leaf_paths,
+};
 
 #[derive(Debug)]
 pub enum PlannedDeployment {
@@ -466,57 +469,6 @@ fn validate_instance_parameters(
             unexpected: unexpected.into_iter().collect(),
         })
     }
-}
-
-fn parameter_leaf_paths(
-    parameters: &std::collections::BTreeMap<String, AnyType>,
-) -> BTreeSet<String> {
-    let mut acc = BTreeSet::new();
-    for_each_parameter_leaf_path(parameters, |path| {
-        acc.insert(path.to_owned());
-    });
-    acc
-}
-
-fn for_each_parameter_leaf_path(
-    parameters: &std::collections::BTreeMap<String, AnyType>,
-    mut visit: impl FnMut(&str),
-) {
-    let mut path = String::new();
-    for (key, value) in parameters {
-        path.clear();
-        path.push_str(key);
-        visit_parameter_leaf_paths(value, &mut path, &mut visit);
-    }
-}
-
-fn visit_parameter_leaf_paths(value: &AnyType, path: &mut String, visit: &mut dyn FnMut(&str)) {
-    match value {
-        AnyType::Object(map) if !map.is_empty() => {
-            if is_array_parameter_schema(map) {
-                visit(path.as_str());
-                return;
-            }
-
-            for (child_key, child_value) in map {
-                let original_len = path.len();
-                path.push('.');
-                path.push_str(child_key);
-                visit_parameter_leaf_paths(child_value, path, visit);
-                path.truncate(original_len);
-            }
-        }
-        _ => {
-            visit(path.as_str());
-        }
-    }
-}
-
-fn is_array_parameter_schema(map: &std::collections::BTreeMap<String, AnyType>) -> bool {
-    matches!(
-        map.get("type"),
-        Some(AnyType::String(kind)) if kind.eq_ignore_ascii_case("array")
-    )
 }
 
 /// Validates that instance parameter values match the types declared in the node manifest.

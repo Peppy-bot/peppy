@@ -1,4 +1,8 @@
-use crate::{common::NodeArguments, config::SchemaVersion, error::ParsingError};
+use crate::{
+    common::{AnyType, NodeArguments, resolve_parameter_path},
+    config::SchemaVersion,
+    error::ParsingError,
+};
 use indexmap::IndexMap;
 use serde::{
     Deserialize, Serialize,
@@ -636,7 +640,7 @@ fn blocked_mount_paths_display() -> String {
 /// Only exact top-level matches are blocked — subdirectories like `/tmp/my_app`
 /// are allowed. Also handles macOS `/private/X` equivalents (e.g., `/private/tmp`
 /// maps to `/tmp`).
-fn is_blocked_mount_source(path: &str) -> bool {
+pub fn is_blocked_mount_source(path: &str) -> bool {
     if BLOCKED_MOUNT_PATHS.contains(&path) {
         return true;
     }
@@ -655,8 +659,30 @@ pub struct ContainerConfig {
     pub mount_paths: Option<Vec<String>>,
 }
 
+/// Extract all `${parameters:...}` references from a mount path string.
+///
+/// Returns the dot-path portion of each reference (e.g., `"device_path"` or
+/// `"video.device_path"`).
+pub fn extract_parameter_refs(mount_path: &str) -> Vec<&str> {
+    let mut refs = Vec::new();
+    let mut remaining = mount_path;
+    while let Some(start) = remaining.find("${parameters:") {
+        let after_prefix = &remaining[start + "${parameters:".len()..];
+        if let Some(end) = after_prefix.find('}') {
+            refs.push(&after_prefix[..end]);
+            remaining = &after_prefix[end + 1..];
+        } else {
+            break;
+        }
+    }
+    refs
+}
+
 impl ContainerConfig {
     /// Validate mount_paths, rejecting top-level system directories as mount sources.
+    ///
+    /// Mount paths whose source contains `${parameters:...}` are skipped because
+    /// the actual host path is not known until runtime.
     ///
     /// Returns `Err((invalid_path, blocked_list_display))` on the first invalid path found.
     pub fn validate(&self) -> Result<(), (String, String)> {
@@ -666,11 +692,64 @@ impl ContainerConfig {
         for mount in mount_paths {
             // Parse "host_path:container_path[:options]" — only validate the source (host) path.
             let src = mount.split(':').next().unwrap_or(mount);
+            // Skip blocked-path check when the source contains parameter references
+            // (the actual path is resolved at runtime).
+            if src.contains("${parameters:") {
+                continue;
+            }
             if is_blocked_mount_source(src) {
                 return Err((mount.clone(), blocked_mount_paths_display()));
             }
         }
         Ok(())
+    }
+
+    /// Validate that `${parameters:...}` references in mount_paths point to existing
+    /// string-typed parameters in the schema.
+    ///
+    /// Returns `Err((ref_path, reason))` on the first invalid reference found.
+    pub fn validate_parameter_refs(
+        &self,
+        parameters: &NodeArguments,
+    ) -> Result<(), (String, String)> {
+        let Some(mount_paths) = &self.mount_paths else {
+            return Ok(());
+        };
+        for mount in mount_paths {
+            for ref_path in extract_parameter_refs(mount) {
+                match resolve_parameter_path(parameters, ref_path) {
+                    None => {
+                        return Err((
+                            ref_path.to_owned(),
+                            "parameter not found in schema".to_owned(),
+                        ));
+                    }
+                    Some(AnyType::String(type_name)) if type_name == "string" => {
+                        // Valid — string-typed parameter.
+                    }
+                    Some(type_spec) => {
+                        return Err((
+                            ref_path.to_owned(),
+                            format!(
+                                "parameter must be of type \"string\", found \"{}\"",
+                                type_spec_display(type_spec)
+                            ),
+                        ));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Human-readable display for a parameter type spec.
+fn type_spec_display(spec: &AnyType) -> &str {
+    match spec {
+        AnyType::String(s) => s.as_str(),
+        AnyType::Object(_) => "object",
+        AnyType::Array(_) => "array",
+        _ => "unknown",
     }
 }
 
