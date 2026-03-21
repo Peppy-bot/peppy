@@ -259,6 +259,14 @@ EOF
             SUDO_FIX_LABELS="${SUDO_FIX_LABELS}  - Set root ownership on Apptainer configuration\n"
         fi
 
+        # Check 1b: AppArmor profile for starter-suid (Ubuntu 24.04+)
+        if [ -f /proc/sys/kernel/apparmor_restrict_unprivileged_userns ] && \
+           [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns)" = "1" ] && \
+           [ -f "$STARTER_SUID" ]; then
+            SUDO_FIXES="${SUDO_FIXES}printf 'abi <abi/4.0>,\ninclude <tunables/global>\n\nprofile peppy-apptainer ${STARTER_SUID} flags=(unconfined) {\n  userns,\n}\n' > /etc/apparmor.d/peppy-apptainer && apparmor_parser -r /etc/apparmor.d/peppy-apptainer && "
+            SUDO_FIX_LABELS="${SUDO_FIX_LABELS}  - Install AppArmor profile for Apptainer starter-suid\n"
+        fi
+
         # Check 2: dbus-user-session (required for systemctl --user / D-Bus user bus)
         if command -v dpkg >/dev/null 2>&1; then
             if ! dpkg -s dbus-user-session >/dev/null 2>&1; then
