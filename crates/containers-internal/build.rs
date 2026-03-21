@@ -294,6 +294,12 @@ mod apptainer_build {
         );
 
         let source_cache = build_helpers::cache_dir("apptainer-source");
+
+        // Serialize concurrent build invocations to prevent one build from
+        // deleting the source tree while another is compiling inside it.
+        let lock_path = source_cache.join(".build.lock");
+        let _build_lock = build_helpers::acquire_file_lock(&lock_path);
+
         let tarball_url = format!(
             "https://github.com/apptainer/apptainer/releases/download/v{version}/apptainer-{version}.tar.gz"
         );
@@ -524,6 +530,56 @@ rm -rf /tmp/apptainer-{version} /tmp/apptainer-{version}.tar.gz"#,
     }
 
     // -----------------------------------------------------------------------
+    // Setuid check
+    // -----------------------------------------------------------------------
+
+    /// Check that `starter-suid` and `apptainer.conf` are owned by root.
+    ///
+    /// Apptainer's setuid mode requires:
+    /// - `starter-suid`: root-owned with mode 4755 (setuid bit)
+    /// - `etc/apptainer/apptainer.conf`: root-owned (security policy)
+    ///
+    /// Panics with a human-readable message and the exact `sudo` command to
+    /// run if either is misconfigured.
+    fn check_starter_suid(install_dir: &Path) {
+        use std::os::unix::fs::MetadataExt;
+
+        let starter_suid = install_dir.join("libexec/apptainer/bin/starter-suid");
+        let conf = install_dir.join("etc/apptainer/apptainer.conf");
+
+        if !starter_suid.exists() {
+            panic!(
+                "starter-suid not found at {}. Rebuild with: rm -rf '{}'",
+                starter_suid.display(),
+                install_dir.display()
+            );
+        }
+
+        let suid_meta =
+            std::fs::metadata(&starter_suid).expect("Failed to stat starter-suid");
+        let suid_ok = suid_meta.uid() == 0 && (suid_meta.mode() & 0o4000) != 0;
+
+        let conf_ok = conf
+            .metadata()
+            .map(|m| m.uid() == 0)
+            .unwrap_or(false);
+
+        if suid_ok && conf_ok {
+            return;
+        }
+
+        let suid_path = starter_suid.display();
+        let conf_path = conf.display();
+        panic!(
+            "\n\n\
+             Apptainer's setuid mode requires root ownership on two files.\n\n\
+             Run this once:\n\n  \
+             sudo chown root:root '{suid_path}' && sudo chmod 4755 '{suid_path}' && \
+             sudo chown root:root '{conf_path}'\n"
+        );
+    }
+
+    // -----------------------------------------------------------------------
     // Main entry point
     // -----------------------------------------------------------------------
 
@@ -651,6 +707,11 @@ rm -rf /tmp/apptainer-{version} /tmp/apptainer-{version}.tar.gz"#,
                         cache_sentinel, e
                     )
                 });
+        }
+
+        // Verify starter-suid has the setuid bit (Linux only).
+        if !use_lima {
+            check_starter_suid(&cache_dir);
         }
 
         // Point APPTAINER_INSTALL_DIR directly at the cache dir. We must NOT

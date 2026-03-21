@@ -246,13 +246,17 @@ EOF
         SUDO_FIXES=""
         SUDO_FIX_LABELS=""
 
-        # Check 1: Apptainer starter-suid setuid permissions
-        # The starter-suid binary must be owned by root with mode 4755 so that
-        # Apptainer can create user namespaces with real GID preservation.
+        # Check 1: Apptainer setuid mode requires root ownership on starter-suid
+        # (with setuid bit) and apptainer.conf (security policy).
         STARTER_SUID="$PEPPY_BIN_DIR/apptainer/libexec/apptainer/bin/starter-suid"
+        APPTAINER_CONF="$PEPPY_BIN_DIR/apptainer/etc/apptainer/apptainer.conf"
         if [ -f "$STARTER_SUID" ]; then
             SUDO_FIXES="${SUDO_FIXES}chown root:root '$STARTER_SUID' && chmod 4755 '$STARTER_SUID' && "
             SUDO_FIX_LABELS="${SUDO_FIX_LABELS}  - Set setuid permissions on Apptainer starter binary\n"
+        fi
+        if [ -f "$APPTAINER_CONF" ]; then
+            SUDO_FIXES="${SUDO_FIXES}chown root:root '$APPTAINER_CONF' && "
+            SUDO_FIX_LABELS="${SUDO_FIX_LABELS}  - Set root ownership on Apptainer configuration\n"
         fi
 
         # Check 2: dbus-user-session (required for systemctl --user / D-Bus user bus)

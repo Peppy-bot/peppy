@@ -63,6 +63,47 @@ pub struct Apptainer {
     pub(crate) extra_mounts: Vec<PathBuf>,
 }
 
+/// Check that `starter-suid` and `apptainer.conf` have root ownership.
+///
+/// Apptainer's setuid mode requires:
+/// - `starter-suid`: root-owned with mode 4755 (setuid bit)
+/// - `etc/apptainer/apptainer.conf`: root-owned (security policy)
+#[cfg(target_os = "linux")]
+fn check_starter_suid(apptainer_dir: &Path) -> Result<()> {
+    use std::os::unix::fs::MetadataExt;
+
+    let starter_suid = apptainer_dir.join("libexec/apptainer/bin/starter-suid");
+    let conf = apptainer_dir.join("etc/apptainer/apptainer.conf");
+
+    if !starter_suid.exists() {
+        return Err(Error::ConfigurationError(format!(
+            "starter-suid not found at {}. Reinstall peppy.",
+            starter_suid.display()
+        )));
+    }
+
+    let suid_meta = std::fs::metadata(&starter_suid).map_err(|e| {
+        Error::ConfigurationError(format!(
+            "Failed to stat starter-suid at {}: {e}",
+            starter_suid.display()
+        ))
+    })?;
+
+    let suid_ok = suid_meta.uid() == 0 && (suid_meta.mode() & 0o4000) != 0;
+    let conf_ok = conf.metadata().map(|m| m.uid() == 0).unwrap_or(false);
+
+    if !suid_ok || !conf_ok {
+        let suid_path = starter_suid.display();
+        let conf_path = conf.display();
+        return Err(Error::ConfigurationError(format!(
+            "Apptainer's setuid mode requires root ownership on two files.\n\
+             Run: sudo chown root:root '{suid_path}' && sudo chmod 4755 '{suid_path}' && \
+             sudo chown root:root '{conf_path}'"
+        )));
+    }
+    Ok(())
+}
+
 impl Apptainer {
     /// Creates a new `Apptainer` by resolving the apptainer installation directory.
     ///
@@ -116,14 +157,18 @@ impl Apptainer {
     /// Ensures the execution backend is fully ready for running commands.
     /// Called once during construction.
     ///
-    /// On Linux (`Backend::Native`): no-op, returns `Ok(())` immediately.
+    /// On Linux (`Backend::Native`): verifies `starter-suid` has the setuid bit.
     ///
     /// On macOS (`Backend::Lima`): boots the Lima VM if it is not already running,
     /// and syncs the apptainer installation into the guest. This may take minutes
     /// on first run.
     fn ensure_ready(&mut self) -> Result<()> {
         match &mut self.backend {
-            Backend::Native { .. } => Ok(()),
+            Backend::Native { .. } => {
+                #[cfg(target_os = "linux")]
+                check_starter_suid(&self.apptainer_dir)?;
+                Ok(())
+            }
             Backend::Lima {
                 limactl_path,
                 lima_home,
