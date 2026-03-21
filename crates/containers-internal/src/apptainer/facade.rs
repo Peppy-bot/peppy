@@ -66,14 +66,14 @@ pub struct Apptainer {
 /// Check that Apptainer's setuid mode prerequisites are met:
 ///
 /// - `starter-suid`: root-owned with mode 4755
-/// - `etc/apptainer/apptainer.conf`: root-owned
+/// - `etc/apptainer/`: entire config directory root-owned
 /// - AppArmor profile installed (Ubuntu 24.04+ with restricted userns)
 #[cfg(target_os = "linux")]
 fn check_starter_suid(apptainer_dir: &Path) -> Result<()> {
     use std::os::unix::fs::MetadataExt;
 
     let starter_suid = apptainer_dir.join("libexec/apptainer/bin/starter-suid");
-    let conf = apptainer_dir.join("etc/apptainer/apptainer.conf");
+    let conf_dir = apptainer_dir.join("etc/apptainer");
 
     if !starter_suid.exists() {
         return Err(Error::ConfigurationError(format!(
@@ -90,7 +90,7 @@ fn check_starter_suid(apptainer_dir: &Path) -> Result<()> {
     })?;
 
     let suid_ok = suid_meta.uid() == 0 && (suid_meta.mode() & 0o4000) != 0;
-    let conf_ok = conf.metadata().map(|m| m.uid() == 0).unwrap_or(false);
+    let conf_ok = conf_dir.metadata().map(|m| m.uid() == 0).unwrap_or(false);
 
     let apparmor_restricted =
         std::fs::read_to_string("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
@@ -110,12 +110,12 @@ fn check_starter_suid(apptainer_dir: &Path) -> Result<()> {
     }
 
     let suid_path = starter_suid.display();
-    let conf_path = conf.display();
+    let conf_dir_path = conf_dir.display();
 
     let mut script = format!(
         "sudo chown root:root '{suid_path}' \\\n  \
          && sudo chmod 4755 '{suid_path}' \\\n  \
-         && sudo chown root:root '{conf_path}'"
+         && sudo chown -R root:root '{conf_dir_path}'"
     );
 
     if apparmor_restricted && !apparmor_ok {
