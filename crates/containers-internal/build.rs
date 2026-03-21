@@ -610,7 +610,6 @@ rm -rf /tmp/apptainer-{version} /tmp/apptainer-{version}.tar.gz"#,
         // ------------------------------------------------------------------
         let cache_dir =
             build_helpers::cache_dir(&format!("apptainer-{}-{}-src", APPTAINER_VERSION, &arch));
-        let out_install_dir = PathBuf::from(&out_dir).join("apptainer-install");
 
         // Check if we have a fully completed cached installation.
         let cached_bin = cache_dir.join("bin/apptainer");
@@ -654,18 +653,14 @@ rm -rf /tmp/apptainer-{version} /tmp/apptainer-{version}.tar.gz"#,
                 });
         }
 
-        // ------------------------------------------------------------------
-        // Step 3: Copy cached apptainer installation to OUT_DIR
-        // ------------------------------------------------------------------
-        if out_install_dir.exists() {
-            std::fs::remove_dir_all(&out_install_dir).ok();
-        }
-        copy_dir_recursive(&cache_dir, &out_install_dir)
-            .unwrap_or_else(|e| panic!("Failed to copy apptainer installation to OUT_DIR: {}", e));
-
+        // Point APPTAINER_INSTALL_DIR directly at the cache dir. We must NOT
+        // copy the installation to OUT_DIR because Apptainer's starter-suid
+        // embeds the --prefix path at compile time and checks it at runtime —
+        // copying to a different directory triggers "Relocation not allowed
+        // with starter-suid".
         println!(
             "cargo:rustc-env=APPTAINER_INSTALL_DIR={}",
-            out_install_dir.display()
+            cache_dir.display()
         );
     }
 }
