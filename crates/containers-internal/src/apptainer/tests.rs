@@ -1,3 +1,5 @@
+#[cfg(target_os = "linux")]
+use super::facade::check_setup_status;
 use super::facade::{Apptainer, Backend, is_uri};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -558,4 +560,78 @@ fn test_host_gateway_returns_correct_value() {
             "On Linux (Native), host_gateway() should return None"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// check_setup_status tests (Linux only)
+// ---------------------------------------------------------------------------
+
+#[cfg(target_os = "linux")]
+#[test]
+fn check_setup_status_errors_when_starter_suid_missing() {
+    let tmp = TempDir::new().unwrap();
+    // Empty directory — no starter-suid binary
+    let result = check_setup_status(tmp.path());
+    assert!(result.is_err(), "should error when starter-suid is missing");
+    let msg = result.unwrap_err().to_string();
+    assert!(
+        msg.contains("starter-suid not found"),
+        "error message should mention missing binary, got: {msg}"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn check_setup_status_reports_real_installation() {
+    // Use the real bundled installation
+    let apptainer = Apptainer::new()
+        .expect("Apptainer::new() should succeed — apptainer is bundled at compile time");
+
+    let status = check_setup_status(&apptainer.apptainer_dir)
+        .expect("check_setup_status should succeed on a valid installation");
+
+    // We can't guarantee setuid is configured in CI, but we can verify the
+    // struct is populated correctly.
+    if status.is_ok() {
+        assert!(status.suid_ok);
+        assert!(status.conf_ok);
+        assert!(status.apparmor_ok);
+        assert!(
+            status.fix_script.is_none(),
+            "fix_script should be None when all checks pass"
+        );
+    } else {
+        assert!(
+            status.fix_script.is_some(),
+            "fix_script should be present when checks fail"
+        );
+        let script = status.fix_script.as_ref().unwrap();
+        assert!(
+            script.contains("chown"),
+            "fix script should contain chown command, got: {script}"
+        );
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn check_setup_status_detects_non_root_starter_suid() {
+    let tmp = TempDir::new().unwrap();
+    let suid_dir = tmp.path().join("libexec/apptainer/bin");
+    fs::create_dir_all(&suid_dir).unwrap();
+    fs::write(suid_dir.join("starter-suid"), b"fake").unwrap();
+
+    let conf_dir = tmp.path().join("etc/apptainer");
+    fs::create_dir_all(&conf_dir).unwrap();
+
+    let status =
+        check_setup_status(tmp.path()).expect("should succeed with fake starter-suid present");
+
+    // Running as non-root, so suid_ok should be false
+    assert!(
+        !status.suid_ok,
+        "suid_ok should be false for non-root-owned file"
+    );
+    assert!(!status.is_ok(), "is_ok should be false");
+    assert!(status.fix_script.is_some(), "should have a fix script");
 }

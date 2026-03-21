@@ -63,13 +63,43 @@ pub struct Apptainer {
     pub(crate) extra_mounts: Vec<PathBuf>,
 }
 
-/// Check that Apptainer's setuid mode prerequisites are met:
-///
-/// - `starter-suid`: root-owned with mode 4755
-/// - `etc/apptainer/`: entire config directory root-owned
-/// - AppArmor profile installed (Ubuntu 24.04+ with restricted userns)
+/// Status of Apptainer setuid prerequisites on the current system.
 #[cfg(target_os = "linux")]
-fn check_starter_suid(apptainer_dir: &Path) -> Result<()> {
+#[derive(Debug)]
+pub struct SetupStatus {
+    /// `starter-suid` is root-owned with the setuid bit (mode 4755).
+    pub suid_ok: bool,
+    /// `etc/apptainer/` config directory is root-owned.
+    pub conf_ok: bool,
+    /// System restricts unprivileged user namespaces via AppArmor.
+    pub apparmor_restricted: bool,
+    /// AppArmor profile for `starter-suid` is installed (always `true` when
+    /// `apparmor_restricted` is `false`).
+    pub apparmor_ok: bool,
+    /// Root of the Apptainer installation directory.
+    pub apptainer_dir: PathBuf,
+    /// A shell script that fixes all failing checks, or `None` when everything
+    /// passes.
+    pub fix_script: Option<String>,
+}
+
+#[cfg(target_os = "linux")]
+impl SetupStatus {
+    /// Returns `true` when all prerequisites are met.
+    pub fn is_ok(&self) -> bool {
+        self.suid_ok && self.conf_ok && self.apparmor_ok
+    }
+}
+
+/// Inspect the Apptainer setuid prerequisites without failing on errors.
+///
+/// Returns a [`SetupStatus`] describing which checks pass and which do not,
+/// along with a ready-to-run fix script when something needs attention.
+///
+/// The caller is responsible for resolving the `apptainer_dir` — use
+/// [`Apptainer::resolve_apptainer_dir`] or the `PEPPY_APPTAINER_DIR` env var.
+#[cfg(target_os = "linux")]
+pub fn check_setup_status(apptainer_dir: &Path) -> Result<SetupStatus> {
     use std::os::unix::fs::MetadataExt;
 
     let starter_suid = apptainer_dir.join("libexec/apptainer/bin/starter-suid");
@@ -105,35 +135,58 @@ fn check_starter_suid(apptainer_dir: &Path) -> Result<()> {
         true
     };
 
-    if suid_ok && conf_ok && apparmor_ok {
+    let fix_script = if suid_ok && conf_ok && apparmor_ok {
+        None
+    } else {
+        let suid_path = starter_suid.display();
+        let conf_dir_path = conf_dir.display();
+
+        let mut script = format!(
+            "sudo chown root:root '{suid_path}' \\\n  \
+             && sudo chmod 4755 '{suid_path}' \\\n  \
+             && sudo chown -R root:root '{conf_dir_path}'"
+        );
+
+        if apparmor_restricted && !apparmor_ok {
+            script.push_str(&format!(
+                " \\\n  \
+                 && echo 'abi <abi/4.0>,\n\
+                 include <tunables/global>\n\
+                 \n\
+                 profile peppy-apptainer {suid_path} flags=(unconfined) {{\n\
+                 \x20 userns,\n\
+                 }}' | sudo tee /etc/apparmor.d/peppy-apptainer > /dev/null \\\n  \
+                 && sudo apparmor_parser -r /etc/apparmor.d/peppy-apptainer"
+            ));
+        }
+
+        Some(script)
+    };
+
+    Ok(SetupStatus {
+        suid_ok,
+        conf_ok,
+        apparmor_restricted,
+        apparmor_ok,
+        apptainer_dir: apptainer_dir.to_path_buf(),
+        fix_script,
+    })
+}
+
+/// Check that Apptainer's setuid mode prerequisites are met.
+/// Returns an error with a copy-pasteable fix script when any check fails.
+#[cfg(target_os = "linux")]
+fn check_starter_suid(apptainer_dir: &Path) -> Result<()> {
+    let status = check_setup_status(apptainer_dir)?;
+    if status.is_ok() {
         return Ok(());
     }
 
-    let suid_path = starter_suid.display();
-    let conf_dir_path = conf_dir.display();
-
-    let mut script = format!(
-        "sudo chown root:root '{suid_path}' \\\n  \
-         && sudo chmod 4755 '{suid_path}' \\\n  \
-         && sudo chown -R root:root '{conf_dir_path}'"
-    );
-
-    if apparmor_restricted && !apparmor_ok {
-        script.push_str(&format!(
-            " \\\n  \
-             && echo 'abi <abi/4.0>,\n\
-             include <tunables/global>\n\
-             \n\
-             profile peppy-apptainer {suid_path} flags=(unconfined) {{\n\
-             \x20 userns,\n\
-             }}' | sudo tee /etc/apparmor.d/peppy-apptainer > /dev/null \\\n  \
-             && sudo apparmor_parser -r /etc/apparmor.d/peppy-apptainer"
-        ));
-    }
-
+    let script = status.fix_script.unwrap();
     Err(Error::ConfigurationError(format!(
         "Apptainer's setuid mode is not fully configured.\n\
-         Run:\n\n{script}"
+         Run:\n\n{script}\n\n\
+         Or run `peppy container setup` to fix this automatically."
     )))
 }
 
@@ -510,7 +563,7 @@ impl Apptainer {
     // Path resolution
     // -----------------------------------------------------------------------
 
-    fn resolve_apptainer_dir() -> Result<PathBuf> {
+    pub fn resolve_apptainer_dir() -> Result<PathBuf> {
         // 1) Runtime override via environment variable
         if let Ok(dir) = std::env::var("PEPPY_APPTAINER_DIR") {
             let dir = dir.trim().to_string();

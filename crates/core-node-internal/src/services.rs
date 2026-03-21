@@ -68,15 +68,16 @@ pub struct CoreNode {
     node_start_health_timeout: Duration,
 }
 
-/// Pre-flight checks that run once at daemon startup. Panics with an
-/// actionable message if any check fails.
+/// Pre-flight checks that run once at daemon startup. Exits with a
+/// user-friendly message if any check fails (no panic backtrace).
 fn perform_runtime_checks() {
     // Apptainer setuid mode: starter-suid must be root-owned with the setuid
     // bit set, and apptainer.conf must be root-owned. On Ubuntu 24.04+ an
     // AppArmor profile is also required.
     #[cfg(target_os = "linux")]
     if let Err(e) = containers::Apptainer::new() {
-        panic!("Apptainer pre-flight check failed: {e}");
+        eprintln!("Apptainer pre-flight check failed: {e}");
+        std::process::exit(1);
     }
 }
 

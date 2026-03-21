@@ -18,6 +18,32 @@ Use containers when you need:
 PeppyOS uses [Apptainer](https://apptainer.org/) as its container runtime.
 On macOS, Apptainer runs transparently inside a [Lima](https://lima-vm.io/) virtual machine — no extra setup is needed.
 
+## Setup (Linux)
+
+On Linux, Apptainer runs in **setuid mode** which requires a one-time system configuration. The installer handles this automatically, but if you skipped it or installed peppy manually you can run:
+
+```sh
+peppy container setup
+```
+
+This configures three things (prompting for `sudo`):
+
+1. **Starter binary** — sets root ownership and the setuid bit on Apptainer's `starter-suid` binary.
+2. **Config directory** — sets root ownership on the `etc/apptainer/` configuration directory.
+3. **AppArmor profile** (Ubuntu 24.04+ only) — installs a profile that allows Apptainer to use user namespaces.
+
+To check the current state without making any changes:
+
+```sh
+peppy container status
+```
+
+This prints a pass/fail summary of each prerequisite and exits with code `0` (all pass) or `1` (something needs fixing).
+
+:::note
+On macOS, no setup is needed — containers run inside a Lima VM which handles permissions transparently.
+:::
+
 ## Initializing a container node
 
 Pass the `--container` flag to `peppy node init`:

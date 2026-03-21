@@ -240,34 +240,14 @@ EOF
         exit 1
     fi
 
-    # ---- Linux system dependency checks (consolidated) ----------------------
-    # Detect all issues first, then offer a single sudo prompt to fix them all.
+    # ---- Linux system dependency checks (phase 1: pre-download) ---------------
+    # Checks that do NOT depend on extracted files. Apptainer setuid checks run
+    # in phase 2, after the archive is extracted (see below).
     if [ "$PLATFORM" != "apple-darwin" ]; then
         SUDO_FIXES=""
         SUDO_FIX_LABELS=""
 
-        # Check 1: Apptainer setuid mode requires root ownership on starter-suid
-        # (with setuid bit) and the entire etc/apptainer/ config directory.
-        STARTER_SUID="$PEPPY_BIN_DIR/apptainer/libexec/apptainer/bin/starter-suid"
-        APPTAINER_CONF_DIR="$PEPPY_BIN_DIR/apptainer/etc/apptainer"
-        if [ -f "$STARTER_SUID" ]; then
-            SUDO_FIXES="${SUDO_FIXES}chown root:root '$STARTER_SUID' && chmod 4755 '$STARTER_SUID' && "
-            SUDO_FIX_LABELS="${SUDO_FIX_LABELS}  - Set setuid permissions on Apptainer starter binary\n"
-        fi
-        if [ -d "$APPTAINER_CONF_DIR" ]; then
-            SUDO_FIXES="${SUDO_FIXES}chown -R root:root '$APPTAINER_CONF_DIR' && "
-            SUDO_FIX_LABELS="${SUDO_FIX_LABELS}  - Set root ownership on Apptainer configuration\n"
-        fi
-
-        # Check 1b: AppArmor profile for starter-suid (Ubuntu 24.04+)
-        if [ -f /proc/sys/kernel/apparmor_restrict_unprivileged_userns ] && \
-           [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns)" = "1" ] && \
-           [ -f "$STARTER_SUID" ]; then
-            SUDO_FIXES="${SUDO_FIXES}printf 'abi <abi/4.0>,\ninclude <tunables/global>\n\nprofile peppy-apptainer ${STARTER_SUID} flags=(unconfined) {\n  userns,\n}\n' > /etc/apparmor.d/peppy-apptainer && apparmor_parser -r /etc/apparmor.d/peppy-apptainer && "
-            SUDO_FIX_LABELS="${SUDO_FIX_LABELS}  - Install AppArmor profile for Apptainer starter-suid\n"
-        fi
-
-        # Check 2: dbus-user-session (required for systemctl --user / D-Bus user bus)
+        # Check 1: dbus-user-session (required for systemctl --user / D-Bus user bus)
         if command -v dpkg >/dev/null 2>&1; then
             if ! dpkg -s dbus-user-session >/dev/null 2>&1; then
                 SUDO_FIXES="${SUDO_FIXES}apt-get update -qq && apt-get install -y -qq dbus-user-session && "
@@ -275,7 +255,7 @@ EOF
             fi
         fi
 
-        # Check 3: loginctl enable-linger (keeps systemd user session alive after logout)
+        # Check 2: loginctl enable-linger (keeps systemd user session alive after logout)
         CURRENT_USER="$(id -un)"
         HAS_LOGINCTL=false
         LINGER_ENABLED=false
@@ -291,7 +271,7 @@ EOF
             SUDO_FIX_LABELS="${SUDO_FIX_LABELS}  - Enable lingering for user ${CURRENT_USER} (keeps peppy daemon running after logout)\n"
         fi
 
-        # Check 4: curl or wget (required to download the release archive)
+        # Check 3: curl or wget (required to download the release archive)
         if [ -z "${ARCHIVE_PATH-}" ] && ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
             if command -v apt-get >/dev/null 2>&1; then
                 SUDO_FIXES="${SUDO_FIXES}apt-get update -qq && apt-get install -y -qq curl && "
@@ -495,6 +475,89 @@ EOF
     # Create lima-data directory for VM instance state (preserved across upgrades)
     if [ -d "$PEPPY_BIN_DIR/lima" ] && [ ! -d "$PEPPY_HOME/lima-data" ]; then
         mkdir -p "$PEPPY_HOME/lima-data"
+    fi
+
+    # ---- Linux system dependency checks (phase 2: post-extraction) -----------
+    # Apptainer setuid checks run here because starter-suid only exists after
+    # the archive has been extracted above.
+    if [ "$PLATFORM" != "apple-darwin" ]; then
+        SUDO_FIXES=""
+        SUDO_FIX_LABELS=""
+
+        # Check 1: Apptainer setuid mode requires root ownership on starter-suid
+        # (with setuid bit) and the entire etc/apptainer/ config directory.
+        STARTER_SUID="$PEPPY_BIN_DIR/apptainer/libexec/apptainer/bin/starter-suid"
+        APPTAINER_CONF_DIR="$PEPPY_BIN_DIR/apptainer/etc/apptainer"
+        if [ -f "$STARTER_SUID" ]; then
+            SUDO_FIXES="${SUDO_FIXES}chown root:root '$STARTER_SUID' && chmod 4755 '$STARTER_SUID' && "
+            SUDO_FIX_LABELS="${SUDO_FIX_LABELS}  - Set setuid permissions on Apptainer starter binary\n"
+        fi
+        if [ -d "$APPTAINER_CONF_DIR" ]; then
+            SUDO_FIXES="${SUDO_FIXES}chown -R root:root '$APPTAINER_CONF_DIR' && "
+            SUDO_FIX_LABELS="${SUDO_FIX_LABELS}  - Set root ownership on Apptainer configuration\n"
+        fi
+
+        # Check 2: AppArmor profile for starter-suid (Ubuntu 24.04+)
+        if [ -f /proc/sys/kernel/apparmor_restrict_unprivileged_userns ] && \
+           [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns)" = "1" ] && \
+           [ -f "$STARTER_SUID" ]; then
+            SUDO_FIXES="${SUDO_FIXES}printf 'abi <abi/4.0>,\ninclude <tunables/global>\n\nprofile peppy-apptainer ${STARTER_SUID} flags=(unconfined) {\n  userns,\n}\n' > /etc/apparmor.d/peppy-apptainer && apparmor_parser -r /etc/apparmor.d/peppy-apptainer && "
+            SUDO_FIX_LABELS="${SUDO_FIX_LABELS}  - Install AppArmor profile for Apptainer starter-suid\n"
+        fi
+
+        # Prompt once for all Apptainer fixes
+        if [ -n "$SUDO_FIXES" ]; then
+            echo ""
+            echo "peppy requires the following system changes for container support:"
+            printf "$SUDO_FIX_LABELS"
+            echo ""
+
+            if [ -t 0 ]; then
+                printf "Apply these fixes now? (requires sudo) [Y/n] "
+                read -r REPLY
+                case "$REPLY" in
+                [Nn] | [Nn][Oo])
+                    echo "" >&2
+                    echo "warning: skipped Apptainer setuid setup." >&2
+                    echo "         Run 'peppy container setup' later to enable container support." >&2
+                    ;;
+                *)
+                    SUDO_FIXES="${SUDO_FIXES% && }"
+                    if [ "$(id -u)" -eq 0 ]; then
+                        if ! sh -c "$SUDO_FIXES"; then
+                            echo "" >&2
+                            echo "warning: failed to apply Apptainer fixes." >&2
+                            echo "         Run 'peppy container setup' later to retry." >&2
+                        else
+                            echo "Apptainer setuid configured successfully."
+                        fi
+                    elif command -v sudo >/dev/null 2>&1; then
+                        if ! sudo sh -c "$SUDO_FIXES"; then
+                            echo "" >&2
+                            echo "warning: failed to apply Apptainer fixes." >&2
+                            echo "         Run 'peppy container setup' later to retry." >&2
+                        else
+                            echo "Apptainer setuid configured successfully."
+                        fi
+                    else
+                        echo "" >&2
+                        echo "warning: sudo not available to configure Apptainer setuid." >&2
+                        echo "         Run 'peppy container setup' later to enable container support." >&2
+                    fi
+                    ;;
+                esac
+            else
+                echo "Proceeding automatically (non-interactive mode)."
+                SUDO_FIXES="${SUDO_FIXES% && }"
+                if [ "$(id -u)" -eq 0 ]; then
+                    sh -c "$SUDO_FIXES" || echo "warning: failed to apply Apptainer fixes. Run 'peppy container setup' later." >&2
+                elif command -v sudo >/dev/null 2>&1; then
+                    sudo sh -c "$SUDO_FIXES" || echo "warning: failed to apply Apptainer fixes. Run 'peppy container setup' later." >&2
+                else
+                    echo "warning: sudo not available to configure Apptainer setuid. Run 'peppy container setup' later." >&2
+                fi
+            fi
+        fi
     fi
 
     render_progress 75 "Installing binaries"

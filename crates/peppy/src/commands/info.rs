@@ -8,6 +8,28 @@ use crate::context::AppContext;
 use crate::error::{Error, Result};
 
 const CALLER_INSTANCE_ID: &str = "peppy-cli";
+
+#[cfg(target_os = "linux")]
+fn print_container_setup_status() {
+    match containers::Apptainer::resolve_apptainer_dir()
+        .and_then(|dir| containers::check_setup_status(&dir))
+    {
+        Ok(status) if status.is_ok() => {
+            println!("Container setup: OK");
+        }
+        Ok(_) => {
+            println!("Container setup: INCOMPLETE (run `peppy container setup`)");
+        }
+        Err(e) => {
+            println!("Container setup: ERROR ({e})");
+        }
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn print_container_setup_status() {
+    println!("Container setup: OK (macOS — no setuid required)");
+}
 // No need for an excessive timeout here
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -25,6 +47,9 @@ async fn info_async(ctx: &Arc<AppContext>) -> Result<()> {
     println!("Peppy client info");
     println!("----------");
     println!("Version: {}", client_version);
+
+    // Local container setup check (works without the daemon running)
+    print_container_setup_status();
 
     // Query core node for its version
     let daemon_state = ctx.read_daemon_state()?;
