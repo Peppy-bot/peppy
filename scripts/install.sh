@@ -249,7 +249,7 @@ EOF
         # Check 1: Apptainer starter-suid setuid permissions
         # The starter-suid binary must be owned by root with mode 4755 so that
         # Apptainer can create user namespaces with real GID preservation.
-        STARTER_SUID="$PEPPY_BIN_DIR/apptainer/$(uname -m)/libexec/apptainer/bin/starter-suid"
+        STARTER_SUID="$PEPPY_BIN_DIR/apptainer/libexec/apptainer/bin/starter-suid"
         if [ -f "$STARTER_SUID" ]; then
             SUDO_FIXES="${SUDO_FIXES}chown root:root '$STARTER_SUID' && chmod 4755 '$STARTER_SUID' && "
             SUDO_FIX_LABELS="${SUDO_FIX_LABELS}  - Set setuid permissions on Apptainer starter binary\n"
