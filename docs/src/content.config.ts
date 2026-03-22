@@ -1,8 +1,9 @@
 import { defineCollection, z } from 'astro:content';
+import { docsLoader } from '@astrojs/starlight/loaders';
 import { docsSchema } from '@astrojs/starlight/schema';
 import { glob } from 'astro/loaders';
 
-const docs = defineCollection({ schema: docsSchema() });
+const docs = defineCollection({ loader: docsLoader(), schema: docsSchema() });
 
 const releases = defineCollection({
   loader: glob({
