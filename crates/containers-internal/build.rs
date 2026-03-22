@@ -667,14 +667,18 @@ rm -rf /tmp/apptainer-{version} /tmp/apptainer-{version}.tar.gz"#,
                 });
         }
 
-        // Point APPTAINER_INSTALL_DIR directly at the cache dir. We must NOT
-        // copy the installation to OUT_DIR because Apptainer's starter-suid
-        // embeds the --prefix path at compile time and checks it at runtime —
-        // copying to a different directory triggers "Relocation not allowed
-        // with starter-suid".
+        // Copy apptainer installation to OUT_DIR so the release packaging
+        // script can find it via containers-*/out/apptainer-install glob.
+        let out_install_dir = PathBuf::from(&out_dir).join("apptainer-install");
+        if out_install_dir.exists() {
+            std::fs::remove_dir_all(&out_install_dir).ok();
+        }
+        copy_dir_recursive(&cache_dir, &out_install_dir)
+            .unwrap_or_else(|e| panic!("Failed to copy apptainer installation to OUT_DIR: {}", e));
+
         println!(
             "cargo:rustc-env=APPTAINER_INSTALL_DIR={}",
-            cache_dir.display()
+            out_install_dir.display()
         );
     }
 }
