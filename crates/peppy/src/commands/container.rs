@@ -103,7 +103,10 @@ fn setup() -> Result<()> {
     }
     println!();
 
-    let script = status.fix_script.as_deref().expect("fix_script is Some when is_ok() is false");
+    let script = status
+        .fix_script
+        .as_deref()
+        .expect("fix_script is Some when is_ok() is false");
 
     // Check if we're in an interactive terminal
     if std::io::stdin().is_terminal() {
