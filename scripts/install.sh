@@ -176,10 +176,21 @@ EOF
         fi
     fi
 
-    if $DAEMON_RUNNING; then
+    # Detect existing installation (daemon may or may not be running)
+    EXISTING_INSTALL=false
+    if [ -d "$PEPPY_HOME" ]; then
+        EXISTING_INSTALL=true
+    fi
+
+    if $DAEMON_RUNNING || $EXISTING_INSTALL; then
         echo ""
-        echo "warning: The peppy daemon is currently running."
-        echo "         Installing will stop the daemon and wipe '${PEPPY_HOME}' before proceeding."
+        if $DAEMON_RUNNING; then
+            echo "warning: The peppy daemon is currently running."
+            echo "         Installing will stop the daemon and wipe '${PEPPY_HOME}' before proceeding."
+        else
+            echo "warning: An existing installation was found at '${PEPPY_HOME}'."
+            echo "         Installing will wipe this directory before proceeding."
+        fi
         echo ""
 
         if [ -t 0 ] || [ -e /dev/tty ]; then
@@ -198,13 +209,15 @@ EOF
             exit 1
         fi
 
-        echo "Stopping peppy daemon..."
-        if [ -x "$PEPPY_BIN_DIR/peppy" ]; then
-            "$PEPPY_BIN_DIR/peppy" service stop >/dev/null 2>&1 || true
-            "$PEPPY_BIN_DIR/peppy" service uninstall >/dev/null 2>&1 || true
+        if $DAEMON_RUNNING; then
+            echo "Stopping peppy daemon..."
+            if [ -x "$PEPPY_BIN_DIR/peppy" ]; then
+                "$PEPPY_BIN_DIR/peppy" service stop >/dev/null 2>&1 || true
+                "$PEPPY_BIN_DIR/peppy" service uninstall >/dev/null 2>&1 || true
+            fi
         fi
         echo "Removing '${PEPPY_HOME}'..."
-        rm -rf "$PEPPY_HOME"
+        rm -rf "$PEPPY_HOME" 2>/dev/null || sudo rm -rf "$PEPPY_HOME"
     fi
 
     REPOURL="${PEPPY_REPOURL:-https://peppy.bot}"
@@ -546,7 +559,7 @@ EOF
     # Install apptainer/lima directory trees into PEPPY_BIN_DIR (siblings of the peppy binary)
     for DIR_NAME in apptainer lima; do
         if [ -d "$TEMP_DIR/bin/$DIR_NAME" ]; then
-            rm -rf "$PEPPY_BIN_DIR/$DIR_NAME"
+            rm -rf "$PEPPY_BIN_DIR/$DIR_NAME" 2>/dev/null || sudo rm -rf "$PEPPY_BIN_DIR/$DIR_NAME"
             mv "$TEMP_DIR/bin/$DIR_NAME" "$PEPPY_BIN_DIR/$DIR_NAME"
         fi
     done
