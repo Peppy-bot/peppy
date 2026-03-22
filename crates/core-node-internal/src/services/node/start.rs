@@ -36,7 +36,7 @@ use tracing::debug;
 
 const STARTUP_OUTPUT_MAX_WAIT: Duration = Duration::from_millis(100);
 const STARTUP_OUTPUT_QUIET_WINDOW: Duration = Duration::from_millis(10);
-const CONTAINER_STARTUP_OUTPUT_MAX_WAIT: Duration = Duration::from_secs(30);
+const CONTAINER_STARTUP_OUTPUT_MAX_WAIT: Duration = Duration::from_secs(2);
 const CONTAINER_STARTUP_OUTPUT_QUIET_WINDOW: Duration = Duration::from_millis(100);
 const FEEDBACK_FLUSH_TIMEOUT: Duration = Duration::from_secs(5);
 

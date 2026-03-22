@@ -291,9 +291,10 @@ fn test_apptainer_version_integration() {
     // On macOS, binary_path should point to the guest-side installation.
     if cfg!(target_os = "macos") {
         let bin = facade.binary_path();
+        let expected = PathBuf::from(env!("GUEST_APPTAINER_DIR")).join("bin/apptainer");
         assert_eq!(
             bin,
-            Path::new("/tmp/peppy/apptainer/bin/apptainer"),
+            expected,
             "On macOS, binary_path should be the guest-side path, got: {}",
             bin.display()
         );

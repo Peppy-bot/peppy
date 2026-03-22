@@ -1,7 +1,6 @@
 use super::*;
 
 use config::node::{ConsumedAction, ExposedAction};
-use std::process::{Command, Stdio};
 use std::{collections::HashMap, fs};
 
 // --- Exposes examples
@@ -979,26 +978,7 @@ fn clippy_single_exposed_action_empty_goal_request() {
         .unwrap();
     fs::remove_file(output_config).unwrap();
 
-    let clippy_output = Command::new("cargo")
-        .arg("clippy")
-        .arg("--all-targets")
-        .arg("--color")
-        .arg("always")
-        .arg("--")
-        .arg("-D")
-        .arg("warnings")
-        .env("CARGO_NET_OFFLINE", "true")
-        .current_dir(&output_dir)
-        .stdin(Stdio::null())
-        .output()
-        .expect("failed to run cargo clippy on generated crate");
-    assert!(
-        clippy_output.status.success(),
-        "cargo clippy failed for generated crate with status: {:?}\nstdout:\n{}\nstderr:\n{}",
-        clippy_output.status.code(),
-        String::from_utf8_lossy(&clippy_output.stdout),
-        String::from_utf8_lossy(&clippy_output.stderr)
-    );
+    run_clippy(&output_dir);
 
     let exposed_actions_mod = output_dir.join("src/exposed_actions.rs");
     assert!(
@@ -1085,41 +1065,8 @@ fn compile_lib_with_exposed_and_consumed_actions() {
         .unwrap();
     fs::remove_file(output_config).unwrap();
 
-    let cargo_output = Command::new("cargo")
-        .arg("build")
-        .env("CARGO_NET_OFFLINE", "true")
-        .current_dir(&output_dir)
-        .stdin(Stdio::null())
-        .output()
-        .expect("failed to invoke cargo build on generated crate");
-    assert!(
-        cargo_output.status.success(),
-        "cargo build failed for generated crate with status: {:?}\nstdout:\n{}\nstderr:\n{}",
-        cargo_output.status.code(),
-        String::from_utf8_lossy(&cargo_output.stdout),
-        String::from_utf8_lossy(&cargo_output.stderr)
-    );
-
-    let clippy_output = Command::new("cargo")
-        .arg("clippy")
-        .arg("--all-targets")
-        .arg("--color")
-        .arg("always")
-        .arg("--")
-        .arg("-D")
-        .arg("warnings")
-        .env("CARGO_NET_OFFLINE", "true")
-        .current_dir(&output_dir)
-        .stdin(Stdio::null())
-        .output()
-        .expect("failed to run cargo clippy on generated crate");
-    assert!(
-        clippy_output.status.success(),
-        "cargo clippy failed for generated crate with status: {:?}\nstdout:\n{}\nstderr:\n{}",
-        clippy_output.status.code(),
-        String::from_utf8_lossy(&clippy_output.stdout),
-        String::from_utf8_lossy(&clippy_output.stderr)
-    );
+    run_cargo_build(&output_dir);
+    run_clippy(&output_dir);
 
     let lib_rs = output_dir.join("src/lib.rs");
     assert!(
@@ -1224,24 +1171,5 @@ fn clippy_consumed_action_empty_goal_request() {
         .unwrap();
     fs::remove_file(output_config).unwrap();
 
-    let clippy_output = Command::new("cargo")
-        .arg("clippy")
-        .arg("--all-targets")
-        .arg("--color")
-        .arg("always")
-        .arg("--")
-        .arg("-D")
-        .arg("warnings")
-        .env("CARGO_NET_OFFLINE", "true")
-        .current_dir(&output_dir)
-        .stdin(Stdio::null())
-        .output()
-        .expect("failed to run cargo clippy on generated crate");
-    assert!(
-        clippy_output.status.success(),
-        "cargo clippy failed for generated crate with status: {:?}\nstdout:\n{}\nstderr:\n{}",
-        clippy_output.status.code(),
-        String::from_utf8_lossy(&clippy_output.stdout),
-        String::from_utf8_lossy(&clippy_output.stderr)
-    );
+    run_clippy(&output_dir);
 }
