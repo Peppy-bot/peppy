@@ -7,7 +7,9 @@ use clap::Subcommand;
 
 use super::Command;
 use crate::context::AppContext;
-use crate::error::{Error, Result};
+#[cfg(target_os = "linux")]
+use crate::error::Error;
+use crate::error::Result;
 
 #[derive(Subcommand)]
 pub enum ContainerCommands {

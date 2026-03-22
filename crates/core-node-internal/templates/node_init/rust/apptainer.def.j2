@@ -5,24 +5,11 @@ From: {{ base_image }}
     Name {{ node_name }}
     Version {{ tag }}
 
-%environment
-    export PATH="/root/.cargo/bin:$PATH"
-
 %files
     . /opt/{{ node_name }}
 
 %post
     set -eux
-    export DEBIAN_FRONTEND=noninteractive
-
-    apt-get update
-    apt-get install -y --no-install-recommends \
-        ca-certificates curl build-essential pkg-config
-    rm -rf /var/lib/apt/lists/*
-
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-    export PATH="/root/.cargo/bin:$PATH"
-
     cd /opt/{{ node_name }}
     cargo build --release
 

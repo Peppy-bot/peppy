@@ -2,7 +2,8 @@ mod common;
 
 use common::{CALLER_INSTANCE_ID, start_core_node_with_mock_messenger};
 use config::consts::{
-    DEFAULT_UBUNTU_BASE_IMAGE, NODE_CONFIG_FILE, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH,
+    DEFAULT_PYTHON_BASE_IMAGE, DEFAULT_RUST_BASE_IMAGE, NODE_CONFIG_FILE, PEPPY_OUTPUT_DIR,
+    PEPPYGEN_OUTPUT_PATH,
 };
 use config::node::Toolchain;
 use config::test_helpers::assert_contains_all;
@@ -220,7 +221,7 @@ async fn listen_for_node_init_rust_container_success() {
         &apptainer_def,
         &[
             "Bootstrap: docker",
-            &format!("From: {DEFAULT_UBUNTU_BASE_IMAGE}"),
+            &format!("From: {DEFAULT_RUST_BASE_IMAGE}"),
         ],
     );
 
@@ -446,7 +447,7 @@ async fn listen_for_node_init_python_container_success() {
         &apptainer_def,
         &[
             "Bootstrap: docker",
-            &format!("From: {DEFAULT_UBUNTU_BASE_IMAGE}"),
+            &format!("From: {DEFAULT_PYTHON_BASE_IMAGE}"),
         ],
     );
 
