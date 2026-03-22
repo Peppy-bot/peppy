@@ -76,8 +76,6 @@ pub struct SetupStatus {
     /// AppArmor profile for `starter-suid` is installed (always `true` when
     /// `apparmor_restricted` is `false`).
     pub apparmor_ok: bool,
-    /// Root of the Apptainer installation directory.
-    pub apptainer_dir: PathBuf,
     /// A shell script that fixes all failing checks, or `None` when everything
     /// passes.
     pub fix_script: Option<String>,
@@ -105,18 +103,18 @@ pub fn check_setup_status(apptainer_dir: &Path) -> Result<SetupStatus> {
     let starter_suid = apptainer_dir.join("libexec/apptainer/bin/starter-suid");
     let conf_dir = apptainer_dir.join("etc/apptainer");
 
-    if !starter_suid.exists() {
-        return Err(Error::ConfigurationError(format!(
-            "starter-suid not found at {}. Reinstall peppy.",
-            starter_suid.display()
-        )));
-    }
-
     let suid_meta = std::fs::metadata(&starter_suid).map_err(|e| {
-        Error::ConfigurationError(format!(
-            "Failed to stat starter-suid at {}: {e}",
-            starter_suid.display()
-        ))
+        if e.kind() == std::io::ErrorKind::NotFound {
+            Error::ConfigurationError(format!(
+                "starter-suid not found at {}. Reinstall peppy.",
+                starter_suid.display()
+            ))
+        } else {
+            Error::ConfigurationError(format!(
+                "Failed to stat starter-suid at {}: {e}",
+                starter_suid.display()
+            ))
+        }
     })?;
 
     let suid_ok = suid_meta.uid() == 0 && (suid_meta.mode() & 0o4000) != 0;
@@ -168,7 +166,6 @@ pub fn check_setup_status(apptainer_dir: &Path) -> Result<SetupStatus> {
         conf_ok,
         apparmor_restricted,
         apparmor_ok,
-        apptainer_dir: apptainer_dir.to_path_buf(),
         fix_script,
     })
 }

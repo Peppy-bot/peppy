@@ -30,6 +30,7 @@ fn print_container_setup_status() {
 fn print_container_setup_status() {
     println!("Container setup: OK (macOS — no setuid required)");
 }
+
 // No need for an excessive timeout here
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
