@@ -657,6 +657,12 @@ pub struct ContainerConfig {
     pub def_file: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mount_paths: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub apptainer_build_extra_args: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub apptainer_run_extra_args: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lima_shell_extra_args: Option<Vec<String>>,
 }
 
 /// Extract all `${parameters:...}` references from a mount path string.

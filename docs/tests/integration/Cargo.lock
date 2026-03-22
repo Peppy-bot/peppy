@@ -2632,6 +2632,7 @@ dependencies = [
  "bytes",
  "clap",
  "config",
+ "containers",
  "core-node",
  "crossterm",
  "derive_more",
