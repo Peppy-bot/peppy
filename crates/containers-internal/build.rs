@@ -9,6 +9,10 @@ mod apptainer_build {
         "22aee997df59e4fd448041b2d1214e48bd8eaf705d2d48a4307d65c1b179dc97";
     const LIMA_INSTANCE: &str = "peppy";
     const LIMA_TEMPLATE: &str = "template:ubuntu-24.04";
+    /// Guest-side installation path for apptainer inside the Lima VM.
+    /// Must match the `--prefix` used at build time so `starter-suid` doesn't
+    /// reject the binary as relocated.
+    const GUEST_APPTAINER_DIR: &str = "/tmp/peppy/apptainer";
 
     // -----------------------------------------------------------------------
     // Cache helpers
@@ -414,7 +418,7 @@ mod apptainer_build {
             version
         );
 
-        let guest_install_dir = "/tmp/peppy-apptainer-source-install";
+        let guest_install_dir = GUEST_APPTAINER_DIR;
         let build_script = format!(
             r#"set -eu
 sudo apt-get update -qq
@@ -544,6 +548,10 @@ rm -rf /tmp/apptainer-{version} /tmp/apptainer-{version}.tar.gz"#,
         println!("cargo:rustc-env=LIMA_TEMPLATE={}", LIMA_TEMPLATE);
         println!("cargo:rustc-env=APPTAINER_VERSION={}", APPTAINER_VERSION);
         println!("cargo:rustc-env=LIMA_VERSION={}", LIMA_VERSION);
+        println!(
+            "cargo:rustc-env=GUEST_APPTAINER_DIR={}",
+            GUEST_APPTAINER_DIR
+        );
 
         // On macOS, apptainer is Linux-only and runs inside a Lima VM.
         // We download and bundle Lima ourselves — no `brew install lima` required.

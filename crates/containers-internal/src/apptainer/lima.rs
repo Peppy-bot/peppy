@@ -196,7 +196,7 @@ pub(crate) fn ensure_guest_apptainer(
     lima_home: &Path,
     instance: &str,
 ) -> Result<PathBuf> {
-    let guest_dir = PathBuf::from("/tmp/peppy/apptainer");
+    let guest_dir = PathBuf::from(env!("GUEST_APPTAINER_DIR"));
     let guest_bin = guest_dir.join("bin/apptainer");
 
     let version = crate::APPTAINER_VERSION;
