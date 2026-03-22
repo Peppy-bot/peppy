@@ -704,6 +704,13 @@ EOF
         esac
     fi
 
+    # Make peppy available for the remainder of this script (and any
+    # interactive shell that sources the output, e.g. eval "$(./install.sh)").
+    case ":${PATH}:" in
+    *":${PEPPY_BIN_DIR}:"*) ;;
+    *) export PATH="${PEPPY_BIN_DIR}:${PATH}" ;;
+    esac
+
     render_progress 100 "Installation complete"
 
     if $PATH_UPDATED; then
@@ -715,8 +722,13 @@ EOF
     print_banner
     echo ""
     printf "%s%s peppy is ready.%s\n\n" "$GREEN" "$OK_MARK" "$RESET"
-    echo "To get started, reload your shell and:"
-    echo "  peppy         # Run command"
+    if $PATH_UPDATED; then
+        echo "To get started, apply the PATH update and run peppy:"
+        echo "  source ${PATH_UPDATE_FILE} && peppy"
+    else
+        echo "To get started:"
+        echo "  peppy"
+    fi
     echo ""
     echo "For more information visit https://docs.peppy.bot"
 } && __wrap__ "$@"
