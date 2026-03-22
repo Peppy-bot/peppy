@@ -30,9 +30,10 @@ pub const PYTHON_MAX_VERSION: &str = "3.14";
 pub const DEFAULT_RUST_BASE_IMAGE: &str = "rust:1-slim";
 
 /// Default base container image for Python nodes.
-/// Uses a minimal Debian base — `uv` installs the correct Python version
-/// from the project's `pyproject.toml` at build time.
-pub const DEFAULT_PYTHON_BASE_IMAGE: &str = "debian:bookworm-slim";
+/// Uses Ubuntu 24.04 (GLIBC 2.39) to satisfy the GLIBC 2.38 requirement
+/// of cross-compiled peppylib native extensions. `uv` installs the correct
+/// Python version from the project's `pyproject.toml` at build time.
+pub const DEFAULT_PYTHON_BASE_IMAGE: &str = "ubuntu:24.04";
 
 /// Default base container image for lightweight test containers (Google mirror — CI-friendly).
 pub const DEFAULT_ALPINE_BASE_IMAGE: &str = "mirror.gcr.io/library/alpine:3.20";
