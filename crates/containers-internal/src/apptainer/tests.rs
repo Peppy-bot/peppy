@@ -293,7 +293,8 @@ fn test_apptainer_version_integration() {
         let bin = facade.binary_path();
         let expected = PathBuf::from(env!("GUEST_APPTAINER_DIR")).join("bin/apptainer");
         assert_eq!(
-            bin, expected,
+            bin,
+            expected,
             "On macOS, binary_path should be the guest-side path, got: {}",
             bin.display()
         );

@@ -280,6 +280,37 @@ pub(crate) fn ensure_guest_apptainer(
         )));
     }
 
+    // Fix setuid ownership and permissions for apptainer's starter-suid binary.
+    // The tar extraction runs as the regular user, so root ownership and the
+    // setuid bit are lost. The Lima guest has passwordless sudo.
+    let suid_fix = Command::new(limactl)
+        .env("LIMA_HOME", lima_home)
+        .args([
+            "shell",
+            instance,
+            "--",
+            "sudo",
+            "sh",
+            "-c",
+            &format!(
+                "chown root:root {0}/libexec/apptainer/bin/starter-suid && \
+                 chmod 4755 {0}/libexec/apptainer/bin/starter-suid && \
+                 chown -R root:root {0}/etc/apptainer",
+                guest_dir.display()
+            ),
+        ])
+        .output()
+        .map_err(|e| {
+            Error::LimaSyncFailed(format!("failed to fix starter-suid permissions: {e}"))
+        })?;
+
+    if !suid_fix.status.success() {
+        let stderr = String::from_utf8_lossy(&suid_fix.stderr);
+        return Err(Error::LimaSyncFailed(format!(
+            "failed to set starter-suid ownership/permissions in guest: {stderr}"
+        )));
+    }
+
     // Write the version marker so we skip the sync next time.
     match Command::new(limactl)
         .env("LIMA_HOME", lima_home)

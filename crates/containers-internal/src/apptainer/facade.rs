@@ -220,8 +220,7 @@ impl Apptainer {
             lima::check_lima_version(&limactl_path)?;
 
             Backend::Lima {
-                apptainer_bin: PathBuf::from(env!("GUEST_APPTAINER_DIR"))
-                    .join("bin/apptainer"),
+                apptainer_bin: PathBuf::from(env!("GUEST_APPTAINER_DIR")).join("bin/apptainer"),
                 limactl_path,
                 lima_home,
             }
