@@ -1,6 +1,5 @@
 use super::*;
 use config::node::{ConsumedTopic, EmittedTopic, MessageFormat, PeppygenLanguage};
-use std::process::{Command, Stdio};
 
 const EMITTED_TOPIC_EXAMPLE: &str = r#"
 {
@@ -560,26 +559,7 @@ fn clippy_single_emitted_topic_empty_format() {
         .unwrap();
     fs::remove_file(output_config).unwrap();
 
-    let clippy_output = Command::new("cargo")
-        .arg("clippy")
-        .arg("--all-targets")
-        .arg("--color")
-        .arg("always")
-        .arg("--")
-        .arg("-D")
-        .arg("warnings")
-        .env("CARGO_NET_OFFLINE", "true")
-        .current_dir(&output_dir)
-        .stdin(Stdio::null())
-        .output()
-        .expect("failed to run cargo clippy on generated crate");
-    assert!(
-        clippy_output.status.success(),
-        "cargo clippy failed for generated crate with status: {:?}\nstdout:\n{}\nstderr:\n{}",
-        clippy_output.status.code(),
-        String::from_utf8_lossy(&clippy_output.stdout),
-        String::from_utf8_lossy(&clippy_output.stderr)
-    );
+    run_clippy(&output_dir);
 
     let emitted_topics_contents = std::fs::read_to_string(output_dir.join("src/emitted_topics.rs"))
         .expect("failed to read emitted_topics module");
@@ -627,41 +607,8 @@ fn compile_lib_with_emitted_and_consumed_topics() {
         .unwrap();
     fs::remove_file(output_config).unwrap();
 
-    let cargo_output = Command::new("cargo")
-        .arg("build")
-        .env("CARGO_NET_OFFLINE", "true")
-        .current_dir(&output_dir)
-        .stdin(Stdio::null())
-        .output()
-        .expect("failed to invoke cargo build on generated crate");
-    assert!(
-        cargo_output.status.success(),
-        "cargo build failed for generated crate with status: {:?}\nstdout:\n{}\nstderr:\n{}",
-        cargo_output.status.code(),
-        String::from_utf8_lossy(&cargo_output.stdout),
-        String::from_utf8_lossy(&cargo_output.stderr)
-    );
-
-    let clippy_output = Command::new("cargo")
-        .arg("clippy")
-        .arg("--all-targets")
-        .arg("--color")
-        .arg("always")
-        .arg("--")
-        .arg("-D")
-        .arg("warnings")
-        .env("CARGO_NET_OFFLINE", "true")
-        .current_dir(&output_dir)
-        .stdin(Stdio::null())
-        .output()
-        .expect("failed to run cargo clippy on generated crate");
-    assert!(
-        clippy_output.status.success(),
-        "cargo clippy failed for generated crate with status: {:?}\nstdout:\n{}\nstderr:\n{}",
-        clippy_output.status.code(),
-        String::from_utf8_lossy(&clippy_output.stdout),
-        String::from_utf8_lossy(&clippy_output.stderr)
-    );
+    run_cargo_build(&output_dir);
+    run_clippy(&output_dir);
 
     // Verify module structure is generated correctly
     assert!(

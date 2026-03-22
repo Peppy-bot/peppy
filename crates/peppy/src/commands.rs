@@ -1,3 +1,4 @@
+pub mod container;
 pub mod info;
 pub mod node;
 pub mod service;

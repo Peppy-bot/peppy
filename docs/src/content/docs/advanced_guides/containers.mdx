@@ -18,6 +18,32 @@ Use containers when you need:
 PeppyOS uses [Apptainer](https://apptainer.org/) as its container runtime.
 On macOS, Apptainer runs transparently inside a [Lima](https://lima-vm.io/) virtual machine — no extra setup is needed.
 
+## Setup (Linux)
+
+On Linux, Apptainer runs in **setuid mode** which requires a one-time system configuration. The installer handles this automatically, but if you skipped it or installed peppy manually you can run:
+
+```sh
+peppy container setup
+```
+
+This configures three things (prompting for `sudo`):
+
+1. **Starter binary** — sets root ownership and the setuid bit on Apptainer's `starter-suid` binary.
+2. **Config directory** — sets root ownership on the `etc/apptainer/` configuration directory.
+3. **AppArmor profile** (Ubuntu 24.04+ only) — installs a profile that allows Apptainer to use user namespaces.
+
+To check the current state without making any changes:
+
+```sh
+peppy container status
+```
+
+This prints a pass/fail summary of each prerequisite and exits with code `0` (all pass) or `1` (something needs fixing).
+
+:::note
+On macOS, no setup is needed — containers run inside a Lima VM which handles permissions transparently.
+:::
+
 ## Initializing a container node
 
 Pass the `--container` flag to `peppy node init`:
@@ -220,7 +246,7 @@ Adding a container node works the same as a regular node:
 peppy node add ./my_node
 ```
 
-Under the hood, PeppyOS runs `apptainer build --fakeroot` to produce a `.sif` (Singularity Image Format) file.
+Under the hood, PeppyOS runs `apptainer build` to produce a `.sif` (Singularity Image Format) file.
 This replaces the `add_cmd` step used by process nodes — the entire build happens inside the container according to the `%post` section of the definition file.
 
 The resulting `.sif` file is stored in PeppyOS's internal storage and is ready to be started.
@@ -339,6 +365,39 @@ Only parameters of type `"string"` can be referenced in mount paths. Numeric or 
 
 :::note
 Blocked system directory validation (e.g., rejecting `/tmp` as a mount source) is applied to the resolved path at runtime, not at parse time.
+:::
+
+## Extra runtime arguments
+
+You can pass additional command-line arguments directly to Apptainer or Lima using `apptainer_build_extra_args`, `apptainer_run_extra_args`, and `lima_shell_extra_args` in the `container` block.
+
+```json5 title="peppy.json5"
+{
+  schema_version: 1,
+  manifest: {
+    name: "my_node",
+    tag: "0.1.0",
+    language: "python",
+  },
+  container: {
+    def_file: "apptainer.def",
+    apptainer_build_extra_args: ["--no-setgroups"],
+    apptainer_run_extra_args: ["--no-setgroups"],
+  },
+  interfaces: {}
+}
+```
+
+| Field                        | Purpose                                                                |
+|------------------------------|------------------------------------------------------------------------|
+| `apptainer_build_extra_args` | Extra flags appended to `apptainer build` (e.g., `["--no-setgroups"]`) |
+| `apptainer_run_extra_args`   | Extra flags appended to `apptainer run` (e.g., `["--no-setgroups"]`)   |
+| `lima_shell_extra_args`      | Extra flags passed to `limactl shell` on macOS (ignored on Linux)      |
+
+All fields are optional and default to an empty list when omitted.
+
+:::note
+These arguments are passed verbatim — no validation is performed beyond basic string checks. Incorrect flags will cause Apptainer or Lima to fail at build or start time.
 :::
 
 ## macOS support

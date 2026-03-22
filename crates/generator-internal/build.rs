@@ -90,12 +90,14 @@ mod ruff_build {
         println!("cargo:rerun-if-changed=build.rs");
         println!("cargo:rustc-env=RUFF_VERSION={}", super::RUFF_VERSION);
 
-        let profile = env::var("PROFILE").unwrap();
         let target = build_helpers::build_target_triple();
 
-        // Architecture-aware cache to avoid sharing binaries between platforms
+        // Architecture-aware cache to avoid sharing binaries between platforms.
+        // The cache key is profile-independent: the downloaded ruff binary is the
+        // same regardless of debug/release, and `cargo install` always builds in
+        // release mode.
         let cache_dir = build_helpers::cache_dir(&format!("ruff-{}", super::RUFF_VERSION));
-        let cached_ruff_path = cache_dir.join(format!("ruff-{profile}-{target}"));
+        let cached_ruff_path = cache_dir.join(format!("ruff-{target}"));
 
         let out_dir = env::var("OUT_DIR").unwrap();
         let ruff_binary_path = format!("{}/ruff", out_dir);

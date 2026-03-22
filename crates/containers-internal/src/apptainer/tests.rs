@@ -1,13 +1,10 @@
+#[cfg(target_os = "linux")]
+use super::facade::check_setup_status;
 use super::facade::{Apptainer, Backend, is_uri};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
-
-#[cfg(target_os = "linux")]
-use super::facade::{check_fakeroot_deps, find_binary};
-#[cfg(target_os = "linux")]
-use crate::error::Error;
 
 // ---------------------------------------------------------------------------
 // Builder argument assembly tests
@@ -149,6 +146,26 @@ fn test_env_flag_format() {
 }
 
 #[test]
+fn test_lima_shell_extra_args_does_not_affect_build_args() {
+    let facade = Apptainer::new()
+        .expect("Apptainer::new() should succeed — apptainer is bundled at compile time");
+
+    let cmd = facade
+        .run("image.sif")
+        .lima_shell_extra_args(&["--timeout".to_string(), "30".to_string()]);
+    let args = cmd.build_args().expect("build_args should succeed");
+
+    // lima_shell_extra_args are passed to limactl, not to apptainer,
+    // so they should NOT appear in build_args output.
+    assert_eq!(args[0], "run");
+    assert!(
+        !args.contains(&"--timeout".to_string()),
+        "lima_shell_extra_args should not appear in apptainer args: {:?}",
+        args
+    );
+}
+
+#[test]
 fn test_raw_flag_passthrough() {
     let facade = Apptainer::new()
         .expect("Apptainer::new() should succeed — apptainer is bundled at compile time");
@@ -181,11 +198,7 @@ fn test_flags_come_before_positional_args() {
     let facade = Apptainer::new()
         .expect("Apptainer::new() should succeed — apptainer is bundled at compile time");
 
-    let cmd = facade
-        .run("image.sif")
-        .fakeroot()
-        .writable_tmpfs()
-        .contain();
+    let cmd = facade.run("image.sif").writable_tmpfs().contain();
     let args = cmd.build_args().expect("build_args should succeed");
 
     // Subcommand is first
@@ -195,14 +208,9 @@ fn test_flags_come_before_positional_args() {
     let image_idx = args.iter().position(|a| a.ends_with("image.sif")).unwrap();
 
     // All flags should come before the image
-    let fakeroot_idx = args.iter().position(|a| a == "--fakeroot").unwrap();
     let writable_idx = args.iter().position(|a| a == "--writable-tmpfs").unwrap();
     let contain_idx = args.iter().position(|a| a == "--contain").unwrap();
 
-    assert!(
-        fakeroot_idx < image_idx,
-        "--fakeroot should come before image"
-    );
     assert!(
         writable_idx < image_idx,
         "--writable-tmpfs should come before image"
@@ -283,9 +291,10 @@ fn test_apptainer_version_integration() {
     // On macOS, binary_path should point to the guest-side installation.
     if cfg!(target_os = "macos") {
         let bin = facade.binary_path();
+        let expected = PathBuf::from(env!("GUEST_APPTAINER_DIR")).join("bin/apptainer");
         assert_eq!(
             bin,
-            Path::new("/tmp/peppy/apptainer/bin/apptainer"),
+            expected,
             "On macOS, binary_path should be the guest-side path, got: {}",
             bin.display()
         );
@@ -546,155 +555,75 @@ fn test_host_gateway_returns_correct_value() {
 }
 
 // ---------------------------------------------------------------------------
-// Fakeroot dependency pre-flight check tests (Linux only)
+// check_setup_status tests (Linux only)
 // ---------------------------------------------------------------------------
 
 #[cfg(target_os = "linux")]
 #[test]
-fn test_find_binary_returns_path_when_present() {
-    let dir = TempDir::new().expect("create temp dir");
-    let binary = dir.path().join("my_binary");
-    fs::write(&binary, "#!/bin/sh\n").expect("write fake binary");
-
-    let result = find_binary("my_binary", &[dir.path().to_path_buf()]);
-    assert_eq!(result, Some(binary));
-}
-
-#[cfg(target_os = "linux")]
-#[test]
-fn test_find_binary_returns_none_when_absent() {
-    let dir = TempDir::new().expect("create temp dir");
-
-    let result = find_binary("nonexistent_binary", &[dir.path().to_path_buf()]);
-    assert_eq!(result, None);
-}
-
-#[cfg(target_os = "linux")]
-#[test]
-fn test_check_fakeroot_deps_succeeds_when_both_present_and_setuid() {
-    use std::os::unix::fs::PermissionsExt;
-
-    let dir = TempDir::new().expect("create temp dir");
-
-    for name in &["newuidmap", "newgidmap"] {
-        let path = dir.path().join(name);
-        fs::write(&path, "#!/bin/sh\n").expect("write fake binary");
-        let mut perms = fs::metadata(&path).expect("read metadata").permissions();
-        perms.set_mode(0o4755);
-        fs::set_permissions(&path, perms).expect("set permissions");
-
-        // The kernel may silently strip setuid on nosetuid-mounted tmpfs.
-        let actual_mode = fs::metadata(&path)
-            .expect("read metadata")
-            .permissions()
-            .mode();
-        if actual_mode & 0o4000 == 0 {
-            eprintln!(
-                "SKIPPING: filesystem stripped setuid bit (mode: {actual_mode:#o}). \
-                 This is expected on nosetuid-mounted tmpfs."
-            );
-            return;
-        }
-    }
-
-    let result = check_fakeroot_deps(&[dir.path().to_path_buf()]);
+fn check_setup_status_errors_when_starter_suid_missing() {
+    let tmp = TempDir::new().unwrap();
+    // Empty directory — no starter-suid binary
+    let result = check_setup_status(tmp.path());
+    assert!(result.is_err(), "should error when starter-suid is missing");
+    let msg = result.unwrap_err().to_string();
     assert!(
-        result.is_ok(),
-        "should succeed when both binaries are present with setuid, got: {:?}",
-        result.unwrap_err()
+        msg.contains("starter-suid not found"),
+        "error message should mention missing binary, got: {msg}"
     );
 }
 
 #[cfg(target_os = "linux")]
 #[test]
-fn test_check_fakeroot_deps_fails_when_newuidmap_missing() {
-    use std::os::unix::fs::PermissionsExt;
+fn check_setup_status_reports_real_installation() {
+    // Use the real bundled installation
+    let apptainer = Apptainer::new()
+        .expect("Apptainer::new() should succeed — apptainer is bundled at compile time");
 
-    let dir = TempDir::new().expect("create temp dir");
+    let status = check_setup_status(&apptainer.apptainer_dir)
+        .expect("check_setup_status should succeed on a valid installation");
 
-    // Only create newgidmap, not newuidmap
-    let path = dir.path().join("newgidmap");
-    fs::write(&path, "#!/bin/sh\n").expect("write fake binary");
-    let mut perms = fs::metadata(&path).expect("read metadata").permissions();
-    perms.set_mode(0o4755);
-    fs::set_permissions(&path, perms).expect("set permissions");
-
-    let err = check_fakeroot_deps(&[dir.path().to_path_buf()])
-        .expect_err("should fail when newuidmap is missing");
-
-    match err {
-        Error::FakerootDepsNotFound { binary, details } => {
-            assert_eq!(binary, "newuidmap");
-            assert!(
-                details.contains("not found"),
-                "expected 'not found' in details, got: {details}"
-            );
-        }
-        other => panic!("expected FakerootDepsNotFound, got: {other:?}"),
+    // We can't guarantee setuid is configured in CI, but we can verify the
+    // struct is populated correctly.
+    if status.is_ok() {
+        assert!(status.suid_ok);
+        assert!(status.conf_ok);
+        assert!(status.apparmor_ok);
+        assert!(
+            status.fix_script.is_none(),
+            "fix_script should be None when all checks pass"
+        );
+    } else {
+        assert!(
+            status.fix_script.is_some(),
+            "fix_script should be present when checks fail"
+        );
+        let script = status.fix_script.as_ref().unwrap();
+        assert!(
+            script.contains("chown"),
+            "fix script should contain chown command, got: {script}"
+        );
     }
 }
 
 #[cfg(target_os = "linux")]
 #[test]
-fn test_check_fakeroot_deps_fails_when_newgidmap_missing() {
-    use std::os::unix::fs::PermissionsExt;
+fn check_setup_status_detects_non_root_starter_suid() {
+    let tmp = TempDir::new().unwrap();
+    let suid_dir = tmp.path().join("libexec/apptainer/bin");
+    fs::create_dir_all(&suid_dir).unwrap();
+    fs::write(suid_dir.join("starter-suid"), b"fake").unwrap();
 
-    let dir = TempDir::new().expect("create temp dir");
+    let conf_dir = tmp.path().join("etc/apptainer");
+    fs::create_dir_all(&conf_dir).unwrap();
 
-    // Only create newuidmap, not newgidmap
-    let path = dir.path().join("newuidmap");
-    fs::write(&path, "#!/bin/sh\n").expect("write fake binary");
-    let mut perms = fs::metadata(&path).expect("read metadata").permissions();
-    perms.set_mode(0o4755);
-    fs::set_permissions(&path, perms).expect("set permissions");
+    let status =
+        check_setup_status(tmp.path()).expect("should succeed with fake starter-suid present");
 
-    // If the kernel stripped setuid, this test would fail for the wrong reason
-    // (newuidmap found but without setuid). Skip in that case.
-    let actual_mode = fs::metadata(&path)
-        .expect("read metadata")
-        .permissions()
-        .mode();
-    if actual_mode & 0o4000 == 0 {
-        eprintln!("SKIPPING: filesystem stripped setuid bit");
-        return;
-    }
-
-    let err = check_fakeroot_deps(&[dir.path().to_path_buf()])
-        .expect_err("should fail when newgidmap is missing");
-
-    match err {
-        Error::FakerootDepsNotFound { binary, details } => {
-            assert_eq!(binary, "newgidmap");
-            assert!(
-                details.contains("not found"),
-                "expected 'not found' in details, got: {details}"
-            );
-        }
-        other => panic!("expected FakerootDepsNotFound, got: {other:?}"),
-    }
-}
-
-#[cfg(target_os = "linux")]
-#[test]
-fn test_check_fakeroot_deps_fails_when_missing_setuid_bit() {
-    let dir = TempDir::new().expect("create temp dir");
-
-    for name in &["newuidmap", "newgidmap"] {
-        let path = dir.path().join(name);
-        fs::write(&path, "#!/bin/sh\n").expect("write fake binary");
-        // Mode 0755 — no setuid bit
-    }
-
-    let err = check_fakeroot_deps(&[dir.path().to_path_buf()])
-        .expect_err("should fail when setuid bit is missing");
-
-    match err {
-        Error::FakerootDepsNotFound { details, .. } => {
-            assert!(
-                details.contains("setuid"),
-                "expected 'setuid' in details, got: {details}"
-            );
-        }
-        other => panic!("expected FakerootDepsNotFound, got: {other:?}"),
-    }
+    // Running as non-root, so suid_ok should be false
+    assert!(
+        !status.suid_ok,
+        "suid_ok should be false for non-root-owned file"
+    );
+    assert!(!status.is_ok(), "is_ok should be false");
+    assert!(status.fix_script.is_some(), "should have a fix script");
 }

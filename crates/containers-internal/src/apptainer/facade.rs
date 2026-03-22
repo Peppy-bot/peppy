@@ -39,7 +39,7 @@ pub(crate) enum Backend {
 /// Handle for the Apptainer container runtime.
 ///
 /// Apptainer is installed as a portable, relocatable directory tree (created by
-/// `install-unprivileged.sh`) rather than a single binary. This type resolves
+/// `install.sh`) rather than a single binary. This type resolves
 /// the installation directory and provides command-builder methods for common
 /// apptainer operations.
 ///
@@ -63,91 +63,128 @@ pub struct Apptainer {
     pub(crate) extra_mounts: Vec<PathBuf>,
 }
 
-/// Search for a binary by name in the given directories (typically from `$PATH`).
+/// Status of Apptainer setuid prerequisites on the current system.
 #[cfg(target_os = "linux")]
-pub(crate) fn find_binary(name: &str, search_dirs: &[PathBuf]) -> Option<PathBuf> {
-    search_dirs
-        .iter()
-        .map(|dir| dir.join(name))
-        .find(|path| path.is_file())
+#[derive(Debug)]
+pub struct SetupStatus {
+    /// `starter-suid` is root-owned with the setuid bit (mode 4755).
+    pub suid_ok: bool,
+    /// `etc/apptainer/` config directory is root-owned.
+    pub conf_ok: bool,
+    /// System restricts unprivileged user namespaces via AppArmor.
+    pub apparmor_restricted: bool,
+    /// AppArmor profile for `starter-suid` is installed (always `true` when
+    /// `apparmor_restricted` is `false`).
+    pub apparmor_ok: bool,
+    /// A shell script that fixes all failing checks, or `None` when everything
+    /// passes.
+    pub fix_script: Option<String>,
 }
 
-/// Check that fakeroot dependencies (`newuidmap`, `newgidmap`) are available
-/// and have setuid-root permissions.
-///
-/// `apptainer build --fakeroot` requires these binaries from the `uidmap`
-/// (Debian/Ubuntu) or `shadow-utils` (Fedora/RHEL) package.  They must be
-/// installed with the setuid bit set (mode `4755`).
 #[cfg(target_os = "linux")]
-pub(crate) fn check_fakeroot_deps(search_dirs: &[PathBuf]) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
+impl SetupStatus {
+    /// Returns `true` when all prerequisites are met.
+    pub fn is_ok(&self) -> bool {
+        self.suid_ok && self.conf_ok && self.apparmor_ok
+    }
+}
 
-    for binary in &["newuidmap", "newgidmap"] {
-        let path = find_binary(binary, search_dirs).ok_or_else(|| Error::FakerootDepsNotFound {
-            binary: (*binary).to_string(),
-            details: format!(
-                "`{binary}` not found on PATH. \
-                     Install the `uidmap` (Debian/Ubuntu) or `shadow-utils` (Fedora/RHEL) package."
-            ),
-        })?;
+/// Inspect the Apptainer setuid prerequisites without failing on errors.
+///
+/// Returns a [`SetupStatus`] describing which checks pass and which do not,
+/// along with a ready-to-run fix script when something needs attention.
+///
+/// The caller is responsible for resolving the `apptainer_dir` — use
+/// [`Apptainer::resolve_apptainer_dir`] or the `PEPPY_APPTAINER_DIR` env var.
+#[cfg(target_os = "linux")]
+pub fn check_setup_status(apptainer_dir: &Path) -> Result<SetupStatus> {
+    use std::os::unix::fs::MetadataExt;
 
-        let metadata = std::fs::metadata(&path).map_err(|e| Error::FakerootDepsNotFound {
-            binary: (*binary).to_string(),
-            details: format!("failed to stat `{}`: {e}", path.display()),
-        })?;
+    let starter_suid = apptainer_dir.join("libexec/apptainer/bin/starter-suid");
+    let conf_dir = apptainer_dir.join("etc/apptainer");
 
-        let mode = metadata.permissions().mode();
-        if mode & 0o4000 == 0 {
-            return Err(Error::FakerootDepsNotFound {
-                binary: (*binary).to_string(),
-                details: format!(
-                    "`{binary}` found at {} but missing setuid bit (mode: {mode:#o}). \
-                     The binary must be installed with setuid-root permissions.",
-                    path.display()
-                ),
-            });
+    let suid_meta = std::fs::metadata(&starter_suid).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            Error::ConfigurationError(format!(
+                "starter-suid not found at {}. Reinstall peppy.",
+                starter_suid.display()
+            ))
+        } else {
+            Error::ConfigurationError(format!(
+                "Failed to stat starter-suid at {}: {e}",
+                starter_suid.display()
+            ))
         }
-    }
-    Ok(())
+    })?;
+
+    let suid_ok = suid_meta.uid() == 0 && (suid_meta.mode() & 0o4000) != 0;
+    let conf_ok = conf_dir.metadata().map(|m| m.uid() == 0).unwrap_or(false);
+
+    let apparmor_restricted =
+        std::fs::read_to_string("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
+            .map(|v| v.trim() == "1")
+            .unwrap_or(false);
+
+    let apparmor_ok = if apparmor_restricted {
+        std::fs::read_to_string("/etc/apparmor.d/peppy-apptainer")
+            .map(|content| content.contains("starter-suid"))
+            .unwrap_or(false)
+    } else {
+        true
+    };
+
+    let fix_script = if suid_ok && conf_ok && apparmor_ok {
+        None
+    } else {
+        let suid_path = starter_suid.display();
+        let conf_dir_path = conf_dir.display();
+
+        let mut script = format!(
+            "sudo chown root:root '{suid_path}' \\\n  \
+             && sudo chmod 4755 '{suid_path}' \\\n  \
+             && sudo chown -R root:root '{conf_dir_path}'"
+        );
+
+        if apparmor_restricted && !apparmor_ok {
+            script.push_str(&format!(
+                " \\\n  \
+                 && echo 'abi <abi/4.0>,\n\
+                 include <tunables/global>\n\
+                 \n\
+                 profile peppy-apptainer {suid_path} flags=(unconfined) {{\n\
+                 \x20 userns,\n\
+                 }}' | sudo tee /etc/apparmor.d/peppy-apptainer > /dev/null \\\n  \
+                 && sudo apparmor_parser -r /etc/apparmor.d/peppy-apptainer"
+            ));
+        }
+
+        Some(script)
+    };
+
+    Ok(SetupStatus {
+        suid_ok,
+        conf_ok,
+        apparmor_restricted,
+        apparmor_ok,
+        fix_script,
+    })
 }
 
-/// Check whether AppArmor's unprivileged user namespace restriction is active
-/// (Ubuntu 24.04+) and no per-binary profile has been installed for Apptainer's
-/// `starter` binary.
-///
-/// When `kernel.apparmor_restrict_unprivileged_userns=1`, unprivileged processes
-/// cannot create user namespaces unless their AppArmor profile grants `userns`.
-/// Without a profile, `apptainer build --fakeroot` fails with
-/// "Failed to create mount namespace".
+/// Check that Apptainer's setuid mode prerequisites are met.
+/// Returns an error with a copy-pasteable fix script when any check fails.
 #[cfg(target_os = "linux")]
-pub(crate) fn check_apparmor_userns(_apptainer_dir: &Path) -> Result<()> {
-    let sysctl = std::fs::read_to_string("/proc/sys/kernel/apparmor_restrict_unprivileged_userns");
-    let restricted = matches!(&sysctl, Ok(v) if v.trim() == "1");
-    if !restricted {
+fn check_starter_suid(apptainer_dir: &Path) -> Result<()> {
+    let status = check_setup_status(apptainer_dir)?;
+    if status.is_ok() {
         return Ok(());
     }
 
-    // Check if the peppy-apptainer AppArmor profile is already installed.
-    if Path::new("/etc/apparmor.d/peppy-apptainer").exists() {
-        return Ok(());
-    }
-
-    // Use a glob pattern so the profile covers the starter binary regardless
-    // of the exact installation path (production ~/.peppy/bin/apptainer/...,
-    // development cargo build output, etc.).
-    let fix_command = "\
-         sudo tee /etc/apparmor.d/peppy-apptainer > /dev/null << 'EOF'\n\
-         abi <abi/4.0>,\n\
-         include <tunables/global>\n\
-         \n\
-         profile peppy-apptainer @{HOME}/**/libexec/apptainer/libexec/starter flags=(unconfined) {\n\
-         \x20 userns,\n\
-         }\n\
-         EOF\n\
-         sudo apparmor_parser -r /etc/apparmor.d/peppy-apptainer"
-        .to_string();
-
-    Err(Error::AppArmorUsernsRestricted { fix_command })
+    let script = status.fix_script.unwrap();
+    Err(Error::ConfigurationError(format!(
+        "Apptainer's setuid mode is not fully configured.\n\
+         Run:\n\n{script}\n\n\
+         Or run `peppy container setup` to fix this automatically."
+    )))
 }
 
 impl Apptainer {
@@ -183,7 +220,7 @@ impl Apptainer {
             lima::check_lima_version(&limactl_path)?;
 
             Backend::Lima {
-                apptainer_bin: PathBuf::from("/tmp/peppy/apptainer/bin/apptainer"),
+                apptainer_bin: PathBuf::from(env!("GUEST_APPTAINER_DIR")).join("bin/apptainer"),
                 limactl_path,
                 lima_home,
             }
@@ -203,7 +240,7 @@ impl Apptainer {
     /// Ensures the execution backend is fully ready for running commands.
     /// Called once during construction.
     ///
-    /// On Linux (`Backend::Native`): no-op, returns `Ok(())` immediately.
+    /// On Linux (`Backend::Native`): verifies `starter-suid` has the setuid bit.
     ///
     /// On macOS (`Backend::Lima`): boots the Lima VM if it is not already running,
     /// and syncs the apptainer installation into the guest. This may take minutes
@@ -212,15 +249,7 @@ impl Apptainer {
         match &mut self.backend {
             Backend::Native { .. } => {
                 #[cfg(target_os = "linux")]
-                {
-                    let search_dirs: Vec<PathBuf> = std::env::var("PATH")
-                        .unwrap_or_default()
-                        .split(':')
-                        .map(PathBuf::from)
-                        .collect();
-                    check_fakeroot_deps(&search_dirs)?;
-                    check_apparmor_userns(&self.apptainer_dir)?;
-                }
+                check_starter_suid(&self.apptainer_dir)?;
                 Ok(())
             }
             Backend::Lima {
@@ -349,7 +378,7 @@ impl Apptainer {
     }
 
     pub fn version(&self) -> Result<String> {
-        let mut cmd = self.command(&["--version"])?;
+        let mut cmd = self.command(&["--version"], &[])?;
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
         let output = cmd.output().map_err(Error::from)?;
         if !output.status.success() {
@@ -394,6 +423,7 @@ impl Apptainer {
             },
             flags: Vec::new(),
             bind_mounts: Vec::new(),
+            lima_shell_extra_args: Vec::new(),
         }
     }
 
@@ -410,6 +440,7 @@ impl Apptainer {
             },
             flags: Vec::new(),
             bind_mounts: Vec::new(),
+            lima_shell_extra_args: Vec::new(),
         }
     }
 
@@ -425,6 +456,7 @@ impl Apptainer {
             },
             flags: Vec::new(),
             bind_mounts: Vec::new(),
+            lima_shell_extra_args: Vec::new(),
         }
     }
 
@@ -497,7 +529,7 @@ impl Apptainer {
     /// On Linux: runs `{apptainer_bin} <args...>` directly.
     /// On macOS: runs `{limactl} shell peppy -- {guest_apptainer_bin} <args...>` to
     /// execute inside the Lima VM using the synced guest-side binary.
-    fn command(&self, args: &[&str]) -> Result<Command> {
+    fn command(&self, args: &[&str], lima_shell_extra_args: &[String]) -> Result<Command> {
         match &self.backend {
             Backend::Native { apptainer_bin } => {
                 let mut cmd = Command::new(apptainer_bin);
@@ -512,7 +544,11 @@ impl Apptainer {
             } => {
                 let mut cmd = Command::new(limactl_path);
                 cmd.env("LIMA_HOME", lima_home);
-                cmd.arg("shell").arg(lima::LIMA_INSTANCE).arg("--");
+                cmd.arg("shell").arg(lima::LIMA_INSTANCE);
+                for arg in lima_shell_extra_args {
+                    cmd.arg(arg);
+                }
+                cmd.arg("--");
                 cmd.arg(apptainer_bin);
                 cmd.args(args);
                 Ok(cmd)
@@ -524,7 +560,7 @@ impl Apptainer {
     // Path resolution
     // -----------------------------------------------------------------------
 
-    fn resolve_apptainer_dir() -> Result<PathBuf> {
+    pub fn resolve_apptainer_dir() -> Result<PathBuf> {
         // 1) Runtime override via environment variable
         if let Ok(dir) = std::env::var("PEPPY_APPTAINER_DIR") {
             let dir = dir.trim().to_string();
@@ -639,6 +675,7 @@ pub struct ApptainerCommand<'a> {
     kind: CommandKind,
     flags: Vec<String>,
     bind_mounts: Vec<BindMount>,
+    lima_shell_extra_args: Vec<String>,
 }
 
 impl<'a> ApptainerCommand<'a> {
@@ -683,12 +720,6 @@ impl<'a> ApptainerCommand<'a> {
         self
     }
 
-    /// Add the `--fakeroot` flag.
-    pub fn fakeroot(mut self) -> Self {
-        self.flags.push("--fakeroot".to_string());
-        self
-    }
-
     /// Add the `--writable-tmpfs` flag.
     pub fn writable_tmpfs(mut self) -> Self {
         self.flags.push("--writable-tmpfs".to_string());
@@ -704,6 +735,15 @@ impl<'a> ApptainerCommand<'a> {
     /// Add the `--contain` flag (minimal `/dev` and empty home/tmp).
     pub fn contain(mut self) -> Self {
         self.flags.push("--contain".to_string());
+        self
+    }
+
+    /// Add extra arguments passed to `limactl shell` (before the `--` separator).
+    ///
+    /// These are only effective when running under the Lima backend (macOS).
+    /// On Linux (native backend) they are silently ignored.
+    pub fn lima_shell_extra_args(mut self, args: &[String]) -> Self {
+        self.lima_shell_extra_args.extend(args.iter().cloned());
         self
     }
 
@@ -750,7 +790,9 @@ impl<'a> ApptainerCommand<'a> {
     pub fn spawn(self) -> Result<Child> {
         let args = self.build_args()?;
         let str_args: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-        let mut cmd = self.facade.command(&str_args)?;
+        let mut cmd = self
+            .facade
+            .command(&str_args, &self.lima_shell_extra_args)?;
         cmd.spawn().map_err(Error::from)
     }
 
@@ -765,7 +807,7 @@ impl<'a> ApptainerCommand<'a> {
     pub fn into_std_command(self) -> Result<Command> {
         let args = self.build_args()?;
         let str_args: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-        self.facade.command(&str_args)
+        self.facade.command(&str_args, &self.lima_shell_extra_args)
     }
 
     /// Run the command to completion and return its captured output.
@@ -774,7 +816,9 @@ impl<'a> ApptainerCommand<'a> {
     pub fn output(self) -> Result<Output> {
         let args = self.build_args()?;
         let str_args: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-        let mut cmd = self.facade.command(&str_args)?;
+        let mut cmd = self
+            .facade
+            .command(&str_args, &self.lima_shell_extra_args)?;
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
         cmd.output().map_err(Error::from)
     }
