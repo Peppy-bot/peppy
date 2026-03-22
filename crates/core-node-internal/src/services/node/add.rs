@@ -486,7 +486,7 @@ fn move_sif_to_storage(
 
 /// Builds a container image using the Apptainer facade.
 ///
-/// Runs `apptainer build --fakeroot {node_name}_{node_tag}.sif {def_file}` in the
+/// Runs `apptainer build {node_name}_{node_tag}.sif {def_file}` in the
 /// working directory. Build output is streamed to both the CLI (via the feedback
 /// publisher) and the log file. On failure, the last [`STDERR_TAIL_LINES`]
 /// lines of stderr are included in the error message.
@@ -519,7 +519,7 @@ async fn build_container_image(ctx: ContainerBuildContext<'_>) -> Result<()> {
     let output_path = ctx.working_dir.join(&sif_name);
     let def_path = ctx.working_dir.join(ctx.def_file);
 
-    let mut cmd_builder = apptainer.build(&output_path, &def_path).fakeroot();
+    let mut cmd_builder = apptainer.build(&output_path, &def_path);
     for arg in ctx.apptainer_build_extra_args {
         cmd_builder = cmd_builder.raw_flag(arg);
     }

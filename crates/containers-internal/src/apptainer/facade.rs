@@ -723,12 +723,6 @@ impl<'a> ApptainerCommand<'a> {
         self
     }
 
-    /// Add the `--fakeroot` flag.
-    pub fn fakeroot(mut self) -> Self {
-        self.flags.push("--fakeroot".to_string());
-        self
-    }
-
     /// Add the `--writable-tmpfs` flag.
     pub fn writable_tmpfs(mut self) -> Self {
         self.flags.push("--writable-tmpfs".to_string());

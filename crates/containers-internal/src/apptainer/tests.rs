@@ -198,11 +198,7 @@ fn test_flags_come_before_positional_args() {
     let facade = Apptainer::new()
         .expect("Apptainer::new() should succeed — apptainer is bundled at compile time");
 
-    let cmd = facade
-        .run("image.sif")
-        .fakeroot()
-        .writable_tmpfs()
-        .contain();
+    let cmd = facade.run("image.sif").writable_tmpfs().contain();
     let args = cmd.build_args().expect("build_args should succeed");
 
     // Subcommand is first
@@ -212,14 +208,9 @@ fn test_flags_come_before_positional_args() {
     let image_idx = args.iter().position(|a| a.ends_with("image.sif")).unwrap();
 
     // All flags should come before the image
-    let fakeroot_idx = args.iter().position(|a| a == "--fakeroot").unwrap();
     let writable_idx = args.iter().position(|a| a == "--writable-tmpfs").unwrap();
     let contain_idx = args.iter().position(|a| a == "--contain").unwrap();
 
-    assert!(
-        fakeroot_idx < image_idx,
-        "--fakeroot should come before image"
-    );
     assert!(
         writable_idx < image_idx,
         "--writable-tmpfs should come before image"

@@ -246,7 +246,7 @@ Adding a container node works the same as a regular node:
 peppy node add ./my_node
 ```
 
-Under the hood, PeppyOS runs `apptainer build --fakeroot` to produce a `.sif` (Singularity Image Format) file.
+Under the hood, PeppyOS runs `apptainer build` to produce a `.sif` (Singularity Image Format) file.
 This replaces the `add_cmd` step used by process nodes — the entire build happens inside the container according to the `%post` section of the definition file.
 
 The resulting `.sif` file is stored in PeppyOS's internal storage and is ready to be started.
