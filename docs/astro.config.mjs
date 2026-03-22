@@ -1,6 +1,7 @@
 // @ts-check
 import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
+import starlightLlmsTxt from 'starlight-llms-txt';
 import { decodeHTML } from 'entities';
 import { fileURLToPath } from 'node:url';
 import { basename } from 'node:path';
@@ -129,6 +130,7 @@ export default defineConfig({
 	integrations: [
 		releaseHtmlEntryType(),
 		starlight({
+			plugins: [starlightLlmsTxt()],
 			expressiveCode: {
 				shiki: {
 					langs: [{ ...apptainerGrammar, name: 'apptainer' }],
