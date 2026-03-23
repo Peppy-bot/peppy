@@ -25,11 +25,11 @@ PEPPY_CONFIG = """{
   },
   runtime: {
     language: "python",
+    parameters: {
+      frequency_hz: "f64"
+    },
     start_cmd: ["uv", "run"]
   },
-  parameters: {
-    frequency_hz: "f64"
-  }
 }"""
 
 
