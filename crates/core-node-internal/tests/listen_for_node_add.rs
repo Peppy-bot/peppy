@@ -199,21 +199,21 @@ async fn listen_for_node_fs_add_success() {
     let node_stack = started_core_node.node_stack.clone();
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
-    let peppy_json5 = format!(
-        r#"{{
+    let peppy_json5 = r#"{
             schema_version: 1,
-            manifest: {{
+            manifest: {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
-            }},
-            codegen: {{
+            },
+            codegen: {
                 language: "rust",
-            }},
-            process: {{
+            },
+            process: {
                 start_cmd: ["sleep", "10"]
-            }}
-        }}"#
-    );
+            }
+        }"#
+    .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
+    .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
     let add_result = send_node_add_and_wait(
@@ -303,8 +303,7 @@ async fn listen_for_node_add_with_container_success() {
     .replace("TARGET_NODE_NAME", TARGET_NODE_NAME)
     .replace("TARGET_NODE_TAG", TARGET_NODE_TAG);
     write_peppy_json5(source_dir.path(), &peppy_json5);
-    let apptainer_def = format!(
-        r#"
+    let apptainer_def = r#"
 Bootstrap: docker
 From: {DEFAULT_ALPINE_BASE_IMAGE}
 
@@ -315,7 +314,9 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
 %runscript
     echo "Running {TARGET_NODE_NAME}:{TARGET_NODE_TAG}"
 "#
-    );
+    .replace("{DEFAULT_ALPINE_BASE_IMAGE}", DEFAULT_ALPINE_BASE_IMAGE)
+    .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
+    .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
     std::fs::write(source_dir.path().join("apptainer.def"), &apptainer_def)
         .expect("failed to write apptainer definition");
 
@@ -579,21 +580,21 @@ async fn listen_for_node_http_add_success() {
     let node_stack = started_core_node.node_stack.clone();
 
     let bundle_dir = tempfile::tempdir().expect("failed to create temp bundle dir");
-    let peppy_json5 = format!(
-        r#"{{
+    let peppy_json5 = r#"{
             schema_version: 1,
-            manifest: {{
+            manifest: {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
-            }},
-            codegen: {{
+            },
+            codegen: {
                 language: "rust",
-            }},
-            process: {{
+            },
+            process: {
                 start_cmd: ["sleep", "10"]
-            }}
-        }}"#
-    );
+            }
+        }"#
+    .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
+    .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
 
     let manifest_path = bundle_dir.path().join(NODE_CONFIG_FILE);
     std::fs::write(&manifest_path, &peppy_json5).expect("failed to write manifest");
@@ -697,21 +698,21 @@ async fn listen_for_node_add_no_config_found() {
     let node_stack = started_core_node.node_stack.clone();
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
-    let peppy_json5 = format!(
-        r#"{{
+    let peppy_json5 = r#"{
             schema_version: 1,
-            manifest: {{
+            manifest: {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
-            }},
-            codegen: {{
+            },
+            codegen: {
                 language: "rust",
-            }},
-            process: {{
+            },
+            process: {
                 start_cmd: ["sleep", "10"]
-            }}
-        }}"#
-    );
+            }
+        }"#
+    .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
+    .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
     std::fs::remove_file(source_dir.path().join(NODE_CONFIG_FILE))
@@ -961,22 +962,22 @@ async fn listen_for_node_add_same_node_same_tags_overwrites_when_no_dependents()
     let source_dir_v2 = tempfile::tempdir().expect("failed to create temp source dir");
 
     // First add: no interfaces
-    let peppy_json5_v1 = format!(
-        r#"{{
+    let peppy_json5_v1 = r#"{
             schema_version: 1,
-            manifest: {{
+            manifest: {
                 name: "{NODE_NAME}",
                 tag: "{NODE_TAG}",
-            }},
-            codegen: {{
+            },
+            codegen: {
                 language: "rust",
-            }},
-            process: {{
+            },
+            process: {
                 start_cmd: ["sleep", "10"]
-            }},
-            parameters: {{}}
-        }}"#
-    );
+            },
+            parameters: {}
+        }"#
+    .replace("{NODE_NAME}", NODE_NAME)
+    .replace("{NODE_TAG}", NODE_TAG);
     write_peppy_json5(source_dir_v1.path(), &peppy_json5_v1);
 
     let add_v1 = send_node_add_and_wait(
@@ -1004,26 +1005,26 @@ async fn listen_for_node_add_same_node_same_tags_overwrites_when_no_dependents()
     let copied_path_v1 = entity.root_path().to_path_buf();
 
     // Second add: same name+tag but different interfaces -> should overwrite.
-    let peppy_json5_v2 = format!(
-        r#"{{
+    let peppy_json5_v2 = r#"{
             schema_version: 1,
-            manifest: {{
+            manifest: {
                 name: "{NODE_NAME}",
                 tag: "{NODE_TAG}",
-            }},
-            codegen: {{
+            },
+            codegen: {
                 language: "rust",
-            }},
-            process: {{
+            },
+            process: {
                 start_cmd: ["sleep", "10"]
-            }},
-            interfaces: {{
-                topics: {{
-                    emits: [{{ name: "/example" }}]
-                }}
-            }}
-        }}"#
-    );
+            },
+            interfaces: {
+                topics: {
+                    emits: [{ name: "/example" }]
+                }
+            }
+        }"#
+    .replace("{NODE_NAME}", NODE_NAME)
+    .replace("{NODE_TAG}", NODE_TAG);
     write_peppy_json5(source_dir_v2.path(), &peppy_json5_v2);
 
     let add_v2 = send_node_add_and_wait(
@@ -1089,28 +1090,28 @@ async fn listen_for_node_add_same_node_same_tags_fails_when_node_has_dependents(
     let dependency_source_dir_v2 = tempfile::tempdir().expect("failed to create temp source dir");
     let dependent_source_dir = tempfile::tempdir().expect("failed to create temp source dir");
 
-    let dependency_peppy_json5_v1 = format!(
-        r#"{{
+    let dependency_peppy_json5_v1 = r#"{
             schema_version: 1,
-            manifest: {{
+            manifest: {
                 name: "{DEPENDENCY_NODE_NAME}",
                 tag: "{DEPENDENCY_NODE_TAG}",
-            }},
-            codegen: {{
+            },
+            codegen: {
                 language: "rust",
-            }},
-            process: {{
+            },
+            process: {
                 start_cmd: ["sleep", "10"]
-            }},
-            interfaces: {{
-                services: {{
+            },
+            interfaces: {
+                services: {
                     exposes: [
-                        {{ name: "reset_sensor" }}
+                        { name: "reset_sensor" }
                     ]
-                }}
-            }}
-        }}"#
-    );
+                }
+            }
+        }"#
+    .replace("{DEPENDENCY_NODE_NAME}", DEPENDENCY_NODE_NAME)
+    .replace("{DEPENDENCY_NODE_TAG}", DEPENDENCY_NODE_TAG);
     write_peppy_json5(dependency_source_dir_v1.path(), &dependency_peppy_json5_v1);
 
     let dependency_add_v1 = send_node_add_and_wait(
@@ -1129,36 +1130,38 @@ async fn listen_for_node_add_same_node_same_tags_fails_when_node_has_dependents(
         dependency_add_v1.error_message
     );
 
-    let dependent_peppy_json5 = format!(
-        r#"{{
+    let dependent_peppy_json5 = r#"{
             schema_version: 1,
-            manifest: {{
+            manifest: {
                 name: "{DEPENDENT_NODE_NAME}",
                 tag: "{DEPENDENT_NODE_TAG}",
-                depends_on: {{
+                depends_on: {
                     nodes: [
-                        {{ name: "{DEPENDENCY_NODE_NAME}", tag: "{DEPENDENCY_NODE_TAG}", local_id: "{DEPENDENCY_NODE_NAME}" }}
+                        { name: "{DEPENDENCY_NODE_NAME}", tag: "{DEPENDENCY_NODE_TAG}", local_id: "{DEPENDENCY_NODE_NAME}" }
                     ]
-                }},
-            }},
-            codegen: {{
+                },
+            },
+            codegen: {
                 language: "rust",
-            }},
-            process: {{
+            },
+            process: {
                 start_cmd: ["sleep", "10"]
-            }},
-            interfaces: {{
-                services: {{
+            },
+            interfaces: {
+                services: {
                     consumes: [
-                        {{
+                        {
                           local_node_id: "{DEPENDENCY_NODE_NAME}",
                           name: "reset_sensor"
-                        }}
+                        }
                     ]
-                }}
-            }}
-        }}"#
-    );
+                }
+            }
+        }"#
+    .replace("{DEPENDENT_NODE_NAME}", DEPENDENT_NODE_NAME)
+    .replace("{DEPENDENT_NODE_TAG}", DEPENDENT_NODE_TAG)
+    .replace("{DEPENDENCY_NODE_NAME}", DEPENDENCY_NODE_NAME)
+    .replace("{DEPENDENCY_NODE_TAG}", DEPENDENCY_NODE_TAG);
     write_peppy_json5(dependent_source_dir.path(), &dependent_peppy_json5);
 
     let dependent_add = send_node_add_and_wait(
@@ -1184,28 +1187,28 @@ async fn listen_for_node_add_same_node_same_tags_fails_when_node_has_dependents(
     let dependency_snapshot_path = dependency_entity.root_path().to_path_buf();
 
     // Overwrite attempt: same name+tag but different interfaces should fail due to dependent nodes.
-    let dependency_peppy_json5_v2 = format!(
-        r#"{{
+    let dependency_peppy_json5_v2 = r#"{
             schema_version: 1,
-            manifest: {{
+            manifest: {
                 name: "{DEPENDENCY_NODE_NAME}",
                 tag: "{DEPENDENCY_NODE_TAG}",
-            }},
-            codegen: {{
+            },
+            codegen: {
                 language: "rust",
-            }},
-            process: {{
+            },
+            process: {
                 start_cmd: ["sleep", "10"]
-            }},
-            interfaces: {{
-                services: {{
+            },
+            interfaces: {
+                services: {
                     exposes: [
-                        {{ name: "new_service" }}
+                        { name: "new_service" }
                     ]
-                }}
-            }}
-        }}"#
-    );
+                }
+            }
+        }"#
+    .replace("{DEPENDENCY_NODE_NAME}", DEPENDENCY_NODE_NAME)
+    .replace("{DEPENDENCY_NODE_TAG}", DEPENDENCY_NODE_TAG);
     write_peppy_json5(dependency_source_dir_v2.path(), &dependency_peppy_json5_v2);
 
     let dependency_add_v2 = send_node_add_and_wait(
@@ -1258,21 +1261,20 @@ async fn listen_for_node_add_same_node_different_tags_create_two_entities() {
     let source_dir_v1 = tempfile::tempdir().expect("failed to create temp source dir");
     let source_dir_v2 = tempfile::tempdir().expect("failed to create temp source dir");
 
-    let peppy_json5_v1 = format!(
-        r#"{{
+    let peppy_json5_v1 = r#"{
             schema_version: 1,
-            manifest: {{
+            manifest: {
                 name: "{NODE_NAME}",
                 tag: "1.0.0",
-            }},
-            codegen: {{
+            },
+            codegen: {
                 language: "rust",
-            }},
-            process: {{
+            },
+            process: {
                 start_cmd: ["sleep", "10"]
-            }}
-        }}"#
-    );
+            }
+        }"#
+    .replace("{NODE_NAME}", NODE_NAME);
     write_peppy_json5(source_dir_v1.path(), &peppy_json5_v1);
 
     let add_v1 = send_node_add_and_wait(
@@ -1292,21 +1294,20 @@ async fn listen_for_node_add_same_node_different_tags_create_two_entities() {
         add_v1.error_message
     );
 
-    let peppy_json5_v2 = format!(
-        r#"{{
+    let peppy_json5_v2 = r#"{
             schema_version: 1,
-            manifest: {{
+            manifest: {
                 name: "{NODE_NAME}",
                 tag: "2.0.0",
-            }},
-            codegen: {{
+            },
+            codegen: {
                 language: "rust",
-            }},
-            process: {{
+            },
+            process: {
                 start_cmd: ["sleep", "10"]
-            }}
-        }}"#
-    );
+            }
+        }"#
+    .replace("{NODE_NAME}", NODE_NAME);
     write_peppy_json5(source_dir_v2.path(), &peppy_json5_v2);
 
     let add_v2 = send_node_add_and_wait(
@@ -1351,21 +1352,21 @@ async fn listen_for_node_add_copies_files_to_storage() {
     std::fs::write(sub_dir.join("nested_file.txt"), "nested content")
         .expect("failed to write nested file");
 
-    let peppy_json5 = format!(
-        r#"{{
+    let peppy_json5 = r#"{
             schema_version: 1,
-            manifest: {{
+            manifest: {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
-            }},
-            codegen: {{
+            },
+            codegen: {
                 language: "rust",
-            }},
-            process: {{
+            },
+            process: {
                 start_cmd: ["sleep", "10"]
-            }}
-        }}"#
-    );
+            }
+        }"#
+    .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
+    .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
     let add_result = send_node_add_and_wait(
@@ -1427,22 +1428,23 @@ async fn listen_for_node_add_runs_add_cmd() {
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
 
     // add_cmd creates a marker file to prove it was executed
-    let peppy_json5 = format!(
-        r#"{{
+    let peppy_json5 = r#"{
             schema_version: 1,
-            manifest: {{
+            manifest: {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
-            }},
-            codegen: {{
+            },
+            codegen: {
                 language: "rust",
-            }},
-            process: {{
+            },
+            process: {
                 add_cmd: ["touch", "{ADD_CMD_MARKER_FILE}"],
                 start_cmd: ["sleep", "10"]
-            }}
-        }}"#
-    );
+            }
+        }"#
+    .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
+    .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG)
+    .replace("{ADD_CMD_MARKER_FILE}", ADD_CMD_MARKER_FILE);
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
     let add_result = send_node_add_and_wait(
@@ -1495,22 +1497,22 @@ async fn listen_for_node_add_cmd_failure_fails_add() {
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
 
     // add_cmd that will fail (non-existent command)
-    let peppy_json5 = format!(
-        r#"{{
+    let peppy_json5 = r#"{
             schema_version: 1,
-            manifest: {{
+            manifest: {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
-            }},
-            codegen: {{
+            },
+            codegen: {
                 language: "rust",
-            }},
-            process: {{
+            },
+            process: {
                 add_cmd: ["this_command_does_not_exist_12345"],
                 start_cmd: ["sleep", "10"]
-            }}
-        }}"#
-    );
+            }
+        }"#
+    .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
+    .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
     let add_result = send_node_add_and_wait(
@@ -1566,22 +1568,22 @@ async fn listen_for_node_add_cmd_nonzero_exit_fails_add() {
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
 
     // add_cmd that exits with non-zero status
-    let peppy_json5 = format!(
-        r#"{{
+    let peppy_json5 = r#"{
             schema_version: 1,
-            manifest: {{
+            manifest: {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
-            }},
-            codegen: {{
+            },
+            codegen: {
                 language: "rust",
-            }},
-            process: {{
+            },
+            process: {
                 add_cmd: ["sh", "-c", "exit 1"],
                 start_cmd: ["sleep", "10"]
-            }}
-        }}"#
-    );
+            }
+        }"#
+    .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
+    .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
     let add_result = send_node_add_and_wait(
@@ -1635,22 +1637,24 @@ async fn listen_for_node_add_streams_stdout_and_stderr() {
     let started_core_node = start_core_node_with_mock_messenger().await;
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
-    let peppy_json5 = format!(
-        r#"{{
+    let peppy_json5 = r#"{
             schema_version: 1,
-            manifest: {{
+            manifest: {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
-            }},
-            codegen: {{
+            },
+            codegen: {
                 language: "rust",
-            }},
-            process: {{
+            },
+            process: {
                 add_cmd: ["sh", "-c", "echo {STDOUT_MARKER}; echo {STDERR_MARKER} 1>&2"],
                 start_cmd: ["sleep", "10"]
-            }}
-        }}"#
-    );
+            }
+        }"#
+    .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
+    .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG)
+    .replace("{STDOUT_MARKER}", STDOUT_MARKER)
+    .replace("{STDERR_MARKER}", STDERR_MARKER);
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
     // Use wildcard caller IDs so mock pub/sub can match feedback topics with "*" segments.
@@ -1697,21 +1701,21 @@ async fn listen_for_node_add_fingerprint_mismatch() {
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
 
-    let peppy_json5 = format!(
-        r#"{{
+    let peppy_json5 = r#"{
             schema_version: 1,
-            manifest: {{
+            manifest: {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
-            }},
-            codegen: {{
+            },
+            codegen: {
                 language: "rust",
-            }},
-            process: {{
+            },
+            process: {
                 start_cmd: ["sleep", "10"]
-            }}
-        }}"#
-    );
+            }
+        }"#
+    .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
+    .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
     // Write the config file only (without fingerprint)
     let config_path = source_dir.path().join(NODE_CONFIG_FILE);
     std::fs::write(&config_path, &peppy_json5).expect("failed to write peppy.json5");
@@ -1774,22 +1778,24 @@ async fn listen_for_node_add_writes_log_file() {
     let started_core_node = start_core_node_with_mock_messenger().await;
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
-    let peppy_json5 = format!(
-        r#"{{
+    let peppy_json5 = r#"{
             schema_version: 1,
-            manifest: {{
+            manifest: {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
-            }},
-            codegen: {{
+            },
+            codegen: {
                 language: "rust",
-            }},
-            process: {{
+            },
+            process: {
                 add_cmd: ["sh", "-c", "echo {STDOUT_MARKER}; echo {STDERR_MARKER} 1>&2"],
                 start_cmd: ["sleep", "10"]
-            }}
-        }}"#
-    );
+            }
+        }"#
+    .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
+    .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG)
+    .replace("{STDOUT_MARKER}", STDOUT_MARKER)
+    .replace("{STDERR_MARKER}", STDERR_MARKER);
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
     let add_result = send_node_add_and_wait(
@@ -1881,21 +1887,21 @@ async fn listen_for_node_add_abandoned_action_does_not_block_next_goal() {
 
     // Create first node source directory
     let first_source_dir = tempfile::tempdir().expect("failed to create temp source dir");
-    let first_peppy_json5 = format!(
-        r#"{{
+    let first_peppy_json5 = r#"{
             schema_version: 1,
-            manifest: {{
+            manifest: {
                 name: "{FIRST_NODE_NAME}",
                 tag: "{FIRST_NODE_TAG}",
-            }},
-            codegen: {{
+            },
+            codegen: {
                 language: "rust",
-            }},
-            process: {{
+            },
+            process: {
                 start_cmd: ["sleep", "10"]
-            }}
-        }}"#
-    );
+            }
+        }"#
+    .replace("{FIRST_NODE_NAME}", FIRST_NODE_NAME)
+    .replace("{FIRST_NODE_TAG}", FIRST_NODE_TAG);
     write_peppy_json5(first_source_dir.path(), &first_peppy_json5);
 
     // Write git hash file for first node
@@ -1949,21 +1955,21 @@ async fn listen_for_node_add_abandoned_action_does_not_block_next_goal() {
     // Now send second goal - this should succeed even though we never polled
     // for the first action's result
     let second_source_dir = tempfile::tempdir().expect("failed to create temp source dir");
-    let second_peppy_json5 = format!(
-        r#"{{
+    let second_peppy_json5 = r#"{
             schema_version: 1,
-            manifest: {{
+            manifest: {
                 name: "{SECOND_NODE_NAME}",
                 tag: "{SECOND_NODE_TAG}",
-            }},
-            codegen: {{
+            },
+            codegen: {
                 language: "rust",
-            }},
-            process: {{
+            },
+            process: {
                 start_cmd: ["sleep", "10"]
-            }}
-        }}"#
-    );
+            }
+        }"#
+    .replace("{SECOND_NODE_NAME}", SECOND_NODE_NAME)
+    .replace("{SECOND_NODE_TAG}", SECOND_NODE_TAG);
     write_peppy_json5(second_source_dir.path(), &second_peppy_json5);
 
     let second_add_result = send_node_add_and_wait(
@@ -2010,21 +2016,21 @@ async fn node_add_same_node_shutdown_existing_instances() {
     let node_stack = started_core_node.node_stack.clone();
 
     let source_dir_v1 = tempfile::tempdir().expect("failed to create temp source dir");
-    let peppy_json5_v1 = format!(
-        r#"{{
+    let peppy_json5_v1 = r#"{
             schema_version: 1,
-            manifest: {{
+            manifest: {
                 name: "{NODE_NAME}",
                 tag: "{NODE_TAG}",
-            }},
-            codegen: {{
+            },
+            codegen: {
                 language: "rust",
-            }},
-            process: {{
+            },
+            process: {
                 start_cmd: ["sleep", "10"]
-            }}
-        }}"#
-    );
+            }
+        }"#
+    .replace("{NODE_NAME}", NODE_NAME)
+    .replace("{NODE_TAG}", NODE_TAG);
     write_peppy_json5(source_dir_v1.path(), &peppy_json5_v1);
 
     let add_v1 = send_node_add_and_wait(
@@ -2130,26 +2136,26 @@ async fn node_add_same_node_shutdown_existing_instances() {
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     let source_dir_v2 = tempfile::tempdir().expect("failed to create temp source dir");
-    let peppy_json5_v2 = format!(
-        r#"{{
+    let peppy_json5_v2 = r#"{
             schema_version: 1,
-            manifest: {{
+            manifest: {
                 name: "{NODE_NAME}",
                 tag: "{NODE_TAG}",
-            }},
-            codegen: {{
+            },
+            codegen: {
                 language: "rust",
-            }},
-            process: {{
+            },
+            process: {
                 start_cmd: ["sleep", "10"]
-            }},
-            interfaces: {{
-                topics: {{
-                    emits: [{{ name: "/example" }}]
-                }}
-            }}
-        }}"#
-    );
+            },
+            interfaces: {
+                topics: {
+                    emits: [{ name: "/example" }]
+                }
+            }
+        }"#
+    .replace("{NODE_NAME}", NODE_NAME)
+    .replace("{NODE_TAG}", NODE_TAG);
     write_peppy_json5(source_dir_v2.path(), &peppy_json5_v2);
 
     // Use wildcard caller IDs so mock pub/sub can match feedback topics with "*" segments.
@@ -2264,22 +2270,24 @@ async fn listen_for_node_add_uses_env_overrides_for_path() {
     let started_core_node = start_core_node_with_mock_messenger().await;
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
-    let peppy_json5 = format!(
-        r#"{{
+    let peppy_json5 = r#"{
             schema_version: 1,
-            manifest: {{
+            manifest: {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
-            }},
-            codegen: {{
+            },
+            codegen: {
                 language: "rust",
-            }},
-            process: {{
+            },
+            process: {
                 add_cmd: ["printout {STDOUT_MARKER}; printout {STDERR_MARKER} 1>&2"],
                 start_cmd: ["sleep", "10"]
-            }}
-        }}"#
-    );
+            }
+        }"#
+    .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
+    .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG)
+    .replace("{STDOUT_MARKER}", STDOUT_MARKER)
+    .replace("{STDERR_MARKER}", STDERR_MARKER);
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
     // `printout` does not exist in the system when this is run
@@ -2351,26 +2359,26 @@ async fn listen_for_node_add_injects_runtime_env_vars() {
 
     let started_core_node = start_core_node_with_mock_messenger().await;
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
-    let peppy_json5 = format!(
-        r#"{{
+    let peppy_json5 = r#"{
             schema_version: 1,
-            manifest: {{
+            manifest: {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
-            }},
-            codegen: {{
+            },
+            codegen: {
                 language: "rust",
-            }},
-            process: {{
+            },
+            process: {
                 add_cmd: [
                     "sh",
                     "-c",
                     "test -n \"$PEPPY_APPTAINER_BIN\" && test \"$PEPPY_NODE_NAME\" = \"{TARGET_NODE_NAME}\" && test \"$PEPPY_NODE_TAG\" = \"{TARGET_NODE_TAG}\""
                 ],
                 start_cmd: ["sleep", "10"]
-            }}
-        }}"#
-    );
+            }
+        }"#
+    .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
+    .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
     let add_result = send_node_add_and_wait(
@@ -2500,26 +2508,26 @@ async fn listen_for_node_add_fails_on_missing_interface_even_when_dependency_exi
     // Step 1: Add the dependency node that emits a topic with a DIFFERENT name
     // than what the dependent node will subscribe to.
     let dep_source_dir = tempfile::tempdir().expect("failed to create temp dep source dir");
-    let dep_peppy_json5 = format!(
-        r#"{{
+    let dep_peppy_json5 = r#"{
             schema_version: 1,
-            manifest: {{
+            manifest: {
                 name: "{DEPENDENCY_NODE_NAME}",
                 tag: "{DEPENDENCY_NODE_TAG}",
-            }},
-            codegen: {{
+            },
+            codegen: {
                 language: "rust",
-            }},
-            process: {{
+            },
+            process: {
                 start_cmd: ["sleep", "10"]
-            }},
-            interfaces: {{
-                topics: {{
-                    emits: [{{ name: "wrong_topic_name" }}]
-                }}
-            }}
-        }}"#
-    );
+            },
+            interfaces: {
+                topics: {
+                    emits: [{ name: "wrong_topic_name" }]
+                }
+            }
+        }"#
+    .replace("{DEPENDENCY_NODE_NAME}", DEPENDENCY_NODE_NAME)
+    .replace("{DEPENDENCY_NODE_TAG}", DEPENDENCY_NODE_TAG);
     write_peppy_json5(dep_source_dir.path(), &dep_peppy_json5);
 
     let dep_result = send_node_add_and_wait(
@@ -2640,21 +2648,21 @@ async fn listen_for_node_add_reports_excluded_dirs_in_feedback() {
             .expect("failed to create excluded dir");
     }
 
-    let peppy_json5 = format!(
-        r#"{{
+    let peppy_json5 = r#"{
             schema_version: 1,
-            manifest: {{
+            manifest: {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
-            }},
-            codegen: {{
+            },
+            codegen: {
                 language: "rust",
-            }},
-            process: {{
+            },
+            process: {
                 start_cmd: ["sleep", "10"]
-            }}
-        }}"#
-    );
+            }
+        }"#
+    .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
+    .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
     let (feedback_tx, mut feedback_rx) = tokio::sync::mpsc::unbounded_channel::<NodeAddFeedback>();
@@ -2827,22 +2835,22 @@ async fn listen_for_node_add_logs_error_on_spawn_failure() {
     // Multi-element add_cmd with a nonexistent binary.
     // Multi-element commands are executed directly (not via shell), so
     // command.spawn() will fail with a "No such file or directory" error.
-    let peppy_json5 = format!(
-        r#"{{
+    let peppy_json5 = r#"{
             schema_version: 1,
-            manifest: {{
+            manifest: {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
-            }},
-            codegen: {{
+            },
+            codegen: {
                 language: "rust",
-            }},
-            process: {{
+            },
+            process: {
                 add_cmd: ["nonexistent_binary_peppy_test_xyz", "--flag"],
                 start_cmd: ["sleep", "10"]
-            }}
-        }}"#
-    );
+            }
+        }"#
+    .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
+    .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
     let add_result = send_node_add_and_wait(
@@ -2928,28 +2936,28 @@ async fn node_add_same_node_with_running_instance_and_dependents_succeeds() {
     let dependency_source_dir_v2 = tempfile::tempdir().expect("failed to create temp source dir");
     let dependent_source_dir = tempfile::tempdir().expect("failed to create temp source dir");
 
-    let dependency_peppy_json5 = format!(
-        r#"{{
+    let dependency_peppy_json5 = r#"{
             schema_version: 1,
-            manifest: {{
+            manifest: {
                 name: "{DEPENDENCY_NODE_NAME}",
                 tag: "{DEPENDENCY_NODE_TAG}",
-            }},
-            codegen: {{
+            },
+            codegen: {
                 language: "rust",
-            }},
-            process: {{
+            },
+            process: {
                 start_cmd: ["sleep", "10"]
-            }},
-            interfaces: {{
-                services: {{
+            },
+            interfaces: {
+                services: {
                     exposes: [
-                        {{ name: "reset_sensor" }}
+                        { name: "reset_sensor" }
                     ]
-                }}
-            }}
-        }}"#
-    );
+                }
+            }
+        }"#
+    .replace("{DEPENDENCY_NODE_NAME}", DEPENDENCY_NODE_NAME)
+    .replace("{DEPENDENCY_NODE_TAG}", DEPENDENCY_NODE_TAG);
     write_peppy_json5(dependency_source_dir_v1.path(), &dependency_peppy_json5);
 
     let dependency_add_v1 = send_node_add_and_wait(
@@ -2968,36 +2976,38 @@ async fn node_add_same_node_with_running_instance_and_dependents_succeeds() {
         dependency_add_v1.error_message
     );
 
-    let dependent_peppy_json5 = format!(
-        r#"{{
+    let dependent_peppy_json5 = r#"{
             schema_version: 1,
-            manifest: {{
+            manifest: {
                 name: "{DEPENDENT_NODE_NAME}",
                 tag: "{DEPENDENT_NODE_TAG}",
-                depends_on: {{
+                depends_on: {
                     nodes: [
-                        {{ name: "{DEPENDENCY_NODE_NAME}", tag: "{DEPENDENCY_NODE_TAG}", local_id: "{DEPENDENCY_NODE_NAME}" }}
+                        { name: "{DEPENDENCY_NODE_NAME}", tag: "{DEPENDENCY_NODE_TAG}", local_id: "{DEPENDENCY_NODE_NAME}" }
                     ]
-                }},
-            }},
-            codegen: {{
+                },
+            },
+            codegen: {
                 language: "rust",
-            }},
-            process: {{
+            },
+            process: {
                 start_cmd: ["sleep", "10"]
-            }},
-            interfaces: {{
-                services: {{
+            },
+            interfaces: {
+                services: {
                     consumes: [
-                        {{
+                        {
                           local_node_id: "{DEPENDENCY_NODE_NAME}",
                           name: "reset_sensor"
-                        }}
+                        }
                     ]
-                }}
-            }}
-        }}"#
-    );
+                }
+            }
+        }"#
+    .replace("{DEPENDENT_NODE_NAME}", DEPENDENT_NODE_NAME)
+    .replace("{DEPENDENT_NODE_TAG}", DEPENDENT_NODE_TAG)
+    .replace("{DEPENDENCY_NODE_NAME}", DEPENDENCY_NODE_NAME)
+    .replace("{DEPENDENCY_NODE_TAG}", DEPENDENCY_NODE_TAG);
     write_peppy_json5(dependent_source_dir.path(), &dependent_peppy_json5);
 
     let dependent_add = send_node_add_and_wait(
@@ -3135,28 +3145,28 @@ async fn node_add_same_node_changing_interface_with_running_instance_and_depende
     let dependency_source_dir_v2 = tempfile::tempdir().expect("failed to create temp source dir");
     let dependent_source_dir = tempfile::tempdir().expect("failed to create temp source dir");
 
-    let dependency_peppy_json5_v1 = format!(
-        r#"{{
+    let dependency_peppy_json5_v1 = r#"{
             schema_version: 1,
-            manifest: {{
+            manifest: {
                 name: "{DEPENDENCY_NODE_NAME}",
                 tag: "{DEPENDENCY_NODE_TAG}",
-            }},
-            codegen: {{
+            },
+            codegen: {
                 language: "rust",
-            }},
-            process: {{
+            },
+            process: {
                 start_cmd: ["sleep", "10"]
-            }},
-            interfaces: {{
-                services: {{
+            },
+            interfaces: {
+                services: {
                     exposes: [
-                        {{ name: "reset_sensor" }}
+                        { name: "reset_sensor" }
                     ]
-                }}
-            }}
-        }}"#
-    );
+                }
+            }
+        }"#
+    .replace("{DEPENDENCY_NODE_NAME}", DEPENDENCY_NODE_NAME)
+    .replace("{DEPENDENCY_NODE_TAG}", DEPENDENCY_NODE_TAG);
     write_peppy_json5(dependency_source_dir_v1.path(), &dependency_peppy_json5_v1);
 
     let dependency_add_v1 = send_node_add_and_wait(
@@ -3175,36 +3185,38 @@ async fn node_add_same_node_changing_interface_with_running_instance_and_depende
         dependency_add_v1.error_message
     );
 
-    let dependent_peppy_json5 = format!(
-        r#"{{
+    let dependent_peppy_json5 = r#"{
             schema_version: 1,
-            manifest: {{
+            manifest: {
                 name: "{DEPENDENT_NODE_NAME}",
                 tag: "{DEPENDENT_NODE_TAG}",
-                depends_on: {{
+                depends_on: {
                     nodes: [
-                        {{ name: "{DEPENDENCY_NODE_NAME}", tag: "{DEPENDENCY_NODE_TAG}", local_id: "{DEPENDENCY_NODE_NAME}" }}
+                        { name: "{DEPENDENCY_NODE_NAME}", tag: "{DEPENDENCY_NODE_TAG}", local_id: "{DEPENDENCY_NODE_NAME}" }
                     ]
-                }},
-            }},
-            codegen: {{
+                },
+            },
+            codegen: {
                 language: "rust",
-            }},
-            process: {{
+            },
+            process: {
                 start_cmd: ["sleep", "10"]
-            }},
-            interfaces: {{
-                services: {{
+            },
+            interfaces: {
+                services: {
                     consumes: [
-                        {{
+                        {
                           local_node_id: "{DEPENDENCY_NODE_NAME}",
                           name: "reset_sensor"
-                        }}
+                        }
                     ]
-                }}
-            }}
-        }}"#
-    );
+                }
+            }
+        }"#
+    .replace("{DEPENDENT_NODE_NAME}", DEPENDENT_NODE_NAME)
+    .replace("{DEPENDENT_NODE_TAG}", DEPENDENT_NODE_TAG)
+    .replace("{DEPENDENCY_NODE_NAME}", DEPENDENCY_NODE_NAME)
+    .replace("{DEPENDENCY_NODE_TAG}", DEPENDENCY_NODE_TAG);
     write_peppy_json5(dependent_source_dir.path(), &dependent_peppy_json5);
 
     let dependent_add = send_node_add_and_wait(
@@ -3262,28 +3274,28 @@ async fn node_add_same_node_changing_interface_with_running_instance_and_depende
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     // Try to overwrite with a different interface (new_service instead of reset_sensor).
-    let dependency_peppy_json5_v2 = format!(
-        r#"{{
+    let dependency_peppy_json5_v2 = r#"{
             schema_version: 1,
-            manifest: {{
+            manifest: {
                 name: "{DEPENDENCY_NODE_NAME}",
                 tag: "{DEPENDENCY_NODE_TAG}",
-            }},
-            codegen: {{
+            },
+            codegen: {
                 language: "rust",
-            }},
-            process: {{
+            },
+            process: {
                 start_cmd: ["sleep", "10"]
-            }},
-            interfaces: {{
-                services: {{
+            },
+            interfaces: {
+                services: {
                     exposes: [
-                        {{ name: "new_service" }}
+                        { name: "new_service" }
                     ]
-                }}
-            }}
-        }}"#
-    );
+                }
+            }
+        }"#
+    .replace("{DEPENDENCY_NODE_NAME}", DEPENDENCY_NODE_NAME)
+    .replace("{DEPENDENCY_NODE_TAG}", DEPENDENCY_NODE_TAG);
     write_peppy_json5(dependency_source_dir_v2.path(), &dependency_peppy_json5_v2);
 
     let add_v2 = send_node_add_and_wait(
@@ -3354,28 +3366,28 @@ async fn node_add_same_node_with_running_instance_and_dependents_fails_on_stoppe
     let dependency_source_dir_v2 = tempfile::tempdir().expect("failed to create temp source dir");
     let dependent_source_dir = tempfile::tempdir().expect("failed to create temp source dir");
 
-    let dependency_peppy_json5 = format!(
-        r#"{{
+    let dependency_peppy_json5 = r#"{
             schema_version: 1,
-            manifest: {{
+            manifest: {
                 name: "{DEPENDENCY_NODE_NAME}",
                 tag: "{DEPENDENCY_NODE_TAG}",
-            }},
-            codegen: {{
+            },
+            codegen: {
                 language: "rust",
-            }},
-            process: {{
+            },
+            process: {
                 start_cmd: ["sleep", "10"]
-            }},
-            interfaces: {{
-                services: {{
+            },
+            interfaces: {
+                services: {
                     exposes: [
-                        {{ name: "reset_sensor" }}
+                        { name: "reset_sensor" }
                     ]
-                }}
-            }}
-        }}"#
-    );
+                }
+            }
+        }"#
+    .replace("{DEPENDENCY_NODE_NAME}", DEPENDENCY_NODE_NAME)
+    .replace("{DEPENDENCY_NODE_TAG}", DEPENDENCY_NODE_TAG);
     write_peppy_json5(dependency_source_dir_v1.path(), &dependency_peppy_json5);
 
     let dependency_add_v1 = send_node_add_and_wait(
@@ -3394,36 +3406,38 @@ async fn node_add_same_node_with_running_instance_and_dependents_fails_on_stoppe
         dependency_add_v1.error_message
     );
 
-    let dependent_peppy_json5 = format!(
-        r#"{{
+    let dependent_peppy_json5 = r#"{
             schema_version: 1,
-            manifest: {{
+            manifest: {
                 name: "{DEPENDENT_NODE_NAME}",
                 tag: "{DEPENDENT_NODE_TAG}",
-                depends_on: {{
+                depends_on: {
                     nodes: [
-                        {{ name: "{DEPENDENCY_NODE_NAME}", tag: "{DEPENDENCY_NODE_TAG}", local_id: "{DEPENDENCY_NODE_NAME}" }}
+                        { name: "{DEPENDENCY_NODE_NAME}", tag: "{DEPENDENCY_NODE_TAG}", local_id: "{DEPENDENCY_NODE_NAME}" }
                     ]
-                }},
-            }},
-            codegen: {{
+                },
+            },
+            codegen: {
                 language: "rust",
-            }},
-            process: {{
+            },
+            process: {
                 start_cmd: ["sleep", "10"]
-            }},
-            interfaces: {{
-                services: {{
+            },
+            interfaces: {
+                services: {
                     consumes: [
-                        {{
+                        {
                           local_node_id: "{DEPENDENCY_NODE_NAME}",
                           name: "reset_sensor"
-                        }}
+                        }
                     ]
-                }}
-            }}
-        }}"#
-    );
+                }
+            }
+        }"#
+    .replace("{DEPENDENT_NODE_NAME}", DEPENDENT_NODE_NAME)
+    .replace("{DEPENDENT_NODE_TAG}", DEPENDENT_NODE_TAG)
+    .replace("{DEPENDENCY_NODE_NAME}", DEPENDENCY_NODE_NAME)
+    .replace("{DEPENDENCY_NODE_TAG}", DEPENDENCY_NODE_TAG);
     write_peppy_json5(dependent_source_dir.path(), &dependent_peppy_json5);
 
     let dependent_add = send_node_add_and_wait(

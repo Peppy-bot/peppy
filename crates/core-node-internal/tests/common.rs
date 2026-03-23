@@ -586,42 +586,42 @@ fn main() -> Result<()> {
     let binary_path = node_dir.join("target/debug").join(crate_name);
     std::fs::write(
         node_dir.join(NODE_CONFIG_FILE),
-        format!(
-            r#"{{
+        r#"{
   schema_version: 1,
-  manifest: {{
+  manifest: {
     name: "{crate_name}",
     tag: "{node_tag}",
-  }},
-  codegen: {{
+  },
+  codegen: {
     language: "rust",
-  }},
+  },
   // Avoid `add_cmd` build step here to make the `add` tests faster
-  process: {{
+  process: {
     add_cmd: [
         "true"
     ],
     start_cmd: [
-      "{}"
+      "{binary_path}"
     ]
-  }},
-  interfaces: {{
-    topics: {{
+  },
+  interfaces: {
+    topics: {
       emits: [
-        {{
+        {
           name: "hello_world",
           qos_profile: "sensor_data",
-          message_format: {{
+          message_format: {
             timestamp: "time",
             message: "string"
-          }}
-        }}
+          }
+        }
       ],
-    }}
-  }}
-}}"#,
-            binary_path.display()
-        ),
+    }
+  }
+}"#
+        .replace("{crate_name}", crate_name)
+        .replace("{node_tag}", node_tag)
+        .replace("{binary_path}", &binary_path.display().to_string()),
     )
     .expect("failed to write test node peppy.json5");
 }

@@ -193,24 +193,28 @@ fn write_node_config_with_options(
     let node_config_path = node_dir.join(NODE_CONFIG_FILE);
     fs::write(
         &node_config_path,
-        format!(
-            r#"{{
+        r#"{
               schema_version: 1,
-              manifest: {{
+              manifest: {
                 name: "{node_name}",
                 tag: "{node_tag}",
                 {depends_on}
-              }},
-              codegen: {{
+              },
+              codegen: {
                 language: "rust",
-              }},
-              process: {{
+              },
+              process: {
                 add_cmd: [{add_cmd_json5}],
                 start_cmd: [{start_cmd_json5}]
-              }},
+              },
               {interfaces}
-            }}"#
-        ),
+            }"#
+        .replace("{node_name}", node_name)
+        .replace("{node_tag}", node_tag)
+        .replace("{depends_on}", depends_on)
+        .replace("{add_cmd_json5}", &add_cmd_json5)
+        .replace("{start_cmd_json5}", &start_cmd_json5)
+        .replace("{interfaces}", &interfaces),
     )
     .expect("failed to write node config");
 
@@ -240,29 +244,28 @@ fn create_uvc_camera_repo(to_path: &Path, node_tag: &str) -> PathBuf {
     let rel_config_path = Path::new("uvc_camera").join(NODE_CONFIG_FILE);
     fs::write(
         repo_path.join(&rel_config_path),
-        format!(
-            r#"{{
+        r#"{
               schema_version: 1,
-              manifest: {{
+              manifest: {
                 name: "uvc_camera",
                 tag: "{node_tag}",
-              }},
-              codegen: {{
+              },
+              codegen: {
                 language: "rust",
-              }},
-              process: {{
+              },
+              process: {
                 add_cmd: ["true"],
                 start_cmd: ["sleep", "60"]
-              }},
-              interfaces: {{
-                topics: {{
+              },
+              interfaces: {
+                topics: {
                   emits: [
-                    {{ name: "camera_stream" }}
+                    { name: "camera_stream" }
                   ]
-                }}
-              }}
-            }}"#
-        ),
+                }
+              }
+            }"#
+        .replace("{node_tag}", node_tag),
     )
     .expect("failed to write uvc_camera peppy.json5");
 

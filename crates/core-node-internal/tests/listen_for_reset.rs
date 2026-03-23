@@ -31,22 +31,22 @@ async fn listen_for_node_reset_clears_node_stack() {
     let source_dir_a = tempfile::tempdir().expect("failed to create temp source dir");
     let source_dir_b = tempfile::tempdir().expect("failed to create temp source dir");
 
-    let peppy_json5_a = format!(
-        r#"{{
+    let peppy_json5_a = r#"{
             schema_version: 1,
-            manifest: {{
+            manifest: {
                 name: "{TARGET_NODE_A_NAME}",
                 tag: "{TARGET_NODE_A_TAG}",
-            }},
-            codegen: {{
+            },
+            codegen: {
                 language: "rust",
-            }},
-            process: {{
+            },
+            process: {
                 start_cmd: ["sleep", "10"]
-            }},
-            parameters: {{}}
-        }}"#
-    );
+            },
+            parameters: {}
+        }"#
+    .replace("{TARGET_NODE_A_NAME}", TARGET_NODE_A_NAME)
+    .replace("{TARGET_NODE_A_TAG}", TARGET_NODE_A_TAG);
     write_peppy_json5(source_dir_a.path(), &peppy_json5_a);
 
     let add_response_a = send_node_add_and_wait(
@@ -66,22 +66,22 @@ async fn listen_for_node_reset_clears_node_stack() {
         add_response_a.error_message
     );
 
-    let peppy_json5_b = format!(
-        r#"{{
+    let peppy_json5_b = r#"{
             schema_version: 1,
-            manifest: {{
+            manifest: {
                 name: "{TARGET_NODE_B_NAME}",
                 tag: "{TARGET_NODE_B_TAG}",
-            }},
-            codegen: {{
+            },
+            codegen: {
                 language: "rust",
-            }},
-            process: {{
+            },
+            process: {
                 start_cmd: ["sleep", "10"]
-            }},
-            parameters: {{}}
-        }}"#
-    );
+            },
+            parameters: {}
+        }"#
+    .replace("{TARGET_NODE_B_NAME}", TARGET_NODE_B_NAME)
+    .replace("{TARGET_NODE_B_TAG}", TARGET_NODE_B_TAG);
     write_peppy_json5(source_dir_b.path(), &peppy_json5_b);
 
     let add_response_b = send_node_add_and_wait(

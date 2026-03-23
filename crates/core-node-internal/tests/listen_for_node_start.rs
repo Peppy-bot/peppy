@@ -141,23 +141,21 @@ async fn listen_for_node_start_timeout() {
 
     // Create a node config with a start_cmd that won't respond to health checks
     // Using "sleep 10" as a simple command that runs but doesn't respond
-    let peppy_json5 = format!(
-        r#"{{
+    let peppy_json5 = r#"{
             schema_version: 1,
-            manifest: {{
-                name: "{}",
+            manifest: {
+                name: "{TARGET_NODE_NAME}",
                 tag: "0.1.0",
-            }},
-            codegen: {{
+            },
+            codegen: {
                 language: "rust",
-            }},
-            process: {{
+            },
+            process: {
                 start_cmd: ["sleep", "10"]
-            }},
-            parameters: {{}}
-        }}"#,
-        TARGET_NODE_NAME
-    );
+            },
+            parameters: {}
+        }"#
+    .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME);
 
     // Create temp directory with peppy.json5
     let temp_dir = create_node_config_dir(&peppy_json5);
@@ -336,21 +334,23 @@ async fn listen_for_node_start_streams_stdout_and_stderr() {
     let started = start_core_node_with_mock_messenger().await;
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
-    let peppy_json5 = format!(
-        r#"{{
+    let peppy_json5 = r#"{
             schema_version: 1,
-            manifest: {{
+            manifest: {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
-            }},
-            codegen: {{
+            },
+            codegen: {
                 language: "rust",
-            }},
-            process: {{
+            },
+            process: {
                 start_cmd: ["sh", "-c", "echo {STDOUT_MARKER}; echo {STDERR_MARKER} 1>&2; sleep 5"]
-            }}
-        }}"#
-    );
+            }
+        }"#
+    .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
+    .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG)
+    .replace("{STDOUT_MARKER}", STDOUT_MARKER)
+    .replace("{STDERR_MARKER}", STDERR_MARKER);
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
     let add_response = send_node_add_and_wait(
@@ -465,21 +465,23 @@ async fn listen_for_node_start_writes_log_file() {
     let started = start_core_node_with_mock_messenger().await;
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
-    let peppy_json5 = format!(
-        r#"{{
+    let peppy_json5 = r#"{
             schema_version: 1,
-            manifest: {{
+            manifest: {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
-            }},
-            codegen: {{
+            },
+            codegen: {
                 language: "rust",
-            }},
-            process: {{
+            },
+            process: {
                 start_cmd: ["sh", "-c", "echo {STDOUT_MARKER}; echo {STDERR_MARKER} 1>&2; sleep 5"]
-            }}
-        }}"#
-    );
+            }
+        }"#
+    .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
+    .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG)
+    .replace("{STDOUT_MARKER}", STDOUT_MARKER)
+    .replace("{STDERR_MARKER}", STDERR_MARKER);
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
     let add_response = send_node_add_and_wait(
@@ -611,31 +613,31 @@ async fn listen_for_node_start_reports_all_missing_parameters() {
 
     // Create a node config with multiple required parameters
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
-    let peppy_json5 = format!(
-        r#"{{
+    let peppy_json5 = r#"{
             schema_version: 1,
-            manifest: {{
+            manifest: {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
-            }},
-            codegen: {{
+            },
+            codegen: {
                 language: "rust",
-            }},
-            process: {{
+            },
+            process: {
                 start_cmd: ["echo", "test"]
-            }},
-            parameters: {{
-                device: {{
+            },
+            parameters: {
+                device: {
                     physical: "string",
                     sim: "string"
-                }},
-                video: {{
+                },
+                video: {
                     frame_rate: "u16",
                     encoding: "string"
-                }}
-            }}
-        }}"#
-    );
+                }
+            }
+        }"#
+    .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
+    .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
     let add_response = send_node_add_and_wait(
@@ -745,31 +747,31 @@ async fn listen_for_node_start_reports_only_missing_parameters_when_some_provide
 
     // Create a node config with multiple required parameters
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
-    let peppy_json5 = format!(
-        r#"{{
+    let peppy_json5 = r#"{
             schema_version: 1,
-            manifest: {{
+            manifest: {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
-            }},
-            codegen: {{
+            },
+            codegen: {
                 language: "rust",
-            }},
-            process: {{
+            },
+            process: {
                 start_cmd: ["echo", "test"]
-            }},
-            parameters: {{
-                device: {{
+            },
+            parameters: {
+                device: {
                     physical: "string",
                     sim: "string"
-                }},
-                video: {{
+                },
+                video: {
                     frame_rate: "u16",
                     encoding: "string"
-                }}
-            }}
-        }}"#
-    );
+                }
+            }
+        }"#
+    .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
+    .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
     let add_response = send_node_add_and_wait(
@@ -905,21 +907,21 @@ async fn listen_for_node_start_abandoned_action_does_not_block_next_goal() {
 
     // Create and add first node
     let first_source_dir = tempfile::tempdir().expect("failed to create temp source dir");
-    let first_peppy_json5 = format!(
-        r#"{{
+    let first_peppy_json5 = r#"{
             schema_version: 1,
-            manifest: {{
+            manifest: {
                 name: "{FIRST_NODE_NAME}",
                 tag: "{FIRST_NODE_TAG}",
-            }},
-            codegen: {{
+            },
+            codegen: {
                 language: "rust",
-            }},
-            process: {{
+            },
+            process: {
                 start_cmd: ["sleep", "30"]
-            }}
-        }}"#
-    );
+            }
+        }"#
+    .replace("{FIRST_NODE_NAME}", FIRST_NODE_NAME)
+    .replace("{FIRST_NODE_TAG}", FIRST_NODE_TAG);
     write_peppy_json5(first_source_dir.path(), &first_peppy_json5);
 
     let first_add_response = send_node_add_and_wait(
@@ -941,21 +943,21 @@ async fn listen_for_node_start_abandoned_action_does_not_block_next_goal() {
 
     // Create and add second node
     let second_source_dir = tempfile::tempdir().expect("failed to create temp source dir");
-    let second_peppy_json5 = format!(
-        r#"{{
+    let second_peppy_json5 = r#"{
             schema_version: 1,
-            manifest: {{
+            manifest: {
                 name: "{SECOND_NODE_NAME}",
                 tag: "{SECOND_NODE_TAG}",
-            }},
-            codegen: {{
+            },
+            codegen: {
                 language: "rust",
-            }},
-            process: {{
+            },
+            process: {
                 start_cmd: ["sleep", "30"]
-            }}
-        }}"#
-    );
+            }
+        }"#
+    .replace("{SECOND_NODE_NAME}", SECOND_NODE_NAME)
+    .replace("{SECOND_NODE_TAG}", SECOND_NODE_TAG);
     write_peppy_json5(second_source_dir.path(), &second_peppy_json5);
 
     let second_add_response = send_node_add_and_wait(
@@ -1140,22 +1142,22 @@ async fn listen_for_node_start_uses_env_overrides_for_path() {
     let started = start_core_node_with_mock_messenger().await;
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
-    let peppy_json5 = format!(
-        r#"{{
+    let peppy_json5 = r#"{
             schema_version: 1,
-            manifest: {{
+            manifest: {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
-            }},
-            codegen: {{
+            },
+            codegen: {
                 language: "rust",
-            }},
-            process: {{
+            },
+            process: {
                 start_cmd: ["printout", "3"]
-            }},
-            parameters: {{}}
-        }}"#
-    );
+            },
+            parameters: {}
+        }"#
+    .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
+    .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
     let add_response = send_node_add_and_wait(
@@ -1295,26 +1297,26 @@ async fn listen_for_node_start_injects_runtime_env_vars() {
     let started = start_core_node_with_mock_messenger().await;
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
-    let peppy_json5 = format!(
-        r#"{{
+    let peppy_json5 = r#"{
             schema_version: 1,
-            manifest: {{
+            manifest: {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
-            }},
-            codegen: {{
+            },
+            codegen: {
                 language: "rust",
-            }},
-            process: {{
+            },
+            process: {
                 start_cmd: [
                     "sh",
                     "-c",
                     "test -n \"$PEPPY_APPTAINER_BIN\" && test \"$PEPPY_NODE_NAME\" = \"{TARGET_NODE_NAME}\" && test \"$PEPPY_NODE_TAG\" = \"{TARGET_NODE_TAG}\" && sleep 10"
                 ]
-            }},
-            parameters: {{}}
-        }}"#
-    );
+            },
+            parameters: {}
+        }"#
+    .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
+    .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
     let add_response = send_node_add_and_wait(
@@ -1908,21 +1910,21 @@ async fn listen_for_node_start_logs_error_on_spawn_failure() {
     // Create a process node with a start_cmd that cannot be found.
     // This will cause command.spawn() to fail in start_node().
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
-    let peppy_json5 = format!(
-        r#"{{
+    let peppy_json5 = r#"{
             schema_version: 1,
-            manifest: {{
+            manifest: {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
-            }},
-            codegen: {{
+            },
+            codegen: {
                 language: "rust",
-            }},
-            process: {{
+            },
+            process: {
                 start_cmd: ["nonexistent_binary_peppy_test_xyz"]
-            }}
-        }}"#
-    );
+            }
+        }"#
+    .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
+    .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
     let add_response = send_node_add_and_wait(

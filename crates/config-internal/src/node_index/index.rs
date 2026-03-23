@@ -71,21 +71,20 @@ mod tests {
 
     fn write_config(dir: &Path, name: &str) -> PathBuf {
         let path = dir.join(NODE_CONFIG_FILE);
-        let json5 = format!(
-            r#"{{
+        let json5 = r#"{
                 schema_version: 1,
-                manifest: {{
+                manifest: {
                     name: "{name}",
                     tag: "0.1.0",
-                }},
-                codegen: {{
+                },
+                codegen: {
                     language: "rust",
-                }},
-                process: {{
+                },
+                process: {
                     start_cmd: ["./target/release/{name}"]
-                }}
-            }}"#
-        );
+                }
+            }"#
+        .replace("{name}", name);
         fs::write(&path, json5).unwrap();
         path
     }

@@ -35,21 +35,21 @@ async fn listen_for_node_info_on_fs_node_success() {
     let node_stack = started_core_node.node_stack.clone();
 
     let node_dir = tempfile::tempdir().expect("failed to create temp node dir");
-    let peppy_json5 = format!(
-        r#"{{
+    let peppy_json5 = r#"{
             schema_version: 1,
-            manifest: {{
+            manifest: {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
-            }},
-            codegen: {{
+            },
+            codegen: {
                 language: "rust",
-            }},
-            process: {{
+            },
+            process: {
                 start_cmd: ["sleep", "10"]
-            }}
-        }}"#
-    );
+            }
+        }"#
+    .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
+    .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
     write_peppy_json5(node_dir.path(), &peppy_json5);
 
     let request = NodeInfoRequest::new(NodeSource::Fs(node_dir.path().to_path_buf()));
@@ -232,21 +232,21 @@ async fn listen_for_node_info_on_http_node_success() {
     let node_stack = started_core_node.node_stack.clone();
 
     let bundle_dir = tempfile::tempdir().expect("failed to create temp bundle dir");
-    let peppy_json5 = format!(
-        r#"{{
+    let peppy_json5 = r#"{
             schema_version: 1,
-            manifest: {{
+            manifest: {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
-            }},
-            codegen: {{
+            },
+            codegen: {
                 language: "rust",
-            }},
-            process: {{
+            },
+            process: {
                 start_cmd: ["sleep", "10"]
-            }}
-        }}"#
-    );
+            }
+        }"#
+    .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
+    .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
 
     let manifest_path = bundle_dir.path().join(NODE_CONFIG_FILE);
     std::fs::write(&manifest_path, &peppy_json5).expect("failed to write manifest");
@@ -357,22 +357,22 @@ async fn listen_for_node_info_has_instance_ids() {
     let started_core_node = start_core_node_with_mock_messenger().await;
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
-    let peppy_json5 = format!(
-        r#"{{
+    let peppy_json5 = r#"{
             schema_version: 1,
-            manifest: {{
+            manifest: {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
-            }},
-            codegen: {{
+            },
+            codegen: {
                 language: "rust",
-            }},
-            process: {{
+            },
+            process: {
                 start_cmd: ["sleep", "10"]
-            }},
-            parameters: {{}}
-        }}"#
-    );
+            },
+            parameters: {}
+        }"#
+    .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
+    .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
     let add_result = send_node_add_and_wait(
@@ -589,21 +589,21 @@ async fn listen_for_node_info_recovers_after_invalid_request() {
 
     // Then send a valid request to ensure the node_info listener is still alive.
     let node_dir = tempfile::tempdir().expect("failed to create temp node dir");
-    let peppy_json5 = format!(
-        r#"{{
+    let peppy_json5 = r#"{
             schema_version: 1,
-            manifest: {{
+            manifest: {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
-            }},
-            codegen: {{
+            },
+            codegen: {
                 language: "rust",
-            }},
-            process: {{
+            },
+            process: {
                 start_cmd: ["sleep", "10"]
-            }}
-        }}"#
-    );
+            }
+        }"#
+    .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
+    .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
     write_peppy_json5(node_dir.path(), &peppy_json5);
 
     let request = NodeInfoRequest::new(NodeSource::Fs(node_dir.path().to_path_buf()));

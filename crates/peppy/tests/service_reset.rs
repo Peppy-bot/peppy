@@ -31,21 +31,22 @@ fn write_node_config(
         .join(", ");
     fs::write(
         &node_config_path,
-        format!(
-            r#"{{
+        r#"{
                 schema_version: 1,
-                manifest: {{
+                manifest: {
                     name: "{node_name}",
                     tag: "{node_tag}",
-                }},
-                codegen: {{
+                },
+                codegen: {
                     language: "rust",
-                }},
-                process: {{
+                },
+                process: {
                     start_cmd: [{start_cmd_json5}]
-                }}
-            }}"#
-        ),
+                }
+            }"#
+        .replace("{node_name}", node_name)
+        .replace("{node_tag}", node_tag)
+        .replace("{start_cmd_json5}", &start_cmd_json5),
     )
     .expect("failed to write node config");
     config::fingerprint::create_codegen_fingerprint(

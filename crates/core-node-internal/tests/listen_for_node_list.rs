@@ -17,22 +17,22 @@ async fn listen_for_node_list_returns_succeeds() {
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
 
-    let peppy_json5 = format!(
-        r#"{{
+    let peppy_json5 = r#"{
             schema_version: 1,
-            manifest: {{
+            manifest: {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
-            }},
-            codegen: {{
+            },
+            codegen: {
                 language: "rust",
-            }},
-            process: {{
+            },
+            process: {
                 start_cmd: ["sleep", "10"]
-            }},
-            parameters: {{}}
-        }}"#
-    );
+            },
+            parameters: {}
+        }"#
+    .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
+    .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
     let add_response = send_node_add_and_wait(
@@ -109,22 +109,22 @@ async fn listen_for_node_list_returns_dot_graph() {
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
 
-    let peppy_json5 = format!(
-        r#"{{
+    let peppy_json5 = r#"{
             schema_version: 1,
-            manifest: {{
+            manifest: {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
-            }},
-            codegen: {{
+            },
+            codegen: {
                 language: "rust",
-            }},
-            process: {{
+            },
+            process: {
                 start_cmd: ["sleep", "10"]
-            }},
-            parameters: {{}}
-        }}"#
-    );
+            },
+            parameters: {}
+        }"#
+    .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
+    .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
     let add_response = send_node_add_and_wait(
