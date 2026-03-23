@@ -15,6 +15,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - name: Run tests
         run: cargo test
@@ -22,5 +24,15 @@ jobs:
       - name: Run documentation integration tests
         run: cargo test --manifest-path docs/tests/integration/Cargo.toml
 
+      - name: Check for scripts changes
+        id: scripts-changes
+        if: github.event_name == 'pull_request'
+        run: |
+          CHANGED=$(git diff --name-only origin/${{ github.base_ref }}...HEAD -- scripts/)
+          if [ -n "$CHANGED" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Run release scripts tests
+        if: steps.scripts-changes.outputs.changed == 'true'
         run: ./scripts/run_tests.sh

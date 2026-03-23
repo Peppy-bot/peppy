@@ -678,7 +678,7 @@ rm -rf /tmp/apptainer-{version} /tmp/apptainer-{version}.tar.gz"#,
 
         println!(
             "cargo:rustc-env=APPTAINER_INSTALL_DIR={}",
-            out_install_dir.display()
+            cache_dir.display()
         );
     }
 }
