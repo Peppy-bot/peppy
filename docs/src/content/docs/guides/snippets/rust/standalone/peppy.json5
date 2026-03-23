@@ -3,7 +3,9 @@
   manifest: {
     name: "standalone",
     tag: "0.1.0",
-    language: "rust",
+  },
+  codegen: {
+    language: "rust"
   },
   process: {
     add_cmd: [

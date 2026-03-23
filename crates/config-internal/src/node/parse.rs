@@ -58,6 +58,8 @@ mod tests {
             manifest: {
                 name: "test_node",
                 tag: "0.1.0",
+            },
+            codegen: {
                 language: "rust",
             },
             process: {
@@ -81,6 +83,8 @@ mod tests {
             manifest: {
                 name: "camera_driver",
                 tag: "2.1.0",
+            },
+            codegen: {
                 language: "rust",
             },
             process: {
@@ -97,10 +101,7 @@ mod tests {
         let config = NodeConfigParser::from_content(json5).unwrap();
         assert_eq!(config.manifest.name.as_str(), "camera_driver");
         assert_eq!(config.manifest.tag, "2.1.0");
-        assert_eq!(
-            config.manifest.language,
-            crate::node::PeppygenLanguage::Rust
-        );
+        assert_eq!(config.codegen.language, crate::node::PeppygenLanguage::Rust);
         assert_eq!(
             config.process.as_ref().unwrap().start_cmd,
             vec!["./target/release/camera_driver"]
@@ -149,6 +150,8 @@ mod tests {
             manifest: {
                 name: "container_node",
                 tag: "0.1.0",
+            },
+            codegen: {
                 language: "rust",
             },
             container: {
@@ -168,6 +171,8 @@ mod tests {
             manifest: {
                 name: "bad_node",
                 tag: "0.1.0",
+            },
+            codegen: {
                 language: "rust",
             },
             process: {
@@ -191,6 +196,8 @@ mod tests {
             manifest: {
                 name: "bare_node",
                 tag: "0.1.0",
+            },
+            codegen: {
                 language: "rust",
             },
         }"#;
@@ -226,6 +233,8 @@ mod tests {
             manifest: {
                 name: "bad_mount_node",
                 tag: "0.1.0",
+            },
+            codegen: {
                 language: "rust",
             },
             container: {
@@ -251,6 +260,8 @@ mod tests {
             manifest: {
                 name: "bad_mount_node",
                 tag: "0.1.0",
+            },
+            codegen: {
                 language: "rust",
             },
             container: {
@@ -276,6 +287,8 @@ mod tests {
             manifest: {
                 name: "good_mount_node",
                 tag: "0.1.0",
+            },
+            codegen: {
                 language: "rust",
             },
             container: {
@@ -296,6 +309,8 @@ mod tests {
             manifest: {
                 name: "no_mount_node",
                 tag: "0.1.0",
+            },
+            codegen: {
                 language: "rust",
             },
             container: {
@@ -313,6 +328,8 @@ mod tests {
             manifest: {
                 name: "camera_node",
                 tag: "0.1.0",
+            },
+            codegen: {
                 language: "rust",
             },
             container: {
@@ -339,6 +356,8 @@ mod tests {
             manifest: {
                 name: "camera_node",
                 tag: "0.1.0",
+            },
+            codegen: {
                 language: "rust",
             },
             container: {
@@ -368,6 +387,8 @@ mod tests {
             manifest: {
                 name: "bad_ref_node",
                 tag: "0.1.0",
+            },
+            codegen: {
                 language: "rust",
             },
             container: {
@@ -397,6 +418,8 @@ mod tests {
             manifest: {
                 name: "bad_type_node",
                 tag: "0.1.0",
+            },
+            codegen: {
                 language: "rust",
             },
             container: {
@@ -428,6 +451,8 @@ mod tests {
             manifest: {
                 name: "dynamic_mount_node",
                 tag: "0.1.0",
+            },
+            codegen: {
                 language: "rust",
             },
             container: {
@@ -451,6 +476,8 @@ mod tests {
             manifest: {
                 name: "container_node",
                 tag: "0.1.0",
+            },
+            codegen: {
                 language: "rust",
             },
             container: {
@@ -471,6 +498,8 @@ mod tests {
             manifest: {
                 name: "container_node",
                 tag: "0.1.0",
+            },
+            codegen: {
                 language: "rust",
             },
             container: {
@@ -503,6 +532,8 @@ mod tests {
             manifest: {
                 name: "container_node",
                 tag: "0.1.0",
+            },
+            codegen: {
                 language: "rust",
             },
             container: {

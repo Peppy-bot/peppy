@@ -4,7 +4,6 @@
     // This is a brain that can plug to any controller
     name: "fake_robot_brain",
     tag: "0.1.0",
-    language: "rust",
     labels: [
       "brain"
     ],
@@ -14,6 +13,9 @@
         { name: "fake_openarm01_controller", tag: "0.1.0", local_id: "fake_openarm01_controller" },
       ]
     },
+  },
+  codegen: {
+    language: "rust"
   },
   process: {
     add_cmd: [

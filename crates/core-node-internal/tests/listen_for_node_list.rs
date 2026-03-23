@@ -23,6 +23,8 @@ async fn listen_for_node_list_returns_succeeds() {
             manifest: {{
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
+            }},
+            codegen: {{
                 language: "rust",
             }},
             process: {{
@@ -113,6 +115,8 @@ async fn listen_for_node_list_returns_dot_graph() {
             manifest: {{
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
+            }},
+            codegen: {{
                 language: "rust",
             }},
             process: {{

@@ -25,11 +25,10 @@ pub fn test_peppy_dirs() -> PeppyDirs {
 
 pub const STUB_NODE_CONFIG: &str = r#"{
   schema_version: 1,
-  manifest: {
-    name: "generated_node",
-    tag: "0.1.0",
-    language: "rust"
-  },
+  manifest: { name: "generated_node",
+    tag: "0.1.0" },
+
+  codegen: { language: "rust" },
   process: {
     start_cmd: ["./target/release/generated_node"]
   }
@@ -534,11 +533,10 @@ pub async fn try_send_shutdown(
 
 pub const STUB_PYTHON_NODE_CONFIG: &str = r#"{
   schema_version: 1,
-  manifest: {
-    name: "generated_node",
-    tag: "0.1.0",
-    language: "python"
-  },
+  manifest: { name: "generated_node",
+    tag: "0.1.0" },
+
+  codegen: { language: "python" },
   process: {
     start_cmd: ["uv", "run", "python", "main.py"]
   }

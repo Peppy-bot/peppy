@@ -147,6 +147,8 @@ async fn listen_for_node_start_timeout() {
             manifest: {{
                 name: "{}",
                 tag: "0.1.0",
+            }},
+            codegen: {{
                 language: "rust",
             }},
             process: {{
@@ -340,6 +342,8 @@ async fn listen_for_node_start_streams_stdout_and_stderr() {
             manifest: {{
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
+            }},
+            codegen: {{
                 language: "rust",
             }},
             process: {{
@@ -467,6 +471,8 @@ async fn listen_for_node_start_writes_log_file() {
             manifest: {{
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
+            }},
+            codegen: {{
                 language: "rust",
             }},
             process: {{
@@ -611,6 +617,8 @@ async fn listen_for_node_start_reports_all_missing_parameters() {
             manifest: {{
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
+            }},
+            codegen: {{
                 language: "rust",
             }},
             process: {{
@@ -743,6 +751,8 @@ async fn listen_for_node_start_reports_only_missing_parameters_when_some_provide
             manifest: {{
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
+            }},
+            codegen: {{
                 language: "rust",
             }},
             process: {{
@@ -901,6 +911,8 @@ async fn listen_for_node_start_abandoned_action_does_not_block_next_goal() {
             manifest: {{
                 name: "{FIRST_NODE_NAME}",
                 tag: "{FIRST_NODE_TAG}",
+            }},
+            codegen: {{
                 language: "rust",
             }},
             process: {{
@@ -935,6 +947,8 @@ async fn listen_for_node_start_abandoned_action_does_not_block_next_goal() {
             manifest: {{
                 name: "{SECOND_NODE_NAME}",
                 tag: "{SECOND_NODE_TAG}",
+            }},
+            codegen: {{
                 language: "rust",
             }},
             process: {{
@@ -1132,6 +1146,8 @@ async fn listen_for_node_start_uses_env_overrides_for_path() {
             manifest: {{
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
+            }},
+            codegen: {{
                 language: "rust",
             }},
             process: {{
@@ -1285,6 +1301,8 @@ async fn listen_for_node_start_injects_runtime_env_vars() {
             manifest: {{
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
+            }},
+            codegen: {{
                 language: "rust",
             }},
             process: {{
@@ -1398,6 +1416,8 @@ async fn listen_for_node_start_with_container_success() {
         manifest: {
             name: "TARGET_NODE_NAME",
             tag: "TARGET_NODE_TAG",
+        },
+        codegen: {
             language: "rust",
         },
         container: {
@@ -1611,6 +1631,8 @@ async fn listen_for_node_start_with_container_creates_missing_mount_dir() {
         manifest: {
             name: "TARGET_NODE_NAME",
             tag: "TARGET_NODE_TAG",
+        },
+        codegen: {
             language: "rust",
         },
         container: {
@@ -1760,6 +1782,8 @@ async fn listen_for_node_start_container_failure_includes_stderr_in_error() {
         manifest: {
             name: "TARGET_NODE_NAME",
             tag: "TARGET_NODE_TAG",
+        },
+        codegen: {
             language: "rust",
         },
         container: {
@@ -1890,6 +1914,8 @@ async fn listen_for_node_start_logs_error_on_spawn_failure() {
             manifest: {{
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
+            }},
+            codegen: {{
                 language: "rust",
             }},
             process: {{

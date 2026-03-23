@@ -25,6 +25,8 @@ async fn listen_for_node_sync_success() {
             manifest: {
                 name: "example_node",
                 tag: "0.1.0",
+            },
+            codegen: {
                 language: "rust",
             },
             process: {
@@ -271,13 +273,15 @@ async fn listen_for_node_sync_missing_dependency_fails() {
             manifest: {
                 name: "my_robot_brain",
                 tag: "0.1.0",
-                language: "rust",
                 labels: ["brain"],
                 depends_on: {
                     nodes: [
                         { name: "uvc_camera", tag: "0.1.0", local_id: "uvc_camera" }
                     ]
                 },
+            },
+            codegen: {
+                language: "rust",
             },
             process: {
                 add_cmd: ["cargo", "build", "--release"],
@@ -349,7 +353,6 @@ async fn listen_for_node_sync_multiple_missing_dependencies_fails() {
             manifest: {
                 name: "my_robot_brain",
                 tag: "0.1.0",
-                language: "rust",
                 labels: ["brain"],
                 depends_on: {
                     nodes: [
@@ -358,6 +361,9 @@ async fn listen_for_node_sync_multiple_missing_dependencies_fails() {
                         { name: "gps_module", tag: "2.0.0", local_id: "gps_module" },
                     ]
                 },
+            },
+            codegen: {
+                language: "rust",
             },
             process: {
                 add_cmd: ["cargo", "build", "--release"],
@@ -460,8 +466,10 @@ async fn listen_for_node_sync_generates_rust_interfaces() {
             manifest: {
                 name: "uvc_camera",
                 tag: "0.1.0",
-                language: "rust",
                 labels: ["camera"],
+            },
+            codegen: {
+                language: "rust",
             },
             process: {
                 add_cmd: ["true"],
@@ -555,13 +563,15 @@ async fn listen_for_node_sync_generates_rust_interfaces() {
             manifest: {
                 name: "my_robot_brain",
                 tag: "0.1.0",
-                language: "rust",
                 labels: ["brain"],
                 depends_on: {
                     nodes: [
                         { name: "uvc_camera", tag: "0.1.0", local_id: "uvc_camera" }
                     ]
                 },
+            },
+            codegen: {
+                language: "rust",
             },
             process: {
                 add_cmd: ["true"],
@@ -676,8 +686,10 @@ async fn listen_for_node_sync_generates_rust_consumed_service_interfaces() {
             manifest: {
                 name: "uvc_camera",
                 tag: "0.1.0",
-                language: "rust",
                 labels: ["camera"],
+            },
+            codegen: {
+                language: "rust",
             },
             process: {
                 add_cmd: ["true"],
@@ -755,13 +767,15 @@ async fn listen_for_node_sync_generates_rust_consumed_service_interfaces() {
             manifest: {
                 name: "my_robot_brain",
                 tag: "0.1.0",
-                language: "rust",
                 labels: ["brain"],
                 depends_on: {
                     nodes: [
                         { name: "uvc_camera", tag: "0.1.0", local_id: "uvc_camera" }
                     ]
                 },
+            },
+            codegen: {
+                language: "rust",
             },
             process: {
                 add_cmd: ["true"],
@@ -837,8 +851,10 @@ async fn listen_for_node_sync_generates_rust_consumed_topic_interfaces() {
             manifest: {
                 name: "uvc_camera",
                 tag: "0.1.0",
-                language: "rust",
                 labels: ["camera"],
+            },
+            codegen: {
+                language: "rust",
             },
             process: {
                 add_cmd: ["true"],
@@ -918,13 +934,15 @@ async fn listen_for_node_sync_generates_rust_consumed_topic_interfaces() {
             manifest: {
                 name: "my_robot_brain",
                 tag: "0.1.0",
-                language: "rust",
                 labels: ["brain"],
                 depends_on: {
                     nodes: [
                         { name: "uvc_camera", tag: "0.1.0", local_id: "uvc_camera" }
                     ]
                 },
+            },
+            codegen: {
+                language: "rust",
             },
             process: {
                 add_cmd: ["true"],
@@ -1000,8 +1018,10 @@ async fn listen_for_node_sync_generates_rust_consumed_action_interfaces() {
             manifest: {
                 name: "brain",
                 tag: "0.1.0",
-                language: "rust",
                 labels: ["brain"],
+            },
+            codegen: {
+                language: "rust",
             },
             process: {
                 add_cmd: ["true"],
@@ -1087,13 +1107,15 @@ async fn listen_for_node_sync_generates_rust_consumed_action_interfaces() {
             manifest: {
                 name: "controller",
                 tag: "0.1.0",
-                language: "rust",
                 labels: ["controller"],
                 depends_on: {
                     nodes: [
                         { name: "brain", tag: "0.1.0", local_id: "brain" }
                     ]
                 },
+            },
+            codegen: {
+                language: "rust",
             },
             process: {
                 add_cmd: ["true"],
@@ -1170,8 +1192,10 @@ async fn listen_for_node_sync_generates_rust_parameters() {
             manifest: {
                 name: "uvc_camera",
                 tag: "0.1.0",
-                language: "rust",
                 labels: ["camera"],
+            },
+            codegen: {
+                language: "rust",
             },
             process: {
                 add_cmd: ["true"],
@@ -1285,6 +1309,8 @@ async fn listen_for_node_sync_deletes_previous_peppy_folder() {
             manifest: {
                 name: "example_node",
                 tag: "0.1.0",
+            },
+            codegen: {
                 language: "rust",
             },
             process: {

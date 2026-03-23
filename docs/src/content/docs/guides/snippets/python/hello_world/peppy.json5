@@ -3,7 +3,9 @@
   manifest: {
     name: "hello_world",
     tag: "0.1.0",
-    language: "python",
+  },
+  codegen: {
+    language: "python"
   },
   process: {
     add_cmd: [

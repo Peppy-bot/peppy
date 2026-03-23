@@ -594,7 +594,7 @@ async fn process_node_start(
     };
 
     let sccache_injected =
-        super::inject_rust_build_env(&mut env_vars, entity.config().manifest.language);
+        super::inject_rust_build_env(&mut env_vars, entity.config().codegen.language);
     if sccache_injected {
         let _ = ctx.feedback_tx.send(FeedbackLine {
             stream: FeedbackStream::Stdout,
@@ -1113,7 +1113,7 @@ pub fn start_node(
 
     // Force unbuffered stdout/stderr for Python nodes. Without this, Python
     // defaults to full buffering when stdout is a pipe, delaying log capture.
-    if manifest.language == PeppygenLanguage::Python {
+    if config.codegen.language == PeppygenLanguage::Python {
         command.env("PYTHONUNBUFFERED", "1");
     }
 

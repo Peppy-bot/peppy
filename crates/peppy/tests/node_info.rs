@@ -33,7 +33,6 @@ async fn node_info_shows_dependencies_from_consumed_interfaces() {
             manifest: {{
                 name: "{NODE_NAME}",
                 tag: "{NODE_TAG}",
-                language: "rust",
                 depends_on: {{
                     nodes: [
                         {{ name: "camera_node", tag: "0.1.0", local_id: "camera_node" }},
@@ -42,6 +41,9 @@ async fn node_info_shows_dependencies_from_consumed_interfaces() {
                         {{ name: "navigation_node", tag: "0.1.0", local_id: "navigation_node" }}
                     ]
                 }}
+            }},
+            codegen: {{
+                language: "rust",
             }},
             process: {{
                 start_cmd: ["sleep", "10"]
@@ -191,7 +193,9 @@ async fn node_info_no_dependencies_when_no_consumes() {
             manifest: {{
                 name: "{NODE_NAME}",
                 tag: "{NODE_TAG}",
-                language: "rust"
+            }},
+            codegen: {{
+                language: "rust",
             }},
             process: {{
                 start_cmd: ["sleep", "10"]

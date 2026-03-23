@@ -3,7 +3,9 @@
   manifest: {
     name: "{{ node_name }}",
     tag: "0.1.0",
-    language: "rust",
+  },
+  codegen: {
+    language: "rust"
   },
 {% if with_container %}
   container: {

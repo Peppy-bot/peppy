@@ -4,10 +4,12 @@
   manifest: {
     name: "{{ node_name }}",
     tag: "0.1.0",
-    language: "rust",
     labels: [
       "controller",
     ],
+  },
+  codegen: {
+    language: "rust"
   },
   process: {
     start_cmd: [

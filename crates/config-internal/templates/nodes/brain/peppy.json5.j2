@@ -5,7 +5,6 @@
   manifest: {
     name: "{{ node_name }}",
     tag: "0.1.0",
-    language: "rust",
     labels: [
       "brain"
     ],
@@ -16,6 +15,9 @@
         { name: "{{ controller_node_name }}", tag: "0.1.0", local_id: "controller" },
       ]
     },
+  },
+  codegen: {
+    language: "rust"
   },
   process: {
     start_cmd: [

@@ -50,11 +50,10 @@ mod tests {
             node_dir.join(NODE_CONFIG_FILE),
             r#"{
                 schema_version: 1,
-                manifest: {
-                    name: "uvc_camera",
-                    tag: "0.1.0",
-                    language: "rust"
-                },
+                manifest: { name: "uvc_camera",
+                    tag: "0.1.0" },
+
+                codegen: { language: "rust" },
                 process: {
                     start_cmd: ["./target/release/uvc_camera"]
                 }

@@ -3,12 +3,14 @@
   manifest: {
     name: "{{ node_name }}",
     tag: "0.1.0",
-    language: "rust",
     depends_on: {
       nodes: [
         { name: "{{ uvc_camera_node_name }}", tag: "0.1.0", local_id: "uvc_camera" },
       ]
     },
+  },
+  codegen: {
+    language: "rust"
   },
   process: {
     start_cmd: [

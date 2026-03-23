@@ -1224,7 +1224,7 @@ async fn process_node_add(
     let node_name = node_config.manifest.name.as_str().to_owned();
     let node_tag = node_config.manifest.tag.clone();
     let sccache_injected =
-        super::inject_rust_build_env(&mut env_vars, node_config.manifest.language);
+        super::inject_rust_build_env(&mut env_vars, node_config.codegen.language);
     if sccache_injected {
         let _ = ctx.feedback_tx.send(FeedbackLine {
             stream: FeedbackStream::Stdout,
@@ -1295,7 +1295,7 @@ async fn process_node_add(
     // Generate the peppygen library in the working directory.
     // Container builds need Copy mode because Apptainer's `%files` copies symlinks
     // as-is — absolute symlinks to the host cache would be broken inside the container.
-    let language = node_config.manifest.language;
+    let language = node_config.codegen.language;
     let deploy_mode = if node_config.container.is_some() {
         generator::CrateDeployMode::Copy
     } else {

@@ -9,12 +9,14 @@ const NODE_EXAMPLE: &str = r#"
   manifest: {
     name: "uvc_camera",
     tag: "0.1.0",
-    language: "python",
     labels: [
       "uvc",
       "camera",
       "usb",
     ],
+  },
+  codegen: {
+    language: "python",
   },
   process: {
     start_cmd: [
@@ -48,12 +50,14 @@ const INVALID_PARAMETERS_NODE_EXAMPLE: &str = r#"
   manifest: {
     name: "uvc_camera",
     tag: "0.1.0",
-    language: "python",
     labels: [
       "uvc",
       "camera",
       "usb",
     ],
+  },
+  codegen: {
+    language: "python",
   },
   process: {
     start_cmd: [
@@ -90,12 +94,14 @@ const NESTED_CLASS_COLLISION_NODE_EXAMPLE: &str = r#"
   manifest: {
     name: "uvc_camera",
     tag: "0.1.0",
-    language: "python",
     labels: [
       "uvc",
       "camera",
       "usb",
     ],
+  },
+  codegen: {
+    language: "python",
   },
   process: {
     start_cmd: [
@@ -126,12 +132,14 @@ const UNSUPPORTED_PARAMETERS_VARIANT_NODE_EXAMPLE: &str = r#"
   manifest: {
     name: "uvc_camera",
     tag: "0.1.0",
-    language: "python",
     labels: [
       "uvc",
       "camera",
       "usb",
     ],
+  },
+  codegen: {
+    language: "python",
   },
   process: {
     start_cmd: [
@@ -155,12 +163,14 @@ const UNKNOWN_PARAMETER_TYPE_NODE_EXAMPLE: &str = r#"
   manifest: {
     name: "uvc_camera",
     tag: "0.1.0",
-    language: "python",
     labels: [
       "uvc",
       "camera",
       "usb",
     ],
+  },
+  codegen: {
+    language: "python",
   },
   process: {
     start_cmd: [
@@ -182,12 +192,14 @@ const UNSUPPORTED_TOP_LEVEL_PARAMETER_VARIANT_NODE_EXAMPLE: &str = r#"
   manifest: {
     name: "uvc_camera",
     tag: "0.1.0",
-    language: "python",
     labels: [
       "uvc",
       "camera",
       "usb",
     ],
+  },
+  codegen: {
+    language: "python",
   },
   process: {
     start_cmd: [

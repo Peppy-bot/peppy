@@ -13,6 +13,8 @@ fn add_instance_creates_new_entity() {
             manifest: {
               name: "sensor",
               tag: "1.0.0",
+            },
+            codegen: {
               language: "rust",
             },
             process: {
@@ -89,6 +91,8 @@ fn add_instance_to_existing_entity() {
             manifest: {
               name: "sensor",
               tag: "1.0.0",
+            },
+            codegen: {
               language: "rust",
             },
             process: {
@@ -155,6 +159,8 @@ fn add_instance_with_specific_id() {
             manifest: {
               name: "sensor",
               tag: "1.0.0",
+            },
+            codegen: {
               language: "rust",
             },
             process: {
@@ -198,6 +204,8 @@ fn remove_instance_from_entity_with_multiple_instances() {
             manifest: {
               name: "sensor",
               tag: "1.0.0",
+            },
+            codegen: {
               language: "rust",
             },
             process: {
@@ -261,6 +269,8 @@ fn remove_last_instance_keeps_entity_in_graph() {
             manifest: {
               name: "sensor",
               tag: "1.0.0",
+            },
+            codegen: {
               language: "rust",
             },
             process: {
@@ -314,6 +324,8 @@ fn remove_nonexistent_instance_returns_false() {
             manifest: {
               name: "sensor",
               tag: "1.0.0",
+            },
+            codegen: {
               language: "rust",
             },
             process: {
@@ -360,6 +372,8 @@ fn reset_clears_all_except_core_node() {
             manifest: {
               name: "sensor1",
               tag: "1.0.0",
+            },
+            codegen: {
               language: "rust",
             },
             process: {
@@ -375,6 +389,8 @@ fn reset_clears_all_except_core_node() {
             manifest: {
               name: "sensor2",
               tag: "1.0.0",
+            },
+            codegen: {
               language: "rust",
             },
             process: {
@@ -418,6 +434,8 @@ fn spawning_multiple_instances_on_same_entity() {
             manifest: {
               name: "sensor",
               tag: "1.0.0",
+            },
+            codegen: {
               language: "rust",
             },
             process: {
@@ -483,6 +501,8 @@ fn adding_same_entity_with_different_interfaces_overwrites_when_no_dependents() 
             manifest: {
               name: "sensor",
               tag: "1.0.0",
+            },
+            codegen: {
               language: "rust",
             },
             process: {
@@ -509,6 +529,8 @@ fn adding_same_entity_with_different_interfaces_overwrites_when_no_dependents() 
             manifest: {
               name: "sensor",
               tag: "1.0.0",
+            },
+            codegen: {
               language: "rust",
             },
             process: {
@@ -586,6 +608,8 @@ fn adding_same_name_with_different_tag_and_different_interfaces_succeeds() {
             manifest: {
               name: "sensor",
               tag: "1.0.0",
+            },
+            codegen: {
               language: "rust",
             },
             process: {
@@ -612,6 +636,8 @@ fn adding_same_name_with_different_tag_and_different_interfaces_succeeds() {
             manifest: {
               name: "sensor",
               tag: "2.0.0",
+            },
+            codegen: {
               language: "rust",
             },
             process: {
@@ -734,6 +760,8 @@ fn node_stack_wires_dependencies_for_dependants() {
             manifest: {
               name: "lidar",
               tag: "1.0.0",
+            },
+            codegen: {
               language: "rust",
             },
             process: {
@@ -756,12 +784,14 @@ fn node_stack_wires_dependencies_for_dependants() {
             manifest: {
               name: "brain",
               tag: "1.0.0",
-              language: "rust",
               depends_on: {
                 nodes: [
                   { name: "lidar", tag: "1.0.0", local_id: "lidar" }
                 ]
               },
+            },
+            codegen: {
+              language: "rust",
             },
             process: {
               start_cmd: ["brain"]
@@ -805,12 +835,14 @@ fn dependency_fails_when_node_name_mismatches() {
             manifest: {
               name: "brain",
               tag: "1.0.0",
-              language: "rust",
               depends_on: {
                 nodes: [
                   { name: "uvc_camera", tag: "1.0.0", local_id: "uvc_camera" }
                 ]
               },
+            },
+            codegen: {
+              language: "rust",
             },
             process: {
               start_cmd: ["brain"]
@@ -835,6 +867,8 @@ fn dependency_fails_when_node_name_mismatches() {
             manifest: {
               name: "lidar",
               tag: "1.0.0",
+            },
+            codegen: {
               language: "rust",
             },
             process: {
@@ -899,12 +933,14 @@ fn dependency_fails_when_node_tag_mismatches() {
             manifest: {
               name: "brain",
               tag: "1.0.0",
-              language: "rust",
               depends_on: {
                 nodes: [
                   { name: "lidar", tag: "1.0.0", local_id: "lidar" }
                 ]
               },
+            },
+            codegen: {
+              language: "rust",
             },
             process: {
               start_cmd: ["brain"]
@@ -929,6 +965,8 @@ fn dependency_fails_when_node_tag_mismatches() {
             manifest: {
               name: "lidar",
               tag: "2.0.0",
+            },
+            codegen: {
               language: "rust",
             },
             process: {
@@ -992,6 +1030,8 @@ fn overwriting_existing_node_fails_if_node_has_dependencies() {
             manifest: {
               name: "lidar",
               tag: "1.0.0",
+            },
+            codegen: {
               language: "rust",
             },
             process: {
@@ -1014,12 +1054,14 @@ fn overwriting_existing_node_fails_if_node_has_dependencies() {
             manifest: {
               name: "brain",
               tag: "1.0.0",
-              language: "rust",
               depends_on: {
                 nodes: [
                   { name: "lidar", tag: "1.0.0", local_id: "lidar" }
                 ]
               },
+            },
+            codegen: {
+              language: "rust",
             },
             process: {
               start_cmd: ["brain"]
@@ -1044,6 +1086,8 @@ fn overwriting_existing_node_fails_if_node_has_dependencies() {
             manifest: {
               name: "lidar",
               tag: "1.0.0",
+            },
+            codegen: {
               language: "rust",
             },
             process: {
@@ -1113,6 +1157,8 @@ fn updating_start_cmd_without_changing_interfaces_applies_new_config() {
             manifest: {
               name: "sensor",
               tag: "1.0.0",
+            },
+            codegen: {
               language: "rust",
             },
             process: {
@@ -1128,6 +1174,8 @@ fn updating_start_cmd_without_changing_interfaces_applies_new_config() {
             manifest: {
               name: "sensor",
               tag: "1.0.0",
+            },
+            codegen: {
               language: "rust",
             },
             process: {
@@ -1178,6 +1226,8 @@ fn updating_start_cmd_succeeds_even_when_node_has_dependents() {
             manifest: {
               name: "lidar",
               tag: "1.0.0",
+            },
+            codegen: {
               language: "rust",
             },
             process: {
@@ -1200,12 +1250,14 @@ fn updating_start_cmd_succeeds_even_when_node_has_dependents() {
             manifest: {
               name: "brain",
               tag: "1.0.0",
-              language: "rust",
               depends_on: {
                 nodes: [
                   { name: "lidar", tag: "1.0.0", local_id: "lidar" }
                 ]
               },
+            },
+            codegen: {
+              language: "rust",
             },
             process: {
               start_cmd: ["brain"]
@@ -1231,6 +1283,8 @@ fn updating_start_cmd_succeeds_even_when_node_has_dependents() {
             manifest: {
               name: "lidar",
               tag: "1.0.0",
+            },
+            codegen: {
               language: "rust",
             },
             process: {

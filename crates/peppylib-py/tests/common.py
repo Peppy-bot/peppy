@@ -22,6 +22,8 @@ PEPPY_CONFIG = """{
   manifest: {
     name: "test_node",
     tag: "0.1.0",
+  },
+  codegen: {
     language: "python",
   },
   process: {

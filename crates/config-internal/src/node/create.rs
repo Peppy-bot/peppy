@@ -22,7 +22,9 @@ struct LauncherConfigTemplate;
   schema_version: 1,
   manifest: {
     name: "{{ name }}",
-    tag: "0.1.0",
+    tag: "0.1.0"
+  },
+  codegen: {
     language: "rust"
   },
   process: {
@@ -102,6 +104,8 @@ mod tests {
             manifest: {
                 name: "a_node",
                 tag: "0.1.0",
+            },
+            codegen: {
                 language: "rust",
             },
             process: {

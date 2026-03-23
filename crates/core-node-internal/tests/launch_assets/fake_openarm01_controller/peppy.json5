@@ -3,11 +3,13 @@
   manifest: {
     name: "fake_openarm01_controller",
     tag: "0.1.0",
-    language: "rust",
     labels: [
       "controller",
       "openarm"
     ],
+  },
+  codegen: {
+    language: "rust"
   },
   process: {
     add_cmd: [

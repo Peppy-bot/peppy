@@ -9,12 +9,14 @@ const NODE_EXAMPLE: &str = r#"
   manifest: {
     name: "uvc_camera",
     tag: "0.1.0",
-    language: "rust",
     labels: [
       "uvc",
       "camera",
       "usb",
     ],
+  },
+  codegen: {
+    language: "rust",
   },
   process: {
     start_cmd: [
@@ -48,12 +50,14 @@ const INVALID_PARAMETERS_NODE_EXAMPLE: &str = r#"
   manifest: {
     name: "uvc_camera",
     tag: "0.1.0",
-    language: "rust",
     labels: [
       "uvc",
       "camera",
       "usb",
     ],
+  },
+  codegen: {
+    language: "rust",
   },
   process: {
     start_cmd: [
@@ -90,12 +94,14 @@ const NESTED_STRUCT_COLLISION_NODE_EXAMPLE: &str = r#"
   manifest: {
     name: "uvc_camera",
     tag: "0.1.0",
-    language: "rust",
     labels: [
       "uvc",
       "camera",
       "usb",
     ],
+  },
+  codegen: {
+    language: "rust",
   },
   process: {
     start_cmd: [
@@ -128,12 +134,14 @@ const UNSUPPORTED_PARAMETERS_VARIANT_NODE_EXAMPLE: &str = r#"
   manifest: {
     name: "uvc_camera",
     tag: "0.1.0",
-    language: "rust",
     labels: [
       "uvc",
       "camera",
       "usb",
     ],
+  },
+  codegen: {
+    language: "rust",
   },
   process: {
     start_cmd: [
@@ -157,12 +165,14 @@ const UNKNOWN_PARAMETER_TYPE_NODE_EXAMPLE: &str = r#"
   manifest: {
     name: "uvc_camera",
     tag: "0.1.0",
-    language: "rust",
     labels: [
       "uvc",
       "camera",
       "usb",
     ],
+  },
+  codegen: {
+    language: "rust",
   },
   process: {
     start_cmd: [
@@ -184,12 +194,14 @@ const UNSUPPORTED_TOP_LEVEL_PARAMETER_VARIANT_NODE_EXAMPLE: &str = r#"
   manifest: {
     name: "uvc_camera",
     tag: "0.1.0",
-    language: "rust",
     labels: [
       "uvc",
       "camera",
       "usb",
     ],
+  },
+  codegen: {
+    language: "rust",
   },
   process: {
     start_cmd: [

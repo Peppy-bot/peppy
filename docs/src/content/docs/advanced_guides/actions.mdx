@@ -45,6 +45,8 @@ Each action defines a `goal_service`, a `feedback_topic`, and a `result_service`
   manifest: {
     name: "brain",
     tag: "0.1.0",
+  },
+  codegen: {
     language: "rust",
   },
   process: {
@@ -210,12 +212,14 @@ Dependencies are declared in `manifest.depends_on` and referenced by `local_node
   manifest: {
     name: "controller",
     tag: "0.1.0",
-    language: "rust",
     depends_on: {
       nodes: [
         { name: "brain", tag: "0.1.0", local_id: "brain" },
       ]
     },
+  },
+  codegen: {
+    language: "rust",
   },
   process: {
     add_cmd: ["cargo", "build", "--release"],

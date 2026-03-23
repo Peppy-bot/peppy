@@ -22,6 +22,8 @@ Each topic defines a `name`, a `qos_profile`, and a `message_format`:
   manifest: {
     name: "uvc_camera",
     tag: "0.1.0",
+  },
+  codegen: {
     language: "rust",
   },
   process: {
@@ -132,12 +134,14 @@ Dependencies are declared in `manifest.depends_on` and referenced by `local_node
   manifest: {
     name: "web_video_stream",
     tag: "0.1.0",
-    language: "rust",
     depends_on: {
       nodes: [
         { name: "uvc_camera", tag: "0.1.0", local_id: "uvc_camera" },
       ]
     },
+  },
+  codegen: {
+    language: "rust",
   },
   process: {
     add_cmd: ["cargo", "build", "--release"],

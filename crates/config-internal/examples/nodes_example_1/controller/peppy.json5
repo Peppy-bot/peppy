@@ -4,11 +4,13 @@
   manifest: {
     name: "controller",
     tag: "0.1.0",
-    language: "rust",
     labels: [
       "controller",
       "openarm",
     ],
+  },
+  codegen: {
+    language: "rust"
   },
   process: {
     add_cmd: [

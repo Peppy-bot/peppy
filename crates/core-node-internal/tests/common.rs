@@ -592,6 +592,8 @@ fn main() -> Result<()> {
   manifest: {{
     name: "{crate_name}",
     tag: "{node_tag}",
+  }},
+  codegen: {{
     language: "rust",
   }},
   // Avoid `add_cmd` build step here to make the `add` tests faster

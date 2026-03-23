@@ -41,6 +41,8 @@ async fn listen_for_node_info_on_fs_node_success() {
             manifest: {{
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
+            }},
+            codegen: {{
                 language: "rust",
             }},
             process: {{
@@ -236,6 +238,8 @@ async fn listen_for_node_info_on_http_node_success() {
             manifest: {{
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
+            }},
+            codegen: {{
                 language: "rust",
             }},
             process: {{
@@ -359,6 +363,8 @@ async fn listen_for_node_info_has_instance_ids() {
             manifest: {{
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
+            }},
+            codegen: {{
                 language: "rust",
             }},
             process: {{
@@ -589,6 +595,8 @@ async fn listen_for_node_info_recovers_after_invalid_request() {
             manifest: {{
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
+            }},
+            codegen: {{
                 language: "rust",
             }},
             process: {{

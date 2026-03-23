@@ -110,6 +110,8 @@ fn create_versioned_nodes_git_repo(to_path: impl AsRef<Path>) -> PathBuf {
             manifest: {
                 name: "uvc_camera",
                 tag: "0.1.0",
+            },
+            codegen: {
                 language: "rust",
             },
             process: {
@@ -150,6 +152,8 @@ fn create_versioned_nodes_git_repo(to_path: impl AsRef<Path>) -> PathBuf {
             manifest: {
                 name: "uvc_camera",
                 tag: "0.2.0",
+            },
+            codegen: {
                 language: "rust",
             },
             process: {
@@ -201,6 +205,8 @@ async fn listen_for_node_fs_add_success() {
             manifest: {{
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
+            }},
+            codegen: {{
                 language: "rust",
             }},
             process: {{
@@ -285,6 +291,8 @@ async fn listen_for_node_add_with_container_success() {
         manifest: {
             name: "TARGET_NODE_NAME",
             tag: "TARGET_NODE_TAG",
+        },
+        codegen: {
             language: "rust",
         },
         // Using `container` let `peppy` manage the node internally
@@ -577,6 +585,8 @@ async fn listen_for_node_http_add_success() {
             manifest: {{
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
+            }},
+            codegen: {{
                 language: "rust",
             }},
             process: {{
@@ -693,6 +703,8 @@ async fn listen_for_node_add_no_config_found() {
             manifest: {{
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
+            }},
+            codegen: {{
                 language: "rust",
             }},
             process: {{
@@ -736,6 +748,8 @@ async fn listen_for_node_add_git_hash_mismatch_fails() {
         manifest: {
             name: "git_hash_mismatch_node",
             tag: "0.1.0",
+        },
+        codegen: {
             language: "rust",
         },
         process: {
@@ -824,6 +838,8 @@ async fn listen_for_node_add_no_start_cmd_fails() {
         manifest: {
             name: "no_start_cmd_node",
             tag: "0.1.0",
+        },
+        codegen: {
             language: "rust",
         },
         parameters: {}
@@ -871,12 +887,14 @@ async fn listen_for_node_add_dependency_not_resolved() {
         manifest: {
             name: "consumer_node",
             tag: "1.0.0",
-            language: "rust",
             depends_on: {
                 nodes: [
                     { name: "non_existent_node", tag: "1.0.0", local_id: "non_existent_node" }
                 ]
             },
+        },
+        codegen: {
+            language: "rust",
         },
         process: {
             start_cmd: ["sleep", "10"],
@@ -949,6 +967,8 @@ async fn listen_for_node_add_same_node_same_tags_overwrites_when_no_dependents()
             manifest: {{
                 name: "{NODE_NAME}",
                 tag: "{NODE_TAG}",
+            }},
+            codegen: {{
                 language: "rust",
             }},
             process: {{
@@ -990,6 +1010,8 @@ async fn listen_for_node_add_same_node_same_tags_overwrites_when_no_dependents()
             manifest: {{
                 name: "{NODE_NAME}",
                 tag: "{NODE_TAG}",
+            }},
+            codegen: {{
                 language: "rust",
             }},
             process: {{
@@ -1073,6 +1095,8 @@ async fn listen_for_node_add_same_node_same_tags_fails_when_node_has_dependents(
             manifest: {{
                 name: "{DEPENDENCY_NODE_NAME}",
                 tag: "{DEPENDENCY_NODE_TAG}",
+            }},
+            codegen: {{
                 language: "rust",
             }},
             process: {{
@@ -1111,12 +1135,14 @@ async fn listen_for_node_add_same_node_same_tags_fails_when_node_has_dependents(
             manifest: {{
                 name: "{DEPENDENT_NODE_NAME}",
                 tag: "{DEPENDENT_NODE_TAG}",
-                language: "rust",
                 depends_on: {{
                     nodes: [
                         {{ name: "{DEPENDENCY_NODE_NAME}", tag: "{DEPENDENCY_NODE_TAG}", local_id: "{DEPENDENCY_NODE_NAME}" }}
                     ]
                 }},
+            }},
+            codegen: {{
+                language: "rust",
             }},
             process: {{
                 start_cmd: ["sleep", "10"]
@@ -1164,6 +1190,8 @@ async fn listen_for_node_add_same_node_same_tags_fails_when_node_has_dependents(
             manifest: {{
                 name: "{DEPENDENCY_NODE_NAME}",
                 tag: "{DEPENDENCY_NODE_TAG}",
+            }},
+            codegen: {{
                 language: "rust",
             }},
             process: {{
@@ -1236,6 +1264,8 @@ async fn listen_for_node_add_same_node_different_tags_create_two_entities() {
             manifest: {{
                 name: "{NODE_NAME}",
                 tag: "1.0.0",
+            }},
+            codegen: {{
                 language: "rust",
             }},
             process: {{
@@ -1268,6 +1298,8 @@ async fn listen_for_node_add_same_node_different_tags_create_two_entities() {
             manifest: {{
                 name: "{NODE_NAME}",
                 tag: "2.0.0",
+            }},
+            codegen: {{
                 language: "rust",
             }},
             process: {{
@@ -1325,6 +1357,8 @@ async fn listen_for_node_add_copies_files_to_storage() {
             manifest: {{
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
+            }},
+            codegen: {{
                 language: "rust",
             }},
             process: {{
@@ -1399,6 +1433,8 @@ async fn listen_for_node_add_runs_add_cmd() {
             manifest: {{
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
+            }},
+            codegen: {{
                 language: "rust",
             }},
             process: {{
@@ -1465,6 +1501,8 @@ async fn listen_for_node_add_cmd_failure_fails_add() {
             manifest: {{
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
+            }},
+            codegen: {{
                 language: "rust",
             }},
             process: {{
@@ -1534,6 +1572,8 @@ async fn listen_for_node_add_cmd_nonzero_exit_fails_add() {
             manifest: {{
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
+            }},
+            codegen: {{
                 language: "rust",
             }},
             process: {{
@@ -1601,6 +1641,8 @@ async fn listen_for_node_add_streams_stdout_and_stderr() {
             manifest: {{
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
+            }},
+            codegen: {{
                 language: "rust",
             }},
             process: {{
@@ -1661,6 +1703,8 @@ async fn listen_for_node_add_fingerprint_mismatch() {
             manifest: {{
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
+            }},
+            codegen: {{
                 language: "rust",
             }},
             process: {{
@@ -1736,6 +1780,8 @@ async fn listen_for_node_add_writes_log_file() {
             manifest: {{
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
+            }},
+            codegen: {{
                 language: "rust",
             }},
             process: {{
@@ -1841,6 +1887,8 @@ async fn listen_for_node_add_abandoned_action_does_not_block_next_goal() {
             manifest: {{
                 name: "{FIRST_NODE_NAME}",
                 tag: "{FIRST_NODE_TAG}",
+            }},
+            codegen: {{
                 language: "rust",
             }},
             process: {{
@@ -1907,6 +1955,8 @@ async fn listen_for_node_add_abandoned_action_does_not_block_next_goal() {
             manifest: {{
                 name: "{SECOND_NODE_NAME}",
                 tag: "{SECOND_NODE_TAG}",
+            }},
+            codegen: {{
                 language: "rust",
             }},
             process: {{
@@ -1966,6 +2016,8 @@ async fn node_add_same_node_shutdown_existing_instances() {
             manifest: {{
                 name: "{NODE_NAME}",
                 tag: "{NODE_TAG}",
+            }},
+            codegen: {{
                 language: "rust",
             }},
             process: {{
@@ -2084,6 +2136,8 @@ async fn node_add_same_node_shutdown_existing_instances() {
             manifest: {{
                 name: "{NODE_NAME}",
                 tag: "{NODE_TAG}",
+            }},
+            codegen: {{
                 language: "rust",
             }},
             process: {{
@@ -2216,6 +2270,8 @@ async fn listen_for_node_add_uses_env_overrides_for_path() {
             manifest: {{
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
+            }},
+            codegen: {{
                 language: "rust",
             }},
             process: {{
@@ -2301,6 +2357,8 @@ async fn listen_for_node_add_injects_runtime_env_vars() {
             manifest: {{
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
+            }},
+            codegen: {{
                 language: "rust",
             }},
             process: {{
@@ -2356,12 +2414,14 @@ async fn listen_for_node_add_fails_runs_add_cmd_on_missing_node_dependency() {
         manifest: {
           name: "TARGET_NODE_NAME",
           tag: "TARGET_NODE_TAG",
-          language: "rust",
           depends_on: {
             nodes: [
               { name: "fake_uvc_camera", tag: "0.1.0", local_id: "fake_uvc_camera" }
             ]
           },
+        },
+        codegen: {
+          language: "rust",
         },
         process: {
           add_cmd: ["sh", "-c", "touch MARKER_PATH && exit 1"],
@@ -2446,6 +2506,8 @@ async fn listen_for_node_add_fails_on_missing_interface_even_when_dependency_exi
             manifest: {{
                 name: "{DEPENDENCY_NODE_NAME}",
                 tag: "{DEPENDENCY_NODE_TAG}",
+            }},
+            codegen: {{
                 language: "rust",
             }},
             process: {{
@@ -2493,12 +2555,14 @@ async fn listen_for_node_add_fails_on_missing_interface_even_when_dependency_exi
         manifest: {
           name: "TARGET_NODE_NAME",
           tag: "TARGET_NODE_TAG",
-          language: "rust",
           depends_on: {
             nodes: [
               { name: "DEPENDENCY_NODE_NAME", tag: "DEPENDENCY_NODE_TAG", local_id: "DEPENDENCY_NODE_NAME" }
             ]
           },
+        },
+        codegen: {
+          language: "rust",
         },
         process: {
           add_cmd: ["sh", "-c", "touch MARKER_PATH && exit 1"],
@@ -2582,6 +2646,8 @@ async fn listen_for_node_add_reports_excluded_dirs_in_feedback() {
             manifest: {{
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
+            }},
+            codegen: {{
                 language: "rust",
             }},
             process: {{
@@ -2656,6 +2722,8 @@ async fn listen_for_node_add_container_build_failure_includes_stderr_in_error() 
         manifest: {
             name: "TARGET_NODE_NAME",
             tag: "TARGET_NODE_TAG",
+        },
+        codegen: {
             language: "rust",
         },
         container: {
@@ -2765,6 +2833,8 @@ async fn listen_for_node_add_logs_error_on_spawn_failure() {
             manifest: {{
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
+            }},
+            codegen: {{
                 language: "rust",
             }},
             process: {{
@@ -2864,6 +2934,8 @@ async fn node_add_same_node_with_running_instance_and_dependents_succeeds() {
             manifest: {{
                 name: "{DEPENDENCY_NODE_NAME}",
                 tag: "{DEPENDENCY_NODE_TAG}",
+            }},
+            codegen: {{
                 language: "rust",
             }},
             process: {{
@@ -2902,12 +2974,14 @@ async fn node_add_same_node_with_running_instance_and_dependents_succeeds() {
             manifest: {{
                 name: "{DEPENDENT_NODE_NAME}",
                 tag: "{DEPENDENT_NODE_TAG}",
-                language: "rust",
                 depends_on: {{
                     nodes: [
                         {{ name: "{DEPENDENCY_NODE_NAME}", tag: "{DEPENDENCY_NODE_TAG}", local_id: "{DEPENDENCY_NODE_NAME}" }}
                     ]
                 }},
+            }},
+            codegen: {{
+                language: "rust",
             }},
             process: {{
                 start_cmd: ["sleep", "10"]
@@ -3067,6 +3141,8 @@ async fn node_add_same_node_changing_interface_with_running_instance_and_depende
             manifest: {{
                 name: "{DEPENDENCY_NODE_NAME}",
                 tag: "{DEPENDENCY_NODE_TAG}",
+            }},
+            codegen: {{
                 language: "rust",
             }},
             process: {{
@@ -3105,12 +3181,14 @@ async fn node_add_same_node_changing_interface_with_running_instance_and_depende
             manifest: {{
                 name: "{DEPENDENT_NODE_NAME}",
                 tag: "{DEPENDENT_NODE_TAG}",
-                language: "rust",
                 depends_on: {{
                     nodes: [
                         {{ name: "{DEPENDENCY_NODE_NAME}", tag: "{DEPENDENCY_NODE_TAG}", local_id: "{DEPENDENCY_NODE_NAME}" }}
                     ]
                 }},
+            }},
+            codegen: {{
+                language: "rust",
             }},
             process: {{
                 start_cmd: ["sleep", "10"]
@@ -3190,6 +3268,8 @@ async fn node_add_same_node_changing_interface_with_running_instance_and_depende
             manifest: {{
                 name: "{DEPENDENCY_NODE_NAME}",
                 tag: "{DEPENDENCY_NODE_TAG}",
+            }},
+            codegen: {{
                 language: "rust",
             }},
             process: {{
@@ -3280,6 +3360,8 @@ async fn node_add_same_node_with_running_instance_and_dependents_fails_on_stoppe
             manifest: {{
                 name: "{DEPENDENCY_NODE_NAME}",
                 tag: "{DEPENDENCY_NODE_TAG}",
+            }},
+            codegen: {{
                 language: "rust",
             }},
             process: {{
@@ -3318,12 +3400,14 @@ async fn node_add_same_node_with_running_instance_and_dependents_fails_on_stoppe
             manifest: {{
                 name: "{DEPENDENT_NODE_NAME}",
                 tag: "{DEPENDENT_NODE_TAG}",
-                language: "rust",
                 depends_on: {{
                     nodes: [
                         {{ name: "{DEPENDENCY_NODE_NAME}", tag: "{DEPENDENCY_NODE_TAG}", local_id: "{DEPENDENCY_NODE_NAME}" }}
                     ]
                 }},
+            }},
+            codegen: {{
+                language: "rust",
             }},
             process: {{
                 start_cmd: ["sleep", "10"]

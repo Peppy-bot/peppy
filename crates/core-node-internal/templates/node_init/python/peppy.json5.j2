@@ -3,7 +3,9 @@
   manifest: {
     name: "{{ node_name }}",
     tag: "0.1.0",
-    language: "python",
+  },
+  codegen: {
+    language: "python"
   },
 {% if with_container %}
   container: {

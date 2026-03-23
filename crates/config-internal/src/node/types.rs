@@ -67,6 +67,7 @@ impl Toolchain {
 pub struct NodeConfig {
     pub schema_version: SchemaVersion,
     pub manifest: Manifest,
+    pub codegen: Codegen,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub process: Option<Process>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -606,10 +607,15 @@ pub struct Variant {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct Codegen {
+    pub language: PeppygenLanguage,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Manifest {
     pub name: Name,
     pub tag: String,
-    pub language: PeppygenLanguage,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub labels: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1102,7 +1108,6 @@ mod tests {
         let json5 = r#"{
             name: "slam",
             tag: "0.1.0",
-            language: "rust",
             depends_on: {
                 nodes: [
                     { name: "lidar_driver", tag: "0.1.0", local_id: "lidar" },
@@ -1124,8 +1129,7 @@ mod tests {
     fn manifest_without_depends_on() {
         let json5 = r#"{
             name: "simple_node",
-            tag: "0.1.0",
-            language: "rust"
+            tag: "0.1.0"
         }"#;
         let manifest: Manifest = serde_json5::from_str(json5).expect("should parse");
         assert!(manifest.depends_on.is_none());
@@ -1136,7 +1140,6 @@ mod tests {
         let json5 = r#"{
             name: "node",
             tag: "0.1.0",
-            language: "rust",
             depends_on: {
                 nodes: [{ name: "dep", tag: "0.1.0", local_id: "d", extra: "bad" }]
             }
@@ -1149,7 +1152,6 @@ mod tests {
         let json5 = r#"{
             name: "uvc_camera",
             tag: "0.1.0",
-            language: "rust",
             variants: [
                 {
                     name: "mujoco",
@@ -1184,8 +1186,7 @@ mod tests {
     fn manifest_without_variants() {
         let json5 = r#"{
             name: "simple_node",
-            tag: "0.1.0",
-            language: "rust"
+            tag: "0.1.0"
         }"#;
         let manifest: Manifest = serde_json5::from_str(json5).expect("should parse");
         assert!(manifest.variants.is_none());
@@ -1196,7 +1197,6 @@ mod tests {
         let json5 = r#"{
             name: "node",
             tag: "0.1.0",
-            language: "rust",
             variants: [{ name: "v1", source: { local: "./x" }, extra: "bad" }]
         }"#;
         assert!(serde_json5::from_str::<Manifest>(json5).is_err());

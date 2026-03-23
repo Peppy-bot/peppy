@@ -75,6 +75,8 @@ A container node uses a `container` block instead of the usual `process` block. 
       manifest: {
         name: "my_node",
         tag: "0.1.0",
+      },
+      codegen: {
         language: "python",
       },
       container: {
@@ -91,6 +93,8 @@ A container node uses a `container` block instead of the usual `process` block. 
       manifest: {
         name: "my_node",
         tag: "0.1.0",
+      },
+      codegen: {
         language: "rust",
       },
       container: {
@@ -114,6 +118,8 @@ Compare this with a standard process node, which defines `add_cmd` and `start_cm
       manifest: {
         name: "my_node",
         tag: "0.1.0",
+      },
+      codegen: {
         language: "python",
       },
       process: {
@@ -131,6 +137,8 @@ Compare this with a standard process node, which defines `add_cmd` and `start_cm
       manifest: {
         name: "my_node",
         tag: "0.1.0",
+      },
+      codegen: {
         language: "rust",
       },
       process: {
@@ -280,6 +288,8 @@ Add a `mount_paths` array to the `container` block in `peppy.json5`:
   manifest: {
     name: "my_node",
     tag: "0.1.0",
+  },
+  codegen: {
     language: "python",
   },
   container: {
@@ -321,6 +331,8 @@ Mount paths can reference runtime [parameters](/getting_started/parameters/) usi
   manifest: {
     name: "uvc_camera",
     tag: "0.1.0",
+  },
+  codegen: {
     language: "rust",
   },
   container: {
@@ -377,6 +389,8 @@ You can pass additional command-line arguments directly to Apptainer or Lima usi
   manifest: {
     name: "my_node",
     tag: "0.1.0",
+  },
+  codegen: {
     language: "python",
   },
   container: {

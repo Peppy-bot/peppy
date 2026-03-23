@@ -11,11 +11,10 @@ use crate::helpers;
 
 const PEPPY_JSON5_CONFIG: &str = r#"{
   schema_version: 1,
-  manifest: {
-    name: "test_node",
-    tag: "0.1.0",
-    language: "rust"
-  },
+  manifest: { name: "test_node",
+    tag: "0.1.0" },
+
+  codegen: { language: "rust" },
   process: {
     start_cmd: ["./target/release/test_node"]
   },
@@ -57,11 +56,10 @@ fn generate_peppygen_lib_minimal_config() {
     // Minimal config with no interfaces
     let minimal_config = r#"{
       schema_version: 1,
-      manifest: {
-        name: "minimal_node",
-        tag: "0.1.0",
-        language: "rust"
-      },
+      manifest: { name: "minimal_node",
+        tag: "0.1.0" },
+
+      codegen: { language: "rust" },
       process: {
         start_cmd: ["./target/debug/minimal_node"]
       }
@@ -235,7 +233,9 @@ fn generate_peppygen_rust_lib_emitted_and_consumed_topics() {
           manifest: {{
             name: "{EXPOSED_NODE_NAME}",
             tag: "0.1.0",
-            language: "rust"
+          }},
+          codegen: {{
+            language: "rust",
           }},
           process: {{
             start_cmd: ["./target/debug/{EXPOSED_NODE_NAME}"]
@@ -287,7 +287,9 @@ fn generate_peppygen_rust_lib_emitted_and_consumed_topics() {
           manifest: {{
             name: "{CONSUMER_NODE_NAME}",
             tag: "0.1.0",
-            language: "rust"
+          }},
+          codegen: {{
+            language: "rust",
           }},
           process: {{
             start_cmd: ["./target/debug/{CONSUMER_NODE_NAME}"]
@@ -348,7 +350,9 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_services() {
           manifest: {{
             name: "{EXPOSED_NODE_NAME}",
             tag: "0.1.0",
-            language: "rust"
+          }},
+          codegen: {{
+            language: "rust",
           }},
           process: {{
             start_cmd: ["./target/debug/{EXPOSED_NODE_NAME}"]
@@ -403,7 +407,9 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_services() {
           manifest: {{
             name: "{CONSUMER_NODE_NAME}",
             tag: "0.1.0",
-            language: "rust"
+          }},
+          codegen: {{
+            language: "rust",
           }},
           process: {{
             start_cmd: ["./target/debug/{CONSUMER_NODE_NAME}"]
@@ -477,7 +483,9 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_actions() {
           manifest: {{
             name: "{EXPOSED_NODE_NAME}",
             tag: "0.1.0",
-            language: "rust"
+          }},
+          codegen: {{
+            language: "rust",
           }},
           process: {{
             start_cmd: ["./target/debug/{EXPOSED_NODE_NAME}"]
@@ -544,7 +552,9 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_actions() {
           manifest: {{
             name: "{CONSUMER_NODE_NAME}",
             tag: "0.1.0",
-            language: "rust"
+          }},
+          codegen: {{
+            language: "rust",
           }},
           process: {{
             start_cmd: ["./target/debug/{CONSUMER_NODE_NAME}"]

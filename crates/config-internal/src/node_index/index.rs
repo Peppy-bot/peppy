@@ -77,7 +77,9 @@ mod tests {
                 manifest: {{
                     name: "{name}",
                     tag: "0.1.0",
-                    language: "rust"
+                }},
+                codegen: {{
+                    language: "rust",
                 }},
                 process: {{
                     start_cmd: ["./target/release/{name}"]

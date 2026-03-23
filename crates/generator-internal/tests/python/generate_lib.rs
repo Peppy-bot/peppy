@@ -10,11 +10,10 @@ use tempfile::TempDir;
 
 const PEPPY_JSON5_CONFIG: &str = r#"{
   schema_version: 1,
-  manifest: {
-    name: "test_node",
-    tag: "0.1.0",
-    language: "python"
-  },
+  manifest: { name: "test_node",
+    tag: "0.1.0" },
+
+  codegen: { language: "python" },
   process: {
     add_cmd: ["uv", "sync"],
     start_cmd: ["uv", "run", "test_node"]
@@ -95,11 +94,10 @@ fn generate_peppygen_lib_minimal_config() {
     // Minimal config with no interfaces
     let minimal_config = r#"{
       schema_version: 1,
-      manifest: {
-        name: "minimal_node",
-        tag: "0.1.0",
-        language: "python"
-      },
+      manifest: { name: "minimal_node",
+        tag: "0.1.0" },
+
+      codegen: { language: "python" },
       process: {
         add_cmd: ["uv", "sync"],
         start_cmd: ["uv", "run", "minimal_node"]
@@ -156,7 +154,9 @@ fn generate_peppygen_python_lib_emitted_and_consumed_topics() {
           manifest: {{
             name: "{EXPOSED_NODE_NAME}",
             tag: "0.1.0",
-            language: "python"
+          }},
+          codegen: {{
+            language: "python",
           }},
           process: {{
             add_cmd: ["uv", "sync"],
@@ -209,7 +209,9 @@ fn generate_peppygen_python_lib_emitted_and_consumed_topics() {
           manifest: {{
             name: "{CONSUMER_NODE_NAME}",
             tag: "0.1.0",
-            language: "python"
+          }},
+          codegen: {{
+            language: "python",
           }},
           process: {{
             add_cmd: ["uv", "sync"],
@@ -271,7 +273,9 @@ fn generate_peppygen_python_lib_exposed_and_consumed_services() {
           manifest: {{
             name: "{EXPOSED_NODE_NAME}",
             tag: "0.1.0",
-            language: "python"
+          }},
+          codegen: {{
+            language: "python",
           }},
           process: {{
             add_cmd: ["uv", "sync"],
@@ -327,7 +331,9 @@ fn generate_peppygen_python_lib_exposed_and_consumed_services() {
           manifest: {{
             name: "{CONSUMER_NODE_NAME}",
             tag: "0.1.0",
-            language: "python"
+          }},
+          codegen: {{
+            language: "python",
           }},
           process: {{
             add_cmd: ["uv", "sync"],
@@ -402,7 +408,9 @@ fn generate_peppygen_python_lib_exposed_and_consumed_actions() {
           manifest: {{
             name: "{EXPOSED_NODE_NAME}",
             tag: "0.1.0",
-            language: "python"
+          }},
+          codegen: {{
+            language: "python",
           }},
           process: {{
             add_cmd: ["uv", "sync"],
@@ -470,7 +478,9 @@ fn generate_peppygen_python_lib_exposed_and_consumed_actions() {
           manifest: {{
             name: "{CONSUMER_NODE_NAME}",
             tag: "0.1.0",
-            language: "python"
+          }},
+          codegen: {{
+            language: "python",
           }},
           process: {{
             add_cmd: ["uv", "sync"],

@@ -61,7 +61,7 @@ fn print_node_info(response: &NodeInfoResponse) {
     // Basic info
     println!("Name:      {}", manifest.name.as_str());
     println!("Tag:       {}", manifest.tag);
-    println!("Language:  {:?}", manifest.language);
+    println!("Language:  {:?}", config.codegen.language);
 
     // Labels
     if let Some(labels) = &manifest.labels

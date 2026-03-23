@@ -5,12 +5,14 @@
   manifest: {
     name: "video_reconstruction",
     tag: "0.1.0",
-    language: "rust",
     depends_on: {
       nodes: [
         { name: "uvc_camera", tag: "0.1.0", local_id: "uvc_camera" },
       ]
     },
+  },
+  codegen: {
+    language: "rust"
   },
   container: {
     def_file: "apptainer.def",

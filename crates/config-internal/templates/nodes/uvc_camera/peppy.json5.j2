@@ -3,12 +3,14 @@
   manifest: {
     name: "{{ node_name }}",
     tag: "0.1.0",
-    language: "rust",
     labels: [
       "uvc",
       "camera",
       "usb",
     ],
+  },
+  codegen: {
+    language: "rust"
   },
   process: {
     start_cmd: [

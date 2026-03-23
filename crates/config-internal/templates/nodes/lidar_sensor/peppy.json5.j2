@@ -3,12 +3,14 @@
   manifest: {
     name: "{{ node_name }}",
     tag: "{{ node_tag }}",
-    language: "rust",
     labels: [
       "sensor",
       "usb",
       "lidar"
     ],
+  },
+  codegen: {
+    language: "rust"
   },
   process: {
     start_cmd: [

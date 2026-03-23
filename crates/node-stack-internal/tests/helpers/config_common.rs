@@ -21,6 +21,8 @@ pub fn core_node_config() -> NodeConfig {
             manifest: {
                 name: "core",
                 tag: "1.0.0",
+            },
+            codegen: {
                 language: "rust",
             },
             process: {

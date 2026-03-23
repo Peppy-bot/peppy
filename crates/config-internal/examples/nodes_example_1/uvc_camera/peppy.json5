@@ -4,13 +4,15 @@
   manifest: {
     name: "uvc_camera",
     tag: "0.1.0",
-    language: "rust",
     // Labels are useful if the node is published with `peppy node publish`
     labels: [
       "uvc",
       "camera",
       "usb",
     ],
+  },
+  codegen: {
+    language: "rust"
   },
   container: {
     def_file: "apptainer.def"

@@ -20,6 +20,8 @@ pub const STUB_NODE_CONFIG: &str = r#"{
   manifest: {
     name: "generated_node",
     tag: "0.1.0",
+  },
+  codegen: {
     language: "rust",
   },
   process: {

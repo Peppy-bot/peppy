@@ -108,6 +108,8 @@ async fn daemon_runner_succeed() {
       manifest: {
         name: "test_node",
         tag: "0.1.0",
+      },
+      codegen: {
         language: "rust",
       },
       process: {
@@ -252,6 +254,8 @@ async fn standalone_runner_succeed() {
       manifest: {
         name: "test_node",
         tag: "0.1.0",
+      },
+      codegen: {
         language: "rust",
       },
       process: {
@@ -311,6 +315,8 @@ async fn node_ready_but_not_healthy() {
       manifest: {
         name: "test_node",
         tag: "0.1.0",
+      },
+      codegen: {
         language: "rust",
       },
       process: {
@@ -563,6 +569,8 @@ async fn daemon_cancellation_token_cancelled_on_shutdown() {
       manifest: {
         name: "test_node",
         tag: "0.1.0",
+      },
+      codegen: {
         language: "rust",
       },
       process: {
@@ -697,6 +705,8 @@ async fn node_runner_exposes_messenger_and_metadata() {
       manifest: {
         name: "test_node",
         tag: "0.1.0",
+      },
+      codegen: {
         language: "rust",
       },
       process: {
