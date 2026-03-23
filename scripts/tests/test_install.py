@@ -143,6 +143,10 @@ def lima_vm(request):
     )
     status = result.stdout.strip()
 
+    # Cloud image downloads can be very slow (especially aarch64 Arch Linux
+    # which is hosted on a community GitHub repo). Use a generous timeout.
+    _VM_START_TIMEOUT = 900
+
     def _start_lima_vm(extra_args: list[str] | None = None) -> None:
         """Start a new Lima VM, converting failures to pytest.fail()."""
         cmd = [
@@ -154,9 +158,22 @@ def lima_vm(request):
             "--mount-writable",
             template,
         ]
-        result = subprocess.run(
-            cmd, env=env, capture_output=True, text=True, timeout=600
-        )
+        try:
+            result = subprocess.run(
+                cmd, env=env, capture_output=True, text=True, timeout=_VM_START_TIMEOUT
+            )
+        except subprocess.TimeoutExpired:
+            # Clean up the partially-created instance
+            subprocess.run(
+                ["limactl", "delete", "--force", instance],
+                env=env,
+                capture_output=True,
+                timeout=60,
+            )
+            pytest.skip(
+                f"Lima VM start for {distro} timed out after {_VM_START_TIMEOUT}s "
+                f"(cloud image download may be slow)"
+            )
         if result.returncode != 0:
             pytest.fail(
                 f"limactl start failed for {distro} (exit {result.returncode}):\n{result.stderr}"
@@ -165,12 +182,23 @@ def lima_vm(request):
     if not status:
         _start_lima_vm()
     elif status == "Stopped":
-        restart = subprocess.run(
-            ["limactl", "start", instance],
-            env=env,
-            capture_output=True,
-            timeout=600,
-        )
+        try:
+            restart = subprocess.run(
+                ["limactl", "start", instance],
+                env=env,
+                capture_output=True,
+                timeout=_VM_START_TIMEOUT,
+            )
+        except subprocess.TimeoutExpired:
+            subprocess.run(
+                ["limactl", "delete", "--force", instance],
+                env=env,
+                capture_output=True,
+                timeout=60,
+            )
+            pytest.skip(
+                f"Lima VM restart for {distro} timed out after {_VM_START_TIMEOUT}s"
+            )
         if restart.returncode != 0:
             # Instance is corrupted (e.g. leftover from a previous failed run).
             # Delete and recreate.
@@ -310,10 +338,12 @@ def test_no_root_install_missing_dbus(lima_vm: str, tmp_path: Path) -> None:
         tmp_path, test_name=f"test_no_root_install_missing_dbus_{distro}", distro=distro
     )
 
-    # Unset DBUS_SESSION_BUS_ADDRESS so dbus-send --session cannot find the
-    # bus, simulating a system where the D-Bus user session is non-functional.
+    # Point DBUS_SESSION_BUS_ADDRESS to a non-existent socket so dbus-send
+    # --session fails to connect, simulating a system without a working D-Bus
+    # user session. Simply unsetting the variable is not enough because
+    # dbus-send falls back to the well-known socket /run/user/UID/bus.
     result = _lima_shell(
-        "unset DBUS_SESSION_BUS_ADDRESS; "
+        "DBUS_SESSION_BUS_ADDRESS=unix:path=/dev/null/nonexistent "
         f"PEPPY_HOME={home} "
         "PEPPY_NO_ROOT_INSTALL=1 "
         "PEPPY_NO_SERVICE_INSTALL=1 "
