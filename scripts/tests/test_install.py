@@ -10,6 +10,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import platform
 import shutil
 import subprocess
 import sys
@@ -39,8 +40,13 @@ def _resolve_archlinux_template() -> str:
     """Fetch the latest Arch Linux aarch64 cloud image URL and return a
     path to a temporary Lima template YAML that references it.
 
-    Falls back to the built-in template:archlinux if the API call fails.
+    The custom template is only needed on aarch64 where the built-in
+    template:archlinux ships a stale 2022 image.  On x86_64 the built-in
+    template has a recent image and works out of the box.
     """
+    if platform.machine() not in ("aarch64", "arm64"):
+        return "template:archlinux"
+
     try:
         req = urllib.request.Request(
             _ARCHLINUX_ARM_LIMA_API,
