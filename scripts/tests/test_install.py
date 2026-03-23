@@ -316,8 +316,8 @@ def test_standard_install_sets_up_setuid(lima_vm, tmp_path: Path) -> None:
     assert result.returncode == 0, (
         f"install.sh exited with {result.returncode}{diagnostic}"
     )
-    assert "Apptainer setuid configured successfully" in result.stdout, (
-        f"Missing setuid success message{diagnostic}"
+    assert "System dependencies configured successfully" in result.stdout, (
+        f"Missing system dependencies success message{diagnostic}"
     )
 
     # Verify starter-suid is root-owned with setuid bit
@@ -329,3 +329,94 @@ def test_standard_install_sets_up_setuid(lima_vm, tmp_path: Path) -> None:
     uid, mode = parts[0], parts[1]
     assert uid == "0", f"starter-suid should be root-owned, got uid {uid}"
     assert mode == "4755", f"starter-suid should have mode 4755, got {mode}"
+
+
+def test_reinstall_over_root_owned_files(lima_vm, tmp_path: Path) -> None:
+    """Reinstall succeeds even when previous install left root-owned Apptainer files."""
+    home = _setup_lima_guest(tmp_path, test_name="test_reinstall_over_root_owned")
+
+    # First install: creates root-owned apptainer files via setuid setup
+    first = _lima_shell(
+        f"PEPPY_HOME={home} "
+        "PEPPY_NO_SERVICE_INSTALL=1 "
+        "PEPPY_FORCE_REINSTALL=1 "
+        "sh /tmp/peppy-test/install.sh /tmp/peppy-test/peppy-fake.tgz"
+    )
+    diagnostic = f"\n--- stdout ---\n{first.stdout}\n--- stderr ---\n{first.stderr}"
+    assert first.returncode == 0, f"first install failed{diagnostic}"
+
+    # Verify root-owned files exist (confirms setuid setup ran)
+    check = _lima_shell(
+        f"stat -c '%u' {home}/bin/apptainer/etc/apptainer/apptainer.conf"
+    )
+    assert check.stdout.strip() == "0", "apptainer config should be root-owned after first install"
+
+    # Second install: must handle root-owned files without errors
+    second = _lima_shell(
+        f"PEPPY_HOME={home} "
+        "PEPPY_NO_SERVICE_INSTALL=1 "
+        "PEPPY_FORCE_REINSTALL=1 "
+        "sh /tmp/peppy-test/install.sh /tmp/peppy-test/peppy-fake.tgz"
+    )
+    diagnostic = f"\n--- stdout ---\n{second.stdout}\n--- stderr ---\n{second.stderr}"
+    assert second.returncode == 0, f"reinstall failed{diagnostic}"
+    assert "Permission denied" not in second.stderr, (
+        f"reinstall should not produce permission errors{diagnostic}"
+    )
+    assert "peppy installed to" in second.stdout, (
+        f"Missing 'peppy installed to' after reinstall{diagnostic}"
+    )
+
+
+def test_existing_install_warning(lima_vm, tmp_path: Path) -> None:
+    """When PEPPY_HOME exists but daemon is not running, show existing install warning."""
+    home = _setup_lima_guest(tmp_path, test_name="test_existing_install_warning")
+
+    # Create PEPPY_HOME directory to simulate a previous install
+    _lima_shell(f"mkdir -p {home}/bin")
+
+    # Run without PEPPY_FORCE_REINSTALL — non-interactive should fail with
+    # the "cannot prompt" error, proving the existing-install check triggered.
+    result = _lima_shell(
+        f"PEPPY_HOME={home} "
+        "PEPPY_NO_SERVICE_INSTALL=1 "
+        "sh /tmp/peppy-test/install.sh /tmp/peppy-test/peppy-fake.tgz"
+    )
+
+    output = result.stdout + result.stderr
+    diagnostic = f"\n--- stdout ---\n{result.stdout}\n--- stderr ---\n{result.stderr}"
+
+    assert "An existing installation was found" in output, (
+        f"Missing existing-install warning{diagnostic}"
+    )
+
+
+def test_unified_sudo_prompt_shows_all_items(lima_vm, tmp_path: Path) -> None:
+    """The pre-download sudo prompt lists both system deps and Apptainer items."""
+    home = _setup_lima_guest(tmp_path, test_name="test_unified_sudo_prompt")
+
+    result = _lima_shell(
+        f"PEPPY_HOME={home} "
+        "PEPPY_NO_SERVICE_INSTALL=1 "
+        "sh /tmp/peppy-test/install.sh /tmp/peppy-test/peppy-fake.tgz"
+    )
+
+    output = result.stdout + result.stderr
+    diagnostic = f"\n--- stdout ---\n{result.stdout}\n--- stderr ---\n{result.stderr}"
+
+    assert result.returncode == 0, f"install.sh failed{diagnostic}"
+
+    # The single prompt should contain both Apptainer items
+    assert "Set setuid permissions on Apptainer starter binary" in output, (
+        f"Missing Apptainer setuid label in prompt{diagnostic}"
+    )
+    assert "Set root ownership on Apptainer configuration" in output, (
+        f"Missing Apptainer config ownership label in prompt{diagnostic}"
+    )
+
+    # These labels must appear BEFORE the download (i.e. before "Extracting archive")
+    prompt_pos = output.find("Set setuid permissions on Apptainer")
+    extract_pos = output.find("Extracting archive")
+    assert prompt_pos < extract_pos, (
+        f"Apptainer labels should appear before extraction{diagnostic}"
+    )
