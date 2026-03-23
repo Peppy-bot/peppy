@@ -8,11 +8,14 @@ different Linux distributions.
 from __future__ import annotations
 
 import io
+import json
 import os
 import shutil
 import subprocess
 import sys
 import tarfile
+import tempfile
+import urllib.request
 from pathlib import Path
 
 import pytest
@@ -22,11 +25,73 @@ INSTALL_SCRIPT = REPO_ROOT / "scripts" / "install.sh"
 
 DISTROS = ["ubuntu", "fedora", "archlinux"]
 
-TEMPLATES = {
-    "ubuntu": "template:ubuntu-24.04",
-    "fedora": "template:fedora",
-    "archlinux": "template:archlinux",
-}
+# Ubuntu and Fedora use Lima's built-in templates which are updated with
+# each Lima release.  Arch Linux aarch64 has no official cloud image; the
+# built-in template:archlinux uses a stale 2022 image from a slow GitHub
+# mirror.  We generate a template at test time that points to the latest
+# release from SuperGregM/archlinux-arm-lima (automated monthly builds).
+_ARCHLINUX_ARM_LIMA_API = (
+    "https://api.github.com/repos/SuperGregM/archlinux-arm-lima/releases/latest"
+)
+
+
+def _resolve_archlinux_template() -> str:
+    """Fetch the latest Arch Linux aarch64 cloud image URL and return a
+    path to a temporary Lima template YAML that references it.
+
+    Falls back to the built-in template:archlinux if the API call fails.
+    """
+    try:
+        req = urllib.request.Request(
+            _ARCHLINUX_ARM_LIMA_API,
+            headers={"Accept": "application/vnd.github+json"},
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read())
+
+        # Find the dated qcow2.xz asset (skip the "latest" alias)
+        image_url = None
+        for asset in data.get("assets", []):
+            name = asset["name"]
+            if (
+                name.endswith(".qcow2.xz")
+                and "cloudimg" in name
+                and "latest" not in name
+            ):
+                image_url = asset["browser_download_url"]
+                break
+
+        if not image_url:
+            return "template:archlinux"
+
+        yaml_content = (
+            "# Auto-generated Arch Linux aarch64 template (latest release)\n"
+            "images:\n"
+            f'  - location: "{image_url}"\n'
+            "    arch: aarch64\n"
+        )
+
+        # Write to a persistent temp file (Lima needs to read it later)
+        fd, path = tempfile.mkstemp(suffix=".yaml", prefix="lima-archlinux-")
+        os.write(fd, yaml_content.encode())
+        os.close(fd)
+        return path
+
+    except (urllib.error.URLError, json.JSONDecodeError, KeyError, OSError):
+        return "template:archlinux"
+
+
+def _get_templates() -> dict[str, str]:
+    """Return the Lima template for each distro, resolving dynamic ones."""
+    return {
+        "ubuntu": "template:ubuntu-24.04",
+        "fedora": "template:fedora",
+        "archlinux": _resolve_archlinux_template(),
+    }
+
+
+# Resolved once at module import so all tests share the same templates.
+TEMPLATES = _get_templates()
 
 
 def _instance_name(distro: str) -> str:
@@ -225,6 +290,10 @@ def lima_vm(request):
         capture_output=True,
         timeout=60,
     )
+
+    # Clean up dynamically-generated template files
+    if template != f"template:{distro}" and os.path.isfile(template):
+        os.unlink(template)
 
 
 def _copy_to_lima(local_path: Path, guest_path: str, *, distro: str) -> None:

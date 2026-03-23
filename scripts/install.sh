@@ -321,10 +321,15 @@ EOF
         if [ -n "${PEPPY_NO_ROOT_INSTALL:-}" ]; then
             # ---------- no-root mode: verify prerequisites without sudo ----------
             # Check 1: D-Bus user session bus
-            if command -v dbus-send >/dev/null 2>&1; then
-                if ! dbus-send --session --dest=org.freedesktop.DBus \
-                     --print-reply /org/freedesktop/DBus \
-                     org.freedesktop.DBus.ListNames >/dev/null 2>&1; then
+            # Try busctl (part of systemd, always present) then dbus-send as fallback.
+            DBUS_CHECK_CMD=""
+            if command -v busctl >/dev/null 2>&1; then
+                DBUS_CHECK_CMD="busctl --user status >/dev/null 2>&1"
+            elif command -v dbus-send >/dev/null 2>&1; then
+                DBUS_CHECK_CMD="dbus-send --session --dest=org.freedesktop.DBus --print-reply /org/freedesktop/DBus org.freedesktop.DBus.ListNames >/dev/null 2>&1"
+            fi
+            if [ -n "$DBUS_CHECK_CMD" ]; then
+                if ! eval "$DBUS_CHECK_CMD"; then
                     echo "" >&2
                     echo "error: D-Bus user session bus is not available." >&2
                     echo "       Install D-Bus user session support manually:" >&2
@@ -369,10 +374,15 @@ EOF
             ALL_LABELS=""
 
             # Check 1: D-Bus user session bus (required for systemctl --user)
-            if command -v dbus-send >/dev/null 2>&1; then
-                if ! dbus-send --session --dest=org.freedesktop.DBus \
-                     --print-reply /org/freedesktop/DBus \
-                     org.freedesktop.DBus.ListNames >/dev/null 2>&1; then
+            # Try busctl (part of systemd, always present) then dbus-send as fallback.
+            DBUS_CHECK_CMD=""
+            if command -v busctl >/dev/null 2>&1; then
+                DBUS_CHECK_CMD="busctl --user status >/dev/null 2>&1"
+            elif command -v dbus-send >/dev/null 2>&1; then
+                DBUS_CHECK_CMD="dbus-send --session --dest=org.freedesktop.DBus --print-reply /org/freedesktop/DBus org.freedesktop.DBus.ListNames >/dev/null 2>&1"
+            fi
+            if [ -n "$DBUS_CHECK_CMD" ]; then
+                if ! eval "$DBUS_CHECK_CMD"; then
                     if command -v apt-get >/dev/null 2>&1; then
                         PREDOWNLOAD_FIXES="${PREDOWNLOAD_FIXES}apt-get update -qq && apt-get install -y -qq dbus-user-session && "
                     elif command -v dnf >/dev/null 2>&1; then
