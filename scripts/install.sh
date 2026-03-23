@@ -176,13 +176,26 @@ EOF
         fi
     fi
 
-    if $DAEMON_RUNNING; then
+    # Detect existing installation (daemon may or may not be running)
+    EXISTING_INSTALL=false
+    if [ -d "$PEPPY_HOME" ]; then
+        EXISTING_INSTALL=true
+    fi
+
+    if $DAEMON_RUNNING || $EXISTING_INSTALL; then
         echo ""
-        echo "warning: The peppy daemon is currently running."
-        echo "         Installing will stop the daemon and wipe '${PEPPY_HOME}' before proceeding."
+        if $DAEMON_RUNNING; then
+            echo "warning: The peppy daemon is currently running."
+            echo "         Installing will stop the daemon and wipe '${PEPPY_HOME}' before proceeding."
+        else
+            echo "warning: An existing installation was found at '${PEPPY_HOME}'."
+            echo "         Installing will wipe this directory before proceeding."
+        fi
         echo ""
 
-        if [ -t 0 ] || [ -e /dev/tty ]; then
+        if [ -n "${PEPPY_FORCE_REINSTALL:-}" ]; then
+            : # Skip confirmation in non-interactive reinstall mode
+        elif [ -t 0 ] || [ -e /dev/tty ]; then
             printf "Do you want to continue? [y/N] "
             read -r REPLY </dev/tty
             case "$REPLY" in
@@ -192,19 +205,21 @@ EOF
                 exit 0
                 ;;
             esac
-        elif [ -z "${PEPPY_FORCE_REINSTALL:-}" ]; then
+        else
             echo "error: cannot prompt for confirmation (no terminal available)." >&2
             echo "       Set PEPPY_FORCE_REINSTALL=1 to skip this check." >&2
             exit 1
         fi
 
-        echo "Stopping peppy daemon..."
-        if [ -x "$PEPPY_BIN_DIR/peppy" ]; then
-            "$PEPPY_BIN_DIR/peppy" service stop >/dev/null 2>&1 || true
-            "$PEPPY_BIN_DIR/peppy" service uninstall >/dev/null 2>&1 || true
+        if $DAEMON_RUNNING; then
+            echo "Stopping peppy daemon..."
+            if [ -x "$PEPPY_BIN_DIR/peppy" ]; then
+                "$PEPPY_BIN_DIR/peppy" service stop >/dev/null 2>&1 || true
+                "$PEPPY_BIN_DIR/peppy" service uninstall >/dev/null 2>&1 || true
+            fi
         fi
         echo "Removing '${PEPPY_HOME}'..."
-        rm -rf "$PEPPY_HOME"
+        rm -rf "$PEPPY_HOME" 2>/dev/null || sudo rm -rf "$PEPPY_HOME"
     fi
 
     REPOURL="${PEPPY_REPOURL:-https://peppy.bot}"
@@ -242,21 +257,85 @@ EOF
         exit 1
     fi
 
+    # ---- Shared helpers for sudo operations ------------------------------------
+    # prompt_sudo_consent: show labels and get user consent (Y/n). Does not execute.
+    prompt_sudo_consent() {
+        _LABELS="$1"
+        echo ""
+        echo "peppy requires the following system changes:"
+        printf "$_LABELS"
+        echo ""
+
+        if [ -t 0 ]; then
+            printf "Apply these changes now? (requires sudo) [Y/n] "
+            read -r REPLY
+            case "$REPLY" in
+            [Nn] | [Nn][Oo])
+                echo "" >&2
+                echo "error: peppy cannot run without these system changes." >&2
+                echo "       Apply them manually and re-run the installer." >&2
+                exit 1
+                ;;
+            esac
+        else
+            echo "Proceeding automatically (non-interactive mode)."
+        fi
+    }
+
+    # apply_sudo_fixes: execute accumulated fixes under sudo. Consent must
+    # already have been obtained. FIXES has trailing " && " stripped internally.
+    apply_sudo_fixes() {
+        _FIXES="${1% && }"
+        _SUCCESS_MSG="$2"
+
+        if [ "$(id -u)" -eq 0 ]; then
+            if ! sh -c "$_FIXES"; then
+                echo "" >&2
+                echo "error: failed to apply system changes." >&2
+                exit 1
+            fi
+        elif command -v sudo >/dev/null 2>&1; then
+            if ! sudo sh -c "$_FIXES"; then
+                echo "" >&2
+                echo "error: failed to apply system changes." >&2
+                exit 1
+            fi
+        else
+            echo "" >&2
+            echo "error: sudo is required to apply system changes (not running as root)." >&2
+            echo "       Either run this script as root or install sudo." >&2
+            exit 1
+        fi
+        echo "$_SUCCESS_MSG"
+    }
+
     # ---- Linux system dependency checks (phase 1: pre-download) ---------------
-    # Checks that do NOT depend on extracted files. Apptainer setuid checks run
-    # in phase 2, after the archive is extracted (see below).
+    # Shows the user a SINGLE comprehensive sudo prompt listing ALL changes
+    # (dbus, linger, curl, Apptainer setuid/ownership, AppArmor). Executes
+    # pre-download fixes (dbus, linger, curl) immediately; Apptainer commands
+    # are deferred to phase 2 post-extraction (files don't exist yet).
     #
     # When PEPPY_NO_ROOT_INSTALL is set, sudo is never used. Missing
     # dependencies become hard errors with manual-install instructions.
     if [ "$PLATFORM" != "apple-darwin" ]; then
         if [ -n "${PEPPY_NO_ROOT_INSTALL:-}" ]; then
             # ---------- no-root mode: verify prerequisites without sudo ----------
-            # Check 1: dbus-user-session
-            if command -v dpkg >/dev/null 2>&1; then
-                if ! dpkg -s dbus-user-session >/dev/null 2>&1; then
+            # Check 1: D-Bus user session bus
+            # Try busctl (part of systemd, always present) then dbus-send as fallback.
+            DBUS_CHECK_CMD=""
+            if command -v busctl >/dev/null 2>&1; then
+                DBUS_CHECK_CMD="busctl --user status >/dev/null 2>&1"
+            elif command -v dbus-send >/dev/null 2>&1; then
+                DBUS_CHECK_CMD="dbus-send --session --dest=org.freedesktop.DBus --print-reply /org/freedesktop/DBus org.freedesktop.DBus.ListNames >/dev/null 2>&1"
+            fi
+            if [ -n "$DBUS_CHECK_CMD" ]; then
+                if ! eval "$DBUS_CHECK_CMD"; then
                     echo "" >&2
-                    echo "error: dbus-user-session is required but not installed." >&2
-                    echo "       Install it manually: sudo apt-get install dbus-user-session" >&2
+                    echo "error: D-Bus user session bus is not available." >&2
+                    echo "       Install D-Bus user session support manually:" >&2
+                    echo "         Debian/Ubuntu: sudo apt-get install dbus-user-session" >&2
+                    echo "         Fedora/RHEL:   sudo dnf install dbus-daemon" >&2
+                    echo "         Arch Linux:    sudo pacman -S dbus" >&2
                     echo "" >&2
                     exit 1
                 fi
@@ -279,24 +358,43 @@ EOF
             if [ -z "${ARCHIVE_PATH-}" ] && ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
                 echo "" >&2
                 echo "error: curl or wget is required but not found." >&2
-                echo "       Install it manually: sudo apt-get install curl" >&2
+                echo "       Install it manually:" >&2
+                echo "         Debian/Ubuntu: sudo apt-get install curl" >&2
+                echo "         Fedora/RHEL:   sudo dnf install curl" >&2
+                echo "         Arch Linux:    sudo pacman -S curl" >&2
                 echo "" >&2
                 exit 1
             fi
         else
-            # ---------- normal mode: accumulate fixes, prompt once for sudo ------
-            SUDO_FIXES=""
-            SUDO_FIX_LABELS=""
+            # ---------- normal mode: prompt ONCE for all sudo changes ---------
+            # Gather labels for everything (including predicted Apptainer items)
+            # so the user sees the full picture before download begins. Only
+            # pre-download fixes (curl) execute now; the rest run post-extraction.
+            PREDOWNLOAD_FIXES=""
+            ALL_LABELS=""
 
-            # Check 1: dbus-user-session (required for systemctl --user / D-Bus user bus)
-            if command -v dpkg >/dev/null 2>&1; then
-                if ! dpkg -s dbus-user-session >/dev/null 2>&1; then
-                    SUDO_FIXES="${SUDO_FIXES}apt-get update -qq && apt-get install -y -qq dbus-user-session && "
-                    SUDO_FIX_LABELS="${SUDO_FIX_LABELS}  - Install dbus-user-session (required for peppy background service)\n"
+            # Check 1: D-Bus user session bus (required for systemctl --user)
+            # Try busctl (part of systemd, always present) then dbus-send as fallback.
+            DBUS_CHECK_CMD=""
+            if command -v busctl >/dev/null 2>&1; then
+                DBUS_CHECK_CMD="busctl --user status >/dev/null 2>&1"
+            elif command -v dbus-send >/dev/null 2>&1; then
+                DBUS_CHECK_CMD="dbus-send --session --dest=org.freedesktop.DBus --print-reply /org/freedesktop/DBus org.freedesktop.DBus.ListNames >/dev/null 2>&1"
+            fi
+            if [ -n "$DBUS_CHECK_CMD" ]; then
+                if ! eval "$DBUS_CHECK_CMD"; then
+                    if command -v apt-get >/dev/null 2>&1; then
+                        PREDOWNLOAD_FIXES="${PREDOWNLOAD_FIXES}apt-get update -qq && apt-get install -y -qq dbus-user-session && "
+                    elif command -v dnf >/dev/null 2>&1; then
+                        PREDOWNLOAD_FIXES="${PREDOWNLOAD_FIXES}dnf install -y dbus-daemon && "
+                    elif command -v pacman >/dev/null 2>&1; then
+                        PREDOWNLOAD_FIXES="${PREDOWNLOAD_FIXES}pacman -Sy --noconfirm dbus && "
+                    fi
+                    ALL_LABELS="${ALL_LABELS}  - Install D-Bus user session support (required for peppy background service)\n"
                 fi
             fi
 
-            # Check 2: loginctl enable-linger (keeps systemd user session alive after logout)
+            # Check 2: loginctl enable-linger (allows peppy daemon to run after SSH disconnect)
             CURRENT_USER="$(id -un)"
             HAS_LOGINCTL=false
             LINGER_ENABLED=false
@@ -308,18 +406,18 @@ EOF
                 fi
             fi
             if $HAS_LOGINCTL && ! $LINGER_ENABLED; then
-                SUDO_FIXES="${SUDO_FIXES}loginctl enable-linger ${CURRENT_USER} && "
-                SUDO_FIX_LABELS="${SUDO_FIX_LABELS}  - Enable lingering for user ${CURRENT_USER} (keeps peppy daemon running after logout)\n"
+                PREDOWNLOAD_FIXES="${PREDOWNLOAD_FIXES}loginctl enable-linger ${CURRENT_USER} && "
+                ALL_LABELS="${ALL_LABELS}  - Enable systemd linger for user ${CURRENT_USER} (allows peppy daemon to run after SSH disconnect)\n"
             fi
 
             # Check 3: curl or wget (required to download the release archive)
             if [ -z "${ARCHIVE_PATH-}" ] && ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
                 if command -v apt-get >/dev/null 2>&1; then
-                    SUDO_FIXES="${SUDO_FIXES}apt-get update -qq && apt-get install -y -qq curl && "
+                    PREDOWNLOAD_FIXES="${PREDOWNLOAD_FIXES}apt-get update -qq && apt-get install -y -qq curl && "
                 elif command -v dnf >/dev/null 2>&1; then
-                    SUDO_FIXES="${SUDO_FIXES}dnf install -y curl && "
+                    PREDOWNLOAD_FIXES="${PREDOWNLOAD_FIXES}dnf install -y curl && "
                 elif command -v pacman >/dev/null 2>&1; then
-                    SUDO_FIXES="${SUDO_FIXES}pacman -S --noconfirm curl && "
+                    PREDOWNLOAD_FIXES="${PREDOWNLOAD_FIXES}pacman -Sy --noconfirm curl && "
                 else
                     echo "" >&2
                     echo "error: curl or wget is required but not found." >&2
@@ -328,52 +426,32 @@ EOF
                     echo "" >&2
                     exit 1
                 fi
-                SUDO_FIX_LABELS="${SUDO_FIX_LABELS}  - Install curl (required to download peppy)\n"
+                ALL_LABELS="${ALL_LABELS}  - Install curl (required to download peppy)\n"
             fi
 
-            # Prompt once for all fixes
-            if [ -n "$SUDO_FIXES" ]; then
-                echo ""
-                echo "peppy requires the following system changes:"
-                printf "$SUDO_FIX_LABELS"
-                echo ""
+            # Predicted Apptainer labels — the Linux archive always ships with
+            # Apptainer, so we can show these before extraction. The actual
+            # commands run in phase 2 once the files exist on disk.
+            ALL_LABELS="${ALL_LABELS}  - Set setuid permissions on Apptainer starter binary\n"
+            ALL_LABELS="${ALL_LABELS}  - Set root ownership on Apptainer configuration\n"
+            if [ -f /proc/sys/kernel/apparmor_restrict_unprivileged_userns ] && \
+               [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns)" = "1" ]; then
+                ALL_LABELS="${ALL_LABELS}  - Install AppArmor profile for Apptainer starter-suid\n"
+            fi
 
-                if [ -t 0 ]; then
-                    printf "Apply these fixes now? (requires sudo) [Y/n] "
-                    read -r REPLY
-                    case "$REPLY" in
-                    [Nn] | [Nn][Oo])
-                        echo "" >&2
-                        echo "error: peppy cannot run without these system dependencies." >&2
-                        echo "       Apply them manually and re-run the installer." >&2
-                        exit 1
-                        ;;
-                    esac
-                else
-                    echo "Proceeding automatically (non-interactive mode)."
-                fi
+            # Single prompt covering everything
+            SUDO_CONSENT_GIVEN=false
+            if [ -n "$ALL_LABELS" ]; then
+                prompt_sudo_consent "$ALL_LABELS"
+                SUDO_CONSENT_GIVEN=true
+            fi
 
-                # Strip trailing " && " and execute everything under one sudo invocation
-                SUDO_FIXES="${SUDO_FIXES% && }"
-                if [ "$(id -u)" -eq 0 ]; then
-                    if ! sh -c "$SUDO_FIXES"; then
-                        echo "" >&2
-                        echo "error: failed to apply system fixes." >&2
-                        exit 1
-                    fi
-                elif command -v sudo >/dev/null 2>&1; then
-                    if ! sudo sh -c "$SUDO_FIXES"; then
-                        echo "" >&2
-                        echo "error: failed to apply system fixes." >&2
-                        exit 1
-                    fi
-                else
-                    echo "" >&2
-                    echo "error: sudo is required to apply system fixes (not running as root)." >&2
-                    echo "       Either run this script as root or install sudo." >&2
-                    exit 1
-                fi
-                echo "System dependencies configured successfully."
+            # Execute pre-download fixes now (dbus, linger, curl)
+            if [ -n "$PREDOWNLOAD_FIXES" ]; then
+                apply_sudo_fixes "$PREDOWNLOAD_FIXES" "Pre-download dependencies configured."
+            elif $SUDO_CONSENT_GIVEN && [ "$(id -u)" -ne 0 ] && command -v sudo >/dev/null 2>&1; then
+                # Prime sudo credential cache so post-extraction doesn't re-prompt
+                sudo true
             fi
         fi
     fi
@@ -509,7 +587,7 @@ EOF
     # Install apptainer/lima directory trees into PEPPY_BIN_DIR (siblings of the peppy binary)
     for DIR_NAME in apptainer lima; do
         if [ -d "$TEMP_DIR/bin/$DIR_NAME" ]; then
-            rm -rf "$PEPPY_BIN_DIR/$DIR_NAME"
+            rm -rf "$PEPPY_BIN_DIR/$DIR_NAME" 2>/dev/null || sudo rm -rf "$PEPPY_BIN_DIR/$DIR_NAME"
             mv "$TEMP_DIR/bin/$DIR_NAME" "$PEPPY_BIN_DIR/$DIR_NAME"
         fi
     done
@@ -520,94 +598,33 @@ EOF
     fi
 
     # ---- Linux system dependency checks (phase 2: post-extraction) -----------
-    # Apptainer setuid checks run here because starter-suid only exists after
-    # the archive has been extracted above.
+    # Apptainer setuid/ownership commands run here because the files only exist
+    # after the archive is extracted. User consent was already obtained in
+    # phase 1 (pre-download), so no prompt is shown here.
     # Skipped entirely when PEPPY_NO_ROOT_INSTALL is set.
     if [ "$PLATFORM" != "apple-darwin" ] && [ -z "${PEPPY_NO_ROOT_INSTALL:-}" ]; then
-        SUDO_FIXES=""
-        SUDO_FIX_LABELS=""
+        POSTEXTRACT_FIXES=""
 
-        # Check 1: Apptainer setuid mode requires root ownership on starter-suid
+        # Apptainer setuid mode requires root ownership on starter-suid
         # (with setuid bit) and the entire etc/apptainer/ config directory.
         STARTER_SUID="$PEPPY_BIN_DIR/apptainer/libexec/apptainer/bin/starter-suid"
         APPTAINER_CONF_DIR="$PEPPY_BIN_DIR/apptainer/etc/apptainer"
         if [ -f "$STARTER_SUID" ]; then
-            SUDO_FIXES="${SUDO_FIXES}chown root:root '$STARTER_SUID' && chmod 4755 '$STARTER_SUID' && "
-            SUDO_FIX_LABELS="${SUDO_FIX_LABELS}  - Set setuid permissions on Apptainer starter binary\n"
+            POSTEXTRACT_FIXES="${POSTEXTRACT_FIXES}chown root:root '$STARTER_SUID' && chmod 4755 '$STARTER_SUID' && "
         fi
         if [ -d "$APPTAINER_CONF_DIR" ]; then
-            SUDO_FIXES="${SUDO_FIXES}chown -R root:root '$APPTAINER_CONF_DIR' && "
-            SUDO_FIX_LABELS="${SUDO_FIX_LABELS}  - Set root ownership on Apptainer configuration\n"
+            POSTEXTRACT_FIXES="${POSTEXTRACT_FIXES}chown -R root:root '$APPTAINER_CONF_DIR' && "
         fi
 
-        # Check 2: AppArmor profile for starter-suid (Ubuntu 24.04+)
+        # AppArmor profile for starter-suid (Ubuntu 24.04+)
         if [ -f /proc/sys/kernel/apparmor_restrict_unprivileged_userns ] && \
            [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns)" = "1" ] && \
            [ -f "$STARTER_SUID" ]; then
-            SUDO_FIXES="${SUDO_FIXES}printf 'abi <abi/4.0>,\ninclude <tunables/global>\n\nprofile peppy-apptainer ${STARTER_SUID} flags=(unconfined) {\n  userns,\n}\n' > /etc/apparmor.d/peppy-apptainer && apparmor_parser -r /etc/apparmor.d/peppy-apptainer && "
-            SUDO_FIX_LABELS="${SUDO_FIX_LABELS}  - Install AppArmor profile for Apptainer starter-suid\n"
+            POSTEXTRACT_FIXES="${POSTEXTRACT_FIXES}printf 'abi <abi/4.0>,\ninclude <tunables/global>\n\nprofile peppy-apptainer ${STARTER_SUID} flags=(unconfined) {\n  userns,\n}\n' > /etc/apparmor.d/peppy-apptainer && apparmor_parser -r /etc/apparmor.d/peppy-apptainer && "
         fi
 
-        # Prompt once for all Apptainer fixes
-        if [ -n "$SUDO_FIXES" ]; then
-            echo ""
-            echo "peppy requires the following system changes for container support:"
-            printf "$SUDO_FIX_LABELS"
-            echo ""
-
-            if [ -t 0 ]; then
-                printf "Apply these fixes now? (requires sudo) [Y/n] "
-                read -r REPLY
-                case "$REPLY" in
-                [Nn] | [Nn][Oo])
-                    echo "" >&2
-                    echo "warning: skipped Apptainer setuid setup." >&2
-                    echo "         Run 'peppy container setup' later to enable container support." >&2
-                    ;;
-                *)
-                    SUDO_FIXES="${SUDO_FIXES% && }"
-                    if [ "$(id -u)" -eq 0 ]; then
-                        if ! sh -c "$SUDO_FIXES"; then
-                            echo "" >&2
-                            echo "warning: failed to apply Apptainer fixes." >&2
-                            echo "         Run 'peppy container setup' later to retry." >&2
-                        else
-                            echo "Apptainer setuid configured successfully."
-                        fi
-                    elif command -v sudo >/dev/null 2>&1; then
-                        if ! sudo sh -c "$SUDO_FIXES"; then
-                            echo "" >&2
-                            echo "warning: failed to apply Apptainer fixes." >&2
-                            echo "         Run 'peppy container setup' later to retry." >&2
-                        else
-                            echo "Apptainer setuid configured successfully."
-                        fi
-                    else
-                        echo "" >&2
-                        echo "warning: sudo not available to configure Apptainer setuid." >&2
-                        echo "         Run 'peppy container setup' later to enable container support." >&2
-                    fi
-                    ;;
-                esac
-            else
-                echo "Proceeding automatically (non-interactive mode)."
-                SUDO_FIXES="${SUDO_FIXES% && }"
-                if [ "$(id -u)" -eq 0 ]; then
-                    if sh -c "$SUDO_FIXES"; then
-                        echo "Apptainer setuid configured successfully."
-                    else
-                        echo "warning: failed to apply Apptainer fixes. Run 'peppy container setup' later." >&2
-                    fi
-                elif command -v sudo >/dev/null 2>&1; then
-                    if sudo sh -c "$SUDO_FIXES"; then
-                        echo "Apptainer setuid configured successfully."
-                    else
-                        echo "warning: failed to apply Apptainer fixes. Run 'peppy container setup' later." >&2
-                    fi
-                else
-                    echo "warning: sudo not available to configure Apptainer setuid. Run 'peppy container setup' later." >&2
-                fi
-            fi
+        if [ -n "$POSTEXTRACT_FIXES" ]; then
+            apply_sudo_fixes "$POSTEXTRACT_FIXES" "System dependencies configured successfully."
         fi
     fi
     if [ "$PLATFORM" != "apple-darwin" ] && [ -n "${PEPPY_NO_ROOT_INSTALL:-}" ]; then
@@ -728,6 +745,13 @@ EOF
         esac
     fi
 
+    # Make peppy available for the remainder of this script (and any
+    # interactive shell that sources the output, e.g. eval "$(./install.sh)").
+    case ":${PATH}:" in
+    *":${PEPPY_BIN_DIR}:"*) ;;
+    *) export PATH="${PEPPY_BIN_DIR}:${PATH}" ;;
+    esac
+
     render_progress 100 "Installation complete"
 
     if $PATH_UPDATED; then
@@ -739,8 +763,13 @@ EOF
     print_banner
     echo ""
     printf "%s%s peppy is ready.%s\n\n" "$GREEN" "$OK_MARK" "$RESET"
-    echo "To get started, reload your shell and:"
-    echo "  peppy         # Run command"
+    if $PATH_UPDATED; then
+        echo "To get started, apply the PATH update and run peppy:"
+        echo "  source ${PATH_UPDATE_FILE} && peppy"
+    else
+        echo "To get started:"
+        echo "  peppy"
+    fi
     echo ""
     echo "For more information visit https://docs.peppy.bot"
 } && __wrap__ "$@"
