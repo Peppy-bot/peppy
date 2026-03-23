@@ -320,12 +320,17 @@ EOF
     if [ "$PLATFORM" != "apple-darwin" ]; then
         if [ -n "${PEPPY_NO_ROOT_INSTALL:-}" ]; then
             # ---------- no-root mode: verify prerequisites without sudo ----------
-            # Check 1: dbus-user-session
-            if command -v dpkg >/dev/null 2>&1; then
-                if ! dpkg -s dbus-user-session >/dev/null 2>&1; then
+            # Check 1: D-Bus user session bus
+            if command -v dbus-send >/dev/null 2>&1; then
+                if ! dbus-send --session --dest=org.freedesktop.DBus \
+                     --print-reply /org/freedesktop/DBus \
+                     org.freedesktop.DBus.ListNames >/dev/null 2>&1; then
                     echo "" >&2
-                    echo "error: dbus-user-session is required but not installed." >&2
-                    echo "       Install it manually: sudo apt-get install dbus-user-session" >&2
+                    echo "error: D-Bus user session bus is not available." >&2
+                    echo "       Install D-Bus user session support manually:" >&2
+                    echo "         Debian/Ubuntu: sudo apt-get install dbus-user-session" >&2
+                    echo "         Fedora/RHEL:   sudo dnf install dbus-daemon" >&2
+                    echo "         Arch Linux:    sudo pacman -S dbus" >&2
                     echo "" >&2
                     exit 1
                 fi
@@ -348,7 +353,10 @@ EOF
             if [ -z "${ARCHIVE_PATH-}" ] && ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
                 echo "" >&2
                 echo "error: curl or wget is required but not found." >&2
-                echo "       Install it manually: sudo apt-get install curl" >&2
+                echo "       Install it manually:" >&2
+                echo "         Debian/Ubuntu: sudo apt-get install curl" >&2
+                echo "         Fedora/RHEL:   sudo dnf install curl" >&2
+                echo "         Arch Linux:    sudo pacman -S curl" >&2
                 echo "" >&2
                 exit 1
             fi
@@ -360,11 +368,19 @@ EOF
             PREDOWNLOAD_FIXES=""
             ALL_LABELS=""
 
-            # Check 1: dbus-user-session (required for systemctl --user / D-Bus user bus)
-            if command -v dpkg >/dev/null 2>&1; then
-                if ! dpkg -s dbus-user-session >/dev/null 2>&1; then
-                    PREDOWNLOAD_FIXES="${PREDOWNLOAD_FIXES}apt-get update -qq && apt-get install -y -qq dbus-user-session && "
-                    ALL_LABELS="${ALL_LABELS}  - Install dbus-user-session (required for peppy background service)\n"
+            # Check 1: D-Bus user session bus (required for systemctl --user)
+            if command -v dbus-send >/dev/null 2>&1; then
+                if ! dbus-send --session --dest=org.freedesktop.DBus \
+                     --print-reply /org/freedesktop/DBus \
+                     org.freedesktop.DBus.ListNames >/dev/null 2>&1; then
+                    if command -v apt-get >/dev/null 2>&1; then
+                        PREDOWNLOAD_FIXES="${PREDOWNLOAD_FIXES}apt-get update -qq && apt-get install -y -qq dbus-user-session && "
+                    elif command -v dnf >/dev/null 2>&1; then
+                        PREDOWNLOAD_FIXES="${PREDOWNLOAD_FIXES}dnf install -y dbus-daemon && "
+                    elif command -v pacman >/dev/null 2>&1; then
+                        PREDOWNLOAD_FIXES="${PREDOWNLOAD_FIXES}pacman -Sy --noconfirm dbus && "
+                    fi
+                    ALL_LABELS="${ALL_LABELS}  - Install D-Bus user session support (required for peppy background service)\n"
                 fi
             fi
 
@@ -391,7 +407,7 @@ EOF
                 elif command -v dnf >/dev/null 2>&1; then
                     PREDOWNLOAD_FIXES="${PREDOWNLOAD_FIXES}dnf install -y curl && "
                 elif command -v pacman >/dev/null 2>&1; then
-                    PREDOWNLOAD_FIXES="${PREDOWNLOAD_FIXES}pacman -S --noconfirm curl && "
+                    PREDOWNLOAD_FIXES="${PREDOWNLOAD_FIXES}pacman -Sy --noconfirm curl && "
                 else
                     echo "" >&2
                     echo "error: curl or wget is required but not found." >&2

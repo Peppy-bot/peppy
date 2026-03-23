@@ -1,7 +1,8 @@
 """Tests for scripts/install.sh.
 
-All tests run inside a Lima VM (Ubuntu 24.04) as a non-root sudo user to
-replicate a real-world install scenario.
+All tests run inside Lima VMs (Ubuntu 24.04, Fedora, Arch Linux) as a
+non-root sudo user to replicate real-world install scenarios across
+different Linux distributions.
 """
 
 from __future__ import annotations
@@ -19,7 +20,18 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 INSTALL_SCRIPT = REPO_ROOT / "scripts" / "install.sh"
 
-_LIMA_INSTANCE = "peppy-test-install"
+DISTROS = ["ubuntu", "fedora", "archlinux"]
+
+TEMPLATES = {
+    "ubuntu": "template:ubuntu-24.04",
+    "fedora": "template:fedora",
+    "archlinux": "template:archlinux",
+}
+
+
+def _instance_name(distro: str) -> str:
+    """Return the Lima instance name for the given distro."""
+    return f"peppy-test-install-{distro}"
 
 
 def _create_fake_archive(directory: Path, *, with_apptainer: bool = False) -> Path:
@@ -71,14 +83,16 @@ def _lima_env() -> dict[str, str]:
     return {**os.environ, "LIMA_HOME": str(lima_home)}
 
 
-def _lima_shell(script: str, *, timeout: int = 120) -> subprocess.CompletedProcess[str]:
-    """Run a bash script inside the test Lima VM."""
+def _lima_shell(
+    script: str, *, distro: str, timeout: int = 120
+) -> subprocess.CompletedProcess[str]:
+    """Run a bash script inside the test Lima VM for the given distro."""
     return subprocess.run(
         [
             "limactl",
             "shell",
             "--workdir=/tmp",
-            _LIMA_INSTANCE,
+            _instance_name(distro),
             "--",
             "bash",
             "-c",
@@ -91,12 +105,17 @@ def _lima_shell(script: str, *, timeout: int = 120) -> subprocess.CompletedProce
     )
 
 
-@pytest.fixture(scope="module")
-def lima_vm():
+@pytest.fixture(scope="module", params=DISTROS)
+def lima_vm(request):
     """Create (or reuse) an ephemeral Lima VM for install.sh testing.
 
-    The VM is started once per test module and deleted on teardown.
+    Parameterized across Ubuntu, Fedora, and Arch Linux.  Each VM is
+    started once per distro per test module and deleted on teardown.
     """
+    distro = request.param
+    instance = _instance_name(distro)
+    template = TEMPLATES[distro]
+
     if sys.platform == "linux" and shutil.which("qemu-img") is None:
         pytest.fail(
             "QEMU is required to run Lima VMs on Linux. "
@@ -117,7 +136,7 @@ def lima_vm():
 
     # Check if instance already exists
     result = subprocess.run(
-        ["limactl", "list", "--format", "{{.Status}}", _LIMA_INSTANCE],
+        ["limactl", "list", "--format", "{{.Status}}", instance],
         env=env,
         capture_output=True,
         text=True,
@@ -130,24 +149,24 @@ def lima_vm():
             "limactl",
             "start",
             *(extra_args or []),
-            f"--name={_LIMA_INSTANCE}",
+            f"--name={instance}",
             "--tty=false",
             "--mount-writable",
-            "template:ubuntu-24.04",
+            template,
         ]
         result = subprocess.run(
             cmd, env=env, capture_output=True, text=True, timeout=300
         )
         if result.returncode != 0:
             pytest.fail(
-                f"limactl start failed (exit {result.returncode}):\n{result.stderr}"
+                f"limactl start failed for {distro} (exit {result.returncode}):\n{result.stderr}"
             )
 
     if not status:
         _start_lima_vm()
     elif status == "Stopped":
         restart = subprocess.run(
-            ["limactl", "start", _LIMA_INSTANCE],
+            ["limactl", "start", instance],
             env=env,
             capture_output=True,
             timeout=300,
@@ -156,34 +175,34 @@ def lima_vm():
             # Instance is corrupted (e.g. leftover from a previous failed run).
             # Delete and recreate.
             subprocess.run(
-                ["limactl", "delete", "--force", _LIMA_INSTANCE],
+                ["limactl", "delete", "--force", instance],
                 env=env,
                 capture_output=True,
                 timeout=60,
             )
             _start_lima_vm()
 
-    yield
+    yield distro
 
     # Teardown: stop and delete the VM
     subprocess.run(
-        ["limactl", "stop", _LIMA_INSTANCE],
+        ["limactl", "stop", instance],
         env=env,
         capture_output=True,
         timeout=60,
     )
     subprocess.run(
-        ["limactl", "delete", _LIMA_INSTANCE],
+        ["limactl", "delete", instance],
         env=env,
         capture_output=True,
         timeout=60,
     )
 
 
-def _copy_to_lima(local_path: Path, guest_path: str) -> None:
+def _copy_to_lima(local_path: Path, guest_path: str, *, distro: str) -> None:
     """Copy a file from the host to the guest VM."""
     subprocess.run(
-        ["limactl", "copy", str(local_path), f"{_LIMA_INSTANCE}:{guest_path}"],
+        ["limactl", "copy", str(local_path), f"{_instance_name(distro)}:{guest_path}"],
         env=_lima_env(),
         check=True,
         timeout=30,
@@ -195,7 +214,7 @@ def _guest_home(test_name: str) -> str:
     return f"/tmp/peppy-test-home/{test_name}"
 
 
-def _setup_lima_guest(tmp_path: Path, *, test_name: str) -> str:
+def _setup_lima_guest(tmp_path: Path, *, test_name: str, distro: str) -> str:
     """Copy install.sh and the fake archive into the Lima guest.
 
     Returns the guest PEPPY_HOME path for this test.
@@ -203,10 +222,10 @@ def _setup_lima_guest(tmp_path: Path, *, test_name: str) -> str:
     archive_path = _create_fake_archive(tmp_path, with_apptainer=True)
     guest_home = _guest_home(test_name)
     # Create a staging dir in the guest
-    _lima_shell("mkdir -p /tmp/peppy-test")
-    _lima_shell(f"rm -rf {guest_home}")
-    _copy_to_lima(INSTALL_SCRIPT, "/tmp/peppy-test/install.sh")
-    _copy_to_lima(archive_path, "/tmp/peppy-test/peppy-fake.tgz")
+    _lima_shell("mkdir -p /tmp/peppy-test", distro=distro)
+    _lima_shell(f"rm -rf {guest_home}", distro=distro)
+    _copy_to_lima(INSTALL_SCRIPT, "/tmp/peppy-test/install.sh", distro=distro)
+    _copy_to_lima(archive_path, "/tmp/peppy-test/peppy-fake.tgz", distro=distro)
     return guest_home
 
 
@@ -215,208 +234,252 @@ def _setup_lima_guest(tmp_path: Path, *, test_name: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def test_install(lima_vm, tmp_path: Path) -> None:
+def test_install(lima_vm: str, tmp_path: Path) -> None:
     """Run install.sh in the Lima VM and verify success."""
-    home = _setup_lima_guest(tmp_path, test_name="test_install")
+    distro = lima_vm
+    home = _setup_lima_guest(tmp_path, test_name=f"test_install_{distro}", distro=distro)
 
     result = _lima_shell(
         f"PEPPY_HOME={home} "
         "PEPPY_NO_SERVICE_INSTALL=1 "
-        "sh /tmp/peppy-test/install.sh /tmp/peppy-test/peppy-fake.tgz"
+        "sh /tmp/peppy-test/install.sh /tmp/peppy-test/peppy-fake.tgz",
+        distro=distro,
     )
 
     diagnostic = f"\n--- stdout ---\n{result.stdout}\n--- stderr ---\n{result.stderr}"
 
     assert result.returncode == 0, (
-        f"install.sh exited with {result.returncode}{diagnostic}"
+        f"install.sh exited with {result.returncode} on {distro}{diagnostic}"
     )
     assert "peppy installed to" in result.stdout, (
-        f"Missing 'peppy installed to' in output{diagnostic}"
+        f"Missing 'peppy installed to' in output on {distro}{diagnostic}"
     )
 
     # Verify the installed binary is executable and runs
-    check = _lima_shell(f"test -x {home}/bin/peppy && {home}/bin/peppy")
+    check = _lima_shell(f"test -x {home}/bin/peppy && {home}/bin/peppy", distro=distro)
     assert check.returncode == 0, (
-        f"peppy binary should be executable and runnable"
+        f"peppy binary should be executable and runnable on {distro}"
         f"\n--- stdout ---\n{check.stdout}\n--- stderr ---\n{check.stderr}"
     )
 
 
-def test_no_root_install_happy_path(lima_vm, tmp_path: Path) -> None:
+def test_no_root_install_happy_path(lima_vm: str, tmp_path: Path) -> None:
     """PEPPY_NO_ROOT_INSTALL=1: install succeeds, setuid setup skipped."""
-    home = _setup_lima_guest(tmp_path, test_name="test_no_root_install_happy_path")
+    distro = lima_vm
+    home = _setup_lima_guest(
+        tmp_path, test_name=f"test_no_root_install_happy_path_{distro}", distro=distro
+    )
 
     result = _lima_shell(
         f"PEPPY_HOME={home} "
         "PEPPY_NO_ROOT_INSTALL=1 "
         "PEPPY_NO_SERVICE_INSTALL=1 "
-        "sh /tmp/peppy-test/install.sh /tmp/peppy-test/peppy-fake.tgz"
+        "sh /tmp/peppy-test/install.sh /tmp/peppy-test/peppy-fake.tgz",
+        distro=distro,
     )
 
     diagnostic = f"\n--- stdout ---\n{result.stdout}\n--- stderr ---\n{result.stderr}"
 
     assert result.returncode == 0, (
-        f"install.sh exited with {result.returncode}{diagnostic}"
+        f"install.sh exited with {result.returncode} on {distro}{diagnostic}"
     )
     assert "Skipped Apptainer setuid setup" in result.stdout, (
-        f"Missing phase 2 skip message{diagnostic}"
+        f"Missing phase 2 skip message on {distro}{diagnostic}"
     )
     assert "peppy installed to" in result.stdout, (
-        f"Missing 'peppy installed to'{diagnostic}"
+        f"Missing 'peppy installed to' on {distro}{diagnostic}"
     )
 
     # Verify apptainer directory was extracted but starter-suid is NOT root-owned
     check = _lima_shell(
         f"test -d {home}/bin/apptainer"
-        f" && stat -c '%u' {home}/bin/apptainer/libexec/apptainer/bin/starter-suid"
+        f" && stat -c '%u' {home}/bin/apptainer/libexec/apptainer/bin/starter-suid",
+        distro=distro,
     )
-    assert check.returncode == 0, "apptainer dir should exist"
+    assert check.returncode == 0, f"apptainer dir should exist on {distro}"
     owner_uid = check.stdout.strip()
     assert owner_uid != "0", (
-        f"starter-suid should NOT be root-owned, but uid is {owner_uid}"
+        f"starter-suid should NOT be root-owned on {distro}, but uid is {owner_uid}"
     )
 
 
-def test_no_root_install_missing_dbus(lima_vm, tmp_path: Path) -> None:
-    """PEPPY_NO_ROOT_INSTALL=1 with dbus-user-session removed: hard error."""
-    home = _setup_lima_guest(tmp_path, test_name="test_no_root_install_missing_dbus")
+def test_no_root_install_missing_dbus(lima_vm: str, tmp_path: Path) -> None:
+    """PEPPY_NO_ROOT_INSTALL=1 with dbus-user-session removed: hard error.
+
+    This test is Ubuntu-only because removing D-Bus packages on Fedora/Arch
+    risks breaking the VM.
+    """
+    distro = lima_vm
+    if distro != "ubuntu":
+        pytest.skip("D-Bus package removal is only safe on Ubuntu")
+
+    home = _setup_lima_guest(
+        tmp_path, test_name=f"test_no_root_install_missing_dbus_{distro}", distro=distro
+    )
 
     result = _lima_shell(
         "sudo apt-get purge -y -qq dbus-user-session > /dev/null 2>&1; "
         f"PEPPY_HOME={home} "
         "PEPPY_NO_ROOT_INSTALL=1 "
         "PEPPY_NO_SERVICE_INSTALL=1 "
-        "sh /tmp/peppy-test/install.sh /tmp/peppy-test/peppy-fake.tgz"
+        "sh /tmp/peppy-test/install.sh /tmp/peppy-test/peppy-fake.tgz",
+        distro=distro,
     )
 
     output = result.stdout + result.stderr
     diagnostic = f"\n--- stdout ---\n{result.stdout}\n--- stderr ---\n{result.stderr}"
 
     assert result.returncode != 0, f"install.sh should have failed{diagnostic}"
-    assert "dbus-user-session" in output, (
-        f"error should mention dbus-user-session{diagnostic}"
+    assert "D-Bus user session bus is not available" in output, (
+        f"error should mention D-Bus user session bus{diagnostic}"
     )
 
     # Restore dbus-user-session for subsequent tests
-    _lima_shell("sudo apt-get install -y -qq dbus-user-session > /dev/null 2>&1")
+    _lima_shell(
+        "sudo apt-get install -y -qq dbus-user-session > /dev/null 2>&1",
+        distro=distro,
+    )
 
 
-def test_standard_install_sets_up_setuid(lima_vm, tmp_path: Path) -> None:
+def test_standard_install_sets_up_setuid(lima_vm: str, tmp_path: Path) -> None:
     """Default install (no PEPPY_NO_ROOT_INSTALL): setuid is configured."""
-    home = _setup_lima_guest(tmp_path, test_name="test_standard_install_sets_up_setuid")
+    distro = lima_vm
+    home = _setup_lima_guest(
+        tmp_path,
+        test_name=f"test_standard_install_sets_up_setuid_{distro}",
+        distro=distro,
+    )
 
     result = _lima_shell(
         f"PEPPY_HOME={home} "
         "PEPPY_NO_SERVICE_INSTALL=1 "
-        "sh /tmp/peppy-test/install.sh /tmp/peppy-test/peppy-fake.tgz"
+        "sh /tmp/peppy-test/install.sh /tmp/peppy-test/peppy-fake.tgz",
+        distro=distro,
     )
 
     diagnostic = f"\n--- stdout ---\n{result.stdout}\n--- stderr ---\n{result.stderr}"
 
     assert result.returncode == 0, (
-        f"install.sh exited with {result.returncode}{diagnostic}"
+        f"install.sh exited with {result.returncode} on {distro}{diagnostic}"
     )
     assert "System dependencies configured successfully" in result.stdout, (
-        f"Missing system dependencies success message{diagnostic}"
+        f"Missing system dependencies success message on {distro}{diagnostic}"
     )
 
     # Verify starter-suid is root-owned with setuid bit
     check = _lima_shell(
-        f"stat -c '%u %a' {home}/bin/apptainer/libexec/apptainer/bin/starter-suid"
+        f"stat -c '%u %a' {home}/bin/apptainer/libexec/apptainer/bin/starter-suid",
+        distro=distro,
     )
     parts = check.stdout.strip().split()
-    assert len(parts) == 2, f"unexpected stat output: {check.stdout}"
+    assert len(parts) == 2, f"unexpected stat output on {distro}: {check.stdout}"
     uid, mode = parts[0], parts[1]
-    assert uid == "0", f"starter-suid should be root-owned, got uid {uid}"
-    assert mode == "4755", f"starter-suid should have mode 4755, got {mode}"
+    assert uid == "0", f"starter-suid should be root-owned on {distro}, got uid {uid}"
+    assert mode == "4755", f"starter-suid should have mode 4755 on {distro}, got {mode}"
 
 
-def test_reinstall_over_root_owned_files(lima_vm, tmp_path: Path) -> None:
+def test_reinstall_over_root_owned_files(lima_vm: str, tmp_path: Path) -> None:
     """Reinstall succeeds even when previous install left root-owned Apptainer files."""
-    home = _setup_lima_guest(tmp_path, test_name="test_reinstall_over_root_owned")
+    distro = lima_vm
+    home = _setup_lima_guest(
+        tmp_path, test_name=f"test_reinstall_over_root_owned_{distro}", distro=distro
+    )
 
     # First install: creates root-owned apptainer files via setuid setup
     first = _lima_shell(
         f"PEPPY_HOME={home} "
         "PEPPY_NO_SERVICE_INSTALL=1 "
         "PEPPY_FORCE_REINSTALL=1 "
-        "sh /tmp/peppy-test/install.sh /tmp/peppy-test/peppy-fake.tgz"
+        "sh /tmp/peppy-test/install.sh /tmp/peppy-test/peppy-fake.tgz",
+        distro=distro,
     )
     diagnostic = f"\n--- stdout ---\n{first.stdout}\n--- stderr ---\n{first.stderr}"
-    assert first.returncode == 0, f"first install failed{diagnostic}"
+    assert first.returncode == 0, f"first install failed on {distro}{diagnostic}"
 
     # Verify root-owned files exist (confirms setuid setup ran)
     check = _lima_shell(
-        f"stat -c '%u' {home}/bin/apptainer/etc/apptainer/apptainer.conf"
+        f"stat -c '%u' {home}/bin/apptainer/etc/apptainer/apptainer.conf",
+        distro=distro,
     )
-    assert check.stdout.strip() == "0", "apptainer config should be root-owned after first install"
+    assert check.stdout.strip() == "0", (
+        f"apptainer config should be root-owned after first install on {distro}"
+    )
 
     # Second install: must handle root-owned files without errors
     second = _lima_shell(
         f"PEPPY_HOME={home} "
         "PEPPY_NO_SERVICE_INSTALL=1 "
         "PEPPY_FORCE_REINSTALL=1 "
-        "sh /tmp/peppy-test/install.sh /tmp/peppy-test/peppy-fake.tgz"
+        "sh /tmp/peppy-test/install.sh /tmp/peppy-test/peppy-fake.tgz",
+        distro=distro,
     )
     diagnostic = f"\n--- stdout ---\n{second.stdout}\n--- stderr ---\n{second.stderr}"
-    assert second.returncode == 0, f"reinstall failed{diagnostic}"
+    assert second.returncode == 0, f"reinstall failed on {distro}{diagnostic}"
     assert "Permission denied" not in second.stderr, (
-        f"reinstall should not produce permission errors{diagnostic}"
+        f"reinstall should not produce permission errors on {distro}{diagnostic}"
     )
     assert "peppy installed to" in second.stdout, (
-        f"Missing 'peppy installed to' after reinstall{diagnostic}"
+        f"Missing 'peppy installed to' after reinstall on {distro}{diagnostic}"
     )
 
 
-def test_existing_install_warning(lima_vm, tmp_path: Path) -> None:
+def test_existing_install_warning(lima_vm: str, tmp_path: Path) -> None:
     """When PEPPY_HOME exists but daemon is not running, show existing install warning."""
-    home = _setup_lima_guest(tmp_path, test_name="test_existing_install_warning")
+    distro = lima_vm
+    home = _setup_lima_guest(
+        tmp_path, test_name=f"test_existing_install_warning_{distro}", distro=distro
+    )
 
     # Create PEPPY_HOME directory to simulate a previous install
-    _lima_shell(f"mkdir -p {home}/bin")
+    _lima_shell(f"mkdir -p {home}/bin", distro=distro)
 
     # Run without PEPPY_FORCE_REINSTALL — non-interactive should fail with
     # the "cannot prompt" error, proving the existing-install check triggered.
     result = _lima_shell(
         f"PEPPY_HOME={home} "
         "PEPPY_NO_SERVICE_INSTALL=1 "
-        "sh /tmp/peppy-test/install.sh /tmp/peppy-test/peppy-fake.tgz"
+        "sh /tmp/peppy-test/install.sh /tmp/peppy-test/peppy-fake.tgz",
+        distro=distro,
     )
 
     output = result.stdout + result.stderr
     diagnostic = f"\n--- stdout ---\n{result.stdout}\n--- stderr ---\n{result.stderr}"
 
     assert "An existing installation was found" in output, (
-        f"Missing existing-install warning{diagnostic}"
+        f"Missing existing-install warning on {distro}{diagnostic}"
     )
 
 
-def test_unified_sudo_prompt_shows_all_items(lima_vm, tmp_path: Path) -> None:
-    """The pre-download sudo prompt lists both system deps and Apptainer items."""
-    home = _setup_lima_guest(tmp_path, test_name="test_unified_sudo_prompt")
+def test_unified_sudo_prompt_shows_all_items(lima_vm: str, tmp_path: Path) -> None:
+    """The pre-download sudo prompt lists Apptainer items on all distros."""
+    distro = lima_vm
+    home = _setup_lima_guest(
+        tmp_path, test_name=f"test_unified_sudo_prompt_{distro}", distro=distro
+    )
 
     result = _lima_shell(
         f"PEPPY_HOME={home} "
         "PEPPY_NO_SERVICE_INSTALL=1 "
-        "sh /tmp/peppy-test/install.sh /tmp/peppy-test/peppy-fake.tgz"
+        "sh /tmp/peppy-test/install.sh /tmp/peppy-test/peppy-fake.tgz",
+        distro=distro,
     )
 
     output = result.stdout + result.stderr
     diagnostic = f"\n--- stdout ---\n{result.stdout}\n--- stderr ---\n{result.stderr}"
 
-    assert result.returncode == 0, f"install.sh failed{diagnostic}"
+    assert result.returncode == 0, f"install.sh failed on {distro}{diagnostic}"
 
-    # The single prompt should contain both Apptainer items
+    # The single prompt should contain both Apptainer items (present on all distros)
     assert "Set setuid permissions on Apptainer starter binary" in output, (
-        f"Missing Apptainer setuid label in prompt{diagnostic}"
+        f"Missing Apptainer setuid label in prompt on {distro}{diagnostic}"
     )
     assert "Set root ownership on Apptainer configuration" in output, (
-        f"Missing Apptainer config ownership label in prompt{diagnostic}"
+        f"Missing Apptainer config ownership label in prompt on {distro}{diagnostic}"
     )
 
     # These labels must appear BEFORE the download (i.e. before "Extracting archive")
     prompt_pos = output.find("Set setuid permissions on Apptainer")
     extract_pos = output.find("Extracting archive")
     assert prompt_pos < extract_pos, (
-        f"Apptainer labels should appear before extraction{diagnostic}"
+        f"Apptainer labels should appear before extraction on {distro}{diagnostic}"
     )
