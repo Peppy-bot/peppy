@@ -104,6 +104,7 @@ impl CoreNode {
                 tag: CORE_NODE_TAG.to_string(),
                 language: PeppygenLanguage::Rust,
                 labels: None,
+                variants: None,
                 depends_on: None,
             },
             process: Some(Process {

@@ -2,6 +2,7 @@ use crate::{
     common::{AnyType, NodeArguments, resolve_parameter_path},
     config::SchemaVersion,
     error::ParsingError,
+    source::DeploymentSource,
 };
 use indexmap::IndexMap;
 use serde::{
@@ -598,12 +599,21 @@ pub struct DependsOn {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct Variant {
+    pub name: Name,
+    pub source: DeploymentSource,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Manifest {
     pub name: Name,
     pub tag: String,
     pub language: PeppygenLanguage,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub labels: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub variants: Option<Vec<Variant>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub depends_on: Option<DependsOn>,
 }
@@ -1130,6 +1140,64 @@ mod tests {
             depends_on: {
                 nodes: [{ name: "dep", tag: "0.1.0", local_id: "d", extra: "bad" }]
             }
+        }"#;
+        assert!(serde_json5::from_str::<Manifest>(json5).is_err());
+    }
+
+    #[test]
+    fn manifest_with_variants() {
+        let json5 = r#"{
+            name: "uvc_camera",
+            tag: "0.1.0",
+            language: "rust",
+            variants: [
+                {
+                    name: "mujoco",
+                    source: { local: "./fake_robot_brain" }
+                },
+                {
+                    name: "isaac-sim",
+                    source: {
+                        repo: "https://github.com/Peppy-bot/example_nodes.git",
+                        path: "rust/fake_robot_brain",
+                        ref: "main"
+                    }
+                },
+                {
+                    name: "gazebo",
+                    source: {
+                        url: "https://example.com/fake_robot_brain.tar.zst",
+                        sha256: "33e83da60a54e3bb487a9a3b67705918602143b30f158143b6909acaf017a36a"
+                    }
+                }
+            ]
+        }"#;
+        let manifest: Manifest = serde_json5::from_str(json5).expect("should parse");
+        let variants = manifest.variants.expect("variants should be Some");
+        assert_eq!(variants.len(), 3);
+        assert_eq!(variants[0].name.as_str(), "mujoco");
+        assert_eq!(variants[1].name.as_str(), "isaac-sim");
+        assert_eq!(variants[2].name.as_str(), "gazebo");
+    }
+
+    #[test]
+    fn manifest_without_variants() {
+        let json5 = r#"{
+            name: "simple_node",
+            tag: "0.1.0",
+            language: "rust"
+        }"#;
+        let manifest: Manifest = serde_json5::from_str(json5).expect("should parse");
+        assert!(manifest.variants.is_none());
+    }
+
+    #[test]
+    fn variant_rejects_unknown_fields() {
+        let json5 = r#"{
+            name: "node",
+            tag: "0.1.0",
+            language: "rust",
+            variants: [{ name: "v1", source: { local: "./x" }, extra: "bad" }]
         }"#;
         assert!(serde_json5::from_str::<Manifest>(json5).is_err());
     }
