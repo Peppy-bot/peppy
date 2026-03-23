@@ -23,10 +23,8 @@ PEPPY_CONFIG = """{
     name: "test_node",
     tag: "0.1.0",
   },
-  codegen: {
+  runtime: {
     language: "python",
-  },
-  process: {
     start_cmd: ["uv", "run"]
   },
   parameters: {
