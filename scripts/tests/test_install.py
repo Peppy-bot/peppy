@@ -155,7 +155,7 @@ def lima_vm(request):
             template,
         ]
         result = subprocess.run(
-            cmd, env=env, capture_output=True, text=True, timeout=300
+            cmd, env=env, capture_output=True, text=True, timeout=600
         )
         if result.returncode != 0:
             pytest.fail(
@@ -169,7 +169,7 @@ def lima_vm(request):
             ["limactl", "start", instance],
             env=env,
             capture_output=True,
-            timeout=300,
+            timeout=600,
         )
         if restart.returncode != 0:
             # Instance is corrupted (e.g. leftover from a previous failed run).
@@ -304,21 +304,16 @@ def test_no_root_install_happy_path(lima_vm: str, tmp_path: Path) -> None:
 
 
 def test_no_root_install_missing_dbus(lima_vm: str, tmp_path: Path) -> None:
-    """PEPPY_NO_ROOT_INSTALL=1 with dbus-user-session removed: hard error.
-
-    This test is Ubuntu-only because removing D-Bus packages on Fedora/Arch
-    risks breaking the VM.
-    """
+    """PEPPY_NO_ROOT_INSTALL=1 with D-Bus session bus unavailable: hard error."""
     distro = lima_vm
-    if distro != "ubuntu":
-        pytest.skip("D-Bus package removal is only safe on Ubuntu")
-
     home = _setup_lima_guest(
         tmp_path, test_name=f"test_no_root_install_missing_dbus_{distro}", distro=distro
     )
 
+    # Unset DBUS_SESSION_BUS_ADDRESS so dbus-send --session cannot find the
+    # bus, simulating a system where the D-Bus user session is non-functional.
     result = _lima_shell(
-        "sudo apt-get purge -y -qq dbus-user-session > /dev/null 2>&1; "
+        "unset DBUS_SESSION_BUS_ADDRESS; "
         f"PEPPY_HOME={home} "
         "PEPPY_NO_ROOT_INSTALL=1 "
         "PEPPY_NO_SERVICE_INSTALL=1 "
@@ -332,12 +327,6 @@ def test_no_root_install_missing_dbus(lima_vm: str, tmp_path: Path) -> None:
     assert result.returncode != 0, f"install.sh should have failed{diagnostic}"
     assert "D-Bus user session bus is not available" in output, (
         f"error should mention D-Bus user session bus{diagnostic}"
-    )
-
-    # Restore dbus-user-session for subsequent tests
-    _lima_shell(
-        "sudo apt-get install -y -qq dbus-user-session > /dev/null 2>&1",
-        distro=distro,
     )
 
 
