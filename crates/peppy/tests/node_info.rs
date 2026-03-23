@@ -41,10 +41,8 @@ async fn node_info_shows_dependencies_from_consumed_interfaces() {
                     ]
                 }
             },
-            codegen: {
+            runtime: {
                 language: "rust",
-            },
-            process: {
                 start_cmd: ["sleep", "10"]
             },
             interfaces: {
@@ -193,10 +191,8 @@ async fn node_info_no_dependencies_when_no_consumes() {
                 name: "{NODE_NAME}",
                 tag: "{NODE_TAG}",
             },
-            codegen: {
+            runtime: {
                 language: "rust",
-            },
-            process: {
                 start_cmd: ["sleep", "10"]
             },
             interfaces: {

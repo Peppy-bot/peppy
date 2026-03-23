@@ -82,7 +82,7 @@ pub fn generate_peppygen_lib(
         PeppygenLanguage::Python => {
             let mut python_generator = PythonGenerator::new();
             python_generator.set_parameters(node_config.parameters);
-            python_generator.set_container(node_config.container.is_some());
+            python_generator.set_container(node_config.runtime.container.is_some());
             generate_with_backend(
                 python_generator,
                 &interfaces,

@@ -11,11 +11,11 @@
       "usb",
     ],
   },
-  codegen: {
-    language: "rust"
-  },
-  container: {
-    def_file: "apptainer.def"
+  runtime: {
+    language: "rust",
+    container: {
+      def_file: "apptainer.def"
+    }
   },
   // Expected parameter types to start the node
   parameters: {

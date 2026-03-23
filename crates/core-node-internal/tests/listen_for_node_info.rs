@@ -41,10 +41,8 @@ async fn listen_for_node_info_on_fs_node_success() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
             },
-            codegen: {
+            runtime: {
                 language: "rust",
-            },
-            process: {
                 start_cmd: ["sleep", "10"]
             }
         }"#
@@ -238,10 +236,8 @@ async fn listen_for_node_info_on_http_node_success() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
             },
-            codegen: {
+            runtime: {
                 language: "rust",
-            },
-            process: {
                 start_cmd: ["sleep", "10"]
             }
         }"#
@@ -363,10 +359,8 @@ async fn listen_for_node_info_has_instance_ids() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
             },
-            codegen: {
+            runtime: {
                 language: "rust",
-            },
-            process: {
                 start_cmd: ["sleep", "10"]
             },
             parameters: {}
@@ -595,10 +589,8 @@ async fn listen_for_node_info_recovers_after_invalid_request() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
             },
-            codegen: {
+            runtime: {
                 language: "rust",
-            },
-            process: {
                 start_cmd: ["sleep", "10"]
             }
         }"#

@@ -67,11 +67,7 @@ impl Toolchain {
 pub struct NodeConfig {
     pub schema_version: SchemaVersion,
     pub manifest: Manifest,
-    pub codegen: Codegen,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub process: Option<Process>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub container: Option<ContainerConfig>,
+    pub runtime: Runtime,
     // TODO: Rename `parameters` to `arguments` when it's given in a NodeConfig, the `parameters` name is only used in DeploymentInstance
     #[serde(default)]
     pub parameters: NodeArguments,
@@ -607,8 +603,14 @@ pub struct Variant {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Codegen {
+pub struct Runtime {
     pub language: PeppygenLanguage,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub add_cmd: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub start_cmd: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub container: Option<ContainerConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -622,15 +624,6 @@ pub struct Manifest {
     pub variants: Option<Vec<Variant>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub depends_on: Option<DependsOn>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Process {
-    // Command to run when right before the node is added to the node stack
-    pub add_cmd: Option<Vec<String>>,
-    // Command to launch the node, e.g., ["./target/release/my_node"]
-    pub start_cmd: Vec<String>,
 }
 
 /// Top-level system directories that cannot be used as mount sources.

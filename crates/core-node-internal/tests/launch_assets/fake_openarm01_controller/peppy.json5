@@ -8,10 +8,8 @@
       "openarm"
     ],
   },
-  codegen: {
-    language: "rust"
-  },
-  process: {
+  runtime: {
+    language: "rust",
     add_cmd: [
       "true"
     ],

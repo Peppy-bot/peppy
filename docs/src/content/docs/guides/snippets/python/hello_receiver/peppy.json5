@@ -9,10 +9,8 @@
       ]
     },
   },
-  codegen: {
-    language: "python"
-  },
-  process: {
+  runtime: {
+    language: "python",
     add_cmd: [
       "uv",
       "sync"

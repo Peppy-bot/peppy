@@ -13,8 +13,7 @@ const PEPPY_JSON5_CONFIG: &str = r#"{
   manifest: { name: "test_node",
     tag: "0.1.0" },
 
-  codegen: { language: "python" },
-  process: {
+  runtime: { language: "python",
     add_cmd: ["uv", "sync"],
     start_cmd: ["uv", "run", "test_node"]
   },
@@ -97,8 +96,7 @@ fn generate_peppygen_lib_minimal_config() {
       manifest: { name: "minimal_node",
         tag: "0.1.0" },
 
-      codegen: { language: "python" },
-      process: {
+      runtime: { language: "python",
         add_cmd: ["uv", "sync"],
         start_cmd: ["uv", "run", "minimal_node"]
       }
@@ -154,10 +152,8 @@ fn generate_peppygen_python_lib_emitted_and_consumed_topics() {
             name: "{EXPOSED_NODE_NAME}",
             tag: "0.1.0",
           },
-          codegen: {
+          runtime: {
             language: "python",
-          },
-          process: {
             add_cmd: ["uv", "sync"],
             start_cmd: ["uv", "run", "{EXPOSED_NODE_NAME}"]
           },
@@ -208,10 +204,8 @@ fn generate_peppygen_python_lib_emitted_and_consumed_topics() {
             name: "{CONSUMER_NODE_NAME}",
             tag: "0.1.0",
           },
-          codegen: {
+          runtime: {
             language: "python",
-          },
-          process: {
             add_cmd: ["uv", "sync"],
             start_cmd: ["uv", "run", "{CONSUMER_NODE_NAME}"]
           }
@@ -271,10 +265,8 @@ fn generate_peppygen_python_lib_exposed_and_consumed_services() {
             name: "{EXPOSED_NODE_NAME}",
             tag: "0.1.0",
           },
-          codegen: {
+          runtime: {
             language: "python",
-          },
-          process: {
             add_cmd: ["uv", "sync"],
             start_cmd: ["uv", "run", "{EXPOSED_NODE_NAME}"]
           },
@@ -328,10 +320,8 @@ fn generate_peppygen_python_lib_exposed_and_consumed_services() {
             name: "{CONSUMER_NODE_NAME}",
             tag: "0.1.0",
           },
-          codegen: {
+          runtime: {
             language: "python",
-          },
-          process: {
             add_cmd: ["uv", "sync"],
             start_cmd: ["uv", "run", "{CONSUMER_NODE_NAME}"]
           }
@@ -404,10 +394,8 @@ fn generate_peppygen_python_lib_exposed_and_consumed_actions() {
             name: "{EXPOSED_NODE_NAME}",
             tag: "0.1.0",
           },
-          codegen: {
+          runtime: {
             language: "python",
-          },
-          process: {
             add_cmd: ["uv", "sync"],
             start_cmd: ["uv", "run", "{EXPOSED_NODE_NAME}"]
           },
@@ -473,10 +461,8 @@ fn generate_peppygen_python_lib_exposed_and_consumed_actions() {
             name: "{CONSUMER_NODE_NAME}",
             tag: "0.1.0",
           },
-          codegen: {
+          runtime: {
             language: "python",
-          },
-          process: {
             add_cmd: ["uv", "sync"],
             start_cmd: ["uv", "run", "{CONSUMER_NODE_NAME}"]
           }

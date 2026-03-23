@@ -14,10 +14,8 @@
       "STS3XIAO_ESP32C3215"
     ],
   },
-  codegen: {
-    language: "rust"
-  },
-  process: {
+  runtime: {
+    language: "rust",
     start_cmd: [
       // This programs compiles and flashes the program to the board
       "espflash",

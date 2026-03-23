@@ -24,10 +24,8 @@ struct LauncherConfigTemplate;
     name: "{{ name }}",
     tag: "0.1.0"
   },
-  codegen: {
-    language: "rust"
-  },
-  process: {
+  runtime: {
+    language: "rust",
     start_cmd: {{ start_cmd | safe }}
   }
 }
@@ -105,10 +103,8 @@ mod tests {
                 name: "a_node",
                 tag: "0.1.0",
             },
-            codegen: {
+            runtime: {
                 language: "rust",
-            },
-            process: {
                 start_cmd: ["./target/release/a_node"],
             }
         }"#;

@@ -10,7 +10,7 @@ use crate::Result;
 use config::{
     AnyType, NodeArguments,
     consts::PeppyDirs,
-    node::{Codegen, Manifest, Name, NodeConfig, PeppygenLanguage, Process},
+    node::{Manifest, Name, NodeConfig, PeppygenLanguage, Runtime},
     peppy_config::CURRENT_SCHEMA_VERSION,
 };
 use names_generator2::get_random;
@@ -106,14 +106,12 @@ impl CoreNode {
                 variants: None,
                 depends_on: None,
             },
-            codegen: Codegen {
+            runtime: Runtime {
                 language: PeppygenLanguage::Rust,
-            },
-            process: Some(Process {
                 add_cmd: None,
-                start_cmd: vec![],
-            }),
-            container: None,
+                start_cmd: Some(vec![]),
+                container: None,
+            },
             parameters: node_arguments.into(),
             interfaces: Default::default(),
         };

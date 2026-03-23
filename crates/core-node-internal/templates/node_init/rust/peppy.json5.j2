@@ -4,15 +4,16 @@
     name: "{{ node_name }}",
     tag: "0.1.0",
   },
-  codegen: {
-    language: "rust"
-  },
 {% if with_container %}
-  container: {
-    def_file: "apptainer.def",
+  runtime: {
+    language: "rust",
+    container: {
+      def_file: "apptainer.def",
+    },
   },
 {% else %}
-  process: {
+  runtime: {
+    language: "rust",
     add_cmd: [
       "cargo",
       "build",

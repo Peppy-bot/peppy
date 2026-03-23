@@ -14,8 +14,7 @@ const PEPPY_JSON5_CONFIG: &str = r#"{
   manifest: { name: "test_node",
     tag: "0.1.0" },
 
-  codegen: { language: "rust" },
-  process: {
+  runtime: { language: "rust",
     start_cmd: ["./target/release/test_node"]
   },
   interfaces: {
@@ -59,8 +58,7 @@ fn generate_peppygen_lib_minimal_config() {
       manifest: { name: "minimal_node",
         tag: "0.1.0" },
 
-      codegen: { language: "rust" },
-      process: {
+      runtime: { language: "rust",
         start_cmd: ["./target/debug/minimal_node"]
       }
     }"#;
@@ -233,10 +231,8 @@ fn generate_peppygen_rust_lib_emitted_and_consumed_topics() {
             name: "{EXPOSED_NODE_NAME}",
             tag: "0.1.0",
           },
-          codegen: {
+          runtime: {
             language: "rust",
-          },
-          process: {
             start_cmd: ["./target/debug/{EXPOSED_NODE_NAME}"]
           },
           interfaces: {
@@ -286,10 +282,8 @@ fn generate_peppygen_rust_lib_emitted_and_consumed_topics() {
             name: "{CONSUMER_NODE_NAME}",
             tag: "0.1.0",
           },
-          codegen: {
+          runtime: {
             language: "rust",
-          },
-          process: {
             start_cmd: ["./target/debug/{CONSUMER_NODE_NAME}"]
           }
         }"#
@@ -348,10 +342,8 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_services() {
             name: "{EXPOSED_NODE_NAME}",
             tag: "0.1.0",
           },
-          codegen: {
+          runtime: {
             language: "rust",
-          },
-          process: {
             start_cmd: ["./target/debug/{EXPOSED_NODE_NAME}"]
           },
           interfaces: {
@@ -404,10 +396,8 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_services() {
             name: "{CONSUMER_NODE_NAME}",
             tag: "0.1.0",
           },
-          codegen: {
+          runtime: {
             language: "rust",
-          },
-          process: {
             start_cmd: ["./target/debug/{CONSUMER_NODE_NAME}"]
           }
         }"#
@@ -479,10 +469,8 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_actions() {
             name: "{EXPOSED_NODE_NAME}",
             tag: "0.1.0",
           },
-          codegen: {
+          runtime: {
             language: "rust",
-          },
-          process: {
             start_cmd: ["./target/debug/{EXPOSED_NODE_NAME}"]
           },
           interfaces: {
@@ -547,10 +535,8 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_actions() {
             name: "{CONSUMER_NODE_NAME}",
             tag: "0.1.0",
           },
-          codegen: {
+          runtime: {
             language: "rust",
-          },
-          process: {
             start_cmd: ["./target/debug/{CONSUMER_NODE_NAME}"]
           }
         }"#

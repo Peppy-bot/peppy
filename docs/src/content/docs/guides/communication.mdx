@@ -25,10 +25,8 @@ Each node is only aware of the interfaces it exposes and the ones it consumes, a
         name: "controller",
         tag: "0.1.0",
       },
-      codegen: {
+      runtime: {
         language: "python",
-      },
-      process: {
         add_cmd: ["uv", "sync"],
         start_cmd: ["uv", "run", "controller"]
       },
@@ -57,10 +55,8 @@ Each node is only aware of the interfaces it exposes and the ones it consumes, a
         name: "controller",
         tag: "0.1.0",
       },
-      codegen: {
+      runtime: {
         language: "rust",
-      },
-      process: {
         add_cmd: ["cargo", "build", "--release"],
         start_cmd: ["./target/release/controller"]
       },

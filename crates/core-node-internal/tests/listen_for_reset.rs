@@ -37,10 +37,8 @@ async fn listen_for_node_reset_clears_node_stack() {
                 name: "{TARGET_NODE_A_NAME}",
                 tag: "{TARGET_NODE_A_TAG}",
             },
-            codegen: {
+            runtime: {
                 language: "rust",
-            },
-            process: {
                 start_cmd: ["sleep", "10"]
             },
             parameters: {}
@@ -72,10 +70,8 @@ async fn listen_for_node_reset_clears_node_stack() {
                 name: "{TARGET_NODE_B_NAME}",
                 tag: "{TARGET_NODE_B_TAG}",
             },
-            codegen: {
+            runtime: {
                 language: "rust",
-            },
-            process: {
                 start_cmd: ["sleep", "10"]
             },
             parameters: {}

@@ -15,10 +15,8 @@ const NODE_EXAMPLE: &str = r#"
       "usb",
     ],
   },
-  codegen: {
+  runtime: {
     language: "python",
-  },
-  process: {
     start_cmd: [
       "python",
       "-m",
@@ -56,10 +54,8 @@ const INVALID_PARAMETERS_NODE_EXAMPLE: &str = r#"
       "usb",
     ],
   },
-  codegen: {
+  runtime: {
     language: "python",
-  },
-  process: {
     start_cmd: [
       "python",
       "-m",
@@ -100,10 +96,8 @@ const NESTED_CLASS_COLLISION_NODE_EXAMPLE: &str = r#"
       "usb",
     ],
   },
-  codegen: {
+  runtime: {
     language: "python",
-  },
-  process: {
     start_cmd: [
       "python",
       "-m",
@@ -138,10 +132,8 @@ const UNSUPPORTED_PARAMETERS_VARIANT_NODE_EXAMPLE: &str = r#"
       "usb",
     ],
   },
-  codegen: {
+  runtime: {
     language: "python",
-  },
-  process: {
     start_cmd: [
       "python",
       "-m",
@@ -169,10 +161,8 @@ const UNKNOWN_PARAMETER_TYPE_NODE_EXAMPLE: &str = r#"
       "usb",
     ],
   },
-  codegen: {
+  runtime: {
     language: "python",
-  },
-  process: {
     start_cmd: [
       "python",
       "-m",
@@ -198,10 +188,8 @@ const UNSUPPORTED_TOP_LEVEL_PARAMETER_VARIANT_NODE_EXAMPLE: &str = r#"
       "usb",
     ],
   },
-  codegen: {
+  runtime: {
     language: "python",
-  },
-  process: {
     start_cmd: [
       "python",
       "-m",

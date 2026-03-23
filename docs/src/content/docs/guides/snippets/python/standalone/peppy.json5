@@ -4,10 +4,8 @@
     name: "standalone",
     tag: "0.1.0",
   },
-  codegen: {
-    language: "python"
-  },
-  process: {
+  runtime: {
+    language: "python",
     add_cmd: [
       "uv",
       "sync"

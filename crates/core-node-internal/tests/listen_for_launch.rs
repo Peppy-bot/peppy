@@ -200,10 +200,8 @@ fn write_node_config_with_options(
                 tag: "{node_tag}",
                 {depends_on}
               },
-              codegen: {
+              runtime: {
                 language: "rust",
-              },
-              process: {
                 add_cmd: [{add_cmd_json5}],
                 start_cmd: [{start_cmd_json5}]
               },
@@ -250,10 +248,8 @@ fn create_uvc_camera_repo(to_path: &Path, node_tag: &str) -> PathBuf {
                 name: "uvc_camera",
                 tag: "{node_tag}",
               },
-              codegen: {
+              runtime: {
                 language: "rust",
-              },
-              process: {
                 add_cmd: ["true"],
                 start_cmd: ["sleep", "60"]
               },

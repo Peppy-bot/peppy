@@ -27,10 +27,8 @@ async fn listen_for_node_remove_success() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
             },
-            codegen: {
+            runtime: {
                 language: "rust",
-            },
-            process: {
                 start_cmd: ["sleep", "10"]
             },
             parameters: {}
@@ -148,10 +146,8 @@ async fn listen_for_node_remove_stop_running_instances_first() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
             },
-            codegen: {
+            runtime: {
                 language: "rust",
-            },
-            process: {
                 start_cmd: ["sleep", "10"]
             },
             parameters: {}
@@ -245,10 +241,8 @@ async fn listen_for_node_fails_when_stop_instances_parameter_not_set_and_instanc
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
             },
-            codegen: {
+            runtime: {
                 language: "rust",
-            },
-            process: {
                 start_cmd: ["sleep", "10"]
             },
             parameters: {}

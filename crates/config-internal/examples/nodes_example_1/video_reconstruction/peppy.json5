@@ -11,15 +11,15 @@
       ]
     },
   },
-  codegen: {
-    language: "rust"
-  },
-  container: {
-    def_file: "apptainer.def",
-    mount_paths: [
-      // host_path:container_path:options
-      "/tmp/video_reconstruction:/tmp/video_reconstruction:rw"
-    ]
+  runtime: {
+    language: "rust",
+    container: {
+      def_file: "apptainer.def",
+      mount_paths: [
+        // host_path:container_path:options
+        "/tmp/video_reconstruction:/tmp/video_reconstruction:rw"
+      ]
+    }
   },
   parameters: {
     // How long do you want the reconstruction to be?

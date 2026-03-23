@@ -111,10 +111,8 @@ fn create_versioned_nodes_git_repo(to_path: impl AsRef<Path>) -> PathBuf {
                 name: "uvc_camera",
                 tag: "0.1.0",
             },
-            codegen: {
+            runtime: {
                 language: "rust",
-            },
-            process: {
                 start_cmd: ["sleep", "10"]
             }
         }"#,
@@ -153,10 +151,8 @@ fn create_versioned_nodes_git_repo(to_path: impl AsRef<Path>) -> PathBuf {
                 name: "uvc_camera",
                 tag: "0.2.0",
             },
-            codegen: {
+            runtime: {
                 language: "rust",
-            },
-            process: {
                 start_cmd: ["sleep", "10"]
             }
         }"#,
@@ -205,10 +201,8 @@ async fn listen_for_node_fs_add_success() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
             },
-            codegen: {
+            runtime: {
                 language: "rust",
-            },
-            process: {
                 start_cmd: ["sleep", "10"]
             }
         }"#
@@ -292,12 +286,12 @@ async fn listen_for_node_add_with_container_success() {
             name: "TARGET_NODE_NAME",
             tag: "TARGET_NODE_TAG",
         },
-        codegen: {
-            language: "rust",
-        },
         // Using `container` let `peppy` manage the node internally
-        container: {
-            def_file: "apptainer.def",
+        runtime: {
+            language: "rust",
+            container: {
+                def_file: "apptainer.def",
+            }
         }
     }"#
     .replace("TARGET_NODE_NAME", TARGET_NODE_NAME)
@@ -586,10 +580,8 @@ async fn listen_for_node_http_add_success() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
             },
-            codegen: {
+            runtime: {
                 language: "rust",
-            },
-            process: {
                 start_cmd: ["sleep", "10"]
             }
         }"#
@@ -704,10 +696,8 @@ async fn listen_for_node_add_no_config_found() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
             },
-            codegen: {
+            runtime: {
                 language: "rust",
-            },
-            process: {
                 start_cmd: ["sleep", "10"]
             }
         }"#
@@ -750,10 +740,8 @@ async fn listen_for_node_add_git_hash_mismatch_fails() {
             name: "git_hash_mismatch_node",
             tag: "0.1.0",
         },
-        codegen: {
+        runtime: {
             language: "rust",
-        },
-        process: {
             start_cmd: ["sleep", "10"]
         }
     }"#;
@@ -840,7 +828,7 @@ async fn listen_for_node_add_no_start_cmd_fails() {
             name: "no_start_cmd_node",
             tag: "0.1.0",
         },
-        codegen: {
+        runtime: {
             language: "rust",
         },
         parameters: {}
@@ -894,10 +882,8 @@ async fn listen_for_node_add_dependency_not_resolved() {
                 ]
             },
         },
-        codegen: {
+        runtime: {
             language: "rust",
-        },
-        process: {
             start_cmd: ["sleep", "10"],
         },
         interfaces: {
@@ -968,10 +954,8 @@ async fn listen_for_node_add_same_node_same_tags_overwrites_when_no_dependents()
                 name: "{NODE_NAME}",
                 tag: "{NODE_TAG}",
             },
-            codegen: {
+            runtime: {
                 language: "rust",
-            },
-            process: {
                 start_cmd: ["sleep", "10"]
             },
             parameters: {}
@@ -1011,10 +995,8 @@ async fn listen_for_node_add_same_node_same_tags_overwrites_when_no_dependents()
                 name: "{NODE_NAME}",
                 tag: "{NODE_TAG}",
             },
-            codegen: {
+            runtime: {
                 language: "rust",
-            },
-            process: {
                 start_cmd: ["sleep", "10"]
             },
             interfaces: {
@@ -1096,10 +1078,8 @@ async fn listen_for_node_add_same_node_same_tags_fails_when_node_has_dependents(
                 name: "{DEPENDENCY_NODE_NAME}",
                 tag: "{DEPENDENCY_NODE_TAG}",
             },
-            codegen: {
+            runtime: {
                 language: "rust",
-            },
-            process: {
                 start_cmd: ["sleep", "10"]
             },
             interfaces: {
@@ -1141,10 +1121,8 @@ async fn listen_for_node_add_same_node_same_tags_fails_when_node_has_dependents(
                     ]
                 },
             },
-            codegen: {
+            runtime: {
                 language: "rust",
-            },
-            process: {
                 start_cmd: ["sleep", "10"]
             },
             interfaces: {
@@ -1193,10 +1171,8 @@ async fn listen_for_node_add_same_node_same_tags_fails_when_node_has_dependents(
                 name: "{DEPENDENCY_NODE_NAME}",
                 tag: "{DEPENDENCY_NODE_TAG}",
             },
-            codegen: {
+            runtime: {
                 language: "rust",
-            },
-            process: {
                 start_cmd: ["sleep", "10"]
             },
             interfaces: {
@@ -1267,10 +1243,8 @@ async fn listen_for_node_add_same_node_different_tags_create_two_entities() {
                 name: "{NODE_NAME}",
                 tag: "1.0.0",
             },
-            codegen: {
+            runtime: {
                 language: "rust",
-            },
-            process: {
                 start_cmd: ["sleep", "10"]
             }
         }"#
@@ -1300,10 +1274,8 @@ async fn listen_for_node_add_same_node_different_tags_create_two_entities() {
                 name: "{NODE_NAME}",
                 tag: "2.0.0",
             },
-            codegen: {
+            runtime: {
                 language: "rust",
-            },
-            process: {
                 start_cmd: ["sleep", "10"]
             }
         }"#
@@ -1358,10 +1330,8 @@ async fn listen_for_node_add_copies_files_to_storage() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
             },
-            codegen: {
+            runtime: {
                 language: "rust",
-            },
-            process: {
                 start_cmd: ["sleep", "10"]
             }
         }"#
@@ -1434,10 +1404,8 @@ async fn listen_for_node_add_runs_add_cmd() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
             },
-            codegen: {
+            runtime: {
                 language: "rust",
-            },
-            process: {
                 add_cmd: ["touch", "{ADD_CMD_MARKER_FILE}"],
                 start_cmd: ["sleep", "10"]
             }
@@ -1503,10 +1471,8 @@ async fn listen_for_node_add_cmd_failure_fails_add() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
             },
-            codegen: {
+            runtime: {
                 language: "rust",
-            },
-            process: {
                 add_cmd: ["this_command_does_not_exist_12345"],
                 start_cmd: ["sleep", "10"]
             }
@@ -1574,10 +1540,8 @@ async fn listen_for_node_add_cmd_nonzero_exit_fails_add() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
             },
-            codegen: {
+            runtime: {
                 language: "rust",
-            },
-            process: {
                 add_cmd: ["sh", "-c", "exit 1"],
                 start_cmd: ["sleep", "10"]
             }
@@ -1643,10 +1607,8 @@ async fn listen_for_node_add_streams_stdout_and_stderr() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
             },
-            codegen: {
+            runtime: {
                 language: "rust",
-            },
-            process: {
                 add_cmd: ["sh", "-c", "echo {STDOUT_MARKER}; echo {STDERR_MARKER} 1>&2"],
                 start_cmd: ["sleep", "10"]
             }
@@ -1707,10 +1669,8 @@ async fn listen_for_node_add_fingerprint_mismatch() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
             },
-            codegen: {
+            runtime: {
                 language: "rust",
-            },
-            process: {
                 start_cmd: ["sleep", "10"]
             }
         }"#
@@ -1784,10 +1744,8 @@ async fn listen_for_node_add_writes_log_file() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
             },
-            codegen: {
+            runtime: {
                 language: "rust",
-            },
-            process: {
                 add_cmd: ["sh", "-c", "echo {STDOUT_MARKER}; echo {STDERR_MARKER} 1>&2"],
                 start_cmd: ["sleep", "10"]
             }
@@ -1893,10 +1851,8 @@ async fn listen_for_node_add_abandoned_action_does_not_block_next_goal() {
                 name: "{FIRST_NODE_NAME}",
                 tag: "{FIRST_NODE_TAG}",
             },
-            codegen: {
+            runtime: {
                 language: "rust",
-            },
-            process: {
                 start_cmd: ["sleep", "10"]
             }
         }"#
@@ -1961,10 +1917,8 @@ async fn listen_for_node_add_abandoned_action_does_not_block_next_goal() {
                 name: "{SECOND_NODE_NAME}",
                 tag: "{SECOND_NODE_TAG}",
             },
-            codegen: {
+            runtime: {
                 language: "rust",
-            },
-            process: {
                 start_cmd: ["sleep", "10"]
             }
         }"#
@@ -2022,10 +1976,8 @@ async fn node_add_same_node_shutdown_existing_instances() {
                 name: "{NODE_NAME}",
                 tag: "{NODE_TAG}",
             },
-            codegen: {
+            runtime: {
                 language: "rust",
-            },
-            process: {
                 start_cmd: ["sleep", "10"]
             }
         }"#
@@ -2142,10 +2094,8 @@ async fn node_add_same_node_shutdown_existing_instances() {
                 name: "{NODE_NAME}",
                 tag: "{NODE_TAG}",
             },
-            codegen: {
+            runtime: {
                 language: "rust",
-            },
-            process: {
                 start_cmd: ["sleep", "10"]
             },
             interfaces: {
@@ -2276,10 +2226,8 @@ async fn listen_for_node_add_uses_env_overrides_for_path() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
             },
-            codegen: {
+            runtime: {
                 language: "rust",
-            },
-            process: {
                 add_cmd: ["printout {STDOUT_MARKER}; printout {STDERR_MARKER} 1>&2"],
                 start_cmd: ["sleep", "10"]
             }
@@ -2365,10 +2313,8 @@ async fn listen_for_node_add_injects_runtime_env_vars() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
             },
-            codegen: {
+            runtime: {
                 language: "rust",
-            },
-            process: {
                 add_cmd: [
                     "sh",
                     "-c",
@@ -2428,10 +2374,8 @@ async fn listen_for_node_add_fails_runs_add_cmd_on_missing_node_dependency() {
             ]
           },
         },
-        codegen: {
+        runtime: {
           language: "rust",
-        },
-        process: {
           add_cmd: ["sh", "-c", "touch MARKER_PATH && exit 1"],
           start_cmd: ["sleep", "10"]
         },
@@ -2514,10 +2458,8 @@ async fn listen_for_node_add_fails_on_missing_interface_even_when_dependency_exi
                 name: "{DEPENDENCY_NODE_NAME}",
                 tag: "{DEPENDENCY_NODE_TAG}",
             },
-            codegen: {
+            runtime: {
                 language: "rust",
-            },
-            process: {
                 start_cmd: ["sleep", "10"]
             },
             interfaces: {
@@ -2569,10 +2511,8 @@ async fn listen_for_node_add_fails_on_missing_interface_even_when_dependency_exi
             ]
           },
         },
-        codegen: {
+        runtime: {
           language: "rust",
-        },
-        process: {
           add_cmd: ["sh", "-c", "touch MARKER_PATH && exit 1"],
           start_cmd: ["sleep", "10"]
         },
@@ -2654,10 +2594,8 @@ async fn listen_for_node_add_reports_excluded_dirs_in_feedback() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
             },
-            codegen: {
+            runtime: {
                 language: "rust",
-            },
-            process: {
                 start_cmd: ["sleep", "10"]
             }
         }"#
@@ -2731,11 +2669,11 @@ async fn listen_for_node_add_container_build_failure_includes_stderr_in_error() 
             name: "TARGET_NODE_NAME",
             tag: "TARGET_NODE_TAG",
         },
-        codegen: {
+        runtime: {
             language: "rust",
-        },
-        container: {
-            def_file: "apptainer.def",
+            container: {
+                def_file: "apptainer.def",
+            }
         }
     }"#
     .replace("TARGET_NODE_NAME", TARGET_NODE_NAME)
@@ -2841,10 +2779,8 @@ async fn listen_for_node_add_logs_error_on_spawn_failure() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
             },
-            codegen: {
+            runtime: {
                 language: "rust",
-            },
-            process: {
                 add_cmd: ["nonexistent_binary_peppy_test_xyz", "--flag"],
                 start_cmd: ["sleep", "10"]
             }
@@ -2942,10 +2878,8 @@ async fn node_add_same_node_with_running_instance_and_dependents_succeeds() {
                 name: "{DEPENDENCY_NODE_NAME}",
                 tag: "{DEPENDENCY_NODE_TAG}",
             },
-            codegen: {
+            runtime: {
                 language: "rust",
-            },
-            process: {
                 start_cmd: ["sleep", "10"]
             },
             interfaces: {
@@ -2987,10 +2921,8 @@ async fn node_add_same_node_with_running_instance_and_dependents_succeeds() {
                     ]
                 },
             },
-            codegen: {
+            runtime: {
                 language: "rust",
-            },
-            process: {
                 start_cmd: ["sleep", "10"]
             },
             interfaces: {
@@ -3151,10 +3083,8 @@ async fn node_add_same_node_changing_interface_with_running_instance_and_depende
                 name: "{DEPENDENCY_NODE_NAME}",
                 tag: "{DEPENDENCY_NODE_TAG}",
             },
-            codegen: {
+            runtime: {
                 language: "rust",
-            },
-            process: {
                 start_cmd: ["sleep", "10"]
             },
             interfaces: {
@@ -3196,10 +3126,8 @@ async fn node_add_same_node_changing_interface_with_running_instance_and_depende
                     ]
                 },
             },
-            codegen: {
+            runtime: {
                 language: "rust",
-            },
-            process: {
                 start_cmd: ["sleep", "10"]
             },
             interfaces: {
@@ -3280,10 +3208,8 @@ async fn node_add_same_node_changing_interface_with_running_instance_and_depende
                 name: "{DEPENDENCY_NODE_NAME}",
                 tag: "{DEPENDENCY_NODE_TAG}",
             },
-            codegen: {
+            runtime: {
                 language: "rust",
-            },
-            process: {
                 start_cmd: ["sleep", "10"]
             },
             interfaces: {
@@ -3372,10 +3298,8 @@ async fn node_add_same_node_with_running_instance_and_dependents_fails_on_stoppe
                 name: "{DEPENDENCY_NODE_NAME}",
                 tag: "{DEPENDENCY_NODE_TAG}",
             },
-            codegen: {
+            runtime: {
                 language: "rust",
-            },
-            process: {
                 start_cmd: ["sleep", "10"]
             },
             interfaces: {
@@ -3417,10 +3341,8 @@ async fn node_add_same_node_with_running_instance_and_dependents_fails_on_stoppe
                     ]
                 },
             },
-            codegen: {
+            runtime: {
                 language: "rust",
-            },
-            process: {
                 start_cmd: ["sleep", "10"]
             },
             interfaces: {

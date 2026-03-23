@@ -22,10 +22,8 @@ pub fn core_node_config() -> NodeConfig {
                 name: "core",
                 tag: "1.0.0",
             },
-            codegen: {
+            runtime: {
                 language: "rust",
-            },
-            process: {
                 start_cmd: ["core"]
             }
         }"#,

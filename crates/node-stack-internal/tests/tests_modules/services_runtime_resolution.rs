@@ -18,10 +18,8 @@ fn service_dependency_resolved_when_dependency_added_first() {
                 ]
               },
             },
-            codegen: {
+            runtime: {
               language: "rust",
-            },
-            process: {
               start_cmd: ["brain"]
             },
             interfaces: {
@@ -45,10 +43,8 @@ fn service_dependency_resolved_when_dependency_added_first() {
               name: "lidar",
               tag: "1.0.0",
             },
-            codegen: {
+            runtime: {
               language: "rust",
-            },
-            process: {
               start_cmd: ["lidar"]
             },
             interfaces: {
@@ -134,10 +130,8 @@ fn service_dependency_fails_when_dependency_is_missing() {
                 ]
               },
             },
-            codegen: {
+            runtime: {
               language: "rust",
-            },
-            process: {
               start_cmd: ["brain"]
             },
             interfaces: {
@@ -187,10 +181,8 @@ fn service_dependency_fails_when_service_not_exposed_by_dependency() {
                 ]
               },
             },
-            codegen: {
+            runtime: {
               language: "rust",
-            },
-            process: {
               start_cmd: ["brain"]
             },
             interfaces: {
@@ -215,10 +207,8 @@ fn service_dependency_fails_when_service_not_exposed_by_dependency() {
               name: "lidar",
               tag: "1.0.0",
             },
-            codegen: {
+            runtime: {
               language: "rust",
-            },
-            process: {
               start_cmd: ["lidar"]
             },
             interfaces: {

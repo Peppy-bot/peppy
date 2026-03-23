@@ -15,10 +15,8 @@ const NODE_EXAMPLE: &str = r#"
       "usb",
     ],
   },
-  codegen: {
+  runtime: {
     language: "rust",
-  },
-  process: {
     start_cmd: [
       "cargo",
       "run",
@@ -56,10 +54,8 @@ const INVALID_PARAMETERS_NODE_EXAMPLE: &str = r#"
       "usb",
     ],
   },
-  codegen: {
+  runtime: {
     language: "rust",
-  },
-  process: {
     start_cmd: [
       "cargo",
       "run",
@@ -100,10 +96,8 @@ const NESTED_STRUCT_COLLISION_NODE_EXAMPLE: &str = r#"
       "usb",
     ],
   },
-  codegen: {
+  runtime: {
     language: "rust",
-  },
-  process: {
     start_cmd: [
       "cargo",
       "run",
@@ -140,10 +134,8 @@ const UNSUPPORTED_PARAMETERS_VARIANT_NODE_EXAMPLE: &str = r#"
       "usb",
     ],
   },
-  codegen: {
+  runtime: {
     language: "rust",
-  },
-  process: {
     start_cmd: [
       "cargo",
       "run",
@@ -171,10 +163,8 @@ const UNKNOWN_PARAMETER_TYPE_NODE_EXAMPLE: &str = r#"
       "usb",
     ],
   },
-  codegen: {
+  runtime: {
     language: "rust",
-  },
-  process: {
     start_cmd: [
       "cargo",
       "run",
@@ -200,10 +190,8 @@ const UNSUPPORTED_TOP_LEVEL_PARAMETER_VARIANT_NODE_EXAMPLE: &str = r#"
       "usb",
     ],
   },
-  codegen: {
+  runtime: {
     language: "rust",
-  },
-  process: {
     start_cmd: [
       "cargo",
       "run",

@@ -61,7 +61,7 @@ fn print_node_info(response: &NodeInfoResponse) {
     // Basic info
     println!("Name:      {}", manifest.name.as_str());
     println!("Tag:       {}", manifest.tag);
-    println!("Language:  {:?}", config.codegen.language);
+    println!("Language:  {:?}", config.runtime.language);
 
     // Labels
     if let Some(labels) = &manifest.labels
@@ -71,13 +71,13 @@ fn print_node_info(response: &NodeInfoResponse) {
     }
 
     // Commands
-    if let Some(build) = &config.process {
-        if let Some(add_cmd) = &build.add_cmd {
-            println!("Add cmd:   {}", add_cmd.join(" "));
-        }
-        println!("Start cmd: {}", build.start_cmd.join(" "));
+    if let Some(add_cmd) = &config.runtime.add_cmd {
+        println!("Add cmd:   {}", add_cmd.join(" "));
     }
-    if let Some(container) = &config.container {
+    if let Some(start_cmd) = &config.runtime.start_cmd {
+        println!("Start cmd: {}", start_cmd.join(" "));
+    }
+    if let Some(container) = &config.runtime.container {
         println!("Container: {}", container.def_file);
     }
 

@@ -42,10 +42,8 @@ fn write_node_config(
                     name: "{node_name}",
                     tag: "{node_tag}",
                 },
-                codegen: {
+                runtime: {
                     language: "rust",
-                },
-                process: {
                     start_cmd: [{start_cmd_json5}]
                 }
             }"#
