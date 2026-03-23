@@ -258,16 +258,16 @@ async fn node_run_command_with_args_succeeds() {
 
   runtime: {
     language: "rust",
+    parameters: {
+      resolution: "string",
+      frequency: "i64",
+      enabled: "bool"
+    },
     start_cmd: [
       "cargo",
       "run",
       "--release"
     ]
-  },
-  parameters: {
-    resolution: "string",
-    frequency: "i64",
-    enabled: "bool"
   },
   interfaces: {
     topics: {

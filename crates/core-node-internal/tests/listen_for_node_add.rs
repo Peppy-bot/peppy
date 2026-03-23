@@ -831,7 +831,6 @@ async fn listen_for_node_add_no_start_cmd_fails() {
         runtime: {
             language: "rust",
         },
-        parameters: {}
     }"#;
     write_peppy_json5(source_dir.path(), peppy_json5);
 
@@ -957,8 +956,7 @@ async fn listen_for_node_add_same_node_same_tags_overwrites_when_no_dependents()
             runtime: {
                 language: "rust",
                 start_cmd: ["sleep", "10"]
-            },
-            parameters: {}
+            }
         }"#
     .replace("{NODE_NAME}", NODE_NAME)
     .replace("{NODE_TAG}", NODE_TAG);

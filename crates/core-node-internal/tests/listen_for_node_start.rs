@@ -150,8 +150,7 @@ async fn listen_for_node_start_timeout() {
             runtime: {
                 language: "rust",
                 start_cmd: ["sleep", "10"]
-            },
-            parameters: {}
+            }
         }"#
     .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME);
 
@@ -615,17 +614,17 @@ async fn listen_for_node_start_reports_all_missing_parameters() {
             },
             runtime: {
                 language: "rust",
-                start_cmd: ["echo", "test"]
-            },
-            parameters: {
-                device: {
-                    physical: "string",
-                    sim: "string"
+                parameters: {
+                    device: {
+                        physical: "string",
+                        sim: "string"
+                    },
+                    video: {
+                        frame_rate: "u16",
+                        encoding: "string"
+                    }
                 },
-                video: {
-                    frame_rate: "u16",
-                    encoding: "string"
-                }
+                start_cmd: ["echo", "test"]
             }
         }"#
     .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
@@ -747,17 +746,17 @@ async fn listen_for_node_start_reports_only_missing_parameters_when_some_provide
             },
             runtime: {
                 language: "rust",
-                start_cmd: ["echo", "test"]
-            },
-            parameters: {
-                device: {
-                    physical: "string",
-                    sim: "string"
+                parameters: {
+                    device: {
+                        physical: "string",
+                        sim: "string"
+                    },
+                    video: {
+                        frame_rate: "u16",
+                        encoding: "string"
+                    }
                 },
-                video: {
-                    frame_rate: "u16",
-                    encoding: "string"
-                }
+                start_cmd: ["echo", "test"]
             }
         }"#
     .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
@@ -1137,8 +1136,7 @@ async fn listen_for_node_start_uses_env_overrides_for_path() {
             runtime: {
                 language: "rust",
                 start_cmd: ["printout", "3"]
-            },
-            parameters: {}
+            }
         }"#
     .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
     .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
@@ -1294,8 +1292,7 @@ async fn listen_for_node_start_injects_runtime_env_vars() {
                     "-c",
                     "test -n \"$PEPPY_APPTAINER_BIN\" && test \"$PEPPY_NODE_NAME\" = \"{TARGET_NODE_NAME}\" && test \"$PEPPY_NODE_TAG\" = \"{TARGET_NODE_TAG}\" && sleep 10"
                 ]
-            },
-            parameters: {}
+            }
         }"#
     .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
     .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);

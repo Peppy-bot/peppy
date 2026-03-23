@@ -68,9 +68,6 @@ pub struct NodeConfig {
     pub schema_version: SchemaVersion,
     pub manifest: Manifest,
     pub runtime: Runtime,
-    // TODO: Rename `parameters` to `arguments` when it's given in a NodeConfig, the `parameters` name is only used in DeploymentInstance
-    #[serde(default)]
-    pub parameters: NodeArguments,
     #[serde(default)]
     pub interfaces: Interfaces,
 }
@@ -605,6 +602,8 @@ pub struct Variant {
 #[serde(deny_unknown_fields)]
 pub struct Runtime {
     pub language: PeppygenLanguage,
+    #[serde(default)]
+    pub parameters: NodeArguments,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub add_cmd: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]

@@ -27,8 +27,6 @@
       "--to_device ${ESP32_DEVICE}" // This is an extra var that can be defined in the deployments
     ]
   },
-  // no_std can't accept dynamic parameters, they won't have any effect
-  parameters: {},
   interfaces: {
     // `peppylib_no_std` will help expose this topic
     topics: {

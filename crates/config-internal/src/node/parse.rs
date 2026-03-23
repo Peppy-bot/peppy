@@ -36,7 +36,8 @@ impl NodeConfigParser {
 
         // Validate ${parameters:...} references in mount paths.
         if let Some(container) = &config.runtime.container
-            && let Err((ref_path, reason)) = container.validate_parameter_refs(&config.parameters)
+            && let Err((ref_path, reason)) =
+                container.validate_parameter_refs(&config.runtime.parameters)
         {
             return Err(ParsingError::InvalidMountPathParameterRef(ref_path, reason).into());
         }
@@ -71,7 +72,7 @@ mod tests {
             config.runtime.start_cmd.as_ref().unwrap(),
             &vec!["./target/release/test_node"]
         );
-        assert!(config.parameters.is_empty());
+        assert!(config.runtime.parameters.is_empty());
     }
 
     #[test]
@@ -325,13 +326,13 @@ mod tests {
             },
             runtime: {
                 language: "rust",
+                parameters: {
+                    device_path: "string",
+                },
                 container: {
                     def_file: "apptainer.def",
                     mount_paths: ["${parameters:device_path}:/dev/video0:rw"],
                 },
-            },
-            parameters: {
-                device_path: "string",
             },
         }"#;
         let config = NodeConfigParser::from_content(json5)
@@ -353,15 +354,15 @@ mod tests {
             },
             runtime: {
                 language: "rust",
+                parameters: {
+                    video: {
+                        device_path: "string",
+                        frame_rate: "u16",
+                    },
+                },
                 container: {
                     def_file: "apptainer.def",
                     mount_paths: ["${parameters:video.device_path}:/dev/video0:rw"],
-                },
-            },
-            parameters: {
-                video: {
-                    device_path: "string",
-                    frame_rate: "u16",
                 },
             },
         }"#;
@@ -384,13 +385,13 @@ mod tests {
             },
             runtime: {
                 language: "rust",
+                parameters: {
+                    device_path: "string",
+                },
                 container: {
                     def_file: "apptainer.def",
                     mount_paths: ["${parameters:nonexistent}:/data:rw"],
                 },
-            },
-            parameters: {
-                device_path: "string",
             },
         }"#;
         let result = NodeConfigParser::from_content(json5);
@@ -415,13 +416,13 @@ mod tests {
             },
             runtime: {
                 language: "rust",
+                parameters: {
+                    frame_rate: "u16",
+                },
                 container: {
                     def_file: "apptainer.def",
                     mount_paths: ["${parameters:frame_rate}:/data:rw"],
                 },
-            },
-            parameters: {
-                frame_rate: "u16",
             },
         }"#;
         let result = NodeConfigParser::from_content(json5);
@@ -448,13 +449,13 @@ mod tests {
             },
             runtime: {
                 language: "rust",
+                parameters: {
+                    path: "string",
+                },
                 container: {
                     def_file: "apptainer.def",
                     mount_paths: ["${parameters:path}:/container/data:rw"],
                 },
-            },
-            parameters: {
-                path: "string",
             },
         }"#;
         let config = NodeConfigParser::from_content(json5)

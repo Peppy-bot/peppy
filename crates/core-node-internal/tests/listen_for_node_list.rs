@@ -26,8 +26,7 @@ async fn listen_for_node_list_returns_succeeds() {
             runtime: {
                 language: "rust",
                 start_cmd: ["sleep", "10"]
-            },
-            parameters: {}
+            }
         }"#
     .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
     .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
@@ -116,8 +115,7 @@ async fn listen_for_node_list_returns_dot_graph() {
             runtime: {
                 language: "rust",
                 start_cmd: ["sleep", "10"]
-            },
-            parameters: {}
+            }
         }"#
     .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
     .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);

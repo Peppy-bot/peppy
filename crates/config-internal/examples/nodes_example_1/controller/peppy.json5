@@ -20,7 +20,6 @@
       "./target/release/controller"
     ]
   },
-  parameters: {},
   interfaces: {
     actions: {
       exposes: [

@@ -40,8 +40,7 @@ async fn listen_for_node_reset_clears_node_stack() {
             runtime: {
                 language: "rust",
                 start_cmd: ["sleep", "10"]
-            },
-            parameters: {}
+            }
         }"#
     .replace("{TARGET_NODE_A_NAME}", TARGET_NODE_A_NAME)
     .replace("{TARGET_NODE_A_TAG}", TARGET_NODE_A_TAG);
@@ -73,8 +72,7 @@ async fn listen_for_node_reset_clears_node_stack() {
             runtime: {
                 language: "rust",
                 start_cmd: ["sleep", "10"]
-            },
-            parameters: {}
+            }
         }"#
     .replace("{TARGET_NODE_B_NAME}", TARGET_NODE_B_NAME)
     .replace("{TARGET_NODE_B_TAG}", TARGET_NODE_B_TAG);

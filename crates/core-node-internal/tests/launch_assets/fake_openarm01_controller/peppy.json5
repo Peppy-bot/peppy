@@ -18,7 +18,6 @@
       "60"
     ]
   },
-  parameters: {},
   interfaces: {
     topics: {
       emits: [],

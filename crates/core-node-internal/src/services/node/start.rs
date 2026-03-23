@@ -609,7 +609,7 @@ async fn process_node_start(
 
     // Validate that all required parameters are provided before starting the node
     let missing_params = validate_parameters(
-        &entity.config().parameters,
+        &entity.config().runtime.parameters,
         &runtime_config.node_instance.arguments,
         "",
     );

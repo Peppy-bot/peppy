@@ -10,27 +10,27 @@
       "uv",
       "sync"
     ],
+    // A bunch of fake parameters required to start our node
+    parameters: {
+      device: {
+        physical: "string",
+        sim: "string",
+        priority: "string"
+      },
+      video: {
+        frame_rate: "u16",
+        resolution: {
+          width: "u16",
+          height: "u16",
+        },
+        encoding: "string",
+      },
+    },
     start_cmd: [
       "uv",
       "run",
       "standalone"
     ]
-  },
-  // A bunch of fake parameters required to start our node
-  parameters: {
-    device: {
-      physical: "string",
-      sim: "string",
-      priority: "string"
-    },
-    video: {
-      frame_rate: "u16",
-      resolution: {
-        width: "u16",
-        height: "u16",
-      },
-      encoding: "string",
-    },
   },
   interfaces: {}
 }

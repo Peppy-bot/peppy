@@ -10,14 +10,14 @@
       "uv",
       "sync"
     ],
+    parameters: {
+      name: "string",
+    },
     start_cmd: [
       "uv",
       "run",
       "hello_world_param"
     ]
-  },
-  parameters: {
-    name: "string",
   },
   interfaces: {
     topics: {

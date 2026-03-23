@@ -108,11 +108,11 @@ impl CoreNode {
             },
             runtime: Runtime {
                 language: PeppygenLanguage::Rust,
+                parameters: node_arguments.into(),
                 add_cmd: None,
                 start_cmd: Some(vec![]),
                 container: None,
             },
-            parameters: node_arguments.into(),
             interfaces: Default::default(),
         };
 

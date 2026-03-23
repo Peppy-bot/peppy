@@ -24,7 +24,6 @@
       "60"
     ]
   },
-  parameters: {},
   interfaces: {
     // The brain receives the inputs from the camera
     topics: {

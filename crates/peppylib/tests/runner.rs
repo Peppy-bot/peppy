@@ -111,11 +111,11 @@ async fn daemon_runner_succeed() {
       },
       runtime: {
         language: "rust",
+        parameters: {
+          frequency_hz: "f64"
+        },
         start_cmd: ["./target/debug/test_node"]
       },
-      parameters: {
-        frequency_hz: "f64"
-      }
     }"#;
     std::fs::write(&peppy_config_path, peppy_config).expect("failed to write peppy config");
     config::fingerprint::create_codegen_fingerprint(
@@ -255,11 +255,11 @@ async fn standalone_runner_succeed() {
       },
       runtime: {
         language: "rust",
+        parameters: {
+          frequency_hz: "f64"
+        },
         start_cmd: ["./target/debug/test_node"]
       },
-      parameters: {
-        frequency_hz: "f64"
-      }
     }"#;
     std::fs::write(&peppy_config_path, peppy_config).expect("failed to write peppy config");
 
@@ -314,11 +314,11 @@ async fn node_ready_but_not_healthy() {
       },
       runtime: {
         language: "rust",
+        parameters: {
+          frequency_hz: "f64"
+        },
         start_cmd: ["./target/debug/test_node"]
       },
-      parameters: {
-        frequency_hz: "f64"
-      }
     }"#;
     std::fs::write(&peppy_config_path, peppy_config).expect("failed to write peppy config");
     config::fingerprint::create_codegen_fingerprint(
@@ -566,11 +566,11 @@ async fn daemon_cancellation_token_cancelled_on_shutdown() {
       },
       runtime: {
         language: "rust",
+        parameters: {
+          frequency_hz: "f64"
+        },
         start_cmd: ["./target/debug/test_node"]
       },
-      parameters: {
-        frequency_hz: "f64"
-      }
     }"#;
     std::fs::write(&peppy_config_path, peppy_config).expect("failed to write peppy config");
     config::fingerprint::create_codegen_fingerprint(
@@ -700,11 +700,11 @@ async fn node_runner_exposes_messenger_and_metadata() {
       },
       runtime: {
         language: "rust",
+        parameters: {
+          frequency_hz: "f64"
+        },
         start_cmd: ["./target/debug/test_node"]
       },
-      parameters: {
-        frequency_hz: "f64"
-      }
     }"#;
     std::fs::write(&peppy_config_path, peppy_config).expect("failed to write peppy config");
 

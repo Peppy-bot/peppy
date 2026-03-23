@@ -11,12 +11,12 @@
       "build",
       "--release"
     ],
+    parameters: {
+      name: "string",
+    },
     start_cmd: [
       "./target/release/hello_world_param"
     ]
-  },
-  parameters: {
-    name: "string",
   },
   interfaces: {
     topics: {

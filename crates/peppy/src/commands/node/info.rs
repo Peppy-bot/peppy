@@ -290,11 +290,11 @@ fn print_node_info(response: &NodeInfoResponse) {
     println!("Config SHA256: {}", response.config_integrity);
 
     // Parameters
-    if !config.parameters.is_empty() {
+    if !config.runtime.parameters.is_empty() {
         println!();
         println!("Parameters");
         println!("{}", "-".repeat(50));
-        for (key, value) in &config.parameters {
+        for (key, value) in &config.runtime.parameters {
             println!("  {}: {}", key, format_any_type(value));
         }
     }

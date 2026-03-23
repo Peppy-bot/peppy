@@ -30,8 +30,7 @@ async fn listen_for_node_remove_success() {
             runtime: {
                 language: "rust",
                 start_cmd: ["sleep", "10"]
-            },
-            parameters: {}
+            }
         }"#
     .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
     .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
@@ -149,8 +148,7 @@ async fn listen_for_node_remove_stop_running_instances_first() {
             runtime: {
                 language: "rust",
                 start_cmd: ["sleep", "10"]
-            },
-            parameters: {}
+            }
         }"#
     .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
     .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
@@ -244,8 +242,7 @@ async fn listen_for_node_fails_when_stop_instances_parameter_not_set_and_instanc
             runtime: {
                 language: "rust",
                 start_cmd: ["sleep", "10"]
-            },
-            parameters: {}
+            }
         }"#
     .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
     .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);

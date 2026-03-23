@@ -283,7 +283,6 @@ async fn listen_for_node_sync_missing_dependency_fails() {
                 add_cmd: ["cargo", "build", "--release"],
                 start_cmd: ["./target/release/my_robot_brain"],
             },
-            parameters: {},
             interfaces: {
                 topics: {
                     emits: [],
@@ -363,7 +362,6 @@ async fn listen_for_node_sync_multiple_missing_dependencies_fails() {
                 add_cmd: ["cargo", "build", "--release"],
                 start_cmd: ["./target/release/my_robot_brain"],
             },
-            parameters: {},
             interfaces: {
                 topics: {
                     emits: [],
@@ -467,7 +465,6 @@ async fn listen_for_node_sync_generates_rust_interfaces() {
                 add_cmd: ["true"],
                 start_cmd: ["sleep", "10"],
             },
-            parameters: {},
             interfaces: {
                 topics: {
                     emits: [
@@ -567,7 +564,6 @@ async fn listen_for_node_sync_generates_rust_interfaces() {
                 add_cmd: ["true"],
                 start_cmd: ["sleep", "10"],
             },
-            parameters: {},
             interfaces: {
                 topics: {
                     emits: [],
@@ -683,7 +679,6 @@ async fn listen_for_node_sync_generates_rust_consumed_service_interfaces() {
                 add_cmd: ["true"],
                 start_cmd: ["sleep", "10"],
             },
-            parameters: {},
             interfaces: {
                 topics: {
                     emits: [],
@@ -767,7 +762,6 @@ async fn listen_for_node_sync_generates_rust_consumed_service_interfaces() {
                 add_cmd: ["true"],
                 start_cmd: ["sleep", "10"],
             },
-            parameters: {},
             interfaces: {
                 topics: {
                     emits: [],
@@ -844,7 +838,6 @@ async fn listen_for_node_sync_generates_rust_consumed_topic_interfaces() {
                 add_cmd: ["true"],
                 start_cmd: ["sleep", "10"],
             },
-            parameters: {},
             interfaces: {
                 topics: {
                     emits: [
@@ -930,7 +923,6 @@ async fn listen_for_node_sync_generates_rust_consumed_topic_interfaces() {
                 add_cmd: ["true"],
                 start_cmd: ["sleep", "10"],
             },
-            parameters: {},
             interfaces: {
                 topics: {
                     emits: [],
@@ -1007,7 +999,6 @@ async fn listen_for_node_sync_generates_rust_consumed_action_interfaces() {
                 add_cmd: ["true"],
                 start_cmd: ["sleep", "10"],
             },
-            parameters: {},
             interfaces: {
                 topics: {
                     emits: [],
@@ -1099,7 +1090,6 @@ async fn listen_for_node_sync_generates_rust_consumed_action_interfaces() {
                 add_cmd: ["true"],
                 start_cmd: ["sleep", "10"],
             },
-            parameters: {},
             interfaces: {
                 topics: {
                     emits: [],
@@ -1174,23 +1164,23 @@ async fn listen_for_node_sync_generates_rust_parameters() {
             },
             runtime: {
                 language: "rust",
+                parameters: {
+                  device: {
+                    physical: "string",
+                    sim: "string",
+                    priority: "string"
+                  },
+                  video: {
+                    frame_rate: "u16",
+                    resolution: {
+                      width: "u16",
+                      height: "u16",
+                    },
+                    encoding: "string",
+                  },
+                },
                 add_cmd: ["true"],
                 start_cmd: ["sleep", "10"],
-            },
-            parameters: {
-              device: {
-                physical: "string",
-                sim: "string",
-                priority: "string"
-              },
-              video: {
-                frame_rate: "u16",
-                resolution: {
-                  width: "u16",
-                  height: "u16",
-                },
-                encoding: "string",
-              },
             },
             interfaces: {},
         }

@@ -26,7 +26,6 @@
       "./target/release/brain"
     ]
   },
-  parameters: {},
   interfaces: {
     topics: {
       consumes: [

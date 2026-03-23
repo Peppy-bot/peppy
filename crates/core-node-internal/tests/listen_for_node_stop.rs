@@ -46,8 +46,7 @@ async fn listen_for_node_stop_success() {
             runtime: {
                 language: "rust",
                 start_cmd: ["sleep", "10"]
-            },
-            parameters: {}
+            }
         }"#
     .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
     .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
