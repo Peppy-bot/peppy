@@ -5,7 +5,7 @@ use common::{
 };
 use common::{NodeStartTestTimeouts, send_node_add_and_wait, send_node_start_and_wait};
 use config::consts::NODE_CONFIG_FILE;
-use config::node::Name;
+use config::node::{Name, PeppygenLanguage};
 use config::peppy_config::Name as InstanceName;
 use config::runtime::{NodeInstance, RuntimeConfig};
 use config::test_helpers;
@@ -621,4 +621,199 @@ async fn listen_for_node_info_recovers_after_invalid_request() {
         TARGET_NODE_NAME
     );
     assert_eq!(info_response.config.manifest.tag, TARGET_NODE_TAG);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_info_with_fs_variant_success() {
+    const ROOT_NODE_NAME: &str = "variant_root";
+    const ROOT_NODE_TAG: &str = "0.2.0";
+
+    let started_core_node = start_core_node_with_mock_messenger().await;
+
+    // Create root node directory with a variant declared in the manifest.
+    let root_dir = tempfile::tempdir().expect("failed to create temp root dir");
+    let root_peppy_json5 = r#"{
+        schema_version: 1,
+        manifest: {
+            name: "variant_root",
+            tag: "0.2.0",
+            variants: [
+                { name: "mock", source: { local: "./mock" } }
+            ]
+        },
+        runtime: {
+            language: "rust",
+            start_cmd: ["sleep", "10"]
+        }
+    }"#;
+    write_peppy_json5(root_dir.path(), root_peppy_json5);
+
+    // Create the variant subdirectory with its own peppy.json5 (different language).
+    let mock_dir = root_dir.path().join("mock");
+    std::fs::create_dir_all(&mock_dir).expect("failed to create mock dir");
+    std::fs::write(
+        mock_dir.join(NODE_CONFIG_FILE),
+        r#"{
+            schema_version: 1,
+            runtime: {
+                language: "python",
+                start_cmd: ["python", "main.py"],
+                parameters: {
+                    mode: "string"
+                }
+            }
+        }"#,
+    )
+    .expect("failed to write mock variant config");
+
+    // Request with variant
+    let request = NodeInfoRequest::new(NodeSource::Fs(root_dir.path().to_path_buf()))
+        .with_variant(NodeSource::Fs(std::path::PathBuf::from("mock")));
+    let request_payload = request.encode().expect("encode should succeed");
+
+    let response = ServiceMessenger::poll(
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        CALLER_INSTANCE_ID,
+        &started_core_node.core_node_name,
+        names::NODE_INFO,
+        Some(&started_core_node.core_node_name),
+        None,
+        request_payload,
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("node_info with variant should succeed");
+
+    let info_response =
+        NodeInfoResponse::decode(&response.payload()).expect("decode should succeed");
+
+    // Manifest comes from root
+    assert_eq!(info_response.config.manifest.name.as_str(), ROOT_NODE_NAME);
+    assert_eq!(info_response.config.manifest.tag, ROOT_NODE_TAG);
+
+    // Runtime comes from variant
+    assert_eq!(
+        info_response.config.runtime.language,
+        PeppygenLanguage::Python
+    );
+    assert_eq!(
+        info_response.config.runtime.start_cmd.as_deref(),
+        Some(&["python".to_string(), "main.py".to_string()][..])
+    );
+    assert!(
+        info_response.config.runtime.parameters.contains_key("mode"),
+        "variant parameters should be present"
+    );
+
+    // Variant name should be reported
+    assert_eq!(info_response.variant_name.as_deref(), Some("mock"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_info_with_unknown_variant_fails() {
+    let started_core_node = start_core_node_with_mock_messenger().await;
+
+    // Create root node with no variants.
+    let root_dir = tempfile::tempdir().expect("failed to create temp root dir");
+    let root_peppy_json5 = r#"{
+        schema_version: 1,
+        manifest: {
+            name: "no_variants_node",
+            tag: "0.1.0",
+        },
+        runtime: {
+            language: "rust",
+            start_cmd: ["sleep", "10"]
+        }
+    }"#;
+    write_peppy_json5(root_dir.path(), root_peppy_json5);
+
+    let request = NodeInfoRequest::new(NodeSource::Fs(root_dir.path().to_path_buf()))
+        .with_variant(NodeSource::Fs(std::path::PathBuf::from("nonexistent")));
+    let request_payload = request.encode().expect("encode should succeed");
+
+    let err = ServiceMessenger::poll(
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        CALLER_INSTANCE_ID,
+        &started_core_node.core_node_name,
+        names::NODE_INFO,
+        Some(&started_core_node.core_node_name),
+        None,
+        request_payload,
+        Duration::from_secs(5),
+    )
+    .await
+    .expect_err("node_info with unknown variant should fail");
+
+    let PeppyError::ServiceError { reason, .. } = err else {
+        panic!("expected ServiceError, got: {err:?}");
+    };
+
+    assert!(
+        reason.contains("does not define any variants"),
+        "error should mention missing variants; got: {reason}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_info_without_variant_shows_available_variants() {
+    let started_core_node = start_core_node_with_mock_messenger().await;
+
+    // Create root node with variants declared in manifest.
+    let root_dir = tempfile::tempdir().expect("failed to create temp root dir");
+    let root_peppy_json5 = r#"{
+        schema_version: 1,
+        manifest: {
+            name: "multi_variant_node",
+            tag: "1.0.0",
+            variants: [
+                { name: "mock", source: { local: "./mock" } },
+                { name: "sim", source: { local: "./sim" } }
+            ]
+        },
+        runtime: {
+            language: "rust",
+            start_cmd: ["sleep", "10"]
+        }
+    }"#;
+    write_peppy_json5(root_dir.path(), root_peppy_json5);
+
+    // Request WITHOUT variant
+    let request = NodeInfoRequest::new(NodeSource::Fs(root_dir.path().to_path_buf()));
+    let request_payload = request.encode().expect("encode should succeed");
+
+    let response = ServiceMessenger::poll(
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        CALLER_INSTANCE_ID,
+        &started_core_node.core_node_name,
+        names::NODE_INFO,
+        Some(&started_core_node.core_node_name),
+        None,
+        request_payload,
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("node_info should succeed");
+
+    let info_response =
+        NodeInfoResponse::decode(&response.payload()).expect("decode should succeed");
+
+    // No variant applied
+    assert!(
+        info_response.variant_name.is_none(),
+        "variant_name should be None when no variant requested"
+    );
+
+    // Manifest should contain variant declarations
+    let variants = info_response
+        .config
+        .manifest
+        .variants
+        .as_ref()
+        .expect("manifest should contain variants");
+    let variant_names: Vec<&str> = variants.iter().map(|v| v.name.as_str()).collect();
+    assert_eq!(variant_names, vec!["mock", "sim"]);
 }

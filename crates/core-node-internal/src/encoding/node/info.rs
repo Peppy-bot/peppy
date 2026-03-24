@@ -17,18 +17,27 @@ use super::{decode_message, encode_message};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeInfoRequest {
     pub source: NodeSource,
+    pub variant: Option<NodeSource>,
 }
 
 impl NodeInfoRequest {
     pub fn new(source: NodeSource) -> Self {
-        Self { source }
+        Self {
+            source,
+            variant: None,
+        }
+    }
+
+    pub fn with_variant(mut self, variant: NodeSource) -> Self {
+        self.variant = Some(variant);
+        self
     }
 
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
-            let request = builder.init_root::<node_capnp::node_info_request::Builder>();
-            let mut source = request.init_source();
+            let mut request = builder.init_root::<node_capnp::node_info_request::Builder>();
+            let mut source = request.reborrow().init_source();
             match &self.source {
                 NodeSource::Fs(path) => {
                     source.set_fs(path.to_string_lossy().as_ref());
@@ -45,6 +54,29 @@ impl NodeInfoRequest {
                 }
                 NodeSource::Http { url } => {
                     source.set_http(url.as_str());
+                }
+            }
+
+            if let Some(ref variant) = self.variant {
+                let variant_builder = request.reborrow().init_variant();
+                let mut variant_source = variant_builder.init_source();
+                match variant {
+                    NodeSource::Fs(name) => {
+                        variant_source.set_fs(name.to_string_lossy().as_ref());
+                    }
+                    NodeSource::Git {
+                        repo_url,
+                        repo_path,
+                        repo_ref,
+                    } => {
+                        let mut git = variant_source.init_git();
+                        git.set_repo_url(repo_url.to_bstring().to_string());
+                        git.set_repo_path(repo_path);
+                        git.set_repo_ref(repo_ref.as_deref().unwrap_or(""));
+                    }
+                    NodeSource::Http { url } => {
+                        variant_source.set_http(url.as_str());
+                    }
                 }
             }
         }
@@ -68,7 +100,46 @@ impl NodeInfoRequest {
             }
             Which::Http(http) => NodeSource::decode_http(http?.to_str()?)?,
         };
-        Ok(Self { source })
+
+        let variant = if request.has_variant() {
+            use crate::node_capnp::node_add_variant_source::source::Which;
+            let variant_reader = request.get_variant()?;
+            match variant_reader.get_source().which()? {
+                Which::Fs(fs) => {
+                    let name = fs?.to_str()?;
+                    if name.is_empty() {
+                        None
+                    } else {
+                        Some(NodeSource::decode_fs(name))
+                    }
+                }
+                Which::Git(git) => {
+                    let git = git?;
+                    let repo_url_str = git.get_repo_url()?.to_str()?;
+                    if repo_url_str.is_empty() {
+                        None
+                    } else {
+                        Some(NodeSource::decode_git(
+                            repo_url_str,
+                            git.get_repo_path()?.to_str()?,
+                            git.get_repo_ref()?.to_str()?,
+                        )?)
+                    }
+                }
+                Which::Http(http) => {
+                    let url_str = http?.to_str()?;
+                    if url_str.is_empty() {
+                        None
+                    } else {
+                        Some(NodeSource::decode_http(url_str)?)
+                    }
+                }
+            }
+        } else {
+            None
+        };
+
+        Ok(Self { source, variant })
     }
 
     pub async fn poll(
@@ -103,6 +174,8 @@ pub struct NodeInfoResponse {
     pub instances_names: Vec<String>,
     /// SHA256 of the entire NodeConfig file taken from NodeSource
     pub config_integrity: String,
+    /// Name of the variant applied, if any.
+    pub variant_name: Option<String>,
 }
 
 impl NodeInfoResponse {
@@ -111,12 +184,14 @@ impl NodeInfoResponse {
         is_in_node_stack: bool,
         instances_names: Vec<String>,
         config_integrity: String,
+        variant_name: Option<String>,
     ) -> Self {
         Self {
             config,
             is_in_node_stack,
             instances_names,
             config_integrity,
+            variant_name,
         }
     }
 
@@ -136,6 +211,7 @@ impl NodeInfoResponse {
                 instances.set(i as u32, name);
             }
             response.set_config_sha256(&self.config_integrity);
+            response.set_variant_name(self.variant_name.as_deref().unwrap_or(""));
         }
         encode_message(&builder)
     }
@@ -153,11 +229,18 @@ impl NodeInfoResponse {
             instances_names.push(instances_names_reader.get(i)?.to_str()?.to_owned());
         }
         let config_integrity = response.get_config_sha256()?.to_str()?.to_owned();
+        let variant_name = response.get_variant_name()?.to_str()?.to_owned();
+        let variant_name = if variant_name.is_empty() {
+            None
+        } else {
+            Some(variant_name)
+        };
         Ok(Self {
             config,
             is_in_node_stack,
             instances_names,
             config_integrity,
+            variant_name,
         })
     }
 }

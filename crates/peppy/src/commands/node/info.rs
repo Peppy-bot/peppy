@@ -5,21 +5,27 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Duration;
 
-use super::source::parse_node_source;
+use super::source::{parse_node_source, parse_variant_source};
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 
 const CALLER_INSTANCE_ID: &str = "peppy-cli";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
-pub fn node_info(ctx: &Arc<AppContext>, source: String, git_ref: Option<String>) -> Result<()> {
-    crate::commands::block_on(node_info_async(ctx, source, git_ref))
+pub fn node_info(
+    ctx: &Arc<AppContext>,
+    source: String,
+    git_ref: Option<String>,
+    variant: Option<String>,
+) -> Result<()> {
+    crate::commands::block_on(node_info_async(ctx, source, git_ref, variant))
 }
 
 async fn node_info_async(
     ctx: &Arc<AppContext>,
     source: String,
     git_ref: Option<String>,
+    variant: Option<String>,
 ) -> Result<()> {
     let daemon_state = ctx.read_daemon_state()?;
     let core_node_name = daemon_state.core_node_name.clone();
@@ -33,7 +39,12 @@ async fn node_info_async(
     .await
     .map_err(|e| Error::ExecutionFailed(format!("Failed to connect to daemon: {}", e)))?;
 
-    let request = NodeInfoRequest::new(node_source);
+    let mut request = NodeInfoRequest::new(node_source);
+    if let Some(variant_str) = &variant {
+        let variant_source = parse_variant_source(variant_str)?;
+        request = request.with_variant(variant_source);
+    }
+
     let response = request
         .poll(
             &messenger,
@@ -68,6 +79,19 @@ fn print_node_info(response: &NodeInfoResponse) {
         && !labels.is_empty()
     {
         println!("Labels:    {}", labels.join(", "));
+    }
+
+    // Variant info
+    if let Some(ref variant_name) = response.variant_name {
+        println!("Variant:   {}", variant_name);
+    }
+
+    // Available variants (from manifest)
+    if let Some(variants) = &manifest.variants
+        && !variants.is_empty()
+    {
+        let names: Vec<&str> = variants.iter().map(|v| v.name.as_str()).collect();
+        println!("Variants:  {}", names.join(", "));
     }
 
     // Commands

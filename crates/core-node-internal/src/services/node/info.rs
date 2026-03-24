@@ -1,8 +1,9 @@
+use super::variant::{resolve_variant, variant_label};
 use super::{checkout_repo_ref, is_supported_http_archive, sanitize_repo_path};
 use crate::Result;
 use crate::encoding::{NodeInfoRequest, NodeInfoResponse, NodeSource};
 use crate::names;
-use config::consts::NODE_CONFIG_FILE;
+use config::consts::{NODE_CONFIG_FILE, PeppyDirs};
 use config::fingerprint::fingerprint_for_bytes;
 use config::node::{NodeConfig, NodeConfigParser};
 use git2::Repository;
@@ -27,6 +28,7 @@ pub async fn listen_for_node_info(
     instance_id: &str,
     node_name: &str,
     node_stack: Arc<NodeStack>,
+    peppy_dirs: PeppyDirs,
     timeout: Duration,
 ) -> Result<JoinHandle<Result<()>>> {
     let mut endpoint = ServiceMessenger::listen(
@@ -41,7 +43,12 @@ pub async fn listen_for_node_info(
     let handle = tokio::spawn(async move {
         endpoint
             .handle_requests(|context| {
-                handle_node_info_request(context, Arc::clone(&node_stack), timeout)
+                handle_node_info_request(
+                    context,
+                    Arc::clone(&node_stack),
+                    peppy_dirs.clone(),
+                    timeout,
+                )
             })
             .await
             .map_err(Into::into)
@@ -53,13 +60,14 @@ pub async fn listen_for_node_info(
 async fn handle_node_info_request(
     context: ServiceRequestContext,
     node_stack: Arc<NodeStack>,
+    peppy_dirs: PeppyDirs,
     timeout: Duration,
 ) -> PeppyResult<Payload> {
     let sender_instance_id = context.message().instance_id().to_string();
 
     match tokio::time::timeout(
         timeout,
-        handle_node_info_request_inner(&context, node_stack),
+        handle_node_info_request_inner(&context, node_stack, peppy_dirs),
     )
     .await
     {
@@ -78,6 +86,7 @@ async fn handle_node_info_request(
 async fn handle_node_info_request_inner(
     context: &ServiceRequestContext,
     node_stack: Arc<NodeStack>,
+    peppy_dirs: PeppyDirs,
 ) -> std::result::Result<Payload, String> {
     let sender_instance_id = context.message().instance_id();
     let payload = context.message().payload();
@@ -86,7 +95,19 @@ async fn handle_node_info_request_inner(
 
     debug!("Received `node_info` request from {sender_instance_id}");
 
-    let node_config = resolve_node_config(request.source).await?;
+    // Resolve the root node config (and keep the source path alive for variant resolution).
+    let (node_config, variant_name) = if let Some(ref variant_source) = request.variant {
+        let (root_config, root_source_path, _keep_alive) =
+            resolve_node_config_with_source_path(request.source.clone(), &peppy_dirs).await?;
+
+        let label = variant_label(variant_source);
+        let resolved =
+            resolve_variant(variant_source, &root_config, &root_source_path, &peppy_dirs).await?;
+        (resolved.merged_config, Some(label))
+    } else {
+        (resolve_node_config(request.source).await?, None)
+    };
+
     let node_name = node_config.manifest.name.as_str();
     let node_tag = node_config.manifest.tag.as_str();
 
@@ -110,6 +131,7 @@ async fn handle_node_info_request_inner(
         is_in_node_stack,
         instances_names,
         config_integrity,
+        variant_name,
     )
     .encode()
     .map_err(|e| format!("{}", e))
@@ -124,6 +146,34 @@ pub async fn resolve_node_config(source: NodeSource) -> std::result::Result<Node
             repo_ref,
         } => parse_node_config_from_git(repo_url, repo_path, repo_ref).await,
         NodeSource::Http { url } => parse_node_config_from_http(url).await,
+    }
+}
+
+/// Resolves a node config and returns both the config and the source directory path.
+/// For git/http sources the returned `Option<PathBuf>` is the temp directory that must
+/// be kept alive until the caller is done with the source path.
+async fn resolve_node_config_with_source_path(
+    source: NodeSource,
+    peppy_dirs: &PeppyDirs,
+) -> std::result::Result<(NodeConfig, PathBuf, Option<PathBuf>), String> {
+    match source {
+        NodeSource::Fs(path) => {
+            let config = parse_node_config_from_fs(&path)?;
+            let source_dir = if path.is_dir() {
+                path
+            } else {
+                path.parent()
+                    .map(|p| p.to_path_buf())
+                    .unwrap_or_else(|| PathBuf::from("."))
+            };
+            Ok((config, source_dir, None))
+        }
+        NodeSource::Git {
+            repo_url,
+            repo_path,
+            repo_ref,
+        } => parse_node_config_from_git_with_path(repo_url, repo_path, repo_ref).await,
+        NodeSource::Http { url } => parse_node_config_from_http_with_path(url, peppy_dirs).await,
     }
 }
 
@@ -273,6 +323,67 @@ fn parse_node_config_from_git_blocking(
             e
         )
     })
+}
+
+/// Like `parse_node_config_from_git` but also returns the source directory path
+/// and keeps the temp dir alive by returning it.
+async fn parse_node_config_from_git_with_path(
+    repo_url: gix_url::Url,
+    repo_path: String,
+    repo_ref: Option<String>,
+) -> std::result::Result<(NodeConfig, PathBuf, Option<PathBuf>), String> {
+    tokio::task::spawn_blocking(move || {
+        let repo_relative_path = sanitize_repo_path(&repo_path)?;
+
+        let checkout_dir = tempfile::tempdir()
+            .map_err(|e| format!("Failed to create temporary directory: {}", e))?
+            .keep();
+
+        let repo_url_bstring = repo_url.to_bstring();
+        let repo_url_str = std::str::from_utf8(repo_url_bstring.as_ref())
+            .map_err(|_| "repo_url must be valid UTF-8".to_string())?
+            .to_owned();
+
+        let repo = Repository::clone(&repo_url_str, &checkout_dir)
+            .map_err(|e| format!("Failed to clone repository: {}", e))?;
+
+        if let Some(repo_ref) = repo_ref.as_deref() {
+            checkout_repo_ref(&repo, repo_ref)
+                .map_err(|e| format!("Failed to checkout git ref '{}': {}", repo_ref, e))?;
+        }
+
+        let candidate_path = checkout_dir.join(&repo_relative_path);
+        let config_path = if candidate_path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("json5"))
+        {
+            candidate_path.clone()
+        } else {
+            candidate_path.join(NODE_CONFIG_FILE)
+        };
+
+        let source_dir = if candidate_path.is_dir() {
+            candidate_path
+        } else {
+            candidate_path
+                .parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or(checkout_dir.clone())
+        };
+
+        let config = NodeConfigParser::from_path(&config_path).map_err(|e| {
+            format!(
+                "Failed to parse node config at {}: {}",
+                config_path.display(),
+                e
+            )
+        })?;
+
+        Ok((config, source_dir, Some(checkout_dir)))
+    })
+    .await
+    .map_err(|e| format!("Failed to join git clone task: {}", e))?
 }
 
 async fn parse_node_config_from_http(url: url::Url) -> std::result::Result<NodeConfig, String> {
@@ -425,4 +536,20 @@ fn parse_node_config_from_http_blocking(url: url::Url) -> std::result::Result<No
             e
         )
     })
+}
+
+/// Like `parse_node_config_from_http` but also returns the source directory path
+/// and keeps the temp dir alive by returning it.
+async fn parse_node_config_from_http_with_path(
+    url: url::Url,
+    peppy_dirs: &PeppyDirs,
+) -> std::result::Result<(NodeConfig, PathBuf, Option<PathBuf>), String> {
+    // For HTTP sources we can use the resolve_http_source from add.rs which already
+    // extracts the archive and returns the source path.
+    let resolved = super::add::resolve_http_source(&url, peppy_dirs.clone()).await?;
+    Ok((
+        resolved.node_config,
+        resolved.source_path,
+        resolved.cleanup_dir,
+    ))
 }

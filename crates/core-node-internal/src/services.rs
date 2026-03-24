@@ -229,6 +229,7 @@ impl CoreNode {
                 self.instance_id(),
                 self.node_name(),
                 Arc::clone(&self.node_stack),
+                self.peppy_dirs.clone(),
                 self.node_startup_timeout,
             )
             .await?,

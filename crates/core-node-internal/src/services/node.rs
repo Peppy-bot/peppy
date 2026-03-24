@@ -6,6 +6,7 @@ mod start;
 mod stop;
 mod sync;
 mod templates;
+pub(crate) mod variant;
 
 use crate::encoding::NodeSource;
 use crate::{Error, Result};

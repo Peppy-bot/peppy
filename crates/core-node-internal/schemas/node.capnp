@@ -220,10 +220,14 @@ struct NodeInfoRequest {
         # HTTP URL source
         http @2 :Text;
     }
+    # Optional variant source — when set, the main source points to the root node
+    # and this identifies which variant to resolve and merge.
+    # Fs = variant name (lookup in manifest), Git/Http = direct source.
+    variant @3 :NodeAddVariantSource;
 }
 
 struct NodeInfoResponse {
-    # JSON5-serialized NodeConfig
+    # JSON5-serialized NodeConfig (merged with variant runtime when variant is requested)
     configJson5 @0 :Text;
     # Whether the node is already in the node stack
     isInNodeStack @1 :Bool;
@@ -231,4 +235,6 @@ struct NodeInfoResponse {
     instancesNames @2 :List(Text);
     # SHA256 of the entire NodeConfig file
     configSha256 @3 :Text;
+    # Name of the variant applied (empty string when no variant)
+    variantName @4 :Text;
 }
