@@ -127,9 +127,9 @@ If the interfaces do not match, the add operation fails with a `VariantInterface
 
 If a variant omits `interfaces` entirely, no validation is performed and the root's interfaces are used as-is.
 
-## Adding a variant
+## Adding a variant by name
 
-Use the `--variant` flag with `peppy node add`:
+Use the `--variant` flag with `peppy node add` to select a variant declared in the root manifest:
 
 ```sh
 peppy node add --variant mock ./robot_brain
@@ -137,9 +137,27 @@ peppy node add --variant mock ./robot_brain
 
 This tells peppy to look up the `mock` variant in `robot_brain`'s manifest and add it instead of the root node. The variant appears in the node stack under the root's name and tag (`robot_brain:0.1.0`).
 
-## Variant source types
+## Adding a variant directly from git or URL
 
-Variant sources support the same three types as regular deployment sources:
+You can also add a variant directly from a git repository or URL without declaring it in the root manifest. Pass a `--variant-git` or `--variant-http` flag:
+
+```sh
+# From a git repository
+peppy node add \
+  --variant-git https://github.com/example/mock-brain.git::brain@main \
+  ./robot_brain
+
+# From an HTTP archive
+peppy node add \
+  --variant-http https://releases.example.com/mock-brain-0.1.0.tar.zst \
+  ./robot_brain
+```
+
+In both cases, the first argument (`./robot_brain`) is still the root node — its manifest and interfaces are used. The variant source provides only the runtime.
+
+## Variant source types in the manifest
+
+When declaring variants in the manifest, sources support the same three types as regular deployment sources:
 
 | Source type | Example |
 |-------------|---------|

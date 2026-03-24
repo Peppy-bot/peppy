@@ -5,8 +5,8 @@ use config::consts::{
 };
 use config::node::{PeppygenLanguage, QoSProfile};
 use core_node::encoding::{
-    NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAddResult, NodeStartFeedback,
-    NodeStartGoal, NodeStartGoalResponse, NodeStartResult,
+    NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAddResult, NodeSource,
+    NodeStartFeedback, NodeStartGoal, NodeStartGoalResponse, NodeStartResult,
 };
 use core_node::names;
 use core_node::{CoreNode, CoreNodeArguments};
@@ -224,7 +224,7 @@ async fn send_node_add_and_wait_internal<'a>(
     messenger: &MessengerHandle,
     core_node_name: &str,
     source: impl Into<NodeAddSource<'a>>,
-    variant: Option<String>,
+    variant: Option<NodeSource>,
     goal_timeout: Duration,
     result_timeout: Duration,
     feedback_tx: Option<UnboundedSender<NodeAddFeedback>>,
@@ -273,7 +273,7 @@ async fn send_node_add_and_wait_internal<'a>(
     .with_env_vars(env_vars);
 
     if let Some(v) = variant {
-        goal = goal.with_variant(v);
+        goal = goal.with_variant_source(v);
     }
 
     let (caller_core_node, caller_instance_id) = if feedback_tx.is_some() {
@@ -454,7 +454,7 @@ pub async fn send_node_add_and_wait_with_variant<'a>(
         messenger,
         core_node_name,
         source,
-        Some(variant.to_owned()),
+        Some(NodeSource::Fs(PathBuf::from(variant))),
         goal_timeout,
         result_timeout,
         feedback_tx,

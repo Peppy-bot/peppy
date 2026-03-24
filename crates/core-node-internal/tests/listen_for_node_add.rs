@@ -3856,14 +3856,47 @@ async fn listen_for_node_add_variant_no_interfaces() {
 
 #[test]
 fn listen_for_node_add_variant_encoding_roundtrip() {
-    let goal = NodeAddGoal::new("/some/path", "test-hash", 60).with_variant("mock");
+    use core_node::encoding::NodeSource;
 
+    // Name-based variant (Fs)
+    let goal = NodeAddGoal::new("/some/path", "test-hash", 60).with_variant_name("mock");
     let encoded = goal.encode().expect("encoding should succeed");
     let decoded = NodeAddGoal::decode(&encoded).expect("decoding should succeed");
-
-    assert_eq!(decoded.variant.as_deref(), Some("mock"));
+    assert!(
+        matches!(&decoded.variant, Some(NodeSource::Fs(p)) if p.to_string_lossy() == "mock"),
+        "expected Fs(\"mock\"), got {:?}",
+        decoded.variant
+    );
     assert_eq!(decoded.git_hash, "test-hash");
     assert_eq!(decoded.timeout_secs, 60);
+
+    // Git-based variant
+    let git_url = GitUrl::try_from("https://github.com/example/repo.git").unwrap();
+    let goal_git =
+        NodeAddGoal::new("/some/path", "test-hash", 60).with_variant_source(NodeSource::Git {
+            repo_url: git_url.clone(),
+            repo_path: "brain".to_string(),
+            repo_ref: Some("main".to_string()),
+        });
+    let encoded = goal_git.encode().expect("encoding should succeed");
+    let decoded = NodeAddGoal::decode(&encoded).expect("decoding should succeed");
+    assert!(
+        matches!(&decoded.variant, Some(NodeSource::Git { repo_path, repo_ref, .. }) if repo_path == "brain" && repo_ref.as_deref() == Some("main")),
+        "expected Git variant, got {:?}",
+        decoded.variant
+    );
+
+    // Http-based variant
+    let url = url::Url::parse("https://example.com/variant.tar.zst").unwrap();
+    let goal_http = NodeAddGoal::new("/some/path", "test-hash", 60)
+        .with_variant_source(NodeSource::Http { url: url.clone() });
+    let encoded = goal_http.encode().expect("encoding should succeed");
+    let decoded = NodeAddGoal::decode(&encoded).expect("decoding should succeed");
+    assert!(
+        matches!(&decoded.variant, Some(NodeSource::Http { url: u }) if u.as_str() == "https://example.com/variant.tar.zst"),
+        "expected Http variant, got {:?}",
+        decoded.variant
+    );
 
     // Without variant
     let goal_no_variant = NodeAddGoal::new("/some/path", "test-hash", 60);

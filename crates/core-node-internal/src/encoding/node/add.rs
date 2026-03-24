@@ -34,7 +34,7 @@ pub struct NodeAddGoal {
     pub git_hash: String,
     pub env_vars: Vec<(String, String)>,
     pub timeout_secs: u64,
-    pub variant: Option<String>,
+    pub variant: Option<NodeSource>,
 }
 
 impl NodeAddGoal {
@@ -97,8 +97,13 @@ impl NodeAddGoal {
         self
     }
 
-    pub fn with_variant(mut self, variant: impl Into<String>) -> Self {
-        self.variant = Some(variant.into());
+    pub fn with_variant_name(mut self, name: impl Into<String>) -> Self {
+        self.variant = Some(NodeSource::Fs(PathBuf::from(name.into())));
+        self
+    }
+
+    pub fn with_variant_source(mut self, source: NodeSource) -> Self {
+        self.variant = Some(source);
         self
     }
 
@@ -145,7 +150,26 @@ impl NodeAddGoal {
             goal.reborrow().set_timeout_secs(self.timeout_secs);
 
             if let Some(ref variant) = self.variant {
-                goal.set_variant(variant);
+                let variant_builder = goal.reborrow().init_variant();
+                let mut variant_source = variant_builder.init_source();
+                match variant {
+                    NodeSource::Fs(name) => {
+                        variant_source.set_fs(name.to_string_lossy().as_ref());
+                    }
+                    NodeSource::Git {
+                        repo_url,
+                        repo_path,
+                        repo_ref,
+                    } => {
+                        let mut git = variant_source.init_git();
+                        git.set_repo_url(repo_url.to_bstring().to_string());
+                        git.set_repo_path(repo_path);
+                        git.set_repo_ref(repo_ref.as_deref().unwrap_or(""));
+                    }
+                    NodeSource::Http { url } => {
+                        variant_source.set_http(url.as_str());
+                    }
+                }
             }
         }
         encode_message(&builder)
@@ -193,11 +217,55 @@ impl NodeAddGoal {
             ));
         }
 
-        let variant_str = goal.get_variant()?.to_str()?;
-        let variant = if variant_str.is_empty() {
-            None
+        let variant = if goal.has_variant() {
+            use crate::node_capnp::node_add_variant_source::source::Which as VWhich;
+            let variant_reader = goal.get_variant()?;
+            match variant_reader.get_source().which()? {
+                VWhich::Fs(fs) => {
+                    let name = fs?.to_str()?;
+                    if name.is_empty() {
+                        None
+                    } else {
+                        Some(NodeSource::Fs(PathBuf::from(name)))
+                    }
+                }
+                VWhich::Git(git) => {
+                    let git = git?;
+                    let repo_url_str = git.get_repo_url()?.to_str()?;
+                    if repo_url_str.is_empty() {
+                        None
+                    } else {
+                        let repo_url = GitUrl::try_from(repo_url_str).map_err(|e| {
+                            crate::Error::Decoding(format!("invalid variant git URL: {}", e))
+                        })?;
+                        let repo_path = git.get_repo_path()?.to_str()?.to_owned();
+                        let repo_ref = git.get_repo_ref()?.to_str()?.trim().to_owned();
+                        let repo_ref = if repo_ref.is_empty() {
+                            None
+                        } else {
+                            Some(repo_ref)
+                        };
+                        Some(NodeSource::Git {
+                            repo_url,
+                            repo_path,
+                            repo_ref,
+                        })
+                    }
+                }
+                VWhich::Http(http) => {
+                    let url_str = http?.to_str()?;
+                    if url_str.is_empty() {
+                        None
+                    } else {
+                        let url = url::Url::parse(url_str).map_err(|e| {
+                            crate::Error::Decoding(format!("invalid variant HTTP URL: {}", e))
+                        })?;
+                        Some(NodeSource::Http { url })
+                    }
+                }
+            }
         } else {
-            Some(variant_str.to_owned())
+            None
         };
 
         Ok(Self {

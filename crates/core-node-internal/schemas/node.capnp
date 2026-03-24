@@ -32,9 +32,10 @@ struct NodeAddGoal {
     envVars @4 :List(EnvVar);
     # Timeout in seconds for the add operation (used to report remaining time when busy)
     timeoutSecs @5 :UInt64;
-    # Optional variant name — when set, the source points to the root node
+    # Optional variant source — when set, the main source points to the root node
     # and this identifies which variant to resolve and build.
-    variant @6 :Text;
+    # Fs = variant name (lookup in manifest), Git/Http = direct source.
+    variant @6 :NodeAddVariantSource;
 }
 
 struct EnvVar {
@@ -49,6 +50,17 @@ struct NodeAddGitSource {
     repoPath @1 :Text;
     # Optional git ref (tag/branch/commit) to checkout before reading repoPath
     repoRef @2 :Text;
+}
+
+struct NodeAddVariantSource {
+    source :union {
+        # Variant name (lookup in root manifest)
+        fs @0 :Text;
+        # Direct git source for the variant
+        git @1 :NodeAddGitSource;
+        # Direct HTTP URL for the variant
+        http @2 :Text;
+    }
 }
 
 struct NodeAddGoalResponse {
