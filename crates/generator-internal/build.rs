@@ -255,7 +255,9 @@ mod peppylib_build {
     /// than any source file in peppylib-py (`src/**`, `peppylib/**/*.py`, `pixi.lock`)
     /// or its dependency crates (`peppylib`, `config-internal`, `pmi-internal`).
     fn so_needs_rebuild(peppylib_py_dir: &Path, peppylib_dir: &Path) -> bool {
-        // Use the newest existing platform-suffixed .so as the reference timestamp.
+        // Use the oldest existing platform-suffixed .so as the reference timestamp.
+        // Using .min() ensures that if ANY platform's .so is stale (e.g. cross-compiled
+        // Linux .so lagging behind the native macOS .so), all .so files get rebuilt.
         let so_mtime = std::fs::read_dir(peppylib_dir).ok().and_then(|d| {
             d.filter_map(|e| e.ok())
                 .filter(|e| {
@@ -264,7 +266,7 @@ mod peppylib_build {
                     s.starts_with("_peppylib.abi3.") && s.ends_with(".so")
                 })
                 .filter_map(|e| e.metadata().ok()?.modified().ok())
-                .max()
+                .min()
         });
         let Some(so_mtime) = so_mtime else {
             return true;
