@@ -4,9 +4,9 @@ mod apptainer_build {
     use std::process::Command;
 
     const APPTAINER_VERSION: &str = "1.4.5";
-    const LIMA_VERSION: &str = "2.0.3";
+    const LIMA_VERSION: &str = "2.1.0";
     const LIMA_DARWIN_ARM64_ARCHIVE_SHA256: &str =
-        "22aee997df59e4fd448041b2d1214e48bd8eaf705d2d48a4307d65c1b179dc97";
+        "1da852bce2f98b8310fb53e5047e08ff798880ddf9ae4b3161d4de4e73777b34";
     const LIMA_INSTANCE: &str = "peppy";
     const LIMA_TEMPLATE: &str = "template:ubuntu-24.04";
     /// Guest-side installation path for apptainer inside the Lima VM.
@@ -47,7 +47,7 @@ mod apptainer_build {
 
     fn lima_archive_sha256(version: &str, os: &str, arch: &str) -> Option<&'static str> {
         match (version, os, arch) {
-            ("2.0.3", "Darwin", "arm64") => Some(LIMA_DARWIN_ARM64_ARCHIVE_SHA256),
+            ("2.1.0", "Darwin", "arm64") => Some(LIMA_DARWIN_ARM64_ARCHIVE_SHA256),
             _ => None,
         }
     }
@@ -405,6 +405,7 @@ mod apptainer_build {
         lima: &LimaConfig,
         version: &str,
         install_dir: &Path,
+        target_arch: &str,
     ) -> bool {
         if !ensure_lima_instance(lima, LIMA_TEMPLATE) {
             println!(
@@ -414,27 +415,50 @@ mod apptainer_build {
         }
 
         println!(
-            "cargo:warning=Building apptainer {} from source inside Lima VM (this may take several minutes)...",
-            version
+            "cargo:warning=Building apptainer {} for {} from source inside Lima VM (this may take several minutes)...",
+            version, target_arch
         );
 
         let guest_install_dir = GUEST_APPTAINER_DIR;
+
+        // When the target arch differs from the Lima VM's native arch (aarch64),
+        // we need cross-compilation tooling and must tell mconfig the host triple.
+        let (extra_packages, mconfig_host_flag) = if target_arch == "x86_64" {
+            (
+                " gcc-x86-64-linux-gnu libseccomp-dev:amd64",
+                " --host=x86_64-linux-gnu",
+            )
+        } else {
+            ("", "")
+        };
+
+        // For x86_64 cross-compilation, enable the amd64 architecture for
+        // multi-arch package installation (libseccomp-dev:amd64).
+        let dpkg_add_arch = if target_arch == "x86_64" {
+            "sudo dpkg --add-architecture amd64\n"
+        } else {
+            ""
+        };
+
         let build_script = format!(
             r#"set -eu
-sudo apt-get update -qq
-sudo apt-get install -y -qq golang-go libseccomp-dev make gcc pkg-config squashfs-tools cryptsetup > /dev/null 2>&1
+{dpkg_add_arch}sudo apt-get update -qq
+sudo apt-get install -y -qq golang-go libseccomp-dev make gcc pkg-config squashfs-tools cryptsetup{extra_packages} > /dev/null 2>&1
 cd /tmp
 rm -rf apptainer-{version} apptainer-{version}.tar.gz {guest_install_dir}
 curl -fsSL https://github.com/apptainer/apptainer/releases/download/v{version}/apptainer-{version}.tar.gz -o apptainer-{version}.tar.gz
 tar -xzf apptainer-{version}.tar.gz
 cd apptainer-{version}
-./mconfig --prefix={guest_install_dir}
+./mconfig --prefix={guest_install_dir}{mconfig_host_flag}
 make -C builddir -j
 make -C builddir install
 cp {guest_install_dir}/libexec/apptainer/bin/starter {guest_install_dir}/libexec/apptainer/bin/starter-suid
 rm -rf /tmp/apptainer-{version} /tmp/apptainer-{version}.tar.gz"#,
+            dpkg_add_arch = dpkg_add_arch,
+            extra_packages = extra_packages,
             version = version,
             guest_install_dir = guest_install_dir,
+            mconfig_host_flag = mconfig_host_flag,
         );
 
         let run = lima
@@ -567,13 +591,10 @@ rm -rf /tmp/apptainer-{version} /tmp/apptainer-{version}.tar.gz"#,
             false
         };
 
-        // On macOS via Lima, the guest architecture may differ from the host.
-        // Default to aarch64 since macOS builds are Apple Silicon only.
-        let arch = if use_lima {
-            "aarch64".to_string()
-        } else {
-            env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_else(|_| "x86_64".to_string())
-        };
+        // Use the target architecture from the Rust compilation target.
+        // CARGO_CFG_TARGET_ARCH reflects the *target* (e.g. "x86_64" when
+        // cross-compiling for x86_64-unknown-linux-gnu), not the host.
+        let arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_else(|_| "aarch64".to_string());
 
         let out_dir = env::var("OUT_DIR").unwrap();
 
@@ -640,7 +661,7 @@ rm -rf /tmp/apptainer-{version} /tmp/apptainer-{version}.tar.gz"#,
             );
 
             let success = if let Some(ref lima) = lima_config {
-                build_apptainer_from_source_via_lima(lima, APPTAINER_VERSION, &cache_dir)
+                build_apptainer_from_source_via_lima(lima, APPTAINER_VERSION, &cache_dir, &arch)
             } else {
                 build_apptainer_from_source(APPTAINER_VERSION, &cache_dir)
             };
