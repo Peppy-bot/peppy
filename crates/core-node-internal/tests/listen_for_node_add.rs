@@ -3871,3 +3871,90 @@ fn listen_for_node_add_variant_encoding_roundtrip() {
     let decoded = NodeAddGoal::decode(&encoded).expect("decoding should succeed");
     assert_eq!(decoded.variant, None);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_add_variant_manifest_ignored_warning() {
+    let started_core_node = start_core_node_with_mock_messenger().await;
+
+    let parent_dir = tempfile::tempdir().expect("failed to create parent dir");
+    let root_dir = parent_dir.path().join("root_node");
+    let variant_dir = parent_dir.path().join("variant_with_manifest");
+    std::fs::create_dir_all(&root_dir).unwrap();
+    std::fs::create_dir_all(&variant_dir).unwrap();
+
+    let root_config = r#"{
+        schema_version: 1,
+        manifest: {
+            name: "test_node",
+            tag: "0.1.0",
+            variants: [
+                { name: "custom", source: { local: "../variant_with_manifest" } }
+            ]
+        },
+        runtime: {
+            language: "rust",
+            start_cmd: ["sleep", "10"]
+        }
+    }"#;
+    write_peppy_json5(&root_dir, root_config);
+
+    // Variant defines a manifest — it should be ignored with a warning
+    let variant_config = r#"{
+        schema_version: 1,
+        manifest: {
+            name: "overridden_name",
+            tag: "9.9.9",
+        },
+        runtime: {
+            language: "rust",
+            start_cmd: ["sleep", "5"]
+        }
+    }"#;
+    write_peppy_json5(&variant_dir, variant_config);
+
+    let (feedback_tx, mut feedback_rx) = tokio::sync::mpsc::unbounded_channel::<NodeAddFeedback>();
+
+    let add_result = send_node_add_and_wait_with_variant(
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        root_dir.as_path(),
+        "custom",
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        Some(feedback_tx),
+    )
+    .await
+    .expect("node_add with variant should succeed");
+
+    assert!(
+        add_result.success,
+        "variant node_add should succeed, got error: {:?}",
+        add_result.error_message
+    );
+
+    // Collect feedback and verify the manifest-ignored warning was emitted
+    let mut feedback = Vec::new();
+    while let Ok(entry) = feedback_rx.try_recv() {
+        feedback.push(entry);
+    }
+
+    let has_manifest_warning = feedback.iter().any(|f| {
+        f.is_stderr()
+            && f.line.contains("manifest")
+            && f.line.contains("ignored")
+            && f.line.contains("custom")
+    });
+    assert!(
+        has_manifest_warning,
+        "should emit a warning about variant manifest being ignored, got feedback: {:?}",
+        feedback.iter().map(|f| &f.line).collect::<Vec<_>>()
+    );
+
+    // Verify the root manifest was used, not the variant's
+    let entity = started_core_node
+        .node_stack
+        .find("test_node", "0.1.0")
+        .expect("node should be in stack under root's name:tag");
+    assert_eq!(entity.config().manifest.name.as_str(), "test_node");
+    assert_eq!(entity.config().manifest.tag, "0.1.0");
+}

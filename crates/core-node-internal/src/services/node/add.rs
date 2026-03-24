@@ -969,6 +969,8 @@ struct ResolvedVariant {
     verify_codegen_fingerprint: bool,
     /// Directory to clean up after variant resolution (git clone / http download).
     cleanup_dir: Option<PathBuf>,
+    /// True when the variant's config defined a `manifest` section that was ignored.
+    manifest_ignored: bool,
 }
 
 /// Resolves a variant by looking it up in the root config's manifest, fetching
@@ -980,18 +982,14 @@ async fn resolve_variant(
     root_source_path: &Path,
     peppy_dirs: &PeppyDirs,
 ) -> std::result::Result<ResolvedVariant, String> {
-    let variants = root_config
-        .manifest
-        .variants
-        .as_ref()
-        .ok_or_else(|| {
-            format!(
-                "variant '{}' not found: node '{}:{}' does not define any variants",
-                variant_name,
-                root_config.manifest.name.as_str(),
-                root_config.manifest.tag,
-            )
-        })?;
+    let variants = root_config.manifest.variants.as_ref().ok_or_else(|| {
+        format!(
+            "variant '{}' not found: node '{}:{}' does not define any variants",
+            variant_name,
+            root_config.manifest.name.as_str(),
+            root_config.manifest.tag,
+        )
+    })?;
 
     let variant = variants
         .iter()
@@ -1015,15 +1013,14 @@ async fn resolve_variant(
                     local.local.clone()
                 };
                 let config_path = path.join(NODE_CONFIG_FILE);
-                let variant_config =
-                    VariantConfigParser::from_path(&config_path).map_err(|e| {
-                        format!(
-                            "Failed to parse variant '{}' config at {}: {}",
-                            variant_name,
-                            config_path.display(),
-                            e
-                        )
-                    })?;
+                let variant_config = VariantConfigParser::from_path(&config_path).map_err(|e| {
+                    format!(
+                        "Failed to parse variant '{}' config at {}: {}",
+                        variant_name,
+                        config_path.display(),
+                        e
+                    )
+                })?;
                 (path, variant_config, true, None)
             }
             DeploymentSource::Git(git) => {
@@ -1077,15 +1074,14 @@ async fn resolve_variant(
                 let resolved = resolve_http_source(&url, peppy_dirs.clone()).await?;
                 // Re-parse as VariantConfig since resolve_http_source parsed as NodeConfig
                 let config_path = resolved.source_path.join(NODE_CONFIG_FILE);
-                let variant_config =
-                    VariantConfigParser::from_path(&config_path).map_err(|e| {
-                        format!(
-                            "Failed to parse variant '{}' config at {}: {}",
-                            variant_name,
-                            config_path.display(),
-                            e
-                        )
-                    })?;
+                let variant_config = VariantConfigParser::from_path(&config_path).map_err(|e| {
+                    format!(
+                        "Failed to parse variant '{}' config at {}: {}",
+                        variant_name,
+                        config_path.display(),
+                        e
+                    )
+                })?;
                 (
                     resolved.source_path,
                     variant_config,
@@ -1096,18 +1092,19 @@ async fn resolve_variant(
         };
 
     // If the variant defines interfaces, validate they match the root's interfaces.
-    if let Some(ref variant_interfaces) = variant_config.interfaces {
-        if *variant_interfaces != Interfaces::default()
-            && !root_config.interfaces.matches_unordered(variant_interfaces)
-        {
-            return Err(format!(
-                "VariantInterfaceMismatch: variant '{}' defines interfaces that differ from the root node '{}:{}'",
-                variant_name,
-                root_config.manifest.name.as_str(),
-                root_config.manifest.tag,
-            ));
-        }
+    if let Some(ref variant_interfaces) = variant_config.interfaces
+        && *variant_interfaces != Interfaces::default()
+        && !root_config.interfaces.matches_unordered(variant_interfaces)
+    {
+        return Err(format!(
+            "VariantInterfaceMismatch: variant '{}' defines interfaces that differ from the root node '{}:{}'",
+            variant_name,
+            root_config.manifest.name.as_str(),
+            root_config.manifest.tag,
+        ));
     }
+
+    let manifest_ignored = variant_config.manifest.is_some();
 
     // Build merged config: root's schema_version + manifest + interfaces + variant's runtime
     let merged_config = NodeConfig {
@@ -1122,6 +1119,7 @@ async fn resolve_variant(
         variant_source_path,
         verify_codegen_fingerprint,
         cleanup_dir,
+        manifest_ignored,
     })
 }
 
@@ -1178,6 +1176,15 @@ pub(crate) async fn run_node_add(
             .await
             {
                 Ok(v) => {
+                    if v.manifest_ignored {
+                        let _ = feedback_tx.send(FeedbackLine {
+                            stream: FeedbackStream::Stderr,
+                            line: format!(
+                                "Warning: variant '{}' defines a `manifest` section which will be ignored — only the root node's manifest is used",
+                                variant_name
+                            ),
+                        });
+                    }
                     resolved.node_config = v.merged_config;
                     resolved.source_path = v.variant_source_path;
                     resolved.verify_codegen_fingerprint = v.verify_codegen_fingerprint;
