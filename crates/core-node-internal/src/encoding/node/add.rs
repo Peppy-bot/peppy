@@ -28,6 +28,34 @@ pub enum NodeSource {
     },
 }
 
+impl NodeSource {
+    pub fn decode_fs(path: &str) -> Self {
+        Self::Fs(PathBuf::from(path))
+    }
+
+    pub fn decode_git(repo_url_str: &str, repo_path: &str, repo_ref: &str) -> Result<Self> {
+        let repo_url = GitUrl::try_from(repo_url_str)
+            .map_err(|e| crate::Error::Decoding(format!("invalid git URL: {}", e)))?;
+        let repo_ref = repo_ref.trim().to_owned();
+        let repo_ref = if repo_ref.is_empty() {
+            None
+        } else {
+            Some(repo_ref)
+        };
+        Ok(Self::Git {
+            repo_url,
+            repo_path: repo_path.to_owned(),
+            repo_ref,
+        })
+    }
+
+    pub fn decode_http(url_str: &str) -> Result<Self> {
+        let url = url::Url::parse(url_str)
+            .map_err(|e| crate::Error::Decoding(format!("invalid HTTP URL: {}", e)))?;
+        Ok(Self::Http { url })
+    }
+}
+
 /// Goal message for the NodeAdd action.
 pub struct NodeAddGoal {
     pub source: NodeSource,
@@ -180,31 +208,16 @@ impl NodeAddGoal {
         let reader = decode_message(data)?;
         let goal = reader.get_root::<node_capnp::node_add_goal::Reader>()?;
         let source = match goal.get_source().which()? {
-            Which::Fs(fs) => NodeSource::Fs(PathBuf::from(fs?.to_str()?)),
+            Which::Fs(fs) => NodeSource::decode_fs(fs?.to_str()?),
             Which::Git(git) => {
                 let git = git?;
-                let repo_url_str = git.get_repo_url()?.to_str()?;
-                let repo_url = GitUrl::try_from(repo_url_str)
-                    .map_err(|e| crate::Error::Decoding(format!("invalid git URL: {}", e)))?;
-                let repo_path = git.get_repo_path()?.to_str()?.to_owned();
-                let repo_ref = git.get_repo_ref()?.to_str()?.trim().to_owned();
-                let repo_ref = if repo_ref.is_empty() {
-                    None
-                } else {
-                    Some(repo_ref)
-                };
-                NodeSource::Git {
-                    repo_url,
-                    repo_path,
-                    repo_ref,
-                }
+                NodeSource::decode_git(
+                    git.get_repo_url()?.to_str()?,
+                    git.get_repo_path()?.to_str()?,
+                    git.get_repo_ref()?.to_str()?,
+                )?
             }
-            Which::Http(http) => {
-                let url_str = http?.to_str()?;
-                let url = url::Url::parse(url_str)
-                    .map_err(|e| crate::Error::Decoding(format!("invalid HTTP URL: {}", e)))?;
-                NodeSource::Http { url }
-            }
+            Which::Http(http) => NodeSource::decode_http(http?.to_str()?)?,
         };
 
         let env_vars_reader = goal.get_env_vars()?;
@@ -218,49 +231,36 @@ impl NodeAddGoal {
         }
 
         let variant = if goal.has_variant() {
-            use crate::node_capnp::node_add_variant_source::source::Which as VWhich;
+            use crate::node_capnp::node_add_variant_source::source::Which;
             let variant_reader = goal.get_variant()?;
             match variant_reader.get_source().which()? {
-                VWhich::Fs(fs) => {
+                Which::Fs(fs) => {
                     let name = fs?.to_str()?;
                     if name.is_empty() {
                         None
                     } else {
-                        Some(NodeSource::Fs(PathBuf::from(name)))
+                        Some(NodeSource::decode_fs(name))
                     }
                 }
-                VWhich::Git(git) => {
+                Which::Git(git) => {
                     let git = git?;
                     let repo_url_str = git.get_repo_url()?.to_str()?;
                     if repo_url_str.is_empty() {
                         None
                     } else {
-                        let repo_url = GitUrl::try_from(repo_url_str).map_err(|e| {
-                            crate::Error::Decoding(format!("invalid variant git URL: {}", e))
-                        })?;
-                        let repo_path = git.get_repo_path()?.to_str()?.to_owned();
-                        let repo_ref = git.get_repo_ref()?.to_str()?.trim().to_owned();
-                        let repo_ref = if repo_ref.is_empty() {
-                            None
-                        } else {
-                            Some(repo_ref)
-                        };
-                        Some(NodeSource::Git {
-                            repo_url,
-                            repo_path,
-                            repo_ref,
-                        })
+                        Some(NodeSource::decode_git(
+                            repo_url_str,
+                            git.get_repo_path()?.to_str()?,
+                            git.get_repo_ref()?.to_str()?,
+                        )?)
                     }
                 }
-                VWhich::Http(http) => {
+                Which::Http(http) => {
                     let url_str = http?.to_str()?;
                     if url_str.is_empty() {
                         None
                     } else {
-                        let url = url::Url::parse(url_str).map_err(|e| {
-                            crate::Error::Decoding(format!("invalid variant HTTP URL: {}", e))
-                        })?;
-                        Some(NodeSource::Http { url })
+                        Some(NodeSource::decode_http(url_str)?)
                     }
                 }
             }

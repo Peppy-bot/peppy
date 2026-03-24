@@ -1,6 +1,5 @@
 //! Cap'n Proto encoding utilities for node info messages.
 
-use std::path::PathBuf;
 use std::time::Duration;
 
 use capnp::message::Builder;
@@ -54,36 +53,20 @@ impl NodeInfoRequest {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         use crate::node_capnp::node_info_request::source::Which;
-        use gix_url::Url as GitUrl;
 
         let reader = decode_message(data)?;
         let request = reader.get_root::<node_capnp::node_info_request::Reader>()?;
         let source = match request.get_source().which()? {
-            Which::Fs(fs) => NodeSource::Fs(PathBuf::from(fs?.to_str()?)),
+            Which::Fs(fs) => NodeSource::decode_fs(fs?.to_str()?),
             Which::Git(git) => {
                 let git = git?;
-                let repo_url_str = git.get_repo_url()?.to_str()?;
-                let repo_url = GitUrl::try_from(repo_url_str)
-                    .map_err(|e| crate::Error::Decoding(format!("invalid git URL: {}", e)))?;
-                let repo_path = git.get_repo_path()?.to_str()?.to_owned();
-                let repo_ref = git.get_repo_ref()?.to_str()?.trim().to_owned();
-                let repo_ref = if repo_ref.is_empty() {
-                    None
-                } else {
-                    Some(repo_ref)
-                };
-                NodeSource::Git {
-                    repo_url,
-                    repo_path,
-                    repo_ref,
-                }
+                NodeSource::decode_git(
+                    git.get_repo_url()?.to_str()?,
+                    git.get_repo_path()?.to_str()?,
+                    git.get_repo_ref()?.to_str()?,
+                )?
             }
-            Which::Http(http) => {
-                let url_str = http?.to_str()?;
-                let url = url::Url::parse(url_str)
-                    .map_err(|e| crate::Error::Decoding(format!("invalid HTTP URL: {}", e)))?;
-                NodeSource::Http { url }
-            }
+            Which::Http(http) => NodeSource::decode_http(http?.to_str()?)?,
         };
         Ok(Self { source })
     }
