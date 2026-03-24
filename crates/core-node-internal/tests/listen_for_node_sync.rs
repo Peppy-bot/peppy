@@ -1357,3 +1357,222 @@ async fn listen_for_node_sync_deletes_previous_peppy_folder() {
         peppygen_dir.display()
     );
 }
+
+fn write_variant_config(variant_dir: &Path, peppy_json5: &str) {
+    fs::create_dir_all(variant_dir).expect("failed to create variant directory");
+    let config_path = variant_dir.join(NODE_CONFIG_FILE);
+    fs::write(&config_path, peppy_json5).expect("failed to write variant peppy.json5");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_sync_with_variant_succeeds() {
+    let started_core_node = start_core_node_with_mock_messenger().await;
+
+    let node_dir = tempdir().expect("failed to create temp node directory");
+
+    // Create a variant subdirectory with a Rust VariantConfig
+    let variant_dir = node_dir.path().join("rust_variant");
+    write_variant_config(
+        &variant_dir,
+        r#"{
+            schema_version: 1,
+            runtime: {
+                language: "rust",
+                start_cmd: ["sleep", "10"],
+            },
+        }"#,
+    );
+
+    // Root config declares the variant
+    write_node_config(
+        node_dir.path(),
+        r#"{
+            schema_version: 1,
+            manifest: {
+                name: "example_node",
+                tag: "0.1.0",
+                variants: [
+                    { name: "rust_variant", source: { local: "./rust_variant" } },
+                ],
+            },
+            interfaces: {
+                topics: {
+                    emits: [
+                        {
+                            name: "hello_world",
+                            qos_profile: "sensor_data",
+                            message_format: {
+                                message: "string",
+                            },
+                        },
+                    ],
+                },
+            },
+            runtime: {
+                language: "rust",
+                start_cmd: ["sleep", "10"],
+            },
+        }"#,
+    );
+
+    let expected_git_hash = "deadbeef";
+    let response = NodeSyncRequest::new(node_dir.path(), expected_git_hash)
+        .poll(
+            &started_core_node.caller_handle,
+            &started_core_node.core_node_name,
+            CALLER_INSTANCE_ID,
+            &started_core_node.core_node_name,
+            Duration::from_secs(10),
+        )
+        .await
+        .expect("node_sync request should complete");
+
+    assert!(
+        response.success,
+        "node_sync should succeed, got error: {}",
+        response.error_message
+    );
+
+    // Verify root .peppy was generated
+    let root_peppygen_dir = node_dir.path().join(PEPPYGEN_OUTPUT_PATH);
+    assert!(
+        root_peppygen_dir.exists(),
+        "root peppygen directory should exist at {}",
+        root_peppygen_dir.display()
+    );
+
+    // Verify variant .peppy was generated
+    let variant_peppy_dir = variant_dir.join(PEPPY_OUTPUT_DIR);
+    assert!(
+        variant_peppy_dir.exists(),
+        "variant .peppy directory should exist at {}",
+        variant_peppy_dir.display()
+    );
+
+    // Verify git.hash in variant .peppy
+    let variant_git_hash_path = variant_peppy_dir.join("git.hash");
+    assert!(
+        variant_git_hash_path.exists(),
+        "variant git.hash should exist at {}",
+        variant_git_hash_path.display()
+    );
+    let stored_git_hash =
+        fs::read_to_string(&variant_git_hash_path).expect("failed to read variant git.hash");
+    assert_eq!(
+        stored_git_hash.trim(),
+        expected_git_hash,
+        "variant git.hash should contain the sync request git_hash"
+    );
+
+    // Verify variant peppygen was generated
+    let variant_peppygen_dir = variant_dir.join(PEPPYGEN_OUTPUT_PATH);
+    assert!(
+        variant_peppygen_dir.exists(),
+        "variant peppygen directory should exist at {}",
+        variant_peppygen_dir.display()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_sync_variant_missing_directory_fails() {
+    let started_core_node = start_core_node_with_mock_messenger().await;
+
+    let node_dir = tempdir().expect("failed to create temp node directory");
+
+    // Root config declares a variant whose directory does not exist
+    write_node_config(
+        node_dir.path(),
+        r#"{
+            schema_version: 1,
+            manifest: {
+                name: "example_node",
+                tag: "0.1.0",
+                variants: [
+                    { name: "missing_variant", source: { local: "./missing_variant" } },
+                ],
+            },
+            interfaces: {},
+            runtime: {
+                language: "rust",
+                start_cmd: ["sleep", "10"],
+            },
+        }"#,
+    );
+
+    let response = NodeSyncRequest::new(node_dir.path(), common::TEST_GIT_HASH)
+        .poll(
+            &started_core_node.caller_handle,
+            &started_core_node.core_node_name,
+            CALLER_INSTANCE_ID,
+            &started_core_node.core_node_name,
+            Duration::from_secs(5),
+        )
+        .await
+        .expect("node_sync request should complete");
+
+    assert!(!response.success, "node_sync should fail");
+    assert!(
+        response.error_message.contains("missing_variant"),
+        "error should mention the variant name, got: {}",
+        response.error_message
+    );
+    assert!(
+        response.error_message.contains("does not exist"),
+        "error should mention directory does not exist, got: {}",
+        response.error_message
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_sync_variant_invalid_config_fails() {
+    let started_core_node = start_core_node_with_mock_messenger().await;
+
+    let node_dir = tempdir().expect("failed to create temp node directory");
+
+    // Create variant directory with invalid config
+    let variant_dir = node_dir.path().join("bad_variant");
+    write_variant_config(&variant_dir, r#"{ invalid: [unclosed"#);
+
+    // Root config declares the variant
+    write_node_config(
+        node_dir.path(),
+        r#"{
+            schema_version: 1,
+            manifest: {
+                name: "example_node",
+                tag: "0.1.0",
+                variants: [
+                    { name: "bad_variant", source: { local: "./bad_variant" } },
+                ],
+            },
+            interfaces: {},
+            runtime: {
+                language: "rust",
+                start_cmd: ["sleep", "10"],
+            },
+        }"#,
+    );
+
+    let response = NodeSyncRequest::new(node_dir.path(), common::TEST_GIT_HASH)
+        .poll(
+            &started_core_node.caller_handle,
+            &started_core_node.core_node_name,
+            CALLER_INSTANCE_ID,
+            &started_core_node.core_node_name,
+            Duration::from_secs(5),
+        )
+        .await
+        .expect("node_sync request should complete");
+
+    assert!(!response.success, "node_sync should fail");
+    assert!(
+        response.error_message.contains("bad_variant"),
+        "error should mention the variant name, got: {}",
+        response.error_message
+    );
+    assert!(
+        response.error_message.contains("Failed to parse variant"),
+        "error should mention parse failure, got: {}",
+        response.error_message
+    );
+}
