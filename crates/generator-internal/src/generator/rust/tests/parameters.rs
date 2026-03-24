@@ -9,36 +9,36 @@ const NODE_EXAMPLE: &str = r#"
   manifest: {
     name: "uvc_camera",
     tag: "0.1.0",
-    language: "rust",
     labels: [
       "uvc",
       "camera",
       "usb",
     ],
   },
-  process: {
+  interfaces: {},
+  runtime: {
+    language: "rust",
+    parameters: {
+      device: {
+        physical: "string",
+        sim: "string",
+        priority: "string"
+      },
+      video: {
+        frame_rate: "u16",
+        resolution: {
+          width: "u16",
+          height: "u16",
+        },
+        encoding: "string",
+      },
+    },
     start_cmd: [
       "cargo",
       "run",
       "--release"
-    ]
-  },
-  parameters: {
-    device: {
-      physical: "string",
-      sim: "string",
-      priority: "string"
-    },
-    video: {
-      frame_rate: "u16",
-      resolution: {
-        width: "u16",
-        height: "u16",
-      },
-      encoding: "string",
-    },
-  },
-  interfaces: {}
+    ],
+  }
 }
 "#;
 
@@ -48,39 +48,39 @@ const INVALID_PARAMETERS_NODE_EXAMPLE: &str = r#"
   manifest: {
     name: "uvc_camera",
     tag: "0.1.0",
-    language: "rust",
     labels: [
       "uvc",
       "camera",
       "usb",
     ],
   },
-  process: {
+  interfaces: {},
+  runtime: {
+    language: "rust",
+    parameters: {
+      device: {
+        $type: "object",
+        physical: "string",
+        sim: "string",
+        priority: "string"
+      },
+      video: {
+        "*type": "object",
+        frame_rate: "u16",
+        resolution: {
+          "%type": "object",
+          width: "u16",
+          height: "u16",
+        },
+        encoding: "string",
+      },
+    },
     start_cmd: [
       "cargo",
       "run",
       "--release"
-    ]
-  },
-  parameters: {
-    device: {
-      $type: "object",
-      physical: "string",
-      sim: "string",
-      priority: "string"
-    },
-    video: {
-      "*type": "object",
-      frame_rate: "u16",
-      resolution: {
-        "%type": "object",
-        width: "u16",
-        height: "u16",
-      },
-      encoding: "string",
-    },
-  },
-  interfaces: {}
+    ],
+  }
 }
 "#;
 
@@ -90,35 +90,35 @@ const NESTED_STRUCT_COLLISION_NODE_EXAMPLE: &str = r#"
   manifest: {
     name: "uvc_camera",
     tag: "0.1.0",
-    language: "rust",
     labels: [
       "uvc",
       "camera",
       "usb",
     ],
   },
-  process: {
+  interfaces: {},
+  runtime: {
+    language: "rust",
+    parameters: {
+      control: {
+        left: {
+          config: {
+            threshold: "u16"
+          }
+        },
+        right: {
+          config: {
+            enabled: "bool"
+          }
+        }
+      }
+    },
     start_cmd: [
       "cargo",
       "run",
       "--release"
-    ]
-  },
-  parameters: {
-    control: {
-      left: {
-        config: {
-          threshold: "u16"
-        }
-      },
-      right: {
-        config: {
-          enabled: "bool"
-        }
-      }
-    }
-  },
-  interfaces: {}
+    ],
+  }
 }
 "#;
 
@@ -128,26 +128,26 @@ const UNSUPPORTED_PARAMETERS_VARIANT_NODE_EXAMPLE: &str = r#"
   manifest: {
     name: "uvc_camera",
     tag: "0.1.0",
-    language: "rust",
     labels: [
       "uvc",
       "camera",
       "usb",
     ],
   },
-  process: {
+  interfaces: {},
+  runtime: {
+    language: "rust",
+    parameters: {
+      device: {
+        enabled: true
+      }
+    },
     start_cmd: [
       "cargo",
       "run",
       "--release"
-    ]
-  },
-  parameters: {
-    device: {
-      enabled: true
-    }
-  },
-  interfaces: {}
+    ],
+  }
 }
 "#;
 
@@ -157,24 +157,24 @@ const UNKNOWN_PARAMETER_TYPE_NODE_EXAMPLE: &str = r#"
   manifest: {
     name: "uvc_camera",
     tag: "0.1.0",
-    language: "rust",
     labels: [
       "uvc",
       "camera",
       "usb",
     ],
   },
-  process: {
+  interfaces: {},
+  runtime: {
+    language: "rust",
+    parameters: {
+      device: "uuid"
+    },
     start_cmd: [
       "cargo",
       "run",
       "--release"
-    ]
-  },
-  parameters: {
-    device: "uuid"
-  },
-  interfaces: {}
+    ],
+  }
 }
 "#;
 
@@ -184,24 +184,24 @@ const UNSUPPORTED_TOP_LEVEL_PARAMETER_VARIANT_NODE_EXAMPLE: &str = r#"
   manifest: {
     name: "uvc_camera",
     tag: "0.1.0",
-    language: "rust",
     labels: [
       "uvc",
       "camera",
       "usb",
     ],
   },
-  process: {
+  interfaces: {},
+  runtime: {
+    language: "rust",
+    parameters: {
+      enabled: true
+    },
     start_cmd: [
       "cargo",
       "run",
       "--release"
-    ]
-  },
-  parameters: {
-    enabled: true
-  },
-  interfaces: {}
+    ],
+  }
 }
 "#;
 
@@ -212,7 +212,7 @@ fn generate_parameters_struct() {
         serde_json5::from_str(NODE_EXAMPLE).expect("failed to parse NODE_EXAMPLE into NodeConfig");
 
     let (mut generator, output_dir, _, _) = init_test_env::<RustGenerator>(&temp_dir);
-    generator.set_parameters(node_config.parameters);
+    generator.set_parameters(node_config.runtime.parameters);
     generator
         .build(
             &output_dir,
@@ -317,7 +317,7 @@ fn generate_parameters_struct_avoids_nested_struct_name_collisions() {
         .expect("failed to parse NESTED_STRUCT_COLLISION_NODE_EXAMPLE into NodeConfig");
 
     let (mut generator, output_dir, _, _) = init_test_env::<RustGenerator>(&temp_dir);
-    generator.set_parameters(node_config.parameters);
+    generator.set_parameters(node_config.runtime.parameters);
     generator
         .build(
             &output_dir,
@@ -369,7 +369,7 @@ fn reject_parameters_with_invalid_field_names() {
     let node_config: NodeConfig = serde_json5::from_str(INVALID_PARAMETERS_NODE_EXAMPLE)
         .expect("failed to parse INVALID_PARAMETERS_NODE_EXAMPLE into NodeConfig");
 
-    let result = generate_parameters_struct(&node_config.parameters);
+    let result = generate_parameters_struct(&node_config.runtime.parameters);
 
     assert!(
         result.is_err(),
@@ -399,7 +399,7 @@ fn reject_parameters_with_unsupported_spec_type() {
         serde_json5::from_str(UNSUPPORTED_PARAMETERS_VARIANT_NODE_EXAMPLE)
             .expect("failed to parse UNSUPPORTED_PARAMETERS_VARIANT_NODE_EXAMPLE into NodeConfig");
 
-    let err = generate_parameters_struct(&node_config.parameters).unwrap_err();
+    let err = generate_parameters_struct(&node_config.runtime.parameters).unwrap_err();
     match err {
         Error::UnsupportedParameterSpecType { path, kind } => {
             assert_eq!(path, "device.enabled");
@@ -419,7 +419,7 @@ fn reject_parameters_with_top_level_unsupported_spec_type() {
     )
     .expect("failed to parse UNSUPPORTED_TOP_LEVEL_PARAMETER_VARIANT_NODE_EXAMPLE into NodeConfig");
 
-    let err = generate_parameters_struct(&node_config.parameters).unwrap_err();
+    let err = generate_parameters_struct(&node_config.runtime.parameters).unwrap_err();
     match err {
         Error::UnsupportedParameterSpecType { path, kind } => {
             assert_eq!(path, "enabled");
@@ -437,7 +437,7 @@ fn reject_parameters_with_unknown_type_name() {
     let node_config: NodeConfig = serde_json5::from_str(UNKNOWN_PARAMETER_TYPE_NODE_EXAMPLE)
         .expect("failed to parse UNKNOWN_PARAMETER_TYPE_NODE_EXAMPLE into NodeConfig");
 
-    let err = generate_parameters_struct(&node_config.parameters).unwrap_err();
+    let err = generate_parameters_struct(&node_config.runtime.parameters).unwrap_err();
     match err {
         Error::UnsupportedParameterTypeName { path, type_name } => {
             assert_eq!(path, "device");

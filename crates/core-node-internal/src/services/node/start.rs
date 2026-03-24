@@ -594,7 +594,7 @@ async fn process_node_start(
     };
 
     let sccache_injected =
-        super::inject_rust_build_env(&mut env_vars, entity.config().manifest.language);
+        super::inject_rust_build_env(&mut env_vars, entity.config().runtime.language);
     if sccache_injected {
         let _ = ctx.feedback_tx.send(FeedbackLine {
             stream: FeedbackStream::Stdout,
@@ -609,7 +609,7 @@ async fn process_node_start(
 
     // Validate that all required parameters are provided before starting the node
     let missing_params = validate_parameters(
-        &entity.config().parameters,
+        &entity.config().runtime.parameters,
         &runtime_config.node_instance.arguments,
         "",
     );
@@ -619,7 +619,7 @@ async fn process_node_start(
         return NodeStartResult::failure(msg);
     }
 
-    let is_container = entity.config().container.is_some();
+    let is_container = entity.config().runtime.container.is_some();
 
     // Prepare instance directory:
     // - Container nodes: create empty dir (SIF image is self-contained)
@@ -649,7 +649,7 @@ async fn process_node_start(
     // Spawn the node process:
     // - Container nodes: apptainer run <sif>
     // - Process nodes: execute start_cmd
-    let container_config = entity.config().container.as_ref();
+    let container_config = entity.config().runtime.container.as_ref();
     let raw_mount_paths = container_config
         .and_then(|c| c.mount_paths.as_deref())
         .unwrap_or_default();
@@ -1050,13 +1050,11 @@ pub fn start_node(
 ) -> std::io::Result<Child> {
     let config = entity.config();
     let manifest = &config.manifest;
-    let build = config.process.as_ref().ok_or_else(|| {
-        std::io::Error::other(
-            "node has no process config (container nodes cannot be started this way)",
-        )
+    let start_cmd = config.runtime.start_cmd.as_ref().ok_or_else(|| {
+        std::io::Error::other("node has no start_cmd (container nodes cannot be started this way)")
     })?;
 
-    let Some((program, args)) = build.start_cmd.split_first() else {
+    let Some((program, args)) = start_cmd.split_first() else {
         return Err(std::io::Error::other("start_cmd is empty"));
     };
 
@@ -1071,7 +1069,7 @@ pub fn start_node(
 
     // Log the command being executed to the log file before attempting to spawn
     {
-        let full_cmd = build.start_cmd.join(" ");
+        let full_cmd = start_cmd.join(" ");
         if let Ok(mut file) = log_file.lock() {
             let timestamp = Local::now().format("%Y-%m-%dT%H:%M:%S%.3f");
             let _ = writeln!(
@@ -1113,12 +1111,12 @@ pub fn start_node(
 
     // Force unbuffered stdout/stderr for Python nodes. Without this, Python
     // defaults to full buffering when stdout is a pipe, delaying log capture.
-    if manifest.language == PeppygenLanguage::Python {
+    if config.runtime.language == PeppygenLanguage::Python {
         command.env("PYTHONUNBUFFERED", "1");
     }
 
     command.spawn().map_err(|e| {
-        let full_cmd = build.start_cmd.join(" ");
+        let full_cmd = start_cmd.join(" ");
         std::io::Error::other(format!("failed to execute start_cmd `{}`: {}", full_cmd, e))
     })
 }

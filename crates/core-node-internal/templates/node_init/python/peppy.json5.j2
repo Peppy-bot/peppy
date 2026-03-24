@@ -3,14 +3,18 @@
   manifest: {
     name: "{{ node_name }}",
     tag: "0.1.0",
-    language: "python",
   },
+  interfaces: {},
 {% if with_container %}
-  container: {
-    def_file: "apptainer.def",
+  runtime: {
+    language: "python",
+    container: {
+      def_file: "apptainer.def",
+    },
   },
 {% else %}
-  process: {
+  runtime: {
+    language: "python",
     add_cmd: [
       "uv",
       "sync",
@@ -23,5 +27,4 @@
     ]
   },
 {% endif %}
-  interfaces: {}
 }

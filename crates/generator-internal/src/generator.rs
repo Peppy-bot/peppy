@@ -67,7 +67,7 @@ pub fn generate_peppygen_lib(
     let result = match language {
         PeppygenLanguage::Rust => {
             let mut rust_generator = RustGenerator::new();
-            rust_generator.set_parameters(node_config.parameters);
+            rust_generator.set_parameters(node_config.runtime.parameters);
             generate_with_backend(
                 rust_generator,
                 &interfaces,
@@ -81,8 +81,8 @@ pub fn generate_peppygen_lib(
         }
         PeppygenLanguage::Python => {
             let mut python_generator = PythonGenerator::new();
-            python_generator.set_parameters(node_config.parameters);
-            python_generator.set_container(node_config.container.is_some());
+            python_generator.set_parameters(node_config.runtime.parameters);
+            python_generator.set_container(node_config.runtime.container.is_some());
             generate_with_backend(
                 python_generator,
                 &interfaces,

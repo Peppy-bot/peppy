@@ -9,36 +9,36 @@ const NODE_EXAMPLE: &str = r#"
   manifest: {
     name: "uvc_camera",
     tag: "0.1.0",
-    language: "python",
     labels: [
       "uvc",
       "camera",
       "usb",
     ],
   },
-  process: {
+  interfaces: {},
+  runtime: {
+    language: "python",
+    parameters: {
+      device: {
+        physical: "string",
+        sim: "string",
+        priority: "string"
+      },
+      video: {
+        frame_rate: "u16",
+        resolution: {
+          width: "u16",
+          height: "u16",
+        },
+        encoding: "string",
+      },
+    },
     start_cmd: [
       "python",
       "-m",
       "uvc_camera"
-    ]
-  },
-  parameters: {
-    device: {
-      physical: "string",
-      sim: "string",
-      priority: "string"
-    },
-    video: {
-      frame_rate: "u16",
-      resolution: {
-        width: "u16",
-        height: "u16",
-      },
-      encoding: "string",
-    },
-  },
-  interfaces: {}
+    ],
+  }
 }
 "#;
 
@@ -48,39 +48,39 @@ const INVALID_PARAMETERS_NODE_EXAMPLE: &str = r#"
   manifest: {
     name: "uvc_camera",
     tag: "0.1.0",
-    language: "python",
     labels: [
       "uvc",
       "camera",
       "usb",
     ],
   },
-  process: {
+  interfaces: {},
+  runtime: {
+    language: "python",
+    parameters: {
+      device: {
+        $type: "object",
+        physical: "string",
+        sim: "string",
+        priority: "string"
+      },
+      video: {
+        "*type": "object",
+        frame_rate: "u16",
+        resolution: {
+          "%type": "object",
+          width: "u16",
+          height: "u16",
+        },
+        encoding: "string",
+      },
+    },
     start_cmd: [
       "python",
       "-m",
       "uvc_camera"
-    ]
-  },
-  parameters: {
-    device: {
-      $type: "object",
-      physical: "string",
-      sim: "string",
-      priority: "string"
-    },
-    video: {
-      "*type": "object",
-      frame_rate: "u16",
-      resolution: {
-        "%type": "object",
-        width: "u16",
-        height: "u16",
-      },
-      encoding: "string",
-    },
-  },
-  interfaces: {}
+    ],
+  }
 }
 "#;
 
@@ -90,33 +90,33 @@ const NESTED_CLASS_COLLISION_NODE_EXAMPLE: &str = r#"
   manifest: {
     name: "uvc_camera",
     tag: "0.1.0",
-    language: "python",
     labels: [
       "uvc",
       "camera",
       "usb",
     ],
   },
-  process: {
+  interfaces: {},
+  runtime: {
+    language: "python",
+    parameters: {
+      left: {
+        config: {
+          threshold: "u16"
+        }
+      },
+      right: {
+        config: {
+          enabled: "bool"
+        }
+      }
+    },
     start_cmd: [
       "python",
       "-m",
       "uvc_camera"
-    ]
-  },
-  parameters: {
-    left: {
-      config: {
-        threshold: "u16"
-      }
-    },
-    right: {
-      config: {
-        enabled: "bool"
-      }
-    }
-  },
-  interfaces: {}
+    ],
+  }
 }
 "#;
 
@@ -126,26 +126,26 @@ const UNSUPPORTED_PARAMETERS_VARIANT_NODE_EXAMPLE: &str = r#"
   manifest: {
     name: "uvc_camera",
     tag: "0.1.0",
-    language: "python",
     labels: [
       "uvc",
       "camera",
       "usb",
     ],
   },
-  process: {
+  interfaces: {},
+  runtime: {
+    language: "python",
+    parameters: {
+      device: {
+        enabled: true
+      }
+    },
     start_cmd: [
       "python",
       "-m",
       "uvc_camera"
-    ]
-  },
-  parameters: {
-    device: {
-      enabled: true
-    }
-  },
-  interfaces: {}
+    ],
+  }
 }
 "#;
 
@@ -155,24 +155,24 @@ const UNKNOWN_PARAMETER_TYPE_NODE_EXAMPLE: &str = r#"
   manifest: {
     name: "uvc_camera",
     tag: "0.1.0",
-    language: "python",
     labels: [
       "uvc",
       "camera",
       "usb",
     ],
   },
-  process: {
+  interfaces: {},
+  runtime: {
+    language: "python",
+    parameters: {
+      device: "uuid"
+    },
     start_cmd: [
       "python",
       "-m",
       "uvc_camera"
-    ]
-  },
-  parameters: {
-    device: "uuid"
-  },
-  interfaces: {}
+    ],
+  }
 }
 "#;
 
@@ -182,24 +182,24 @@ const UNSUPPORTED_TOP_LEVEL_PARAMETER_VARIANT_NODE_EXAMPLE: &str = r#"
   manifest: {
     name: "uvc_camera",
     tag: "0.1.0",
-    language: "python",
     labels: [
       "uvc",
       "camera",
       "usb",
     ],
   },
-  process: {
+  interfaces: {},
+  runtime: {
+    language: "python",
+    parameters: {
+      enabled: true
+    },
     start_cmd: [
       "python",
       "-m",
       "uvc_camera"
-    ]
-  },
-  parameters: {
-    enabled: true
-  },
-  interfaces: {}
+    ],
+  }
 }
 "#;
 
@@ -213,7 +213,7 @@ fn generate_parameters_struct() {
     fs::create_dir_all(&output_dir).unwrap();
 
     let mut generator = PythonGenerator::new();
-    generator.set_parameters(node_config.parameters);
+    generator.set_parameters(node_config.runtime.parameters);
     generator
         .build(
             &output_dir,
@@ -295,7 +295,7 @@ fn generate_parameters_struct_avoids_nested_class_name_collisions() {
     fs::create_dir_all(&output_dir).unwrap();
 
     let mut generator = PythonGenerator::new();
-    generator.set_parameters(node_config.parameters);
+    generator.set_parameters(node_config.runtime.parameters);
     generator
         .build(
             &output_dir,
@@ -380,7 +380,7 @@ fn reject_parameters_with_invalid_field_names() {
     let node_config: NodeConfig = serde_json5::from_str(INVALID_PARAMETERS_NODE_EXAMPLE)
         .expect("failed to parse INVALID_PARAMETERS_NODE_EXAMPLE into NodeConfig");
 
-    let result = generate_parameters_struct(&node_config.parameters);
+    let result = generate_parameters_struct(&node_config.runtime.parameters);
 
     assert!(
         result.is_err(),
@@ -414,7 +414,7 @@ fn reject_python_parameters_with_unsupported_spec_type() {
             .expect("failed to parse UNSUPPORTED_PARAMETERS_VARIANT_NODE_EXAMPLE into NodeConfig");
 
     let mut generator = PythonGenerator::new();
-    generator.set_parameters(node_config.parameters);
+    generator.set_parameters(node_config.runtime.parameters);
     let err = generator
         .build(
             &output_dir,
@@ -446,7 +446,7 @@ fn reject_python_parameters_with_top_level_unsupported_spec_type() {
     .expect("failed to parse UNSUPPORTED_TOP_LEVEL_PARAMETER_VARIANT_NODE_EXAMPLE into NodeConfig");
 
     let mut generator = PythonGenerator::new();
-    generator.set_parameters(node_config.parameters);
+    generator.set_parameters(node_config.runtime.parameters);
     let err = generator
         .build(
             &output_dir,
@@ -476,7 +476,7 @@ fn reject_python_parameters_with_unknown_type_name() {
         .expect("failed to parse UNKNOWN_PARAMETER_TYPE_NODE_EXAMPLE into NodeConfig");
 
     let mut generator = PythonGenerator::new();
-    generator.set_parameters(node_config.parameters);
+    generator.set_parameters(node_config.runtime.parameters);
     let err = generator
         .build(
             &output_dir,

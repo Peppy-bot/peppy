@@ -56,6 +56,14 @@ fn status() -> Result<()> {
             "  AppArmor profile       : {}",
             if status.apparmor_ok { "OK" } else { "FAILED" }
         );
+        println!(
+            "  AppArmor profile loaded: {}",
+            if status.apparmor_loaded {
+                "OK"
+            } else {
+                "FAILED"
+            }
+        );
     } else {
         println!("  AppArmor profile       : not required");
     }
@@ -101,7 +109,9 @@ fn setup() -> Result<()> {
         println!("  - Set root ownership on Apptainer configuration directory");
     }
     if status.apparmor_restricted && !status.apparmor_ok {
-        println!("  - Install AppArmor profile for Apptainer starter-suid");
+        println!("  - Install/update AppArmor profile for Apptainer starter-suid");
+    } else if status.apparmor_restricted && !status.apparmor_loaded {
+        println!("  - Load AppArmor profile for Apptainer starter-suid into the kernel");
     }
     println!();
 

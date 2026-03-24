@@ -22,11 +22,6 @@ Each topic defines a `name`, a `qos_profile`, and a `message_format`:
   manifest: {
     name: "uvc_camera",
     tag: "0.1.0",
-    language: "rust",
-  },
-  process: {
-    add_cmd: ["cargo", "build", "--release"],
-    start_cmd: ["./target/release/uvc_camera"]
   },
   interfaces: {
     topics: {
@@ -51,7 +46,12 @@ Each topic defines a `name`, a `qos_profile`, and a `message_format`:
         }
       ],
     },
-  }
+  },
+  runtime: {
+    language: "rust",
+    add_cmd: ["cargo", "build", "--release"],
+    start_cmd: ["./target/release/uvc_camera"]
+  },
 }
 ```
 
@@ -132,16 +132,11 @@ Dependencies are declared in `manifest.depends_on` and referenced by `local_node
   manifest: {
     name: "web_video_stream",
     tag: "0.1.0",
-    language: "rust",
     depends_on: {
       nodes: [
         { name: "uvc_camera", tag: "0.1.0", local_id: "uvc_camera" },
       ]
     },
-  },
-  process: {
-    add_cmd: ["cargo", "build", "--release"],
-    start_cmd: ["./target/release/web_video_stream"]
   },
   interfaces: {
     topics: {
@@ -152,7 +147,12 @@ Dependencies are declared in `manifest.depends_on` and referenced by `local_node
         },
       ],
     },
-  }
+  },
+  runtime: {
+    language: "rust",
+    add_cmd: ["cargo", "build", "--release"],
+    start_cmd: ["./target/release/web_video_stream"]
+  },
 }
 ```
 

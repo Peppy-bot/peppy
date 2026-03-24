@@ -25,9 +25,26 @@ async fn listen_for_node_sync_success() {
             manifest: {
                 name: "example_node",
                 tag: "0.1.0",
-                language: "rust",
             },
-            process: {
+            interfaces: {
+                topics: {
+                    emits: [],
+                    consumes: [
+                        {
+                            local_node_id: "uvc_camera",
+                            name: "video_stream",
+                        }
+                    ],
+                },
+                services: {
+                    exposes: [],
+                },
+                actions: {
+                    exposes: [],
+                },
+            },
+            runtime: {
+                language: "rust",
                 start_cmd: ["sleep", "10"]
             }
         }"#,
@@ -271,7 +288,6 @@ async fn listen_for_node_sync_missing_dependency_fails() {
             manifest: {
                 name: "my_robot_brain",
                 tag: "0.1.0",
-                language: "rust",
                 labels: ["brain"],
                 depends_on: {
                     nodes: [
@@ -279,11 +295,6 @@ async fn listen_for_node_sync_missing_dependency_fails() {
                     ]
                 },
             },
-            process: {
-                add_cmd: ["cargo", "build", "--release"],
-                start_cmd: ["./target/release/my_robot_brain"],
-            },
-            parameters: {},
             interfaces: {
                 topics: {
                     emits: [],
@@ -291,6 +302,18 @@ async fn listen_for_node_sync_missing_dependency_fails() {
                         {
                             local_node_id: "uvc_camera",
                             name: "video_stream",
+                        },
+                        {
+                            local_node_id: "uvc_camera",
+                            name: "video_stream_rear",
+                        },
+                        {
+                            local_node_id: "lidar_sensor",
+                            name: "point_cloud",
+                        },
+                        {
+                            local_node_id: "gps_module",
+                            name: "location",
                         }
                     ],
                 },
@@ -300,6 +323,11 @@ async fn listen_for_node_sync_missing_dependency_fails() {
                 actions: {
                     exposes: [],
                 },
+            },
+            runtime: {
+                language: "rust",
+                add_cmd: ["cargo", "build", "--release"],
+                start_cmd: ["./target/release/my_robot_brain"],
             },
         }
         "#,
@@ -349,7 +377,6 @@ async fn listen_for_node_sync_multiple_missing_dependencies_fails() {
             manifest: {
                 name: "my_robot_brain",
                 tag: "0.1.0",
-                language: "rust",
                 labels: ["brain"],
                 depends_on: {
                     nodes: [
@@ -359,39 +386,11 @@ async fn listen_for_node_sync_multiple_missing_dependencies_fails() {
                     ]
                 },
             },
-            process: {
+            interfaces: {},
+            runtime: {
+                language: "rust",
                 add_cmd: ["cargo", "build", "--release"],
                 start_cmd: ["./target/release/my_robot_brain"],
-            },
-            parameters: {},
-            interfaces: {
-                topics: {
-                    emits: [],
-                    consumes: [
-                        {
-                            local_node_id: "uvc_camera",
-                            name: "video_stream",
-                        },
-                        {
-                            local_node_id: "uvc_camera",
-                            name: "video_stream_rear",
-                        },
-                        {
-                            local_node_id: "lidar_sensor",
-                            name: "point_cloud",
-                        },
-                        {
-                            local_node_id: "gps_module",
-                            name: "location",
-                        }
-                    ],
-                },
-                services: {
-                    exposes: [],
-                },
-                actions: {
-                    exposes: [],
-                },
             },
         }
         "#,
@@ -460,14 +459,8 @@ async fn listen_for_node_sync_generates_rust_interfaces() {
             manifest: {
                 name: "uvc_camera",
                 tag: "0.1.0",
-                language: "rust",
                 labels: ["camera"],
             },
-            process: {
-                add_cmd: ["true"],
-                start_cmd: ["sleep", "10"],
-            },
-            parameters: {},
             interfaces: {
                 topics: {
                     emits: [
@@ -498,6 +491,11 @@ async fn listen_for_node_sync_generates_rust_interfaces() {
                 actions: {
                     exposes: [],
                 },
+            },
+            runtime: {
+                language: "rust",
+                add_cmd: ["true"],
+                start_cmd: ["sleep", "10"],
             },
         }
         "#,
@@ -555,7 +553,6 @@ async fn listen_for_node_sync_generates_rust_interfaces() {
             manifest: {
                 name: "my_robot_brain",
                 tag: "0.1.0",
-                language: "rust",
                 labels: ["brain"],
                 depends_on: {
                     nodes: [
@@ -563,11 +560,6 @@ async fn listen_for_node_sync_generates_rust_interfaces() {
                     ]
                 },
             },
-            process: {
-                add_cmd: ["true"],
-                start_cmd: ["sleep", "10"],
-            },
-            parameters: {},
             interfaces: {
                 topics: {
                     emits: [],
@@ -584,6 +576,11 @@ async fn listen_for_node_sync_generates_rust_interfaces() {
                 actions: {
                     exposes: [],
                 },
+            },
+            runtime: {
+                language: "rust",
+                add_cmd: ["true"],
+                start_cmd: ["sleep", "10"],
             },
         }
         "#,
@@ -676,14 +673,8 @@ async fn listen_for_node_sync_generates_rust_consumed_service_interfaces() {
             manifest: {
                 name: "uvc_camera",
                 tag: "0.1.0",
-                language: "rust",
                 labels: ["camera"],
             },
-            process: {
-                add_cmd: ["true"],
-                start_cmd: ["sleep", "10"],
-            },
-            parameters: {},
             interfaces: {
                 topics: {
                     emits: [],
@@ -701,6 +692,11 @@ async fn listen_for_node_sync_generates_rust_consumed_service_interfaces() {
                 actions: {
                     exposes: [],
                 },
+            },
+            runtime: {
+                language: "rust",
+                add_cmd: ["true"],
+                start_cmd: ["sleep", "10"],
             },
         }
         "#,
@@ -755,7 +751,6 @@ async fn listen_for_node_sync_generates_rust_consumed_service_interfaces() {
             manifest: {
                 name: "my_robot_brain",
                 tag: "0.1.0",
-                language: "rust",
                 labels: ["brain"],
                 depends_on: {
                     nodes: [
@@ -763,11 +758,6 @@ async fn listen_for_node_sync_generates_rust_consumed_service_interfaces() {
                     ]
                 },
             },
-            process: {
-                add_cmd: ["true"],
-                start_cmd: ["sleep", "10"],
-            },
-            parameters: {},
             interfaces: {
                 topics: {
                     emits: [],
@@ -784,6 +774,11 @@ async fn listen_for_node_sync_generates_rust_consumed_service_interfaces() {
                 actions: {
                     exposes: [],
                 },
+            },
+            runtime: {
+                language: "rust",
+                add_cmd: ["true"],
+                start_cmd: ["sleep", "10"],
             },
         }
         "#,
@@ -837,14 +832,8 @@ async fn listen_for_node_sync_generates_rust_consumed_topic_interfaces() {
             manifest: {
                 name: "uvc_camera",
                 tag: "0.1.0",
-                language: "rust",
                 labels: ["camera"],
             },
-            process: {
-                add_cmd: ["true"],
-                start_cmd: ["sleep", "10"],
-            },
-            parameters: {},
             interfaces: {
                 topics: {
                     emits: [
@@ -864,6 +853,11 @@ async fn listen_for_node_sync_generates_rust_consumed_topic_interfaces() {
                 actions: {
                     exposes: [],
                 },
+            },
+            runtime: {
+                language: "rust",
+                add_cmd: ["true"],
+                start_cmd: ["sleep", "10"],
             },
         }
         "#,
@@ -918,7 +912,6 @@ async fn listen_for_node_sync_generates_rust_consumed_topic_interfaces() {
             manifest: {
                 name: "my_robot_brain",
                 tag: "0.1.0",
-                language: "rust",
                 labels: ["brain"],
                 depends_on: {
                     nodes: [
@@ -926,11 +919,6 @@ async fn listen_for_node_sync_generates_rust_consumed_topic_interfaces() {
                     ]
                 },
             },
-            process: {
-                add_cmd: ["true"],
-                start_cmd: ["sleep", "10"],
-            },
-            parameters: {},
             interfaces: {
                 topics: {
                     emits: [],
@@ -947,6 +935,11 @@ async fn listen_for_node_sync_generates_rust_consumed_topic_interfaces() {
                 actions: {
                     exposes: [],
                 },
+            },
+            runtime: {
+                language: "rust",
+                add_cmd: ["true"],
+                start_cmd: ["sleep", "10"],
             },
         }
         "#,
@@ -1000,14 +993,8 @@ async fn listen_for_node_sync_generates_rust_consumed_action_interfaces() {
             manifest: {
                 name: "brain",
                 tag: "0.1.0",
-                language: "rust",
                 labels: ["brain"],
             },
-            process: {
-                add_cmd: ["true"],
-                start_cmd: ["sleep", "10"],
-            },
-            parameters: {},
             interfaces: {
                 topics: {
                     emits: [],
@@ -1033,6 +1020,11 @@ async fn listen_for_node_sync_generates_rust_consumed_action_interfaces() {
                       }
                     ],
                 },
+            },
+            runtime: {
+                language: "rust",
+                add_cmd: ["true"],
+                start_cmd: ["sleep", "10"],
             },
         }
         "#,
@@ -1087,7 +1079,6 @@ async fn listen_for_node_sync_generates_rust_consumed_action_interfaces() {
             manifest: {
                 name: "controller",
                 tag: "0.1.0",
-                language: "rust",
                 labels: ["controller"],
                 depends_on: {
                     nodes: [
@@ -1095,11 +1086,6 @@ async fn listen_for_node_sync_generates_rust_consumed_action_interfaces() {
                     ]
                 },
             },
-            process: {
-                add_cmd: ["true"],
-                start_cmd: ["sleep", "10"],
-            },
-            parameters: {},
             interfaces: {
                 topics: {
                     emits: [],
@@ -1116,6 +1102,11 @@ async fn listen_for_node_sync_generates_rust_consumed_action_interfaces() {
                         }
                     ],
                 },
+            },
+            runtime: {
+                language: "rust",
+                add_cmd: ["true"],
+                start_cmd: ["sleep", "10"],
             },
         }
         "#,
@@ -1170,29 +1161,28 @@ async fn listen_for_node_sync_generates_rust_parameters() {
             manifest: {
                 name: "uvc_camera",
                 tag: "0.1.0",
-                language: "rust",
                 labels: ["camera"],
             },
-            process: {
+            runtime: {
+                language: "rust",
+                parameters: {
+                  device: {
+                    physical: "string",
+                    sim: "string",
+                    priority: "string"
+                  },
+                  video: {
+                    frame_rate: "u16",
+                    resolution: {
+                      width: "u16",
+                      height: "u16",
+                    },
+                    encoding: "string",
+                  },
+                },
                 add_cmd: ["true"],
                 start_cmd: ["sleep", "10"],
             },
-            parameters: {
-              device: {
-                physical: "string",
-                sim: "string",
-                priority: "string"
-              },
-              video: {
-                frame_rate: "u16",
-                resolution: {
-                  width: "u16",
-                  height: "u16",
-                },
-                encoding: "string",
-              },
-            },
-            interfaces: {},
         }
         "#,
     );
@@ -1285,9 +1275,9 @@ async fn listen_for_node_sync_deletes_previous_peppy_folder() {
             manifest: {
                 name: "example_node",
                 tag: "0.1.0",
-                language: "rust",
             },
-            process: {
+            runtime: {
+                language: "rust",
                 start_cmd: ["sleep", "10"]
             }
         }"#,

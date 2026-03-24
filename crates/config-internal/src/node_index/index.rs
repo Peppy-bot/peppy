@@ -71,19 +71,18 @@ mod tests {
 
     fn write_config(dir: &Path, name: &str) -> PathBuf {
         let path = dir.join(NODE_CONFIG_FILE);
-        let json5 = format!(
-            r#"{{
+        let json5 = r#"{
                 schema_version: 1,
-                manifest: {{
+                manifest: {
                     name: "{name}",
                     tag: "0.1.0",
-                    language: "rust"
-                }},
-                process: {{
+                },
+                runtime: {
+                    language: "rust",
                     start_cmd: ["./target/release/{name}"]
-                }}
-            }}"#
-        );
+                }
+            }"#
+        .replace("{name}", name);
         fs::write(&path, json5).unwrap();
         path
     }
@@ -125,7 +124,7 @@ mod tests {
         // Invalid name (spaces and '!') should fail parsing on initial load
         fs::write(
             temp.path().join(NODE_CONFIG_FILE),
-            "{ schema_version: 1, manifest: { name: 'Invalid Name!', tag: '0.1.0', language: 'rust' }, process: { start_cmd: ['./target/release/Invalid Name!'] } }",
+            "{ schema_version: 1, manifest: { name: 'Invalid Name!', tag: '0.1.0' }, runtime: { language: 'rust', start_cmd: ['./target/release/Invalid Name!'] } }",
         )
         .unwrap();
 

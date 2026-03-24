@@ -5,26 +5,29 @@
   manifest: {
     name: "{{ node_name }}",
     tag: "0.1.0",
-    language: "rust",
     labels: [
       "brain"
     ],
     depends_on: {
       nodes: [
-        { name: "{{ uvc_camera_node_name }}", tag: "0.1.0", local_id: "uvc_camera" },
-        { name: "{{ lidar_sensor_node_name }}", tag: "0.1.0", local_id: "lidar_sensor" },
-        { name: "{{ controller_node_name }}", tag: "0.1.0", local_id: "controller" },
+        {
+          name: "{{ uvc_camera_node_name }}",
+          tag: "0.1.0",
+          local_id: "uvc_camera"
+        },
+        {
+          name: "{{ lidar_sensor_node_name }}",
+          tag: "0.1.0",
+          local_id: "lidar_sensor"
+        },
+        {
+          name: "{{ controller_node_name }}",
+          tag: "0.1.0",
+          local_id: "controller"
+        },
       ]
     },
   },
-  process: {
-    start_cmd: [
-      "cargo",
-      "run",
-      "--release"
-    ]
-  },
-  parameters: {},
   interfaces: {
     topics: {
       consumes: [
@@ -46,5 +49,14 @@
         }
       ],
     },
-  }
+  },
+  runtime: {
+    language: "rust",
+    parameters: {},
+    start_cmd: [
+      "cargo",
+      "run",
+      "--release"
+    ]
+  },
 }

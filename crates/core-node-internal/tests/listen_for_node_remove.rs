@@ -21,20 +21,19 @@ async fn listen_for_node_remove_success() {
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
 
-    let peppy_json5 = format!(
-        r#"{{
+    let peppy_json5 = r#"{
             schema_version: 1,
-            manifest: {{
+            manifest: {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
+            },
+            runtime: {
                 language: "rust",
-            }},
-            process: {{
                 start_cmd: ["sleep", "10"]
-            }},
-            parameters: {{}}
-        }}"#
-    );
+            }
+        }"#
+    .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
+    .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
     let add_response = send_node_add_and_wait(
@@ -140,20 +139,19 @@ async fn listen_for_node_remove_stop_running_instances_first() {
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
 
-    let peppy_json5 = format!(
-        r#"{{
+    let peppy_json5 = r#"{
             schema_version: 1,
-            manifest: {{
+            manifest: {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
+            },
+            runtime: {
                 language: "rust",
-            }},
-            process: {{
                 start_cmd: ["sleep", "10"]
-            }},
-            parameters: {{}}
-        }}"#
-    );
+            }
+        }"#
+    .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
+    .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
     let add_response = send_node_add_and_wait(
@@ -235,20 +233,19 @@ async fn listen_for_node_fails_when_stop_instances_parameter_not_set_and_instanc
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
 
-    let peppy_json5 = format!(
-        r#"{{
+    let peppy_json5 = r#"{
             schema_version: 1,
-            manifest: {{
+            manifest: {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
+            },
+            runtime: {
                 language: "rust",
-            }},
-            process: {{
                 start_cmd: ["sleep", "10"]
-            }},
-            parameters: {{}}
-        }}"#
-    );
+            }
+        }"#
+    .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
+    .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
     let add_response = send_node_add_and_wait(

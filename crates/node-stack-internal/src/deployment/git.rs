@@ -173,12 +173,11 @@ mod tests {
             &file_path,
             r#"{
                 schema_version: 1,
-                manifest: {
-                    name: "uvc_camera",
-                    tag: "0.1.0",
-                    language: "rust"
-                },
-                process: {
+                manifest: { name: "uvc_camera",
+                    tag: "0.1.0" },
+
+                runtime: {
+                    language: "rust",
                     start_cmd: ["./target/release/uvc_camera"]
                 }
             }"#,

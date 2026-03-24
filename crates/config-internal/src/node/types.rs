@@ -2,6 +2,7 @@ use crate::{
     common::{AnyType, NodeArguments, resolve_parameter_path},
     config::SchemaVersion,
     error::ParsingError,
+    source::DeploymentSource,
 };
 use indexmap::IndexMap;
 use serde::{
@@ -66,15 +67,9 @@ impl Toolchain {
 pub struct NodeConfig {
     pub schema_version: SchemaVersion,
     pub manifest: Manifest,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub process: Option<Process>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub container: Option<ContainerConfig>,
-    // TODO: Rename `parameters` to `arguments` when it's given in a NodeConfig, the `parameters` name is only used in DeploymentInstance
-    #[serde(default)]
-    pub parameters: NodeArguments,
     #[serde(default)]
     pub interfaces: Interfaces,
+    pub runtime: Runtime,
 }
 
 /// Validated node name. Lowercase letters, digits, '_' and '-' only.
@@ -598,23 +593,36 @@ pub struct DependsOn {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Manifest {
+pub struct Variant {
     pub name: Name,
-    pub tag: String,
-    pub language: PeppygenLanguage,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub labels: Option<Vec<String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub depends_on: Option<DependsOn>,
+    pub source: DeploymentSource,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Process {
-    // Command to run when right before the node is added to the node stack
+pub struct Runtime {
+    pub language: PeppygenLanguage,
+    #[serde(default)]
+    pub parameters: NodeArguments,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub add_cmd: Option<Vec<String>>,
-    // Command to launch the node, e.g., ["./target/release/my_node"]
-    pub start_cmd: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub start_cmd: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub container: Option<ContainerConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Manifest {
+    pub name: Name,
+    pub tag: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub labels: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub variants: Option<Vec<Variant>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub depends_on: Option<DependsOn>,
 }
 
 /// Top-level system directories that cannot be used as mount sources.
@@ -1092,7 +1100,6 @@ mod tests {
         let json5 = r#"{
             name: "slam",
             tag: "0.1.0",
-            language: "rust",
             depends_on: {
                 nodes: [
                     { name: "lidar_driver", tag: "0.1.0", local_id: "lidar" },
@@ -1114,8 +1121,7 @@ mod tests {
     fn manifest_without_depends_on() {
         let json5 = r#"{
             name: "simple_node",
-            tag: "0.1.0",
-            language: "rust"
+            tag: "0.1.0"
         }"#;
         let manifest: Manifest = serde_json5::from_str(json5).expect("should parse");
         assert!(manifest.depends_on.is_none());
@@ -1126,11 +1132,76 @@ mod tests {
         let json5 = r#"{
             name: "node",
             tag: "0.1.0",
-            language: "rust",
             depends_on: {
                 nodes: [{ name: "dep", tag: "0.1.0", local_id: "d", extra: "bad" }]
             }
         }"#;
         assert!(serde_json5::from_str::<Manifest>(json5).is_err());
+    }
+
+    #[test]
+    fn manifest_with_variants() {
+        let json5 = r#"{
+            name: "uvc_camera",
+            tag: "0.1.0",
+            variants: [
+                {
+                    name: "mujoco",
+                    source: { local: "./fake_robot_brain" }
+                },
+                {
+                    name: "isaac-sim",
+                    source: {
+                        repo: "https://github.com/Peppy-bot/example_nodes.git",
+                        path: "rust/fake_robot_brain",
+                        ref: "main"
+                    }
+                },
+                {
+                    name: "gazebo",
+                    source: {
+                        url: "https://example.com/fake_robot_brain.tar.zst",
+                        sha256: "33e83da60a54e3bb487a9a3b67705918602143b30f158143b6909acaf017a36a"
+                    }
+                }
+            ]
+        }"#;
+        let manifest: Manifest = serde_json5::from_str(json5).expect("should parse");
+        let variants = manifest.variants.expect("variants should be Some");
+        assert_eq!(variants.len(), 3);
+        assert_eq!(variants[0].name.as_str(), "mujoco");
+        assert_eq!(variants[1].name.as_str(), "isaac-sim");
+        assert_eq!(variants[2].name.as_str(), "gazebo");
+    }
+
+    #[test]
+    fn manifest_without_variants() {
+        let json5 = r#"{
+            name: "simple_node",
+            tag: "0.1.0"
+        }"#;
+        let manifest: Manifest = serde_json5::from_str(json5).expect("should parse");
+        assert!(manifest.variants.is_none());
+    }
+
+    #[test]
+    fn variant_rejects_unknown_fields() {
+        let json5 = r#"{
+            name: "node",
+            tag: "0.1.0",
+            variants: [{ name: "v1", source: { local: "./x" }, extra: "bad" }]
+        }"#;
+        assert!(serde_json5::from_str::<Manifest>(json5).is_err());
+    }
+
+    #[test]
+    fn node_config_rejects_unknown_fields() {
+        let json5 = r#"{
+            schema_version: 1,
+            manifest: { name: "node", tag: "0.1.0" },
+            runtime: { language: "rust", start_cmd: ["./run"] },
+            extra: "bad"
+        }"#;
+        assert!(serde_json5::from_str::<NodeConfig>(json5).is_err());
     }
 }

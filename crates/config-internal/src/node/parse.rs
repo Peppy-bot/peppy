@@ -20,23 +20,24 @@ impl NodeConfigParser {
         // Strict schema validation is handled by serde via #[serde(deny_unknown_fields)]
         let config: NodeConfig = serde_json5::from_str(content).map_err(ParsingError::from)?;
 
-        // `process` and `container` are mutually exclusive; exactly one must be present.
-        match (&config.process, &config.container) {
+        // `start_cmd` and `container` are mutually exclusive; exactly one must be present.
+        match (&config.runtime.start_cmd, &config.runtime.container) {
             (Some(_), Some(_)) => return Err(ParsingError::ProcessAndContainerConflict.into()),
             (None, None) => return Err(ParsingError::NoProcessOrContainer.into()),
             _ => {}
         }
 
         // Validate container mount paths (reject top-level system directories).
-        if let Some(container) = &config.container
+        if let Some(container) = &config.runtime.container
             && let Err((path, blocked_list)) = container.validate()
         {
             return Err(ParsingError::InvalidMountPath(path, blocked_list).into());
         }
 
         // Validate ${parameters:...} references in mount paths.
-        if let Some(container) = &config.container
-            && let Err((ref_path, reason)) = container.validate_parameter_refs(&config.parameters)
+        if let Some(container) = &config.runtime.container
+            && let Err((ref_path, reason)) =
+                container.validate_parameter_refs(&config.runtime.parameters)
         {
             return Err(ParsingError::InvalidMountPathParameterRef(ref_path, reason).into());
         }
@@ -58,9 +59,9 @@ mod tests {
             manifest: {
                 name: "test_node",
                 tag: "0.1.0",
-                language: "rust",
             },
-            process: {
+            runtime: {
+                language: "rust",
                 start_cmd: ["./target/release/test_node"],
             },
         }"#;
@@ -68,10 +69,10 @@ mod tests {
         assert_eq!(config.manifest.name.as_str(), "test_node");
         assert_eq!(config.manifest.tag, "0.1.0");
         assert_eq!(
-            config.process.as_ref().unwrap().start_cmd,
-            vec!["./target/release/test_node"]
+            config.runtime.start_cmd.as_ref().unwrap(),
+            &vec!["./target/release/test_node"]
         );
-        assert!(config.parameters.is_empty());
+        assert!(config.runtime.parameters.is_empty());
     }
 
     #[test]
@@ -81,10 +82,6 @@ mod tests {
             manifest: {
                 name: "camera_driver",
                 tag: "2.1.0",
-                language: "rust",
-            },
-            process: {
-                start_cmd: ["./target/release/camera_driver"],
             },
             interfaces: {
                 topics: {
@@ -92,18 +89,19 @@ mod tests {
                         { name: "/camera/image_raw" }
                     ]
                 }
-            }
+            },
+            runtime: {
+                language: "rust",
+                start_cmd: ["./target/release/camera_driver"],
+            },
         }"#;
         let config = NodeConfigParser::from_content(json5).unwrap();
         assert_eq!(config.manifest.name.as_str(), "camera_driver");
         assert_eq!(config.manifest.tag, "2.1.0");
+        assert_eq!(config.runtime.language, crate::node::PeppygenLanguage::Rust);
         assert_eq!(
-            config.manifest.language,
-            crate::node::PeppygenLanguage::Rust
-        );
-        assert_eq!(
-            config.process.as_ref().unwrap().start_cmd,
-            vec!["./target/release/camera_driver"]
+            config.runtime.start_cmd.as_ref().unwrap(),
+            &vec!["./target/release/camera_driver"]
         );
         assert!(config.interfaces.topics.is_some());
     }
@@ -149,15 +147,17 @@ mod tests {
             manifest: {
                 name: "container_node",
                 tag: "0.1.0",
-                language: "rust",
             },
-            container: {
-                def_file: "apptainer.def",
+            runtime: {
+                language: "rust",
+                container: {
+                    def_file: "apptainer.def",
+                },
             },
         }"#;
         let config = NodeConfigParser::from_content(json5).unwrap();
-        assert!(config.process.is_none());
-        let container = config.container.as_ref().unwrap();
+        assert!(config.runtime.start_cmd.is_none());
+        let container = config.runtime.container.as_ref().unwrap();
         assert_eq!(container.def_file, "apptainer.def");
     }
 
@@ -168,13 +168,13 @@ mod tests {
             manifest: {
                 name: "bad_node",
                 tag: "0.1.0",
+            },
+            runtime: {
                 language: "rust",
-            },
-            process: {
                 start_cmd: ["./bin"],
-            },
-            container: {
-                def_file: "apptainer.def",
+                container: {
+                    def_file: "apptainer.def",
+                },
             },
         }"#;
         let result = NodeConfigParser::from_content(json5);
@@ -191,6 +191,8 @@ mod tests {
             manifest: {
                 name: "bare_node",
                 tag: "0.1.0",
+            },
+            runtime: {
                 language: "rust",
             },
         }"#;
@@ -226,11 +228,13 @@ mod tests {
             manifest: {
                 name: "bad_mount_node",
                 tag: "0.1.0",
-                language: "rust",
             },
-            container: {
-                def_file: "apptainer.def",
-                mount_paths: ["/tmp:/tmp:rw"],
+            runtime: {
+                language: "rust",
+                container: {
+                    def_file: "apptainer.def",
+                    mount_paths: ["/tmp:/tmp:rw"],
+                },
             },
         }"#;
         let result = NodeConfigParser::from_content(json5);
@@ -251,11 +255,13 @@ mod tests {
             manifest: {
                 name: "bad_mount_node",
                 tag: "0.1.0",
-                language: "rust",
             },
-            container: {
-                def_file: "apptainer.def",
-                mount_paths: ["/private/tmp:/tmp:rw"],
+            runtime: {
+                language: "rust",
+                container: {
+                    def_file: "apptainer.def",
+                    mount_paths: ["/private/tmp:/tmp:rw"],
+                },
             },
         }"#;
         let result = NodeConfigParser::from_content(json5);
@@ -276,16 +282,18 @@ mod tests {
             manifest: {
                 name: "good_mount_node",
                 tag: "0.1.0",
-                language: "rust",
             },
-            container: {
-                def_file: "apptainer.def",
-                mount_paths: ["/tmp/my_app_data:/tmp/my_app_data:rw"],
+            runtime: {
+                language: "rust",
+                container: {
+                    def_file: "apptainer.def",
+                    mount_paths: ["/tmp/my_app_data:/tmp/my_app_data:rw"],
+                },
             },
         }"#;
         let config =
             NodeConfigParser::from_content(json5).expect("subdirectory mount should be accepted");
-        let mount_paths = config.container.unwrap().mount_paths.unwrap();
+        let mount_paths = config.runtime.container.unwrap().mount_paths.unwrap();
         assert_eq!(mount_paths, vec!["/tmp/my_app_data:/tmp/my_app_data:rw"]);
     }
 
@@ -296,14 +304,16 @@ mod tests {
             manifest: {
                 name: "no_mount_node",
                 tag: "0.1.0",
-                language: "rust",
             },
-            container: {
-                def_file: "apptainer.def",
+            runtime: {
+                language: "rust",
+                container: {
+                    def_file: "apptainer.def",
+                },
             },
         }"#;
         let config = NodeConfigParser::from_content(json5).expect("no mount_paths should be valid");
-        assert!(config.container.unwrap().mount_paths.is_none());
+        assert!(config.runtime.container.unwrap().mount_paths.is_none());
     }
 
     #[test]
@@ -313,19 +323,21 @@ mod tests {
             manifest: {
                 name: "camera_node",
                 tag: "0.1.0",
+            },
+            runtime: {
                 language: "rust",
-            },
-            container: {
-                def_file: "apptainer.def",
-                mount_paths: ["${parameters:device_path}:/dev/video0:rw"],
-            },
-            parameters: {
-                device_path: "string",
+                parameters: {
+                    device_path: "string",
+                },
+                container: {
+                    def_file: "apptainer.def",
+                    mount_paths: ["${parameters:device_path}:/dev/video0:rw"],
+                },
             },
         }"#;
         let config = NodeConfigParser::from_content(json5)
             .expect("parameter ref in mount path should parse");
-        let mount_paths = config.container.unwrap().mount_paths.unwrap();
+        let mount_paths = config.runtime.container.unwrap().mount_paths.unwrap();
         assert_eq!(
             mount_paths,
             vec!["${parameters:device_path}:/dev/video0:rw"]
@@ -339,22 +351,24 @@ mod tests {
             manifest: {
                 name: "camera_node",
                 tag: "0.1.0",
+            },
+            runtime: {
                 language: "rust",
-            },
-            container: {
-                def_file: "apptainer.def",
-                mount_paths: ["${parameters:video.device_path}:/dev/video0:rw"],
-            },
-            parameters: {
-                video: {
-                    device_path: "string",
-                    frame_rate: "u16",
+                parameters: {
+                    video: {
+                        device_path: "string",
+                        frame_rate: "u16",
+                    },
+                },
+                container: {
+                    def_file: "apptainer.def",
+                    mount_paths: ["${parameters:video.device_path}:/dev/video0:rw"],
                 },
             },
         }"#;
         let config = NodeConfigParser::from_content(json5)
             .expect("nested parameter ref in mount path should parse");
-        let mount_paths = config.container.unwrap().mount_paths.unwrap();
+        let mount_paths = config.runtime.container.unwrap().mount_paths.unwrap();
         assert_eq!(
             mount_paths,
             vec!["${parameters:video.device_path}:/dev/video0:rw"]
@@ -368,14 +382,16 @@ mod tests {
             manifest: {
                 name: "bad_ref_node",
                 tag: "0.1.0",
+            },
+            runtime: {
                 language: "rust",
-            },
-            container: {
-                def_file: "apptainer.def",
-                mount_paths: ["${parameters:nonexistent}:/data:rw"],
-            },
-            parameters: {
-                device_path: "string",
+                parameters: {
+                    device_path: "string",
+                },
+                container: {
+                    def_file: "apptainer.def",
+                    mount_paths: ["${parameters:nonexistent}:/data:rw"],
+                },
             },
         }"#;
         let result = NodeConfigParser::from_content(json5);
@@ -397,14 +413,16 @@ mod tests {
             manifest: {
                 name: "bad_type_node",
                 tag: "0.1.0",
+            },
+            runtime: {
                 language: "rust",
-            },
-            container: {
-                def_file: "apptainer.def",
-                mount_paths: ["${parameters:frame_rate}:/data:rw"],
-            },
-            parameters: {
-                frame_rate: "u16",
+                parameters: {
+                    frame_rate: "u16",
+                },
+                container: {
+                    def_file: "apptainer.def",
+                    mount_paths: ["${parameters:frame_rate}:/data:rw"],
+                },
             },
         }"#;
         let result = NodeConfigParser::from_content(json5);
@@ -428,19 +446,21 @@ mod tests {
             manifest: {
                 name: "dynamic_mount_node",
                 tag: "0.1.0",
+            },
+            runtime: {
                 language: "rust",
-            },
-            container: {
-                def_file: "apptainer.def",
-                mount_paths: ["${parameters:path}:/container/data:rw"],
-            },
-            parameters: {
-                path: "string",
+                parameters: {
+                    path: "string",
+                },
+                container: {
+                    def_file: "apptainer.def",
+                    mount_paths: ["${parameters:path}:/container/data:rw"],
+                },
             },
         }"#;
         let config = NodeConfigParser::from_content(json5)
             .expect("parameter ref source should skip blocked-path check at parse time");
-        let mount_paths = config.container.unwrap().mount_paths.unwrap();
+        let mount_paths = config.runtime.container.unwrap().mount_paths.unwrap();
         assert_eq!(mount_paths, vec!["${parameters:path}:/container/data:rw"]);
     }
 
@@ -451,14 +471,16 @@ mod tests {
             manifest: {
                 name: "container_node",
                 tag: "0.1.0",
-                language: "rust",
             },
-            container: {
-                def_file: "apptainer.def",
+            runtime: {
+                language: "rust",
+                container: {
+                    def_file: "apptainer.def",
+                },
             },
         }"#;
         let config = NodeConfigParser::from_content(json5).unwrap();
-        let container = config.container.as_ref().unwrap();
+        let container = config.runtime.container.as_ref().unwrap();
         assert!(container.apptainer_build_extra_args.is_none());
         assert!(container.apptainer_run_extra_args.is_none());
         assert!(container.lima_shell_extra_args.is_none());
@@ -471,17 +493,19 @@ mod tests {
             manifest: {
                 name: "container_node",
                 tag: "0.1.0",
-                language: "rust",
             },
-            container: {
-                def_file: "apptainer.def",
-                apptainer_build_extra_args: ["--no-setgroups", "--force"],
-                apptainer_run_extra_args: ["--no-setgroups"],
-                lima_shell_extra_args: ["--timeout", "30"],
+            runtime: {
+                language: "rust",
+                container: {
+                    def_file: "apptainer.def",
+                    apptainer_build_extra_args: ["--no-setgroups", "--force"],
+                    apptainer_run_extra_args: ["--no-setgroups"],
+                    lima_shell_extra_args: ["--timeout", "30"],
+                },
             },
         }"#;
         let config = NodeConfigParser::from_content(json5).unwrap();
-        let container = config.container.as_ref().unwrap();
+        let container = config.runtime.container.as_ref().unwrap();
         assert_eq!(
             container.apptainer_build_extra_args.as_deref().unwrap(),
             &["--no-setgroups", "--force"]
@@ -503,17 +527,19 @@ mod tests {
             manifest: {
                 name: "container_node",
                 tag: "0.1.0",
-                language: "rust",
             },
-            container: {
-                def_file: "apptainer.def",
-                apptainer_build_extra_args: [],
-                apptainer_run_extra_args: [],
-                lima_shell_extra_args: [],
+            runtime: {
+                language: "rust",
+                container: {
+                    def_file: "apptainer.def",
+                    apptainer_build_extra_args: [],
+                    apptainer_run_extra_args: [],
+                    lima_shell_extra_args: [],
+                },
             },
         }"#;
         let config = NodeConfigParser::from_content(json5).unwrap();
-        let container = config.container.as_ref().unwrap();
+        let container = config.runtime.container.as_ref().unwrap();
         assert_eq!(
             container.apptainer_build_extra_args.as_deref().unwrap(),
             &[] as &[String]

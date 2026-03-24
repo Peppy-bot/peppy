@@ -3,17 +3,6 @@
   manifest: {
     name: "hello_world",
     tag: "0.1.0",
-    language: "rust",
-  },
-  process: {
-    add_cmd: [
-      "cargo",
-      "build",
-      "--release"
-    ],
-    start_cmd: [
-      "./target/release/hello_world"
-    ]
   },
   interfaces: {
     topics: {
@@ -27,5 +16,16 @@
         }
       ],
     }
-  }
+  },
+  runtime: {
+    language: "rust",
+    add_cmd: [
+      "cargo",
+      "build",
+      "--release"
+    ],
+    start_cmd: [
+      "./target/release/hello_world"
+    ]
+  },
 }

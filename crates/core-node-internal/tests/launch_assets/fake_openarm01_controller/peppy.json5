@@ -3,22 +3,11 @@
   manifest: {
     name: "fake_openarm01_controller",
     tag: "0.1.0",
-    language: "rust",
     labels: [
       "controller",
       "openarm"
     ],
   },
-  process: {
-    add_cmd: [
-      "true"
-    ],
-    start_cmd: [
-      "sleep",
-      "60"
-    ]
-  },
-  parameters: {},
   interfaces: {
     topics: {
       emits: [],
@@ -105,5 +94,15 @@
       ],
       consumes: [],
     },
-  }
+  },
+  runtime: {
+    language: "rust",
+    add_cmd: [
+      "true"
+    ],
+    start_cmd: [
+      "sleep",
+      "60"
+    ]
+  },
 }

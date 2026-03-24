@@ -22,10 +22,10 @@ struct LauncherConfigTemplate;
   schema_version: 1,
   manifest: {
     name: "{{ name }}",
-    tag: "0.1.0",
-    language: "rust"
+    tag: "0.1.0"
   },
-  process: {
+  runtime: {
+    language: "rust",
     start_cmd: {{ start_cmd | safe }}
   }
 }
@@ -102,9 +102,9 @@ mod tests {
             manifest: {
                 name: "a_node",
                 tag: "0.1.0",
-                language: "rust",
             },
-            process: {
+            runtime: {
+                language: "rust",
                 start_cmd: ["./target/release/a_node"],
             }
         }"#;

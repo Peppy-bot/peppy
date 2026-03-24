@@ -12,15 +12,11 @@ fn action_dependency_resolved_when_dependency_added_first() {
             manifest: {
               name: "brain",
               tag: "1.0.0",
-              language: "rust",
               depends_on: {
                 nodes: [
                   { name: "controller", tag: "1.0.0", local_id: "controller" }
                 ]
               },
-            },
-            process: {
-              start_cmd: ["brain"]
             },
             interfaces: {
                 actions: {
@@ -31,7 +27,11 @@ fn action_dependency_resolved_when_dependency_added_first() {
                         }
                     ]
                 }
-            }
+            },
+            runtime: {
+              language: "rust",
+              start_cmd: ["brain"]
+            },
         }"#,
     )
     .expect("valid dependent node config");
@@ -42,10 +42,6 @@ fn action_dependency_resolved_when_dependency_added_first() {
             manifest: {
               name: "controller",
               tag: "1.0.0",
-              language: "rust",
-            },
-            process: {
-              start_cmd: ["controller"]
             },
             interfaces: {
                 actions: {
@@ -87,7 +83,11 @@ fn action_dependency_resolved_when_dependency_added_first() {
                         }
                     ]
                 }
-            }
+            },
+            runtime: {
+              language: "rust",
+              start_cmd: ["controller"]
+            },
         }"#,
     )
     .expect("valid dependency node config");
@@ -146,15 +146,11 @@ fn action_dependency_fails_when_dependency_is_missing() {
             manifest: {
               name: "brain",
               tag: "1.0.0",
-              language: "rust",
               depends_on: {
                 nodes: [
                   { name: "controller", tag: "1.0.0", local_id: "controller" }
                 ]
               },
-            },
-            process: {
-              start_cmd: ["brain"]
             },
             interfaces: {
                 actions: {
@@ -165,7 +161,11 @@ fn action_dependency_fails_when_dependency_is_missing() {
                         }
                     ]
                 }
-            }
+            },
+            runtime: {
+              language: "rust",
+              start_cmd: ["brain"]
+            },
         }"#,
     )
     .expect("valid dependent node config");
@@ -197,15 +197,11 @@ fn action_dependency_fails_when_action_not_exposed_by_dependency() {
             manifest: {
               name: "brain",
               tag: "1.0.0",
-              language: "rust",
               depends_on: {
                 nodes: [
                   { name: "controller", tag: "1.0.0", local_id: "controller" }
                 ]
               },
-            },
-            process: {
-              start_cmd: ["brain"]
             },
             interfaces: {
                 actions: {
@@ -216,7 +212,11 @@ fn action_dependency_fails_when_action_not_exposed_by_dependency() {
                         }
                     ]
                 }
-            }
+            },
+            runtime: {
+              language: "rust",
+              start_cmd: ["brain"]
+            },
         }"#,
     )
     .expect("valid dependent node config");
@@ -228,10 +228,6 @@ fn action_dependency_fails_when_action_not_exposed_by_dependency() {
             manifest: {
               name: "controller",
               tag: "1.0.0",
-              language: "rust",
-            },
-            process: {
-              start_cmd: ["controller"]
             },
             interfaces: {
                 actions: {
@@ -273,7 +269,11 @@ fn action_dependency_fails_when_action_not_exposed_by_dependency() {
                         }
                     ]
                 }
-            }
+            },
+            runtime: {
+              language: "rust",
+              start_cmd: ["controller"]
+            },
         }"#,
     )
     .expect("valid dependency node config with wrong action");

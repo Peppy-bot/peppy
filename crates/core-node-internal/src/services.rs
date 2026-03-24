@@ -10,7 +10,7 @@ use crate::Result;
 use config::{
     AnyType, NodeArguments,
     consts::PeppyDirs,
-    node::{Manifest, Name, NodeConfig, PeppygenLanguage, Process},
+    node::{Manifest, Name, NodeConfig, PeppygenLanguage, Runtime},
     peppy_config::CURRENT_SCHEMA_VERSION,
 };
 use names_generator2::get_random;
@@ -102,16 +102,17 @@ impl CoreNode {
             manifest: Manifest {
                 name: manifest_name,
                 tag: CORE_NODE_TAG.to_string(),
-                language: PeppygenLanguage::Rust,
                 labels: None,
+                variants: None,
                 depends_on: None,
             },
-            process: Some(Process {
+            runtime: Runtime {
+                language: PeppygenLanguage::Rust,
+                parameters: node_arguments.into(),
                 add_cmd: None,
-                start_cmd: vec![],
-            }),
-            container: None,
-            parameters: node_arguments.into(),
+                start_cmd: Some(vec![]),
+                container: None,
+            },
             interfaces: Default::default(),
         };
 

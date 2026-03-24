@@ -3,37 +3,11 @@
   manifest: {
     name: "fake_uvc_camera",
     tag: "0.1.0",
-    language: "rust",
     labels: [
       "uvc",
       "camera",
       "usb",
     ],
-  },
-  process: {
-    add_cmd: [
-      "true"
-    ],
-    start_cmd: [
-      "sleep",
-      "60"
-    ]
-  },
-  // Those are fake parameters supposed to emulate a real camera
-  parameters: {
-    device: {
-      physical: "string",
-      sim: "string",
-      priority: "string"
-    },
-    video: {
-      frame_rate: "u16",
-      resolution: {
-        width: "u16",
-        height: "u16",
-      },
-      encoding: "string",
-    },
   },
   interfaces: {
     topics: {
@@ -71,5 +45,31 @@
         },
       ],
     },
-  }
+  },
+  runtime: {
+    language: "rust",
+    add_cmd: [
+      "true"
+    ],
+    // Those are fake parameters supposed to emulate a real camera
+    parameters: {
+      device: {
+        physical: "string",
+        sim: "string",
+        priority: "string"
+      },
+      video: {
+        frame_rate: "u16",
+        resolution: {
+          width: "u16",
+          height: "u16",
+        },
+        encoding: "string",
+      },
+    },
+    start_cmd: [
+      "sleep",
+      "60"
+    ]
+  },
 }

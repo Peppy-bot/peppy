@@ -575,11 +575,12 @@ fn check_setup_status_errors_when_starter_suid_missing() {
 #[cfg(target_os = "linux")]
 #[test]
 fn check_setup_status_reports_real_installation() {
-    // Use the real bundled installation
-    let apptainer = Apptainer::new()
-        .expect("Apptainer::new() should succeed — apptainer is bundled at compile time");
+    // Use resolve_apptainer_dir() directly to avoid the ensure_ready() check
+    // in Apptainer::new(), which would fail if setup isn't complete.
+    let apptainer_dir = Apptainer::resolve_apptainer_dir()
+        .expect("resolve_apptainer_dir should succeed — apptainer is bundled at compile time");
 
-    let status = check_setup_status(&apptainer.apptainer_dir)
+    let status = check_setup_status(&apptainer_dir)
         .expect("check_setup_status should succeed on a valid installation");
 
     // We can't guarantee setuid is configured in CI, but we can verify the
@@ -588,6 +589,7 @@ fn check_setup_status_reports_real_installation() {
         assert!(status.suid_ok);
         assert!(status.conf_ok);
         assert!(status.apparmor_ok);
+        assert!(status.apparmor_loaded);
         assert!(
             status.fix_script.is_none(),
             "fix_script should be None when all checks pass"
@@ -598,9 +600,115 @@ fn check_setup_status_reports_real_installation() {
             "fix_script should be present when checks fail"
         );
         let script = status.fix_script.as_ref().unwrap();
+        // The fix script should contain relevant commands for whichever
+        // checks failed — chown for suid/conf, apparmor_parser for AppArmor.
+        let has_relevant_fix = script.contains("chown")
+            || script.contains("apparmor_parser")
+            || script.contains("tee /etc/apparmor.d/peppy-apptainer");
         assert!(
-            script.contains("chown"),
-            "fix script should contain chown command, got: {script}"
+            has_relevant_fix,
+            "fix script should contain relevant fix commands, got: {script}"
+        );
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn check_setup_status_requires_apparmor_profile_loaded() {
+    // On systems where AppArmor restricts unprivileged user namespaces,
+    // check_setup_status must verify the profile is loaded into the kernel,
+    // not just that the file exists on disk.
+    let apparmor_restricted =
+        std::fs::read_to_string("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
+            .map(|v| v.trim() == "1")
+            .unwrap_or(false);
+
+    if !apparmor_restricted {
+        eprintln!("SKIPPING: system does not restrict unprivileged user namespaces via AppArmor");
+        return;
+    }
+
+    // Use resolve_apptainer_dir() directly to avoid the ensure_ready() check
+    // in Apptainer::new(), which would fail if setup isn't complete.
+    let apptainer_dir = Apptainer::resolve_apptainer_dir()
+        .expect("resolve_apptainer_dir should succeed — apptainer is bundled at compile time");
+
+    let status = check_setup_status(&apptainer_dir)
+        .expect("check_setup_status should succeed on a valid installation");
+
+    assert!(
+        status.apparmor_restricted,
+        "apparmor_restricted should be true on this system"
+    );
+
+    // If the profile file exists but isn't loaded, is_ok() must be false.
+    if status.apparmor_ok && !status.apparmor_loaded {
+        assert!(
+            !status.is_ok(),
+            "is_ok() should be false when profile is installed but not loaded"
+        );
+        let script = status.fix_script.as_ref().expect("fix_script should exist");
+        assert!(
+            script.contains("apparmor_parser"),
+            "fix script should include apparmor_parser to load the profile, got: {script}"
+        );
+    }
+
+    // If both are true, the full check should pass (assuming suid/conf are also ok).
+    if status.apparmor_ok && status.apparmor_loaded && status.suid_ok && status.conf_ok {
+        assert!(
+            status.is_ok(),
+            "is_ok() should be true when all checks pass"
+        );
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn check_setup_status_detects_stale_apparmor_profile_path() {
+    // When the AppArmor profile references a different starter-suid path than
+    // the current installation (e.g. a previous build artifact), apparmor_ok
+    // must be false so the profile gets regenerated with the correct path.
+    let apparmor_restricted =
+        std::fs::read_to_string("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
+            .map(|v| v.trim() == "1")
+            .unwrap_or(false);
+
+    if !apparmor_restricted {
+        eprintln!("SKIPPING: system does not restrict unprivileged user namespaces via AppArmor");
+        return;
+    }
+
+    let apptainer_dir = Apptainer::resolve_apptainer_dir()
+        .expect("resolve_apptainer_dir should succeed — apptainer is bundled at compile time");
+
+    let status = check_setup_status(&apptainer_dir)
+        .expect("check_setup_status should succeed on a valid installation");
+
+    // Read the installed profile and check if it references the current path.
+    let starter_suid = apptainer_dir.join("libexec/apptainer/bin/starter-suid");
+    let canonical = starter_suid
+        .canonicalize()
+        .unwrap_or_else(|_| starter_suid.clone());
+
+    let profile_references_current_path = fs::read_to_string("/etc/apparmor.d/peppy-apptainer")
+        .map(|content| content.contains(&format!("{}", canonical.display())))
+        .unwrap_or(false);
+
+    if !profile_references_current_path {
+        assert!(
+            !status.apparmor_ok,
+            "apparmor_ok should be false when profile references a stale path"
+        );
+        assert!(!status.is_ok(), "is_ok should be false with stale profile");
+        let script = status.fix_script.as_ref().expect("fix_script should exist");
+        assert!(
+            script.contains("tee /etc/apparmor.d/peppy-apptainer"),
+            "fix script should regenerate the profile, got: {script}"
+        );
+        assert!(
+            script.contains(&format!("{}", canonical.display())),
+            "fix script should use the current starter-suid path, got: {script}"
         );
     }
 }

@@ -238,7 +238,7 @@ async fn handle_node_sync_request_inner(
 
                 // Collect consumed interfaces with resolved message formats
                 let interfaces = collect_consumed_interfaces(&node_config, node_stack);
-                let language = node_config.manifest.language;
+                let language = node_config.runtime.language;
                 (interfaces, language)
             }
             Err(e) => {

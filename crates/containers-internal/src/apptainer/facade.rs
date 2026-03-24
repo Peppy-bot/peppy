@@ -73,9 +73,12 @@ pub struct SetupStatus {
     pub conf_ok: bool,
     /// System restricts unprivileged user namespaces via AppArmor.
     pub apparmor_restricted: bool,
-    /// AppArmor profile for `starter-suid` is installed (always `true` when
-    /// `apparmor_restricted` is `false`).
+    /// AppArmor profile for `starter-suid` is installed on disk (always `true`
+    /// when `apparmor_restricted` is `false`).
     pub apparmor_ok: bool,
+    /// AppArmor profile for `starter-suid` is loaded into the kernel (always
+    /// `true` when `apparmor_restricted` is `false`).
+    pub apparmor_loaded: bool,
     /// A shell script that fixes all failing checks, or `None` when everything
     /// passes.
     pub fix_script: Option<String>,
@@ -85,7 +88,7 @@ pub struct SetupStatus {
 impl SetupStatus {
     /// Returns `true` when all prerequisites are met.
     pub fn is_ok(&self) -> bool {
-        self.suid_ok && self.conf_ok && self.apparmor_ok
+        self.suid_ok && self.conf_ok && self.apparmor_ok && self.apparmor_loaded
     }
 }
 
@@ -125,30 +128,56 @@ pub fn check_setup_status(apptainer_dir: &Path) -> Result<SetupStatus> {
             .map(|v| v.trim() == "1")
             .unwrap_or(false);
 
+    let starter_suid_canonical = starter_suid
+        .canonicalize()
+        .unwrap_or_else(|_| starter_suid.clone());
+
     let apparmor_ok = if apparmor_restricted {
+        // The profile must exist AND reference the current starter-suid path.
+        // A stale profile pointing to a different binary (e.g. a previous build
+        // artifact) won't grant the current binary namespace privileges.
         std::fs::read_to_string("/etc/apparmor.d/peppy-apptainer")
-            .map(|content| content.contains("starter-suid"))
+            .map(|content| content.contains(&format!("{}", starter_suid_canonical.display())))
             .unwrap_or(false)
     } else {
         true
     };
 
-    let fix_script = if suid_ok && conf_ok && apparmor_ok {
+    let apparmor_loaded = if apparmor_restricted {
+        // /sys/kernel/security/apparmor/profiles requires CAP_MAC_ADMIN, so
+        // use the policy directory listing which is world-readable.
+        std::fs::read_dir("/sys/kernel/security/apparmor/policy/profiles")
+            .map(|entries| {
+                entries.filter_map(|e| e.ok()).any(|e| {
+                    e.file_name()
+                        .to_str()
+                        .is_some_and(|name| name.starts_with("peppy-apptainer."))
+                })
+            })
+            .unwrap_or(false)
+    } else {
+        true
+    };
+
+    let fix_script = if suid_ok && conf_ok && apparmor_ok && apparmor_loaded {
         None
     } else {
-        let suid_path = starter_suid.display();
+        let suid_path = starter_suid_canonical.display();
         let conf_dir_path = conf_dir.display();
 
-        let mut script = format!(
-            "sudo chown root:root '{suid_path}' \\\n  \
-             && sudo chmod 4755 '{suid_path}' \\\n  \
-             && sudo chown -R root:root '{conf_dir_path}'"
-        );
+        let mut parts: Vec<String> = Vec::new();
+
+        if !suid_ok || !conf_ok {
+            parts.push(format!(
+                "sudo chown root:root '{suid_path}' \\\n  \
+                 && sudo chmod 4755 '{suid_path}' \\\n  \
+                 && sudo chown -R root:root '{conf_dir_path}'"
+            ));
+        }
 
         if apparmor_restricted && !apparmor_ok {
-            script.push_str(&format!(
-                " \\\n  \
-                 && echo 'abi <abi/4.0>,\n\
+            parts.push(format!(
+                "echo 'abi <abi/4.0>,\n\
                  include <tunables/global>\n\
                  \n\
                  profile peppy-apptainer {suid_path} flags=(unconfined) {{\n\
@@ -156,9 +185,11 @@ pub fn check_setup_status(apptainer_dir: &Path) -> Result<SetupStatus> {
                  }}' | sudo tee /etc/apparmor.d/peppy-apptainer > /dev/null \\\n  \
                  && sudo apparmor_parser -r /etc/apparmor.d/peppy-apptainer"
             ));
+        } else if apparmor_restricted && !apparmor_loaded {
+            parts.push("sudo apparmor_parser -r /etc/apparmor.d/peppy-apptainer".to_string());
         }
 
-        Some(script)
+        Some(parts.join(" \\\n  && "))
     };
 
     Ok(SetupStatus {
@@ -166,6 +197,7 @@ pub fn check_setup_status(apptainer_dir: &Path) -> Result<SetupStatus> {
         conf_ok,
         apparmor_restricted,
         apparmor_ok,
+        apparmor_loaded,
         fix_script,
     })
 }

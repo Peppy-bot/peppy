@@ -4,33 +4,12 @@
   manifest: {
     name: "uvc_camera",
     tag: "0.1.0",
-    language: "rust",
     // Labels are useful if the node is published with `peppy node publish`
     labels: [
       "uvc",
       "camera",
       "usb",
     ],
-  },
-  container: {
-    def_file: "apptainer.def"
-  },
-  // Expected parameter types to start the node
-  parameters: {
-    device: {
-      // Can be USB IDs/serial or udev rule
-      physical: "string", // values like `/dev/video4` or `/dev/video_front`
-      sim: "string", // values like `mujoco:camera_front` or `isaac_sim:camera_rear`
-      priority: "string" // "physical" or "sim". If the physical path is not accessible, the sim path is attempted
-    },
-    video: {
-      frame_rate: "u16",
-      resolution: {
-        width: "u16",
-        height: "u16",
-      },
-      encoding: "string", // "rgb8", "bgr8", "yuyv", "mjpeg"
-    },
   },
   interfaces: {
     topics: {
@@ -75,5 +54,28 @@
         },
       ],
     },
-  }
+  },
+  runtime: {
+    language: "rust",
+    // Expected parameter types to start the node
+    parameters: {
+      device: {
+        // Can be USB IDs/serial or udev rule
+        physical: "string", // values like `/dev/video4` or `/dev/video_front`
+        sim: "string", // values like `mujoco:camera_front` or `isaac_sim:camera_rear`
+        priority: "string" // "physical" or "sim". If the physical path is not accessible, the sim path is attempted
+      },
+      video: {
+        frame_rate: "u16",
+        resolution: {
+          width: "u16",
+          height: "u16",
+        },
+        encoding: "string", // "rgb8", "bgr8", "yuyv", "mjpeg"
+      },
+    },
+    container: {
+      def_file: "apptainer.def"
+    }
+  },
 }

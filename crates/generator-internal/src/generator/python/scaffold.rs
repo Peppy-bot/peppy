@@ -19,6 +19,7 @@ use std::path::Path;
 #[include = "*.py"]
 #[include = "*.so"]
 #[exclude = "__pycache__/*"]
+#[exclude = "_peppylib.abi3.so"]
 struct EmbeddedPeppylibPy;
 
 /// The filename prefix that all platform-suffixed native extensions share.

@@ -5,7 +5,6 @@
   manifest: {
     name: "brain",
     tag: "0.1.0",
-    language: "rust",
     labels: [
       "brain"
     ],
@@ -16,17 +15,6 @@
       ]
     },
   },
-  process: {
-    add_cmd: [
-      "cargo",
-      "build",
-      "--release"
-    ],
-    start_cmd: [
-      "./target/release/brain"
-    ]
-  },
-  parameters: {},
   interfaces: {
     topics: {
       consumes: [
@@ -56,5 +44,16 @@
         }
       ],
     },
-  }
+  },
+  runtime: {
+    language: "rust",
+    add_cmd: [
+      "cargo",
+      "build",
+      "--release"
+    ],
+    start_cmd: [
+      "./target/release/brain"
+    ]
+  },
 }

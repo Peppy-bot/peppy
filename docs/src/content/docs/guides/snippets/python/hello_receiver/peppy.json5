@@ -3,23 +3,11 @@
   manifest: {
     name: "hello_receiver",
     tag: "0.1.0",
-    language: "python",
     depends_on: {
       nodes: [
         { name: "hello_world_param", tag: "0.1.0", local_id: "hello_world_param" },
       ]
     },
-  },
-  process: {
-    add_cmd: [
-      "uv",
-      "sync"
-    ],
-    start_cmd: [
-      "uv",
-      "run",
-      "hello_receiver"
-    ]
   },
   interfaces: {
     topics: {
@@ -30,5 +18,17 @@
         }
       ],
     }
-  }
+  },
+  runtime: {
+    language: "python",
+    add_cmd: [
+      "uv",
+      "sync"
+    ],
+    start_cmd: [
+      "uv",
+      "run",
+      "hello_receiver"
+    ]
+  },
 }

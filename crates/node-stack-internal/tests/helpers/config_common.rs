@@ -21,9 +21,9 @@ pub fn core_node_config() -> NodeConfig {
             manifest: {
                 name: "core",
                 tag: "1.0.0",
-                language: "rust",
             },
-            process: {
+            runtime: {
+                language: "rust",
                 start_cmd: ["core"]
             }
         }"#,
