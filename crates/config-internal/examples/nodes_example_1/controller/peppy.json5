@@ -9,17 +9,6 @@
       "openarm",
     ],
   },
-  runtime: {
-    language: "rust",
-    add_cmd: [
-      "cargo",
-      "build",
-      "--release"
-    ],
-    start_cmd: [
-      "./target/release/controller"
-    ]
-  },
   interfaces: {
     actions: {
       exposes: [
@@ -99,5 +88,16 @@
         }
       ],
     },
-  }
+  },
+  runtime: {
+    language: "rust",
+    add_cmd: [
+      "cargo",
+      "build",
+      "--release"
+    ],
+    start_cmd: [
+      "./target/release/controller"
+    ]
+  },
 }

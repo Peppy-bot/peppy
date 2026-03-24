@@ -11,20 +11,6 @@
       ]
     },
   },
-  runtime: {
-    language: "rust",
-    parameters: {
-      // How long do you want the reconstruction to be?
-      video_duration_seconds: "u32"
-    },
-    container: {
-      def_file: "apptainer.def",
-      mount_paths: [
-        // host_path:container_path:options
-        "/tmp/video_reconstruction:/tmp/video_reconstruction:rw"
-      ]
-    }
-  },
   interfaces: {
     topics: {
       consumes: [
@@ -42,5 +28,19 @@
         },
       ],
     },
-  }
+  },
+  runtime: {
+    language: "rust",
+    parameters: {
+      // How long do you want the reconstruction to be?
+      video_duration_seconds: "u32"
+    },
+    container: {
+      def_file: "apptainer.def",
+      mount_paths: [
+        // host_path:container_path:options
+        "/tmp/video_reconstruction:/tmp/video_reconstruction:rw"
+      ]
+    }
+  },
 }

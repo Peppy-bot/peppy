@@ -4,6 +4,7 @@
     name: "hello_world",
     tag: "0.1.0",
   },
+  interfaces: {},
   runtime: {
     language: "rust",
     add_cmd: [
@@ -14,6 +15,5 @@
     start_cmd: [
       "./target/release/first_node"
     ]
-  },
-  interfaces: {}
+  }
 }

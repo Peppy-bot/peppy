@@ -4,17 +4,6 @@
     name: "hello_world",
     tag: "0.1.0",
   },
-  runtime: {
-    language: "rust",
-    add_cmd: [
-      "cargo",
-      "build",
-      "--release"
-    ],
-    start_cmd: [
-      "./target/release/hello_world"
-    ]
-  },
   interfaces: {
     topics: {
       emits: [
@@ -27,5 +16,16 @@
         }
       ],
     }
-  }
+  },
+  runtime: {
+    language: "rust",
+    add_cmd: [
+      "cargo",
+      "build",
+      "--release"
+    ],
+    start_cmd: [
+      "./target/release/hello_world"
+    ]
+  },
 }

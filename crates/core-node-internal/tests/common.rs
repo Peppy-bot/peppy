@@ -592,16 +592,6 @@ fn main() -> Result<()> {
     name: "{crate_name}",
     tag: "{node_tag}",
   },
-  // Avoid `add_cmd` build step here to make the `add` tests faster
-  runtime: {
-    language: "rust",
-    add_cmd: [
-        "true"
-    ],
-    start_cmd: [
-      "{binary_path}"
-    ]
-  },
   interfaces: {
     topics: {
       emits: [
@@ -615,7 +605,17 @@ fn main() -> Result<()> {
         }
       ],
     }
-  }
+  },
+  // Avoid `add_cmd` build step here to make the `add` tests faster
+  runtime: {
+    language: "rust",
+    add_cmd: [
+        "true"
+    ],
+    start_cmd: [
+      "{binary_path}"
+    ]
+  },
 }"#
         .replace("{crate_name}", crate_name)
         .replace("{node_tag}", node_tag)

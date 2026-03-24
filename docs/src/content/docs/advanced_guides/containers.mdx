@@ -76,13 +76,13 @@ A container node includes a `container` block inside its `runtime` section inste
         name: "my_node",
         tag: "0.1.0",
       },
+      interfaces: {},
       runtime: {
         language: "python",
         container: {
           def_file: "apptainer.def",
         },
-      },
-      interfaces: {}
+      }
     }
     ```
   </TabItem>
@@ -94,13 +94,13 @@ A container node includes a `container` block inside its `runtime` section inste
         name: "my_node",
         tag: "0.1.0",
       },
+      interfaces: {},
       runtime: {
         language: "rust",
         container: {
           def_file: "apptainer.def",
         },
-      },
-      interfaces: {}
+      }
     }
     ```
   </TabItem>
@@ -119,12 +119,12 @@ Compare this with a standard process node, which defines `add_cmd` and `start_cm
         name: "my_node",
         tag: "0.1.0",
       },
+      interfaces: {},
       runtime: {
         language: "python",
         add_cmd: ["uv", "sync", "--no-editable"],
         start_cmd: ["./.venv/bin/python", "-m", "my_node"]
-      },
-      interfaces: {}
+      }
     }
     ```
   </TabItem>
@@ -136,12 +136,12 @@ Compare this with a standard process node, which defines `add_cmd` and `start_cm
         name: "my_node",
         tag: "0.1.0",
       },
+      interfaces: {},
       runtime: {
         language: "rust",
         add_cmd: ["cargo", "build", "--release"],
         start_cmd: ["./target/release/my_node"]
-      },
-      interfaces: {}
+      }
     }
     ```
   </TabItem>
@@ -285,6 +285,7 @@ Add a `mount_paths` array to the `container` block inside `runtime` in `peppy.js
     name: "my_node",
     tag: "0.1.0",
   },
+  interfaces: {},
   runtime: {
     language: "python",
     container: {
@@ -294,8 +295,7 @@ Add a `mount_paths` array to the `container` block inside `runtime` in `peppy.js
         "/tmp/my_node_output:/output:rw"
       ]
     },
-  },
-  interfaces: {}
+  }
 }
 ```
 
@@ -328,8 +328,12 @@ Mount paths can reference runtime [parameters](/getting_started/parameters/) usi
     name: "uvc_camera",
     tag: "0.1.0",
   },
+  interfaces: {},
   runtime: {
     language: "rust",
+    parameters: {
+      device_path: "string",
+    },
     container: {
       def_file: "apptainer.def",
       mount_paths: [
@@ -337,10 +341,6 @@ Mount paths can reference runtime [parameters](/getting_started/parameters/) usi
       ]
     },
   },
-  parameters: {
-    device_path: "string",
-  },
-  interfaces: {}
 }
 ```
 
@@ -353,17 +353,17 @@ For nested parameters, use dot notation:
   // ...
   runtime: {
     // ...
+    parameters: {
+      video: {
+        device_path: "string",
+        frame_rate: "u16",
+      },
+    },
     container: {
       def_file: "apptainer.def",
       mount_paths: [
         "${parameters:video.device_path}:/dev/video0:rw"
       ]
-    },
-  },
-  parameters: {
-    video: {
-      device_path: "string",
-      frame_rate: "u16",
     },
   },
   // ...
@@ -389,6 +389,7 @@ You can pass additional command-line arguments directly to Apptainer or Lima usi
     name: "my_node",
     tag: "0.1.0",
   },
+  interfaces: {},
   runtime: {
     language: "python",
     container: {
@@ -396,8 +397,7 @@ You can pass additional command-line arguments directly to Apptainer or Lima usi
       apptainer_build_extra_args: ["--no-setgroups"],
       apptainer_run_extra_args: ["--no-setgroups"],
     },
-  },
-  interfaces: {}
+  }
 }
 ```
 

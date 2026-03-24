@@ -14,19 +14,6 @@
       "STS3XIAO_ESP32C3215"
     ],
   },
-  runtime: {
-    language: "rust",
-    start_cmd: [
-      // This programs compiles and flashes the program to the board
-      "espflash",
-      "flash",
-      "--compile",
-      // The heap doesn't exist in no_std envs, so this flag need to be set at compilation time
-      // The parsing of the jspn5 config can eventually be done on the host and passed down to the `espflash` program
-      "--peppy-runtime-config ${PEPPY_RUNTIME_CONFIG}",
-      "--to_device ${ESP32_DEVICE}" // This is an extra var that can be defined in the deployments
-    ]
-  },
   interfaces: {
     // `peppylib_no_std` will help expose this topic
     topics: {
@@ -52,5 +39,18 @@
         }
       ],
     },
-  }
+  },
+  runtime: {
+    language: "rust",
+    start_cmd: [
+      // This programs compiles and flashes the program to the board
+      "espflash",
+      "flash",
+      "--compile",
+      // The heap doesn't exist in no_std envs, so this flag need to be set at compilation time
+      // The parsing of the jspn5 config can eventually be done on the host and passed down to the `espflash` program
+      "--peppy-runtime-config ${PEPPY_RUNTIME_CONFIG}",
+      "--to_device ${ESP32_DEVICE}" // This is an extra var that can be defined in the deployments
+    ]
+  },
 }

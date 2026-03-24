@@ -83,17 +83,17 @@ mod tests {
                 name: "camera_driver",
                 tag: "2.1.0",
             },
-            runtime: {
-                language: "rust",
-                start_cmd: ["./target/release/camera_driver"],
-            },
             interfaces: {
                 topics: {
                     emits: [
                         { name: "/camera/image_raw" }
                     ]
                 }
-            }
+            },
+            runtime: {
+                language: "rust",
+                start_cmd: ["./target/release/camera_driver"],
+            },
         }"#;
         let config = NodeConfigParser::from_content(json5).unwrap();
         assert_eq!(config.manifest.name.as_str(), "camera_driver");

@@ -174,7 +174,7 @@ fn write_node_config_with_options(
                   {emits_topics}
                   {expects_topics}
                 }}
-              }}"#
+              }},"#
         )
     } else {
         String::new()
@@ -200,12 +200,12 @@ fn write_node_config_with_options(
                 tag: "{node_tag}",
                 {depends_on}
               },
+              {interfaces}
               runtime: {
                 language: "rust",
                 add_cmd: [{add_cmd_json5}],
                 start_cmd: [{start_cmd_json5}]
-              },
-              {interfaces}
+              }
             }"#
         .replace("{node_name}", node_name)
         .replace("{node_tag}", node_tag)
@@ -248,17 +248,17 @@ fn create_uvc_camera_repo(to_path: &Path, node_tag: &str) -> PathBuf {
                 name: "uvc_camera",
                 tag: "{node_tag}",
               },
-              runtime: {
-                language: "rust",
-                add_cmd: ["true"],
-                start_cmd: ["sleep", "60"]
-              },
               interfaces: {
                 topics: {
                   emits: [
                     { name: "camera_stream" }
                   ]
                 }
+              },
+              runtime: {
+                language: "rust",
+                add_cmd: ["true"],
+                start_cmd: ["sleep", "60"]
               }
             }"#
         .replace("{node_tag}", node_tag),

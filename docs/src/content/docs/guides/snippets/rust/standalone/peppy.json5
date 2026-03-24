@@ -4,13 +4,9 @@
     name: "standalone",
     tag: "0.1.0",
   },
+  interfaces: {},
   runtime: {
     language: "rust",
-    add_cmd: [
-      "cargo",
-      "build",
-      "--release"
-    ],
     // A bunch of fake parameters required to start our node
     parameters: {
       device: {
@@ -27,9 +23,13 @@
         encoding: "string",
       },
     },
+    add_cmd: [
+      "cargo",
+      "build",
+      "--release"
+    ],
     start_cmd: [
       "./target/release/standalone"
     ]
-  },
-  interfaces: {}
+  }
 }

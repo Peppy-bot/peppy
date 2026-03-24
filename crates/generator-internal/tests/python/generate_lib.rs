@@ -12,11 +12,6 @@ const PEPPY_JSON5_CONFIG: &str = r#"{
   schema_version: 1,
   manifest: { name: "test_node",
     tag: "0.1.0" },
-
-  runtime: { language: "python",
-    add_cmd: ["uv", "sync"],
-    start_cmd: ["uv", "run", "test_node"]
-  },
   interfaces: {
     topics: {
       emits: [
@@ -44,7 +39,12 @@ const PEPPY_JSON5_CONFIG: &str = r#"{
         }
       ]
     }
-  }
+  },
+
+  runtime: { language: "python",
+    add_cmd: ["uv", "sync"],
+    start_cmd: ["uv", "run", "test_node"]
+  },
 }"#;
 
 #[test]
@@ -152,11 +152,6 @@ fn generate_peppygen_python_lib_emitted_and_consumed_topics() {
             name: "{EXPOSED_NODE_NAME}",
             tag: "0.1.0",
           },
-          runtime: {
-            language: "python",
-            add_cmd: ["uv", "sync"],
-            start_cmd: ["uv", "run", "{EXPOSED_NODE_NAME}"]
-          },
           interfaces: {
             topics: {
               emits: [
@@ -169,7 +164,12 @@ fn generate_peppygen_python_lib_emitted_and_consumed_topics() {
                 }
               ]
             }
-          }
+          },
+          runtime: {
+            language: "python",
+            add_cmd: ["uv", "sync"],
+            start_cmd: ["uv", "run", "{EXPOSED_NODE_NAME}"]
+          },
         }"#
     .replace("{EXPOSED_NODE_NAME}", EXPOSED_NODE_NAME);
 
@@ -265,11 +265,6 @@ fn generate_peppygen_python_lib_exposed_and_consumed_services() {
             name: "{EXPOSED_NODE_NAME}",
             tag: "0.1.0",
           },
-          runtime: {
-            language: "python",
-            add_cmd: ["uv", "sync"],
-            start_cmd: ["uv", "run", "{EXPOSED_NODE_NAME}"]
-          },
           interfaces: {
             services: {
               exposes: [
@@ -285,7 +280,12 @@ fn generate_peppygen_python_lib_exposed_and_consumed_services() {
                 }
               ]
             }
-          }
+          },
+          runtime: {
+            language: "python",
+            add_cmd: ["uv", "sync"],
+            start_cmd: ["uv", "run", "{EXPOSED_NODE_NAME}"]
+          },
         }"#
     .replace("{EXPOSED_NODE_NAME}", EXPOSED_NODE_NAME);
 
@@ -394,11 +394,6 @@ fn generate_peppygen_python_lib_exposed_and_consumed_actions() {
             name: "{EXPOSED_NODE_NAME}",
             tag: "0.1.0",
           },
-          runtime: {
-            language: "python",
-            add_cmd: ["uv", "sync"],
-            start_cmd: ["uv", "run", "{EXPOSED_NODE_NAME}"]
-          },
           interfaces: {
             actions: {
               exposes: [
@@ -426,7 +421,12 @@ fn generate_peppygen_python_lib_exposed_and_consumed_actions() {
                 }
               ]
             }
-          }
+          },
+          runtime: {
+            language: "python",
+            add_cmd: ["uv", "sync"],
+            start_cmd: ["uv", "run", "{EXPOSED_NODE_NAME}"]
+          },
         }"#
     .replace("{EXPOSED_NODE_NAME}", EXPOSED_NODE_NAME);
 

@@ -4,20 +4,6 @@
     name: "hello_world_param",
     tag: "0.1.0",
   },
-  runtime: {
-    language: "rust",
-    add_cmd: [
-      "cargo",
-      "build",
-      "--release"
-    ],
-    parameters: {
-      name: "string",
-    },
-    start_cmd: [
-      "./target/release/hello_world_param"
-    ]
-  },
   interfaces: {
     topics: {
       emits: [
@@ -30,5 +16,19 @@
         }
       ],
     }
-  }
+  },
+  runtime: {
+    language: "rust",
+    parameters: {
+      name: "string",
+    },
+    add_cmd: [
+      "cargo",
+      "build",
+      "--release"
+    ],
+    start_cmd: [
+      "./target/release/hello_world_param"
+    ]
+  },
 }

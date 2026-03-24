@@ -4,6 +4,7 @@
     name: "{{ node_name }}",
     tag: "0.1.0",
   },
+  interfaces: {},
 {% if with_container %}
   runtime: {
     language: "python",
@@ -26,5 +27,4 @@
     ]
   },
 {% endif %}
-  interfaces: {}
 }

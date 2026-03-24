@@ -9,6 +9,16 @@
       ]
     },
   },
+  interfaces: {
+    topics: {
+      consumes: [
+        {
+          local_node_id: "hello_world_param",
+          name: "message_stream",
+        }
+      ],
+    }
+  },
   runtime: {
     language: "python",
     add_cmd: [
@@ -21,14 +31,4 @@
       "hello_receiver"
     ]
   },
-  interfaces: {
-    topics: {
-      consumes: [
-        {
-          local_node_id: "hello_world_param",
-          name: "message_stream",
-        }
-      ],
-    }
-  }
 }

@@ -18,10 +18,6 @@ fn service_dependency_resolved_when_dependency_added_first() {
                 ]
               },
             },
-            runtime: {
-              language: "rust",
-              start_cmd: ["brain"]
-            },
             interfaces: {
                 services: {
                     consumes: [
@@ -31,7 +27,11 @@ fn service_dependency_resolved_when_dependency_added_first() {
                         }
                     ]
                 }
-            }
+            },
+            runtime: {
+              language: "rust",
+              start_cmd: ["brain"]
+            },
         }"#,
     )
     .expect("valid dependent node config");
@@ -42,10 +42,6 @@ fn service_dependency_resolved_when_dependency_added_first() {
             manifest: {
               name: "lidar",
               tag: "1.0.0",
-            },
-            runtime: {
-              language: "rust",
-              start_cmd: ["lidar"]
             },
             interfaces: {
                 services: {
@@ -65,7 +61,11 @@ fn service_dependency_resolved_when_dependency_added_first() {
                         }
                     ]
                 }
-            }
+            },
+            runtime: {
+              language: "rust",
+              start_cmd: ["lidar"]
+            },
         }"#,
     )
     .expect("valid dependency node config");
@@ -130,10 +130,6 @@ fn service_dependency_fails_when_dependency_is_missing() {
                 ]
               },
             },
-            runtime: {
-              language: "rust",
-              start_cmd: ["brain"]
-            },
             interfaces: {
                 services: {
                     consumes: [
@@ -143,7 +139,11 @@ fn service_dependency_fails_when_dependency_is_missing() {
                         }
                     ]
                 }
-            }
+            },
+            runtime: {
+              language: "rust",
+              start_cmd: ["brain"]
+            },
         }"#,
     )
     .expect("valid dependent node config");
@@ -181,10 +181,6 @@ fn service_dependency_fails_when_service_not_exposed_by_dependency() {
                 ]
               },
             },
-            runtime: {
-              language: "rust",
-              start_cmd: ["brain"]
-            },
             interfaces: {
                 services: {
                     consumes: [
@@ -194,7 +190,11 @@ fn service_dependency_fails_when_service_not_exposed_by_dependency() {
                         }
                     ]
                 }
-            }
+            },
+            runtime: {
+              language: "rust",
+              start_cmd: ["brain"]
+            },
         }"#,
     )
     .expect("valid dependent node config");
@@ -206,10 +206,6 @@ fn service_dependency_fails_when_service_not_exposed_by_dependency() {
             manifest: {
               name: "lidar",
               tag: "1.0.0",
-            },
-            runtime: {
-              language: "rust",
-              start_cmd: ["lidar"]
             },
             interfaces: {
                 services: {
@@ -225,7 +221,11 @@ fn service_dependency_fails_when_service_not_exposed_by_dependency() {
                         }
                     ]
                 }
-            }
+            },
+            runtime: {
+              language: "rust",
+              start_cmd: ["lidar"]
+            },
         }"#,
     )
     .expect("valid dependency node config with wrong service");

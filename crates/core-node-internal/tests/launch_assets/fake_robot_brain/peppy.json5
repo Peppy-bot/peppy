@@ -14,16 +14,6 @@
       ]
     },
   },
-  runtime: {
-    language: "rust",
-    add_cmd: [
-      "true"
-    ],
-    start_cmd: [
-      "sleep",
-      "60"
-    ]
-  },
   interfaces: {
     // The brain receives the inputs from the camera
     topics: {
@@ -58,5 +48,15 @@
         }
       ],
     },
-  }
+  },
+  runtime: {
+    language: "rust",
+    add_cmd: [
+      "true"
+    ],
+    start_cmd: [
+      "sleep",
+      "60"
+    ]
+  },
 }

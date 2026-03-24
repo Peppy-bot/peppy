@@ -25,11 +25,6 @@ Each node is only aware of the interfaces it exposes and the ones it consumes, a
         name: "controller",
         tag: "0.1.0",
       },
-      runtime: {
-        language: "python",
-        add_cmd: ["uv", "sync"],
-        start_cmd: ["uv", "run", "controller"]
-      },
       interfaces: {
         topics: {
           emits: [],
@@ -43,7 +38,12 @@ Each node is only aware of the interfaces it exposes and the ones it consumes, a
           exposes: [],
           consumes: [],
         },
-      }
+      },
+      runtime: {
+        language: "python",
+        add_cmd: ["uv", "sync"],
+        start_cmd: ["uv", "run", "controller"]
+      },
     }
     ```
   </TabItem>
@@ -55,11 +55,6 @@ Each node is only aware of the interfaces it exposes and the ones it consumes, a
         name: "controller",
         tag: "0.1.0",
       },
-      runtime: {
-        language: "rust",
-        add_cmd: ["cargo", "build", "--release"],
-        start_cmd: ["./target/release/controller"]
-      },
       interfaces: {
         topics: {
           emits: [],
@@ -73,7 +68,12 @@ Each node is only aware of the interfaces it exposes and the ones it consumes, a
           exposes: [],
           consumes: [],
         },
-      }
+      },
+      runtime: {
+        language: "rust",
+        add_cmd: ["cargo", "build", "--release"],
+        start_cmd: ["./target/release/controller"]
+      },
     }
     ```
   </TabItem>

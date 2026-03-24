@@ -41,10 +41,6 @@ async fn node_info_shows_dependencies_from_consumed_interfaces() {
                     ]
                 }
             },
-            runtime: {
-                language: "rust",
-                start_cmd: ["sleep", "10"]
-            },
             interfaces: {
                 topics: {
                     consumes: [
@@ -63,7 +59,11 @@ async fn node_info_shows_dependencies_from_consumed_interfaces() {
                         { local_node_id: "navigation_node", name: "go_to_pose" }
                     ]
                 }
-            }
+            },
+            runtime: {
+                language: "rust",
+                start_cmd: ["sleep", "10"]
+            },
         }"#
     .replace("{NODE_NAME}", NODE_NAME)
     .replace("{NODE_TAG}", NODE_TAG);
@@ -191,17 +191,17 @@ async fn node_info_no_dependencies_when_no_consumes() {
                 name: "{NODE_NAME}",
                 tag: "{NODE_TAG}",
             },
-            runtime: {
-                language: "rust",
-                start_cmd: ["sleep", "10"]
-            },
             interfaces: {
                 topics: {
                     emits: [
                         { name: "output_data", qos_profile: "standard" }
                     ]
                 }
-            }
+            },
+            runtime: {
+                language: "rust",
+                start_cmd: ["sleep", "10"]
+            },
         }"#
     .replace("{NODE_NAME}", NODE_NAME)
     .replace("{NODE_TAG}", NODE_TAG);

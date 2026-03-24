@@ -14,6 +14,16 @@ fn add_instance_creates_new_entity() {
               name: "sensor",
               tag: "1.0.0",
             },
+            interfaces: {
+                topics: {
+                    emits: [
+                        {
+                          name: "data_stream",
+                          qos_profile: "sensor_data"
+                        }
+                    ]
+                }
+            },
             runtime: {
               language: "rust",
               start_cmd: ["sensor"]
@@ -90,6 +100,23 @@ fn add_instance_to_existing_entity() {
               name: "sensor",
               tag: "1.0.0",
             },
+            interfaces: {
+                topics: {
+                    emits: [
+                        {
+                          name: "data_stream",
+                          qos_profile: "sensor_data"
+                        }
+                    ]
+                },
+                services: {
+                    exposes: [
+                        {
+                          name: "calibrate"
+                        }
+                    ]
+                }
+            },
             runtime: {
               language: "rust",
               start_cmd: ["sensor"]
@@ -156,6 +183,16 @@ fn add_instance_with_specific_id() {
               name: "sensor",
               tag: "1.0.0",
             },
+            interfaces: {
+                topics: {
+                    emits: [
+                        {
+                          name: "data_stream",
+                          qos_profile: "sensor_data"
+                        }
+                    ]
+                }
+            },
             runtime: {
               language: "rust",
               start_cmd: ["sensor"]
@@ -198,6 +235,23 @@ fn remove_instance_from_entity_with_multiple_instances() {
             manifest: {
               name: "sensor",
               tag: "1.0.0",
+            },
+            interfaces: {
+                topics: {
+                    emits: [
+                        {
+                          name: "data_stream",
+                          qos_profile: "sensor_data"
+                        }
+                    ]
+                },
+                services: {
+                    exposes: [
+                        {
+                          name: "calibrate"
+                        }
+                    ]
+                }
             },
             runtime: {
               language: "rust",
@@ -262,6 +316,13 @@ fn remove_last_instance_keeps_entity_in_graph() {
               name: "sensor",
               tag: "1.0.0",
             },
+            interfaces: {
+                services: {
+                    exposes: [
+                        { name: "reset_sensor" }
+                    ]
+                }
+            },
             runtime: {
               language: "rust",
               start_cmd: ["sensor"]
@@ -315,6 +376,16 @@ fn remove_nonexistent_instance_returns_false() {
               name: "sensor",
               tag: "1.0.0",
             },
+            interfaces: {
+                services: {
+                    consumes: [
+                        {
+                          local_node_id: "lidar",
+                          name: "reset_sensor"
+                        }
+                    ]
+                }
+            },
             runtime: {
               language: "rust",
               start_cmd: ["sensor"]
@@ -361,6 +432,16 @@ fn reset_clears_all_except_core_node() {
               name: "sensor1",
               tag: "1.0.0",
             },
+            interfaces: {
+                services: {
+                    consumes: [
+                        {
+                          local_node_id: "uvc_camera",
+                          name: "reset_sensor"
+                        }
+                    ]
+                }
+            },
             runtime: {
               language: "rust",
               start_cmd: ["sensor1"]
@@ -375,6 +456,25 @@ fn reset_clears_all_except_core_node() {
             manifest: {
               name: "sensor2",
               tag: "1.0.0",
+            },
+            interfaces: {
+                services: {
+                    exposes: [
+                        {
+                          name: "reset_sensor",
+                          request_message_format: {
+                            force: "bool"
+                          },
+                          response_message_format: {
+                            success: "bool",
+                            error_message: {
+                              $type: "string",
+                              $optional: true
+                            }
+                          }
+                        }
+                    ]
+                }
             },
             runtime: {
               language: "rust",
@@ -418,6 +518,16 @@ fn spawning_multiple_instances_on_same_entity() {
             manifest: {
               name: "sensor",
               tag: "1.0.0",
+            },
+            interfaces: {
+                services: {
+                    consumes: [
+                        {
+                          local_node_id: "lidar",
+                          name: "reset_sensor"
+                        }
+                    ]
+                }
             },
             runtime: {
               language: "rust",
@@ -484,10 +594,6 @@ fn adding_same_entity_with_different_interfaces_overwrites_when_no_dependents() 
               name: "sensor",
               tag: "1.0.0",
             },
-            runtime: {
-              language: "rust",
-              start_cmd: ["sensor"]
-            },
             interfaces: {
                 topics: {
                     emits: [
@@ -497,7 +603,11 @@ fn adding_same_entity_with_different_interfaces_overwrites_when_no_dependents() 
                         }
                     ]
                 }
-            }
+            },
+            runtime: {
+              language: "rust",
+              start_cmd: ["sensor"]
+            },
         }"#,
     )
     .expect("valid node config");
@@ -509,10 +619,6 @@ fn adding_same_entity_with_different_interfaces_overwrites_when_no_dependents() 
             manifest: {
               name: "sensor",
               tag: "1.0.0",
-            },
-            runtime: {
-              language: "rust",
-              start_cmd: ["sensor"]
             },
             interfaces: {
                 topics: {
@@ -530,7 +636,11 @@ fn adding_same_entity_with_different_interfaces_overwrites_when_no_dependents() 
                         }
                     ]
                 }
-            }
+            },
+            runtime: {
+              language: "rust",
+              start_cmd: ["sensor"]
+            },
         }"#,
     )
     .expect("valid node config");
@@ -587,20 +697,20 @@ fn adding_same_name_with_different_tag_and_different_interfaces_succeeds() {
               name: "sensor",
               tag: "1.0.0",
             },
+            interfaces: {
+                services: {
+                    consumes: [
+                        {
+                          local_node_id: "lidar",
+                          name: "reset_sensor"
+                        }
+                    ]
+                }
+            },
             runtime: {
               language: "rust",
               start_cmd: ["sensor"]
             },
-            interfaces: {
-                topics: {
-                    emits: [
-                        {
-                          name: "data_stream",
-                          qos_profile: "sensor_data"
-                        }
-                    ]
-                }
-            }
         }"#,
     )
     .expect("valid node config");
@@ -613,27 +723,17 @@ fn adding_same_name_with_different_tag_and_different_interfaces_succeeds() {
               name: "sensor",
               tag: "2.0.0",
             },
+            interfaces: {
+                services: {
+                    exposes: [
+                        { name: "new_service" }
+                    ]
+                }
+            },
             runtime: {
               language: "rust",
               start_cmd: ["sensor"]
             },
-            interfaces: {
-                topics: {
-                    emits: [
-                        {
-                          name: "data_stream",
-                          qos_profile: "sensor_data"
-                        }
-                    ]
-                },
-                services: {
-                    exposes: [
-                        {
-                          name: "calibrate"
-                        }
-                    ]
-                }
-            }
         }"#,
     )
     .expect("valid node config");
@@ -735,17 +835,17 @@ fn node_stack_wires_dependencies_for_dependants() {
               name: "lidar",
               tag: "1.0.0",
             },
-            runtime: {
-              language: "rust",
-              start_cmd: ["lidar"]
-            },
             interfaces: {
                 services: {
                     exposes: [
                         { name: "reset_sensor" }
                     ]
                 }
-            }
+            },
+            runtime: {
+              language: "rust",
+              start_cmd: ["lidar"]
+            },
         }"#,
     )
     .expect("valid dependency node config");
@@ -762,10 +862,6 @@ fn node_stack_wires_dependencies_for_dependants() {
                 ]
               },
             },
-            runtime: {
-              language: "rust",
-              start_cmd: ["brain"]
-            },
             interfaces: {
                 services: {
                     consumes: [
@@ -775,7 +871,11 @@ fn node_stack_wires_dependencies_for_dependants() {
                         }
                     ]
                 }
-            }
+            },
+            runtime: {
+              language: "rust",
+              start_cmd: ["brain"]
+            },
         }"#,
     )
     .expect("valid dependent node config");
@@ -811,20 +911,17 @@ fn dependency_fails_when_node_name_mismatches() {
                 ]
               },
             },
+            interfaces: {
+                services: {
+                    exposes: [
+                        { name: "reset_sensor" }
+                    ]
+                }
+            },
             runtime: {
               language: "rust",
               start_cmd: ["brain"]
             },
-            interfaces: {
-                services: {
-                    consumes: [
-                        {
-                          local_node_id: "uvc_camera",
-                          name: "reset_sensor"
-                        }
-                    ]
-                }
-            }
         }"#,
     )
     .expect("valid dependent node config");
@@ -840,25 +937,6 @@ fn dependency_fails_when_node_name_mismatches() {
               language: "rust",
               start_cmd: ["lidar"]
             },
-            interfaces: {
-                services: {
-                    exposes: [
-                        {
-                          name: "reset_sensor",
-                          request_message_format: {
-                            force: "bool"
-                          },
-                          response_message_format: {
-                            success: "bool",
-                            error_message: {
-                              $type: "string",
-                              $optional: true
-                            }
-                          }
-                        }
-                    ]
-                }
-            }
         }"#,
     )
     .expect("valid dependency node config");
@@ -909,16 +987,6 @@ fn dependency_fails_when_node_tag_mismatches() {
               language: "rust",
               start_cmd: ["brain"]
             },
-            interfaces: {
-                services: {
-                    consumes: [
-                        {
-                          local_node_id: "lidar",
-                          name: "reset_sensor"
-                        }
-                    ]
-                }
-            }
         }"#,
     )
     .expect("valid dependent node config");
@@ -934,25 +1002,6 @@ fn dependency_fails_when_node_tag_mismatches() {
               language: "rust",
               start_cmd: ["lidar"]
             },
-            interfaces: {
-                services: {
-                    exposes: [
-                        {
-                          name: "reset_sensor",
-                          request_message_format: {
-                            force: "bool"
-                          },
-                          response_message_format: {
-                            success: "bool",
-                            error_message: {
-                              $type: "string",
-                              $optional: true
-                            }
-                          }
-                        }
-                    ]
-                }
-            }
         }"#,
     )
     .expect("valid dependency node config");
@@ -993,17 +1042,17 @@ fn overwriting_existing_node_fails_if_node_has_dependencies() {
               name: "lidar",
               tag: "1.0.0",
             },
-            runtime: {
-              language: "rust",
-              start_cmd: ["lidar"]
-            },
             interfaces: {
                 services: {
                     exposes: [
                         { name: "reset_sensor" }
                     ]
                 }
-            }
+            },
+            runtime: {
+              language: "rust",
+              start_cmd: ["lidar"]
+            },
         }"#,
     )
     .expect("valid dependency node config");
@@ -1020,10 +1069,6 @@ fn overwriting_existing_node_fails_if_node_has_dependencies() {
                 ]
               },
             },
-            runtime: {
-              language: "rust",
-              start_cmd: ["brain"]
-            },
             interfaces: {
                 services: {
                     consumes: [
@@ -1033,7 +1078,11 @@ fn overwriting_existing_node_fails_if_node_has_dependencies() {
                         }
                     ]
                 }
-            }
+            },
+            runtime: {
+              language: "rust",
+              start_cmd: ["brain"]
+            },
         }"#,
     )
     .expect("valid dependent node config");
@@ -1045,17 +1094,17 @@ fn overwriting_existing_node_fails_if_node_has_dependencies() {
               name: "lidar",
               tag: "1.0.0",
             },
-            runtime: {
-              language: "rust",
-              start_cmd: ["lidar"]
-            },
             interfaces: {
                 services: {
                     exposes: [
                         { name: "new_service" }
                     ]
                 }
-            }
+            },
+            runtime: {
+              language: "rust",
+              start_cmd: ["lidar"]
+            },
         }"#,
     )
     .expect("valid dependency node config");
@@ -1183,13 +1232,6 @@ fn updating_start_cmd_succeeds_even_when_node_has_dependents() {
               language: "rust",
               start_cmd: ["./old_lidar"]
             },
-            interfaces: {
-                services: {
-                    exposes: [
-                        { name: "reset_sensor" }
-                    ]
-                }
-            }
         }"#,
     )
     .expect("valid dependency node config");
@@ -1210,16 +1252,6 @@ fn updating_start_cmd_succeeds_even_when_node_has_dependents() {
               language: "rust",
               start_cmd: ["brain"]
             },
-            interfaces: {
-                services: {
-                    consumes: [
-                        {
-                          local_node_id: "lidar",
-                          name: "reset_sensor"
-                        }
-                    ]
-                }
-            }
         }"#,
     )
     .expect("valid dependent node config");
@@ -1236,13 +1268,6 @@ fn updating_start_cmd_succeeds_even_when_node_has_dependents() {
               language: "rust",
               start_cmd: ["./new_lidar"]
             },
-            interfaces: {
-                services: {
-                    exposes: [
-                        { name: "reset_sensor" }
-                    ]
-                }
-            }
         }"#,
     )
     .expect("valid dependency node config");

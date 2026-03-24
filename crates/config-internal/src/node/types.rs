@@ -67,9 +67,9 @@ impl Toolchain {
 pub struct NodeConfig {
     pub schema_version: SchemaVersion,
     pub manifest: Manifest,
-    pub runtime: Runtime,
     #[serde(default)]
     pub interfaces: Interfaces,
+    pub runtime: Runtime,
 }
 
 /// Validated node name. Lowercase letters, digits, '_' and '-' only.

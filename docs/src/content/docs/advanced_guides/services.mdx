@@ -22,11 +22,6 @@ Each service defines a `name`, an optional `request_message_format`, and an opti
     name: "uvc_camera",
     tag: "0.1.0",
   },
-  runtime: {
-    language: "rust",
-    add_cmd: ["cargo", "build", "--release"],
-    start_cmd: ["./target/release/uvc_camera"]
-  },
   interfaces: {
     services: {
       exposes: [
@@ -54,7 +49,12 @@ Each service defines a `name`, an optional `request_message_format`, and an opti
         },
       ],
     },
-  }
+  },
+  runtime: {
+    language: "rust",
+    add_cmd: ["cargo", "build", "--release"],
+    start_cmd: ["./target/release/uvc_camera"]
+  },
 }
 ```
 
@@ -151,11 +151,6 @@ Dependencies are declared in `manifest.depends_on` and referenced by `local_node
       ]
     },
   },
-  runtime: {
-    language: "rust",
-    add_cmd: ["cargo", "build", "--release"],
-    start_cmd: ["./target/release/robot_brain"]
-  },
   interfaces: {
     services: {
       consumes: [
@@ -165,7 +160,12 @@ Dependencies are declared in `manifest.depends_on` and referenced by `local_node
         },
       ],
     },
-  }
+  },
+  runtime: {
+    language: "rust",
+    add_cmd: ["cargo", "build", "--release"],
+    start_cmd: ["./target/release/robot_brain"]
+  },
 }
 ```
 

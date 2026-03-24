@@ -15,17 +15,6 @@
       ]
     },
   },
-  runtime: {
-    language: "rust",
-    add_cmd: [
-      "cargo",
-      "build",
-      "--release"
-    ],
-    start_cmd: [
-      "./target/release/brain"
-    ]
-  },
   interfaces: {
     topics: {
       consumes: [
@@ -55,5 +44,16 @@
         }
       ],
     },
-  }
+  },
+  runtime: {
+    language: "rust",
+    add_cmd: [
+      "cargo",
+      "build",
+      "--release"
+    ],
+    start_cmd: [
+      "./target/release/brain"
+    ]
+  },
 }

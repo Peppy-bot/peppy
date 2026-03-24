@@ -8,15 +8,6 @@
       "controller",
     ],
   },
-  runtime: {
-    language: "rust",
-    start_cmd: [
-      "cargo",
-      "run",
-      "--release"
-    ]
-  },
-  parameters: {},
   interfaces: {
     actions: {
       exposes: [
@@ -60,5 +51,14 @@
         }
       ],
     },
-  }
+  },
+  runtime: {
+    language: "rust",
+    parameters: {},
+    start_cmd: [
+      "cargo",
+      "run",
+      "--release"
+    ]
+  },
 }

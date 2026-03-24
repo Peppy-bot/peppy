@@ -4,21 +4,6 @@
     name: "hello_world_param",
     tag: "0.1.0",
   },
-  runtime: {
-    language: "python",
-    add_cmd: [
-      "uv",
-      "sync"
-    ],
-    parameters: {
-      name: "string",
-    },
-    start_cmd: [
-      "uv",
-      "run",
-      "hello_world_param"
-    ]
-  },
   interfaces: {
     topics: {
       emits: [
@@ -31,5 +16,20 @@
         }
       ],
     }
-  }
+  },
+  runtime: {
+    language: "python",
+    parameters: {
+      name: "string",
+    },
+    add_cmd: [
+      "uv",
+      "sync"
+    ],
+    start_cmd: [
+      "uv",
+      "run",
+      "hello_world_param"
+    ]
+  },
 }

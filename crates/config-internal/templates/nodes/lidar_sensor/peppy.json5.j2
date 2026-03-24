@@ -9,30 +9,6 @@
       "lidar"
     ],
   },
-  runtime: {
-    language: "rust",
-    start_cmd: [
-      "cargo",
-      "run",
-      "--release"
-    ]
-  },
-  parameters: {
-    device: {
-      physical: "string",
-      sim: "string",
-      priority: "string"
-    },
-    lidar_point: {
-      x: "f32",
-      y: "f32",
-      z: "f32",
-      intensity: "f32",
-      return_type: "u8",
-      classification: "u8",
-      timestamp: "time",
-    }
-  },
   interfaces: {
     topics: {
       emits: [
@@ -76,5 +52,29 @@
         },
       ],
     },
-  }
+  },
+  runtime: {
+    language: "rust",
+    parameters: {
+      device: {
+        physical: "string",
+        sim: "string",
+        priority: "string"
+      },
+      lidar_point: {
+        x: "f32",
+        y: "f32",
+        z: "f32",
+        intensity: "f32",
+        return_type: "u8",
+        classification: "u8",
+        timestamp: "time",
+      }
+    },
+    start_cmd: [
+      "cargo",
+      "run",
+      "--release"
+    ]
+  },
 }

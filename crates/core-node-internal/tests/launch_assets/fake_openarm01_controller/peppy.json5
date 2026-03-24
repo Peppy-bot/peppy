@@ -8,16 +8,6 @@
       "openarm"
     ],
   },
-  runtime: {
-    language: "rust",
-    add_cmd: [
-      "true"
-    ],
-    start_cmd: [
-      "sleep",
-      "60"
-    ]
-  },
   interfaces: {
     topics: {
       emits: [],
@@ -104,5 +94,15 @@
       ],
       consumes: [],
     },
-  }
+  },
+  runtime: {
+    language: "rust",
+    add_cmd: [
+      "true"
+    ],
+    start_cmd: [
+      "sleep",
+      "60"
+    ]
+  },
 }

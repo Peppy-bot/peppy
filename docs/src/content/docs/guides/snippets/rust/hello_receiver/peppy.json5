@@ -9,6 +9,16 @@
       ]
     },
   },
+  interfaces: {
+    topics: {
+      consumes: [
+        {
+          local_node_id: "hello_world_param",
+          name: "message_stream",
+        }
+      ],
+    }
+  },
   runtime: {
     language: "rust",
     add_cmd: [
@@ -20,14 +30,4 @@
       "./target/release/hello_receiver"
     ]
   },
-  interfaces: {
-    topics: {
-      consumes: [
-        {
-          local_node_id: "hello_world_param",
-          name: "message_stream",
-        }
-      ],
-    }
-  }
 }

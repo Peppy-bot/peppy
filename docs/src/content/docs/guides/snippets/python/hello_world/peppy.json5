@@ -4,18 +4,6 @@
     name: "hello_world",
     tag: "0.1.0",
   },
-  runtime: {
-    language: "python",
-    add_cmd: [
-      "uv",
-      "sync"
-    ],
-    start_cmd: [
-      "uv",
-      "run",
-      "hello_world"
-    ]
-  },
   interfaces: {
     topics: {
       emits: [
@@ -28,5 +16,17 @@
         }
       ],
     }
-  }
+  },
+  runtime: {
+    language: "python",
+    add_cmd: [
+      "uv",
+      "sync"
+    ],
+    start_cmd: [
+      "uv",
+      "run",
+      "hello_world"
+    ]
+  },
 }

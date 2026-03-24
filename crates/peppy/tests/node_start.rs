@@ -255,20 +255,6 @@ async fn node_run_command_with_args_succeeds() {
   schema_version: 1,
   manifest: { name: "test_run_args_node",
     tag: "0.1.0" },
-
-  runtime: {
-    language: "rust",
-    parameters: {
-      resolution: "string",
-      frequency: "i64",
-      enabled: "bool"
-    },
-    start_cmd: [
-      "cargo",
-      "run",
-      "--release"
-    ]
-  },
   interfaces: {
     topics: {
       emits: [
@@ -282,7 +268,20 @@ async fn node_run_command_with_args_succeeds() {
         }
       ],
     }
-  }
+  },
+  runtime: {
+    language: "rust",
+    parameters: {
+      resolution: "string",
+      frequency: "i64",
+      enabled: "bool"
+    },
+    start_cmd: [
+      "cargo",
+      "run",
+      "--release"
+    ]
+  },
 }
 "#;
     std::fs::write(&peppy_json5_path, peppy_config).expect("peppy.json5 should be writable");

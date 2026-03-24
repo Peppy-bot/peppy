@@ -111,6 +111,11 @@ fn create_versioned_nodes_git_repo(to_path: impl AsRef<Path>) -> PathBuf {
                 name: "uvc_camera",
                 tag: "0.1.0",
             },
+            interfaces: {
+                topics: {
+                    emits: [{ name: "/example" }]
+                }
+            },
             runtime: {
                 language: "rust",
                 start_cmd: ["sleep", "10"]
@@ -150,6 +155,13 @@ fn create_versioned_nodes_git_repo(to_path: impl AsRef<Path>) -> PathBuf {
             manifest: {
                 name: "uvc_camera",
                 tag: "0.2.0",
+            },
+            interfaces: {
+                services: {
+                    exposes: [
+                        { name: "reset_sensor" }
+                    ]
+                }
             },
             runtime: {
                 language: "rust",
@@ -200,6 +212,16 @@ async fn listen_for_node_fs_add_success() {
             manifest: {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
+            },
+            interfaces: {
+                services: {
+                    consumes: [
+                        {
+                          local_node_id: "{DEPENDENCY_NODE_NAME}",
+                          name: "reset_sensor"
+                        }
+                    ]
+                }
             },
             runtime: {
                 language: "rust",
@@ -285,6 +307,16 @@ async fn listen_for_node_add_with_container_success() {
         manifest: {
             name: "TARGET_NODE_NAME",
             tag: "TARGET_NODE_TAG",
+        },
+        interfaces: {
+            topics: {
+                consumes: [
+                    {
+                        local_node_id: "non_existent_node",
+                        name: "sensor_data"
+                    }
+                ]
+            }
         },
         // Using `container` let `peppy` manage the node internally
         runtime: {
@@ -580,6 +612,13 @@ async fn listen_for_node_http_add_success() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
             },
+            interfaces: {
+                services: {
+                    exposes: [
+                        { name: "new_service" }
+                    ]
+                }
+            },
             runtime: {
                 language: "rust",
                 start_cmd: ["sleep", "10"]
@@ -695,6 +734,11 @@ async fn listen_for_node_add_no_config_found() {
             manifest: {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
+            },
+            interfaces: {
+                topics: {
+                    emits: [{ name: "/example" }]
+                }
             },
             runtime: {
                 language: "rust",
@@ -885,16 +929,6 @@ async fn listen_for_node_add_dependency_not_resolved() {
             language: "rust",
             start_cmd: ["sleep", "10"],
         },
-        interfaces: {
-            topics: {
-                consumes: [
-                    {
-                        local_node_id: "non_existent_node",
-                        name: "sensor_data"
-                    }
-                ]
-            }
-        }
     }"#;
     write_peppy_json5(source_dir.path(), peppy_json5);
 
@@ -953,6 +987,11 @@ async fn listen_for_node_add_same_node_same_tags_overwrites_when_no_dependents()
                 name: "{NODE_NAME}",
                 tag: "{NODE_TAG}",
             },
+            interfaces: {
+                topics: {
+                    emits: [{ name: "wrong_topic_name" }]
+                }
+            },
             runtime: {
                 language: "rust",
                 start_cmd: ["sleep", "10"]
@@ -993,15 +1032,15 @@ async fn listen_for_node_add_same_node_same_tags_overwrites_when_no_dependents()
                 name: "{NODE_NAME}",
                 tag: "{NODE_TAG}",
             },
-            runtime: {
-                language: "rust",
-                start_cmd: ["sleep", "10"]
-            },
             interfaces: {
                 topics: {
                     emits: [{ name: "/example" }]
                 }
-            }
+            },
+            runtime: {
+                language: "rust",
+                start_cmd: ["sleep", "10"]
+            },
         }"#
     .replace("{NODE_NAME}", NODE_NAME)
     .replace("{NODE_TAG}", NODE_TAG);
@@ -1076,17 +1115,17 @@ async fn listen_for_node_add_same_node_same_tags_fails_when_node_has_dependents(
                 name: "{DEPENDENCY_NODE_NAME}",
                 tag: "{DEPENDENCY_NODE_TAG}",
             },
-            runtime: {
-                language: "rust",
-                start_cmd: ["sleep", "10"]
-            },
             interfaces: {
                 services: {
                     exposes: [
                         { name: "reset_sensor" }
                     ]
                 }
-            }
+            },
+            runtime: {
+                language: "rust",
+                start_cmd: ["sleep", "10"]
+            },
         }"#
     .replace("{DEPENDENCY_NODE_NAME}", DEPENDENCY_NODE_NAME)
     .replace("{DEPENDENCY_NODE_TAG}", DEPENDENCY_NODE_TAG);
@@ -1119,10 +1158,6 @@ async fn listen_for_node_add_same_node_same_tags_fails_when_node_has_dependents(
                     ]
                 },
             },
-            runtime: {
-                language: "rust",
-                start_cmd: ["sleep", "10"]
-            },
             interfaces: {
                 services: {
                     consumes: [
@@ -1132,7 +1167,11 @@ async fn listen_for_node_add_same_node_same_tags_fails_when_node_has_dependents(
                         }
                     ]
                 }
-            }
+            },
+            runtime: {
+                language: "rust",
+                start_cmd: ["sleep", "10"]
+            },
         }"#
     .replace("{DEPENDENT_NODE_NAME}", DEPENDENT_NODE_NAME)
     .replace("{DEPENDENT_NODE_TAG}", DEPENDENT_NODE_TAG)
@@ -1169,17 +1208,17 @@ async fn listen_for_node_add_same_node_same_tags_fails_when_node_has_dependents(
                 name: "{DEPENDENCY_NODE_NAME}",
                 tag: "{DEPENDENCY_NODE_TAG}",
             },
-            runtime: {
-                language: "rust",
-                start_cmd: ["sleep", "10"]
-            },
             interfaces: {
                 services: {
                     exposes: [
                         { name: "new_service" }
                     ]
                 }
-            }
+            },
+            runtime: {
+                language: "rust",
+                start_cmd: ["sleep", "10"]
+            },
         }"#
     .replace("{DEPENDENCY_NODE_NAME}", DEPENDENCY_NODE_NAME)
     .replace("{DEPENDENCY_NODE_TAG}", DEPENDENCY_NODE_TAG);
@@ -1241,6 +1280,13 @@ async fn listen_for_node_add_same_node_different_tags_create_two_entities() {
                 name: "{NODE_NAME}",
                 tag: "1.0.0",
             },
+            interfaces: {
+                services: {
+                    exposes: [
+                        { name: "new_service" }
+                    ]
+                }
+            },
             runtime: {
                 language: "rust",
                 start_cmd: ["sleep", "10"]
@@ -1271,6 +1317,13 @@ async fn listen_for_node_add_same_node_different_tags_create_two_entities() {
             manifest: {
                 name: "{NODE_NAME}",
                 tag: "2.0.0",
+            },
+            interfaces: {
+                services: {
+                    exposes: [
+                        { name: "reset_sensor" }
+                    ]
+                }
             },
             runtime: {
                 language: "rust",
@@ -1327,6 +1380,16 @@ async fn listen_for_node_add_copies_files_to_storage() {
             manifest: {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
+            },
+            interfaces: {
+                services: {
+                    consumes: [
+                        {
+                          local_node_id: "{DEPENDENCY_NODE_NAME}",
+                          name: "reset_sensor"
+                        }
+                    ]
+                }
             },
             runtime: {
                 language: "rust",
@@ -2096,11 +2159,6 @@ async fn node_add_same_node_shutdown_existing_instances() {
                 language: "rust",
                 start_cmd: ["sleep", "10"]
             },
-            interfaces: {
-                topics: {
-                    emits: [{ name: "/example" }]
-                }
-            }
         }"#
     .replace("{NODE_NAME}", NODE_NAME)
     .replace("{NODE_TAG}", NODE_TAG);
@@ -2372,11 +2430,6 @@ async fn listen_for_node_add_fails_runs_add_cmd_on_missing_node_dependency() {
             ]
           },
         },
-        runtime: {
-          language: "rust",
-          add_cmd: ["sh", "-c", "touch MARKER_PATH && exit 1"],
-          start_cmd: ["sleep", "10"]
-        },
         interfaces: {
           topics: {
             consumes: [
@@ -2386,6 +2439,11 @@ async fn listen_for_node_add_fails_runs_add_cmd_on_missing_node_dependency() {
               },
             ],
           },
+        },
+        runtime: {
+          language: "rust",
+          add_cmd: ["sh", "-c", "touch MARKER_PATH && exit 1"],
+          start_cmd: ["sleep", "10"]
         },
     }"#
     .replace("TARGET_NODE_NAME", TARGET_NODE_NAME)
@@ -2460,11 +2518,6 @@ async fn listen_for_node_add_fails_on_missing_interface_even_when_dependency_exi
                 language: "rust",
                 start_cmd: ["sleep", "10"]
             },
-            interfaces: {
-                topics: {
-                    emits: [{ name: "wrong_topic_name" }]
-                }
-            }
         }"#
     .replace("{DEPENDENCY_NODE_NAME}", DEPENDENCY_NODE_NAME)
     .replace("{DEPENDENCY_NODE_TAG}", DEPENDENCY_NODE_TAG);
@@ -2509,11 +2562,6 @@ async fn listen_for_node_add_fails_on_missing_interface_even_when_dependency_exi
             ]
           },
         },
-        runtime: {
-          language: "rust",
-          add_cmd: ["sh", "-c", "touch MARKER_PATH && exit 1"],
-          start_cmd: ["sleep", "10"]
-        },
         interfaces: {
           topics: {
             consumes: [
@@ -2523,6 +2571,11 @@ async fn listen_for_node_add_fails_on_missing_interface_even_when_dependency_exi
               },
             ],
           },
+        },
+        runtime: {
+          language: "rust",
+          add_cmd: ["sh", "-c", "touch MARKER_PATH && exit 1"],
+          start_cmd: ["sleep", "10"]
         },
     }"#
     .replace("TARGET_NODE_NAME", TARGET_NODE_NAME)
@@ -2876,17 +2929,17 @@ async fn node_add_same_node_with_running_instance_and_dependents_succeeds() {
                 name: "{DEPENDENCY_NODE_NAME}",
                 tag: "{DEPENDENCY_NODE_TAG}",
             },
-            runtime: {
-                language: "rust",
-                start_cmd: ["sleep", "10"]
-            },
             interfaces: {
                 services: {
                     exposes: [
                         { name: "reset_sensor" }
                     ]
                 }
-            }
+            },
+            runtime: {
+                language: "rust",
+                start_cmd: ["sleep", "10"]
+            },
         }"#
     .replace("{DEPENDENCY_NODE_NAME}", DEPENDENCY_NODE_NAME)
     .replace("{DEPENDENCY_NODE_TAG}", DEPENDENCY_NODE_TAG);
@@ -2919,10 +2972,6 @@ async fn node_add_same_node_with_running_instance_and_dependents_succeeds() {
                     ]
                 },
             },
-            runtime: {
-                language: "rust",
-                start_cmd: ["sleep", "10"]
-            },
             interfaces: {
                 services: {
                     consumes: [
@@ -2932,7 +2981,11 @@ async fn node_add_same_node_with_running_instance_and_dependents_succeeds() {
                         }
                     ]
                 }
-            }
+            },
+            runtime: {
+                language: "rust",
+                start_cmd: ["sleep", "10"]
+            },
         }"#
     .replace("{DEPENDENT_NODE_NAME}", DEPENDENT_NODE_NAME)
     .replace("{DEPENDENT_NODE_TAG}", DEPENDENT_NODE_TAG)
@@ -3081,17 +3134,17 @@ async fn node_add_same_node_changing_interface_with_running_instance_and_depende
                 name: "{DEPENDENCY_NODE_NAME}",
                 tag: "{DEPENDENCY_NODE_TAG}",
             },
-            runtime: {
-                language: "rust",
-                start_cmd: ["sleep", "10"]
-            },
             interfaces: {
                 services: {
                     exposes: [
                         { name: "reset_sensor" }
                     ]
                 }
-            }
+            },
+            runtime: {
+                language: "rust",
+                start_cmd: ["sleep", "10"]
+            },
         }"#
     .replace("{DEPENDENCY_NODE_NAME}", DEPENDENCY_NODE_NAME)
     .replace("{DEPENDENCY_NODE_TAG}", DEPENDENCY_NODE_TAG);
@@ -3124,10 +3177,6 @@ async fn node_add_same_node_changing_interface_with_running_instance_and_depende
                     ]
                 },
             },
-            runtime: {
-                language: "rust",
-                start_cmd: ["sleep", "10"]
-            },
             interfaces: {
                 services: {
                     consumes: [
@@ -3137,7 +3186,11 @@ async fn node_add_same_node_changing_interface_with_running_instance_and_depende
                         }
                     ]
                 }
-            }
+            },
+            runtime: {
+                language: "rust",
+                start_cmd: ["sleep", "10"]
+            },
         }"#
     .replace("{DEPENDENT_NODE_NAME}", DEPENDENT_NODE_NAME)
     .replace("{DEPENDENT_NODE_TAG}", DEPENDENT_NODE_TAG)
@@ -3206,17 +3259,17 @@ async fn node_add_same_node_changing_interface_with_running_instance_and_depende
                 name: "{DEPENDENCY_NODE_NAME}",
                 tag: "{DEPENDENCY_NODE_TAG}",
             },
-            runtime: {
-                language: "rust",
-                start_cmd: ["sleep", "10"]
-            },
             interfaces: {
                 services: {
                     exposes: [
                         { name: "new_service" }
                     ]
                 }
-            }
+            },
+            runtime: {
+                language: "rust",
+                start_cmd: ["sleep", "10"]
+            },
         }"#
     .replace("{DEPENDENCY_NODE_NAME}", DEPENDENCY_NODE_NAME)
     .replace("{DEPENDENCY_NODE_TAG}", DEPENDENCY_NODE_TAG);
@@ -3300,13 +3353,6 @@ async fn node_add_same_node_with_running_instance_and_dependents_fails_on_stoppe
                 language: "rust",
                 start_cmd: ["sleep", "10"]
             },
-            interfaces: {
-                services: {
-                    exposes: [
-                        { name: "reset_sensor" }
-                    ]
-                }
-            }
         }"#
     .replace("{DEPENDENCY_NODE_NAME}", DEPENDENCY_NODE_NAME)
     .replace("{DEPENDENCY_NODE_TAG}", DEPENDENCY_NODE_TAG);
@@ -3343,16 +3389,6 @@ async fn node_add_same_node_with_running_instance_and_dependents_fails_on_stoppe
                 language: "rust",
                 start_cmd: ["sleep", "10"]
             },
-            interfaces: {
-                services: {
-                    consumes: [
-                        {
-                          local_node_id: "{DEPENDENCY_NODE_NAME}",
-                          name: "reset_sensor"
-                        }
-                    ]
-                }
-            }
         }"#
     .replace("{DEPENDENT_NODE_NAME}", DEPENDENT_NODE_NAME)
     .replace("{DEPENDENT_NODE_TAG}", DEPENDENT_NODE_TAG)

@@ -15,6 +15,7 @@ const NODE_EXAMPLE: &str = r#"
       "usb",
     ],
   },
+  interfaces: {},
   runtime: {
     language: "rust",
     parameters: {
@@ -37,8 +38,7 @@ const NODE_EXAMPLE: &str = r#"
       "run",
       "--release"
     ],
-  },
-  interfaces: {}
+  }
 }
 "#;
 
@@ -54,6 +54,7 @@ const INVALID_PARAMETERS_NODE_EXAMPLE: &str = r#"
       "usb",
     ],
   },
+  interfaces: {},
   runtime: {
     language: "rust",
     parameters: {
@@ -79,8 +80,7 @@ const INVALID_PARAMETERS_NODE_EXAMPLE: &str = r#"
       "run",
       "--release"
     ],
-  },
-  interfaces: {}
+  }
 }
 "#;
 
@@ -96,6 +96,7 @@ const NESTED_STRUCT_COLLISION_NODE_EXAMPLE: &str = r#"
       "usb",
     ],
   },
+  interfaces: {},
   runtime: {
     language: "rust",
     parameters: {
@@ -117,8 +118,7 @@ const NESTED_STRUCT_COLLISION_NODE_EXAMPLE: &str = r#"
       "run",
       "--release"
     ],
-  },
-  interfaces: {}
+  }
 }
 "#;
 
@@ -134,6 +134,7 @@ const UNSUPPORTED_PARAMETERS_VARIANT_NODE_EXAMPLE: &str = r#"
       "usb",
     ],
   },
+  interfaces: {},
   runtime: {
     language: "rust",
     parameters: {
@@ -146,8 +147,7 @@ const UNSUPPORTED_PARAMETERS_VARIANT_NODE_EXAMPLE: &str = r#"
       "run",
       "--release"
     ],
-  },
-  interfaces: {}
+  }
 }
 "#;
 
@@ -163,6 +163,7 @@ const UNKNOWN_PARAMETER_TYPE_NODE_EXAMPLE: &str = r#"
       "usb",
     ],
   },
+  interfaces: {},
   runtime: {
     language: "rust",
     parameters: {
@@ -173,8 +174,7 @@ const UNKNOWN_PARAMETER_TYPE_NODE_EXAMPLE: &str = r#"
       "run",
       "--release"
     ],
-  },
-  interfaces: {}
+  }
 }
 "#;
 
@@ -190,6 +190,7 @@ const UNSUPPORTED_TOP_LEVEL_PARAMETER_VARIANT_NODE_EXAMPLE: &str = r#"
       "usb",
     ],
   },
+  interfaces: {},
   runtime: {
     language: "rust",
     parameters: {
@@ -200,8 +201,7 @@ const UNSUPPORTED_TOP_LEVEL_PARAMETER_VARIANT_NODE_EXAMPLE: &str = r#"
       "run",
       "--release"
     ],
-  },
-  interfaces: {}
+  }
 }
 "#;
 

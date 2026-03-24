@@ -13,10 +13,6 @@ const PEPPY_JSON5_CONFIG: &str = r#"{
   schema_version: 1,
   manifest: { name: "test_node",
     tag: "0.1.0" },
-
-  runtime: { language: "rust",
-    start_cmd: ["./target/release/test_node"]
-  },
   interfaces: {
     topics: {
       emits: [
@@ -44,7 +40,11 @@ const PEPPY_JSON5_CONFIG: &str = r#"{
         }
       ]
     }
-  }
+  },
+
+  runtime: { language: "rust",
+    start_cmd: ["./target/release/test_node"]
+  },
 }"#;
 
 #[test]
@@ -231,10 +231,6 @@ fn generate_peppygen_rust_lib_emitted_and_consumed_topics() {
             name: "{EXPOSED_NODE_NAME}",
             tag: "0.1.0",
           },
-          runtime: {
-            language: "rust",
-            start_cmd: ["./target/debug/{EXPOSED_NODE_NAME}"]
-          },
           interfaces: {
             topics: {
               emits: [
@@ -247,7 +243,11 @@ fn generate_peppygen_rust_lib_emitted_and_consumed_topics() {
                 }
               ]
             }
-          }
+          },
+          runtime: {
+            language: "rust",
+            start_cmd: ["./target/debug/{EXPOSED_NODE_NAME}"]
+          },
         }"#
     .replace("{EXPOSED_NODE_NAME}", EXPOSED_NODE_NAME);
 
@@ -342,10 +342,6 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_services() {
             name: "{EXPOSED_NODE_NAME}",
             tag: "0.1.0",
           },
-          runtime: {
-            language: "rust",
-            start_cmd: ["./target/debug/{EXPOSED_NODE_NAME}"]
-          },
           interfaces: {
             services: {
               exposes: [
@@ -361,7 +357,11 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_services() {
                 }
               ]
             }
-          }
+          },
+          runtime: {
+            language: "rust",
+            start_cmd: ["./target/debug/{EXPOSED_NODE_NAME}"]
+          },
         }"#
     .replace("{EXPOSED_NODE_NAME}", EXPOSED_NODE_NAME);
 
@@ -469,10 +469,6 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_actions() {
             name: "{EXPOSED_NODE_NAME}",
             tag: "0.1.0",
           },
-          runtime: {
-            language: "rust",
-            start_cmd: ["./target/debug/{EXPOSED_NODE_NAME}"]
-          },
           interfaces: {
             actions: {
               exposes: [
@@ -500,7 +496,11 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_actions() {
                 }
               ]
             }
-          }
+          },
+          runtime: {
+            language: "rust",
+            start_cmd: ["./target/debug/{EXPOSED_NODE_NAME}"]
+          },
         }"#
     .replace("{EXPOSED_NODE_NAME}", EXPOSED_NODE_NAME);
 
