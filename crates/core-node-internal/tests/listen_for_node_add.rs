@@ -2,7 +2,8 @@ mod common;
 
 use common::{
     AbortOnDrop, CALLER_INSTANCE_ID, NodeAddSource, TEST_GIT_HASH, send_node_add_and_wait,
-    send_node_add_and_wait_with_env, start_core_node_with_mock_messenger, write_peppy_json5,
+    send_node_add_and_wait_with_env, send_node_add_and_wait_with_variant,
+    start_core_node_with_mock_messenger, write_peppy_json5,
 };
 use config::consts::{
     DEFAULT_ALPINE_BASE_IMAGE, NODE_CONFIG_FILE, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH,
@@ -3494,4 +3495,379 @@ async fn node_add_same_node_with_running_instance_and_dependents_fails_on_stoppe
         node_stack.contains(DEPENDENT_NODE_NAME, DEPENDENT_NODE_TAG),
         "dependent node should still be in the stack"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Variant tests
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_add_variant_local_source() {
+    const ROOT_NODE_NAME: &str = "robot_brain";
+    const ROOT_NODE_TAG: &str = "0.1.0";
+
+    let started_core_node = start_core_node_with_mock_messenger().await;
+    let node_stack = started_core_node.node_stack.clone();
+
+    // Create a parent directory with root node and variant side by side
+    let parent_dir = tempfile::tempdir().expect("failed to create parent dir");
+    let root_dir = parent_dir.path().join("root_node");
+    let variant_dir = parent_dir.path().join("mock_node");
+    std::fs::create_dir_all(&root_dir).unwrap();
+    std::fs::create_dir_all(&variant_dir).unwrap();
+
+    // Root node config with a "mock" variant pointing to a sibling directory
+    let root_config = r#"{
+        schema_version: 1,
+        manifest: {
+            name: "robot_brain",
+            tag: "0.1.0",
+            variants: [
+                { name: "mock", source: { local: "../mock_node" } }
+            ]
+        },
+        interfaces: {
+            topics: {
+                emits: [
+                    { name: "joint_positions", qos_profile: "sensor_data", message_format: { x: "f64", y: "f64" } }
+                ]
+            }
+        },
+        runtime: {
+            language: "rust",
+            start_cmd: ["sleep", "10"]
+        }
+    }"#;
+    write_peppy_json5(&root_dir, root_config);
+
+    // Variant config — only defines runtime (no manifest, no interfaces)
+    let variant_config = r#"{
+        schema_version: 1,
+        runtime: {
+            language: "rust",
+            start_cmd: ["sleep", "5"]
+        }
+    }"#;
+    write_peppy_json5(&variant_dir, variant_config);
+
+    let add_result = send_node_add_and_wait_with_variant(
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        root_dir.as_path(),
+        "mock",
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        None,
+    )
+    .await
+    .expect("node_add with variant should succeed");
+
+    assert!(
+        add_result.success,
+        "variant node_add should succeed, got error: {:?}",
+        add_result.error_message
+    );
+
+    // Variant should be in the stack under the root node's name:tag
+    assert!(node_stack.contains(ROOT_NODE_NAME, ROOT_NODE_TAG));
+
+    let entity = node_stack
+        .find(ROOT_NODE_NAME, ROOT_NODE_TAG)
+        .expect("node should exist in stack");
+    // The config in the stack should have root's interfaces but variant's runtime
+    let config = entity.config();
+    assert!(
+        config.interfaces.topics.is_some(),
+        "interfaces should be inherited from root"
+    );
+    assert_eq!(
+        config.runtime.start_cmd.as_ref().unwrap(),
+        &vec!["sleep".to_string(), "5".to_string()],
+        "runtime should come from the variant"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_add_variant_not_found() {
+    let started_core_node = start_core_node_with_mock_messenger().await;
+
+    let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
+    let config = r#"{
+        schema_version: 1,
+        manifest: {
+            name: "test_node",
+            tag: "0.1.0",
+        },
+        runtime: {
+            language: "rust",
+            start_cmd: ["sleep", "10"]
+        }
+    }"#;
+    write_peppy_json5(source_dir.path(), config);
+
+    let add_result = send_node_add_and_wait_with_variant(
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        source_dir.path(),
+        "nonexistent",
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        None,
+    )
+    .await
+    .expect("request should complete");
+
+    assert!(
+        !add_result.success,
+        "node_add should fail for nonexistent variant"
+    );
+    assert!(
+        add_result
+            .error_message
+            .as_deref()
+            .unwrap_or("")
+            .contains("variant 'nonexistent' not found"),
+        "error should mention the missing variant: {:?}",
+        add_result.error_message
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_add_variant_interface_mismatch() {
+    let started_core_node = start_core_node_with_mock_messenger().await;
+
+    let parent_dir = tempfile::tempdir().expect("failed to create parent dir");
+    let root_dir = parent_dir.path().join("root_node");
+    let variant_dir = parent_dir.path().join("bad_variant");
+    std::fs::create_dir_all(&root_dir).unwrap();
+    std::fs::create_dir_all(&variant_dir).unwrap();
+
+    let root_config = r#"{
+        schema_version: 1,
+        manifest: {
+            name: "test_node",
+            tag: "0.1.0",
+            variants: [
+                { name: "bad", source: { local: "../bad_variant" } }
+            ]
+        },
+        interfaces: {
+            topics: {
+                emits: [
+                    { name: "sensor_data", message_format: { temperature: "f64" } }
+                ]
+            }
+        },
+        runtime: {
+            language: "rust",
+            start_cmd: ["sleep", "10"]
+        }
+    }"#;
+    write_peppy_json5(&root_dir, root_config);
+
+    // Variant defines DIFFERENT interfaces
+    let variant_config = r#"{
+        schema_version: 1,
+        interfaces: {
+            topics: {
+                emits: [
+                    { name: "different_topic", message_format: { speed: "f32" } }
+                ]
+            }
+        },
+        runtime: {
+            language: "rust",
+            start_cmd: ["sleep", "5"]
+        }
+    }"#;
+    write_peppy_json5(&variant_dir, variant_config);
+
+    let add_result = send_node_add_and_wait_with_variant(
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        root_dir.as_path(),
+        "bad",
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        None,
+    )
+    .await
+    .expect("request should complete");
+
+    assert!(
+        !add_result.success,
+        "node_add should fail for interface mismatch"
+    );
+    assert!(
+        add_result
+            .error_message
+            .as_deref()
+            .unwrap_or("")
+            .contains("VariantInterfaceMismatch"),
+        "error should mention interface mismatch: {:?}",
+        add_result.error_message
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_add_variant_matching_interfaces_different_order() {
+    let started_core_node = start_core_node_with_mock_messenger().await;
+    let node_stack = started_core_node.node_stack.clone();
+
+    let parent_dir = tempfile::tempdir().expect("failed to create parent dir");
+    let root_dir = parent_dir.path().join("root_node");
+    let variant_dir = parent_dir.path().join("good_variant");
+    std::fs::create_dir_all(&root_dir).unwrap();
+    std::fs::create_dir_all(&variant_dir).unwrap();
+
+    let root_config = r#"{
+        schema_version: 1,
+        manifest: {
+            name: "test_node",
+            tag: "0.1.0",
+            variants: [
+                { name: "good", source: { local: "../good_variant" } }
+            ]
+        },
+        interfaces: {
+            topics: {
+                emits: [
+                    { name: "topic_a", message_format: { x: "f64", y: "f64" } },
+                    { name: "topic_b" }
+                ]
+            }
+        },
+        runtime: {
+            language: "rust",
+            start_cmd: ["sleep", "10"]
+        }
+    }"#;
+    write_peppy_json5(&root_dir, root_config);
+
+    // Variant defines the SAME interfaces but in different order
+    let variant_config = r#"{
+        schema_version: 1,
+        interfaces: {
+            topics: {
+                emits: [
+                    { name: "topic_b" },
+                    { name: "topic_a", message_format: { y: "f64", x: "f64" } }
+                ]
+            }
+        },
+        runtime: {
+            language: "rust",
+            start_cmd: ["sleep", "5"]
+        }
+    }"#;
+    write_peppy_json5(&variant_dir, variant_config);
+
+    let add_result = send_node_add_and_wait_with_variant(
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        root_dir.as_path(),
+        "good",
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        None,
+    )
+    .await
+    .expect("node_add with matching interfaces should succeed");
+
+    assert!(
+        add_result.success,
+        "variant with matching interfaces (different order) should succeed, got error: {:?}",
+        add_result.error_message
+    );
+    assert!(node_stack.contains("test_node", "0.1.0"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_add_variant_no_interfaces() {
+    let started_core_node = start_core_node_with_mock_messenger().await;
+    let node_stack = started_core_node.node_stack.clone();
+
+    let parent_dir = tempfile::tempdir().expect("failed to create parent dir");
+    let root_dir = parent_dir.path().join("root_node");
+    let variant_dir = parent_dir.path().join("minimal_variant");
+    std::fs::create_dir_all(&root_dir).unwrap();
+    std::fs::create_dir_all(&variant_dir).unwrap();
+
+    let root_config = r#"{
+        schema_version: 1,
+        manifest: {
+            name: "test_node",
+            tag: "0.1.0",
+            variants: [
+                { name: "minimal", source: { local: "../minimal_variant" } }
+            ]
+        },
+        interfaces: {
+            topics: {
+                emits: [
+                    { name: "data", message_format: { value: "f64" } }
+                ]
+            }
+        },
+        runtime: {
+            language: "rust",
+            start_cmd: ["sleep", "10"]
+        }
+    }"#;
+    write_peppy_json5(&root_dir, root_config);
+
+    // Variant has NO interfaces (omitted entirely) — should be accepted
+    let variant_config = r#"{
+        schema_version: 1,
+        runtime: {
+            language: "rust",
+            start_cmd: ["sleep", "5"]
+        }
+    }"#;
+    write_peppy_json5(&variant_dir, variant_config);
+
+    let add_result = send_node_add_and_wait_with_variant(
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        root_dir.as_path(),
+        "minimal",
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        None,
+    )
+    .await
+    .expect("node_add with variant without interfaces should succeed");
+
+    assert!(
+        add_result.success,
+        "variant without interfaces should succeed, got error: {:?}",
+        add_result.error_message
+    );
+    assert!(node_stack.contains("test_node", "0.1.0"));
+
+    let entity = node_stack
+        .find("test_node", "0.1.0")
+        .expect("node should exist");
+    assert!(
+        entity.config().interfaces.topics.is_some(),
+        "root interfaces should be used even when variant has none"
+    );
+}
+
+#[test]
+fn listen_for_node_add_variant_encoding_roundtrip() {
+    let goal = NodeAddGoal::new("/some/path", "test-hash", 60).with_variant("mock");
+
+    let encoded = goal.encode().expect("encoding should succeed");
+    let decoded = NodeAddGoal::decode(&encoded).expect("decoding should succeed");
+
+    assert_eq!(decoded.variant.as_deref(), Some("mock"));
+    assert_eq!(decoded.git_hash, "test-hash");
+    assert_eq!(decoded.timeout_secs, 60);
+
+    // Without variant
+    let goal_no_variant = NodeAddGoal::new("/some/path", "test-hash", 60);
+    let encoded = goal_no_variant.encode().expect("encoding should succeed");
+    let decoded = NodeAddGoal::decode(&encoded).expect("decoding should succeed");
+    assert_eq!(decoded.variant, None);
 }

@@ -32,6 +32,9 @@ struct NodeAddGoal {
     envVars @4 :List(EnvVar);
     # Timeout in seconds for the add operation (used to report remaining time when busy)
     timeoutSecs @5 :UInt64;
+    # Optional variant name — when set, the source points to the root node
+    # and this identifies which variant to resolve and build.
+    variant @6 :Text;
 }
 
 struct EnvVar {

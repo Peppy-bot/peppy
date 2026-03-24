@@ -1,0 +1,150 @@
+---
+title: Variants
+description: Define alternative implementations of the same node
+sidebar:
+  order: 6
+---
+
+Variants let you define multiple implementations of the same node — each with its own runtime — while sharing a single manifest and interface contract.
+
+Use variants when you need:
+- **Different brains** — swap between AI models (e.g., a `skildai` variant and a `pi0` variant of the same `brain` node).
+- **Mock nodes** — a lightweight `mock` variant for testing that responds to the same interfaces as the real node.
+- **Platform-specific builds** — a `macos` variant, a `mujoco` simulation variant, or an `isaac-sim` variant, all answering to the same interface.
+
+## How variants work
+
+A variant is a regular node that inherits the **manifest** and **interfaces** from a root node but defines its own **runtime**.
+When you add a variant, peppy:
+
+1. Reads the root node's `peppy.json5` to find the variant definition in `manifest.variants`.
+2. Resolves the variant's source (local path, git repo, or URL).
+3. Reads the variant's `peppy.json5` for its `runtime` configuration.
+4. Merges the root's `manifest` + `interfaces` with the variant's `runtime`.
+5. Adds the merged config to the node stack under the root node's `name:tag`.
+
+Only one variant (or the root node itself) can be active in the stack at a time — adding a variant replaces any previous entry for that `name:tag`.
+
+## Defining variants
+
+Variants are declared in the root node's `manifest.variants` array. Each entry has a `name` and a `source`:
+
+```json5
+// peppy.json5 (root node)
+{
+  schema_version: 1,
+  manifest: {
+    name: "robot_brain",
+    tag: "0.1.0",
+    variants: [
+      { name: "mock", source: { local: "../mock_brain" } },
+      { name: "skildai", source: { local: "../skildai_brain" } },
+      {
+        name: "pi0",
+        source: {
+          repo: "https://github.com/example/pi0-brain.git",
+          path: "brain",
+          ref: "main",
+        },
+      },
+    ],
+  },
+  interfaces: {
+    topics: {
+      emits: [
+        {
+          name: "joint_commands",
+          qos_profile: "sensor_data",
+          message_format: {
+            positions: { $type: "array", $items: "f64", $length: 6 },
+          },
+        },
+      ],
+    },
+  },
+  runtime: {
+    language: "rust",
+    add_cmd: ["cargo", "build", "--release"],
+    start_cmd: ["./target/release/robot_brain"],
+  },
+}
+```
+
+## Variant config
+
+A variant's `peppy.json5` only needs a `schema_version` and a `runtime`. The `manifest` and `interfaces` fields are optional:
+
+```json5
+// peppy.json5 (mock variant)
+{
+  schema_version: 1,
+  runtime: {
+    language: "rust",
+    start_cmd: ["./target/release/mock_brain"],
+  },
+}
+```
+
+Each variant has its own `runtime`, which means:
+- Its own `language` (Rust or Python).
+- Its own `add_cmd` for build steps.
+- Its own `start_cmd` or `container` configuration.
+- Its own `parameters` schema.
+
+Each variant also gets its own `.peppy` directory with independently generated code bindings and fingerprints.
+
+## Interface matching
+
+If a variant's `peppy.json5` does define an `interfaces` section, the interfaces **must match** the root node's interfaces. The comparison is order-independent — topics, services, and actions can appear in any order, and message format fields can be in any order, as long as the same items and attributes are present.
+
+If the interfaces do not match, the add operation fails with a `VariantInterfaceMismatch` error.
+
+```json5
+// This variant config is valid — same interfaces, different order
+{
+  schema_version: 1,
+  interfaces: {
+    topics: {
+      emits: [
+        // Same topic as root but message format fields in different order
+        {
+          name: "joint_commands",
+          qos_profile: "sensor_data",
+          message_format: {
+            positions: { $type: "array", $items: "f64", $length: 6 },
+          },
+        },
+      ],
+    },
+  },
+  runtime: {
+    language: "python",
+    add_cmd: ["uv", "sync"],
+    start_cmd: ["uv", "run", "mock_brain"],
+  },
+}
+```
+
+If a variant omits `interfaces` entirely, no validation is performed and the root's interfaces are used as-is.
+
+## Adding a variant
+
+Use the `--variant` flag with `peppy node add`:
+
+```sh
+peppy node add --variant mock ./robot_brain
+```
+
+This tells peppy to look up the `mock` variant in `robot_brain`'s manifest and add it instead of the root node. The variant appears in the node stack under the root's name and tag (`robot_brain:0.1.0`).
+
+## Variant source types
+
+Variant sources support the same three types as regular deployment sources:
+
+| Source type | Example |
+|-------------|---------|
+| Local path | `{ local: "../mock_brain" }` |
+| Git repo | `{ repo: "https://github.com/...", path: "brain", ref: "main" }` |
+| URL archive | `{ url: "https://example.com/brain.tar.zst", sha256: "..." }` |
+
+Local paths are resolved relative to the root node's directory.

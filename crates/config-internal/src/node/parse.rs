@@ -1,9 +1,35 @@
-use super::types::NodeConfig;
+use super::types::{NodeConfig, Runtime, VariantConfig};
 use crate::{
     error::{ParsingError, Result},
     parsing::read_non_empty_file,
 };
 use std::path::Path;
+
+/// Validates runtime constraints shared by both full node configs and variant configs.
+fn validate_runtime(runtime: &Runtime) -> Result<()> {
+    // `start_cmd` and `container` are mutually exclusive; exactly one must be present.
+    match (&runtime.start_cmd, &runtime.container) {
+        (Some(_), Some(_)) => return Err(ParsingError::ProcessAndContainerConflict.into()),
+        (None, None) => return Err(ParsingError::NoProcessOrContainer.into()),
+        _ => {}
+    }
+
+    // Validate container mount paths (reject top-level system directories).
+    if let Some(container) = &runtime.container
+        && let Err((path, blocked_list)) = container.validate()
+    {
+        return Err(ParsingError::InvalidMountPath(path, blocked_list).into());
+    }
+
+    // Validate ${parameters:...} references in mount paths.
+    if let Some(container) = &runtime.container
+        && let Err((ref_path, reason)) = container.validate_parameter_refs(&runtime.parameters)
+    {
+        return Err(ParsingError::InvalidMountPathParameterRef(ref_path, reason).into());
+    }
+
+    Ok(())
+}
 
 /// Parser responsible for extracting configuration from JSON5 documents
 pub struct NodeConfigParser;
@@ -19,29 +45,24 @@ impl NodeConfigParser {
     pub fn from_content(content: &str) -> Result<NodeConfig> {
         // Strict schema validation is handled by serde via #[serde(deny_unknown_fields)]
         let config: NodeConfig = serde_json5::from_str(content).map_err(ParsingError::from)?;
+        validate_runtime(&config.runtime)?;
+        Ok(config)
+    }
+}
 
-        // `start_cmd` and `container` are mutually exclusive; exactly one must be present.
-        match (&config.runtime.start_cmd, &config.runtime.container) {
-            (Some(_), Some(_)) => return Err(ParsingError::ProcessAndContainerConflict.into()),
-            (None, None) => return Err(ParsingError::NoProcessOrContainer.into()),
-            _ => {}
-        }
+/// Parser for variant node configs where `manifest` and `interfaces` are optional.
+pub struct VariantConfigParser;
 
-        // Validate container mount paths (reject top-level system directories).
-        if let Some(container) = &config.runtime.container
-            && let Err((path, blocked_list)) = container.validate()
-        {
-            return Err(ParsingError::InvalidMountPath(path, blocked_list).into());
-        }
+impl VariantConfigParser {
+    pub fn from_path(file: impl AsRef<Path>) -> Result<VariantConfig> {
+        let path = file.as_ref();
+        let content = read_non_empty_file(path)?;
+        Self::from_content(&content)
+    }
 
-        // Validate ${parameters:...} references in mount paths.
-        if let Some(container) = &config.runtime.container
-            && let Err((ref_path, reason)) =
-                container.validate_parameter_refs(&config.runtime.parameters)
-        {
-            return Err(ParsingError::InvalidMountPathParameterRef(ref_path, reason).into());
-        }
-
+    pub fn from_content(content: &str) -> Result<VariantConfig> {
+        let config: VariantConfig = serde_json5::from_str(content).map_err(ParsingError::from)?;
+        validate_runtime(&config.runtime)?;
         Ok(config)
     }
 }

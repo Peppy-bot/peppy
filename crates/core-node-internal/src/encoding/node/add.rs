@@ -34,6 +34,7 @@ pub struct NodeAddGoal {
     pub git_hash: String,
     pub env_vars: Vec<(String, String)>,
     pub timeout_secs: u64,
+    pub variant: Option<String>,
 }
 
 impl NodeAddGoal {
@@ -44,6 +45,7 @@ impl NodeAddGoal {
             git_hash: git_hash.into(),
             env_vars: Vec::new(),
             timeout_secs,
+            variant: None,
         }
     }
 
@@ -54,6 +56,7 @@ impl NodeAddGoal {
             git_hash: git_hash.into(),
             env_vars: Vec::new(),
             timeout_secs,
+            variant: None,
         }
     }
 
@@ -74,6 +77,7 @@ impl NodeAddGoal {
             git_hash: git_hash.into(),
             env_vars: Vec::new(),
             timeout_secs,
+            variant: None,
         }
     }
 
@@ -84,11 +88,17 @@ impl NodeAddGoal {
             git_hash: git_hash.into(),
             env_vars: Vec::new(),
             timeout_secs,
+            variant: None,
         }
     }
 
     pub fn with_env_vars(mut self, env_vars: Vec<(String, String)>) -> Self {
         self.env_vars = env_vars;
+        self
+    }
+
+    pub fn with_variant(mut self, variant: impl Into<String>) -> Self {
+        self.variant = Some(variant.into());
         self
     }
 
@@ -133,6 +143,10 @@ impl NodeAddGoal {
             }
 
             goal.reborrow().set_timeout_secs(self.timeout_secs);
+
+            if let Some(ref variant) = self.variant {
+                goal.set_variant(variant);
+            }
         }
         encode_message(&builder)
     }
@@ -179,11 +193,19 @@ impl NodeAddGoal {
             ));
         }
 
+        let variant_str = goal.get_variant()?.to_str()?;
+        let variant = if variant_str.is_empty() {
+            None
+        } else {
+            Some(variant_str.to_owned())
+        };
+
         Ok(Self {
             source,
             git_hash: goal.get_git_hash()?.to_str()?.to_owned(),
             env_vars,
             timeout_secs: goal.get_timeout_secs(),
+            variant,
         })
     }
 

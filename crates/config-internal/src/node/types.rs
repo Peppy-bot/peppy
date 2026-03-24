@@ -778,6 +778,222 @@ pub struct Interfaces {
     pub actions: Option<ActionInterfaces>,
 }
 
+impl Interfaces {
+    /// Compares two `Interfaces` for equivalence, ignoring the order of items
+    /// within each list and the order of fields within message formats.
+    pub fn matches_unordered(&self, other: &Interfaces) -> bool {
+        fn sort_by_name<T: Clone>(items: &Option<Vec<T>>, name_fn: impl Fn(&T) -> &str) -> Vec<T> {
+            let mut sorted = items.as_deref().unwrap_or_default().to_vec();
+            sorted.sort_by(|a, b| name_fn(a).cmp(name_fn(b)));
+            sorted
+        }
+
+        fn message_format_eq(a: &Option<MessageFormat>, b: &Option<MessageFormat>) -> bool {
+            match (a, b) {
+                (None, None) => true,
+                (Some(a), Some(b)) => {
+                    if a.0.len() != b.0.len() {
+                        return false;
+                    }
+                    // Compare as sorted key-value pairs to ignore order
+                    let mut a_sorted: Vec<_> = a.0.iter().collect();
+                    let mut b_sorted: Vec<_> = b.0.iter().collect();
+                    a_sorted.sort_by_key(|(k, _)| k.as_str());
+                    b_sorted.sort_by_key(|(k, _)| k.as_str());
+                    a_sorted
+                        .iter()
+                        .zip(b_sorted.iter())
+                        .all(|((ka, va), (kb, vb))| ka == kb && va == vb)
+                }
+                _ => false,
+            }
+        }
+
+        fn emitted_topics_eq(a: &Option<Vec<EmittedTopic>>, b: &Option<Vec<EmittedTopic>>) -> bool {
+            let a = sort_by_name(a, |t| &t.name);
+            let b = sort_by_name(b, |t| &t.name);
+            if a.len() != b.len() {
+                return false;
+            }
+            a.iter().zip(b.iter()).all(|(a, b)| {
+                a.name == b.name
+                    && a.qos_profile == b.qos_profile
+                    && message_format_eq(&a.message_format, &b.message_format)
+            })
+        }
+
+        fn consumed_topics_eq(
+            a: &Option<Vec<ConsumedTopic>>,
+            b: &Option<Vec<ConsumedTopic>>,
+        ) -> bool {
+            let a = sort_by_name(a, |t| t.name());
+            let b = sort_by_name(b, |t| t.name());
+            if a.len() != b.len() {
+                return false;
+            }
+            a.iter().zip(b.iter()).all(|(a, b)| a == b)
+        }
+
+        fn exposed_services_eq(
+            a: &Option<Vec<ExposedService>>,
+            b: &Option<Vec<ExposedService>>,
+        ) -> bool {
+            let a = sort_by_name(a, |s| &s.name);
+            let b = sort_by_name(b, |s| &s.name);
+            if a.len() != b.len() {
+                return false;
+            }
+            a.iter().zip(b.iter()).all(|(a, b)| {
+                a.name == b.name
+                    && message_format_eq(&a.request_message_format, &b.request_message_format)
+                    && message_format_eq(&a.response_message_format, &b.response_message_format)
+            })
+        }
+
+        fn consumed_services_eq(
+            a: &Option<Vec<ConsumedService>>,
+            b: &Option<Vec<ConsumedService>>,
+        ) -> bool {
+            let a = sort_by_name(a, |s| &s.name);
+            let b = sort_by_name(b, |s| &s.name);
+            if a.len() != b.len() {
+                return false;
+            }
+            a.iter().zip(b.iter()).all(|(a, b)| a == b)
+        }
+
+        fn exposed_actions_eq(
+            a: &Option<Vec<ExposedAction>>,
+            b: &Option<Vec<ExposedAction>>,
+        ) -> bool {
+            let a = sort_by_name(a, |a| &a.name);
+            let b = sort_by_name(b, |a| &a.name);
+            if a.len() != b.len() {
+                return false;
+            }
+            a.iter().zip(b.iter()).all(|(a, b)| a == b)
+        }
+
+        fn consumed_actions_eq(
+            a: &Option<Vec<ConsumedAction>>,
+            b: &Option<Vec<ConsumedAction>>,
+        ) -> bool {
+            let a = sort_by_name(a, |a| &a.name);
+            let b = sort_by_name(b, |a| &a.name);
+            if a.len() != b.len() {
+                return false;
+            }
+            a.iter().zip(b.iter()).all(|(a, b)| a == b)
+        }
+
+        fn opt_eq<T: Default + PartialEq>(a: &Option<T>, b: &Option<T>) -> bool {
+            let a = a.as_ref();
+            let b = b.as_ref();
+            match (a, b) {
+                (None, None) => true,
+                (Some(a), Some(b)) => a == b,
+                // Treat None as default (empty)
+                (None, Some(b)) => *b == T::default(),
+                (Some(a), None) => *a == T::default(),
+            }
+        }
+
+        // Topics
+        let topics_match = match (&self.topics, &other.topics) {
+            (None, None) => true,
+            (Some(a), Some(b)) => {
+                emitted_topics_eq(&a.emits, &b.emits)
+                    && consumed_topics_eq(&a.consumes, &b.consumes)
+            }
+            (a, b) => {
+                let a = a.as_ref().cloned().unwrap_or_default();
+                let b = b.as_ref().cloned().unwrap_or_default();
+                opt_eq(&a.emits, &b.emits) && opt_eq(&a.consumes, &b.consumes)
+            }
+        };
+
+        // Services
+        let services_match = match (&self.services, &other.services) {
+            (None, None) => true,
+            (Some(a), Some(b)) => {
+                exposed_services_eq(&a.exposes, &b.exposes)
+                    && consumed_services_eq(&a.consumes, &b.consumes)
+            }
+            (a, b) => {
+                let a = a.as_ref().cloned().unwrap_or_default();
+                let b = b.as_ref().cloned().unwrap_or_default();
+                opt_eq(&a.exposes, &b.exposes) && opt_eq(&a.consumes, &b.consumes)
+            }
+        };
+
+        // Actions
+        let actions_match = match (&self.actions, &other.actions) {
+            (None, None) => true,
+            (Some(a), Some(b)) => {
+                exposed_actions_eq(&a.exposes, &b.exposes)
+                    && consumed_actions_eq(&a.consumes, &b.consumes)
+            }
+            (a, b) => {
+                let a = a.as_ref().cloned().unwrap_or_default();
+                let b = b.as_ref().cloned().unwrap_or_default();
+                opt_eq(&a.exposes, &b.exposes) && opt_eq(&a.consumes, &b.consumes)
+            }
+        };
+
+        topics_match && services_match && actions_match
+    }
+}
+
+/// Trait shared by [`NodeConfig`] and [`VariantConfig`], providing access to
+/// common fields for validation and variant resolution.
+pub trait PeppyNodeConfig {
+    fn schema_version(&self) -> SchemaVersion;
+    fn interfaces(&self) -> Option<&Interfaces>;
+    fn runtime(&self) -> &Runtime;
+}
+
+impl PeppyNodeConfig for NodeConfig {
+    fn schema_version(&self) -> SchemaVersion {
+        self.schema_version
+    }
+
+    fn interfaces(&self) -> Option<&Interfaces> {
+        Some(&self.interfaces)
+    }
+
+    fn runtime(&self) -> &Runtime {
+        &self.runtime
+    }
+}
+
+/// Configuration for a node variant. Unlike [`NodeConfig`], `manifest` and
+/// `interfaces` are optional — variants typically inherit these from the root
+/// node and only define their own `runtime`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VariantConfig {
+    pub schema_version: SchemaVersion,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manifest: Option<Manifest>,
+    #[serde(default)]
+    pub interfaces: Option<Interfaces>,
+    pub runtime: Runtime,
+}
+
+impl PeppyNodeConfig for VariantConfig {
+    fn schema_version(&self) -> SchemaVersion {
+        self.schema_version
+    }
+
+    fn interfaces(&self) -> Option<&Interfaces> {
+        self.interfaces.as_ref()
+    }
+
+    fn runtime(&self) -> &Runtime {
+        &self.runtime
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

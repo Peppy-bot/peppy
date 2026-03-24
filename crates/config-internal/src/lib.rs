@@ -3,7 +3,7 @@ mod config;
 mod error;
 mod node_index;
 mod parsing;
-mod source;
+pub mod source;
 
 pub mod consts;
 pub mod encoding;

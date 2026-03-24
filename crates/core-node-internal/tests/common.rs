@@ -219,10 +219,12 @@ async fn send_node_start_and_wait_internal(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn send_node_add_and_wait_internal<'a>(
     messenger: &MessengerHandle,
     core_node_name: &str,
     source: impl Into<NodeAddSource<'a>>,
+    variant: Option<String>,
     goal_timeout: Duration,
     result_timeout: Duration,
     feedback_tx: Option<UnboundedSender<NodeAddFeedback>>,
@@ -230,7 +232,7 @@ async fn send_node_add_and_wait_internal<'a>(
 ) -> Result<NodeAddResult, String> {
     let source = source.into();
 
-    let goal = match &source {
+    let mut goal = match &source {
         NodeAddSource::Path(path) => {
             // For filesystem sources, ensure the git hash file exists
             let peppy_dir = path.join(PEPPY_OUTPUT_DIR);
@@ -269,6 +271,10 @@ async fn send_node_add_and_wait_internal<'a>(
         }
     }
     .with_env_vars(env_vars);
+
+    if let Some(v) = variant {
+        goal = goal.with_variant(v);
+    }
 
     let (caller_core_node, caller_instance_id) = if feedback_tx.is_some() {
         ("*", "*")
@@ -404,6 +410,7 @@ pub async fn send_node_add_and_wait<'a>(
         messenger,
         core_node_name,
         source,
+        None,
         goal_timeout,
         result_timeout,
         feedback_tx,
@@ -425,10 +432,33 @@ pub async fn send_node_add_and_wait_with_env<'a>(
         messenger,
         core_node_name,
         source,
+        None,
         goal_timeout,
         result_timeout,
         feedback_tx,
         env_vars,
+    )
+    .await
+}
+
+pub async fn send_node_add_and_wait_with_variant<'a>(
+    messenger: &MessengerHandle,
+    core_node_name: &str,
+    source: impl Into<NodeAddSource<'a>>,
+    variant: &str,
+    goal_timeout: Duration,
+    result_timeout: Duration,
+    feedback_tx: Option<UnboundedSender<NodeAddFeedback>>,
+) -> Result<NodeAddResult, String> {
+    send_node_add_and_wait_internal(
+        messenger,
+        core_node_name,
+        source,
+        Some(variant.to_owned()),
+        goal_timeout,
+        result_timeout,
+        feedback_tx,
+        Vec::new(),
     )
     .await
 }

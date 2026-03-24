@@ -12,7 +12,8 @@ use crate::encoding::{
 use crate::names;
 use chrono::Local;
 use config::consts::{NODE_CONFIG_FILE, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH, PeppyDirs};
-use config::node::{NodeConfig, NodeConfigParser};
+use config::node::{Interfaces, NodeConfig, NodeConfigParser, VariantConfigParser};
+use config::source::DeploymentSource;
 use futures::FutureExt;
 use git2::Repository;
 use node_stack::{NodeStack, validate_dependency_specs};
@@ -959,6 +960,171 @@ async fn resolve_node_add_source(
     }
 }
 
+struct ResolvedVariant {
+    /// The merged NodeConfig: root manifest + root interfaces + variant runtime.
+    merged_config: NodeConfig,
+    /// Path to the variant's source directory.
+    variant_source_path: PathBuf,
+    /// Whether to verify codegen fingerprint for the variant.
+    verify_codegen_fingerprint: bool,
+    /// Directory to clean up after variant resolution (git clone / http download).
+    cleanup_dir: Option<PathBuf>,
+}
+
+/// Resolves a variant by looking it up in the root config's manifest, fetching
+/// the variant's source, parsing its config, validating interfaces, and merging
+/// the root's manifest/interfaces with the variant's runtime.
+async fn resolve_variant(
+    variant_name: &str,
+    root_config: &NodeConfig,
+    root_source_path: &Path,
+    peppy_dirs: &PeppyDirs,
+) -> std::result::Result<ResolvedVariant, String> {
+    let variants = root_config
+        .manifest
+        .variants
+        .as_ref()
+        .ok_or_else(|| {
+            format!(
+                "variant '{}' not found: node '{}:{}' does not define any variants",
+                variant_name,
+                root_config.manifest.name.as_str(),
+                root_config.manifest.tag,
+            )
+        })?;
+
+    let variant = variants
+        .iter()
+        .find(|v| v.name.as_str() == variant_name)
+        .ok_or_else(|| {
+            format!(
+                "variant '{}' not found in manifest of node '{}:{}'",
+                variant_name,
+                root_config.manifest.name.as_str(),
+                root_config.manifest.tag,
+            )
+        })?;
+
+    // Resolve the variant's source to a directory path and parse its config.
+    let (variant_source_path, variant_config, verify_codegen_fingerprint, cleanup_dir) =
+        match &variant.source {
+            DeploymentSource::Local(local) => {
+                let path = if local.local.is_relative() {
+                    root_source_path.join(&local.local)
+                } else {
+                    local.local.clone()
+                };
+                let config_path = path.join(NODE_CONFIG_FILE);
+                let variant_config =
+                    VariantConfigParser::from_path(&config_path).map_err(|e| {
+                        format!(
+                            "Failed to parse variant '{}' config at {}: {}",
+                            variant_name,
+                            config_path.display(),
+                            e
+                        )
+                    })?;
+                (path, variant_config, true, None)
+            }
+            DeploymentSource::Git(git) => {
+                gix_url::Url::try_from(git.repo.as_str())
+                    .map_err(|e| format!("invalid variant git URL: {}", e))?;
+                let repo_relative_path = sanitize_repo_path(&git.path)?;
+
+                let checkout_dir = tempfile::tempdir()
+                    .map_err(|e| format!("Failed to create temporary directory: {}", e))?
+                    .keep();
+
+                let clone_checkout_dir = checkout_dir.clone();
+                let clone_repo_url = git.repo.clone();
+                let clone_repo_ref = Some(git.ref_.clone());
+                if let Err(err) = tokio::task::spawn_blocking(move || {
+                    let repo = Repository::clone(&clone_repo_url, &clone_checkout_dir)
+                        .map_err(|e| format!("Failed to clone repository: {}", e))?;
+                    if let Some(repo_ref) = clone_repo_ref.as_deref() {
+                        checkout_repo_ref(&repo, repo_ref).map_err(|e| {
+                            format!("Failed to checkout git ref '{}': {}", repo_ref, e)
+                        })?;
+                    }
+                    Ok::<_, String>(())
+                })
+                .await
+                .map_err(|e| format!("Failed to join git clone task: {}", e))?
+                {
+                    std::fs::remove_dir_all(&checkout_dir).ok();
+                    return Err(err);
+                }
+
+                let node_root_dir = checkout_dir.join(&repo_relative_path);
+                let config_path = node_root_dir.join(NODE_CONFIG_FILE);
+                let variant_config = match VariantConfigParser::from_path(&config_path) {
+                    Ok(cfg) => cfg,
+                    Err(e) => {
+                        std::fs::remove_dir_all(&checkout_dir).ok();
+                        return Err(format!(
+                            "Failed to parse variant '{}' config at {}: {}",
+                            variant_name,
+                            config_path.display(),
+                            e
+                        ));
+                    }
+                };
+                (node_root_dir, variant_config, false, Some(checkout_dir))
+            }
+            DeploymentSource::Url(url_source) => {
+                let url = url::Url::parse(&url_source.url)
+                    .map_err(|e| format!("invalid variant URL: {}", e))?;
+                let resolved = resolve_http_source(&url, peppy_dirs.clone()).await?;
+                // Re-parse as VariantConfig since resolve_http_source parsed as NodeConfig
+                let config_path = resolved.source_path.join(NODE_CONFIG_FILE);
+                let variant_config =
+                    VariantConfigParser::from_path(&config_path).map_err(|e| {
+                        format!(
+                            "Failed to parse variant '{}' config at {}: {}",
+                            variant_name,
+                            config_path.display(),
+                            e
+                        )
+                    })?;
+                (
+                    resolved.source_path,
+                    variant_config,
+                    false,
+                    resolved.cleanup_dir,
+                )
+            }
+        };
+
+    // If the variant defines interfaces, validate they match the root's interfaces.
+    if let Some(ref variant_interfaces) = variant_config.interfaces {
+        if *variant_interfaces != Interfaces::default()
+            && !root_config.interfaces.matches_unordered(variant_interfaces)
+        {
+            return Err(format!(
+                "VariantInterfaceMismatch: variant '{}' defines interfaces that differ from the root node '{}:{}'",
+                variant_name,
+                root_config.manifest.name.as_str(),
+                root_config.manifest.tag,
+            ));
+        }
+    }
+
+    // Build merged config: root's schema_version + manifest + interfaces + variant's runtime
+    let merged_config = NodeConfig {
+        schema_version: root_config.schema_version,
+        manifest: root_config.manifest.clone(),
+        interfaces: root_config.interfaces.clone(),
+        runtime: variant_config.runtime,
+    };
+
+    Ok(ResolvedVariant {
+        merged_config,
+        variant_source_path,
+        verify_codegen_fingerprint,
+        cleanup_dir,
+    })
+}
+
 /// Encodes a rejected goal response, mapping encoding errors to `PeppyError`.
 fn encode_rejected_goal(reason: impl Into<String>) -> PeppyResult<Payload> {
     NodeAddGoalResponse::rejected(reason).encode().map_err(|e| {
@@ -1000,6 +1166,30 @@ pub(crate) async fn run_node_add(
             }
         };
 
+        // If a variant is specified, resolve it using the root config's manifest.
+        let mut variant_cleanup_dir: Option<PathBuf> = None;
+        if let Some(ref variant_name) = goal.variant {
+            match resolve_variant(
+                variant_name,
+                &resolved.node_config,
+                &resolved.source_path,
+                &action_context.peppy_dirs,
+            )
+            .await
+            {
+                Ok(v) => {
+                    resolved.node_config = v.merged_config;
+                    resolved.source_path = v.variant_source_path;
+                    resolved.verify_codegen_fingerprint = v.verify_codegen_fingerprint;
+                    variant_cleanup_dir = v.cleanup_dir;
+                }
+                Err(error_msg) => {
+                    write_error_to_log(&log_file, &error_msg);
+                    return NodeAddResult::failure(&log_path, error_msg);
+                }
+            }
+        }
+
         let cleanup_dir = resolved.cleanup_dir.take();
         let source_path = resolved.source_path.clone();
         let verify_codegen_fingerprint = resolved.verify_codegen_fingerprint;
@@ -1016,6 +1206,9 @@ pub(crate) async fn run_node_add(
         } else {
             log_path
         };
+
+        // RAII guard: cleans up variant clone/download dir on any exit path.
+        let _variant_cleanup_guard = CleanupDir::new(variant_cleanup_dir);
 
         let ctx = ProcessNodeAddContext {
             action: action_context,
@@ -1266,6 +1459,33 @@ async fn process_node_add(
         };
     // RAII guard: cleans up the temp working dir on any exit path.
     let working_dir_cleanup = CleanupDir::new(Some(working_dir.clone()));
+
+    // For variant adds, write the merged config (root manifest + interfaces +
+    // variant runtime) into the working directory so the peppygen generator
+    // finds a valid NodeConfig with all required fields.
+    if goal.variant.is_some() {
+        let merged_config_str = serde_json5::to_string(&node_config)
+            .map_err(|e| format!("Failed to serialize merged variant config: {}", e));
+        match merged_config_str {
+            Ok(content) => {
+                let config_path = working_dir.join(NODE_CONFIG_FILE);
+                if let Err(e) = std::fs::write(&config_path, &content) {
+                    let msg = format!("Failed to write merged variant config: {}", e);
+                    write_error_to_log(&ctx.log_file, &msg);
+                    return NodeAddResult::failure(&ctx.log_path, msg);
+                }
+                // Regenerate fingerprint for the new config
+                config::fingerprint::create_codegen_fingerprint(
+                    &config_path,
+                    std::path::Path::new(PEPPYGEN_OUTPUT_PATH),
+                );
+            }
+            Err(msg) => {
+                write_error_to_log(&ctx.log_file, &msg);
+                return NodeAddResult::failure(&ctx.log_path, msg);
+            }
+        }
+    }
 
     if !excluded_dirs.is_empty() {
         let _ = ctx.feedback_tx.send(FeedbackLine {
