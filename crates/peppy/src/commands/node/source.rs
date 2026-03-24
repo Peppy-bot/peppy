@@ -64,6 +64,32 @@ pub fn parse_node_source(source: &str, git_ref: Option<String>) -> Result<NodeSo
     Ok(NodeSource::Fs(from_dir))
 }
 
+/// Parses a variant source string into a [`NodeSource`].
+///
+/// Unlike [`parse_node_source`], this does **not** canonicalize local paths or
+/// check for `peppy.json5`. A plain string (non-URL) is treated as a variant
+/// name and wrapped as `NodeSource::Fs`.
+pub fn parse_variant_source(variant: &str) -> Result<NodeSource> {
+    if is_probably_remote_source(variant) {
+        if let Ok(url) = url::Url::parse(variant)
+            && matches!(url.scheme(), "http" | "https")
+            && is_supported_http_archive(&url)
+        {
+            return Ok(NodeSource::Http { url });
+        }
+
+        let (repo_url, repo_path) = parse_git_repo_url_and_path(variant)?;
+        return Ok(NodeSource::Git {
+            repo_url,
+            repo_path,
+            repo_ref: None,
+        });
+    }
+
+    // Plain string = variant name (looked up in root manifest)
+    Ok(NodeSource::Fs(PathBuf::from(variant)))
+}
+
 pub fn is_supported_http_archive(url: &url::Url) -> bool {
     let path = url.path().to_ascii_lowercase();
     path.ends_with(".tar.zst") || path.ends_with(".tar.zstd") || path.ends_with(".tzst")

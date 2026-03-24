@@ -104,6 +104,7 @@ async fn service_reset_command_resets_node_stack() {
         command: NodeCommands::Add {
             source: node_path.display().to_string(),
             git_ref: None,
+            variant: None,
             start: false,
             args: Vec::new(),
             instance_id: None,

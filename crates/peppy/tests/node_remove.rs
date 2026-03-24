@@ -70,6 +70,7 @@ fn node_remove_command_succeeds() {
         command: NodeCommands::Add {
             source: node_path.display().to_string(),
             git_ref: None,
+            variant: None,
             start: false,
             args: Vec::new(),
             instance_id: None,
@@ -236,6 +237,7 @@ fn node_remove_command_force_bypasses_prompt_and_stops_instances() {
         command: NodeCommands::Add {
             source: node_path.display().to_string(),
             git_ref: None,
+            variant: None,
             start: true,
             args: Vec::new(),
             instance_id: Some(instance_id.to_string()),
@@ -377,6 +379,7 @@ fn node_remove_command_with_stop_instances_succeeds_and_stops_instances() {
         command: NodeCommands::Add {
             source: node_path.display().to_string(),
             git_ref: None,
+            variant: None,
             start: true,
             args: Vec::new(),
             instance_id: Some(instance_id.to_string()),

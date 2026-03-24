@@ -103,6 +103,14 @@ pub enum NodeCommands {
         /// Git ref (tag/branch/commit) to checkout before reading `subpath` (git sources only).
         #[arg(long = "ref")]
         git_ref: Option<String>,
+        /// Optional variant to add instead of the root node.
+        ///
+        /// Supported formats:
+        /// - Variant name: `mock` (looked up in root manifest)
+        /// - Git URL: `https://github.com/org/repo.git/path`
+        /// - HTTP archive: `https://example.com/variant.tar.zst`
+        #[arg(long)]
+        variant: Option<String>,
         /// If set, will attempt to spawn an instance directly after adding the node to the node stack
         #[arg(long)]
         start: bool,
@@ -224,6 +232,7 @@ impl Command for NodeCommand {
             NodeCommands::Add {
                 source,
                 git_ref,
+                variant,
                 start,
                 args,
                 instance_id,
@@ -247,7 +256,15 @@ impl Command for NodeCommand {
                     idle_secs: idle_timeout,
                     max_secs: max_timeout,
                 };
-                add::add_node(ctx, source, git_ref, start_options, timeouts, force)
+                add::add_node(
+                    ctx,
+                    source,
+                    git_ref,
+                    variant,
+                    start_options,
+                    timeouts,
+                    force,
+                )
             }
             NodeCommands::Sync {} => {
                 info!("Syncing node interfaces...");

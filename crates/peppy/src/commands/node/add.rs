@@ -10,7 +10,7 @@ use tracing::info;
 
 use super::TimeoutConfig;
 use super::env::caller_env_overrides;
-use super::source::parse_node_source;
+use super::source::{parse_node_source, parse_variant_source};
 use super::start::start_instance_async;
 use crate::context::AppContext;
 use crate::error::{Error, Result};
@@ -44,6 +44,7 @@ pub fn add_node(
     ctx: &Arc<AppContext>,
     source: String,
     git_ref: Option<String>,
+    variant: Option<String>,
     start_options: Option<StartAfterAddOptions>,
     timeouts: TimeoutConfig,
     force: bool,
@@ -52,6 +53,7 @@ pub fn add_node(
         ctx,
         source,
         git_ref,
+        variant,
         start_options,
         timeouts,
         force,
@@ -62,6 +64,7 @@ async fn add_node_async(
     ctx: &Arc<AppContext>,
     source: String,
     git_ref: Option<String>,
+    variant: Option<String>,
     start_options: Option<StartAfterAddOptions>,
     timeouts: TimeoutConfig,
     force: bool,
@@ -110,8 +113,12 @@ async fn add_node_async(
 
     // Create and send the goal to start the add action
     // Pass max timeout as the goal timeout for daemon-side busy reporting
-    let add_goal = NodeAddGoal::from_source(node_source, git_hash, timeouts.max_secs)
+    let mut add_goal = NodeAddGoal::from_source(node_source, git_hash, timeouts.max_secs)
         .with_env_vars(caller_env_overrides());
+    if let Some(ref variant_str) = variant {
+        let variant_source = parse_variant_source(variant_str)?;
+        add_goal = add_goal.with_variant_source(variant_source);
+    }
     let mut action_handle = add_goal
         .send_goal(
             messenger_handle,
