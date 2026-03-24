@@ -1193,4 +1193,15 @@ mod tests {
         }"#;
         assert!(serde_json5::from_str::<Manifest>(json5).is_err());
     }
+
+    #[test]
+    fn node_config_rejects_unknown_fields() {
+        let json5 = r#"{
+            schema_version: 1,
+            manifest: { name: "node", tag: "0.1.0" },
+            runtime: { language: "rust", start_cmd: ["./run"] },
+            extra: "bad"
+        }"#;
+        assert!(serde_json5::from_str::<NodeConfig>(json5).is_err());
+    }
 }
