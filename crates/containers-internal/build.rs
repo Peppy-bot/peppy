@@ -254,22 +254,10 @@ mod apptainer_build {
             Some(_status) => {
                 // Instance exists but is not running — start it.
                 println!("cargo:warning=Starting Lima {} instance...", lima.instance);
-                let start = lima.lima_command().args(["start", lima.instance]).output();
-                match start {
-                    Ok(o) if o.status.success() => true,
-                    Ok(o) => {
-                        let stderr = String::from_utf8_lossy(&o.stderr);
-                        println!(
-                            "cargo:warning=Failed to start Lima {} instance (exit: {}): {}",
-                            lima.instance, o.status, stderr
-                        );
-                        false
-                    }
-                    Err(e) => {
-                        println!("cargo:warning=Failed to run limactl start: {}", e);
-                        false
-                    }
-                }
+                let mut cmd = lima.lima_command();
+                cmd.args(["start", lima.instance]);
+                let label = format!("lima-start-{}", lima.instance);
+                build_helpers::run_command_streaming(&mut cmd, &label).success
             }
             None => {
                 // Instance does not exist — create and start it.
@@ -291,22 +279,8 @@ mod apptainer_build {
                     cmd.arg(format!("--arch={}", a));
                 }
                 cmd.arg(template);
-                let create = cmd.output();
-                match create {
-                    Ok(o) if o.status.success() => true,
-                    Ok(o) => {
-                        let stderr = String::from_utf8_lossy(&o.stderr);
-                        println!(
-                            "cargo:warning=Failed to create Lima {} instance (exit: {}): {}",
-                            lima.instance, o.status, stderr
-                        );
-                        false
-                    }
-                    Err(e) => {
-                        println!("cargo:warning=Failed to run limactl start: {}", e);
-                        false
-                    }
-                }
+                let label = format!("lima-create-{}", lima.instance);
+                build_helpers::run_command_streaming(&mut cmd, &label).success
             }
         }
     }
@@ -391,12 +365,14 @@ mod apptainer_build {
         }
 
         // Build: make -C builddir
-        if !build_helpers::run_command(
+        if !build_helpers::run_command_streaming(
             Command::new("make")
                 .current_dir(&source_dir)
                 .args(["-C", "builddir", "-j"]),
-            "compile apptainer",
-        ) {
+            "apptainer-compile",
+        )
+        .success
+        {
             std::fs::remove_dir_all(&source_dir).ok();
             return false;
         }
@@ -510,47 +486,38 @@ mod apptainer_build {
 
         let build_script = format!(
             r#"set -eu
-# Wait for cloud-init / unattended-upgrades to release the apt lock.
+echo "=== Waiting for apt lock ==="
 while sudo fuser /var/lib/apt/lists/lock /var/lib/dpkg/lock /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do sleep 2; done
+echo "=== Installing build dependencies ==="
 sudo apt-get update -qq
-sudo apt-get install -y -qq golang-go libseccomp-dev make gcc pkg-config squashfs-tools cryptsetup > /dev/null 2>&1
+sudo apt-get install -y -qq golang-go libseccomp-dev make gcc pkg-config squashfs-tools cryptsetup
 cd /tmp
 sudo rm -rf apptainer-{version} apptainer-{version}.tar.gz {guest_install_dir}
+echo "=== Downloading apptainer {version} source ==="
 curl -fsSL https://github.com/apptainer/apptainer/releases/download/v{version}/apptainer-{version}.tar.gz -o apptainer-{version}.tar.gz
 tar -xzf apptainer-{version}.tar.gz
 cd apptainer-{version}
 echo "{version}" > VERSION
+echo "=== Configuring apptainer ==="
 ./mconfig --prefix={guest_install_dir}
+echo "=== Compiling apptainer (this is the slow part under QEMU) ==="
 make -C builddir -j
+echo "=== Installing apptainer ==="
 make -C builddir install
 cp {guest_install_dir}/libexec/apptainer/bin/starter {guest_install_dir}/libexec/apptainer/bin/starter-suid
-rm -rf /tmp/apptainer-{version} /tmp/apptainer-{version}.tar.gz"#,
+rm -rf /tmp/apptainer-{version} /tmp/apptainer-{version}.tar.gz
+echo "=== Apptainer build complete ==="
+"#,
             version = version,
             guest_install_dir = guest_install_dir,
         );
 
-        let run = lima
-            .lima_command()
-            .args(["shell", lima.instance, "--", "bash", "-c", &build_script])
-            .output();
-        match &run {
-            Ok(o) if o.status.success() => {}
-            Ok(o) => {
-                let stderr = String::from_utf8_lossy(&o.stderr);
-                let stdout = String::from_utf8_lossy(&o.stdout);
-                println!(
-                    "cargo:warning=Apptainer source build failed inside Lima VM (exit: {}): {} {}",
-                    o.status, stderr, stdout
-                );
-                return false;
-            }
-            Err(e) => {
-                println!(
-                    "cargo:warning=Failed to run apptainer source build via limactl shell: {}",
-                    e
-                );
-                return false;
-            }
+        let label = format!("apptainer-build-{}", target_arch);
+        let mut cmd = lima.lima_command();
+        cmd.args(["shell", lima.instance, "--", "bash", "-c", &build_script]);
+        let run = build_helpers::run_command_streaming(&mut cmd, &label);
+        if !run.success {
+            return false;
         }
 
         copy_lima_result_to_host(lima, guest_install_dir, install_dir)
