@@ -45,7 +45,12 @@ _ARCHLINUX_ARM_LIMA_API = (
 
 def _host_arch() -> str:
     """Return the normalised host architecture."""
-    return "aarch64" if platform.machine() in ("aarch64", "arm64") else "x86_64"
+    machine = platform.machine()
+    if machine in ("aarch64", "arm64"):
+        return "aarch64"
+    if machine in ("x86_64", "AMD64"):
+        return "x86_64"
+    raise RuntimeError(f"Unsupported host architecture: {machine}")
 
 
 def _resolve_archlinux_template() -> str:
@@ -104,7 +109,9 @@ def _resolve_archlinux_template() -> str:
 # may reference the same temp file.
 _ARCHLINUX_TEMPLATE = _resolve_archlinux_template()
 if _ARCHLINUX_TEMPLATE.startswith("/"):
-    atexit.register(lambda p=_ARCHLINUX_TEMPLATE: os.unlink(p) if os.path.isfile(p) else None)
+    atexit.register(
+        lambda p=_ARCHLINUX_TEMPLATE: os.unlink(p) if os.path.isfile(p) else None
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -147,7 +154,9 @@ class VMConfig:
             return "template:macos"
         if self.distro == "archlinux":
             # The custom template is aarch64-only; x86_64 uses the built-in.
-            return _ARCHLINUX_TEMPLATE if self.arch == "aarch64" else "template:archlinux"
+            return (
+                _ARCHLINUX_TEMPLATE if self.arch == "aarch64" else "template:archlinux"
+            )
         templates = {
             "ubuntu": "template:ubuntu-24.04",
             "fedora": "template:fedora",
@@ -351,7 +360,6 @@ def lima_vm(request) -> Generator[VMConfig, None, None]:
     is started once per config per test module and deleted on teardown.
     """
     yield from _lima_vm_lifecycle(request)
-
 
 
 def _lima_vm_lifecycle(request):  # noqa: ANN001
@@ -577,9 +585,7 @@ def test_no_root_install_missing_dbus(lima_vm: VMConfig) -> None:
 
     output = result.stdout + result.stderr
 
-    assert result.returncode != 0, (
-        f"install.sh should have failed{_diagnostic(result)}"
-    )
+    assert result.returncode != 0, f"install.sh should have failed{_diagnostic(result)}"
     assert "D-Bus user session bus is not available" in output, (
         f"error should mention D-Bus user session bus{_diagnostic(result)}"
     )
@@ -693,8 +699,7 @@ def test_existing_install_warning(lima_vm: VMConfig) -> None:
     output = result.stdout + result.stderr
 
     assert "An existing installation was found" in output, (
-        f"Missing existing-install warning on {config.pytest_id()}"
-        f"{_diagnostic(result)}"
+        f"Missing existing-install warning on {config.pytest_id()}{_diagnostic(result)}"
     )
 
 
@@ -754,9 +759,7 @@ def test_binary_architecture(lima_vm: VMConfig) -> None:
     config = lima_vm
     assert config.os == "linux", "binary architecture test only applies to Linux VMs"
 
-    home = _setup_lima_guest(
-        config, test_name=f"test_binary_arch_{config.pytest_id()}"
-    )
+    home = _setup_lima_guest(config, test_name=f"test_binary_arch_{config.pytest_id()}")
 
     result = _lima_shell(
         _install_cmd(config, home),
@@ -797,14 +800,11 @@ def test_peppylib_so_architecture(lima_vm: VMConfig) -> None:
     config = lima_vm
     assert config.os == "linux", "peppylib .so test only applies to Linux VMs"
 
-    home = _setup_lima_guest(
-        config, test_name=f"test_peppylib_so_{config.pytest_id()}"
-    )
+    home = _setup_lima_guest(config, test_name=f"test_peppylib_so_{config.pytest_id()}")
 
     # Kill any leftover daemon from a previous run
     _lima_shell(
-        f"pkill -f 'peppy service serve' 2>/dev/null; "
-        f"rm -rf {home}; true",
+        f"pkill -f 'peppy service serve' 2>/dev/null; rm -rf {home}; true",
         instance=config.instance_name,
     )
 

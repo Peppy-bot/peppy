@@ -441,7 +441,13 @@ mod apptainer_build {
         // additional agents come from brew's `lima-additional-guestagents`.
         // Copy any missing agents into the Lima share directory.
         if arch_flag.is_some() {
-            let lima_share = lima.limactl.parent().unwrap().parent().unwrap().join("share/lima");
+            let lima_share = lima
+                .limactl
+                .parent()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .join("share/lima");
             let agent_name = format!("lima-guestagent.Linux-{}.gz", lima_arch);
             let dest = lima_share.join(&agent_name);
             if !dest.exists() {
@@ -682,63 +688,57 @@ rm -rf /tmp/apptainer-{version} /tmp/apptainer-{version}.tar.gz"#,
         // cache is ready when the Lima VM later runs build.rs for cross-arch
         // targets.  The Lima VM mounts the macOS home directory, so it can
         // read the macOS-side cache at the same absolute path.
-        if use_lima {
-            if let Some(ref lima) = lima_config {
-                for target in &["aarch64", "x86_64"] {
-                    let target_cache = build_helpers::cache_dir(&format!(
-                        "apptainer-{}-{}-src",
-                        APPTAINER_VERSION, target
-                    ));
-                    let sentinel =
-                        apptainer_cache_sentinel_path(&target_cache, APPTAINER_VERSION);
-                    if sentinel.exists() && target_cache.join("bin/apptainer").exists() {
-                        println!(
-                            "cargo:warning=Apptainer {} for {} already cached",
-                            APPTAINER_VERSION, target
-                        );
-                        continue;
-                    }
+        if use_lima && let Some(ref lima) = lima_config {
+            for target in &["aarch64", "x86_64"] {
+                let target_cache = build_helpers::cache_dir(&format!(
+                    "apptainer-{}-{}-src",
+                    APPTAINER_VERSION, target
+                ));
+                let sentinel = apptainer_cache_sentinel_path(&target_cache, APPTAINER_VERSION);
+                if sentinel.exists() && target_cache.join("bin/apptainer").exists() {
                     println!(
-                        "cargo:warning=Pre-building apptainer {} for {} via Lima VM...",
+                        "cargo:warning=Apptainer {} for {} already cached",
                         APPTAINER_VERSION, target
                     );
-                    // Each architecture gets its own Lima instance so the VM
-                    // runs natively on the target ISA (or under QEMU emulation
-                    // for cross-arch).
-                    let instance_name: &'static str = match *target {
-                        "aarch64" => "peppy-a64",
-                        "x86_64" => "peppy-x64",
-                        _ => LIMA_INSTANCE,
-                    };
-                    let target_lima = LimaConfig {
-                        limactl: lima.limactl.clone(),
-                        lima_home: lima.lima_home.clone(),
-                        instance: instance_name,
-                    };
-                    let ok = build_apptainer_from_source_via_lima(
-                        &target_lima,
-                        APPTAINER_VERSION,
-                        &target_cache,
-                        target,
-                    );
-                    assert!(
-                        ok,
-                        "Failed to build apptainer {} for {} in Lima VM",
-                        APPTAINER_VERSION, target
-                    );
-                    assert!(
-                        target_cache.join("bin/apptainer").exists(),
-                        "Apptainer build for {} completed but bin/apptainer missing",
-                        target
-                    );
-                    std::fs::write(
-                        &sentinel,
-                        format!("version={}\n", APPTAINER_VERSION),
-                    )
+                    continue;
+                }
+                println!(
+                    "cargo:warning=Pre-building apptainer {} for {} via Lima VM...",
+                    APPTAINER_VERSION, target
+                );
+                // Each architecture gets its own Lima instance so the VM
+                // runs natively on the target ISA (or under QEMU emulation
+                // for cross-arch).
+                let instance_name: &'static str = match *target {
+                    "aarch64" => "peppy-a64",
+                    "x86_64" => "peppy-x64",
+                    _ => LIMA_INSTANCE,
+                };
+                let target_lima = LimaConfig {
+                    limactl: lima.limactl.clone(),
+                    lima_home: lima.lima_home.clone(),
+                    instance: instance_name,
+                };
+                let ok = build_apptainer_from_source_via_lima(
+                    &target_lima,
+                    APPTAINER_VERSION,
+                    &target_cache,
+                    target,
+                );
+                assert!(
+                    ok,
+                    "Failed to build apptainer {} for {} in Lima VM",
+                    APPTAINER_VERSION, target
+                );
+                assert!(
+                    target_cache.join("bin/apptainer").exists(),
+                    "Apptainer build for {} completed but bin/apptainer missing",
+                    target
+                );
+                std::fs::write(&sentinel, format!("version={}\n", APPTAINER_VERSION))
                     .unwrap_or_else(|e| {
                         panic!("Failed to write cache sentinel {:?}: {}", sentinel, e)
                     });
-                }
             }
         }
 
@@ -761,10 +761,7 @@ rm -rf /tmp/apptainer-{version} /tmp/apptainer-{version}.tar.gz"#,
                     let mut found = false;
                     if let Ok(entries) = std::fs::read_dir(&macos_home) {
                         for entry in entries.flatten() {
-                            let candidate = entry
-                                .path()
-                                .join(".peppy/tmp")
-                                .join(&pattern);
+                            let candidate = entry.path().join(".peppy/tmp").join(&pattern);
                             let candidate_sentinel =
                                 apptainer_cache_sentinel_path(&candidate, APPTAINER_VERSION);
                             if candidate_sentinel.exists()
@@ -781,7 +778,7 @@ rm -rf /tmp/apptainer-{version} /tmp/apptainer-{version}.tar.gz"#,
                                 copy_dir_recursive(&candidate, &cache_dir)
                                     .expect("Failed to copy macOS apptainer cache");
                                 std::fs::write(
-                                    &apptainer_cache_sentinel_path(&cache_dir, APPTAINER_VERSION),
+                                    apptainer_cache_sentinel_path(&cache_dir, APPTAINER_VERSION),
                                     format!("version={}\n", APPTAINER_VERSION),
                                 )
                                 .ok();
