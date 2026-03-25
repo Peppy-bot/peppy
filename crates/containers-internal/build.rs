@@ -369,6 +369,12 @@ mod apptainer_build {
         // Clean up tarball
         std::fs::remove_file(&tarball_path).ok();
 
+        // The GitHub auto-generated tarball does not include a VERSION file,
+        // but apptainer's mconfig requires either .git or VERSION to determine
+        // the version.  Create it from the version we already know.
+        std::fs::write(source_dir.join("VERSION"), format!("{}\n", version))
+            .expect("Failed to write apptainer VERSION file");
+
         // Start fresh install directory
         force_remove_dir(install_dir);
         std::fs::create_dir_all(install_dir).expect("Failed to create apptainer install directory");
@@ -513,6 +519,7 @@ sudo rm -rf apptainer-{version} apptainer-{version}.tar.gz {guest_install_dir}
 curl -fsSL https://github.com/apptainer/apptainer/releases/download/v{version}/apptainer-{version}.tar.gz -o apptainer-{version}.tar.gz
 tar -xzf apptainer-{version}.tar.gz
 cd apptainer-{version}
+echo "{version}" > VERSION
 ./mconfig --prefix={guest_install_dir}
 make -C builddir -j
 make -C builddir install

@@ -390,6 +390,15 @@ def _build_release_archives() -> None:
         capture_output=True,
     )
 
+    # Clear apptainer source caches to force a full source build, ensuring
+    # that build.rs source-build logic (e.g. VERSION file creation) is
+    # always exercised rather than masked by stale cached binaries.
+    peppy_tmp = Path.home() / ".peppy" / "tmp"
+    if peppy_tmp.exists():
+        for entry in peppy_tmp.iterdir():
+            if entry.name.startswith("apptainer-") and entry.is_dir():
+                shutil.rmtree(entry, ignore_errors=True)
+
     tag = "test"
     targets = get_targets_for_platform()
     _build_all_targets(tag, targets, REPO_ROOT)
