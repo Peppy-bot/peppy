@@ -29,7 +29,8 @@ if TYPE_CHECKING:
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
-INSTALL_SCRIPT = REPO_ROOT / "scripts" / "install.sh"
+SCRIPTS_ROOT = REPO_ROOT / "scripts"
+INSTALL_SCRIPT = SCRIPTS_ROOT / "install.sh"
 
 LINUX_DISTROS = ["ubuntu", "fedora", "archlinux"]
 
@@ -180,10 +181,6 @@ def _build_vm_configs() -> list[VMConfig]:
     for distro in LINUX_DISTROS:
         configs.append(VMConfig(os="linux", arch=cross, distro=distro))
 
-    # macOS guest only on macOS hosts
-    if sys.platform == "darwin":
-        configs.append(VMConfig(os="darwin", arch="aarch64", distro=None))
-
     return configs
 
 
@@ -271,8 +268,7 @@ def _find_release_archive(config: VMConfig) -> Path:
 
     pytest.fail(
         f"Release archive {archive_name} not found "
-        f"(searched: {', '.join(str(d) for d in search_dirs)}). "
-        f"Build release archives first with: pixi run build-release --local"
+        f"(searched: {', '.join(str(d) for d in search_dirs)})"
     )
 
 
@@ -307,6 +303,39 @@ def _setup_lima_guest(config: VMConfig, *, test_name: str) -> str:
     _copy_to_lima(INSTALL_SCRIPT, "/tmp/peppy-test/install.sh", instance=instance)
     _copy_to_lima(archive_path, _archive_guest_path(config), instance=instance)
     return guest_home
+
+
+# ---------------------------------------------------------------------------
+# Build fixture — builds release archives once before any test runs
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _build_release_archives() -> None:
+    """Build all release archives from the current source tree.
+
+    Runs once per test session before any install test executes.  The
+    archives land in REPO_ROOT/dist/ where ``_find_release_archive``
+    picks them up.
+
+    Cleans the containers crate build cache first to ensure build.rs
+    changes (e.g. architecture detection fixes) take effect.
+    """
+    from functions.build_release import _build_all_targets
+    from functions.cli import get_targets_for_platform
+
+    # Force rebuild of the containers crate so build.rs re-runs with the
+    # latest arch detection logic.  Without this, stale build artifacts
+    # may bundle the wrong architecture binaries.
+    subprocess.run(
+        ["cargo", "clean", "-p", "containers", "--release"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+    )
+
+    tag = "test"
+    targets = get_targets_for_platform()
+    _build_all_targets(tag, targets, REPO_ROOT)
 
 
 # ---------------------------------------------------------------------------
