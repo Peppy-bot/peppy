@@ -2,19 +2,20 @@
 name = "peppy-release-scripts"
 version = "0.0.1"
 description = "Release scripts for peppy"
-channels = ["conda-forge"]
+channels = ["https://prefix.dev/github-releases", "conda-forge"]
 platforms = ["linux-64", "osx-arm64", "linux-aarch64"]
 
 [dependencies]
 python = ">=3.13,<3.14"
 pip = "*"
-lima-vm = "*"
+lima = { version = ">=2.1.0", channel = "https://prefix.dev/github-releases" }
 
 [pypi-dependencies]
 peppy-release-scripts = { path = ".", editable = true }
 httpx = "*"
 rich = "*"
 pytest = "*"
+pytest-xdist = "*"
 respx = "*"
 
 [tasks]
