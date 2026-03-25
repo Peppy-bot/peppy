@@ -201,7 +201,11 @@ mod apptainer_build {
     /// * If the instance does not exist, create and start it with `template`.
     /// * If it exists but is stopped, start it.
     /// * If it is already running, this is a no-op.
-    fn ensure_lima_instance(lima: &LimaConfig, template: &str) -> bool {
+    ///
+    /// When `arch` is `Some`, an `--arch=<value>` flag is passed to
+    /// `limactl start` so the VM runs under QEMU emulation for a
+    /// non-native architecture.
+    fn ensure_lima_instance(lima: &LimaConfig, template: &str, arch: Option<&str>) -> bool {
         // Query instance status using Go template output — avoids brittle JSON parsing.
         let list_output = lima
             .lima_command()
@@ -252,17 +256,19 @@ mod apptainer_build {
                     lima.instance, template
                 );
                 let name_flag = format!("--name={}", lima.instance);
-                let create = lima
-                    .lima_command()
-                    .args([
-                        "start",
-                        &name_flag,
-                        "--tty=false",
-                        "--mount-writable",
-                        "--memory=12",
-                        template,
-                    ])
-                    .output();
+                let mut cmd = lima.lima_command();
+                cmd.args([
+                    "start",
+                    &name_flag,
+                    "--tty=false",
+                    "--mount-writable",
+                    "--memory=12",
+                ]);
+                if let Some(a) = arch {
+                    cmd.arg(format!("--arch={}", a));
+                }
+                cmd.arg(template);
+                let create = cmd.output();
                 match create {
                     Ok(o) if o.status.success() => true,
                     Ok(o) => {
@@ -286,7 +292,7 @@ mod apptainer_build {
     // Build apptainer from source
     // -----------------------------------------------------------------------
 
-    /// Build apptainer from source on the local host (native Linux builds).
+    /// Build apptainer from source on the local host (native builds only).
     ///
     /// Downloads the source tarball from GitHub, builds with `mconfig` + `make`,
     /// and installs to `install_dir`. Requires Go, make, gcc, libseccomp-dev,
@@ -397,17 +403,65 @@ mod apptainer_build {
         true
     }
 
-    /// Build apptainer from source inside a Lima VM (macOS builds for Linux targets).
+    /// Build apptainer from source inside a Lima VM.
     ///
-    /// Downloads and builds apptainer inside the VM, then copies the result
-    /// back to the host.
+    /// Starts a Lima VM of the target architecture (using `--arch` for
+    /// non-native targets so QEMU emulates the correct ISA), builds
+    /// apptainer natively inside it, then copies the result back to the host.
+    /// This avoids cross-compilation entirely — the binary is guaranteed to
+    /// match the target because it is built on the target architecture.
     fn build_apptainer_from_source_via_lima(
         lima: &LimaConfig,
         version: &str,
         install_dir: &Path,
         target_arch: &str,
     ) -> bool {
-        if !ensure_lima_instance(lima, LIMA_TEMPLATE) {
+        // Map Rust arch names to Lima --arch values.
+        let lima_arch = match target_arch {
+            "x86_64" => "x86_64",
+            "aarch64" => "aarch64",
+            other => {
+                println!(
+                    "cargo:warning=Unsupported Lima VM architecture for apptainer build: {}",
+                    other
+                );
+                return false;
+            }
+        };
+
+        // Only pass --arch when the target differs from the host.
+        let arch_flag = if target_arch != std::env::consts::ARCH {
+            Some(lima_arch)
+        } else {
+            None
+        };
+
+        // Cross-arch VMs need a guest agent binary for the target
+        // architecture.  The main Lima package only ships the native agent;
+        // additional agents come from brew's `lima-additional-guestagents`.
+        // Copy any missing agents into the Lima share directory.
+        if arch_flag.is_some() {
+            let lima_share = lima.limactl.parent().unwrap().parent().unwrap().join("share/lima");
+            let agent_name = format!("lima-guestagent.Linux-{}.gz", lima_arch);
+            let dest = lima_share.join(&agent_name);
+            if !dest.exists() {
+                let brew_src = PathBuf::from("/opt/homebrew/share/lima").join(&agent_name);
+                if brew_src.exists() {
+                    println!(
+                        "cargo:warning=Copying {} guest agent from Homebrew",
+                        lima_arch
+                    );
+                    std::fs::copy(&brew_src, &dest).ok();
+                } else {
+                    println!(
+                        "cargo:warning=Guest agent {} not found; install lima-additional-guestagents via Homebrew",
+                        agent_name
+                    );
+                }
+            }
+        }
+
+        if !ensure_lima_instance(lima, LIMA_TEMPLATE, arch_flag) {
             println!(
                 "cargo:warning=Could not ensure a running Lima instance for apptainer source build"
             );
@@ -421,44 +475,24 @@ mod apptainer_build {
 
         let guest_install_dir = GUEST_APPTAINER_DIR;
 
-        // When the target arch differs from the Lima VM's native arch (aarch64),
-        // we need cross-compilation tooling and must tell mconfig the host triple.
-        let (extra_packages, mconfig_host_flag) = if target_arch == "x86_64" {
-            (
-                " gcc-x86-64-linux-gnu libseccomp-dev:amd64",
-                " --host=x86_64-linux-gnu",
-            )
-        } else {
-            ("", "")
-        };
-
-        // For x86_64 cross-compilation, enable the amd64 architecture for
-        // multi-arch package installation (libseccomp-dev:amd64).
-        let dpkg_add_arch = if target_arch == "x86_64" {
-            "sudo dpkg --add-architecture amd64\n"
-        } else {
-            ""
-        };
-
         let build_script = format!(
             r#"set -eu
-{dpkg_add_arch}sudo apt-get update -qq
-sudo apt-get install -y -qq golang-go libseccomp-dev make gcc pkg-config squashfs-tools cryptsetup{extra_packages} > /dev/null 2>&1
+# Wait for cloud-init / unattended-upgrades to release the apt lock.
+while sudo fuser /var/lib/apt/lists/lock /var/lib/dpkg/lock /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do sleep 2; done
+sudo apt-get update -qq
+sudo apt-get install -y -qq golang-go libseccomp-dev make gcc pkg-config squashfs-tools cryptsetup > /dev/null 2>&1
 cd /tmp
-rm -rf apptainer-{version} apptainer-{version}.tar.gz {guest_install_dir}
+sudo rm -rf apptainer-{version} apptainer-{version}.tar.gz {guest_install_dir}
 curl -fsSL https://github.com/apptainer/apptainer/releases/download/v{version}/apptainer-{version}.tar.gz -o apptainer-{version}.tar.gz
 tar -xzf apptainer-{version}.tar.gz
 cd apptainer-{version}
-./mconfig --prefix={guest_install_dir}{mconfig_host_flag}
+./mconfig --prefix={guest_install_dir}
 make -C builddir -j
 make -C builddir install
 cp {guest_install_dir}/libexec/apptainer/bin/starter {guest_install_dir}/libexec/apptainer/bin/starter-suid
 rm -rf /tmp/apptainer-{version} /tmp/apptainer-{version}.tar.gz"#,
-            dpkg_add_arch = dpkg_add_arch,
-            extra_packages = extra_packages,
             version = version,
             guest_install_dir = guest_install_dir,
-            mconfig_host_flag = mconfig_host_flag,
         );
 
         let run = lima
@@ -643,8 +677,129 @@ rm -rf /tmp/apptainer-{version} /tmp/apptainer-{version}.tar.gz"#,
         // ------------------------------------------------------------------
         // Step 2: Build apptainer from source
         // ------------------------------------------------------------------
+
+        // On macOS, pre-build apptainer for ALL Linux architectures so the
+        // cache is ready when the Lima VM later runs build.rs for cross-arch
+        // targets.  The Lima VM mounts the macOS home directory, so it can
+        // read the macOS-side cache at the same absolute path.
+        if use_lima {
+            if let Some(ref lima) = lima_config {
+                for target in &["aarch64", "x86_64"] {
+                    let target_cache = build_helpers::cache_dir(&format!(
+                        "apptainer-{}-{}-src",
+                        APPTAINER_VERSION, target
+                    ));
+                    let sentinel =
+                        apptainer_cache_sentinel_path(&target_cache, APPTAINER_VERSION);
+                    if sentinel.exists() && target_cache.join("bin/apptainer").exists() {
+                        println!(
+                            "cargo:warning=Apptainer {} for {} already cached",
+                            APPTAINER_VERSION, target
+                        );
+                        continue;
+                    }
+                    println!(
+                        "cargo:warning=Pre-building apptainer {} for {} via Lima VM...",
+                        APPTAINER_VERSION, target
+                    );
+                    // Each architecture gets its own Lima instance so the VM
+                    // runs natively on the target ISA (or under QEMU emulation
+                    // for cross-arch).
+                    let instance_name: &'static str = match *target {
+                        "aarch64" => "peppy-a64",
+                        "x86_64" => "peppy-x64",
+                        _ => LIMA_INSTANCE,
+                    };
+                    let target_lima = LimaConfig {
+                        limactl: lima.limactl.clone(),
+                        lima_home: lima.lima_home.clone(),
+                        instance: instance_name,
+                    };
+                    let ok = build_apptainer_from_source_via_lima(
+                        &target_lima,
+                        APPTAINER_VERSION,
+                        &target_cache,
+                        target,
+                    );
+                    assert!(
+                        ok,
+                        "Failed to build apptainer {} for {} in Lima VM",
+                        APPTAINER_VERSION, target
+                    );
+                    assert!(
+                        target_cache.join("bin/apptainer").exists(),
+                        "Apptainer build for {} completed but bin/apptainer missing",
+                        target
+                    );
+                    std::fs::write(
+                        &sentinel,
+                        format!("version={}\n", APPTAINER_VERSION),
+                    )
+                    .unwrap_or_else(|e| {
+                        panic!("Failed to write cache sentinel {:?}: {}", sentinel, e)
+                    });
+                }
+            }
+        }
+
         let cache_dir =
             build_helpers::cache_dir(&format!("apptainer-{}-{}-src", APPTAINER_VERSION, &arch));
+
+        // On Linux inside a Lima VM, the macOS-side cache is accessible at the
+        // same absolute path because Lima mounts the host home directory.
+        // Check there as a fallback when the Linux-side cache is empty.
+        let macos_cache_hit = if !use_lima {
+            let sentinel = apptainer_cache_sentinel_path(&cache_dir, APPTAINER_VERSION);
+            if !sentinel.exists() || !cache_dir.join("bin/apptainer").exists() {
+                // The Linux HOME-based cache_dir didn't hit.  Try the macOS
+                // home path (e.g. /Users/<user>/.peppy/tmp/...) which Lima
+                // mounts into the guest.
+                let macos_home = PathBuf::from("/Users");
+                if macos_home.is_dir() {
+                    // Find any matching cache under /Users/*/.peppy/tmp/
+                    let pattern = format!("apptainer-{}-{}-src", APPTAINER_VERSION, &arch);
+                    let mut found = false;
+                    if let Ok(entries) = std::fs::read_dir(&macos_home) {
+                        for entry in entries.flatten() {
+                            let candidate = entry
+                                .path()
+                                .join(".peppy/tmp")
+                                .join(&pattern);
+                            let candidate_sentinel =
+                                apptainer_cache_sentinel_path(&candidate, APPTAINER_VERSION);
+                            if candidate_sentinel.exists()
+                                && candidate.join("bin/apptainer").exists()
+                            {
+                                println!(
+                                    "cargo:warning=Using macOS-side cached apptainer from {:?}",
+                                    candidate
+                                );
+                                // Copy to our local cache so OUT_DIR copy works.
+                                if cache_dir.exists() {
+                                    std::fs::remove_dir_all(&cache_dir).ok();
+                                }
+                                copy_dir_recursive(&candidate, &cache_dir)
+                                    .expect("Failed to copy macOS apptainer cache");
+                                std::fs::write(
+                                    &apptainer_cache_sentinel_path(&cache_dir, APPTAINER_VERSION),
+                                    format!("version={}\n", APPTAINER_VERSION),
+                                )
+                                .ok();
+                                found = true;
+                                break;
+                            }
+                        }
+                    }
+                    found
+                } else {
+                    false
+                }
+            } else {
+                true // Linux-side cache hit
+            }
+        } else {
+            false // macOS path already handled above
+        };
 
         // Check if we have a fully completed cached installation.
         let cached_bin = cache_dir.join("bin/apptainer");
@@ -654,17 +809,15 @@ rm -rf /tmp/apptainer-{version} /tmp/apptainer-{version}.tar.gz"#,
                 "cargo:warning=Using cached apptainer installation from {:?}",
                 cache_dir
             );
+        } else if macos_cache_hit {
+            // Already handled above via copy.
         } else {
             println!(
                 "cargo:warning=Building apptainer {} from source...",
                 APPTAINER_VERSION
             );
 
-            let success = if let Some(ref lima) = lima_config {
-                build_apptainer_from_source_via_lima(lima, APPTAINER_VERSION, &cache_dir, &arch)
-            } else {
-                build_apptainer_from_source(APPTAINER_VERSION, &cache_dir)
-            };
+            let success = build_apptainer_from_source(APPTAINER_VERSION, &cache_dir);
 
             assert!(
                 success,
