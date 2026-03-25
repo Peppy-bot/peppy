@@ -12,6 +12,8 @@ from functions.cli import ReleaseError
 from functions.lima import (
     GUEST_CARGO_HOME,
     GUEST_RUSTUP_HOME,
+    LIMA_INSTANCE,
+    LIMA_TEMPLATE,
     cargo_build_in_lima,
     ensure_lima_vm,
     find_limactl,
@@ -42,7 +44,7 @@ def test_find_limactl_from_build_output(tmp_path: Path) -> None:
 
 def test_find_limactl_fallback_to_cache(tmp_path: Path) -> None:
     # No build output, but cache exists
-    cache_dir = tmp_path / ".peppy" / "tmp" / "lima-2.0.3-Darwin-arm64" / "bin"
+    cache_dir = tmp_path / ".peppy" / "tmp" / "lima-2.1.0-Darwin-arm64" / "bin"
     cache_dir.mkdir(parents=True)
     limactl = cache_dir / "limactl"
     limactl.write_bytes(b"cached limactl")
@@ -86,12 +88,44 @@ def test_ensure_lima_vm_starts_stopped_instance(tmp_path: Path) -> None:
     assert mock_run.call_count == 2
 
 
-def test_ensure_lima_vm_not_found_raises(tmp_path: Path) -> None:
+def test_ensure_lima_vm_creates_when_not_found(tmp_path: Path) -> None:
     limactl = tmp_path / "limactl"
 
     with patch("functions.lima._run_limactl") as mock_run:
-        mock_run.return_value = MagicMock(stdout="")
-        with pytest.raises(ReleaseError, match="not found"):
+        # First call: list (empty = not found), second call: start/create (success)
+        mock_run.side_effect = [
+            MagicMock(stdout=""),
+            MagicMock(returncode=0),
+        ]
+        ensure_lima_vm(limactl)
+
+    assert mock_run.call_count == 2
+    create_call = mock_run.call_args_list[1]
+    assert create_call[0] == (
+        limactl,
+        [
+            "start",
+            f"--name={LIMA_INSTANCE}",
+            "--tty=false",
+            "--mount-writable",
+            "--containerd=none",
+            "--memory=12",
+            LIMA_TEMPLATE,
+        ],
+    )
+    assert create_call[1] == {"capture": False}
+
+
+def test_ensure_lima_vm_create_failure_raises(tmp_path: Path) -> None:
+    limactl = tmp_path / "limactl"
+
+    with patch("functions.lima._run_limactl") as mock_run:
+        # First call: list (empty = not found), second call: create fails
+        mock_run.side_effect = [
+            MagicMock(stdout=""),
+            MagicMock(returncode=1),
+        ]
+        with pytest.raises(ReleaseError, match="failed to create Lima VM"):
             ensure_lima_vm(limactl)
 
 
