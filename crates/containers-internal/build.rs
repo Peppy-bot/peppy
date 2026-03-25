@@ -22,6 +22,28 @@ mod apptainer_build {
         cache_dir.join(format!(".peppy-version-{}", version))
     }
 
+    /// Remove a directory tree, falling back to `rm -rf` if `std::fs`
+    /// fails (e.g. due to root-owned files left by a previous Lima VM build).
+    fn force_remove_dir(dir: &Path) {
+        if !dir.exists() {
+            return;
+        }
+        if std::fs::remove_dir_all(dir).is_ok() {
+            return;
+        }
+        // Fall back to rm -rf which can sometimes succeed where std::fs
+        // cannot (e.g. when directory permissions differ).
+        let _ = Command::new("rm").args(["-rf"]).arg(dir).status();
+        if dir.exists() {
+            panic!(
+                "Cannot remove stale apptainer cache at {:?} (likely contains root-owned files \
+                 from a previous Lima VM build). Please remove it manually:\n  \
+                 sudo rm -rf {:?}",
+                dir, dir
+            );
+        }
+    }
+
     /// LIMA_HOME for the build-time VM instance.
     ///
     /// Uses `~/.peppy/lima-build/` instead of the temp dir because macOS temp
@@ -347,9 +369,7 @@ mod apptainer_build {
         std::fs::remove_file(&tarball_path).ok();
 
         // Start fresh install directory
-        if install_dir.exists() {
-            std::fs::remove_dir_all(install_dir).ok();
-        }
+        force_remove_dir(install_dir);
         std::fs::create_dir_all(install_dir).expect("Failed to create apptainer install directory");
 
         // Configure: ./mconfig --prefix=<install_dir>
@@ -530,9 +550,7 @@ rm -rf /tmp/apptainer-{version} /tmp/apptainer-{version}.tar.gz"#,
 
     /// Copy a directory from the Lima guest to the host via tar pipe.
     fn copy_lima_result_to_host(lima: &LimaConfig, guest_dir: &str, host_dir: &Path) -> bool {
-        if host_dir.exists() {
-            std::fs::remove_dir_all(host_dir).ok();
-        }
+        force_remove_dir(host_dir);
         std::fs::create_dir_all(host_dir).expect("Failed to create host install directory");
 
         let tar_pipe = Command::new("bash")

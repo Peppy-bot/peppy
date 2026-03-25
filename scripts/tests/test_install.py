@@ -177,7 +177,12 @@ class VMConfig:
 
 
 def _build_vm_configs() -> list[VMConfig]:
-    """Build the list of VM configs based on the host platform."""
+    """Build the list of VM configs based on the host platform.
+
+    On macOS all release triples are built, so both native and cross-arch
+    Linux VMs are included.  On Linux only the native triple is produced,
+    so cross-arch VM configs are omitted (no archive to test with).
+    """
     configs: list[VMConfig] = []
     host = _host_arch()
     cross = "x86_64" if host == "aarch64" else "aarch64"
@@ -186,9 +191,10 @@ def _build_vm_configs() -> list[VMConfig]:
     for distro in LINUX_DISTROS:
         configs.append(VMConfig(os="linux", arch=host, distro=distro))
 
-    # Cross-arch Linux VMs (all distros)
-    for distro in LINUX_DISTROS:
-        configs.append(VMConfig(os="linux", arch=cross, distro=distro))
+    # Cross-arch Linux VMs — only when all triples are built (macOS).
+    if sys.platform == "darwin":
+        for distro in LINUX_DISTROS:
+            configs.append(VMConfig(os="linux", arch=cross, distro=distro))
 
     return configs
 

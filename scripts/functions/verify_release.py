@@ -41,14 +41,20 @@ def verify_release_archive(archive_path: Path, triple: str) -> list[str]:
     return missing
 
 
-def verify_all_releases(dist_dir: Path) -> None:
-    """Verify all expected release archives exist and contain all required binaries.
+def verify_all_releases(
+    dist_dir: Path, triples: tuple[str, ...] | list[str] | None = None
+) -> None:
+    """Verify release archives exist and contain all required binaries.
+
+    When *triples* is ``None`` (the default), all ``RELEASE_TRIPLES`` are
+    checked.  Pass an explicit list to verify only a subset (e.g. when
+    building on Linux where only the native target is produced).
 
     Raises ReleaseError with a summary of all missing items.
     """
     errors: list[str] = []
 
-    for triple in RELEASE_TRIPLES:
+    for triple in (triples if triples is not None else RELEASE_TRIPLES):
         archive = dist_dir / f"peppy-{triple}.tgz"
 
         if not archive.exists():

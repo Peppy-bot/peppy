@@ -144,10 +144,10 @@ def _build_all_targets(
             artifact = build_and_package(tag, triple, repo_root)
         artifacts.append(artifact)
 
-    # Verify all release archives contain the required binaries
+    # Verify the release archives that were actually built
     if artifacts:
         dist_dir = artifacts[0].asset_path.parent
-        verify_all_releases(dist_dir)
+        verify_all_releases(dist_dir, targets)
         console.print("[green]All release archives verified successfully.[/green]")
 
     return artifacts
