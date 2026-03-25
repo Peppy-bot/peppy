@@ -12,12 +12,14 @@ from __future__ import annotations
 
 import atexit
 import json
+import logging
 import os
 import platform
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -224,36 +226,76 @@ def _lima_env() -> dict[str, str]:
     return {**os.environ, "LIMA_HOME": str(lima_home)}
 
 
+logger = logging.getLogger(__name__)
+
+_SSH_MAX_RETRIES = 3
+_SSH_RETRY_DELAY = 5  # seconds
+
+
+def _is_ssh_connection_error(result: subprocess.CompletedProcess[str]) -> bool:
+    """Return True if the process failed due to a transient SSH/SCP error."""
+    if result.returncode == 0:
+        return False
+    stderr = (result.stderr or "").lower()
+    return result.returncode == 255 or "connection closed" in stderr
+
+
 def _lima_shell(
-    script: str, *, instance: str, timeout: int = 120
+    script: str, *, instance: str, timeout: int = 120, retries: int = _SSH_MAX_RETRIES
 ) -> subprocess.CompletedProcess[str]:
-    """Run a bash script inside the test Lima VM for the given instance."""
-    return subprocess.run(
-        [
-            "limactl",
-            "shell",
-            "--workdir=/tmp",
-            instance,
-            "--",
-            "bash",
-            "-c",
-            script,
-        ],
-        env=_lima_env(),
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-    )
+    """Run a bash script inside the test Lima VM for the given instance.
+
+    Retries on transient SSH connection errors (common with cross-arch QEMU VMs).
+    """
+    cmd = [
+        "limactl",
+        "shell",
+        "--workdir=/tmp",
+        instance,
+        "--",
+        "bash",
+        "-c",
+        script,
+    ]
+    env = _lima_env()
+    for attempt in range(1, retries + 1):
+        result = subprocess.run(
+            cmd, env=env, capture_output=True, text=True, timeout=timeout
+        )
+        if not _is_ssh_connection_error(result) or attempt == retries:
+            return result
+        logger.warning(
+            "SSH connection error (attempt %d/%d) for %s, retrying in %ds...",
+            attempt, retries, instance, _SSH_RETRY_DELAY,
+        )
+        time.sleep(_SSH_RETRY_DELAY)
+    return result  # unreachable, but satisfies type checkers
 
 
-def _copy_to_lima(local_path: Path, guest_path: str, *, instance: str) -> None:
-    """Copy a file from the host to the guest VM."""
-    subprocess.run(
-        ["limactl", "copy", str(local_path), f"{instance}:{guest_path}"],
-        env=_lima_env(),
-        check=True,
-        timeout=30,
-    )
+def _copy_to_lima(
+    local_path: Path, guest_path: str, *, instance: str, retries: int = _SSH_MAX_RETRIES
+) -> None:
+    """Copy a file from the host to the guest VM.
+
+    Retries on transient SSH connection errors (common with cross-arch QEMU VMs).
+    """
+    cmd = ["limactl", "copy", str(local_path), f"{instance}:{guest_path}"]
+    env = _lima_env()
+    for attempt in range(1, retries + 1):
+        result = subprocess.run(
+            cmd, env=env, capture_output=True, text=True, timeout=30
+        )
+        if result.returncode == 0:
+            return
+        if not _is_ssh_connection_error(result) or attempt == retries:
+            raise subprocess.CalledProcessError(
+                result.returncode, cmd, output=result.stdout, stderr=result.stderr
+            )
+        logger.warning(
+            "SCP connection error (attempt %d/%d) for %s, retrying in %ds...",
+            attempt, retries, instance, _SSH_RETRY_DELAY,
+        )
+        time.sleep(_SSH_RETRY_DELAY)
 
 
 def _guest_home(test_name: str) -> str:
