@@ -4,7 +4,7 @@ use std::process::{Command, Stdio};
 
 pub(crate) const LIMA_INSTANCE: &str = env!("LIMA_INSTANCE");
 pub(crate) const LIMA_TEMPLATE: &str = env!("LIMA_TEMPLATE");
-pub(crate) const MIN_LIMA_VERSION: (u32, u32, u32) = (2, 0, 0);
+pub(crate) const MIN_LIMA_VERSION: (u32, u32, u32) = (2, 1, 0);
 
 /// Single-quote a path for safe embedding in a shell command string.
 fn shell_escape(path: &Path) -> String {

@@ -10,6 +10,7 @@ from .cli import ReleaseError, console
 
 LIMA_HOME = Path.home() / ".peppy" / "lima-build"
 LIMA_INSTANCE = "peppy"
+LIMA_TEMPLATE = "template:ubuntu-24.04"
 GUEST_RUST_DIR = "/opt/peppy-rust"
 GUEST_RUSTUP_HOME = f"{GUEST_RUST_DIR}/rustup"
 GUEST_CARGO_HOME = f"{GUEST_RUST_DIR}/cargo"
@@ -71,10 +72,9 @@ def _lima_shell(
 
 
 def ensure_lima_vm(limactl: Path) -> None:
-    """Ensure the peppy Lima VM instance is running.
+    """Ensure the peppy Lima VM instance exists and is running.
 
-    The VM should already exist (created by the containers crate build.rs
-    during the native macOS build). This function starts it if stopped.
+    Creates the VM if it does not exist, starts it if stopped.
     """
     result = _run_limactl(
         limactl,
@@ -83,10 +83,29 @@ def ensure_lima_vm(limactl: Path) -> None:
     status = result.stdout.strip()
 
     if not status:
-        raise ReleaseError(
-            f"Lima VM instance '{LIMA_INSTANCE}' not found. "
-            "Build the macOS target first (cargo build triggers VM creation)."
+        console.print(
+            f"Creating Lima VM '{LIMA_INSTANCE}' with {LIMA_TEMPLATE} "
+            "(this may take a few minutes on first run)..."
         )
+        create = _run_limactl(
+            limactl,
+            [
+                "start",
+                f"--name={LIMA_INSTANCE}",
+                "--tty=false",
+                "--mount-writable",
+                "--containerd=none",
+                "--memory=12",
+                LIMA_TEMPLATE,
+            ],
+            capture=False,
+        )
+        if create.returncode != 0:
+            raise ReleaseError(
+                f"failed to create Lima VM '{LIMA_INSTANCE}' "
+                f"(exit {create.returncode})"
+            )
+        return
 
     if status == "Running":
         return
