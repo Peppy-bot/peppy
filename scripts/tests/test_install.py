@@ -418,6 +418,7 @@ def _lima_vm_lifecycle(request):  # noqa: ANN001
             f"--name={instance}",
             "--tty=false",
             "--mount-writable",
+            "--containerd=none",
             "--disk=20",
             template,
         ]

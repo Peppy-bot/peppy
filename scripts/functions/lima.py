@@ -94,6 +94,7 @@ def ensure_lima_vm(limactl: Path) -> None:
                 f"--name={LIMA_INSTANCE}",
                 "--tty=false",
                 "--mount-writable",
+                "--containerd=none",
                 "--memory=12",
                 LIMA_TEMPLATE,
             ],

@@ -284,6 +284,7 @@ mod apptainer_build {
                     &name_flag,
                     "--tty=false",
                     "--mount-writable",
+                    "--containerd=none",
                     "--memory=12",
                 ]);
                 if let Some(a) = arch {
