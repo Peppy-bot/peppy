@@ -65,33 +65,40 @@ pub fn run_command_streaming(command: &mut Command, label: &str) -> CommandOutpu
         }
     };
 
+    // Read stdout and stderr on separate threads to avoid deadlocks.
+    // If both are read sequentially, a child that fills one pipe buffer
+    // while we're blocked reading the other will hang indefinitely.
     let stderr_pipe = child.stderr.take().unwrap();
-    let label_for_thread = label.to_string();
+    let label_for_stderr = label.to_string();
     let stderr_thread = std::thread::spawn(move || {
         let mut captured = String::new();
         for line in std::io::BufReader::new(stderr_pipe)
             .lines()
             .map_while(Result::ok)
         {
-            println!("cargo:warning=[{}] {}", label_for_thread, line);
+            println!("cargo:warning=[{}] {}", label_for_stderr, line);
             captured.push_str(&line);
             captured.push('\n');
         }
         captured
     });
 
-    let mut stdout_captured = String::new();
-    if let Some(stdout_pipe) = child.stdout.take() {
+    let stdout_pipe = child.stdout.take().unwrap();
+    let label_for_stdout = label.to_string();
+    let stdout_thread = std::thread::spawn(move || {
+        let mut captured = String::new();
         for line in std::io::BufReader::new(stdout_pipe)
             .lines()
             .map_while(Result::ok)
         {
-            println!("cargo:warning=[{}] {}", label, line);
-            stdout_captured.push_str(&line);
-            stdout_captured.push('\n');
+            println!("cargo:warning=[{}] {}", label_for_stdout, line);
+            captured.push_str(&line);
+            captured.push('\n');
         }
-    }
+        captured
+    });
 
+    let stdout_captured = stdout_thread.join().unwrap_or_default();
     let stderr_captured = stderr_thread.join().unwrap_or_default();
     let status = child.wait().expect("Failed to wait for child process");
 

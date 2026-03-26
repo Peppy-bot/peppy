@@ -135,7 +135,7 @@ pub fn check_setup_status(apptainer_dir: &Path) -> SetupStatus {
         // A stale profile pointing to a different binary (e.g. a previous build
         // artifact) won't grant the current binary namespace privileges.
         std::fs::read_to_string("/etc/apparmor.d/peppy-apptainer")
-            .map(|content| content.contains(&format!("{}", starter_canonical.display())))
+            .map(|content| content.contains(&starter_canonical.display().to_string()))
             .unwrap_or(false)
     } else {
         true

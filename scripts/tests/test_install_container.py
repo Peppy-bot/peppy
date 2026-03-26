@@ -17,7 +17,6 @@ import pytest
 
 from .lima_helpers import (
     VMConfig,
-    diagnostic,
     host_arch,
     install_cmd,
     lima_shell,
@@ -101,9 +100,7 @@ def test_container_node_build(lima_vm: VMConfig) -> None:
         "Install peppy",
         install_cmd(config, home, extra_env="PEPPY_FORCE_REINSTALL=1"),
     )
-    assert result.returncode == 0, (
-        f"install failed on {config.pytest_id()}{diagnostic(result)}"
-    )
+    assert result.returncode == 0, f"install failed on {config.pytest_id()}"
 
     # Start daemon in a detached session.  limactl shell (SSH) hangs after
     # bash exits because the daemon inherits SSH channel file descriptors
@@ -126,14 +123,14 @@ def test_container_node_build(lima_vm: VMConfig) -> None:
         "Verify daemon",
         "pgrep -f 'peppy service serve' > /dev/null && echo 'Daemon running'",
     )
-    assert result.returncode == 0, f"daemon start failed{diagnostic(result)}"
+    assert result.returncode == 0, "daemon start failed"
 
     # Init container node
     result = run_step(
         "Node init --container",
         f"{env_preamble} && cd /tmp && rm -rf test-node && peppy node init --container test-node",
     )
-    assert result.returncode == 0, f"node init failed{diagnostic(result)}"
+    assert result.returncode == 0, "node init failed"
 
     # Add the node (triggers Apptainer container build)
     result = run_step(
@@ -141,7 +138,7 @@ def test_container_node_build(lima_vm: VMConfig) -> None:
         f"{env_preamble} && cd /tmp/test-node && peppy node add .",
         timeout=600,
     )
-    assert result.returncode == 0, f"node add failed{diagnostic(result)}"
+    assert result.returncode == 0, "node add failed"
 
     # Start the node
     result = run_step(
@@ -149,7 +146,7 @@ def test_container_node_build(lima_vm: VMConfig) -> None:
         f"{env_preamble} && peppy node start test-node:0.1.0",
         timeout=120,
     )
-    assert result.returncode == 0, f"node start failed{diagnostic(result)}"
+    assert result.returncode == 0, "node start failed"
 
     # Stop daemon
     run_step(
