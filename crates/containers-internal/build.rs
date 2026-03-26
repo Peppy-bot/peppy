@@ -348,6 +348,18 @@ mod apptainer_build {
         std::fs::write(source_dir.join("VERSION"), format!("{}\n", version))
             .expect("Failed to write apptainer VERSION file");
 
+        // Refresh vendored Go dependencies — the release tarball's vendor/
+        // directory can be stale (vendor/modules.txt out of sync with go.mod).
+        if !build_helpers::run_command(
+            Command::new("go")
+                .current_dir(&source_dir)
+                .args(["mod", "vendor"]),
+            "refresh apptainer vendor directory",
+        ) {
+            std::fs::remove_dir_all(&source_dir).ok();
+            return false;
+        }
+
         // Start fresh install directory
         force_remove_dir(install_dir);
         std::fs::create_dir_all(install_dir).expect("Failed to create apptainer install directory");
@@ -490,10 +502,12 @@ curl -fsSL https://github.com/apptainer/apptainer/releases/download/v{version}/a
 tar -xzf apptainer-{version}.tar.gz
 cd apptainer-{version}
 echo "{version}" > VERSION
+echo "=== Refreshing vendored Go dependencies ==="
+go mod vendor
 echo "=== Configuring apptainer ==="
 ./mconfig --without-suid --prefix={guest_install_dir}
 echo "=== Compiling apptainer (this is the slow part under QEMU) ==="
-make -C builddir -j
+make -C builddir -j"$(nproc)"
 echo "=== Installing apptainer ==="
 make -C builddir install
 rm -rf /tmp/apptainer-{version} /tmp/apptainer-{version}.tar.gz
