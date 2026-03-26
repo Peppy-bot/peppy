@@ -81,15 +81,14 @@ pub fn run_command_streaming(command: &mut Command, label: &str) -> CommandOutpu
     });
 
     let mut stdout_captured = String::new();
-    if let Some(stdout_pipe) = child.stdout.take() {
-        for line in std::io::BufReader::new(stdout_pipe)
-            .lines()
-            .map_while(Result::ok)
-        {
-            println!("cargo:warning=[{}] {}", label, line);
-            stdout_captured.push_str(&line);
-            stdout_captured.push('\n');
-        }
+    let stdout_pipe = child.stdout.take().unwrap();
+    for line in std::io::BufReader::new(stdout_pipe)
+        .lines()
+        .map_while(Result::ok)
+    {
+        println!("cargo:warning=[{}] {}", label, line);
+        stdout_captured.push_str(&line);
+        stdout_captured.push('\n');
     }
 
     let stderr_captured = stderr_thread.join().unwrap_or_default();

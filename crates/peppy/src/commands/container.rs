@@ -100,12 +100,11 @@ fn setup(force: bool) -> Result<()> {
     let status = containers::check_setup_status(&apptainer_dir)
         .map_err(|e| Error::ExecutionFailed(format!("{e}")))?;
 
-    if !force && status.is_ok() {
-        println!("All container prerequisites are already met. Nothing to do.");
-        return Ok(());
-    }
-
-    if force && status.is_ok() {
+    if status.is_ok() {
+        if !force {
+            println!("All container prerequisites are already met. Nothing to do.");
+            return Ok(());
+        }
         println!("All checks pass but --force was specified. Re-applying fixes.");
     } else {
         println!("The following fixes are needed:");
