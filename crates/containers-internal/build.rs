@@ -603,6 +603,7 @@ echo "=== Apptainer build complete ==="
         println!("cargo:rerun-if-changed=build.rs");
         println!("cargo:rerun-if-env-changed=PEPPY_APPTAINER_DIR");
         println!("cargo:rerun-if-env-changed=PEPPY_LIMA_DIR");
+        println!("cargo:rerun-if-env-changed=PEPPY_CROSS_ARCH");
 
         let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
 
@@ -682,12 +683,19 @@ echo "=== Apptainer build complete ==="
         // Step 2: Build apptainer from source
         // ------------------------------------------------------------------
 
-        // On macOS, pre-build apptainer for ALL Linux architectures so the
-        // cache is ready when the Lima VM later runs build.rs for cross-arch
-        // targets.  The Lima VM mounts the macOS home directory, so it can
-        // read the macOS-side cache at the same absolute path.
+        // On macOS, build apptainer inside Lima VMs.  By default only the
+        // native architecture is built.  Set PEPPY_CROSS_ARCH=1 (used by the
+        // release script) to also build for non-native architectures so the
+        // cache is ready for cross-compiled release targets.
         if use_lima && let Some(ref lima) = lima_config {
-            for target in &["aarch64", "x86_64"] {
+            let cross_arch = env::var("PEPPY_CROSS_ARCH").unwrap_or_default() == "1";
+            let native_arch: &str = std::env::consts::ARCH;
+            let targets: Vec<&str> = if cross_arch {
+                vec!["aarch64", "x86_64"]
+            } else {
+                vec![native_arch]
+            };
+            for target in &targets {
                 let target_cache = build_helpers::cache_dir(&format!(
                     "apptainer-{}-{}-nosuid",
                     APPTAINER_VERSION, target
