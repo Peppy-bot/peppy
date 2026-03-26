@@ -12,17 +12,10 @@ from __future__ import annotations
 
 import atexit
 import json
-import logging
 import os
-import platform
-import shutil
-import subprocess
 import sys
 import tempfile
-import time
 import urllib.request
-from dataclasses import dataclass
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -30,9 +23,15 @@ if TYPE_CHECKING:
 
 import pytest
 
-REPO_ROOT = Path(__file__).resolve().parent.parent.parent
-SCRIPTS_ROOT = REPO_ROOT / "scripts"
-INSTALL_SCRIPT = SCRIPTS_ROOT / "install.sh"
+from .lima_helpers import (
+    VMConfig,
+    diagnostic,
+    host_arch,
+    install_cmd,
+    lima_shell,
+    lima_vm_lifecycle,
+    setup_lima_guest,
+)
 
 LINUX_DISTROS = ["ubuntu", "fedora", "archlinux"]
 
@@ -45,16 +44,6 @@ _ARCHLINUX_ARM_LIMA_API = (
 )
 
 
-def _host_arch() -> str:
-    """Return the normalised host architecture."""
-    machine = platform.machine()
-    if machine in ("aarch64", "arm64"):
-        return "aarch64"
-    if machine in ("x86_64", "AMD64"):
-        return "x86_64"
-    raise RuntimeError(f"Unsupported host architecture: {machine}")
-
-
 def _resolve_archlinux_template() -> str:
     """Fetch the latest Arch Linux aarch64 cloud image URL and return a
     path to a temporary Lima template YAML that references it.
@@ -63,7 +52,7 @@ def _resolve_archlinux_template() -> str:
     template:archlinux ships a stale 2022 image.  On x86_64 the built-in
     template has a recent image and works out of the box.
     """
-    if _host_arch() != "aarch64":
+    if host_arch() != "aarch64":
         return "template:archlinux"
 
     try:
@@ -117,65 +106,8 @@ if _ARCHLINUX_TEMPLATE.startswith("/"):
 
 
 # ---------------------------------------------------------------------------
-# VMConfig — the central parameterisation unit
+# VM config construction
 # ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class VMConfig:
-    """Describes a Lima VM target for install testing."""
-
-    os: str  # "linux" or "darwin"
-    arch: str  # "aarch64" or "x86_64"
-    distro: str | None  # "ubuntu", "fedora", "archlinux", or None (macOS)
-
-    @property
-    def target_triple(self) -> str:
-        if self.os == "darwin":
-            return "aarch64-apple-darwin"
-        return f"{self.arch}-unknown-linux-gnu"
-
-    @property
-    def instance_name(self) -> str:
-        # Keep short to stay under macOS UNIX_PATH_MAX=104 for ssh.sock paths.
-        # Format: pti-{arch_short}-{distro_short_or_os}
-        arch_short = "a64" if self.arch == "aarch64" else "x64"
-        if self.distro:
-            distro_map = {"ubuntu": "ubu", "fedora": "fed", "archlinux": "arch"}
-            return f"pti-{arch_short}-{distro_map[self.distro]}"
-        return f"pti-{arch_short}-{self.os[:3]}"
-
-    @property
-    def is_cross_arch(self) -> bool:
-        """True if guest arch differs from host arch."""
-        return self.arch != _host_arch()
-
-    @property
-    def template(self) -> str:
-        if self.os == "darwin":
-            return "template:macos"
-        if self.distro == "archlinux":
-            # The custom template is aarch64-only; x86_64 uses the built-in.
-            return (
-                _ARCHLINUX_TEMPLATE if self.arch == "aarch64" else "template:archlinux"
-            )
-        templates = {
-            "ubuntu": "template:ubuntu-24.04",
-            "fedora": "template:fedora",
-        }
-        return templates[self.distro]
-
-    @property
-    def lima_arch_flag(self) -> list[str]:
-        """Return --arch flag if cross-arch, else empty."""
-        if self.is_cross_arch:
-            return [f"--arch={self.arch}"]
-        return []
-
-    def pytest_id(self) -> str:
-        if self.distro:
-            return f"{self.os}-{self.arch}-{self.distro}"
-        return f"{self.os}-{self.arch}"
 
 
 def _build_vm_configs() -> list[VMConfig]:
@@ -184,19 +116,34 @@ def _build_vm_configs() -> list[VMConfig]:
     On macOS all release triples are built, so both native and cross-arch
     Linux VMs are included.  On Linux only the native triple is produced,
     so cross-arch VM configs are omitted (no archive to test with).
+
+    The archlinux aarch64 template is resolved dynamically (see above),
+    so archlinux configs use ``template_override`` to point at the custom
+    template YAML.
     """
     configs: list[VMConfig] = []
-    host = _host_arch()
+    host = host_arch()
     cross = "x86_64" if host == "aarch64" else "aarch64"
+
+    def _archlinux_template(arch: str) -> str:
+        return _ARCHLINUX_TEMPLATE if arch == "aarch64" else "template:archlinux"
 
     # Native-arch Linux VMs (all distros)
     for distro in LINUX_DISTROS:
-        configs.append(VMConfig(os="linux", arch=host, distro=distro))
+        override = _archlinux_template(host) if distro == "archlinux" else None
+        configs.append(
+            VMConfig(os="linux", arch=host, distro=distro, template_override=override)
+        )
 
     # Cross-arch Linux VMs — only when all triples are built (macOS).
     if sys.platform == "darwin":
         for distro in LINUX_DISTROS:
-            configs.append(VMConfig(os="linux", arch=cross, distro=distro))
+            override = _archlinux_template(cross) if distro == "archlinux" else None
+            configs.append(
+                VMConfig(
+                    os="linux", arch=cross, distro=distro, template_override=override
+                )
+            )
 
     return configs
 
@@ -205,207 +152,7 @@ VM_CONFIGS = _build_vm_configs()
 
 
 # ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def _diagnostic(result: subprocess.CompletedProcess[str]) -> str:
-    """Format stdout/stderr from a completed process for assertion messages."""
-    return f"\n--- stdout ---\n{result.stdout}\n--- stderr ---\n{result.stderr}"
-
-
-def _lima_env() -> dict[str, str]:
-    """Environment with LIMA_HOME pointing to a test-specific directory.
-
-    When running under pytest-xdist, each worker gets its own LIMA_HOME
-    to avoid conflicts between parallel VM operations.
-    """
-    worker = os.environ.get("PYTEST_XDIST_WORKER", "gw0")
-    lima_home = Path.home() / ".peppy" / f"lti-{worker}"
-    lima_home.mkdir(parents=True, exist_ok=True)
-    return {**os.environ, "LIMA_HOME": str(lima_home)}
-
-
-logger = logging.getLogger(__name__)
-
-_SSH_MAX_RETRIES = 3
-_SSH_RETRY_DELAY = 5  # seconds
-
-
-def _is_ssh_connection_error(result: subprocess.CompletedProcess[str]) -> bool:
-    """Return True if the process failed due to a transient SSH/SCP error."""
-    if result.returncode == 0:
-        return False
-    stderr = (result.stderr or "").lower()
-    return result.returncode == 255 or "connection closed" in stderr
-
-
-def _lima_shell(
-    script: str, *, instance: str, timeout: int = 120, retries: int = _SSH_MAX_RETRIES
-) -> subprocess.CompletedProcess[str]:
-    """Run a bash script inside the test Lima VM for the given instance.
-
-    Retries on transient SSH connection errors (common with cross-arch QEMU VMs).
-    """
-    cmd = [
-        "limactl",
-        "shell",
-        "--workdir=/tmp",
-        instance,
-        "--",
-        "bash",
-        "-c",
-        script,
-    ]
-    env = _lima_env()
-    for attempt in range(1, retries + 1):
-        result = subprocess.run(
-            cmd, env=env, capture_output=True, text=True, timeout=timeout
-        )
-        if not _is_ssh_connection_error(result) or attempt == retries:
-            return result
-        logger.warning(
-            "SSH connection error (attempt %d/%d) for %s, retrying in %ds...",
-            attempt, retries, instance, _SSH_RETRY_DELAY,
-        )
-        time.sleep(_SSH_RETRY_DELAY)
-    return result  # unreachable, but satisfies type checkers
-
-
-def _copy_to_lima(
-    local_path: Path, guest_path: str, *, instance: str, retries: int = _SSH_MAX_RETRIES
-) -> None:
-    """Copy a file from the host to the guest VM.
-
-    Retries on transient SSH connection errors (common with cross-arch QEMU VMs).
-    """
-    cmd = ["limactl", "copy", str(local_path), f"{instance}:{guest_path}"]
-    env = _lima_env()
-    for attempt in range(1, retries + 1):
-        result = subprocess.run(
-            cmd, env=env, capture_output=True, text=True, timeout=30
-        )
-        if result.returncode == 0:
-            return
-        if not _is_ssh_connection_error(result) or attempt == retries:
-            raise subprocess.CalledProcessError(
-                result.returncode, cmd, output=result.stdout, stderr=result.stderr
-            )
-        logger.warning(
-            "SCP connection error (attempt %d/%d) for %s, retrying in %ds...",
-            attempt, retries, instance, _SSH_RETRY_DELAY,
-        )
-        time.sleep(_SSH_RETRY_DELAY)
-
-
-def _guest_home(test_name: str) -> str:
-    """Return a unique PEPPY_HOME path on the guest for the given test."""
-    return f"/tmp/peppy-test-home/{test_name}"
-
-
-def _find_release_archive(config: VMConfig) -> Path:
-    """Find the pre-built release archive for the given VMConfig.
-
-    Looks in PEPPY_TEST_ARCHIVE_DIR (env var), then falls back to
-    REPO_ROOT/dist/.  Raises pytest.fail() if the archive is not found.
-    """
-    triple = config.target_triple
-    archive_name = f"peppy-{triple}.tgz"
-
-    search_dirs: list[Path] = []
-    env_dir = os.environ.get("PEPPY_TEST_ARCHIVE_DIR")
-    if env_dir:
-        search_dirs.append(Path(env_dir))
-    search_dirs.append(REPO_ROOT / "dist")
-
-    for d in search_dirs:
-        path = d / archive_name
-        if path.is_file():
-            return path
-
-    pytest.fail(
-        f"Release archive {archive_name} not found "
-        f"(searched: {', '.join(str(d) for d in search_dirs)})"
-    )
-
-
-def _archive_guest_path(config: VMConfig) -> str:
-    """Return the guest-side path for the release archive."""
-    return f"/tmp/peppy-test/peppy-{config.target_triple}.tgz"
-
-
-def _install_cmd(config: VMConfig, home: str, *, extra_env: str = "") -> str:
-    """Build the install.sh invocation command for the guest."""
-    env_parts = f"PEPPY_HOME={home} PEPPY_NO_SERVICE_INSTALL=1"
-    if extra_env:
-        env_parts = f"{env_parts} {extra_env}"
-    return f"{env_parts} sh /tmp/peppy-test/install.sh {_archive_guest_path(config)}"
-
-
-def _setup_lima_guest(config: VMConfig, *, test_name: str) -> str:
-    """Copy install.sh and the release archive into the Lima guest.
-
-    Returns the guest PEPPY_HOME path for this test.
-    """
-    archive_path = _find_release_archive(config)
-    guest_home = _guest_home(test_name)
-    instance = config.instance_name
-
-    # Clean up all previous test homes to free disk space (real archives
-    # are large and VMs have limited /tmp).
-    _lima_shell(
-        "rm -rf /tmp/peppy-test-home && mkdir -p /tmp/peppy-test",
-        instance=instance,
-    )
-    _copy_to_lima(INSTALL_SCRIPT, "/tmp/peppy-test/install.sh", instance=instance)
-    _copy_to_lima(archive_path, _archive_guest_path(config), instance=instance)
-    return guest_home
-
-
-# ---------------------------------------------------------------------------
-# Build fixture — builds release archives once before any test runs
-# ---------------------------------------------------------------------------
-
-
-@pytest.fixture(scope="session", autouse=True)
-def _build_release_archives() -> None:
-    """Build all release archives from the current source tree.
-
-    Runs once per test session before any install test executes.  The
-    archives land in REPO_ROOT/dist/ where ``_find_release_archive``
-    picks them up.
-
-    Cleans the containers crate build cache first to ensure build.rs
-    changes (e.g. architecture detection fixes) take effect.
-    """
-    from functions.build_release import _build_all_targets
-    from functions.cli import get_targets_for_platform
-
-    # Force rebuild of the containers crate so build.rs re-runs with the
-    # latest arch detection logic.  Without this, stale build artifacts
-    # may bundle the wrong architecture binaries.
-    subprocess.run(
-        ["cargo", "clean", "-p", "containers", "--release"],
-        cwd=REPO_ROOT,
-        capture_output=True,
-    )
-
-    # Clear apptainer source caches to force a full source build, ensuring
-    # that build.rs source-build logic (e.g. VERSION file creation) is
-    # always exercised rather than masked by stale cached binaries.
-    peppy_tmp = Path.home() / ".peppy" / "tmp"
-    if peppy_tmp.exists():
-        for entry in peppy_tmp.iterdir():
-            if entry.name.startswith("apptainer-") and entry.is_dir():
-                shutil.rmtree(entry, ignore_errors=True)
-
-    tag = "test"
-    targets = get_targets_for_platform()
-    _build_all_targets(tag, targets, REPO_ROOT)
-
-
-# ---------------------------------------------------------------------------
-# Lima VM fixture
+# Fixtures
 # ---------------------------------------------------------------------------
 
 
@@ -416,127 +163,7 @@ def lima_vm(request) -> Generator[VMConfig, None, None]:
     Parameterized across all VM configs (distro x arch combos).  Each VM
     is started once per config per test module and deleted on teardown.
     """
-    yield from _lima_vm_lifecycle(request)
-
-
-def _lima_vm_lifecycle(request):  # noqa: ANN001
-    """Shared VM lifecycle used by both ``lima_vm`` and ``lima_linux_vm``."""
-    config: VMConfig = request.param
-    instance = config.instance_name
-    template = config.template
-
-    if sys.platform == "linux" and shutil.which("qemu-img") is None:
-        pytest.fail(
-            "QEMU is required to run Lima VMs on Linux. "
-            "Install it via: sudo apt install qemu-utils qemu-system"
-        )
-
-    if (
-        sys.platform == "linux"
-        and os.path.exists("/dev/kvm")
-        and not os.access("/dev/kvm", os.R_OK | os.W_OK)
-    ):
-        pytest.fail(
-            "KVM is not accessible (permission denied on /dev/kvm). "
-            "Add your user to the kvm group: sudo usermod -aG kvm $(whoami) && newgrp kvm"
-        )
-
-    env = _lima_env()
-
-    result = subprocess.run(
-        ["limactl", "list", "--format", "{{.Status}}", instance],
-        env=env,
-        capture_output=True,
-        text=True,
-    )
-    status = result.stdout.strip()
-
-    # macOS guests download a ~14GB IPSW; cross-arch VMs use slow QEMU emulation.
-    if config.os == "darwin":
-        vm_start_timeout = 3600
-    elif config.is_cross_arch:
-        vm_start_timeout = 1800
-    else:
-        vm_start_timeout = 900
-    vm_label = config.pytest_id()
-
-    def _start_lima_vm(extra_args: list[str] | None = None) -> None:
-        cmd = [
-            "limactl",
-            "start",
-            *(extra_args or []),
-            *config.lima_arch_flag,
-            f"--name={instance}",
-            "--tty=false",
-            "--mount-writable",
-            "--containerd=none",
-            "--disk=20",
-            template,
-        ]
-        try:
-            result = subprocess.run(
-                cmd, env=env, capture_output=True, text=True, timeout=vm_start_timeout
-            )
-        except subprocess.TimeoutExpired:
-            subprocess.run(
-                ["limactl", "delete", "--force", instance],
-                env=env,
-                capture_output=True,
-                timeout=60,
-            )
-            pytest.fail(
-                f"Lima VM start for {vm_label} timed out after {vm_start_timeout}s "
-                f"(cloud image download may be slow)"
-            )
-        if result.returncode != 0:
-            pytest.fail(
-                f"limactl start failed for {vm_label} "
-                f"(exit {result.returncode}):\n{result.stderr}"
-            )
-
-    if not status:
-        _start_lima_vm()
-    elif status == "Stopped":
-        try:
-            restart = subprocess.run(
-                ["limactl", "start", instance],
-                env=env,
-                capture_output=True,
-                timeout=vm_start_timeout,
-            )
-        except subprocess.TimeoutExpired:
-            subprocess.run(
-                ["limactl", "delete", "--force", instance],
-                env=env,
-                capture_output=True,
-                timeout=60,
-            )
-            pytest.fail(
-                f"Lima VM restart for {vm_label} timed out after {vm_start_timeout}s"
-            )
-        if restart.returncode != 0:
-            subprocess.run(
-                ["limactl", "delete", "--force", instance],
-                env=env,
-                capture_output=True,
-                timeout=60,
-            )
-            _start_lima_vm()
-
-    yield config
-
-    subprocess.run(
-        ["limactl", "stop", instance],
-        env=env,
-        capture_output=True,
-        timeout=60,
-    )
-    subprocess.run(
-        ["limactl", "delete", instance],
-        env=env,
-        capture_output=True,
-        timeout=60,
-    )
+    yield from lima_vm_lifecycle(request)
 
     # Note: dynamically-generated template files (e.g. archlinux aarch64 YAML)
     # are cleaned up at process exit via atexit, not here, because multiple
@@ -551,59 +178,59 @@ def _lima_vm_lifecycle(request):  # noqa: ANN001
 def test_install(lima_vm: VMConfig) -> None:
     """Run install.sh in the Lima VM and verify success."""
     config = lima_vm
-    home = _setup_lima_guest(config, test_name=f"test_install_{config.pytest_id()}")
+    home = setup_lima_guest(config, test_name=f"test_install_{config.pytest_id()}")
 
-    result = _lima_shell(
-        _install_cmd(config, home),
+    result = lima_shell(
+        install_cmd(config, home),
         instance=config.instance_name,
     )
 
     assert result.returncode == 0, (
         f"install.sh exited with {result.returncode} on {config.pytest_id()}"
-        f"{_diagnostic(result)}"
+        f"{diagnostic(result)}"
     )
     assert "peppy installed to" in result.stdout, (
         f"Missing 'peppy installed to' in output on {config.pytest_id()}"
-        f"{_diagnostic(result)}"
+        f"{diagnostic(result)}"
     )
 
     # Verify the installed binary is executable and responds to --help
-    check = _lima_shell(
+    check = lima_shell(
         f"test -x {home}/bin/peppy && {home}/bin/peppy --help",
         instance=config.instance_name,
     )
     assert check.returncode == 0, (
         f"peppy binary should be executable and respond to --help on "
-        f"{config.pytest_id()}{_diagnostic(check)}"
+        f"{config.pytest_id()}{diagnostic(check)}"
     )
 
 
 def test_no_root_install_happy_path(lima_vm: VMConfig) -> None:
     """PEPPY_NO_ROOT_INSTALL=1: install succeeds, setuid setup skipped."""
     config = lima_vm
-    home = _setup_lima_guest(
+    home = setup_lima_guest(
         config, test_name=f"test_no_root_install_happy_path_{config.pytest_id()}"
     )
 
-    result = _lima_shell(
-        _install_cmd(config, home, extra_env="PEPPY_NO_ROOT_INSTALL=1"),
+    result = lima_shell(
+        install_cmd(config, home, extra_env="PEPPY_NO_ROOT_INSTALL=1"),
         instance=config.instance_name,
     )
 
     assert result.returncode == 0, (
         f"install.sh exited with {result.returncode} on {config.pytest_id()}"
-        f"{_diagnostic(result)}"
+        f"{diagnostic(result)}"
     )
     assert "Skipped Apptainer setuid setup" in result.stdout, (
-        f"Missing phase 2 skip message on {config.pytest_id()}{_diagnostic(result)}"
+        f"Missing phase 2 skip message on {config.pytest_id()}{diagnostic(result)}"
     )
     assert "peppy installed to" in result.stdout, (
-        f"Missing 'peppy installed to' on {config.pytest_id()}{_diagnostic(result)}"
+        f"Missing 'peppy installed to' on {config.pytest_id()}{diagnostic(result)}"
     )
 
     # Verify apptainer directory was extracted but starter-suid is NOT root-owned
     if config.os == "linux":
-        check = _lima_shell(
+        check = lima_shell(
             f"test -d {home}/bin/apptainer"
             f" && stat -c '%u' {home}/bin/apptainer/libexec/apptainer/bin/starter-suid",
             instance=config.instance_name,
@@ -621,7 +248,7 @@ def test_no_root_install_happy_path(lima_vm: VMConfig) -> None:
 def test_no_root_install_missing_dbus(lima_vm: VMConfig) -> None:
     """PEPPY_NO_ROOT_INSTALL=1 with D-Bus session bus unavailable: hard error."""
     config = lima_vm
-    home = _setup_lima_guest(
+    home = setup_lima_guest(
         config, test_name=f"test_no_root_install_missing_dbus_{config.pytest_id()}"
     )
 
@@ -629,8 +256,8 @@ def test_no_root_install_missing_dbus(lima_vm: VMConfig) -> None:
     # --session fails to connect, simulating a system without a working D-Bus
     # user session.  Simply unsetting the variable is not enough because
     # dbus-send falls back to the well-known socket /run/user/UID/bus.
-    result = _lima_shell(
-        _install_cmd(
+    result = lima_shell(
+        install_cmd(
             config,
             home,
             extra_env=(
@@ -643,9 +270,9 @@ def test_no_root_install_missing_dbus(lima_vm: VMConfig) -> None:
 
     output = result.stdout + result.stderr
 
-    assert result.returncode != 0, f"install.sh should have failed{_diagnostic(result)}"
+    assert result.returncode != 0, f"install.sh should have failed{diagnostic(result)}"
     assert "D-Bus user session bus is not available" in output, (
-        f"error should mention D-Bus user session bus{_diagnostic(result)}"
+        f"error should mention D-Bus user session bus{diagnostic(result)}"
     )
 
 
@@ -654,27 +281,27 @@ def test_standard_install_sets_up_setuid(lima_vm: VMConfig) -> None:
     config = lima_vm
     assert config.os == "linux", "setuid test only applies to Linux VMs"
 
-    home = _setup_lima_guest(
+    home = setup_lima_guest(
         config,
         test_name=f"test_standard_install_sets_up_setuid_{config.pytest_id()}",
     )
 
-    result = _lima_shell(
-        _install_cmd(config, home),
+    result = lima_shell(
+        install_cmd(config, home),
         instance=config.instance_name,
     )
 
     assert result.returncode == 0, (
         f"install.sh exited with {result.returncode} on {config.pytest_id()}"
-        f"{_diagnostic(result)}"
+        f"{diagnostic(result)}"
     )
     assert "Container setup completed successfully" in result.stdout, (
         f"Missing container setup success message on {config.pytest_id()}"
-        f"{_diagnostic(result)}"
+        f"{diagnostic(result)}"
     )
 
     # Verify starter-suid is root-owned with setuid bit
-    check = _lima_shell(
+    check = lima_shell(
         f"stat -c '%u %a' {home}/bin/apptainer/libexec/apptainer/bin/starter-suid",
         instance=config.instance_name,
     )
@@ -696,21 +323,21 @@ def test_reinstall_over_root_owned_files(lima_vm: VMConfig) -> None:
     config = lima_vm
     assert config.os == "linux", "reinstall test only applies to Linux VMs"
 
-    home = _setup_lima_guest(
+    home = setup_lima_guest(
         config, test_name=f"test_reinstall_over_root_owned_{config.pytest_id()}"
     )
 
     # First install: creates root-owned apptainer files via setuid setup
-    first = _lima_shell(
-        _install_cmd(config, home, extra_env="PEPPY_FORCE_REINSTALL=1"),
+    first = lima_shell(
+        install_cmd(config, home, extra_env="PEPPY_FORCE_REINSTALL=1"),
         instance=config.instance_name,
     )
     assert first.returncode == 0, (
-        f"first install failed on {config.pytest_id()}{_diagnostic(first)}"
+        f"first install failed on {config.pytest_id()}{diagnostic(first)}"
     )
 
     # Verify root-owned files exist (confirms setuid setup ran)
-    check = _lima_shell(
+    check = lima_shell(
         f"stat -c '%u' {home}/bin/apptainer/etc/apptainer/apptainer.conf",
         instance=config.instance_name,
     )
@@ -720,44 +347,44 @@ def test_reinstall_over_root_owned_files(lima_vm: VMConfig) -> None:
     )
 
     # Second install: must handle root-owned files without errors
-    second = _lima_shell(
-        _install_cmd(config, home, extra_env="PEPPY_FORCE_REINSTALL=1"),
+    second = lima_shell(
+        install_cmd(config, home, extra_env="PEPPY_FORCE_REINSTALL=1"),
         instance=config.instance_name,
     )
     assert second.returncode == 0, (
-        f"reinstall failed on {config.pytest_id()}{_diagnostic(second)}"
+        f"reinstall failed on {config.pytest_id()}{diagnostic(second)}"
     )
     assert "Permission denied" not in second.stderr, (
         f"reinstall should not produce permission errors on {config.pytest_id()}"
-        f"{_diagnostic(second)}"
+        f"{diagnostic(second)}"
     )
     assert "peppy installed to" in second.stdout, (
         f"Missing 'peppy installed to' after reinstall on {config.pytest_id()}"
-        f"{_diagnostic(second)}"
+        f"{diagnostic(second)}"
     )
 
 
 def test_existing_install_warning(lima_vm: VMConfig) -> None:
     """When PEPPY_HOME exists but daemon is not running, show existing install warning."""
     config = lima_vm
-    home = _setup_lima_guest(
+    home = setup_lima_guest(
         config, test_name=f"test_existing_install_warning_{config.pytest_id()}"
     )
 
     # Create PEPPY_HOME directory to simulate a previous install
-    _lima_shell(f"mkdir -p {home}/bin", instance=config.instance_name)
+    lima_shell(f"mkdir -p {home}/bin", instance=config.instance_name)
 
     # Run without PEPPY_FORCE_REINSTALL — non-interactive should fail with
     # the "cannot prompt" error, proving the existing-install check triggered.
-    result = _lima_shell(
-        _install_cmd(config, home),
+    result = lima_shell(
+        install_cmd(config, home),
         instance=config.instance_name,
     )
 
     output = result.stdout + result.stderr
 
     assert "An existing installation was found" in output, (
-        f"Missing existing-install warning on {config.pytest_id()}{_diagnostic(result)}"
+        f"Missing existing-install warning on {config.pytest_id()}{diagnostic(result)}"
     )
 
 
@@ -778,33 +405,33 @@ def test_binary_architecture(lima_vm: VMConfig) -> None:
     config = lima_vm
     assert config.os == "linux", "binary architecture test only applies to Linux VMs"
 
-    home = _setup_lima_guest(config, test_name=f"test_binary_arch_{config.pytest_id()}")
+    home = setup_lima_guest(config, test_name=f"test_binary_arch_{config.pytest_id()}")
 
-    result = _lima_shell(
-        _install_cmd(config, home),
+    result = lima_shell(
+        install_cmd(config, home),
         instance=config.instance_name,
     )
     assert result.returncode == 0, (
-        f"install failed on {config.pytest_id()}{_diagnostic(result)}"
+        f"install failed on {config.pytest_id()}{diagnostic(result)}"
     )
 
     expected_arch = {"x86_64": "x86-64", "aarch64": "aarch64"}[config.arch]
 
     # Check peppy binary
-    check = _lima_shell(f"file {home}/bin/peppy", instance=config.instance_name)
+    check = lima_shell(f"file {home}/bin/peppy", instance=config.instance_name)
     assert expected_arch in check.stdout, (
         f"peppy binary arch mismatch on {config.pytest_id()}: "
-        f"expected '{expected_arch}'{_diagnostic(check)}"
+        f"expected '{expected_arch}'{diagnostic(check)}"
     )
 
     # Check apptainer binary
-    check = _lima_shell(
+    check = lima_shell(
         f"file {home}/bin/apptainer/bin/apptainer",
         instance=config.instance_name,
     )
     assert expected_arch in check.stdout, (
         f"apptainer binary arch mismatch on {config.pytest_id()}: "
-        f"expected '{expected_arch}'{_diagnostic(check)}"
+        f"expected '{expected_arch}'{diagnostic(check)}"
     )
 
 
@@ -819,21 +446,21 @@ def test_peppylib_so_architecture(lima_vm: VMConfig) -> None:
     config = lima_vm
     assert config.os == "linux", "peppylib .so test only applies to Linux VMs"
 
-    home = _setup_lima_guest(config, test_name=f"test_peppylib_so_{config.pytest_id()}")
+    home = setup_lima_guest(config, test_name=f"test_peppylib_so_{config.pytest_id()}")
 
     # Kill any leftover daemon from a previous run
-    _lima_shell(
+    lima_shell(
         f"pkill -f 'peppy service serve' 2>/dev/null; rm -rf {home}; true",
         instance=config.instance_name,
     )
 
     # Install peppy (force reinstall in case PEPPY_HOME existed)
-    install = _lima_shell(
-        _install_cmd(config, home, extra_env="PEPPY_FORCE_REINSTALL=1"),
+    install = lima_shell(
+        install_cmd(config, home, extra_env="PEPPY_FORCE_REINSTALL=1"),
         instance=config.instance_name,
     )
     assert install.returncode == 0, (
-        f"install failed on {config.pytest_id()}{_diagnostic(install)}"
+        f"install failed on {config.pytest_id()}{diagnostic(install)}"
     )
 
     timeout = 3600 if config.is_cross_arch else 600
@@ -881,13 +508,13 @@ fi
 echo "FOUND_SO=$SO_FILE"
 file "$SO_FILE"
 """
-    result = _lima_shell(script, instance=config.instance_name, timeout=timeout)
+    result = lima_shell(script, instance=config.instance_name, timeout=timeout)
 
     expected_arch = {"x86_64": "x86-64", "aarch64": "aarch64"}[config.arch]
     assert result.returncode == 0, (
-        f"peppylib .so test failed on {config.pytest_id()}{_diagnostic(result)}"
+        f"peppylib .so test failed on {config.pytest_id()}{diagnostic(result)}"
     )
     assert expected_arch in result.stdout, (
         f".abi3.so arch mismatch on {config.pytest_id()}: "
-        f"expected '{expected_arch}'{_diagnostic(result)}"
+        f"expected '{expected_arch}'{diagnostic(result)}"
     )

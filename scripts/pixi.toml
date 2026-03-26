@@ -21,3 +21,5 @@ respx = "*"
 [tasks]
 build-release = "build-release"
 test = "pytest tests/ -v"
+test-one = "pytest tests/ -v -k"
+test-container = "pytest tests/test_install_container.py -v -s"

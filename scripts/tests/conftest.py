@@ -11,6 +11,8 @@ import httpx
 import pytest
 import respx
 
+from .lima_helpers import build_release_archives, get_native_linux_targets
+
 
 def pytest_configure(config: pytest.Config) -> None:
     """Register custom markers and ensure Lima cross-arch guest agents are available."""
@@ -46,6 +48,24 @@ def _ensure_lima_guest_agents() -> None:
         dest = pixi_share / agent.name
         if not dest.exists():
             shutil.copy2(agent, dest)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _build_release_archives(request: pytest.FixtureRequest) -> None:
+    """Build release archives needed by the collected tests.
+
+    Only builds cross-arch targets when ``test_install`` is collected
+    (the only module with cross-arch VM configs).  This avoids spawning
+    a slow QEMU x86_64 VM when running container tests alone.
+    """
+    needs_cross_arch = any(
+        item.module.__name__.endswith(".test_install")
+        for item in request.session.items
+    )
+    if needs_cross_arch:
+        build_release_archives()
+    else:
+        build_release_archives(targets=get_native_linux_targets())
 
 
 @pytest.fixture()
