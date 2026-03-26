@@ -568,11 +568,12 @@ fn check_setup_status_reports_real_installation() {
 
     let status = check_setup_status(&apptainer_dir);
 
-    // On systems without AppArmor restrictions, everything should pass.
-    if !status.apparmor_restricted {
+    // On systems with newuidmap and without AppArmor restrictions,
+    // everything should pass.
+    if status.newuidmap_ok && !status.apparmor_restricted {
         assert!(
             status.is_ok(),
-            "is_ok should be true without AppArmor restrictions"
+            "is_ok should be true when newuidmap is available and no AppArmor restrictions"
         );
         assert!(
             status.fix_script.is_none(),
@@ -610,8 +611,10 @@ fn check_setup_status_no_apparmor_restriction() {
         status.apparmor_loaded,
         "apparmor_loaded should be true when not restricted"
     );
-    assert!(status.is_ok());
-    assert!(status.fix_script.is_none());
+    if status.newuidmap_ok {
+        assert!(status.is_ok());
+        assert!(status.fix_script.is_none());
+    }
 }
 
 #[cfg(target_os = "linux")]

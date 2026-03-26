@@ -42,6 +42,14 @@ fn status() -> Result<()> {
 
     println!("Container prerequisites");
     println!("----------------------");
+    println!(
+        "  newuidmap              : {}",
+        if status.newuidmap_ok {
+            "OK"
+        } else {
+            "FAILED (install uidmap package)"
+        }
+    );
     if status.apparmor_restricted {
         println!(
             "  AppArmor profile       : {}",
@@ -92,6 +100,9 @@ fn setup() -> Result<()> {
     }
 
     println!("The following fixes are needed:");
+    if !status.newuidmap_ok {
+        println!("  - Install uidmap package (provides newuidmap for fakeroot)");
+    }
     if status.apparmor_restricted && !status.apparmor_ok {
         println!("  - Install/update AppArmor profile for Apptainer starter");
     } else if status.apparmor_restricted && !status.apparmor_loaded {

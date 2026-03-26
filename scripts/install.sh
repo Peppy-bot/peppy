@@ -363,6 +363,18 @@ EOF
                 echo "" >&2
                 exit 1
             fi
+
+            # Check 4: newuidmap (required for Apptainer fakeroot / user namespaces)
+            if ! command -v newuidmap >/dev/null 2>&1; then
+                echo "" >&2
+                echo "error: newuidmap is required but not found." >&2
+                echo "       Install it manually:" >&2
+                echo "         Debian/Ubuntu: sudo apt-get install uidmap" >&2
+                echo "         Fedora/RHEL:   sudo dnf install shadow-utils" >&2
+                echo "         Arch Linux:    sudo pacman -S shadow" >&2
+                echo "" >&2
+                exit 1
+            fi
         else
             # ---------- normal mode: prompt for pre-download sudo changes -----
             # Apptainer AppArmor setup is handled post-install by
@@ -426,7 +438,19 @@ EOF
                 ALL_LABELS="${ALL_LABELS}  - Install curl (required to download peppy)\n"
             fi
 
-            # Prompt and execute pre-download fixes (dbus, linger, curl)
+            # Check 4: newuidmap (required for Apptainer fakeroot / user namespaces)
+            if ! command -v newuidmap >/dev/null 2>&1; then
+                if command -v apt-get >/dev/null 2>&1; then
+                    PREDOWNLOAD_FIXES="${PREDOWNLOAD_FIXES}apt-get update -qq && apt-get install -y -qq uidmap && "
+                elif command -v dnf >/dev/null 2>&1; then
+                    PREDOWNLOAD_FIXES="${PREDOWNLOAD_FIXES}dnf install -y shadow-utils && "
+                elif command -v pacman >/dev/null 2>&1; then
+                    PREDOWNLOAD_FIXES="${PREDOWNLOAD_FIXES}pacman -Sy --noconfirm shadow && "
+                fi
+                ALL_LABELS="${ALL_LABELS}  - Install uidmap (required for Apptainer container builds)\n"
+            fi
+
+            # Prompt and execute pre-download fixes (dbus, linger, curl, uidmap)
             if [ -n "$ALL_LABELS" ]; then
                 prompt_sudo_consent "$ALL_LABELS"
             fi

@@ -675,7 +675,7 @@ echo "=== Apptainer build complete ==="
         if use_lima && let Some(ref lima) = lima_config {
             for target in &["aarch64", "x86_64"] {
                 let target_cache = build_helpers::cache_dir(&format!(
-                    "apptainer-{}-{}-src",
+                    "apptainer-{}-{}-nosuid",
                     APPTAINER_VERSION, target
                 ));
                 let sentinel = apptainer_cache_sentinel_path(&target_cache, APPTAINER_VERSION);
@@ -727,7 +727,7 @@ echo "=== Apptainer build complete ==="
         }
 
         let cache_dir =
-            build_helpers::cache_dir(&format!("apptainer-{}-{}-src", APPTAINER_VERSION, &arch));
+            build_helpers::cache_dir(&format!("apptainer-{}-{}-nosuid", APPTAINER_VERSION, &arch));
 
         // On Linux inside a Lima VM, the macOS-side cache is accessible at the
         // same absolute path because Lima mounts the host home directory.
@@ -741,7 +741,7 @@ echo "=== Apptainer build complete ==="
                 let macos_home = PathBuf::from("/Users");
                 if macos_home.is_dir() {
                     // Find any matching cache under /Users/*/.peppy/tmp/
-                    let pattern = format!("apptainer-{}-{}-src", APPTAINER_VERSION, &arch);
+                    let pattern = format!("apptainer-{}-{}-nosuid", APPTAINER_VERSION, &arch);
                     let mut found = false;
                     if let Ok(entries) = std::fs::read_dir(&macos_home) {
                         for entry in entries.flatten() {

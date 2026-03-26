@@ -63,15 +63,29 @@ pub struct Apptainer {
     pub(crate) extra_mounts: Vec<PathBuf>,
 }
 
+/// Check if a command is available in PATH.
+#[cfg(target_os = "linux")]
+fn which(cmd: &str) -> Option<PathBuf> {
+    std::env::var_os("PATH").and_then(|paths| {
+        std::env::split_paths(&paths).find_map(|dir| {
+            let full = dir.join(cmd);
+            if full.is_file() { Some(full) } else { None }
+        })
+    })
+}
+
 /// Status of Apptainer user namespace prerequisites on the current system.
 ///
 /// Apptainer is built without setuid (`--without-suid`) and relies on
-/// unprivileged user namespaces. On systems where AppArmor restricts
+/// unprivileged user namespaces via fakeroot. This requires `newuidmap`
+/// (from the `uidmap` package). On systems where AppArmor restricts
 /// unprivileged user namespaces (e.g. Ubuntu 24.04+), an AppArmor profile
 /// must be installed to allow the `starter` binary to create them.
 #[cfg(target_os = "linux")]
 #[derive(Debug)]
 pub struct SetupStatus {
+    /// `newuidmap` is available in PATH (required for fakeroot).
+    pub newuidmap_ok: bool,
     /// System restricts unprivileged user namespaces via AppArmor.
     pub apparmor_restricted: bool,
     /// AppArmor profile for `starter` is installed and references the current
@@ -89,7 +103,7 @@ pub struct SetupStatus {
 impl SetupStatus {
     /// Returns `true` when all prerequisites are met.
     pub fn is_ok(&self) -> bool {
-        self.apparmor_ok && self.apparmor_loaded
+        self.newuidmap_ok && self.apparmor_ok && self.apparmor_loaded
     }
 }
 
@@ -103,6 +117,11 @@ impl SetupStatus {
 #[cfg(target_os = "linux")]
 pub fn check_setup_status(apptainer_dir: &Path) -> SetupStatus {
     let starter = apptainer_dir.join("libexec/apptainer/bin/starter");
+
+    // newuidmap is required for fakeroot mode (unprivileged user namespaces).
+    // It's provided by the `uidmap` package on Debian/Ubuntu, `shadow-utils`
+    // on Fedora, and `shadow` on Arch Linux.
+    let newuidmap_ok = which("newuidmap").is_some();
 
     let apparmor_restricted =
         std::fs::read_to_string("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
@@ -138,11 +157,20 @@ pub fn check_setup_status(apptainer_dir: &Path) -> SetupStatus {
         true
     };
 
-    let fix_script = if apparmor_ok && apparmor_loaded {
+    let fix_script = if newuidmap_ok && apparmor_ok && apparmor_loaded {
         None
     } else {
         let starter_path = starter_canonical.display();
         let mut parts: Vec<String> = Vec::new();
+
+        if !newuidmap_ok {
+            parts.push(
+                "sudo apt-get install -y uidmap 2>/dev/null \
+                 || sudo dnf install -y shadow-utils 2>/dev/null \
+                 || sudo pacman -Sy --noconfirm shadow 2>/dev/null"
+                    .to_string(),
+            );
+        }
 
         if apparmor_restricted && !apparmor_ok {
             parts.push(format!(
@@ -162,6 +190,7 @@ pub fn check_setup_status(apptainer_dir: &Path) -> SetupStatus {
     };
 
     SetupStatus {
+        newuidmap_ok,
         apparmor_restricted,
         apparmor_ok,
         apparmor_loaded,
