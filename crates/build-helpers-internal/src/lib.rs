@@ -69,7 +69,10 @@ pub fn run_command_streaming(command: &mut Command, label: &str) -> CommandOutpu
     let label_for_thread = label.to_string();
     let stderr_thread = std::thread::spawn(move || {
         let mut captured = String::new();
-        for line in std::io::BufReader::new(stderr_pipe).lines().map_while(Result::ok) {
+        for line in std::io::BufReader::new(stderr_pipe)
+            .lines()
+            .map_while(Result::ok)
+        {
             println!("cargo:warning=[{}] {}", label_for_thread, line);
             captured.push_str(&line);
             captured.push('\n');
@@ -79,7 +82,10 @@ pub fn run_command_streaming(command: &mut Command, label: &str) -> CommandOutpu
 
     let mut stdout_captured = String::new();
     if let Some(stdout_pipe) = child.stdout.take() {
-        for line in std::io::BufReader::new(stdout_pipe).lines().map_while(Result::ok) {
+        for line in std::io::BufReader::new(stdout_pipe)
+            .lines()
+            .map_while(Result::ok)
+        {
             println!("cargo:warning=[{}] {}", label, line);
             stdout_captured.push_str(&line);
             stdout_captured.push('\n');
@@ -314,10 +320,8 @@ mod tests {
 
     #[test]
     fn streaming_captures_stdout() {
-        let output = run_command_streaming(
-            &mut Command::new("echo").arg("hello world"),
-            "test-echo",
-        );
+        let output =
+            run_command_streaming(Command::new("echo").arg("hello world"), "test-echo");
         assert!(output.success);
         assert!(output.stdout.contains("hello world"));
     }
@@ -325,7 +329,7 @@ mod tests {
     #[test]
     fn streaming_captures_stderr() {
         let output = run_command_streaming(
-            &mut Command::new("bash").args(["-c", "echo error-output >&2"]),
+            Command::new("bash").args(["-c", "echo error-output >&2"]),
             "test-stderr",
         );
         assert!(output.success);
@@ -341,7 +345,7 @@ mod tests {
     #[test]
     fn streaming_handles_mixed_output() {
         let output = run_command_streaming(
-            &mut Command::new("bash").args(["-c", "echo out-line; echo err-line >&2"]),
+            Command::new("bash").args(["-c", "echo out-line; echo err-line >&2"]),
             "test-mixed",
         );
         assert!(output.success);

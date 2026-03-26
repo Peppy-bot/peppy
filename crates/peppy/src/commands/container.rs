@@ -16,7 +16,11 @@ pub enum ContainerCommands {
     /// Check container prerequisites and show what needs fixing
     Status,
     /// Interactively fix container prerequisites (may prompt for sudo)
-    Setup,
+    Setup {
+        /// Re-apply fixes even if all checks already pass
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 pub struct ContainerCommand {
@@ -27,7 +31,7 @@ impl Command for ContainerCommand {
     fn execute(self, _ctx: &Arc<AppContext>) -> Result<()> {
         match self.command {
             ContainerCommands::Status => status(),
-            ContainerCommands::Setup => setup(),
+            ContainerCommands::Setup { force } => setup(force),
         }
     }
 }
@@ -80,7 +84,7 @@ fn status() -> Result<()> {
 }
 
 #[cfg(target_os = "linux")]
-fn setup() -> Result<()> {
+fn setup(force: bool) -> Result<()> {
     let apptainer_dir = containers::Apptainer::resolve_apptainer_dir().map_err(|e| {
         Error::ExecutionFailed(format!("Could not locate Apptainer installation: {e}"))
     })?;
@@ -88,27 +92,28 @@ fn setup() -> Result<()> {
     let status = containers::check_setup_status(&apptainer_dir)
         .map_err(|e| Error::ExecutionFailed(format!("{e}")))?;
 
-    if status.is_ok() {
+    if !force && status.is_ok() {
         println!("All container prerequisites are already met. Nothing to do.");
         return Ok(());
     }
 
-    println!("The following fixes are needed:");
-    if !status.suid_ok {
-        println!("  - Set setuid permissions on Apptainer starter binary");
-    }
-    if !status.conf_ok {
-        println!("  - Set root ownership on Apptainer configuration directory");
-    }
-    if status.apparmor_restricted && !status.apparmor_ok {
-        println!("  - Install AppArmor profile for Apptainer starter-suid");
+    if force && status.is_ok() {
+        println!("All checks pass but --force was specified. Re-applying fixes.");
+    } else {
+        println!("The following fixes are needed:");
+        if !status.suid_ok {
+            println!("  - Set setuid permissions on Apptainer starter binary");
+        }
+        if !status.conf_ok {
+            println!("  - Set root ownership on Apptainer configuration directory");
+        }
+        if status.apparmor_restricted && !status.apparmor_ok {
+            println!("  - Install AppArmor profile for Apptainer starter-suid");
+        }
     }
     println!();
 
-    let script = status
-        .fix_script
-        .as_deref()
-        .expect("fix_script is Some when is_ok() is false");
+    let script = &status.fix_script;
 
     // Check if we're in an interactive terminal
     if std::io::stdin().is_terminal() {
@@ -157,7 +162,7 @@ fn setup() -> Result<()> {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn setup() -> Result<()> {
+fn setup(_force: bool) -> Result<()> {
     println!("No setup needed. On macOS, containers run inside a Lima VM (no setuid required).");
     Ok(())
 }

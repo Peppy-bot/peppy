@@ -584,24 +584,17 @@ fn check_setup_status_reports_real_installation() {
 
     // We can't guarantee setuid is configured in CI, but we can verify the
     // struct is populated correctly.
+    // fix_script is always populated (idempotent)
+    assert!(
+        status.fix_script.contains("chown"),
+        "fix script should contain chown command, got: {}",
+        status.fix_script
+    );
+
     if status.is_ok() {
         assert!(status.suid_ok);
         assert!(status.conf_ok);
         assert!(status.apparmor_ok);
-        assert!(
-            status.fix_script.is_none(),
-            "fix_script should be None when all checks pass"
-        );
-    } else {
-        assert!(
-            status.fix_script.is_some(),
-            "fix_script should be present when checks fail"
-        );
-        let script = status.fix_script.as_ref().unwrap();
-        assert!(
-            script.contains("chown"),
-            "fix script should contain chown command, got: {script}"
-        );
     }
 }
 
@@ -625,5 +618,8 @@ fn check_setup_status_detects_non_root_starter_suid() {
         "suid_ok should be false for non-root-owned file"
     );
     assert!(!status.is_ok(), "is_ok should be false");
-    assert!(status.fix_script.is_some(), "should have a fix script");
+    assert!(
+        status.fix_script.contains("chown"),
+        "fix script should contain chown command"
+    );
 }

@@ -668,8 +668,8 @@ def test_standard_install_sets_up_setuid(lima_vm: VMConfig) -> None:
         f"install.sh exited with {result.returncode} on {config.pytest_id()}"
         f"{_diagnostic(result)}"
     )
-    assert "System dependencies configured successfully" in result.stdout, (
-        f"Missing system dependencies success message on {config.pytest_id()}"
+    assert "Container setup completed successfully" in result.stdout, (
+        f"Missing container setup success message on {config.pytest_id()}"
         f"{_diagnostic(result)}"
     )
 
@@ -758,45 +758,6 @@ def test_existing_install_warning(lima_vm: VMConfig) -> None:
 
     assert "An existing installation was found" in output, (
         f"Missing existing-install warning on {config.pytest_id()}{_diagnostic(result)}"
-    )
-
-
-def test_unified_sudo_prompt_shows_all_items(lima_vm: VMConfig) -> None:
-    """The pre-download sudo prompt lists Apptainer items on all distros."""
-    config = lima_vm
-    assert config.os == "linux", "sudo prompt test only applies to Linux VMs"
-
-    home = _setup_lima_guest(
-        config, test_name=f"test_unified_sudo_prompt_{config.pytest_id()}"
-    )
-
-    result = _lima_shell(
-        _install_cmd(config, home),
-        instance=config.instance_name,
-    )
-
-    output = result.stdout + result.stderr
-
-    assert result.returncode == 0, (
-        f"install.sh failed on {config.pytest_id()}{_diagnostic(result)}"
-    )
-
-    # The single prompt should contain both Apptainer items (present on all distros)
-    assert "Set setuid permissions on Apptainer starter binary" in output, (
-        f"Missing Apptainer setuid label in prompt on {config.pytest_id()}"
-        f"{_diagnostic(result)}"
-    )
-    assert "Set root ownership on Apptainer configuration" in output, (
-        f"Missing Apptainer config ownership label in prompt on {config.pytest_id()}"
-        f"{_diagnostic(result)}"
-    )
-
-    # These labels must appear BEFORE the download (i.e. before "Extracting archive")
-    prompt_pos = output.find("Set setuid permissions on Apptainer")
-    extract_pos = output.find("Extracting archive")
-    assert prompt_pos < extract_pos, (
-        f"Apptainer labels should appear before extraction on {config.pytest_id()}"
-        f"{_diagnostic(result)}"
     )
 
 

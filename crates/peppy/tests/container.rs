@@ -29,7 +29,7 @@ fn container_setup_runs_without_daemon() {
     let ctx = Arc::new(AppContext::default());
 
     let _result = ContainerCommand {
-        command: ContainerCommands::Setup,
+        command: ContainerCommands::Setup { force: false },
     }
     .execute(&ctx);
 }

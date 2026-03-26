@@ -76,9 +76,8 @@ pub struct SetupStatus {
     /// AppArmor profile for `starter-suid` is installed (always `true` when
     /// `apparmor_restricted` is `false`).
     pub apparmor_ok: bool,
-    /// A shell script that fixes all failing checks, or `None` when everything
-    /// passes.
-    pub fix_script: Option<String>,
+    /// An idempotent shell script that ensures all checks pass.
+    pub fix_script: String,
 }
 
 #[cfg(target_os = "linux")]
@@ -92,7 +91,7 @@ impl SetupStatus {
 /// Inspect the Apptainer setuid prerequisites without failing on errors.
 ///
 /// Returns a [`SetupStatus`] describing which checks pass and which do not,
-/// along with a ready-to-run fix script when something needs attention.
+/// along with an idempotent fix script that ensures correct state.
 ///
 /// The caller is responsible for resolving the `apptainer_dir` — use
 /// [`Apptainer::resolve_apptainer_dir`] or the `PEPPY_APPTAINER_DIR` env var.
@@ -133,33 +132,27 @@ pub fn check_setup_status(apptainer_dir: &Path) -> Result<SetupStatus> {
         true
     };
 
-    let fix_script = if suid_ok && conf_ok && apparmor_ok {
-        None
-    } else {
-        let suid_path = starter_suid.display();
-        let conf_dir_path = conf_dir.display();
+    let suid_path = starter_suid.display();
+    let conf_dir_path = conf_dir.display();
 
-        let mut script = format!(
-            "sudo chown root:root '{suid_path}' \\\n  \
-             && sudo chmod 4755 '{suid_path}' \\\n  \
-             && sudo chown -R root:root '{conf_dir_path}'"
-        );
+    let mut fix_script = format!(
+        "sudo chown root:root '{suid_path}' \\\n  \
+         && sudo chmod 4755 '{suid_path}' \\\n  \
+         && sudo chown -R root:root '{conf_dir_path}'"
+    );
 
-        if apparmor_restricted && !apparmor_ok {
-            script.push_str(&format!(
-                " \\\n  \
-                 && echo 'abi <abi/4.0>,\n\
-                 include <tunables/global>\n\
-                 \n\
-                 profile peppy-apptainer {suid_path} flags=(unconfined) {{\n\
-                 \x20 userns,\n\
-                 }}' | sudo tee /etc/apparmor.d/peppy-apptainer > /dev/null \\\n  \
-                 && sudo apparmor_parser -r /etc/apparmor.d/peppy-apptainer"
-            ));
-        }
-
-        Some(script)
-    };
+    if apparmor_restricted {
+        fix_script.push_str(&format!(
+            " \\\n  \
+             && echo 'abi <abi/4.0>,\n\
+             include <tunables/global>\n\
+             \n\
+             profile peppy-apptainer {suid_path} flags=(unconfined) {{\n\
+             \x20 userns,\n\
+             }}' | sudo tee /etc/apparmor.d/peppy-apptainer > /dev/null \\\n  \
+             && sudo apparmor_parser -r /etc/apparmor.d/peppy-apptainer"
+        ));
+    }
 
     Ok(SetupStatus {
         suid_ok,
@@ -179,7 +172,7 @@ fn check_starter_suid(apptainer_dir: &Path) -> Result<()> {
         return Ok(());
     }
 
-    let script = status.fix_script.unwrap();
+    let script = status.fix_script;
     Err(Error::ConfigurationError(format!(
         "Apptainer's setuid mode is not fully configured.\n\
          Run:\n\n{script}\n\n\
