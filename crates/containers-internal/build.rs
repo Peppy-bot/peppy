@@ -21,6 +21,16 @@ mod apptainer_build {
         cache_dir.join(format!(".peppy-version-{}", version))
     }
 
+    fn write_cache_sentinel(cache_dir: &Path, version: &str) {
+        let sentinel = apptainer_cache_sentinel_path(cache_dir, version);
+        std::fs::write(&sentinel, format!("version={}\n", version))
+            .unwrap_or_else(|e| panic!("Failed to write cache sentinel {:?}: {}", sentinel, e));
+    }
+
+    fn apptainer_cache_dir(version: &str, arch: &str) -> PathBuf {
+        build_helpers::cache_dir(&format!("apptainer-{}-{}-nosuid", version, arch))
+    }
+
     /// Remove a directory tree, falling back to `rm -rf` if `std::fs`
     /// fails (e.g. due to root-owned files left by a previous Lima VM build).
     fn force_remove_dir(dir: &Path) {
@@ -246,10 +256,7 @@ mod apptainer_build {
         };
 
         match instance_status.as_deref() {
-            Some("Running") => {
-                // Already running — nothing to do.
-                true
-            }
+            Some("Running") => true,
             Some(_status) => {
                 // Instance exists but is not running — start it.
                 println!("cargo:warning=Starting Lima {} instance...", lima.instance);
@@ -347,18 +354,6 @@ mod apptainer_build {
         // the version.  Create it from the version we already know.
         std::fs::write(source_dir.join("VERSION"), format!("{}\n", version))
             .expect("Failed to write apptainer VERSION file");
-
-        // Refresh vendored Go dependencies — the release tarball's vendor/
-        // directory can be stale (vendor/modules.txt out of sync with go.mod).
-        if !build_helpers::run_command(
-            Command::new("go")
-                .current_dir(&source_dir)
-                .args(["mod", "vendor"]),
-            "refresh apptainer vendor directory",
-        ) {
-            std::fs::remove_dir_all(&source_dir).ok();
-            return false;
-        }
 
         // Start fresh install directory
         force_remove_dir(install_dir);
@@ -502,8 +497,6 @@ curl -fsSL https://github.com/apptainer/apptainer/releases/download/v{version}/a
 tar -xzf apptainer-{version}.tar.gz
 cd apptainer-{version}
 echo "{version}" > VERSION
-echo "=== Refreshing vendored Go dependencies ==="
-go mod vendor
 echo "=== Configuring apptainer ==="
 ./mconfig --without-suid --prefix={guest_install_dir}
 echo "=== Compiling apptainer (this is the slow part under QEMU) ==="
@@ -596,17 +589,17 @@ echo "=== Apptainer build complete ==="
     }
 
     // -----------------------------------------------------------------------
-    // Main entry point
+    // Main entry point — orchestration
     // -----------------------------------------------------------------------
 
-    pub fn run() {
+    fn emit_rerun_directives() {
         println!("cargo:rerun-if-changed=build.rs");
         println!("cargo:rerun-if-env-changed=PEPPY_APPTAINER_DIR");
         println!("cargo:rerun-if-env-changed=PEPPY_LIMA_DIR");
         println!("cargo:rerun-if-env-changed=PEPPY_CROSS_ARCH");
+    }
 
-        let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
-
+    fn emit_constant_env_vars() {
         println!("cargo:rustc-env=LIMA_INSTANCE={}", LIMA_INSTANCE);
         println!("cargo:rustc-env=LIMA_TEMPLATE={}", LIMA_TEMPLATE);
         println!("cargo:rustc-env=APPTAINER_VERSION={}", APPTAINER_VERSION);
@@ -615,6 +608,185 @@ echo "=== Apptainer build complete ==="
             "cargo:rustc-env=GUEST_APPTAINER_DIR={}",
             GUEST_APPTAINER_DIR
         );
+    }
+
+    /// Download and cache Lima, copy to OUT_DIR, emit env vars.
+    /// Panics if Lima cannot be downloaded (it's required for macOS builds).
+    fn setup_lima(out_dir: &str) -> LimaConfig {
+        let lima_cache_dir =
+            ensure_lima_cached(LIMA_VERSION, "Darwin", "arm64").unwrap_or_else(|| {
+                panic!(
+                    "Could not download Lima {}. Lima is required for macOS builds.",
+                    LIMA_VERSION
+                );
+            });
+
+        let lima = LimaConfig {
+            limactl: lima_cache_dir.join("bin/limactl"),
+            lima_home: get_lima_build_home(),
+            instance: LIMA_INSTANCE,
+        };
+
+        // Copy Lima installation to OUT_DIR for the crate to reference at compile time
+        let out_lima_dir = PathBuf::from(out_dir).join("lima-install");
+        if out_lima_dir.exists() {
+            std::fs::remove_dir_all(&out_lima_dir).ok();
+        }
+        if let Err(e) = copy_dir_recursive(&lima_cache_dir, &out_lima_dir) {
+            panic!("Failed to copy Lima installation to OUT_DIR: {}", e);
+        }
+        println!(
+            "cargo:rustc-env=LIMA_INSTALL_DIR={}",
+            out_lima_dir.display()
+        );
+        println!(
+            "cargo:rustc-env=LIMA_BUILD_HOME={}",
+            lima.lima_home.display()
+        );
+
+        lima
+    }
+
+    /// Pre-build apptainer for all target architectures via Lima VMs.
+    ///
+    /// By default only the native architecture is built. Set PEPPY_CROSS_ARCH=1
+    /// (used by the release script) to also build for non-native architectures.
+    fn build_lima_targets(lima: &LimaConfig) {
+        let cross_arch = env::var("PEPPY_CROSS_ARCH").unwrap_or_default() == "1";
+        let native_arch: &str = std::env::consts::ARCH;
+        let targets: Vec<&str> = if cross_arch {
+            vec!["aarch64", "x86_64"]
+        } else {
+            vec![native_arch]
+        };
+
+        for target in &targets {
+            let target_cache = apptainer_cache_dir(APPTAINER_VERSION, target);
+            let sentinel = apptainer_cache_sentinel_path(&target_cache, APPTAINER_VERSION);
+            if sentinel.exists() && target_cache.join("bin/apptainer").exists() {
+                println!(
+                    "cargo:warning=Apptainer {} for {} already cached",
+                    APPTAINER_VERSION, target
+                );
+                continue;
+            }
+
+            println!(
+                "cargo:warning=Pre-building apptainer {} for {} via Lima VM...",
+                APPTAINER_VERSION, target
+            );
+
+            // Each architecture gets its own Lima instance so the VM
+            // runs natively on the target ISA (or under QEMU emulation
+            // for cross-arch).
+            let instance_name: &'static str = match *target {
+                "aarch64" => "peppy-a64",
+                "x86_64" => "peppy-x64",
+                _ => LIMA_INSTANCE,
+            };
+            let target_lima = LimaConfig {
+                limactl: lima.limactl.clone(),
+                lima_home: lima.lima_home.clone(),
+                instance: instance_name,
+            };
+
+            let ok = build_apptainer_from_source_via_lima(
+                &target_lima,
+                APPTAINER_VERSION,
+                &target_cache,
+                target,
+            );
+            assert!(
+                ok,
+                "Failed to build apptainer {} for {} in Lima VM",
+                APPTAINER_VERSION, target
+            );
+            assert!(
+                target_cache.join("bin/apptainer").exists(),
+                "Apptainer build for {} completed but bin/apptainer missing",
+                target
+            );
+            write_cache_sentinel(&target_cache, APPTAINER_VERSION);
+        }
+    }
+
+    /// On Linux inside a Lima VM, the macOS-side cache is accessible at the
+    /// same absolute path because Lima mounts the host home directory.
+    /// Scan `/Users/*/` for a cached apptainer build and return its path.
+    fn find_macos_cache_fallback(version: &str, arch: &str) -> Option<PathBuf> {
+        let macos_home = Path::new("/Users");
+        if !macos_home.is_dir() {
+            return None;
+        }
+        let pattern = format!("apptainer-{}-{}-nosuid", version, arch);
+        for entry in std::fs::read_dir(macos_home).ok()?.flatten() {
+            let candidate = entry.path().join(".peppy/tmp").join(&pattern);
+            let sentinel = apptainer_cache_sentinel_path(&candidate, version);
+            if sentinel.exists() && candidate.join("bin/apptainer").exists() {
+                println!(
+                    "cargo:warning=Using macOS-side cached apptainer from {:?}",
+                    candidate
+                );
+                return Some(candidate);
+            }
+        }
+        None
+    }
+
+    /// Ensure we have a cached apptainer installation for the given arch.
+    /// Returns the path to the cache directory containing `bin/apptainer`.
+    fn ensure_apptainer_cached(use_lima: bool, arch: &str) -> PathBuf {
+        let cache_dir = apptainer_cache_dir(APPTAINER_VERSION, arch);
+        let sentinel = apptainer_cache_sentinel_path(&cache_dir, APPTAINER_VERSION);
+        let cached_bin = cache_dir.join("bin/apptainer");
+
+        // Check if we already have a valid cache.
+        if sentinel.exists() && cached_bin.exists() {
+            println!(
+                "cargo:warning=Using cached apptainer installation from {:?}",
+                cache_dir
+            );
+            return cache_dir;
+        }
+
+        // On Linux, try the macOS-side cache (Lima mounts host home dirs).
+        if !use_lima
+            && let Some(macos_cache) = find_macos_cache_fallback(APPTAINER_VERSION, arch)
+        {
+            force_remove_dir(&cache_dir);
+            copy_dir_recursive(&macos_cache, &cache_dir)
+                .expect("Failed to copy macOS apptainer cache");
+            write_cache_sentinel(&cache_dir, APPTAINER_VERSION);
+            return cache_dir;
+        }
+
+        // No cache available — build from source (Linux host only).
+        println!(
+            "cargo:warning=Building apptainer {} from source...",
+            APPTAINER_VERSION
+        );
+        let success = build_apptainer_from_source(APPTAINER_VERSION, &cache_dir);
+        assert!(
+            success,
+            "Failed to build apptainer {} from source for {}. \
+             Ensure Go, make, gcc, libseccomp-dev, and pkg-config are installed.",
+            APPTAINER_VERSION, arch
+        );
+        assert!(
+            cache_dir.join("bin/apptainer").exists(),
+            "Apptainer source build completed but bin/apptainer not found in {:?}",
+            cache_dir
+        );
+        write_cache_sentinel(&cache_dir, APPTAINER_VERSION);
+
+        cache_dir
+    }
+
+    pub fn run() {
+        emit_rerun_directives();
+        emit_constant_env_vars();
+
+        let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
 
         // On macOS, apptainer is Linux-only and runs inside a Lima VM.
         // We download and bundle Lima ourselves — no `brew install lima` required.
@@ -630,222 +802,19 @@ echo "=== Apptainer build complete ==="
             false
         };
 
-        // Use the target architecture from the Rust compilation target.
-        // CARGO_CFG_TARGET_ARCH reflects the *target* (e.g. "x86_64" when
-        // cross-compiling for x86_64-unknown-linux-gnu), not the host.
         let arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_else(|_| "aarch64".to_string());
-
         let out_dir = env::var("OUT_DIR").unwrap();
 
-        // ------------------------------------------------------------------
-        // Step 1 (macOS only): Download and cache Lima
-        // ------------------------------------------------------------------
-        let lima_config = if use_lima {
-            let lima_cache_dir = match ensure_lima_cached(LIMA_VERSION, "Darwin", "arm64") {
-                Some(dir) => dir,
-                None => {
-                    panic!(
-                        "Could not download Lima {}. Lima is required for macOS builds.",
-                        LIMA_VERSION
-                    );
-                }
-            };
-
-            let lima = LimaConfig {
-                limactl: lima_cache_dir.join("bin/limactl"),
-                lima_home: get_lima_build_home(),
-                instance: LIMA_INSTANCE,
-            };
-
-            // Copy Lima installation to OUT_DIR for the crate to reference at compile time
-            let out_lima_dir = PathBuf::from(&out_dir).join("lima-install");
-            if out_lima_dir.exists() {
-                std::fs::remove_dir_all(&out_lima_dir).ok();
-            }
-            if let Err(e) = copy_dir_recursive(&lima_cache_dir, &out_lima_dir) {
-                panic!("Failed to copy Lima installation to OUT_DIR: {}", e);
-            }
-            println!(
-                "cargo:rustc-env=LIMA_INSTALL_DIR={}",
-                out_lima_dir.display()
-            );
-            println!(
-                "cargo:rustc-env=LIMA_BUILD_HOME={}",
-                lima.lima_home.display()
-            );
-
-            Some(lima)
-        } else {
-            None
-        };
-
-        // ------------------------------------------------------------------
-        // Step 2: Build apptainer from source
-        // ------------------------------------------------------------------
-
-        // On macOS, build apptainer inside Lima VMs.  By default only the
-        // native architecture is built.  Set PEPPY_CROSS_ARCH=1 (used by the
-        // release script) to also build for non-native architectures so the
-        // cache is ready for cross-compiled release targets.
-        if use_lima && let Some(ref lima) = lima_config {
-            let cross_arch = env::var("PEPPY_CROSS_ARCH").unwrap_or_default() == "1";
-            let native_arch: &str = std::env::consts::ARCH;
-            let targets: Vec<&str> = if cross_arch {
-                vec!["aarch64", "x86_64"]
-            } else {
-                vec![native_arch]
-            };
-            for target in &targets {
-                let target_cache = build_helpers::cache_dir(&format!(
-                    "apptainer-{}-{}-nosuid",
-                    APPTAINER_VERSION, target
-                ));
-                let sentinel = apptainer_cache_sentinel_path(&target_cache, APPTAINER_VERSION);
-                if sentinel.exists() && target_cache.join("bin/apptainer").exists() {
-                    println!(
-                        "cargo:warning=Apptainer {} for {} already cached",
-                        APPTAINER_VERSION, target
-                    );
-                    continue;
-                }
-                println!(
-                    "cargo:warning=Pre-building apptainer {} for {} via Lima VM...",
-                    APPTAINER_VERSION, target
-                );
-                // Each architecture gets its own Lima instance so the VM
-                // runs natively on the target ISA (or under QEMU emulation
-                // for cross-arch).
-                let instance_name: &'static str = match *target {
-                    "aarch64" => "peppy-a64",
-                    "x86_64" => "peppy-x64",
-                    _ => LIMA_INSTANCE,
-                };
-                let target_lima = LimaConfig {
-                    limactl: lima.limactl.clone(),
-                    lima_home: lima.lima_home.clone(),
-                    instance: instance_name,
-                };
-                let ok = build_apptainer_from_source_via_lima(
-                    &target_lima,
-                    APPTAINER_VERSION,
-                    &target_cache,
-                    target,
-                );
-                assert!(
-                    ok,
-                    "Failed to build apptainer {} for {} in Lima VM",
-                    APPTAINER_VERSION, target
-                );
-                assert!(
-                    target_cache.join("bin/apptainer").exists(),
-                    "Apptainer build for {} completed but bin/apptainer missing",
-                    target
-                );
-                std::fs::write(&sentinel, format!("version={}\n", APPTAINER_VERSION))
-                    .unwrap_or_else(|e| {
-                        panic!("Failed to write cache sentinel {:?}: {}", sentinel, e)
-                    });
-            }
+        // Step 1 (macOS only): Download and cache Lima, pre-build apptainer via VMs
+        if use_lima {
+            let lima = setup_lima(&out_dir);
+            build_lima_targets(&lima);
         }
 
-        let cache_dir =
-            build_helpers::cache_dir(&format!("apptainer-{}-{}-nosuid", APPTAINER_VERSION, &arch));
+        // Step 2: Ensure apptainer is cached (from Lima pre-build, macOS fallback, or local build)
+        let cache_dir = ensure_apptainer_cached(use_lima, &arch);
 
-        // On Linux inside a Lima VM, the macOS-side cache is accessible at the
-        // same absolute path because Lima mounts the host home directory.
-        // Check there as a fallback when the Linux-side cache is empty.
-        let macos_cache_hit = if !use_lima {
-            let sentinel = apptainer_cache_sentinel_path(&cache_dir, APPTAINER_VERSION);
-            if !sentinel.exists() || !cache_dir.join("bin/apptainer").exists() {
-                // The Linux HOME-based cache_dir didn't hit.  Try the macOS
-                // home path (e.g. /Users/<user>/.peppy/tmp/...) which Lima
-                // mounts into the guest.
-                let macos_home = PathBuf::from("/Users");
-                if macos_home.is_dir() {
-                    // Find any matching cache under /Users/*/.peppy/tmp/
-                    let pattern = format!("apptainer-{}-{}-nosuid", APPTAINER_VERSION, &arch);
-                    let mut found = false;
-                    if let Ok(entries) = std::fs::read_dir(&macos_home) {
-                        for entry in entries.flatten() {
-                            let candidate = entry.path().join(".peppy/tmp").join(&pattern);
-                            let candidate_sentinel =
-                                apptainer_cache_sentinel_path(&candidate, APPTAINER_VERSION);
-                            if candidate_sentinel.exists()
-                                && candidate.join("bin/apptainer").exists()
-                            {
-                                println!(
-                                    "cargo:warning=Using macOS-side cached apptainer from {:?}",
-                                    candidate
-                                );
-                                // Copy to our local cache so OUT_DIR copy works.
-                                if cache_dir.exists() {
-                                    std::fs::remove_dir_all(&cache_dir).ok();
-                                }
-                                copy_dir_recursive(&candidate, &cache_dir)
-                                    .expect("Failed to copy macOS apptainer cache");
-                                std::fs::write(
-                                    apptainer_cache_sentinel_path(&cache_dir, APPTAINER_VERSION),
-                                    format!("version={}\n", APPTAINER_VERSION),
-                                )
-                                .ok();
-                                found = true;
-                                break;
-                            }
-                        }
-                    }
-                    found
-                } else {
-                    false
-                }
-            } else {
-                true // Linux-side cache hit
-            }
-        } else {
-            false // macOS path already handled above
-        };
-
-        // Check if we have a fully completed cached installation.
-        let cached_bin = cache_dir.join("bin/apptainer");
-        let cache_sentinel = apptainer_cache_sentinel_path(&cache_dir, APPTAINER_VERSION);
-        if cache_sentinel.exists() && cached_bin.exists() {
-            println!(
-                "cargo:warning=Using cached apptainer installation from {:?}",
-                cache_dir
-            );
-        } else if macos_cache_hit {
-            // Already handled above via copy.
-        } else {
-            println!(
-                "cargo:warning=Building apptainer {} from source...",
-                APPTAINER_VERSION
-            );
-
-            let success = build_apptainer_from_source(APPTAINER_VERSION, &cache_dir);
-
-            assert!(
-                success,
-                "Failed to build apptainer {} from source for {}. \
-                 Ensure Go, make, gcc, libseccomp-dev, and pkg-config are installed.",
-                APPTAINER_VERSION, arch
-            );
-
-            assert!(
-                cached_bin.exists(),
-                "Apptainer source build completed but bin/apptainer not found in {:?}",
-                cache_dir
-            );
-
-            std::fs::write(&cache_sentinel, format!("version={}\n", APPTAINER_VERSION))
-                .unwrap_or_else(|e| {
-                    panic!(
-                        "Failed to write apptainer cache sentinel {:?}: {}",
-                        cache_sentinel, e
-                    )
-                });
-        }
-
-        // Copy apptainer installation to OUT_DIR so the release packaging
-        // script can find it via containers-*/out/apptainer-install glob.
+        // Step 3: Copy apptainer installation to OUT_DIR for release packaging
         let out_install_dir = PathBuf::from(&out_dir).join("apptainer-install");
         if out_install_dir.exists() {
             std::fs::remove_dir_all(&out_install_dir).ok();
