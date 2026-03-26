@@ -76,6 +76,9 @@ pub struct SetupStatus {
     /// AppArmor profile for `starter-suid` is installed (always `true` when
     /// `apparmor_restricted` is `false`).
     pub apparmor_ok: bool,
+    /// `starter-suid` is not relocated, or the symlink fix is in place
+    /// (install-dir binary symlinks to the compiled-in prefix with SUID).
+    pub relocation_ok: bool,
     /// An idempotent shell script that ensures all checks pass.
     pub fix_script: String,
 }
@@ -84,7 +87,45 @@ pub struct SetupStatus {
 impl SetupStatus {
     /// Returns `true` when all prerequisites are met.
     pub fn is_ok(&self) -> bool {
-        self.suid_ok && self.conf_ok && self.apparmor_ok
+        self.suid_ok && self.conf_ok && self.apparmor_ok && self.relocation_ok
+    }
+}
+
+/// Extract the compiled-in prefix from an Apptainer `starter-suid` binary.
+///
+/// The Go binary contains the `LIBEXECDIR` path as an embedded string of the
+/// form `<prefix>/libexec/apptainer`. This function searches the binary bytes
+/// for that pattern, walks backwards to the preceding null byte to find the
+/// prefix start, and returns `Some(prefix)` when it differs from
+/// `apptainer_dir`. Returns `None` when the binary was built for the current
+/// installation directory (not relocated).
+#[cfg(target_os = "linux")]
+pub(crate) fn extract_compiled_prefix(binary: &[u8], apptainer_dir: &Path) -> Option<PathBuf> {
+    let needle = b"/libexec/apptainer";
+    let pos = binary.windows(needle.len()).position(|w| w == needle)?;
+
+    // Walk backwards from the match to find the start of the path.
+    // In Go binaries the string data is preceded by a null byte (or is at
+    // the very start of the segment).
+    let start = binary[..pos]
+        .iter()
+        .rposition(|&b| b == 0 || b < 0x20)
+        .map(|i| i + 1)
+        .unwrap_or(0);
+
+    let prefix_bytes = &binary[start..pos];
+    let prefix_str = std::str::from_utf8(prefix_bytes).ok()?;
+
+    // Must look like an absolute path.
+    if !prefix_str.starts_with('/') {
+        return None;
+    }
+
+    let prefix = PathBuf::from(prefix_str);
+    if prefix == apptainer_dir {
+        None // Not relocated — compiled-in prefix matches the installation dir.
+    } else {
+        Some(prefix)
     }
 }
 
@@ -102,7 +143,9 @@ pub fn check_setup_status(apptainer_dir: &Path) -> Result<SetupStatus> {
     let starter_suid = apptainer_dir.join("libexec/apptainer/bin/starter-suid");
     let conf_dir = apptainer_dir.join("etc/apptainer");
 
-    let suid_meta = std::fs::metadata(&starter_suid).map_err(|e| {
+    // Read the binary — needed both for the metadata check and to extract the
+    // compiled-in prefix for the relocation check.
+    let suid_bytes = std::fs::read(&starter_suid).map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
             Error::ConfigurationError(format!(
                 "starter-suid not found at {}. Reinstall peppy.",
@@ -110,13 +153,51 @@ pub fn check_setup_status(apptainer_dir: &Path) -> Result<SetupStatus> {
             ))
         } else {
             Error::ConfigurationError(format!(
-                "Failed to stat starter-suid at {}: {e}",
+                "Failed to read starter-suid at {}: {e}",
                 starter_suid.display()
             ))
         }
     })?;
 
-    let suid_ok = suid_meta.uid() == 0 && (suid_meta.mode() & 0o4000) != 0;
+    // --- Relocation detection ---
+    // The starter-suid binary has a compiled-in LIBEXECDIR from `--prefix`.
+    // When the SUID bit is set and the binary is executed from a different
+    // path, Apptainer rejects it with "Relocation not allowed with
+    // starter-suid". Detect this by extracting the compiled-in prefix and
+    // comparing it with the actual installation directory.
+    let compiled_prefix = extract_compiled_prefix(&suid_bytes, apptainer_dir);
+
+    // Determine the "effective" starter-suid path — this is where the binary
+    // must actually live with SUID permissions for Apptainer to accept it.
+    let (effective_suid, relocation_ok) = match &compiled_prefix {
+        None => {
+            // Not relocated. The install-dir binary is the effective one.
+            (starter_suid.clone(), true)
+        }
+        Some(prefix) => {
+            let compiled_suid = prefix.join("libexec/apptainer/bin/starter-suid");
+
+            // The fix creates a symlink at the install-dir path pointing to the
+            // compiled-in prefix. Check whether that is already in place.
+            let symlink_ok = std::fs::read_link(&starter_suid)
+                .map(|target| target == compiled_suid)
+                .unwrap_or(false);
+
+            let target_exists_with_suid = compiled_suid
+                .metadata()
+                .map(|m| m.uid() == 0 && (m.mode() & 0o4000) != 0)
+                .unwrap_or(false);
+
+            (compiled_suid, symlink_ok && target_exists_with_suid)
+        }
+    };
+
+    // --- SUID ownership / mode check ---
+    let suid_ok = effective_suid
+        .metadata()
+        .map(|m| m.uid() == 0 && (m.mode() & 0o4000) != 0)
+        .unwrap_or(false);
+
     let conf_ok = conf_dir.metadata().map(|m| m.uid() == 0).unwrap_or(false);
 
     let apparmor_restricted =
@@ -132,22 +213,48 @@ pub fn check_setup_status(apptainer_dir: &Path) -> Result<SetupStatus> {
         true
     };
 
-    let suid_path = starter_suid.display();
+    // --- Build the fix script ---
+    let effective_suid_display = effective_suid.display();
     let conf_dir_path = conf_dir.display();
 
-    let mut fix_script = format!(
-        "sudo chown root:root '{suid_path}' \\\n  \
-         && sudo chmod 4755 '{suid_path}' \\\n  \
-         && sudo chown -R root:root '{conf_dir_path}'"
-    );
+    let mut fix_script = match &compiled_prefix {
+        Some(prefix) => {
+            // Relocated: copy the binary to the compiled-in prefix and create a
+            // symlink at the install dir so that /proc/self/exe resolves to the
+            // compiled-in path (passing the relocation check).
+            let compiled_suid = prefix.join("libexec/apptainer/bin/starter-suid");
+            let compiled_suid_display = compiled_suid.display();
+            let compiled_libexec_bin = prefix.join("libexec/apptainer/bin");
+            let compiled_libexec_bin_display = compiled_libexec_bin.display();
+            let install_suid_display = starter_suid.display();
+            format!(
+                "sudo mkdir -p '{compiled_libexec_bin_display}' \\\n  \
+                 && sudo cp '{install_suid_display}' '{compiled_suid_display}' \\\n  \
+                 && sudo chown root:root '{compiled_suid_display}' \\\n  \
+                 && sudo chmod 4755 '{compiled_suid_display}' \\\n  \
+                 && sudo ln -sf '{compiled_suid_display}' '{install_suid_display}' \\\n  \
+                 && sudo chown -R root:root '{conf_dir_path}'"
+            )
+        }
+        None => {
+            // Not relocated: set ownership and SUID on the install-dir binary.
+            format!(
+                "sudo chown root:root '{effective_suid_display}' \\\n  \
+                 && sudo chmod 4755 '{effective_suid_display}' \\\n  \
+                 && sudo chown -R root:root '{conf_dir_path}'"
+            )
+        }
+    };
 
     if apparmor_restricted {
+        // Use the effective (non-symlink) binary path in the AppArmor profile
+        // so the kernel grants userns to the actual binary.
         fix_script.push_str(&format!(
             " \\\n  \
              && echo 'abi <abi/4.0>,\n\
              include <tunables/global>\n\
              \n\
-             profile peppy-apptainer {suid_path} flags=(unconfined) {{\n\
+             profile peppy-apptainer {effective_suid_display} flags=(unconfined) {{\n\
              \x20 userns,\n\
              }}' | sudo tee /etc/apparmor.d/peppy-apptainer > /dev/null \\\n  \
              && sudo apparmor_parser -r /etc/apparmor.d/peppy-apptainer"
@@ -159,6 +266,7 @@ pub fn check_setup_status(apptainer_dir: &Path) -> Result<SetupStatus> {
         conf_ok,
         apparmor_restricted,
         apparmor_ok,
+        relocation_ok,
         fix_script,
     })
 }

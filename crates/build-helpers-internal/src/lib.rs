@@ -320,8 +320,7 @@ mod tests {
 
     #[test]
     fn streaming_captures_stdout() {
-        let output =
-            run_command_streaming(Command::new("echo").arg("hello world"), "test-echo");
+        let output = run_command_streaming(Command::new("echo").arg("hello world"), "test-echo");
         assert!(output.success);
         assert!(output.stdout.contains("hello world"));
     }

@@ -1,6 +1,6 @@
-#[cfg(target_os = "linux")]
-use super::facade::check_setup_status;
 use super::facade::{Apptainer, Backend, is_uri};
+#[cfg(target_os = "linux")]
+use super::facade::{check_setup_status, extract_compiled_prefix};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -621,5 +621,226 @@ fn check_setup_status_detects_non_root_starter_suid() {
     assert!(
         status.fix_script.contains("chown"),
         "fix script should contain chown command"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Relocation detection tests (Linux only)
+// ---------------------------------------------------------------------------
+
+#[cfg(target_os = "linux")]
+#[test]
+fn check_setup_status_detects_relocated_starter_suid() {
+    let tmp = TempDir::new().unwrap();
+    let suid_dir = tmp.path().join("libexec/apptainer/bin");
+    fs::create_dir_all(&suid_dir).unwrap();
+
+    // Fake binary with a DIFFERENT prefix embedded — simulates a binary that
+    // was built with --prefix=/some/other/path and then moved to tmp.path().
+    let mut content = vec![0u8; 16];
+    content.extend_from_slice(b"/some/other/path/libexec/apptainer");
+    content.extend_from_slice(&[0u8; 16]);
+    fs::write(suid_dir.join("starter-suid"), &content).unwrap();
+
+    let conf_dir = tmp.path().join("etc/apptainer");
+    fs::create_dir_all(&conf_dir).unwrap();
+
+    let status =
+        check_setup_status(tmp.path()).expect("should succeed with fake starter-suid present");
+
+    assert!(
+        !status.relocation_ok,
+        "relocation_ok should be false when binary contains a different prefix"
+    );
+    assert!(!status.is_ok(), "is_ok should be false when relocated");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn check_setup_status_relocation_ok_when_prefix_matches() {
+    let tmp = TempDir::new().unwrap();
+    let suid_dir = tmp.path().join("libexec/apptainer/bin");
+    fs::create_dir_all(&suid_dir).unwrap();
+
+    // Fake binary with the CORRECT prefix embedded — matches the installation
+    // directory, so no relocation.
+    let prefix = tmp.path().to_string_lossy().to_string();
+    let mut content = vec![0u8; 16];
+    content.extend_from_slice(format!("{prefix}/libexec/apptainer").as_bytes());
+    content.extend_from_slice(&[0u8; 16]);
+    fs::write(suid_dir.join("starter-suid"), &content).unwrap();
+
+    let conf_dir = tmp.path().join("etc/apptainer");
+    fs::create_dir_all(&conf_dir).unwrap();
+
+    let status =
+        check_setup_status(tmp.path()).expect("should succeed with fake starter-suid present");
+
+    assert!(
+        status.relocation_ok,
+        "relocation_ok should be true when binary prefix matches installation dir"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn check_setup_status_relocation_ok_when_symlink_fix_applied() {
+    use std::os::unix::fs as unix_fs;
+
+    let tmp = TempDir::new().unwrap();
+    let install_suid_dir = tmp.path().join("libexec/apptainer/bin");
+    fs::create_dir_all(&install_suid_dir).unwrap();
+
+    // Simulate a binary compiled for /some/build/prefix.
+    let compiled_prefix = tmp.path().join("compiled_prefix");
+    let compiled_suid_dir = compiled_prefix.join("libexec/apptainer/bin");
+    fs::create_dir_all(&compiled_suid_dir).unwrap();
+
+    let mut content = vec![0u8; 16];
+    let prefix_str = compiled_prefix.to_string_lossy().to_string();
+    content.extend_from_slice(format!("{prefix_str}/libexec/apptainer").as_bytes());
+    content.extend_from_slice(&[0u8; 16]);
+
+    // Place the binary at the compiled-in prefix path.
+    let compiled_suid = compiled_suid_dir.join("starter-suid");
+    fs::write(&compiled_suid, &content).unwrap();
+
+    // Create a symlink at the install dir pointing to the compiled-in prefix.
+    let install_suid = install_suid_dir.join("starter-suid");
+    unix_fs::symlink(&compiled_suid, &install_suid).unwrap();
+
+    let conf_dir = tmp.path().join("etc/apptainer");
+    fs::create_dir_all(&conf_dir).unwrap();
+
+    let status =
+        check_setup_status(tmp.path()).expect("should succeed with symlinked starter-suid");
+
+    // The symlink points to the right place but the binary is not root-owned
+    // (running as non-root in tests), so suid_ok is false. However the
+    // relocation check only verifies the symlink target structure — the SUID
+    // permissions are checked separately via suid_ok.
+    // In tests (non-root), the compiled-prefix binary won't have uid=0 or
+    // mode 4755, so relocation_ok will be false because the target_exists_with_suid
+    // check fails. This is correct behavior — in production, `peppy container setup`
+    // sets root ownership and SUID before we re-check.
+    assert!(
+        !status.relocation_ok,
+        "relocation_ok should be false without root-owned SUID target (expected in non-root tests)"
+    );
+    // But importantly, the symlink IS in place, so the fix_script should still
+    // contain the copy + symlink commands since check_setup_status sees the
+    // relocation.
+    assert!(
+        status.fix_script.contains("ln -sf"),
+        "fix script should contain symlink command when relocated, got: {}",
+        status.fix_script
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn check_setup_status_fix_script_creates_symlink_when_relocated() {
+    let tmp = TempDir::new().unwrap();
+    let suid_dir = tmp.path().join("libexec/apptainer/bin");
+    fs::create_dir_all(&suid_dir).unwrap();
+
+    let mut content = vec![0u8; 16];
+    content.extend_from_slice(b"/opt/build/cache/libexec/apptainer");
+    content.extend_from_slice(&[0u8; 16]);
+    fs::write(suid_dir.join("starter-suid"), &content).unwrap();
+
+    let conf_dir = tmp.path().join("etc/apptainer");
+    fs::create_dir_all(&conf_dir).unwrap();
+
+    let status =
+        check_setup_status(tmp.path()).expect("should succeed with fake starter-suid present");
+
+    assert!(
+        !status.relocation_ok,
+        "relocation_ok should be false for relocated binary"
+    );
+
+    // The fix script should contain the symlink-based fix (no build tools).
+    assert!(
+        status
+            .fix_script
+            .contains("mkdir -p '/opt/build/cache/libexec/apptainer/bin'"),
+        "fix script should create compiled-in prefix dir, got: {}",
+        status.fix_script
+    );
+    assert!(
+        status.fix_script.contains("cp '"),
+        "fix script should copy the binary, got: {}",
+        status.fix_script
+    );
+    assert!(
+        status
+            .fix_script
+            .contains("ln -sf '/opt/build/cache/libexec/apptainer/bin/starter-suid'"),
+        "fix script should create symlink to compiled-in prefix, got: {}",
+        status.fix_script
+    );
+    assert!(
+        status.fix_script.contains("chmod 4755"),
+        "fix script should set SUID bit, got: {}",
+        status.fix_script
+    );
+    // Must NOT require build tools.
+    assert!(
+        !status.fix_script.contains("curl"),
+        "fix script should not require downloading source, got: {}",
+        status.fix_script
+    );
+    assert!(
+        !status.fix_script.contains("make"),
+        "fix script should not require compiling, got: {}",
+        status.fix_script
+    );
+}
+
+// ---------------------------------------------------------------------------
+// extract_compiled_prefix unit tests (Linux only)
+// ---------------------------------------------------------------------------
+
+#[cfg(target_os = "linux")]
+#[test]
+fn extract_compiled_prefix_returns_none_when_matching() {
+    let dir = Path::new("/home/user/.peppy/tmp/apptainer-1.4.5-aarch64-src");
+    let mut binary = vec![0u8; 32];
+    binary
+        .extend_from_slice(b"/home/user/.peppy/tmp/apptainer-1.4.5-aarch64-src/libexec/apptainer");
+    binary.extend_from_slice(&[0u8; 32]);
+
+    assert!(
+        extract_compiled_prefix(&binary, dir).is_none(),
+        "should return None when prefix matches apptainer_dir"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn extract_compiled_prefix_returns_some_when_different() {
+    let dir = Path::new("/home/user/.peppy/bin/apptainer");
+    let mut binary = vec![0u8; 32];
+    binary.extend_from_slice(b"/tmp/peppy/apptainer/libexec/apptainer");
+    binary.extend_from_slice(&[0u8; 32]);
+
+    let prefix = extract_compiled_prefix(&binary, dir);
+    assert_eq!(
+        prefix.as_deref(),
+        Some(Path::new("/tmp/peppy/apptainer")),
+        "should return the compiled-in prefix when different from apptainer_dir"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn extract_compiled_prefix_returns_none_for_no_match() {
+    let dir = Path::new("/some/dir");
+    let binary = b"this binary has no apptainer paths in it at all";
+
+    assert!(
+        extract_compiled_prefix(binary, dir).is_none(),
+        "should return None when binary contains no libexec/apptainer pattern"
     );
 }

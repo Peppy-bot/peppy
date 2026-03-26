@@ -52,6 +52,14 @@ fn status() -> Result<()> {
         if status.suid_ok { "OK" } else { "FAILED" }
     );
     println!(
+        "  starter-suid relocation: {}",
+        if status.relocation_ok {
+            "OK".to_string()
+        } else {
+            "FAILED (binary compiled for a different prefix)".to_string()
+        }
+    );
+    println!(
         "  config dir ownership   : {}",
         if status.conf_ok { "OK" } else { "FAILED" }
     );
@@ -101,6 +109,9 @@ fn setup(force: bool) -> Result<()> {
         println!("All checks pass but --force was specified. Re-applying fixes.");
     } else {
         println!("The following fixes are needed:");
+        if !status.relocation_ok {
+            println!("  - Symlink starter-suid to compiled-in prefix path");
+        }
         if !status.suid_ok {
             println!("  - Set setuid permissions on Apptainer starter binary");
         }
