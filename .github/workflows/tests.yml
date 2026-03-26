@@ -26,4 +26,4 @@ jobs:
 
       - name: Run release scripts tests
         if: github.event_name == 'pull_request' && github.base_ref == 'main'
-        run: ./scripts/run_tests.sh
+        run: ./scripts/run_tests.sh --all

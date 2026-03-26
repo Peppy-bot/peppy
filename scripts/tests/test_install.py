@@ -157,7 +157,7 @@ VM_CONFIGS = _build_vm_configs()
 
 
 @pytest.fixture(scope="module", params=VM_CONFIGS, ids=lambda c: c.pytest_id())
-def lima_vm(request) -> Generator[VMConfig, None, None]:
+def lima_vm(request, _build_release_archives) -> Generator[VMConfig, None, None]:
     """Create (or reuse) an ephemeral Lima VM for install.sh testing.
 
     Parameterized across all VM configs (distro x arch combos).  Each VM
