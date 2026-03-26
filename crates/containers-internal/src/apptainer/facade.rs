@@ -63,226 +63,126 @@ pub struct Apptainer {
     pub(crate) extra_mounts: Vec<PathBuf>,
 }
 
-/// Status of Apptainer setuid prerequisites on the current system.
+/// Status of Apptainer user namespace prerequisites on the current system.
+///
+/// Apptainer is built without setuid (`--without-suid`) and relies on
+/// unprivileged user namespaces. On systems where AppArmor restricts
+/// unprivileged user namespaces (e.g. Ubuntu 24.04+), an AppArmor profile
+/// must be installed to allow the `starter` binary to create them.
 #[cfg(target_os = "linux")]
 #[derive(Debug)]
 pub struct SetupStatus {
-    /// `starter-suid` is root-owned with the setuid bit (mode 4755).
-    pub suid_ok: bool,
-    /// `etc/apptainer/` config directory is root-owned.
-    pub conf_ok: bool,
     /// System restricts unprivileged user namespaces via AppArmor.
     pub apparmor_restricted: bool,
-    /// AppArmor profile for `starter-suid` is installed (always `true` when
-    /// `apparmor_restricted` is `false`).
+    /// AppArmor profile for `starter` is installed and references the current
+    /// binary path (always `true` when `apparmor_restricted` is `false`).
     pub apparmor_ok: bool,
-    /// `starter-suid` is not relocated, or the symlink fix is in place
-    /// (install-dir binary symlinks to the compiled-in prefix with SUID).
-    pub relocation_ok: bool,
-    /// An idempotent shell script that ensures all checks pass.
-    pub fix_script: String,
+    /// AppArmor profile is loaded into the kernel (always `true` when
+    /// `apparmor_restricted` is `false`).
+    pub apparmor_loaded: bool,
+    /// A shell script that fixes all failing checks, or `None` when everything
+    /// passes.
+    pub fix_script: Option<String>,
 }
 
 #[cfg(target_os = "linux")]
 impl SetupStatus {
     /// Returns `true` when all prerequisites are met.
     pub fn is_ok(&self) -> bool {
-        self.suid_ok && self.conf_ok && self.apparmor_ok && self.relocation_ok
+        self.apparmor_ok && self.apparmor_loaded
     }
 }
 
-/// Extract the compiled-in prefix from an Apptainer `starter-suid` binary.
-///
-/// The Go binary contains the `LIBEXECDIR` path as an embedded string of the
-/// form `<prefix>/libexec/apptainer`. This function searches the binary bytes
-/// for that pattern, walks backwards to the preceding null byte to find the
-/// prefix start, and returns `Some(prefix)` when it differs from
-/// `apptainer_dir`. Returns `None` when the binary was built for the current
-/// installation directory (not relocated).
-#[cfg(target_os = "linux")]
-pub(crate) fn extract_compiled_prefix(binary: &[u8], apptainer_dir: &Path) -> Option<PathBuf> {
-    let needle = b"/libexec/apptainer";
-    let pos = binary.windows(needle.len()).position(|w| w == needle)?;
-
-    // Walk backwards from the match to find the start of the path.
-    // In Go binaries the string data is preceded by a null byte (or is at
-    // the very start of the segment).
-    let start = binary[..pos]
-        .iter()
-        .rposition(|&b| b == 0 || b < 0x20)
-        .map(|i| i + 1)
-        .unwrap_or(0);
-
-    let prefix_bytes = &binary[start..pos];
-    let prefix_str = std::str::from_utf8(prefix_bytes).ok()?;
-
-    // Must look like an absolute path.
-    if !prefix_str.starts_with('/') {
-        return None;
-    }
-
-    let prefix = PathBuf::from(prefix_str);
-    if prefix == apptainer_dir {
-        None // Not relocated — compiled-in prefix matches the installation dir.
-    } else {
-        Some(prefix)
-    }
-}
-
-/// Inspect the Apptainer setuid prerequisites without failing on errors.
+/// Inspect the Apptainer user namespace prerequisites without failing on errors.
 ///
 /// Returns a [`SetupStatus`] describing which checks pass and which do not,
-/// along with an idempotent fix script that ensures correct state.
+/// along with a ready-to-run fix script when something needs attention.
 ///
 /// The caller is responsible for resolving the `apptainer_dir` — use
 /// [`Apptainer::resolve_apptainer_dir`] or the `PEPPY_APPTAINER_DIR` env var.
 #[cfg(target_os = "linux")]
-pub fn check_setup_status(apptainer_dir: &Path) -> Result<SetupStatus> {
-    use std::os::unix::fs::MetadataExt;
-
-    let starter_suid = apptainer_dir.join("libexec/apptainer/bin/starter-suid");
-    let conf_dir = apptainer_dir.join("etc/apptainer");
-
-    // Read the binary — needed both for the metadata check and to extract the
-    // compiled-in prefix for the relocation check.
-    let suid_bytes = std::fs::read(&starter_suid).map_err(|e| {
-        if e.kind() == std::io::ErrorKind::NotFound {
-            Error::ConfigurationError(format!(
-                "starter-suid not found at {}. Reinstall peppy.",
-                starter_suid.display()
-            ))
-        } else {
-            Error::ConfigurationError(format!(
-                "Failed to read starter-suid at {}: {e}",
-                starter_suid.display()
-            ))
-        }
-    })?;
-
-    // --- Relocation detection ---
-    // The starter-suid binary has a compiled-in LIBEXECDIR from `--prefix`.
-    // When the SUID bit is set and the binary is executed from a different
-    // path, Apptainer rejects it with "Relocation not allowed with
-    // starter-suid". Detect this by extracting the compiled-in prefix and
-    // comparing it with the actual installation directory.
-    let compiled_prefix = extract_compiled_prefix(&suid_bytes, apptainer_dir);
-
-    // Determine the "effective" starter-suid path — this is where the binary
-    // must actually live with SUID permissions for Apptainer to accept it.
-    let (effective_suid, relocation_ok) = match &compiled_prefix {
-        None => {
-            // Not relocated. The install-dir binary is the effective one.
-            (starter_suid.clone(), true)
-        }
-        Some(prefix) => {
-            let compiled_suid = prefix.join("libexec/apptainer/bin/starter-suid");
-
-            // The fix creates a symlink at the install-dir path pointing to the
-            // compiled-in prefix. Check whether that is already in place.
-            let symlink_ok = std::fs::read_link(&starter_suid)
-                .map(|target| target == compiled_suid)
-                .unwrap_or(false);
-
-            let target_exists_with_suid = compiled_suid
-                .metadata()
-                .map(|m| m.uid() == 0 && (m.mode() & 0o4000) != 0)
-                .unwrap_or(false);
-
-            (compiled_suid, symlink_ok && target_exists_with_suid)
-        }
-    };
-
-    // --- SUID ownership / mode check ---
-    let suid_ok = effective_suid
-        .metadata()
-        .map(|m| m.uid() == 0 && (m.mode() & 0o4000) != 0)
-        .unwrap_or(false);
-
-    let conf_ok = conf_dir.metadata().map(|m| m.uid() == 0).unwrap_or(false);
+pub fn check_setup_status(apptainer_dir: &Path) -> SetupStatus {
+    let starter = apptainer_dir.join("libexec/apptainer/bin/starter");
 
     let apparmor_restricted =
         std::fs::read_to_string("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
             .map(|v| v.trim() == "1")
             .unwrap_or(false);
 
+    let starter_canonical = starter.canonicalize().unwrap_or_else(|_| starter.clone());
+
     let apparmor_ok = if apparmor_restricted {
+        // The profile must exist AND reference the current starter path.
+        // A stale profile pointing to a different binary (e.g. a previous build
+        // artifact) won't grant the current binary namespace privileges.
         std::fs::read_to_string("/etc/apparmor.d/peppy-apptainer")
-            .map(|content| content.contains("starter-suid"))
+            .map(|content| content.contains(&format!("{}", starter_canonical.display())))
             .unwrap_or(false)
     } else {
         true
     };
 
-    // --- Build the fix script ---
-    let effective_suid_display = effective_suid.display();
-    let conf_dir_path = conf_dir.display();
-
-    let mut fix_script = match &compiled_prefix {
-        Some(prefix) => {
-            // Relocated: copy the binary to the compiled-in prefix and create a
-            // symlink at the install dir so that /proc/self/exe resolves to the
-            // compiled-in path (passing the relocation check).
-            let compiled_suid = prefix.join("libexec/apptainer/bin/starter-suid");
-            let compiled_suid_display = compiled_suid.display();
-            let compiled_libexec_bin = prefix.join("libexec/apptainer/bin");
-            let compiled_libexec_bin_display = compiled_libexec_bin.display();
-            let install_suid_display = starter_suid.display();
-            format!(
-                "sudo mkdir -p '{compiled_libexec_bin_display}' \\\n  \
-                 && sudo cp '{install_suid_display}' '{compiled_suid_display}' \\\n  \
-                 && sudo chown root:root '{compiled_suid_display}' \\\n  \
-                 && sudo chmod 4755 '{compiled_suid_display}' \\\n  \
-                 && sudo ln -sf '{compiled_suid_display}' '{install_suid_display}' \\\n  \
-                 && sudo chown -R root:root '{conf_dir_path}'"
-            )
-        }
-        None => {
-            // Not relocated: set ownership and SUID on the install-dir binary.
-            format!(
-                "sudo chown root:root '{effective_suid_display}' \\\n  \
-                 && sudo chmod 4755 '{effective_suid_display}' \\\n  \
-                 && sudo chown -R root:root '{conf_dir_path}'"
-            )
-        }
+    let apparmor_loaded = if apparmor_restricted {
+        // /sys/kernel/security/apparmor/profiles requires CAP_MAC_ADMIN, so
+        // use the policy directory listing which is world-readable.
+        std::fs::read_dir("/sys/kernel/security/apparmor/policy/profiles")
+            .map(|entries| {
+                entries.filter_map(|e| e.ok()).any(|e| {
+                    e.file_name()
+                        .to_str()
+                        .is_some_and(|name| name.starts_with("peppy-apptainer."))
+                })
+            })
+            .unwrap_or(false)
+    } else {
+        true
     };
 
-    if apparmor_restricted {
-        // Use the effective (non-symlink) binary path in the AppArmor profile
-        // so the kernel grants userns to the actual binary.
-        fix_script.push_str(&format!(
-            " \\\n  \
-             && echo 'abi <abi/4.0>,\n\
-             include <tunables/global>\n\
-             \n\
-             profile peppy-apptainer {effective_suid_display} flags=(unconfined) {{\n\
-             \x20 userns,\n\
-             }}' | sudo tee /etc/apparmor.d/peppy-apptainer > /dev/null \\\n  \
-             && sudo apparmor_parser -r /etc/apparmor.d/peppy-apptainer"
-        ));
-    }
+    let fix_script = if apparmor_ok && apparmor_loaded {
+        None
+    } else {
+        let starter_path = starter_canonical.display();
+        let mut parts: Vec<String> = Vec::new();
 
-    Ok(SetupStatus {
-        suid_ok,
-        conf_ok,
+        if apparmor_restricted && !apparmor_ok {
+            parts.push(format!(
+                "echo 'abi <abi/4.0>,\n\
+                 include <tunables/global>\n\
+                 \n\
+                 profile peppy-apptainer {starter_path} flags=(unconfined) {{\n\
+                 \x20 userns,\n\
+                 }}' | sudo tee /etc/apparmor.d/peppy-apptainer > /dev/null \\\n  \
+                 && sudo apparmor_parser -r /etc/apparmor.d/peppy-apptainer"
+            ));
+        } else if apparmor_restricted && !apparmor_loaded {
+            parts.push("sudo apparmor_parser -r /etc/apparmor.d/peppy-apptainer".to_string());
+        }
+
+        Some(parts.join(" \\\n  && "))
+    };
+
+    SetupStatus {
         apparmor_restricted,
         apparmor_ok,
-        relocation_ok,
+        apparmor_loaded,
         fix_script,
-    })
+    }
 }
 
-/// Check that Apptainer's setuid mode prerequisites are met.
+/// Check that Apptainer's user namespace prerequisites are met.
 /// Returns an error with a copy-pasteable fix script when any check fails.
 #[cfg(target_os = "linux")]
-fn check_starter_suid(apptainer_dir: &Path) -> Result<()> {
-    let status = check_setup_status(apptainer_dir)?;
+fn check_userns_prerequisites(apptainer_dir: &Path) -> Result<()> {
+    let status = check_setup_status(apptainer_dir);
     if status.is_ok() {
         return Ok(());
     }
 
-    let script = status.fix_script;
+    let script = status
+        .fix_script
+        .unwrap_or_else(|| "peppy container setup".to_string());
     Err(Error::ConfigurationError(format!(
-        "Apptainer's setuid mode is not fully configured.\n\
+        "Apptainer's user namespace prerequisites are not met.\n\
          Run:\n\n{script}\n\n\
          Or run `peppy container setup` to fix this automatically."
     )))
@@ -341,7 +241,7 @@ impl Apptainer {
     /// Ensures the execution backend is fully ready for running commands.
     /// Called once during construction.
     ///
-    /// On Linux (`Backend::Native`): verifies `starter-suid` has the setuid bit.
+    /// On Linux (`Backend::Native`): verifies user namespace prerequisites (AppArmor).
     ///
     /// On macOS (`Backend::Lima`): boots the Lima VM if it is not already running,
     /// and syncs the apptainer installation into the guest. This may take minutes
@@ -350,7 +250,7 @@ impl Apptainer {
         match &mut self.backend {
             Backend::Native { .. } => {
                 #[cfg(target_os = "linux")]
-                check_starter_suid(&self.apptainer_dir)?;
+                check_userns_prerequisites(&self.apptainer_dir)?;
                 Ok(())
             }
             Backend::Lima {

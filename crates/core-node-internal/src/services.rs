@@ -71,9 +71,8 @@ pub struct CoreNode {
 /// Pre-flight checks that run once at daemon startup. Exits with a
 /// user-friendly message if any check fails (no panic backtrace).
 fn perform_runtime_checks() {
-    // Apptainer setuid mode: starter-suid must be root-owned with the setuid
-    // bit set, and apptainer.conf must be root-owned. On Ubuntu 24.04+ an
-    // AppArmor profile is also required.
+    // Apptainer user namespaces: on Ubuntu 24.04+ an AppArmor profile is
+    // required to allow unprivileged user namespace creation.
     #[cfg(target_os = "linux")]
     if let Err(e) = containers::Apptainer::new() {
         eprintln!("Apptainer pre-flight check failed: {e}");

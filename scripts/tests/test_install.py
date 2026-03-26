@@ -206,7 +206,7 @@ def test_install(lima_vm: VMConfig) -> None:
 
 
 def test_no_root_install_happy_path(lima_vm: VMConfig) -> None:
-    """PEPPY_NO_ROOT_INSTALL=1: install succeeds, setuid setup skipped."""
+    """PEPPY_NO_ROOT_INSTALL=1: install succeeds, container setup skipped."""
     config = lima_vm
     home = setup_lima_guest(
         config, test_name=f"test_no_root_install_happy_path_{config.pytest_id()}"
@@ -221,27 +221,22 @@ def test_no_root_install_happy_path(lima_vm: VMConfig) -> None:
         f"install.sh exited with {result.returncode} on {config.pytest_id()}"
         f"{diagnostic(result)}"
     )
-    assert "Skipped Apptainer setuid setup" in result.stdout, (
-        f"Missing phase 2 skip message on {config.pytest_id()}{diagnostic(result)}"
+    assert "Skipped Apptainer setup" in result.stdout, (
+        f"Missing setup skip message on {config.pytest_id()}{diagnostic(result)}"
     )
     assert "peppy installed to" in result.stdout, (
         f"Missing 'peppy installed to' on {config.pytest_id()}{diagnostic(result)}"
     )
 
-    # Verify apptainer directory was extracted but starter-suid is NOT root-owned
+    # Verify apptainer directory was extracted
     if config.os == "linux":
         check = lima_shell(
             f"test -d {home}/bin/apptainer"
-            f" && stat -c '%u' {home}/bin/apptainer/libexec/apptainer/bin/starter-suid",
+            f" && test -f {home}/bin/apptainer/bin/apptainer",
             instance=config.instance_name,
         )
         assert check.returncode == 0, (
-            f"apptainer dir should exist on {config.pytest_id()}"
-        )
-        owner_uid = check.stdout.strip()
-        assert owner_uid != "0", (
-            f"starter-suid should NOT be root-owned on {config.pytest_id()}, "
-            f"but uid is {owner_uid}"
+            f"apptainer dir and binary should exist on {config.pytest_id()}"
         )
 
 
@@ -276,14 +271,14 @@ def test_no_root_install_missing_dbus(lima_vm: VMConfig) -> None:
     )
 
 
-def test_standard_install_sets_up_setuid(lima_vm: VMConfig) -> None:
-    """Default install (no PEPPY_NO_ROOT_INSTALL): setuid is configured."""
+def test_standard_install_container_setup(lima_vm: VMConfig) -> None:
+    """Default install (no PEPPY_NO_ROOT_INSTALL): container setup runs."""
     config = lima_vm
-    assert config.os == "linux", "setuid test only applies to Linux VMs"
+    assert config.os == "linux", "container setup test only applies to Linux VMs"
 
     home = setup_lima_guest(
         config,
-        test_name=f"test_standard_install_sets_up_setuid_{config.pytest_id()}",
+        test_name=f"test_standard_install_container_setup_{config.pytest_id()}",
     )
 
     result = lima_shell(
@@ -295,31 +290,19 @@ def test_standard_install_sets_up_setuid(lima_vm: VMConfig) -> None:
         f"install.sh exited with {result.returncode} on {config.pytest_id()}"
         f"{diagnostic(result)}"
     )
-    assert "Container setup completed successfully" in result.stdout, (
-        f"Missing container setup success message on {config.pytest_id()}"
-        f"{diagnostic(result)}"
-    )
 
-    # Verify starter-suid is root-owned with setuid bit
+    # Verify apptainer starter binary exists (no starter-suid in --without-suid builds)
     check = lima_shell(
-        f"stat -c '%u %a' {home}/bin/apptainer/libexec/apptainer/bin/starter-suid",
+        f"test -f {home}/bin/apptainer/libexec/apptainer/bin/starter",
         instance=config.instance_name,
     )
-    parts = check.stdout.strip().split()
-    assert len(parts) == 2, (
-        f"unexpected stat output on {config.pytest_id()}: {check.stdout}"
-    )
-    uid, mode = parts[0], parts[1]
-    assert uid == "0", (
-        f"starter-suid should be root-owned on {config.pytest_id()}, got uid {uid}"
-    )
-    assert mode == "4755", (
-        f"starter-suid should have mode 4755 on {config.pytest_id()}, got {mode}"
+    assert check.returncode == 0, (
+        f"apptainer starter binary should exist on {config.pytest_id()}"
     )
 
 
 def test_reinstall_over_root_owned_files(lima_vm: VMConfig) -> None:
-    """Reinstall succeeds even when previous install left root-owned Apptainer files."""
+    """Reinstall succeeds even when previous install left files behind."""
     config = lima_vm
     assert config.os == "linux", "reinstall test only applies to Linux VMs"
 
@@ -327,7 +310,7 @@ def test_reinstall_over_root_owned_files(lima_vm: VMConfig) -> None:
         config, test_name=f"test_reinstall_over_root_owned_{config.pytest_id()}"
     )
 
-    # First install: creates root-owned apptainer files via setuid setup
+    # First install
     first = lima_shell(
         install_cmd(config, home, extra_env="PEPPY_FORCE_REINSTALL=1"),
         instance=config.instance_name,
@@ -336,13 +319,13 @@ def test_reinstall_over_root_owned_files(lima_vm: VMConfig) -> None:
         f"first install failed on {config.pytest_id()}{diagnostic(first)}"
     )
 
-    # Verify root-owned files exist (confirms setuid setup ran)
+    # Verify apptainer files exist
     check = lima_shell(
-        f"stat -c '%u' {home}/bin/apptainer/etc/apptainer/apptainer.conf",
+        f"test -f {home}/bin/apptainer/etc/apptainer/apptainer.conf",
         instance=config.instance_name,
     )
-    assert check.stdout.strip() == "0", (
-        f"apptainer config should be root-owned after first install on "
+    assert check.returncode == 0, (
+        f"apptainer config should exist after first install on "
         f"{config.pytest_id()}"
     )
 

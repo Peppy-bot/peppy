@@ -1141,8 +1141,15 @@ async fn handle_goal_request(
             }
         });
 
-        let result =
-            run_node_add(goal, action_context, feedback_tx, log_file, log_path_clone, timestamp).await;
+        let result = run_node_add(
+            goal,
+            action_context,
+            feedback_tx,
+            log_file,
+            log_path_clone,
+            timestamp,
+        )
+        .await;
 
         // Wait for the feedback consumer to drain before completing.
         let _ = consumer_handle.await;

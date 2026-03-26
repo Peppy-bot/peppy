@@ -1,6 +1,6 @@
-use super::facade::{Apptainer, Backend, is_uri};
 #[cfg(target_os = "linux")]
-use super::facade::{check_setup_status, extract_compiled_prefix};
+use super::facade::check_setup_status;
+use super::facade::{Apptainer, Backend, is_uri};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -560,287 +560,151 @@ fn test_host_gateway_returns_correct_value() {
 
 #[cfg(target_os = "linux")]
 #[test]
-fn check_setup_status_errors_when_starter_suid_missing() {
-    let tmp = TempDir::new().unwrap();
-    // Empty directory — no starter-suid binary
-    let result = check_setup_status(tmp.path());
-    assert!(result.is_err(), "should error when starter-suid is missing");
-    let msg = result.unwrap_err().to_string();
-    assert!(
-        msg.contains("starter-suid not found"),
-        "error message should mention missing binary, got: {msg}"
-    );
-}
-
-#[cfg(target_os = "linux")]
-#[test]
 fn check_setup_status_reports_real_installation() {
-    // Use the real bundled installation
-    let apptainer = Apptainer::new()
-        .expect("Apptainer::new() should succeed — apptainer is bundled at compile time");
+    // Use resolve_apptainer_dir() directly to avoid the ensure_ready() check
+    // in Apptainer::new(), which would fail if setup isn't complete.
+    let apptainer_dir = Apptainer::resolve_apptainer_dir()
+        .expect("resolve_apptainer_dir should succeed — apptainer is bundled at compile time");
 
-    let status = check_setup_status(&apptainer.apptainer_dir)
-        .expect("check_setup_status should succeed on a valid installation");
+    let status = check_setup_status(&apptainer_dir);
 
-    // We can't guarantee setuid is configured in CI, but we can verify the
-    // struct is populated correctly.
-    // fix_script is always populated (idempotent)
-    assert!(
-        status.fix_script.contains("chown"),
-        "fix script should contain chown command, got: {}",
-        status.fix_script
-    );
-
-    if status.is_ok() {
-        assert!(status.suid_ok);
-        assert!(status.conf_ok);
-        assert!(status.apparmor_ok);
+    // On systems without AppArmor restrictions, everything should pass.
+    if !status.apparmor_restricted {
+        assert!(
+            status.is_ok(),
+            "is_ok should be true without AppArmor restrictions"
+        );
+        assert!(
+            status.fix_script.is_none(),
+            "fix_script should be None when all checks pass"
+        );
     }
 }
 
 #[cfg(target_os = "linux")]
 #[test]
-fn check_setup_status_detects_non_root_starter_suid() {
-    let tmp = TempDir::new().unwrap();
-    let suid_dir = tmp.path().join("libexec/apptainer/bin");
-    fs::create_dir_all(&suid_dir).unwrap();
-    fs::write(suid_dir.join("starter-suid"), b"fake").unwrap();
+fn check_setup_status_no_apparmor_restriction() {
+    // On systems where AppArmor does not restrict user namespaces,
+    // check_setup_status should report everything as OK.
+    let apparmor_restricted =
+        std::fs::read_to_string("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
+            .map(|v| v.trim() == "1")
+            .unwrap_or(false);
 
-    let conf_dir = tmp.path().join("etc/apptainer");
-    fs::create_dir_all(&conf_dir).unwrap();
+    if apparmor_restricted {
+        eprintln!("SKIPPING: system restricts unprivileged user namespaces via AppArmor");
+        return;
+    }
 
-    let status =
-        check_setup_status(tmp.path()).expect("should succeed with fake starter-suid present");
+    let apptainer_dir = Apptainer::resolve_apptainer_dir()
+        .expect("resolve_apptainer_dir should succeed — apptainer is bundled at compile time");
 
-    // Running as non-root, so suid_ok should be false
+    let status = check_setup_status(&apptainer_dir);
+
+    assert!(!status.apparmor_restricted);
     assert!(
-        !status.suid_ok,
-        "suid_ok should be false for non-root-owned file"
+        status.apparmor_ok,
+        "apparmor_ok should be true when not restricted"
     );
-    assert!(!status.is_ok(), "is_ok should be false");
     assert!(
-        status.fix_script.contains("chown"),
-        "fix script should contain chown command"
+        status.apparmor_loaded,
+        "apparmor_loaded should be true when not restricted"
     );
-}
-
-// ---------------------------------------------------------------------------
-// Relocation detection tests (Linux only)
-// ---------------------------------------------------------------------------
-
-#[cfg(target_os = "linux")]
-#[test]
-fn check_setup_status_detects_relocated_starter_suid() {
-    let tmp = TempDir::new().unwrap();
-    let suid_dir = tmp.path().join("libexec/apptainer/bin");
-    fs::create_dir_all(&suid_dir).unwrap();
-
-    // Fake binary with a DIFFERENT prefix embedded — simulates a binary that
-    // was built with --prefix=/some/other/path and then moved to tmp.path().
-    let mut content = vec![0u8; 16];
-    content.extend_from_slice(b"/some/other/path/libexec/apptainer");
-    content.extend_from_slice(&[0u8; 16]);
-    fs::write(suid_dir.join("starter-suid"), &content).unwrap();
-
-    let conf_dir = tmp.path().join("etc/apptainer");
-    fs::create_dir_all(&conf_dir).unwrap();
-
-    let status =
-        check_setup_status(tmp.path()).expect("should succeed with fake starter-suid present");
-
-    assert!(
-        !status.relocation_ok,
-        "relocation_ok should be false when binary contains a different prefix"
-    );
-    assert!(!status.is_ok(), "is_ok should be false when relocated");
+    assert!(status.is_ok());
+    assert!(status.fix_script.is_none());
 }
 
 #[cfg(target_os = "linux")]
 #[test]
-fn check_setup_status_relocation_ok_when_prefix_matches() {
-    let tmp = TempDir::new().unwrap();
-    let suid_dir = tmp.path().join("libexec/apptainer/bin");
-    fs::create_dir_all(&suid_dir).unwrap();
+fn check_setup_status_requires_apparmor_profile_loaded() {
+    // On systems where AppArmor restricts unprivileged user namespaces,
+    // check_setup_status must verify the profile is loaded into the kernel,
+    // not just that the file exists on disk.
+    let apparmor_restricted =
+        std::fs::read_to_string("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
+            .map(|v| v.trim() == "1")
+            .unwrap_or(false);
 
-    // Fake binary with the CORRECT prefix embedded — matches the installation
-    // directory, so no relocation.
-    let prefix = tmp.path().to_string_lossy().to_string();
-    let mut content = vec![0u8; 16];
-    content.extend_from_slice(format!("{prefix}/libexec/apptainer").as_bytes());
-    content.extend_from_slice(&[0u8; 16]);
-    fs::write(suid_dir.join("starter-suid"), &content).unwrap();
+    if !apparmor_restricted {
+        eprintln!("SKIPPING: system does not restrict unprivileged user namespaces via AppArmor");
+        return;
+    }
 
-    let conf_dir = tmp.path().join("etc/apptainer");
-    fs::create_dir_all(&conf_dir).unwrap();
+    let apptainer_dir = Apptainer::resolve_apptainer_dir()
+        .expect("resolve_apptainer_dir should succeed — apptainer is bundled at compile time");
 
-    let status =
-        check_setup_status(tmp.path()).expect("should succeed with fake starter-suid present");
+    let status = check_setup_status(&apptainer_dir);
 
     assert!(
-        status.relocation_ok,
-        "relocation_ok should be true when binary prefix matches installation dir"
+        status.apparmor_restricted,
+        "apparmor_restricted should be true on this system"
     );
+
+    // If the profile file exists but isn't loaded, is_ok() must be false.
+    if status.apparmor_ok && !status.apparmor_loaded {
+        assert!(
+            !status.is_ok(),
+            "is_ok() should be false when profile is installed but not loaded"
+        );
+        let script = status.fix_script.as_ref().expect("fix_script should exist");
+        assert!(
+            script.contains("apparmor_parser"),
+            "fix script should include apparmor_parser to load the profile, got: {script}"
+        );
+    }
+
+    // If both are true, the full check should pass.
+    if status.apparmor_ok && status.apparmor_loaded {
+        assert!(
+            status.is_ok(),
+            "is_ok() should be true when all checks pass"
+        );
+    }
 }
 
 #[cfg(target_os = "linux")]
 #[test]
-fn check_setup_status_relocation_ok_when_symlink_fix_applied() {
-    use std::os::unix::fs as unix_fs;
+fn check_setup_status_detects_stale_apparmor_profile_path() {
+    // When the AppArmor profile references a different starter path than
+    // the current installation (e.g. a previous build artifact), apparmor_ok
+    // must be false so the profile gets regenerated with the correct path.
+    let apparmor_restricted =
+        std::fs::read_to_string("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
+            .map(|v| v.trim() == "1")
+            .unwrap_or(false);
 
-    let tmp = TempDir::new().unwrap();
-    let install_suid_dir = tmp.path().join("libexec/apptainer/bin");
-    fs::create_dir_all(&install_suid_dir).unwrap();
+    if !apparmor_restricted {
+        eprintln!("SKIPPING: system does not restrict unprivileged user namespaces via AppArmor");
+        return;
+    }
 
-    // Simulate a binary compiled for /some/build/prefix.
-    let compiled_prefix = tmp.path().join("compiled_prefix");
-    let compiled_suid_dir = compiled_prefix.join("libexec/apptainer/bin");
-    fs::create_dir_all(&compiled_suid_dir).unwrap();
+    let apptainer_dir = Apptainer::resolve_apptainer_dir()
+        .expect("resolve_apptainer_dir should succeed — apptainer is bundled at compile time");
 
-    let mut content = vec![0u8; 16];
-    let prefix_str = compiled_prefix.to_string_lossy().to_string();
-    content.extend_from_slice(format!("{prefix_str}/libexec/apptainer").as_bytes());
-    content.extend_from_slice(&[0u8; 16]);
+    let status = check_setup_status(&apptainer_dir);
 
-    // Place the binary at the compiled-in prefix path.
-    let compiled_suid = compiled_suid_dir.join("starter-suid");
-    fs::write(&compiled_suid, &content).unwrap();
+    // Read the installed profile and check if it references the current path.
+    let starter = apptainer_dir.join("libexec/apptainer/bin/starter");
+    let canonical = starter.canonicalize().unwrap_or_else(|_| starter.clone());
 
-    // Create a symlink at the install dir pointing to the compiled-in prefix.
-    let install_suid = install_suid_dir.join("starter-suid");
-    unix_fs::symlink(&compiled_suid, &install_suid).unwrap();
+    let profile_references_current_path = fs::read_to_string("/etc/apparmor.d/peppy-apptainer")
+        .map(|content| content.contains(&format!("{}", canonical.display())))
+        .unwrap_or(false);
 
-    let conf_dir = tmp.path().join("etc/apptainer");
-    fs::create_dir_all(&conf_dir).unwrap();
-
-    let status =
-        check_setup_status(tmp.path()).expect("should succeed with symlinked starter-suid");
-
-    // The symlink points to the right place but the binary is not root-owned
-    // (running as non-root in tests), so suid_ok is false. However the
-    // relocation check only verifies the symlink target structure — the SUID
-    // permissions are checked separately via suid_ok.
-    // In tests (non-root), the compiled-prefix binary won't have uid=0 or
-    // mode 4755, so relocation_ok will be false because the target_exists_with_suid
-    // check fails. This is correct behavior — in production, `peppy container setup`
-    // sets root ownership and SUID before we re-check.
-    assert!(
-        !status.relocation_ok,
-        "relocation_ok should be false without root-owned SUID target (expected in non-root tests)"
-    );
-    // But importantly, the symlink IS in place, so the fix_script should still
-    // contain the copy + symlink commands since check_setup_status sees the
-    // relocation.
-    assert!(
-        status.fix_script.contains("ln -sf"),
-        "fix script should contain symlink command when relocated, got: {}",
-        status.fix_script
-    );
-}
-
-#[cfg(target_os = "linux")]
-#[test]
-fn check_setup_status_fix_script_creates_symlink_when_relocated() {
-    let tmp = TempDir::new().unwrap();
-    let suid_dir = tmp.path().join("libexec/apptainer/bin");
-    fs::create_dir_all(&suid_dir).unwrap();
-
-    let mut content = vec![0u8; 16];
-    content.extend_from_slice(b"/opt/build/cache/libexec/apptainer");
-    content.extend_from_slice(&[0u8; 16]);
-    fs::write(suid_dir.join("starter-suid"), &content).unwrap();
-
-    let conf_dir = tmp.path().join("etc/apptainer");
-    fs::create_dir_all(&conf_dir).unwrap();
-
-    let status =
-        check_setup_status(tmp.path()).expect("should succeed with fake starter-suid present");
-
-    assert!(
-        !status.relocation_ok,
-        "relocation_ok should be false for relocated binary"
-    );
-
-    // The fix script should contain the symlink-based fix (no build tools).
-    assert!(
-        status
-            .fix_script
-            .contains("mkdir -p '/opt/build/cache/libexec/apptainer/bin'"),
-        "fix script should create compiled-in prefix dir, got: {}",
-        status.fix_script
-    );
-    assert!(
-        status.fix_script.contains("cp '"),
-        "fix script should copy the binary, got: {}",
-        status.fix_script
-    );
-    assert!(
-        status
-            .fix_script
-            .contains("ln -sf '/opt/build/cache/libexec/apptainer/bin/starter-suid'"),
-        "fix script should create symlink to compiled-in prefix, got: {}",
-        status.fix_script
-    );
-    assert!(
-        status.fix_script.contains("chmod 4755"),
-        "fix script should set SUID bit, got: {}",
-        status.fix_script
-    );
-    // Must NOT require build tools.
-    assert!(
-        !status.fix_script.contains("curl"),
-        "fix script should not require downloading source, got: {}",
-        status.fix_script
-    );
-    assert!(
-        !status.fix_script.contains("make"),
-        "fix script should not require compiling, got: {}",
-        status.fix_script
-    );
-}
-
-// ---------------------------------------------------------------------------
-// extract_compiled_prefix unit tests (Linux only)
-// ---------------------------------------------------------------------------
-
-#[cfg(target_os = "linux")]
-#[test]
-fn extract_compiled_prefix_returns_none_when_matching() {
-    let dir = Path::new("/home/user/.peppy/tmp/apptainer-1.4.5-aarch64-src");
-    let mut binary = vec![0u8; 32];
-    binary
-        .extend_from_slice(b"/home/user/.peppy/tmp/apptainer-1.4.5-aarch64-src/libexec/apptainer");
-    binary.extend_from_slice(&[0u8; 32]);
-
-    assert!(
-        extract_compiled_prefix(&binary, dir).is_none(),
-        "should return None when prefix matches apptainer_dir"
-    );
-}
-
-#[cfg(target_os = "linux")]
-#[test]
-fn extract_compiled_prefix_returns_some_when_different() {
-    let dir = Path::new("/home/user/.peppy/bin/apptainer");
-    let mut binary = vec![0u8; 32];
-    binary.extend_from_slice(b"/tmp/peppy/apptainer/libexec/apptainer");
-    binary.extend_from_slice(&[0u8; 32]);
-
-    let prefix = extract_compiled_prefix(&binary, dir);
-    assert_eq!(
-        prefix.as_deref(),
-        Some(Path::new("/tmp/peppy/apptainer")),
-        "should return the compiled-in prefix when different from apptainer_dir"
-    );
-}
-
-#[cfg(target_os = "linux")]
-#[test]
-fn extract_compiled_prefix_returns_none_for_no_match() {
-    let dir = Path::new("/some/dir");
-    let binary = b"this binary has no apptainer paths in it at all";
-
-    assert!(
-        extract_compiled_prefix(binary, dir).is_none(),
-        "should return None when binary contains no libexec/apptainer pattern"
-    );
+    if !profile_references_current_path {
+        assert!(
+            !status.apparmor_ok,
+            "apparmor_ok should be false when profile references a stale path"
+        );
+        assert!(!status.is_ok(), "is_ok should be false with stale profile");
+        let script = status.fix_script.as_ref().expect("fix_script should exist");
+        assert!(
+            script.contains("tee /etc/apparmor.d/peppy-apptainer"),
+            "fix script should regenerate the profile, got: {script}"
+        );
+        assert!(
+            script.contains(&format!("{}", canonical.display())),
+            "fix script should use the current starter path, got: {script}"
+        );
+    }
 }

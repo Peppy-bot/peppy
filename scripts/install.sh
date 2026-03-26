@@ -365,8 +365,8 @@ EOF
             fi
         else
             # ---------- normal mode: prompt for pre-download sudo changes -----
-            # Apptainer setuid/ownership is handled post-install by
-            # `peppy container setup --force`.
+            # Apptainer AppArmor setup is handled post-install by
+            # `peppy container setup`.
             PREDOWNLOAD_FIXES=""
             ALL_LABELS=""
 
@@ -600,18 +600,19 @@ EOF
     fi
 
     # ---- Apptainer container setup (post-install) ----------------------------
-    # Delegates setuid/ownership/AppArmor configuration to `peppy container setup`
+    # Delegates AppArmor profile configuration to `peppy container setup`
     # which is the single source of truth for Apptainer system prerequisites.
+    # On systems without AppArmor restrictions (Fedora, Arch), this is a no-op.
     if [ "$PLATFORM" != "apple-darwin" ] && [ -z "${PEPPY_NO_ROOT_INSTALL:-}" ]; then
-        if ! "$PEPPY_BIN_DIR/peppy" container setup --force; then
+        if ! "$PEPPY_BIN_DIR/peppy" container setup; then
             echo "error: Apptainer container setup failed." >&2
             echo "       You can retry manually: $PEPPY_BIN_DIR/peppy container setup" >&2
             exit 1
         fi
     fi
     if [ "$PLATFORM" != "apple-darwin" ] && [ -n "${PEPPY_NO_ROOT_INSTALL:-}" ]; then
-        echo "Skipped Apptainer setuid setup (PEPPY_NO_ROOT_INSTALL is set)."
-        echo "Run 'peppy container setup' later to enable container support."
+        echo "Skipped Apptainer setup (PEPPY_NO_ROOT_INSTALL is set)."
+        echo "Run 'peppy container setup' later if AppArmor blocks container support."
     fi
 
     render_progress 85 "Configuring service"

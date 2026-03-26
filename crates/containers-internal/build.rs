@@ -10,8 +10,7 @@ mod apptainer_build {
     const LIMA_INSTANCE: &str = "peppy";
     const LIMA_TEMPLATE: &str = "template:ubuntu-24.04";
     /// Guest-side installation path for apptainer inside the Lima VM.
-    /// Must match the `--prefix` used at build time so `starter-suid` doesn't
-    /// reject the binary as relocated.
+    /// Must match the `--prefix` used at build time.
     const GUEST_APPTAINER_DIR: &str = "/tmp/peppy/apptainer";
 
     // -----------------------------------------------------------------------
@@ -353,10 +352,15 @@ mod apptainer_build {
         force_remove_dir(install_dir);
         std::fs::create_dir_all(install_dir).expect("Failed to create apptainer install directory");
 
-        // Configure: ./mconfig --prefix=<install_dir>
+        // Configure: ./mconfig --without-suid --prefix=<install_dir>
+        // Build without setuid support — apptainer uses unprivileged user
+        // namespaces instead.  This avoids the "Relocation not allowed with
+        // starter-suid" error that occurs when the compiled-in --prefix
+        // doesn't match the final installation path.
         if !build_helpers::run_command(
             Command::new("./mconfig")
                 .current_dir(&source_dir)
+                .arg("--without-suid")
                 .arg(format!("--prefix={}", install_dir.display())),
             "configure apptainer build",
         ) {
@@ -390,18 +394,6 @@ mod apptainer_build {
 
         // Clean up source directory
         std::fs::remove_dir_all(&source_dir).ok();
-
-        // Create starter-suid as a copy of starter. In Apptainer, both are the
-        // same binary — the difference is that starter-suid has the setuid bit
-        // (set at install time by scripts/install.sh since it requires root).
-        // `make install` skips creating starter-suid for non-root builds, so we
-        // create the copy here.
-        let starter = install_dir.join("libexec/apptainer/bin/starter");
-        let starter_suid = install_dir.join("libexec/apptainer/bin/starter-suid");
-        if starter.exists() && !starter_suid.exists() {
-            std::fs::copy(&starter, &starter_suid)
-                .expect("Failed to create starter-suid copy of starter");
-        }
 
         true
     }
@@ -499,12 +491,11 @@ tar -xzf apptainer-{version}.tar.gz
 cd apptainer-{version}
 echo "{version}" > VERSION
 echo "=== Configuring apptainer ==="
-./mconfig --prefix={guest_install_dir}
+./mconfig --without-suid --prefix={guest_install_dir}
 echo "=== Compiling apptainer (this is the slow part under QEMU) ==="
 make -C builddir -j
 echo "=== Installing apptainer ==="
 make -C builddir install
-cp {guest_install_dir}/libexec/apptainer/bin/starter {guest_install_dir}/libexec/apptainer/bin/starter-suid
 rm -rf /tmp/apptainer-{version} /tmp/apptainer-{version}.tar.gz
 echo "=== Apptainer build complete ==="
 "#,

@@ -21,15 +21,15 @@ fn container_status_runs_without_daemon() {
 }
 
 /// `peppy container setup` should succeed without a running daemon.
-/// In CI/test environments where stdin is not a terminal and setuid is
-/// already configured, the command should either report "nothing to do" (Ok)
-/// or fail gracefully (Err with a message) — never panic.
+/// In CI/test environments where stdin is not a terminal and AppArmor is
+/// already configured (or not required), the command should either report
+/// "nothing to do" (Ok) or fail gracefully (Err with a message) — never panic.
 #[test]
 fn container_setup_runs_without_daemon() {
     let ctx = Arc::new(AppContext::default());
 
     let _result = ContainerCommand {
-        command: ContainerCommands::Setup { force: false },
+        command: ContainerCommands::Setup,
     }
     .execute(&ctx);
 }
