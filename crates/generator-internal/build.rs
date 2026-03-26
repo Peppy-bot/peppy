@@ -413,6 +413,98 @@ mod peppylib_build {
         std::fs::remove_dir_all(&wheels_dir).ok();
     }
 
+    /// Marker file that records the source hash at the time the `.so` was built.
+    const SOURCE_HASH_MARKER: &str = ".so-source-hash";
+
+    /// Dependency crate source directories that are compiled into the `.so`.
+    const DEP_CRATES: &[&str] = &["peppylib", "config-internal", "pmi-internal"];
+
+    /// Computes a SHA-256 hash over all source files that feed into the `.so`
+    /// build: peppylib-py Rust sources, Python sources, pixi.lock, and
+    /// dependency crate sources. Used to detect branch-switch staleness that
+    /// mtime-based checks miss.
+    fn compute_source_hash(peppylib_py_dir: &Path) -> String {
+        use sha2::{Digest, Sha256};
+
+        let mut hasher = Sha256::new();
+
+        let mut collect_dir = |dir: &Path, filter_py: bool| {
+            if !dir.is_dir() {
+                return;
+            }
+            let mut files = super::walkdir(dir);
+            files.sort();
+            for f in &files {
+                if f.components().any(|c| c.as_os_str() == "__pycache__") {
+                    continue;
+                }
+                if filter_py && !f.extension().is_some_and(|e| e == "py") {
+                    continue;
+                }
+                if let Ok(bytes) = std::fs::read(f) {
+                    hasher.update(f.file_name().unwrap_or_default().as_encoded_bytes());
+                    hasher.update(&bytes);
+                }
+            }
+        };
+
+        // peppylib-py Rust sources
+        collect_dir(&peppylib_py_dir.join("src"), false);
+        // peppylib-py Python sources
+        collect_dir(&peppylib_py_dir.join("peppylib"), true);
+
+        // Dependency crate sources
+        let crates_root = peppylib_py_dir.join("..");
+        for dep_crate in DEP_CRATES {
+            collect_dir(&crates_root.join(dep_crate).join("src"), false);
+        }
+
+        // pixi.lock
+        if let Ok(bytes) = std::fs::read(peppylib_py_dir.join("pixi.lock")) {
+            hasher.update(b"pixi.lock");
+            hasher.update(&bytes);
+        }
+
+        let hash = hasher.finalize();
+        hash.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    /// Returns `true` if the source hash marker is missing or doesn't match the
+    /// current source hash — indicating the `.so` files are stale.
+    fn source_hash_changed(peppylib_py_dir: &Path, peppylib_dir: &Path) -> bool {
+        let marker_path = peppylib_dir.join(SOURCE_HASH_MARKER);
+        let Ok(saved) = std::fs::read_to_string(&marker_path) else {
+            return true; // No marker = assume stale
+        };
+        let current = compute_source_hash(peppylib_py_dir);
+        saved.trim() != current
+    }
+
+    /// Writes the source hash marker after a successful build.
+    fn write_source_hash_marker(peppylib_py_dir: &Path, peppylib_dir: &Path) {
+        let hash = compute_source_hash(peppylib_py_dir);
+        let marker_path = peppylib_dir.join(SOURCE_HASH_MARKER);
+        std::fs::write(&marker_path, &hash).unwrap_or_else(|e| {
+            println!(
+                "cargo:warning=Failed to write source hash marker {:?}: {e}",
+                marker_path
+            );
+        });
+    }
+
+    /// Deletes all platform `.so` files so the next build starts fresh.
+    fn remove_stale_so_files(peppylib_dir: &Path) {
+        if let Ok(entries) = std::fs::read_dir(peppylib_dir) {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let s = name.to_string_lossy();
+                if s.starts_with("_peppylib.abi3.") && s.ends_with(".so") {
+                    std::fs::remove_file(entry.path()).ok();
+                }
+            }
+        }
+    }
+
     /// Computes a combined SHA-256 hash of all platform `.so` files and emits it
     /// as the `PEPPYLIB_SO_HASH` env var for cache invalidation.
     fn compute_and_emit_so_hash(peppylib_dir: &Path) {
@@ -449,6 +541,10 @@ mod peppylib_build {
         let so_path = peppylib_dir.join("_peppylib.abi3.so");
 
         register_rerun_triggers(&peppylib_py_dir);
+        println!(
+            "cargo:rerun-if-changed={}",
+            peppylib_dir.join(SOURCE_HASH_MARKER).display()
+        );
 
         // Use a separate CARGO_TARGET_DIR so maturin's inner `cargo build`
         // does not deadlock on the workspace build lock held by the outer cargo.
@@ -460,16 +556,28 @@ mod peppylib_build {
         // When skipped, the hash is computed from whatever .so files already
         // exist (e.g. from a prior build).
         if !is_pixi_available() {
+            if source_hash_changed(&peppylib_py_dir, &peppylib_dir) {
+                panic!(
+                    "Stale peppylib-py .so files: sources have changed since last build \
+                     but pixi is not available to rebuild. Run \
+                     `cargo build -p generator` on a machine with pixi first."
+                );
+            }
             println!(
                 "cargo:warning=Skipping peppylib-py build (pixi not available). \
                  Using existing .so files."
             );
         } else {
-            let sources_changed = so_needs_rebuild(&peppylib_py_dir, &peppylib_dir);
+            // Use both mtime and content-hash checks. The hash check catches
+            // branch-switch staleness that mtime comparison misses (the .so
+            // may be newer than re-checked-out source files).
+            let sources_changed = so_needs_rebuild(&peppylib_py_dir, &peppylib_dir)
+                || source_hash_changed(&peppylib_py_dir, &peppylib_dir);
 
-            // Only invoke maturin when peppylib-py or its dependency crate sources
-            // have changed.
             if sources_changed {
+                // Delete stale .so files before rebuilding so we start fresh.
+                remove_stale_so_files(&peppylib_dir);
+
                 build_native_so(
                     &peppylib_py_dir,
                     &peppylib_dir,
@@ -491,6 +599,9 @@ mod peppylib_build {
                     cross_compile_linux_so(target, &peppylib_py_dir, &target_dir, &peppylib_dir);
                 }
             }
+
+            // Record the source hash so future builds can detect staleness.
+            write_source_hash_marker(&peppylib_py_dir, &peppylib_dir);
         }
 
         // Guard against partial rebuilds leaving an unsuffixed .so behind
