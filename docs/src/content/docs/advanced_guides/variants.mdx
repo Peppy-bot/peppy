@@ -99,6 +99,77 @@ depth_camera/             ← root node
 
 Because every variant exposes `depth_image` and `point_cloud` with the same message formats, they are interchangeable — swap the active variant without touching any other node in the stack.
 
+**Example — mock node for testing:**
+
+A `mock` variant lets you test the rest of the stack without real hardware. It publishes the same topics with synthetic data:
+
+```json5
+// depth_camera/mock/peppy.json5 — lightweight test double
+{
+  schema_version: 1,
+  runtime: {
+    language: "python",
+    add_cmd: ["uv", "sync"],
+    start_cmd: ["uv", "run", "mock_depth_camera"],
+  },
+}
+```
+
+The mock variant defines only a runtime — it inherits the root's `depth_image` and `point_cloud` interfaces, so every downstream node works exactly as it would with real hardware.
+
+**Example — platform-specific builds:**
+
+A node can also declare variants for different execution environments. For instance, a `lidar` node might run natively on Linux but need a macOS variant for local development and a containerized variant for CI:
+
+```json5
+// lidar/peppy.json5 (root node — Linux native)
+{
+  schema_version: 1,
+  manifest: {
+    name: "lidar",
+    tag: "0.2.0",
+    variants: [
+      { name: "macos", source: { local: "./macos" } },
+      { name: "containerized", source: { local: "./containerized" } },
+    ],
+  },
+  interfaces: {
+    topics: {
+      emits: [
+        {
+          name: "scan",
+          qos_profile: "sensor_data",
+          message_format: {
+            ranges: { $type: "array", $items: "f32" },
+            angle_min: "f32",
+            angle_max: "f32",
+          },
+        },
+      ],
+    },
+  },
+  runtime: {
+    language: "rust",
+    add_cmd: ["cargo", "build", "--release"],
+    start_cmd: ["./target/release/lidar"],
+  },
+}
+```
+
+```json5
+// lidar/containerized/peppy.json5 — same interfaces, runs in a container
+{
+  schema_version: 1,
+  runtime: {
+    container: {
+      image: "ghcr.io/example/lidar:0.2.0",
+    },
+  },
+}
+```
+
+All three — native Linux, macOS, and containerized — publish the same `scan` topic. The rest of the stack is unaffected by which variant is active.
+
 ### Same function, different robots
 
 Sometimes a repository implements the same function — for example a robot brain — but each implementation targets a **different robot**. Because each robot has different joints, sensors, and capabilities, the interfaces necessarily differ. Within the repository these are independent nodes, not variants of each other.
