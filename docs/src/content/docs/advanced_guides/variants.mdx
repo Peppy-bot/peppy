@@ -15,13 +15,9 @@ Use variants when you need:
 ## How variants work
 
 A variant is a regular node that inherits the **manifest** and **interfaces** from a root node but defines its own **runtime**.
-When you add a variant, peppy:
+When you add a variant, peppy swaps the root node's runtime with the variant's runtime while keeping the same manifest and interfaces.
 
-1. Reads the root node's `peppy.json5` to find the variant definition in `manifest.variants`.
-2. Resolves the variant's source (local path, git repo, or URL).
-3. Reads the variant's `peppy.json5` for its `runtime` configuration.
-4. Merges the root's `manifest` + `interfaces` with the variant's `runtime`.
-5. Adds the merged config to the node stack under the root node's `name:tag`.
+For example, if you have a `brain` node running a Rust-based controller, you can add a `mock` variant that runs a lightweight Python script instead — same interfaces, different runtime. The rest of your stack doesn't notice the difference.
 
 Only one variant (or the root node itself) can be active in the stack at a time — adding a variant replaces any previous entry for that `name:tag`.
 
