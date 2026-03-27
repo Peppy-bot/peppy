@@ -11,6 +11,18 @@ import httpx
 import pytest
 import respx
 
+from .lima_helpers import VMConfig, build_release_archives, get_native_linux_targets
+
+
+def pytest_addoption(parser: pytest.Parser) -> None:
+    """Add custom CLI options for the test suite."""
+    parser.addoption(
+        "--cross-arch",
+        action="store_true",
+        default=False,
+        help="Run cross-architecture QEMU tests (slow, disabled by default)",
+    )
+
 
 def pytest_configure(config: pytest.Config) -> None:
     """Register custom markers and ensure Lima cross-arch guest agents are available."""
@@ -19,6 +31,20 @@ def pytest_configure(config: pytest.Config) -> None:
         "cross_arch: marks tests as cross-architecture (may be slow under QEMU emulation)",
     )
     _ensure_lima_guest_agents()
+
+
+def pytest_collection_modifyitems(
+    config: pytest.Config, items: list[pytest.Item]
+) -> None:
+    """Skip cross-arch VM parameterizations unless --cross-arch is passed."""
+    if config.getoption("--cross-arch"):
+        return
+    skip_cross = pytest.mark.skip(reason="Cross-arch tests disabled (use --cross-arch)")
+    for item in items:
+        if hasattr(item, "callspec") and "lima_vm" in item.callspec.params:
+            vm_config = item.callspec.params["lima_vm"]
+            if isinstance(vm_config, VMConfig) and vm_config.is_cross_arch:
+                item.add_marker(skip_cross)
 
 
 def _ensure_lima_guest_agents() -> None:
@@ -46,6 +72,25 @@ def _ensure_lima_guest_agents() -> None:
         dest = pixi_share / agent.name
         if not dest.exists():
             shutil.copy2(agent, dest)
+
+
+@pytest.fixture(scope="session")
+def _build_release_archives(request: pytest.FixtureRequest) -> None:
+    """Build release archives needed by the collected tests.
+
+    Only builds cross-arch targets when ``--cross-arch`` is passed and
+    ``test_install`` is collected (the only module with cross-arch VM
+    configs).  This avoids building slow cross-arch binaries by default.
+    """
+    run_cross = request.config.getoption("--cross-arch", default=False)
+    needs_cross_arch = run_cross and any(
+        item.module.__name__.endswith(".test_install")
+        for item in request.session.items
+    )
+    if needs_cross_arch:
+        build_release_archives()
+    else:
+        build_release_archives(targets=get_native_linux_targets())
 
 
 @pytest.fixture()

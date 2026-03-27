@@ -273,7 +273,7 @@ async fn add_node_directly(
     // Create log file before source resolution so clone/download output is captured.
     let log_label = log_label_from_source(&node_add_goal.source);
     let log_dir = ctx.peppy_dirs.logs_dir_add();
-    let timestamp = Local::now().format("%Y%m%d_%H%M%S_%3f");
+    let timestamp = Local::now().format("%Y%m%d_%H%M%S_%3f").to_string();
     let log_filename = format!("{}_{}.log", log_label, timestamp);
     let (log_file, log_path) = match create_action_log_file(&log_dir, &log_filename) {
         Ok(r) => r,
@@ -306,6 +306,7 @@ async fn add_node_directly(
             feedback_tx,
             log_file,
             log_path,
+            timestamp,
         ),
     )
     .await

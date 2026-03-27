@@ -187,6 +187,7 @@ export RUSTUP_HOME={GUEST_RUSTUP_HOME}
 export CARGO_HOME={GUEST_CARGO_HOME}
 export PATH="{GUEST_CARGO_HOME}/bin:$PATH"
 export PEPPY_GIT_TAG={tag}
+export PEPPY_CROSS_ARCH=1
 export RUSTC_WRAPPER=""
 {cross_linker}
 cd {repo_root}

@@ -985,9 +985,9 @@ pub(crate) async fn run_node_add(
     feedback_tx: mpsc::UnboundedSender<FeedbackLine>,
     log_file: Arc<StdMutex<File>>,
     log_path: PathBuf,
+    timestamp: String,
 ) -> NodeAddResult {
     let log_dir = action_context.peppy_dirs.logs_dir_add();
-    let timestamp = Local::now().format("%Y%m%d_%H%M%S_%3f");
 
     let log_file_for_panic = log_file.clone();
     let log_path_for_panic = log_path.clone();
@@ -1146,7 +1146,7 @@ async fn handle_goal_request(
     // progress and any errors are captured in the log from the very start.
     let log_label = log_label_from_source(&goal.source);
     let log_dir = action_context.peppy_dirs.logs_dir_add();
-    let timestamp = Local::now().format("%Y%m%d_%H%M%S_%3f");
+    let timestamp = Local::now().format("%Y%m%d_%H%M%S_%3f").to_string();
     let log_filename = format!("{}_{}.log", log_label, timestamp);
     let (log_file, log_path) = match create_action_log_file(&log_dir, &log_filename) {
         Ok(result) => result,
@@ -1180,8 +1180,15 @@ async fn handle_goal_request(
             }
         });
 
-        let result =
-            run_node_add(goal, action_context, feedback_tx, log_file, log_path_clone).await;
+        let result = run_node_add(
+            goal,
+            action_context,
+            feedback_tx,
+            log_file,
+            log_path_clone,
+            timestamp,
+        )
+        .await;
 
         // Wait for the feedback consumer to drain before completing.
         let _ = consumer_handle.await;

@@ -30,7 +30,7 @@ def cargo_build(tag: str, target_triple: str, repo_root: Path) -> None:
     so no cargo clean is needed.
     """
     console.print(f"Building peppy for [bold]{target_triple}[/bold]...")
-    env = {**os.environ, "PEPPY_GIT_TAG": tag}
+    env = {**os.environ, "PEPPY_GIT_TAG": tag, "PEPPY_CROSS_ARCH": "1"}
     result = subprocess.run(
         [
             "cargo",
