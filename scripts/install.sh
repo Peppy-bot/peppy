@@ -207,7 +207,7 @@ EOF
 
         if [ -n "${PEPPY_FORCE_REINSTALL:-}" ]; then
             : # Skip confirmation in non-interactive reinstall mode
-        elif [ -t 0 ] || [ -e /dev/tty ]; then
+        elif [ -t 0 ] || { [ -c /dev/tty ] && : </dev/tty; } 2>/dev/null; then
             printf "Do you want to continue? [y/N] "
             read -r REPLY </dev/tty
             case "$REPLY" in

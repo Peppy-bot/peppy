@@ -170,7 +170,7 @@ def test_install_skips_container_setup_in_docker(lima_vm: VMConfig) -> None:
     lima_shell("sudo touch /.dockerenv", instance=instance)
     try:
         result = lima_shell(
-            install_cmd(config, home),
+            install_cmd(config, home, extra_env="PEPPY_FORCE_REINSTALL=1"),
             instance=instance,
         )
         assert result.returncode == 0, (
@@ -204,7 +204,7 @@ def test_install_skips_container_setup_with_env_var(lima_vm: VMConfig) -> None:
     instance = config.instance_name
 
     result = lima_shell(
-        install_cmd(config, home, extra_env="PEPPY_NO_CONTAINER_SETUP=1"),
+        install_cmd(config, home, extra_env="PEPPY_FORCE_REINSTALL=1 PEPPY_NO_CONTAINER_SETUP=1"),
         instance=instance,
     )
     assert result.returncode == 0, (
