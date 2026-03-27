@@ -11,8 +11,6 @@ set -eu
 #   PEPPY_VERSION            Version to install (default: latest)
 #   PEPPY_HOME               Install prefix (default: ~/.peppy)
 #   PEPPY_BIN_DIR            Binary install directory (default: $PEPPY_HOME/bin)
-#   PEPPY_PLATFORM           Linux target suffix (default: auto-detected)
-#   PEPPY_ARCH               Override detected architecture (e.g. aarch64, x86_64)
 #   PEPPY_REPOURL            Base URL for downloads (default: https://peppy.bot)
 #   PEPPY_DOWNLOAD_URL       Override full download URL
 #   PEPPY_NO_PATH_UPDATE     If set, do not update shell PATH config
@@ -184,6 +182,7 @@ EOF
             DAEMON_RUNNING=true
         fi
     elif command -v ps >/dev/null 2>&1; then
+        # shellcheck disable=SC2009
         if ps -e -o comm= 2>/dev/null | grep -qxE 'peppy|zenohd'; then
             DAEMON_RUNNING=true
         fi
@@ -232,29 +231,21 @@ EOF
             fi
         fi
         echo "Removing '${PEPPY_HOME}'..."
-        rm -rf "$PEPPY_HOME" 2>/dev/null || sudo rm -rf "$PEPPY_HOME"
+        mv "$PEPPY_HOME" "$(mktemp -d "${TMPDIR:-/tmp}/.peppy_old.XXXXXXXX")"
     fi
 
     REPOURL="${PEPPY_REPOURL:-https://peppy.bot}"
     PLATFORM="$(uname -s)"
-    ARCH="${PEPPY_ARCH:-$(uname -m)}"
-
-    detect_linux_platform() {
-        # Check if musl libc is in use by examining ldd output
-        if command -v ldd >/dev/null 2>&1; then
-            if ldd --version 2>&1 | grep -qi musl; then
-                echo "unknown-linux-musl"
-                return
-            fi
-        fi
-        # Default to glibc
-        echo "unknown-linux-gnu"
-    }
+    ARCH="$(uname -m)"
 
     if [ "${PLATFORM-}" = "Darwin" ]; then
         PLATFORM="apple-darwin"
     elif [ "${PLATFORM-}" = "Linux" ]; then
-        PLATFORM="${PEPPY_PLATFORM:-$(detect_linux_platform)}"
+        if command -v ldd >/dev/null 2>&1 && ldd --version 2>&1 | grep -qi musl; then
+            PLATFORM="unknown-linux-musl"
+        else
+            PLATFORM="unknown-linux-gnu"
+        fi
     else
         echo "error: unsupported platform '$PLATFORM' (only macOS and Linux are supported)" >&2
         exit 1
@@ -276,7 +267,7 @@ EOF
         _LABELS="$1"
         echo ""
         echo "peppy requires the following system changes:"
-        printf "$_LABELS"
+        printf '%b' "$_LABELS"
         echo ""
 
         if [ -t 0 ]; then
@@ -308,6 +299,7 @@ EOF
                 exit 1
             fi
         elif command -v sudo >/dev/null 2>&1; then
+            sudo -v # cache credentials for this and subsequent sudo calls
             if ! sudo sh -c "$_FIXES"; then
                 echo "" >&2
                 echo "error: failed to apply system changes." >&2
@@ -320,6 +312,28 @@ EOF
             exit 1
         fi
         echo "$_SUCCESS_MSG"
+    }
+
+    # ---- Linux system dependency helpers ----------------------------------------
+
+    # Returns 0 if the D-Bus user session bus is reachable.
+    check_dbus_session() {
+        if command -v busctl >/dev/null 2>&1; then
+            busctl --user status >/dev/null 2>&1
+            return $?
+        elif command -v dbus-send >/dev/null 2>&1; then
+            dbus-send --session --dest=org.freedesktop.DBus --print-reply \
+                /org/freedesktop/DBus org.freedesktop.DBus.ListNames >/dev/null 2>&1
+            return $?
+        fi
+        return 0 # no D-Bus tools — assume OK
+    }
+
+    # Returns 0 if loginctl linger is enabled for the current user,
+    # or if loginctl is not available (cannot check).
+    check_linger_enabled() {
+        command -v loginctl >/dev/null 2>&1 || return 0
+        [ "$(loginctl show-user "$(id -un)" -p Linger --value 2>/dev/null || echo "no")" = "yes" ]
     }
 
     # ---- Linux system dependency checks (pre-download) -------------------------
@@ -341,42 +355,28 @@ EOF
         if [ -n "${PEPPY_NO_ROOT_INSTALL:-}" ]; then
             # ---------- no-root mode: verify prerequisites without sudo ----------
             if ! $IN_CONTAINER; then
-                # Check 1: D-Bus user session bus
-                # Try busctl (part of systemd, always present) then dbus-send as fallback.
-                DBUS_CHECK_CMD=""
-                if command -v busctl >/dev/null 2>&1; then
-                    DBUS_CHECK_CMD="busctl --user status >/dev/null 2>&1"
-                elif command -v dbus-send >/dev/null 2>&1; then
-                    DBUS_CHECK_CMD="dbus-send --session --dest=org.freedesktop.DBus --print-reply /org/freedesktop/DBus org.freedesktop.DBus.ListNames >/dev/null 2>&1"
-                fi
-                if [ -n "$DBUS_CHECK_CMD" ]; then
-                    if ! eval "$DBUS_CHECK_CMD"; then
-                        echo "" >&2
-                        echo "error: D-Bus user session bus is not available." >&2
-                        echo "       Install D-Bus user session support manually:" >&2
-                        echo "         Debian/Ubuntu: sudo apt-get install dbus-user-session" >&2
-                        echo "         Fedora/RHEL:   sudo dnf install dbus-daemon" >&2
-                        echo "         Arch Linux:    sudo pacman -S dbus" >&2
-                        echo "" >&2
-                        exit 1
-                    fi
+                if ! check_dbus_session; then
+                    echo "" >&2
+                    echo "error: D-Bus user session bus is not available." >&2
+                    echo "       Install D-Bus user session support manually:" >&2
+                    echo "         Debian/Ubuntu: sudo apt-get install dbus-user-session" >&2
+                    echo "         Fedora/RHEL:   sudo dnf install dbus-daemon" >&2
+                    echo "         Arch Linux:    sudo pacman -S dbus" >&2
+                    echo "" >&2
+                    exit 1
                 fi
 
-                # Check 2: loginctl enable-linger
-                CURRENT_USER="$(id -un)"
-                if command -v loginctl >/dev/null 2>&1; then
-                    LINGER_VAL="$(loginctl show-user "$CURRENT_USER" -p Linger --value 2>/dev/null || echo "no")"
-                    if [ "$LINGER_VAL" != "yes" ]; then
-                        echo "" >&2
-                        echo "error: loginctl linger is not enabled for user ${CURRENT_USER}." >&2
-                        echo "       Enable it manually: sudo loginctl enable-linger ${CURRENT_USER}" >&2
-                        echo "" >&2
-                        exit 1
-                    fi
+                if ! check_linger_enabled; then
+                    CURRENT_USER="$(id -un)"
+                    echo "" >&2
+                    echo "error: loginctl linger is not enabled for user ${CURRENT_USER}." >&2
+                    echo "       Enable it manually: sudo loginctl enable-linger ${CURRENT_USER}" >&2
+                    echo "" >&2
+                    exit 1
                 fi
             fi
 
-            # Check 3: curl or wget (only when downloading)
+            # Check: curl or wget (only when downloading)
             if [ -z "${ARCHIVE_PATH-}" ] && ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
                 echo "" >&2
                 echo "error: curl or wget is required but not found." >&2
@@ -389,51 +389,29 @@ EOF
             fi
         else
             # ---------- normal mode: prompt for pre-download sudo changes -----
-            # Apptainer AppArmor setup is handled post-install by
-            # `peppy container setup`.
             PREDOWNLOAD_FIXES=""
             ALL_LABELS=""
 
             if ! $IN_CONTAINER; then
-                # Check 1: D-Bus user session bus (required for systemctl --user)
-                # Try busctl (part of systemd, always present) then dbus-send as fallback.
-                DBUS_CHECK_CMD=""
-                if command -v busctl >/dev/null 2>&1; then
-                    DBUS_CHECK_CMD="busctl --user status >/dev/null 2>&1"
-                elif command -v dbus-send >/dev/null 2>&1; then
-                    DBUS_CHECK_CMD="dbus-send --session --dest=org.freedesktop.DBus --print-reply /org/freedesktop/DBus org.freedesktop.DBus.ListNames >/dev/null 2>&1"
-                fi
-                if [ -n "$DBUS_CHECK_CMD" ]; then
-                    if ! eval "$DBUS_CHECK_CMD"; then
-                        if command -v apt-get >/dev/null 2>&1; then
-                            PREDOWNLOAD_FIXES="${PREDOWNLOAD_FIXES}apt-get update -qq && apt-get install -y -qq dbus-user-session && "
-                        elif command -v dnf >/dev/null 2>&1; then
-                            PREDOWNLOAD_FIXES="${PREDOWNLOAD_FIXES}dnf install -y dbus-daemon && "
-                        elif command -v pacman >/dev/null 2>&1; then
-                            PREDOWNLOAD_FIXES="${PREDOWNLOAD_FIXES}pacman -Sy --noconfirm dbus && "
-                        fi
-                        ALL_LABELS="${ALL_LABELS}  - Install D-Bus user session support (required for peppy background service)\n"
+                if ! check_dbus_session; then
+                    if command -v apt-get >/dev/null 2>&1; then
+                        PREDOWNLOAD_FIXES="${PREDOWNLOAD_FIXES}apt-get update -qq && apt-get install -y -qq dbus-user-session && "
+                    elif command -v dnf >/dev/null 2>&1; then
+                        PREDOWNLOAD_FIXES="${PREDOWNLOAD_FIXES}dnf install -y dbus-daemon && "
+                    elif command -v pacman >/dev/null 2>&1; then
+                        PREDOWNLOAD_FIXES="${PREDOWNLOAD_FIXES}pacman -Sy --noconfirm dbus && "
                     fi
+                    ALL_LABELS="${ALL_LABELS}  - Install D-Bus user session support (required for peppy background service)\n"
                 fi
 
-                # Check 2: loginctl enable-linger (allows peppy daemon to run after SSH disconnect)
-                CURRENT_USER="$(id -un)"
-                HAS_LOGINCTL=false
-                LINGER_ENABLED=false
-                if command -v loginctl >/dev/null 2>&1; then
-                    HAS_LOGINCTL=true
-                    LINGER_VAL="$(loginctl show-user "$CURRENT_USER" -p Linger --value 2>/dev/null || echo "no")"
-                    if [ "$LINGER_VAL" = "yes" ]; then
-                        LINGER_ENABLED=true
-                    fi
-                fi
-                if $HAS_LOGINCTL && ! $LINGER_ENABLED; then
+                if ! check_linger_enabled; then
+                    CURRENT_USER="$(id -un)"
                     PREDOWNLOAD_FIXES="${PREDOWNLOAD_FIXES}loginctl enable-linger ${CURRENT_USER} && "
                     ALL_LABELS="${ALL_LABELS}  - Enable systemd linger for user ${CURRENT_USER} (allows peppy daemon to run after SSH disconnect)\n"
                 fi
             fi
 
-            # Check 3: curl or wget (required to download the release archive)
+            # Check: curl or wget (required to download the release archive)
             if [ -z "${ARCHIVE_PATH-}" ] && ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
                 if command -v apt-get >/dev/null 2>&1; then
                     PREDOWNLOAD_FIXES="${PREDOWNLOAD_FIXES}apt-get update -qq && apt-get install -y -qq curl && "
@@ -540,6 +518,7 @@ EOF
 
         if $HAVE_CURL; then
             CURL_ERR=0
+            # shellcheck disable=SC2086
             HTTP_CODE="$(curl -L $CURL_OPTIONS "$DOWNLOAD_URL" --output "$TEMP_FILE" --write-out "%{http_code}")" || CURL_ERR=$?
             case "$CURL_ERR" in
             35 | 53 | 54 | 59 | 66 | 77)
@@ -566,6 +545,7 @@ EOF
             esac
         fi
 
+        # shellcheck disable=SC2086
         if $HAVE_WGET && ! wget $WGET_OPTIONS --output-document="$TEMP_FILE" "$DOWNLOAD_URL"; then
             echo "error: '$(mask_credentials "$DOWNLOAD_URL")' is not available" >&2
             exit 1
@@ -593,7 +573,9 @@ EOF
     # Install apptainer/lima directory trees into PEPPY_BIN_DIR (siblings of the peppy binary)
     for DIR_NAME in apptainer lima; do
         if [ -d "$TEMP_DIR/bin/$DIR_NAME" ]; then
-            rm -rf "$PEPPY_BIN_DIR/$DIR_NAME" 2>/dev/null || sudo rm -rf "$PEPPY_BIN_DIR/$DIR_NAME"
+            if [ -d "$PEPPY_BIN_DIR/$DIR_NAME" ]; then
+                mv "$PEPPY_BIN_DIR/$DIR_NAME" "$TEMP_DIR/old_$DIR_NAME"
+            fi
             mv "$TEMP_DIR/bin/$DIR_NAME" "$PEPPY_BIN_DIR/$DIR_NAME"
         fi
     done
@@ -631,8 +613,11 @@ EOF
     # On systems without AppArmor restrictions (Fedora, Arch), this is a no-op.
     # Inside containers (Docker/Podman), AppArmor profiles cannot be loaded
     # (requires CAP_MAC_ADMIN), so setup is skipped automatically.
-    if [ "$PLATFORM" != "apple-darwin" ] && [ -z "${PEPPY_NO_ROOT_INSTALL:-}" ]; then
-        if $IN_CONTAINER; then
+    if [ "$PLATFORM" != "apple-darwin" ]; then
+        if [ -n "${PEPPY_NO_ROOT_INSTALL:-}" ]; then
+            echo "Skipped Apptainer setup (PEPPY_NO_ROOT_INSTALL is set)."
+            echo "Run 'peppy container setup' later if AppArmor blocks container support."
+        elif $IN_CONTAINER; then
             flush_progress_line
             if [ -n "${PEPPY_NO_CONTAINER_SETUP:-}" ]; then
                 echo "Skipped Apptainer setup (PEPPY_NO_CONTAINER_SETUP is set)."
@@ -644,10 +629,6 @@ EOF
             echo "       You can retry manually: $PEPPY_BIN_DIR/peppy container setup" >&2
             exit 1
         fi
-    fi
-    if [ "$PLATFORM" != "apple-darwin" ] && [ -n "${PEPPY_NO_ROOT_INSTALL:-}" ]; then
-        echo "Skipped Apptainer setup (PEPPY_NO_ROOT_INSTALL is set)."
-        echo "Run 'peppy container setup' later if AppArmor blocks container support."
     fi
 
     render_progress 85 "Configuring service"
