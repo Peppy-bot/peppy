@@ -1304,7 +1304,7 @@ fn start_container_node(
 
     // Add all bind mounts (runtime config + user-specified).
     // Device passthrough mounts (src under /dev/ with no dest or same dest)
-    // are skipped: in setuid mode Apptainer applies `nodev` to --bind mounts
+    // are skipped: Apptainer applies `nodev` to --bind mounts
     // which blocks device-node access. Host devices are already available
     // inside the container via `mount dev = yes` in apptainer.conf.
     // Remapped device mounts (e.g. /dev/video0:/dev/my_video0) still need

@@ -68,35 +68,23 @@ pub fn run_command_streaming(command: &mut Command, label: &str) -> CommandOutpu
     // Read stdout and stderr on separate threads to avoid deadlocks.
     // If both are read sequentially, a child that fills one pipe buffer
     // while we're blocked reading the other will hang indefinitely.
-    let stderr_pipe = child.stderr.take().unwrap();
-    let label_for_stderr = label.to_string();
-    let stderr_thread = std::thread::spawn(move || {
-        let mut captured = String::new();
-        for line in std::io::BufReader::new(stderr_pipe)
-            .lines()
-            .map_while(Result::ok)
-        {
-            println!("cargo:warning=[{}] {}", label_for_stderr, line);
-            captured.push_str(&line);
-            captured.push('\n');
-        }
-        captured
-    });
+    fn stream_pipe(
+        pipe: impl Read + Send + 'static,
+        label: String,
+    ) -> std::thread::JoinHandle<String> {
+        std::thread::spawn(move || {
+            let mut captured = String::new();
+            for line in std::io::BufReader::new(pipe).lines().map_while(Result::ok) {
+                println!("cargo:warning=[{}] {}", label, line);
+                captured.push_str(&line);
+                captured.push('\n');
+            }
+            captured
+        })
+    }
 
-    let stdout_pipe = child.stdout.take().unwrap();
-    let label_for_stdout = label.to_string();
-    let stdout_thread = std::thread::spawn(move || {
-        let mut captured = String::new();
-        for line in std::io::BufReader::new(stdout_pipe)
-            .lines()
-            .map_while(Result::ok)
-        {
-            println!("cargo:warning=[{}] {}", label_for_stdout, line);
-            captured.push_str(&line);
-            captured.push('\n');
-        }
-        captured
-    });
+    let stderr_thread = stream_pipe(child.stderr.take().unwrap(), label.to_string());
+    let stdout_thread = stream_pipe(child.stdout.take().unwrap(), label.to_string());
 
     let stdout_captured = stdout_thread.join().unwrap_or_default();
     let stderr_captured = stderr_thread.join().unwrap_or_default();

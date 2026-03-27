@@ -28,7 +28,7 @@ fn print_container_setup_status() {
 
 #[cfg(not(target_os = "linux"))]
 fn print_container_setup_status() {
-    println!("Container setup: OK (macOS — no setuid required)");
+    println!("Container setup: OK (macOS — runs via Lima VM)");
 }
 
 // No need for an excessive timeout here

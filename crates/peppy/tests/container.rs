@@ -5,7 +5,7 @@ use peppy::commands::container::{ContainerCommand, ContainerCommands};
 use peppy::context::AppContext;
 
 /// `peppy container status` should succeed without a running daemon.
-/// On the dev machine the setuid setup may or may not be complete, so we
+/// On the dev machine the user namespace setup may or may not be complete, so we
 /// accept both Ok (all checks pass) and Err (some checks fail) — the
 /// important thing is that the command does not panic or crash.
 #[test]

@@ -750,9 +750,7 @@ echo "=== Apptainer build complete ==="
         }
 
         // On Linux, try the macOS-side cache (Lima mounts host home dirs).
-        if !use_lima
-            && let Some(macos_cache) = find_macos_cache_fallback(APPTAINER_VERSION, arch)
-        {
+        if !use_lima && let Some(macos_cache) = find_macos_cache_fallback(APPTAINER_VERSION, arch) {
             force_remove_dir(&cache_dir);
             copy_dir_recursive(&macos_cache, &cache_dir)
                 .expect("Failed to copy macOS apptainer cache");

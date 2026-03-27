@@ -438,7 +438,7 @@ mod peppylib_build {
                 if f.components().any(|c| c.as_os_str() == "__pycache__") {
                     continue;
                 }
-                if filter_py && !f.extension().is_some_and(|e| e == "py") {
+                if filter_py && f.extension().is_none_or(|e| e != "py") {
                     continue;
                 }
                 if let Ok(bytes) = std::fs::read(f) {
@@ -469,22 +469,25 @@ mod peppylib_build {
         hash.iter().map(|b| format!("{b:02x}")).collect()
     }
 
-    /// Returns `true` if the source hash marker is missing or doesn't match the
-    /// current source hash — indicating the `.so` files are stale.
-    fn source_hash_changed(peppylib_py_dir: &Path, peppylib_dir: &Path) -> bool {
+    /// Returns the current source hash if it differs from the saved marker,
+    /// or `None` if the marker matches (sources unchanged).
+    fn source_hash_if_changed(peppylib_py_dir: &Path, peppylib_dir: &Path) -> Option<String> {
         let marker_path = peppylib_dir.join(SOURCE_HASH_MARKER);
-        let Ok(saved) = std::fs::read_to_string(&marker_path) else {
-            return true; // No marker = assume stale
-        };
         let current = compute_source_hash(peppylib_py_dir);
-        saved.trim() != current
+        let Ok(saved) = std::fs::read_to_string(&marker_path) else {
+            return Some(current); // No marker = assume stale
+        };
+        if saved.trim() != current {
+            Some(current)
+        } else {
+            None
+        }
     }
 
     /// Writes the source hash marker after a successful build.
-    fn write_source_hash_marker(peppylib_py_dir: &Path, peppylib_dir: &Path) {
-        let hash = compute_source_hash(peppylib_py_dir);
+    fn write_source_hash_marker(peppylib_dir: &Path, hash: &str) {
         let marker_path = peppylib_dir.join(SOURCE_HASH_MARKER);
-        std::fs::write(&marker_path, &hash).unwrap_or_else(|e| {
+        std::fs::write(&marker_path, hash).unwrap_or_else(|e| {
             println!(
                 "cargo:warning=Failed to write source hash marker {:?}: {e}",
                 marker_path
@@ -556,7 +559,7 @@ mod peppylib_build {
         // When skipped, the hash is computed from whatever .so files already
         // exist (e.g. from a prior build).
         if !is_pixi_available() {
-            if source_hash_changed(&peppylib_py_dir, &peppylib_dir) {
+            if source_hash_if_changed(&peppylib_py_dir, &peppylib_dir).is_some() {
                 panic!(
                     "Stale peppylib-py .so files: sources have changed since last build \
                      but pixi is not available to rebuild. Run \
@@ -571,8 +574,9 @@ mod peppylib_build {
             // Use both mtime and content-hash checks. The hash check catches
             // branch-switch staleness that mtime comparison misses (the .so
             // may be newer than re-checked-out source files).
-            let sources_changed = so_needs_rebuild(&peppylib_py_dir, &peppylib_dir)
-                || source_hash_changed(&peppylib_py_dir, &peppylib_dir);
+            let hash_result = source_hash_if_changed(&peppylib_py_dir, &peppylib_dir);
+            let sources_changed =
+                so_needs_rebuild(&peppylib_py_dir, &peppylib_dir) || hash_result.is_some();
 
             if sources_changed {
                 // Delete stale .so files before rebuilding so we start fresh.
@@ -601,7 +605,8 @@ mod peppylib_build {
             }
 
             // Record the source hash so future builds can detect staleness.
-            write_source_hash_marker(&peppylib_py_dir, &peppylib_dir);
+            let hash = hash_result.unwrap_or_else(|| compute_source_hash(&peppylib_py_dir));
+            write_source_hash_marker(&peppylib_dir, &hash);
         }
 
         // Guard against partial rebuilds leaving an unsuffixed .so behind

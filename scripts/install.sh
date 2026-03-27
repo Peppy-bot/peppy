@@ -17,7 +17,7 @@ set -eu
 #   PEPPY_DOWNLOAD_URL       Override full download URL
 #   PEPPY_NO_PATH_UPDATE     If set, do not update shell PATH config
 #   PEPPY_FORCE_REINSTALL    If set, skip confirmation when daemon is running (for non-interactive installs)
-#   PEPPY_NO_ROOT_INSTALL    If set, never use sudo. Missing deps become hard errors; Apptainer setuid setup is deferred to 'peppy container setup'
+#   PEPPY_NO_ROOT_INSTALL    If set, never use sudo. Missing deps become hard errors; Apptainer setup is deferred to 'peppy container setup'
 #   PEPPY_NO_SERVICE_INSTALL If set, skips the installation of the daemon in systemd
 
 __wrap__() {
@@ -311,7 +311,7 @@ EOF
 
     # ---- Linux system dependency checks (pre-download) -------------------------
     # Checks and installs pre-download dependencies (dbus, linger, curl).
-    # Apptainer setuid/ownership is handled post-install by `peppy container setup`.
+    # Apptainer setup is handled post-install by `peppy container setup`.
     #
     # When PEPPY_NO_ROOT_INSTALL is set, sudo is never used. Missing
     # dependencies become hard errors with manual-install instructions.
