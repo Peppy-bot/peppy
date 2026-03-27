@@ -75,7 +75,7 @@ fn perform_runtime_checks() {
     // required to allow unprivileged user namespace creation.
     #[cfg(target_os = "linux")]
     if let Err(e) = containers::Apptainer::new() {
-        eprintln!("Apptainer pre-flight check failed: {e}");
+        eprintln!("Apptainer pre-flight check failed:\n\n{e}");
         std::process::exit(1);
     }
 }

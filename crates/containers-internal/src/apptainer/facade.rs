@@ -210,9 +210,18 @@ fn check_userns_prerequisites(apptainer_dir: &Path) -> Result<()> {
     let script = status
         .fix_script
         .unwrap_or_else(|| "peppy container setup".to_string());
+    let indented: String = script.lines().fold(String::new(), |mut buf, line| {
+        buf.push_str("  ");
+        buf.push_str(line);
+        buf.push('\n');
+        buf
+    });
     Err(Error::ConfigurationError(format!(
         "Apptainer's user namespace prerequisites are not met.\n\
-         Run:\n\n{script}\n\n\
+         \n\
+         To fix, run the following command:\n\
+         \n\
+         {indented}\n\
          Or run `peppy container setup` to fix this automatically."
     )))
 }
