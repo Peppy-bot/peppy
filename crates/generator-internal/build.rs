@@ -108,8 +108,7 @@ mod ruff_build {
                 "cargo:warning=Using cached ruff binary from {:?}",
                 cached_ruff_path
             );
-            std::fs::copy(&cached_ruff_path, &ruff_binary_path)
-                .expect("Failed to copy cached ruff binary");
+            build_helpers::copy_if_changed(&cached_ruff_path, ruff_binary_path.as_ref());
             return;
         }
 
@@ -139,8 +138,7 @@ mod ruff_build {
             }
         }
 
-        std::fs::copy(&cached_ruff_path, &ruff_binary_path)
-            .expect("Failed to copy ruff binary to OUT_DIR");
+        build_helpers::copy_if_changed(&cached_ruff_path, ruff_binary_path.as_ref());
     }
 }
 
@@ -487,12 +485,10 @@ mod peppylib_build {
     /// Writes the source hash marker after a successful build.
     fn write_source_hash_marker(peppylib_dir: &Path, hash: &str) {
         let marker_path = peppylib_dir.join(SOURCE_HASH_MARKER);
-        std::fs::write(&marker_path, hash).unwrap_or_else(|e| {
-            println!(
-                "cargo:warning=Failed to write source hash marker {:?}: {e}",
-                marker_path
-            );
-        });
+        // Use write_if_changed to avoid bumping mtime when the hash is
+        // identical — the marker is watched via cargo:rerun-if-changed and
+        // an unconditional write would create an infinite rebuild loop.
+        build_helpers::write_if_changed(&marker_path, hash.as_bytes());
     }
 
     /// Deletes all platform `.so` files so the next build starts fresh.
@@ -622,23 +618,22 @@ mod peppylib_build {
 /// This allows the binary to be extracted at runtime on any machine, rather than relying
 /// on a stale compile-time filesystem path.
 fn embed_ruff_binary() {
-    use std::io::Write;
-
     let out_dir = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap());
     let ruff_binary_path = out_dir.join("ruff");
     let generated = out_dir.join("embedded_ruff.rs");
 
-    let mut file = std::fs::File::create(&generated).unwrap();
-    if ruff_binary_path.exists() {
-        writeln!(
-            file,
+    let content = if ruff_binary_path.exists() {
+        format!(
             r#"pub const RUFF_BINARY: Option<&[u8]> = Some(include_bytes!("{}"));"#,
             ruff_binary_path.display()
         )
-        .unwrap();
     } else {
-        writeln!(file, r#"pub const RUFF_BINARY: Option<&[u8]> = None;"#).unwrap();
-    }
+        r#"pub const RUFF_BINARY: Option<&[u8]> = None;"#.to_string()
+    };
+
+    // Use write_if_changed to avoid bumping mtime — this file is
+    // referenced via include!() so any mtime change triggers recompilation.
+    build_helpers::write_if_changed(&generated, content.as_bytes());
 }
 
 mod rust_crates_build {

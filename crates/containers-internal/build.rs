@@ -627,13 +627,22 @@ echo "=== Apptainer build complete ==="
             instance: LIMA_INSTANCE,
         };
 
-        // Copy Lima installation to OUT_DIR for the crate to reference at compile time
+        // Copy Lima installation to OUT_DIR for the crate to reference at compile time.
+        // Use a sentinel to skip the copy when the source hasn't changed.
         let out_lima_dir = PathBuf::from(out_dir).join("lima-install");
-        if out_lima_dir.exists() {
-            std::fs::remove_dir_all(&out_lima_dir).ok();
-        }
-        if let Err(e) = copy_dir_recursive(&lima_cache_dir, &out_lima_dir) {
-            panic!("Failed to copy Lima installation to OUT_DIR: {}", e);
+        let lima_sentinel_path = out_lima_dir.join(".copy-source");
+        let lima_sentinel_content = format!("{}", lima_cache_dir.display());
+        let lima_needs_copy = !lima_sentinel_path.exists()
+            || std::fs::read_to_string(&lima_sentinel_path)
+                .map_or(true, |s| s.trim() != lima_sentinel_content.trim());
+        if lima_needs_copy {
+            if out_lima_dir.exists() {
+                std::fs::remove_dir_all(&out_lima_dir).ok();
+            }
+            if let Err(e) = copy_dir_recursive(&lima_cache_dir, &out_lima_dir) {
+                panic!("Failed to copy Lima installation to OUT_DIR: {}", e);
+            }
+            std::fs::write(&lima_sentinel_path, &lima_sentinel_content).ok();
         }
         println!(
             "cargo:rustc-env=LIMA_INSTALL_DIR={}",
@@ -812,13 +821,24 @@ echo "=== Apptainer build complete ==="
         // Step 2: Ensure apptainer is cached (from Lima pre-build, macOS fallback, or local build)
         let cache_dir = ensure_apptainer_cached(use_lima, &arch);
 
-        // Step 3: Copy apptainer installation to OUT_DIR for release packaging
+        // Step 3: Copy apptainer installation to OUT_DIR for release packaging.
+        // Use a sentinel to skip the copy when the source hasn't changed,
+        // avoiding mtime bumps that trigger unnecessary recompilation.
         let out_install_dir = PathBuf::from(&out_dir).join("apptainer-install");
-        if out_install_dir.exists() {
-            std::fs::remove_dir_all(&out_install_dir).ok();
+        let sentinel_path = out_install_dir.join(".copy-source");
+        let sentinel_content = format!("{}", cache_dir.display());
+        let needs_copy = !sentinel_path.exists()
+            || std::fs::read_to_string(&sentinel_path)
+                .map_or(true, |s| s.trim() != sentinel_content.trim());
+        if needs_copy {
+            if out_install_dir.exists() {
+                std::fs::remove_dir_all(&out_install_dir).ok();
+            }
+            copy_dir_recursive(&cache_dir, &out_install_dir).unwrap_or_else(|e| {
+                panic!("Failed to copy apptainer installation to OUT_DIR: {}", e)
+            });
+            std::fs::write(&sentinel_path, &sentinel_content).ok();
         }
-        copy_dir_recursive(&cache_dir, &out_install_dir)
-            .unwrap_or_else(|e| panic!("Failed to copy apptainer installation to OUT_DIR: {}", e));
 
         println!(
             "cargo:rustc-env=APPTAINER_INSTALL_DIR={}",

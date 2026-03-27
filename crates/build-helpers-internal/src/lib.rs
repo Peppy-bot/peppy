@@ -156,6 +156,51 @@ pub fn verify_sha256(path: &Path, expected: &str, label: &str) -> bool {
     }
 }
 
+/// Write `contents` to `path` only if the file does not already contain identical data.
+///
+/// Avoids bumping the file's mtime when content is unchanged, which prevents
+/// cargo from detecting a spurious change via `rerun-if-changed` or
+/// `include!`/`include_bytes!` tracking.
+///
+/// Returns `true` if the file was actually written (content changed or file was new).
+pub fn write_if_changed(path: &Path, contents: &[u8]) -> bool {
+    if std::fs::read(path).is_ok_and(|existing| existing == contents) {
+        return false;
+    }
+    std::fs::write(path, contents).unwrap_or_else(|e| {
+        panic!("Failed to write {}: {}", path.display(), e);
+    });
+    true
+}
+
+/// Copy `src` to `dst` only if `dst` does not exist or differs in size/content.
+///
+/// Avoids bumping the destination's mtime when the content is unchanged,
+/// preventing cargo from detecting a spurious change and recompiling dependents.
+///
+/// Returns `true` if the copy was performed.
+pub fn copy_if_changed(src: &Path, dst: &Path) -> bool {
+    if dst.exists()
+        && let Ok(src_meta) = std::fs::metadata(src)
+        && let Ok(dst_meta) = std::fs::metadata(dst)
+        && src_meta.len() == dst_meta.len()
+        && let Ok(s) = std::fs::read(src)
+        && let Ok(d) = std::fs::read(dst)
+        && s == d
+    {
+        return false;
+    }
+    std::fs::copy(src, dst).unwrap_or_else(|e| {
+        panic!(
+            "Failed to copy {} to {}: {}",
+            src.display(),
+            dst.display(),
+            e
+        );
+    });
+    true
+}
+
 /// Embed the `PEPPY_GIT_TAG` environment variable into the binary at compile time.
 ///
 /// If `PEPPY_GIT_TAG` is set and non-empty (by build_release.sh), emits a
