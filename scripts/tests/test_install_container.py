@@ -17,6 +17,7 @@ import pytest
 
 from .lima_helpers import (
     VMConfig,
+    diagnostic,
     host_arch,
     install_cmd,
     lima_shell,
@@ -152,4 +153,72 @@ def test_container_node_build(lima_vm: VMConfig) -> None:
     run_step(
         "Stop daemon",
         "pkill -f 'peppy service serve' 2>/dev/null; true",
+    )
+
+
+def test_install_skips_container_setup_in_docker(lima_vm: VMConfig) -> None:
+    """install.sh auto-detects Docker env and skips Apptainer container setup."""
+    config = lima_vm
+    assert config.os == "linux", "Docker detection test only applies to Linux VMs"
+
+    home = setup_lima_guest(
+        config, test_name=f"test_docker_skip_{config.pytest_id()}"
+    )
+    instance = config.instance_name
+
+    # Create /.dockerenv to simulate a Docker environment
+    lima_shell("sudo touch /.dockerenv", instance=instance)
+    try:
+        result = lima_shell(
+            install_cmd(config, home),
+            instance=instance,
+        )
+        assert result.returncode == 0, (
+            f"install.sh failed on {config.pytest_id()}{diagnostic(result)}"
+        )
+        assert "Skipped Apptainer setup (running inside a container)" in result.stdout, (
+            f"Missing container skip message on {config.pytest_id()}{diagnostic(result)}"
+        )
+        assert "peppy installed to" in result.stdout, (
+            f"Missing install confirmation on {config.pytest_id()}{diagnostic(result)}"
+        )
+
+        # Verify the binary was actually installed
+        check = lima_shell(f"test -x {home}/bin/peppy", instance=instance)
+        assert check.returncode == 0, (
+            f"peppy binary not found at {home}/bin/peppy on {config.pytest_id()}"
+        )
+    finally:
+        # Clean up the marker file so other tests are unaffected
+        lima_shell("sudo rm -f /.dockerenv", instance=instance)
+
+
+def test_install_skips_container_setup_with_env_var(lima_vm: VMConfig) -> None:
+    """PEPPY_NO_CONTAINER_SETUP=1 explicitly skips Apptainer container setup."""
+    config = lima_vm
+    assert config.os == "linux", "container setup skip test only applies to Linux VMs"
+
+    home = setup_lima_guest(
+        config, test_name=f"test_no_container_setup_{config.pytest_id()}"
+    )
+    instance = config.instance_name
+
+    result = lima_shell(
+        install_cmd(config, home, extra_env="PEPPY_NO_CONTAINER_SETUP=1"),
+        instance=instance,
+    )
+    assert result.returncode == 0, (
+        f"install.sh failed on {config.pytest_id()}{diagnostic(result)}"
+    )
+    assert "Skipped Apptainer setup (PEPPY_NO_CONTAINER_SETUP is set)" in result.stdout, (
+        f"Missing env var skip message on {config.pytest_id()}{diagnostic(result)}"
+    )
+    assert "peppy installed to" in result.stdout, (
+        f"Missing install confirmation on {config.pytest_id()}{diagnostic(result)}"
+    )
+
+    # Verify the binary was actually installed
+    check = lima_shell(f"test -x {home}/bin/peppy", instance=instance)
+    assert check.returncode == 0, (
+        f"peppy binary not found at {home}/bin/peppy on {config.pytest_id()}"
     )

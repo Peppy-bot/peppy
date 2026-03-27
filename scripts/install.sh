@@ -19,6 +19,7 @@ set -eu
 #   PEPPY_FORCE_REINSTALL    If set, skip confirmation when daemon is running (for non-interactive installs)
 #   PEPPY_NO_ROOT_INSTALL    If set, never use sudo. Missing deps become hard errors; Apptainer setup is deferred to 'peppy container setup'
 #   PEPPY_NO_SERVICE_INSTALL If set, skips the installation of the daemon in systemd
+#   PEPPY_NO_CONTAINER_SETUP If set, skips the Apptainer container setup (useful inside Docker/Podman)
 
 __wrap__() {
     IS_TTY=false
@@ -130,6 +131,18 @@ EOF
     mask_credentials() {
         URL="$1"
         echo "$URL" | sed -E 's|://[^:@/]+:[^@/]+@|://***:***@|g'
+    }
+
+    is_running_in_container() {
+        # Docker creates /.dockerenv in every container
+        [ -f /.dockerenv ] && return 0
+        # Podman creates /run/.containerenv
+        [ -f /run/.containerenv ] && return 0
+        # systemd-nspawn, LXC set container= in PID 1's environment
+        if [ -r /proc/1/environ ] && tr '\0' '\n' < /proc/1/environ 2>/dev/null | grep -q '^container='; then
+            return 0
+        fi
+        return 1
     }
 
     ARCHIVE_PATH="${1:-}"
@@ -313,42 +326,53 @@ EOF
     # Checks and installs pre-download dependencies (dbus, linger, curl).
     # Apptainer setup is handled post-install by `peppy container setup`.
     #
+    # Inside containers (Docker/Podman), D-Bus and linger are irrelevant —
+    # the daemon is managed by the container runtime, not systemd.
+    # Only curl/wget is still checked (needed to download the archive).
+    #
     # When PEPPY_NO_ROOT_INSTALL is set, sudo is never used. Missing
     # dependencies become hard errors with manual-install instructions.
+    IN_CONTAINER=false
+    if [ -n "${PEPPY_NO_CONTAINER_SETUP:-}" ] || is_running_in_container; then
+        IN_CONTAINER=true
+    fi
+
     if [ "$PLATFORM" != "apple-darwin" ]; then
         if [ -n "${PEPPY_NO_ROOT_INSTALL:-}" ]; then
             # ---------- no-root mode: verify prerequisites without sudo ----------
-            # Check 1: D-Bus user session bus
-            # Try busctl (part of systemd, always present) then dbus-send as fallback.
-            DBUS_CHECK_CMD=""
-            if command -v busctl >/dev/null 2>&1; then
-                DBUS_CHECK_CMD="busctl --user status >/dev/null 2>&1"
-            elif command -v dbus-send >/dev/null 2>&1; then
-                DBUS_CHECK_CMD="dbus-send --session --dest=org.freedesktop.DBus --print-reply /org/freedesktop/DBus org.freedesktop.DBus.ListNames >/dev/null 2>&1"
-            fi
-            if [ -n "$DBUS_CHECK_CMD" ]; then
-                if ! eval "$DBUS_CHECK_CMD"; then
-                    echo "" >&2
-                    echo "error: D-Bus user session bus is not available." >&2
-                    echo "       Install D-Bus user session support manually:" >&2
-                    echo "         Debian/Ubuntu: sudo apt-get install dbus-user-session" >&2
-                    echo "         Fedora/RHEL:   sudo dnf install dbus-daemon" >&2
-                    echo "         Arch Linux:    sudo pacman -S dbus" >&2
-                    echo "" >&2
-                    exit 1
+            if ! $IN_CONTAINER; then
+                # Check 1: D-Bus user session bus
+                # Try busctl (part of systemd, always present) then dbus-send as fallback.
+                DBUS_CHECK_CMD=""
+                if command -v busctl >/dev/null 2>&1; then
+                    DBUS_CHECK_CMD="busctl --user status >/dev/null 2>&1"
+                elif command -v dbus-send >/dev/null 2>&1; then
+                    DBUS_CHECK_CMD="dbus-send --session --dest=org.freedesktop.DBus --print-reply /org/freedesktop/DBus org.freedesktop.DBus.ListNames >/dev/null 2>&1"
                 fi
-            fi
+                if [ -n "$DBUS_CHECK_CMD" ]; then
+                    if ! eval "$DBUS_CHECK_CMD"; then
+                        echo "" >&2
+                        echo "error: D-Bus user session bus is not available." >&2
+                        echo "       Install D-Bus user session support manually:" >&2
+                        echo "         Debian/Ubuntu: sudo apt-get install dbus-user-session" >&2
+                        echo "         Fedora/RHEL:   sudo dnf install dbus-daemon" >&2
+                        echo "         Arch Linux:    sudo pacman -S dbus" >&2
+                        echo "" >&2
+                        exit 1
+                    fi
+                fi
 
-            # Check 2: loginctl enable-linger
-            CURRENT_USER="$(id -un)"
-            if command -v loginctl >/dev/null 2>&1; then
-                LINGER_VAL="$(loginctl show-user "$CURRENT_USER" -p Linger --value 2>/dev/null || echo "no")"
-                if [ "$LINGER_VAL" != "yes" ]; then
-                    echo "" >&2
-                    echo "error: loginctl linger is not enabled for user ${CURRENT_USER}." >&2
-                    echo "       Enable it manually: sudo loginctl enable-linger ${CURRENT_USER}" >&2
-                    echo "" >&2
-                    exit 1
+                # Check 2: loginctl enable-linger
+                CURRENT_USER="$(id -un)"
+                if command -v loginctl >/dev/null 2>&1; then
+                    LINGER_VAL="$(loginctl show-user "$CURRENT_USER" -p Linger --value 2>/dev/null || echo "no")"
+                    if [ "$LINGER_VAL" != "yes" ]; then
+                        echo "" >&2
+                        echo "error: loginctl linger is not enabled for user ${CURRENT_USER}." >&2
+                        echo "       Enable it manually: sudo loginctl enable-linger ${CURRENT_USER}" >&2
+                        echo "" >&2
+                        exit 1
+                    fi
                 fi
             fi
 
@@ -370,41 +394,43 @@ EOF
             PREDOWNLOAD_FIXES=""
             ALL_LABELS=""
 
-            # Check 1: D-Bus user session bus (required for systemctl --user)
-            # Try busctl (part of systemd, always present) then dbus-send as fallback.
-            DBUS_CHECK_CMD=""
-            if command -v busctl >/dev/null 2>&1; then
-                DBUS_CHECK_CMD="busctl --user status >/dev/null 2>&1"
-            elif command -v dbus-send >/dev/null 2>&1; then
-                DBUS_CHECK_CMD="dbus-send --session --dest=org.freedesktop.DBus --print-reply /org/freedesktop/DBus org.freedesktop.DBus.ListNames >/dev/null 2>&1"
-            fi
-            if [ -n "$DBUS_CHECK_CMD" ]; then
-                if ! eval "$DBUS_CHECK_CMD"; then
-                    if command -v apt-get >/dev/null 2>&1; then
-                        PREDOWNLOAD_FIXES="${PREDOWNLOAD_FIXES}apt-get update -qq && apt-get install -y -qq dbus-user-session && "
-                    elif command -v dnf >/dev/null 2>&1; then
-                        PREDOWNLOAD_FIXES="${PREDOWNLOAD_FIXES}dnf install -y dbus-daemon && "
-                    elif command -v pacman >/dev/null 2>&1; then
-                        PREDOWNLOAD_FIXES="${PREDOWNLOAD_FIXES}pacman -Sy --noconfirm dbus && "
+            if ! $IN_CONTAINER; then
+                # Check 1: D-Bus user session bus (required for systemctl --user)
+                # Try busctl (part of systemd, always present) then dbus-send as fallback.
+                DBUS_CHECK_CMD=""
+                if command -v busctl >/dev/null 2>&1; then
+                    DBUS_CHECK_CMD="busctl --user status >/dev/null 2>&1"
+                elif command -v dbus-send >/dev/null 2>&1; then
+                    DBUS_CHECK_CMD="dbus-send --session --dest=org.freedesktop.DBus --print-reply /org/freedesktop/DBus org.freedesktop.DBus.ListNames >/dev/null 2>&1"
+                fi
+                if [ -n "$DBUS_CHECK_CMD" ]; then
+                    if ! eval "$DBUS_CHECK_CMD"; then
+                        if command -v apt-get >/dev/null 2>&1; then
+                            PREDOWNLOAD_FIXES="${PREDOWNLOAD_FIXES}apt-get update -qq && apt-get install -y -qq dbus-user-session && "
+                        elif command -v dnf >/dev/null 2>&1; then
+                            PREDOWNLOAD_FIXES="${PREDOWNLOAD_FIXES}dnf install -y dbus-daemon && "
+                        elif command -v pacman >/dev/null 2>&1; then
+                            PREDOWNLOAD_FIXES="${PREDOWNLOAD_FIXES}pacman -Sy --noconfirm dbus && "
+                        fi
+                        ALL_LABELS="${ALL_LABELS}  - Install D-Bus user session support (required for peppy background service)\n"
                     fi
-                    ALL_LABELS="${ALL_LABELS}  - Install D-Bus user session support (required for peppy background service)\n"
                 fi
-            fi
 
-            # Check 2: loginctl enable-linger (allows peppy daemon to run after SSH disconnect)
-            CURRENT_USER="$(id -un)"
-            HAS_LOGINCTL=false
-            LINGER_ENABLED=false
-            if command -v loginctl >/dev/null 2>&1; then
-                HAS_LOGINCTL=true
-                LINGER_VAL="$(loginctl show-user "$CURRENT_USER" -p Linger --value 2>/dev/null || echo "no")"
-                if [ "$LINGER_VAL" = "yes" ]; then
-                    LINGER_ENABLED=true
+                # Check 2: loginctl enable-linger (allows peppy daemon to run after SSH disconnect)
+                CURRENT_USER="$(id -un)"
+                HAS_LOGINCTL=false
+                LINGER_ENABLED=false
+                if command -v loginctl >/dev/null 2>&1; then
+                    HAS_LOGINCTL=true
+                    LINGER_VAL="$(loginctl show-user "$CURRENT_USER" -p Linger --value 2>/dev/null || echo "no")"
+                    if [ "$LINGER_VAL" = "yes" ]; then
+                        LINGER_ENABLED=true
+                    fi
                 fi
-            fi
-            if $HAS_LOGINCTL && ! $LINGER_ENABLED; then
-                PREDOWNLOAD_FIXES="${PREDOWNLOAD_FIXES}loginctl enable-linger ${CURRENT_USER} && "
-                ALL_LABELS="${ALL_LABELS}  - Enable systemd linger for user ${CURRENT_USER} (allows peppy daemon to run after SSH disconnect)\n"
+                if $HAS_LOGINCTL && ! $LINGER_ENABLED; then
+                    PREDOWNLOAD_FIXES="${PREDOWNLOAD_FIXES}loginctl enable-linger ${CURRENT_USER} && "
+                    ALL_LABELS="${ALL_LABELS}  - Enable systemd linger for user ${CURRENT_USER} (allows peppy daemon to run after SSH disconnect)\n"
+                fi
             fi
 
             # Check 3: curl or wget (required to download the release archive)
@@ -603,8 +629,17 @@ EOF
     # Delegates AppArmor profile configuration to `peppy container setup`
     # which is the single source of truth for Apptainer system prerequisites.
     # On systems without AppArmor restrictions (Fedora, Arch), this is a no-op.
+    # Inside containers (Docker/Podman), AppArmor profiles cannot be loaded
+    # (requires CAP_MAC_ADMIN), so setup is skipped automatically.
     if [ "$PLATFORM" != "apple-darwin" ] && [ -z "${PEPPY_NO_ROOT_INSTALL:-}" ]; then
-        if ! "$PEPPY_BIN_DIR/peppy" container setup; then
+        if $IN_CONTAINER; then
+            flush_progress_line
+            if [ -n "${PEPPY_NO_CONTAINER_SETUP:-}" ]; then
+                echo "Skipped Apptainer setup (PEPPY_NO_CONTAINER_SETUP is set)."
+            else
+                echo "Skipped Apptainer setup (running inside a container)."
+            fi
+        elif ! "$PEPPY_BIN_DIR/peppy" container setup; then
             echo "error: Apptainer container setup failed." >&2
             echo "       You can retry manually: $PEPPY_BIN_DIR/peppy container setup" >&2
             exit 1
