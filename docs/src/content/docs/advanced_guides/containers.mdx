@@ -20,17 +20,16 @@ On macOS, Apptainer runs transparently inside a [Lima](https://lima-vm.io/) virt
 
 ## Setup (Linux)
 
-On Linux, Apptainer runs in **setuid mode** which requires a one-time system configuration. The installer handles this automatically, but if you skipped it or installed peppy manually you can run:
+On Linux, Apptainer uses unprivileged user namespaces which may require a one-time system configuration. The installer handles this automatically, but if you skipped it or installed peppy manually you can run:
 
 ```sh
 peppy container setup
 ```
 
-This configures three things (prompting for `sudo`):
+This configures the following (prompting for `sudo` when needed):
 
-1. **Starter binary** — sets root ownership and the setuid bit on Apptainer's `starter-suid` binary.
-2. **Config directory** — sets root ownership on the `etc/apptainer/` configuration directory.
-3. **AppArmor profile** (Ubuntu 24.04+ only) — installs a profile that allows Apptainer to use user namespaces.
+1. **uidmap package** — installs `newuidmap` (required for fakeroot mode).
+2. **AppArmor profile** (Ubuntu 24.04+ only) — installs a profile that allows Apptainer to create user namespaces.
 
 To check the current state without making any changes:
 

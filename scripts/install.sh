@@ -17,7 +17,7 @@ set -eu
 #   PEPPY_DOWNLOAD_URL       Override full download URL
 #   PEPPY_NO_PATH_UPDATE     If set, do not update shell PATH config
 #   PEPPY_FORCE_REINSTALL    If set, skip confirmation when daemon is running (for non-interactive installs)
-#   PEPPY_NO_ROOT_INSTALL    If set, never use sudo. Missing deps become hard errors; Apptainer setuid setup is deferred to 'peppy container setup'
+#   PEPPY_NO_ROOT_INSTALL    If set, never use sudo. Missing deps become hard errors; Apptainer setup is deferred to 'peppy container setup'
 #   PEPPY_NO_SERVICE_INSTALL If set, skips the installation of the daemon in systemd
 
 __wrap__() {
@@ -309,11 +309,9 @@ EOF
         echo "$_SUCCESS_MSG"
     }
 
-    # ---- Linux system dependency checks (phase 1: pre-download) ---------------
-    # Shows the user a SINGLE comprehensive sudo prompt listing ALL changes
-    # (dbus, linger, curl, Apptainer setuid/ownership, AppArmor). Executes
-    # pre-download fixes (dbus, linger, curl) immediately; Apptainer commands
-    # are deferred to phase 2 post-extraction (files don't exist yet).
+    # ---- Linux system dependency checks (pre-download) -------------------------
+    # Checks and installs pre-download dependencies (dbus, linger, curl).
+    # Apptainer setup is handled post-install by `peppy container setup`.
     #
     # When PEPPY_NO_ROOT_INSTALL is set, sudo is never used. Missing
     # dependencies become hard errors with manual-install instructions.
@@ -366,10 +364,9 @@ EOF
                 exit 1
             fi
         else
-            # ---------- normal mode: prompt ONCE for all sudo changes ---------
-            # Gather labels for everything (including predicted Apptainer items)
-            # so the user sees the full picture before download begins. Only
-            # pre-download fixes (curl) execute now; the rest run post-extraction.
+            # ---------- normal mode: prompt for pre-download sudo changes -----
+            # Apptainer AppArmor setup is handled post-install by
+            # `peppy container setup`.
             PREDOWNLOAD_FIXES=""
             ALL_LABELS=""
 
@@ -429,29 +426,12 @@ EOF
                 ALL_LABELS="${ALL_LABELS}  - Install curl (required to download peppy)\n"
             fi
 
-            # Predicted Apptainer labels — the Linux archive always ships with
-            # Apptainer, so we can show these before extraction. The actual
-            # commands run in phase 2 once the files exist on disk.
-            ALL_LABELS="${ALL_LABELS}  - Set setuid permissions on Apptainer starter binary\n"
-            ALL_LABELS="${ALL_LABELS}  - Set root ownership on Apptainer configuration\n"
-            if [ -f /proc/sys/kernel/apparmor_restrict_unprivileged_userns ] && \
-               [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns)" = "1" ]; then
-                ALL_LABELS="${ALL_LABELS}  - Install AppArmor profile for Apptainer starter-suid\n"
-            fi
-
-            # Single prompt covering everything
-            SUDO_CONSENT_GIVEN=false
+            # Prompt and execute pre-download fixes (dbus, linger, curl)
             if [ -n "$ALL_LABELS" ]; then
                 prompt_sudo_consent "$ALL_LABELS"
-                SUDO_CONSENT_GIVEN=true
             fi
-
-            # Execute pre-download fixes now (dbus, linger, curl)
             if [ -n "$PREDOWNLOAD_FIXES" ]; then
                 apply_sudo_fixes "$PREDOWNLOAD_FIXES" "Pre-download dependencies configured."
-            elif $SUDO_CONSENT_GIVEN && [ "$(id -u)" -ne 0 ] && command -v sudo >/dev/null 2>&1; then
-                # Prime sudo credential cache so post-extraction doesn't re-prompt
-                sudo true
             fi
         fi
     fi
@@ -597,41 +577,6 @@ EOF
         mkdir -p "$PEPPY_HOME/lima-data"
     fi
 
-    # ---- Linux system dependency checks (phase 2: post-extraction) -----------
-    # Apptainer setuid/ownership commands run here because the files only exist
-    # after the archive is extracted. User consent was already obtained in
-    # phase 1 (pre-download), so no prompt is shown here.
-    # Skipped entirely when PEPPY_NO_ROOT_INSTALL is set.
-    if [ "$PLATFORM" != "apple-darwin" ] && [ -z "${PEPPY_NO_ROOT_INSTALL:-}" ]; then
-        POSTEXTRACT_FIXES=""
-
-        # Apptainer setuid mode requires root ownership on starter-suid
-        # (with setuid bit) and the entire etc/apptainer/ config directory.
-        STARTER_SUID="$PEPPY_BIN_DIR/apptainer/libexec/apptainer/bin/starter-suid"
-        APPTAINER_CONF_DIR="$PEPPY_BIN_DIR/apptainer/etc/apptainer"
-        if [ -f "$STARTER_SUID" ]; then
-            POSTEXTRACT_FIXES="${POSTEXTRACT_FIXES}chown root:root '$STARTER_SUID' && chmod 4755 '$STARTER_SUID' && "
-        fi
-        if [ -d "$APPTAINER_CONF_DIR" ]; then
-            POSTEXTRACT_FIXES="${POSTEXTRACT_FIXES}chown -R root:root '$APPTAINER_CONF_DIR' && "
-        fi
-
-        # AppArmor profile for starter-suid (Ubuntu 24.04+)
-        if [ -f /proc/sys/kernel/apparmor_restrict_unprivileged_userns ] && \
-           [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns)" = "1" ] && \
-           [ -f "$STARTER_SUID" ]; then
-            POSTEXTRACT_FIXES="${POSTEXTRACT_FIXES}printf 'abi <abi/4.0>,\ninclude <tunables/global>\n\nprofile peppy-apptainer ${STARTER_SUID} flags=(unconfined) {\n  userns,\n}\n' > /etc/apparmor.d/peppy-apptainer && apparmor_parser -r /etc/apparmor.d/peppy-apptainer && "
-        fi
-
-        if [ -n "$POSTEXTRACT_FIXES" ]; then
-            apply_sudo_fixes "$POSTEXTRACT_FIXES" "System dependencies configured successfully."
-        fi
-    fi
-    if [ "$PLATFORM" != "apple-darwin" ] && [ -n "${PEPPY_NO_ROOT_INSTALL:-}" ]; then
-        echo "Skipped Apptainer setuid setup (PEPPY_NO_ROOT_INSTALL is set)."
-        echo "Run 'peppy container setup' later to enable container support."
-    fi
-
     render_progress 75 "Installing binaries"
     # Install binaries
     mv "$TEMP_DIR/bin/peppy" "$PEPPY_BIN_DIR/peppy"
@@ -652,6 +597,22 @@ EOF
     if [ ! -f "$PEPPY_BIN_DIR/zenohd" ]; then
         flush_progress_line
         echo "warning: 'zenohd' was not found in the archive. 'peppy service serve' requires zenohd on PATH or next to the peppy binary." >&2
+    fi
+
+    # ---- Apptainer container setup (post-install) ----------------------------
+    # Delegates AppArmor profile configuration to `peppy container setup`
+    # which is the single source of truth for Apptainer system prerequisites.
+    # On systems without AppArmor restrictions (Fedora, Arch), this is a no-op.
+    if [ "$PLATFORM" != "apple-darwin" ] && [ -z "${PEPPY_NO_ROOT_INSTALL:-}" ]; then
+        if ! "$PEPPY_BIN_DIR/peppy" container setup; then
+            echo "error: Apptainer container setup failed." >&2
+            echo "       You can retry manually: $PEPPY_BIN_DIR/peppy container setup" >&2
+            exit 1
+        fi
+    fi
+    if [ "$PLATFORM" != "apple-darwin" ] && [ -n "${PEPPY_NO_ROOT_INSTALL:-}" ]; then
+        echo "Skipped Apptainer setup (PEPPY_NO_ROOT_INSTALL is set)."
+        echo "Run 'peppy container setup' later if AppArmor blocks container support."
     fi
 
     render_progress 85 "Configuring service"

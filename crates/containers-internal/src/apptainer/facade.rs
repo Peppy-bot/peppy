@@ -63,21 +63,36 @@ pub struct Apptainer {
     pub(crate) extra_mounts: Vec<PathBuf>,
 }
 
-/// Status of Apptainer setuid prerequisites on the current system.
+/// Check if a command is available in PATH.
+#[cfg(target_os = "linux")]
+fn which(cmd: &str) -> Option<PathBuf> {
+    std::env::var_os("PATH").and_then(|paths| {
+        std::env::split_paths(&paths).find_map(|dir| {
+            let full = dir.join(cmd);
+            if full.is_file() { Some(full) } else { None }
+        })
+    })
+}
+
+/// Status of Apptainer user namespace prerequisites on the current system.
+///
+/// Apptainer is built without setuid (`--without-suid`) and relies on
+/// unprivileged user namespaces via fakeroot. This requires `newuidmap`
+/// (from the `uidmap` package). On systems where AppArmor restricts
+/// unprivileged user namespaces (e.g. Ubuntu 24.04+), an AppArmor profile
+/// must be installed to allow the `starter` binary to create them.
 #[cfg(target_os = "linux")]
 #[derive(Debug)]
 pub struct SetupStatus {
-    /// `starter-suid` is root-owned with the setuid bit (mode 4755).
-    pub suid_ok: bool,
-    /// `etc/apptainer/` config directory is root-owned.
-    pub conf_ok: bool,
+    /// `newuidmap` is available in PATH (required for fakeroot).
+    pub newuidmap_ok: bool,
     /// System restricts unprivileged user namespaces via AppArmor.
     pub apparmor_restricted: bool,
-    /// AppArmor profile for `starter-suid` is installed on disk (always `true`
-    /// when `apparmor_restricted` is `false`).
+    /// AppArmor profile for `starter` is installed and references the current
+    /// binary path (always `true` when `apparmor_restricted` is `false`).
     pub apparmor_ok: bool,
-    /// AppArmor profile for `starter-suid` is loaded into the kernel (always
-    /// `true` when `apparmor_restricted` is `false`).
+    /// AppArmor profile is loaded into the kernel (always `true` when
+    /// `apparmor_restricted` is `false`).
     pub apparmor_loaded: bool,
     /// A shell script that fixes all failing checks, or `None` when everything
     /// passes.
@@ -88,11 +103,11 @@ pub struct SetupStatus {
 impl SetupStatus {
     /// Returns `true` when all prerequisites are met.
     pub fn is_ok(&self) -> bool {
-        self.suid_ok && self.conf_ok && self.apparmor_ok && self.apparmor_loaded
+        self.newuidmap_ok && self.apparmor_ok && self.apparmor_loaded
     }
 }
 
-/// Inspect the Apptainer setuid prerequisites without failing on errors.
+/// Inspect the Apptainer user namespace prerequisites without failing on errors.
 ///
 /// Returns a [`SetupStatus`] describing which checks pass and which do not,
 /// along with a ready-to-run fix script when something needs attention.
@@ -100,44 +115,27 @@ impl SetupStatus {
 /// The caller is responsible for resolving the `apptainer_dir` — use
 /// [`Apptainer::resolve_apptainer_dir`] or the `PEPPY_APPTAINER_DIR` env var.
 #[cfg(target_os = "linux")]
-pub fn check_setup_status(apptainer_dir: &Path) -> Result<SetupStatus> {
-    use std::os::unix::fs::MetadataExt;
+pub fn check_setup_status(apptainer_dir: &Path) -> SetupStatus {
+    let starter = apptainer_dir.join("libexec/apptainer/bin/starter");
 
-    let starter_suid = apptainer_dir.join("libexec/apptainer/bin/starter-suid");
-    let conf_dir = apptainer_dir.join("etc/apptainer");
-
-    let suid_meta = std::fs::metadata(&starter_suid).map_err(|e| {
-        if e.kind() == std::io::ErrorKind::NotFound {
-            Error::ConfigurationError(format!(
-                "starter-suid not found at {}. Reinstall peppy.",
-                starter_suid.display()
-            ))
-        } else {
-            Error::ConfigurationError(format!(
-                "Failed to stat starter-suid at {}: {e}",
-                starter_suid.display()
-            ))
-        }
-    })?;
-
-    let suid_ok = suid_meta.uid() == 0 && (suid_meta.mode() & 0o4000) != 0;
-    let conf_ok = conf_dir.metadata().map(|m| m.uid() == 0).unwrap_or(false);
+    // newuidmap is required for fakeroot mode (unprivileged user namespaces).
+    // It's provided by the `uidmap` package on Debian/Ubuntu, `shadow-utils`
+    // on Fedora, and `shadow` on Arch Linux.
+    let newuidmap_ok = which("newuidmap").is_some();
 
     let apparmor_restricted =
         std::fs::read_to_string("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
             .map(|v| v.trim() == "1")
             .unwrap_or(false);
 
-    let starter_suid_canonical = starter_suid
-        .canonicalize()
-        .unwrap_or_else(|_| starter_suid.clone());
+    let starter_canonical = starter.canonicalize().unwrap_or_else(|_| starter.clone());
 
     let apparmor_ok = if apparmor_restricted {
-        // The profile must exist AND reference the current starter-suid path.
+        // The profile must exist AND reference the current starter path.
         // A stale profile pointing to a different binary (e.g. a previous build
         // artifact) won't grant the current binary namespace privileges.
         std::fs::read_to_string("/etc/apparmor.d/peppy-apptainer")
-            .map(|content| content.contains(&format!("{}", starter_suid_canonical.display())))
+            .map(|content| content.contains(&starter_canonical.display().to_string()))
             .unwrap_or(false)
     } else {
         true
@@ -159,20 +157,19 @@ pub fn check_setup_status(apptainer_dir: &Path) -> Result<SetupStatus> {
         true
     };
 
-    let fix_script = if suid_ok && conf_ok && apparmor_ok && apparmor_loaded {
+    let fix_script = if newuidmap_ok && apparmor_ok && apparmor_loaded {
         None
     } else {
-        let suid_path = starter_suid_canonical.display();
-        let conf_dir_path = conf_dir.display();
-
+        let starter_path = starter_canonical.display();
         let mut parts: Vec<String> = Vec::new();
 
-        if !suid_ok || !conf_ok {
-            parts.push(format!(
-                "sudo chown root:root '{suid_path}' \\\n  \
-                 && sudo chmod 4755 '{suid_path}' \\\n  \
-                 && sudo chown -R root:root '{conf_dir_path}'"
-            ));
+        if !newuidmap_ok {
+            parts.push(
+                "sudo apt-get install -y uidmap 2>/dev/null \
+                 || sudo dnf install -y shadow-utils 2>/dev/null \
+                 || sudo pacman -Sy --noconfirm shadow 2>/dev/null"
+                    .to_string(),
+            );
         }
 
         if apparmor_restricted && !apparmor_ok {
@@ -180,7 +177,7 @@ pub fn check_setup_status(apptainer_dir: &Path) -> Result<SetupStatus> {
                 "echo 'abi <abi/4.0>,\n\
                  include <tunables/global>\n\
                  \n\
-                 profile peppy-apptainer {suid_path} flags=(unconfined) {{\n\
+                 profile peppy-apptainer {starter_path} flags=(unconfined) {{\n\
                  \x20 userns,\n\
                  }}' | sudo tee /etc/apparmor.d/peppy-apptainer > /dev/null \\\n  \
                  && sudo apparmor_parser -r /etc/apparmor.d/peppy-apptainer"
@@ -192,29 +189,39 @@ pub fn check_setup_status(apptainer_dir: &Path) -> Result<SetupStatus> {
         Some(parts.join(" \\\n  && "))
     };
 
-    Ok(SetupStatus {
-        suid_ok,
-        conf_ok,
+    SetupStatus {
+        newuidmap_ok,
         apparmor_restricted,
         apparmor_ok,
         apparmor_loaded,
         fix_script,
-    })
+    }
 }
 
-/// Check that Apptainer's setuid mode prerequisites are met.
+/// Check that Apptainer's user namespace prerequisites are met.
 /// Returns an error with a copy-pasteable fix script when any check fails.
 #[cfg(target_os = "linux")]
-fn check_starter_suid(apptainer_dir: &Path) -> Result<()> {
-    let status = check_setup_status(apptainer_dir)?;
+fn check_userns_prerequisites(apptainer_dir: &Path) -> Result<()> {
+    let status = check_setup_status(apptainer_dir);
     if status.is_ok() {
         return Ok(());
     }
 
-    let script = status.fix_script.unwrap();
+    let script = status
+        .fix_script
+        .unwrap_or_else(|| "peppy container setup".to_string());
+    let indented: String = script.lines().fold(String::new(), |mut buf, line| {
+        buf.push_str("  ");
+        buf.push_str(line);
+        buf.push('\n');
+        buf
+    });
     Err(Error::ConfigurationError(format!(
-        "Apptainer's setuid mode is not fully configured.\n\
-         Run:\n\n{script}\n\n\
+        "Apptainer's user namespace prerequisites are not met.\n\
+         \n\
+         To fix, run the following command:\n\
+         \n\
+         {indented}\n\
          Or run `peppy container setup` to fix this automatically."
     )))
 }
@@ -272,7 +279,7 @@ impl Apptainer {
     /// Ensures the execution backend is fully ready for running commands.
     /// Called once during construction.
     ///
-    /// On Linux (`Backend::Native`): verifies `starter-suid` has the setuid bit.
+    /// On Linux (`Backend::Native`): verifies user namespace prerequisites (AppArmor).
     ///
     /// On macOS (`Backend::Lima`): boots the Lima VM if it is not already running,
     /// and syncs the apptainer installation into the guest. This may take minutes
@@ -281,7 +288,7 @@ impl Apptainer {
         match &mut self.backend {
             Backend::Native { .. } => {
                 #[cfg(target_os = "linux")]
-                check_starter_suid(&self.apptainer_dir)?;
+                check_userns_prerequisites(&self.apptainer_dir)?;
                 Ok(())
             }
             Backend::Lima {

@@ -108,8 +108,7 @@ mod ruff_build {
                 "cargo:warning=Using cached ruff binary from {:?}",
                 cached_ruff_path
             );
-            std::fs::copy(&cached_ruff_path, &ruff_binary_path)
-                .expect("Failed to copy cached ruff binary");
+            build_helpers::copy_if_changed(&cached_ruff_path, ruff_binary_path.as_ref());
             return;
         }
 
@@ -139,8 +138,7 @@ mod ruff_build {
             }
         }
 
-        std::fs::copy(&cached_ruff_path, &ruff_binary_path)
-            .expect("Failed to copy ruff binary to OUT_DIR");
+        build_helpers::copy_if_changed(&cached_ruff_path, ruff_binary_path.as_ref());
     }
 }
 
@@ -413,6 +411,99 @@ mod peppylib_build {
         std::fs::remove_dir_all(&wheels_dir).ok();
     }
 
+    /// Marker file that records the source hash at the time the `.so` was built.
+    const SOURCE_HASH_MARKER: &str = ".so-source-hash";
+
+    /// Dependency crate source directories that are compiled into the `.so`.
+    const DEP_CRATES: &[&str] = &["peppylib", "config-internal", "pmi-internal"];
+
+    /// Computes a SHA-256 hash over all source files that feed into the `.so`
+    /// build: peppylib-py Rust sources, Python sources, pixi.lock, and
+    /// dependency crate sources. Used to detect branch-switch staleness that
+    /// mtime-based checks miss.
+    fn compute_source_hash(peppylib_py_dir: &Path) -> String {
+        use sha2::{Digest, Sha256};
+
+        let mut hasher = Sha256::new();
+
+        let mut collect_dir = |dir: &Path, filter_py: bool| {
+            if !dir.is_dir() {
+                return;
+            }
+            let mut files = super::walkdir(dir);
+            files.sort();
+            for f in &files {
+                if f.components().any(|c| c.as_os_str() == "__pycache__") {
+                    continue;
+                }
+                if filter_py && f.extension().is_none_or(|e| e != "py") {
+                    continue;
+                }
+                if let Ok(bytes) = std::fs::read(f) {
+                    hasher.update(f.file_name().unwrap_or_default().as_encoded_bytes());
+                    hasher.update(&bytes);
+                }
+            }
+        };
+
+        // peppylib-py Rust sources
+        collect_dir(&peppylib_py_dir.join("src"), false);
+        // peppylib-py Python sources
+        collect_dir(&peppylib_py_dir.join("peppylib"), true);
+
+        // Dependency crate sources
+        let crates_root = peppylib_py_dir.join("..");
+        for dep_crate in DEP_CRATES {
+            collect_dir(&crates_root.join(dep_crate).join("src"), false);
+        }
+
+        // pixi.lock
+        if let Ok(bytes) = std::fs::read(peppylib_py_dir.join("pixi.lock")) {
+            hasher.update(b"pixi.lock");
+            hasher.update(&bytes);
+        }
+
+        let hash = hasher.finalize();
+        hash.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    /// Returns the current source hash if it differs from the saved marker,
+    /// or `None` if the marker matches (sources unchanged).
+    fn source_hash_if_changed(peppylib_py_dir: &Path, peppylib_dir: &Path) -> Option<String> {
+        let marker_path = peppylib_dir.join(SOURCE_HASH_MARKER);
+        let current = compute_source_hash(peppylib_py_dir);
+        let Ok(saved) = std::fs::read_to_string(&marker_path) else {
+            return Some(current); // No marker = assume stale
+        };
+        if saved.trim() != current {
+            Some(current)
+        } else {
+            None
+        }
+    }
+
+    /// Writes the source hash marker after a successful build.
+    fn write_source_hash_marker(peppylib_dir: &Path, hash: &str) {
+        let marker_path = peppylib_dir.join(SOURCE_HASH_MARKER);
+        // Use write_if_changed to avoid bumping mtime when the hash is
+        // identical — the marker is watched via cargo:rerun-if-changed and
+        // an unconditional write would create an infinite rebuild loop.
+        build_helpers::write_if_changed(&marker_path, hash.as_bytes());
+    }
+
+    /// Deletes all platform `.so` files so the next build starts fresh.
+    fn remove_stale_so_files(peppylib_dir: &Path) {
+        if let Ok(entries) = std::fs::read_dir(peppylib_dir) {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let s = name.to_string_lossy();
+                if s.starts_with("_peppylib.abi3.") && s.ends_with(".so") {
+                    std::fs::remove_file(entry.path()).ok();
+                }
+            }
+        }
+    }
+
     /// Computes a combined SHA-256 hash of all platform `.so` files and emits it
     /// as the `PEPPYLIB_SO_HASH` env var for cache invalidation.
     fn compute_and_emit_so_hash(peppylib_dir: &Path) {
@@ -449,6 +540,10 @@ mod peppylib_build {
         let so_path = peppylib_dir.join("_peppylib.abi3.so");
 
         register_rerun_triggers(&peppylib_py_dir);
+        println!(
+            "cargo:rerun-if-changed={}",
+            peppylib_dir.join(SOURCE_HASH_MARKER).display()
+        );
 
         // Use a separate CARGO_TARGET_DIR so maturin's inner `cargo build`
         // does not deadlock on the workspace build lock held by the outer cargo.
@@ -460,16 +555,29 @@ mod peppylib_build {
         // When skipped, the hash is computed from whatever .so files already
         // exist (e.g. from a prior build).
         if !is_pixi_available() {
+            if source_hash_if_changed(&peppylib_py_dir, &peppylib_dir).is_some() {
+                panic!(
+                    "Stale peppylib-py .so files: sources have changed since last build \
+                     but pixi is not available to rebuild. Run \
+                     `cargo build -p generator` on a machine with pixi first."
+                );
+            }
             println!(
                 "cargo:warning=Skipping peppylib-py build (pixi not available). \
                  Using existing .so files."
             );
         } else {
-            let sources_changed = so_needs_rebuild(&peppylib_py_dir, &peppylib_dir);
+            // Use both mtime and content-hash checks. The hash check catches
+            // branch-switch staleness that mtime comparison misses (the .so
+            // may be newer than re-checked-out source files).
+            let hash_result = source_hash_if_changed(&peppylib_py_dir, &peppylib_dir);
+            let sources_changed =
+                so_needs_rebuild(&peppylib_py_dir, &peppylib_dir) || hash_result.is_some();
 
-            // Only invoke maturin when peppylib-py or its dependency crate sources
-            // have changed.
             if sources_changed {
+                // Delete stale .so files before rebuilding so we start fresh.
+                remove_stale_so_files(&peppylib_dir);
+
                 build_native_so(
                     &peppylib_py_dir,
                     &peppylib_dir,
@@ -491,6 +599,10 @@ mod peppylib_build {
                     cross_compile_linux_so(target, &peppylib_py_dir, &target_dir, &peppylib_dir);
                 }
             }
+
+            // Record the source hash so future builds can detect staleness.
+            let hash = hash_result.unwrap_or_else(|| compute_source_hash(&peppylib_py_dir));
+            write_source_hash_marker(&peppylib_dir, &hash);
         }
 
         // Guard against partial rebuilds leaving an unsuffixed .so behind
@@ -506,23 +618,22 @@ mod peppylib_build {
 /// This allows the binary to be extracted at runtime on any machine, rather than relying
 /// on a stale compile-time filesystem path.
 fn embed_ruff_binary() {
-    use std::io::Write;
-
     let out_dir = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap());
     let ruff_binary_path = out_dir.join("ruff");
     let generated = out_dir.join("embedded_ruff.rs");
 
-    let mut file = std::fs::File::create(&generated).unwrap();
-    if ruff_binary_path.exists() {
-        writeln!(
-            file,
+    let content = if ruff_binary_path.exists() {
+        format!(
             r#"pub const RUFF_BINARY: Option<&[u8]> = Some(include_bytes!("{}"));"#,
             ruff_binary_path.display()
         )
-        .unwrap();
     } else {
-        writeln!(file, r#"pub const RUFF_BINARY: Option<&[u8]> = None;"#).unwrap();
-    }
+        r#"pub const RUFF_BINARY: Option<&[u8]> = None;"#.to_string()
+    };
+
+    // Use write_if_changed to avoid bumping mtime — this file is
+    // referenced via include!() so any mtime change triggers recompilation.
+    build_helpers::write_if_changed(&generated, content.as_bytes());
 }
 
 mod rust_crates_build {

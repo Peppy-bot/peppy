@@ -49,14 +49,12 @@ fn embed_git_hash() {
     if let Some(root) = git_root {
         let git_dir = root.join(".git");
         println!("cargo:rerun-if-changed={}", git_dir.join("HEAD").display());
-        // Also track the current branch ref file for when commits are made
-        if let Ok(head_content) = std::fs::read_to_string(git_dir.join("HEAD"))
-            && let Some(ref_path) = head_content.trim().strip_prefix("ref: ")
-        {
-            println!(
-                "cargo:rerun-if-changed={}",
-                git_dir.join(ref_path).display()
-            );
+        // The reflog is updated on every commit, merge, rebase, or checkout.
+        // Unlike loose ref files under refs/heads/, the reflog is never
+        // removed by `git pack-refs`, avoiding spurious rebuilds.
+        let reflog = git_dir.join("logs/HEAD");
+        if reflog.exists() {
+            println!("cargo:rerun-if-changed={}", reflog.display());
         }
     }
 }

@@ -11,14 +11,14 @@ const CALLER_INSTANCE_ID: &str = "peppy-cli";
 
 #[cfg(target_os = "linux")]
 fn print_container_setup_status() {
-    match containers::Apptainer::resolve_apptainer_dir()
-        .and_then(|dir| containers::check_setup_status(&dir))
-    {
-        Ok(status) if status.is_ok() => {
-            println!("Container setup: OK");
-        }
-        Ok(_) => {
-            println!("Container setup: INCOMPLETE (run `peppy container setup`)");
+    match containers::Apptainer::resolve_apptainer_dir() {
+        Ok(dir) => {
+            let status = containers::check_setup_status(&dir);
+            if status.is_ok() {
+                println!("Container setup: OK");
+            } else {
+                println!("Container setup: INCOMPLETE (run `peppy container setup`)");
+            }
         }
         Err(e) => {
             println!("Container setup: ERROR ({e})");
@@ -28,7 +28,7 @@ fn print_container_setup_status() {
 
 #[cfg(not(target_os = "linux"))]
 fn print_container_setup_status() {
-    println!("Container setup: OK (macOS — no setuid required)");
+    println!("Container setup: OK (macOS — runs via Lima VM)");
 }
 
 // No need for an excessive timeout here
