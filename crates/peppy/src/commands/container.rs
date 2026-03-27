@@ -38,23 +38,30 @@ fn status() -> Result<()> {
         Error::ExecutionFailed(format!("Could not locate Apptainer installation: {e}"))
     })?;
 
-    let status = containers::check_setup_status(&apptainer_dir)
-        .map_err(|e| Error::ExecutionFailed(format!("{e}")))?;
+    let status = containers::check_setup_status(&apptainer_dir);
 
     println!("Container prerequisites");
     println!("----------------------");
     println!(
-        "  starter-suid ownership : {}",
-        if status.suid_ok { "OK" } else { "FAILED" }
-    );
-    println!(
-        "  config dir ownership   : {}",
-        if status.conf_ok { "OK" } else { "FAILED" }
+        "  newuidmap              : {}",
+        if status.newuidmap_ok {
+            "OK"
+        } else {
+            "FAILED (install uidmap package)"
+        }
     );
     if status.apparmor_restricted {
         println!(
             "  AppArmor profile       : {}",
             if status.apparmor_ok { "OK" } else { "FAILED" }
+        );
+        println!(
+            "  AppArmor profile loaded: {}",
+            if status.apparmor_loaded {
+                "OK"
+            } else {
+                "FAILED"
+            }
         );
     } else {
         println!("  AppArmor profile       : not required");
@@ -74,8 +81,8 @@ fn status() -> Result<()> {
 fn status() -> Result<()> {
     println!("Container prerequisites");
     println!("----------------------");
-    println!("  Apptainer setuid checks are only required on Linux.");
-    println!("  On macOS, containers run inside a Lima VM (no setuid needed).");
+    println!("  Apptainer user namespace checks are only required on Linux.");
+    println!("  On macOS, containers run inside a Lima VM (no setup needed).");
     Ok(())
 }
 
@@ -85,8 +92,7 @@ fn setup() -> Result<()> {
         Error::ExecutionFailed(format!("Could not locate Apptainer installation: {e}"))
     })?;
 
-    let status = containers::check_setup_status(&apptainer_dir)
-        .map_err(|e| Error::ExecutionFailed(format!("{e}")))?;
+    let status = containers::check_setup_status(&apptainer_dir);
 
     if status.is_ok() {
         println!("All container prerequisites are already met. Nothing to do.");
@@ -94,14 +100,13 @@ fn setup() -> Result<()> {
     }
 
     println!("The following fixes are needed:");
-    if !status.suid_ok {
-        println!("  - Set setuid permissions on Apptainer starter binary");
-    }
-    if !status.conf_ok {
-        println!("  - Set root ownership on Apptainer configuration directory");
+    if !status.newuidmap_ok {
+        println!("  - Install uidmap package (provides newuidmap for fakeroot)");
     }
     if status.apparmor_restricted && !status.apparmor_ok {
-        println!("  - Install AppArmor profile for Apptainer starter-suid");
+        println!("  - Install/update AppArmor profile for Apptainer starter");
+    } else if status.apparmor_restricted && !status.apparmor_loaded {
+        println!("  - Load AppArmor profile for Apptainer starter into the kernel");
     }
     println!();
 
@@ -141,8 +146,7 @@ fn setup() -> Result<()> {
     }
 
     // Re-check to confirm
-    let recheck = containers::check_setup_status(&apptainer_dir)
-        .map_err(|e| Error::ExecutionFailed(format!("{e}")))?;
+    let recheck = containers::check_setup_status(&apptainer_dir);
 
     if recheck.is_ok() {
         println!();
@@ -158,6 +162,6 @@ fn setup() -> Result<()> {
 
 #[cfg(not(target_os = "linux"))]
 fn setup() -> Result<()> {
-    println!("No setup needed. On macOS, containers run inside a Lima VM (no setuid required).");
+    println!("No setup needed. On macOS, containers run inside a Lima VM (no setup required).");
     Ok(())
 }

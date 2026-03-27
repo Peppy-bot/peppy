@@ -204,8 +204,7 @@ mod zenoh_build {
                     "cargo:warning=Using cached zenohd binary from {:?}",
                     cached_zenoh_path
                 );
-                std::fs::copy(&cached_zenoh_path, &zenoh_binary_path)
-                    .expect("Failed to copy cached zenohd binary");
+                build_helpers::copy_if_changed(&cached_zenoh_path, zenoh_binary_path.as_ref());
             } else if let Some(expected_hash) = checksums.get(&target) {
                 // Download pre-built binary (checksum available for this target)
                 let url = format!(

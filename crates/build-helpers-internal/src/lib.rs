@@ -1,6 +1,6 @@
-use std::io::Read;
+use std::io::{BufRead, Read};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 /// Returns a cache directory under `~/.peppy/tmp/{suffix}`, creating it if needed.
 pub fn cache_dir(suffix: &str) -> PathBuf {
@@ -35,6 +35,69 @@ pub fn run_command(command: &mut Command, description: &str) -> bool {
             println!("cargo:warning=Failed to {description}: {err}");
             false
         }
+    }
+}
+
+/// Output from a streamed command execution.
+pub struct CommandOutput {
+    pub success: bool,
+    pub stdout: String,
+    pub stderr: String,
+}
+
+/// Runs a command, streaming its stdout and stderr as `cargo:warning=` lines.
+///
+/// Each output line is forwarded as `cargo:warning=[{label}] {line}` so the
+/// user sees real-time progress during long-running build script operations.
+/// The full captured stdout and stderr are returned for post-hoc error reporting.
+pub fn run_command_streaming(command: &mut Command, label: &str) -> CommandOutput {
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+
+    let mut child = match command.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            println!("cargo:warning=[{label}] Failed to spawn: {e}");
+            return CommandOutput {
+                success: false,
+                stdout: String::new(),
+                stderr: e.to_string(),
+            };
+        }
+    };
+
+    // Read stdout and stderr on separate threads to avoid deadlocks.
+    // If both are read sequentially, a child that fills one pipe buffer
+    // while we're blocked reading the other will hang indefinitely.
+    fn stream_pipe(
+        pipe: impl Read + Send + 'static,
+        label: String,
+    ) -> std::thread::JoinHandle<String> {
+        std::thread::spawn(move || {
+            let mut captured = String::new();
+            for line in std::io::BufReader::new(pipe).lines().map_while(Result::ok) {
+                println!("cargo:warning=[{}] {}", label, line);
+                captured.push_str(&line);
+                captured.push('\n');
+            }
+            captured
+        })
+    }
+
+    let stderr_thread = stream_pipe(child.stderr.take().unwrap(), label.to_string());
+    let stdout_thread = stream_pipe(child.stdout.take().unwrap(), label.to_string());
+
+    let stdout_captured = stdout_thread.join().unwrap_or_default();
+    let stderr_captured = stderr_thread.join().unwrap_or_default();
+    let status = child.wait().expect("Failed to wait for child process");
+
+    if !status.success() {
+        println!("cargo:warning=[{label}] Command failed with exit status: {status}");
+    }
+
+    CommandOutput {
+        success: status.success(),
+        stdout: stdout_captured,
+        stderr: stderr_captured,
     }
 }
 
@@ -91,6 +154,51 @@ pub fn verify_sha256(path: &Path, expected: &str, label: &str) -> bool {
         );
         false
     }
+}
+
+/// Write `contents` to `path` only if the file does not already contain identical data.
+///
+/// Avoids bumping the file's mtime when content is unchanged, which prevents
+/// cargo from detecting a spurious change via `rerun-if-changed` or
+/// `include!`/`include_bytes!` tracking.
+///
+/// Returns `true` if the file was actually written (content changed or file was new).
+pub fn write_if_changed(path: &Path, contents: &[u8]) -> bool {
+    if std::fs::read(path).is_ok_and(|existing| existing == contents) {
+        return false;
+    }
+    std::fs::write(path, contents).unwrap_or_else(|e| {
+        panic!("Failed to write {}: {}", path.display(), e);
+    });
+    true
+}
+
+/// Copy `src` to `dst` only if `dst` does not exist or differs in size/content.
+///
+/// Avoids bumping the destination's mtime when the content is unchanged,
+/// preventing cargo from detecting a spurious change and recompiling dependents.
+///
+/// Returns `true` if the copy was performed.
+pub fn copy_if_changed(src: &Path, dst: &Path) -> bool {
+    if dst.exists()
+        && let Ok(src_meta) = std::fs::metadata(src)
+        && let Ok(dst_meta) = std::fs::metadata(dst)
+        && src_meta.len() == dst_meta.len()
+        && let Ok(s) = std::fs::read(src)
+        && let Ok(d) = std::fs::read(dst)
+        && s == d
+    {
+        return false;
+    }
+    std::fs::copy(src, dst).unwrap_or_else(|e| {
+        panic!(
+            "Failed to copy {} to {}: {}",
+            src.display(),
+            dst.display(),
+            e
+        );
+    });
+    true
 }
 
 /// Embed the `PEPPY_GIT_TAG` environment variable into the binary at compile time.
@@ -215,23 +323,11 @@ pub fn cargo_install_binary(
     ])
     .env("CARGO_TARGET_DIR", &cargo_target_dir);
 
-    let output = cmd.output();
-    match &output {
-        Ok(o) if o.status.success() => {}
-        Ok(o) => {
-            let stderr = String::from_utf8_lossy(&o.stderr);
-            println!(
-                "cargo:warning=cargo install {crate_spec} failed (exit: {}): {}",
-                o.status, stderr
-            );
-            std::fs::remove_dir_all(&install_root).ok();
-            return None;
-        }
-        Err(e) => {
-            println!("cargo:warning=Failed to run cargo install: {e}");
-            std::fs::remove_dir_all(&install_root).ok();
-            return None;
-        }
+    let label = format!("cargo-install-{name}");
+    let output = run_command_streaming(&mut cmd, &label);
+    if !output.success {
+        std::fs::remove_dir_all(&install_root).ok();
+        return None;
     }
 
     let built_binary = install_root.join("bin").join(name);
@@ -256,4 +352,43 @@ pub fn cargo_install_binary(
 
     println!("cargo:warning=Successfully compiled and cached {name} {version} for {target}");
     Some(cached_binary)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn streaming_captures_stdout() {
+        let output = run_command_streaming(Command::new("echo").arg("hello world"), "test-echo");
+        assert!(output.success);
+        assert!(output.stdout.contains("hello world"));
+    }
+
+    #[test]
+    fn streaming_captures_stderr() {
+        let output = run_command_streaming(
+            Command::new("bash").args(["-c", "echo error-output >&2"]),
+            "test-stderr",
+        );
+        assert!(output.success);
+        assert!(output.stderr.contains("error-output"));
+    }
+
+    #[test]
+    fn streaming_reports_failure() {
+        let output = run_command_streaming(&mut Command::new("false"), "test-fail");
+        assert!(!output.success);
+    }
+
+    #[test]
+    fn streaming_handles_mixed_output() {
+        let output = run_command_streaming(
+            Command::new("bash").args(["-c", "echo out-line; echo err-line >&2"]),
+            "test-mixed",
+        );
+        assert!(output.success);
+        assert!(output.stdout.contains("out-line"));
+        assert!(output.stderr.contains("err-line"));
+    }
 }
