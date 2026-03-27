@@ -25,6 +25,181 @@ When you add a variant, peppy:
 
 Only one variant (or the root node itself) can be active in the stack at a time — adding a variant replaces any previous entry for that `name:tag`.
 
+## When to use variants
+
+A repository of variants typically falls into one of two patterns, depending on whether every implementation shares the same interface.
+
+### Same feature, different implementations
+
+When multiple implementations serve the same role in the system, they share an identical interface. The rest of the stack does not need to know which implementation is active — it talks to the node through the same topics, services, and actions regardless.
+
+This is the core use case for peppy variants: one root node defines the manifest and interfaces, and each variant supplies only a runtime.
+
+**Example — depth camera drivers:**
+
+A `depth_camera` node ships a default driver and declares variants for other hardware. Every variant publishes the same `depth_image` and `point_cloud` topics, so downstream nodes consume depth data without caring which physical sensor is behind it.
+
+```
+depth_camera/             ← root node
+├── peppy.json5           ← manifest + interfaces + default runtime
+├── realsense/            ← variant (runtime only)
+│   └── peppy.json5
+├── zed/                  ← variant (runtime only)
+│   └── peppy.json5
+└── oak_d/                ← variant (runtime only)
+    └── peppy.json5
+```
+
+```json5
+// depth_camera/peppy.json5 (root node)
+{
+  schema_version: 1,
+  manifest: {
+    name: "depth_camera",
+    tag: "0.1.0",
+    variants: [
+      { name: "realsense", source: { local: "./realsense" } },
+      { name: "zed", source: { local: "./zed" } },
+      { name: "oak_d", source: { local: "./oak_d" } },
+    ],
+  },
+  interfaces: {
+    topics: {
+      emits: [
+        {
+          name: "depth_image",
+          qos_profile: "sensor_data",
+          message_format: {
+            width: "u32",
+            height: "u32",
+            encoding: "string",
+            data: { $type: "array", $items: "u8" },
+          },
+        },
+        {
+          name: "point_cloud",
+          qos_profile: "sensor_data",
+          message_format: {
+            points: {
+              $type: "array",
+              $items: { x: "f32", y: "f32", z: "f32" },
+            },
+          },
+        },
+      ],
+    },
+  },
+  runtime: {
+    language: "rust",
+    add_cmd: ["cargo", "build", "--release"],
+    start_cmd: ["./target/release/depth_camera"],
+  },
+}
+```
+
+Because every variant exposes `depth_image` and `point_cloud` with the same message formats, they are interchangeable — swap the active variant without touching any other node in the stack.
+
+### Same function, different robots
+
+Sometimes a repository implements the same function — for example a robot brain — but each implementation targets a **different robot**. Because each robot has different joints, sensors, and capabilities, the interfaces necessarily differ. Within the repository these are independent nodes, not variants of each other.
+
+However, each node is designed to be **consumed as a variant** in its target robot's project. A standard peppy node can serve as a variant in another project as long as its interfaces match the root node's interfaces. The repository is a collection of variant sources for different downstream projects, sharing common code.
+
+:::note
+Any peppy node can be used as a variant of another node — it just needs matching interfaces. The nodes below are independent within their repository but are each referenced as a variant source from a different robot project.
+:::
+
+**Example — GR00T brain for multiple robots:**
+
+A GR00T brain repository contains implementations for different robot platforms. Each has its own joint configuration and sensor layout, so they define different interfaces.
+
+```
+groot_brain/
+├── shared/                ← common code used by all implementations
+├── openarm01/             ← full node (manifest + interfaces + runtime)
+│   └── peppy.json5
+├── unitree_g1/            ← full node (manifest + interfaces + runtime)
+│   └── peppy.json5
+└── 1x/                    ← full node (manifest + interfaces + runtime)
+    └── peppy.json5
+```
+
+Each node has its own manifest and interfaces tailored to its target robot:
+
+```json5
+// groot_brain/openarm01/peppy.json5 — a standalone node
+{
+  schema_version: 1,
+  manifest: {
+    name: "openarm01_brain",
+    tag: "0.1.0",
+  },
+  interfaces: {
+    topics: {
+      emits: [
+        {
+          name: "joint_commands",
+          qos_profile: "sensor_data",
+          message_format: {
+            // OpenArm01 has 6 joints
+            positions: { $type: "array", $items: "f64", $length: 6 },
+          },
+        },
+      ],
+    },
+  },
+  runtime: {
+    language: "python",
+    add_cmd: ["uv", "sync"],
+    start_cmd: ["uv", "run", "openarm01_brain"],
+  },
+}
+// unitree_g1 and 1x each have their own peppy.json5 with
+// different joint counts, sensors, and message formats.
+```
+
+A downstream OpenArm01 robot project can then reference this node as a variant of its own `brain` node:
+
+```json5
+// openarm01_robot/brain/peppy.json5 (root node in the robot project)
+{
+  schema_version: 1,
+  manifest: {
+    name: "brain",
+    tag: "0.1.0",
+    variants: [
+      {
+        name: "groot",
+        source: {
+          repo: "https://github.com/example/groot-brain.git",
+          path: "openarm01",
+          ref: "main",
+        },
+      },
+    ],
+  },
+  // Same interfaces as openarm01_brain — variant matching succeeds
+  interfaces: {
+    topics: {
+      emits: [
+        {
+          name: "joint_commands",
+          qos_profile: "sensor_data",
+          message_format: {
+            positions: { $type: "array", $items: "f64", $length: 6 },
+          },
+        },
+      ],
+    },
+  },
+  runtime: {
+    language: "rust",
+    add_cmd: ["cargo", "build", "--release"],
+    start_cmd: ["./target/release/brain"],
+  },
+}
+```
+
 ## Defining variants
 
 Variants are declared in the root node's `manifest.variants` array. Each entry has a `name` and a `source`:
