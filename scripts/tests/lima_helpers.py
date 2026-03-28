@@ -144,7 +144,7 @@ def lima_shell(
     cmd = [
         "limactl",
         "shell",
-        "--workdir=/tmp",
+        "--workdir=/var/tmp",
         instance,
         "--",
         "bash",
@@ -241,7 +241,7 @@ def archive_guest_path(config: VMConfig) -> str:
 
 def install_cmd(config: VMConfig, home: str, *, extra_env: str = "") -> str:
     """Build the install.sh invocation command for the guest."""
-    env_parts = f"PEPPY_HOME={home} PEPPY_NO_SERVICE_INSTALL=1"
+    env_parts = f"TMPDIR=/var/tmp PEPPY_HOME={home} PEPPY_NO_SERVICE_INSTALL=1"
     if extra_env:
         env_parts = f"{env_parts} {extra_env}"
     return f"{env_parts} sh /var/tmp/peppy-test/install.sh {archive_guest_path(config)}"
