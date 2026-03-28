@@ -172,7 +172,7 @@ pub(crate) async fn resolve_variant(
         schema_version: root_config.schema_version,
         manifest: root_config.manifest.clone(),
         interfaces: root_config.interfaces.clone(),
-        runtime: variant_config.runtime,
+        runtime: Some(variant_config.runtime),
     };
 
     Ok(ResolvedVariant {

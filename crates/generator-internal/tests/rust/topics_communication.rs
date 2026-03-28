@@ -154,7 +154,7 @@ fn main() -> Result<()> {
     // Update the peppy node config to include the parameters schema
     let mut node_config: config::node::NodeConfig =
         serde_json5::from_str(&fs::read_to_string(&peppy_node_config_path).unwrap()).unwrap();
-    node_config.runtime.parameters = emitter_parameters;
+    node_config.runtime.as_mut().unwrap().parameters = emitter_parameters;
     fs::write(
         &peppy_node_config_path,
         serde_json5::to_string(&node_config).unwrap(),

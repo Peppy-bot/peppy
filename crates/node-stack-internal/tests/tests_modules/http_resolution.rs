@@ -127,7 +127,7 @@ fn http_bundle_is_cloned_and_same_tag_updates_code() {
     let start_cmd_v1 = planned
         .node()
         .expect("resolved node config")
-        .runtime
+        .runtime_ref()
         .start_cmd
         .as_ref()
         .unwrap()
@@ -156,7 +156,7 @@ fn http_bundle_is_cloned_and_same_tag_updates_code() {
     let start_cmd_v2 = planned
         .node()
         .expect("resolved node config after update")
-        .runtime
+        .runtime_ref()
         .start_cmd
         .as_ref()
         .unwrap()

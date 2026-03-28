@@ -312,6 +312,72 @@ Variants are declared in the root node's `manifest.variants` array. Each entry h
 }
 ```
 
+## Default variant
+
+A variant named `"default"` has special meaning: it is the node's **primary implementation**, relocated to a separate directory. When a `default` variant is declared, the root `peppy.json5` omits the `runtime` section entirely — the runtime comes from the default variant instead.
+
+This is useful when you want every implementation (including the primary one) to live under a `variants/` subdirectory for a cleaner project layout:
+
+```
+uvc_camera/                   ← root node (no runtime)
+├── peppy.json5               ← manifest + interfaces only
+└── variants/
+    ├── default/              ← default variant (runtime)
+    │   └── peppy.json5
+    └── mujoco/               ← another variant (runtime)
+        └── peppy.json5
+```
+
+```json5
+// uvc_camera/peppy.json5 (root node — no runtime)
+{
+  schema_version: 1,
+  manifest: {
+    name: "uvc_camera",
+    tag: "0.1.0",
+    variants: [
+      { name: "default", source: { local: "./variants/default" } },
+      { name: "mujoco", source: { local: "./variants/mujoco" } },
+    ],
+  },
+  interfaces: {
+    topics: {
+      emits: [
+        {
+          name: "image",
+          qos_profile: "sensor_data",
+          message_format: {
+            width: "u32",
+            height: "u32",
+            encoding: "string",
+            data: { $type: "array", $items: "u8" },
+          },
+        },
+      ],
+    },
+  },
+  // No `runtime` — it comes from the default variant
+}
+```
+
+```json5
+// uvc_camera/variants/default/peppy.json5
+{
+  schema_version: 1,
+  runtime: {
+    language: "rust",
+    add_cmd: ["cargo", "build", "--release"],
+    start_cmd: ["./target/release/uvc_camera"],
+  },
+}
+```
+
+When you run `peppy node add ./uvc_camera` without specifying a `--variant`, the default variant is resolved automatically. You can still select a different variant explicitly with `peppy node add --variant mujoco ./uvc_camera`.
+
+:::note
+When a `default` variant is present, the root `peppy.json5` **must not** define a `runtime` section — the two are mutually exclusive. Conversely, if no `default` variant is declared, the `runtime` section is required as usual.
+:::
+
 ## Variant config
 
 A variant's `peppy.json5` only needs a `schema_version` and a `runtime`. The `manifest` and `interfaces` fields are optional:

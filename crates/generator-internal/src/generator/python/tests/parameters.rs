@@ -213,7 +213,7 @@ fn generate_parameters_struct() {
     fs::create_dir_all(&output_dir).unwrap();
 
     let mut generator = PythonGenerator::new();
-    generator.set_parameters(node_config.runtime.parameters);
+    generator.set_parameters(node_config.runtime.unwrap().parameters);
     generator
         .build(
             &output_dir,
@@ -295,7 +295,7 @@ fn generate_parameters_struct_avoids_nested_class_name_collisions() {
     fs::create_dir_all(&output_dir).unwrap();
 
     let mut generator = PythonGenerator::new();
-    generator.set_parameters(node_config.runtime.parameters);
+    generator.set_parameters(node_config.runtime.unwrap().parameters);
     generator
         .build(
             &output_dir,
@@ -380,7 +380,7 @@ fn reject_parameters_with_invalid_field_names() {
     let node_config: NodeConfig = serde_json5::from_str(INVALID_PARAMETERS_NODE_EXAMPLE)
         .expect("failed to parse INVALID_PARAMETERS_NODE_EXAMPLE into NodeConfig");
 
-    let result = generate_parameters_struct(&node_config.runtime.parameters);
+    let result = generate_parameters_struct(&node_config.runtime.unwrap().parameters);
 
     assert!(
         result.is_err(),
@@ -414,7 +414,7 @@ fn reject_python_parameters_with_unsupported_spec_type() {
             .expect("failed to parse UNSUPPORTED_PARAMETERS_VARIANT_NODE_EXAMPLE into NodeConfig");
 
     let mut generator = PythonGenerator::new();
-    generator.set_parameters(node_config.runtime.parameters);
+    generator.set_parameters(node_config.runtime.unwrap().parameters);
     let err = generator
         .build(
             &output_dir,
@@ -446,7 +446,7 @@ fn reject_python_parameters_with_top_level_unsupported_spec_type() {
     .expect("failed to parse UNSUPPORTED_TOP_LEVEL_PARAMETER_VARIANT_NODE_EXAMPLE into NodeConfig");
 
     let mut generator = PythonGenerator::new();
-    generator.set_parameters(node_config.runtime.parameters);
+    generator.set_parameters(node_config.runtime.unwrap().parameters);
     let err = generator
         .build(
             &output_dir,
@@ -476,7 +476,7 @@ fn reject_python_parameters_with_unknown_type_name() {
         .expect("failed to parse UNKNOWN_PARAMETER_TYPE_NODE_EXAMPLE into NodeConfig");
 
     let mut generator = PythonGenerator::new();
-    generator.set_parameters(node_config.runtime.parameters);
+    generator.set_parameters(node_config.runtime.unwrap().parameters);
     let err = generator
         .build(
             &output_dir,

@@ -3581,7 +3581,7 @@ async fn listen_for_node_add_variant_local_source() {
         "interfaces should be inherited from root"
     );
     assert_eq!(
-        config.runtime.start_cmd.as_ref().unwrap(),
+        config.runtime_ref().start_cmd.as_ref().unwrap(),
         &vec!["sleep".to_string(), "5".to_string()],
         "runtime should come from the variant"
     );
@@ -3990,4 +3990,200 @@ async fn listen_for_node_add_variant_manifest_ignored_warning() {
         .expect("node should be in stack under root's name:tag");
     assert_eq!(entity.config().manifest.name.as_str(), "test_node");
     assert_eq!(entity.config().manifest.tag, "0.1.0");
+}
+
+/// When a root node defines a "default" variant and omits `runtime`, adding
+/// the node without `--variant` should auto-resolve the default variant.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_add_default_variant_auto_resolved() {
+    const ROOT_NODE_NAME: &str = "uvc_camera";
+    const ROOT_NODE_TAG: &str = "0.1.0";
+
+    let started_core_node = start_core_node_with_mock_messenger().await;
+    let node_stack = started_core_node.node_stack.clone();
+
+    let parent_dir = tempfile::tempdir().expect("failed to create parent dir");
+    let root_dir = parent_dir.path().join("uvc_camera");
+    let default_variant_dir = parent_dir
+        .path()
+        .join("uvc_camera")
+        .join("variants")
+        .join("default");
+    let mujoco_variant_dir = parent_dir
+        .path()
+        .join("uvc_camera")
+        .join("variants")
+        .join("mujoco");
+    std::fs::create_dir_all(&root_dir).unwrap();
+    std::fs::create_dir_all(&default_variant_dir).unwrap();
+    std::fs::create_dir_all(&mujoco_variant_dir).unwrap();
+
+    // Root config: has a "default" variant, NO runtime
+    let root_config = r#"{
+        schema_version: 1,
+        manifest: {
+            name: "uvc_camera",
+            tag: "0.1.0",
+            variants: [
+                { name: "default", source: { local: "./variants/default" } },
+                { name: "mujoco", source: { local: "./variants/mujoco" } },
+            ]
+        },
+        interfaces: {
+            topics: {
+                emits: [
+                    { name: "image", qos_profile: "sensor_data", message_format: { width: "u32", height: "u32" } }
+                ]
+            }
+        }
+    }"#;
+    write_peppy_json5(&root_dir, root_config);
+
+    // Default variant config
+    let default_variant_config = r#"{
+        schema_version: 1,
+        runtime: {
+            language: "rust",
+            start_cmd: ["sleep", "7"]
+        }
+    }"#;
+    write_peppy_json5(&default_variant_dir, default_variant_config);
+
+    // Mujoco variant config
+    let mujoco_variant_config = r#"{
+        schema_version: 1,
+        runtime: {
+            language: "python",
+            start_cmd: ["sleep", "3"]
+        }
+    }"#;
+    write_peppy_json5(&mujoco_variant_dir, mujoco_variant_config);
+
+    // Add WITHOUT specifying a variant — should auto-resolve "default"
+    let add_result = send_node_add_and_wait(
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        root_dir.as_path(),
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        None,
+    )
+    .await
+    .expect("node_add with default variant should succeed");
+
+    assert!(
+        add_result.success,
+        "default variant node_add should succeed, got error: {:?}",
+        add_result.error_message
+    );
+
+    assert!(node_stack.contains(ROOT_NODE_NAME, ROOT_NODE_TAG));
+
+    let entity = node_stack
+        .find(ROOT_NODE_NAME, ROOT_NODE_TAG)
+        .expect("node should exist in stack");
+    let config = entity.config();
+    assert!(
+        config.interfaces.topics.is_some(),
+        "interfaces should be inherited from root"
+    );
+    assert_eq!(
+        config.runtime_ref().start_cmd.as_ref().unwrap(),
+        &vec!["sleep".to_string(), "7".to_string()],
+        "runtime should come from the default variant"
+    );
+}
+
+/// When a root node has a "default" variant but an explicit `--variant mujoco`
+/// is requested, the explicit variant should be used instead.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_add_default_variant_explicit_other() {
+    const ROOT_NODE_NAME: &str = "uvc_camera2";
+    const ROOT_NODE_TAG: &str = "0.2.0";
+
+    let started_core_node = start_core_node_with_mock_messenger().await;
+    let node_stack = started_core_node.node_stack.clone();
+
+    let parent_dir = tempfile::tempdir().expect("failed to create parent dir");
+    let root_dir = parent_dir.path().join("uvc_camera2");
+    let default_variant_dir = parent_dir
+        .path()
+        .join("uvc_camera2")
+        .join("variants")
+        .join("default");
+    let mujoco_variant_dir = parent_dir
+        .path()
+        .join("uvc_camera2")
+        .join("variants")
+        .join("mujoco");
+    std::fs::create_dir_all(&root_dir).unwrap();
+    std::fs::create_dir_all(&default_variant_dir).unwrap();
+    std::fs::create_dir_all(&mujoco_variant_dir).unwrap();
+
+    let root_config = r#"{
+        schema_version: 1,
+        manifest: {
+            name: "uvc_camera2",
+            tag: "0.2.0",
+            variants: [
+                { name: "default", source: { local: "./variants/default" } },
+                { name: "mujoco", source: { local: "./variants/mujoco" } },
+            ]
+        },
+        interfaces: {
+            topics: {
+                emits: [
+                    { name: "image", qos_profile: "sensor_data", message_format: { width: "u32", height: "u32" } }
+                ]
+            }
+        }
+    }"#;
+    write_peppy_json5(&root_dir, root_config);
+
+    let default_variant_config = r#"{
+        schema_version: 1,
+        runtime: {
+            language: "rust",
+            start_cmd: ["sleep", "7"]
+        }
+    }"#;
+    write_peppy_json5(&default_variant_dir, default_variant_config);
+
+    let mujoco_variant_config = r#"{
+        schema_version: 1,
+        runtime: {
+            language: "python",
+            start_cmd: ["sleep", "3"]
+        }
+    }"#;
+    write_peppy_json5(&mujoco_variant_dir, mujoco_variant_config);
+
+    // Add with explicit --variant mujoco
+    let add_result = send_node_add_and_wait_with_variant(
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        root_dir.as_path(),
+        "mujoco",
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        None,
+    )
+    .await
+    .expect("node_add with explicit mujoco variant should succeed");
+
+    assert!(
+        add_result.success,
+        "explicit variant node_add should succeed, got error: {:?}",
+        add_result.error_message
+    );
+
+    let entity = node_stack
+        .find(ROOT_NODE_NAME, ROOT_NODE_TAG)
+        .expect("node should exist in stack");
+    let config = entity.config();
+    assert_eq!(
+        config.runtime_ref().start_cmd.as_ref().unwrap(),
+        &vec!["sleep".to_string(), "3".to_string()],
+        "runtime should come from the mujoco variant, not the default"
+    );
 }

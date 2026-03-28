@@ -168,7 +168,7 @@ fn git_repo_is_cloned_and_same_tag_updates_code() {
     let start_cmd_v1 = deployment
         .node()
         .expect("resolved node config")
-        .runtime
+        .runtime_ref()
         .start_cmd
         .as_ref()
         .unwrap()
@@ -212,7 +212,7 @@ fn git_repo_is_cloned_and_same_tag_updates_code() {
     let start_cmd_v2 = deployment
         .node()
         .expect("resolved node config after update")
-        .runtime
+        .runtime_ref()
         .start_cmd
         .as_ref()
         .unwrap()

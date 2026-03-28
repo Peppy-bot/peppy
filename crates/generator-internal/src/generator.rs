@@ -64,10 +64,14 @@ pub fn generate_peppygen_lib(
     let output_dir = node_dir.join(config::consts::PEPPYGEN_OUTPUT_PATH);
     fs::create_dir_all(&output_dir)?;
 
+    let runtime = node_config
+        .runtime
+        .expect("BUG: generate_peppygen_lib called on a config without a runtime");
+
     let result = match language {
         PeppygenLanguage::Rust => {
             let mut rust_generator = RustGenerator::new();
-            rust_generator.set_parameters(node_config.runtime.parameters);
+            rust_generator.set_parameters(runtime.parameters);
             generate_with_backend(
                 rust_generator,
                 &interfaces,
@@ -81,8 +85,8 @@ pub fn generate_peppygen_lib(
         }
         PeppygenLanguage::Python => {
             let mut python_generator = PythonGenerator::new();
-            python_generator.set_parameters(node_config.runtime.parameters);
-            python_generator.set_container(node_config.runtime.container.is_some());
+            python_generator.set_parameters(runtime.parameters);
+            python_generator.set_container(runtime.container.is_some());
             generate_with_backend(
                 python_generator,
                 &interfaces,

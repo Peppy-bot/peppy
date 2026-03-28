@@ -697,7 +697,7 @@ fn node_add_command_with_variant_succeeds() {
     // Read the generated config, add a variant declaration, and disable add_cmd
     let mut root_cfg =
         config::node::NodeConfigParser::from_path(&root_peppy_json5).expect("should parse config");
-    root_cfg.runtime.add_cmd = None;
+    root_cfg.runtime.as_mut().unwrap().add_cmd = None;
     root_cfg.manifest.variants = Some(vec![config::node::Variant {
         name: config::node::Name::new("mock").expect("valid name"),
         source: config::source::DeploymentSource::Local(config::source::DeploymentLocalSource {

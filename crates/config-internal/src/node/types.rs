@@ -69,7 +69,32 @@ pub struct NodeConfig {
     pub manifest: Manifest,
     #[serde(default)]
     pub interfaces: Interfaces,
-    pub runtime: Runtime,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<Runtime>,
+}
+
+/// Name reserved for the default variant.
+pub const DEFAULT_VARIANT_NAME: &str = "default";
+
+impl NodeConfig {
+    /// Returns a reference to the runtime, panicking if absent.
+    ///
+    /// Only call this after variant resolution guarantees that `runtime` is `Some`
+    /// (either from the root config itself or merged from the resolved default variant).
+    pub fn runtime_ref(&self) -> &Runtime {
+        self.runtime.as_ref().expect(
+            "BUG: runtime accessed before variant resolution on a config with a default variant",
+        )
+    }
+
+    /// Returns `true` if the manifest contains a variant named `"default"`.
+    pub fn has_default_variant(&self) -> bool {
+        self.manifest.variants.as_ref().is_some_and(|variants| {
+            variants
+                .iter()
+                .any(|v| v.name.as_str() == DEFAULT_VARIANT_NAME)
+        })
+    }
 }
 
 /// Validated node name. Lowercase letters, digits, '_' and '-' only.
@@ -962,7 +987,7 @@ impl PeppyNodeConfig for NodeConfig {
     }
 
     fn runtime(&self) -> &Runtime {
-        &self.runtime
+        self.runtime_ref()
     }
 }
 

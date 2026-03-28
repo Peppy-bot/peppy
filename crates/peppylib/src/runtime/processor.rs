@@ -46,7 +46,7 @@ impl Processor {
             serde_json5::from_str(&std::fs::read_to_string(peppy_config.as_ref())?)?;
         Self::validate_parameter_types(
             &runtime_config.node_instance.arguments,
-            &node_config.runtime.parameters,
+            &node_config.runtime_ref().parameters,
         )?;
 
         Ok(Self { runtime_config })
@@ -75,7 +75,7 @@ impl Processor {
             None => NodeArguments::new(),
         };
 
-        Self::validate_required_parameters(&arguments, &node_config.runtime.parameters)?;
+        Self::validate_required_parameters(&arguments, &node_config.runtime_ref().parameters)?;
 
         let node_name: String = config
             .node_name

@@ -246,7 +246,7 @@ async fn handle_node_sync_request_inner(
 
                 // Collect consumed interfaces with resolved message formats
                 let interfaces = collect_consumed_interfaces(&node_config, node_stack);
-                let language = node_config.runtime.language;
+                let language = node_config.runtime.as_ref().map(|r| r.language);
                 let variants = node_config.manifest.variants.clone();
                 let root_manifest = node_config.manifest.clone();
                 let root_interfaces = node_config.interfaces.clone();
@@ -277,39 +277,42 @@ async fn handle_node_sync_request_inner(
     let consumed_interfaces_for_variants = consumed_interfaces.clone();
     let peppy_dirs_for_variants = peppy_dirs.clone();
 
-    match tokio::task::spawn_blocking(move || -> Result<()> {
-        remove_previous_peppy_dir(&node_root_dir);
-        generate_peppygen_for_node(
-            language,
-            &node_root_dir,
-            consumed_interfaces,
-            &git_hash,
-            &peppy_dirs,
-            generator::CrateDeployMode::default(),
-        )
-    })
-    .await
-    {
-        Ok(Ok(())) => {}
-        Ok(Err(crate::Error::GeneratorError(e))) => {
-            return NodeSyncResponse::failure(format!("Failed to generate peppygen: {}", e))
+    // Generate peppygen for the root node (skip if runtime is absent, e.g. default-variant nodes).
+    if let Some(language) = language {
+        match tokio::task::spawn_blocking(move || -> Result<()> {
+            remove_previous_peppy_dir(&node_root_dir);
+            generate_peppygen_for_node(
+                language,
+                &node_root_dir,
+                consumed_interfaces,
+                &git_hash,
+                &peppy_dirs,
+                generator::CrateDeployMode::default(),
+            )
+        })
+        .await
+        {
+            Ok(Ok(())) => {}
+            Ok(Err(crate::Error::GeneratorError(e))) => {
+                return NodeSyncResponse::failure(format!("Failed to generate peppygen: {}", e))
+                    .encode();
+            }
+            Ok(Err(crate::Error::Io(e))) => {
+                return NodeSyncResponse::failure(format!("Failed to write git hash file: {}", e))
+                    .encode();
+            }
+            Ok(Err(e)) => {
+                return NodeSyncResponse::failure(format!("Failed to sync node: {}", e)).encode();
+            }
+            Err(e) => {
+                return NodeSyncResponse::failure(format!(
+                    "Failed to generate peppygen (generate task failed): {}",
+                    e
+                ))
                 .encode();
-        }
-        Ok(Err(crate::Error::Io(e))) => {
-            return NodeSyncResponse::failure(format!("Failed to write git hash file: {}", e))
-                .encode();
-        }
-        Ok(Err(e)) => {
-            return NodeSyncResponse::failure(format!("Failed to sync node: {}", e)).encode();
-        }
-        Err(e) => {
-            return NodeSyncResponse::failure(format!(
-                "Failed to generate peppygen (generate task failed): {}",
-                e
-            ))
-            .encode();
-        }
-    };
+            }
+        };
+    }
 
     // Sync variants: each variant gets its own .peppy directory using the root's interfaces
     if let Some(variants) = variants {
@@ -353,12 +356,16 @@ async fn handle_node_sync_request_inner(
             let variant_language = variant_config.runtime.language;
 
             // Write a merged NodeConfig (root manifest + root interfaces + variant runtime)
-            // so the generator can read it as a standard NodeConfig
+            // so the generator can read it as a standard NodeConfig.
+            // Strip the variants list — it is no longer relevant once resolved and
+            // would trigger a validation error with a "default" variant + runtime.
+            let mut merged_manifest = root_manifest.clone();
+            merged_manifest.variants = None;
             let merged_config = config::node::NodeConfig {
                 schema_version: root_schema_version,
-                manifest: root_manifest.clone(),
+                manifest: merged_manifest,
                 interfaces: root_interfaces.clone(),
-                runtime: variant_config.runtime,
+                runtime: Some(variant_config.runtime),
             };
             let merged_json5 = serde_json5::to_string(&merged_config)
                 .expect("failed to serialize merged variant config");

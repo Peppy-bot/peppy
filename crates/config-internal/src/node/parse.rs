@@ -45,7 +45,15 @@ impl NodeConfigParser {
     pub fn from_content(content: &str) -> Result<NodeConfig> {
         // Strict schema validation is handled by serde via #[serde(deny_unknown_fields)]
         let config: NodeConfig = serde_json5::from_str(content).map_err(ParsingError::from)?;
-        validate_runtime(&config.runtime)?;
+
+        let has_default = config.has_default_variant();
+        match (&config.runtime, has_default) {
+            (Some(runtime), false) => validate_runtime(runtime)?,
+            (None, true) => { /* runtime comes from default variant */ }
+            (Some(_), true) => return Err(ParsingError::RuntimeWithDefaultVariant.into()),
+            (None, false) => return Err(ParsingError::MissingRuntime.into()),
+        }
+
         Ok(config)
     }
 }
@@ -90,10 +98,10 @@ mod tests {
         assert_eq!(config.manifest.name.as_str(), "test_node");
         assert_eq!(config.manifest.tag, "0.1.0");
         assert_eq!(
-            config.runtime.start_cmd.as_ref().unwrap(),
+            config.runtime_ref().start_cmd.as_ref().unwrap(),
             &vec!["./target/release/test_node"]
         );
-        assert!(config.runtime.parameters.is_empty());
+        assert!(config.runtime_ref().parameters.is_empty());
     }
 
     #[test]
@@ -119,9 +127,12 @@ mod tests {
         let config = NodeConfigParser::from_content(json5).unwrap();
         assert_eq!(config.manifest.name.as_str(), "camera_driver");
         assert_eq!(config.manifest.tag, "2.1.0");
-        assert_eq!(config.runtime.language, crate::node::PeppygenLanguage::Rust);
         assert_eq!(
-            config.runtime.start_cmd.as_ref().unwrap(),
+            config.runtime_ref().language,
+            crate::node::PeppygenLanguage::Rust
+        );
+        assert_eq!(
+            config.runtime_ref().start_cmd.as_ref().unwrap(),
             &vec!["./target/release/camera_driver"]
         );
         assert!(config.interfaces.topics.is_some());
@@ -177,8 +188,8 @@ mod tests {
             },
         }"#;
         let config = NodeConfigParser::from_content(json5).unwrap();
-        assert!(config.runtime.start_cmd.is_none());
-        let container = config.runtime.container.as_ref().unwrap();
+        assert!(config.runtime_ref().start_cmd.is_none());
+        let container = config.runtime_ref().container.as_ref().unwrap();
         assert_eq!(container.def_file, "apptainer.def");
     }
 
@@ -314,7 +325,13 @@ mod tests {
         }"#;
         let config =
             NodeConfigParser::from_content(json5).expect("subdirectory mount should be accepted");
-        let mount_paths = config.runtime.container.unwrap().mount_paths.unwrap();
+        let mount_paths = config
+            .runtime
+            .unwrap()
+            .container
+            .unwrap()
+            .mount_paths
+            .unwrap();
         assert_eq!(mount_paths, vec!["/tmp/my_app_data:/tmp/my_app_data:rw"]);
     }
 
@@ -334,7 +351,15 @@ mod tests {
             },
         }"#;
         let config = NodeConfigParser::from_content(json5).expect("no mount_paths should be valid");
-        assert!(config.runtime.container.unwrap().mount_paths.is_none());
+        assert!(
+            config
+                .runtime
+                .unwrap()
+                .container
+                .unwrap()
+                .mount_paths
+                .is_none()
+        );
     }
 
     #[test]
@@ -358,7 +383,13 @@ mod tests {
         }"#;
         let config = NodeConfigParser::from_content(json5)
             .expect("parameter ref in mount path should parse");
-        let mount_paths = config.runtime.container.unwrap().mount_paths.unwrap();
+        let mount_paths = config
+            .runtime
+            .unwrap()
+            .container
+            .unwrap()
+            .mount_paths
+            .unwrap();
         assert_eq!(
             mount_paths,
             vec!["${parameters:device_path}:/dev/video0:rw"]
@@ -389,7 +420,13 @@ mod tests {
         }"#;
         let config = NodeConfigParser::from_content(json5)
             .expect("nested parameter ref in mount path should parse");
-        let mount_paths = config.runtime.container.unwrap().mount_paths.unwrap();
+        let mount_paths = config
+            .runtime
+            .unwrap()
+            .container
+            .unwrap()
+            .mount_paths
+            .unwrap();
         assert_eq!(
             mount_paths,
             vec!["${parameters:video.device_path}:/dev/video0:rw"]
@@ -481,7 +518,13 @@ mod tests {
         }"#;
         let config = NodeConfigParser::from_content(json5)
             .expect("parameter ref source should skip blocked-path check at parse time");
-        let mount_paths = config.runtime.container.unwrap().mount_paths.unwrap();
+        let mount_paths = config
+            .runtime
+            .unwrap()
+            .container
+            .unwrap()
+            .mount_paths
+            .unwrap();
         assert_eq!(mount_paths, vec!["${parameters:path}:/container/data:rw"]);
     }
 
@@ -501,7 +544,7 @@ mod tests {
             },
         }"#;
         let config = NodeConfigParser::from_content(json5).unwrap();
-        let container = config.runtime.container.as_ref().unwrap();
+        let container = config.runtime_ref().container.as_ref().unwrap();
         assert!(container.apptainer_build_extra_args.is_none());
         assert!(container.apptainer_run_extra_args.is_none());
         assert!(container.lima_shell_extra_args.is_none());
@@ -526,7 +569,7 @@ mod tests {
             },
         }"#;
         let config = NodeConfigParser::from_content(json5).unwrap();
-        let container = config.runtime.container.as_ref().unwrap();
+        let container = config.runtime_ref().container.as_ref().unwrap();
         assert_eq!(
             container.apptainer_build_extra_args.as_deref().unwrap(),
             &["--no-setgroups", "--force"]
@@ -560,7 +603,7 @@ mod tests {
             },
         }"#;
         let config = NodeConfigParser::from_content(json5).unwrap();
-        let container = config.runtime.container.as_ref().unwrap();
+        let container = config.runtime_ref().container.as_ref().unwrap();
         assert_eq!(
             container.apptainer_build_extra_args.as_deref().unwrap(),
             &[] as &[String]
@@ -573,5 +616,71 @@ mod tests {
             container.lima_shell_extra_args.as_deref().unwrap(),
             &[] as &[String]
         );
+    }
+
+    #[test]
+    fn test_parse_config_with_default_variant_no_runtime() {
+        let json5 = r#"{
+            schema_version: 1,
+            manifest: {
+                name: "uvc_camera",
+                tag: "0.1.0",
+                variants: [
+                    { name: "default", source: { local: "./variants/default" } },
+                    { name: "mujoco", source: { local: "./variants/mujoco" } },
+                ],
+            },
+            interfaces: {
+                topics: {
+                    emits: [{ name: "image" }],
+                },
+            },
+        }"#;
+        let config = NodeConfigParser::from_content(json5).unwrap();
+        assert_eq!(config.manifest.name.as_str(), "uvc_camera");
+        assert!(config.runtime.is_none());
+        assert!(config.has_default_variant());
+    }
+
+    #[test]
+    fn test_parse_config_with_default_variant_and_runtime_rejected() {
+        let json5 = r#"{
+            schema_version: 1,
+            manifest: {
+                name: "uvc_camera",
+                tag: "0.1.0",
+                variants: [
+                    { name: "default", source: { local: "./variants/default" } },
+                ],
+            },
+            runtime: {
+                language: "rust",
+                start_cmd: ["./target/release/uvc_camera"],
+            },
+        }"#;
+        let result = NodeConfigParser::from_content(json5);
+        assert!(matches!(
+            result.unwrap_err(),
+            Error::Parsing(ParsingError::RuntimeWithDefaultVariant)
+        ));
+    }
+
+    #[test]
+    fn test_parse_config_no_runtime_no_default_variant_rejected() {
+        let json5 = r#"{
+            schema_version: 1,
+            manifest: {
+                name: "uvc_camera",
+                tag: "0.1.0",
+                variants: [
+                    { name: "mujoco", source: { local: "./variants/mujoco" } },
+                ],
+            },
+        }"#;
+        let result = NodeConfigParser::from_content(json5);
+        assert!(matches!(
+            result.unwrap_err(),
+            Error::Parsing(ParsingError::MissingRuntime)
+        ));
     }
 }

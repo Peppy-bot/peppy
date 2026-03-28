@@ -433,7 +433,7 @@ fn validate_instance_parameters(
     deployment: &Deployment,
     node: &NodeConfig,
 ) -> std::result::Result<(), Error> {
-    let expected = parameter_leaf_paths(&node.runtime.parameters);
+    let expected = parameter_leaf_paths(&node.runtime_ref().parameters);
     if expected.is_empty() {
         return Ok(());
     }
@@ -449,7 +449,7 @@ fn validate_instance_parameters(
 
         // Validate parameter types
         if let Err(type_mismatch) =
-            validate_parameter_types(&instance.arguments, &node.runtime.parameters, "")
+            validate_parameter_types(&instance.arguments, &node.runtime_ref().parameters, "")
         {
             return Err(Error::WrongParameterType {
                 deployment: deployment_label.to_string(),

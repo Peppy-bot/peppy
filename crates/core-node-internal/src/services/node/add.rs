@@ -12,7 +12,7 @@ use crate::encoding::{
 use crate::names;
 use chrono::Local;
 use config::consts::{NODE_CONFIG_FILE, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH, PeppyDirs};
-use config::node::{NodeConfig, NodeConfigParser};
+use config::node::{DEFAULT_VARIANT_NAME, NodeConfig, NodeConfigParser};
 use futures::FutureExt;
 use git2::Repository;
 use node_stack::{NodeStack, validate_dependency_specs};
@@ -1002,9 +1002,18 @@ pub(crate) async fn run_node_add(
             }
         };
 
-        // If a variant is specified, resolve it from the root config.
+        // Auto-resolve the default variant when no explicit variant is specified.
+        let effective_variant = match &goal.variant {
+            Some(v) => Some(v.clone()),
+            None if resolved.node_config.has_default_variant() => {
+                Some(NodeSource::Fs(DEFAULT_VARIANT_NAME.into()))
+            }
+            None => None,
+        };
+
+        // If a variant is specified (or auto-resolved), resolve it from the root config.
         let mut variant_cleanup_dir: Option<PathBuf> = None;
-        if let Some(ref variant_source) = goal.variant {
+        if let Some(ref variant_source) = effective_variant {
             let label = variant_label(variant_source);
             match resolve_variant(
                 variant_source,
@@ -1270,7 +1279,7 @@ async fn process_node_add(
     let node_name = node_config.manifest.name.as_str().to_owned();
     let node_tag = node_config.manifest.tag.clone();
     let sccache_injected =
-        super::inject_rust_build_env(&mut env_vars, node_config.runtime.language);
+        super::inject_rust_build_env(&mut env_vars, node_config.runtime_ref().language);
     if sccache_injected {
         let _ = ctx.feedback_tx.send(FeedbackLine {
             stream: FeedbackStream::Stdout,
@@ -1313,11 +1322,16 @@ async fn process_node_add(
     // RAII guard: cleans up the temp working dir on any exit path.
     let working_dir_cleanup = CleanupDir::new(Some(working_dir.clone()));
 
-    // For variant adds, write the merged config (root manifest + interfaces +
-    // variant runtime) into the working directory so the peppygen generator
-    // finds a valid NodeConfig with all required fields.
-    if goal.variant.is_some() {
-        let merged_config_str = serde_json5::to_string(&node_config)
+    // For variant adds (including auto-resolved default variants), write the
+    // merged config (root manifest + interfaces + variant runtime) into the
+    // working directory so the peppygen generator finds a valid NodeConfig.
+    // Strip the variants list from the manifest — it is no longer relevant
+    // once the variant has been resolved and would trigger a validation error
+    // if a "default" variant is present alongside a runtime.
+    if goal.variant.is_some() || node_config.has_default_variant() {
+        let mut write_config = node_config.clone();
+        write_config.manifest.variants = None;
+        let merged_config_str = serde_json5::to_string(&write_config)
             .map_err(|e| format!("Failed to serialize merged variant config: {}", e));
         match merged_config_str {
             Ok(content) => {
@@ -1368,8 +1382,8 @@ async fn process_node_add(
     // Generate the peppygen library in the working directory.
     // Container builds need Copy mode because Apptainer's `%files` copies symlinks
     // as-is — absolute symlinks to the host cache would be broken inside the container.
-    let language = node_config.runtime.language;
-    let deploy_mode = if node_config.runtime.container.is_some() {
+    let language = node_config.runtime_ref().language;
+    let deploy_mode = if node_config.runtime_ref().container.is_some() {
         generator::CrateDeployMode::Copy
     } else {
         generator::CrateDeployMode::Symlink
@@ -1388,7 +1402,7 @@ async fn process_node_add(
         return NodeAddResult::failure(&ctx.log_path, msg);
     }
 
-    let snapshot_path = if let Some(container) = &node_config.runtime.container {
+    let snapshot_path = if let Some(container) = &node_config.runtime_ref().container {
         // Container nodes: use the Apptainer facade to build the .sif image from
         // the definition file, then move it to storage.
         let apptainer_build_extra_args = container
@@ -1425,7 +1439,7 @@ async fn process_node_add(
         }
     } else {
         // Regular nodes: run add_cmd then archive the working directory.
-        let add_cmd = node_config.runtime.add_cmd.as_ref();
+        let add_cmd = node_config.runtime_ref().add_cmd.as_ref();
         if let Err(e) = run_add_cmd_with_streaming(
             add_cmd,
             &working_dir,

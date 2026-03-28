@@ -51,6 +51,14 @@ pub enum ParsingError {
     #[error("Node config must have either `process` or `container`")]
     NoProcessOrContainer,
 
+    // -- node config: default variant
+    #[error(
+        "Node config with a 'default' variant must not define a `runtime` section — the runtime comes from the default variant"
+    )]
+    RuntimeWithDefaultVariant,
+    #[error("Node config must define a `runtime` section (or declare a 'default' variant)")]
+    MissingRuntime,
+
     // -- container config: mount paths
     #[error(
         "Invalid mount path `{0}`: top-level system directories ({1}) cannot be used as mount sources — use a subdirectory instead (e.g., /tmp/my_app)"
