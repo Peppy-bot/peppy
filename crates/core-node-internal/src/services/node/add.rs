@@ -1002,6 +1002,10 @@ pub(crate) async fn run_node_add(
             }
         };
 
+        // RAII guard: ensures resolved.cleanup_dir is removed on any early return
+        // (e.g. variant resolution failure) before process_node_add takes ownership.
+        let mut resolved_cleanup_guard = CleanupDir::new(resolved.cleanup_dir.take());
+
         // Auto-resolve the default variant when no explicit variant is specified.
         let effective_variant = match &goal.variant {
             Some(v) => Some(v.clone()),
@@ -1045,7 +1049,7 @@ pub(crate) async fn run_node_add(
             }
         }
 
-        let cleanup_dir = resolved.cleanup_dir.take();
+        let cleanup_dir = resolved_cleanup_guard.take();
         let source_path = resolved.source_path.clone();
         let verify_codegen_fingerprint = resolved.verify_codegen_fingerprint;
         let node_config = resolved.node_config;
