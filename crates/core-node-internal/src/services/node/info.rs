@@ -97,8 +97,9 @@ async fn handle_node_info_request_inner(
 
     // Resolve the root node config (and keep the source path alive for variant resolution).
     let (node_config, variant_name) = if let Some(ref variant_source) = request.variant {
-        let (root_config, root_source_path, _keep_alive) =
+        let (root_config, root_source_path, cleanup_dir) =
             resolve_node_config_with_source_path(request.source.clone(), &peppy_dirs).await?;
+        let _cleanup_guard = super::add::CleanupDir::new(cleanup_dir);
 
         let label = variant_label(variant_source);
         let resolved =

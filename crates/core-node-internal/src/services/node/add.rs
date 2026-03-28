@@ -593,14 +593,14 @@ fn verify_git_hash(source_path: &Path, expected_git_hash: &str) -> std::result::
     Ok(())
 }
 
-struct CleanupDir(Option<PathBuf>);
+pub(super) struct CleanupDir(Option<PathBuf>);
 
 impl CleanupDir {
-    fn new(dir: Option<PathBuf>) -> Self {
+    pub(super) fn new(dir: Option<PathBuf>) -> Self {
         Self(dir)
     }
 
-    fn take(&mut self) -> Option<PathBuf> {
+    pub(super) fn take(&mut self) -> Option<PathBuf> {
         self.0.take()
     }
 }
