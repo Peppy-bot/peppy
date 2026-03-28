@@ -42,6 +42,9 @@ fn status() -> Result<()> {
 
     println!("Container prerequisites");
     println!("----------------------");
+    if !status.apparmor_manageable {
+        println!("  AppArmor               : not manageable (security filesystem not mounted)");
+    }
     println!(
         "  newuidmap              : {}",
         if status.newuidmap_ok {
@@ -50,7 +53,9 @@ fn status() -> Result<()> {
             "FAILED (install uidmap package)"
         }
     );
-    if status.apparmor_restricted {
+    if !status.apparmor_manageable {
+        println!("  AppArmor profile       : skipped (AppArmor not manageable)");
+    } else if status.apparmor_restricted {
         println!(
             "  AppArmor profile       : {}",
             if status.apparmor_ok { "OK" } else { "FAILED" }
@@ -95,6 +100,12 @@ fn setup() -> Result<()> {
     let status = containers::check_setup_status(&apptainer_dir);
 
     if status.is_ok() {
+        if !status.apparmor_manageable {
+            println!(
+                "AppArmor is not manageable on this system (security filesystem not mounted)."
+            );
+            println!("Skipping AppArmor profile checks.");
+        }
         println!("All container prerequisites are already met. Nothing to do.");
         return Ok(());
     }

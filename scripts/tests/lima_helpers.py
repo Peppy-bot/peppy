@@ -205,7 +205,7 @@ def copy_to_lima(
 
 def guest_home(test_name: str) -> str:
     """Return a unique PEPPY_HOME path on the guest for the given test."""
-    return f"/tmp/peppy-test-home/{test_name}"
+    return f"/var/tmp/peppy-test-home/{test_name}"
 
 
 def find_release_archive(config: VMConfig) -> Path:
@@ -236,7 +236,7 @@ def find_release_archive(config: VMConfig) -> Path:
 
 def archive_guest_path(config: VMConfig) -> str:
     """Return the guest-side path for the release archive."""
-    return f"/tmp/peppy-test/peppy-{config.target_triple}.tgz"
+    return f"/var/tmp/peppy-test/peppy-{config.target_triple}.tgz"
 
 
 def install_cmd(config: VMConfig, home: str, *, extra_env: str = "") -> str:
@@ -244,7 +244,7 @@ def install_cmd(config: VMConfig, home: str, *, extra_env: str = "") -> str:
     env_parts = f"PEPPY_HOME={home} PEPPY_NO_SERVICE_INSTALL=1"
     if extra_env:
         env_parts = f"{env_parts} {extra_env}"
-    return f"{env_parts} sh /tmp/peppy-test/install.sh {archive_guest_path(config)}"
+    return f"{env_parts} sh /var/tmp/peppy-test/install.sh {archive_guest_path(config)}"
 
 
 def setup_lima_guest(config: VMConfig, *, test_name: str) -> str:
@@ -256,13 +256,13 @@ def setup_lima_guest(config: VMConfig, *, test_name: str) -> str:
     home = guest_home(test_name)
     instance = config.instance_name
 
-    # Clean up all previous test homes to free disk space (real archives
-    # are large and VMs have limited /tmp).
+    # Use /var/tmp (disk-backed) instead of /tmp to avoid tmpfs size
+    # limits on Fedora and Arch Linux where /tmp is RAM-backed.
     lima_shell(
-        "rm -rf /tmp/peppy-test-home && mkdir -p /tmp/peppy-test",
+        "rm -rf /var/tmp/peppy-test-home && mkdir -p /var/tmp/peppy-test",
         instance=instance,
     )
-    copy_to_lima(INSTALL_SCRIPT, "/tmp/peppy-test/install.sh", instance=instance)
+    copy_to_lima(INSTALL_SCRIPT, "/var/tmp/peppy-test/install.sh", instance=instance)
     copy_to_lima(archive_path, archive_guest_path(config), instance=instance)
     return home
 
