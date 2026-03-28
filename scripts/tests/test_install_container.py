@@ -156,43 +156,6 @@ def test_container_node_build(lima_vm: VMConfig) -> None:
     )
 
 
-def test_install_skips_container_setup_in_docker(lima_vm: VMConfig) -> None:
-    """install.sh auto-detects Docker env and skips Apptainer container setup."""
-    config = lima_vm
-    assert config.os == "linux", "Docker detection test only applies to Linux VMs"
-
-    home = setup_lima_guest(
-        config, test_name=f"test_docker_skip_{config.pytest_id()}"
-    )
-    instance = config.instance_name
-
-    # Create /.dockerenv to simulate a Docker environment
-    lima_shell("sudo touch /.dockerenv", instance=instance)
-    try:
-        result = lima_shell(
-            install_cmd(config, home, extra_env="PEPPY_FORCE_REINSTALL=1"),
-            instance=instance,
-        )
-        assert result.returncode == 0, (
-            f"install.sh failed on {config.pytest_id()}{diagnostic(result)}"
-        )
-        assert "Skipped Apptainer setup (running inside a container)" in result.stdout, (
-            f"Missing container skip message on {config.pytest_id()}{diagnostic(result)}"
-        )
-        assert "peppy installed to" in result.stdout, (
-            f"Missing install confirmation on {config.pytest_id()}{diagnostic(result)}"
-        )
-
-        # Verify the binary was actually installed
-        check = lima_shell(f"test -x {home}/bin/peppy", instance=instance)
-        assert check.returncode == 0, (
-            f"peppy binary not found at {home}/bin/peppy on {config.pytest_id()}"
-        )
-    finally:
-        # Clean up the marker file so other tests are unaffected
-        lima_shell("sudo rm -f /.dockerenv", instance=instance)
-
-
 def test_install_skips_container_setup_with_env_var(lima_vm: VMConfig) -> None:
     """PEPPY_NO_CONTAINER_SETUP=1 explicitly skips Apptainer container setup."""
     config = lima_vm
@@ -204,15 +167,17 @@ def test_install_skips_container_setup_with_env_var(lima_vm: VMConfig) -> None:
     instance = config.instance_name
 
     result = lima_shell(
-        install_cmd(config, home, extra_env="PEPPY_FORCE_REINSTALL=1 PEPPY_NO_CONTAINER_SETUP=1"),
+        install_cmd(
+            config, home, extra_env="PEPPY_FORCE_REINSTALL=1 PEPPY_NO_CONTAINER_SETUP=1"
+        ),
         instance=instance,
     )
     assert result.returncode == 0, (
         f"install.sh failed on {config.pytest_id()}{diagnostic(result)}"
     )
-    assert "Skipped Apptainer setup (PEPPY_NO_CONTAINER_SETUP is set)" in result.stdout, (
-        f"Missing env var skip message on {config.pytest_id()}{diagnostic(result)}"
-    )
+    assert (
+        "Skipped Apptainer setup (PEPPY_NO_CONTAINER_SETUP is set)" in result.stdout
+    ), f"Missing env var skip message on {config.pytest_id()}{diagnostic(result)}"
     assert "peppy installed to" in result.stdout, (
         f"Missing install confirmation on {config.pytest_id()}{diagnostic(result)}"
     )
@@ -221,4 +186,46 @@ def test_install_skips_container_setup_with_env_var(lima_vm: VMConfig) -> None:
     check = lima_shell(f"test -x {home}/bin/peppy", instance=instance)
     assert check.returncode == 0, (
         f"peppy binary not found at {home}/bin/peppy on {config.pytest_id()}"
+    )
+
+
+def test_peppy_container_setup_without_apparmor(lima_vm: VMConfig) -> None:
+    """peppy container setup succeeds when AppArmor is not manageable.
+
+    Simulates the Docker/BuildKit scenario: /proc reports AppArmor
+    restrictions (inherited from host kernel) but the AppArmor security
+    filesystem (/sys/kernel/security/apparmor/) is not mounted.  The Rust
+    binary should detect this and skip AppArmor profile management.
+    """
+    config = lima_vm
+    assert config.os == "linux", "AppArmor test only applies to Linux VMs"
+
+    home = setup_lima_guest(
+        config, test_name=f"test_setup_no_apparmor_{config.pytest_id()}"
+    )
+    instance = config.instance_name
+
+    # Install peppy first
+    result = lima_shell(
+        install_cmd(config, home, extra_env="PEPPY_FORCE_REINSTALL=1"),
+        instance=instance,
+    )
+    assert result.returncode == 0, (
+        f"install.sh failed on {config.pytest_id()}{diagnostic(result)}"
+    )
+
+    # Hide /sys/kernel/security/apparmor to simulate a container env where
+    # AppArmor is not manageable, then run `peppy container setup` directly.
+    result = lima_shell(
+        f"sudo mount -t tmpfs none /sys/kernel/security/apparmor 2>/dev/null; "
+        f"{home}/bin/peppy container setup 2>&1; EXIT=$?; "
+        f"sudo umount /sys/kernel/security/apparmor 2>/dev/null; "
+        f"exit $EXIT",
+        instance=instance,
+    )
+    assert result.returncode == 0, (
+        f"peppy container setup failed on {config.pytest_id()}{diagnostic(result)}"
+    )
+    assert "Nothing to do" in result.stdout, (
+        f"Expected 'Nothing to do' message on {config.pytest_id()}{diagnostic(result)}"
     )

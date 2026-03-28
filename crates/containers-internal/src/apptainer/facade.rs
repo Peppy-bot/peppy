@@ -74,6 +74,27 @@ fn which(cmd: &str) -> Option<PathBuf> {
     })
 }
 
+/// Check whether AppArmor profiles can actually be managed on this system.
+///
+/// Returns `true` when the AppArmor security filesystem is fully mounted
+/// — meaning we can inspect loaded profiles and load new ones via
+/// `apparmor_parser`.
+///
+/// We check for `policy/` inside the AppArmor directory because:
+/// - On a real host with AppArmor, `/sys/kernel/security/apparmor/policy/`
+///   exists and contains loaded profile entries.
+/// - Inside containers (Docker, Podman, BuildKit, etc.), the directory is
+///   either absent entirely or is an empty mount point with no `policy/`
+///   subdirectory.
+///
+/// The procfs value `/proc/sys/kernel/apparmor_restrict_unprivileged_userns`
+/// is inherited from the host kernel and may read "1" even inside containers
+/// where AppArmor cannot actually be managed.
+#[cfg(target_os = "linux")]
+fn is_apparmor_manageable() -> bool {
+    Path::new("/sys/kernel/security/apparmor/policy").is_dir()
+}
+
 /// Status of Apptainer user namespace prerequisites on the current system.
 ///
 /// Apptainer is built without setuid (`--without-suid`) and relies on
@@ -89,11 +110,16 @@ pub struct SetupStatus {
     /// System restricts unprivileged user namespaces via AppArmor.
     pub apparmor_restricted: bool,
     /// AppArmor profile for `starter` is installed and references the current
-    /// binary path (always `true` when `apparmor_restricted` is `false`).
+    /// binary path (always `true` when `apparmor_restricted` is `false`,
+    /// or when AppArmor is not manageable).
     pub apparmor_ok: bool,
     /// AppArmor profile is loaded into the kernel (always `true` when
-    /// `apparmor_restricted` is `false`).
+    /// `apparmor_restricted` is `false`, or when AppArmor is not manageable).
     pub apparmor_loaded: bool,
+    /// Whether AppArmor profiles can be managed on this system.
+    /// `false` when the AppArmor security filesystem is not mounted
+    /// (e.g. inside Docker/Podman/BuildKit containers).
+    pub apparmor_manageable: bool,
     /// A shell script that fixes all failing checks, or `None` when everything
     /// passes.
     pub fix_script: Option<String>,
@@ -117,14 +143,19 @@ impl SetupStatus {
 #[cfg(target_os = "linux")]
 pub fn check_setup_status(apptainer_dir: &Path) -> SetupStatus {
     let starter = apptainer_dir.join("libexec/apptainer/bin/starter");
+    let apparmor_manageable = is_apparmor_manageable();
 
     // newuidmap is required for fakeroot mode (unprivileged user namespaces).
     // It's provided by the `uidmap` package on Debian/Ubuntu, `shadow-utils`
     // on Fedora, and `shadow` on Arch Linux.
     let newuidmap_ok = which("newuidmap").is_some();
 
-    let apparmor_restricted =
-        std::fs::read_to_string("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
+    // The procfs flag may read "1" even inside containers (inherited from
+    // the host kernel). Only treat it as restricted when AppArmor is also
+    // manageable — otherwise we'd try to load profiles into a kernel we
+    // have no access to.
+    let apparmor_restricted = apparmor_manageable
+        && std::fs::read_to_string("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
             .map(|v| v.trim() == "1")
             .unwrap_or(false);
 
@@ -186,7 +217,11 @@ pub fn check_setup_status(apptainer_dir: &Path) -> SetupStatus {
             parts.push("sudo apparmor_parser -r /etc/apparmor.d/peppy-apptainer".to_string());
         }
 
-        Some(parts.join(" \\\n  && "))
+        if parts.is_empty() {
+            None
+        } else {
+            Some(parts.join(" \\\n  && "))
+        }
     };
 
     SetupStatus {
@@ -194,6 +229,7 @@ pub fn check_setup_status(apptainer_dir: &Path) -> SetupStatus {
         apparmor_restricted,
         apparmor_ok,
         apparmor_loaded,
+        apparmor_manageable,
         fix_script,
     }
 }
