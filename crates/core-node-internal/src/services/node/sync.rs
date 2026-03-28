@@ -367,8 +367,17 @@ async fn handle_node_sync_request_inner(
                 interfaces: root_interfaces.clone(),
                 execution: Some(variant_config.execution),
             };
-            let merged_json5 = serde_json5::to_string(&merged_config)
-                .expect("failed to serialize merged variant config");
+            let merged_json5 = match serde_json5::to_string(&merged_config) {
+                Ok(json) => json,
+                Err(e) => {
+                    return NodeSyncResponse::failure(format!(
+                        "Failed to serialize merged config for variant '{}': {}",
+                        variant.name.as_str(),
+                        e
+                    ))
+                    .encode();
+                }
+            };
             if let Err(e) = std::fs::write(&variant_config_path, &merged_json5) {
                 return NodeSyncResponse::failure(format!(
                     "Failed to write merged config for variant '{}': {}",
