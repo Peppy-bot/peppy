@@ -27,6 +27,7 @@ target
 .DS_Store
 .astro
 .claude/settings.local.json
+.claude/plans
 scripts/uv.lock
 
 # Peppy stuff, anywhere
