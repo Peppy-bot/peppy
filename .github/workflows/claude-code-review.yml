@@ -19,7 +19,7 @@ jobs:
     #   github.event.pull_request.user.login == 'new-developer' ||
     #   github.event.pull_request.author_association == 'FIRST_TIME_CONTRIBUTOR'
 
-    runs-on: self-hosted
+    runs-on: [self-hosted, llm]
     permissions:
       contents: read
       pull-requests: read
