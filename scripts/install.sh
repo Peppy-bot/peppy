@@ -230,8 +230,10 @@ EOF
                 "$PEPPY_BIN_DIR/peppy" service uninstall >/dev/null 2>&1 || true
             fi
         fi
-        echo "Removing '${PEPPY_HOME}'..."
-        mv "$PEPPY_HOME" "$(mktemp -d "${TMPDIR:-/tmp}/.peppy_old.XXXXXXXX")"
+        if [ -d "$PEPPY_HOME" ]; then
+            echo "Removing '${PEPPY_HOME}'..."
+            mv "$PEPPY_HOME" "$(mktemp -d "${TMPDIR:-/tmp}/.peppy_old.XXXXXXXX")"
+        fi
     fi
 
     REPOURL="${PEPPY_REPOURL:-https://peppy.bot}"
