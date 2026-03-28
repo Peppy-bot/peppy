@@ -1576,3 +1576,104 @@ async fn listen_for_node_sync_variant_invalid_config_fails() {
         response.error_message
     );
 }
+
+/// When a root node has a "default" variant and no runtime, sync should
+/// skip root codegen (no .peppy at root) but still generate the variant's .peppy.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_sync_default_variant_skips_root_codegen() {
+    let started_core_node = start_core_node_with_mock_messenger().await;
+
+    let node_dir = tempdir().expect("failed to create temp node directory");
+
+    // Default variant with its own runtime
+    let default_variant_dir = node_dir.path().join("variants").join("default");
+    write_variant_config(
+        &default_variant_dir,
+        r#"{
+            schema_version: 1,
+            runtime: {
+                language: "rust",
+                start_cmd: ["sleep", "10"],
+            },
+        }"#,
+    );
+
+    // Root config: default variant, NO runtime
+    write_node_config(
+        node_dir.path(),
+        r#"{
+            schema_version: 1,
+            manifest: {
+                name: "default_variant_node",
+                tag: "0.1.0",
+                variants: [
+                    { name: "default", source: { local: "./variants/default" } },
+                ],
+            },
+            interfaces: {
+                topics: {
+                    emits: [
+                        {
+                            name: "hello_world",
+                            qos_profile: "sensor_data",
+                            message_format: {
+                                message: "string",
+                            },
+                        },
+                    ],
+                },
+            },
+        }"#,
+    );
+
+    let expected_git_hash = "abc12345";
+    let response = NodeSyncRequest::new(node_dir.path(), expected_git_hash)
+        .poll(
+            &started_core_node.caller_handle,
+            &started_core_node.core_node_name,
+            CALLER_INSTANCE_ID,
+            &started_core_node.core_node_name,
+            Duration::from_secs(10),
+        )
+        .await
+        .expect("node_sync request should complete");
+
+    assert!(
+        response.success,
+        "node_sync with default variant should succeed, got error: {}",
+        response.error_message
+    );
+
+    // Root peppygen should NOT be generated (no runtime at root level)
+    let root_peppygen_dir = node_dir.path().join(PEPPYGEN_OUTPUT_PATH);
+    assert!(
+        !root_peppygen_dir.exists(),
+        "root peppygen directory should NOT exist for a default-variant node"
+    );
+
+    // Variant .peppy should be generated
+    let variant_peppy_dir = default_variant_dir.join(PEPPY_OUTPUT_DIR);
+    assert!(
+        variant_peppy_dir.exists(),
+        "variant .peppy directory should exist at {}",
+        variant_peppy_dir.display()
+    );
+
+    // Verify variant peppygen was generated
+    let variant_peppygen_dir = default_variant_dir.join(PEPPYGEN_OUTPUT_PATH);
+    assert!(
+        variant_peppygen_dir.exists(),
+        "variant peppygen directory should exist at {}",
+        variant_peppygen_dir.display()
+    );
+
+    // Verify git.hash in variant .peppy
+    let variant_git_hash_path = variant_peppy_dir.join("git.hash");
+    let stored_git_hash =
+        fs::read_to_string(&variant_git_hash_path).expect("failed to read variant git.hash");
+    assert_eq!(
+        stored_git_hash.trim(),
+        expected_git_hash,
+        "variant git.hash should contain the sync request git_hash"
+    );
+}
