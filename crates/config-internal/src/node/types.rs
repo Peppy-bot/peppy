@@ -887,6 +887,43 @@ impl Interfaces {
             a.iter().zip(b.iter()).all(|(a, b)| a == b)
         }
 
+        fn action_service_endpoint_eq(
+            a: &Option<ActionServiceEndpoint>,
+            b: &Option<ActionServiceEndpoint>,
+        ) -> bool {
+            match (a, b) {
+                (None, None) => true,
+                (Some(a), Some(b)) => {
+                    a.qos_profile == b.qos_profile
+                        && message_format_eq(
+                            &a.request_message_format,
+                            &b.request_message_format,
+                        )
+                        && message_format_eq(
+                            &a.response_message_format,
+                            &b.response_message_format,
+                        )
+                }
+                _ => false,
+            }
+        }
+
+        fn action_topic_endpoint_eq(
+            a: &Option<ActionTopicEndpoint>,
+            b: &Option<ActionTopicEndpoint>,
+        ) -> bool {
+            match (a, b) {
+                (None, None) => true,
+                (Some(a), Some(b)) => {
+                    a.topic_type == b.topic_type
+                        && a.qos_profile == b.qos_profile
+                        && a.name == b.name
+                        && message_format_eq(&a.message_format, &b.message_format)
+                }
+                _ => false,
+            }
+        }
+
         fn exposed_actions_eq(
             a: &Option<Vec<ExposedAction>>,
             b: &Option<Vec<ExposedAction>>,
@@ -896,7 +933,12 @@ impl Interfaces {
             if a.len() != b.len() {
                 return false;
             }
-            a.iter().zip(b.iter()).all(|(a, b)| a == b)
+            a.iter().zip(b.iter()).all(|(a, b)| {
+                a.name == b.name
+                    && action_service_endpoint_eq(&a.goal_service, &b.goal_service)
+                    && action_topic_endpoint_eq(&a.feedback_topic, &b.feedback_topic)
+                    && action_service_endpoint_eq(&a.result_service, &b.result_service)
+            })
         }
 
         fn consumed_actions_eq(
