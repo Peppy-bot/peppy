@@ -17,7 +17,7 @@
       ],
     }
   },
-  runtime: {
+  execution: {
     language: "rust",
     add_cmd: [
       "cargo",

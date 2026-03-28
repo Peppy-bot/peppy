@@ -637,7 +637,7 @@ fn main() -> Result<()> {
     }
   },
   // Avoid `add_cmd` build step here to make the `add` tests faster
-  runtime: {
+  execution: {
     language: "rust",
     add_cmd: [
         "true"

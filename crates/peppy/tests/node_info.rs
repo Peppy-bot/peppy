@@ -60,7 +60,7 @@ async fn node_info_shows_dependencies_from_consumed_interfaces() {
                     ]
                 }
             },
-            runtime: {
+            execution: {
                 language: "rust",
                 start_cmd: ["sleep", "10"]
             },
@@ -198,7 +198,7 @@ async fn node_info_no_dependencies_when_no_consumes() {
                     ]
                 }
             },
-            runtime: {
+            execution: {
                 language: "rust",
                 start_cmd: ["sleep", "10"]
             },

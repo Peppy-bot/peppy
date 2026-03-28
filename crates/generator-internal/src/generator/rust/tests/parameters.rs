@@ -16,7 +16,7 @@ const NODE_EXAMPLE: &str = r#"
     ],
   },
   interfaces: {},
-  runtime: {
+  execution: {
     language: "rust",
     parameters: {
       device: {
@@ -55,7 +55,7 @@ const INVALID_PARAMETERS_NODE_EXAMPLE: &str = r#"
     ],
   },
   interfaces: {},
-  runtime: {
+  execution: {
     language: "rust",
     parameters: {
       device: {
@@ -97,7 +97,7 @@ const NESTED_STRUCT_COLLISION_NODE_EXAMPLE: &str = r#"
     ],
   },
   interfaces: {},
-  runtime: {
+  execution: {
     language: "rust",
     parameters: {
       control: {
@@ -135,7 +135,7 @@ const UNSUPPORTED_PARAMETERS_VARIANT_NODE_EXAMPLE: &str = r#"
     ],
   },
   interfaces: {},
-  runtime: {
+  execution: {
     language: "rust",
     parameters: {
       device: {
@@ -164,7 +164,7 @@ const UNKNOWN_PARAMETER_TYPE_NODE_EXAMPLE: &str = r#"
     ],
   },
   interfaces: {},
-  runtime: {
+  execution: {
     language: "rust",
     parameters: {
       device: "uuid"
@@ -191,7 +191,7 @@ const UNSUPPORTED_TOP_LEVEL_PARAMETER_VARIANT_NODE_EXAMPLE: &str = r#"
     ],
   },
   interfaces: {},
-  runtime: {
+  execution: {
     language: "rust",
     parameters: {
       enabled: true
@@ -212,7 +212,7 @@ fn generate_parameters_struct() {
         serde_json5::from_str(NODE_EXAMPLE).expect("failed to parse NODE_EXAMPLE into NodeConfig");
 
     let (mut generator, output_dir, _, _) = init_test_env::<RustGenerator>(&temp_dir);
-    generator.set_parameters(node_config.runtime.unwrap().parameters);
+    generator.set_parameters(node_config.execution.unwrap().parameters);
     generator
         .build(
             &output_dir,
@@ -317,7 +317,7 @@ fn generate_parameters_struct_avoids_nested_struct_name_collisions() {
         .expect("failed to parse NESTED_STRUCT_COLLISION_NODE_EXAMPLE into NodeConfig");
 
     let (mut generator, output_dir, _, _) = init_test_env::<RustGenerator>(&temp_dir);
-    generator.set_parameters(node_config.runtime.unwrap().parameters);
+    generator.set_parameters(node_config.execution.unwrap().parameters);
     generator
         .build(
             &output_dir,
@@ -369,7 +369,7 @@ fn reject_parameters_with_invalid_field_names() {
     let node_config: NodeConfig = serde_json5::from_str(INVALID_PARAMETERS_NODE_EXAMPLE)
         .expect("failed to parse INVALID_PARAMETERS_NODE_EXAMPLE into NodeConfig");
 
-    let result = generate_parameters_struct(&node_config.runtime.unwrap().parameters);
+    let result = generate_parameters_struct(&node_config.execution.unwrap().parameters);
 
     assert!(
         result.is_err(),
@@ -399,7 +399,7 @@ fn reject_parameters_with_unsupported_spec_type() {
         serde_json5::from_str(UNSUPPORTED_PARAMETERS_VARIANT_NODE_EXAMPLE)
             .expect("failed to parse UNSUPPORTED_PARAMETERS_VARIANT_NODE_EXAMPLE into NodeConfig");
 
-    let err = generate_parameters_struct(&node_config.runtime.unwrap().parameters).unwrap_err();
+    let err = generate_parameters_struct(&node_config.execution.unwrap().parameters).unwrap_err();
     match err {
         Error::UnsupportedParameterSpecType { path, kind } => {
             assert_eq!(path, "device.enabled");
@@ -419,7 +419,7 @@ fn reject_parameters_with_top_level_unsupported_spec_type() {
     )
     .expect("failed to parse UNSUPPORTED_TOP_LEVEL_PARAMETER_VARIANT_NODE_EXAMPLE into NodeConfig");
 
-    let err = generate_parameters_struct(&node_config.runtime.unwrap().parameters).unwrap_err();
+    let err = generate_parameters_struct(&node_config.execution.unwrap().parameters).unwrap_err();
     match err {
         Error::UnsupportedParameterSpecType { path, kind } => {
             assert_eq!(path, "enabled");
@@ -437,7 +437,7 @@ fn reject_parameters_with_unknown_type_name() {
     let node_config: NodeConfig = serde_json5::from_str(UNKNOWN_PARAMETER_TYPE_NODE_EXAMPLE)
         .expect("failed to parse UNKNOWN_PARAMETER_TYPE_NODE_EXAMPLE into NodeConfig");
 
-    let err = generate_parameters_struct(&node_config.runtime.unwrap().parameters).unwrap_err();
+    let err = generate_parameters_struct(&node_config.execution.unwrap().parameters).unwrap_err();
     match err {
         Error::UnsupportedParameterTypeName { path, type_name } => {
             assert_eq!(path, "device");

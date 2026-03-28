@@ -70,20 +70,20 @@ pub struct NodeConfig {
     #[serde(default)]
     pub interfaces: Interfaces,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub runtime: Option<Runtime>,
+    pub execution: Option<Execution>,
 }
 
 /// Name reserved for the default variant.
 pub const DEFAULT_VARIANT_NAME: &str = "default";
 
 impl NodeConfig {
-    /// Returns a reference to the runtime, panicking if absent.
+    /// Returns a reference to the execution config, panicking if absent.
     ///
-    /// Only call this after variant resolution guarantees that `runtime` is `Some`
+    /// Only call this after variant resolution guarantees that `execution` is `Some`
     /// (either from the root config itself or merged from the resolved default variant).
-    pub fn runtime_ref(&self) -> &Runtime {
-        self.runtime.as_ref().expect(
-            "BUG: runtime accessed before variant resolution on a config with a default variant",
+    pub fn execution_ref(&self) -> &Execution {
+        self.execution.as_ref().expect(
+            "BUG: execution accessed before variant resolution on a config with a default variant",
         )
     }
 
@@ -625,7 +625,7 @@ pub struct Variant {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Runtime {
+pub struct Execution {
     pub language: PeppygenLanguage,
     #[serde(default)]
     pub parameters: NodeArguments,
@@ -974,7 +974,7 @@ impl Interfaces {
 pub trait PeppyNodeConfig {
     fn schema_version(&self) -> SchemaVersion;
     fn interfaces(&self) -> Option<&Interfaces>;
-    fn runtime(&self) -> &Runtime;
+    fn execution(&self) -> &Execution;
 }
 
 impl PeppyNodeConfig for NodeConfig {
@@ -986,14 +986,14 @@ impl PeppyNodeConfig for NodeConfig {
         Some(&self.interfaces)
     }
 
-    fn runtime(&self) -> &Runtime {
-        self.runtime_ref()
+    fn execution(&self) -> &Execution {
+        self.execution_ref()
     }
 }
 
 /// Configuration for a node variant. Unlike [`NodeConfig`], `manifest` and
 /// `interfaces` are optional — variants typically inherit these from the root
-/// node and only define their own `runtime`.
+/// node and only define their own `execution`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct VariantConfig {
@@ -1002,7 +1002,7 @@ pub struct VariantConfig {
     pub manifest: Option<Manifest>,
     #[serde(default)]
     pub interfaces: Option<Interfaces>,
-    pub runtime: Runtime,
+    pub execution: Execution,
 }
 
 impl PeppyNodeConfig for VariantConfig {
@@ -1014,8 +1014,8 @@ impl PeppyNodeConfig for VariantConfig {
         self.interfaces.as_ref()
     }
 
-    fn runtime(&self) -> &Runtime {
-        &self.runtime
+    fn execution(&self) -> &Execution {
+        &self.execution
     }
 }
 
@@ -1440,7 +1440,7 @@ mod tests {
         let json5 = r#"{
             schema_version: 1,
             manifest: { name: "node", tag: "0.1.0" },
-            runtime: { language: "rust", start_cmd: ["./run"] },
+            execution: { language: "rust", start_cmd: ["./run"] },
             extra: "bad"
         }"#;
         assert!(serde_json5::from_str::<NodeConfig>(json5).is_err());

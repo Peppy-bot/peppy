@@ -23,7 +23,7 @@ PEPPY_CONFIG = """{
     name: "test_node",
     tag: "0.1.0",
   },
-  runtime: {
+  execution: {
     language: "python",
     parameters: {
       frequency_hz: "f64"

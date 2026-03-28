@@ -41,7 +41,7 @@ async fn listen_for_node_info_on_fs_node_success() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
             },
-            runtime: {
+            execution: {
                 language: "rust",
                 start_cmd: ["sleep", "10"]
             }
@@ -236,7 +236,7 @@ async fn listen_for_node_info_on_http_node_success() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
             },
-            runtime: {
+            execution: {
                 language: "rust",
                 start_cmd: ["sleep", "10"]
             }
@@ -359,7 +359,7 @@ async fn listen_for_node_info_has_instance_ids() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
             },
-            runtime: {
+            execution: {
                 language: "rust",
                 start_cmd: ["sleep", "10"]
             }
@@ -588,7 +588,7 @@ async fn listen_for_node_info_recovers_after_invalid_request() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
             },
-            runtime: {
+            execution: {
                 language: "rust",
                 start_cmd: ["sleep", "10"]
             }
@@ -641,7 +641,7 @@ async fn listen_for_node_info_with_fs_variant_success() {
                 { name: "mock", source: { local: "./mock" } }
             ]
         },
-        runtime: {
+        execution: {
             language: "rust",
             start_cmd: ["sleep", "10"]
         }
@@ -655,7 +655,7 @@ async fn listen_for_node_info_with_fs_variant_success() {
         mock_dir.join(NODE_CONFIG_FILE),
         r#"{
             schema_version: 1,
-            runtime: {
+            execution: {
                 language: "python",
                 start_cmd: ["python", "main.py"],
                 parameters: {
@@ -694,17 +694,17 @@ async fn listen_for_node_info_with_fs_variant_success() {
 
     // Runtime comes from variant
     assert_eq!(
-        info_response.config.runtime_ref().language,
+        info_response.config.execution_ref().language,
         PeppygenLanguage::Python
     );
     assert_eq!(
-        info_response.config.runtime_ref().start_cmd.as_deref(),
+        info_response.config.execution_ref().start_cmd.as_deref(),
         Some(&["python".to_string(), "main.py".to_string()][..])
     );
     assert!(
         info_response
             .config
-            .runtime_ref()
+            .execution_ref()
             .parameters
             .contains_key("mode"),
         "variant parameters should be present"
@@ -726,7 +726,7 @@ async fn listen_for_node_info_with_unknown_variant_fails() {
             name: "no_variants_node",
             tag: "0.1.0",
         },
-        runtime: {
+        execution: {
             language: "rust",
             start_cmd: ["sleep", "10"]
         }
@@ -777,7 +777,7 @@ async fn listen_for_node_info_without_variant_shows_available_variants() {
                 { name: "sim", source: { local: "./sim" } }
             ]
         },
-        runtime: {
+        execution: {
             language: "rust",
             start_cmd: ["sleep", "10"]
         }

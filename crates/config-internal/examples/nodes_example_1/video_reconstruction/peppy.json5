@@ -29,7 +29,7 @@
       ],
     },
   },
-  runtime: {
+  execution: {
     language: "rust",
     parameters: {
       // How long do you want the reconstruction to be?

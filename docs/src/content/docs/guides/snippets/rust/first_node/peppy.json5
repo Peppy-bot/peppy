@@ -5,7 +5,7 @@
     tag: "0.1.0",
   },
   interfaces: {},
-  runtime: {
+  execution: {
     language: "rust",
     add_cmd: [
       "cargo",

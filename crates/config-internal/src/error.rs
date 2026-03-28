@@ -53,11 +53,11 @@ pub enum ParsingError {
 
     // -- node config: default variant
     #[error(
-        "Node config with a 'default' variant must not define a `runtime` section — the runtime comes from the default variant"
+        "Node config with a 'default' variant must not define an `execution` section — the execution comes from the default variant"
     )]
-    RuntimeWithDefaultVariant,
-    #[error("Node config must define a `runtime` section (or declare a 'default' variant)")]
-    MissingRuntime,
+    ExecutionWithDefaultVariant,
+    #[error("Node config must define an `execution` section (or declare a 'default' variant)")]
+    MissingExecution,
 
     // -- container config: mount paths
     #[error(

@@ -117,7 +117,7 @@ fn create_versioned_nodes_git_repo(to_path: impl AsRef<Path>) -> PathBuf {
                     emits: [{ name: "/example" }]
                 }
             },
-            runtime: {
+            execution: {
                 language: "rust",
                 start_cmd: ["sleep", "10"]
             }
@@ -164,7 +164,7 @@ fn create_versioned_nodes_git_repo(to_path: impl AsRef<Path>) -> PathBuf {
                     ]
                 }
             },
-            runtime: {
+            execution: {
                 language: "rust",
                 start_cmd: ["sleep", "10"]
             }
@@ -224,7 +224,7 @@ async fn listen_for_node_fs_add_success() {
                     ]
                 }
             },
-            runtime: {
+            execution: {
                 language: "rust",
                 start_cmd: ["sleep", "10"]
             }
@@ -320,7 +320,7 @@ async fn listen_for_node_add_with_container_success() {
             }
         },
         // Using `container` let `peppy` manage the node internally
-        runtime: {
+        execution: {
             language: "rust",
             container: {
                 def_file: "apptainer.def",
@@ -620,7 +620,7 @@ async fn listen_for_node_http_add_success() {
                     ]
                 }
             },
-            runtime: {
+            execution: {
                 language: "rust",
                 start_cmd: ["sleep", "10"]
             }
@@ -741,7 +741,7 @@ async fn listen_for_node_add_no_config_found() {
                     emits: [{ name: "/example" }]
                 }
             },
-            runtime: {
+            execution: {
                 language: "rust",
                 start_cmd: ["sleep", "10"]
             }
@@ -785,7 +785,7 @@ async fn listen_for_node_add_git_hash_mismatch_fails() {
             name: "git_hash_mismatch_node",
             tag: "0.1.0",
         },
-        runtime: {
+        execution: {
             language: "rust",
             start_cmd: ["sleep", "10"]
         }
@@ -873,7 +873,7 @@ async fn listen_for_node_add_no_start_cmd_fails() {
             name: "no_start_cmd_node",
             tag: "0.1.0",
         },
-        runtime: {
+        execution: {
             language: "rust",
         },
     }"#;
@@ -926,7 +926,7 @@ async fn listen_for_node_add_dependency_not_resolved() {
                 ]
             },
         },
-        runtime: {
+        execution: {
             language: "rust",
             start_cmd: ["sleep", "10"],
         },
@@ -993,7 +993,7 @@ async fn listen_for_node_add_same_node_same_tags_overwrites_when_no_dependents()
                     emits: [{ name: "wrong_topic_name" }]
                 }
             },
-            runtime: {
+            execution: {
                 language: "rust",
                 start_cmd: ["sleep", "10"]
             }
@@ -1038,7 +1038,7 @@ async fn listen_for_node_add_same_node_same_tags_overwrites_when_no_dependents()
                     emits: [{ name: "/example" }]
                 }
             },
-            runtime: {
+            execution: {
                 language: "rust",
                 start_cmd: ["sleep", "10"]
             },
@@ -1123,7 +1123,7 @@ async fn listen_for_node_add_same_node_same_tags_fails_when_node_has_dependents(
                     ]
                 }
             },
-            runtime: {
+            execution: {
                 language: "rust",
                 start_cmd: ["sleep", "10"]
             },
@@ -1169,7 +1169,7 @@ async fn listen_for_node_add_same_node_same_tags_fails_when_node_has_dependents(
                     ]
                 }
             },
-            runtime: {
+            execution: {
                 language: "rust",
                 start_cmd: ["sleep", "10"]
             },
@@ -1216,7 +1216,7 @@ async fn listen_for_node_add_same_node_same_tags_fails_when_node_has_dependents(
                     ]
                 }
             },
-            runtime: {
+            execution: {
                 language: "rust",
                 start_cmd: ["sleep", "10"]
             },
@@ -1288,7 +1288,7 @@ async fn listen_for_node_add_same_node_different_tags_create_two_entities() {
                     ]
                 }
             },
-            runtime: {
+            execution: {
                 language: "rust",
                 start_cmd: ["sleep", "10"]
             }
@@ -1326,7 +1326,7 @@ async fn listen_for_node_add_same_node_different_tags_create_two_entities() {
                     ]
                 }
             },
-            runtime: {
+            execution: {
                 language: "rust",
                 start_cmd: ["sleep", "10"]
             }
@@ -1392,7 +1392,7 @@ async fn listen_for_node_add_copies_files_to_storage() {
                     ]
                 }
             },
-            runtime: {
+            execution: {
                 language: "rust",
                 start_cmd: ["sleep", "10"]
             }
@@ -1466,7 +1466,7 @@ async fn listen_for_node_add_runs_add_cmd() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
             },
-            runtime: {
+            execution: {
                 language: "rust",
                 add_cmd: ["touch", "{ADD_CMD_MARKER_FILE}"],
                 start_cmd: ["sleep", "10"]
@@ -1533,7 +1533,7 @@ async fn listen_for_node_add_cmd_failure_fails_add() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
             },
-            runtime: {
+            execution: {
                 language: "rust",
                 add_cmd: ["this_command_does_not_exist_12345"],
                 start_cmd: ["sleep", "10"]
@@ -1602,7 +1602,7 @@ async fn listen_for_node_add_cmd_nonzero_exit_fails_add() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
             },
-            runtime: {
+            execution: {
                 language: "rust",
                 add_cmd: ["sh", "-c", "exit 1"],
                 start_cmd: ["sleep", "10"]
@@ -1669,7 +1669,7 @@ async fn listen_for_node_add_streams_stdout_and_stderr() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
             },
-            runtime: {
+            execution: {
                 language: "rust",
                 add_cmd: ["sh", "-c", "echo {STDOUT_MARKER}; echo {STDERR_MARKER} 1>&2"],
                 start_cmd: ["sleep", "10"]
@@ -1731,7 +1731,7 @@ async fn listen_for_node_add_fingerprint_mismatch() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
             },
-            runtime: {
+            execution: {
                 language: "rust",
                 start_cmd: ["sleep", "10"]
             }
@@ -1806,7 +1806,7 @@ async fn listen_for_node_add_writes_log_file() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
             },
-            runtime: {
+            execution: {
                 language: "rust",
                 add_cmd: ["sh", "-c", "echo {STDOUT_MARKER}; echo {STDERR_MARKER} 1>&2"],
                 start_cmd: ["sleep", "10"]
@@ -1913,7 +1913,7 @@ async fn listen_for_node_add_abandoned_action_does_not_block_next_goal() {
                 name: "{FIRST_NODE_NAME}",
                 tag: "{FIRST_NODE_TAG}",
             },
-            runtime: {
+            execution: {
                 language: "rust",
                 start_cmd: ["sleep", "10"]
             }
@@ -1979,7 +1979,7 @@ async fn listen_for_node_add_abandoned_action_does_not_block_next_goal() {
                 name: "{SECOND_NODE_NAME}",
                 tag: "{SECOND_NODE_TAG}",
             },
-            runtime: {
+            execution: {
                 language: "rust",
                 start_cmd: ["sleep", "10"]
             }
@@ -2038,7 +2038,7 @@ async fn node_add_same_node_shutdown_existing_instances() {
                 name: "{NODE_NAME}",
                 tag: "{NODE_TAG}",
             },
-            runtime: {
+            execution: {
                 language: "rust",
                 start_cmd: ["sleep", "10"]
             }
@@ -2156,7 +2156,7 @@ async fn node_add_same_node_shutdown_existing_instances() {
                 name: "{NODE_NAME}",
                 tag: "{NODE_TAG}",
             },
-            runtime: {
+            execution: {
                 language: "rust",
                 start_cmd: ["sleep", "10"]
             },
@@ -2283,7 +2283,7 @@ async fn listen_for_node_add_uses_env_overrides_for_path() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
             },
-            runtime: {
+            execution: {
                 language: "rust",
                 add_cmd: ["printout {STDOUT_MARKER}; printout {STDERR_MARKER} 1>&2"],
                 start_cmd: ["sleep", "10"]
@@ -2370,7 +2370,7 @@ async fn listen_for_node_add_injects_runtime_env_vars() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
             },
-            runtime: {
+            execution: {
                 language: "rust",
                 add_cmd: [
                     "sh",
@@ -2441,7 +2441,7 @@ async fn listen_for_node_add_fails_runs_add_cmd_on_missing_node_dependency() {
             ],
           },
         },
-        runtime: {
+        execution: {
           language: "rust",
           add_cmd: ["sh", "-c", "touch MARKER_PATH && exit 1"],
           start_cmd: ["sleep", "10"]
@@ -2515,7 +2515,7 @@ async fn listen_for_node_add_fails_on_missing_interface_even_when_dependency_exi
                 name: "{DEPENDENCY_NODE_NAME}",
                 tag: "{DEPENDENCY_NODE_TAG}",
             },
-            runtime: {
+            execution: {
                 language: "rust",
                 start_cmd: ["sleep", "10"]
             },
@@ -2573,7 +2573,7 @@ async fn listen_for_node_add_fails_on_missing_interface_even_when_dependency_exi
             ],
           },
         },
-        runtime: {
+        execution: {
           language: "rust",
           add_cmd: ["sh", "-c", "touch MARKER_PATH && exit 1"],
           start_cmd: ["sleep", "10"]
@@ -2646,7 +2646,7 @@ async fn listen_for_node_add_reports_excluded_dirs_in_feedback() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
             },
-            runtime: {
+            execution: {
                 language: "rust",
                 start_cmd: ["sleep", "10"]
             }
@@ -2721,7 +2721,7 @@ async fn listen_for_node_add_container_build_failure_includes_stderr_in_error() 
             name: "TARGET_NODE_NAME",
             tag: "TARGET_NODE_TAG",
         },
-        runtime: {
+        execution: {
             language: "rust",
             container: {
                 def_file: "apptainer.def",
@@ -2831,7 +2831,7 @@ async fn listen_for_node_add_logs_error_on_spawn_failure() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
             },
-            runtime: {
+            execution: {
                 language: "rust",
                 add_cmd: ["nonexistent_binary_peppy_test_xyz", "--flag"],
                 start_cmd: ["sleep", "10"]
@@ -2937,7 +2937,7 @@ async fn node_add_same_node_with_running_instance_and_dependents_succeeds() {
                     ]
                 }
             },
-            runtime: {
+            execution: {
                 language: "rust",
                 start_cmd: ["sleep", "10"]
             },
@@ -2983,7 +2983,7 @@ async fn node_add_same_node_with_running_instance_and_dependents_succeeds() {
                     ]
                 }
             },
-            runtime: {
+            execution: {
                 language: "rust",
                 start_cmd: ["sleep", "10"]
             },
@@ -3142,7 +3142,7 @@ async fn node_add_same_node_changing_interface_with_running_instance_and_depende
                     ]
                 }
             },
-            runtime: {
+            execution: {
                 language: "rust",
                 start_cmd: ["sleep", "10"]
             },
@@ -3188,7 +3188,7 @@ async fn node_add_same_node_changing_interface_with_running_instance_and_depende
                     ]
                 }
             },
-            runtime: {
+            execution: {
                 language: "rust",
                 start_cmd: ["sleep", "10"]
             },
@@ -3267,7 +3267,7 @@ async fn node_add_same_node_changing_interface_with_running_instance_and_depende
                     ]
                 }
             },
-            runtime: {
+            execution: {
                 language: "rust",
                 start_cmd: ["sleep", "10"]
             },
@@ -3350,7 +3350,7 @@ async fn node_add_same_node_with_running_instance_and_dependents_fails_on_stoppe
                 name: "{DEPENDENCY_NODE_NAME}",
                 tag: "{DEPENDENCY_NODE_TAG}",
             },
-            runtime: {
+            execution: {
                 language: "rust",
                 start_cmd: ["sleep", "10"]
             },
@@ -3386,7 +3386,7 @@ async fn node_add_same_node_with_running_instance_and_dependents_fails_on_stoppe
                     ]
                 },
             },
-            runtime: {
+            execution: {
                 language: "rust",
                 start_cmd: ["sleep", "10"]
             },
@@ -3533,7 +3533,7 @@ async fn listen_for_node_add_variant_local_source() {
                 ]
             }
         },
-        runtime: {
+        execution: {
             language: "rust",
             start_cmd: ["sleep", "10"]
         }
@@ -3543,7 +3543,7 @@ async fn listen_for_node_add_variant_local_source() {
     // Variant config — only defines runtime (no manifest, no interfaces)
     let variant_config = r#"{
         schema_version: 1,
-        runtime: {
+        execution: {
             language: "rust",
             start_cmd: ["sleep", "5"]
         }
@@ -3581,9 +3581,9 @@ async fn listen_for_node_add_variant_local_source() {
         "interfaces should be inherited from root"
     );
     assert_eq!(
-        config.runtime_ref().start_cmd.as_ref().unwrap(),
+        config.execution_ref().start_cmd.as_ref().unwrap(),
         &vec!["sleep".to_string(), "5".to_string()],
-        "runtime should come from the variant"
+        "execution should come from the variant"
     );
 }
 
@@ -3598,7 +3598,7 @@ async fn listen_for_node_add_variant_not_found() {
             name: "test_node",
             tag: "0.1.0",
         },
-        runtime: {
+        execution: {
             language: "rust",
             start_cmd: ["sleep", "10"]
         }
@@ -3658,7 +3658,7 @@ async fn listen_for_node_add_variant_interface_mismatch() {
                 ]
             }
         },
-        runtime: {
+        execution: {
             language: "rust",
             start_cmd: ["sleep", "10"]
         }
@@ -3675,7 +3675,7 @@ async fn listen_for_node_add_variant_interface_mismatch() {
                 ]
             }
         },
-        runtime: {
+        execution: {
             language: "rust",
             start_cmd: ["sleep", "5"]
         }
@@ -3737,7 +3737,7 @@ async fn listen_for_node_add_variant_matching_interfaces_different_order() {
                 ]
             }
         },
-        runtime: {
+        execution: {
             language: "rust",
             start_cmd: ["sleep", "10"]
         }
@@ -3755,7 +3755,7 @@ async fn listen_for_node_add_variant_matching_interfaces_different_order() {
                 ]
             }
         },
-        runtime: {
+        execution: {
             language: "rust",
             start_cmd: ["sleep", "5"]
         }
@@ -3809,7 +3809,7 @@ async fn listen_for_node_add_variant_no_interfaces() {
                 ]
             }
         },
-        runtime: {
+        execution: {
             language: "rust",
             start_cmd: ["sleep", "10"]
         }
@@ -3819,7 +3819,7 @@ async fn listen_for_node_add_variant_no_interfaces() {
     // Variant has NO interfaces (omitted entirely) — should be accepted
     let variant_config = r#"{
         schema_version: 1,
-        runtime: {
+        execution: {
             language: "rust",
             start_cmd: ["sleep", "5"]
         }
@@ -3924,7 +3924,7 @@ async fn listen_for_node_add_variant_manifest_ignored_warning() {
                 { name: "custom", source: { local: "../variant_with_manifest" } }
             ]
         },
-        runtime: {
+        execution: {
             language: "rust",
             start_cmd: ["sleep", "10"]
         }
@@ -3938,7 +3938,7 @@ async fn listen_for_node_add_variant_manifest_ignored_warning() {
             name: "overridden_name",
             tag: "9.9.9",
         },
-        runtime: {
+        execution: {
             language: "rust",
             start_cmd: ["sleep", "5"]
         }
@@ -4042,7 +4042,7 @@ async fn listen_for_node_add_default_variant_auto_resolved() {
     // Default variant config
     let default_variant_config = r#"{
         schema_version: 1,
-        runtime: {
+        execution: {
             language: "rust",
             start_cmd: ["sleep", "7"]
         }
@@ -4052,7 +4052,7 @@ async fn listen_for_node_add_default_variant_auto_resolved() {
     // Mujoco variant config
     let mujoco_variant_config = r#"{
         schema_version: 1,
-        runtime: {
+        execution: {
             language: "python",
             start_cmd: ["sleep", "3"]
         }
@@ -4088,9 +4088,9 @@ async fn listen_for_node_add_default_variant_auto_resolved() {
         "interfaces should be inherited from root"
     );
     assert_eq!(
-        config.runtime_ref().start_cmd.as_ref().unwrap(),
+        config.execution_ref().start_cmd.as_ref().unwrap(),
         &vec!["sleep".to_string(), "7".to_string()],
-        "runtime should come from the default variant"
+        "execution should come from the default variant"
     );
 }
 
@@ -4142,7 +4142,7 @@ async fn listen_for_node_add_default_variant_explicit_other() {
 
     let default_variant_config = r#"{
         schema_version: 1,
-        runtime: {
+        execution: {
             language: "rust",
             start_cmd: ["sleep", "7"]
         }
@@ -4151,7 +4151,7 @@ async fn listen_for_node_add_default_variant_explicit_other() {
 
     let mujoco_variant_config = r#"{
         schema_version: 1,
-        runtime: {
+        execution: {
             language: "python",
             start_cmd: ["sleep", "3"]
         }
@@ -4182,8 +4182,8 @@ async fn listen_for_node_add_default_variant_explicit_other() {
         .expect("node should exist in stack");
     let config = entity.config();
     assert_eq!(
-        config.runtime_ref().start_cmd.as_ref().unwrap(),
+        config.execution_ref().start_cmd.as_ref().unwrap(),
         &vec!["sleep".to_string(), "3".to_string()],
-        "runtime should come from the mujoco variant, not the default"
+        "execution should come from the mujoco variant, not the default"
     );
 }

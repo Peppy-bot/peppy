@@ -22,7 +22,7 @@ pub fn core_node_config() -> NodeConfig {
                 name: "core",
                 tag: "1.0.0",
             },
-            runtime: {
+            execution: {
                 language: "rust",
                 start_cmd: ["core"]
             }

@@ -246,7 +246,7 @@ async fn handle_node_sync_request_inner(
 
                 // Collect consumed interfaces with resolved message formats
                 let interfaces = collect_consumed_interfaces(&node_config, node_stack);
-                let language = node_config.runtime.as_ref().map(|r| r.language);
+                let language = node_config.execution.as_ref().map(|r| r.language);
                 let variants = node_config.manifest.variants.clone();
                 let root_manifest = node_config.manifest.clone();
                 let root_interfaces = node_config.interfaces.clone();
@@ -277,7 +277,7 @@ async fn handle_node_sync_request_inner(
     let consumed_interfaces_for_variants = consumed_interfaces.clone();
     let peppy_dirs_for_variants = peppy_dirs.clone();
 
-    // Generate peppygen for the root node (skip if runtime is absent, e.g. default-variant nodes).
+    // Generate peppygen for the root node (skip if execution is absent, e.g. default-variant nodes).
     if let Some(language) = language {
         match tokio::task::spawn_blocking(move || -> Result<()> {
             remove_previous_peppy_dir(&node_root_dir);
@@ -353,19 +353,19 @@ async fn handle_node_sync_request_inner(
                 }
             };
 
-            let variant_language = variant_config.runtime.language;
+            let variant_language = variant_config.execution.language;
 
-            // Write a merged NodeConfig (root manifest + root interfaces + variant runtime)
+            // Write a merged NodeConfig (root manifest + root interfaces + variant execution)
             // so the generator can read it as a standard NodeConfig.
             // Strip the variants list — it is no longer relevant once resolved and
-            // would trigger a validation error with a "default" variant + runtime.
+            // would trigger a validation error with a "default" variant + execution.
             let mut merged_manifest = root_manifest.clone();
             merged_manifest.variants = None;
             let merged_config = config::node::NodeConfig {
                 schema_version: root_schema_version,
                 manifest: merged_manifest,
                 interfaces: root_interfaces.clone(),
-                runtime: Some(variant_config.runtime),
+                execution: Some(variant_config.execution),
             };
             let merged_json5 = serde_json5::to_string(&merged_config)
                 .expect("failed to serialize merged variant config");

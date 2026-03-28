@@ -17,7 +17,7 @@ fn git_repo_is_cloned_and_resolved() {
             schema_version: 1,
             manifest: { name: "uvc_camera", tag: "1.2.3" },
 
-            runtime: { language: "rust", start_cmd: ["uvc_camera"] }
+            execution: { language: "rust", start_cmd: ["uvc_camera"] }
         }"#;
     let remote = create_simple_git_repo(manifest_content, "1.2.3");
 
@@ -140,7 +140,7 @@ fn git_repo_is_cloned_and_same_tag_updates_code() {
             schema_version: 1,
             manifest: { name: "uvc_camera", tag: "1.0.0" },
 
-            runtime: { language: "rust", start_cmd: ["run_v1"] }
+            execution: { language: "rust", start_cmd: ["run_v1"] }
         }"#;
     let remote = create_simple_git_repo(manifest_v1, "1.0.0");
 
@@ -168,7 +168,7 @@ fn git_repo_is_cloned_and_same_tag_updates_code() {
     let start_cmd_v1 = deployment
         .node()
         .expect("resolved node config")
-        .runtime_ref()
+        .execution_ref()
         .start_cmd
         .as_ref()
         .unwrap()
@@ -180,7 +180,7 @@ fn git_repo_is_cloned_and_same_tag_updates_code() {
             schema_version: 1,
             manifest: { name: "uvc_camera", tag: "1.0.0" },
 
-            runtime: { language: "rust", start_cmd: ["run_v2"] }
+            execution: { language: "rust", start_cmd: ["run_v2"] }
         }"#;
 
     let commit_id = push_git_commit(
@@ -212,7 +212,7 @@ fn git_repo_is_cloned_and_same_tag_updates_code() {
     let start_cmd_v2 = deployment
         .node()
         .expect("resolved node config after update")
-        .runtime_ref()
+        .execution_ref()
         .start_cmd
         .as_ref()
         .unwrap()

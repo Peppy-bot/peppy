@@ -43,7 +43,7 @@ async fn listen_for_node_sync_success() {
                     exposes: [],
                 },
             },
-            runtime: {
+            execution: {
                 language: "rust",
                 start_cmd: ["sleep", "10"]
             }
@@ -324,7 +324,7 @@ async fn listen_for_node_sync_missing_dependency_fails() {
                     exposes: [],
                 },
             },
-            runtime: {
+            execution: {
                 language: "rust",
                 add_cmd: ["cargo", "build", "--release"],
                 start_cmd: ["./target/release/my_robot_brain"],
@@ -387,7 +387,7 @@ async fn listen_for_node_sync_multiple_missing_dependencies_fails() {
                 },
             },
             interfaces: {},
-            runtime: {
+            execution: {
                 language: "rust",
                 add_cmd: ["cargo", "build", "--release"],
                 start_cmd: ["./target/release/my_robot_brain"],
@@ -492,7 +492,7 @@ async fn listen_for_node_sync_generates_rust_interfaces() {
                     exposes: [],
                 },
             },
-            runtime: {
+            execution: {
                 language: "rust",
                 add_cmd: ["true"],
                 start_cmd: ["sleep", "10"],
@@ -577,7 +577,7 @@ async fn listen_for_node_sync_generates_rust_interfaces() {
                     exposes: [],
                 },
             },
-            runtime: {
+            execution: {
                 language: "rust",
                 add_cmd: ["true"],
                 start_cmd: ["sleep", "10"],
@@ -693,7 +693,7 @@ async fn listen_for_node_sync_generates_rust_consumed_service_interfaces() {
                     exposes: [],
                 },
             },
-            runtime: {
+            execution: {
                 language: "rust",
                 add_cmd: ["true"],
                 start_cmd: ["sleep", "10"],
@@ -775,7 +775,7 @@ async fn listen_for_node_sync_generates_rust_consumed_service_interfaces() {
                     exposes: [],
                 },
             },
-            runtime: {
+            execution: {
                 language: "rust",
                 add_cmd: ["true"],
                 start_cmd: ["sleep", "10"],
@@ -854,7 +854,7 @@ async fn listen_for_node_sync_generates_rust_consumed_topic_interfaces() {
                     exposes: [],
                 },
             },
-            runtime: {
+            execution: {
                 language: "rust",
                 add_cmd: ["true"],
                 start_cmd: ["sleep", "10"],
@@ -936,7 +936,7 @@ async fn listen_for_node_sync_generates_rust_consumed_topic_interfaces() {
                     exposes: [],
                 },
             },
-            runtime: {
+            execution: {
                 language: "rust",
                 add_cmd: ["true"],
                 start_cmd: ["sleep", "10"],
@@ -1021,7 +1021,7 @@ async fn listen_for_node_sync_generates_rust_consumed_action_interfaces() {
                     ],
                 },
             },
-            runtime: {
+            execution: {
                 language: "rust",
                 add_cmd: ["true"],
                 start_cmd: ["sleep", "10"],
@@ -1103,7 +1103,7 @@ async fn listen_for_node_sync_generates_rust_consumed_action_interfaces() {
                     ],
                 },
             },
-            runtime: {
+            execution: {
                 language: "rust",
                 add_cmd: ["true"],
                 start_cmd: ["sleep", "10"],
@@ -1163,7 +1163,7 @@ async fn listen_for_node_sync_generates_rust_parameters() {
                 tag: "0.1.0",
                 labels: ["camera"],
             },
-            runtime: {
+            execution: {
                 language: "rust",
                 parameters: {
                   device: {
@@ -1276,7 +1276,7 @@ async fn listen_for_node_sync_deletes_previous_peppy_folder() {
                 name: "example_node",
                 tag: "0.1.0",
             },
-            runtime: {
+            execution: {
                 language: "rust",
                 start_cmd: ["sleep", "10"]
             }
@@ -1376,7 +1376,7 @@ async fn listen_for_node_sync_with_variant_succeeds() {
         &variant_dir,
         r#"{
             schema_version: 1,
-            runtime: {
+            execution: {
                 language: "rust",
                 start_cmd: ["sleep", "10"],
             },
@@ -1408,7 +1408,7 @@ async fn listen_for_node_sync_with_variant_succeeds() {
                     ],
                 },
             },
-            runtime: {
+            execution: {
                 language: "rust",
                 start_cmd: ["sleep", "10"],
             },
@@ -1492,7 +1492,7 @@ async fn listen_for_node_sync_variant_missing_directory_fails() {
                 ],
             },
             interfaces: {},
-            runtime: {
+            execution: {
                 language: "rust",
                 start_cmd: ["sleep", "10"],
             },
@@ -1546,7 +1546,7 @@ async fn listen_for_node_sync_variant_invalid_config_fails() {
                 ],
             },
             interfaces: {},
-            runtime: {
+            execution: {
                 language: "rust",
                 start_cmd: ["sleep", "10"],
             },
@@ -1577,7 +1577,7 @@ async fn listen_for_node_sync_variant_invalid_config_fails() {
     );
 }
 
-/// When a root node has a "default" variant and no runtime, sync should
+/// When a root node has a "default" variant and no execution, sync should
 /// skip root codegen (no .peppy at root) but still generate the variant's .peppy.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_sync_default_variant_skips_root_codegen() {
@@ -1585,20 +1585,20 @@ async fn listen_for_node_sync_default_variant_skips_root_codegen() {
 
     let node_dir = tempdir().expect("failed to create temp node directory");
 
-    // Default variant with its own runtime
+    // Default variant with its own execution
     let default_variant_dir = node_dir.path().join("variants").join("default");
     write_variant_config(
         &default_variant_dir,
         r#"{
             schema_version: 1,
-            runtime: {
+            execution: {
                 language: "rust",
                 start_cmd: ["sleep", "10"],
             },
         }"#,
     );
 
-    // Root config: default variant, NO runtime
+    // Root config: default variant, NO execution
     write_node_config(
         node_dir.path(),
         r#"{
@@ -1644,7 +1644,7 @@ async fn listen_for_node_sync_default_variant_skips_root_codegen() {
         response.error_message
     );
 
-    // Root peppygen should NOT be generated (no runtime at root level)
+    // Root peppygen should NOT be generated (no execution at root level)
     let root_peppygen_dir = node_dir.path().join(PEPPYGEN_OUTPUT_PATH);
     assert!(
         !root_peppygen_dir.exists(),

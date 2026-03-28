@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use super::add::resolve_http_source;
 
 pub(crate) struct ResolvedVariant {
-    /// The merged NodeConfig: root manifest + root interfaces + variant runtime.
+    /// The merged NodeConfig: root manifest + root interfaces + variant execution.
     pub(crate) merged_config: NodeConfig,
     /// Path to the variant's source directory.
     pub(crate) variant_source_path: PathBuf,
@@ -36,7 +36,7 @@ pub(crate) fn variant_label(variant: &NodeSource) -> String {
 
 /// Resolves a variant from a [`NodeSource`], parsing its config, validating
 /// interfaces against the root, and merging the root's manifest/interfaces
-/// with the variant's runtime.
+/// with the variant's execution.
 ///
 /// - `NodeSource::Fs` is treated as a variant **name** (looked up in the root
 ///   manifest's `variants` array, then its `DeploymentSource` is resolved).
@@ -167,12 +167,12 @@ pub(crate) async fn resolve_variant(
 
     let manifest_ignored = variant_config.manifest.is_some();
 
-    // Build merged config: root's schema_version + manifest + interfaces + variant's runtime
+    // Build merged config: root's schema_version + manifest + interfaces + variant's execution
     let merged_config = NodeConfig {
         schema_version: root_config.schema_version,
         manifest: root_config.manifest.clone(),
         interfaces: root_config.interfaces.clone(),
-        runtime: Some(variant_config.runtime),
+        execution: Some(variant_config.execution),
     };
 
     Ok(ResolvedVariant {

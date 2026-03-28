@@ -28,7 +28,7 @@ fn topic_dependency_resolved_when_dependency_added_first() {
                     ]
                 }
             },
-            runtime: {
+            execution: {
               language: "rust",
               start_cmd: ["brain"]
             },
@@ -66,7 +66,7 @@ fn topic_dependency_resolved_when_dependency_added_first() {
                     ]
                 }
             },
-            runtime: {
+            execution: {
               language: "rust",
               start_cmd: ["lidar"]
             },
@@ -139,7 +139,7 @@ fn topic_dependency_fails_when_dependency_is_missing() {
                     ]
                 }
             },
-            runtime: {
+            execution: {
               language: "rust",
               start_cmd: ["brain"]
             },
@@ -190,7 +190,7 @@ fn topic_dependency_fails_when_topic_not_exposed_by_dependency() {
                     ]
                 }
             },
-            runtime: {
+            execution: {
               language: "rust",
               start_cmd: ["brain"]
             },
@@ -220,7 +220,7 @@ fn topic_dependency_fails_when_topic_not_exposed_by_dependency() {
                     ]
                 }
             },
-            runtime: {
+            execution: {
               language: "rust",
               start_cmd: ["lidar"]
             },

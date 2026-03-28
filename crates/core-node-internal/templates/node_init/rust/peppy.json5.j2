@@ -6,14 +6,14 @@
   },
   interfaces: {},
 {% if with_container %}
-  runtime: {
+  execution: {
     language: "rust",
     container: {
       def_file: "apptainer.def",
     },
   },
 {% else %}
-  runtime: {
+  execution: {
     language: "rust",
     add_cmd: [
       "cargo",

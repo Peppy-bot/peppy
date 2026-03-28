@@ -23,7 +23,7 @@ fn http_bundle_is_downloaded_and_resolved() {
             schema_version: 1,
             manifest: { name: "uvc_camera", tag: "1.2.3" },
 
-            runtime: { language: "rust", start_cmd: ["uvc_camera"] }
+            execution: { language: "rust", start_cmd: ["uvc_camera"] }
         }"#;
     let bundle_bytes = create_http_bundle(temp_dir.path(), "uvc_camera.tar.zst", manifest_content);
     let sha256 = sha256_checksum(&bundle_bytes);
@@ -79,7 +79,7 @@ fn http_bundle_is_cloned_and_same_tag_updates_code() {
             schema_version: 1,
             manifest: { name: "uvc_camera", tag: "1.0.0" },
 
-            runtime: { language: "rust", start_cmd: ["run_v1"] }
+            execution: { language: "rust", start_cmd: ["run_v1"] }
         }"#;
     let bundle_bytes_v1 = create_http_bundle(temp_dir.path(), "uvc_camera.tar.zst", manifest_v1);
     let checksum_v1 = sha256_checksum(&bundle_bytes_v1);
@@ -88,7 +88,7 @@ fn http_bundle_is_cloned_and_same_tag_updates_code() {
             schema_version: 1,
             manifest: { name: "uvc_camera", tag: "1.0.0" },
 
-            runtime: { language: "rust", start_cmd: ["run_v2"] }
+            execution: { language: "rust", start_cmd: ["run_v2"] }
         }"#;
     let bundle_bytes_v2 = create_http_bundle(temp_dir.path(), "uvc_camera.tar.zst", manifest_v2);
     let checksum_v2 = sha256_checksum(&bundle_bytes_v2);
@@ -127,7 +127,7 @@ fn http_bundle_is_cloned_and_same_tag_updates_code() {
     let start_cmd_v1 = planned
         .node()
         .expect("resolved node config")
-        .runtime_ref()
+        .execution_ref()
         .start_cmd
         .as_ref()
         .unwrap()
@@ -156,7 +156,7 @@ fn http_bundle_is_cloned_and_same_tag_updates_code() {
     let start_cmd_v2 = planned
         .node()
         .expect("resolved node config after update")
-        .runtime_ref()
+        .execution_ref()
         .start_cmd
         .as_ref()
         .unwrap()

@@ -72,7 +72,7 @@ fn print_node_info(response: &NodeInfoResponse) {
     // Basic info
     println!("Name:      {}", manifest.name.as_str());
     println!("Tag:       {}", manifest.tag);
-    println!("Language:  {:?}", config.runtime_ref().language);
+    println!("Language:  {:?}", config.execution_ref().language);
 
     // Labels
     if let Some(labels) = &manifest.labels
@@ -95,13 +95,13 @@ fn print_node_info(response: &NodeInfoResponse) {
     }
 
     // Commands
-    if let Some(add_cmd) = &config.runtime_ref().add_cmd {
+    if let Some(add_cmd) = &config.execution_ref().add_cmd {
         println!("Add cmd:   {}", add_cmd.join(" "));
     }
-    if let Some(start_cmd) = &config.runtime_ref().start_cmd {
+    if let Some(start_cmd) = &config.execution_ref().start_cmd {
         println!("Start cmd: {}", start_cmd.join(" "));
     }
-    if let Some(container) = &config.runtime_ref().container {
+    if let Some(container) = &config.execution_ref().container {
         println!("Container: {}", container.def_file);
     }
 
@@ -314,11 +314,11 @@ fn print_node_info(response: &NodeInfoResponse) {
     println!("Config SHA256: {}", response.config_integrity);
 
     // Parameters
-    if !config.runtime_ref().parameters.is_empty() {
+    if !config.execution_ref().parameters.is_empty() {
         println!();
         println!("Parameters");
         println!("{}", "-".repeat(50));
-        for (key, value) in &config.runtime_ref().parameters {
+        for (key, value) in &config.execution_ref().parameters {
             println!("  {}: {}", key, format_any_type(value));
         }
     }

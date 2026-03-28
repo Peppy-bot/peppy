@@ -5,7 +5,7 @@ sidebar:
   order: 6
 ---
 
-Variants let you define multiple implementations of the same node — each with its own runtime — while sharing a single manifest and interface contract.
+Variants let you define multiple implementations of the same node — each with its own execution — while sharing a single manifest and interface contract.
 
 Use variants when you need:
 - **Different brains** — swap between AI models (e.g., a `skildai` variant and a `pi0` variant of the same `brain` node).
@@ -14,10 +14,10 @@ Use variants when you need:
 
 ## How variants work
 
-A variant is a regular node that inherits the **manifest** and **interfaces** from a root node but defines its own **runtime**.
-When you add a variant, peppy swaps the root node's runtime with the variant's runtime while keeping the same manifest and interfaces.
+A variant is a regular node that inherits the **manifest** and **interfaces** from a root node but defines its own **execution**.
+When you add a variant, peppy swaps the root node's execution with the variant's execution while keeping the same manifest and interfaces.
 
-For example, if you have a `brain` node running a Rust-based controller, you can add a `mock` variant that runs a lightweight Python script instead — same interfaces, different runtime. The rest of your stack doesn't notice the difference.
+For example, if you have a `brain` node running a Rust-based controller, you can add a `mock` variant that runs a lightweight Python script instead — same interfaces, different execution. The rest of your stack doesn't notice the difference.
 
 Only one variant (or the root node itself) can be active in the stack at a time — adding a variant replaces any previous entry for that `name:tag`.
 
@@ -29,7 +29,7 @@ A repository of variants typically falls into one of two patterns, depending on 
 
 When multiple implementations serve the same role in the system, they share an identical interface. The rest of the stack does not need to know which implementation is active — it talks to the node through the same topics, services, and actions regardless.
 
-This is the core use case for peppy variants: one root node defines the manifest and interfaces, and each variant supplies only a runtime.
+This is the core use case for peppy variants: one root node defines the manifest and interfaces, and each variant supplies only an execution.
 
 **Example — depth camera drivers:**
 
@@ -37,12 +37,12 @@ A `depth_camera` node ships a default driver and declares variants for other har
 
 ```
 depth_camera/             ← root node
-├── peppy.json5           ← manifest + interfaces + default runtime
-├── realsense/            ← variant (runtime only)
+├── peppy.json5           ← manifest + interfaces + default execution
+├── realsense/            ← variant (execution only)
 │   └── peppy.json5
-├── zed/                  ← variant (runtime only)
+├── zed/                  ← variant (execution only)
 │   └── peppy.json5
-└── oak_d/                ← variant (runtime only)
+└── oak_d/                ← variant (execution only)
     └── peppy.json5
 ```
 
@@ -85,7 +85,7 @@ depth_camera/             ← root node
       ],
     },
   },
-  runtime: {
+  execution: {
     language: "rust",
     add_cmd: ["cargo", "build", "--release"],
     start_cmd: ["./target/release/depth_camera"],
@@ -103,7 +103,7 @@ A `mock` variant lets you test the rest of the stack without real hardware. It p
 // depth_camera/mock/peppy.json5 — lightweight test double
 {
   schema_version: 1,
-  runtime: {
+  execution: {
     language: "python",
     add_cmd: ["uv", "sync"],
     start_cmd: ["uv", "run", "mock_depth_camera"],
@@ -111,7 +111,7 @@ A `mock` variant lets you test the rest of the stack without real hardware. It p
 }
 ```
 
-The mock variant defines only a runtime — it inherits the root's `depth_image` and `point_cloud` interfaces, so every downstream node works exactly as it would with real hardware.
+The mock variant defines only an execution — it inherits the root's `depth_image` and `point_cloud` interfaces, so every downstream node works exactly as it would with real hardware.
 
 **Example — platform-specific builds:**
 
@@ -144,7 +144,7 @@ A node can also declare variants for different execution environments. For insta
       ],
     },
   },
-  runtime: {
+  execution: {
     language: "rust",
     add_cmd: ["cargo", "build", "--release"],
     start_cmd: ["./target/release/lidar"],
@@ -156,7 +156,7 @@ A node can also declare variants for different execution environments. For insta
 // lidar/containerized/peppy.json5 — same interfaces, runs in a container
 {
   schema_version: 1,
-  runtime: {
+  execution: {
     container: {
       image: "ghcr.io/example/lidar:0.2.0",
     },
@@ -183,11 +183,11 @@ A GR00T brain repository contains implementations for different robot platforms.
 ```
 groot_brain/
 ├── shared/                ← common code used by all implementations
-├── openarm01/             ← full node (manifest + interfaces + runtime)
+├── openarm01/             ← full node (manifest + interfaces + execution)
 │   └── peppy.json5
-├── unitree_g1/            ← full node (manifest + interfaces + runtime)
+├── unitree_g1/            ← full node (manifest + interfaces + execution)
 │   └── peppy.json5
-└── 1x/                    ← full node (manifest + interfaces + runtime)
+└── 1x/                    ← full node (manifest + interfaces + execution)
     └── peppy.json5
 ```
 
@@ -215,7 +215,7 @@ Each node has its own manifest and interfaces tailored to its target robot:
       ],
     },
   },
-  runtime: {
+  execution: {
     language: "python",
     add_cmd: ["uv", "sync"],
     start_cmd: ["uv", "run", "openarm01_brain"],
@@ -259,7 +259,7 @@ A downstream OpenArm01 robot project can then reference this node as a variant o
       ],
     },
   },
-  runtime: {
+  execution: {
     language: "rust",
     add_cmd: ["cargo", "build", "--release"],
     start_cmd: ["./target/release/brain"],
@@ -304,7 +304,7 @@ Variants are declared in the root node's `manifest.variants` array. Each entry h
       ],
     },
   },
-  runtime: {
+  execution: {
     language: "rust",
     add_cmd: ["cargo", "build", "--release"],
     start_cmd: ["./target/release/robot_brain"],
@@ -314,22 +314,22 @@ Variants are declared in the root node's `manifest.variants` array. Each entry h
 
 ## Default variant
 
-A variant named `"default"` has special meaning: it is the node's **primary implementation**, relocated to a separate directory. When a `default` variant is declared, the root `peppy.json5` omits the `runtime` section entirely — the runtime comes from the default variant instead.
+A variant named `"default"` has special meaning: it is the node's **primary implementation**, relocated to a separate directory. When a `default` variant is declared, the root `peppy.json5` omits the `execution` section entirely — the execution comes from the default variant instead.
 
 This is useful when you want every implementation (including the primary one) to live under a `variants/` subdirectory for a cleaner project layout:
 
 ```
-uvc_camera/                   ← root node (no runtime)
+uvc_camera/                   ← root node (no execution)
 ├── peppy.json5               ← manifest + interfaces only
 └── variants/
-    ├── default/              ← default variant (runtime)
+    ├── default/              ← default variant (execution)
     │   └── peppy.json5
-    └── mujoco/               ← another variant (runtime)
+    └── mujoco/               ← another variant (execution)
         └── peppy.json5
 ```
 
 ```json5
-// uvc_camera/peppy.json5 (root node — no runtime)
+// uvc_camera/peppy.json5 (root node — no execution)
 {
   schema_version: 1,
   manifest: {
@@ -356,7 +356,7 @@ uvc_camera/                   ← root node (no runtime)
       ],
     },
   },
-  // No `runtime` — it comes from the default variant
+  // No `execution` — it comes from the default variant
 }
 ```
 
@@ -364,7 +364,7 @@ uvc_camera/                   ← root node (no runtime)
 // uvc_camera/variants/default/peppy.json5
 {
   schema_version: 1,
-  runtime: {
+  execution: {
     language: "rust",
     add_cmd: ["cargo", "build", "--release"],
     start_cmd: ["./target/release/uvc_camera"],
@@ -375,25 +375,25 @@ uvc_camera/                   ← root node (no runtime)
 When you run `peppy node add ./uvc_camera` without specifying a `--variant`, the default variant is resolved automatically. You can still select a different variant explicitly with `peppy node add --variant mujoco ./uvc_camera`.
 
 :::note
-When a `default` variant is present, the root `peppy.json5` **must not** define a `runtime` section — the two are mutually exclusive. Conversely, if no `default` variant is declared, the `runtime` section is required as usual.
+When a `default` variant is present, the root `peppy.json5` **must not** define an `execution` section — the two are mutually exclusive. Conversely, if no `default` variant is declared, the `execution` section is required as usual.
 :::
 
 ## Variant config
 
-A variant's `peppy.json5` only needs a `schema_version` and a `runtime`. The `manifest` and `interfaces` fields are optional:
+A variant's `peppy.json5` only needs a `schema_version` and an `execution`. The `manifest` and `interfaces` fields are optional:
 
 ```json5
 // peppy.json5 (mock variant)
 {
   schema_version: 1,
-  runtime: {
+  execution: {
     language: "rust",
     start_cmd: ["./target/release/mock_brain"],
   },
 }
 ```
 
-Each variant has its own `runtime`, which means:
+Each variant has its own `execution`, which means:
 - Its own `language` (Rust or Python).
 - Its own `add_cmd` for build steps.
 - Its own `start_cmd` or `container` configuration.
@@ -425,7 +425,7 @@ If the interfaces do not match, the add operation fails with a `VariantInterface
       ],
     },
   },
-  runtime: {
+  execution: {
     language: "python",
     add_cmd: ["uv", "sync"],
     start_cmd: ["uv", "run", "mock_brain"],
@@ -456,7 +456,7 @@ peppy node add \
 
 For git sources, append `@ref` to specify a branch, tag, or commit (e.g., `@main`, `@v1.0`).
 
-In all cases, the positional argument (`./robot_brain`) is the root node — its manifest and interfaces are used. The variant provides only the runtime. The variant appears in the node stack under the root's name and tag (`robot_brain:0.1.0`).
+In all cases, the positional argument (`./robot_brain`) is the root node — its manifest and interfaces are used. The variant provides only the execution. The variant appears in the node stack under the root's name and tag (`robot_brain:0.1.0`).
 
 ## Variant source types in the manifest
 

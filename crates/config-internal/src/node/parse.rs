@@ -1,29 +1,29 @@
-use super::types::{NodeConfig, Runtime, VariantConfig};
+use super::types::{Execution, NodeConfig, VariantConfig};
 use crate::{
     error::{ParsingError, Result},
     parsing::read_non_empty_file,
 };
 use std::path::Path;
 
-/// Validates runtime constraints shared by both full node configs and variant configs.
-fn validate_runtime(runtime: &Runtime) -> Result<()> {
+/// Validates execution constraints shared by both full node configs and variant configs.
+fn validate_execution(execution: &Execution) -> Result<()> {
     // `start_cmd` and `container` are mutually exclusive; exactly one must be present.
-    match (&runtime.start_cmd, &runtime.container) {
+    match (&execution.start_cmd, &execution.container) {
         (Some(_), Some(_)) => return Err(ParsingError::ProcessAndContainerConflict.into()),
         (None, None) => return Err(ParsingError::NoProcessOrContainer.into()),
         _ => {}
     }
 
     // Validate container mount paths (reject top-level system directories).
-    if let Some(container) = &runtime.container
+    if let Some(container) = &execution.container
         && let Err((path, blocked_list)) = container.validate()
     {
         return Err(ParsingError::InvalidMountPath(path, blocked_list).into());
     }
 
     // Validate ${parameters:...} references in mount paths.
-    if let Some(container) = &runtime.container
-        && let Err((ref_path, reason)) = container.validate_parameter_refs(&runtime.parameters)
+    if let Some(container) = &execution.container
+        && let Err((ref_path, reason)) = container.validate_parameter_refs(&execution.parameters)
     {
         return Err(ParsingError::InvalidMountPathParameterRef(ref_path, reason).into());
     }
@@ -47,11 +47,11 @@ impl NodeConfigParser {
         let config: NodeConfig = serde_json5::from_str(content).map_err(ParsingError::from)?;
 
         let has_default = config.has_default_variant();
-        match (&config.runtime, has_default) {
-            (Some(runtime), false) => validate_runtime(runtime)?,
-            (None, true) => { /* runtime comes from default variant */ }
-            (Some(_), true) => return Err(ParsingError::RuntimeWithDefaultVariant.into()),
-            (None, false) => return Err(ParsingError::MissingRuntime.into()),
+        match (&config.execution, has_default) {
+            (Some(execution), false) => validate_execution(execution)?,
+            (None, true) => { /* execution comes from default variant */ }
+            (Some(_), true) => return Err(ParsingError::ExecutionWithDefaultVariant.into()),
+            (None, false) => return Err(ParsingError::MissingExecution.into()),
         }
 
         Ok(config)
@@ -70,7 +70,7 @@ impl VariantConfigParser {
 
     pub fn from_content(content: &str) -> Result<VariantConfig> {
         let config: VariantConfig = serde_json5::from_str(content).map_err(ParsingError::from)?;
-        validate_runtime(&config.runtime)?;
+        validate_execution(&config.execution)?;
         Ok(config)
     }
 }
@@ -89,7 +89,7 @@ mod tests {
                 name: "test_node",
                 tag: "0.1.0",
             },
-            runtime: {
+            execution: {
                 language: "rust",
                 start_cmd: ["./target/release/test_node"],
             },
@@ -98,10 +98,10 @@ mod tests {
         assert_eq!(config.manifest.name.as_str(), "test_node");
         assert_eq!(config.manifest.tag, "0.1.0");
         assert_eq!(
-            config.runtime_ref().start_cmd.as_ref().unwrap(),
+            config.execution_ref().start_cmd.as_ref().unwrap(),
             &vec!["./target/release/test_node"]
         );
-        assert!(config.runtime_ref().parameters.is_empty());
+        assert!(config.execution_ref().parameters.is_empty());
     }
 
     #[test]
@@ -119,7 +119,7 @@ mod tests {
                     ]
                 }
             },
-            runtime: {
+            execution: {
                 language: "rust",
                 start_cmd: ["./target/release/camera_driver"],
             },
@@ -128,11 +128,11 @@ mod tests {
         assert_eq!(config.manifest.name.as_str(), "camera_driver");
         assert_eq!(config.manifest.tag, "2.1.0");
         assert_eq!(
-            config.runtime_ref().language,
+            config.execution_ref().language,
             crate::node::PeppygenLanguage::Rust
         );
         assert_eq!(
-            config.runtime_ref().start_cmd.as_ref().unwrap(),
+            config.execution_ref().start_cmd.as_ref().unwrap(),
             &vec!["./target/release/camera_driver"]
         );
         assert!(config.interfaces.topics.is_some());
@@ -180,7 +180,7 @@ mod tests {
                 name: "container_node",
                 tag: "0.1.0",
             },
-            runtime: {
+            execution: {
                 language: "rust",
                 container: {
                     def_file: "apptainer.def",
@@ -188,8 +188,8 @@ mod tests {
             },
         }"#;
         let config = NodeConfigParser::from_content(json5).unwrap();
-        assert!(config.runtime_ref().start_cmd.is_none());
-        let container = config.runtime_ref().container.as_ref().unwrap();
+        assert!(config.execution_ref().start_cmd.is_none());
+        let container = config.execution_ref().container.as_ref().unwrap();
         assert_eq!(container.def_file, "apptainer.def");
     }
 
@@ -201,7 +201,7 @@ mod tests {
                 name: "bad_node",
                 tag: "0.1.0",
             },
-            runtime: {
+            execution: {
                 language: "rust",
                 start_cmd: ["./bin"],
                 container: {
@@ -224,7 +224,7 @@ mod tests {
                 name: "bare_node",
                 tag: "0.1.0",
             },
-            runtime: {
+            execution: {
                 language: "rust",
             },
         }"#;
@@ -261,7 +261,7 @@ mod tests {
                 name: "bad_mount_node",
                 tag: "0.1.0",
             },
-            runtime: {
+            execution: {
                 language: "rust",
                 container: {
                     def_file: "apptainer.def",
@@ -288,7 +288,7 @@ mod tests {
                 name: "bad_mount_node",
                 tag: "0.1.0",
             },
-            runtime: {
+            execution: {
                 language: "rust",
                 container: {
                     def_file: "apptainer.def",
@@ -315,7 +315,7 @@ mod tests {
                 name: "good_mount_node",
                 tag: "0.1.0",
             },
-            runtime: {
+            execution: {
                 language: "rust",
                 container: {
                     def_file: "apptainer.def",
@@ -326,7 +326,7 @@ mod tests {
         let config =
             NodeConfigParser::from_content(json5).expect("subdirectory mount should be accepted");
         let mount_paths = config
-            .runtime
+            .execution
             .unwrap()
             .container
             .unwrap()
@@ -343,7 +343,7 @@ mod tests {
                 name: "no_mount_node",
                 tag: "0.1.0",
             },
-            runtime: {
+            execution: {
                 language: "rust",
                 container: {
                     def_file: "apptainer.def",
@@ -353,7 +353,7 @@ mod tests {
         let config = NodeConfigParser::from_content(json5).expect("no mount_paths should be valid");
         assert!(
             config
-                .runtime
+                .execution
                 .unwrap()
                 .container
                 .unwrap()
@@ -370,7 +370,7 @@ mod tests {
                 name: "camera_node",
                 tag: "0.1.0",
             },
-            runtime: {
+            execution: {
                 language: "rust",
                 parameters: {
                     device_path: "string",
@@ -384,7 +384,7 @@ mod tests {
         let config = NodeConfigParser::from_content(json5)
             .expect("parameter ref in mount path should parse");
         let mount_paths = config
-            .runtime
+            .execution
             .unwrap()
             .container
             .unwrap()
@@ -404,7 +404,7 @@ mod tests {
                 name: "camera_node",
                 tag: "0.1.0",
             },
-            runtime: {
+            execution: {
                 language: "rust",
                 parameters: {
                     video: {
@@ -421,7 +421,7 @@ mod tests {
         let config = NodeConfigParser::from_content(json5)
             .expect("nested parameter ref in mount path should parse");
         let mount_paths = config
-            .runtime
+            .execution
             .unwrap()
             .container
             .unwrap()
@@ -441,7 +441,7 @@ mod tests {
                 name: "bad_ref_node",
                 tag: "0.1.0",
             },
-            runtime: {
+            execution: {
                 language: "rust",
                 parameters: {
                     device_path: "string",
@@ -472,7 +472,7 @@ mod tests {
                 name: "bad_type_node",
                 tag: "0.1.0",
             },
-            runtime: {
+            execution: {
                 language: "rust",
                 parameters: {
                     frame_rate: "u16",
@@ -505,7 +505,7 @@ mod tests {
                 name: "dynamic_mount_node",
                 tag: "0.1.0",
             },
-            runtime: {
+            execution: {
                 language: "rust",
                 parameters: {
                     path: "string",
@@ -519,7 +519,7 @@ mod tests {
         let config = NodeConfigParser::from_content(json5)
             .expect("parameter ref source should skip blocked-path check at parse time");
         let mount_paths = config
-            .runtime
+            .execution
             .unwrap()
             .container
             .unwrap()
@@ -536,7 +536,7 @@ mod tests {
                 name: "container_node",
                 tag: "0.1.0",
             },
-            runtime: {
+            execution: {
                 language: "rust",
                 container: {
                     def_file: "apptainer.def",
@@ -544,7 +544,7 @@ mod tests {
             },
         }"#;
         let config = NodeConfigParser::from_content(json5).unwrap();
-        let container = config.runtime_ref().container.as_ref().unwrap();
+        let container = config.execution_ref().container.as_ref().unwrap();
         assert!(container.apptainer_build_extra_args.is_none());
         assert!(container.apptainer_run_extra_args.is_none());
         assert!(container.lima_shell_extra_args.is_none());
@@ -558,7 +558,7 @@ mod tests {
                 name: "container_node",
                 tag: "0.1.0",
             },
-            runtime: {
+            execution: {
                 language: "rust",
                 container: {
                     def_file: "apptainer.def",
@@ -569,7 +569,7 @@ mod tests {
             },
         }"#;
         let config = NodeConfigParser::from_content(json5).unwrap();
-        let container = config.runtime_ref().container.as_ref().unwrap();
+        let container = config.execution_ref().container.as_ref().unwrap();
         assert_eq!(
             container.apptainer_build_extra_args.as_deref().unwrap(),
             &["--no-setgroups", "--force"]
@@ -592,7 +592,7 @@ mod tests {
                 name: "container_node",
                 tag: "0.1.0",
             },
-            runtime: {
+            execution: {
                 language: "rust",
                 container: {
                     def_file: "apptainer.def",
@@ -603,7 +603,7 @@ mod tests {
             },
         }"#;
         let config = NodeConfigParser::from_content(json5).unwrap();
-        let container = config.runtime_ref().container.as_ref().unwrap();
+        let container = config.execution_ref().container.as_ref().unwrap();
         assert_eq!(
             container.apptainer_build_extra_args.as_deref().unwrap(),
             &[] as &[String]
@@ -619,7 +619,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_config_with_default_variant_no_runtime() {
+    fn test_parse_config_with_default_variant_no_execution() {
         let json5 = r#"{
             schema_version: 1,
             manifest: {
@@ -638,12 +638,12 @@ mod tests {
         }"#;
         let config = NodeConfigParser::from_content(json5).unwrap();
         assert_eq!(config.manifest.name.as_str(), "uvc_camera");
-        assert!(config.runtime.is_none());
+        assert!(config.execution.is_none());
         assert!(config.has_default_variant());
     }
 
     #[test]
-    fn test_parse_config_with_default_variant_and_runtime_rejected() {
+    fn test_parse_config_with_default_variant_and_execution_rejected() {
         let json5 = r#"{
             schema_version: 1,
             manifest: {
@@ -653,7 +653,7 @@ mod tests {
                     { name: "default", source: { local: "./variants/default" } },
                 ],
             },
-            runtime: {
+            execution: {
                 language: "rust",
                 start_cmd: ["./target/release/uvc_camera"],
             },
@@ -661,12 +661,12 @@ mod tests {
         let result = NodeConfigParser::from_content(json5);
         assert!(matches!(
             result.unwrap_err(),
-            Error::Parsing(ParsingError::RuntimeWithDefaultVariant)
+            Error::Parsing(ParsingError::ExecutionWithDefaultVariant)
         ));
     }
 
     #[test]
-    fn test_parse_config_no_runtime_no_default_variant_rejected() {
+    fn test_parse_config_no_execution_no_default_variant_rejected() {
         let json5 = r#"{
             schema_version: 1,
             manifest: {
@@ -680,7 +680,7 @@ mod tests {
         let result = NodeConfigParser::from_content(json5);
         assert!(matches!(
             result.unwrap_err(),
-            Error::Parsing(ParsingError::MissingRuntime)
+            Error::Parsing(ParsingError::MissingExecution)
         ));
     }
 }

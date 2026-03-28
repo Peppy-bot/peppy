@@ -270,7 +270,7 @@ async fn node_run_command_with_args_succeeds() {
       ],
     }
   },
-  runtime: {
+  execution: {
     language: "rust",
     parameters: {
       resolution: "string",
