@@ -803,211 +803,174 @@ pub struct Interfaces {
     pub actions: Option<ActionInterfaces>,
 }
 
+/// Puts a value into canonical form so that derived `PartialEq` becomes
+/// order-independent: vecs are sorted by name, IndexMap keys are sorted
+/// recursively, and `Some(default)` is collapsed to `None`.
+trait Normalize {
+    fn normalize(&mut self);
+
+    fn normalized(mut self) -> Self
+    where
+        Self: Sized,
+    {
+        self.normalize();
+        self
+    }
+}
+
+fn normalize_schema_map(map: &mut IndexMap<String, SchemaType>) {
+    for value in map.values_mut() {
+        value.normalize();
+    }
+    map.sort_keys();
+}
+
+fn normalize_opt<T: Normalize>(opt: &mut Option<T>) {
+    if let Some(inner) = opt.as_mut() {
+        inner.normalize();
+    }
+}
+
+fn normalize_opt_default<T: Normalize + Default + PartialEq>(opt: &mut Option<T>) {
+    if let Some(inner) = opt.as_mut() {
+        inner.normalize();
+        let mut def = T::default();
+        def.normalize();
+        if *inner == def {
+            *opt = None;
+        }
+    }
+}
+
+fn normalize_opt_vec<T: Normalize>(opt: &mut Option<Vec<T>>, name_fn: impl Fn(&T) -> &str) {
+    if let Some(items) = opt.as_mut() {
+        for item in items.iter_mut() {
+            item.normalize();
+        }
+        items.sort_by(|a, b| name_fn(a).cmp(name_fn(b)));
+        if items.is_empty() {
+            *opt = None;
+        }
+    }
+}
+
+impl Normalize for SchemaType {
+    fn normalize(&mut self) {
+        match self {
+            SchemaType::Type(_) | SchemaType::Primitive(_) => {}
+            SchemaType::Array(arr) => arr.items.normalize(),
+            SchemaType::Object(obj) => normalize_schema_map(&mut obj.fields),
+        }
+    }
+}
+
+impl Normalize for MessageFormat {
+    fn normalize(&mut self) {
+        normalize_schema_map(&mut self.0);
+    }
+}
+
+impl Normalize for EmittedTopic {
+    fn normalize(&mut self) {
+        normalize_opt(&mut self.message_format);
+    }
+}
+
+impl Normalize for LinkedConsumedTopic {
+    fn normalize(&mut self) {}
+}
+
+impl Normalize for ExternalConsumedTopic {
+    fn normalize(&mut self) {
+        self.message_format.normalize();
+    }
+}
+
+impl Normalize for ConsumedTopic {
+    fn normalize(&mut self) {
+        match self {
+            ConsumedTopic::Linked(t) => t.normalize(),
+            ConsumedTopic::External(t) => t.normalize(),
+        }
+    }
+}
+
+impl Normalize for ExposedService {
+    fn normalize(&mut self) {
+        normalize_opt(&mut self.request_message_format);
+        normalize_opt(&mut self.response_message_format);
+    }
+}
+
+impl Normalize for ConsumedService {
+    fn normalize(&mut self) {}
+}
+
+impl Normalize for ConsumedAction {
+    fn normalize(&mut self) {}
+}
+
+impl Normalize for ActionServiceEndpoint {
+    fn normalize(&mut self) {
+        normalize_opt(&mut self.request_message_format);
+        normalize_opt(&mut self.response_message_format);
+    }
+}
+
+impl Normalize for ActionTopicEndpoint {
+    fn normalize(&mut self) {
+        normalize_opt(&mut self.message_format);
+    }
+}
+
+impl Normalize for ExposedAction {
+    fn normalize(&mut self) {
+        if let Some(gs) = &mut self.goal_service {
+            gs.normalize();
+        }
+        if let Some(ft) = &mut self.feedback_topic {
+            ft.normalize();
+        }
+        if let Some(rs) = &mut self.result_service {
+            rs.normalize();
+        }
+    }
+}
+
+impl Normalize for TopicInterfaces {
+    fn normalize(&mut self) {
+        normalize_opt_vec(&mut self.emits, |t| &t.name);
+        normalize_opt_vec(&mut self.consumes, |t| t.name());
+    }
+}
+
+impl Normalize for ServiceInterfaces {
+    fn normalize(&mut self) {
+        normalize_opt_vec(&mut self.exposes, |s| &s.name);
+        normalize_opt_vec(&mut self.consumes, |s| &s.name);
+    }
+}
+
+impl Normalize for ActionInterfaces {
+    fn normalize(&mut self) {
+        normalize_opt_vec(&mut self.exposes, |a| &a.name);
+        normalize_opt_vec(&mut self.consumes, |a| &a.name);
+    }
+}
+
+impl Normalize for Interfaces {
+    fn normalize(&mut self) {
+        normalize_opt_default(&mut self.topics);
+        normalize_opt_default(&mut self.services);
+        normalize_opt_default(&mut self.actions);
+    }
+}
+
 impl Interfaces {
     /// Compares two `Interfaces` for equivalence, ignoring the order of items
     /// within each list and the order of fields within message formats.
     pub fn matches_unordered(&self, other: &Interfaces) -> bool {
-        fn sort_by_name<T: Clone>(items: &Option<Vec<T>>, name_fn: impl Fn(&T) -> &str) -> Vec<T> {
-            let mut sorted = items.as_deref().unwrap_or_default().to_vec();
-            sorted.sort_by(|a, b| name_fn(a).cmp(name_fn(b)));
-            sorted
-        }
-
-        fn message_format_eq(a: &Option<MessageFormat>, b: &Option<MessageFormat>) -> bool {
-            match (a, b) {
-                (None, None) => true,
-                (Some(a), Some(b)) => {
-                    if a.0.len() != b.0.len() {
-                        return false;
-                    }
-                    // Compare as sorted key-value pairs to ignore order
-                    let mut a_sorted: Vec<_> = a.0.iter().collect();
-                    let mut b_sorted: Vec<_> = b.0.iter().collect();
-                    a_sorted.sort_by_key(|(k, _)| k.as_str());
-                    b_sorted.sort_by_key(|(k, _)| k.as_str());
-                    a_sorted
-                        .iter()
-                        .zip(b_sorted.iter())
-                        .all(|((ka, va), (kb, vb))| ka == kb && va == vb)
-                }
-                _ => false,
-            }
-        }
-
-        fn emitted_topics_eq(a: &Option<Vec<EmittedTopic>>, b: &Option<Vec<EmittedTopic>>) -> bool {
-            let a = sort_by_name(a, |t| &t.name);
-            let b = sort_by_name(b, |t| &t.name);
-            if a.len() != b.len() {
-                return false;
-            }
-            a.iter().zip(b.iter()).all(|(a, b)| {
-                a.name == b.name
-                    && a.qos_profile == b.qos_profile
-                    && message_format_eq(&a.message_format, &b.message_format)
-            })
-        }
-
-        fn consumed_topics_eq(
-            a: &Option<Vec<ConsumedTopic>>,
-            b: &Option<Vec<ConsumedTopic>>,
-        ) -> bool {
-            let a = sort_by_name(a, |t| t.name());
-            let b = sort_by_name(b, |t| t.name());
-            if a.len() != b.len() {
-                return false;
-            }
-            a.iter().zip(b.iter()).all(|(a, b)| a == b)
-        }
-
-        fn exposed_services_eq(
-            a: &Option<Vec<ExposedService>>,
-            b: &Option<Vec<ExposedService>>,
-        ) -> bool {
-            let a = sort_by_name(a, |s| &s.name);
-            let b = sort_by_name(b, |s| &s.name);
-            if a.len() != b.len() {
-                return false;
-            }
-            a.iter().zip(b.iter()).all(|(a, b)| {
-                a.name == b.name
-                    && message_format_eq(&a.request_message_format, &b.request_message_format)
-                    && message_format_eq(&a.response_message_format, &b.response_message_format)
-            })
-        }
-
-        fn consumed_services_eq(
-            a: &Option<Vec<ConsumedService>>,
-            b: &Option<Vec<ConsumedService>>,
-        ) -> bool {
-            let a = sort_by_name(a, |s| &s.name);
-            let b = sort_by_name(b, |s| &s.name);
-            if a.len() != b.len() {
-                return false;
-            }
-            a.iter().zip(b.iter()).all(|(a, b)| a == b)
-        }
-
-        fn action_service_endpoint_eq(
-            a: &Option<ActionServiceEndpoint>,
-            b: &Option<ActionServiceEndpoint>,
-        ) -> bool {
-            match (a, b) {
-                (None, None) => true,
-                (Some(a), Some(b)) => {
-                    a.qos_profile == b.qos_profile
-                        && message_format_eq(
-                            &a.request_message_format,
-                            &b.request_message_format,
-                        )
-                        && message_format_eq(
-                            &a.response_message_format,
-                            &b.response_message_format,
-                        )
-                }
-                _ => false,
-            }
-        }
-
-        fn action_topic_endpoint_eq(
-            a: &Option<ActionTopicEndpoint>,
-            b: &Option<ActionTopicEndpoint>,
-        ) -> bool {
-            match (a, b) {
-                (None, None) => true,
-                (Some(a), Some(b)) => {
-                    a.topic_type == b.topic_type
-                        && a.qos_profile == b.qos_profile
-                        && a.name == b.name
-                        && message_format_eq(&a.message_format, &b.message_format)
-                }
-                _ => false,
-            }
-        }
-
-        fn exposed_actions_eq(
-            a: &Option<Vec<ExposedAction>>,
-            b: &Option<Vec<ExposedAction>>,
-        ) -> bool {
-            let a = sort_by_name(a, |a| &a.name);
-            let b = sort_by_name(b, |a| &a.name);
-            if a.len() != b.len() {
-                return false;
-            }
-            a.iter().zip(b.iter()).all(|(a, b)| {
-                a.name == b.name
-                    && action_service_endpoint_eq(&a.goal_service, &b.goal_service)
-                    && action_topic_endpoint_eq(&a.feedback_topic, &b.feedback_topic)
-                    && action_service_endpoint_eq(&a.result_service, &b.result_service)
-            })
-        }
-
-        fn consumed_actions_eq(
-            a: &Option<Vec<ConsumedAction>>,
-            b: &Option<Vec<ConsumedAction>>,
-        ) -> bool {
-            let a = sort_by_name(a, |a| &a.name);
-            let b = sort_by_name(b, |a| &a.name);
-            if a.len() != b.len() {
-                return false;
-            }
-            a.iter().zip(b.iter()).all(|(a, b)| a == b)
-        }
-
-        fn opt_eq<T: Default + PartialEq>(a: &Option<T>, b: &Option<T>) -> bool {
-            let a = a.as_ref();
-            let b = b.as_ref();
-            match (a, b) {
-                (None, None) => true,
-                (Some(a), Some(b)) => a == b,
-                // Treat None as default (empty)
-                (None, Some(b)) => *b == T::default(),
-                (Some(a), None) => *a == T::default(),
-            }
-        }
-
-        // Topics
-        let topics_match = match (&self.topics, &other.topics) {
-            (None, None) => true,
-            (Some(a), Some(b)) => {
-                emitted_topics_eq(&a.emits, &b.emits)
-                    && consumed_topics_eq(&a.consumes, &b.consumes)
-            }
-            (a, b) => {
-                let a = a.as_ref().cloned().unwrap_or_default();
-                let b = b.as_ref().cloned().unwrap_or_default();
-                opt_eq(&a.emits, &b.emits) && opt_eq(&a.consumes, &b.consumes)
-            }
-        };
-
-        // Services
-        let services_match = match (&self.services, &other.services) {
-            (None, None) => true,
-            (Some(a), Some(b)) => {
-                exposed_services_eq(&a.exposes, &b.exposes)
-                    && consumed_services_eq(&a.consumes, &b.consumes)
-            }
-            (a, b) => {
-                let a = a.as_ref().cloned().unwrap_or_default();
-                let b = b.as_ref().cloned().unwrap_or_default();
-                opt_eq(&a.exposes, &b.exposes) && opt_eq(&a.consumes, &b.consumes)
-            }
-        };
-
-        // Actions
-        let actions_match = match (&self.actions, &other.actions) {
-            (None, None) => true,
-            (Some(a), Some(b)) => {
-                exposed_actions_eq(&a.exposes, &b.exposes)
-                    && consumed_actions_eq(&a.consumes, &b.consumes)
-            }
-            (a, b) => {
-                let a = a.as_ref().cloned().unwrap_or_default();
-                let b = b.as_ref().cloned().unwrap_or_default();
-                opt_eq(&a.exposes, &b.exposes) && opt_eq(&a.consumes, &b.consumes)
-            }
-        };
-
-        topics_match && services_match && actions_match
+        self.clone().normalized() == other.clone().normalized()
     }
 }
 
