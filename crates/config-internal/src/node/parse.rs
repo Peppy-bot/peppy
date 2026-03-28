@@ -78,8 +78,17 @@ impl VariantConfigParser {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{config::PeppyLauncherParser, error::Error};
+    use crate::{config::PeppyLauncherParser, error::Error, node::ContainerConfig};
     use tempfile::NamedTempFile;
+
+    /// Test helper: borrows the `ContainerConfig` from a parsed `NodeConfig`.
+    fn container(config: &NodeConfig) -> &ContainerConfig {
+        config
+            .execution_ref()
+            .container
+            .as_ref()
+            .expect("expected container")
+    }
 
     #[test]
     fn test_parse_minimal_config() {
@@ -189,8 +198,7 @@ mod tests {
         }"#;
         let config = NodeConfigParser::from_content(json5).unwrap();
         assert!(config.execution_ref().start_cmd.is_none());
-        let container = config.execution_ref().container.as_ref().unwrap();
-        assert_eq!(container.def_file, "apptainer.def");
+        assert_eq!(container(&config).def_file, "apptainer.def");
     }
 
     #[test]
@@ -325,14 +333,10 @@ mod tests {
         }"#;
         let config =
             NodeConfigParser::from_content(json5).expect("subdirectory mount should be accepted");
-        let mount_paths = config
-            .execution
-            .unwrap()
-            .container
-            .unwrap()
-            .mount_paths
-            .unwrap();
-        assert_eq!(mount_paths, vec!["/tmp/my_app_data:/tmp/my_app_data:rw"]);
+        assert_eq!(
+            container(&config).mount_paths.as_deref().unwrap(),
+            &["/tmp/my_app_data:/tmp/my_app_data:rw"]
+        );
     }
 
     #[test]
@@ -351,15 +355,7 @@ mod tests {
             },
         }"#;
         let config = NodeConfigParser::from_content(json5).expect("no mount_paths should be valid");
-        assert!(
-            config
-                .execution
-                .unwrap()
-                .container
-                .unwrap()
-                .mount_paths
-                .is_none()
-        );
+        assert!(container(&config).mount_paths.is_none());
     }
 
     #[test]
@@ -383,16 +379,9 @@ mod tests {
         }"#;
         let config = NodeConfigParser::from_content(json5)
             .expect("parameter ref in mount path should parse");
-        let mount_paths = config
-            .execution
-            .unwrap()
-            .container
-            .unwrap()
-            .mount_paths
-            .unwrap();
         assert_eq!(
-            mount_paths,
-            vec!["${parameters:device_path}:/dev/video0:rw"]
+            container(&config).mount_paths.as_deref().unwrap(),
+            &["${parameters:device_path}:/dev/video0:rw"]
         );
     }
 
@@ -420,16 +409,9 @@ mod tests {
         }"#;
         let config = NodeConfigParser::from_content(json5)
             .expect("nested parameter ref in mount path should parse");
-        let mount_paths = config
-            .execution
-            .unwrap()
-            .container
-            .unwrap()
-            .mount_paths
-            .unwrap();
         assert_eq!(
-            mount_paths,
-            vec!["${parameters:video.device_path}:/dev/video0:rw"]
+            container(&config).mount_paths.as_deref().unwrap(),
+            &["${parameters:video.device_path}:/dev/video0:rw"]
         );
     }
 
@@ -518,14 +500,10 @@ mod tests {
         }"#;
         let config = NodeConfigParser::from_content(json5)
             .expect("parameter ref source should skip blocked-path check at parse time");
-        let mount_paths = config
-            .execution
-            .unwrap()
-            .container
-            .unwrap()
-            .mount_paths
-            .unwrap();
-        assert_eq!(mount_paths, vec!["${parameters:path}:/container/data:rw"]);
+        assert_eq!(
+            container(&config).mount_paths.as_deref().unwrap(),
+            &["${parameters:path}:/container/data:rw"]
+        );
     }
 
     #[test]
@@ -544,10 +522,9 @@ mod tests {
             },
         }"#;
         let config = NodeConfigParser::from_content(json5).unwrap();
-        let container = config.execution_ref().container.as_ref().unwrap();
-        assert!(container.apptainer_build_extra_args.is_none());
-        assert!(container.apptainer_run_extra_args.is_none());
-        assert!(container.lima_shell_extra_args.is_none());
+        assert!(container(&config).apptainer_build_extra_args.is_none());
+        assert!(container(&config).apptainer_run_extra_args.is_none());
+        assert!(container(&config).lima_shell_extra_args.is_none());
     }
 
     #[test]
@@ -569,17 +546,17 @@ mod tests {
             },
         }"#;
         let config = NodeConfigParser::from_content(json5).unwrap();
-        let container = config.execution_ref().container.as_ref().unwrap();
+        let c = container(&config);
         assert_eq!(
-            container.apptainer_build_extra_args.as_deref().unwrap(),
+            c.apptainer_build_extra_args.as_deref().unwrap(),
             &["--no-setgroups", "--force"]
         );
         assert_eq!(
-            container.apptainer_run_extra_args.as_deref().unwrap(),
+            c.apptainer_run_extra_args.as_deref().unwrap(),
             &["--no-setgroups"]
         );
         assert_eq!(
-            container.lima_shell_extra_args.as_deref().unwrap(),
+            c.lima_shell_extra_args.as_deref().unwrap(),
             &["--timeout", "30"]
         );
     }
@@ -603,17 +580,17 @@ mod tests {
             },
         }"#;
         let config = NodeConfigParser::from_content(json5).unwrap();
-        let container = config.execution_ref().container.as_ref().unwrap();
+        let c = container(&config);
         assert_eq!(
-            container.apptainer_build_extra_args.as_deref().unwrap(),
+            c.apptainer_build_extra_args.as_deref().unwrap(),
             &[] as &[String]
         );
         assert_eq!(
-            container.apptainer_run_extra_args.as_deref().unwrap(),
+            c.apptainer_run_extra_args.as_deref().unwrap(),
             &[] as &[String]
         );
         assert_eq!(
-            container.lima_shell_extra_args.as_deref().unwrap(),
+            c.lima_shell_extra_args.as_deref().unwrap(),
             &[] as &[String]
         );
     }
