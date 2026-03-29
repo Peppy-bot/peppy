@@ -1051,7 +1051,7 @@ pub fn start_node(
     let config = entity.config();
     let manifest = &config.manifest;
     let start_cmd = config.execution.start_cmd.as_ref().ok_or_else(|| {
-        std::io::Error::other("node has no start_cmd (container nodes cannot be started this way)")
+        std::io::Error::other("node has no execution.start_cmd")
     })?;
 
     let Some((program, args)) = start_cmd.split_first() else {
