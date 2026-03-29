@@ -14,7 +14,7 @@ fn resolve_default_variant_local(
     raw_config: &config::node::RawNodeConfig,
     variant_source: &DeploymentSource,
     root_path: &Path,
-) -> Result<NodeConfig> {
+) -> Result<ResolvedNode> {
     let local_source = match variant_source {
         DeploymentSource::Local(local) => local,
         DeploymentSource::Git(_) | DeploymentSource::Url(_) => {
@@ -24,20 +24,32 @@ fn resolve_default_variant_local(
         }
     };
 
-    let variant_dir = if local_source.local.is_relative() {
+    let target = if local_source.local.is_relative() {
         root_path.join(&local_source.local)
     } else {
         local_source.local.clone()
     };
-    let variant_config_path = variant_dir.join(NODE_CONFIG_FILE);
+
+    let (variant_dir, variant_config_path) = if target.is_file() {
+        let parent = target
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."));
+        (parent, target)
+    } else {
+        (target.clone(), target.join(NODE_CONFIG_FILE))
+    };
 
     let variant_config = VariantConfigParser::from_path(&variant_config_path)?;
 
-    Ok(NodeConfig {
-        schema_version: raw_config.schema_version,
-        manifest: raw_config.manifest.clone(),
-        interfaces: raw_config.interfaces.clone(),
-        execution: variant_config.execution,
+    Ok(ResolvedNode {
+        config: NodeConfig {
+            schema_version: raw_config.schema_version,
+            manifest: raw_config.manifest.clone(),
+            interfaces: raw_config.interfaces.clone(),
+            execution: variant_config.execution,
+        },
+        root_path: variant_dir,
     })
 }
 
@@ -67,16 +79,14 @@ pub fn resolve_local_deployment(
 
     let raw_config = NodeConfigParser::from_path(&config_path)?;
 
-    let node = if let Some(source) = raw_config.manifest.default_variant_source() {
-        resolve_default_variant_local(&raw_config, source, &root_path)?
+    if let Some(source) = raw_config.manifest.default_variant_source() {
+        resolve_default_variant_local(&raw_config, source, &root_path)
     } else {
-        raw_config.into_resolved()?
-    };
-
-    Ok(ResolvedNode {
-        config: node,
-        root_path,
-    })
+        Ok(ResolvedNode {
+            config: raw_config.into_resolved()?,
+            root_path,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -129,6 +139,7 @@ mod tests {
             resolved.config.execution.start_cmd,
             Some(vec!["./target/release/variant_node".to_string()])
         );
+        assert_eq!(resolved.root_path, variant_dir);
     }
 
     #[test]
