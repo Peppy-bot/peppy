@@ -186,7 +186,10 @@ fn node_source_from_deployment_source(
         DeploymentSource::Url(spec) => {
             let url = url::Url::parse(&spec.url)
                 .map_err(|e| format!("invalid HTTP URL `{}`: {e}", spec.url))?;
-            Ok(NodeSource::Http { url })
+            Ok(NodeSource::Http {
+                url,
+                sha256: Some(spec.sha256.clone()),
+            })
         }
     }
 }
@@ -810,9 +813,12 @@ async fn add_nodes_to_stack(
                 STACK_LAUNCH_GIT_HASH,
                 goal_timeout_secs,
             ),
-            NodeSource::Http { url } => {
-                NodeAddGoal::new_http(url.clone(), STACK_LAUNCH_GIT_HASH, goal_timeout_secs)
-            }
+            NodeSource::Http { url, sha256 } => NodeAddGoal::new_http(
+                url.clone(),
+                sha256.clone(),
+                STACK_LAUNCH_GIT_HASH,
+                goal_timeout_secs,
+            ),
         }
         .with_env_vars(ctx.env_vars.clone());
 

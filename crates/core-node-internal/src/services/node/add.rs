@@ -986,7 +986,9 @@ async fn resolve_node_add_source(
             repo_path,
             repo_ref,
         } => resolve_git_source(repo_url, repo_path, repo_ref.as_deref()).await,
-        NodeSource::Http { url } => resolve_http_source(url, peppy_dirs.clone(), None).await,
+        NodeSource::Http { url, sha256 } => {
+            resolve_http_source(url, peppy_dirs.clone(), sha256.clone()).await
+        }
     }
 }
 
@@ -1189,7 +1191,7 @@ async fn handle_goal_request(
             "Received `node_add` goal from {sender_instance_id}, source=git:{}::{} ({:?})",
             repo_url, repo_path, repo_ref
         ),
-        NodeSource::Http { url } => debug!(
+        NodeSource::Http { url, .. } => debug!(
             "Received `node_add` goal from {sender_instance_id}, source=http:{}",
             url
         ),
@@ -1669,5 +1671,62 @@ mod tests {
         let result = download_http_bundle(&url, &dest, None);
         assert!(result.is_ok(), "expected Ok, got: {:?}", result);
         assert!(dest.exists(), "bundle file should exist");
+    }
+
+    #[test]
+    fn test_resolve_http_source_rejects_wrong_sha256() {
+        let bundle = create_test_tar_zst(b"node content");
+        let server = Server::run();
+        server.expect(
+            Expectation::matching(request::method_path("GET", "/node.tar.zst"))
+                .respond_with(status_code(200).body(bundle)),
+        );
+
+        let url = url::Url::parse(&server.url("/node.tar.zst").to_string()).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(tmp.path());
+
+        let wrong_hash = "b".repeat(64);
+        let result = resolve_http_source_blocking(url, &peppy_dirs, Some(wrong_hash));
+        assert!(result.is_err(), "should fail with wrong checksum");
+        let err = result.err().unwrap();
+        assert!(
+            err.contains("checksum mismatch"),
+            "expected checksum mismatch error, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_resolve_http_source_accepts_correct_sha256() {
+        let bundle = create_test_tar_zst(b"node content");
+        let correct_hash = sha256_hex(&bundle);
+        let server = Server::run();
+        // The bundle will be downloaded, checksum verified, then extraction will
+        // fail because it doesn't contain a valid peppy.json5. That's fine —
+        // the checksum verification happens *before* config parsing, so a
+        // checksum-mismatch error would surface first if sha256 weren't threaded
+        // through.  A config-parse error proves the checksum passed.
+        server.expect(
+            Expectation::matching(request::method_path("GET", "/node.tar.zst"))
+                .respond_with(status_code(200).body(bundle)),
+        );
+
+        let url = url::Url::parse(&server.url("/node.tar.zst").to_string()).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(tmp.path());
+
+        let result = resolve_http_source_blocking(url, &peppy_dirs, Some(correct_hash));
+
+        // We expect an error, but NOT a checksum error — it should fail later
+        // during config parsing because our test archive doesn't contain peppy.json5.
+        let err = result
+            .err()
+            .expect("expected an error (config parse), but got Ok");
+        assert!(
+            !err.contains("checksum mismatch"),
+            "should not fail on checksum when hash is correct, got: {}",
+            err
+        );
     }
 }

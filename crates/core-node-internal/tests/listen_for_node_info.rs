@@ -275,7 +275,10 @@ async fn listen_for_node_info_on_http_node_success() {
     let url = url::Url::parse(&server.url("/bundles/http_node.tar.zst").to_string())
         .expect("http bundle url should parse");
 
-    let request = NodeInfoRequest::new(NodeSource::Http { url: url.clone() });
+    let request = NodeInfoRequest::new(NodeSource::Http {
+        url: url.clone(),
+        sha256: None,
+    });
     let request_payload = request.encode().expect("encode should succeed");
 
     let response = ServiceMessenger::poll(
@@ -317,7 +320,7 @@ async fn listen_for_node_info_on_http_node_success() {
         .add_instance(TARGET_NODE_NAME, TARGET_NODE_TAG, Some(&instance_id), None)
         .expect("add_instance should succeed");
 
-    let request = NodeInfoRequest::new(NodeSource::Http { url });
+    let request = NodeInfoRequest::new(NodeSource::Http { url, sha256: None });
     let request_payload = request.encode().expect("encode should succeed");
 
     let response = ServiceMessenger::poll(
@@ -546,7 +549,10 @@ async fn listen_for_node_info_recovers_after_invalid_request() {
     // First, send a request that is guaranteed to fail quickly without performing I/O.
     let bad_url = url::Url::parse("https://example.com/bad_url")
         .expect("bad test URL should parse as a valid URL");
-    let bad_request = NodeInfoRequest::new(NodeSource::Http { url: bad_url });
+    let bad_request = NodeInfoRequest::new(NodeSource::Http {
+        url: bad_url,
+        sha256: None,
+    });
     let bad_payload = bad_request.encode().expect("encode should succeed");
 
     let err = match ServiceMessenger::poll(

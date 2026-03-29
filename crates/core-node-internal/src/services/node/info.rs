@@ -204,7 +204,9 @@ async fn resolve_node_config_with_source_path(
             repo_path,
             repo_ref,
         } => parse_node_config_from_git_with_path(repo_url, repo_path, repo_ref).await,
-        NodeSource::Http { url } => parse_node_config_from_http_with_path(url, peppy_dirs).await,
+        NodeSource::Http { url, .. } => {
+            parse_node_config_from_http_with_path(url, peppy_dirs).await
+        }
     }
 }
 

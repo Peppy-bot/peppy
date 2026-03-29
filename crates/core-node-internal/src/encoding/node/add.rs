@@ -25,6 +25,7 @@ pub enum NodeSource {
     // Only .tzst (.tar.zstd) archives are supported for the moment
     Http {
         url: url::Url,
+        sha256: Option<String>,
     },
 }
 
@@ -52,7 +53,7 @@ impl NodeSource {
     pub fn decode_http(url_str: &str) -> Result<Self> {
         let url = url::Url::parse(url_str)
             .map_err(|e| crate::Error::Decoding(format!("invalid HTTP URL: {}", e)))?;
-        Ok(Self::Http { url })
+        Ok(Self::Http { url, sha256: None })
     }
 }
 
@@ -110,9 +111,14 @@ impl NodeAddGoal {
     }
 
     /// Creates a new NodeAddGoal from an HTTP URL (for .tzst archives).
-    pub fn new_http(url: url::Url, git_hash: impl Into<String>, timeout_secs: u64) -> Self {
+    pub fn new_http(
+        url: url::Url,
+        sha256: Option<String>,
+        git_hash: impl Into<String>,
+        timeout_secs: u64,
+    ) -> Self {
         Self {
-            source: NodeSource::Http { url },
+            source: NodeSource::Http { url, sha256 },
             git_hash: git_hash.into(),
             env_vars: Vec::new(),
             timeout_secs,
@@ -163,7 +169,7 @@ impl NodeAddGoal {
                     git.set_repo_path(repo_path);
                     git.set_repo_ref(repo_ref.as_deref().unwrap_or(""));
                 }
-                NodeSource::Http { url } => {
+                NodeSource::Http { url, .. } => {
                     source.set_http(url.as_str());
                 }
             }
@@ -194,7 +200,7 @@ impl NodeAddGoal {
                         git.set_repo_path(repo_path);
                         git.set_repo_ref(repo_ref.as_deref().unwrap_or(""));
                     }
-                    NodeSource::Http { url } => {
+                    NodeSource::Http { url, .. } => {
                         variant_source.set_http(url.as_str());
                     }
                 }

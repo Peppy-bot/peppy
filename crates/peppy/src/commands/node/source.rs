@@ -20,7 +20,7 @@ pub fn parse_node_source(source: &str, git_ref: Option<String>) -> Result<NodeSo
                     "`--ref` is only supported for git sources".to_string(),
                 ));
             }
-            return Ok(NodeSource::Http { url });
+            return Ok(NodeSource::Http { url, sha256: None });
         }
 
         let (repo_url, repo_path) = parse_git_repo_url_and_path(source)?;
@@ -78,7 +78,7 @@ pub fn parse_variant_source(variant: &str) -> Result<NodeSource> {
             && matches!(url.scheme(), "http" | "https")
             && is_supported_http_archive(&url)
         {
-            return Ok(NodeSource::Http { url });
+            return Ok(NodeSource::Http { url, sha256: None });
         }
 
         // Extract @ref from the end of the string before URL parsing.
@@ -230,7 +230,7 @@ mod tests {
     fn parse_variant_source_http() {
         let source = parse_variant_source("https://example.com/variant.tar.zst").unwrap();
         assert!(
-            matches!(&source, NodeSource::Http { url } if url.as_str() == "https://example.com/variant.tar.zst"),
+            matches!(&source, NodeSource::Http { url, .. } if url.as_str() == "https://example.com/variant.tar.zst"),
             "expected Http variant, got {:?}",
             source
         );

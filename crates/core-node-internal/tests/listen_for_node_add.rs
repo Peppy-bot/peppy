@@ -4223,12 +4223,15 @@ fn listen_for_node_add_variant_encoding_roundtrip() {
 
     // Http-based variant
     let url = url::Url::parse("https://example.com/variant.tar.zst").unwrap();
-    let goal_http = NodeAddGoal::new("/some/path", "test-hash", 60)
-        .with_variant_source(NodeSource::Http { url: url.clone() });
+    let goal_http =
+        NodeAddGoal::new("/some/path", "test-hash", 60).with_variant_source(NodeSource::Http {
+            url: url.clone(),
+            sha256: None,
+        });
     let encoded = goal_http.encode().expect("encoding should succeed");
     let decoded = NodeAddGoal::decode(&encoded).expect("decoding should succeed");
     assert!(
-        matches!(&decoded.variant, Some(NodeSource::Http { url: u }) if u.as_str() == "https://example.com/variant.tar.zst"),
+        matches!(&decoded.variant, Some(NodeSource::Http { url: u, .. }) if u.as_str() == "https://example.com/variant.tar.zst"),
         "expected Http variant, got {:?}",
         decoded.variant
     );

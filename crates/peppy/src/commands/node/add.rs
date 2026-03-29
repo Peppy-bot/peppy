@@ -382,7 +382,7 @@ mod tests {
             .expect("should parse http source");
 
         match &source {
-            NodeSource::Http { url } => {
+            NodeSource::Http { url, .. } => {
                 assert_eq!(url.as_str(), "https://example.com/fake_uvc_camera.tar.zst");
             }
             other => panic!("expected http source, got {other:?}"),

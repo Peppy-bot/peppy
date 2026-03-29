@@ -48,7 +48,7 @@ pub(crate) fn variant_label(variant: &NodeSource) -> String {
             repo_path,
             ..
         } => format!("git:{}::{}", repo_url, repo_path),
-        NodeSource::Http { url } => url.to_string(),
+        NodeSource::Http { url, .. } => url.to_string(),
     }
 }
 
@@ -151,8 +151,8 @@ pub(crate) async fn resolve_variant(
                 (node_root_dir, variant_config, false, Some(checkout_dir))
             }
             // Direct HTTP source — skip manifest lookup.
-            NodeSource::Http { url } => {
-                let resolved = resolve_http_source(url, peppy_dirs.clone(), None).await?;
+            NodeSource::Http { url, sha256 } => {
+                let resolved = resolve_http_source(url, peppy_dirs.clone(), sha256.clone()).await?;
                 let mut http_guard = CleanupGuard(resolved.cleanup_dir);
                 let config_path = resolved.source_path.join(NODE_CONFIG_FILE);
                 let variant_config = VariantConfigParser::from_path(&config_path).map_err(|e| {

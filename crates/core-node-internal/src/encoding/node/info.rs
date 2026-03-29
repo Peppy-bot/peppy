@@ -52,7 +52,7 @@ impl NodeInfoRequest {
                     git.set_repo_path(repo_path);
                     git.set_repo_ref(repo_ref.as_deref().unwrap_or(""));
                 }
-                NodeSource::Http { url } => {
+                NodeSource::Http { url, .. } => {
                     source.set_http(url.as_str());
                 }
             }
@@ -74,7 +74,7 @@ impl NodeInfoRequest {
                         git.set_repo_path(repo_path);
                         git.set_repo_ref(repo_ref.as_deref().unwrap_or(""));
                     }
-                    NodeSource::Http { url } => {
+                    NodeSource::Http { url, .. } => {
                         variant_source.set_http(url.as_str());
                     }
                 }
