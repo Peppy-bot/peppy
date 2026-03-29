@@ -8,6 +8,24 @@ use std::path::{Path, PathBuf};
 
 use super::add::resolve_http_source;
 
+/// RAII guard that removes a directory on drop unless defused.
+struct CleanupGuard(Option<PathBuf>);
+
+impl CleanupGuard {
+    /// Disarm the guard, returning the path without deleting it.
+    fn defuse(&mut self) -> Option<PathBuf> {
+        self.0.take()
+    }
+}
+
+impl Drop for CleanupGuard {
+    fn drop(&mut self) {
+        if let Some(ref dir) = self.0 {
+            std::fs::remove_dir_all(dir).ok();
+        }
+    }
+}
+
 pub(crate) struct ResolvedVariant {
     /// The merged NodeConfig: root manifest + root interfaces + variant execution.
     pub(crate) merged_config: NodeConfig,
@@ -152,6 +170,9 @@ pub(crate) async fn resolve_variant(
             }
         };
 
+    // Guard ensures cleanup_dir is removed if we exit early (e.g. validation error).
+    let mut cleanup_guard = CleanupGuard(cleanup_dir);
+
     // If the variant defines interfaces, validate they match the root's interfaces.
     if let Some(ref variant_interfaces) = variant_config.interfaces
         && *variant_interfaces != Interfaces::default()
@@ -174,6 +195,9 @@ pub(crate) async fn resolve_variant(
         interfaces: root_config.interfaces.clone(),
         execution: variant_config.execution,
     };
+
+    // Defuse the guard — caller takes ownership of cleanup responsibility.
+    let cleanup_dir = cleanup_guard.defuse();
 
     Ok(ResolvedVariant {
         merged_config,
