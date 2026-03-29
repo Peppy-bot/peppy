@@ -64,9 +64,8 @@ impl Toolchain {
 
 /// Raw node configuration as deserialized from JSON5. The `execution` field is
 /// optional because configs with a `"default"` variant omit it — execution
-/// comes from the variant. Use [`RawNodeConfig::into_resolved`] or
-/// [`RawNodeConfig::resolve`] to produce a [`NodeConfig`] with guaranteed
-/// `execution`.
+/// comes from the variant. Use [`RawNodeConfig::into_resolved`] to produce a
+/// [`NodeConfig`] with guaranteed `execution`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RawNodeConfig {
