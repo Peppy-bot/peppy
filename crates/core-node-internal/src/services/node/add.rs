@@ -621,6 +621,12 @@ pub(crate) struct ResolvedNodeAddSource {
     pub(crate) cleanup_dir: Option<PathBuf>,
 }
 
+/// Result of downloading and extracting an HTTP bundle without parsing the node config.
+pub(crate) struct ExtractedHttpSource {
+    pub(crate) source_path: PathBuf,
+    pub(crate) cleanup_dir: Option<PathBuf>,
+}
+
 #[derive(Clone)]
 pub(crate) struct NodeAddActionContext {
     pub(crate) node_stack: Arc<NodeStack>,
@@ -833,6 +839,19 @@ fn extract_http_bundle(
     extract_tar_zst(bundle_path, destination).map_err(|e| format!("{} (source: {})", e, url))
 }
 
+pub(crate) async fn download_and_extract_http_source(
+    url: &url::Url,
+    peppy_dirs: PeppyDirs,
+    expected_sha256: Option<String>,
+) -> std::result::Result<ExtractedHttpSource, String> {
+    let url = url.clone();
+    tokio::task::spawn_blocking(move || {
+        download_and_extract_http_source_blocking(url, &peppy_dirs, expected_sha256)
+    })
+    .await
+    .map_err(|e| format!("Failed to join HTTP download task: {}", e))?
+}
+
 pub(crate) async fn resolve_http_source(
     url: &url::Url,
     peppy_dirs: PeppyDirs,
@@ -846,11 +865,11 @@ pub(crate) async fn resolve_http_source(
     .map_err(|e| format!("Failed to join HTTP download task: {}", e))?
 }
 
-fn resolve_http_source_blocking(
+fn download_and_extract_http_source_blocking(
     url: url::Url,
     peppy_dirs: &PeppyDirs,
     expected_sha256: Option<String>,
-) -> std::result::Result<ResolvedNodeAddSource, String> {
+) -> std::result::Result<ExtractedHttpSource, String> {
     match url.scheme() {
         "http" | "https" => {}
         other => {
@@ -890,7 +909,22 @@ fn resolve_http_source_blocking(
     std::fs::remove_file(&bundle_path).ok();
 
     let node_root_dir = locate_node_root_dir(&extract_dir)?;
-    let config_path = node_root_dir.join(NODE_CONFIG_FILE);
+
+    let operation_dir = operation_cleanup.take();
+
+    Ok(ExtractedHttpSource {
+        source_path: node_root_dir,
+        cleanup_dir: operation_dir,
+    })
+}
+
+fn resolve_http_source_blocking(
+    url: url::Url,
+    peppy_dirs: &PeppyDirs,
+    expected_sha256: Option<String>,
+) -> std::result::Result<ResolvedNodeAddSource, String> {
+    let extracted = download_and_extract_http_source_blocking(url, peppy_dirs, expected_sha256)?;
+    let config_path = extracted.source_path.join(NODE_CONFIG_FILE);
     let node_config = NodeConfigParser::from_path(&config_path).map_err(|e| {
         format!(
             "Failed to parse node config at {}: {}",
@@ -899,13 +933,11 @@ fn resolve_http_source_blocking(
         )
     })?;
 
-    let operation_dir = operation_cleanup.take();
-
     Ok(ResolvedNodeAddSource {
-        source_path: node_root_dir,
+        source_path: extracted.source_path,
         node_config,
         verify_codegen_fingerprint: false,
-        cleanup_dir: operation_dir,
+        cleanup_dir: extracted.cleanup_dir,
     })
 }
 

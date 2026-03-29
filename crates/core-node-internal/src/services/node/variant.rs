@@ -1,4 +1,4 @@
-use super::add::{CleanupDir, resolve_http_source};
+use super::add::{CleanupDir, download_and_extract_http_source};
 use super::{checkout_repo_ref, sanitize_repo_path};
 use crate::encoding::NodeSource;
 use config::consts::{NODE_CONFIG_FILE, PeppyDirs};
@@ -140,9 +140,11 @@ pub(crate) async fn resolve_variant(
             }
             // Direct HTTP source — skip manifest lookup.
             NodeSource::Http { url, sha256 } => {
-                let resolved = resolve_http_source(url, peppy_dirs.clone(), sha256.clone()).await?;
-                let mut http_guard = CleanupDir::new(resolved.cleanup_dir);
-                let config_path = resolved.source_path.join(NODE_CONFIG_FILE);
+                let extracted =
+                    download_and_extract_http_source(url, peppy_dirs.clone(), sha256.clone())
+                        .await?;
+                let mut http_guard = CleanupDir::new(extracted.cleanup_dir);
+                let config_path = extracted.source_path.join(NODE_CONFIG_FILE);
                 let variant_config = VariantConfigParser::from_path(&config_path).map_err(|e| {
                     format!(
                         "Failed to parse variant config at {}: {}",
@@ -151,7 +153,7 @@ pub(crate) async fn resolve_variant(
                     )
                 })?;
                 (
-                    resolved.source_path,
+                    extracted.source_path,
                     variant_config,
                     false,
                     http_guard.take(),
@@ -273,14 +275,17 @@ async fn resolve_variant_deployment_source(
         DeploymentSource::Url(url_source) => {
             let url = url::Url::parse(&url_source.url)
                 .map_err(|e| format!("invalid variant URL: {}", e))?;
-            let resolved =
-                resolve_http_source(&url, peppy_dirs.clone(), Some(url_source.sha256.clone()))
-                    .await?;
-            let config_path = resolved.source_path.join(NODE_CONFIG_FILE);
+            let extracted = download_and_extract_http_source(
+                &url,
+                peppy_dirs.clone(),
+                Some(url_source.sha256.clone()),
+            )
+            .await?;
+            let config_path = extracted.source_path.join(NODE_CONFIG_FILE);
             let variant_config = match VariantConfigParser::from_path(&config_path) {
                 Ok(cfg) => cfg,
                 Err(e) => {
-                    if let Some(ref dir) = resolved.cleanup_dir {
+                    if let Some(ref dir) = extracted.cleanup_dir {
                         std::fs::remove_dir_all(dir).ok();
                     }
                     return Err(format!(
@@ -292,10 +297,10 @@ async fn resolve_variant_deployment_source(
                 }
             };
             Ok((
-                resolved.source_path,
+                extracted.source_path,
                 variant_config,
                 false,
-                resolved.cleanup_dir,
+                extracted.cleanup_dir,
             ))
         }
     }
