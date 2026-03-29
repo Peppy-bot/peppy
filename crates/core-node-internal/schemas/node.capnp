@@ -28,6 +28,8 @@ struct NodeAddGoal {
         # HTTP URL source
         http @3 :Text;
     }
+    # Optional SHA256 checksum for HTTP sources
+    httpSha256 @7 :Text;
     # Environment variables to apply when executing add_cmd (e.g. PATH)
     envVars @4 :List(EnvVar);
     # Timeout in seconds for the add operation (used to report remaining time when busy)
@@ -61,6 +63,8 @@ struct NodeAddVariantSource {
         # Direct HTTP URL for the variant
         http @2 :Text;
     }
+    # Optional SHA256 checksum for HTTP variant sources
+    httpSha256 @3 :Text;
 }
 
 struct NodeAddGoalResponse {
@@ -220,6 +224,8 @@ struct NodeInfoRequest {
         # HTTP URL source
         http @2 :Text;
     }
+    # Optional SHA256 checksum for HTTP sources
+    httpSha256 @4 :Text;
     # Optional variant source — when set, the main source points to the root node
     # and this identifies which variant to resolve and merge.
     # Fs = variant name (lookup in manifest), Git/Http = direct source.

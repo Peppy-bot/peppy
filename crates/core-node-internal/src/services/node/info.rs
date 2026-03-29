@@ -209,8 +209,8 @@ async fn resolve_node_config_with_source_path(
             repo_path,
             repo_ref,
         } => parse_node_config_from_git_with_path(repo_url, repo_path, repo_ref).await,
-        NodeSource::Http { url, .. } => {
-            parse_node_config_from_http_with_path(url, peppy_dirs).await
+        NodeSource::Http { url, sha256 } => {
+            parse_node_config_from_http_with_path(url, sha256, peppy_dirs).await
         }
     }
 }
@@ -307,11 +307,13 @@ async fn parse_node_config_from_git_with_path(
 /// and keeps the temp dir alive by returning it.
 async fn parse_node_config_from_http_with_path(
     url: url::Url,
+    expected_sha256: Option<String>,
     peppy_dirs: &PeppyDirs,
 ) -> std::result::Result<(RawNodeConfig, PathBuf, Option<PathBuf>), String> {
     // For HTTP sources we can use the resolve_http_source from add.rs which already
     // extracts the archive and returns the source path.
-    let resolved = super::add::resolve_http_source(&url, peppy_dirs.clone(), None).await?;
+    let resolved =
+        super::add::resolve_http_source(&url, peppy_dirs.clone(), expected_sha256).await?;
     Ok((
         resolved.node_config,
         resolved.source_path,
@@ -323,7 +325,10 @@ async fn parse_node_config_from_http_with_path(
 mod tests {
     use super::*;
     use git2::{Repository, Signature};
+    use httptest::{Expectation, Server, matchers::request, responders::status_code};
+    use sha2::{Digest, Sha256};
     use std::collections::BTreeSet;
+    use std::io::Write;
 
     fn temp_entries(root: &std::path::Path) -> BTreeSet<PathBuf> {
         std::fs::read_dir(root)
@@ -403,6 +408,43 @@ mod tests {
         let commit = repo.find_commit(commit_id).expect("failed to find commit");
         repo.tag("0.1.0", commit.as_object(), &signature, "0.1.0", false)
             .expect("failed to create tag");
+    }
+
+    fn create_http_node_bundle(name: &str, tag: &str) -> Vec<u8> {
+        let bundle_dir = tempfile::tempdir().expect("failed to create temp bundle dir");
+        let config = format!(
+            r#"{{
+                schema_version: 1,
+                manifest: {{
+                    name: "{name}",
+                    tag: "{tag}",
+                }},
+                execution: {{
+                    language: "rust",
+                    start_cmd: ["sleep", "10"]
+                }}
+            }}"#
+        );
+        let manifest_path = bundle_dir.path().join(NODE_CONFIG_FILE);
+        std::fs::write(&manifest_path, config).expect("failed to write manifest");
+
+        let mut tar_data = Vec::new();
+        {
+            let mut tar_builder = tar::Builder::new(&mut tar_data);
+            tar_builder
+                .append_path_with_name(&manifest_path, NODE_CONFIG_FILE)
+                .expect("failed to append manifest to tar");
+            tar_builder.finish().expect("failed to finish tar");
+        }
+
+        let mut bundle_bytes = Vec::new();
+        let mut encoder =
+            zstd::Encoder::new(&mut bundle_bytes, 0).expect("failed to create zstd encoder");
+        encoder
+            .write_all(&tar_data)
+            .expect("failed to write compressed bundle");
+        encoder.finish().expect("failed to finish encoder");
+        bundle_bytes
     }
 
     /// Verifies that `parse_node_config_from_git_with_path` cleans up its temp
@@ -520,6 +562,43 @@ mod tests {
             leaked.is_empty(),
             "git-backed default variant checkout should be cleaned up; leaked entries: {:?}",
             leaked
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_node_config_rejects_http_checksum_mismatch() {
+        let bundle = create_http_node_bundle("http_checksum_node", "0.1.0");
+        let actual_sha256 = format!("{:x}", Sha256::digest(&bundle));
+        let wrong_sha256 = if let Some(stripped) = actual_sha256.strip_prefix('0') {
+            format!("1{}", stripped)
+        } else {
+            format!("0{}", &actual_sha256[1..])
+        };
+
+        let server = Server::run();
+        server.expect(
+            Expectation::matching(request::method_path("GET", "/bundle.tar.zst"))
+                .respond_with(status_code(200).body(bundle)),
+        );
+        let url = url::Url::parse(&server.url("/bundle.tar.zst").to_string())
+            .expect("http bundle url should parse");
+
+        let peppy_root = tempfile::TempDir::new().expect("failed to create peppy data dir");
+        let peppy_dirs = PeppyDirs::new(peppy_root.path());
+
+        let error = resolve_node_config(
+            NodeSource::Http {
+                url,
+                sha256: Some(wrong_sha256),
+            },
+            &peppy_dirs,
+        )
+        .await
+        .expect_err("resolve_node_config should reject checksum mismatch");
+
+        assert!(
+            error.contains("checksum mismatch"),
+            "expected checksum mismatch, got: {error}"
         );
     }
 }

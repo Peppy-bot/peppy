@@ -17,6 +17,7 @@ use peppylib::messaging::MessengerHandle;
 use peppylib::services::health::listen_for_node_health;
 use peppylib::services::ready::listen_for_node_ready;
 use peppylib::{PeppyError, ServiceMessenger};
+use sha2::{Digest, Sha256};
 use std::io::Write;
 use std::sync::Arc;
 use std::time::Duration;
@@ -265,6 +266,7 @@ async fn listen_for_node_info_on_http_node_success() {
         .expect("failed to write compressed bundle");
     encoder.finish().expect("failed to finish encoder");
     let bundle_bytes = std::fs::read(&bundle_path).expect("failed to read bundle");
+    let bundle_sha256 = format!("{:x}", Sha256::digest(&bundle_bytes));
 
     let server = Server::run();
     server.expect(
@@ -277,7 +279,7 @@ async fn listen_for_node_info_on_http_node_success() {
 
     let request = NodeInfoRequest::new(NodeSource::Http {
         url: url.clone(),
-        sha256: None,
+        sha256: Some(bundle_sha256.clone()),
     });
     let request_payload = request.encode().expect("encode should succeed");
 
@@ -320,7 +322,10 @@ async fn listen_for_node_info_on_http_node_success() {
         .add_instance(TARGET_NODE_NAME, TARGET_NODE_TAG, Some(&instance_id), None)
         .expect("add_instance should succeed");
 
-    let request = NodeInfoRequest::new(NodeSource::Http { url, sha256: None });
+    let request = NodeInfoRequest::new(NodeSource::Http {
+        url,
+        sha256: Some(bundle_sha256),
+    });
     let request_payload = request.encode().expect("encode should succeed");
 
     let response = ServiceMessenger::poll(

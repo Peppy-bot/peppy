@@ -52,14 +52,17 @@ impl NodeInfoRequest {
                     git.set_repo_path(repo_path);
                     git.set_repo_ref(repo_ref.as_deref().unwrap_or(""));
                 }
-                NodeSource::Http { url, .. } => {
+                NodeSource::Http { url, sha256 } => {
                     source.set_http(url.as_str());
+                    if let Some(digest) = NodeSource::normalize_http_sha256(sha256.as_deref()) {
+                        request.reborrow().set_http_sha256(&digest);
+                    }
                 }
             }
 
             if let Some(ref variant) = self.variant {
-                let variant_builder = request.reborrow().init_variant();
-                let mut variant_source = variant_builder.init_source();
+                let mut variant_builder = request.reborrow().init_variant();
+                let mut variant_source = variant_builder.reborrow().init_source();
                 match variant {
                     NodeSource::Fs(name) => {
                         variant_source.set_fs(name.to_string_lossy().as_ref());
@@ -74,8 +77,11 @@ impl NodeInfoRequest {
                         git.set_repo_path(repo_path);
                         git.set_repo_ref(repo_ref.as_deref().unwrap_or(""));
                     }
-                    NodeSource::Http { url, .. } => {
+                    NodeSource::Http { url, sha256 } => {
                         variant_source.set_http(url.as_str());
+                        if let Some(digest) = NodeSource::normalize_http_sha256(sha256.as_deref()) {
+                            variant_builder.set_http_sha256(&digest);
+                        }
                     }
                 }
             }
@@ -98,7 +104,10 @@ impl NodeInfoRequest {
                     git.get_repo_ref()?.to_str()?,
                 )?
             }
-            Which::Http(http) => NodeSource::decode_http(http?.to_str()?)?,
+            Which::Http(http) => NodeSource::decode_http(
+                http?.to_str()?,
+                Some(request.get_http_sha256()?.to_str()?),
+            )?,
         };
 
         let variant = if request.has_variant() {
@@ -131,7 +140,10 @@ impl NodeInfoRequest {
                     if url_str.is_empty() {
                         None
                     } else {
-                        Some(NodeSource::decode_http(url_str)?)
+                        Some(NodeSource::decode_http(
+                            url_str,
+                            Some(variant_reader.get_http_sha256()?.to_str()?),
+                        )?)
                     }
                 }
             }
@@ -242,5 +254,55 @@ impl NodeInfoResponse {
             config_integrity,
             variant_name,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn node_info_request_http_source_roundtrips_sha256() {
+        let url = url::Url::parse("https://example.com/node.tar.zst").unwrap();
+        let sha256 = "c".repeat(64);
+
+        let encoded = NodeInfoRequest::new(NodeSource::Http {
+            url: url.clone(),
+            sha256: Some(sha256.clone()),
+        })
+        .encode()
+        .expect("encoding should succeed");
+        let decoded = NodeInfoRequest::decode(&encoded).expect("decoding should succeed");
+
+        assert_eq!(
+            decoded.source,
+            NodeSource::Http {
+                url,
+                sha256: Some(sha256)
+            }
+        );
+    }
+
+    #[test]
+    fn node_info_request_http_variant_roundtrips_sha256() {
+        let url = url::Url::parse("https://example.com/variant.tar.zst").unwrap();
+        let sha256 = "d".repeat(64);
+
+        let encoded = NodeInfoRequest::new(NodeSource::Fs("/root".into()))
+            .with_variant(NodeSource::Http {
+                url: url.clone(),
+                sha256: Some(sha256.clone()),
+            })
+            .encode()
+            .expect("encoding should succeed");
+        let decoded = NodeInfoRequest::decode(&encoded).expect("decoding should succeed");
+
+        assert_eq!(
+            decoded.variant,
+            Some(NodeSource::Http {
+                url,
+                sha256: Some(sha256)
+            })
+        );
     }
 }

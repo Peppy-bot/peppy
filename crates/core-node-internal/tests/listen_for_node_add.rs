@@ -4221,17 +4221,31 @@ fn listen_for_node_add_variant_encoding_roundtrip() {
         decoded.variant
     );
 
+    // Http-based source
+    let url = url::Url::parse("https://example.com/node.tar.zst").unwrap();
+    let source_sha256 = "a".repeat(64);
+    let goal_http_source =
+        NodeAddGoal::new_http(url.clone(), Some(source_sha256.clone()), "test-hash", 60);
+    let encoded = goal_http_source.encode().expect("encoding should succeed");
+    let decoded = NodeAddGoal::decode(&encoded).expect("decoding should succeed");
+    assert!(
+        matches!(&decoded.source, NodeSource::Http { url: u, sha256 } if u.as_str() == "https://example.com/node.tar.zst" && sha256.as_deref() == Some(source_sha256.as_str())),
+        "expected Http source with sha256, got {:?}",
+        decoded.source
+    );
+
     // Http-based variant
     let url = url::Url::parse("https://example.com/variant.tar.zst").unwrap();
+    let variant_sha256 = "b".repeat(64);
     let goal_http =
         NodeAddGoal::new("/some/path", "test-hash", 60).with_variant_source(NodeSource::Http {
             url: url.clone(),
-            sha256: None,
+            sha256: Some(variant_sha256.clone()),
         });
     let encoded = goal_http.encode().expect("encoding should succeed");
     let decoded = NodeAddGoal::decode(&encoded).expect("decoding should succeed");
     assert!(
-        matches!(&decoded.variant, Some(NodeSource::Http { url: u, .. }) if u.as_str() == "https://example.com/variant.tar.zst"),
+        matches!(&decoded.variant, Some(NodeSource::Http { url: u, sha256 }) if u.as_str() == "https://example.com/variant.tar.zst" && sha256.as_deref() == Some(variant_sha256.as_str())),
         "expected Http variant, got {:?}",
         decoded.variant
     );

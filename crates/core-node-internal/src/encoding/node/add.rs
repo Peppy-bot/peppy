@@ -50,10 +50,20 @@ impl NodeSource {
         })
     }
 
-    pub fn decode_http(url_str: &str) -> Result<Self> {
+    pub(crate) fn normalize_http_sha256(sha256: Option<&str>) -> Option<String> {
+        sha256
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned)
+    }
+
+    pub fn decode_http(url_str: &str, sha256: Option<&str>) -> Result<Self> {
         let url = url::Url::parse(url_str)
             .map_err(|e| crate::Error::Decoding(format!("invalid HTTP URL: {}", e)))?;
-        Ok(Self::Http { url, sha256: None })
+        Ok(Self::Http {
+            url,
+            sha256: Self::normalize_http_sha256(sha256),
+        })
     }
 }
 
@@ -169,8 +179,11 @@ impl NodeAddGoal {
                     git.set_repo_path(repo_path);
                     git.set_repo_ref(repo_ref.as_deref().unwrap_or(""));
                 }
-                NodeSource::Http { url, .. } => {
+                NodeSource::Http { url, sha256 } => {
                     source.set_http(url.as_str());
+                    if let Some(digest) = NodeSource::normalize_http_sha256(sha256.as_deref()) {
+                        goal.reborrow().set_http_sha256(&digest);
+                    }
                 }
             }
 
@@ -184,8 +197,8 @@ impl NodeAddGoal {
             goal.reborrow().set_timeout_secs(self.timeout_secs);
 
             if let Some(ref variant) = self.variant {
-                let variant_builder = goal.reborrow().init_variant();
-                let mut variant_source = variant_builder.init_source();
+                let mut variant_builder = goal.reborrow().init_variant();
+                let mut variant_source = variant_builder.reborrow().init_source();
                 match variant {
                     NodeSource::Fs(name) => {
                         variant_source.set_fs(name.to_string_lossy().as_ref());
@@ -200,8 +213,11 @@ impl NodeAddGoal {
                         git.set_repo_path(repo_path);
                         git.set_repo_ref(repo_ref.as_deref().unwrap_or(""));
                     }
-                    NodeSource::Http { url, .. } => {
+                    NodeSource::Http { url, sha256 } => {
                         variant_source.set_http(url.as_str());
+                        if let Some(digest) = NodeSource::normalize_http_sha256(sha256.as_deref()) {
+                            variant_builder.set_http_sha256(&digest);
+                        }
                     }
                 }
             }
@@ -223,7 +239,9 @@ impl NodeAddGoal {
                     git.get_repo_ref()?.to_str()?,
                 )?
             }
-            Which::Http(http) => NodeSource::decode_http(http?.to_str()?)?,
+            Which::Http(http) => {
+                NodeSource::decode_http(http?.to_str()?, Some(goal.get_http_sha256()?.to_str()?))?
+            }
         };
 
         let env_vars_reader = goal.get_env_vars()?;
@@ -266,7 +284,10 @@ impl NodeAddGoal {
                     if url_str.is_empty() {
                         None
                     } else {
-                        Some(NodeSource::decode_http(url_str)?)
+                        Some(NodeSource::decode_http(
+                            url_str,
+                            Some(variant_reader.get_http_sha256()?.to_str()?),
+                        )?)
                     }
                 }
             }
@@ -308,6 +329,53 @@ impl NodeAddGoal {
         )
         .await?;
         Ok(handle)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn node_add_goal_http_source_roundtrips_sha256() {
+        let url = url::Url::parse("https://example.com/node.tar.zst").unwrap();
+        let sha256 = "a".repeat(64);
+
+        let encoded = NodeAddGoal::new_http(url.clone(), Some(sha256.clone()), "git-hash", 42)
+            .encode()
+            .expect("encoding should succeed");
+        let decoded = NodeAddGoal::decode(&encoded).expect("decoding should succeed");
+
+        assert_eq!(
+            decoded.source,
+            NodeSource::Http {
+                url,
+                sha256: Some(sha256)
+            }
+        );
+    }
+
+    #[test]
+    fn node_add_goal_http_variant_roundtrips_sha256() {
+        let url = url::Url::parse("https://example.com/variant.tar.zst").unwrap();
+        let sha256 = "b".repeat(64);
+
+        let encoded = NodeAddGoal::new("/some/path", "git-hash", 42)
+            .with_variant_source(NodeSource::Http {
+                url: url.clone(),
+                sha256: Some(sha256.clone()),
+            })
+            .encode()
+            .expect("encoding should succeed");
+        let decoded = NodeAddGoal::decode(&encoded).expect("decoding should succeed");
+
+        assert_eq!(
+            decoded.variant,
+            Some(NodeSource::Http {
+                url,
+                sha256: Some(sha256)
+            })
+        );
     }
 }
 
