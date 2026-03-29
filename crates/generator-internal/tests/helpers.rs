@@ -284,6 +284,7 @@ pub fn run_generate_peppygen_lib_test(
         "test-hash",
         &peppy_dirs,
         Default::default(),
+        None,
     )
     .expect("failed to generate library");
 

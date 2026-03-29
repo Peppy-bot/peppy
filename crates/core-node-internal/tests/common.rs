@@ -546,6 +546,7 @@ pub fn init_test_node_project(node_name: &str, node_tag: &str, build_project: bo
         "test-hash",
         &peppy_dirs,
         Default::default(),
+        None,
     )
     .expect("failed to generate peppygen for test node");
 

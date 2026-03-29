@@ -41,9 +41,12 @@ pub fn generate_peppygen_lib(
     git_hash: &str,
     peppy_dirs: &PeppyDirs,
     deploy_mode: common::CrateDeployMode,
+    config_path: Option<&Path>,
 ) -> Result<()> {
     let node_dir = node_dir.as_ref();
-    let node_config_path = node_dir.join(NODE_CONFIG_FILE);
+    let node_config_path = config_path
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| node_dir.join(NODE_CONFIG_FILE));
 
     let peppy_dir = node_dir.join(config::consts::PEPPY_OUTPUT_DIR);
     std::fs::create_dir_all(&peppy_dir)?;
@@ -97,9 +100,11 @@ pub fn generate_peppygen_lib(
         }
     };
 
-    // Lastly generate the codegen fingerprint based on the peppy.json5 config file
-    let node_config_path = node_dir.join(NODE_CONFIG_FILE);
-    config::fingerprint::generate_node_config_fingerprint(&node_config_path, &output_dir)?;
+    // Lastly generate the codegen fingerprint based on the original peppy.json5 config file.
+    // Always fingerprint from the canonical path, even when generation used a merged config,
+    // so that `verify_codegen_fingerprint` (which reads peppy.json5) stays consistent.
+    let fingerprint_config_path = node_dir.join(NODE_CONFIG_FILE);
+    config::fingerprint::generate_node_config_fingerprint(&fingerprint_config_path, &output_dir)?;
 
     result
 }

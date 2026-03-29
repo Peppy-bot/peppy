@@ -117,6 +117,7 @@ fn handle_node_init_request_inner(
         &request.git_hash,
         peppy_dirs,
         generator::CrateDeployMode::default(),
+        None,
     ) {
         return NodeInitResponse::failure(format!("Failed to generate peppygen: {}", e)).encode();
     }

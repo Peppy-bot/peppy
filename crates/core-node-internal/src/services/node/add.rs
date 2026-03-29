@@ -1400,6 +1400,7 @@ async fn process_node_add(
         &goal.git_hash,
         &ctx.action.peppy_dirs,
         deploy_mode,
+        None,
     ) {
         let msg = format!("Failed to generate peppygen library: {}", e);
         write_error_to_log(&ctx.log_file, &msg);

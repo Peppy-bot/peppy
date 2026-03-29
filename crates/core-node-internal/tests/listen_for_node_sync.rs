@@ -1471,6 +1471,19 @@ async fn listen_for_node_sync_with_variant_succeeds() {
         "variant peppygen directory should exist at {}",
         variant_peppygen_dir.display()
     );
+
+    // Verify the original variant peppy.json5 was NOT overwritten with the merged config
+    let variant_config_content = fs::read_to_string(variant_dir.join(NODE_CONFIG_FILE))
+        .expect("variant peppy.json5 should still exist");
+    assert!(
+        !variant_config_content.contains("example_node"),
+        "variant peppy.json5 should not contain the root manifest name — \
+         it should remain the original VariantConfig"
+    );
+    assert!(
+        variant_config_content.contains("start_cmd"),
+        "variant peppy.json5 should still contain the original execution config"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1675,5 +1688,18 @@ async fn listen_for_node_sync_default_variant_skips_root_codegen() {
         stored_git_hash.trim(),
         expected_git_hash,
         "variant git.hash should contain the sync request git_hash"
+    );
+
+    // Verify the original variant peppy.json5 was NOT overwritten with the merged config
+    let variant_config_content = fs::read_to_string(default_variant_dir.join(NODE_CONFIG_FILE))
+        .expect("variant peppy.json5 should still exist");
+    assert!(
+        !variant_config_content.contains("default_variant_node"),
+        "variant peppy.json5 should not contain the root manifest name — \
+         it should remain the original VariantConfig"
+    );
+    assert!(
+        variant_config_content.contains("start_cmd"),
+        "variant peppy.json5 should still contain the original execution config"
     );
 }

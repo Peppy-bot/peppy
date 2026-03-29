@@ -288,6 +288,7 @@ async fn handle_node_sync_request_inner(
                 &git_hash,
                 &peppy_dirs,
                 generator::CrateDeployMode::default(),
+                None,
             )
         })
         .await
@@ -378,20 +379,43 @@ async fn handle_node_sync_request_inner(
                     .encode();
                 }
             };
-            if let Err(e) = std::fs::write(&variant_config_path, &merged_json5) {
-                return NodeSyncResponse::failure(format!(
-                    "Failed to write merged config for variant '{}': {}",
-                    variant.name.as_str(),
-                    e
-                ))
-                .encode();
-            }
+            // Write the merged config to a temporary file so the generator can
+            // read a full NodeConfig without overwriting the user's peppy.json5.
+            let variant_merged_config_file = match tempfile::Builder::new()
+                .prefix(".peppy-merged-")
+                .suffix(".json5")
+                .tempfile()
+            {
+                Ok(mut f) => {
+                    if let Err(e) = std::io::Write::write_all(&mut f, merged_json5.as_bytes()) {
+                        return NodeSyncResponse::failure(format!(
+                            "Failed to write merged config for variant '{}': {}",
+                            variant.name.as_str(),
+                            e
+                        ))
+                        .encode();
+                    }
+                    f
+                }
+                Err(e) => {
+                    return NodeSyncResponse::failure(format!(
+                        "Failed to create temp file for variant '{}': {}",
+                        variant.name.as_str(),
+                        e
+                    ))
+                    .encode();
+                }
+            };
+            let variant_merged_config_path = variant_merged_config_file.path().to_path_buf();
 
             let variant_interfaces = consumed_interfaces_for_variants.clone();
             let variant_git_hash = git_hash_for_variants.clone();
             let variant_peppy_dirs = peppy_dirs_for_variants.clone();
 
             match tokio::task::spawn_blocking(move || -> Result<()> {
+                // Keep the temp file alive for the duration of generation;
+                // it is automatically deleted when `_merged_config` is dropped.
+                let _merged_config = variant_merged_config_file;
                 remove_previous_peppy_dir(&variant_dir);
                 generate_peppygen_for_node(
                     variant_language,
@@ -400,6 +424,7 @@ async fn handle_node_sync_request_inner(
                     &variant_git_hash,
                     &variant_peppy_dirs,
                     generator::CrateDeployMode::default(),
+                    Some(&variant_merged_config_path),
                 )
             })
             .await
@@ -597,6 +622,7 @@ pub fn generate_peppygen_for_node(
     git_hash: &str,
     peppy_dirs: &PeppyDirs,
     deploy_mode: generator::CrateDeployMode,
+    config_path: Option<&std::path::Path>,
 ) -> crate::Result<()> {
     generator::generate_peppygen_lib(
         language,
@@ -605,6 +631,7 @@ pub fn generate_peppygen_for_node(
         git_hash,
         peppy_dirs,
         deploy_mode,
+        config_path,
     )?;
 
     Ok(())
