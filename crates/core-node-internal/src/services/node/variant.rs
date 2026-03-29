@@ -152,7 +152,7 @@ pub(crate) async fn resolve_variant(
             }
             // Direct HTTP source — skip manifest lookup.
             NodeSource::Http { url } => {
-                let resolved = resolve_http_source(url, peppy_dirs.clone()).await?;
+                let resolved = resolve_http_source(url, peppy_dirs.clone(), None).await?;
                 let mut http_guard = CleanupGuard(resolved.cleanup_dir);
                 let config_path = resolved.source_path.join(NODE_CONFIG_FILE);
                 let variant_config = VariantConfigParser::from_path(&config_path).map_err(|e| {
@@ -282,7 +282,9 @@ async fn resolve_variant_deployment_source(
         DeploymentSource::Url(url_source) => {
             let url = url::Url::parse(&url_source.url)
                 .map_err(|e| format!("invalid variant URL: {}", e))?;
-            let resolved = resolve_http_source(&url, peppy_dirs.clone()).await?;
+            let resolved =
+                resolve_http_source(&url, peppy_dirs.clone(), Some(url_source.sha256.clone()))
+                    .await?;
             let config_path = resolved.source_path.join(NODE_CONFIG_FILE);
             let variant_config = match VariantConfigParser::from_path(&config_path) {
                 Ok(cfg) => cfg,

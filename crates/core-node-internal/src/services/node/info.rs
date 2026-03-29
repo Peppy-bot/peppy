@@ -301,7 +301,7 @@ async fn parse_node_config_from_http_with_path(
 ) -> std::result::Result<(RawNodeConfig, PathBuf, Option<PathBuf>), String> {
     // For HTTP sources we can use the resolve_http_source from add.rs which already
     // extracts the archive and returns the source path.
-    let resolved = super::add::resolve_http_source(&url, peppy_dirs.clone()).await?;
+    let resolved = super::add::resolve_http_source(&url, peppy_dirs.clone(), None).await?;
     Ok((
         resolved.node_config,
         resolved.source_path,

@@ -650,6 +650,7 @@ dependencies = [
  "rust-embed",
  "serde_json",
  "serde_json5",
+ "sha2",
  "sysinfo",
  "tar",
  "tempfile",

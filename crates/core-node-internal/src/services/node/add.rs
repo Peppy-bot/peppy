@@ -733,7 +733,17 @@ fn bundle_file_name(url: &url::Url) -> String {
         .unwrap_or_else(|| "bundle.tar.zst".to_string())
 }
 
-fn download_http_bundle(url: &url::Url, destination: &Path) -> std::result::Result<(), String> {
+fn download_http_bundle(
+    url: &url::Url,
+    destination: &Path,
+    expected_sha256: Option<&str>,
+) -> std::result::Result<(), String> {
+    use sha2::{Digest, Sha256};
+
+    let expected_bytes = expected_sha256
+        .map(|hex| decode_sha256_hex(hex).map_err(|e| format!("Invalid SHA256 for {}: {}", url, e)))
+        .transpose()?;
+
     let response = ureq::get(url.as_str()).call().map_err(|err| {
         let reason = match err {
             HttpError::StatusCode(code) => format!("unexpected status code {code}"),
@@ -751,6 +761,7 @@ fn download_http_bundle(url: &url::Url, destination: &Path) -> std::result::Resu
         )
     })?;
 
+    let mut hasher = expected_bytes.as_ref().map(|_| Sha256::new());
     let mut buffer = [0u8; 8 * 1024];
     loop {
         let read = reader
@@ -766,6 +777,9 @@ fn download_http_bundle(url: &url::Url, destination: &Path) -> std::result::Resu
                 e
             )
         })?;
+        if let Some(ref mut h) = hasher {
+            h.update(&buffer[..read]);
+        }
     }
     file.flush().map_err(|e| {
         format!(
@@ -775,7 +789,40 @@ fn download_http_bundle(url: &url::Url, destination: &Path) -> std::result::Resu
         )
     })?;
 
+    if let Some((hasher, expected)) = hasher.zip(expected_bytes) {
+        let computed = hasher.finalize();
+        if computed.as_slice() != expected.as_slice() {
+            std::fs::remove_file(destination).ok();
+            return Err(format!(
+                "SHA256 checksum mismatch for {}: expected {}, computed {}",
+                url,
+                expected_sha256.unwrap_or_default(),
+                encode_hex(computed.as_slice()),
+            ));
+        }
+    }
+
     Ok(())
+}
+
+fn decode_sha256_hex(input: &str) -> std::result::Result<Vec<u8>, String> {
+    let bytes = input.as_bytes();
+    if bytes.len() != 64 {
+        return Err(format!("expected 64 hex characters, got {}", bytes.len()));
+    }
+    // Input is already validated as lowercase hex by config parsing (source.rs),
+    // so we can convert directly without error handling per digit.
+    let mut output = Vec::with_capacity(32);
+    for chunk in bytes.chunks_exact(2) {
+        let high = (chunk[0] as char).to_digit(16).unwrap() as u8;
+        let low = (chunk[1] as char).to_digit(16).unwrap() as u8;
+        output.push((high << 4) | low);
+    }
+    Ok(output)
+}
+
+fn encode_hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
 fn extract_http_bundle(
@@ -789,16 +836,20 @@ fn extract_http_bundle(
 pub(crate) async fn resolve_http_source(
     url: &url::Url,
     peppy_dirs: PeppyDirs,
+    expected_sha256: Option<String>,
 ) -> std::result::Result<ResolvedNodeAddSource, String> {
     let url = url.clone();
-    tokio::task::spawn_blocking(move || resolve_http_source_blocking(url, &peppy_dirs))
-        .await
-        .map_err(|e| format!("Failed to join HTTP download task: {}", e))?
+    tokio::task::spawn_blocking(move || {
+        resolve_http_source_blocking(url, &peppy_dirs, expected_sha256)
+    })
+    .await
+    .map_err(|e| format!("Failed to join HTTP download task: {}", e))?
 }
 
 fn resolve_http_source_blocking(
     url: url::Url,
     peppy_dirs: &PeppyDirs,
+    expected_sha256: Option<String>,
 ) -> std::result::Result<ResolvedNodeAddSource, String> {
     match url.scheme() {
         "http" | "https" => {}
@@ -834,7 +885,7 @@ fn resolve_http_source_blocking(
     std::fs::create_dir_all(&extract_dir)
         .map_err(|e| format!("Failed to create bundle extract directory: {}", e))?;
 
-    download_http_bundle(&url, &bundle_path)?;
+    download_http_bundle(&url, &bundle_path, expected_sha256.as_deref())?;
     extract_http_bundle(&bundle_path, &extract_dir, &url)?;
     std::fs::remove_file(&bundle_path).ok();
 
@@ -935,7 +986,7 @@ async fn resolve_node_add_source(
             repo_path,
             repo_ref,
         } => resolve_git_source(repo_url, repo_path, repo_ref.as_deref()).await,
-        NodeSource::Http { url } => resolve_http_source(url, peppy_dirs.clone()).await,
+        NodeSource::Http { url } => resolve_http_source(url, peppy_dirs.clone(), None).await,
     }
 }
 
@@ -1504,4 +1555,105 @@ async fn process_node_add(
     );
 
     NodeAddResult::success(snapshot_path, &ctx.log_path, node_name, node_tag)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use httptest::{Expectation, Server, matchers::request, responders::status_code};
+    use sha2::{Digest, Sha256};
+
+    fn create_test_tar_zst(content: &[u8]) -> Vec<u8> {
+        let mut tar_data = Vec::new();
+        {
+            let mut tar_builder = tar::Builder::new(&mut tar_data);
+            let mut header = tar::Header::new_gnu();
+            header.set_size(content.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            tar_builder
+                .append_data(&mut header, "test.txt", content)
+                .unwrap();
+            tar_builder.finish().unwrap();
+        }
+        let mut zst_data = Vec::new();
+        let mut encoder = zstd::Encoder::new(&mut zst_data, 0).unwrap();
+        std::io::Write::write_all(&mut encoder, &tar_data).unwrap();
+        encoder.finish().unwrap();
+        zst_data
+    }
+
+    fn sha256_hex(data: &[u8]) -> String {
+        let hash = Sha256::digest(data);
+        encode_hex(hash.as_slice())
+    }
+
+    #[test]
+    fn test_download_http_bundle_checksum_mismatch() {
+        let bundle = create_test_tar_zst(b"hello world");
+        let server = Server::run();
+        server.expect(
+            Expectation::matching(request::method_path("GET", "/bundle.tar.zst"))
+                .respond_with(status_code(200).body(bundle)),
+        );
+
+        let url = url::Url::parse(&server.url("/bundle.tar.zst").to_string()).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("bundle.tar.zst");
+
+        let wrong_hash = "a".repeat(64);
+        let result = download_http_bundle(&url, &dest, Some(&wrong_hash));
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("checksum mismatch"),
+            "error should mention checksum mismatch, got: {}",
+            err
+        );
+        assert!(
+            !dest.exists(),
+            "bundle file should be cleaned up on mismatch"
+        );
+    }
+
+    #[test]
+    fn test_download_http_bundle_checksum_ok() {
+        let bundle = create_test_tar_zst(b"hello world");
+        let correct_hash = sha256_hex(&bundle);
+        let server = Server::run();
+        server.expect(
+            Expectation::matching(request::method_path("GET", "/bundle.tar.zst"))
+                .respond_with(status_code(200).body(bundle)),
+        );
+
+        let url = url::Url::parse(&server.url("/bundle.tar.zst").to_string()).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("bundle.tar.zst");
+
+        let result = download_http_bundle(&url, &dest, Some(&correct_hash));
+        assert!(result.is_ok(), "expected Ok, got: {:?}", result);
+        assert!(
+            dest.exists(),
+            "bundle file should exist after successful download"
+        );
+    }
+
+    #[test]
+    fn test_download_http_bundle_no_checksum_skips_verification() {
+        let bundle = create_test_tar_zst(b"hello world");
+        let server = Server::run();
+        server.expect(
+            Expectation::matching(request::method_path("GET", "/bundle.tar.zst"))
+                .respond_with(status_code(200).body(bundle)),
+        );
+
+        let url = url::Url::parse(&server.url("/bundle.tar.zst").to_string()).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("bundle.tar.zst");
+
+        let result = download_http_bundle(&url, &dest, None);
+        assert!(result.is_ok(), "expected Ok, got: {:?}", result);
+        assert!(dest.exists(), "bundle file should exist");
+    }
 }
