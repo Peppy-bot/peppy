@@ -14,7 +14,7 @@ pub type NodeIndexState = HashMap<PathBuf, core::result::Result<RawNodeConfig, P
 
 /// Builds an aggregated node configuration index for a directory tree.
 /// The index maps each `peppy.json5` file path to the parse result
-/// (`Ok(NodeConfig)` or `Err(ParsingError)`).
+/// (`Ok(RawNodeConfig)` or `Err(ParsingError)`).
 pub struct FSNodeConfigIndex {
     state: NodeIndexState,
 }

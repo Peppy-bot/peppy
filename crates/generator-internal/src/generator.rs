@@ -99,13 +99,10 @@ pub fn generate_peppygen_lib(
         }
     };
 
-    // Lastly generate the codegen fingerprint based on the original peppy.json5 config file.
-    // Always fingerprint from the canonical path, even when generation used a merged config,
-    // so that `verify_codegen_fingerprint` (which reads peppy.json5) stays consistent.
-    let fingerprint_config_path = node_dir.join(NODE_CONFIG_FILE);
-    config::fingerprint::generate_node_config_fingerprint(&fingerprint_config_path, &output_dir)?;
-
-    result
+    // Only write the fingerprint after successful generation, using the resolved config path.
+    result?;
+    config::fingerprint::generate_node_config_fingerprint(&node_config_path, &output_dir)?;
+    Ok(())
 }
 
 /// Collects all exposed interfaces from a NodeConfig into DeploymentInterface instances.
@@ -453,6 +450,95 @@ mod tests {
             peppylib_path,
             config::consts::PEPPYLIB_OUTPUT_PATH,
             "stale peppylib path should be overwritten"
+        );
+    }
+
+    #[test]
+    fn fingerprint_uses_resolved_config_path() {
+        let temp_dir = TempDir::new().expect("failed to create temp directory");
+        let node_dir = temp_dir.path().join("node");
+        fs::create_dir_all(&node_dir).unwrap();
+
+        // Write a canonical peppy.json5 at the default location
+        let canonical_config = r#"{
+          schema_version: 1,
+          manifest: { name: "canonical_node", tag: "0.1.0" },
+          execution: { language: "rust", start_cmd: ["./target/release/canonical_node"] }
+        }"#;
+        fs::write(node_dir.join(NODE_CONFIG_FILE), canonical_config).unwrap();
+
+        // Write a different config at a custom path
+        let custom_config = r#"{
+          schema_version: 1,
+          manifest: { name: "custom_node", tag: "0.2.0" },
+          execution: { language: "rust", start_cmd: ["./target/release/custom_node"] }
+        }"#;
+        let custom_path = temp_dir.path().join("custom_peppy.json5");
+        fs::write(&custom_path, custom_config).unwrap();
+
+        let peppy_dirs = config::consts::PeppyDirs::default();
+        generate_peppygen_lib(
+            config::node::PeppygenLanguage::Rust,
+            &node_dir,
+            Vec::new(),
+            "test-hash",
+            &peppy_dirs,
+            common::CrateDeployMode::default(),
+            Some(custom_path.as_path()),
+        )
+        .expect("generation should succeed");
+
+        // Read the fingerprint file directly from the output directory
+        let fingerprint_path = node_dir
+            .join(config::consts::PEPPYGEN_OUTPUT_PATH)
+            .join("peppy.json5.sha256");
+        let written_fingerprint = fs::read_to_string(&fingerprint_path)
+            .expect("fingerprint file should exist")
+            .trim()
+            .to_string();
+
+        let expected = config::fingerprint::fingerprint_for_bytes(custom_config.as_bytes());
+        let not_expected = config::fingerprint::fingerprint_for_bytes(canonical_config.as_bytes());
+
+        assert_eq!(
+            written_fingerprint, expected,
+            "fingerprint should match the custom config content"
+        );
+        assert_ne!(
+            written_fingerprint, not_expected,
+            "fingerprint should NOT match the canonical config content"
+        );
+    }
+
+    #[test]
+    fn no_fingerprint_written_on_generation_failure() {
+        let temp_dir = TempDir::new().expect("failed to create temp directory");
+        let node_dir = temp_dir.path().join("node");
+        fs::create_dir_all(&node_dir).unwrap();
+
+        // Do NOT write any peppy.json5 — generation should fail with NodeNotFound
+        let peppy_dirs = config::consts::PeppyDirs::default();
+        let result = generate_peppygen_lib(
+            config::node::PeppygenLanguage::Rust,
+            &node_dir,
+            Vec::new(),
+            "test-hash",
+            &peppy_dirs,
+            common::CrateDeployMode::default(),
+            None,
+        );
+
+        assert!(
+            result.is_err(),
+            "generation should fail when config is missing"
+        );
+
+        let fingerprint_path = node_dir
+            .join(config::consts::PEPPYGEN_OUTPUT_PATH)
+            .join("peppy.json5.sha256");
+        assert!(
+            !fingerprint_path.exists(),
+            "fingerprint file should not exist when generation fails"
         );
     }
 }
