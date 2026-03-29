@@ -206,12 +206,12 @@ fn load_nodes_from_fs(root_dir: &Path, core_node: NodeConfig) -> Result<NodeStac
         .filter_map(|(path, result)| {
             result
                 .ok()
-                .filter(|cfg| !cfg.has_default_variant())
+                .filter(|cfg| cfg.execution.is_some())
                 .map(|cfg| {
                     (
                         path,
                         cfg.into_resolved()
-                            .expect("execution present after default-variant filter"),
+                            .expect("execution present after is_some filter"),
                     )
                 })
         })
@@ -617,5 +617,58 @@ mod tests {
             "default-variant config must not have execution"
         );
         assert!(raw.has_default_variant());
+    }
+
+    #[test]
+    fn config_with_execution_passes_filter() {
+        let raw = NodeConfigParser::from_content(
+            r#"{
+                schema_version: 1,
+                manifest: {
+                    name: "my_node",
+                    tag: "0.1.0",
+                },
+                execution: {
+                    language: "python",
+                    start_cmd: ["python", "main.py"],
+                },
+            }"#,
+        )
+        .expect("valid node config with execution");
+
+        assert!(
+            raw.execution.is_some(),
+            "config with execution must pass the fs filter"
+        );
+        assert!(
+            raw.into_resolved().is_ok(),
+            "config with execution must be resolvable"
+        );
+    }
+
+    #[test]
+    fn config_without_execution_is_filtered_out() {
+        let raw = NodeConfigParser::from_content(
+            r#"{
+                schema_version: 1,
+                manifest: {
+                    name: "variant_node",
+                    tag: "0.1.0",
+                    variants: [
+                        { name: "default", source: { local: "./variants/default" } },
+                    ],
+                },
+            }"#,
+        )
+        .expect("valid node config with default variant");
+
+        assert!(
+            raw.execution.is_none(),
+            "default-variant config without execution must be filtered out"
+        );
+        assert!(
+            raw.into_resolved().is_err(),
+            "config without execution must not be resolvable"
+        );
     }
 }
