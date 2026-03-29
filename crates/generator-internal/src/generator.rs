@@ -19,7 +19,8 @@ use types::{DeploymentInterface, InterfaceVariant, LanguageGenerator};
 
 /// Generate an interface library for the given language from a node directory.
 ///
-/// This function reads the `peppy.json5` configuration file from the `node_dir`,
+/// This function reads the node configuration (from `config_path` if provided,
+/// otherwise from `peppy.json5` inside `node_dir`),
 /// extracts the exposed interfaces, combines them with the provided consumed interfaces,
 /// and generates a library for the specified programming language.
 /// The library is generated at `node_dir/.peppy/libs/peppygen`.
@@ -28,10 +29,17 @@ use types::{DeploymentInterface, InterfaceVariant, LanguageGenerator};
 /// * `language` - The language to generate for (Rust or Python)
 /// * `node_dir` - Path to the node directory containing `peppy.json5`
 /// * `consumed_interfaces` - Consumed interfaces with resolved message formats from dependency nodes
+/// * `config_path` - An optional pre-resolved path to the configuration file
+///   (`Option<&Path>`). When `Some`, this borrowed path is used directly as the
+///   configuration source instead of the default `node_dir/peppy.json5`; the
+///   function does **not** canonicalize or otherwise transform the supplied path,
+///   so the caller must ensure it is already resolved. When `None`, the function
+///   falls back to reading `node_dir/peppy.json5`.
 ///
 /// # Errors
 /// Returns an error if:
-/// - The `peppy.json5` file is not found in `node_dir`
+/// - The configuration file (either `config_path` or the default
+///   `node_dir/peppy.json5`) does not exist
 /// - The configuration file cannot be parsed
 /// - Code generation fails
 pub fn generate_peppygen_lib(
