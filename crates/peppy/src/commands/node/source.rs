@@ -84,19 +84,25 @@ pub fn parse_variant_source(variant: &str) -> Result<NodeSource> {
         // Extract @ref from the end of the string before URL parsing.
         // e.g., "https://github.com/org/repo.git/brain@main" → url part + ref="main"
         // Only split on @ that appears after ".git" to avoid splitting on git@ prefixes.
-        let (url_part, repo_ref) = if let Some(git_pos) = variant.find(".git") {
+        let (url_part, repo_ref) = if let Some(git_pos) = variant.rfind(".git") {
             let after_git = &variant[git_pos..];
             if let Some(at_pos) = after_git.rfind('@') {
                 let split_pos = git_pos + at_pos;
-                let r = &variant[split_pos + 1..];
-                (
-                    &variant[..split_pos],
-                    if r.is_empty() {
-                        None
-                    } else {
-                        Some(r.to_string())
-                    },
-                )
+                let after_at = &variant[split_pos + 1..];
+                // Only treat '@' as a ref marker if there is no '/' after it;
+                // a '/' means this is a scoped-package segment (e.g. @scope/pkg).
+                if !after_at.contains('/') {
+                    (
+                        &variant[..split_pos],
+                        if after_at.is_empty() {
+                            None
+                        } else {
+                            Some(after_at.to_string())
+                        },
+                    )
+                } else {
+                    (variant, None)
+                }
             } else {
                 (variant, None)
             }
@@ -221,6 +227,23 @@ mod tests {
             } => {
                 assert!(repo_path.is_empty());
                 assert_eq!(repo_ref.as_deref(), Some("v1.0"));
+            }
+            other => panic!("expected Git variant, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_variant_source_git_scoped_package_not_treated_as_ref() {
+        let source =
+            parse_variant_source("https://github.com/org/repo.git/packages/@scope/node").unwrap();
+        match &source {
+            NodeSource::Git {
+                repo_path,
+                repo_ref,
+                ..
+            } => {
+                assert_eq!(repo_path, "packages/@scope/node");
+                assert_eq!(*repo_ref, None);
             }
             other => panic!("expected Git variant, got {:?}", other),
         }
