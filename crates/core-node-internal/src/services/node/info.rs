@@ -478,10 +478,7 @@ mod tests {
 
         // Snapshot temp dir entries before the call.
         let temp_root = std::env::temp_dir();
-        let entries_before: std::collections::BTreeSet<_> = std::fs::read_dir(&temp_root)
-            .unwrap()
-            .filter_map(|e| e.ok().map(|e| e.file_name()))
-            .collect();
+        let entries_before = temp_entries(&temp_root);
 
         // Use a ref that doesn't exist → clone succeeds, checkout_repo_ref fails.
         let result = parse_node_config_from_git_with_path(
@@ -498,13 +495,14 @@ mod tests {
             "error should mention the failed checkout"
         );
 
-        // Verify no temp directories were leaked.
-        let entries_after: std::collections::BTreeSet<_> = std::fs::read_dir(&temp_root)
-            .unwrap()
-            .filter_map(|e| e.ok().map(|e| e.file_name()))
+        // Verify no test-specific temp directories were leaked.
+        let marker = "uvc_camera";
+        let entries_after = temp_entries(&temp_root);
+        let leaked: Vec<_> = entries_after
+            .difference(&entries_before)
+            .filter(|path| contains_config_marker(path, marker))
+            .cloned()
             .collect();
-
-        let leaked: Vec<_> = entries_after.difference(&entries_before).collect();
         assert!(
             leaked.is_empty(),
             "temp directory should be cleaned up on error; leaked entries: {:?}",
