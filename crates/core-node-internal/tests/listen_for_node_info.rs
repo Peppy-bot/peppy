@@ -912,3 +912,93 @@ async fn listen_for_node_info_without_variant_shows_available_variants() {
     let variant_names: Vec<&str> = variants.iter().map(|v| v.name.as_str()).collect();
     assert_eq!(variant_names, vec!["mock", "sim"]);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_info_auto_resolves_default_variant() {
+    const ROOT_NODE_NAME: &str = "default_variant_node";
+    const ROOT_NODE_TAG: &str = "0.1.0";
+
+    let started_core_node = start_core_node_with_mock_messenger().await;
+
+    // Create root node with a "default" variant and NO execution in root config.
+    let root_dir = tempfile::tempdir().expect("failed to create temp root dir");
+    let root_peppy_json5 = r#"{
+        schema_version: 1,
+        manifest: {
+            name: "default_variant_node",
+            tag: "0.1.0",
+            variants: [
+                { name: "default", source: { local: "./default_variant" } }
+            ]
+        },
+        interfaces: {
+            topics: {
+                emits: [{ name: "sensor_data" }]
+            }
+        }
+    }"#;
+    write_peppy_json5(root_dir.path(), root_peppy_json5);
+
+    // Create the default variant subdirectory with execution.
+    let variant_dir = root_dir.path().join("default_variant");
+    std::fs::create_dir_all(&variant_dir).expect("failed to create default variant dir");
+    std::fs::write(
+        variant_dir.join(NODE_CONFIG_FILE),
+        r#"{
+            schema_version: 1,
+            execution: {
+                language: "python",
+                start_cmd: ["python", "main.py"]
+            }
+        }"#,
+    )
+    .expect("failed to write default variant config");
+
+    // Request WITHOUT specifying a variant — should auto-resolve "default".
+    let request = NodeInfoRequest::new(NodeSource::Fs(root_dir.path().to_path_buf()));
+    let request_payload = request.encode().expect("encode should succeed");
+
+    let response = ServiceMessenger::poll(
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        CALLER_INSTANCE_ID,
+        &started_core_node.core_node_name,
+        names::NODE_INFO,
+        Some(&started_core_node.core_node_name),
+        None,
+        request_payload,
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("node_info should auto-resolve default variant without panic");
+
+    let info_response =
+        NodeInfoResponse::decode(&response.payload()).expect("decode should succeed");
+
+    // Manifest comes from root
+    assert_eq!(info_response.config.manifest.name.as_str(), ROOT_NODE_NAME);
+    assert_eq!(info_response.config.manifest.tag, ROOT_NODE_TAG);
+
+    // Interfaces inherited from root
+    assert!(
+        info_response.config.interfaces.topics.is_some(),
+        "interfaces should be inherited from root"
+    );
+
+    // Execution comes from the default variant
+    assert_eq!(
+        info_response.config.execution.language,
+        PeppygenLanguage::Python
+    );
+    assert_eq!(
+        info_response.config.execution.start_cmd.as_deref(),
+        Some(&["python".to_string(), "main.py".to_string()][..])
+    );
+
+    // Variant name should be reported as "default"
+    assert_eq!(
+        info_response.variant_name.as_deref(),
+        Some("default"),
+        "auto-resolved default variant name should be reported"
+    );
+}

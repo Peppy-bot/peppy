@@ -521,7 +521,7 @@ async fn resolve_deployments(
         )
         .await;
 
-        let config = match resolve_node_config(source.clone()).await {
+        let config = match resolve_node_config(source.clone(), &ctx.peppy_dirs).await {
             Ok(config) => config,
             Err(err) => {
                 planning_errors.push(format!(

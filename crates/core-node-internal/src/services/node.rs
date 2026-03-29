@@ -461,8 +461,9 @@ pub(crate) fn is_supported_http_archive(url: &url::Url) -> bool {
 
 pub(crate) async fn resolve_node_config(
     source: NodeSource,
+    peppy_dirs: &config::consts::PeppyDirs,
 ) -> std::result::Result<NodeConfig, String> {
-    info::resolve_node_config(source).await
+    info::resolve_node_config(source, peppy_dirs).await
 }
 
 #[cfg(test)]

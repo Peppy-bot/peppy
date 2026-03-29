@@ -1,29 +1,22 @@
 use super::variant::{resolve_variant, variant_label};
 use super::{
-    checkout_repo_ref, is_supported_fs_archive, is_supported_http_archive,
-    resolve_local_archive_source, sanitize_repo_path,
+    checkout_repo_ref, is_supported_fs_archive, resolve_local_archive_source, sanitize_repo_path,
 };
 use crate::Result;
 use crate::encoding::{NodeInfoRequest, NodeInfoResponse, NodeSource};
 use crate::names;
 use config::consts::{NODE_CONFIG_FILE, PeppyDirs};
 use config::fingerprint::fingerprint_for_bytes;
-use config::node::{NodeConfig, NodeConfigParser, RawNodeConfig};
+use config::node::{DEFAULT_VARIANT_NAME, NodeConfig, NodeConfigParser, RawNodeConfig};
 use git2::Repository;
 use node_stack::NodeStack;
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::types::Payload;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
-use std::collections::HashSet;
-use std::ffi::OsStr;
-use std::io::Read;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::{sync::Arc, time::Duration};
-use tar::Archive;
 use tokio::task::JoinHandle;
 use tracing::debug;
-use ureq::Error as HttpError;
-use zstd::stream::read::Decoder;
 
 pub async fn listen_for_node_info(
     messenger: &MessengerHandle,
@@ -109,8 +102,24 @@ async fn handle_node_info_request_inner(
             resolve_variant(variant_source, &root_config, &root_source_path, &peppy_dirs).await?;
         (resolved.merged_config, Some(label))
     } else {
-        let raw = resolve_raw_node_config(request.source).await?;
-        (raw.into_resolved(), None)
+        let (root_config, root_source_path, cleanup_dir) =
+            resolve_node_config_with_source_path(request.source, &peppy_dirs).await?;
+        let _cleanup_guard = super::add::CleanupDir::new(cleanup_dir);
+
+        if root_config.has_default_variant() {
+            let variant_source = NodeSource::Fs(DEFAULT_VARIANT_NAME.into());
+            let label = variant_label(&variant_source);
+            let resolved = resolve_variant(
+                &variant_source,
+                &root_config,
+                &root_source_path,
+                &peppy_dirs,
+            )
+            .await?;
+            (resolved.merged_config, Some(label))
+        } else {
+            (root_config.into_resolved(), None)
+        }
     };
 
     let node_name = node_config.manifest.name.as_str();
@@ -142,21 +151,20 @@ async fn handle_node_info_request_inner(
     .map_err(|e| format!("{}", e))
 }
 
-pub async fn resolve_node_config(source: NodeSource) -> std::result::Result<NodeConfig, String> {
-    resolve_raw_node_config(source)
-        .await
-        .map(|raw| raw.into_resolved())
-}
+pub async fn resolve_node_config(
+    source: NodeSource,
+    peppy_dirs: &PeppyDirs,
+) -> std::result::Result<NodeConfig, String> {
+    let (raw, source_path, cleanup_dir) =
+        resolve_node_config_with_source_path(source, peppy_dirs).await?;
+    let _cleanup_guard = super::add::CleanupDir::new(cleanup_dir);
 
-async fn resolve_raw_node_config(source: NodeSource) -> std::result::Result<RawNodeConfig, String> {
-    match source {
-        NodeSource::Fs(path) => parse_node_config_from_fs(&path),
-        NodeSource::Git {
-            repo_url,
-            repo_path,
-            repo_ref,
-        } => parse_node_config_from_git(repo_url, repo_path, repo_ref).await,
-        NodeSource::Http { url } => parse_node_config_from_http(url).await,
+    if raw.has_default_variant() {
+        let variant_source = NodeSource::Fs(DEFAULT_VARIANT_NAME.into());
+        let resolved = resolve_variant(&variant_source, &raw, &source_path, peppy_dirs).await?;
+        Ok(resolved.merged_config)
+    } else {
+        Ok(raw.into_resolved())
     }
 }
 
@@ -224,62 +232,7 @@ fn parse_node_config_from_archive(
     Ok(resolved.node_config)
 }
 
-async fn parse_node_config_from_git(
-    repo_url: gix_url::Url,
-    repo_path: String,
-    repo_ref: Option<String>,
-) -> std::result::Result<RawNodeConfig, String> {
-    tokio::task::spawn_blocking(move || {
-        parse_node_config_from_git_blocking(repo_url, repo_path, repo_ref)
-    })
-    .await
-    .map_err(|e| format!("Failed to join git clone task: {}", e))?
-}
-
-fn parse_node_config_from_git_blocking(
-    repo_url: gix_url::Url,
-    repo_path: String,
-    repo_ref: Option<String>,
-) -> std::result::Result<RawNodeConfig, String> {
-    let repo_relative_path = sanitize_repo_path(&repo_path)?;
-
-    let checkout_dir =
-        tempfile::tempdir().map_err(|e| format!("Failed to create temporary directory: {}", e))?;
-
-    let repo_url_bstring = repo_url.to_bstring();
-    let repo_url_str = std::str::from_utf8(repo_url_bstring.as_ref())
-        .map_err(|_| "repo_url must be valid UTF-8".to_string())?
-        .to_owned();
-
-    let repo = Repository::clone(&repo_url_str, checkout_dir.path())
-        .map_err(|e| format!("Failed to clone repository: {}", e))?;
-
-    if let Some(repo_ref) = repo_ref.as_deref() {
-        checkout_repo_ref(&repo, repo_ref)
-            .map_err(|e| format!("Failed to checkout git ref '{}': {}", repo_ref, e))?;
-    }
-
-    let candidate_path = checkout_dir.path().join(&repo_relative_path);
-    let config_path = if candidate_path
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("json5"))
-    {
-        candidate_path
-    } else {
-        candidate_path.join(NODE_CONFIG_FILE)
-    };
-
-    NodeConfigParser::from_path(&config_path).map_err(|e| {
-        format!(
-            "Failed to parse node config at {}: {}",
-            config_path.display(),
-            e
-        )
-    })
-}
-
-/// Like `parse_node_config_from_git` but also returns the source directory path
+/// Parses a node config from a git repository and returns the source directory path
 /// and keeps the temp dir alive by returning it.
 async fn parse_node_config_from_git_with_path(
     repo_url: gix_url::Url,
@@ -340,161 +293,7 @@ async fn parse_node_config_from_git_with_path(
     .map_err(|e| format!("Failed to join git clone task: {}", e))?
 }
 
-async fn parse_node_config_from_http(url: url::Url) -> std::result::Result<RawNodeConfig, String> {
-    tokio::task::spawn_blocking(move || parse_node_config_from_http_blocking(url))
-        .await
-        .map_err(|e| format!("Failed to join HTTP download task: {}", e))?
-}
-
-fn parse_node_config_from_http_blocking(
-    url: url::Url,
-) -> std::result::Result<RawNodeConfig, String> {
-    match url.scheme() {
-        "http" | "https" => {}
-        other => {
-            return Err(format!(
-                "HTTP source URL must use http or https (got scheme '{}')",
-                other
-            ));
-        }
-    }
-
-    if !is_supported_http_archive(&url) {
-        return Err(
-            "Only tar.zst (.tar.zstd/.tar.zst/.tzst) archives are supported for HTTP sources"
-                .to_string(),
-        );
-    }
-
-    let response = ureq::get(url.as_str()).call().map_err(|err| {
-        let reason = match err {
-            HttpError::StatusCode(code) => format!("unexpected status code {code}"),
-            other => other.to_string(),
-        };
-        format!("Failed to download bundle from {}: {}", url, reason)
-    })?;
-
-    let reader = response.into_body().into_reader();
-    let decoder = Decoder::new(reader)
-        .map_err(|e| format!("Failed to decode zstd bundle from {}: {}", url, e))?;
-    let mut archive = Archive::new(decoder);
-    let entries = archive
-        .entries()
-        .map_err(|e| format!("Failed to read tar bundle entries from {}: {}", url, e))?;
-
-    let mut config_candidates: Vec<(PathBuf, Vec<u8>)> = Vec::new();
-    let mut top_level_dirs: HashSet<String> = HashSet::new();
-
-    for entry in entries {
-        let mut entry =
-            entry.map_err(|e| format!("Failed to read tar bundle entry from {}: {}", url, e))?;
-
-        let entry_path = entry
-            .path()
-            .map_err(|e| format!("Failed to read tar bundle entry path from {}: {}", url, e))?
-            .into_owned();
-
-        if entry_path.components().any(|component| {
-            matches!(
-                component,
-                Component::ParentDir | Component::RootDir | Component::Prefix(..)
-            )
-        }) {
-            return Err(format!(
-                "Bundle from {} contains unsafe path: {}",
-                url,
-                entry_path.display()
-            ));
-        }
-
-        let depth = entry_path.components().count();
-        if depth == 1 && entry.header().entry_type().is_dir() {
-            if let Some(name) = entry_path.to_str() {
-                top_level_dirs.insert(name.to_owned());
-            }
-        } else if depth >= 2
-            && let Some(Component::Normal(first)) = entry_path.components().next()
-            && let Some(name) = first.to_str()
-        {
-            top_level_dirs.insert(name.to_owned());
-        }
-
-        if entry.header().entry_type().is_dir() {
-            continue;
-        }
-
-        if entry_path.file_name() != Some(OsStr::new(NODE_CONFIG_FILE)) {
-            continue;
-        }
-
-        let mut content = Vec::new();
-        entry.read_to_end(&mut content).map_err(|e| {
-            format!(
-                "Failed to read {} from bundle {}: {}",
-                NODE_CONFIG_FILE, url, e
-            )
-        })?;
-        config_candidates.push((entry_path, content));
-    }
-
-    let (config_path, config_bytes) = if let Some((path, bytes)) =
-        config_candidates.iter().find(|(path, _)| {
-            path.components().count() == 1 && path.as_path() == Path::new(NODE_CONFIG_FILE)
-        }) {
-        (path.clone(), bytes.clone())
-    } else if top_level_dirs.len() == 1 {
-        let root = top_level_dirs
-            .into_iter()
-            .next()
-            .expect("root dir should exist");
-        config_candidates
-            .into_iter()
-            .find(|(path, _)| {
-                let mut comps = path.components();
-                let Some(Component::Normal(first)) = comps.next() else {
-                    return false;
-                };
-                let Some(first) = first.to_str() else {
-                    return false;
-                };
-                first == root
-                    && comps.next().is_some()
-                    && comps.next().is_none()
-                    && path.file_name() == Some(OsStr::new(NODE_CONFIG_FILE))
-            })
-            .ok_or_else(|| {
-                format!(
-                    "Bundle does not contain {} at the root (or single top-level folder)",
-                    NODE_CONFIG_FILE
-                )
-            })?
-    } else {
-        return Err(format!(
-            "Bundle does not contain {} at the root (or single top-level folder)",
-            NODE_CONFIG_FILE
-        ));
-    };
-
-    let config_str = std::str::from_utf8(&config_bytes).map_err(|e| {
-        format!(
-            "{} in bundle {} is not valid UTF-8: {}",
-            config_path.display(),
-            url,
-            e
-        )
-    })?;
-
-    NodeConfigParser::from_content(config_str).map_err(|e| {
-        format!(
-            "Failed to parse node config from {} in bundle {}: {}",
-            config_path.display(),
-            url,
-            e
-        )
-    })
-}
-
-/// Like `parse_node_config_from_http` but also returns the source directory path
+/// Parses a node config from an HTTP source and returns the source directory path
 /// and keeps the temp dir alive by returning it.
 async fn parse_node_config_from_http_with_path(
     url: url::Url,
