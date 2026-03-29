@@ -651,9 +651,8 @@ fn node_add_same_node_shutdown_existing_instances() {
     );
 }
 
-/// When a node is added from a local filesystem and started, and then the same node is added
-/// from a git source, the system should properly handle the existing instances.
-///
+/// Adding a node with `--variant` resolves the variant source, merges configs,
+/// and registers the node in the stack under the root node's name and tag.
 #[test]
 fn node_add_command_with_variant_succeeds() {
     let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");

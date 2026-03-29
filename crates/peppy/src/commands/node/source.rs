@@ -88,9 +88,14 @@ pub fn parse_variant_source(variant: &str) -> Result<NodeSource> {
             let after_git = &variant[git_pos..];
             if let Some(at_pos) = after_git.rfind('@') {
                 let split_pos = git_pos + at_pos;
+                let r = &variant[split_pos + 1..];
                 (
                     &variant[..split_pos],
-                    Some(variant[split_pos + 1..].to_string()),
+                    if r.is_empty() {
+                        None
+                    } else {
+                        Some(r.to_string())
+                    },
                 )
             } else {
                 (variant, None)
