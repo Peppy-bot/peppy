@@ -8,12 +8,12 @@ use crate::names;
 use config::consts::{NODE_CONFIG_FILE, PeppyDirs};
 use config::fingerprint::fingerprint_for_bytes;
 use config::node::{DEFAULT_VARIANT_NAME, NodeConfig, NodeConfigParser, RawNodeConfig};
-use git2::Repository;
 use node_stack::NodeStack;
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::types::Payload;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 use std::{sync::Arc, time::Duration};
 use tokio::task::JoinHandle;
 use tracing::debug;
@@ -61,9 +61,13 @@ async fn handle_node_info_request(
 ) -> PeppyResult<Payload> {
     let sender_instance_id = context.message().instance_id().to_string();
 
+    // Cooperative deadline fires slightly before the outer safety-net timeout,
+    // giving the blocking task a chance to abort and clean up resources.
+    let deadline = Some(Instant::now() + timeout.saturating_sub(Duration::from_millis(500)));
+
     match tokio::time::timeout(
         timeout,
-        handle_node_info_request_inner(&context, node_stack, peppy_dirs),
+        handle_node_info_request_inner(&context, node_stack, peppy_dirs, deadline),
     )
     .await
     {
@@ -83,6 +87,7 @@ async fn handle_node_info_request_inner(
     context: &ServiceRequestContext,
     node_stack: Arc<NodeStack>,
     peppy_dirs: PeppyDirs,
+    deadline: Option<Instant>,
 ) -> std::result::Result<Payload, String> {
     let sender_instance_id = context.message().instance_id();
     let payload = context.message().payload();
@@ -94,16 +99,23 @@ async fn handle_node_info_request_inner(
     // Resolve the root node config (and keep the source path alive for variant resolution).
     let (node_config, variant_name) = if let Some(ref variant_source) = request.variant {
         let (root_config, root_source_path, cleanup_dir) =
-            resolve_node_config_with_source_path(request.source.clone(), &peppy_dirs).await?;
+            resolve_node_config_with_source_path(request.source.clone(), &peppy_dirs, deadline)
+                .await?;
         let _cleanup_guard = super::add::CleanupDir::new(cleanup_dir);
 
         let label = variant_label(variant_source);
-        let resolved =
-            resolve_variant(variant_source, &root_config, &root_source_path, &peppy_dirs).await?;
+        let resolved = resolve_variant(
+            variant_source,
+            &root_config,
+            &root_source_path,
+            &peppy_dirs,
+            deadline,
+        )
+        .await?;
         (merged_config_with_variant_cleanup(resolved), Some(label))
     } else {
         let (root_config, root_source_path, cleanup_dir) =
-            resolve_node_config_with_source_path(request.source, &peppy_dirs).await?;
+            resolve_node_config_with_source_path(request.source, &peppy_dirs, deadline).await?;
         let _cleanup_guard = super::add::CleanupDir::new(cleanup_dir);
 
         if root_config.has_default_variant() {
@@ -114,6 +126,7 @@ async fn handle_node_info_request_inner(
                 &root_config,
                 &root_source_path,
                 &peppy_dirs,
+                deadline,
             )
             .await?;
             (merged_config_with_variant_cleanup(resolved), Some(label))
@@ -164,12 +177,13 @@ pub async fn resolve_node_config(
     peppy_dirs: &PeppyDirs,
 ) -> std::result::Result<NodeConfig, String> {
     let (raw, source_path, cleanup_dir) =
-        resolve_node_config_with_source_path(source, peppy_dirs).await?;
+        resolve_node_config_with_source_path(source, peppy_dirs, None).await?;
     let _cleanup_guard = super::add::CleanupDir::new(cleanup_dir);
 
     if raw.has_default_variant() {
         let variant_source = NodeSource::Fs(DEFAULT_VARIANT_NAME.into());
-        let resolved = resolve_variant(&variant_source, &raw, &source_path, peppy_dirs).await?;
+        let resolved =
+            resolve_variant(&variant_source, &raw, &source_path, peppy_dirs, None).await?;
         Ok(merged_config_with_variant_cleanup(resolved))
     } else {
         raw.into_resolved().map_err(|e| e.to_string())
@@ -182,6 +196,7 @@ pub async fn resolve_node_config(
 async fn resolve_node_config_with_source_path(
     source: NodeSource,
     peppy_dirs: &PeppyDirs,
+    deadline: Option<Instant>,
 ) -> std::result::Result<(RawNodeConfig, PathBuf, Option<PathBuf>), String> {
     match source {
         NodeSource::Fs(path) => {
@@ -208,7 +223,7 @@ async fn resolve_node_config_with_source_path(
             repo_url,
             repo_path,
             repo_ref,
-        } => parse_node_config_from_git_with_path(repo_url, repo_path, repo_ref).await,
+        } => parse_node_config_from_git_with_path(repo_url, repo_path, repo_ref, deadline).await,
         NodeSource::Http { url, sha256 } => {
             parse_node_config_from_http_with_path(url, sha256, peppy_dirs).await
         }
@@ -248,6 +263,7 @@ async fn parse_node_config_from_git_with_path(
     repo_url: gix_url::Url,
     repo_path: String,
     repo_ref: Option<String>,
+    deadline: Option<Instant>,
 ) -> std::result::Result<(RawNodeConfig, PathBuf, Option<PathBuf>), String> {
     tokio::task::spawn_blocking(move || {
         let repo_relative_path = sanitize_repo_path(&repo_path)?;
@@ -260,8 +276,11 @@ async fn parse_node_config_from_git_with_path(
             .map_err(|_| "repo_url must be valid UTF-8".to_string())?
             .to_owned();
 
-        let repo = Repository::clone(&repo_url_str, temp_dir.path())
-            .map_err(|e| format!("Failed to clone repository: {}", e))?;
+        let repo = super::clone_repo_with_deadline(&repo_url_str, temp_dir.path(), deadline)?;
+
+        if deadline.is_some_and(|d| Instant::now() >= d) {
+            return Err("Git operation timed out".to_string());
+        }
 
         if let Some(repo_ref) = repo_ref.as_deref() {
             checkout_repo_ref(&repo, repo_ref)
@@ -469,6 +488,7 @@ mod tests {
             repo_url,
             "nodes/uvc_camera".to_string(),
             Some("nonexistent_ref_that_does_not_exist".to_string()),
+            None,
         )
         .await;
 

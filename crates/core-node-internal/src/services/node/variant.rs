@@ -4,8 +4,8 @@ use crate::encoding::NodeSource;
 use config::consts::{NODE_CONFIG_FILE, PeppyDirs};
 use config::node::{Interfaces, NodeConfig, RawNodeConfig, VariantConfigParser};
 use config::source::DeploymentSource;
-use git2::Repository;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 pub(crate) struct ResolvedVariant {
     /// The merged NodeConfig: root manifest + root interfaces + variant execution.
@@ -46,6 +46,7 @@ pub(crate) async fn resolve_variant(
     root_config: &RawNodeConfig,
     root_source_path: &Path,
     peppy_dirs: &PeppyDirs,
+    deadline: Option<Instant>,
 ) -> std::result::Result<ResolvedVariant, String> {
     let label = variant_label(variant);
 
@@ -81,6 +82,7 @@ pub(crate) async fn resolve_variant(
                     &label,
                     root_source_path,
                     peppy_dirs,
+                    deadline,
                 )
                 .await?
             }
@@ -92,16 +94,20 @@ pub(crate) async fn resolve_variant(
             } => {
                 let repo_relative_path = sanitize_repo_path(repo_path)?;
 
-                let checkout_dir = tempfile::tempdir()
-                    .map_err(|e| format!("Failed to create temporary directory: {}", e))?
-                    .keep();
+                let temp_dir = tempfile::tempdir()
+                    .map_err(|e| format!("Failed to create temporary directory: {}", e))?;
+                let dest = temp_dir.path().to_path_buf();
 
-                let clone_checkout_dir = checkout_dir.clone();
+                let clone_dest = dest.clone();
                 let clone_repo_url = repo_url.to_bstring().to_string();
                 let clone_repo_ref = repo_ref.clone();
+                let clone_deadline = deadline;
                 if let Err(err) = tokio::task::spawn_blocking(move || {
-                    let repo = Repository::clone(&clone_repo_url, &clone_checkout_dir)
-                        .map_err(|e| format!("Failed to clone repository: {}", e))?;
+                    let repo = super::clone_repo_with_deadline(
+                        &clone_repo_url,
+                        &clone_dest,
+                        clone_deadline,
+                    )?;
                     if let Some(repo_ref) = clone_repo_ref.as_deref() {
                         checkout_repo_ref(&repo, repo_ref).map_err(|e| {
                             format!("Failed to checkout git ref '{}': {}", repo_ref, e)
@@ -112,10 +118,11 @@ pub(crate) async fn resolve_variant(
                 .await
                 .map_err(|e| format!("Failed to join git clone task: {}", e))?
                 {
-                    std::fs::remove_dir_all(&checkout_dir).ok();
+                    // temp_dir drops here, auto-cleaning the directory.
                     return Err(err);
                 }
 
+                let checkout_dir = temp_dir.keep();
                 let node_root_dir = checkout_dir.join(&repo_relative_path);
                 let config_path = node_root_dir.join(NODE_CONFIG_FILE);
                 let variant_config = match VariantConfigParser::from_path(&config_path) {
@@ -197,6 +204,7 @@ async fn resolve_variant_deployment_source(
     label: &str,
     root_source_path: &Path,
     peppy_dirs: &PeppyDirs,
+    deadline: Option<Instant>,
 ) -> std::result::Result<(PathBuf, config::node::VariantConfig, bool, Option<PathBuf>), String> {
     match deployment {
         DeploymentSource::Local(local) => {
@@ -221,16 +229,17 @@ async fn resolve_variant_deployment_source(
                 .map_err(|e| format!("invalid variant git URL: {}", e))?;
             let repo_relative_path = sanitize_repo_path(&git.path)?;
 
-            let checkout_dir = tempfile::tempdir()
-                .map_err(|e| format!("Failed to create temporary directory: {}", e))?
-                .keep();
+            let temp_dir = tempfile::tempdir()
+                .map_err(|e| format!("Failed to create temporary directory: {}", e))?;
+            let dest = temp_dir.path().to_path_buf();
 
-            let clone_checkout_dir = checkout_dir.clone();
+            let clone_dest = dest.clone();
             let clone_repo_url = git.repo.clone();
             let clone_repo_ref = Some(git.ref_.clone());
+            let clone_deadline = deadline;
             if let Err(err) = tokio::task::spawn_blocking(move || {
-                let repo = Repository::clone(&clone_repo_url, &clone_checkout_dir)
-                    .map_err(|e| format!("Failed to clone repository: {}", e))?;
+                let repo =
+                    super::clone_repo_with_deadline(&clone_repo_url, &clone_dest, clone_deadline)?;
                 if let Some(repo_ref) = clone_repo_ref.as_deref() {
                     checkout_repo_ref(&repo, repo_ref)
                         .map_err(|e| format!("Failed to checkout git ref '{}': {}", repo_ref, e))?;
@@ -240,10 +249,11 @@ async fn resolve_variant_deployment_source(
             .await
             .map_err(|e| format!("Failed to join git clone task: {}", e))?
             {
-                std::fs::remove_dir_all(&checkout_dir).ok();
+                // temp_dir drops here, auto-cleaning the directory.
                 return Err(err);
             }
 
+            let checkout_dir = temp_dir.keep();
             let node_root_dir = checkout_dir.join(&repo_relative_path);
             let config_path = node_root_dir.join(NODE_CONFIG_FILE);
             let variant_config = match VariantConfigParser::from_path(&config_path) {

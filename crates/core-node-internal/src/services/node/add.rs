@@ -1058,6 +1058,7 @@ pub(crate) async fn run_node_add(
                 &resolved.node_config,
                 &resolved.source_path,
                 &action_context.peppy_dirs,
+                None,
             )
             .await
             {

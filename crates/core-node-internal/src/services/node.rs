@@ -15,7 +15,7 @@ pub(crate) use add::{NodeAddActionContext, log_label_from_source, run_node_add};
 use chrono::Local;
 use config::consts::NODE_CONFIG_FILE;
 use config::node::{NodeConfig, NodeConfigParser, PeppygenLanguage, RawNodeConfig};
-use git2::{Repository, build::CheckoutBuilder};
+use git2::{Repository, build::CheckoutBuilder, build::RepoBuilder};
 pub use info::listen_for_node_info;
 pub use init::listen_for_node_init;
 use rand::RngExt;
@@ -27,6 +27,7 @@ use std::fs::File;
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
+use std::time::Instant;
 pub use stop::listen_for_node_stop;
 pub use sync::listen_for_node_sync;
 use tar::Archive;
@@ -374,6 +375,33 @@ pub(crate) fn checkout_repo_ref(
     checkout.force();
     repo.checkout_head(Some(&mut checkout))?;
     Ok(())
+}
+
+/// Clones a git repository, aborting the network transfer if `deadline` is
+/// exceeded.  When `deadline` is `None` the clone runs without any time limit.
+pub(crate) fn clone_repo_with_deadline(
+    repo_url: &str,
+    dest: &Path,
+    deadline: Option<Instant>,
+) -> std::result::Result<Repository, String> {
+    let mut callbacks = git2::RemoteCallbacks::new();
+    if let Some(deadline) = deadline {
+        callbacks.transfer_progress(move |_progress| Instant::now() < deadline);
+    }
+
+    let mut fetch_opts = git2::FetchOptions::new();
+    fetch_opts.remote_callbacks(callbacks);
+
+    RepoBuilder::new()
+        .fetch_options(fetch_opts)
+        .clone(repo_url, dest)
+        .map_err(|e| {
+            if deadline.is_some_and(|d| Instant::now() >= d) {
+                format!("Git clone timed out for {}", repo_url)
+            } else {
+                format!("Failed to clone repository: {}", e)
+            }
+        })
 }
 
 fn is_supported_archive_path(path: &str) -> bool {
