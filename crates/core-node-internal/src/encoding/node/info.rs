@@ -95,7 +95,7 @@ impl NodeInfoRequest {
         let reader = decode_message(data)?;
         let request = reader.get_root::<node_capnp::node_info_request::Reader>()?;
         let source = match request.get_source().which()? {
-            Which::Fs(fs) => NodeSource::decode_fs(fs?.to_str()?),
+            Which::Fs(fs) => NodeSource::decode_fs(fs?.to_str()?)?,
             Which::Git(git) => {
                 let git = git?;
                 NodeSource::decode_git(
@@ -119,7 +119,7 @@ impl NodeInfoRequest {
                     if name.is_empty() {
                         None
                     } else {
-                        Some(NodeSource::decode_fs(name))
+                        Some(NodeSource::decode_fs(name)?)
                     }
                 }
                 Which::Git(git) => {

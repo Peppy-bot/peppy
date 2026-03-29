@@ -30,8 +30,11 @@ pub enum NodeSource {
 }
 
 impl NodeSource {
-    pub fn decode_fs(path: &str) -> Self {
-        Self::Fs(PathBuf::from(path))
+    pub fn decode_fs(path: &str) -> Result<Self> {
+        if path.is_empty() {
+            return Err(crate::Error::Decoding("empty filesystem path".to_owned()));
+        }
+        Ok(Self::Fs(PathBuf::from(path)))
     }
 
     pub fn decode_git(repo_url_str: &str, repo_path: &str, repo_ref: &str) -> Result<Self> {
@@ -230,7 +233,7 @@ impl NodeAddGoal {
         let reader = decode_message(data)?;
         let goal = reader.get_root::<node_capnp::node_add_goal::Reader>()?;
         let source = match goal.get_source().which()? {
-            Which::Fs(fs) => NodeSource::decode_fs(fs?.to_str()?),
+            Which::Fs(fs) => NodeSource::decode_fs(fs?.to_str()?)?,
             Which::Git(git) => {
                 let git = git?;
                 NodeSource::decode_git(
@@ -263,7 +266,7 @@ impl NodeAddGoal {
                     if name.is_empty() {
                         None
                     } else {
-                        Some(NodeSource::decode_fs(name))
+                        Some(NodeSource::decode_fs(name)?)
                     }
                 }
                 Which::Git(git) => {
@@ -335,6 +338,38 @@ impl NodeAddGoal {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn decode_fs_rejects_empty_path() {
+        let result = NodeSource::decode_fs("");
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("empty filesystem path"),
+            "unexpected error: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn decode_fs_accepts_non_empty_path() {
+        let source = NodeSource::decode_fs("/some/path").expect("should accept non-empty path");
+        assert_eq!(source, NodeSource::Fs(PathBuf::from("/some/path")));
+    }
+
+    #[test]
+    fn node_add_goal_decode_rejects_empty_fs_source() {
+        // Encode a goal with an empty Fs path (bypass decode_fs by using NodeSource::Fs directly)
+        let goal = NodeAddGoal {
+            source: NodeSource::Fs(PathBuf::from("")),
+            git_hash: "hash".to_owned(),
+            env_vars: vec![],
+            timeout_secs: 30,
+            variant: None,
+        };
+        let encoded = goal.encode().expect("encoding should succeed");
+        let result = NodeAddGoal::decode(&encoded);
+        assert!(result.is_err(), "decoding an empty Fs source should fail");
+    }
 
     #[test]
     fn node_add_goal_http_source_roundtrips_sha256() {
