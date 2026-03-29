@@ -122,7 +122,7 @@ pub fn resolve_remote_git(
     let config_path = node_config_path(&spec.path);
     let content = read_blob_from_tree(&repo, &tree, &config_path)?;
 
-    let node = NodeConfigParser::from_content(&content)?;
+    let node = NodeConfigParser::from_content(&content)?.into_resolved();
 
     let root_path = repo_dir.join(config_path.parent().unwrap_or_else(|| Path::new("")));
 

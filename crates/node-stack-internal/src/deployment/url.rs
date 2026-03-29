@@ -2,7 +2,7 @@ use super::ResolvedNode;
 use crate::error::{Error, Result};
 use config::consts::NODE_CONFIG_FILE;
 use config::{
-    node::{NodeConfigParser, RawNodeConfig},
+    node::{NodeConfig, NodeConfigParser},
     peppy_config::DeploymentUrlSource,
 };
 use sha2::{Digest, Sha256};
@@ -43,7 +43,7 @@ fn refresh_bundle(
     cache_dir: &Path,
     spec: &DeploymentUrlSource,
     expected_checksum: &str,
-) -> Result<RawNodeConfig> {
+) -> Result<NodeConfig> {
     let temp_dir_path = cache_dir.with_extension("tmp");
     if temp_dir_path.exists() {
         fs::remove_dir_all(&temp_dir_path)?;
@@ -74,11 +74,11 @@ fn refresh_bundle(
     Ok(node)
 }
 
-fn load_manifest(cache_dir: &Path) -> Result<RawNodeConfig> {
+fn load_manifest(cache_dir: &Path) -> Result<NodeConfig> {
     load_manifest_inner(cache_dir)
 }
 
-fn load_manifest_inner(dir: &Path) -> Result<RawNodeConfig> {
+fn load_manifest_inner(dir: &Path) -> Result<NodeConfig> {
     let manifest_path = dir.join(NODE_CONFIG_FILE);
     if !manifest_path.is_file() {
         return Err(Error::BundleExtraction {
@@ -87,7 +87,7 @@ fn load_manifest_inner(dir: &Path) -> Result<RawNodeConfig> {
         });
     }
 
-    let node = NodeConfigParser::from_path(&manifest_path)?;
+    let node = NodeConfigParser::from_path(&manifest_path)?.into_resolved();
 
     Ok(node)
 }

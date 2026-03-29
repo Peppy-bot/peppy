@@ -376,7 +376,7 @@ fn build_launch_plan(
                 continue;
             }
         };
-        let node = resolved.config.into_resolved();
+        let node = resolved.config;
         let root_path = resolved.root_path;
         let deployment_label = format!("{}:{}", node.manifest.name.as_str(), node.manifest.tag);
 

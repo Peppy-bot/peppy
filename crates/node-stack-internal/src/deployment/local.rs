@@ -29,7 +29,7 @@ pub fn resolve_local_deployment(
         return Err(Error::FileNotFound(config_path));
     }
 
-    let node = NodeConfigParser::from_path(&config_path)?;
+    let node = NodeConfigParser::from_path(&config_path)?.into_resolved();
 
     Ok(ResolvedNode {
         config: node,
