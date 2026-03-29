@@ -207,7 +207,13 @@ fn load_nodes_from_fs(root_dir: &Path, core_node: NodeConfig) -> Result<NodeStac
             result
                 .ok()
                 .filter(|cfg| !cfg.has_default_variant())
-                .map(|cfg| (path, cfg.into_resolved()))
+                .map(|cfg| {
+                    (
+                        path,
+                        cfg.into_resolved()
+                            .expect("execution present after default-variant filter"),
+                    )
+                })
         })
         .collect();
 

@@ -87,28 +87,19 @@ impl RawNodeConfig {
         self.manifest.has_default_variant()
     }
 
-    /// Converts into a resolved [`NodeConfig`] using the given variant execution.
-    pub fn resolve(self, execution: Execution) -> NodeConfig {
-        NodeConfig {
+    /// Converts into a resolved [`NodeConfig`] when execution is already present
+    /// (non-variant configs).
+    ///
+    /// Returns an error if `execution` is `None`
+    /// (e.g., for configs with a default variant that has not been resolved yet).
+    pub fn into_resolved(self) -> crate::error::Result<NodeConfig> {
+        let execution = self.execution.ok_or(ParsingError::MissingExecution)?;
+        Ok(NodeConfig {
             schema_version: self.schema_version,
             manifest: self.manifest,
             interfaces: self.interfaces,
             execution,
-        }
-    }
-
-    /// Converts into a resolved [`NodeConfig`] when execution is already present
-    /// (non-variant configs). Only call after validation has confirmed execution
-    /// is `Some`.
-    pub fn into_resolved(self) -> NodeConfig {
-        NodeConfig {
-            schema_version: self.schema_version,
-            manifest: self.manifest,
-            interfaces: self.interfaces,
-            execution: self
-                .execution
-                .expect("BUG: into_resolved called on config without execution"),
-        }
+        })
     }
 }
 

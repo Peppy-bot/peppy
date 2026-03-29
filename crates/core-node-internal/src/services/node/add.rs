@@ -1080,7 +1080,14 @@ pub(crate) async fn run_node_add(
                 }
             }
         } else {
-            node_config = resolved.node_config.into_resolved();
+            match resolved.node_config.into_resolved() {
+                Ok(cfg) => node_config = cfg,
+                Err(e) => {
+                    let error_msg = e.to_string();
+                    write_error_to_log(&log_file, &error_msg);
+                    return NodeAddResult::failure(&log_path, error_msg);
+                }
+            }
         }
 
         let cleanup_dir = resolved_cleanup_guard.take();

@@ -87,7 +87,7 @@ fn load_manifest_inner(dir: &Path) -> Result<NodeConfig> {
         });
     }
 
-    let node = NodeConfigParser::from_path(&manifest_path)?.into_resolved();
+    let node = NodeConfigParser::from_path(&manifest_path)?.into_resolved()?;
 
     Ok(node)
 }

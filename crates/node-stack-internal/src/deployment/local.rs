@@ -29,7 +29,7 @@ pub fn resolve_local_deployment(
         return Err(Error::FileNotFound(config_path));
     }
 
-    let node = NodeConfigParser::from_path(&config_path)?.into_resolved();
+    let node = NodeConfigParser::from_path(&config_path)?.into_resolved()?;
 
     Ok(ResolvedNode {
         config: node,
@@ -40,6 +40,72 @@ pub fn resolve_local_deployment(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resolve_local_deployment_default_variant_returns_error() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let node_dir = dir.path().join("variant_node");
+        std::fs::create_dir_all(&node_dir).expect("create node dir");
+        std::fs::write(
+            node_dir.join(NODE_CONFIG_FILE),
+            r#"{
+                schema_version: 1,
+                manifest: {
+                    name: "variant_node",
+                    tag: "0.1.0",
+                    variants: [
+                        { name: "default", source: { local: "./variants/default" } },
+                    ],
+                },
+            }"#,
+        )
+        .expect("write node config");
+
+        let spec = DeploymentLocalSource {
+            local: PathBuf::from("./variant_node"),
+        };
+        let err = resolve_local_deployment(dir.path(), &spec)
+            .expect_err("should fail for default variant config");
+
+        let msg = err.to_string();
+        assert!(
+            msg.contains("execution"),
+            "expected missing-execution error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn resolve_local_deployment_non_default_variant_succeeds() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let node_dir = dir.path().join("gpu_node");
+        std::fs::create_dir_all(&node_dir).expect("create node dir");
+        std::fs::write(
+            node_dir.join(NODE_CONFIG_FILE),
+            r#"{
+                schema_version: 1,
+                manifest: {
+                    name: "gpu_node",
+                    tag: "0.1.0",
+                    variants: [
+                        { name: "gpu", source: { local: "./variants/gpu" } },
+                    ],
+                },
+                execution: {
+                    language: "rust",
+                    start_cmd: ["./target/release/gpu_node"]
+                }
+            }"#,
+        )
+        .expect("write node config");
+
+        let spec = DeploymentLocalSource {
+            local: PathBuf::from("./gpu_node"),
+        };
+        let resolved =
+            resolve_local_deployment(dir.path(), &spec).expect("non-default variant resolves");
+
+        assert_eq!(resolved.config.manifest.name.as_str(), "gpu_node");
+    }
 
     #[test]
     fn resolve_local_deployment_dir_success() {

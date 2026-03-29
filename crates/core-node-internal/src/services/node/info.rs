@@ -118,7 +118,10 @@ async fn handle_node_info_request_inner(
             .await?;
             (resolved.merged_config, Some(label))
         } else {
-            (root_config.into_resolved(), None)
+            (
+                root_config.into_resolved().map_err(|e| e.to_string())?,
+                None,
+            )
         }
     };
 
@@ -164,7 +167,7 @@ pub async fn resolve_node_config(
         let resolved = resolve_variant(&variant_source, &raw, &source_path, peppy_dirs).await?;
         Ok(resolved.merged_config)
     } else {
-        Ok(raw.into_resolved())
+        raw.into_resolved().map_err(|e| e.to_string())
     }
 }
 

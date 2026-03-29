@@ -122,7 +122,7 @@ pub fn resolve_remote_git(
     let config_path = node_config_path(&spec.path);
     let content = read_blob_from_tree(&repo, &tree, &config_path)?;
 
-    let node = NodeConfigParser::from_content(&content)?.into_resolved();
+    let node = NodeConfigParser::from_content(&content)?.into_resolved()?;
 
     let root_path = repo_dir.join(config_path.parent().unwrap_or_else(|| Path::new("")));
 
@@ -258,6 +258,69 @@ mod tests {
         assert!(
             matches!(err, crate::error::Error::Git(_)),
             "expected git error, got: {err}"
+        );
+    }
+
+    fn init_local_git_repo_with_default_variant() -> TempDir {
+        let remote_dir = tempfile::tempdir().expect("remote temp dir");
+        let repo = Repository::init(remote_dir.path()).expect("init repo");
+
+        let file_path = remote_dir.path().join(config::consts::NODE_CONFIG_FILE);
+        std::fs::write(
+            &file_path,
+            r#"{
+                schema_version: 1,
+                manifest: {
+                    name: "variant_node",
+                    tag: "0.1.0",
+                    variants: [
+                        { name: "default", source: { local: "./variants/default" } },
+                    ],
+                },
+            }"#,
+        )
+        .expect("write node config");
+
+        let rel_path = file_path
+            .strip_prefix(remote_dir.path())
+            .expect("relative path");
+
+        let mut index = repo.index().expect("repository index");
+        index.add_path(rel_path).expect("add file to index");
+        index.write().expect("write index");
+
+        let tree_id = index.write_tree().expect("write tree");
+        let tree = repo.find_tree(tree_id).expect("find tree");
+        let signature = Signature::now("Peppy", "peppy@example.com").expect("signature");
+        let commit_id = repo
+            .commit(Some("HEAD"), &signature, &signature, "initial", &tree, &[])
+            .expect("create commit");
+
+        let commit_obj = repo
+            .find_object(commit_id, Some(ObjectType::Commit))
+            .expect("find commit object");
+        repo.tag("0.1.0", &commit_obj, &signature, "tag", false)
+            .expect("create tag");
+
+        remote_dir
+    }
+
+    #[test]
+    fn resolve_remote_git_default_variant_returns_error() {
+        let remote_repo = init_local_git_repo_with_default_variant();
+        let spec = DeploymentGitSource {
+            repo: remote_repo.path().to_string_lossy().to_string(),
+            path: ".".to_string(),
+            ref_: "0.1.0".to_string(),
+        };
+        let cache_dir = tempfile::tempdir().expect("cache dir");
+
+        let err = resolve_remote_git(cache_dir.path(), &spec)
+            .expect_err("should fail for default variant config");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("execution"),
+            "expected missing-execution error, got: {msg}"
         );
     }
 }
