@@ -12,7 +12,7 @@ use crate::encoding::{
 use crate::names;
 use chrono::Local;
 use config::consts::{NODE_CONFIG_FILE, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH, PeppyDirs};
-use config::node::{NodeConfig, NodeConfigParser};
+use config::node::{DEFAULT_VARIANT_NAME, NodeConfig, NodeConfigParser};
 use futures::FutureExt;
 use git2::Repository;
 use node_stack::{NodeStack, validate_dependency_specs};
@@ -613,11 +613,11 @@ impl Drop for CleanupDir {
     }
 }
 
-struct ResolvedNodeAddSource {
-    source_path: PathBuf,
-    node_config: NodeConfig,
-    verify_codegen_fingerprint: bool,
-    cleanup_dir: Option<PathBuf>,
+pub(crate) struct ResolvedNodeAddSource {
+    pub(crate) source_path: PathBuf,
+    pub(crate) node_config: NodeConfig,
+    pub(crate) verify_codegen_fingerprint: bool,
+    pub(crate) cleanup_dir: Option<PathBuf>,
 }
 
 #[derive(Clone)]
@@ -831,7 +831,7 @@ fn locate_node_root_dir(extracted_dir: &Path) -> std::result::Result<PathBuf, St
     ))
 }
 
-async fn resolve_http_source(
+pub(crate) async fn resolve_http_source(
     url: &url::Url,
     peppy_dirs: PeppyDirs,
 ) -> std::result::Result<ResolvedNodeAddSource, String> {
@@ -959,6 +959,8 @@ async fn resolve_node_add_source(
     }
 }
 
+use super::variant::{resolve_variant, variant_label};
+
 /// Encodes a rejected goal response, mapping encoding errors to `PeppyError`.
 fn encode_rejected_goal(reason: impl Into<String>) -> PeppyResult<Payload> {
     NodeAddGoalResponse::rejected(reason).encode().map_err(|e| {
@@ -1000,10 +1002,58 @@ pub(crate) async fn run_node_add(
             }
         };
 
+        // Auto-resolve the default variant when no explicit variant is specified.
+        let effective_variant = match &goal.variant {
+            Some(v) => Some(v.clone()),
+            None if resolved.node_config.has_default_variant() => {
+                Some(NodeSource::Fs(DEFAULT_VARIANT_NAME.into()))
+            }
+            None => None,
+        };
+
+        // If a variant is specified (or auto-resolved), resolve it from the root config.
+        let mut variant_cleanup_dir: Option<PathBuf> = None;
+        if let Some(ref variant_source) = effective_variant {
+            let label = variant_label(variant_source);
+            match resolve_variant(
+                variant_source,
+                &resolved.node_config,
+                &resolved.source_path,
+                &action_context.peppy_dirs,
+            )
+            .await
+            {
+                Ok(v) => {
+                    if v.manifest_ignored {
+                        let _ = feedback_tx.send(FeedbackLine {
+                            stream: FeedbackStream::Stderr,
+                            line: format!(
+                                "Warning: variant '{}' defines a `manifest` section which will be ignored — only the root node's manifest is used",
+                                label
+                            ),
+                        });
+                    }
+                    resolved.node_config = v.merged_config;
+                    resolved.source_path = v.variant_source_path;
+                    resolved.verify_codegen_fingerprint = v.verify_codegen_fingerprint;
+                    variant_cleanup_dir = v.cleanup_dir;
+                }
+                Err(error_msg) => {
+                    write_error_to_log(&log_file, &error_msg);
+                    return NodeAddResult::failure(&log_path, error_msg);
+                }
+            }
+        }
+
         let cleanup_dir = resolved.cleanup_dir.take();
         let source_path = resolved.source_path.clone();
         let verify_codegen_fingerprint = resolved.verify_codegen_fingerprint;
         let node_config = resolved.node_config;
+
+        // Propagate the effective variant (explicit or auto-resolved default) so
+        // process_node_add can check goal.variant.is_some() without re-deriving it.
+        let mut goal = goal;
+        goal.variant = effective_variant;
 
         // Rename log file to the canonical {name}_{tag}_{timestamp}.log format
         // now that we know the node name and tag from the resolved config.
@@ -1016,6 +1066,9 @@ pub(crate) async fn run_node_add(
         } else {
             log_path
         };
+
+        // RAII guard: cleans up variant clone/download dir on any exit path.
+        let _variant_cleanup_guard = CleanupDir::new(variant_cleanup_dir);
 
         let ctx = ProcessNodeAddContext {
             action: action_context,
@@ -1231,7 +1284,7 @@ async fn process_node_add(
     let node_name = node_config.manifest.name.as_str().to_owned();
     let node_tag = node_config.manifest.tag.clone();
     let sccache_injected =
-        super::inject_rust_build_env(&mut env_vars, node_config.manifest.language);
+        super::inject_rust_build_env(&mut env_vars, node_config.execution_ref().language);
     if sccache_injected {
         let _ = ctx.feedback_tx.send(FeedbackLine {
             stream: FeedbackStream::Stdout,
@@ -1274,6 +1327,38 @@ async fn process_node_add(
     // RAII guard: cleans up the temp working dir on any exit path.
     let working_dir_cleanup = CleanupDir::new(Some(working_dir.clone()));
 
+    // For variant adds (including auto-resolved default variants), write the
+    // merged config (root manifest + interfaces + variant execution) into the
+    // working directory so the peppygen generator finds a valid NodeConfig.
+    // Strip the variants list from the manifest — it is no longer relevant
+    // once the variant has been resolved and would trigger a validation error
+    // if a "default" variant is present alongside an execution.
+    if goal.variant.is_some() {
+        let mut write_config = node_config.clone();
+        write_config.manifest.variants = None;
+        let merged_config_str = serde_json5::to_string(&write_config)
+            .map_err(|e| format!("Failed to serialize merged variant config: {}", e));
+        match merged_config_str {
+            Ok(content) => {
+                let config_path = working_dir.join(NODE_CONFIG_FILE);
+                if let Err(e) = std::fs::write(&config_path, &content) {
+                    let msg = format!("Failed to write merged variant config: {}", e);
+                    write_error_to_log(&ctx.log_file, &msg);
+                    return NodeAddResult::failure(&ctx.log_path, msg);
+                }
+                // Regenerate fingerprint for the new config
+                config::fingerprint::create_codegen_fingerprint(
+                    &config_path,
+                    std::path::Path::new(PEPPYGEN_OUTPUT_PATH),
+                );
+            }
+            Err(msg) => {
+                write_error_to_log(&ctx.log_file, &msg);
+                return NodeAddResult::failure(&ctx.log_path, msg);
+            }
+        }
+    }
+
     if !excluded_dirs.is_empty() {
         let _ = ctx.feedback_tx.send(FeedbackLine {
             stream: FeedbackStream::Stdout,
@@ -1302,8 +1387,8 @@ async fn process_node_add(
     // Generate the peppygen library in the working directory.
     // Container builds need Copy mode because Apptainer's `%files` copies symlinks
     // as-is — absolute symlinks to the host cache would be broken inside the container.
-    let language = node_config.manifest.language;
-    let deploy_mode = if node_config.container.is_some() {
+    let language = node_config.execution_ref().language;
+    let deploy_mode = if node_config.execution_ref().container.is_some() {
         generator::CrateDeployMode::Copy
     } else {
         generator::CrateDeployMode::Symlink
@@ -1322,7 +1407,7 @@ async fn process_node_add(
         return NodeAddResult::failure(&ctx.log_path, msg);
     }
 
-    let snapshot_path = if let Some(container) = &node_config.container {
+    let snapshot_path = if let Some(container) = &node_config.execution_ref().container {
         // Container nodes: use the Apptainer facade to build the .sif image from
         // the definition file, then move it to storage.
         let apptainer_build_extra_args = container
@@ -1359,10 +1444,7 @@ async fn process_node_add(
         }
     } else {
         // Regular nodes: run add_cmd then archive the working directory.
-        let add_cmd = node_config
-            .process
-            .as_ref()
-            .and_then(|b| b.add_cmd.as_ref());
+        let add_cmd = node_config.execution_ref().add_cmd.as_ref();
         if let Err(e) = run_add_cmd_with_streaming(
             add_cmd,
             &working_dir,
