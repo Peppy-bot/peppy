@@ -6,7 +6,7 @@ use std::{
 use super::ResolvedNode;
 use crate::error::{Error, Result};
 use config::consts::NODE_CONFIG_FILE;
-use config::node::{DEFAULT_VARIANT_NAME, NodeConfig, NodeConfigParser, VariantConfigParser};
+use config::node::{NodeConfig, NodeConfigParser, VariantConfigParser};
 use config::peppy_config::DeploymentGitSource;
 use config::source::DeploymentSource;
 use git2::{AutotagOption, FetchOptions, ObjectType, Repository};
@@ -128,11 +128,11 @@ fn resolve_default_variant_from_tree(
     };
 
     let parent = config_path.parent().unwrap_or_else(|| Path::new(""));
-    let local_path = local_source
-        .local
-        .strip_prefix("./")
-        .unwrap_or(&local_source.local);
-    let variant_dir = parent.join(local_path);
+    let variant_dir = if local_source.local.is_relative() {
+        parent.join(&local_source.local)
+    } else {
+        local_source.local.clone()
+    };
     let variant_config_path = variant_dir.join(NODE_CONFIG_FILE);
 
     let variant_content = read_blob_from_tree(repo, tree, &variant_config_path)?;
@@ -164,15 +164,9 @@ pub fn resolve_remote_git(
     let content = read_blob_from_tree(&repo, &tree, &config_path)?;
 
     let raw_config = NodeConfigParser::from_content(&content)?;
-    let default_variant_source = raw_config
-        .manifest
-        .variants
-        .as_ref()
-        .and_then(|vs| vs.iter().find(|v| v.name.as_str() == DEFAULT_VARIANT_NAME))
-        .map(|v| v.source.clone());
 
-    let node = if let Some(ref source) = default_variant_source {
-        resolve_default_variant_from_tree(&repo, &tree, raw_config, source, &config_path)?
+    let node = if let Some(source) = raw_config.manifest.default_variant_source().cloned() {
+        resolve_default_variant_from_tree(&repo, &tree, raw_config, &source, &config_path)?
     } else {
         raw_config.into_resolved()?
     };

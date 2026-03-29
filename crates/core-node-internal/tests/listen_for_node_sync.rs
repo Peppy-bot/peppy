@@ -1530,8 +1530,9 @@ async fn listen_for_node_sync_variant_missing_directory_fails() {
         response.error_message
     );
     assert!(
-        response.error_message.contains("does not exist"),
-        "error should mention directory does not exist, got: {}",
+        response.error_message.contains("does not exist")
+            || response.error_message.contains("No such file"),
+        "error should mention missing variant directory, got: {}",
         response.error_message
     );
 }

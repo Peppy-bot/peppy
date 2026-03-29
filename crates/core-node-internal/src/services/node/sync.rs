@@ -337,15 +337,6 @@ async fn handle_node_sync_request_inner(
                 local.local.clone()
             };
 
-            if !variant_dir.exists() || !variant_dir.is_dir() {
-                return NodeSyncResponse::failure(format!(
-                    "Variant '{}' directory does not exist or is not a directory: {}",
-                    variant.name.as_str(),
-                    variant_dir.display()
-                ))
-                .encode();
-            }
-
             let variant_config_path = variant_dir.join(config::consts::NODE_CONFIG_FILE);
             let variant_config = match VariantConfigParser::from_path(&variant_config_path) {
                 Ok(vc) => vc,

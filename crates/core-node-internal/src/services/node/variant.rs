@@ -1,3 +1,4 @@
+use super::add::{CleanupDir, resolve_http_source};
 use super::{checkout_repo_ref, sanitize_repo_path};
 use crate::encoding::NodeSource;
 use config::consts::{NODE_CONFIG_FILE, PeppyDirs};
@@ -5,26 +6,6 @@ use config::node::{Interfaces, NodeConfig, RawNodeConfig, VariantConfigParser};
 use config::source::DeploymentSource;
 use git2::Repository;
 use std::path::{Path, PathBuf};
-
-use super::add::resolve_http_source;
-
-/// RAII guard that removes a directory on drop unless defused.
-struct CleanupGuard(Option<PathBuf>);
-
-impl CleanupGuard {
-    /// Disarm the guard, returning the path without deleting it.
-    fn defuse(&mut self) -> Option<PathBuf> {
-        self.0.take()
-    }
-}
-
-impl Drop for CleanupGuard {
-    fn drop(&mut self) {
-        if let Some(ref dir) = self.0 {
-            std::fs::remove_dir_all(dir).ok();
-        }
-    }
-}
 
 pub(crate) struct ResolvedVariant {
     /// The merged NodeConfig: root manifest + root interfaces + variant execution.
@@ -153,7 +134,7 @@ pub(crate) async fn resolve_variant(
             // Direct HTTP source — skip manifest lookup.
             NodeSource::Http { url, sha256 } => {
                 let resolved = resolve_http_source(url, peppy_dirs.clone(), sha256.clone()).await?;
-                let mut http_guard = CleanupGuard(resolved.cleanup_dir);
+                let mut http_guard = CleanupDir::new(resolved.cleanup_dir);
                 let config_path = resolved.source_path.join(NODE_CONFIG_FILE);
                 let variant_config = VariantConfigParser::from_path(&config_path).map_err(|e| {
                     format!(
@@ -166,13 +147,13 @@ pub(crate) async fn resolve_variant(
                     resolved.source_path,
                     variant_config,
                     false,
-                    http_guard.defuse(),
+                    http_guard.take(),
                 )
             }
         };
 
     // Guard ensures cleanup_dir is removed if we exit early (e.g. validation error).
-    let mut cleanup_guard = CleanupGuard(cleanup_dir);
+    let mut cleanup_guard = CleanupDir::new(cleanup_dir);
 
     // If the variant defines interfaces, validate they match the root's interfaces.
     if let Some(ref variant_interfaces) = variant_config.interfaces
@@ -198,7 +179,7 @@ pub(crate) async fn resolve_variant(
     };
 
     // Defuse the guard — caller takes ownership of cleanup responsibility.
-    let cleanup_dir = cleanup_guard.defuse();
+    let cleanup_dir = cleanup_guard.take();
 
     Ok(ResolvedVariant {
         merged_config,

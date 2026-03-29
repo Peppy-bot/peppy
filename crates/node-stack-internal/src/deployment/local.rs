@@ -1,7 +1,7 @@
 use super::ResolvedNode;
 use crate::error::{Error, Result};
 use config::consts::NODE_CONFIG_FILE;
-use config::node::{DEFAULT_VARIANT_NAME, NodeConfig, NodeConfigParser, VariantConfigParser};
+use config::node::{NodeConfig, NodeConfigParser, VariantConfigParser};
 use config::peppy_config::DeploymentLocalSource;
 use config::source::DeploymentSource;
 use std::path::{Path, PathBuf};
@@ -66,14 +66,8 @@ pub fn resolve_local_deployment(
     }
 
     let raw_config = NodeConfigParser::from_path(&config_path)?;
-    let default_variant_source = raw_config
-        .manifest
-        .variants
-        .as_ref()
-        .and_then(|vs| vs.iter().find(|v| v.name.as_str() == DEFAULT_VARIANT_NAME))
-        .map(|v| v.source.clone());
 
-    let node = if let Some(ref source) = default_variant_source {
+    let node = if let Some(source) = raw_config.manifest.default_variant_source() {
         resolve_default_variant_local(&raw_config, source, &root_path)?
     } else {
         raw_config.into_resolved()?

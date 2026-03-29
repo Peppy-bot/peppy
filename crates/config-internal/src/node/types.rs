@@ -672,10 +672,16 @@ pub struct Manifest {
 impl Manifest {
     /// Returns `true` if the manifest contains a variant named `"default"`.
     pub fn has_default_variant(&self) -> bool {
-        self.variants.as_ref().is_some_and(|variants| {
+        self.default_variant_source().is_some()
+    }
+
+    /// Returns the deployment source for the `"default"` variant, if one exists.
+    pub fn default_variant_source(&self) -> Option<&DeploymentSource> {
+        self.variants.as_ref().and_then(|variants| {
             variants
                 .iter()
-                .any(|v| v.name.as_str() == DEFAULT_VARIANT_NAME)
+                .find(|v| v.name.as_str() == DEFAULT_VARIANT_NAME)
+                .map(|v| &v.source)
         })
     }
 }
