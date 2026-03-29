@@ -153,6 +153,7 @@ pub(crate) async fn resolve_variant(
             // Direct HTTP source — skip manifest lookup.
             NodeSource::Http { url } => {
                 let resolved = resolve_http_source(url, peppy_dirs.clone()).await?;
+                let mut http_guard = CleanupGuard(resolved.cleanup_dir);
                 let config_path = resolved.source_path.join(NODE_CONFIG_FILE);
                 let variant_config = VariantConfigParser::from_path(&config_path).map_err(|e| {
                     format!(
@@ -165,7 +166,7 @@ pub(crate) async fn resolve_variant(
                     resolved.source_path,
                     variant_config,
                     false,
-                    resolved.cleanup_dir,
+                    http_guard.defuse(),
                 )
             }
         };
@@ -283,14 +284,20 @@ async fn resolve_variant_deployment_source(
                 .map_err(|e| format!("invalid variant URL: {}", e))?;
             let resolved = resolve_http_source(&url, peppy_dirs.clone()).await?;
             let config_path = resolved.source_path.join(NODE_CONFIG_FILE);
-            let variant_config = VariantConfigParser::from_path(&config_path).map_err(|e| {
-                format!(
-                    "Failed to parse variant '{}' config at {}: {}",
-                    label,
-                    config_path.display(),
-                    e
-                )
-            })?;
+            let variant_config = match VariantConfigParser::from_path(&config_path) {
+                Ok(cfg) => cfg,
+                Err(e) => {
+                    if let Some(ref dir) = resolved.cleanup_dir {
+                        std::fs::remove_dir_all(dir).ok();
+                    }
+                    return Err(format!(
+                        "Failed to parse variant '{}' config at {}: {}",
+                        label,
+                        config_path.display(),
+                        e
+                    ));
+                }
+            };
             Ok((
                 resolved.source_path,
                 variant_config,

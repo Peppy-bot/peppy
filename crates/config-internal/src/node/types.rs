@@ -1044,7 +1044,7 @@ pub struct VariantConfig {
     pub schema_version: SchemaVersion,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub manifest: Option<Manifest>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub interfaces: Option<Interfaces>,
     pub execution: Execution,
 }
@@ -1477,6 +1477,27 @@ mod tests {
             variants: [{ name: "v1", source: { local: "./x" }, extra: "bad" }]
         }"#;
         assert!(serde_json5::from_str::<Manifest>(json5).is_err());
+    }
+
+    #[test]
+    fn variant_config_omits_none_interfaces_on_serialize() {
+        let json5 = r#"{
+            schema_version: 1,
+            execution: { language: "rust" }
+        }"#;
+        let config: VariantConfig =
+            serde_json5::from_str(json5).expect("minimal variant config should parse");
+        assert!(config.interfaces.is_none());
+
+        let serialized = serde_json5::to_string(&config).unwrap();
+        assert!(
+            !serialized.contains("interfaces"),
+            "interfaces should be omitted when None, got: {serialized}"
+        );
+        assert!(
+            !serialized.contains("manifest"),
+            "manifest should be omitted when None, got: {serialized}"
+        );
     }
 
     #[test]
