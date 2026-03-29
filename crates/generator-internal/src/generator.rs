@@ -53,7 +53,7 @@ pub fn generate_peppygen_lib(
     write_if_changed(&peppy_dir.join("git.hash"), git_hash.as_bytes())?;
 
     if !node_config_path.exists() {
-        return Err(Error::NodeNotFound(node_dir.display().to_string()));
+        return Err(Error::NodeNotFound(node_config_path.display().to_string()));
     }
 
     let node_config = NodeConfigParser::from_path(&node_config_path)
