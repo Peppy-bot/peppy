@@ -172,7 +172,8 @@ async fn handle_node_sync_request_inner(
             Ok(node_config) => {
                 // Validate dependencies exist in the node stack
                 let dep_errors = node_stack::validate_dependency_specs(
-                    &node_config,
+                    &node_config.manifest,
+                    &node_config.interfaces,
                     node_config.manifest.name.as_str(),
                     &node_config.manifest.tag,
                     |name, tag| node_stack.find(name, tag).map(|e| e.config().clone()),
@@ -245,7 +246,11 @@ async fn handle_node_sync_request_inner(
                 }
 
                 // Collect consumed interfaces with resolved message formats
-                let interfaces = collect_consumed_interfaces(&node_config, node_stack);
+                let interfaces = collect_consumed_interfaces(
+                    &node_config.manifest,
+                    &node_config.interfaces,
+                    node_stack,
+                );
                 let language = node_config.execution.as_ref().map(|r| r.language);
                 let variants = node_config.manifest.variants.clone();
                 let root_manifest = node_config.manifest.clone();
@@ -366,7 +371,7 @@ async fn handle_node_sync_request_inner(
                 schema_version: root_schema_version,
                 manifest: merged_manifest,
                 interfaces: root_interfaces.clone(),
-                execution: Some(variant_config.execution),
+                execution: variant_config.execution,
             };
             let merged_json5 = match serde_json5::to_string(&merged_config) {
                 Ok(json) => json,
@@ -455,10 +460,9 @@ async fn handle_node_sync_request_inner(
 
 /// Builds a lookup from `local_id` → `(dep_name, dep_tag)` using the node's `depends_on.nodes`.
 fn build_dependency_lookup(
-    config: &config::node::NodeConfig,
+    manifest: &config::node::Manifest,
 ) -> std::collections::HashMap<String, (String, String)> {
-    config
-        .manifest
+    manifest
         .depends_on
         .as_ref()
         .map(|d| {
@@ -478,14 +482,15 @@ fn build_dependency_lookup(
 /// Collects consumed interfaces from a node config and resolves their message formats
 /// by looking up the exposed interfaces from dependency nodes in the node stack.
 pub fn collect_consumed_interfaces(
-    node_config: &config::node::NodeConfig,
+    manifest: &config::node::Manifest,
+    interfaces_cfg: &config::node::Interfaces,
     node_stack: &NodeStack,
 ) -> Vec<DeploymentInterface> {
     let mut interfaces = Vec::new();
-    let dep_lookup = build_dependency_lookup(node_config);
+    let dep_lookup = build_dependency_lookup(manifest);
 
     // Collect consumed topics
-    if let Some(topic_interfaces) = &node_config.interfaces.topics
+    if let Some(topic_interfaces) = &interfaces_cfg.topics
         && let Some(consumed_topics) = &topic_interfaces.consumes
     {
         for consumed_topic in consumed_topics {
@@ -525,7 +530,7 @@ pub fn collect_consumed_interfaces(
     }
 
     // Collect consumed services
-    if let Some(service_interfaces) = &node_config.interfaces.services
+    if let Some(service_interfaces) = &interfaces_cfg.services
         && let Some(consumed_services) = &service_interfaces.consumes
     {
         for consumed_service in consumed_services {
@@ -558,7 +563,7 @@ pub fn collect_consumed_interfaces(
     }
 
     // Collect consumed actions
-    if let Some(action_interfaces) = &node_config.interfaces.actions
+    if let Some(action_interfaces) = &interfaces_cfg.actions
         && let Some(consumed_actions) = &action_interfaces.consumes
     {
         for consumed_action in consumed_actions {

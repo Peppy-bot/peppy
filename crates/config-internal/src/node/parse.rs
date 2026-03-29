@@ -1,4 +1,4 @@
-use super::types::{Execution, NodeConfig, VariantConfig};
+use super::types::{Execution, RawNodeConfig, VariantConfig};
 use crate::{
     error::{ParsingError, Result},
     parsing::read_non_empty_file,
@@ -35,16 +35,16 @@ fn validate_execution(execution: &Execution) -> Result<()> {
 pub struct NodeConfigParser;
 
 impl NodeConfigParser {
-    pub fn from_path(file: impl AsRef<Path>) -> Result<NodeConfig> {
+    pub fn from_path(file: impl AsRef<Path>) -> Result<RawNodeConfig> {
         let path = file.as_ref();
         let content = read_non_empty_file(path)?;
         Self::from_content(&content)
     }
 
     /// Takes a JSON5 content as parameter
-    pub fn from_content(content: &str) -> Result<NodeConfig> {
+    pub fn from_content(content: &str) -> Result<RawNodeConfig> {
         // Strict schema validation is handled by serde via #[serde(deny_unknown_fields)]
-        let config: NodeConfig = serde_json5::from_str(content).map_err(ParsingError::from)?;
+        let config: RawNodeConfig = serde_json5::from_str(content).map_err(ParsingError::from)?;
 
         let has_default = config.has_default_variant();
         match (&config.execution, has_default) {
@@ -81,10 +81,12 @@ mod tests {
     use crate::{config::PeppyLauncherParser, error::Error, node::ContainerConfig};
     use tempfile::NamedTempFile;
 
-    /// Test helper: borrows the `ContainerConfig` from a parsed `NodeConfig`.
-    fn container(config: &NodeConfig) -> &ContainerConfig {
+    /// Test helper: borrows the `ContainerConfig` from a parsed `RawNodeConfig`.
+    fn container(config: &RawNodeConfig) -> &ContainerConfig {
         config
-            .execution_ref()
+            .execution
+            .as_ref()
+            .expect("expected execution")
             .container
             .as_ref()
             .expect("expected container")
@@ -107,10 +109,16 @@ mod tests {
         assert_eq!(config.manifest.name.as_str(), "test_node");
         assert_eq!(config.manifest.tag, "0.1.0");
         assert_eq!(
-            config.execution_ref().start_cmd.as_ref().unwrap(),
+            config
+                .execution
+                .as_ref()
+                .unwrap()
+                .start_cmd
+                .as_ref()
+                .unwrap(),
             &vec!["./target/release/test_node"]
         );
-        assert!(config.execution_ref().parameters.is_empty());
+        assert!(config.execution.as_ref().unwrap().parameters.is_empty());
     }
 
     #[test]
@@ -137,11 +145,17 @@ mod tests {
         assert_eq!(config.manifest.name.as_str(), "camera_driver");
         assert_eq!(config.manifest.tag, "2.1.0");
         assert_eq!(
-            config.execution_ref().language,
+            config.execution.as_ref().unwrap().language,
             crate::node::PeppygenLanguage::Rust
         );
         assert_eq!(
-            config.execution_ref().start_cmd.as_ref().unwrap(),
+            config
+                .execution
+                .as_ref()
+                .unwrap()
+                .start_cmd
+                .as_ref()
+                .unwrap(),
             &vec!["./target/release/camera_driver"]
         );
         assert!(config.interfaces.topics.is_some());
@@ -197,7 +211,7 @@ mod tests {
             },
         }"#;
         let config = NodeConfigParser::from_content(json5).unwrap();
-        assert!(config.execution_ref().start_cmd.is_none());
+        assert!(config.execution.as_ref().unwrap().start_cmd.is_none());
         assert_eq!(container(&config).def_file, "apptainer.def");
     }
 

@@ -3581,7 +3581,7 @@ async fn listen_for_node_add_variant_local_source() {
         "interfaces should be inherited from root"
     );
     assert_eq!(
-        config.execution_ref().start_cmd.as_ref().unwrap(),
+        config.execution.start_cmd.as_ref().unwrap(),
         &vec!["sleep".to_string(), "5".to_string()],
         "execution should come from the variant"
     );
@@ -4088,7 +4088,7 @@ async fn listen_for_node_add_default_variant_auto_resolved() {
         "interfaces should be inherited from root"
     );
     assert_eq!(
-        config.execution_ref().start_cmd.as_ref().unwrap(),
+        config.execution.start_cmd.as_ref().unwrap(),
         &vec!["sleep".to_string(), "7".to_string()],
         "execution should come from the default variant"
     );
@@ -4182,7 +4182,7 @@ async fn listen_for_node_add_default_variant_explicit_other() {
         .expect("node should exist in stack");
     let config = entity.config();
     assert_eq!(
-        config.execution_ref().start_cmd.as_ref().unwrap(),
+        config.execution.start_cmd.as_ref().unwrap(),
         &vec!["sleep".to_string(), "3".to_string()],
         "execution should come from the mujoco variant, not the default"
     );

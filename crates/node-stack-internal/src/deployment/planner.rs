@@ -203,7 +203,12 @@ fn load_nodes_from_fs(root_dir: &Path, core_node: NodeConfig) -> Result<NodeStac
 
     let local_nodes: Vec<(PathBuf, NodeConfig)> = state_snapshot
         .into_iter()
-        .filter_map(|(path, result)| result.ok().map(|config| (path, config)))
+        .filter_map(|(path, result)| {
+            result
+                .ok()
+                .filter(|cfg| !cfg.has_default_variant())
+                .map(|cfg| (path, cfg.into_resolved()))
+        })
         .collect();
 
     let stack = NodeStack::new(core_node, None, root_dir);
@@ -371,7 +376,7 @@ fn build_launch_plan(
                 continue;
             }
         };
-        let node = resolved.config;
+        let node = resolved.config.into_resolved();
         let root_path = resolved.root_path;
         let deployment_label = format!("{}:{}", node.manifest.name.as_str(), node.manifest.tag);
 
@@ -433,11 +438,7 @@ fn validate_instance_parameters(
     deployment: &Deployment,
     node: &NodeConfig,
 ) -> std::result::Result<(), Error> {
-    // When the node uses a default variant, execution is not yet resolved;
-    // parameter validation will happen after variant resolution.
-    let Some(execution) = node.execution.as_ref() else {
-        return Ok(());
-    };
+    let execution = &node.execution;
 
     let expected = parameter_leaf_paths(&execution.parameters);
     if expected.is_empty() {
@@ -567,7 +568,8 @@ fn validate_stack_dependencies(stack: &NodeStack) -> Vec<Error> {
         .iter()
         .flat_map(|entity| {
             validate_dependency_specs(
-                entity.config(),
+                &entity.config().manifest,
+                &entity.config().interfaces,
                 entity.config().manifest.name.as_str(),
                 &entity.config().manifest.tag,
                 |name, tag| node_index.get(&(name, tag)).map(|c| (*c).clone()),
@@ -586,12 +588,11 @@ fn deployment_source_id(source: &DeploymentSource) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use config::node::NodeConfigParser;
 
     #[test]
-    fn validate_instance_parameters_skips_node_with_default_variant() {
-        let node = NodeConfigParser::from_content(
+    fn default_variant_config_has_no_execution() {
+        let raw = NodeConfigParser::from_content(
             r#"{
                 schema_version: 1,
                 manifest: {
@@ -606,27 +607,9 @@ mod tests {
         .expect("valid node config with default variant");
 
         assert!(
-            node.execution.is_none(),
-            "precondition: execution must be None"
+            raw.execution.is_none(),
+            "default-variant config must not have execution"
         );
-
-        let deployment: Deployment = serde_json5::from_str(
-            r#"{
-                source: { local: "./variant_node" },
-                instances: [
-                    {
-                        instance_id: "inst1",
-                        arguments: { some_param: "hello" },
-                    },
-                ],
-            }"#,
-        )
-        .expect("valid deployment");
-
-        let result = validate_instance_parameters("variant_node:0.1.0", &deployment, &node);
-        assert!(
-            result.is_ok(),
-            "should not panic or error for default-variant node"
-        );
+        assert!(raw.has_default_variant());
     }
 }

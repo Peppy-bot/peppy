@@ -7,6 +7,7 @@ Review this plan thoroughly before making any code changes. For every issue or r
 ## My engineering preferences (use these to guide your recommendations)
 
 - DRY is important—flag repetition aggressively.
+- Use the "Parse, don't validate" pattern when applicable
 - Well-tested code is non-negotiable.
 - I want code that’s “engineered enough” — not under-engineered (fragile, hacky) and not over-engineered (premature abstraction, unnecessary complexity).
 - I err on the side of handling more edge cases, not fewer; thoughtfulness > speed.

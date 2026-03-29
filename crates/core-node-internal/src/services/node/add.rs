@@ -12,7 +12,7 @@ use crate::encoding::{
 use crate::names;
 use chrono::Local;
 use config::consts::{NODE_CONFIG_FILE, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH, PeppyDirs};
-use config::node::{DEFAULT_VARIANT_NAME, NodeConfig, NodeConfigParser};
+use config::node::{DEFAULT_VARIANT_NAME, NodeConfig, NodeConfigParser, RawNodeConfig};
 use futures::FutureExt;
 use git2::Repository;
 use node_stack::{NodeStack, validate_dependency_specs};
@@ -615,7 +615,7 @@ impl Drop for CleanupDir {
 
 pub(crate) struct ResolvedNodeAddSource {
     pub(crate) source_path: PathBuf,
-    pub(crate) node_config: NodeConfig,
+    pub(crate) node_config: RawNodeConfig,
     pub(crate) verify_codegen_fingerprint: bool,
     pub(crate) cleanup_dir: Option<PathBuf>,
 }
@@ -1017,6 +1017,7 @@ pub(crate) async fn run_node_add(
 
         // If a variant is specified (or auto-resolved), resolve it from the root config.
         let mut variant_cleanup_dir: Option<PathBuf> = None;
+        let node_config: NodeConfig;
         if let Some(ref variant_source) = effective_variant {
             let label = variant_label(variant_source);
             match resolve_variant(
@@ -1037,7 +1038,7 @@ pub(crate) async fn run_node_add(
                             ),
                         });
                     }
-                    resolved.node_config = v.merged_config;
+                    node_config = v.merged_config;
                     resolved.source_path = v.variant_source_path;
                     resolved.verify_codegen_fingerprint = v.verify_codegen_fingerprint;
                     variant_cleanup_dir = v.cleanup_dir;
@@ -1047,12 +1048,13 @@ pub(crate) async fn run_node_add(
                     return NodeAddResult::failure(&log_path, error_msg);
                 }
             }
+        } else {
+            node_config = resolved.node_config.into_resolved();
         }
 
         let cleanup_dir = resolved_cleanup_guard.take();
         let source_path = resolved.source_path.clone();
         let verify_codegen_fingerprint = resolved.verify_codegen_fingerprint;
-        let node_config = resolved.node_config;
 
         // Rename log file to the canonical {name}_{tag}_{timestamp}.log format
         // now that we know the node name and tag from the resolved config.
@@ -1283,7 +1285,7 @@ async fn process_node_add(
     let node_name = node_config.manifest.name.as_str().to_owned();
     let node_tag = node_config.manifest.tag.clone();
     let sccache_injected =
-        super::inject_rust_build_env(&mut env_vars, node_config.execution_ref().language);
+        super::inject_rust_build_env(&mut env_vars, node_config.execution.language);
     if sccache_injected {
         let _ = ctx.feedback_tx.send(FeedbackLine {
             stream: FeedbackStream::Stdout,
@@ -1332,7 +1334,7 @@ async fn process_node_add(
     // Strip the variants list from the manifest — it is no longer relevant
     // once the variant has been resolved and would trigger a validation error
     // if a "default" variant is present alongside an execution.
-    if goal.variant.is_some() || node_config.has_default_variant() {
+    if goal.variant.is_some() || node_config.manifest.has_default_variant() {
         let mut write_config = node_config.clone();
         write_config.manifest.variants = None;
         let merged_config_str = serde_json5::to_string(&write_config)
@@ -1371,12 +1373,18 @@ async fn process_node_add(
     // Validate that all dependency nodes exist in the stack and expose the required
     // interfaces before running add_cmd. This prevents confusing build failures when
     // peppygen is generated with incomplete interfaces due to missing dependencies.
-    let dep_errors = validate_dependency_specs(&node_config, &node_name, &node_tag, |name, tag| {
-        ctx.action
-            .node_stack
-            .find(name, tag)
-            .map(|e| e.config().clone())
-    });
+    let dep_errors = validate_dependency_specs(
+        &node_config.manifest,
+        &node_config.interfaces,
+        &node_name,
+        &node_tag,
+        |name, tag| {
+            ctx.action
+                .node_stack
+                .find(name, tag)
+                .map(|e| e.config().clone())
+        },
+    );
     if let Some(err) = dep_errors.into_iter().next() {
         let msg = format!("Failed to add node config: {}", err);
         write_error_to_log(&ctx.log_file, &msg);
@@ -1386,13 +1394,17 @@ async fn process_node_add(
     // Generate the peppygen library in the working directory.
     // Container builds need Copy mode because Apptainer's `%files` copies symlinks
     // as-is — absolute symlinks to the host cache would be broken inside the container.
-    let language = node_config.execution_ref().language;
-    let deploy_mode = if node_config.execution_ref().container.is_some() {
+    let language = node_config.execution.language;
+    let deploy_mode = if node_config.execution.container.is_some() {
         generator::CrateDeployMode::Copy
     } else {
         generator::CrateDeployMode::Symlink
     };
-    let consumed_interfaces = collect_consumed_interfaces(&node_config, &ctx.action.node_stack);
+    let consumed_interfaces = collect_consumed_interfaces(
+        &node_config.manifest,
+        &node_config.interfaces,
+        &ctx.action.node_stack,
+    );
     if let Err(e) = generate_peppygen_for_node(
         language,
         &working_dir,
@@ -1407,7 +1419,7 @@ async fn process_node_add(
         return NodeAddResult::failure(&ctx.log_path, msg);
     }
 
-    let snapshot_path = if let Some(container) = &node_config.execution_ref().container {
+    let snapshot_path = if let Some(container) = &node_config.execution.container {
         // Container nodes: use the Apptainer facade to build the .sif image from
         // the definition file, then move it to storage.
         let apptainer_build_extra_args = container
@@ -1444,7 +1456,7 @@ async fn process_node_add(
         }
     } else {
         // Regular nodes: run add_cmd then archive the working directory.
-        let add_cmd = node_config.execution_ref().add_cmd.as_ref();
+        let add_cmd = node_config.execution.add_cmd.as_ref();
         if let Err(e) = run_add_cmd_with_streaming(
             add_cmd,
             &working_dir,

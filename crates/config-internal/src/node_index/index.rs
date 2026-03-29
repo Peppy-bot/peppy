@@ -6,11 +6,11 @@ use super::discovery::find_peppy_nodes_from_dir;
 use crate::error::{Error, ParsingError, Result};
 use tracing::{info, warn};
 
-use crate::{consts::NODE_CONFIG_FILE, node::NodeConfig};
+use crate::{consts::NODE_CONFIG_FILE, node::RawNodeConfig};
 
 /// Aggregated state keyed by config file path. Each entry reflects the
 /// current parse result of the corresponding `peppy.json5` file.
-pub type NodeIndexState = HashMap<PathBuf, core::result::Result<NodeConfig, ParsingError>>;
+pub type NodeIndexState = HashMap<PathBuf, core::result::Result<RawNodeConfig, ParsingError>>;
 
 /// Builds an aggregated node configuration index for a directory tree.
 /// The index maps each `peppy.json5` file path to the parse result

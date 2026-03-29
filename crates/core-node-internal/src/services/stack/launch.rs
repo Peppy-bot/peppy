@@ -612,7 +612,8 @@ async fn validate_and_order_dependencies(
         .iter()
         .flat_map(|item| {
             node_stack::validate_dependency_specs(
-                &item.config,
+                &item.config.manifest,
+                &item.config.interfaces,
                 &item.node_name,
                 &item.node_tag,
                 |name, tag| configs_by_key.get(&NodeKey::new(name, tag)).cloned(),

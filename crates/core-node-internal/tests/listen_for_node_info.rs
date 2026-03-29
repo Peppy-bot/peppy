@@ -694,17 +694,17 @@ async fn listen_for_node_info_with_fs_variant_success() {
 
     // Runtime comes from variant
     assert_eq!(
-        info_response.config.execution_ref().language,
+        info_response.config.execution.language,
         PeppygenLanguage::Python
     );
     assert_eq!(
-        info_response.config.execution_ref().start_cmd.as_deref(),
+        info_response.config.execution.start_cmd.as_deref(),
         Some(&["python".to_string(), "main.py".to_string()][..])
     );
     assert!(
         info_response
             .config
-            .execution_ref()
+            .execution
             .parameters
             .contains_key("mode"),
         "variant parameters should be present"

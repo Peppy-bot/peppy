@@ -5,7 +5,7 @@ use crate::encoding::{NodeInfoRequest, NodeInfoResponse, NodeSource};
 use crate::names;
 use config::consts::{NODE_CONFIG_FILE, PeppyDirs};
 use config::fingerprint::fingerprint_for_bytes;
-use config::node::{NodeConfig, NodeConfigParser};
+use config::node::{NodeConfig, NodeConfigParser, RawNodeConfig};
 use git2::Repository;
 use node_stack::NodeStack;
 use peppylib::messaging::ServiceRequestContext;
@@ -106,7 +106,8 @@ async fn handle_node_info_request_inner(
             resolve_variant(variant_source, &root_config, &root_source_path, &peppy_dirs).await?;
         (resolved.merged_config, Some(label))
     } else {
-        (resolve_node_config(request.source).await?, None)
+        let raw = resolve_raw_node_config(request.source).await?;
+        (raw.into_resolved(), None)
     };
 
     let node_name = node_config.manifest.name.as_str();
@@ -139,6 +140,12 @@ async fn handle_node_info_request_inner(
 }
 
 pub async fn resolve_node_config(source: NodeSource) -> std::result::Result<NodeConfig, String> {
+    resolve_raw_node_config(source)
+        .await
+        .map(|raw| raw.into_resolved())
+}
+
+async fn resolve_raw_node_config(source: NodeSource) -> std::result::Result<RawNodeConfig, String> {
     match source {
         NodeSource::Fs(path) => parse_node_config_from_fs(&path),
         NodeSource::Git {
@@ -156,7 +163,7 @@ pub async fn resolve_node_config(source: NodeSource) -> std::result::Result<Node
 async fn resolve_node_config_with_source_path(
     source: NodeSource,
     peppy_dirs: &PeppyDirs,
-) -> std::result::Result<(NodeConfig, PathBuf, Option<PathBuf>), String> {
+) -> std::result::Result<(RawNodeConfig, PathBuf, Option<PathBuf>), String> {
     match source {
         NodeSource::Fs(path) => {
             let config = parse_node_config_from_fs(&path)?;
@@ -178,7 +185,7 @@ async fn resolve_node_config_with_source_path(
     }
 }
 
-fn parse_node_config_from_fs(node_path: &Path) -> std::result::Result<NodeConfig, String> {
+fn parse_node_config_from_fs(node_path: &Path) -> std::result::Result<RawNodeConfig, String> {
     if node_path.to_str().is_some_and(|s| s.ends_with(".tar.zst")) {
         return parse_node_config_from_archive(node_path);
     }
@@ -198,7 +205,9 @@ fn parse_node_config_from_fs(node_path: &Path) -> std::result::Result<NodeConfig
     })
 }
 
-fn parse_node_config_from_archive(archive_path: &Path) -> std::result::Result<NodeConfig, String> {
+fn parse_node_config_from_archive(
+    archive_path: &Path,
+) -> std::result::Result<RawNodeConfig, String> {
     let file = std::fs::File::open(archive_path)
         .map_err(|e| format!("Failed to open archive {}: {}", archive_path.display(), e))?;
     let decoder = Decoder::new(file)
@@ -275,7 +284,7 @@ async fn parse_node_config_from_git(
     repo_url: gix_url::Url,
     repo_path: String,
     repo_ref: Option<String>,
-) -> std::result::Result<NodeConfig, String> {
+) -> std::result::Result<RawNodeConfig, String> {
     tokio::task::spawn_blocking(move || {
         parse_node_config_from_git_blocking(repo_url, repo_path, repo_ref)
     })
@@ -287,7 +296,7 @@ fn parse_node_config_from_git_blocking(
     repo_url: gix_url::Url,
     repo_path: String,
     repo_ref: Option<String>,
-) -> std::result::Result<NodeConfig, String> {
+) -> std::result::Result<RawNodeConfig, String> {
     let repo_relative_path = sanitize_repo_path(&repo_path)?;
 
     let checkout_dir =
@@ -332,7 +341,7 @@ async fn parse_node_config_from_git_with_path(
     repo_url: gix_url::Url,
     repo_path: String,
     repo_ref: Option<String>,
-) -> std::result::Result<(NodeConfig, PathBuf, Option<PathBuf>), String> {
+) -> std::result::Result<(RawNodeConfig, PathBuf, Option<PathBuf>), String> {
     tokio::task::spawn_blocking(move || {
         let repo_relative_path = sanitize_repo_path(&repo_path)?;
 
@@ -387,13 +396,15 @@ async fn parse_node_config_from_git_with_path(
     .map_err(|e| format!("Failed to join git clone task: {}", e))?
 }
 
-async fn parse_node_config_from_http(url: url::Url) -> std::result::Result<NodeConfig, String> {
+async fn parse_node_config_from_http(url: url::Url) -> std::result::Result<RawNodeConfig, String> {
     tokio::task::spawn_blocking(move || parse_node_config_from_http_blocking(url))
         .await
         .map_err(|e| format!("Failed to join HTTP download task: {}", e))?
 }
 
-fn parse_node_config_from_http_blocking(url: url::Url) -> std::result::Result<NodeConfig, String> {
+fn parse_node_config_from_http_blocking(
+    url: url::Url,
+) -> std::result::Result<RawNodeConfig, String> {
     match url.scheme() {
         "http" | "https" => {}
         other => {
@@ -544,7 +555,7 @@ fn parse_node_config_from_http_blocking(url: url::Url) -> std::result::Result<No
 async fn parse_node_config_from_http_with_path(
     url: url::Url,
     peppy_dirs: &PeppyDirs,
-) -> std::result::Result<(NodeConfig, PathBuf, Option<PathBuf>), String> {
+) -> std::result::Result<(RawNodeConfig, PathBuf, Option<PathBuf>), String> {
     // For HTTP sources we can use the resolve_http_source from add.rs which already
     // extracts the archive and returns the source path.
     let resolved = super::add::resolve_http_source(&url, peppy_dirs.clone()).await?;

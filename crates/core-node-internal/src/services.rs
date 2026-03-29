@@ -105,13 +105,13 @@ impl CoreNode {
                 variants: None,
                 depends_on: None,
             },
-            execution: Some(Execution {
+            execution: Execution {
                 language: PeppygenLanguage::Rust,
                 parameters: node_arguments.into(),
                 add_cmd: None,
                 start_cmd: Some(vec![]),
                 container: None,
-            }),
+            },
             interfaces: Default::default(),
         };
 

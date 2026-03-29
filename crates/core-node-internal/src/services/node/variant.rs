@@ -1,7 +1,7 @@
 use super::{checkout_repo_ref, sanitize_repo_path};
 use crate::encoding::NodeSource;
 use config::consts::{NODE_CONFIG_FILE, PeppyDirs};
-use config::node::{Interfaces, NodeConfig, VariantConfigParser};
+use config::node::{Interfaces, NodeConfig, RawNodeConfig, VariantConfigParser};
 use config::source::DeploymentSource;
 use git2::Repository;
 use std::path::{Path, PathBuf};
@@ -44,7 +44,7 @@ pub(crate) fn variant_label(variant: &NodeSource) -> String {
 ///   manifest lookup is skipped.
 pub(crate) async fn resolve_variant(
     variant: &NodeSource,
-    root_config: &NodeConfig,
+    root_config: &RawNodeConfig,
     root_source_path: &Path,
     peppy_dirs: &PeppyDirs,
 ) -> std::result::Result<ResolvedVariant, String> {
@@ -172,7 +172,7 @@ pub(crate) async fn resolve_variant(
         schema_version: root_config.schema_version,
         manifest: root_config.manifest.clone(),
         interfaces: root_config.interfaces.clone(),
-        execution: Some(variant_config.execution),
+        execution: variant_config.execution,
     };
 
     Ok(ResolvedVariant {

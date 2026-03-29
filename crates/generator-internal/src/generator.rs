@@ -57,7 +57,8 @@ pub fn generate_peppygen_lib(
     }
 
     let node_config = NodeConfigParser::from_path(&node_config_path)
-        .map_err(|e| Error::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e)))?;
+        .map_err(|e| Error::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e)))?
+        .into_resolved();
 
     let mut interfaces = collect_exposed_interfaces(&node_config, consumed_interfaces.len());
     // Add the consumed interfaces with resolved message formats
@@ -67,9 +68,7 @@ pub fn generate_peppygen_lib(
     let output_dir = node_dir.join(config::consts::PEPPYGEN_OUTPUT_PATH);
     fs::create_dir_all(&output_dir)?;
 
-    let execution = node_config
-        .execution
-        .expect("BUG: generate_peppygen_lib called on a config without an execution");
+    let execution = node_config.execution;
 
     let result = match language {
         PeppygenLanguage::Rust => {

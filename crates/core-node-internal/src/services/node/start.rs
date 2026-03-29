@@ -594,7 +594,7 @@ async fn process_node_start(
     };
 
     let sccache_injected =
-        super::inject_rust_build_env(&mut env_vars, entity.config().execution_ref().language);
+        super::inject_rust_build_env(&mut env_vars, entity.config().execution.language);
     if sccache_injected {
         let _ = ctx.feedback_tx.send(FeedbackLine {
             stream: FeedbackStream::Stdout,
@@ -609,7 +609,7 @@ async fn process_node_start(
 
     // Validate that all required parameters are provided before starting the node
     let missing_params = validate_parameters(
-        &entity.config().execution_ref().parameters,
+        &entity.config().execution.parameters,
         &runtime_config.node_instance.arguments,
         "",
     );
@@ -619,7 +619,7 @@ async fn process_node_start(
         return NodeStartResult::failure(msg);
     }
 
-    let is_container = entity.config().execution_ref().container.is_some();
+    let is_container = entity.config().execution.container.is_some();
 
     // Prepare instance directory:
     // - Container nodes: create empty dir (SIF image is self-contained)
@@ -649,7 +649,7 @@ async fn process_node_start(
     // Spawn the node process:
     // - Container nodes: apptainer run <sif>
     // - Process nodes: execute start_cmd
-    let container_config = entity.config().execution_ref().container.as_ref();
+    let container_config = entity.config().execution.container.as_ref();
     let raw_mount_paths = container_config
         .and_then(|c| c.mount_paths.as_deref())
         .unwrap_or_default();
@@ -1050,7 +1050,7 @@ pub fn start_node(
 ) -> std::io::Result<Child> {
     let config = entity.config();
     let manifest = &config.manifest;
-    let start_cmd = config.execution_ref().start_cmd.as_ref().ok_or_else(|| {
+    let start_cmd = config.execution.start_cmd.as_ref().ok_or_else(|| {
         std::io::Error::other("node has no start_cmd (container nodes cannot be started this way)")
     })?;
 
@@ -1111,7 +1111,7 @@ pub fn start_node(
 
     // Force unbuffered stdout/stderr for Python nodes. Without this, Python
     // defaults to full buffering when stdout is a pipe, delaying log capture.
-    if config.execution_ref().language == PeppygenLanguage::Python {
+    if config.execution.language == PeppygenLanguage::Python {
         command.env("PYTHONUNBUFFERED", "1");
     }
 

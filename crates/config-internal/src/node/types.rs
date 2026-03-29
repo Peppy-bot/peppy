@@ -62,9 +62,14 @@ impl Toolchain {
     }
 }
 
+/// Raw node configuration as deserialized from JSON5. The `execution` field is
+/// optional because configs with a `"default"` variant omit it — execution
+/// comes from the variant. Use [`RawNodeConfig::into_resolved`] or
+/// [`RawNodeConfig::resolve`] to produce a [`NodeConfig`] with guaranteed
+/// `execution`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct NodeConfig {
+pub struct RawNodeConfig {
     pub schema_version: SchemaVersion,
     pub manifest: Manifest,
     #[serde(default)]
@@ -76,25 +81,48 @@ pub struct NodeConfig {
 /// Name reserved for the default variant.
 pub const DEFAULT_VARIANT_NAME: &str = "default";
 
-impl NodeConfig {
-    /// Returns a reference to the execution config, panicking if absent.
-    ///
-    /// Only call this after variant resolution guarantees that `execution` is `Some`
-    /// (either from the root config itself or merged from the resolved default variant).
-    pub fn execution_ref(&self) -> &Execution {
-        self.execution.as_ref().expect(
-            "BUG: execution accessed before variant resolution on a config with a default variant",
-        )
-    }
-
+impl RawNodeConfig {
     /// Returns `true` if the manifest contains a variant named `"default"`.
     pub fn has_default_variant(&self) -> bool {
-        self.manifest.variants.as_ref().is_some_and(|variants| {
-            variants
-                .iter()
-                .any(|v| v.name.as_str() == DEFAULT_VARIANT_NAME)
-        })
+        self.manifest.has_default_variant()
     }
+
+    /// Converts into a resolved [`NodeConfig`] using the given variant execution.
+    pub fn resolve(self, execution: Execution) -> NodeConfig {
+        NodeConfig {
+            schema_version: self.schema_version,
+            manifest: self.manifest,
+            interfaces: self.interfaces,
+            execution,
+        }
+    }
+
+    /// Converts into a resolved [`NodeConfig`] when execution is already present
+    /// (non-variant configs). Only call after validation has confirmed execution
+    /// is `Some`.
+    pub fn into_resolved(self) -> NodeConfig {
+        NodeConfig {
+            schema_version: self.schema_version,
+            manifest: self.manifest,
+            interfaces: self.interfaces,
+            execution: self
+                .execution
+                .expect("BUG: into_resolved called on config without execution"),
+        }
+    }
+}
+
+/// Fully resolved node configuration with guaranteed `execution`.
+/// Produced from [`RawNodeConfig`] after variant resolution or after validation
+/// confirms that execution is present in the root config.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NodeConfig {
+    pub schema_version: SchemaVersion,
+    pub manifest: Manifest,
+    #[serde(default)]
+    pub interfaces: Interfaces,
+    pub execution: Execution,
 }
 
 /// Validated node name. Lowercase letters, digits, '_' and '-' only.
@@ -650,6 +678,17 @@ pub struct Manifest {
     pub depends_on: Option<DependsOn>,
 }
 
+impl Manifest {
+    /// Returns `true` if the manifest contains a variant named `"default"`.
+    pub fn has_default_variant(&self) -> bool {
+        self.variants.as_ref().is_some_and(|variants| {
+            variants
+                .iter()
+                .any(|v| v.name.as_str() == DEFAULT_VARIANT_NAME)
+        })
+    }
+}
+
 /// Top-level system directories that cannot be used as mount sources.
 ///
 /// These paths are rejected by Lima 2.0+ as guest mountPoints, and using them
@@ -992,7 +1031,7 @@ impl PeppyNodeConfig for NodeConfig {
     }
 
     fn execution(&self) -> &Execution {
-        self.execution_ref()
+        &self.execution
     }
 }
 

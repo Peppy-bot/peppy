@@ -1,5 +1,5 @@
 use crate::error::{Error, Result};
-use config::node::{InterfaceKind, Interfaces, Name, NodeConfig};
+use config::node::{InterfaceKind, Interfaces, Manifest, Name, NodeConfig};
 use names_generator2::get_random;
 use petgraph::{
     Direction,
@@ -223,7 +223,8 @@ pub fn collect_dependency_specs(node: &NodeConfig) -> Vec<DependencySpec> {
 /// 2. **Interface exposure**: Each consumed/expected interface must reference a valid `local_node_id`
 ///    that maps to a dependency which exposes the required interface.
 pub fn validate_dependency_specs(
-    config: &NodeConfig,
+    manifest: &Manifest,
+    interfaces: &Interfaces,
     dependant_name: &str,
     dependant_tag: &str,
     resolve: impl Fn(&str, &str) -> Option<NodeConfig>,
@@ -234,7 +235,7 @@ pub fn validate_dependency_specs(
     let mut resolved_deps: HashMap<String, (String, String, NodeConfig)> = HashMap::new();
 
     // Phase 1: Validate all declared dependency nodes exist
-    if let Some(depends_on) = &config.manifest.depends_on {
+    if let Some(depends_on) = &manifest.depends_on {
         for dep in &depends_on.nodes {
             let dep_name = dep.name.as_str().to_owned();
             let dep_tag = dep.tag.clone();
@@ -253,7 +254,7 @@ pub fn validate_dependency_specs(
 
     // Phase 2: Validate consumed interfaces reference valid local_node_ids
     // and that the dependency exposes the required interface
-    if let Some(topics) = &config.interfaces.topics
+    if let Some(topics) = &interfaces.topics
         && let Some(expected) = &topics.consumes
     {
         for topic in expected {
@@ -271,7 +272,7 @@ pub fn validate_dependency_specs(
         }
     }
 
-    if let Some(services) = &config.interfaces.services
+    if let Some(services) = &interfaces.services
         && let Some(consumed) = &services.consumes
     {
         for service in consumed {
@@ -287,7 +288,7 @@ pub fn validate_dependency_specs(
         }
     }
 
-    if let Some(actions) = &config.interfaces.actions
+    if let Some(actions) = &interfaces.actions
         && let Some(consumed) = &actions.consumes
     {
         for action in consumed {
@@ -433,7 +434,8 @@ impl NodeStackInner {
 
     fn validate_dependencies(&self, node: &NodeEntity) -> Result<()> {
         let errors = validate_dependency_specs(
-            node.config(),
+            &node.config().manifest,
+            &node.config().interfaces,
             node.config().manifest.name.as_str(),
             &node.config().manifest.tag,
             |name, tag| {

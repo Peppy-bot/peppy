@@ -5,11 +5,11 @@ mod url;
 
 use std::path::PathBuf;
 
-use config::node::NodeConfig;
+use config::node::RawNodeConfig;
 
 #[derive(Debug, Clone)]
 pub(crate) struct ResolvedNode {
-    pub config: NodeConfig,
+    pub config: RawNodeConfig,
     pub root_path: PathBuf,
 }
 
