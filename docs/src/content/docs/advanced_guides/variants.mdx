@@ -1,16 +1,16 @@
 ---
-title: Variants & Flavours
+title: Variants & Flavors
 description: Define alternative implementations of the same node
 sidebar:
   order: 6
 ---
 
-Variants let you define multiple implementations of the same node — each with its own execution — while sharing a single manifest and interface contract.
+Peppy provides two ways to organize alternative implementations of a node:
 
-Use variants when you need:
-- **Different brains** — swap between AI models (e.g., a `skildai` variant and a `pi0` variant of the same `brain` node).
-- **Mock nodes** — a lightweight `mock` variant for testing that responds to the same interfaces as the real node.
-- **Platform-specific builds** — a `macos` variant, a `mujoco` simulation variant, or an `isaac-sim` variant, all answering to the same interface.
+- **Variant** — same interface, different implementation. Swap between AI models, mock nodes, or platform-specific builds without the rest of the stack noticing.
+- **Flavor** — different interfaces, same core function. A repository of implementations that serve the same role (e.g., a robot brain) but target different robots with different joints, sensors, and capabilities.
+
+Both use the same underlying mechanism — the `variants` array in the root node's manifest — but they serve different design goals.
 
 ## How variants work
 
@@ -21,11 +21,7 @@ For example, if you have a `brain` node running a Rust-based controller, you can
 
 Only one variant (or the root node itself) can be active in the stack at a time — adding a variant replaces any previous entry for that `name:tag`.
 
-## When to use variants
-
-A repository of variants typically falls into one of two patterns, depending on whether every implementation shares the same interface.
-
-### Same feature, different implementations
+## Variants — same interface, different implementations
 
 When multiple implementations serve the same role in the system, they share an identical interface. The rest of the stack does not need to know which implementation is active — it talks to the node through the same topics, services, and actions regardless.
 
@@ -166,32 +162,32 @@ A node can also declare variants for different execution environments. For insta
 
 All three — native Linux, macOS, and containerized — publish the same `scan` topic. The rest of the stack is unaffected by which variant is active.
 
-### Same function, different robots
+## Flavors — different interfaces, same core function
 
-Sometimes a repository implements the same function — for example a robot brain — but each implementation targets a **different robot**. Because each robot has different joints, sensors, and capabilities, the interfaces necessarily differ. Within the repository these are independent nodes, not variants of each other.
+A **flavor** is a variant whose source node implements the same core function as the root node but targets a **different system** — typically a different robot. Because each system has different joints, sensors, and capabilities, the interfaces necessarily differ between flavors.
 
-However, each node is designed to be **consumed as a variant** in its target robot's project. A standard peppy node can serve as a variant in another project as long as its interfaces match the root node's interfaces. The repository is a collection of variant sources for different downstream projects, sharing common code.
+Within the source repository, flavors are independent nodes with their own manifests and interfaces. Each node is designed to be **consumed as a variant** in its target system's project. A standard peppy node can serve as a variant in another project as long as its interfaces match the root node's interfaces in that project.
 
 :::note
-Any peppy node can be used as a variant of another node — it just needs matching interfaces. The nodes below are independent within their repository but are each referenced as a variant source from a different robot project.
+Any peppy node can be used as a variant of another node — it just needs matching interfaces. Flavour nodes are independent within their source repository but are each referenced as a variant source from a different downstream project.
 :::
 
 **Example — GR00T brain for multiple robots:**
 
-A GR00T brain repository contains implementations for different robot platforms. Each has its own joint configuration and sensor layout, so they define different interfaces.
+A GR00T brain repository contains implementations for different robot platforms. Each has its own joint configuration and sensor layout, so they define different interfaces. These are flavors of the same core function — a GR00T-powered robot brain.
 
 ```
 groot_brain/
-├── shared/                ← common code used by all implementations
-├── openarm01/             ← full node (manifest + interfaces + execution)
+├── shared/                ← common code used by all flavors
+├── openarm01/             ← flavor: full node (manifest + interfaces + execution)
 │   └── peppy.json5
-├── unitree_g1/            ← full node (manifest + interfaces + execution)
+├── unitree_g1/            ← flavor: full node (manifest + interfaces + execution)
 │   └── peppy.json5
-└── 1x/                    ← full node (manifest + interfaces + execution)
+└── 1x/                    ← flavor: full node (manifest + interfaces + execution)
     └── peppy.json5
 ```
 
-Each node has its own manifest and interfaces tailored to its target robot:
+Each flavor has its own manifest and interfaces tailored to its target robot:
 
 ```json5
 // groot_brain/openarm01/peppy.json5 — a standalone node
@@ -225,7 +221,7 @@ Each node has its own manifest and interfaces tailored to its target robot:
 // different joint counts, sensors, and message formats.
 ```
 
-A downstream OpenArm01 robot project can then reference this node as a variant of its own `brain` node:
+A downstream OpenArm01 robot project can then reference this flavor as a variant of its own `brain` node:
 
 ```json5
 // openarm01_robot/brain/peppy.json5 (root node in the robot project)
