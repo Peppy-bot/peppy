@@ -1386,10 +1386,17 @@ async fn process_node_add(
                     return NodeAddResult::failure(&ctx.log_path, msg);
                 }
                 // Regenerate fingerprint for the new config
-                config::fingerprint::create_codegen_fingerprint(
+                if let Err(e) = config::fingerprint::generate_node_config_fingerprint(
                     &config_path,
-                    std::path::Path::new(PEPPYGEN_OUTPUT_PATH),
-                );
+                    working_dir.join(PEPPYGEN_OUTPUT_PATH),
+                ) {
+                    let msg = format!(
+                        "Failed to regenerate fingerprint for merged variant config: {}",
+                        e
+                    );
+                    write_error_to_log(&ctx.log_file, &msg);
+                    return NodeAddResult::failure(&ctx.log_path, msg);
+                }
             }
             Err(msg) => {
                 write_error_to_log(&ctx.log_file, &msg);
