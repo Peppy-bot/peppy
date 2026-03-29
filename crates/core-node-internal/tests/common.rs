@@ -92,6 +92,21 @@ pub fn write_peppy_json5(dir: &Path, content: &str) {
     config::fingerprint::create_codegen_fingerprint(&config_path, Path::new(PEPPYGEN_OUTPUT_PATH));
 }
 
+pub fn create_tar_zst_from_dir(source_dir: &Path, archive_path: &Path, archive_root_name: &str) {
+    let bundle_file = std::fs::File::create(archive_path).expect("failed to create bundle file");
+    let encoder =
+        zstd::stream::write::Encoder::new(bundle_file, 0).expect("failed to create zstd encoder");
+    let mut tar_builder = tar::Builder::new(encoder);
+    tar_builder
+        .append_dir_all(archive_root_name, source_dir)
+        .expect("failed to append source dir to tar");
+    tar_builder.finish().expect("failed to finish tar");
+    let encoder = tar_builder
+        .into_inner()
+        .expect("failed to finish tar encoder");
+    encoder.finish().expect("failed to finalize zstd stream");
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn send_node_start_and_wait_internal(
     messenger: &MessengerHandle,
@@ -234,24 +249,27 @@ async fn send_node_add_and_wait_internal<'a>(
 
     let mut goal = match &source {
         NodeAddSource::Path(path) => {
-            // For filesystem sources, ensure the git hash file exists
-            let peppy_dir = path.join(PEPPY_OUTPUT_DIR);
-            std::fs::create_dir_all(&peppy_dir).map_err(|e| {
-                format!(
-                    "Failed to create peppy output dir {}: {}",
-                    peppy_dir.display(),
-                    e
-                )
-            })?;
-            let git_hash_path = peppy_dir.join("git.hash");
-            if !git_hash_path.exists() {
-                std::fs::write(&git_hash_path, TEST_GIT_HASH).map_err(|e| {
+            // For directory sources, ensure the git hash file exists. Archive sources must
+            // already contain the expected git hash within the bundle.
+            if path.is_dir() {
+                let peppy_dir = path.join(PEPPY_OUTPUT_DIR);
+                std::fs::create_dir_all(&peppy_dir).map_err(|e| {
                     format!(
-                        "Failed to write git hash file {}: {}",
-                        git_hash_path.display(),
+                        "Failed to create peppy output dir {}: {}",
+                        peppy_dir.display(),
                         e
                     )
                 })?;
+                let git_hash_path = peppy_dir.join("git.hash");
+                if !git_hash_path.exists() {
+                    std::fs::write(&git_hash_path, TEST_GIT_HASH).map_err(|e| {
+                        format!(
+                            "Failed to write git hash file {}: {}",
+                            git_hash_path.display(),
+                            e
+                        )
+                    })?;
+                }
             }
             NodeAddGoal::new(path, TEST_GIT_HASH, result_timeout.as_secs())
         }

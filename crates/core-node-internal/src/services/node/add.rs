@@ -2,7 +2,8 @@ use super::super::action_loop::{ActionResult, ActionState, GoalHandler, run_acti
 use super::super::stack::STACK_LAUNCH_GIT_HASH;
 use super::sync::{collect_consumed_interfaces, generate_peppygen_for_node};
 use super::{
-    checkout_repo_ref, extract_tar_zst, generate_random_id, is_supported_http_archive,
+    checkout_repo_ref, extract_tar_zst, generate_random_id, is_supported_fs_archive,
+    is_supported_http_archive, locate_node_root_dir, resolve_local_archive_source,
     sanitize_repo_path, write_error_to_log,
 };
 use crate::Result;
@@ -785,52 +786,6 @@ fn extract_http_bundle(
     extract_tar_zst(bundle_path, destination).map_err(|e| format!("{} (source: {})", e, url))
 }
 
-fn locate_node_root_dir(extracted_dir: &Path) -> std::result::Result<PathBuf, String> {
-    let direct = extracted_dir.join(NODE_CONFIG_FILE);
-    if direct.is_file() {
-        return Ok(extracted_dir.to_path_buf());
-    }
-
-    let mut candidate_dirs = Vec::new();
-    for entry in std::fs::read_dir(extracted_dir).map_err(|e| {
-        format!(
-            "Failed to list extracted bundle directory {}: {}",
-            extracted_dir.display(),
-            e
-        )
-    })? {
-        let entry = entry.map_err(|e| {
-            format!(
-                "Failed to read extracted bundle directory entry in {}: {}",
-                extracted_dir.display(),
-                e
-            )
-        })?;
-        let file_type = entry.file_type().map_err(|e| {
-            format!(
-                "Failed to read file type for extracted bundle entry {}: {}",
-                entry.path().display(),
-                e
-            )
-        })?;
-        if file_type.is_dir() {
-            candidate_dirs.push(entry.path());
-        }
-    }
-
-    if candidate_dirs.len() == 1 {
-        let candidate = candidate_dirs.pop().expect("candidate dir should exist");
-        if candidate.join(NODE_CONFIG_FILE).is_file() {
-            return Ok(candidate);
-        }
-    }
-
-    Err(format!(
-        "Bundle does not contain {} at the root (or single top-level folder)",
-        NODE_CONFIG_FILE
-    ))
-}
-
 pub(crate) async fn resolve_http_source(
     url: &url::Url,
     peppy_dirs: PeppyDirs,
@@ -909,6 +864,17 @@ fn resolve_http_source_blocking(
 pub(crate) fn log_label_from_source(source: &NodeSource) -> String {
     match source {
         NodeSource::Fs(path) => {
+            if is_supported_fs_archive(path)
+                && let Ok(resolved) = resolve_local_archive_source(path)
+            {
+                let label = format!(
+                    "{}_{}",
+                    resolved.node_config.manifest.name.as_str(),
+                    resolved.node_config.manifest.tag
+                );
+                return label;
+            }
+
             let config_path = path.join(NODE_CONFIG_FILE);
             if let Ok(config) = NodeConfigParser::from_path(&config_path) {
                 return format!("{}_{}", config.manifest.name.as_str(), config.manifest.tag);
@@ -932,6 +898,20 @@ async fn resolve_node_add_source(
             // checks. This allows stack_launch to work with local filesystem sources without
             // requiring `peppy node sync` beforehand - fresh peppygen will be generated.
             let is_stack_launch = goal.git_hash == STACK_LAUNCH_GIT_HASH;
+
+            if is_supported_fs_archive(path) {
+                let resolved = resolve_local_archive_source(path)?;
+                if !is_stack_launch {
+                    verify_git_hash(&resolved.source_path, &goal.git_hash)?;
+                }
+                return Ok(ResolvedNodeAddSource {
+                    source_path: resolved.source_path,
+                    node_config: resolved.node_config,
+                    verify_codegen_fingerprint: !is_stack_launch,
+                    cleanup_dir: Some(resolved.temp_dir.keep()),
+                });
+            }
+
             if !is_stack_launch {
                 verify_git_hash(path, &goal.git_hash)?;
             }

@@ -1,7 +1,8 @@
 mod common;
 
 use common::{
-    AbortOnDrop, CALLER_INSTANCE_ID, start_core_node_with_mock_messenger, write_peppy_json5,
+    AbortOnDrop, CALLER_INSTANCE_ID, create_tar_zst_from_dir, start_core_node_with_mock_messenger,
+    write_peppy_json5,
 };
 use common::{NodeStartTestTimeouts, send_node_add_and_wait, send_node_start_and_wait};
 use config::consts::NODE_CONFIG_FILE;
@@ -711,6 +712,96 @@ async fn listen_for_node_info_with_fs_variant_success() {
     );
 
     // Variant name should be reported
+    assert_eq!(info_response.variant_name.as_deref(), Some("mock"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_info_with_fs_archive_variant_uses_archived_root() {
+    let started_core_node = start_core_node_with_mock_messenger().await;
+
+    let bundle_dir = tempfile::tempdir().expect("failed to create temp bundle dir");
+    let archived_root_dir = bundle_dir.path().join("archived_root");
+    let archived_variant_dir = archived_root_dir.join("mock_node");
+    std::fs::create_dir_all(&archived_variant_dir).expect("failed to create archived variant dir");
+
+    let root_peppy_json5 = r#"{
+        schema_version: 1,
+        manifest: {
+            name: "archive_variant_root",
+            tag: "0.3.0",
+            variants: [
+                { name: "mock", source: { local: "./mock_node" } }
+            ]
+        },
+        execution: {
+            language: "rust",
+            start_cmd: ["sleep", "10"]
+        }
+    }"#;
+    write_peppy_json5(&archived_root_dir, root_peppy_json5);
+
+    write_peppy_json5(
+        &archived_variant_dir,
+        r#"{
+            schema_version: 1,
+            execution: {
+                language: "python",
+                start_cmd: ["python", "from_archive.py"]
+            }
+        }"#,
+    );
+
+    let host_decoy_variant_dir = bundle_dir.path().join("mock_node");
+    std::fs::create_dir_all(&host_decoy_variant_dir)
+        .expect("failed to create host decoy variant dir");
+    write_peppy_json5(
+        &host_decoy_variant_dir,
+        r#"{
+            schema_version: 1,
+            execution: {
+                language: "python",
+                start_cmd: ["python", "from_host_dir.py"]
+            }
+        }"#,
+    );
+
+    let bundle_path = bundle_dir.path().join("archive_variant_root.tar.zst");
+    create_tar_zst_from_dir(&archived_root_dir, &bundle_path, "root_node");
+
+    let request = NodeInfoRequest::new(NodeSource::Fs(bundle_path))
+        .with_variant(NodeSource::Fs(std::path::PathBuf::from("mock")));
+    let request_payload = request.encode().expect("encode should succeed");
+
+    let response = ServiceMessenger::poll(
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        CALLER_INSTANCE_ID,
+        &started_core_node.core_node_name,
+        names::NODE_INFO,
+        Some(&started_core_node.core_node_name),
+        None,
+        request_payload,
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("node_info with archive variant should succeed");
+
+    let info_response =
+        NodeInfoResponse::decode(&response.payload()).expect("decode should succeed");
+
+    assert_eq!(
+        info_response.config.manifest.name.as_str(),
+        "archive_variant_root"
+    );
+    assert_eq!(info_response.config.manifest.tag, "0.3.0");
+    assert_eq!(
+        info_response.config.execution.language,
+        PeppygenLanguage::Python
+    );
+    assert_eq!(
+        info_response.config.execution.start_cmd.as_deref(),
+        Some(&["python".to_string(), "from_archive.py".to_string()][..])
+    );
     assert_eq!(info_response.variant_name.as_deref(), Some("mock"));
 }
 

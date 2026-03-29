@@ -13,7 +13,8 @@ use crate::{Error, Result};
 pub use add::listen_for_node_add;
 pub(crate) use add::{NodeAddActionContext, log_label_from_source, run_node_add};
 use chrono::Local;
-use config::node::{NodeConfig, PeppygenLanguage};
+use config::consts::NODE_CONFIG_FILE;
+use config::node::{NodeConfig, NodeConfigParser, PeppygenLanguage, RawNodeConfig};
 use git2::{Repository, build::CheckoutBuilder};
 pub use info::listen_for_node_info;
 pub use init::listen_for_node_init;
@@ -223,6 +224,12 @@ pub(crate) fn generate_random_id() -> String {
     bytes.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
+pub(crate) struct ResolvedLocalArchiveSource {
+    pub(crate) node_config: RawNodeConfig,
+    pub(crate) source_path: PathBuf,
+    pub(crate) temp_dir: tempfile::TempDir,
+}
+
 /// Extracts a `.tar.zst` archive into `destination` with path safety checks.
 /// Rejects entries containing `..`, root, or prefix path components.
 /// Directories are applied last to avoid permission interference during extraction.
@@ -369,9 +376,87 @@ pub(crate) fn checkout_repo_ref(
     Ok(())
 }
 
-pub(crate) fn is_supported_http_archive(url: &url::Url) -> bool {
-    let path = url.path().to_ascii_lowercase();
+fn is_supported_archive_path(path: &str) -> bool {
+    let path = path.to_ascii_lowercase();
     path.ends_with(".tar.zst") || path.ends_with(".tar.zstd") || path.ends_with(".tzst")
+}
+
+pub(crate) fn is_supported_fs_archive(path: &Path) -> bool {
+    is_supported_archive_path(path.to_string_lossy().as_ref())
+}
+
+pub(crate) fn locate_node_root_dir(extracted_dir: &Path) -> std::result::Result<PathBuf, String> {
+    let direct = extracted_dir.join(NODE_CONFIG_FILE);
+    if direct.is_file() {
+        return Ok(extracted_dir.to_path_buf());
+    }
+
+    let mut candidate_dirs = Vec::new();
+    for entry in std::fs::read_dir(extracted_dir).map_err(|e| {
+        format!(
+            "Failed to list extracted bundle directory {}: {}",
+            extracted_dir.display(),
+            e
+        )
+    })? {
+        let entry = entry.map_err(|e| {
+            format!(
+                "Failed to read extracted bundle directory entry in {}: {}",
+                extracted_dir.display(),
+                e
+            )
+        })?;
+        let file_type = entry.file_type().map_err(|e| {
+            format!(
+                "Failed to read file type for extracted bundle entry {}: {}",
+                entry.path().display(),
+                e
+            )
+        })?;
+        if file_type.is_dir() {
+            candidate_dirs.push(entry.path());
+        }
+    }
+
+    if candidate_dirs.len() == 1 {
+        let candidate = candidate_dirs.pop().expect("candidate dir should exist");
+        if candidate.join(NODE_CONFIG_FILE).is_file() {
+            return Ok(candidate);
+        }
+    }
+
+    Err(format!(
+        "Bundle does not contain {} at the root (or single top-level folder)",
+        NODE_CONFIG_FILE
+    ))
+}
+
+pub(crate) fn resolve_local_archive_source(
+    archive_path: &Path,
+) -> std::result::Result<ResolvedLocalArchiveSource, String> {
+    let temp_dir =
+        tempfile::tempdir().map_err(|e| format!("Failed to create temporary directory: {}", e))?;
+
+    extract_tar_zst(archive_path, temp_dir.path())?;
+    let source_path = locate_node_root_dir(temp_dir.path())?;
+    let config_path = source_path.join(NODE_CONFIG_FILE);
+    let node_config = NodeConfigParser::from_path(&config_path).map_err(|e| {
+        format!(
+            "Failed to parse node config at {}: {}",
+            config_path.display(),
+            e
+        )
+    })?;
+
+    Ok(ResolvedLocalArchiveSource {
+        node_config,
+        source_path,
+        temp_dir,
+    })
+}
+
+pub(crate) fn is_supported_http_archive(url: &url::Url) -> bool {
+    is_supported_archive_path(url.path())
 }
 
 pub(crate) async fn resolve_node_config(
@@ -383,6 +468,67 @@ pub(crate) async fn resolve_node_config(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const TEST_NODE_CONFIG: &str = r#"{
+  schema_version: 1,
+  manifest: {
+    name: "standalone",
+    tag: "0.1.0",
+  },
+  interfaces: {},
+  execution: {
+    language: "rust",
+    parameters: {
+      device: {
+        physical: "string",
+        sim: "string",
+        priority: "string",
+      },
+      video: {
+        frame_rate: "u16",
+        resolution: {
+          width: "u16",
+          height: "u16",
+        },
+        encoding: "string",
+      },
+    },
+    add_cmd: [
+      "cargo",
+      "build",
+      "--release",
+    ],
+    start_cmd: [
+      "./target/release/standalone",
+    ],
+  },
+}"#;
+
+    fn write_tar_zst_archive(archive_path: &Path, entries: &[(&str, Option<&str>)]) {
+        let file = std::fs::File::create(archive_path).unwrap();
+        let encoder = zstd::stream::write::Encoder::new(file, 1).unwrap();
+        let mut builder = tar::Builder::new(encoder);
+
+        for (path, contents) in entries {
+            let mut header = tar::Header::new_gnu();
+            header.set_path(path).unwrap();
+            header.set_mode(if contents.is_some() { 0o644 } else { 0o755 });
+            if let Some(contents) = contents {
+                header.set_size(contents.len() as u64);
+                header.set_cksum();
+                builder.append(&header, contents.as_bytes()).unwrap();
+            } else {
+                header.set_entry_type(tar::EntryType::Directory);
+                header.set_size(0);
+                header.set_cksum();
+                builder.append(&header, std::io::empty()).unwrap();
+            }
+        }
+
+        builder.finish().unwrap();
+        let encoder = builder.into_inner().unwrap();
+        encoder.finish().unwrap();
+    }
 
     #[test]
     fn inject_rust_build_env_skips_python_nodes() {
@@ -558,6 +704,54 @@ mod tests {
     fn is_supported_http_archive_is_case_insensitive() {
         let url = url::Url::parse("https://example.com/BUNDLE.TAR.ZST").unwrap();
         assert!(is_supported_http_archive(&url));
+    }
+
+    #[test]
+    fn is_supported_fs_archive_accepts_supported_extensions() {
+        assert!(is_supported_fs_archive(Path::new("bundle.tar.zst")));
+        assert!(is_supported_fs_archive(Path::new("bundle.tar.zstd")));
+        assert!(is_supported_fs_archive(Path::new("bundle.tzst")));
+        assert!(is_supported_fs_archive(Path::new("BUNDLE.TAR.ZST")));
+        assert!(!is_supported_fs_archive(Path::new("bundle.tar.gz")));
+    }
+
+    #[test]
+    fn resolve_local_archive_source_accepts_root_layout() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let archive_path = temp_dir.path().join("bundle.tar.zst");
+        write_tar_zst_archive(&archive_path, &[(NODE_CONFIG_FILE, Some(TEST_NODE_CONFIG))]);
+
+        let resolved = resolve_local_archive_source(&archive_path).unwrap();
+
+        assert_eq!(resolved.node_config.manifest.name.as_str(), "standalone");
+        assert_eq!(resolved.source_path, resolved.temp_dir.path());
+        assert!(resolved.source_path.join(NODE_CONFIG_FILE).is_file());
+    }
+
+    #[test]
+    fn resolve_local_archive_source_uses_single_top_level_folder() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let archive_path = temp_dir.path().join("bundle.tar.zst");
+        write_tar_zst_archive(
+            &archive_path,
+            &[("node", None), ("node/peppy.json5", Some(TEST_NODE_CONFIG))],
+        );
+
+        let resolved = resolve_local_archive_source(&archive_path).unwrap();
+
+        assert_eq!(resolved.node_config.manifest.name.as_str(), "standalone");
+        assert_eq!(
+            resolved
+                .source_path
+                .file_name()
+                .and_then(|name| name.to_str()),
+            Some("node")
+        );
+        assert_eq!(
+            resolved.source_path.parent(),
+            Some(resolved.temp_dir.path())
+        );
+        assert!(resolved.source_path.join(NODE_CONFIG_FILE).is_file());
     }
 
     #[test]

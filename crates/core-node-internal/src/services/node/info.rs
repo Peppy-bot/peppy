@@ -1,5 +1,8 @@
 use super::variant::{resolve_variant, variant_label};
-use super::{checkout_repo_ref, is_supported_http_archive, sanitize_repo_path};
+use super::{
+    checkout_repo_ref, is_supported_fs_archive, is_supported_http_archive,
+    resolve_local_archive_source, sanitize_repo_path,
+};
 use crate::Result;
 use crate::encoding::{NodeInfoRequest, NodeInfoResponse, NodeSource};
 use crate::names;
@@ -166,6 +169,15 @@ async fn resolve_node_config_with_source_path(
 ) -> std::result::Result<(RawNodeConfig, PathBuf, Option<PathBuf>), String> {
     match source {
         NodeSource::Fs(path) => {
+            if is_supported_fs_archive(&path) {
+                let resolved = resolve_local_archive_source(&path)?;
+                return Ok((
+                    resolved.node_config,
+                    resolved.source_path,
+                    Some(resolved.temp_dir.keep()),
+                ));
+            }
+
             let config = parse_node_config_from_fs(&path)?;
             let source_dir = if path.is_dir() {
                 path
@@ -186,7 +198,7 @@ async fn resolve_node_config_with_source_path(
 }
 
 fn parse_node_config_from_fs(node_path: &Path) -> std::result::Result<RawNodeConfig, String> {
-    if node_path.to_str().is_some_and(|s| s.ends_with(".tar.zst")) {
+    if is_supported_fs_archive(node_path) {
         return parse_node_config_from_archive(node_path);
     }
 
@@ -208,76 +220,8 @@ fn parse_node_config_from_fs(node_path: &Path) -> std::result::Result<RawNodeCon
 fn parse_node_config_from_archive(
     archive_path: &Path,
 ) -> std::result::Result<RawNodeConfig, String> {
-    let file = std::fs::File::open(archive_path)
-        .map_err(|e| format!("Failed to open archive {}: {}", archive_path.display(), e))?;
-    let decoder = Decoder::new(file)
-        .map_err(|e| format!("Failed to decode archive {}: {}", archive_path.display(), e))?;
-    let mut archive = Archive::new(decoder);
-    let entries = archive
-        .entries()
-        .map_err(|e| format!("Failed to read archive {}: {}", archive_path.display(), e))?;
-
-    for entry in entries {
-        let mut entry = entry.map_err(|e| {
-            format!(
-                "Failed to read entry from {}: {}",
-                archive_path.display(),
-                e
-            )
-        })?;
-
-        let entry_path = entry
-            .path()
-            .map_err(|e| {
-                format!(
-                    "Failed to read entry path from {}: {}",
-                    archive_path.display(),
-                    e
-                )
-            })?
-            .into_owned();
-
-        if entry.header().entry_type().is_dir() {
-            continue;
-        }
-
-        if entry_path.file_name() != Some(OsStr::new(NODE_CONFIG_FILE)) {
-            continue;
-        }
-
-        let mut content = Vec::new();
-        entry.read_to_end(&mut content).map_err(|e| {
-            format!(
-                "Failed to read {} from {}: {}",
-                NODE_CONFIG_FILE,
-                archive_path.display(),
-                e
-            )
-        })?;
-
-        let config_str = std::str::from_utf8(&content).map_err(|e| {
-            format!(
-                "{} in {} is not valid UTF-8: {}",
-                NODE_CONFIG_FILE,
-                archive_path.display(),
-                e
-            )
-        })?;
-
-        return NodeConfigParser::from_content(config_str).map_err(|e| {
-            format!(
-                "Failed to parse node config from {}: {}",
-                archive_path.display(),
-                e
-            )
-        });
-    }
-
-    Err(format!(
-        "Archive {} does not contain {}",
-        archive_path.display(),
-        NODE_CONFIG_FILE
-    ))
+    let resolved = resolve_local_archive_source(archive_path)?;
+    Ok(resolved.node_config)
 }
 
 async fn parse_node_config_from_git(

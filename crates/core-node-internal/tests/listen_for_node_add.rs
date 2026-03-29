@@ -1,8 +1,8 @@
 mod common;
 
 use common::{
-    AbortOnDrop, CALLER_INSTANCE_ID, NodeAddSource, TEST_GIT_HASH, send_node_add_and_wait,
-    send_node_add_and_wait_with_env, send_node_add_and_wait_with_variant,
+    AbortOnDrop, CALLER_INSTANCE_ID, NodeAddSource, TEST_GIT_HASH, create_tar_zst_from_dir,
+    send_node_add_and_wait, send_node_add_and_wait_with_env, send_node_add_and_wait_with_variant,
     start_core_node_with_mock_messenger, write_peppy_json5,
 };
 use config::consts::{
@@ -3584,6 +3584,107 @@ async fn listen_for_node_add_variant_local_source() {
         config.execution.start_cmd.as_ref().unwrap(),
         &vec!["sleep".to_string(), "5".to_string()],
         "execution should come from the variant"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_add_with_fs_archive_variant_uses_archived_root() {
+    const ROOT_NODE_NAME: &str = "archive_robot_brain";
+    const ROOT_NODE_TAG: &str = "0.1.0";
+
+    let started_core_node = start_core_node_with_mock_messenger().await;
+    let node_stack = started_core_node.node_stack.clone();
+
+    let bundle_dir = tempfile::tempdir().expect("failed to create temp bundle dir");
+    let archived_root_dir = bundle_dir.path().join("archived_root");
+    let archived_variant_dir = archived_root_dir.join("mock_node");
+    std::fs::create_dir_all(&archived_variant_dir).expect("failed to create archived variant dir");
+
+    let root_config = r#"{
+        schema_version: 1,
+        manifest: {
+            name: "archive_robot_brain",
+            tag: "0.1.0",
+            variants: [
+                { name: "mock", source: { local: "./mock_node" } }
+            ]
+        },
+        interfaces: {
+            topics: {
+                emits: [
+                    { name: "joint_positions", qos_profile: "sensor_data", message_format: { x: "f64", y: "f64" } }
+                ]
+            }
+        },
+        execution: {
+            language: "rust",
+            start_cmd: ["sleep", "10"]
+        }
+    }"#;
+    write_peppy_json5(&archived_root_dir, root_config);
+    let peppy_dir = archived_root_dir.join(PEPPY_OUTPUT_DIR);
+    std::fs::create_dir_all(&peppy_dir).expect("failed to create peppy output dir");
+    std::fs::write(peppy_dir.join("git.hash"), TEST_GIT_HASH).expect("failed to write git hash");
+
+    write_peppy_json5(
+        &archived_variant_dir,
+        r#"{
+            schema_version: 1,
+            execution: {
+                language: "rust",
+                start_cmd: ["sleep", "5"]
+            }
+        }"#,
+    );
+
+    let host_decoy_variant_dir = bundle_dir.path().join("mock_node");
+    std::fs::create_dir_all(&host_decoy_variant_dir)
+        .expect("failed to create host decoy variant dir");
+    write_peppy_json5(
+        &host_decoy_variant_dir,
+        r#"{
+            schema_version: 1,
+            execution: {
+                language: "rust",
+                start_cmd: ["sleep", "99"]
+            }
+        }"#,
+    );
+
+    let bundle_path = bundle_dir.path().join("archive_robot_brain.tar.zst");
+    create_tar_zst_from_dir(&archived_root_dir, &bundle_path, "root_node");
+
+    let add_result = send_node_add_and_wait_with_variant(
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        bundle_path.as_path(),
+        "mock",
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        None,
+    )
+    .await
+    .expect("node_add with archive variant should succeed");
+
+    assert!(
+        add_result.success,
+        "archive variant node_add should succeed, got error: {:?}",
+        add_result.error_message
+    );
+    assert!(node_stack.contains(ROOT_NODE_NAME, ROOT_NODE_TAG));
+
+    let entity = node_stack
+        .find(ROOT_NODE_NAME, ROOT_NODE_TAG)
+        .expect("node should exist in stack");
+    let config = entity.config();
+    assert!(
+        config.interfaces.topics.is_some(),
+        "interfaces should be inherited from root"
+    );
+    assert_eq!(
+        config.execution.start_cmd.as_ref().unwrap(),
+        &vec!["sleep".to_string(), "5".to_string()],
+        "execution should come from the archived variant, not the host decoy"
     );
 }
 
