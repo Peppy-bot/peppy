@@ -4,9 +4,11 @@ use std::{
 };
 
 use super::ResolvedNode;
-use crate::error::Result;
-use config::node::NodeConfigParser;
+use crate::error::{Error, Result};
+use config::consts::NODE_CONFIG_FILE;
+use config::node::{DEFAULT_VARIANT_NAME, NodeConfig, NodeConfigParser, VariantConfigParser};
 use config::peppy_config::DeploymentGitSource;
+use config::source::DeploymentSource;
 use git2::{AutotagOption, FetchOptions, ObjectType, Repository};
 
 fn node_config_path(path: &str) -> PathBuf {
@@ -105,6 +107,45 @@ fn ensure_repository(
     }
 }
 
+/// Resolves the default variant for a node config read from a git tree.
+///
+/// Reads the variant's config file from the same git tree and merges the root's
+/// manifest/interfaces with the variant's execution.
+fn resolve_default_variant_from_tree(
+    repo: &Repository,
+    tree: &git2::Tree,
+    raw_config: config::node::RawNodeConfig,
+    variant_source: &DeploymentSource,
+    config_path: &Path,
+) -> Result<NodeConfig> {
+    let local_source = match variant_source {
+        DeploymentSource::Local(local) => local,
+        DeploymentSource::Git(_) | DeploymentSource::Url(_) => {
+            return Err(Error::NotImplemented(
+                "non-local default variant sources in git deployments",
+            ));
+        }
+    };
+
+    let parent = config_path.parent().unwrap_or_else(|| Path::new(""));
+    let local_path = local_source
+        .local
+        .strip_prefix("./")
+        .unwrap_or(&local_source.local);
+    let variant_dir = parent.join(local_path);
+    let variant_config_path = variant_dir.join(NODE_CONFIG_FILE);
+
+    let variant_content = read_blob_from_tree(repo, tree, &variant_config_path)?;
+    let variant_config = VariantConfigParser::from_content(&variant_content)?;
+
+    Ok(NodeConfig {
+        schema_version: raw_config.schema_version,
+        manifest: raw_config.manifest,
+        interfaces: raw_config.interfaces,
+        execution: variant_config.execution,
+    })
+}
+
 pub fn resolve_remote_git(
     added_nodes_dir: &Path,
     spec: &DeploymentGitSource,
@@ -122,7 +163,19 @@ pub fn resolve_remote_git(
     let config_path = node_config_path(&spec.path);
     let content = read_blob_from_tree(&repo, &tree, &config_path)?;
 
-    let node = NodeConfigParser::from_content(&content)?.into_resolved()?;
+    let raw_config = NodeConfigParser::from_content(&content)?;
+    let default_variant_source = raw_config
+        .manifest
+        .variants
+        .as_ref()
+        .and_then(|vs| vs.iter().find(|v| v.name.as_str() == DEFAULT_VARIANT_NAME))
+        .map(|v| v.source.clone());
+
+    let node = if let Some(ref source) = default_variant_source {
+        resolve_default_variant_from_tree(&repo, &tree, raw_config, source, &config_path)?
+    } else {
+        raw_config.into_resolved()?
+    };
 
     let root_path = repo_dir.join(config_path.parent().unwrap_or_else(|| Path::new("")));
 
@@ -261,7 +314,7 @@ mod tests {
         );
     }
 
-    fn init_local_git_repo_with_default_variant() -> TempDir {
+    fn init_local_git_repo_with_default_variant(include_variant_file: bool) -> TempDir {
         let remote_dir = tempfile::tempdir().expect("remote temp dir");
         let repo = Repository::init(remote_dir.path()).expect("init repo");
 
@@ -287,6 +340,30 @@ mod tests {
 
         let mut index = repo.index().expect("repository index");
         index.add_path(rel_path).expect("add file to index");
+
+        if include_variant_file {
+            let variant_dir = remote_dir.path().join("variants").join("default");
+            std::fs::create_dir_all(&variant_dir).expect("create variant directory");
+            let variant_file = variant_dir.join(config::consts::NODE_CONFIG_FILE);
+            std::fs::write(
+                &variant_file,
+                r#"{
+                    schema_version: 1,
+                    execution: {
+                        language: "rust",
+                        start_cmd: ["./target/release/variant_node"]
+                    }
+                }"#,
+            )
+            .expect("write variant config");
+            let variant_rel = variant_file
+                .strip_prefix(remote_dir.path())
+                .expect("variant relative path");
+            index
+                .add_path(variant_rel)
+                .expect("add variant file to index");
+        }
+
         index.write().expect("write index");
 
         let tree_id = index.write_tree().expect("write tree");
@@ -306,8 +383,28 @@ mod tests {
     }
 
     #[test]
-    fn resolve_remote_git_default_variant_returns_error() {
-        let remote_repo = init_local_git_repo_with_default_variant();
+    fn resolve_remote_git_default_variant_merges_execution() {
+        let remote_repo = init_local_git_repo_with_default_variant(true);
+        let spec = DeploymentGitSource {
+            repo: remote_repo.path().to_string_lossy().to_string(),
+            path: ".".to_string(),
+            ref_: "0.1.0".to_string(),
+        };
+        let cache_dir = tempfile::tempdir().expect("cache dir");
+
+        let resolved = resolve_remote_git(cache_dir.path(), &spec)
+            .expect("default variant should resolve successfully");
+        assert_eq!(resolved.config.manifest.name.as_str(), "variant_node");
+        assert_eq!(resolved.config.manifest.tag, "0.1.0");
+        assert_eq!(
+            resolved.config.execution.start_cmd,
+            Some(vec!["./target/release/variant_node".to_string()])
+        );
+    }
+
+    #[test]
+    fn resolve_remote_git_default_variant_missing_file_returns_error() {
+        let remote_repo = init_local_git_repo_with_default_variant(false);
         let spec = DeploymentGitSource {
             repo: remote_repo.path().to_string_lossy().to_string(),
             path: ".".to_string(),
@@ -316,11 +413,10 @@ mod tests {
         let cache_dir = tempfile::tempdir().expect("cache dir");
 
         let err = resolve_remote_git(cache_dir.path(), &spec)
-            .expect_err("should fail for default variant config");
-        let msg = err.to_string();
+            .expect_err("should fail when variant file is missing from tree");
         assert!(
-            msg.contains("execution"),
-            "expected missing-execution error, got: {msg}"
+            matches!(err, crate::error::Error::Git(_)),
+            "expected git error for missing variant file, got: {err}"
         );
     }
 }

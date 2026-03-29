@@ -1,9 +1,45 @@
 use super::ResolvedNode;
 use crate::error::{Error, Result};
 use config::consts::NODE_CONFIG_FILE;
-use config::node::NodeConfigParser;
+use config::node::{DEFAULT_VARIANT_NAME, NodeConfig, NodeConfigParser, VariantConfigParser};
 use config::peppy_config::DeploymentLocalSource;
+use config::source::DeploymentSource;
 use std::path::{Path, PathBuf};
+
+/// Resolves the default variant for a node config on the local filesystem.
+///
+/// Reads the variant's config file from disk and merges the root's
+/// manifest/interfaces with the variant's execution.
+fn resolve_default_variant_local(
+    raw_config: &config::node::RawNodeConfig,
+    variant_source: &DeploymentSource,
+    root_path: &Path,
+) -> Result<NodeConfig> {
+    let local_source = match variant_source {
+        DeploymentSource::Local(local) => local,
+        DeploymentSource::Git(_) | DeploymentSource::Url(_) => {
+            return Err(Error::NotImplemented(
+                "non-local default variant sources in local deployments",
+            ));
+        }
+    };
+
+    let variant_dir = if local_source.local.is_relative() {
+        root_path.join(&local_source.local)
+    } else {
+        local_source.local.clone()
+    };
+    let variant_config_path = variant_dir.join(NODE_CONFIG_FILE);
+
+    let variant_config = VariantConfigParser::from_path(&variant_config_path)?;
+
+    Ok(NodeConfig {
+        schema_version: raw_config.schema_version,
+        manifest: raw_config.manifest.clone(),
+        interfaces: raw_config.interfaces.clone(),
+        execution: variant_config.execution,
+    })
+}
 
 pub fn resolve_local_deployment(
     base_dir: &Path,
@@ -29,7 +65,19 @@ pub fn resolve_local_deployment(
         return Err(Error::FileNotFound(config_path));
     }
 
-    let node = NodeConfigParser::from_path(&config_path)?.into_resolved()?;
+    let raw_config = NodeConfigParser::from_path(&config_path)?;
+    let default_variant_source = raw_config
+        .manifest
+        .variants
+        .as_ref()
+        .and_then(|vs| vs.iter().find(|v| v.name.as_str() == DEFAULT_VARIANT_NAME))
+        .map(|v| v.source.clone());
+
+    let node = if let Some(ref source) = default_variant_source {
+        resolve_default_variant_local(&raw_config, source, &root_path)?
+    } else {
+        raw_config.into_resolved()?
+    };
 
     Ok(ResolvedNode {
         config: node,
@@ -42,7 +90,55 @@ mod tests {
     use super::*;
 
     #[test]
-    fn resolve_local_deployment_default_variant_returns_error() {
+    fn resolve_local_deployment_default_variant_merges_execution() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let node_dir = dir.path().join("variant_node");
+        std::fs::create_dir_all(&node_dir).expect("create node dir");
+        std::fs::write(
+            node_dir.join(NODE_CONFIG_FILE),
+            r#"{
+                schema_version: 1,
+                manifest: {
+                    name: "variant_node",
+                    tag: "0.1.0",
+                    variants: [
+                        { name: "default", source: { local: "./variants/default" } },
+                    ],
+                },
+            }"#,
+        )
+        .expect("write node config");
+
+        let variant_dir = node_dir.join("variants").join("default");
+        std::fs::create_dir_all(&variant_dir).expect("create variant dir");
+        std::fs::write(
+            variant_dir.join(NODE_CONFIG_FILE),
+            r#"{
+                schema_version: 1,
+                execution: {
+                    language: "rust",
+                    start_cmd: ["./target/release/variant_node"]
+                }
+            }"#,
+        )
+        .expect("write variant config");
+
+        let spec = DeploymentLocalSource {
+            local: PathBuf::from("./variant_node"),
+        };
+        let resolved = resolve_local_deployment(dir.path(), &spec)
+            .expect("default variant should resolve successfully");
+
+        assert_eq!(resolved.config.manifest.name.as_str(), "variant_node");
+        assert_eq!(resolved.config.manifest.tag, "0.1.0");
+        assert_eq!(
+            resolved.config.execution.start_cmd,
+            Some(vec!["./target/release/variant_node".to_string()])
+        );
+    }
+
+    #[test]
+    fn resolve_local_deployment_default_variant_missing_file_returns_error() {
         let dir = tempfile::tempdir().expect("temp dir");
         let node_dir = dir.path().join("variant_node");
         std::fs::create_dir_all(&node_dir).expect("create node dir");
@@ -65,12 +161,12 @@ mod tests {
             local: PathBuf::from("./variant_node"),
         };
         let err = resolve_local_deployment(dir.path(), &spec)
-            .expect_err("should fail for default variant config");
+            .expect_err("should fail when variant file is missing");
 
         let msg = err.to_string();
         assert!(
-            msg.contains("execution"),
-            "expected missing-execution error, got: {msg}"
+            msg.contains("peppy.json5") || msg.contains("No such file"),
+            "expected file-not-found error, got: {msg}"
         );
     }
 
