@@ -299,6 +299,7 @@ Variants are declared in the root node's `manifest.variants` array. Each entry h
           qos_profile: "sensor_data",
           message_format: {
             positions: { $type: "array", $items: "f64", $length: 6 },
+            velocities: { $type: "array", $items: "f64", $length: 6 },
           },
         },
       ],
@@ -419,6 +420,7 @@ If the interfaces do not match, the add operation fails with a `VariantInterface
           name: "joint_commands",
           qos_profile: "sensor_data",
           message_format: {
+            velocities: { $type: "array", $items: "f64", $length: 6 },
             positions: { $type: "array", $items: "f64", $length: 6 },
           },
         },
