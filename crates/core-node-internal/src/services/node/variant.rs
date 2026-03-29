@@ -215,6 +215,13 @@ async fn resolve_variant_deployment_source(
             } else {
                 local.local.clone()
             };
+            if !path.exists() {
+                return Err(format!(
+                    "Variant '{}' source directory does not exist: {}",
+                    label,
+                    path.display()
+                ));
+            }
             let config_path = path.join(NODE_CONFIG_FILE);
             let variant_config = VariantConfigParser::from_path(&config_path).map_err(|e| {
                 format!(
