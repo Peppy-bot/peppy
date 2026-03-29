@@ -3587,6 +3587,240 @@ async fn listen_for_node_add_variant_local_source() {
     );
 }
 
+/// Regression test: `node sync` must fingerprint the variant's own peppy.json5,
+/// not the temporary merged config, so that `node add` verification passes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_add_variant_local_source_after_sync() {
+    use core_node::encoding::NodeSyncRequest;
+
+    const ROOT_NODE_NAME: &str = "synced_robot";
+    const ROOT_NODE_TAG: &str = "0.1.0";
+
+    let started_core_node = start_core_node_with_mock_messenger().await;
+    let node_stack = started_core_node.node_stack.clone();
+
+    // Create a parent directory with root node and variant side by side
+    let parent_dir = tempfile::tempdir().expect("failed to create parent dir");
+    let root_dir = parent_dir.path().join("root_node");
+    let variant_dir = parent_dir.path().join("mock_node");
+    std::fs::create_dir_all(&root_dir).unwrap();
+    std::fs::create_dir_all(&variant_dir).unwrap();
+
+    // Root node config with a "mock" variant pointing to a sibling directory
+    let root_config = r#"{
+        schema_version: 1,
+        manifest: {
+            name: "synced_robot",
+            tag: "0.1.0",
+            variants: [
+                { name: "mock", source: { local: "../mock_node" } }
+            ]
+        },
+        interfaces: {
+            topics: {
+                emits: [
+                    { name: "joint_positions", qos_profile: "sensor_data", message_format: { x: "f64", y: "f64" } }
+                ]
+            }
+        },
+        execution: {
+            language: "rust",
+            start_cmd: ["sleep", "10"]
+        }
+    }"#;
+    // Write configs WITHOUT pre-baked fingerprints — sync will generate them.
+    let root_config_path = root_dir.join(NODE_CONFIG_FILE);
+    std::fs::write(&root_config_path, root_config).expect("failed to write root config");
+
+    // Variant config — only defines execution (no manifest, no interfaces)
+    let variant_config = r#"{
+        schema_version: 1,
+        execution: {
+            language: "rust",
+            start_cmd: ["sleep", "5"]
+        }
+    }"#;
+    let variant_config_path = variant_dir.join(NODE_CONFIG_FILE);
+    std::fs::write(&variant_config_path, variant_config).expect("failed to write variant config");
+
+    // Step 1: Run node sync — this generates peppygen + fingerprint for root and variant.
+    let sync_response = NodeSyncRequest::new(&root_dir, TEST_GIT_HASH)
+        .poll(
+            &started_core_node.caller_handle,
+            &started_core_node.core_node_name,
+            CALLER_INSTANCE_ID,
+            &started_core_node.core_node_name,
+            Duration::from_secs(10),
+        )
+        .await
+        .expect("node_sync request should complete");
+
+    assert!(
+        sync_response.success,
+        "node_sync should succeed, got error: {}",
+        sync_response.error_message
+    );
+
+    // Sanity: variant .peppy directory should exist after sync
+    assert!(
+        variant_dir.join(PEPPY_OUTPUT_DIR).exists(),
+        "variant .peppy directory should exist after sync"
+    );
+
+    // Step 2: Run node add with the variant.
+    // Before the fix, this would fail with "Codegen fingerprint verification failed"
+    // because sync fingerprinted the merged temp config, not the variant's own peppy.json5.
+    let add_result = send_node_add_and_wait_with_variant(
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        root_dir.as_path(),
+        "mock",
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        None,
+    )
+    .await
+    .expect("node_add with variant should succeed");
+
+    assert!(
+        add_result.success,
+        "variant node_add after sync should succeed, got error: {:?}",
+        add_result.error_message
+    );
+
+    // Verify the node is in the stack with the expected merged config
+    assert!(node_stack.contains(ROOT_NODE_NAME, ROOT_NODE_TAG));
+
+    let entity = node_stack
+        .find(ROOT_NODE_NAME, ROOT_NODE_TAG)
+        .expect("node should exist in stack");
+    let config = entity.config();
+    assert!(
+        config.interfaces.topics.is_some(),
+        "interfaces should be inherited from root"
+    );
+    assert_eq!(
+        config.execution.start_cmd.as_ref().unwrap(),
+        &vec!["sleep".to_string(), "5".to_string()],
+        "execution should come from the variant"
+    );
+}
+
+/// After sync, modifying the variant's peppy.json5 must cause a fingerprint
+/// mismatch on the next `node add`, blocking the stale variant from being added.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_add_variant_fingerprint_mismatch_after_sync() {
+    use core_node::encoding::NodeSyncRequest;
+
+    const ROOT_NODE_NAME: &str = "stale_variant_robot";
+    const ROOT_NODE_TAG: &str = "0.1.0";
+
+    let started_core_node = start_core_node_with_mock_messenger().await;
+    let node_stack = started_core_node.node_stack.clone();
+
+    let parent_dir = tempfile::tempdir().expect("failed to create parent dir");
+    let root_dir = parent_dir.path().join("root_node");
+    let variant_dir = parent_dir.path().join("mock_node");
+    std::fs::create_dir_all(&root_dir).unwrap();
+    std::fs::create_dir_all(&variant_dir).unwrap();
+
+    let root_config = r#"{
+        schema_version: 1,
+        manifest: {
+            name: "stale_variant_robot",
+            tag: "0.1.0",
+            variants: [
+                { name: "mock", source: { local: "../mock_node" } }
+            ]
+        },
+        interfaces: {
+            topics: {
+                emits: [
+                    { name: "joint_positions", qos_profile: "sensor_data", message_format: { x: "f64", y: "f64" } }
+                ]
+            }
+        },
+        execution: {
+            language: "rust",
+            start_cmd: ["sleep", "10"]
+        }
+    }"#;
+    std::fs::write(root_dir.join(NODE_CONFIG_FILE), root_config)
+        .expect("failed to write root config");
+
+    let variant_config = r#"{
+        schema_version: 1,
+        execution: {
+            language: "rust",
+            start_cmd: ["sleep", "5"]
+        }
+    }"#;
+    std::fs::write(variant_dir.join(NODE_CONFIG_FILE), variant_config)
+        .expect("failed to write variant config");
+
+    // Step 1: Sync — generates peppygen and fingerprint for both root and variant.
+    let sync_response = NodeSyncRequest::new(&root_dir, TEST_GIT_HASH)
+        .poll(
+            &started_core_node.caller_handle,
+            &started_core_node.core_node_name,
+            CALLER_INSTANCE_ID,
+            &started_core_node.core_node_name,
+            Duration::from_secs(10),
+        )
+        .await
+        .expect("node_sync request should complete");
+
+    assert!(
+        sync_response.success,
+        "node_sync should succeed, got error: {}",
+        sync_response.error_message
+    );
+
+    // Step 2: Modify the variant config after sync (simulates user editing without re-syncing).
+    let modified_variant_config = r#"{
+        schema_version: 1,
+        execution: {
+            language: "rust",
+            start_cmd: ["sleep", "99"]
+        }
+    }"#;
+    std::fs::write(variant_dir.join(NODE_CONFIG_FILE), modified_variant_config)
+        .expect("failed to write modified variant config");
+
+    // Step 3: node add should fail — fingerprint no longer matches.
+    let add_result = send_node_add_and_wait_with_variant(
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        root_dir.as_path(),
+        "mock",
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        None,
+    )
+    .await
+    .expect("node_add request should complete");
+
+    assert!(
+        !add_result.success,
+        "node_add should fail when variant config was modified after sync"
+    );
+    assert!(
+        add_result
+            .error_message
+            .as_ref()
+            .map(|msg| msg.contains("Codegen fingerprint verification failed"))
+            .unwrap_or(false),
+        "error should indicate fingerprint verification failure, got: {:?}",
+        add_result.error_message
+    );
+
+    // Node should not be in the stack
+    assert!(
+        !node_stack.contains(ROOT_NODE_NAME, ROOT_NODE_TAG),
+        "node should not be added when variant fingerprint mismatches"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_add_with_fs_archive_variant_uses_archived_root() {
     const ROOT_NODE_NAME: &str = "archive_robot_brain";

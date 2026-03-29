@@ -430,7 +430,16 @@ async fn handle_node_sync_request_inner(
                     &variant_peppy_dirs,
                     generator::CrateDeployMode::default(),
                     Some(&variant_merged_config_path),
+                )?;
+                // The generator fingerprinted the merged temp file, but node add
+                // verifies against the variant's own peppy.json5. Re-fingerprint
+                // using the actual source config so both paths agree.
+                config::fingerprint::generate_node_config_fingerprint(
+                    variant_dir.join(config::consts::NODE_CONFIG_FILE),
+                    variant_dir.join(config::consts::PEPPYGEN_OUTPUT_PATH),
                 )
+                .map_err(|e| generator::GeneratorError::Config(e))?;
+                Ok(())
             })
             .await
             {
