@@ -433,7 +433,13 @@ fn validate_instance_parameters(
     deployment: &Deployment,
     node: &NodeConfig,
 ) -> std::result::Result<(), Error> {
-    let expected = parameter_leaf_paths(&node.execution_ref().parameters);
+    // When the node uses a default variant, execution is not yet resolved;
+    // parameter validation will happen after variant resolution.
+    let Some(execution) = node.execution.as_ref() else {
+        return Ok(());
+    };
+
+    let expected = parameter_leaf_paths(&execution.parameters);
     if expected.is_empty() {
         return Ok(());
     }
@@ -449,7 +455,7 @@ fn validate_instance_parameters(
 
         // Validate parameter types
         if let Err(type_mismatch) =
-            validate_parameter_types(&instance.arguments, &node.execution_ref().parameters, "")
+            validate_parameter_types(&instance.arguments, &execution.parameters, "")
         {
             return Err(Error::WrongParameterType {
                 deployment: deployment_label.to_string(),
@@ -575,5 +581,52 @@ fn deployment_source_id(source: &DeploymentSource) -> String {
         DeploymentSource::Local(spec) => format!("local:{}", spec.local.display()),
         DeploymentSource::Git(spec) => format!("git:{}::{}@{}", spec.repo, spec.path, spec.ref_),
         DeploymentSource::Url(spec) => format!("url:{}#sha256:{}", spec.url, spec.sha256),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use config::node::NodeConfigParser;
+
+    #[test]
+    fn validate_instance_parameters_skips_node_with_default_variant() {
+        let node = NodeConfigParser::from_content(
+            r#"{
+                schema_version: 1,
+                manifest: {
+                    name: "variant_node",
+                    tag: "0.1.0",
+                    variants: [
+                        { name: "default", source: { local: "./variants/default" } },
+                    ],
+                },
+            }"#,
+        )
+        .expect("valid node config with default variant");
+
+        assert!(
+            node.execution.is_none(),
+            "precondition: execution must be None"
+        );
+
+        let deployment: Deployment = serde_json5::from_str(
+            r#"{
+                source: { local: "./variant_node" },
+                instances: [
+                    {
+                        instance_id: "inst1",
+                        arguments: { some_param: "hello" },
+                    },
+                ],
+            }"#,
+        )
+        .expect("valid deployment");
+
+        let result = validate_instance_parameters("variant_node:0.1.0", &deployment, &node);
+        assert!(
+            result.is_ok(),
+            "should not panic or error for default-variant node"
+        );
     }
 }
