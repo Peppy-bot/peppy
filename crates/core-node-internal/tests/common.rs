@@ -285,7 +285,7 @@ async fn send_node_add_and_wait_internal<'a>(
             result_timeout.as_secs(),
         ),
         NodeAddSource::Http(url) => {
-            NodeAddGoal::new_http(url.clone(), TEST_GIT_HASH, result_timeout.as_secs())
+            NodeAddGoal::new_http(url.clone(), None, TEST_GIT_HASH, result_timeout.as_secs())
         }
     }
     .with_env_vars(env_vars);

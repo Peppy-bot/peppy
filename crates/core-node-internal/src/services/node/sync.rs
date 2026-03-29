@@ -438,7 +438,7 @@ async fn handle_node_sync_request_inner(
                     variant_dir.join(config::consts::NODE_CONFIG_FILE),
                     variant_dir.join(config::consts::PEPPYGEN_OUTPUT_PATH),
                 )
-                .map_err(|e| generator::GeneratorError::Config(e))?;
+                .map_err(generator::GeneratorError::Config)?;
                 Ok(())
             })
             .await

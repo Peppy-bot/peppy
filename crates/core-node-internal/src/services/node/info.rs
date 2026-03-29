@@ -100,7 +100,7 @@ async fn handle_node_info_request_inner(
         let label = variant_label(variant_source);
         let resolved =
             resolve_variant(variant_source, &root_config, &root_source_path, &peppy_dirs).await?;
-        (resolved.merged_config, Some(label))
+        (merged_config_with_variant_cleanup(resolved), Some(label))
     } else {
         let (root_config, root_source_path, cleanup_dir) =
             resolve_node_config_with_source_path(request.source, &peppy_dirs).await?;
@@ -116,7 +116,7 @@ async fn handle_node_info_request_inner(
                 &peppy_dirs,
             )
             .await?;
-            (resolved.merged_config, Some(label))
+            (merged_config_with_variant_cleanup(resolved), Some(label))
         } else {
             (
                 root_config.into_resolved().map_err(|e| e.to_string())?,
@@ -154,6 +154,11 @@ async fn handle_node_info_request_inner(
     .map_err(|e| format!("{}", e))
 }
 
+fn merged_config_with_variant_cleanup(resolved: super::variant::ResolvedVariant) -> NodeConfig {
+    let _cleanup_guard = super::add::CleanupDir::new(resolved.cleanup_dir);
+    resolved.merged_config
+}
+
 pub async fn resolve_node_config(
     source: NodeSource,
     peppy_dirs: &PeppyDirs,
@@ -165,7 +170,7 @@ pub async fn resolve_node_config(
     if raw.has_default_variant() {
         let variant_source = NodeSource::Fs(DEFAULT_VARIANT_NAME.into());
         let resolved = resolve_variant(&variant_source, &raw, &source_path, peppy_dirs).await?;
-        Ok(resolved.merged_config)
+        Ok(merged_config_with_variant_cleanup(resolved))
     } else {
         raw.into_resolved().map_err(|e| e.to_string())
     }
@@ -317,6 +322,88 @@ async fn parse_node_config_from_http_with_path(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use git2::{Repository, Signature};
+    use std::collections::BTreeSet;
+
+    fn temp_entries(root: &std::path::Path) -> BTreeSet<PathBuf> {
+        std::fs::read_dir(root)
+            .unwrap()
+            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+            .collect()
+    }
+
+    fn contains_config_marker(path: &std::path::Path, marker: &str) -> bool {
+        let mut stack = vec![path.to_path_buf()];
+        while let Some(current) = stack.pop() {
+            let Ok(metadata) = std::fs::metadata(&current) else {
+                continue;
+            };
+            if metadata.is_dir() {
+                let Ok(entries) = std::fs::read_dir(&current) else {
+                    continue;
+                };
+                for entry in entries.flatten() {
+                    stack.push(entry.path());
+                }
+                continue;
+            }
+
+            if current.file_name().and_then(|name| name.to_str()) == Some(NODE_CONFIG_FILE)
+                && let Ok(contents) = std::fs::read_to_string(&current)
+                && contents.contains(marker)
+            {
+                return true;
+            }
+        }
+
+        false
+    }
+    fn init_git_repo_with_default_variant(repo_path: &std::path::Path, marker: &str) {
+        std::fs::create_dir_all(repo_path).expect("failed to create git repo directory");
+        let repo = Repository::init(repo_path).expect("failed to init repository");
+
+        let variant_path = std::path::Path::new("variants/default/peppy.json5");
+        if let Some(parent) = variant_path.parent() {
+            std::fs::create_dir_all(repo_path.join(parent))
+                .expect("failed to create variant directories");
+        }
+
+        let variant_config = format!(
+            r#"{{
+                schema_version: 1,
+                execution: {{
+                    language: "python",
+                    start_cmd: ["python", "{marker}"]
+                }}
+            }}"#
+        );
+        std::fs::write(repo_path.join(variant_path), variant_config)
+            .expect("failed to write variant config");
+
+        let mut index = repo.index().expect("failed to open index");
+        index
+            .add_path(variant_path)
+            .expect("failed to add variant config");
+        index.write().expect("failed to write index");
+
+        let tree_id = index.write_tree().expect("failed to write tree");
+        let tree = repo.find_tree(tree_id).expect("failed to find tree");
+        let signature =
+            Signature::now("Peppy", "peppy@example.com").expect("failed to create signature");
+        let commit_id = repo
+            .commit(
+                Some("HEAD"),
+                &signature,
+                &signature,
+                "initial commit",
+                &tree,
+                &[],
+            )
+            .expect("failed to create commit");
+        let commit = repo.find_commit(commit_id).expect("failed to find commit");
+        repo.tag("0.1.0", commit.as_object(), &signature, "0.1.0", false)
+            .expect("failed to create tag");
+    }
 
     /// Verifies that `parse_node_config_from_git_with_path` cleans up its temp
     /// directory when an operation (e.g. checking out a nonexistent ref) fails
@@ -359,6 +446,79 @@ mod tests {
         assert!(
             leaked.is_empty(),
             "temp directory should be cleaned up on error; leaked entries: {:?}",
+            leaked
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_node_config_cleans_up_git_backed_default_variant_checkout() {
+        let marker = "default_variant_git_cleanup_marker";
+        let variant_repo_root = tempfile::TempDir::new().expect("failed to create temp repo root");
+        let variant_repo_path = variant_repo_root.path().join("default_variant_repo");
+        init_git_repo_with_default_variant(&variant_repo_path, marker);
+
+        let root_dir = tempfile::TempDir::new().expect("failed to create root node dir");
+        let root_config = format!(
+            r#"{{
+                schema_version: 1,
+                manifest: {{
+                    name: "default_variant_root",
+                    tag: "0.1.0",
+                    variants: [
+                        {{
+                            name: "default",
+                            source: {{
+                                repo: "{}",
+                                path: "variants/default",
+                                ref: "0.1.0"
+                            }}
+                        }}
+                    ]
+                }},
+                interfaces: {{
+                    topics: {{
+                        emits: [{{ name: "sensor_data" }}]
+                    }}
+                }}
+            }}"#,
+            variant_repo_path.display()
+        );
+        std::fs::write(root_dir.path().join(NODE_CONFIG_FILE), root_config)
+            .expect("failed to write root config");
+
+        let peppy_root = tempfile::TempDir::new().expect("failed to create peppy data dir");
+        let peppy_dirs = PeppyDirs::new(peppy_root.path());
+
+        let temp_root = std::env::temp_dir();
+        let entries_before = temp_entries(&temp_root);
+
+        let resolved =
+            resolve_node_config(NodeSource::Fs(root_dir.path().to_path_buf()), &peppy_dirs)
+                .await
+                .expect("default variant should resolve");
+
+        assert_eq!(
+            resolved.execution.language,
+            config::node::PeppygenLanguage::Python
+        );
+        assert!(
+            resolved
+                .execution
+                .start_cmd
+                .as_ref()
+                .is_some_and(|cmd| cmd.iter().any(|arg| arg == marker)),
+            "resolved execution should come from the git-backed default variant"
+        );
+
+        let entries_after = temp_entries(&temp_root);
+        let leaked: Vec<_> = entries_after
+            .difference(&entries_before)
+            .filter(|path| contains_config_marker(path, marker))
+            .cloned()
+            .collect();
+        assert!(
+            leaked.is_empty(),
+            "git-backed default variant checkout should be cleaned up; leaked entries: {:?}",
             leaked
         );
     }
