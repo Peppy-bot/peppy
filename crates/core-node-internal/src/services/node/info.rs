@@ -245,16 +245,15 @@ async fn parse_node_config_from_git_with_path(
     tokio::task::spawn_blocking(move || {
         let repo_relative_path = sanitize_repo_path(&repo_path)?;
 
-        let checkout_dir = tempfile::tempdir()
-            .map_err(|e| format!("Failed to create temporary directory: {}", e))?
-            .keep();
+        let temp_dir = tempfile::tempdir()
+            .map_err(|e| format!("Failed to create temporary directory: {}", e))?;
 
         let repo_url_bstring = repo_url.to_bstring();
         let repo_url_str = std::str::from_utf8(repo_url_bstring.as_ref())
             .map_err(|_| "repo_url must be valid UTF-8".to_string())?
             .to_owned();
 
-        let repo = Repository::clone(&repo_url_str, &checkout_dir)
+        let repo = Repository::clone(&repo_url_str, temp_dir.path())
             .map_err(|e| format!("Failed to clone repository: {}", e))?;
 
         if let Some(repo_ref) = repo_ref.as_deref() {
@@ -262,7 +261,7 @@ async fn parse_node_config_from_git_with_path(
                 .map_err(|e| format!("Failed to checkout git ref '{}': {}", repo_ref, e))?;
         }
 
-        let candidate_path = checkout_dir.join(&repo_relative_path);
+        let candidate_path = temp_dir.path().join(&repo_relative_path);
         let config_path = if candidate_path
             .extension()
             .and_then(|ext| ext.to_str())
@@ -279,7 +278,7 @@ async fn parse_node_config_from_git_with_path(
             candidate_path
                 .parent()
                 .map(|p| p.to_path_buf())
-                .unwrap_or(checkout_dir.clone())
+                .unwrap_or_else(|| temp_dir.path().to_path_buf())
         };
 
         let config = NodeConfigParser::from_path(&config_path).map_err(|e| {
@@ -290,6 +289,7 @@ async fn parse_node_config_from_git_with_path(
             )
         })?;
 
+        let checkout_dir = temp_dir.keep();
         Ok((config, source_dir, Some(checkout_dir)))
     })
     .await
@@ -310,4 +310,54 @@ async fn parse_node_config_from_http_with_path(
         resolved.source_path,
         resolved.cleanup_dir,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Verifies that `parse_node_config_from_git_with_path` cleans up its temp
+    /// directory when an operation (e.g. checking out a nonexistent ref) fails
+    /// after the directory has been created and the repo cloned.
+    #[tokio::test]
+    async fn git_clone_cleans_up_temp_dir_on_checkout_failure() {
+        let git_repo_temp_dir = tempfile::TempDir::new().unwrap();
+        let git_repo_path = config::test_helpers::create_nodes_git_repo(&git_repo_temp_dir);
+        let repo_url =
+            gix_url::Url::try_from(git_repo_path.as_path()).expect("git repo path should parse");
+
+        // Snapshot temp dir entries before the call.
+        let temp_root = std::env::temp_dir();
+        let entries_before: std::collections::BTreeSet<_> = std::fs::read_dir(&temp_root)
+            .unwrap()
+            .filter_map(|e| e.ok().map(|e| e.file_name()))
+            .collect();
+
+        // Use a ref that doesn't exist → clone succeeds, checkout_repo_ref fails.
+        let result = parse_node_config_from_git_with_path(
+            repo_url,
+            "nodes/uvc_camera".to_string(),
+            Some("nonexistent_ref_that_does_not_exist".to_string()),
+        )
+        .await;
+
+        assert!(result.is_err(), "should fail with nonexistent git ref");
+        assert!(
+            result.unwrap_err().contains("Failed to checkout git ref"),
+            "error should mention the failed checkout"
+        );
+
+        // Verify no temp directories were leaked.
+        let entries_after: std::collections::BTreeSet<_> = std::fs::read_dir(&temp_root)
+            .unwrap()
+            .filter_map(|e| e.ok().map(|e| e.file_name()))
+            .collect();
+
+        let leaked: Vec<_> = entries_after.difference(&entries_before).collect();
+        assert!(
+            leaked.is_empty(),
+            "temp directory should be cleaned up on error; leaked entries: {:?}",
+            leaked
+        );
+    }
 }
