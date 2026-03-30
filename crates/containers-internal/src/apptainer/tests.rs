@@ -711,3 +711,41 @@ fn check_setup_status_detects_stale_apparmor_profile_path() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Compile-time cache consistency test
+// ---------------------------------------------------------------------------
+
+/// Verifies that the compile-time `APPTAINER_INSTALL_DIR` injected by build.rs
+/// points to a valid cache directory with the expected sentinel and binary.
+///
+/// If this test fails after deleting `~/.peppy`, it means the build cache is
+/// stale and `cargo build` needs to re-run build.rs (which the
+/// `rerun-if-changed` directive on the sentinel file should ensure).
+#[cfg(target_os = "linux")]
+#[test]
+fn compile_time_apptainer_dir_exists_with_sentinel() {
+    let install_dir = option_env!("APPTAINER_INSTALL_DIR")
+        .expect("APPTAINER_INSTALL_DIR should be set by build.rs at compile time");
+
+    let path = Path::new(install_dir);
+    assert!(
+        path.is_dir(),
+        "APPTAINER_INSTALL_DIR={} does not exist — was ~/.peppy deleted without rebuilding?",
+        install_dir
+    );
+
+    let sentinel = path.join(format!(".peppy-version-{}", env!("APPTAINER_VERSION")));
+    assert!(
+        sentinel.exists(),
+        "Cache sentinel {:?} is missing — the apptainer cache may be corrupt",
+        sentinel
+    );
+
+    let apptainer_bin = path.join("bin/apptainer");
+    assert!(
+        apptainer_bin.exists(),
+        "bin/apptainer not found in APPTAINER_INSTALL_DIR={}",
+        install_dir
+    );
+}

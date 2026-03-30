@@ -821,6 +821,10 @@ echo "=== Apptainer build complete ==="
         // Step 2: Ensure apptainer is cached (from Lima pre-build, macOS fallback, or local build)
         let cache_dir = ensure_apptainer_cached(use_lima, &arch);
 
+        // Track the cache sentinel so Cargo re-runs build.rs if ~/.peppy is deleted.
+        let cache_sentinel = apptainer_cache_sentinel_path(&cache_dir, APPTAINER_VERSION);
+        println!("cargo:rerun-if-changed={}", cache_sentinel.display());
+
         // Step 3: Copy apptainer installation to OUT_DIR for release packaging.
         // Use a sentinel to skip the copy when the source hasn't changed,
         // avoiding mtime bumps that trigger unnecessary recompilation.
