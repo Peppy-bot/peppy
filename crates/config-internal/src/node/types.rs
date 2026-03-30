@@ -984,18 +984,27 @@ impl Normalize for ExposedAction {
 
 impl Normalize for TopicInterfaces {
     fn normalize(&mut self) {
-        normalize_opt_vec(&mut self.emits, |a, b| a.name.cmp(&b.name));
+        normalize_opt_vec(&mut self.emits, |a, b| {
+            a.name
+                .cmp(&b.name)
+                .then_with(|| format!("{a:?}").cmp(&format!("{b:?}")))
+        });
         normalize_opt_vec(&mut self.consumes, |a, b| {
             a.name()
                 .cmp(b.name())
                 .then_with(|| a.local_node_id().cmp(&b.local_node_id()))
+                .then_with(|| format!("{a:?}").cmp(&format!("{b:?}")))
         });
     }
 }
 
 impl Normalize for ServiceInterfaces {
     fn normalize(&mut self) {
-        normalize_opt_vec(&mut self.exposes, |a, b| a.name.cmp(&b.name));
+        normalize_opt_vec(&mut self.exposes, |a, b| {
+            a.name
+                .cmp(&b.name)
+                .then_with(|| format!("{a:?}").cmp(&format!("{b:?}")))
+        });
         normalize_opt_vec(&mut self.consumes, |a, b| {
             a.name
                 .cmp(&b.name)
@@ -1006,7 +1015,11 @@ impl Normalize for ServiceInterfaces {
 
 impl Normalize for ActionInterfaces {
     fn normalize(&mut self) {
-        normalize_opt_vec(&mut self.exposes, |a, b| a.name.cmp(&b.name));
+        normalize_opt_vec(&mut self.exposes, |a, b| {
+            a.name
+                .cmp(&b.name)
+                .then_with(|| format!("{a:?}").cmp(&format!("{b:?}")))
+        });
         normalize_opt_vec(&mut self.consumes, |a, b| {
             a.name
                 .cmp(&b.name)
