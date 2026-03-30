@@ -4,7 +4,7 @@ use std::{
 };
 
 use super::ResolvedNode;
-use crate::error::{Error, Result};
+use crate::error::Result;
 use config::consts::NODE_CONFIG_FILE;
 use config::node::{NodeConfig, NodeConfigParser, VariantConfigParser};
 use config::peppy_config::DeploymentGitSource;
@@ -109,34 +109,52 @@ fn ensure_repository(
 
 /// Resolves the default variant for a node config read from a git tree.
 ///
-/// Reads the variant's config file from the same git tree and merges the root's
-/// manifest/interfaces with the variant's execution.
+/// For `DeploymentSource::Local` variants, reads the variant's config file from
+/// the same git tree. For `DeploymentSource::Git` and `DeploymentSource::Url`
+/// variants, delegates to the shared resolvers (cloning the remote repo or
+/// downloading the URL bundle respectively).
 fn resolve_default_variant_from_tree(
     repo: &Repository,
     tree: &git2::Tree,
     raw_config: config::node::RawNodeConfig,
     variant_source: &DeploymentSource,
     config_path: &Path,
+    added_nodes_dir: &Path,
 ) -> Result<NodeConfig> {
-    let local_source = match variant_source {
-        DeploymentSource::Local(local) => local,
-        DeploymentSource::Git(_) | DeploymentSource::Url(_) => {
-            return Err(Error::NotImplemented(
-                "non-local default variant sources in git deployments",
-            ));
+    let variant_config = match variant_source {
+        DeploymentSource::Local(local_source) => {
+            let parent = config_path.parent().unwrap_or_else(|| Path::new(""));
+            let variant_dir = if local_source.local.is_relative() {
+                parent.join(&local_source.local)
+            } else {
+                local_source.local.clone()
+            };
+            // Strip leading "./" so libgit2 can look up the path in the tree.
+            let variant_config_path: PathBuf = variant_dir
+                .join(NODE_CONFIG_FILE)
+                .components()
+                .filter(|c| !matches!(c, std::path::Component::CurDir))
+                .collect();
+            let variant_content = read_blob_from_tree(repo, tree, &variant_config_path)?;
+            VariantConfigParser::from_content(&variant_content)?
+        }
+        DeploymentSource::Git(git_spec) => {
+            let repo_dir = build_repo_cache_path(added_nodes_dir, &git_spec.repo);
+            let variant_repo = ensure_repository(&repo_dir, &git_spec.repo)?;
+            fetch_repository(&variant_repo)?;
+            let variant_commit = find_commit_for_tag(&variant_repo, &git_spec.ref_)?;
+            let variant_tree = variant_commit.tree()?;
+            let variant_config_path = node_config_path(&git_spec.path);
+            let variant_content =
+                read_blob_from_tree(&variant_repo, &variant_tree, &variant_config_path)?;
+            VariantConfigParser::from_content(&variant_content)?
+        }
+        DeploymentSource::Url(url_spec) => {
+            let cache_dir = super::url::ensure_url_source(added_nodes_dir, url_spec)?;
+            let variant_config_path = cache_dir.join(NODE_CONFIG_FILE);
+            VariantConfigParser::from_path(&variant_config_path)?
         }
     };
-
-    let parent = config_path.parent().unwrap_or_else(|| Path::new(""));
-    let variant_dir = if local_source.local.is_relative() {
-        parent.join(&local_source.local)
-    } else {
-        local_source.local.clone()
-    };
-    let variant_config_path = variant_dir.join(NODE_CONFIG_FILE);
-
-    let variant_content = read_blob_from_tree(repo, tree, &variant_config_path)?;
-    let variant_config = VariantConfigParser::from_content(&variant_content)?;
 
     Ok(NodeConfig {
         schema_version: raw_config.schema_version,
@@ -166,7 +184,14 @@ pub fn resolve_remote_git(
     let raw_config = NodeConfigParser::from_content(&content)?;
 
     let node = if let Some(source) = raw_config.manifest.default_variant_source().cloned() {
-        resolve_default_variant_from_tree(&repo, &tree, raw_config, &source, &config_path)?
+        resolve_default_variant_from_tree(
+            &repo,
+            &tree,
+            raw_config,
+            &source,
+            &config_path,
+            added_nodes_dir,
+        )?
     } else {
         raw_config.into_resolved()?
     };
@@ -393,6 +418,115 @@ mod tests {
         assert_eq!(
             resolved.config.execution.start_cmd,
             Some(vec!["./target/release/variant_node".to_string()])
+        );
+    }
+
+    /// Creates a git repo whose default variant points to a separate git repo.
+    fn init_git_repo_with_git_variant_source(variant_repo_url: &str) -> TempDir {
+        let remote_dir = tempfile::tempdir().expect("remote temp dir");
+        let repo = Repository::init(remote_dir.path()).expect("init repo");
+
+        let file_path = remote_dir.path().join(config::consts::NODE_CONFIG_FILE);
+        let config_content = format!(
+            r#"{{
+                schema_version: 1,
+                manifest: {{
+                    name: "git_variant_node",
+                    tag: "0.2.0",
+                    variants: [
+                        {{ name: "default", source: {{ repo: "{variant_repo_url}", path: ".", ref: "0.1.0" }} }},
+                    ],
+                }},
+            }}"#,
+        );
+        std::fs::write(&file_path, config_content).expect("write node config");
+
+        let rel_path = file_path
+            .strip_prefix(remote_dir.path())
+            .expect("relative path");
+
+        let mut index = repo.index().expect("repository index");
+        index.add_path(rel_path).expect("add file to index");
+        index.write().expect("write index");
+
+        let tree_id = index.write_tree().expect("write tree");
+        let tree = repo.find_tree(tree_id).expect("find tree");
+        let signature = Signature::now("Peppy", "peppy@example.com").expect("signature");
+        let commit_id = repo
+            .commit(Some("HEAD"), &signature, &signature, "initial", &tree, &[])
+            .expect("create commit");
+
+        let commit_obj = repo
+            .find_object(commit_id, Some(ObjectType::Commit))
+            .expect("find commit object");
+        repo.tag("0.1.0", &commit_obj, &signature, "tag", false)
+            .expect("create tag");
+
+        remote_dir
+    }
+
+    /// Creates a git repo containing only a variant config (execution block).
+    fn init_variant_git_repo() -> TempDir {
+        let remote_dir = tempfile::tempdir().expect("variant remote temp dir");
+        let repo = Repository::init(remote_dir.path()).expect("init variant repo");
+
+        let file_path = remote_dir.path().join(config::consts::NODE_CONFIG_FILE);
+        std::fs::write(
+            &file_path,
+            r#"{
+                schema_version: 1,
+                execution: {
+                    language: "rust",
+                    start_cmd: ["./target/release/git_variant"]
+                }
+            }"#,
+        )
+        .expect("write variant config");
+
+        let rel_path = file_path
+            .strip_prefix(remote_dir.path())
+            .expect("relative path");
+
+        let mut index = repo.index().expect("repository index");
+        index.add_path(rel_path).expect("add file to index");
+        index.write().expect("write index");
+
+        let tree_id = index.write_tree().expect("write tree");
+        let tree = repo.find_tree(tree_id).expect("find tree");
+        let signature = Signature::now("Peppy", "peppy@example.com").expect("signature");
+        let commit_id = repo
+            .commit(Some("HEAD"), &signature, &signature, "initial", &tree, &[])
+            .expect("create commit");
+
+        let commit_obj = repo
+            .find_object(commit_id, Some(ObjectType::Commit))
+            .expect("find commit object");
+        repo.tag("0.1.0", &commit_obj, &signature, "tag", false)
+            .expect("create tag");
+
+        remote_dir
+    }
+
+    #[test]
+    fn resolve_remote_git_default_variant_from_git_source() {
+        let variant_repo = init_variant_git_repo();
+        let variant_url = variant_repo.path().to_string_lossy().to_string();
+        let main_repo = init_git_repo_with_git_variant_source(&variant_url);
+
+        let spec = DeploymentGitSource {
+            repo: main_repo.path().to_string_lossy().to_string(),
+            path: ".".to_string(),
+            ref_: "0.1.0".to_string(),
+        };
+        let cache_dir = tempfile::tempdir().expect("cache dir");
+
+        let resolved = resolve_remote_git(cache_dir.path(), &spec)
+            .expect("git variant source should resolve successfully");
+        assert_eq!(resolved.config.manifest.name.as_str(), "git_variant_node");
+        assert_eq!(resolved.config.manifest.tag, "0.2.0");
+        assert_eq!(
+            resolved.config.execution.start_cmd,
+            Some(vec!["./target/release/git_variant".to_string()])
         );
     }
 

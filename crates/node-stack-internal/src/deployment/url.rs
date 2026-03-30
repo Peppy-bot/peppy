@@ -17,6 +17,26 @@ use zstd::stream::read::Decoder;
 
 const CHECKSUM_FILE: &str = ".checksum";
 
+/// Downloads and extracts a URL bundle to a cache directory, returning the path.
+///
+/// This is used by other deployment resolvers (e.g. git) when a default variant
+/// source points to a URL bundle.
+pub(super) fn ensure_url_source(
+    added_nodes_dir: &Path,
+    spec: &DeploymentUrlSource,
+) -> Result<PathBuf> {
+    fs::create_dir_all(added_nodes_dir)?;
+
+    let cache_dir = build_bundle_cache_path(added_nodes_dir, &spec.url, &spec.sha256);
+    let expected_checksum = spec.sha256.as_str();
+
+    if should_refresh(&cache_dir, expected_checksum) {
+        refresh_bundle(&cache_dir, spec, expected_checksum)?;
+    }
+
+    Ok(cache_dir)
+}
+
 pub fn resolve_remote_url(
     added_nodes_dir: &Path,
     spec: &DeploymentUrlSource,
