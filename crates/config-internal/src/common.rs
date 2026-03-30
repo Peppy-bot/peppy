@@ -218,60 +218,79 @@ impl std::error::Error for TypeMismatch {}
 // Node arguments with open-ended structure
 pub type NodeArguments = BTreeMap<String, AnyType>;
 
-/// Collect all leaf dot-paths from a parameter schema.
-///
-/// For example, `{ device_path: "string", video: { fps: "u16" } }` yields
-/// `{"device_path", "video.fps"}`.
-pub fn parameter_leaf_paths(
-    parameters: &BTreeMap<String, AnyType>,
-) -> std::collections::BTreeSet<String> {
-    let mut acc = std::collections::BTreeSet::new();
-    for_each_parameter_leaf_path(parameters, |path| {
-        acc.insert(path.to_owned());
-    });
-    acc
-}
-
-/// Visit every leaf dot-path in a parameter schema, invoking `visit` for each.
-pub fn for_each_parameter_leaf_path(
-    parameters: &BTreeMap<String, AnyType>,
-    mut visit: impl FnMut(&str),
-) {
-    let mut path = String::new();
-    for (key, value) in parameters {
-        path.clear();
-        path.push_str(key);
-        visit_parameter_leaf_paths(value, &mut path, &mut visit);
-    }
-}
-
-fn visit_parameter_leaf_paths(value: &AnyType, path: &mut String, visit: &mut dyn FnMut(&str)) {
-    match value {
-        AnyType::Object(map) if !map.is_empty() => {
-            if is_array_parameter_schema(map) {
-                visit(path.as_str());
-                return;
-            }
-
-            for (child_key, child_value) in map {
-                let original_len = path.len();
-                path.push('.');
-                path.push_str(child_key);
-                visit_parameter_leaf_paths(child_value, path, visit);
-                path.truncate(original_len);
-            }
-        }
-        _ => {
-            visit(path.as_str());
-        }
-    }
-}
-
-pub fn is_array_parameter_schema(map: &BTreeMap<String, AnyType>) -> bool {
+fn is_array_parameter_schema(map: &BTreeMap<String, AnyType>) -> bool {
     matches!(
         map.get("type"),
         Some(AnyType::String(kind)) if kind.eq_ignore_ascii_case("array")
     )
+}
+
+/// Validates that instance parameter values match the types declared in a parameter schema.
+/// Recursively walks through nested objects to validate each leaf value.
+///
+/// Returns `Ok(())` if all values match, or the first `TypeMismatch` found.
+pub fn validate_parameter_types(
+    instance_params: &BTreeMap<String, AnyType>,
+    manifest_params: &BTreeMap<String, AnyType>,
+    prefix: &str,
+) -> std::result::Result<(), TypeMismatch> {
+    for (key, instance_value) in instance_params {
+        let path = if prefix.is_empty() {
+            key.clone()
+        } else {
+            format!("{}.{}", prefix, key)
+        };
+
+        let Some(manifest_value) = manifest_params.get(key) else {
+            continue;
+        };
+
+        match (instance_value, manifest_value) {
+            // Both are objects - recurse into nested structure
+            (AnyType::Object(inst_map), AnyType::Object(man_map)) => {
+                if is_array_parameter_schema(man_map) {
+                    return Err(TypeMismatch {
+                        path,
+                        expected: "array".to_string(),
+                        actual: "object".to_string(),
+                    });
+                }
+                validate_parameter_types(inst_map, man_map, &path)?;
+            }
+            // Manifest declares a type (string like "f32", "bool", etc.)
+            (instance_value, AnyType::String(_)) => {
+                instance_value.matches_type_spec(manifest_value, &path)?;
+            }
+            // Manifest declares an object schema but instance provides a non-object
+            (instance_value, AnyType::Object(man_map)) => {
+                if is_array_parameter_schema(man_map) {
+                    if !matches!(instance_value, AnyType::Array(_)) {
+                        return Err(TypeMismatch {
+                            path,
+                            expected: "array".to_string(),
+                            actual: instance_value.type_name().to_string(),
+                        });
+                    }
+                    if let (AnyType::Array(items), Some(item_spec)) =
+                        (instance_value, man_map.get("items"))
+                    {
+                        for (i, item) in items.iter().enumerate() {
+                            let item_path = format!("{}[{}]", path, i);
+                            item.matches_type_spec(item_spec, &item_path)?;
+                        }
+                    }
+                } else {
+                    return Err(TypeMismatch {
+                        path,
+                        expected: "object".to_string(),
+                        actual: instance_value.type_name().to_string(),
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 /// Resolve a dot-path (e.g., `"video.device_path"`) against a `NodeArguments` map,
@@ -523,18 +542,90 @@ mod tests {
     }
 
     #[test]
-    fn parameter_leaf_paths_flat_and_nested() {
-        let mut video = BTreeMap::new();
-        video.insert("fps".to_string(), AnyType::String("u16".to_string()));
-        video.insert("device".to_string(), AnyType::String("string".to_string()));
-        let mut params = BTreeMap::new();
-        params.insert("name".to_string(), AnyType::String("string".to_string()));
-        params.insert("video".to_string(), AnyType::Object(video));
+    fn validate_parameter_types_flat_ok() {
+        let mut schema = BTreeMap::new();
+        schema.insert("fps".to_string(), AnyType::String("u16".to_string()));
+        schema.insert("name".to_string(), AnyType::String("string".to_string()));
 
-        let paths = parameter_leaf_paths(&params);
-        assert!(paths.contains("name"));
-        assert!(paths.contains("video.device"));
-        assert!(paths.contains("video.fps"));
-        assert_eq!(paths.len(), 3);
+        let mut args = BTreeMap::new();
+        args.insert("fps".to_string(), AnyType::Int(30));
+        args.insert("name".to_string(), AnyType::String("cam".to_string()));
+
+        assert!(validate_parameter_types(&args, &schema, "").is_ok());
+    }
+
+    #[test]
+    fn validate_parameter_types_nested_ok() {
+        let mut video_schema = BTreeMap::new();
+        video_schema.insert("fps".to_string(), AnyType::String("u16".to_string()));
+        let mut schema = BTreeMap::new();
+        schema.insert("video".to_string(), AnyType::Object(video_schema));
+
+        let mut video_args = BTreeMap::new();
+        video_args.insert("fps".to_string(), AnyType::Int(30));
+        let mut args = BTreeMap::new();
+        args.insert("video".to_string(), AnyType::Object(video_args));
+
+        assert!(validate_parameter_types(&args, &schema, "").is_ok());
+    }
+
+    #[test]
+    fn validate_parameter_types_type_mismatch() {
+        let mut schema = BTreeMap::new();
+        schema.insert("fps".to_string(), AnyType::String("u16".to_string()));
+
+        let mut args = BTreeMap::new();
+        args.insert(
+            "fps".to_string(),
+            AnyType::String("not a number".to_string()),
+        );
+
+        let err = validate_parameter_types(&args, &schema, "").unwrap_err();
+        assert_eq!(err.path, "fps");
+    }
+
+    #[test]
+    fn validate_parameter_types_array_schema_expects_array() {
+        let mut schema = BTreeMap::new();
+        schema.insert(
+            "flags".to_string(),
+            AnyType::Object(BTreeMap::from([
+                ("type".to_string(), AnyType::String("array".to_string())),
+                ("items".to_string(), AnyType::String("string".to_string())),
+            ])),
+        );
+
+        let mut args = BTreeMap::new();
+        args.insert("flags".to_string(), AnyType::Int(42));
+
+        let err = validate_parameter_types(&args, &schema, "").unwrap_err();
+        assert_eq!(err.path, "flags");
+        assert_eq!(err.expected, "array");
+    }
+
+    #[test]
+    fn validate_parameter_types_object_given_for_array_schema() {
+        let mut schema = BTreeMap::new();
+        schema.insert(
+            "flags".to_string(),
+            AnyType::Object(BTreeMap::from([
+                ("type".to_string(), AnyType::String("array".to_string())),
+                ("items".to_string(), AnyType::String("string".to_string())),
+            ])),
+        );
+
+        let mut args = BTreeMap::new();
+        args.insert(
+            "flags".to_string(),
+            AnyType::Object(BTreeMap::from([(
+                "nested".to_string(),
+                AnyType::Bool(true),
+            )])),
+        );
+
+        let err = validate_parameter_types(&args, &schema, "").unwrap_err();
+        assert_eq!(err.path, "flags");
+        assert_eq!(err.expected, "array");
+        assert_eq!(err.actual, "object");
     }
 }

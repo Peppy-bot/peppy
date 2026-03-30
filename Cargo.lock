@@ -1183,16 +1183,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "fs2"
-version = "0.4.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9564fc758e15025b46aa6643b1b77d047d1a56a1aea6e01002ac0c7026876213"
-dependencies = [
- "libc",
- "winapi",
-]
-
-[[package]]
 name = "fs_extra"
 version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2316,22 +2306,15 @@ name = "node-stack"
 version = "0.0.1"
 dependencies = [
  "config",
- "fs2",
- "git2",
- "httptest",
  "names-generator2",
  "petgraph",
  "rand 0.10.0",
  "serde",
  "serde_json5",
- "sha2",
- "tar",
  "tempfile",
  "thiserror 2.0.18",
  "tracing",
  "tracing-subscriber",
- "ureq",
- "zstd",
 ]
 
 [[package]]

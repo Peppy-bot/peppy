@@ -18,11 +18,9 @@ pub mod peppy_config {
 pub mod test_helpers;
 
 pub use common::{
-    AnyType, NodeArguments, TypeMismatch, for_each_parameter_leaf_path, is_array_parameter_schema,
-    parameter_leaf_paths, resolve_parameter_path,
+    AnyType, NodeArguments, TypeMismatch, resolve_parameter_path, validate_parameter_types,
 };
 
-// Node configuration index (filesystem snapshot)
-pub use node_index::{FSNodeConfigIndex, NodeIndexState};
+pub use node_index::FSNodeConfigIndex;
 
 pub use error::{Error as ConfigError, ParsingError, Result as ConfigResult};

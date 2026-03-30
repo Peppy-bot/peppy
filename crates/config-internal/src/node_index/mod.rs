@@ -1,4 +1,4 @@
 mod discovery;
 mod index;
 
-pub use index::{FSNodeConfigIndex, NodeIndexState};
+pub use index::FSNodeConfigIndex;
