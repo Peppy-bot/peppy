@@ -21,6 +21,9 @@ jobs:
       - name: Run tests
         run: cargo test
 
+      - name: Run container e2e tests
+        run: cargo test -p core-node --features container_e2e --test container_e2e
+
       - name: Run documentation integration tests
         run: cargo test --manifest-path docs/tests/integration/Cargo.toml
 

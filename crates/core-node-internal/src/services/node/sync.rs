@@ -431,10 +431,11 @@ async fn handle_node_sync_request_inner(
                     generator::CrateDeployMode::default(),
                     Some(&variant_merged_config_path),
                 )?;
-                // Re-fingerprint using the merged config that was actually used
-                // for generation so the stored hash reflects the real input.
+                // Re-fingerprint using the variant's own peppy.json5 so that
+                // node-add verification (which reads the variant's config) finds
+                // a matching hash.
                 config::fingerprint::generate_node_config_fingerprint(
-                    &variant_merged_config_path,
+                    variant_dir.join(config::consts::NODE_CONFIG_FILE),
                     variant_dir.join(config::consts::PEPPYGEN_OUTPUT_PATH),
                 )
                 .map_err(generator::GeneratorError::Config)?;

@@ -1478,81 +1478,21 @@ async fn listen_for_node_sync_with_variant_succeeds() {
         "variant peppy.json5 should still contain the original execution config"
     );
 
-    // Verify the stored fingerprint matches the merged config, not the variant's own peppy.json5
+    // Verify the stored fingerprint matches the variant's own peppy.json5.
+    // Each variant lives in its own sandbox for fingerprinting — it is only
+    // aware of its own peppy.json5, not the merged config.
     let variant_fingerprint_path = variant_peppygen_dir.join("peppy.json5.sha256");
     let stored_fingerprint = fs::read_to_string(&variant_fingerprint_path)
         .expect("variant fingerprint file should exist")
         .trim()
         .to_string();
 
-    // Reconstruct the merged config the same way sync.rs does
-    let root_raw: config::node::RawNodeConfig = serde_json5::from_str(
-        r#"{
-            schema_version: 1,
-            manifest: {
-                name: "example_node",
-                tag: "0.1.0",
-                variants: [
-                    { name: "rust_variant", source: { local: "./rust_variant" } },
-                ],
-            },
-            interfaces: {
-                topics: {
-                    emits: [
-                        {
-                            name: "hello_world",
-                            qos_profile: "sensor_data",
-                            message_format: {
-                                message: "string",
-                            },
-                        },
-                    ],
-                },
-            },
-            execution: {
-                language: "rust",
-                start_cmd: ["sleep", "10"],
-            },
-        }"#,
-    )
-    .expect("root config should parse as RawNodeConfig");
-
-    let variant_cfg: config::node::VariantConfig = serde_json5::from_str(
-        r#"{
-            schema_version: 1,
-            execution: {
-                language: "rust",
-                start_cmd: ["sleep", "10"],
-            },
-        }"#,
-    )
-    .expect("variant config should parse as VariantConfig");
-
-    let mut merged_manifest = root_raw.manifest.clone();
-    merged_manifest.variants = None;
-    let merged_config = config::node::NodeConfig {
-        schema_version: root_raw.schema_version,
-        manifest: merged_manifest,
-        interfaces: root_raw.interfaces,
-        execution: variant_cfg.execution,
-    };
-    let merged_json5 =
-        serde_json5::to_string(&merged_config).expect("merged config should serialize");
-    let expected_fingerprint = config::fingerprint::fingerprint_for_bytes(merged_json5.as_bytes());
-
-    assert_eq!(
-        stored_fingerprint, expected_fingerprint,
-        "stored fingerprint should match the hash of the merged config"
-    );
-
-    // The fingerprint must NOT match the variant's own peppy.json5
     let variant_own_bytes = fs::read(variant_dir.join(NODE_CONFIG_FILE))
         .expect("variant peppy.json5 should be readable");
-    let variant_own_fingerprint = config::fingerprint::fingerprint_for_bytes(&variant_own_bytes);
-    assert_ne!(
-        stored_fingerprint, variant_own_fingerprint,
-        "stored fingerprint should NOT match the variant's own peppy.json5 — \
-         it should match the merged config instead"
+    let expected_fingerprint = config::fingerprint::fingerprint_for_bytes(&variant_own_bytes);
+    assert_eq!(
+        stored_fingerprint, expected_fingerprint,
+        "stored fingerprint should match the variant's own peppy.json5"
     );
 }
 

@@ -89,14 +89,15 @@ async fn add_node_async(
     // Use a separate connection to check for existing instances before connecting with the main handle.
     // This avoids interfering with the action messenger used for send_goal.
     let pre_add_node_info = if !force {
-        fetch_node_info(
-            &daemon_state,
-            &core_node_name,
-            node_source.clone(),
-            variant_source.clone(),
+        Some(
+            fetch_node_info(
+                &daemon_state,
+                &core_node_name,
+                node_source.clone(),
+                variant_source.clone(),
+            )
+            .await?,
         )
-        .await
-        .ok()
     } else {
         None
     };

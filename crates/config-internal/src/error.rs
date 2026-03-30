@@ -50,7 +50,7 @@ pub enum ParsingError {
     ProcessAndContainerConflict,
     #[error("Node config must have either `process` or `container`")]
     NoProcessOrContainer,
-    #[error("Node config `process` must not be empty")]
+    #[error("Node config `execution.start_cmd` must not be empty")]
     EmptyStartCmd,
 
     // -- node config: default variant

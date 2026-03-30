@@ -50,3 +50,6 @@ libc = "0.2"
 tempfile = "3.10"
 tokio = { version = "1.47", features = ["full"] }
 httptest = "0.16.3"
+
+[features]
+container_e2e = []
