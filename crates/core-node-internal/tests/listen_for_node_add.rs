@@ -3509,21 +3509,21 @@ async fn listen_for_node_add_variant_local_source() {
     let started_core_node = start_core_node_with_mock_messenger().await;
     let node_stack = started_core_node.node_stack.clone();
 
-    // Create a parent directory with root node and variant side by side
+    // Create root node directory with variant inside it
     let parent_dir = tempfile::tempdir().expect("failed to create parent dir");
     let root_dir = parent_dir.path().join("root_node");
-    let variant_dir = parent_dir.path().join("mock_node");
+    let variant_dir = root_dir.join("mock_node");
     std::fs::create_dir_all(&root_dir).unwrap();
     std::fs::create_dir_all(&variant_dir).unwrap();
 
-    // Root node config with a "mock" variant pointing to a sibling directory
+    // Root node config with a "mock" variant pointing to a subdirectory
     let root_config = r#"{
         schema_version: 1,
         manifest: {
             name: "robot_brain",
             tag: "0.1.0",
             variants: [
-                { name: "mock", source: { local: "../mock_node" } }
+                { name: "mock", source: { local: "mock_node" } }
             ]
         },
         interfaces: {
@@ -3599,21 +3599,21 @@ async fn listen_for_node_add_variant_local_source_after_sync() {
     let started_core_node = start_core_node_with_mock_messenger().await;
     let node_stack = started_core_node.node_stack.clone();
 
-    // Create a parent directory with root node and variant side by side
+    // Create root node directory with variant inside it
     let parent_dir = tempfile::tempdir().expect("failed to create parent dir");
     let root_dir = parent_dir.path().join("root_node");
-    let variant_dir = parent_dir.path().join("mock_node");
+    let variant_dir = root_dir.join("mock_node");
     std::fs::create_dir_all(&root_dir).unwrap();
     std::fs::create_dir_all(&variant_dir).unwrap();
 
-    // Root node config with a "mock" variant pointing to a sibling directory
+    // Root node config with a "mock" variant pointing to a subdirectory
     let root_config = r#"{
         schema_version: 1,
         manifest: {
             name: "synced_robot",
             tag: "0.1.0",
             variants: [
-                { name: "mock", source: { local: "../mock_node" } }
+                { name: "mock", source: { local: "mock_node" } }
             ]
         },
         interfaces: {
@@ -3720,7 +3720,7 @@ async fn listen_for_node_add_variant_fingerprint_mismatch_after_sync() {
 
     let parent_dir = tempfile::tempdir().expect("failed to create parent dir");
     let root_dir = parent_dir.path().join("root_node");
-    let variant_dir = parent_dir.path().join("mock_node");
+    let variant_dir = root_dir.join("mock_node");
     std::fs::create_dir_all(&root_dir).unwrap();
     std::fs::create_dir_all(&variant_dir).unwrap();
 
@@ -3730,7 +3730,7 @@ async fn listen_for_node_add_variant_fingerprint_mismatch_after_sync() {
             name: "stale_variant_robot",
             tag: "0.1.0",
             variants: [
-                { name: "mock", source: { local: "../mock_node" } }
+                { name: "mock", source: { local: "mock_node" } }
             ]
         },
         interfaces: {
@@ -3973,7 +3973,7 @@ async fn listen_for_node_add_variant_interface_mismatch() {
 
     let parent_dir = tempfile::tempdir().expect("failed to create parent dir");
     let root_dir = parent_dir.path().join("root_node");
-    let variant_dir = parent_dir.path().join("bad_variant");
+    let variant_dir = root_dir.join("bad_variant");
     std::fs::create_dir_all(&root_dir).unwrap();
     std::fs::create_dir_all(&variant_dir).unwrap();
 
@@ -3983,7 +3983,7 @@ async fn listen_for_node_add_variant_interface_mismatch() {
             name: "test_node",
             tag: "0.1.0",
             variants: [
-                { name: "bad", source: { local: "../bad_variant" } }
+                { name: "bad", source: { local: "bad_variant" } }
             ]
         },
         interfaces: {
@@ -4051,7 +4051,7 @@ async fn listen_for_node_add_variant_matching_interfaces_different_order() {
 
     let parent_dir = tempfile::tempdir().expect("failed to create parent dir");
     let root_dir = parent_dir.path().join("root_node");
-    let variant_dir = parent_dir.path().join("good_variant");
+    let variant_dir = root_dir.join("good_variant");
     std::fs::create_dir_all(&root_dir).unwrap();
     std::fs::create_dir_all(&variant_dir).unwrap();
 
@@ -4061,7 +4061,7 @@ async fn listen_for_node_add_variant_matching_interfaces_different_order() {
             name: "test_node",
             tag: "0.1.0",
             variants: [
-                { name: "good", source: { local: "../good_variant" } }
+                { name: "good", source: { local: "good_variant" } }
             ]
         },
         interfaces: {
@@ -4124,7 +4124,7 @@ async fn listen_for_node_add_variant_no_interfaces() {
 
     let parent_dir = tempfile::tempdir().expect("failed to create parent dir");
     let root_dir = parent_dir.path().join("root_node");
-    let variant_dir = parent_dir.path().join("minimal_variant");
+    let variant_dir = root_dir.join("minimal_variant");
     std::fs::create_dir_all(&root_dir).unwrap();
     std::fs::create_dir_all(&variant_dir).unwrap();
 
@@ -4134,7 +4134,7 @@ async fn listen_for_node_add_variant_no_interfaces() {
             name: "test_node",
             tag: "0.1.0",
             variants: [
-                { name: "minimal", source: { local: "../minimal_variant" } }
+                { name: "minimal", source: { local: "minimal_variant" } }
             ]
         },
         interfaces: {
@@ -4263,7 +4263,7 @@ async fn listen_for_node_add_variant_manifest_ignored_warning() {
 
     let parent_dir = tempfile::tempdir().expect("failed to create parent dir");
     let root_dir = parent_dir.path().join("root_node");
-    let variant_dir = parent_dir.path().join("variant_with_manifest");
+    let variant_dir = root_dir.join("variant_with_manifest");
     std::fs::create_dir_all(&root_dir).unwrap();
     std::fs::create_dir_all(&variant_dir).unwrap();
 
@@ -4273,7 +4273,7 @@ async fn listen_for_node_add_variant_manifest_ignored_warning() {
             name: "test_node",
             tag: "0.1.0",
             variants: [
-                { name: "custom", source: { local: "../variant_with_manifest" } }
+                { name: "custom", source: { local: "variant_with_manifest" } }
             ]
         },
         execution: {
