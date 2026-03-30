@@ -307,14 +307,6 @@ async fn listen_for_node_sync_missing_dependency_fails() {
                             local_node_id: "uvc_camera",
                             name: "video_stream_rear",
                         },
-                        {
-                            local_node_id: "lidar_sensor",
-                            name: "point_cloud",
-                        },
-                        {
-                            local_node_id: "gps_module",
-                            name: "location",
-                        }
                     ],
                 },
                 services: {
