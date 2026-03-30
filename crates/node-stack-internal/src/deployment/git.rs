@@ -120,8 +120,9 @@ fn resolve_default_variant_from_tree(
     variant_source: &DeploymentSource,
     config_path: &Path,
     added_nodes_dir: &Path,
-) -> Result<NodeConfig> {
-    let variant_config = match variant_source {
+    repo_dir: &Path,
+) -> Result<(NodeConfig, PathBuf)> {
+    let (variant_config, variant_root_path) = match variant_source {
         DeploymentSource::Local(local_source) => {
             let parent = config_path.parent().unwrap_or_else(|| Path::new(""));
             let variant_dir = if local_source.local.is_relative() {
@@ -136,32 +137,53 @@ fn resolve_default_variant_from_tree(
                 .filter(|c| !matches!(c, std::path::Component::CurDir))
                 .collect();
             let variant_content = read_blob_from_tree(repo, tree, &variant_config_path)?;
-            VariantConfigParser::from_content(&variant_content)?
+            let normalized_variant_dir: PathBuf = variant_dir
+                .components()
+                .filter(|c| !matches!(c, std::path::Component::CurDir))
+                .collect();
+            (
+                VariantConfigParser::from_content(&variant_content)?,
+                repo_dir.join(normalized_variant_dir),
+            )
         }
         DeploymentSource::Git(git_spec) => {
-            let repo_dir = build_repo_cache_path(added_nodes_dir, &git_spec.repo);
-            let variant_repo = ensure_repository(&repo_dir, &git_spec.repo)?;
+            let variant_repo_dir = build_repo_cache_path(added_nodes_dir, &git_spec.repo);
+            let variant_repo = ensure_repository(&variant_repo_dir, &git_spec.repo)?;
             fetch_repository(&variant_repo)?;
             let variant_commit = find_commit_for_tag(&variant_repo, &git_spec.ref_)?;
             let variant_tree = variant_commit.tree()?;
             let variant_config_path = node_config_path(&git_spec.path);
             let variant_content =
                 read_blob_from_tree(&variant_repo, &variant_tree, &variant_config_path)?;
-            VariantConfigParser::from_content(&variant_content)?
+            let variant_root = variant_repo_dir.join(
+                variant_config_path
+                    .parent()
+                    .unwrap_or_else(|| Path::new("")),
+            );
+            (
+                VariantConfigParser::from_content(&variant_content)?,
+                variant_root,
+            )
         }
         DeploymentSource::Url(url_spec) => {
             let cache_dir = super::url::ensure_url_source(added_nodes_dir, url_spec)?;
             let variant_config_path = cache_dir.join(NODE_CONFIG_FILE);
-            VariantConfigParser::from_path(&variant_config_path)?
+            (
+                VariantConfigParser::from_path(&variant_config_path)?,
+                cache_dir,
+            )
         }
     };
 
-    Ok(NodeConfig {
-        schema_version: raw_config.schema_version,
-        manifest: raw_config.manifest,
-        interfaces: raw_config.interfaces,
-        execution: variant_config.execution,
-    })
+    Ok((
+        NodeConfig {
+            schema_version: raw_config.schema_version,
+            manifest: raw_config.manifest,
+            interfaces: raw_config.interfaces,
+            execution: variant_config.execution,
+        },
+        variant_root_path,
+    ))
 }
 
 pub fn resolve_remote_git(
@@ -183,20 +205,21 @@ pub fn resolve_remote_git(
 
     let raw_config = NodeConfigParser::from_content(&content)?;
 
-    let node = if let Some(source) = raw_config.manifest.default_variant_source().cloned() {
-        resolve_default_variant_from_tree(
-            &repo,
-            &tree,
-            raw_config,
-            &source,
-            &config_path,
-            added_nodes_dir,
-        )?
-    } else {
-        raw_config.into_resolved()?
-    };
-
-    let root_path = repo_dir.join(config_path.parent().unwrap_or_else(|| Path::new("")));
+    let (node, root_path) =
+        if let Some(source) = raw_config.manifest.default_variant_source().cloned() {
+            resolve_default_variant_from_tree(
+                &repo,
+                &tree,
+                raw_config,
+                &source,
+                &config_path,
+                added_nodes_dir,
+                &repo_dir,
+            )?
+        } else {
+            let root_path = repo_dir.join(config_path.parent().unwrap_or_else(|| Path::new("")));
+            (raw_config.into_resolved()?, root_path)
+        };
 
     Ok(ResolvedNode {
         config: node,
@@ -419,6 +442,10 @@ mod tests {
             resolved.config.execution.start_cmd,
             Some(vec!["./target/release/variant_node".to_string()])
         );
+        let expected_variant_root = build_repo_cache_path(cache_dir.path(), &spec.repo)
+            .join("variants")
+            .join("default");
+        assert_eq!(resolved.root_path, expected_variant_root);
     }
 
     /// Creates a git repo whose default variant points to a separate git repo.
@@ -528,6 +555,8 @@ mod tests {
             resolved.config.execution.start_cmd,
             Some(vec!["./target/release/git_variant".to_string()])
         );
+        let expected_variant_root = build_repo_cache_path(cache_dir.path(), &variant_url);
+        assert_eq!(resolved.root_path, expected_variant_root);
     }
 
     #[test]
