@@ -8,17 +8,17 @@ pub use node::FORBIDDEN_ENV_KEYS;
 
 use crate::Result;
 use config::{
-    AnyType, RawNodeArguments,
+    AnyType,
     consts::PeppyDirs,
     launcher::CURRENT_SCHEMA_VERSION,
     node::{Execution, Manifest, Name, NodeConfig, PeppygenLanguage},
+    runtime::RawNodeArguments,
 };
 use names_generator2::get_random;
 use node_stack::NodeStack;
 use peppylib::MessengerHandle;
 use pmi::Messenger;
 use rand::rng;
-use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -44,16 +44,16 @@ pub struct CoreNodeArguments {
 
 impl From<CoreNodeArguments> for RawNodeArguments {
     fn from(args: CoreNodeArguments) -> Self {
-        let mut map = BTreeMap::new();
-        map.insert(
+        let mut raw = RawNodeArguments::new();
+        raw.insert(
             "node_startup_timeout_ms".to_string(),
             AnyType::UInt(args.node_startup_timeout.as_millis() as u64),
         );
-        map.insert(
+        raw.insert(
             "node_start_health_timeout_ms".to_string(),
             AnyType::UInt(args.node_start_health_timeout.as_millis() as u64),
         );
-        map
+        raw
     }
 }
 
@@ -107,7 +107,7 @@ impl CoreNode {
             },
             execution: Execution {
                 language: PeppygenLanguage::Rust,
-                parameters: node_arguments.into(),
+                parameters: RawNodeArguments::from(node_arguments).into_inner(),
                 add_cmd: None,
                 start_cmd: Some(vec![]),
                 container: None,

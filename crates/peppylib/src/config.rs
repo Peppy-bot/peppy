@@ -1,6 +1,6 @@
 //! Configuration utilities and re-exports from the config crate.
 
-pub use crate::runtime::NodeArguments;
+pub use config::NodeArguments;
 pub use config::consts::{NODE_CONFIG_FILE, RUNTIME_CONFIG_VAR_NAME};
 pub use config::node::*;
 pub use schemars::JsonSchema;

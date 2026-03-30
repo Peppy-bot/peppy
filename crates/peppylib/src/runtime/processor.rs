@@ -1,26 +1,13 @@
 use std::path::Path;
 
-use crate::error::{Error, MissingStandaloneParameters, ParameterDeserializationError, Result};
+use crate::error::{Error, ParameterDeserializationError, Result};
 use config::{
-    RawNodeArguments,
+    NodeArguments,
     consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME},
     launcher::Name,
     node::NodeConfig,
-    runtime::{NodeInstance, RuntimeConfig},
+    runtime::{NodeInstance, RawNodeArguments, RuntimeConfig},
 };
-use serde::Serialize;
-
-/// Node arguments that have passed validation against the manifest spec.
-///
-/// In daemon mode: type-validated against the peppy.json5 parameter declarations.
-/// In standalone mode: checked for required parameter presence.
-///
-/// This type cannot be constructed directly — it is only produced by the
-/// validation functions in [`Processor`]. The inner [`RawNodeArguments`] is
-/// not accessible; consumers must parse into a typed struct via
-/// [`crate::config::deserialize_parameters`].
-#[derive(Clone, Debug, Serialize)]
-pub struct NodeArguments(RawNodeArguments);
 
 use super::builder::StandaloneConfig;
 
@@ -58,10 +45,11 @@ impl Processor {
 
         let node_config: NodeConfig =
             serde_json5::from_str(&std::fs::read_to_string(peppy_config.as_ref())?)?;
-        let validated_arguments = Self::validate_parameter_types(
-            runtime_config.node_instance.arguments.clone(),
-            &node_config.execution.parameters,
-        )?;
+        let validated_arguments = runtime_config
+            .node_instance
+            .arguments
+            .clone()
+            .into_resolved(&node_config.execution.parameters)?;
 
         Ok(Self {
             runtime_config,
@@ -92,8 +80,7 @@ impl Processor {
             None => RawNodeArguments::new(),
         };
 
-        let validated_arguments =
-            Self::validate_required_parameters(arguments, &node_config.execution.parameters)?;
+        let validated_arguments = arguments.into_resolved(&node_config.execution.parameters)?;
 
         let node_name: String = config
             .node_name
@@ -155,43 +142,6 @@ impl Processor {
         }
     }
 
-    fn validate_parameter_types(
-        runtime_args: RawNodeArguments,
-        compiled_params: &RawNodeArguments,
-    ) -> Result<NodeArguments> {
-        for (key, runtime_value) in &runtime_args {
-            let compiled_type = compiled_params
-                .get(key)
-                .ok_or_else(|| Error::MissingCompiledParameter { path: key.clone() })?;
-            runtime_value.matches_type_spec(compiled_type, key)?;
-        }
-        Ok(NodeArguments(runtime_args))
-    }
-
-    /// Validate that all required parameters defined in peppy.json5 are
-    /// provided when running in standalone mode. This catches missing
-    /// parameters early — before the Zenoh connection attempt — so the
-    /// developer sees a clear error instead of a hanging process.
-    fn validate_required_parameters(
-        runtime_args: RawNodeArguments,
-        compiled_params: &RawNodeArguments,
-    ) -> Result<NodeArguments> {
-        let missing: Vec<String> = compiled_params
-            .keys()
-            .filter(|key| !runtime_args.contains_key(key.as_str()))
-            .cloned()
-            .collect();
-
-        if !missing.is_empty() {
-            return Err(MissingStandaloneParameters {
-                parameters: missing,
-            }
-            .into());
-        }
-
-        Ok(NodeArguments(runtime_args))
-    }
-
     pub fn bound_instance_id(&self) -> &str {
         self.runtime_config.node_instance.instance_id.as_str()
     }
@@ -221,7 +171,10 @@ impl Processor {
 mod tests {
     use super::{PEPPYGEN_OUTPUT_PATH, Processor, RUNTIME_CONFIG_VAR_NAME};
     use crate::runtime::builder::StandaloneConfig;
-    use config::{AnyType, RawNodeArguments, runtime::RuntimeConfig};
+    use config::{
+        AnyType, ParameterSchema,
+        runtime::{RawNodeArguments, RuntimeConfig},
+    };
     use std::{collections::BTreeMap, env, path::Path, sync::Mutex};
     use tempfile::TempDir;
 
@@ -468,8 +421,8 @@ mod tests {
         };
         let err_string = err.to_string();
         assert!(
-            err_string.contains("missing parameter") && err_string.contains("extra_param"),
-            "expected missing parameter error for 'extra_param', got: {err_string}"
+            err_string.contains("unknown parameter") && err_string.contains("extra_param"),
+            "expected unknown parameter error for 'extra_param', got: {err_string}"
         );
     }
 
@@ -842,8 +795,8 @@ mod tests {
             panic!("expected error when required parameters are missing");
         };
         assert!(
-            matches!(err, crate::error::Error::MissingStandaloneParameters(_)),
-            "expected MissingStandaloneParameters error, got: {err:?}"
+            matches!(err, crate::error::Error::NodeArgumentsValidation(_)),
+            "expected NodeArgumentsValidation error, got: {err:?}"
         );
         let err_string = err.to_string();
         assert!(
@@ -892,11 +845,8 @@ mod tests {
         // RawNodeArguments — the only way to consume it is through
         // deserialize_parameters, which parses into a typed struct.
         let raw = RawNodeArguments::from([("x".to_string(), AnyType::Int(1))]);
-        let validated = Processor::validate_parameter_types(
-            raw,
-            &RawNodeArguments::from([("x".to_string(), AnyType::String("i64".to_string()))]),
-        )
-        .expect("validation should pass");
+        let schema = ParameterSchema::from([("x".to_string(), AnyType::String("i64".to_string()))]);
+        let validated = raw.into_resolved(&schema).expect("validation should pass");
 
         // We can serialize (for deserialize_parameters) but cannot access
         // the inner map directly — this is a compile-time guarantee.

@@ -182,6 +182,9 @@ pub enum Error {
     #[error(transparent)]
     ParameterTypeMismatch(#[from] config::TypeMismatch),
 
+    #[error(transparent)]
+    NodeArgumentsValidation(#[from] config::NodeArgumentsError),
+
     #[error("missing parameter `{path}` in compiled node parameters")]
     MissingCompiledParameter { path: String },
 

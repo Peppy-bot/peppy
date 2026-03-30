@@ -38,7 +38,7 @@ pub(crate) struct PythonSchemaInfo {
 #[derive(Default)]
 pub struct PythonGenerator {
     sections: Vec<InterfaceArtifact>,
-    parameters: config::RawNodeArguments,
+    parameters: config::ParameterSchema,
     schemas: HashMap<String, CapnpSchema>,
     is_container: bool,
 }
@@ -49,7 +49,7 @@ impl PythonGenerator {
     }
 
     /// Sets the node parameters for code generation.
-    pub fn set_parameters(&mut self, parameters: config::RawNodeArguments) {
+    pub fn set_parameters(&mut self, parameters: config::ParameterSchema) {
         self.parameters = parameters;
     }
 

@@ -10,7 +10,7 @@ use chrono::Local;
 use config::consts::{PeppyDirs, RUNTIME_CONFIG_VAR_NAME};
 use config::node::{Name, PeppygenLanguage};
 use config::runtime::RuntimeConfig;
-use config::{AnyType, RawNodeArguments};
+use config::{AnyType, runtime::RawNodeArguments};
 use futures::FutureExt;
 use node_stack::{NodeEntity, NodeStack};
 use peppylib::encoding::health::NodeHealthRequest;
@@ -141,8 +141,8 @@ impl GoalHandler for NodeStartGoalHandler {
 /// Validates that all required parameters from the schema are present in the provided arguments.
 /// Returns a list of all missing parameter paths (e.g., ["device.physical", "video.frame_rate"]).
 fn validate_parameters(
-    schema: &RawNodeArguments,
-    arguments: &RawNodeArguments,
+    schema: &std::collections::BTreeMap<String, AnyType>,
+    arguments: &std::collections::BTreeMap<String, AnyType>,
     prefix: &str,
 ) -> Vec<String> {
     let mut missing = Vec::new();
@@ -610,7 +610,7 @@ async fn process_node_start(
     // Validate that all required parameters are provided before starting the node
     let missing_params = validate_parameters(
         &entity.config().execution.parameters,
-        &runtime_config.node_instance.arguments,
+        runtime_config.node_instance.arguments.as_inner(),
         "",
     );
     if !missing_params.is_empty() {
@@ -1147,7 +1147,7 @@ fn resolve_mount_path_parameters(
                 .ok_or_else(|| format!("Unclosed parameter reference in mount path: {mount}"))?;
             let dot_path = &after_prefix[..end];
 
-            match config::resolve_parameter_path(arguments, dot_path) {
+            match arguments.resolve_path(dot_path) {
                 Some(AnyType::String(value)) => {
                     result.push_str(value);
                 }

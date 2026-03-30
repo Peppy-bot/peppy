@@ -10,7 +10,8 @@ pub mod fingerprint;
 pub mod node;
 pub mod runtime;
 pub use common::{
-    AnyType, RawNodeArguments, TypeMismatch, resolve_parameter_path, validate_parameter_types,
+    AnyType, NodeArguments, NodeArgumentsError, ParameterSchema, TypeMismatch,
+    resolve_parameter_path, validate_parameter_types,
 };
 pub mod launcher;
 pub use error::{Error as ConfigError, ParsingError, Result as ConfigResult};

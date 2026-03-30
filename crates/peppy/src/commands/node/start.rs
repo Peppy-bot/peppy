@@ -1,6 +1,7 @@
+use config::AnyType;
 use config::launcher::Name;
+use config::runtime::RawNodeArguments;
 use config::runtime::{NodeInstance, RuntimeConfig};
-use config::{AnyType, RawNodeArguments};
 use core_node::encoding::{
     NodeStartFeedback, NodeStartGoal, NodeStartGoalResponse, NodeStartResult,
 };
@@ -32,20 +33,24 @@ const SCROLLING_OUTPUT_LINES: usize = 10;
 /// - Float strings -> Float
 /// - Everything else -> String
 pub fn args_to_node_arguments(args: &[(String, String)]) -> RawNodeArguments {
-    let mut result: RawNodeArguments = std::collections::BTreeMap::new();
+    let mut result: std::collections::BTreeMap<String, AnyType> = std::collections::BTreeMap::new();
 
     for (key, value) in args {
         let parsed_value = parse_value(value);
         insert_nested_value(&mut result, key, parsed_value);
     }
 
-    result
+    RawNodeArguments::from(result)
 }
 
-/// Inserts a value at a dot-separated path into a nested RawNodeArguments structure.
+/// Inserts a value at a dot-separated path into a nested BTreeMap structure.
 /// For example, path "device.physical" with value "foo" creates:
 /// {"device": {"physical": "foo"}}
-fn insert_nested_value(root: &mut RawNodeArguments, path: &str, value: AnyType) {
+fn insert_nested_value(
+    root: &mut std::collections::BTreeMap<String, AnyType>,
+    path: &str,
+    value: AnyType,
+) {
     let parts: Vec<&str> = path.split('.').collect();
 
     if parts.len() == 1 {
@@ -59,7 +64,11 @@ fn insert_nested_value(root: &mut RawNodeArguments, path: &str, value: AnyType) 
 }
 
 /// Recursively inserts a value at the given path parts.
-fn insert_at_path(current: &mut RawNodeArguments, parts: &[&str], value: AnyType) {
+fn insert_at_path(
+    current: &mut std::collections::BTreeMap<String, AnyType>,
+    parts: &[&str],
+    value: AnyType,
+) {
     if parts.is_empty() {
         return;
     }

@@ -215,8 +215,149 @@ impl std::fmt::Display for TypeMismatch {
 
 impl std::error::Error for TypeMismatch {}
 
-// Node arguments with open-ended structure
-pub type RawNodeArguments = BTreeMap<String, AnyType>;
+/// Type alias for parameter type specifications declared in `peppy.json5`.
+///
+/// Each key is a parameter name and each value describes the expected type
+/// (e.g. `AnyType::String("f64")` or an object/array type spec).
+pub type ParameterSchema = BTreeMap<String, AnyType>;
+
+/// Unvalidated node arguments deserialized from a runtime or deployment config.
+///
+/// Use [`RawNodeArguments::into_resolved`] to validate against a
+/// [`ParameterSchema`] and obtain a [`NodeArguments`] value.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(transparent)]
+pub struct RawNodeArguments(BTreeMap<String, AnyType>);
+
+impl RawNodeArguments {
+    pub fn new() -> Self {
+        Self(BTreeMap::new())
+    }
+
+    pub fn insert(&mut self, key: String, value: AnyType) -> Option<AnyType> {
+        self.0.insert(key, value)
+    }
+
+    pub fn get(&self, key: &str) -> Option<&AnyType> {
+        self.0.get(key)
+    }
+
+    pub fn keys(&self) -> impl Iterator<Item = &String> {
+        self.0.keys()
+    }
+
+    pub fn contains_key(&self, key: &str) -> bool {
+        self.0.contains_key(key)
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&String, &AnyType)> {
+        self.0.iter()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn as_inner(&self) -> &BTreeMap<String, AnyType> {
+        &self.0
+    }
+
+    pub fn into_inner(self) -> BTreeMap<String, AnyType> {
+        self.0
+    }
+
+    /// Resolve a dot-separated path (e.g. `"video.device_path"`) against these
+    /// arguments, returning the leaf [`AnyType`] value if found.
+    pub fn resolve_path(&self, dot_path: &str) -> Option<&AnyType> {
+        resolve_parameter_path(&self.0, dot_path)
+    }
+
+    /// Validate these raw arguments against a [`ParameterSchema`] and produce
+    /// a [`NodeArguments`] value.
+    ///
+    /// Checks that:
+    /// 1. Every key declared in the schema is present in the arguments.
+    /// 2. Every argument value matches the type declared in the schema.
+    /// 3. No unknown keys (absent from the schema) are present.
+    pub fn into_resolved(
+        self,
+        schema: &ParameterSchema,
+    ) -> Result<NodeArguments, NodeArgumentsError> {
+        // 1. Check all schema keys are present.
+        let missing: Vec<String> = schema
+            .keys()
+            .filter(|k| !self.0.contains_key(k.as_str()))
+            .cloned()
+            .collect();
+        if !missing.is_empty() {
+            return Err(NodeArgumentsError::MissingParameters(missing));
+        }
+
+        // 2. Validate types of each runtime arg against schema.
+        for (key, value) in &self.0 {
+            let type_spec = schema
+                .get(key)
+                .ok_or_else(|| NodeArgumentsError::UnknownParameter { key: key.clone() })?;
+            value
+                .matches_type_spec(type_spec, key)
+                .map_err(NodeArgumentsError::TypeMismatch)?;
+        }
+
+        Ok(NodeArguments(self.0))
+    }
+}
+
+impl<const N: usize> From<[(String, AnyType); N]> for RawNodeArguments {
+    fn from(arr: [(String, AnyType); N]) -> Self {
+        Self(BTreeMap::from(arr))
+    }
+}
+
+impl From<BTreeMap<String, AnyType>> for RawNodeArguments {
+    fn from(map: BTreeMap<String, AnyType>) -> Self {
+        Self(map)
+    }
+}
+
+/// Node arguments that have passed validation against the manifest spec.
+///
+/// This type cannot be constructed directly — it is only produced by
+/// [`RawNodeArguments::into_resolved`]. The inner data is not accessible;
+/// consumers must parse into a typed struct via
+/// [`peppylib::config::deserialize_parameters`].
+#[derive(Clone, Debug, Serialize)]
+pub struct NodeArguments(BTreeMap<String, AnyType>);
+
+/// Error produced when [`RawNodeArguments::into_resolved`] fails.
+#[derive(Debug)]
+pub enum NodeArgumentsError {
+    /// One or more runtime argument values do not match the schema types.
+    TypeMismatch(TypeMismatch),
+    /// One or more parameters declared in the schema are missing from the arguments.
+    MissingParameters(Vec<String>),
+    /// An argument key is not declared in the schema.
+    UnknownParameter { key: String },
+}
+
+impl std::fmt::Display for NodeArgumentsError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TypeMismatch(tm) => write!(f, "{tm}"),
+            Self::MissingParameters(keys) => {
+                write!(f, "missing parameter(s): {}", keys.join(", "))
+            }
+            Self::UnknownParameter { key } => {
+                write!(f, "unknown parameter `{key}` not declared in schema")
+            }
+        }
+    }
+}
+
+impl std::error::Error for NodeArgumentsError {}
 
 fn is_array_parameter_schema(map: &BTreeMap<String, AnyType>) -> bool {
     matches!(
@@ -293,12 +434,12 @@ pub fn validate_parameter_types(
     Ok(())
 }
 
-/// Resolve a dot-path (e.g., `"video.device_path"`) against a `RawNodeArguments` map,
+/// Resolve a dot-path (e.g., `"video.device_path"`) against a parameter map,
 /// returning the leaf `AnyType` value if found.
 ///
 /// Descends into `AnyType::Object` values at each segment boundary.
 pub fn resolve_parameter_path<'a>(
-    parameters: &'a RawNodeArguments,
+    parameters: &'a BTreeMap<String, AnyType>,
     dot_path: &str,
 ) -> Option<&'a AnyType> {
     let mut segments = dot_path.split('.');
