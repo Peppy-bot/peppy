@@ -86,12 +86,15 @@ async fn add_node_async(
         source, core_node_name
     );
 
-    // Use a separate connection to check for existing instances before connecting with the main handle.
-    // This avoids interfering with the action messenger used for send_goal.
+    ctx.connect().await?;
+    let messenger_handle = ctx
+        .messenger_handle()
+        .ok_or_else(|| Error::ExecutionFailed("Failed to connect to daemon".to_string()))?;
+
     let pre_add_node_info = if !force {
         Some(
             fetch_node_info(
-                &daemon_state,
+                messenger_handle,
                 &core_node_name,
                 node_source.clone(),
                 variant_source.clone(),
@@ -115,11 +118,6 @@ async fn add_node_async(
             ));
         }
     }
-
-    ctx.connect().await?;
-    let messenger_handle = ctx
-        .messenger_handle()
-        .ok_or_else(|| Error::ExecutionFailed("Failed to connect to daemon".to_string()))?;
 
     // Create and send the goal to start the add action
     // Pass max timeout as the goal timeout for daemon-side busy reporting
@@ -301,32 +299,18 @@ async fn add_node_async(
 /// Fetches node info for a given source using NodeInfoRequest.
 /// This includes the node config, whether it's in the node stack, and running instance names.
 async fn fetch_node_info(
-    daemon_state: &crate::daemon_state::DaemonState,
+    messenger: &MessengerHandle,
     core_node_name: &str,
     node_source: NodeSource,
     variant: Option<NodeSource>,
 ) -> Result<NodeInfoResponse> {
-    // Create a completely fresh connection for this check to avoid
-    // interfering with the main connection used for send_goal
-    let messenger = MessengerHandle::from_host_port(
-        config::consts::DEFAULT_MESSAGING_HOST,
-        daemon_state.messaging_port,
-    )
-    .await
-    .map_err(|e| {
-        Error::ExecutionFailed(format!(
-            "Failed to create messenger for node info check: {}",
-            e
-        ))
-    })?;
-
     let mut request = NodeInfoRequest::new(node_source);
     if let Some(variant) = variant {
         request = request.with_variant(variant);
     }
     request
         .poll(
-            &messenger,
+            messenger,
             core_node_name,
             CALLER_INSTANCE_ID,
             core_node_name,
