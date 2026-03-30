@@ -8,7 +8,7 @@ pub use node::FORBIDDEN_ENV_KEYS;
 
 use crate::Result;
 use config::{
-    AnyType, NodeArguments,
+    AnyType, RawNodeArguments,
     consts::PeppyDirs,
     node::{Execution, Manifest, Name, NodeConfig, PeppygenLanguage},
     peppy_config::CURRENT_SCHEMA_VERSION,
@@ -42,7 +42,7 @@ pub struct CoreNodeArguments {
     pub node_start_health_timeout: Duration,
 }
 
-impl From<CoreNodeArguments> for NodeArguments {
+impl From<CoreNodeArguments> for RawNodeArguments {
     fn from(args: CoreNodeArguments) -> Self {
         let mut map = BTreeMap::new();
         map.insert(

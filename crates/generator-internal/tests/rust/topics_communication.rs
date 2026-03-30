@@ -141,7 +141,7 @@ fn main() -> Result<()> {
     let emitted_topic: EmittedTopic = serde_json5::from_str(EMITTED_TOPIC_EXAMPLE).unwrap();
     let (mut generator, emitter_dir, user_node_emitter, peppy_node_config_path) =
         init_test_env::<generator::RustGenerator>(&temp_dir_proj1, STUB_NODE_CONFIG);
-    let emitter_parameters: config::NodeArguments =
+    let emitter_parameters: config::RawNodeArguments =
         serde_json5::from_str(r#"{ frequency: "f64" }"#).unwrap();
     generator.set_parameters(emitter_parameters.clone());
     generator.add_emitted_topic(&emitted_topic).unwrap();

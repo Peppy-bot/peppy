@@ -1,4 +1,3 @@
-use std::marker::PhantomData;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -127,7 +126,7 @@ impl StandaloneConfig {
 pub struct NodeBuilder<Params> {
     standalone_config: Option<StandaloneConfig>,
     peppy_config_path: PathBuf,
-    _params: PhantomData<Params>,
+    _params: std::marker::PhantomData<Params>,
 }
 
 impl<Params> NodeBuilder<Params>
@@ -139,7 +138,7 @@ where
         Self {
             standalone_config: None,
             peppy_config_path: PathBuf::from(NODE_CONFIG_FILE),
-            _params: PhantomData,
+            _params: std::marker::PhantomData,
         }
     }
 
@@ -161,6 +160,10 @@ where
 
     /// Initialize and return context for manual async execution.
     ///
+    /// Parses and validates parameters eagerly — any type mismatch or missing
+    /// field is reported immediately rather than being deferred to
+    /// [`NodeContext::parameters`].
+    ///
     /// Use this when you need:
     /// - Full debugger/breakpoint support
     /// - Custom async runtime configuration
@@ -174,11 +177,13 @@ where
             }
         };
 
+        let params: Params = crate::config::deserialize_parameters(processor.input_arguments())?;
+
         Ok(NodeContext {
             processor,
             mode: resolved_mode,
             cancellation_token: None,
-            _params: PhantomData,
+            params: Some(params),
         })
     }
 
@@ -218,13 +223,14 @@ where
 
 /// Initialized node context for manual async execution.
 ///
-/// Returned by `NodeBuilder::init()`. Provides access to create the
-/// node runner and retrieve parameters.
+/// Returned by `NodeBuilder::init()`. Parameters are parsed eagerly
+/// during construction — call [`parameters`](Self::parameters) to
+/// take the already-validated, typed parameters.
 pub struct NodeContext<Params> {
     processor: Processor,
     mode: ExecutionMode,
     cancellation_token: Option<CancellationToken>,
-    _params: PhantomData<Params>,
+    params: Option<Params>,
 }
 
 impl<Params> NodeContext<Params>
@@ -251,9 +257,13 @@ where
         self
     }
 
-    /// Deserialize and return the parameters
-    pub fn parameters(&self) -> Result<Params> {
-        crate::config::deserialize_parameters(self.processor.input_arguments())
+    /// Take the parsed parameters.
+    ///
+    /// Returns the parameters that were parsed and validated during
+    /// [`NodeBuilder::init`]. Can only be called once — subsequent calls
+    /// return [`Error::ParametersAlreadyTaken`].
+    pub fn parameters(&mut self) -> Result<Params> {
+        self.params.take().ok_or(Error::ParametersAlreadyTaken)
     }
 
     /// Check if running in standalone mode
@@ -469,4 +479,96 @@ async fn wait_for_handles(handles: Vec<TaskHandle<Result<()>>>) -> Result<()> {
         .into_iter()
         .collect::<Result<Vec<_>>>()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+    struct TestParams {
+        value: i64,
+    }
+
+    fn write_peppy_config(dir: &std::path::Path, parameters: &str) -> std::path::PathBuf {
+        let path = dir.join("peppy.json5");
+        let content = format!(
+            r#"{{
+                schema_version: 1,
+                manifest: {{ name: "test_node", tag: "0.1.0" }},
+                execution: {{ language: "rust", parameters: {{ {parameters} }}, start_cmd: ["./test"] }},
+            }}"#,
+        );
+        std::fs::write(&path, content).expect("peppy config should be written");
+        path
+    }
+
+    #[test]
+    fn parameters_can_only_be_taken_once() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let peppy_config = write_peppy_config(temp_dir.path(), r#"value: "i64""#);
+
+        let config =
+            StandaloneConfig::new().with_parameters_json(serde_json::json!({ "value": 42 }));
+
+        let mut ctx = NodeBuilder::<TestParams>::new()
+            .with_config_path(&peppy_config)
+            .standalone(config)
+            .init()
+            .expect("init should succeed");
+
+        let params = ctx.parameters().expect("first take should succeed");
+        assert_eq!(params.value, 42);
+
+        let err = ctx.parameters().expect_err("second take should fail");
+        assert!(
+            matches!(err, Error::ParametersAlreadyTaken),
+            "expected ParametersAlreadyTaken, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn init_fails_eagerly_on_invalid_parameter_types() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let peppy_config = write_peppy_config(temp_dir.path(), r#"value: "i64""#);
+
+        // Provide a string where i64 is expected — should fail at init(), not parameters()
+        let config = StandaloneConfig::new()
+            .with_parameters_json(serde_json::json!({ "value": "not_a_number" }));
+
+        let Err(err) = NodeBuilder::<TestParams>::new()
+            .with_config_path(&peppy_config)
+            .standalone(config)
+            .init()
+        else {
+            panic!("init should fail with type mismatch");
+        };
+
+        let err_string = err.to_string();
+        assert!(
+            err_string.contains("value"),
+            "error should mention the invalid parameter, got: {err_string}"
+        );
+    }
+
+    #[test]
+    fn init_parses_parameters_eagerly() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let peppy_config = write_peppy_config(temp_dir.path(), r#"value: "i64""#);
+
+        let config =
+            StandaloneConfig::new().with_parameters_json(serde_json::json!({ "value": 99 }));
+
+        let mut ctx = NodeBuilder::<TestParams>::new()
+            .with_config_path(&peppy_config)
+            .standalone(config)
+            .init()
+            .expect("init should succeed");
+
+        // Parameters are already parsed — no Result needed for validation,
+        // only for the take-once check
+        let params = ctx.parameters().expect("should take parameters");
+        assert_eq!(params.value, 99);
+    }
 }

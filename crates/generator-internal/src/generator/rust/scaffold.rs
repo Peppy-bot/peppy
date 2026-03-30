@@ -71,7 +71,7 @@ pub fn add_artifacts_to_lib(
 /// that can be used to deserialize parameter values at runtime.
 pub fn add_parameters_to_lib(
     lib_path: impl AsRef<Path>,
-    parameters: &config::NodeArguments,
+    parameters: &config::RawNodeArguments,
 ) -> Result<()> {
     let lib_path = lib_path.as_ref();
     let src_dir = lib_path.join("src");

@@ -1,5 +1,5 @@
 use crate::{
-    common::{AnyType, NodeArguments, resolve_parameter_path},
+    common::{AnyType, RawNodeArguments, resolve_parameter_path},
     config::SchemaVersion,
     error::ParsingError,
     source::DeploymentSource,
@@ -653,7 +653,7 @@ pub struct Variant {
 pub struct Execution {
     pub language: PeppygenLanguage,
     #[serde(default)]
-    pub parameters: NodeArguments,
+    pub parameters: RawNodeArguments,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub add_cmd: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -791,7 +791,7 @@ impl ContainerConfig {
     /// Returns `Err((ref_path, reason))` on the first invalid reference found.
     pub fn validate_parameter_refs(
         &self,
-        parameters: &NodeArguments,
+        parameters: &RawNodeArguments,
     ) -> Result<(), (String, String)> {
         let Some(mount_paths) = &self.mount_paths else {
             return Ok(());

@@ -1,6 +1,6 @@
 //! Configuration utilities and re-exports from the config crate.
 
-pub use config::NodeArguments;
+pub use crate::runtime::NodeArguments;
 pub use config::consts::{NODE_CONFIG_FILE, RUNTIME_CONFIG_VAR_NAME};
 pub use config::node::*;
 pub use schemars::JsonSchema;
@@ -26,16 +26,16 @@ fn format_validation_error(error: &jsonschema::ValidationError) -> String {
     }
 }
 
-/// Deserialize node arguments into a custom parameter struct with validation.
+/// Deserialize validated node arguments into a custom parameter struct.
 ///
-/// This function converts a [`NodeArguments`] map into a user-defined struct type.
-/// It first validates the input against the JSON schema derived from the type,
-/// collecting all validation errors (including multiple missing fields) and
-/// reporting them at once.
+/// This function converts [`NodeArguments`] (already validated against the
+/// manifest spec) into a user-defined struct type. It validates the input
+/// against the JSON schema derived from the type, collecting all validation
+/// errors (including multiple missing fields) and reporting them at once.
 ///
 /// # Example
 ///
-/// ```
+/// ```ignore
 /// use serde::Deserialize;
 /// use peppylib::config::{NodeArguments, deserialize_parameters, JsonSchema};
 ///

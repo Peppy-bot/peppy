@@ -1,6 +1,6 @@
 use config::peppy_config::Name;
 use config::runtime::{NodeInstance, RuntimeConfig};
-use config::{AnyType, NodeArguments};
+use config::{AnyType, RawNodeArguments};
 use core_node::encoding::{
     NodeStartFeedback, NodeStartGoal, NodeStartGoalResponse, NodeStartResult,
 };
@@ -22,7 +22,7 @@ const CALLER_INSTANCE_ID: &str = "peppy-cli";
 const GOAL_TIMEOUT: Duration = Duration::from_secs(30);
 const SCROLLING_OUTPUT_LINES: usize = 10;
 
-/// Converts a list of key=value string pairs into NodeArguments.
+/// Converts a list of key=value string pairs into RawNodeArguments.
 /// Dot-separated keys are converted into nested objects.
 /// For example: "device.physical=/dev/video0" becomes {"device": {"physical": "/dev/video0"}}
 ///
@@ -31,8 +31,8 @@ const SCROLLING_OUTPUT_LINES: usize = 10;
 /// - Integer strings -> Int
 /// - Float strings -> Float
 /// - Everything else -> String
-pub fn args_to_node_arguments(args: &[(String, String)]) -> NodeArguments {
-    let mut result: NodeArguments = std::collections::BTreeMap::new();
+pub fn args_to_node_arguments(args: &[(String, String)]) -> RawNodeArguments {
+    let mut result: RawNodeArguments = std::collections::BTreeMap::new();
 
     for (key, value) in args {
         let parsed_value = parse_value(value);
@@ -42,10 +42,10 @@ pub fn args_to_node_arguments(args: &[(String, String)]) -> NodeArguments {
     result
 }
 
-/// Inserts a value at a dot-separated path into a nested NodeArguments structure.
+/// Inserts a value at a dot-separated path into a nested RawNodeArguments structure.
 /// For example, path "device.physical" with value "foo" creates:
 /// {"device": {"physical": "foo"}}
-fn insert_nested_value(root: &mut NodeArguments, path: &str, value: AnyType) {
+fn insert_nested_value(root: &mut RawNodeArguments, path: &str, value: AnyType) {
     let parts: Vec<&str> = path.split('.').collect();
 
     if parts.len() == 1 {
@@ -59,7 +59,7 @@ fn insert_nested_value(root: &mut NodeArguments, path: &str, value: AnyType) {
 }
 
 /// Recursively inserts a value at the given path parts.
-fn insert_at_path(current: &mut NodeArguments, parts: &[&str], value: AnyType) {
+fn insert_at_path(current: &mut RawNodeArguments, parts: &[&str], value: AnyType) {
     if parts.is_empty() {
         return;
     }
@@ -126,7 +126,7 @@ pub async fn start_instance_async(
     // Generate or use provided instance_id
     let instance_id = instance_id.unwrap_or_else(|| get_random(rng()));
 
-    // Convert CLI arguments to NodeArguments
+    // Convert CLI arguments to RawNodeArguments
     let arguments = args_to_node_arguments(args);
 
     info!(

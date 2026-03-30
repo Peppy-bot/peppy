@@ -182,7 +182,7 @@ pub fn add_capnp_schemas(schemas: &HashMap<String, CapnpSchema>, to_path: &Path)
     Ok(())
 }
 
-pub fn add_parameters_to_lib(parameters: &config::NodeArguments, to_path: &Path) -> Result<()> {
+pub fn add_parameters_to_lib(parameters: &config::RawNodeArguments, to_path: &Path) -> Result<()> {
     let parameters_code = super::parameters::generate_python_parameters(parameters)?;
     let peppygen_dir = to_path.join("peppygen");
     fs::create_dir_all(&peppygen_dir)?;

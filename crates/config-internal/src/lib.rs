@@ -18,7 +18,7 @@ pub mod peppy_config {
 pub mod test_helpers;
 
 pub use common::{
-    AnyType, NodeArguments, TypeMismatch, resolve_parameter_path, validate_parameter_types,
+    AnyType, RawNodeArguments, TypeMismatch, resolve_parameter_path, validate_parameter_types,
 };
 
 pub use node_index::FSNodeConfigIndex;

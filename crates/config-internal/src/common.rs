@@ -216,7 +216,7 @@ impl std::fmt::Display for TypeMismatch {
 impl std::error::Error for TypeMismatch {}
 
 // Node arguments with open-ended structure
-pub type NodeArguments = BTreeMap<String, AnyType>;
+pub type RawNodeArguments = BTreeMap<String, AnyType>;
 
 fn is_array_parameter_schema(map: &BTreeMap<String, AnyType>) -> bool {
     matches!(
@@ -293,12 +293,12 @@ pub fn validate_parameter_types(
     Ok(())
 }
 
-/// Resolve a dot-path (e.g., `"video.device_path"`) against a `NodeArguments` map,
+/// Resolve a dot-path (e.g., `"video.device_path"`) against a `RawNodeArguments` map,
 /// returning the leaf `AnyType` value if found.
 ///
 /// Descends into `AnyType::Object` values at each segment boundary.
 pub fn resolve_parameter_path<'a>(
-    parameters: &'a NodeArguments,
+    parameters: &'a RawNodeArguments,
     dot_path: &str,
 ) -> Option<&'a AnyType> {
     let mut segments = dot_path.split('.');

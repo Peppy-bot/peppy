@@ -1,4 +1,4 @@
-use crate::{common::NodeArguments, error::Result};
+use crate::{common::RawNodeArguments, error::Result};
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
@@ -13,7 +13,7 @@ use crate::config::Name;
 pub struct NodeInstance {
     pub instance_id: Name,
     #[serde(default)]
-    pub arguments: NodeArguments,
+    pub arguments: RawNodeArguments,
 }
 
 /// Configuration for the launcher to know how to configure spawned nodes' messaging.

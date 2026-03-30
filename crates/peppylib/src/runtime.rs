@@ -4,7 +4,7 @@ mod processor;
 
 pub use builder::{NodeBuilder, NodeContext, StandaloneConfig};
 pub use node_runner::NodeRunner;
-pub use processor::Processor;
+pub use processor::{NodeArguments, Processor};
 
 use std::fmt;
 use std::future::Future;
