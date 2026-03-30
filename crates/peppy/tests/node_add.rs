@@ -774,6 +774,212 @@ fn node_add_command_with_variant_succeeds() {
     assert_eq!(added_node.instance_count(), 0);
 }
 
+/// When `--variant` is provided, the preflight overwrite check must resolve the variant-merged
+/// config (not just the base source) so the overwrite prompt uses the same config as the actual add.
+#[test]
+fn node_add_with_variant_uses_variant_in_preflight() {
+    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
+    let serve = rt
+        .block_on(ServeCommandEmulation::with_mock())
+        .expect("failed to create serve emulation");
+    let shared_messenger = serve.messenger();
+    let core_node_name = serve.core_node_name().to_string();
+
+    let node_dir = tempfile::tempdir().expect("failed to create temp dir for node");
+    let root_node_name = "test_variant_preflight";
+    let instance_id = "variant_preflight_instance";
+
+    let node_ctx = Arc::new(
+        AppContext::with_messenger(node_dir.path(), Arc::clone(&shared_messenger))
+            .with_daemon_state_file(serve.daemon_state_path()),
+    );
+
+    let log_capture = LogCapture::new();
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .without_time()
+        .with_writer(log_capture.clone())
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+
+    // Create the root node via init
+    NodeCommand {
+        command: NodeCommands::Init {
+            node_name: NodeName::new(root_node_name).expect("valid node name"),
+            to_dir: None,
+            toolchain: Toolchain::Cargo,
+            with_container: false,
+        },
+    }
+    .execute(&node_ctx)
+    .expect("node init command should succeed");
+
+    let root_path = node_dir.path().join(root_node_name);
+    let root_peppy_json5 = root_path.join("peppy.json5");
+
+    // Read the generated config, add a variant declaration
+    let mut root_cfg =
+        config::node::NodeConfigParser::from_path(&root_peppy_json5).expect("should parse config");
+    root_cfg.manifest.variants = Some(vec![config::node::Variant {
+        name: config::node::Name::new("mock").expect("valid name"),
+        source: config::source::DeploymentSource::Local(config::source::DeploymentLocalSource {
+            local: std::path::PathBuf::from("../mock_variant"),
+        }),
+    }]);
+    let updated = serde_json::to_string_pretty(&root_cfg).expect("should serialize updated config");
+    std::fs::write(&root_peppy_json5, &updated).expect("should write updated config");
+    config::fingerprint::create_codegen_fingerprint(
+        &root_peppy_json5,
+        std::path::Path::new(config::consts::PEPPYGEN_OUTPUT_PATH),
+    );
+
+    // Create the variant directory with a minimal config (no manifest, no interfaces)
+    let variant_dir = node_dir.path().join("mock_variant");
+    std::fs::create_dir_all(&variant_dir).expect("should create variant dir");
+    let variant_config = r#"{
+        "schema_version": 1,
+        "execution": {
+            "language": "rust",
+            "start_cmd": ["sleep", "42"]
+        }
+    }"#;
+    let variant_peppy_json5 = variant_dir.join("peppy.json5");
+    std::fs::write(&variant_peppy_json5, variant_config).expect("should write variant config");
+    config::fingerprint::create_codegen_fingerprint(
+        &variant_peppy_json5,
+        std::path::Path::new(config::consts::PEPPYGEN_OUTPUT_PATH),
+    );
+
+    // Disable add_cmd to avoid spawning a real binary; provide node services in-process
+    peppy::test_support::override_start_cmd(&root_peppy_json5);
+
+    let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
+    let _node_ready_handle = rt
+        .block_on(listen_for_node_ready(
+            &node_messenger,
+            &core_node_name,
+            instance_id,
+            root_node_name,
+        ))
+        .expect("node ready service should start");
+    let _node_health_handle = rt
+        .block_on(listen_for_node_health(
+            &node_messenger,
+            &core_node_name,
+            instance_id,
+            root_node_name,
+        ))
+        .expect("node health service should start");
+    let (_node_shutdown_handle, _shutdown_rx) = rt
+        .block_on(listen_for_shutdown(
+            &node_messenger,
+            &core_node_name,
+            instance_id,
+            root_node_name,
+        ))
+        .expect("node shutdown service should start");
+
+    // Step 1: Add the node with --variant mock, start=true, force=true to create a running instance
+    NodeCommand {
+        command: NodeCommands::Add {
+            source: root_path.display().to_string(),
+            git_ref: None,
+            variant: Some("mock".to_string()),
+            start: true,
+            args: Vec::new(),
+            instance_id: Some(instance_id.to_string()),
+            idle_timeout: 60,
+            max_timeout: 3600,
+            force: true,
+        },
+    }
+    .execute(&node_ctx)
+    .expect("first node add with variant should succeed");
+
+    // Verify 1 instance is running
+    let messenger_handle = node_ctx
+        .messenger_handle()
+        .expect("messenger handle should be available");
+
+    let response = rt
+        .block_on(NodeListRequest::new(false).poll(
+            messenger_handle,
+            &core_node_name,
+            CALLER_INSTANCE_ID,
+            &core_node_name,
+            Duration::from_secs(5),
+        ))
+        .expect("node_list request should complete");
+
+    let graph: SerializedNodeGraph =
+        serde_json::from_str(&response.graph_json).expect("graph_json should parse");
+
+    let node_before = graph
+        .nodes
+        .iter()
+        .find(|n| n.name == root_node_name && n.tag == "0.1.0")
+        .unwrap_or_else(|| {
+            panic!(
+                "graph should contain the variant node after first add. Got: {:?}",
+                graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+            )
+        });
+    assert_eq!(
+        node_before.instance_count(),
+        1,
+        "should have 1 instance running after first add with variant"
+    );
+
+    // Step 2: Re-add with --variant mock and force=true.
+    // The preflight fetch_node_info now passes the variant, so it resolves the
+    // same merged config and correctly identifies the existing node+instances.
+    NodeCommand {
+        command: NodeCommands::Add {
+            source: root_path.display().to_string(),
+            git_ref: None,
+            variant: Some("mock".to_string()),
+            start: false,
+            args: Vec::new(),
+            instance_id: None,
+            idle_timeout: 60,
+            max_timeout: 3600,
+            force: true,
+        },
+    }
+    .execute(&node_ctx)
+    .expect("second node add with variant and force should succeed");
+
+    // Verify existing instance was stopped and node was re-added
+    let response = rt
+        .block_on(NodeListRequest::new(false).poll(
+            messenger_handle,
+            &core_node_name,
+            CALLER_INSTANCE_ID,
+            &core_node_name,
+            Duration::from_secs(5),
+        ))
+        .expect("node_list request should complete after re-add");
+
+    let graph: SerializedNodeGraph =
+        serde_json::from_str(&response.graph_json).expect("graph_json should parse");
+
+    let node_after = graph
+        .nodes
+        .iter()
+        .find(|n| n.name == root_node_name && n.tag == "0.1.0")
+        .unwrap_or_else(|| {
+            panic!(
+                "graph should contain the variant node after re-add. Got: {:?}",
+                graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+            )
+        });
+    assert_eq!(
+        node_after.instance_count(),
+        0,
+        "should have 0 instances after re-add with force (instance should be stopped)"
+    );
+}
+
 /// NOTE: For git-sourced nodes, we cannot check for existing instances BEFORE the add operation
 /// because we don't know the node name/tag until after cloning. By the time we check (after add),
 /// the core node has already stopped the existing instances. This is different from local

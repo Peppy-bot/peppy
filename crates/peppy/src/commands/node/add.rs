@@ -77,6 +77,10 @@ async fn add_node_async(
     let git_ref = validate_git_ref(git_ref.as_deref())?;
     let node_source = parse_node_source(&source, git_ref)?;
 
+    // Parse variant source early so the preflight check uses the same merged config
+    // that the actual add will use.
+    let variant_source = variant.as_deref().map(parse_variant_source).transpose()?;
+
     info!(
         "Running `add_cmd` for '{}' on daemon '{}'...",
         source, core_node_name
@@ -85,9 +89,14 @@ async fn add_node_async(
     // Use a separate connection to check for existing instances before connecting with the main handle.
     // This avoids interfering with the action messenger used for send_goal.
     let pre_add_node_info = if !force {
-        fetch_node_info(&daemon_state, &core_node_name, node_source.clone())
-            .await
-            .ok()
+        fetch_node_info(
+            &daemon_state,
+            &core_node_name,
+            node_source.clone(),
+            variant_source.clone(),
+        )
+        .await
+        .ok()
     } else {
         None
     };
@@ -115,8 +124,7 @@ async fn add_node_async(
     // Pass max timeout as the goal timeout for daemon-side busy reporting
     let mut add_goal = NodeAddGoal::from_source(node_source, git_hash, timeouts.max_secs)
         .with_env_vars(caller_env_overrides());
-    if let Some(ref variant_str) = variant {
-        let variant_source = parse_variant_source(variant_str)?;
+    if let Some(variant_source) = variant_source {
         add_goal = add_goal.with_variant_source(variant_source);
     }
     let mut action_handle = add_goal
@@ -295,6 +303,7 @@ async fn fetch_node_info(
     daemon_state: &crate::daemon_state::DaemonState,
     core_node_name: &str,
     node_source: NodeSource,
+    variant: Option<NodeSource>,
 ) -> Result<NodeInfoResponse> {
     // Create a completely fresh connection for this check to avoid
     // interfering with the main connection used for send_goal
@@ -310,7 +319,10 @@ async fn fetch_node_info(
         ))
     })?;
 
-    let request = NodeInfoRequest::new(node_source);
+    let mut request = NodeInfoRequest::new(node_source);
+    if let Some(variant) = variant {
+        request = request.with_variant(variant);
+    }
     request
         .poll(
             &messenger,
