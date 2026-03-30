@@ -318,6 +318,8 @@ async fn handle_node_sync_request_inner(
                 .encode();
             }
         };
+    } else {
+        remove_previous_peppy_dir(&node_root_dir);
     }
 
     // Sync variants: each variant gets its own .peppy directory using the root's interfaces

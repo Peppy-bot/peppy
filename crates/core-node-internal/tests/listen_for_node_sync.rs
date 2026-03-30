@@ -1721,3 +1721,109 @@ async fn listen_for_node_sync_default_variant_skips_root_codegen() {
         "variant peppy.json5 should still contain the original execution config"
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_sync_default_variant_cleans_stale_root_peppy_dir() {
+    let started_core_node = start_core_node_with_mock_messenger().await;
+
+    let node_dir = tempdir().expect("failed to create temp node directory");
+
+    // First sync: node WITH execution — creates a root .peppy directory
+    write_node_config(
+        node_dir.path(),
+        r#"{
+            schema_version: 1,
+            manifest: {
+                name: "example_node",
+                tag: "0.1.0",
+            },
+            execution: {
+                language: "rust",
+                start_cmd: ["sleep", "10"],
+            },
+        }"#,
+    );
+
+    let response = NodeSyncRequest::new(node_dir.path(), common::TEST_GIT_HASH)
+        .poll(
+            &started_core_node.caller_handle,
+            &started_core_node.core_node_name,
+            CALLER_INSTANCE_ID,
+            &started_core_node.core_node_name,
+            Duration::from_secs(5),
+        )
+        .await
+        .expect("first node_sync request should complete");
+
+    assert!(
+        response.success,
+        "first node_sync (with execution) should succeed, got error: {}",
+        response.error_message
+    );
+
+    let root_peppy_dir = node_dir.path().join(PEPPY_OUTPUT_DIR);
+    assert!(
+        root_peppy_dir.exists(),
+        "root .peppy directory should exist after first sync"
+    );
+
+    // Rewrite config: remove execution from root, add a default variant
+    let default_variant_dir = node_dir.path().join("variants").join("default");
+    write_variant_config(
+        &default_variant_dir,
+        r#"{
+            schema_version: 1,
+            execution: {
+                language: "rust",
+                start_cmd: ["sleep", "10"],
+            },
+        }"#,
+    );
+
+    write_node_config(
+        node_dir.path(),
+        r#"{
+            schema_version: 1,
+            manifest: {
+                name: "example_node",
+                tag: "0.1.0",
+                variants: [
+                    { name: "default", source: { local: "./variants/default" } },
+                ],
+            },
+        }"#,
+    );
+
+    // Second sync: language is None at root — should clean up stale root .peppy
+    let response = NodeSyncRequest::new(node_dir.path(), common::TEST_GIT_HASH)
+        .poll(
+            &started_core_node.caller_handle,
+            &started_core_node.core_node_name,
+            CALLER_INSTANCE_ID,
+            &started_core_node.core_node_name,
+            Duration::from_secs(10),
+        )
+        .await
+        .expect("second node_sync request should complete");
+
+    assert!(
+        response.success,
+        "second node_sync (without execution) should succeed, got error: {}",
+        response.error_message
+    );
+
+    // Root .peppy should have been cleaned up since language is now None
+    assert!(
+        !root_peppy_dir.exists(),
+        "root .peppy directory should NOT exist after sync with no execution — \
+         stale outputs from a previous sync should be cleaned up"
+    );
+
+    // Variant .peppy should be generated
+    let variant_peppy_dir = default_variant_dir.join(PEPPY_OUTPUT_DIR);
+    assert!(
+        variant_peppy_dir.exists(),
+        "variant .peppy directory should exist at {}",
+        variant_peppy_dir.display()
+    );
+}

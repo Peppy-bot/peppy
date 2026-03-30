@@ -363,7 +363,7 @@ mod tests {
     /// all release builds (including cross-compilation) originate.
     #[test]
     #[cfg(target_os = "macos")]
-    fn embedded_peppylib_contains_all_release_platform_sos() {
+    fn embedded_peppylib_contains_all_release_platform_dynamic_lib() {
         let required = [
             "_peppylib.abi3.macos-aarch64.so",
             "_peppylib.abi3.linux-aarch64.so",
