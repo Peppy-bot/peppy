@@ -3896,24 +3896,41 @@ async fn listen_for_node_add_with_fs_archive_variant_uses_archived_root() {
 async fn listen_for_node_add_variant_not_found() {
     let started_core_node = start_core_node_with_mock_messenger().await;
 
-    let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
-    let config = r#"{
+    let parent_dir = tempfile::tempdir().expect("failed to create parent dir");
+    let root_dir = parent_dir.path().join("root_node");
+    let variant_dir = root_dir.join("real_variant");
+    std::fs::create_dir_all(&root_dir).unwrap();
+    std::fs::create_dir_all(&variant_dir).unwrap();
+
+    let root_config = r#"{
         schema_version: 1,
         manifest: {
             name: "test_node",
             tag: "0.1.0",
+            variants: [
+                { name: "real", source: { local: "real_variant" } }
+            ]
         },
         execution: {
             language: "rust",
             start_cmd: ["sleep", "10"]
         }
     }"#;
-    write_peppy_json5(source_dir.path(), config);
+    write_peppy_json5(&root_dir, root_config);
+
+    let variant_config = r#"{
+        schema_version: 1,
+        execution: {
+            language: "rust",
+            start_cmd: ["sleep", "5"]
+        }
+    }"#;
+    write_peppy_json5(&variant_dir, variant_config);
 
     let add_result = send_node_add_and_wait_with_variant(
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
-        source_dir.path(),
+        root_dir.as_path(),
         "nonexistent",
         GOAL_TIMEOUT,
         RESULT_TIMEOUT,
