@@ -58,8 +58,6 @@ pub fn generate_peppygen_lib(
 
     let peppy_dir = node_dir.join(config::consts::PEPPY_OUTPUT_DIR);
     std::fs::create_dir_all(&peppy_dir)?;
-    write_if_changed(&peppy_dir.join("git.hash"), git_hash.as_bytes())?;
-
     if !node_config_path.exists() {
         return Err(Error::NodeNotFound(node_config_path.display().to_string()));
     }
@@ -107,8 +105,9 @@ pub fn generate_peppygen_lib(
         }
     };
 
-    // Only write the fingerprint after successful generation, using the resolved config path.
+    // Only write git.hash and the fingerprint after successful generation.
     result?;
+    write_if_changed(&peppy_dir.join("git.hash"), git_hash.as_bytes())?;
     config::fingerprint::generate_node_config_fingerprint(&node_config_path, &output_dir)?;
     Ok(())
 }
@@ -516,6 +515,16 @@ mod tests {
             written_fingerprint, not_expected,
             "fingerprint should NOT match the canonical config content"
         );
+
+        let git_hash_path = node_dir
+            .join(config::consts::PEPPY_OUTPUT_DIR)
+            .join("git.hash");
+        let written_hash = fs::read_to_string(&git_hash_path)
+            .expect("git.hash file should exist after successful generation");
+        assert_eq!(
+            written_hash, "test-hash",
+            "git.hash should contain the provided hash"
+        );
     }
 
     #[test]
@@ -547,6 +556,14 @@ mod tests {
         assert!(
             !fingerprint_path.exists(),
             "fingerprint file should not exist when generation fails"
+        );
+
+        let git_hash_path = node_dir
+            .join(config::consts::PEPPY_OUTPUT_DIR)
+            .join("git.hash");
+        assert!(
+            !git_hash_path.exists(),
+            "git.hash file should not exist when generation fails"
         );
     }
 }
