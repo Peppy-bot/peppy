@@ -7,6 +7,12 @@ use std::path::Path;
 
 /// Validates execution constraints shared by both full node configs and variant configs.
 fn validate_execution(execution: &Execution) -> Result<()> {
+    if let Some(cmds) = &execution.start_cmd {
+        if cmds.is_empty() {
+            return Err(ParsingError::EmptyStartCmd.into());
+        }
+    }
+
     // `start_cmd` and `container` are mutually exclusive; exactly one must be present.
     match (&execution.start_cmd, &execution.container) {
         (Some(_), Some(_)) => return Err(ParsingError::ProcessAndContainerConflict.into()),
@@ -254,6 +260,26 @@ mod tests {
         assert!(matches!(
             result.unwrap_err(),
             Error::Parsing(ParsingError::NoProcessOrContainer)
+        ));
+    }
+
+    #[test]
+    fn test_empty_start_cmd() {
+        let json5 = r#"{
+            schema_version: 1,
+            manifest: {
+                name: "empty_cmd_node",
+                tag: "0.1.0",
+            },
+            execution: {
+                language: "rust",
+                start_cmd: [],
+            },
+        }"#;
+        let result = NodeConfigParser::from_content(json5);
+        assert!(matches!(
+            result.unwrap_err(),
+            Error::Parsing(ParsingError::EmptyStartCmd)
         ));
     }
 
