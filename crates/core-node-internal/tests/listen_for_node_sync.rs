@@ -381,6 +381,7 @@ async fn listen_for_node_sync_multiple_missing_dependencies_fails() {
                 depends_on: {
                     nodes: [
                         { name: "uvc_camera", tag: "0.1.0", local_id: "uvc_camera" },
+                        { name: "uvc_camera", tag: "0.1.0", local_id: "uvc_camera_2" },
                         { name: "lidar_sensor", tag: "1.0.0", local_id: "lidar_sensor" },
                         { name: "gps_module", tag: "2.0.0", local_id: "gps_module" },
                     ]
