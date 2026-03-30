@@ -4,6 +4,7 @@ use crate::encoding::NodeSource;
 use config::consts::{NODE_CONFIG_FILE, PeppyDirs};
 use config::node::{Interfaces, NodeConfig, RawNodeConfig, VariantConfigParser};
 use config::source::DeploymentSource;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -195,6 +196,53 @@ pub(crate) async fn resolve_variant(
     })
 }
 
+/// Validates that a local variant source path is relative and contained within
+/// the root source directory. Returns the canonicalized path on success.
+fn validate_local_source_path(
+    root_source_path: &Path,
+    local_path: &Path,
+    label: &str,
+) -> std::result::Result<PathBuf, String> {
+    if local_path.is_absolute() {
+        return Err(format!(
+            "Variant '{}' local source path must be relative, got: {}",
+            label,
+            local_path.display()
+        ));
+    }
+    let candidate = root_source_path.join(local_path);
+    if !candidate.exists() {
+        return Err(format!(
+            "Variant '{}' source directory does not exist: {}",
+            label,
+            candidate.display()
+        ));
+    }
+    let root_canon = fs::canonicalize(root_source_path).map_err(|e| {
+        format!(
+            "Failed to resolve root source path {}: {}",
+            root_source_path.display(),
+            e
+        )
+    })?;
+    let candidate_canon = fs::canonicalize(&candidate).map_err(|e| {
+        format!(
+            "Failed to resolve variant '{}' source path {}: {}",
+            label,
+            candidate.display(),
+            e
+        )
+    })?;
+    if !candidate_canon.starts_with(&root_canon) {
+        return Err(format!(
+            "Variant '{}' source path escapes root directory: {}",
+            label,
+            candidate.display()
+        ));
+    }
+    Ok(candidate_canon)
+}
+
 /// Resolves a variant from a [`DeploymentSource`] found in the root manifest.
 /// This is used by the name-based lookup path.
 async fn resolve_variant_deployment_source(
@@ -206,18 +254,7 @@ async fn resolve_variant_deployment_source(
 ) -> std::result::Result<(PathBuf, config::node::VariantConfig, bool, Option<PathBuf>), String> {
     match deployment {
         DeploymentSource::Local(local) => {
-            let path = if local.local.is_relative() {
-                root_source_path.join(&local.local)
-            } else {
-                local.local.clone()
-            };
-            if !path.exists() {
-                return Err(format!(
-                    "Variant '{}' source directory does not exist: {}",
-                    label,
-                    path.display()
-                ));
-            }
+            let path = validate_local_source_path(root_source_path, &local.local, label)?;
             let config_path = path.join(NODE_CONFIG_FILE);
             let variant_config = VariantConfigParser::from_path(&config_path).map_err(|e| {
                 format!(
@@ -302,5 +339,75 @@ async fn resolve_variant_deployment_source(
                 extracted.cleanup_dir,
             ))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn validate_local_source_path_relative_inside_root_succeeds() {
+        let root = tempdir().unwrap();
+        let subdir = root.path().join("my_variant");
+        fs::create_dir(&subdir).unwrap();
+
+        let result = validate_local_source_path(root.path(), Path::new("my_variant"), "v1");
+        let resolved = result.unwrap();
+        assert_eq!(resolved, fs::canonicalize(&subdir).unwrap());
+    }
+
+    #[test]
+    fn validate_local_source_path_rejects_parent_dir_escape() {
+        let root = tempdir().unwrap();
+        let inner = root.path().join("inner");
+        fs::create_dir(&inner).unwrap();
+        let outside = root.path().join("outside");
+        fs::create_dir(&outside).unwrap();
+
+        let result = validate_local_source_path(&inner, Path::new("../outside"), "v1");
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("escapes root directory"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_local_source_path_rejects_absolute_path() {
+        let root = tempdir().unwrap();
+
+        let result = validate_local_source_path(root.path(), Path::new("/etc"), "v1");
+        let err = result.unwrap_err();
+        assert!(err.contains("must be relative"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn validate_local_source_path_nonexistent_path_fails() {
+        let root = tempdir().unwrap();
+
+        let result = validate_local_source_path(root.path(), Path::new("nonexistent"), "v1");
+        let err = result.unwrap_err();
+        assert!(err.contains("does not exist"), "unexpected error: {err}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn validate_local_source_path_rejects_symlink_escape() {
+        let root = tempdir().unwrap();
+        let inner = root.path().join("inner");
+        fs::create_dir(&inner).unwrap();
+        let outside = root.path().join("outside");
+        fs::create_dir(&outside).unwrap();
+
+        std::os::unix::fs::symlink(&outside, inner.join("link")).unwrap();
+
+        let result = validate_local_source_path(&inner, Path::new("link"), "v1");
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("escapes root directory"),
+            "unexpected error: {err}"
+        );
     }
 }
