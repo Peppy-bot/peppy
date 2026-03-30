@@ -2,7 +2,7 @@ use serde::{
     Deserialize, Serialize,
     de::{self, Deserializer},
 };
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(untagged)]
@@ -57,6 +57,14 @@ where
     let trimmed = value.trim().trim_start_matches('/');
     if trimmed.is_empty() {
         return Err(invalid_deployment_source::<E>("git path cannot be empty"));
+    }
+    let path = Path::new(trimmed);
+    if path.is_absolute()
+        || path.components().any(|c| matches!(c, Component::ParentDir | Component::Prefix(_)))
+    {
+        return Err(invalid_deployment_source::<E>(
+            "git path cannot be absolute or contain parent-dir components",
+        ));
     }
     Ok(trimmed.to_owned())
 }
