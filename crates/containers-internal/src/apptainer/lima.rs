@@ -182,6 +182,44 @@ pub(crate) fn ensure_guest_userns(limactl: &Path, lima_home: &Path, instance: &s
     Ok(())
 }
 
+/// Ensure that `newuidmap` is available inside the Lima guest.
+///
+/// Apptainer relies on unprivileged user namespaces via fakeroot, which
+/// requires `newuidmap` (provided by the `uidmap` package on Debian/Ubuntu).
+/// The base Ubuntu 24.04 template does not include it by default.
+pub(crate) fn ensure_guest_uidmap(limactl: &Path, lima_home: &Path, instance: &str) -> Result<()> {
+    let check = Command::new(limactl)
+        .env("LIMA_HOME", lima_home)
+        .args(["shell", instance, "--", "which", "newuidmap"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+
+    let already_installed = matches!(check, Ok(s) if s.success());
+    if already_installed {
+        return Ok(());
+    }
+
+    tracing::info!("Installing uidmap (newuidmap) in Lima guest...");
+
+    let install = Command::new(limactl)
+        .env("LIMA_HOME", lima_home)
+        .args([
+            "shell", instance, "--", "sudo", "apt-get", "install", "-y", "uidmap",
+        ])
+        .output()
+        .map_err(|e| Error::LimaInstanceError(format!("failed to install uidmap: {e}")))?;
+
+    if !install.status.success() {
+        let stderr = String::from_utf8_lossy(&install.stderr);
+        return Err(Error::LimaInstanceError(format!(
+            "failed to install uidmap in guest: {stderr}"
+        )));
+    }
+
+    Ok(())
+}
+
 /// Ensure the apptainer installation is available inside the Lima VM guest.
 ///
 /// Syncs the host-side installation to `/tmp/peppy/apptainer/` in the guest.
