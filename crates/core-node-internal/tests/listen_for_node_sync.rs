@@ -1665,6 +1665,13 @@ async fn listen_for_node_sync_default_variant_skips_root_codegen() {
         "root peppygen directory should NOT exist for a default-variant node"
     );
 
+    // Root .peppy should NOT be generated (no execution at root level)
+    let root_peppy_dir = node_dir.path().join(".peppy");
+    assert!(
+        !root_peppy_dir.exists(),
+        "root .peppy directory should NOT exist for a default-variant node"
+    );
+
     // Variant .peppy should be generated
     let variant_peppy_dir = default_variant_dir.join(PEPPY_OUTPUT_DIR);
     assert!(
