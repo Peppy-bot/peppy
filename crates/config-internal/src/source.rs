@@ -60,7 +60,9 @@ where
     }
     let path = Path::new(trimmed);
     if path.is_absolute()
-        || path.components().any(|c| matches!(c, Component::ParentDir | Component::Prefix(_)))
+        || path
+            .components()
+            .any(|c| matches!(c, Component::ParentDir | Component::Prefix(_)))
     {
         return Err(invalid_deployment_source::<E>(
             "git path cannot be absolute or contain parent-dir components",

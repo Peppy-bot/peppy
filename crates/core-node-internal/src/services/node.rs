@@ -26,6 +26,7 @@ use std::collections::VecDeque;
 use std::fs::File;
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::Instant;
 pub use stop::listen_for_node_stop;
@@ -384,9 +385,18 @@ pub(crate) fn clone_repo_with_deadline(
     dest: &Path,
     deadline: Option<Instant>,
 ) -> std::result::Result<Repository, String> {
+    let deadline_triggered = Arc::new(AtomicBool::new(false));
+
     let mut callbacks = git2::RemoteCallbacks::new();
     if let Some(deadline) = deadline {
-        callbacks.transfer_progress(move |_progress| Instant::now() < deadline);
+        let flag = Arc::clone(&deadline_triggered);
+        callbacks.transfer_progress(move |_progress| {
+            if Instant::now() >= deadline {
+                flag.store(true, Ordering::SeqCst);
+                return false;
+            }
+            true
+        });
     }
 
     let mut fetch_opts = git2::FetchOptions::new();
@@ -396,7 +406,7 @@ pub(crate) fn clone_repo_with_deadline(
         .fetch_options(fetch_opts)
         .clone(repo_url, dest)
         .map_err(|e| {
-            if deadline.is_some_and(|d| Instant::now() >= d) {
+            if deadline_triggered.load(Ordering::SeqCst) {
                 format!("Git clone timed out for {}", repo_url)
             } else {
                 format!("Failed to clone repository: {}", e)
