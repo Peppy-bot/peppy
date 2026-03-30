@@ -7,10 +7,10 @@ use std::path::Path;
 
 /// Validates execution constraints shared by both full node configs and variant configs.
 fn validate_execution(execution: &Execution) -> Result<()> {
-    if let Some(cmds) = &execution.start_cmd {
-        if cmds.is_empty() {
-            return Err(ParsingError::EmptyStartCmd.into());
-        }
+    if let Some(cmds) = &execution.start_cmd
+        && cmds.is_empty()
+    {
+        return Err(ParsingError::EmptyStartCmd.into());
     }
 
     // `start_cmd` and `container` are mutually exclusive; exactly one must be present.

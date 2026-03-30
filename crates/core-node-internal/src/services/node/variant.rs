@@ -102,7 +102,7 @@ pub(crate) async fn resolve_variant(
                 let clone_repo_url = repo_url.to_bstring().to_string();
                 let clone_repo_ref = repo_ref.clone();
                 let clone_deadline = deadline;
-                if let Err(err) = tokio::task::spawn_blocking(move || {
+                tokio::task::spawn_blocking(move || {
                     let repo = super::clone_repo_with_deadline(
                         &clone_repo_url,
                         &clone_dest,
@@ -116,11 +116,7 @@ pub(crate) async fn resolve_variant(
                     Ok::<_, String>(())
                 })
                 .await
-                .map_err(|e| format!("Failed to join git clone task: {}", e))?
-                {
-                    // temp_dir drops here, auto-cleaning the directory.
-                    return Err(err);
-                }
+                .map_err(|e| format!("Failed to join git clone task: {}", e))??;
 
                 let checkout_dir = temp_dir.keep();
                 let node_root_dir = checkout_dir.join(&repo_relative_path);
@@ -246,7 +242,7 @@ async fn resolve_variant_deployment_source(
             let clone_repo_url = git.repo.clone();
             let clone_repo_ref = Some(git.ref_.clone());
             let clone_deadline = deadline;
-            if let Err(err) = tokio::task::spawn_blocking(move || {
+            tokio::task::spawn_blocking(move || {
                 let repo =
                     super::clone_repo_with_deadline(&clone_repo_url, &clone_dest, clone_deadline)?;
                 if let Some(repo_ref) = clone_repo_ref.as_deref() {
@@ -256,11 +252,7 @@ async fn resolve_variant_deployment_source(
                 Ok::<_, String>(())
             })
             .await
-            .map_err(|e| format!("Failed to join git clone task: {}", e))?
-            {
-                // temp_dir drops here, auto-cleaning the directory.
-                return Err(err);
-            }
+            .map_err(|e| format!("Failed to join git clone task: {}", e))??;
 
             let checkout_dir = temp_dir.keep();
             let node_root_dir = checkout_dir.join(&repo_relative_path);

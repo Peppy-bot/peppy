@@ -820,13 +820,16 @@ async fn listen_for_node_info_with_fs_archive_variant_uses_archived_root() {
 async fn listen_for_node_info_with_unknown_variant_fails() {
     let started_core_node = start_core_node_with_mock_messenger().await;
 
-    // Create root node with no variants.
+    // Create root node with a declared variant that differs from the requested one.
     let root_dir = tempfile::tempdir().expect("failed to create temp root dir");
     let root_peppy_json5 = r#"{
         schema_version: 1,
         manifest: {
-            name: "no_variants_node",
+            name: "has_variants_node",
             tag: "0.1.0",
+            variants: [
+                { name: "existing", source: { local: "./existing" } }
+            ]
         },
         execution: {
             language: "rust",
@@ -858,8 +861,8 @@ async fn listen_for_node_info_with_unknown_variant_fails() {
     };
 
     assert!(
-        reason.contains("does not define any variants"),
-        "error should mention missing variants; got: {reason}"
+        reason.contains("not found in manifest"),
+        "error should mention variant not found in manifest; got: {reason}"
     );
 }
 
