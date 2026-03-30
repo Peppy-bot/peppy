@@ -510,6 +510,13 @@ impl ConsumedTopic {
             Self::External(t) => &t.name,
         }
     }
+
+    pub fn local_node_id(&self) -> Option<&str> {
+        match self {
+            Self::Linked(t) => Some(&t.local_node_id),
+            Self::External(_) => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -877,12 +884,15 @@ fn normalize_opt_default<T: Normalize + Default + PartialEq>(opt: &mut Option<T>
     }
 }
 
-fn normalize_opt_vec<T: Normalize>(opt: &mut Option<Vec<T>>, name_fn: impl Fn(&T) -> &str) {
+fn normalize_opt_vec<T: Normalize>(
+    opt: &mut Option<Vec<T>>,
+    cmp: impl Fn(&T, &T) -> std::cmp::Ordering,
+) {
     if let Some(items) = opt.as_mut() {
         for item in items.iter_mut() {
             item.normalize();
         }
-        items.sort_by(|a, b| name_fn(a).cmp(name_fn(b)));
+        items.sort_by(|a, b| cmp(a, b));
         if items.is_empty() {
             *opt = None;
         }
@@ -974,22 +984,34 @@ impl Normalize for ExposedAction {
 
 impl Normalize for TopicInterfaces {
     fn normalize(&mut self) {
-        normalize_opt_vec(&mut self.emits, |t| &t.name);
-        normalize_opt_vec(&mut self.consumes, |t| t.name());
+        normalize_opt_vec(&mut self.emits, |a, b| a.name.cmp(&b.name));
+        normalize_opt_vec(&mut self.consumes, |a, b| {
+            a.name()
+                .cmp(b.name())
+                .then_with(|| a.local_node_id().cmp(&b.local_node_id()))
+        });
     }
 }
 
 impl Normalize for ServiceInterfaces {
     fn normalize(&mut self) {
-        normalize_opt_vec(&mut self.exposes, |s| &s.name);
-        normalize_opt_vec(&mut self.consumes, |s| &s.name);
+        normalize_opt_vec(&mut self.exposes, |a, b| a.name.cmp(&b.name));
+        normalize_opt_vec(&mut self.consumes, |a, b| {
+            a.name
+                .cmp(&b.name)
+                .then_with(|| a.local_node_id.cmp(&b.local_node_id))
+        });
     }
 }
 
 impl Normalize for ActionInterfaces {
     fn normalize(&mut self) {
-        normalize_opt_vec(&mut self.exposes, |a| &a.name);
-        normalize_opt_vec(&mut self.consumes, |a| &a.name);
+        normalize_opt_vec(&mut self.exposes, |a, b| a.name.cmp(&b.name));
+        normalize_opt_vec(&mut self.consumes, |a, b| {
+            a.name
+                .cmp(&b.name)
+                .then_with(|| a.local_node_id.cmp(&b.local_node_id))
+        });
     }
 }
 
@@ -1505,5 +1527,111 @@ mod tests {
             extra: "bad"
         }"#;
         assert!(serde_json5::from_str::<NodeConfig>(json5).is_err());
+    }
+
+    #[test]
+    fn consume_normalization_sorts_by_name_and_local_node_id() {
+        // TopicInterfaces: two linked consumed topics with same name, different local_node_id
+        let mut topics_a = TopicInterfaces {
+            emits: None,
+            consumes: Some(vec![
+                ConsumedTopic::Linked(LinkedConsumedTopic {
+                    local_node_id: "node_b".into(),
+                    name: "topic".into(),
+                }),
+                ConsumedTopic::Linked(LinkedConsumedTopic {
+                    local_node_id: "node_a".into(),
+                    name: "topic".into(),
+                }),
+            ]),
+        };
+        let mut topics_b = TopicInterfaces {
+            emits: None,
+            consumes: Some(vec![
+                ConsumedTopic::Linked(LinkedConsumedTopic {
+                    local_node_id: "node_a".into(),
+                    name: "topic".into(),
+                }),
+                ConsumedTopic::Linked(LinkedConsumedTopic {
+                    local_node_id: "node_b".into(),
+                    name: "topic".into(),
+                }),
+            ]),
+        };
+        topics_a.normalize();
+        topics_b.normalize();
+        assert_eq!(topics_a, topics_b);
+        // Verify sorted order: node_a before node_b
+        let consumes = topics_a.consumes.unwrap();
+        assert!(matches!(&consumes[0], ConsumedTopic::Linked(t) if t.local_node_id == "node_a"));
+        assert!(matches!(&consumes[1], ConsumedTopic::Linked(t) if t.local_node_id == "node_b"));
+
+        // ServiceInterfaces: same name, different local_node_id
+        let mut services_a = ServiceInterfaces {
+            exposes: None,
+            consumes: Some(vec![
+                ConsumedService {
+                    local_node_id: "node_b".into(),
+                    name: "svc".into(),
+                },
+                ConsumedService {
+                    local_node_id: "node_a".into(),
+                    name: "svc".into(),
+                },
+            ]),
+        };
+        let mut services_b = ServiceInterfaces {
+            exposes: None,
+            consumes: Some(vec![
+                ConsumedService {
+                    local_node_id: "node_a".into(),
+                    name: "svc".into(),
+                },
+                ConsumedService {
+                    local_node_id: "node_b".into(),
+                    name: "svc".into(),
+                },
+            ]),
+        };
+        services_a.normalize();
+        services_b.normalize();
+        assert_eq!(services_a, services_b);
+        let consumes = services_a.consumes.unwrap();
+        assert_eq!(consumes[0].local_node_id, "node_a");
+        assert_eq!(consumes[1].local_node_id, "node_b");
+
+        // ActionInterfaces: same name, different local_node_id
+        let mut actions_a = ActionInterfaces {
+            exposes: None,
+            consumes: Some(vec![
+                ConsumedAction {
+                    local_node_id: "node_b".into(),
+                    name: "act".into(),
+                },
+                ConsumedAction {
+                    local_node_id: "node_a".into(),
+                    name: "act".into(),
+                },
+            ]),
+        };
+        let mut actions_b = ActionInterfaces {
+            exposes: None,
+            consumes: Some(vec![
+                ConsumedAction {
+                    local_node_id: "node_a".into(),
+                    name: "act".into(),
+                },
+                ConsumedAction {
+                    local_node_id: "node_b".into(),
+                    name: "act".into(),
+                },
+            ]),
+        };
+        actions_a.normalize();
+        actions_b.normalize();
+        assert_eq!(actions_a, actions_b);
+        let consumes = actions_a.consumes.unwrap();
+        assert_eq!(consumes[0].local_node_id, "node_a");
+        assert_eq!(consumes[1].local_node_id, "node_b");
     }
 }

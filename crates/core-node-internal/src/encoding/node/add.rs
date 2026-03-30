@@ -261,38 +261,19 @@ impl NodeAddGoal {
             use crate::node_capnp::node_add_variant_source::source::Which;
             let variant_reader = goal.get_variant()?;
             match variant_reader.get_source().which()? {
-                Which::Fs(fs) => {
-                    let name = fs?.to_str()?;
-                    if name.is_empty() {
-                        None
-                    } else {
-                        Some(NodeSource::decode_fs(name)?)
-                    }
-                }
+                Which::Fs(fs) => Some(NodeSource::decode_fs(fs?.to_str()?)?),
                 Which::Git(git) => {
                     let git = git?;
-                    let repo_url_str = git.get_repo_url()?.to_str()?;
-                    if repo_url_str.is_empty() {
-                        None
-                    } else {
-                        Some(NodeSource::decode_git(
-                            repo_url_str,
-                            git.get_repo_path()?.to_str()?,
-                            git.get_repo_ref()?.to_str()?,
-                        )?)
-                    }
+                    Some(NodeSource::decode_git(
+                        git.get_repo_url()?.to_str()?,
+                        git.get_repo_path()?.to_str()?,
+                        git.get_repo_ref()?.to_str()?,
+                    )?)
                 }
-                Which::Http(http) => {
-                    let url_str = http?.to_str()?;
-                    if url_str.is_empty() {
-                        None
-                    } else {
-                        Some(NodeSource::decode_http(
-                            url_str,
-                            Some(variant_reader.get_http_sha256()?.to_str()?),
-                        )?)
-                    }
-                }
+                Which::Http(http) => Some(NodeSource::decode_http(
+                    http?.to_str()?,
+                    Some(variant_reader.get_http_sha256()?.to_str()?),
+                )?),
             }
         } else {
             None
