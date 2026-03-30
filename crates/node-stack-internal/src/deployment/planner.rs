@@ -340,7 +340,7 @@ fn resolve_deployment(
     deployment: &Deployment,
 ) -> Result<ResolvedNode> {
     match &deployment.source {
-        DeploymentSource::Local(spec) => resolve_local_deployment(base_dir, spec),
+        DeploymentSource::Local(spec) => resolve_local_deployment(base_dir, spec, added_nodes_dir),
         DeploymentSource::Git(spec) => resolve_remote_git(added_nodes_dir, spec),
         DeploymentSource::Url(spec) => resolve_remote_url(added_nodes_dir, spec),
     }

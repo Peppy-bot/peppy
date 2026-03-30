@@ -32,7 +32,7 @@ pub(super) fn ensure_url_source(
     let expected_checksum = spec.sha256.as_str();
 
     if should_refresh(&cache_dir, expected_checksum) {
-        with_refresh_lock(&cache_dir, spec, expected_checksum)?;
+        with_refresh_lock(&cache_dir, spec, expected_checksum, added_nodes_dir)?;
     }
 
     Ok(cache_dir)
@@ -48,18 +48,18 @@ pub fn resolve_remote_url(
     let expected_checksum = spec.sha256.as_str();
     let needs_refresh = should_refresh(&cache_dir, expected_checksum);
 
-    let node = if needs_refresh {
-        match with_refresh_lock(&cache_dir, spec, expected_checksum)? {
-            Some(node) => node,
-            None => load_manifest(&cache_dir)?,
+    let (node, root_path) = if needs_refresh {
+        match with_refresh_lock(&cache_dir, spec, expected_checksum, added_nodes_dir)? {
+            Some(result) => result,
+            None => load_manifest(&cache_dir, added_nodes_dir)?,
         }
     } else {
-        load_manifest(&cache_dir)?
+        load_manifest(&cache_dir, added_nodes_dir)?
     };
 
     Ok(ResolvedNode {
         config: node,
-        root_path: cache_dir,
+        root_path,
     })
 }
 
@@ -67,7 +67,8 @@ fn with_refresh_lock(
     cache_dir: &Path,
     spec: &DeploymentUrlSource,
     expected_checksum: &str,
-) -> Result<Option<NodeConfig>> {
+    added_nodes_dir: &Path,
+) -> Result<Option<(NodeConfig, PathBuf)>> {
     if let Some(parent) = cache_dir.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -82,7 +83,12 @@ fn with_refresh_lock(
     lock_file.lock_exclusive()?;
 
     let result = if should_refresh(cache_dir, expected_checksum) {
-        Some(refresh_bundle(cache_dir, spec, expected_checksum)?)
+        Some(refresh_bundle(
+            cache_dir,
+            spec,
+            expected_checksum,
+            added_nodes_dir,
+        )?)
     } else {
         None
     };
@@ -95,7 +101,8 @@ fn refresh_bundle(
     cache_dir: &Path,
     spec: &DeploymentUrlSource,
     expected_checksum: &str,
-) -> Result<NodeConfig> {
+    added_nodes_dir: &Path,
+) -> Result<(NodeConfig, PathBuf)> {
     let unique_suffix = format!(
         "{}-{}",
         std::process::id(),
@@ -117,7 +124,7 @@ fn refresh_bundle(
 
     fs::write(temp_dir.path().join(CHECKSUM_FILE), expected_checksum)?;
 
-    let node = load_manifest_inner(temp_dir.path())?;
+    let (node, root_path) = load_manifest_inner(temp_dir.path(), added_nodes_dir)?;
 
     if cache_dir.exists() {
         fs::remove_dir_all(cache_dir)?;
@@ -128,14 +135,21 @@ fn refresh_bundle(
     fs::rename(temp_dir.path(), cache_dir)?;
     temp_dir.disarm();
 
-    Ok(node)
+    // Rebase root_path from temp_dir to cache_dir if it was inside temp_dir.
+    let root_path = if root_path.starts_with(temp_dir.path()) {
+        cache_dir.join(root_path.strip_prefix(temp_dir.path()).unwrap())
+    } else {
+        root_path
+    };
+
+    Ok((node, root_path))
 }
 
-fn load_manifest(cache_dir: &Path) -> Result<NodeConfig> {
-    load_manifest_inner(cache_dir)
+fn load_manifest(cache_dir: &Path, added_nodes_dir: &Path) -> Result<(NodeConfig, PathBuf)> {
+    load_manifest_inner(cache_dir, added_nodes_dir)
 }
 
-fn load_manifest_inner(dir: &Path) -> Result<NodeConfig> {
+fn load_manifest_inner(dir: &Path, added_nodes_dir: &Path) -> Result<(NodeConfig, PathBuf)> {
     let manifest_path = dir.join(NODE_CONFIG_FILE);
     if !manifest_path.is_file() {
         return Err(Error::BundleExtraction {
@@ -144,9 +158,18 @@ fn load_manifest_inner(dir: &Path) -> Result<NodeConfig> {
         });
     }
 
-    let node = NodeConfigParser::from_path(&manifest_path)?.into_resolved()?;
+    let raw_config = NodeConfigParser::from_path(&manifest_path)?;
 
-    Ok(node)
+    if let Some(source) = raw_config.manifest.default_variant_source().cloned() {
+        super::variant::resolve_default_variant(
+            raw_config,
+            &source,
+            |local_source| super::variant::resolve_local_variant_from_path(local_source, dir),
+            added_nodes_dir,
+        )
+    } else {
+        Ok((raw_config.into_resolved()?, dir.to_path_buf()))
+    }
 }
 
 fn should_refresh(cache_dir: &Path, expected_checksum: &str) -> bool {
@@ -415,5 +438,156 @@ mod tests {
             build_bundle_cache_path(base, url, "a"),
             build_bundle_cache_path(base, url, "b"),
         );
+    }
+
+    #[test]
+    fn load_manifest_inner_default_variant_merges_execution() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let bundle_dir = dir.path().join("bundle");
+        std::fs::create_dir_all(&bundle_dir).expect("create bundle dir");
+        std::fs::write(
+            bundle_dir.join(NODE_CONFIG_FILE),
+            r#"{
+                schema_version: 1,
+                manifest: {
+                    name: "url_node",
+                    tag: "0.2.0",
+                    variants: [
+                        { name: "default", source: { local: "./variants/default" } },
+                    ],
+                },
+            }"#,
+        )
+        .expect("write root config");
+
+        let variant_dir = bundle_dir.join("variants").join("default");
+        std::fs::create_dir_all(&variant_dir).expect("create variant dir");
+        std::fs::write(
+            variant_dir.join(NODE_CONFIG_FILE),
+            r#"{
+                schema_version: 1,
+                execution: {
+                    language: "rust",
+                    start_cmd: ["./target/release/url_node"]
+                }
+            }"#,
+        )
+        .expect("write variant config");
+
+        let added_nodes_dir = dir.path().join("added_nodes");
+        std::fs::create_dir_all(&added_nodes_dir).expect("create added_nodes dir");
+
+        let (node, root_path) =
+            load_manifest_inner(&bundle_dir, &added_nodes_dir).expect("variant should resolve");
+
+        assert_eq!(node.manifest.name.as_str(), "url_node");
+        assert_eq!(node.manifest.tag, "0.2.0");
+        assert_eq!(
+            node.execution.start_cmd,
+            Some(vec!["./target/release/url_node".to_string()])
+        );
+        assert_eq!(root_path, variant_dir);
+    }
+
+    #[test]
+    fn load_manifest_inner_default_variant_missing_file_returns_error() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let bundle_dir = dir.path().join("bundle");
+        std::fs::create_dir_all(&bundle_dir).expect("create bundle dir");
+        std::fs::write(
+            bundle_dir.join(NODE_CONFIG_FILE),
+            r#"{
+                schema_version: 1,
+                manifest: {
+                    name: "url_node",
+                    tag: "0.2.0",
+                    variants: [
+                        { name: "default", source: { local: "./variants/default" } },
+                    ],
+                },
+            }"#,
+        )
+        .expect("write root config");
+
+        let added_nodes_dir = dir.path().join("added_nodes");
+        std::fs::create_dir_all(&added_nodes_dir).expect("create added_nodes dir");
+
+        let err = load_manifest_inner(&bundle_dir, &added_nodes_dir)
+            .expect_err("should fail when variant file is missing");
+
+        let msg = err.to_string();
+        assert!(
+            msg.contains("peppy.json5") || msg.contains("No such file"),
+            "expected file-not-found error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn load_manifest_inner_without_variant_resolves_normally() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let bundle_dir = dir.path().join("bundle");
+        std::fs::create_dir_all(&bundle_dir).expect("create bundle dir");
+        std::fs::write(
+            bundle_dir.join(NODE_CONFIG_FILE),
+            r#"{
+                schema_version: 1,
+                manifest: {
+                    name: "plain_node",
+                    tag: "1.0.0",
+                },
+                execution: {
+                    language: "rust",
+                    start_cmd: ["./target/release/plain_node"]
+                }
+            }"#,
+        )
+        .expect("write config");
+
+        let added_nodes_dir = dir.path().join("added_nodes");
+        std::fs::create_dir_all(&added_nodes_dir).expect("create added_nodes dir");
+
+        let (node, root_path) =
+            load_manifest_inner(&bundle_dir, &added_nodes_dir).expect("should resolve");
+
+        assert_eq!(node.manifest.name.as_str(), "plain_node");
+        assert_eq!(
+            node.execution.start_cmd,
+            Some(vec!["./target/release/plain_node".to_string()])
+        );
+        assert_eq!(root_path, bundle_dir);
+    }
+
+    #[test]
+    fn load_manifest_inner_non_default_variant_resolves_normally() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let bundle_dir = dir.path().join("bundle");
+        std::fs::create_dir_all(&bundle_dir).expect("create bundle dir");
+        std::fs::write(
+            bundle_dir.join(NODE_CONFIG_FILE),
+            r#"{
+                schema_version: 1,
+                manifest: {
+                    name: "gpu_node",
+                    tag: "0.1.0",
+                    variants: [
+                        { name: "gpu", source: { local: "./variants/gpu" } },
+                    ],
+                },
+                execution: {
+                    language: "rust",
+                    start_cmd: ["./target/release/gpu_node"]
+                }
+            }"#,
+        )
+        .expect("write config");
+
+        let added_nodes_dir = dir.path().join("added_nodes");
+        std::fs::create_dir_all(&added_nodes_dir).expect("create added_nodes dir");
+
+        let (node, root_path) =
+            load_manifest_inner(&bundle_dir, &added_nodes_dir).expect("should resolve");
+
+        assert_eq!(node.manifest.name.as_str(), "gpu_node");
+        assert_eq!(root_path, bundle_dir);
     }
 }

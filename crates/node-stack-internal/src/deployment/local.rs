@@ -1,61 +1,14 @@
 use super::ResolvedNode;
 use crate::error::{Error, Result};
 use config::consts::NODE_CONFIG_FILE;
-use config::node::{NodeConfig, NodeConfigParser, VariantConfigParser};
+use config::node::NodeConfigParser;
 use config::peppy_config::DeploymentLocalSource;
-use config::source::DeploymentSource;
 use std::path::{Path, PathBuf};
-
-/// Resolves the default variant for a node config on the local filesystem.
-///
-/// Reads the variant's config file from disk and merges the root's
-/// manifest/interfaces with the variant's execution.
-fn resolve_default_variant_local(
-    raw_config: &config::node::RawNodeConfig,
-    variant_source: &DeploymentSource,
-    root_path: &Path,
-) -> Result<ResolvedNode> {
-    let local_source = match variant_source {
-        DeploymentSource::Local(local) => local,
-        DeploymentSource::Git(_) | DeploymentSource::Url(_) => {
-            return Err(Error::NotImplemented(
-                "non-local default variant sources in local deployments",
-            ));
-        }
-    };
-
-    let target = if local_source.local.is_relative() {
-        root_path.join(&local_source.local)
-    } else {
-        local_source.local.clone()
-    };
-
-    let (variant_dir, variant_config_path) = if target.is_file() {
-        let parent = target
-            .parent()
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| PathBuf::from("."));
-        (parent, target)
-    } else {
-        (target.clone(), target.join(NODE_CONFIG_FILE))
-    };
-
-    let variant_config = VariantConfigParser::from_path(&variant_config_path)?;
-
-    Ok(ResolvedNode {
-        config: NodeConfig {
-            schema_version: raw_config.schema_version,
-            manifest: raw_config.manifest.clone(),
-            interfaces: raw_config.interfaces.clone(),
-            execution: variant_config.execution,
-        },
-        root_path: variant_dir,
-    })
-}
 
 pub fn resolve_local_deployment(
     base_dir: &Path,
     spec: &DeploymentLocalSource,
+    added_nodes_dir: &Path,
 ) -> Result<ResolvedNode> {
     let target = if spec.local.is_absolute() {
         spec.local.clone()
@@ -79,8 +32,19 @@ pub fn resolve_local_deployment(
 
     let raw_config = NodeConfigParser::from_path(&config_path)?;
 
-    if let Some(source) = raw_config.manifest.default_variant_source() {
-        resolve_default_variant_local(&raw_config, source, &root_path)
+    if let Some(source) = raw_config.manifest.default_variant_source().cloned() {
+        let (config, variant_root) = super::variant::resolve_default_variant(
+            raw_config,
+            &source,
+            |local_source| {
+                super::variant::resolve_local_variant_from_path(local_source, &root_path)
+            },
+            added_nodes_dir,
+        )?;
+        Ok(ResolvedNode {
+            config,
+            root_path: variant_root,
+        })
     } else {
         Ok(ResolvedNode {
             config: raw_config.into_resolved()?,
@@ -127,10 +91,13 @@ mod tests {
         )
         .expect("write variant config");
 
+        let added_nodes_dir = dir.path().join("added_nodes");
+        std::fs::create_dir_all(&added_nodes_dir).expect("create added_nodes dir");
+
         let spec = DeploymentLocalSource {
             local: PathBuf::from("./variant_node"),
         };
-        let resolved = resolve_local_deployment(dir.path(), &spec)
+        let resolved = resolve_local_deployment(dir.path(), &spec, &added_nodes_dir)
             .expect("default variant should resolve successfully");
 
         assert_eq!(resolved.config.manifest.name.as_str(), "variant_node");
@@ -162,10 +129,13 @@ mod tests {
         )
         .expect("write node config");
 
+        let added_nodes_dir = dir.path().join("added_nodes");
+        std::fs::create_dir_all(&added_nodes_dir).expect("create added_nodes dir");
+
         let spec = DeploymentLocalSource {
             local: PathBuf::from("./variant_node"),
         };
-        let err = resolve_local_deployment(dir.path(), &spec)
+        let err = resolve_local_deployment(dir.path(), &spec, &added_nodes_dir)
             .expect_err("should fail when variant file is missing");
 
         let msg = err.to_string();
@@ -202,8 +172,11 @@ mod tests {
         let spec = DeploymentLocalSource {
             local: PathBuf::from("./gpu_node"),
         };
-        let resolved =
-            resolve_local_deployment(dir.path(), &spec).expect("non-default variant resolves");
+        let added_nodes_dir = dir.path().join("added_nodes");
+        std::fs::create_dir_all(&added_nodes_dir).expect("create added_nodes dir");
+
+        let resolved = resolve_local_deployment(dir.path(), &spec, &added_nodes_dir)
+            .expect("non-default variant resolves");
 
         assert_eq!(resolved.config.manifest.name.as_str(), "gpu_node");
     }
@@ -231,8 +204,11 @@ mod tests {
         let spec = DeploymentLocalSource {
             local: PathBuf::from("./uvc_camera"),
         };
-        let resolved =
-            resolve_local_deployment(dir.path(), &spec).expect("local deployment resolves");
+        let added_nodes_dir = dir.path().join("added_nodes");
+        std::fs::create_dir_all(&added_nodes_dir).expect("create added_nodes dir");
+
+        let resolved = resolve_local_deployment(dir.path(), &spec, &added_nodes_dir)
+            .expect("local deployment resolves");
 
         assert_eq!(resolved.config.manifest.name.as_str(), "uvc_camera");
         assert_eq!(resolved.config.manifest.tag, "0.1.0");

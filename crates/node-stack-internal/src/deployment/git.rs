@@ -6,12 +6,11 @@ use std::{
 use super::ResolvedNode;
 use crate::error::Result;
 use config::consts::NODE_CONFIG_FILE;
-use config::node::{NodeConfig, NodeConfigParser, VariantConfigParser};
+use config::node::{NodeConfigParser, VariantConfigParser};
 use config::peppy_config::DeploymentGitSource;
-use config::source::DeploymentSource;
 use git2::{AutotagOption, FetchOptions, ObjectType, Repository};
 
-fn node_config_path(path: &str) -> PathBuf {
+pub(super) fn node_config_path(path: &str) -> PathBuf {
     let trimmed = path.trim().trim_start_matches("./");
     if trimmed.is_empty() || trimmed == "." {
         return PathBuf::from(config::consts::NODE_CONFIG_FILE);
@@ -25,7 +24,7 @@ fn node_config_path(path: &str) -> PathBuf {
     }
 }
 
-fn find_commit_for_tag<'repo>(
+pub(super) fn find_commit_for_tag<'repo>(
     repo: &'repo Repository,
     tag: &str,
 ) -> std::result::Result<git2::Commit<'repo>, git2::Error> {
@@ -56,7 +55,7 @@ fn git_dir_name(remote: &str) -> &str {
     segment.strip_suffix(".git").unwrap_or(segment)
 }
 
-fn read_blob_from_tree(
+pub(super) fn read_blob_from_tree(
     repo: &Repository,
     tree: &git2::Tree,
     path: &Path,
@@ -68,7 +67,7 @@ fn read_blob_from_tree(
     Ok(content.to_owned())
 }
 
-fn build_repo_cache_path(base: &Path, remote: &str) -> PathBuf {
+pub(super) fn build_repo_cache_path(base: &Path, remote: &str) -> PathBuf {
     let hash = stable_hash(remote);
     let dir = git_dir_name(remote);
     let dir = if dir.is_empty() {
@@ -79,7 +78,7 @@ fn build_repo_cache_path(base: &Path, remote: &str) -> PathBuf {
     base.join(format!("{dir}-{hash:016x}"))
 }
 
-fn fetch_repository(repo: &Repository) -> std::result::Result<(), git2::Error> {
+pub(super) fn fetch_repository(repo: &Repository) -> std::result::Result<(), git2::Error> {
     if let Ok(mut remote) = repo.find_remote("origin") {
         let mut fo = FetchOptions::new();
         fo.download_tags(AutotagOption::All);
@@ -96,7 +95,7 @@ fn fetch_repository(repo: &Repository) -> std::result::Result<(), git2::Error> {
     }
 }
 
-fn ensure_repository(
+pub(super) fn ensure_repository(
     repo_dir: &Path,
     remote: &str,
 ) -> std::result::Result<Repository, git2::Error> {
@@ -105,85 +104,6 @@ fn ensure_repository(
     } else {
         Repository::clone(remote, repo_dir)
     }
-}
-
-/// Resolves the default variant for a node config read from a git tree.
-///
-/// For `DeploymentSource::Local` variants, reads the variant's config file from
-/// the same git tree. For `DeploymentSource::Git` and `DeploymentSource::Url`
-/// variants, delegates to the shared resolvers (cloning the remote repo or
-/// downloading the URL bundle respectively).
-fn resolve_default_variant_from_tree(
-    repo: &Repository,
-    tree: &git2::Tree,
-    raw_config: config::node::RawNodeConfig,
-    variant_source: &DeploymentSource,
-    config_path: &Path,
-    added_nodes_dir: &Path,
-    repo_dir: &Path,
-) -> Result<(NodeConfig, PathBuf)> {
-    let (variant_config, variant_root_path) = match variant_source {
-        DeploymentSource::Local(local_source) => {
-            let parent = config_path.parent().unwrap_or_else(|| Path::new(""));
-            let variant_dir = if local_source.local.is_relative() {
-                parent.join(&local_source.local)
-            } else {
-                local_source.local.clone()
-            };
-            // Strip leading "./" so libgit2 can look up the path in the tree.
-            let variant_config_path: PathBuf = variant_dir
-                .join(NODE_CONFIG_FILE)
-                .components()
-                .filter(|c| !matches!(c, std::path::Component::CurDir))
-                .collect();
-            let variant_content = read_blob_from_tree(repo, tree, &variant_config_path)?;
-            let normalized_variant_dir: PathBuf = variant_dir
-                .components()
-                .filter(|c| !matches!(c, std::path::Component::CurDir))
-                .collect();
-            (
-                VariantConfigParser::from_content(&variant_content)?,
-                repo_dir.join(normalized_variant_dir),
-            )
-        }
-        DeploymentSource::Git(git_spec) => {
-            let variant_repo_dir = build_repo_cache_path(added_nodes_dir, &git_spec.repo);
-            let variant_repo = ensure_repository(&variant_repo_dir, &git_spec.repo)?;
-            fetch_repository(&variant_repo)?;
-            let variant_commit = find_commit_for_tag(&variant_repo, &git_spec.ref_)?;
-            let variant_tree = variant_commit.tree()?;
-            let variant_config_path = node_config_path(&git_spec.path);
-            let variant_content =
-                read_blob_from_tree(&variant_repo, &variant_tree, &variant_config_path)?;
-            let variant_root = variant_repo_dir.join(
-                variant_config_path
-                    .parent()
-                    .unwrap_or_else(|| Path::new("")),
-            );
-            (
-                VariantConfigParser::from_content(&variant_content)?,
-                variant_root,
-            )
-        }
-        DeploymentSource::Url(url_spec) => {
-            let cache_dir = super::url::ensure_url_source(added_nodes_dir, url_spec)?;
-            let variant_config_path = cache_dir.join(NODE_CONFIG_FILE);
-            (
-                VariantConfigParser::from_path(&variant_config_path)?,
-                cache_dir,
-            )
-        }
-    };
-
-    Ok((
-        NodeConfig {
-            schema_version: raw_config.schema_version,
-            manifest: raw_config.manifest,
-            interfaces: raw_config.interfaces,
-            execution: variant_config.execution,
-        },
-        variant_root_path,
-    ))
 }
 
 pub fn resolve_remote_git(
@@ -205,26 +125,60 @@ pub fn resolve_remote_git(
 
     let raw_config = NodeConfigParser::from_content(&content)?;
 
-    let (node, root_path) =
-        if let Some(source) = raw_config.manifest.default_variant_source().cloned() {
-            resolve_default_variant_from_tree(
-                &repo,
-                &tree,
-                raw_config,
-                &source,
-                &config_path,
-                added_nodes_dir,
-                &repo_dir,
-            )?
-        } else {
-            let root_path = repo_dir.join(config_path.parent().unwrap_or_else(|| Path::new("")));
-            (raw_config.into_resolved()?, root_path)
-        };
+    let (node, root_path) = if let Some(source) =
+        raw_config.manifest.default_variant_source().cloned()
+    {
+        super::variant::resolve_default_variant(
+            raw_config,
+            &source,
+            |local_source| {
+                resolve_local_variant_from_tree(&repo, &tree, local_source, &config_path, &repo_dir)
+            },
+            added_nodes_dir,
+        )?
+    } else {
+        let root_path = repo_dir.join(config_path.parent().unwrap_or_else(|| Path::new("")));
+        (raw_config.into_resolved()?, root_path)
+    };
 
     Ok(ResolvedNode {
         config: node,
         root_path,
     })
+}
+
+/// Resolves a local variant source by reading the config from a git tree.
+///
+/// This is specific to git deployments where the variant config is read
+/// from the in-memory git tree rather than from the filesystem.
+fn resolve_local_variant_from_tree(
+    repo: &Repository,
+    tree: &git2::Tree,
+    local_source: &config::peppy_config::DeploymentLocalSource,
+    config_path: &Path,
+    repo_dir: &Path,
+) -> Result<(config::node::VariantConfig, PathBuf)> {
+    let parent = config_path.parent().unwrap_or_else(|| Path::new(""));
+    let variant_dir = if local_source.local.is_relative() {
+        parent.join(&local_source.local)
+    } else {
+        local_source.local.clone()
+    };
+    // Strip leading "./" so libgit2 can look up the path in the tree.
+    let variant_config_path: PathBuf = variant_dir
+        .join(NODE_CONFIG_FILE)
+        .components()
+        .filter(|c| !matches!(c, std::path::Component::CurDir))
+        .collect();
+    let variant_content = read_blob_from_tree(repo, tree, &variant_config_path)?;
+    let normalized_variant_dir: PathBuf = variant_dir
+        .components()
+        .filter(|c| !matches!(c, std::path::Component::CurDir))
+        .collect();
+    Ok((
+        VariantConfigParser::from_content(&variant_content)?,
+        repo_dir.join(normalized_variant_dir),
+    ))
 }
 
 #[cfg(test)]

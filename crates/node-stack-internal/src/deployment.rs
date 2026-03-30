@@ -2,6 +2,7 @@ mod git;
 mod local;
 mod planner;
 mod url;
+mod variant;
 
 use std::path::PathBuf;
 
