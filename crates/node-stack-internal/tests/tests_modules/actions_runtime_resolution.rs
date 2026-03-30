@@ -308,3 +308,43 @@ fn action_dependency_fails_when_action_not_exposed_by_dependency() {
         "stack should still only have core node + controller"
     );
 }
+
+#[test]
+fn action_dependency_fails_when_local_node_id_is_undeclared() {
+    let dependent: config::node::NodeConfig = serde_json5::from_str(
+        r#"{
+            schema_version: 1,
+            manifest: {
+              name: "brain",
+              tag: "1.0.0",
+              depends_on: {
+                nodes: []
+              },
+            },
+            interfaces: {
+                actions: {
+                    consumes: [
+                        {
+                          local_node_id: "nonexistent",
+                          name: "move_right_arm"
+                        }
+                    ]
+                }
+            },
+            execution: {
+              language: "rust",
+              start_cmd: ["brain"]
+            },
+        }"#,
+    )
+    .expect("valid node config");
+
+    let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
+
+    let result = stack.push_config(dependent, false, PathBuf::from("/tmp"));
+    let Err(NodeStackError::UndeclaredLocalNodeId { local_node_id, .. }) = result else {
+        panic!("expected UndeclaredLocalNodeId error, got {:?}", result);
+    };
+    assert_eq!(local_node_id, "nonexistent");
+    assert_eq!(stack.len(), 1, "stack should only have core node");
+}

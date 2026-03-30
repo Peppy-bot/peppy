@@ -378,9 +378,8 @@ fn remove_nonexistent_instance_returns_false() {
             },
             interfaces: {
                 services: {
-                    consumes: [
+                    exposes: [
                         {
-                          local_node_id: "lidar",
                           name: "reset_sensor"
                         }
                     ]
@@ -434,9 +433,8 @@ fn reset_clears_all_except_core_node() {
             },
             interfaces: {
                 services: {
-                    consumes: [
+                    exposes: [
                         {
-                          local_node_id: "uvc_camera",
                           name: "reset_sensor"
                         }
                     ]
@@ -521,9 +519,8 @@ fn spawning_multiple_instances_on_same_entity() {
             },
             interfaces: {
                 services: {
-                    consumes: [
+                    exposes: [
                         {
-                          local_node_id: "lidar",
                           name: "reset_sensor"
                         }
                     ]
@@ -689,7 +686,7 @@ fn adding_same_entity_with_different_interfaces_overwrites_when_no_dependents() 
 
 #[test]
 fn adding_same_name_with_different_tag_and_different_interfaces_succeeds() {
-    // First config: version 1.0.0 emits a topic
+    // First config: version 1.0.0 exposes a service
     let config_v1: config::node::NodeConfig = serde_json5::from_str(
         r#"{
             schema_version: 1,
@@ -699,9 +696,8 @@ fn adding_same_name_with_different_tag_and_different_interfaces_succeeds() {
             },
             interfaces: {
                 services: {
-                    consumes: [
+                    exposes: [
                         {
-                          local_node_id: "lidar",
                           name: "reset_sensor"
                         }
                     ]

@@ -10,7 +10,7 @@ use petgraph::{
 use rand::rng;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     sync::{Arc, RwLock},
 };
@@ -252,6 +252,14 @@ pub fn validate_dependency_specs(
         }
     }
 
+    // Collect all declared local_ids so we can distinguish "declared but unresolved"
+    // (already has a MissingDependency error) from "never declared" (typo).
+    let declared_local_ids: HashSet<&str> = manifest
+        .depends_on
+        .as_ref()
+        .map(|d| d.nodes.iter().map(|n| n.local_id.as_str()).collect())
+        .unwrap_or_default();
+
     // Phase 2: Validate consumed interfaces reference valid local_node_ids
     // and that the dependency exposes the required interface
     if let Some(topics) = &interfaces.topics
@@ -259,6 +267,16 @@ pub fn validate_dependency_specs(
     {
         for topic in expected {
             if let config::node::ConsumedTopic::Linked(linked) = topic {
+                if !resolved_deps.contains_key(linked.local_node_id.as_str()) {
+                    if !declared_local_ids.contains(linked.local_node_id.as_str()) {
+                        errors.push(crate::error::Error::UndeclaredLocalNodeId {
+                            dependant: dependant_name.to_owned(),
+                            dependant_tag: dependant_tag.to_owned(),
+                            local_node_id: linked.local_node_id.clone(),
+                        });
+                    }
+                    continue;
+                }
                 validate_consumed_interface(
                     &linked.local_node_id,
                     &linked.name,
@@ -276,6 +294,16 @@ pub fn validate_dependency_specs(
         && let Some(consumed) = &services.consumes
     {
         for service in consumed {
+            if !resolved_deps.contains_key(service.local_node_id.as_str()) {
+                if !declared_local_ids.contains(service.local_node_id.as_str()) {
+                    errors.push(crate::error::Error::UndeclaredLocalNodeId {
+                        dependant: dependant_name.to_owned(),
+                        dependant_tag: dependant_tag.to_owned(),
+                        local_node_id: service.local_node_id.clone(),
+                    });
+                }
+                continue;
+            }
             validate_consumed_interface(
                 &service.local_node_id,
                 &service.name,
@@ -292,6 +320,16 @@ pub fn validate_dependency_specs(
         && let Some(consumed) = &actions.consumes
     {
         for action in consumed {
+            if !resolved_deps.contains_key(action.local_node_id.as_str()) {
+                if !declared_local_ids.contains(action.local_node_id.as_str()) {
+                    errors.push(crate::error::Error::UndeclaredLocalNodeId {
+                        dependant: dependant_name.to_owned(),
+                        dependant_tag: dependant_tag.to_owned(),
+                        local_node_id: action.local_node_id.clone(),
+                    });
+                }
+                continue;
+            }
             validate_consumed_interface(
                 &action.local_node_id,
                 &action.name,
@@ -319,10 +357,10 @@ fn validate_consumed_interface(
     errors: &mut Vec<crate::error::Error>,
 ) {
     let Some((dep_name, dep_tag, dep_config)) = resolved_deps.get(local_node_id) else {
-        // The local_node_id doesn't map to any resolved dependency — either
-        // the dependency itself was missing (already reported in phase 1)
-        // or the local_node_id is invalid. Skip silently since phase 1 covers
-        // missing dependencies.
+        // The local_node_id doesn't map to any resolved dependency.
+        // This path is only reached when the dependency was declared but failed
+        // to resolve (already reported as MissingDependency in Phase 1).
+        // Undeclared local_node_ids are caught before this function is called.
         return;
     };
 

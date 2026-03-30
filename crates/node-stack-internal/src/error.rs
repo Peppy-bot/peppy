@@ -57,6 +57,14 @@ pub enum Error {
         dependency: String,
         dependency_tag: String,
     },
+    #[error(
+        "`{dependant}:{dependant_tag}` references undeclared local_node_id `{local_node_id}` in consumed interfaces"
+    )]
+    UndeclaredLocalNodeId {
+        dependant: String,
+        dependant_tag: String,
+        local_node_id: String,
+    },
 
     // -- node stack errors
     #[error("Cannot modify the root node (it always has exactly one instance)")]
