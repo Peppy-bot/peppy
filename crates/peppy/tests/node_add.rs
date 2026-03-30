@@ -700,7 +700,7 @@ fn node_add_command_with_variant_succeeds() {
     root_cfg.manifest.variants = Some(vec![config::node::Variant {
         name: config::node::Name::new("mock").expect("valid name"),
         source: config::source::DeploymentSource::Local(config::source::DeploymentLocalSource {
-            local: std::path::PathBuf::from("../mock_variant"),
+            local: std::path::PathBuf::from("mock_variant"),
         }),
     }]);
     let updated = serde_json::to_string_pretty(&root_cfg).expect("should serialize updated config");
@@ -711,7 +711,7 @@ fn node_add_command_with_variant_succeeds() {
     );
 
     // Create the variant directory with a minimal config (no manifest, no interfaces)
-    let variant_dir = node_dir.path().join("mock_variant");
+    let variant_dir = root_path.join("mock_variant");
     std::fs::create_dir_all(&variant_dir).expect("should create variant dir");
     let variant_config = r#"{
         "schema_version": 1,
@@ -823,7 +823,7 @@ fn node_add_with_variant_uses_variant_in_preflight() {
     root_cfg.manifest.variants = Some(vec![config::node::Variant {
         name: config::node::Name::new("mock").expect("valid name"),
         source: config::source::DeploymentSource::Local(config::source::DeploymentLocalSource {
-            local: std::path::PathBuf::from("../mock_variant"),
+            local: std::path::PathBuf::from("mock_variant"),
         }),
     }]);
     let updated = serde_json::to_string_pretty(&root_cfg).expect("should serialize updated config");
@@ -834,7 +834,7 @@ fn node_add_with_variant_uses_variant_in_preflight() {
     );
 
     // Create the variant directory with a minimal config (no manifest, no interfaces)
-    let variant_dir = node_dir.path().join("mock_variant");
+    let variant_dir = root_path.join("mock_variant");
     std::fs::create_dir_all(&variant_dir).expect("should create variant dir");
     let variant_config = r#"{
         "schema_version": 1,
