@@ -5,6 +5,7 @@ use config::{
     node::{NodeConfig, NodeConfigParser},
     peppy_config::DeploymentUrlSource,
 };
+use fs2::FileExt;
 use sha2::{Digest, Sha256};
 use std::{
     fs,
@@ -31,7 +32,7 @@ pub(super) fn ensure_url_source(
     let expected_checksum = spec.sha256.as_str();
 
     if should_refresh(&cache_dir, expected_checksum) {
-        refresh_bundle(&cache_dir, spec, expected_checksum)?;
+        with_refresh_lock(&cache_dir, spec, expected_checksum)?;
     }
 
     Ok(cache_dir)
@@ -48,7 +49,10 @@ pub fn resolve_remote_url(
     let needs_refresh = should_refresh(&cache_dir, expected_checksum);
 
     let node = if needs_refresh {
-        refresh_bundle(&cache_dir, spec, expected_checksum)?
+        match with_refresh_lock(&cache_dir, spec, expected_checksum)? {
+            Some(node) => node,
+            None => load_manifest(&cache_dir)?,
+        }
     } else {
         load_manifest(&cache_dir)?
     };
@@ -59,15 +63,48 @@ pub fn resolve_remote_url(
     })
 }
 
+fn with_refresh_lock(
+    cache_dir: &Path,
+    spec: &DeploymentUrlSource,
+    expected_checksum: &str,
+) -> Result<Option<NodeConfig>> {
+    if let Some(parent) = cache_dir.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let lock_path = cache_dir.with_extension("lock");
+    let lock_file = fs::File::options()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(&lock_path)?;
+
+    lock_file.lock_exclusive()?;
+
+    let result = if should_refresh(cache_dir, expected_checksum) {
+        Some(refresh_bundle(cache_dir, spec, expected_checksum)?)
+    } else {
+        None
+    };
+
+    lock_file.unlock()?;
+    Ok(result)
+}
+
 fn refresh_bundle(
     cache_dir: &Path,
     spec: &DeploymentUrlSource,
     expected_checksum: &str,
 ) -> Result<NodeConfig> {
-    let temp_dir_path = cache_dir.with_extension("tmp");
-    if temp_dir_path.exists() {
-        fs::remove_dir_all(&temp_dir_path)?;
-    }
+    let unique_suffix = format!(
+        "{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    );
+    let temp_dir_path = cache_dir.with_extension(format!("tmp-{unique_suffix}"));
     fs::create_dir_all(&temp_dir_path)?;
     let mut temp_dir = TempDirGuard::new(temp_dir_path);
 
