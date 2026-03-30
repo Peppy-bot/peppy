@@ -7,8 +7,8 @@ use common::{
     start_core_node_with_real_messenger, write_peppy_json5,
 };
 use config::consts::DEFAULT_ALPINE_BASE_IMAGE;
+use config::launcher::Name;
 use config::node::Name as NodeName;
-use config::peppy_config::Name;
 use config::runtime::{NodeInstance, RuntimeConfig};
 use core_node::encoding::NodeStartFeedback;
 use peppylib::messaging::MessengerHandle;
@@ -1817,7 +1817,7 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
         "127.0.0.1",
         config::consts::DEFAULT_MESSAGING_PORT,
         config::runtime::NodeInstance {
-            instance_id: config::peppy_config::Name::new(TARGET_INSTANCE_ID).unwrap(),
+            instance_id: config::launcher::Name::new(TARGET_INSTANCE_ID).unwrap(),
             arguments: Default::default(),
         },
         TARGET_NODE_NAME,

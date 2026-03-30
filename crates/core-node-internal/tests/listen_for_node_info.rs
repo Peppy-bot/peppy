@@ -6,8 +6,8 @@ use common::{
 };
 use common::{NodeStartTestTimeouts, send_node_add_and_wait, send_node_start_and_wait};
 use config::consts::NODE_CONFIG_FILE;
+use config::launcher::Name as InstanceName;
 use config::node::{Name, PeppygenLanguage};
-use config::peppy_config::Name as InstanceName;
 use config::runtime::{NodeInstance, RuntimeConfig};
 use config::test_helpers;
 use core_node::encoding::{NodeInfoRequest, NodeInfoResponse, NodeSource};

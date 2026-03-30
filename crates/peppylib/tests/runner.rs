@@ -1,5 +1,5 @@
 use config::consts::PEPPYGEN_OUTPUT_PATH;
-use config::peppy_config::Name;
+use config::launcher::Name;
 use config::runtime::{NodeInstance, RuntimeConfig};
 use peppylib::encoding::health::{NodeHealthRequest, NodeHealthResponse};
 use peppylib::messaging::{NODE_HEALTH_SERVICE, NODE_READY_SERVICE, SHUTDOWN_SERVICE};

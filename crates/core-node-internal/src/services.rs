@@ -10,8 +10,8 @@ use crate::Result;
 use config::{
     AnyType, RawNodeArguments,
     consts::PeppyDirs,
+    launcher::CURRENT_SCHEMA_VERSION,
     node::{Execution, Manifest, Name, NodeConfig, PeppygenLanguage},
-    peppy_config::CURRENT_SCHEMA_VERSION,
 };
 use names_generator2::get_random;
 use node_stack::NodeStack;

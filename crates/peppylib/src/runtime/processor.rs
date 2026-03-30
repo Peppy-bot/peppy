@@ -4,8 +4,8 @@ use crate::error::{Error, MissingStandaloneParameters, ParameterDeserializationE
 use config::{
     RawNodeArguments,
     consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME},
+    launcher::Name,
     node::NodeConfig,
-    peppy_config::Name,
     runtime::{NodeInstance, RuntimeConfig},
 };
 use serde::Serialize;

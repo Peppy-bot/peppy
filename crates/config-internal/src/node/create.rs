@@ -81,7 +81,7 @@ impl NodeConfigCreator {
 mod tests {
     use super::super::types::NodeConfig;
     use super::*;
-    use crate::config::PeppyLauncher;
+    use crate::launcher::PeppyLauncher;
     use std::fs;
     use tempfile::NamedTempFile;
 

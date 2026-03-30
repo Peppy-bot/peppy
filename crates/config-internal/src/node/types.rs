@@ -1,7 +1,7 @@
 use crate::{
     common::{AnyType, RawNodeArguments, resolve_parameter_path},
-    config::SchemaVersion,
     error::ParsingError,
+    launcher::SchemaVersion,
     source::DeploymentSource,
 };
 use indexmap::IndexMap;

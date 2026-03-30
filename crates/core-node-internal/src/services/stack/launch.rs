@@ -12,7 +12,7 @@ use crate::services::node::{
 };
 use chrono::Local;
 use config::consts::{DEFAULT_MESSAGING_HOST, DEFAULT_MESSAGING_PORT, PeppyDirs};
-use config::peppy_config::{Deployment, DeploymentSource, PeppyLauncherParser};
+use config::launcher::{Deployment, DeploymentSource, PeppyLauncherParser};
 use config::runtime::RuntimeConfig;
 use node_stack::NodeStack;
 use peppylib::messaging::{ServiceRequestContext, TopicPublisher};

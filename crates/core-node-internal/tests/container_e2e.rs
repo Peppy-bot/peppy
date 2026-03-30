@@ -7,9 +7,9 @@ mod container_e2e_tests {
         CALLER_INSTANCE_ID, NodeStartTestTimeouts, send_node_add_and_wait,
         send_node_start_and_wait, start_core_node_with_real_messenger_and_timeouts,
     };
+    use config::launcher::Name;
     use config::node::Name as NodeName;
     use config::node::Toolchain;
-    use config::peppy_config::Name;
     use config::runtime::{NodeInstance, RuntimeConfig};
     use core_node::encoding::NodeInitRequest;
     use std::time::Duration;

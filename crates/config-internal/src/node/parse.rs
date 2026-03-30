@@ -84,7 +84,7 @@ impl VariantConfigParser {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{config::PeppyLauncherParser, error::Error, node::ContainerConfig};
+    use crate::{error::Error, launcher::PeppyLauncherParser, node::ContainerConfig};
     use tempfile::NamedTempFile;
 
     /// Test helper: borrows the `ContainerConfig` from a parsed `RawNodeConfig`.

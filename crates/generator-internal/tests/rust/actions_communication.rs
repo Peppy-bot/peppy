@@ -7,8 +7,8 @@ use crate::helpers::{
 use config::consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME};
 use config::runtime::NodeInstance;
 use config::{
+    launcher::Name,
     node::{ConsumedAction, ExposedAction, MessageFormat},
-    peppy_config::Name,
     runtime::RuntimeConfig,
 };
 use generator::{ConsumedActionMessage, LanguageGenerator};

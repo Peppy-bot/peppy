@@ -725,8 +725,7 @@ fn check_setup_status_detects_stale_apparmor_profile_path() {
 #[cfg(target_os = "linux")]
 #[test]
 fn compile_time_apptainer_dir_exists_with_sentinel() {
-    let install_dir = option_env!("APPTAINER_INSTALL_DIR")
-        .expect("APPTAINER_INSTALL_DIR should be set by build.rs at compile time");
+    let install_dir = env!("APPTAINER_INSTALL_DIR", "APPTAINER_INSTALL_DIR should be set by build.rs at compile time");
 
     let path = Path::new(install_dir);
     assert!(

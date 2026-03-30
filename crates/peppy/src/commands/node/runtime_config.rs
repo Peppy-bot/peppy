@@ -2,8 +2,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use config::launcher::Name;
 use config::node::NodeConfigParser;
-use config::peppy_config::Name;
 use config::runtime::{NodeInstance, RuntimeConfig};
 use core_node::encoding::NodeListRequest;
 use names_generator2::get_random;

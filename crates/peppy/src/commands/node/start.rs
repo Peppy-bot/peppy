@@ -1,4 +1,4 @@
-use config::peppy_config::Name;
+use config::launcher::Name;
 use config::runtime::{NodeInstance, RuntimeConfig};
 use config::{AnyType, RawNodeArguments};
 use core_node::encoding::{
