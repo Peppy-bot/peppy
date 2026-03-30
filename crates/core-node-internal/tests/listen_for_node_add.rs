@@ -214,16 +214,6 @@ async fn listen_for_node_fs_add_success() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
             },
-            interfaces: {
-                services: {
-                    consumes: [
-                        {
-                          local_node_id: "{DEPENDENCY_NODE_NAME}",
-                          name: "reset_sensor"
-                        }
-                    ]
-                }
-            },
             execution: {
                 language: "rust",
                 start_cmd: ["sleep", "10"]
@@ -308,16 +298,6 @@ async fn listen_for_node_add_with_container_success() {
         manifest: {
             name: "TARGET_NODE_NAME",
             tag: "TARGET_NODE_TAG",
-        },
-        interfaces: {
-            topics: {
-                consumes: [
-                    {
-                        local_node_id: "non_existent_node",
-                        name: "sensor_data"
-                    }
-                ]
-            }
         },
         // Using `container` let `peppy` manage the node internally
         execution: {
@@ -1381,16 +1361,6 @@ async fn listen_for_node_add_copies_files_to_storage() {
             manifest: {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
-            },
-            interfaces: {
-                services: {
-                    consumes: [
-                        {
-                          local_node_id: "{DEPENDENCY_NODE_NAME}",
-                          name: "reset_sensor"
-                        }
-                    ]
-                }
             },
             execution: {
                 language: "rust",
