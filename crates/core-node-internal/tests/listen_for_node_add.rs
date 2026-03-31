@@ -3691,7 +3691,7 @@ async fn listen_for_node_add_variant_local_source() {
     );
 }
 
-/// Regression test: `node sync` must fingerprint the variant's own peppy.json5,
+/// `node sync` must fingerprint the variant's own peppy.json5,
 /// not the temporary merged config, so that `node add` verification passes.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_add_variant_local_source_after_sync() {
@@ -3772,8 +3772,6 @@ async fn listen_for_node_add_variant_local_source_after_sync() {
     );
 
     // Step 2: Run node add with the variant.
-    // Before the fix, this would fail with "Codegen fingerprint verification failed"
-    // because sync fingerprinted the merged temp config, not the variant's own peppy.json5.
     let add_result = send_node_add_and_wait_with_variant(
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
@@ -3807,6 +3805,17 @@ async fn listen_for_node_add_variant_local_source_after_sync() {
         config.execution.start_cmd.as_ref().unwrap(),
         &vec!["sleep".to_string(), "5".to_string()],
         "execution should come from the variant"
+    );
+
+    // Verify that the fingerprint stored by sync matches the variant's peppy.json5 content
+    let stored_fingerprint =
+        config::fingerprint::read_codegen_fingerprint(&variant_config_path, PEPPYGEN_OUTPUT_PATH)
+            .expect("variant fingerprint should be readable after sync");
+    let expected_fingerprint =
+        config::fingerprint::fingerprint_for_bytes(variant_config.as_bytes());
+    assert_eq!(
+        stored_fingerprint, expected_fingerprint,
+        "stored fingerprint should match the variant's peppy.json5 content"
     );
 }
 

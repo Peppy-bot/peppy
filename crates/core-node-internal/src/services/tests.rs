@@ -14,6 +14,8 @@ async fn create_mock_messenger() -> Arc<Mutex<Messenger>> {
     Arc::new(Mutex::new(messenger))
 }
 
+/// Verifies that the core node is configured to run in-process, not as a spawned
+/// subprocess or inside a container.
 #[tokio::test]
 async fn core_node_execution_has_no_start_cmd_and_no_container() {
     let messenger = create_mock_messenger().await;
