@@ -176,86 +176,80 @@ mod tests {
     #[test]
     fn parse_variant_source_name() {
         let source = parse_variant_source("mock").unwrap();
-        assert!(
-            matches!(&source, NodeSource::Fs(p) if p.to_string_lossy() == "mock"),
-            "expected Fs(\"mock\"), got {:?}",
-            source
-        );
+        let NodeSource::Fs(p) = &source else {
+            panic!("expected Fs variant, got {:?}", source)
+        };
+        assert_eq!(p.to_string_lossy(), "mock");
     }
 
     #[test]
     fn parse_variant_source_git_with_ref() {
         let source =
             parse_variant_source("https://github.com/example/repo.git/brain@main").unwrap();
-        match &source {
-            NodeSource::Git {
-                repo_path,
-                repo_ref,
-                ..
-            } => {
-                assert_eq!(repo_path, "brain");
-                assert_eq!(repo_ref.as_deref(), Some("main"));
-            }
-            other => panic!("expected Git variant, got {:?}", other),
-        }
+        let NodeSource::Git {
+            repo_path,
+            repo_ref,
+            ..
+        } = &source
+        else {
+            panic!("expected Git variant, got {:?}", source)
+        };
+        assert_eq!(repo_path, "brain");
+        assert_eq!(repo_ref.as_deref(), Some("main"));
     }
 
     #[test]
     fn parse_variant_source_git_without_ref() {
         let source = parse_variant_source("https://github.com/example/repo.git/brain").unwrap();
-        match &source {
-            NodeSource::Git {
-                repo_path,
-                repo_ref,
-                ..
-            } => {
-                assert_eq!(repo_path, "brain");
-                assert_eq!(*repo_ref, None);
-            }
-            other => panic!("expected Git variant, got {:?}", other),
-        }
+        let NodeSource::Git {
+            repo_path,
+            repo_ref,
+            ..
+        } = &source
+        else {
+            panic!("expected Git variant, got {:?}", source)
+        };
+        assert_eq!(repo_path, "brain");
+        assert_eq!(*repo_ref, None);
     }
 
     #[test]
     fn parse_variant_source_git_ref_no_path() {
         let source = parse_variant_source("https://github.com/example/repo.git@v1.0").unwrap();
-        match &source {
-            NodeSource::Git {
-                repo_path,
-                repo_ref,
-                ..
-            } => {
-                assert!(repo_path.is_empty());
-                assert_eq!(repo_ref.as_deref(), Some("v1.0"));
-            }
-            other => panic!("expected Git variant, got {:?}", other),
-        }
+        let NodeSource::Git {
+            repo_path,
+            repo_ref,
+            ..
+        } = &source
+        else {
+            panic!("expected Git variant, got {:?}", source)
+        };
+        assert!(repo_path.is_empty());
+        assert_eq!(repo_ref.as_deref(), Some("v1.0"));
     }
 
     #[test]
     fn parse_variant_source_git_scoped_package_not_treated_as_ref() {
         let source =
             parse_variant_source("https://github.com/org/repo.git/packages/@scope/node").unwrap();
-        match &source {
-            NodeSource::Git {
-                repo_path,
-                repo_ref,
-                ..
-            } => {
-                assert_eq!(repo_path, "packages/@scope/node");
-                assert_eq!(*repo_ref, None);
-            }
-            other => panic!("expected Git variant, got {:?}", other),
-        }
+        let NodeSource::Git {
+            repo_path,
+            repo_ref,
+            ..
+        } = &source
+        else {
+            panic!("expected Git variant, got {:?}", source)
+        };
+        assert_eq!(repo_path, "packages/@scope/node");
+        assert_eq!(*repo_ref, None);
     }
 
     #[test]
     fn parse_variant_source_http() {
         let source = parse_variant_source("https://example.com/variant.tar.zst").unwrap();
-        assert!(
-            matches!(&source, NodeSource::Http { url, .. } if url.as_str() == "https://example.com/variant.tar.zst"),
-            "expected Http variant, got {:?}",
-            source
-        );
+        let NodeSource::Http { url, .. } = &source else {
+            panic!("expected Http variant, got {:?}", source)
+        };
+        assert_eq!(url.as_str(), "https://example.com/variant.tar.zst");
     }
 }
