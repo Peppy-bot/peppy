@@ -205,14 +205,6 @@ pub enum NodeCommands {
         /// Git ref (tag/branch/commit) to checkout before reading `subpath` (git sources only).
         #[arg(long = "ref")]
         git_ref: Option<String>,
-        /// Optional variant to inspect instead of the root node.
-        ///
-        /// Supported formats:
-        /// - Variant name: `mock` (looked up in root manifest)
-        /// - Git URL: `https://github.com/org/repo.git/path`
-        /// - HTTP archive: `https://example.com/variant.tar.zst`
-        #[arg(long)]
-        variant: Option<String>,
     },
 }
 
@@ -318,11 +310,7 @@ impl Command for NodeCommand {
                 info!("Remove node {}:{}...", node_name, tag);
                 remove::remove_node(ctx, node_name, tag, stop_instances, force)
             }
-            NodeCommands::Info {
-                source,
-                git_ref,
-                variant,
-            } => {
+            NodeCommands::Info { source, git_ref } => {
                 let display_source = if source::is_probably_remote_source(&source) {
                     source.clone()
                 } else {
@@ -330,7 +318,7 @@ impl Command for NodeCommand {
                     path.canonicalize().unwrap_or(path).display().to_string()
                 };
                 info!("Getting node info for {}...", display_source);
-                info::node_info(ctx, source, git_ref, variant)
+                info::node_info(ctx, source, git_ref)
             }
         }
     }

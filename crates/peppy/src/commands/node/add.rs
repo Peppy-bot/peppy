@@ -88,15 +88,7 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
         .ok_or_else(|| Error::ExecutionFailed("Failed to connect to daemon".to_string()))?;
 
     let pre_add_node_info = if !force {
-        Some(
-            fetch_node_info(
-                messenger_handle,
-                &core_node_name,
-                node_source.clone(),
-                variant_source.clone(),
-            )
-            .await?,
-        )
+        Some(fetch_node_info(messenger_handle, &core_node_name, node_source.clone()).await?)
     } else {
         None
     };
@@ -303,13 +295,8 @@ async fn fetch_node_info(
     messenger: &MessengerHandle,
     core_node_name: &str,
     node_source: NodeSource,
-    variant: Option<NodeSource>,
 ) -> Result<NodeInfoResponse> {
-    let mut request = NodeInfoRequest::new(node_source);
-    if let Some(variant) = variant {
-        request = request.with_variant(variant);
-    }
-    request
+    NodeInfoRequest::new(node_source)
         .poll(
             messenger,
             core_node_name,

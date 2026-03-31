@@ -125,6 +125,20 @@ impl ParsedNodeConfig {
         self.0.into_resolved()
     }
 
+    /// Converts into a [`NodeConfig`], using a default `Execution` if none is
+    /// present. Intended for display-only paths (e.g. `node info`) where a
+    /// missing execution (due to failed variant resolution) should not prevent
+    /// returning useful information.
+    pub fn into_resolved_or_default(self) -> NodeConfig {
+        let execution = self.0.execution.unwrap_or_default();
+        NodeConfig {
+            schema_version: self.0.schema_version,
+            manifest: self.0.manifest,
+            interfaces: self.0.interfaces,
+            execution,
+        }
+    }
+
     /// Returns the node name from the manifest.
     pub fn manifest_name(&self) -> &str {
         self.0.manifest.name.as_str()
@@ -760,7 +774,7 @@ pub struct Variant {
     pub source: DeploymentSource,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Execution {
     pub language: PeppygenLanguage,

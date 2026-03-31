@@ -527,211 +527,6 @@ async fn listen_for_node_info_recovers_after_invalid_request() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_info_with_fs_variant_success() {
-    const ROOT_NODE_NAME: &str = "variant_root";
-    const ROOT_NODE_TAG: &str = "0.2.0";
-
-    let started_core_node = start_core_node_with_mock_messenger().await;
-
-    // Create root node directory with a variant declared in the manifest.
-    let root_dir = tempfile::tempdir().expect("failed to create temp root dir");
-    let root_peppy_json5 = r#"{
-        schema_version: 1,
-        manifest: {
-            name: "variant_root",
-            tag: "0.2.0",
-            variants: [
-                { name: "mock", source: { local: "./mock" } }
-            ]
-        },
-        execution: {
-            language: "rust",
-            start_cmd: ["sleep", "10"]
-        }
-    }"#;
-    write_peppy_json5(root_dir.path(), root_peppy_json5);
-
-    // Create the variant subdirectory with its own peppy.json5 (different language).
-    let mock_dir = root_dir.path().join("mock");
-    std::fs::create_dir_all(&mock_dir).expect("failed to create mock dir");
-    std::fs::write(
-        mock_dir.join(NODE_CONFIG_FILE),
-        r#"{
-            schema_version: 1,
-            execution: {
-                language: "python",
-                start_cmd: ["python", "main.py"],
-                parameters: {
-                    mode: "string"
-                }
-            }
-        }"#,
-    )
-    .expect("failed to write mock variant config");
-
-    // Request with variant
-    let request = NodeInfoRequest::new(NodeSource::Fs(root_dir.path().to_path_buf()))
-        .with_variant(NodeSource::Fs(std::path::PathBuf::from("mock")));
-
-    let info_response = poll_node_info(&started_core_node, &request, Duration::from_secs(5))
-        .await
-        .expect("node_info with variant should succeed");
-
-    // Manifest comes from root
-    assert_eq!(info_response.config.manifest.name.as_str(), ROOT_NODE_NAME);
-    assert_eq!(info_response.config.manifest.tag, ROOT_NODE_TAG);
-
-    // Runtime comes from variant
-    assert_eq!(
-        info_response.config.execution.language,
-        PeppygenLanguage::Python
-    );
-    assert_eq!(
-        info_response.config.execution.start_cmd.as_deref(),
-        Some(&["python".to_string(), "main.py".to_string()][..])
-    );
-    assert!(
-        info_response
-            .config
-            .execution
-            .parameters
-            .contains_key("mode"),
-        "variant parameters should be present"
-    );
-
-    // Variant name should be reported
-    assert_eq!(info_response.variant_name.as_deref(), Some("mock"));
-}
-
-/// Verifies that variant resolution from a filesystem archive (`.tar.zst`) uses the
-/// archived root directory, not the host filesystem. A decoy variant directory is placed
-/// on the host to catch incorrect path resolution.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_info_with_fs_archive_variant_uses_archived_root() {
-    let started_core_node = start_core_node_with_mock_messenger().await;
-
-    let bundle_dir = tempfile::tempdir().expect("failed to create temp bundle dir");
-    let archived_root_dir = bundle_dir.path().join("archived_root");
-    let archived_variant_dir = archived_root_dir.join("mock_node");
-    std::fs::create_dir_all(&archived_variant_dir).expect("failed to create archived variant dir");
-
-    let root_peppy_json5 = r#"{
-        schema_version: 1,
-        manifest: {
-            name: "archive_variant_root",
-            tag: "0.3.0",
-            variants: [
-                { name: "mock", source: { local: "./mock_node" } }
-            ]
-        },
-        execution: {
-            language: "rust",
-            start_cmd: ["sleep", "10"]
-        }
-    }"#;
-    write_peppy_json5(&archived_root_dir, root_peppy_json5);
-
-    write_peppy_json5(
-        &archived_variant_dir,
-        r#"{
-            schema_version: 1,
-            execution: {
-                language: "python",
-                start_cmd: ["python", "from_archive.py"]
-            }
-        }"#,
-    );
-
-    let host_decoy_variant_dir = bundle_dir.path().join("mock_node");
-    std::fs::create_dir_all(&host_decoy_variant_dir)
-        .expect("failed to create host decoy variant dir");
-    write_peppy_json5(
-        &host_decoy_variant_dir,
-        r#"{
-            schema_version: 1,
-            execution: {
-                language: "python",
-                start_cmd: ["python", "from_host_dir.py"]
-            }
-        }"#,
-    );
-
-    let bundle_path = bundle_dir.path().join("archive_variant_root.tar.zst");
-    create_tar_zst_from_dir(&archived_root_dir, &bundle_path, "root_node");
-
-    let request = NodeInfoRequest::new(NodeSource::Fs(bundle_path))
-        .with_variant(NodeSource::Fs(std::path::PathBuf::from("mock")));
-
-    let info_response = poll_node_info(&started_core_node, &request, Duration::from_secs(5))
-        .await
-        .expect("node_info with archive variant should succeed");
-
-    assert_eq!(
-        info_response.config.manifest.name.as_str(),
-        "archive_variant_root"
-    );
-    assert_eq!(info_response.config.manifest.tag, "0.3.0");
-    assert_eq!(
-        info_response.config.execution.language,
-        PeppygenLanguage::Python
-    );
-    assert_eq!(
-        info_response.config.execution.start_cmd.as_deref(),
-        Some(&["python".to_string(), "from_archive.py".to_string()][..])
-    );
-    assert_eq!(info_response.variant_name.as_deref(), Some("mock"));
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_info_with_unknown_variant_returns_issues() {
-    let started_core_node = start_core_node_with_mock_messenger().await;
-
-    // Create root node with a declared variant that differs from the requested one.
-    let root_dir = tempfile::tempdir().expect("failed to create temp root dir");
-    let root_peppy_json5 = r#"{
-        schema_version: 1,
-        manifest: {
-            name: "has_variants_node",
-            tag: "0.1.0",
-            variants: [
-                { name: "existing", source: { local: "./existing" } }
-            ]
-        },
-        execution: {
-            language: "rust",
-            start_cmd: ["sleep", "10"]
-        }
-    }"#;
-    write_peppy_json5(root_dir.path(), root_peppy_json5);
-
-    let request = NodeInfoRequest::new(NodeSource::Fs(root_dir.path().to_path_buf()))
-        .with_variant(NodeSource::Fs(std::path::PathBuf::from("nonexistent")));
-
-    let info_response = poll_node_info(&started_core_node, &request, Duration::from_secs(5))
-        .await
-        .expect("node_info with unknown variant should succeed with issues");
-
-    assert!(
-        !info_response.issues.is_empty(),
-        "response should contain issues for unknown variant"
-    );
-    assert!(
-        info_response.issues[0].contains("not found in manifest"),
-        "issue should mention variant not found in manifest; got: {}",
-        info_response.issues[0]
-    );
-    assert!(
-        info_response.variant_name.is_none(),
-        "variant_name should be None when variant resolution failed"
-    );
-    assert_eq!(
-        info_response.config.manifest.name.as_str(),
-        "has_variants_node",
-        "should return root config when variant resolution fails"
-    );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_info_without_variant_shows_available_variants() {
     let started_core_node = start_core_node_with_mock_messenger().await;
 
@@ -754,7 +549,7 @@ async fn listen_for_node_info_without_variant_shows_available_variants() {
     }"#;
     write_peppy_json5(root_dir.path(), root_peppy_json5);
 
-    // Request WITHOUT variant
+    // Request WITHOUT variant on FS
     let request = NodeInfoRequest::new(NodeSource::Fs(root_dir.path().to_path_buf()));
 
     let info_response = poll_node_info(&started_core_node, &request, Duration::from_secs(5))
@@ -851,5 +646,122 @@ async fn listen_for_node_info_auto_resolves_default_variant() {
         info_response.variant_name.as_deref(),
         Some("default"),
         "auto-resolved default variant name should be reported"
+    );
+}
+
+/// Verifies that default variant resolution from a filesystem archive (`.tar.zst`) uses the
+/// archived root directory, not the host filesystem. A decoy variant directory is placed
+/// on the host to catch incorrect path resolution.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_info_archive_default_variant_uses_archived_root() {
+    let started_core_node = start_core_node_with_mock_messenger().await;
+
+    let bundle_dir = tempfile::tempdir().expect("failed to create temp bundle dir");
+    let archived_root_dir = bundle_dir.path().join("archived_root");
+    let archived_variant_dir = archived_root_dir.join("default_variant");
+    std::fs::create_dir_all(&archived_variant_dir).expect("failed to create archived variant dir");
+
+    let root_peppy_json5 = r#"{
+        schema_version: 1,
+        manifest: {
+            name: "archive_variant_root",
+            tag: "0.3.0",
+            variants: [
+                { name: "default", source: { local: "./default_variant" } }
+            ]
+        }
+    }"#;
+    write_peppy_json5(&archived_root_dir, root_peppy_json5);
+
+    write_peppy_json5(
+        &archived_variant_dir,
+        r#"{
+            schema_version: 1,
+            execution: {
+                language: "python",
+                start_cmd: ["python", "from_archive.py"]
+            }
+        }"#,
+    );
+
+    // Place a decoy on the host to detect incorrect path resolution.
+    let host_decoy_variant_dir = bundle_dir.path().join("default_variant");
+    std::fs::create_dir_all(&host_decoy_variant_dir)
+        .expect("failed to create host decoy variant dir");
+    write_peppy_json5(
+        &host_decoy_variant_dir,
+        r#"{
+            schema_version: 1,
+            execution: {
+                language: "python",
+                start_cmd: ["python", "from_host_dir.py"]
+            }
+        }"#,
+    );
+
+    let bundle_path = bundle_dir.path().join("archive_variant_root.tar.zst");
+    create_tar_zst_from_dir(&archived_root_dir, &bundle_path, "root_node");
+
+    let request = NodeInfoRequest::new(NodeSource::Fs(bundle_path));
+
+    let info_response = poll_node_info(&started_core_node, &request, Duration::from_secs(5))
+        .await
+        .expect("node_info with archive default variant should succeed");
+
+    assert_eq!(
+        info_response.config.manifest.name.as_str(),
+        "archive_variant_root"
+    );
+    assert_eq!(info_response.config.manifest.tag, "0.3.0");
+    assert_eq!(
+        info_response.config.execution.language,
+        PeppygenLanguage::Python
+    );
+    assert_eq!(
+        info_response.config.execution.start_cmd.as_deref(),
+        Some(&["python".to_string(), "from_archive.py".to_string()][..]),
+        "execution should come from the archived variant, not the host decoy"
+    );
+    assert_eq!(info_response.variant_name.as_deref(), Some("default"));
+}
+
+/// When the default variant directory does not exist, the response should contain
+/// issues describing the failure and fall back to the root config.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_info_with_missing_default_variant_returns_issues() {
+    let started_core_node = start_core_node_with_mock_messenger().await;
+
+    // Root declares a default variant, but the directory doesn't exist.
+    let root_dir = tempfile::tempdir().expect("failed to create temp root dir");
+    let root_peppy_json5 = r#"{
+        schema_version: 1,
+        manifest: {
+            name: "broken_default_node",
+            tag: "0.1.0",
+            variants: [
+                { name: "default", source: { local: "./nonexistent" } }
+            ]
+        }
+    }"#;
+    write_peppy_json5(root_dir.path(), root_peppy_json5);
+
+    let request = NodeInfoRequest::new(NodeSource::Fs(root_dir.path().to_path_buf()));
+
+    let info_response = poll_node_info(&started_core_node, &request, Duration::from_secs(5))
+        .await
+        .expect("node_info with missing default variant should succeed with issues");
+
+    assert!(
+        !info_response.issues.is_empty(),
+        "response should contain issues for missing default variant"
+    );
+    assert!(
+        info_response.variant_name.is_none(),
+        "variant_name should be None when default variant resolution failed"
+    );
+    assert_eq!(
+        info_response.config.manifest.name.as_str(),
+        "broken_default_node",
+        "should return root config when default variant resolution fails"
     );
 }
