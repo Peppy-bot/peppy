@@ -13,15 +13,32 @@ use config::test_helpers;
 use core_node::encoding::{NodeInfoRequest, NodeInfoResponse, NodeSource};
 use core_node::names;
 use gix_url::Url as GitUrl;
+use peppylib::PeppyError;
 use peppylib::messaging::MessengerHandle;
 use peppylib::services::health::listen_for_node_health;
 use peppylib::services::ready::listen_for_node_ready;
-use peppylib::{PeppyError, ServiceMessenger};
 use sha2::{Digest, Sha256};
 use std::io::Write;
 use std::sync::Arc;
 use std::time::Duration;
 use tempfile::TempDir;
+
+/// Sends a `NODE_INFO` poll request to the given core node and returns the raw result.
+async fn poll_node_info(
+    started_core_node: &common::StartedCoreNode,
+    request: &NodeInfoRequest,
+    timeout: Duration,
+) -> core_node::Result<NodeInfoResponse> {
+    request
+        .poll(
+            &started_core_node.caller_handle,
+            &started_core_node.core_node_name,
+            CALLER_INSTANCE_ID,
+            &started_core_node.core_node_name,
+            timeout,
+        )
+        .await
+}
 use {
     httptest::Expectation, httptest::Server, httptest::matchers::request,
     httptest::responders::status_code,
@@ -53,24 +70,10 @@ async fn listen_for_node_info_on_fs_node_success() {
     write_peppy_json5(node_dir.path(), &peppy_json5);
 
     let request = NodeInfoRequest::new(NodeSource::Fs(node_dir.path().to_path_buf()));
-    let request_payload = request.encode().expect("encode should succeed");
 
-    let response = ServiceMessenger::poll(
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        CALLER_INSTANCE_ID,
-        &started_core_node.core_node_name,
-        names::NODE_INFO,
-        Some(&started_core_node.core_node_name),
-        None,
-        request_payload,
-        Duration::from_secs(5),
-    )
-    .await
-    .expect("node_info request should succeed");
-
-    let info_response =
-        NodeInfoResponse::decode(&response.payload()).expect("decode should succeed");
+    let info_response = poll_node_info(&started_core_node, &request, Duration::from_secs(5))
+        .await
+        .expect("node_info request should succeed");
 
     assert_eq!(
         info_response.config.manifest.name.as_str(),
@@ -101,24 +104,10 @@ async fn listen_for_node_info_on_fs_node_success() {
         .expect("add_instance should succeed");
 
     let request = NodeInfoRequest::new(NodeSource::Fs(node_dir.path().to_path_buf()));
-    let request_payload = request.encode().expect("encode should succeed");
 
-    let response = ServiceMessenger::poll(
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        CALLER_INSTANCE_ID,
-        &started_core_node.core_node_name,
-        names::NODE_INFO,
-        Some(&started_core_node.core_node_name),
-        None,
-        request_payload,
-        Duration::from_secs(5),
-    )
-    .await
-    .expect("node_info request should succeed");
-
-    let info_response =
-        NodeInfoResponse::decode(&response.payload()).expect("decode should succeed");
+    let info_response = poll_node_info(&started_core_node, &request, Duration::from_secs(5))
+        .await
+        .expect("node_info request should succeed");
 
     assert!(info_response.is_in_node_stack, "node should be in stack");
     assert_eq!(
@@ -146,24 +135,10 @@ async fn listen_for_node_info_on_git_node_success() {
         repo_path: TARGET_REPO_PATH.to_owned(),
         repo_ref: Some(TARGET_NODE_TAG.to_owned()),
     });
-    let request_payload = request.encode().expect("encode should succeed");
 
-    let response = ServiceMessenger::poll(
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        CALLER_INSTANCE_ID,
-        &started_core_node.core_node_name,
-        names::NODE_INFO,
-        Some(&started_core_node.core_node_name),
-        None,
-        request_payload,
-        Duration::from_secs(10),
-    )
-    .await
-    .expect("node_info request should succeed");
-
-    let info_response =
-        NodeInfoResponse::decode(&response.payload()).expect("decode should succeed");
+    let info_response = poll_node_info(&started_core_node, &request, Duration::from_secs(10))
+        .await
+        .expect("node_info request should succeed");
 
     assert_eq!(
         info_response.config.manifest.name.as_str(),
@@ -196,24 +171,10 @@ async fn listen_for_node_info_on_git_node_success() {
         repo_path: TARGET_REPO_PATH.to_owned(),
         repo_ref: Some(TARGET_NODE_TAG.to_owned()),
     });
-    let request_payload = request.encode().expect("encode should succeed");
 
-    let response = ServiceMessenger::poll(
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        CALLER_INSTANCE_ID,
-        &started_core_node.core_node_name,
-        names::NODE_INFO,
-        Some(&started_core_node.core_node_name),
-        None,
-        request_payload,
-        Duration::from_secs(10),
-    )
-    .await
-    .expect("node_info request should succeed");
-
-    let info_response =
-        NodeInfoResponse::decode(&response.payload()).expect("decode should succeed");
+    let info_response = poll_node_info(&started_core_node, &request, Duration::from_secs(10))
+        .await
+        .expect("node_info request should succeed");
 
     assert!(info_response.is_in_node_stack, "node should be in stack");
     assert_eq!(
@@ -281,24 +242,10 @@ async fn listen_for_node_info_on_http_node_success() {
         url: url.clone(),
         sha256: Some(bundle_sha256.clone()),
     });
-    let request_payload = request.encode().expect("encode should succeed");
 
-    let response = ServiceMessenger::poll(
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        CALLER_INSTANCE_ID,
-        &started_core_node.core_node_name,
-        names::NODE_INFO,
-        Some(&started_core_node.core_node_name),
-        None,
-        request_payload,
-        Duration::from_secs(10),
-    )
-    .await
-    .expect("node_info request should succeed");
-
-    let info_response =
-        NodeInfoResponse::decode(&response.payload()).expect("decode should succeed");
+    let info_response = poll_node_info(&started_core_node, &request, Duration::from_secs(10))
+        .await
+        .expect("node_info request should succeed");
 
     assert_eq!(
         info_response.config.manifest.name.as_str(),
@@ -326,24 +273,10 @@ async fn listen_for_node_info_on_http_node_success() {
         url,
         sha256: Some(bundle_sha256),
     });
-    let request_payload = request.encode().expect("encode should succeed");
 
-    let response = ServiceMessenger::poll(
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        CALLER_INSTANCE_ID,
-        &started_core_node.core_node_name,
-        names::NODE_INFO,
-        Some(&started_core_node.core_node_name),
-        None,
-        request_payload,
-        Duration::from_secs(10),
-    )
-    .await
-    .expect("node_info request should succeed");
-
-    let info_response =
-        NodeInfoResponse::decode(&response.payload()).expect("decode should succeed");
+    let info_response = poll_node_info(&started_core_node, &request, Duration::from_secs(10))
+        .await
+        .expect("node_info request should succeed");
 
     assert!(info_response.is_in_node_stack, "node should be in stack");
     assert_eq!(
@@ -512,24 +445,10 @@ async fn listen_for_node_info_has_instance_ids() {
     );
 
     let request = NodeInfoRequest::new(NodeSource::Fs(add_result.snapshot_path.clone()));
-    let request_payload = request.encode().expect("encode should succeed");
 
-    let response = ServiceMessenger::poll(
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        CALLER_INSTANCE_ID,
-        &started_core_node.core_node_name,
-        names::NODE_INFO,
-        Some(&started_core_node.core_node_name),
-        None,
-        request_payload,
-        Duration::from_secs(5),
-    )
-    .await
-    .expect("node_info request should succeed");
-
-    let info_response =
-        NodeInfoResponse::decode(&response.payload()).expect("decode should succeed");
+    let info_response = poll_node_info(&started_core_node, &request, Duration::from_secs(5))
+        .await
+        .expect("node_info request should succeed");
 
     assert!(info_response.is_in_node_stack, "node should be in stack");
 
@@ -558,30 +477,16 @@ async fn listen_for_node_info_recovers_after_invalid_request() {
         url: bad_url,
         sha256: None,
     });
-    let bad_payload = bad_request.encode().expect("encode should succeed");
 
-    let err = match ServiceMessenger::poll(
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        CALLER_INSTANCE_ID,
-        &started_core_node.core_node_name,
-        names::NODE_INFO,
-        Some(&started_core_node.core_node_name),
-        None,
-        bad_payload,
-        Duration::from_secs(2),
-    )
-    .await
-    {
-        Ok(_) => panic!("node_info should return an error for invalid HTTP source"),
-        Err(err) => err,
-    };
+    let err = poll_node_info(&started_core_node, &bad_request, Duration::from_secs(2))
+        .await
+        .expect_err("node_info should return an error for invalid HTTP source");
 
-    let PeppyError::ServiceError {
+    let core_node::Error::Peppylib(PeppyError::ServiceError {
         service_name,
         reason,
         ..
-    } = err
+    }) = err
     else {
         panic!("expected ServiceError, got: {err:?}");
     };
@@ -610,24 +515,10 @@ async fn listen_for_node_info_recovers_after_invalid_request() {
     write_peppy_json5(node_dir.path(), &peppy_json5);
 
     let request = NodeInfoRequest::new(NodeSource::Fs(node_dir.path().to_path_buf()));
-    let request_payload = request.encode().expect("encode should succeed");
 
-    let response = ServiceMessenger::poll(
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        CALLER_INSTANCE_ID,
-        &started_core_node.core_node_name,
-        names::NODE_INFO,
-        Some(&started_core_node.core_node_name),
-        None,
-        request_payload,
-        Duration::from_secs(5),
-    )
-    .await
-    .expect("node_info should still work after a failed request");
-
-    let info_response =
-        NodeInfoResponse::decode(&response.payload()).expect("decode should succeed");
+    let info_response = poll_node_info(&started_core_node, &request, Duration::from_secs(5))
+        .await
+        .expect("node_info should still work after a failed request");
     assert_eq!(
         info_response.config.manifest.name.as_str(),
         TARGET_NODE_NAME
@@ -681,24 +572,10 @@ async fn listen_for_node_info_with_fs_variant_success() {
     // Request with variant
     let request = NodeInfoRequest::new(NodeSource::Fs(root_dir.path().to_path_buf()))
         .with_variant(NodeSource::Fs(std::path::PathBuf::from("mock")));
-    let request_payload = request.encode().expect("encode should succeed");
 
-    let response = ServiceMessenger::poll(
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        CALLER_INSTANCE_ID,
-        &started_core_node.core_node_name,
-        names::NODE_INFO,
-        Some(&started_core_node.core_node_name),
-        None,
-        request_payload,
-        Duration::from_secs(5),
-    )
-    .await
-    .expect("node_info with variant should succeed");
-
-    let info_response =
-        NodeInfoResponse::decode(&response.payload()).expect("decode should succeed");
+    let info_response = poll_node_info(&started_core_node, &request, Duration::from_secs(5))
+        .await
+        .expect("node_info with variant should succeed");
 
     // Manifest comes from root
     assert_eq!(info_response.config.manifest.name.as_str(), ROOT_NODE_NAME);
@@ -726,6 +603,9 @@ async fn listen_for_node_info_with_fs_variant_success() {
     assert_eq!(info_response.variant_name.as_deref(), Some("mock"));
 }
 
+/// Verifies that variant resolution from a filesystem archive (`.tar.zst`) uses the
+/// archived root directory, not the host filesystem. A decoy variant directory is placed
+/// on the host to catch incorrect path resolution.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_info_with_fs_archive_variant_uses_archived_root() {
     let started_core_node = start_core_node_with_mock_messenger().await;
@@ -781,24 +661,10 @@ async fn listen_for_node_info_with_fs_archive_variant_uses_archived_root() {
 
     let request = NodeInfoRequest::new(NodeSource::Fs(bundle_path))
         .with_variant(NodeSource::Fs(std::path::PathBuf::from("mock")));
-    let request_payload = request.encode().expect("encode should succeed");
 
-    let response = ServiceMessenger::poll(
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        CALLER_INSTANCE_ID,
-        &started_core_node.core_node_name,
-        names::NODE_INFO,
-        Some(&started_core_node.core_node_name),
-        None,
-        request_payload,
-        Duration::from_secs(5),
-    )
-    .await
-    .expect("node_info with archive variant should succeed");
-
-    let info_response =
-        NodeInfoResponse::decode(&response.payload()).expect("decode should succeed");
+    let info_response = poll_node_info(&started_core_node, &request, Duration::from_secs(5))
+        .await
+        .expect("node_info with archive variant should succeed");
 
     assert_eq!(
         info_response.config.manifest.name.as_str(),
@@ -840,23 +706,12 @@ async fn listen_for_node_info_with_unknown_variant_fails() {
 
     let request = NodeInfoRequest::new(NodeSource::Fs(root_dir.path().to_path_buf()))
         .with_variant(NodeSource::Fs(std::path::PathBuf::from("nonexistent")));
-    let request_payload = request.encode().expect("encode should succeed");
 
-    let err = ServiceMessenger::poll(
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        CALLER_INSTANCE_ID,
-        &started_core_node.core_node_name,
-        names::NODE_INFO,
-        Some(&started_core_node.core_node_name),
-        None,
-        request_payload,
-        Duration::from_secs(5),
-    )
-    .await
-    .expect_err("node_info with unknown variant should fail");
+    let err = poll_node_info(&started_core_node, &request, Duration::from_secs(5))
+        .await
+        .expect_err("node_info with unknown variant should fail");
 
-    let PeppyError::ServiceError { reason, .. } = err else {
+    let core_node::Error::Peppylib(PeppyError::ServiceError { reason, .. }) = err else {
         panic!("expected ServiceError, got: {err:?}");
     };
 
@@ -891,24 +746,10 @@ async fn listen_for_node_info_without_variant_shows_available_variants() {
 
     // Request WITHOUT variant
     let request = NodeInfoRequest::new(NodeSource::Fs(root_dir.path().to_path_buf()));
-    let request_payload = request.encode().expect("encode should succeed");
 
-    let response = ServiceMessenger::poll(
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        CALLER_INSTANCE_ID,
-        &started_core_node.core_node_name,
-        names::NODE_INFO,
-        Some(&started_core_node.core_node_name),
-        None,
-        request_payload,
-        Duration::from_secs(5),
-    )
-    .await
-    .expect("node_info should succeed");
-
-    let info_response =
-        NodeInfoResponse::decode(&response.payload()).expect("decode should succeed");
+    let info_response = poll_node_info(&started_core_node, &request, Duration::from_secs(5))
+        .await
+        .expect("node_info should succeed");
 
     // No variant applied
     assert!(
@@ -970,24 +811,10 @@ async fn listen_for_node_info_auto_resolves_default_variant() {
 
     // Request WITHOUT specifying a variant — should auto-resolve "default".
     let request = NodeInfoRequest::new(NodeSource::Fs(root_dir.path().to_path_buf()));
-    let request_payload = request.encode().expect("encode should succeed");
 
-    let response = ServiceMessenger::poll(
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        CALLER_INSTANCE_ID,
-        &started_core_node.core_node_name,
-        names::NODE_INFO,
-        Some(&started_core_node.core_node_name),
-        None,
-        request_payload,
-        Duration::from_secs(5),
-    )
-    .await
-    .expect("node_info should auto-resolve default variant without panic");
-
-    let info_response =
-        NodeInfoResponse::decode(&response.payload()).expect("decode should succeed");
+    let info_response = poll_node_info(&started_core_node, &request, Duration::from_secs(5))
+        .await
+        .expect("node_info should auto-resolve default variant without panic");
 
     // Manifest comes from root
     assert_eq!(info_response.config.manifest.name.as_str(), ROOT_NODE_NAME);
