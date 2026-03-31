@@ -97,22 +97,39 @@ async fn handle_node_info_request_inner(
     debug!("Received `node_info` request from {sender_instance_id}");
 
     // Resolve the root node config (and keep the source path alive for variant resolution).
-    let (node_config, variant_name) = if let Some(ref variant_source) = request.variant {
+    // Variant resolution errors are collected as issues rather than failing the request,
+    // since info calls are display-only and should always return useful information.
+    let (node_config, variant_name, issues) = if let Some(ref variant_source) = request.variant {
         let (root_config, root_source_path, cleanup_dir) =
             resolve_node_config_with_source_path(request.source.clone(), &peppy_dirs, deadline)
                 .await?;
         let _cleanup_guard = super::add::CleanupDir::new(cleanup_dir);
 
         let label = variant_label(variant_source);
-        let resolved = resolve_variant(
+        match resolve_variant(
             variant_source,
             &root_config,
             &root_source_path,
             &peppy_dirs,
             deadline,
         )
-        .await?;
-        (merged_config_with_variant_cleanup(resolved), Some(label))
+        .await
+        {
+            Ok(resolved) => (
+                merged_config_with_variant_cleanup(resolved),
+                Some(label),
+                Vec::new(),
+            ),
+            Err(variant_err) => {
+                let fallback_config = root_config.into_resolved().map_err(|e| {
+                    format!(
+                        "variant resolution failed ({variant_err}) \
+                         and root config cannot be used as fallback: {e}"
+                    )
+                })?;
+                (fallback_config, None, vec![variant_err])
+            }
+        }
     } else {
         let (root_config, root_source_path, cleanup_dir) =
             resolve_node_config_with_source_path(request.source, &peppy_dirs, deadline).await?;
@@ -121,19 +138,35 @@ async fn handle_node_info_request_inner(
         if root_config.has_default_variant() {
             let variant_source = NodeSource::Fs(DEFAULT_VARIANT_NAME.into());
             let label = variant_label(&variant_source);
-            let resolved = resolve_variant(
+            match resolve_variant(
                 &variant_source,
                 &root_config,
                 &root_source_path,
                 &peppy_dirs,
                 deadline,
             )
-            .await?;
-            (merged_config_with_variant_cleanup(resolved), Some(label))
+            .await
+            {
+                Ok(resolved) => (
+                    merged_config_with_variant_cleanup(resolved),
+                    Some(label),
+                    Vec::new(),
+                ),
+                Err(variant_err) => {
+                    let fallback_config = root_config.into_resolved().map_err(|e| {
+                        format!(
+                            "default variant resolution failed ({variant_err}) \
+                             and root config has no execution: {e}"
+                        )
+                    })?;
+                    (fallback_config, None, vec![variant_err])
+                }
+            }
         } else {
             (
                 root_config.into_resolved().map_err(|e| e.to_string())?,
                 None,
+                Vec::new(),
             )
         }
     };
@@ -162,6 +195,7 @@ async fn handle_node_info_request_inner(
         instances_names,
         config_integrity,
         variant_name,
+        issues,
     )
     .encode()
     .map_err(|e| format!("{}", e))

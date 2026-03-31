@@ -243,4 +243,7 @@ struct NodeInfoResponse {
     configSha256 @3 :Text;
     # Name of the variant applied (empty string when no variant)
     variantName @4 :Text;
+    # Non-fatal issues encountered during resolution (e.g. unknown variant).
+    # Empty when resolution was fully successful.
+    issues @5 :List(Text);
 }

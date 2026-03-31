@@ -307,6 +307,16 @@ fn print_node_info(response: &NodeInfoResponse) {
         }
     }
 
+    // Issues
+    if !response.issues.is_empty() {
+        println!();
+        println!("Issues");
+        println!("{}", "-".repeat(50));
+        for issue in &response.issues {
+            println!("  - {}", issue);
+        }
+    }
+
     // Integrity
     println!();
     println!("Integrity");

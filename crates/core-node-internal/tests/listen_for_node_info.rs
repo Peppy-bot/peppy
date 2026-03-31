@@ -683,7 +683,7 @@ async fn listen_for_node_info_with_fs_archive_variant_uses_archived_root() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_info_with_unknown_variant_fails() {
+async fn listen_for_node_info_with_unknown_variant_returns_issues() {
     let started_core_node = start_core_node_with_mock_messenger().await;
 
     // Create root node with a declared variant that differs from the requested one.
@@ -707,17 +707,27 @@ async fn listen_for_node_info_with_unknown_variant_fails() {
     let request = NodeInfoRequest::new(NodeSource::Fs(root_dir.path().to_path_buf()))
         .with_variant(NodeSource::Fs(std::path::PathBuf::from("nonexistent")));
 
-    let err = poll_node_info(&started_core_node, &request, Duration::from_secs(5))
+    let info_response = poll_node_info(&started_core_node, &request, Duration::from_secs(5))
         .await
-        .expect_err("node_info with unknown variant should fail");
-
-    let core_node::Error::Peppylib(PeppyError::ServiceError { reason, .. }) = err else {
-        panic!("expected ServiceError, got: {err:?}");
-    };
+        .expect("node_info with unknown variant should succeed with issues");
 
     assert!(
-        reason.contains("not found in manifest"),
-        "error should mention variant not found in manifest; got: {reason}"
+        !info_response.issues.is_empty(),
+        "response should contain issues for unknown variant"
+    );
+    assert!(
+        info_response.issues[0].contains("not found in manifest"),
+        "issue should mention variant not found in manifest; got: {}",
+        info_response.issues[0]
+    );
+    assert!(
+        info_response.variant_name.is_none(),
+        "variant_name should be None when variant resolution failed"
+    );
+    assert_eq!(
+        info_response.config.manifest.name.as_str(),
+        "has_variants_node",
+        "should return root config when variant resolution fails"
     );
 }
 

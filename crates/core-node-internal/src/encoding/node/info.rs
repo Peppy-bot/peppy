@@ -191,6 +191,8 @@ pub struct NodeInfoResponse {
     pub config_integrity: String,
     /// Name of the variant applied, if any.
     pub variant_name: Option<String>,
+    /// Non-fatal issues encountered during resolution (e.g. unknown variant).
+    pub issues: Vec<String>,
 }
 
 impl NodeInfoResponse {
@@ -200,6 +202,7 @@ impl NodeInfoResponse {
         instances_names: Vec<String>,
         config_integrity: String,
         variant_name: Option<String>,
+        issues: Vec<String>,
     ) -> Self {
         Self {
             config,
@@ -207,6 +210,7 @@ impl NodeInfoResponse {
             instances_names,
             config_integrity,
             variant_name,
+            issues,
         }
     }
 
@@ -227,6 +231,10 @@ impl NodeInfoResponse {
             }
             response.set_config_sha256(&self.config_integrity);
             response.set_variant_name(self.variant_name.as_deref().unwrap_or(""));
+            let mut issues_builder = response.reborrow().init_issues(self.issues.len() as u32);
+            for (i, issue) in self.issues.iter().enumerate() {
+                issues_builder.set(i as u32, issue);
+            }
         }
         encode_message(&builder)
     }
@@ -250,12 +258,18 @@ impl NodeInfoResponse {
         } else {
             Some(variant_name)
         };
+        let issues_reader = response.get_issues()?;
+        let mut issues = Vec::with_capacity(issues_reader.len() as usize);
+        for i in 0..issues_reader.len() {
+            issues.push(issues_reader.get(i)?.to_str()?.to_owned());
+        }
         Ok(Self {
             config,
             is_in_node_stack,
             instances_names,
             config_integrity,
             variant_name,
+            issues,
         })
     }
 }
