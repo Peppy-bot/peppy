@@ -207,6 +207,14 @@ async fn handle_node_sync_request_inner(
                                 dependency_tag
                             ));
                         }
+                        node_stack::NodeStackError::UndeclaredLocalNodeId {
+                            local_node_id, ..
+                        } => {
+                            missing_interfaces.push(format!(
+                                "references undeclared local_node_id `{}`",
+                                local_node_id
+                            ));
+                        }
                         _ => {}
                     }
                 }

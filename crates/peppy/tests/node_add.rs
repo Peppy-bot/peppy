@@ -3,7 +3,9 @@ use config::node::Toolchain;
 use core_node::encoding::NodeListRequest;
 use node_stack::SerializedNodeGraph;
 use peppy::commands::Command;
-use peppy::commands::node::{NodeCommand, NodeCommands, NodeName, TimeoutConfig, add_node};
+use peppy::commands::node::{
+    AddNodeParams, NodeCommand, NodeCommands, NodeName, TimeoutConfig, add_node,
+};
 use peppy::context::AppContext;
 use peppy::test_support::{LogCapture, ServeCommandEmulation};
 use peppylib::MessengerHandle;
@@ -940,16 +942,18 @@ fn node_add_with_variant_uses_variant_in_preflight() {
     // prompts for approval (mocked via a Cursor reader supplying "y\n").
     add_node(
         &node_ctx,
-        root_path.display().to_string(),
-        None,
-        Some("mock".to_string()),
-        None,
-        TimeoutConfig {
-            idle_secs: 60,
-            max_secs: 3600,
+        AddNodeParams {
+            source: root_path.display().to_string(),
+            git_ref: None,
+            variant: Some("mock".to_string()),
+            start_options: None,
+            timeouts: TimeoutConfig {
+                idle_secs: 60,
+                max_secs: 3600,
+            },
+            force: false,
+            confirm_reader: Some(Box::new(std::io::Cursor::new(b"y\n" as &[u8]))),
         },
-        false,
-        Some(Box::new(std::io::Cursor::new(b"y\n" as &[u8]))),
     )
     .expect("second node add with variant should succeed through confirmation path");
 

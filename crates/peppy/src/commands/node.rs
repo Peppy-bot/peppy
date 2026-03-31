@@ -20,7 +20,7 @@ use tracing::info;
 use super::Command;
 use crate::{context::AppContext, error::Error as CommandError};
 
-pub use add::add_node;
+pub use add::{AddNodeParams, add_node};
 pub use env::caller_env_overrides;
 pub use init::NodeInitBuilder;
 pub use types::NodeName;
@@ -267,13 +267,15 @@ impl Command for NodeCommand {
                 };
                 add::add_node(
                     ctx,
-                    source,
-                    git_ref,
-                    variant,
-                    start_options,
-                    timeouts,
-                    force,
-                    None,
+                    add::AddNodeParams {
+                        source,
+                        git_ref,
+                        variant,
+                        start_options,
+                        timeouts,
+                        force,
+                        confirm_reader: None,
+                    },
                 )
             }
             NodeCommands::Sync {} => {

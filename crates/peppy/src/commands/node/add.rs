@@ -22,6 +22,17 @@ pub struct StartAfterAddOptions {
     pub instance_id: Option<String>,
 }
 
+/// Parameters for adding a node.
+pub struct AddNodeParams {
+    pub source: String,
+    pub git_ref: Option<String>,
+    pub variant: Option<String>,
+    pub start_options: Option<StartAfterAddOptions>,
+    pub timeouts: TimeoutConfig,
+    pub force: bool,
+    pub confirm_reader: Option<Box<dyn BufRead>>,
+}
+
 const CALLER_INSTANCE_ID: &str = "peppy-cli";
 // Timeout for the goal to be accepted (should be fast)
 const GOAL_TIMEOUT: Duration = Duration::from_secs(30);
@@ -40,38 +51,20 @@ fn validate_git_ref(git_ref: Option<&str>) -> Result<Option<String>> {
     Ok(git_ref.map(str::to_owned))
 }
 
-pub fn add_node(
-    ctx: &Arc<AppContext>,
-    source: String,
-    git_ref: Option<String>,
-    variant: Option<String>,
-    start_options: Option<StartAfterAddOptions>,
-    timeouts: TimeoutConfig,
-    force: bool,
-    confirm_reader: Option<Box<dyn BufRead>>,
-) -> Result<()> {
-    crate::commands::block_on(add_node_async(
-        ctx,
+pub fn add_node(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<()> {
+    crate::commands::block_on(add_node_async(ctx, params))
+}
+
+async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<()> {
+    let AddNodeParams {
         source,
         git_ref,
         variant,
         start_options,
         timeouts,
         force,
-        confirm_reader,
-    ))
-}
-
-async fn add_node_async(
-    ctx: &Arc<AppContext>,
-    source: String,
-    git_ref: Option<String>,
-    variant: Option<String>,
-    start_options: Option<StartAfterAddOptions>,
-    timeouts: TimeoutConfig,
-    force: bool,
-    mut confirm_reader: Option<Box<dyn BufRead>>,
-) -> Result<()> {
+        mut confirm_reader,
+    } = params;
     let daemon_state = ctx.read_daemon_state()?;
     let core_node_name = daemon_state.core_node_name.clone();
     let git_hash = daemon_state.git_hash.clone();

@@ -29,12 +29,7 @@ async fn listen_for_node_sync_success() {
             interfaces: {
                 topics: {
                     emits: [],
-                    consumes: [
-                        {
-                            local_node_id: "uvc_camera",
-                            name: "video_stream",
-                        }
-                    ],
+                    consumes: [],
                 },
                 services: {
                     exposes: [],
@@ -1825,5 +1820,76 @@ async fn listen_for_node_sync_default_variant_cleans_stale_root_peppy_dir() {
         variant_peppy_dir.exists(),
         "variant .peppy directory should exist at {}",
         variant_peppy_dir.display()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_sync_undeclared_local_node_id_fails() {
+    let started_core_node = start_core_node_with_mock_messenger().await;
+
+    let node_dir = tempdir().expect("failed to create temp node directory");
+    // The node consumes a topic from local_node_id "nonexistent", but this
+    // local_node_id is not declared in depends_on.nodes, so sync should fail.
+    write_node_config(
+        node_dir.path(),
+        r#"
+        {
+            schema_version: 1,
+            manifest: {
+                name: "my_robot_brain",
+                tag: "0.1.0",
+                depends_on: {
+                    nodes: []
+                },
+            },
+            interfaces: {
+                topics: {
+                    emits: [],
+                    consumes: [
+                        {
+                            local_node_id: "nonexistent",
+                            name: "video_stream",
+                        }
+                    ],
+                },
+                services: {
+                    exposes: [],
+                },
+                actions: {
+                    exposes: [],
+                },
+            },
+            execution: {
+                language: "rust",
+                start_cmd: ["sleep", "10"],
+            },
+        }
+        "#,
+    );
+
+    let peppygen_dir = node_dir.path().join(PEPPYGEN_OUTPUT_PATH);
+
+    let response = NodeSyncRequest::new(node_dir.path(), common::TEST_GIT_HASH)
+        .poll(
+            &started_core_node.caller_handle,
+            &started_core_node.core_node_name,
+            CALLER_INSTANCE_ID,
+            &started_core_node.core_node_name,
+            Duration::from_secs(5),
+        )
+        .await
+        .expect("node_sync request should complete");
+
+    assert!(!response.success, "node_sync should fail");
+    assert!(
+        response.error_message.contains("undeclared local_node_id"),
+        "error should mention undeclared local_node_id, got: {}",
+        response.error_message
+    );
+
+    assert!(
+        !peppygen_dir.exists(),
+        "peppygen directory should not exist at {}",
+        peppygen_dir.display()
     );
 }
