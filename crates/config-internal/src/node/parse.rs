@@ -304,6 +304,10 @@ mod tests {
         assert_eq!(msg, "local path cannot be empty");
     }
 
+    /// Top-level system directories (e.g. `/tmp`) are blocked as mount sources
+    /// because Lima 2.0+ rejects them as guest mount points and binding an
+    /// entire system directory into a container is almost always a mistake.
+    /// Users should mount a subdirectory instead (e.g. `/tmp/my_app`).
     #[test]
     fn test_container_config_rejects_system_path_mount() {
         let json5 = r#"{
@@ -331,6 +335,9 @@ mod tests {
         );
     }
 
+    /// macOS exposes `/private/tmp`, `/private/var`, etc. as aliases for
+    /// `/tmp`, `/var`, etc. The validation strips the `/private` prefix so
+    /// these paths are caught by the same blocked-mount-source check.
     #[test]
     fn test_container_config_rejects_private_system_path_mount() {
         let json5 = r#"{
@@ -401,6 +408,10 @@ mod tests {
         assert!(container(&config).mount_paths.is_none());
     }
 
+    // NOTE: These parse-time tests assert the raw `${parameters:...}` template
+    // strings. Actual substitution with concrete argument values happens at
+    // runtime in `resolve_mount_path_parameters()` (core-node-internal), which
+    // has its own test coverage.
     #[test]
     fn test_container_mount_path_with_parameter_ref() {
         let json5 = r#"{
@@ -702,5 +713,25 @@ mod tests {
             result.unwrap_err(),
             Error::Parsing(ParsingError::MissingExecution)
         ));
+    }
+
+    #[test]
+    fn test_parse_config_no_execution_with_default_variant_accepted() {
+        let json5 = r#"{
+            schema_version: 1,
+            manifest: {
+                name: "uvc_camera",
+                tag: "0.1.0",
+                variants: [
+                    { name: "default", source: { local: "./variants/my_default_variant" } },
+                ],
+            },
+        }"#;
+        let result = NodeConfigParser::from_content(json5);
+        assert!(
+            result.is_ok(),
+            "expected parsing to succeed when a 'default' variant is present, but got: {:?}",
+            result.unwrap_err()
+        );
     }
 }
