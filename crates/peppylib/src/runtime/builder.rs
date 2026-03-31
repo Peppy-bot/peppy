@@ -486,6 +486,18 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    /// Ensure standalone mode is used regardless of env var state.
+    ///
+    /// Other tests (e.g. integration tests in `runner.rs`) may set
+    /// `PEPPY_RUNTIME_CONFIG`, which would cause `resolve_mode()` to
+    /// pick daemon mode. Clearing it prevents cross-test interference.
+    fn ensure_standalone_mode() {
+        // SAFETY: acceptable in single-threaded unit tests for env isolation.
+        unsafe {
+            std::env::remove_var(config::consts::RUNTIME_CONFIG_VAR_NAME);
+        }
+    }
+
     #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
     struct TestParams {
         value: i64,
@@ -506,6 +518,7 @@ mod tests {
 
     #[test]
     fn parameters_can_only_be_taken_once() {
+        ensure_standalone_mode();
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let peppy_config = write_peppy_config(temp_dir.path(), r#"value: "i64""#);
 
@@ -530,6 +543,7 @@ mod tests {
 
     #[test]
     fn init_fails_eagerly_on_invalid_parameter_types() {
+        ensure_standalone_mode();
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let peppy_config = write_peppy_config(temp_dir.path(), r#"value: "i64""#);
 
@@ -554,6 +568,7 @@ mod tests {
 
     #[test]
     fn init_parses_parameters_eagerly() {
+        ensure_standalone_mode();
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let peppy_config = write_peppy_config(temp_dir.path(), r#"value: "i64""#);
 
