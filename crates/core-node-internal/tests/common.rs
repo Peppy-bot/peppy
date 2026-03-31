@@ -59,7 +59,10 @@ pub enum NodeAddSource<'a> {
         repo_ref: Option<&'a str>,
     },
     /// Add from an HTTP URL (for .tzst archives).
-    Http(url::Url),
+    Http {
+        url: url::Url,
+        sha256: Option<String>,
+    },
 }
 
 impl<'a> From<&'a Path> for NodeAddSource<'a> {
@@ -284,9 +287,12 @@ async fn send_node_add_and_wait_internal<'a>(
             TEST_GIT_HASH,
             result_timeout.as_secs(),
         ),
-        NodeAddSource::Http(url) => {
-            NodeAddGoal::new_http(url.clone(), None, TEST_GIT_HASH, result_timeout.as_secs())
-        }
+        NodeAddSource::Http { url, sha256 } => NodeAddGoal::new_http(
+            url.clone(),
+            sha256.clone(),
+            TEST_GIT_HASH,
+            result_timeout.as_secs(),
+        ),
     }
     .with_env_vars(env_vars);
 

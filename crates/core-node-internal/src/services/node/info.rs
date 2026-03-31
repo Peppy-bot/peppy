@@ -382,6 +382,7 @@ mod tests {
 
         false
     }
+
     fn init_git_repo_with_default_variant(repo_path: &std::path::Path, marker: &str) {
         std::fs::create_dir_all(repo_path).expect("failed to create git repo directory");
         let repo = Repository::init(repo_path).expect("failed to init repository");

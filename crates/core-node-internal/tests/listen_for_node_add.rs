@@ -647,7 +647,7 @@ async fn listen_for_node_http_add_success() {
     let add_result = send_node_add_and_wait(
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
-        NodeAddSource::Http(url),
+        NodeAddSource::Http { url, sha256: None },
         GOAL_TIMEOUT,
         RESULT_TIMEOUT,
         None,
@@ -699,6 +699,140 @@ async fn listen_for_node_http_add_success() {
         "archive file name should be '<node_name>_<tag>.tar.zst', got: {}",
         file_name
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_http_add_rejects_wrong_sha256() {
+    const TARGET_NODE_NAME: &str = "http_sha_bad";
+    const TARGET_NODE_TAG: &str = "0.1.0";
+
+    let started_core_node = start_core_node_with_mock_messenger().await;
+    let node_stack = started_core_node.node_stack.clone();
+
+    let bundle_dir = tempfile::tempdir().expect("failed to create temp bundle dir");
+    let peppy_json5 = r#"{
+            schema_version: 1,
+            manifest: {
+                name: "{TARGET_NODE_NAME}",
+                tag: "{TARGET_NODE_TAG}",
+            },
+            interfaces: {},
+            execution: {
+                language: "rust",
+                start_cmd: ["sleep", "10"]
+            }
+        }"#
+    .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
+    .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
+
+    let manifest_path = bundle_dir.path().join(NODE_CONFIG_FILE);
+    std::fs::write(&manifest_path, &peppy_json5).expect("failed to write manifest");
+
+    let bundle_path = bundle_dir.path().join("node.tar.zst");
+    create_tar_zst_from_dir(bundle_dir.path(), &bundle_path, ".");
+    let bundle_bytes = std::fs::read(&bundle_path).expect("failed to read bundle");
+
+    let server = Server::run();
+    server.expect(
+        Expectation::matching(request::method_path("GET", "/bundles/node.tar.zst"))
+            .respond_with(status_code(200).body(bundle_bytes)),
+    );
+    let url = url::Url::parse(&server.url("/bundles/node.tar.zst").to_string())
+        .expect("http bundle url should parse");
+
+    let wrong_sha256 = "a".repeat(64);
+    let add_result = send_node_add_and_wait(
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        NodeAddSource::Http {
+            url,
+            sha256: Some(wrong_sha256),
+        },
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        None,
+    )
+    .await
+    .expect("node_add request should succeed");
+
+    assert!(
+        !add_result.success,
+        "node_add should fail with wrong sha256"
+    );
+    assert!(
+        add_result
+            .error_message
+            .as_deref()
+            .map(|msg| msg.contains("checksum mismatch"))
+            .unwrap_or(false),
+        "error should mention checksum mismatch, got: {:?}",
+        add_result.error_message
+    );
+    assert!(!node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_http_add_accepts_correct_sha256() {
+    const TARGET_NODE_NAME: &str = "http_sha_ok";
+    const TARGET_NODE_TAG: &str = "0.1.0";
+
+    let started_core_node = start_core_node_with_mock_messenger().await;
+    let node_stack = started_core_node.node_stack.clone();
+
+    let bundle_dir = tempfile::tempdir().expect("failed to create temp bundle dir");
+    let peppy_json5 = r#"{
+            schema_version: 1,
+            manifest: {
+                name: "{TARGET_NODE_NAME}",
+                tag: "{TARGET_NODE_TAG}",
+            },
+            interfaces: {},
+            execution: {
+                language: "rust",
+                start_cmd: ["sleep", "10"]
+            }
+        }"#
+    .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
+    .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
+
+    let manifest_path = bundle_dir.path().join(NODE_CONFIG_FILE);
+    std::fs::write(&manifest_path, &peppy_json5).expect("failed to write manifest");
+
+    let bundle_path = bundle_dir.path().join("node.tar.zst");
+    create_tar_zst_from_dir(bundle_dir.path(), &bundle_path, ".");
+    let bundle_bytes = std::fs::read(&bundle_path).expect("failed to read bundle");
+
+    use sha2::{Digest, Sha256};
+    let correct_sha256 = format!("{:x}", Sha256::digest(&bundle_bytes));
+
+    let server = Server::run();
+    server.expect(
+        Expectation::matching(request::method_path("GET", "/bundles/node.tar.zst"))
+            .respond_with(status_code(200).body(bundle_bytes)),
+    );
+    let url = url::Url::parse(&server.url("/bundles/node.tar.zst").to_string())
+        .expect("http bundle url should parse");
+
+    let add_result = send_node_add_and_wait(
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        NodeAddSource::Http {
+            url,
+            sha256: Some(correct_sha256),
+        },
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        None,
+    )
+    .await
+    .expect("node_add request should succeed");
+
+    assert!(
+        add_result.success,
+        "node_add should succeed with correct sha256, got error: {:?}",
+        add_result.error_message
+    );
+    assert!(node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
