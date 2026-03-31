@@ -76,11 +76,45 @@ where
     E: de::Error,
 {
     let trimmed = trim_non_empty::<E>(value, "url cannot be empty")?;
-    if !trimmed.starts_with("http://") && !trimmed.starts_with("https://") {
+
+    if trimmed.contains(' ') {
+        return Err(invalid_deployment_source::<E>(
+            "url must not contain spaces",
+        ));
+    }
+
+    let (scheme, rest) = if let Some(rest) = trimmed.strip_prefix("https://") {
+        ("https", rest)
+    } else if let Some(rest) = trimmed.strip_prefix("http://") {
+        ("http", rest)
+    } else {
         return Err(invalid_deployment_source::<E>(
             "url must start with http:// or https://",
         ));
+    };
+    _ = scheme;
+
+    // rest must have a non-empty host followed by a non-empty path
+    let (host_part, path_part) = match rest.find('/') {
+        Some(idx) => (&rest[..idx], &rest[idx..]),
+        None => {
+            return Err(invalid_deployment_source::<E>(
+                "url must have a non-empty path",
+            ));
+        }
+    };
+
+    if host_part.is_empty() {
+        return Err(invalid_deployment_source::<E>("url must have a host"));
     }
+
+    // path_part starts with '/', so a path of just "/" means no meaningful path
+    if path_part == "/" || path_part.is_empty() {
+        return Err(invalid_deployment_source::<E>(
+            "url must have a non-empty path",
+        ));
+    }
+
     Ok(trimmed)
 }
 
@@ -239,5 +273,38 @@ mod tests {
             panic!("expected invalid deployment source error");
         };
         assert_eq!(msg, "sha256 must be a 64-character hexadecimal string");
+    }
+
+    #[test]
+    fn deployment_source_rejects_malformed_urls() {
+        let valid_sha = "33e83da60a54e3bb487a9a3b67705918602143b30f158143b6909acaf017a36a";
+
+        let cases = [
+            (
+                format!("{{ url: \"https://\", sha256: \"{valid_sha}\" }}"),
+                "url must have a non-empty path",
+            ),
+            (
+                format!("{{ url: \"https:// /node.tar.zst\", sha256: \"{valid_sha}\" }}"),
+                "url must not contain spaces",
+            ),
+            (
+                format!("{{ url: \"https://example.com\", sha256: \"{valid_sha}\" }}"),
+                "url must have a non-empty path",
+            ),
+            (
+                format!("{{ url: \"https://example.com/\", sha256: \"{valid_sha}\" }}"),
+                "url must have a non-empty path",
+            ),
+        ];
+
+        for (input, expected_msg) in cases {
+            let result: Result<DeploymentSource, _> = serde_json5::from_str(&input);
+            let err = result.expect_err(&format!("expected failure for: {input}"));
+            let ParsingError::InvalidDeploymentSource(msg) = err.into() else {
+                panic!("expected InvalidDeploymentSource for: {input}");
+            };
+            assert_eq!(msg, expected_msg, "wrong message for: {input}");
+        }
     }
 }
