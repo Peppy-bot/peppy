@@ -212,6 +212,8 @@ mod tests {
         assert_eq!(duplicate, "camera_front");
     }
 
+    /// Verifies that optional fields (`arguments`, `env_vars`) default to empty
+    /// when omitted, and that partially specified instances deserialize correctly.
     #[test]
     fn deployment_instance_defaults() {
         let instance: DeploymentInstance =
