@@ -3,7 +3,7 @@ use config::node::Toolchain;
 use core_node::encoding::NodeListRequest;
 use node_stack::SerializedNodeGraph;
 use peppy::commands::Command;
-use peppy::commands::node::{NodeCommand, NodeCommands, NodeName};
+use peppy::commands::node::{NodeCommand, NodeCommands, NodeName, TimeoutConfig, add_node};
 use peppy::context::AppContext;
 use peppy::test_support::{LogCapture, ServeCommandEmulation};
 use peppylib::MessengerHandle;
@@ -934,24 +934,24 @@ fn node_add_with_variant_uses_variant_in_preflight() {
         "should have 1 instance running after first add with variant"
     );
 
-    // Step 2: Re-add with --variant mock and force=true.
-    // The preflight fetch_node_info now passes the variant, so it resolves the
-    // same merged config and correctly identifies the existing node+instances.
-    NodeCommand {
-        command: NodeCommands::Add {
-            source: root_path.display().to_string(),
-            git_ref: None,
-            variant: Some("mock".to_string()),
-            start: false,
-            args: Vec::new(),
-            instance_id: None,
-            idle_timeout: 60,
-            max_timeout: 3600,
-            force: true,
+    // Step 2: Re-add with --variant mock and force=false.
+    // The preflight fetch_node_info resolves the variant-merged config and
+    // correctly identifies the existing node+instances, then confirm_overwrite
+    // prompts for approval (mocked via a Cursor reader supplying "y\n").
+    add_node(
+        &node_ctx,
+        root_path.display().to_string(),
+        None,
+        Some("mock".to_string()),
+        None,
+        TimeoutConfig {
+            idle_secs: 60,
+            max_secs: 3600,
         },
-    }
-    .execute(&node_ctx)
-    .expect("second node add with variant and force should succeed");
+        false,
+        Some(Box::new(std::io::Cursor::new(b"y\n" as &[u8]))),
+    )
+    .expect("second node add with variant should succeed through confirmation path");
 
     // Verify existing instance was stopped and node was re-added
     let response = rt

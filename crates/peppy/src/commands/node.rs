@@ -20,6 +20,7 @@ use tracing::info;
 use super::Command;
 use crate::{context::AppContext, error::Error as CommandError};
 
+pub use add::add_node;
 pub use env::caller_env_overrides;
 pub use init::NodeInitBuilder;
 pub use types::NodeName;
@@ -30,7 +31,7 @@ pub(crate) const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 600;
 pub(crate) const DEFAULT_MAX_TIMEOUT_SECS: u64 = 3600;
 
 /// Idle + absolute-max timeout pair used by `node add` and `node start` polling loops.
-pub(crate) struct TimeoutConfig {
+pub struct TimeoutConfig {
     pub idle_secs: u64,
     pub max_secs: u64,
 }
@@ -272,6 +273,7 @@ impl Command for NodeCommand {
                     start_options,
                     timeouts,
                     force,
+                    None,
                 )
             }
             NodeCommands::Sync {} => {

@@ -3,7 +3,7 @@ use core_node::encoding::{
     NodeInfoResponse, NodeSource,
 };
 use peppylib::{ActionMessenger, MessengerHandle, PeppyError};
-use std::io::{self, Write};
+use std::io::{self, BufRead, Write};
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::info;
@@ -17,7 +17,7 @@ use crate::error::{Error, Result};
 use crate::terminal::ScrollingOutput;
 
 /// Options for starting a node instance immediately after adding it.
-pub(crate) struct StartAfterAddOptions {
+pub struct StartAfterAddOptions {
     pub args: Vec<(String, String)>,
     pub instance_id: Option<String>,
 }
@@ -48,6 +48,7 @@ pub fn add_node(
     start_options: Option<StartAfterAddOptions>,
     timeouts: TimeoutConfig,
     force: bool,
+    confirm_reader: Option<Box<dyn BufRead>>,
 ) -> Result<()> {
     crate::commands::block_on(add_node_async(
         ctx,
@@ -57,6 +58,7 @@ pub fn add_node(
         start_options,
         timeouts,
         force,
+        confirm_reader,
     ))
 }
 
@@ -68,6 +70,7 @@ async fn add_node_async(
     start_options: Option<StartAfterAddOptions>,
     timeouts: TimeoutConfig,
     force: bool,
+    mut confirm_reader: Option<Box<dyn BufRead>>,
 ) -> Result<()> {
     let daemon_state = ctx.read_daemon_state()?;
     let core_node_name = daemon_state.core_node_name.clone();
@@ -111,7 +114,12 @@ async fn add_node_async(
     {
         let node_name = info.config.manifest.name.as_str();
         let node_tag = &info.config.manifest.tag;
-        let confirm = confirm_overwrite(node_name, node_tag, &info.instances_names)?;
+        let confirm = confirm_overwrite(
+            node_name,
+            node_tag,
+            &info.instances_names,
+            confirm_reader.take(),
+        )?;
         if !confirm {
             return Err(Error::ExecutionFailed(
                 "Node add aborted by user".to_string(),
@@ -322,7 +330,12 @@ async fn fetch_node_info(
         })
 }
 
-fn confirm_overwrite(node_name: &str, tag: &str, instance_ids: &[String]) -> Result<bool> {
+fn confirm_overwrite(
+    node_name: &str,
+    tag: &str,
+    instance_ids: &[String],
+    mut reader: Option<Box<dyn BufRead>>,
+) -> Result<bool> {
     let count = instance_ids.len();
     let suffix = if count == 1 { "instance" } else { "instances" };
     let ids = instance_ids
@@ -346,9 +359,12 @@ fn confirm_overwrite(node_name: &str, tag: &str, instance_ids: &[String]) -> Res
     })?;
 
     let mut input = String::new();
-    io::stdin().read_line(&mut input).map_err(|e| {
-        Error::ExecutionFailed(format!("Failed to read confirmation response: {}", e))
-    })?;
+    if let Some(ref mut reader) = reader {
+        reader.read_line(&mut input)
+    } else {
+        io::stdin().read_line(&mut input)
+    }
+    .map_err(|e| Error::ExecutionFailed(format!("Failed to read confirmation response: {}", e)))?;
 
     let response = input.trim().to_ascii_lowercase();
     Ok(matches!(response.as_str(), "y" | "yes"))
