@@ -754,6 +754,8 @@ mod tests {
         assert!(!is_supported_fs_archive(Path::new("bundle.tar.gz")));
     }
 
+    /// Verifies that `resolve_local_archive_source` works when the config file
+    /// sits directly at the archive root (no wrapping top-level folder).
     #[test]
     fn resolve_local_archive_source_accepts_root_layout() {
         let temp_dir = tempfile::tempdir().unwrap();
@@ -767,6 +769,8 @@ mod tests {
         assert!(resolved.source_path.join(NODE_CONFIG_FILE).is_file());
     }
 
+    /// Verifies that `resolve_local_archive_source` unwraps a single top-level
+    /// folder and uses it as the source path instead of the extraction root.
     #[test]
     fn resolve_local_archive_source_uses_single_top_level_folder() {
         let temp_dir = tempfile::tempdir().unwrap();
