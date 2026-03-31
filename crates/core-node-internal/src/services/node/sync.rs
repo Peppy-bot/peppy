@@ -172,10 +172,10 @@ async fn handle_node_sync_request_inner(
             Ok(node_config) => {
                 // Validate dependencies exist in the node stack
                 let dep_errors = node_stack::validate_dependency_specs(
-                    &node_config.manifest,
-                    &node_config.interfaces,
-                    node_config.manifest.name.as_str(),
-                    &node_config.manifest.tag,
+                    node_config.manifest(),
+                    node_config.interfaces(),
+                    node_config.manifest_name(),
+                    node_config.manifest_tag(),
                     |name, tag| node_stack.find(name, tag).map(|e| e.config().clone()),
                 );
 
@@ -238,8 +238,8 @@ async fn handle_node_sync_request_inner(
 
                     return NodeSyncResponse::failure(format!(
                         "`{}:{} {}",
-                        node_config.manifest.name.as_str(),
-                        node_config.manifest.tag,
+                        node_config.manifest_name(),
+                        node_config.manifest_tag(),
                         errors.join("; ")
                     ))
                     .encode();
@@ -247,15 +247,15 @@ async fn handle_node_sync_request_inner(
 
                 // Collect consumed interfaces with resolved message formats
                 let interfaces = collect_consumed_interfaces(
-                    &node_config.manifest,
-                    &node_config.interfaces,
+                    node_config.manifest(),
+                    node_config.interfaces(),
                     node_stack,
                 );
-                let language = node_config.execution.as_ref().map(|r| r.language);
-                let variants = node_config.manifest.variants.clone();
-                let root_manifest = node_config.manifest.clone();
-                let root_interfaces = node_config.interfaces.clone();
-                let root_schema_version = node_config.schema_version;
+                let language = node_config.execution().map(|r| r.language);
+                let variants = node_config.manifest().variants.clone();
+                let root_manifest = node_config.manifest().clone();
+                let root_interfaces = node_config.interfaces().clone();
+                let root_schema_version = node_config.schema_version();
                 (
                     interfaces,
                     language,

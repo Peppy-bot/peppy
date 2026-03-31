@@ -13,7 +13,7 @@ use crate::encoding::{
 use crate::names;
 use chrono::Local;
 use config::consts::{NODE_CONFIG_FILE, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH, PeppyDirs};
-use config::node::{DEFAULT_VARIANT_NAME, NodeConfig, NodeConfigParser, RawNodeConfig};
+use config::node::{DEFAULT_VARIANT_NAME, NodeConfig, NodeConfigParser, ParsedNodeConfig};
 use futures::FutureExt;
 use git2::Repository;
 use node_stack::{NodeStack, validate_dependency_specs};
@@ -616,7 +616,7 @@ impl Drop for CleanupDir {
 
 pub(crate) struct ResolvedNodeAddSource {
     pub(crate) source_path: PathBuf,
-    pub(crate) node_config: RawNodeConfig,
+    pub(crate) node_config: ParsedNodeConfig,
     pub(crate) verify_codegen_fingerprint: bool,
     pub(crate) cleanup_dir: Option<PathBuf>,
 }
@@ -952,15 +952,15 @@ pub(crate) fn log_label_from_source(source: &NodeSource) -> String {
             {
                 let label = format!(
                     "{}_{}",
-                    resolved.node_config.manifest.name.as_str(),
-                    resolved.node_config.manifest.tag
+                    resolved.node_config.manifest_name(),
+                    resolved.node_config.manifest_tag()
                 );
                 return label;
             }
 
             let config_path = path.join(NODE_CONFIG_FILE);
             if let Ok(config) = NodeConfigParser::from_path(&config_path) {
-                return format!("{}_{}", config.manifest.name.as_str(), config.manifest.tag);
+                return format!("{}_{}", config.manifest_name(), config.manifest_tag());
             }
             path.file_name()
                 .and_then(|n| n.to_str())

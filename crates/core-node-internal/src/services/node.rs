@@ -14,7 +14,7 @@ pub use add::listen_for_node_add;
 pub(crate) use add::{NodeAddActionContext, log_label_from_source, run_node_add};
 use chrono::Local;
 use config::consts::NODE_CONFIG_FILE;
-use config::node::{NodeConfig, NodeConfigParser, PeppygenLanguage, RawNodeConfig};
+use config::node::{NodeConfig, NodeConfigParser, ParsedNodeConfig, PeppygenLanguage};
 use git2::{Repository, build::CheckoutBuilder, build::RepoBuilder};
 pub use info::listen_for_node_info;
 pub use init::listen_for_node_init;
@@ -227,7 +227,7 @@ pub(crate) fn generate_random_id() -> String {
 }
 
 pub(crate) struct ResolvedLocalArchiveSource {
-    pub(crate) node_config: RawNodeConfig,
+    pub(crate) node_config: ParsedNodeConfig,
     pub(crate) source_path: PathBuf,
     pub(crate) temp_dir: tempfile::TempDir,
 }
@@ -762,7 +762,7 @@ mod tests {
 
         let resolved = resolve_local_archive_source(&archive_path).unwrap();
 
-        assert_eq!(resolved.node_config.manifest.name.as_str(), "standalone");
+        assert_eq!(resolved.node_config.manifest_name(), "standalone");
         assert_eq!(resolved.source_path, resolved.temp_dir.path());
         assert!(resolved.source_path.join(NODE_CONFIG_FILE).is_file());
     }
@@ -778,7 +778,7 @@ mod tests {
 
         let resolved = resolve_local_archive_source(&archive_path).unwrap();
 
-        assert_eq!(resolved.node_config.manifest.name.as_str(), "standalone");
+        assert_eq!(resolved.node_config.manifest_name(), "standalone");
         assert_eq!(
             resolved
                 .source_path

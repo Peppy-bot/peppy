@@ -1,4 +1,4 @@
-use crate::{common::RawNodeArguments, error::ParsingError};
+use crate::{common::AnyType, error::ParsingError};
 use serde::{
     Deserialize, Serialize,
     de::{self, Deserializer},
@@ -37,7 +37,7 @@ pub struct Deployment {
 pub struct DeploymentInstance {
     pub instance_id: Name,
     #[serde(default)]
-    pub arguments: RawNodeArguments,
+    pub arguments: BTreeMap<String, AnyType>,
     #[serde(default)]
     pub env_vars: BTreeMap<String, String>,
 }

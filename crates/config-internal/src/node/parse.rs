@@ -1,4 +1,4 @@
-use super::types::{Execution, RawNodeConfig, VariantConfig};
+use super::types::{Execution, ParsedNodeConfig, RawNodeConfig, VariantConfig};
 use crate::{
     error::{ParsingError, Result},
     parsing::read_non_empty_file,
@@ -41,14 +41,14 @@ fn validate_execution(execution: &Execution) -> Result<()> {
 pub struct NodeConfigParser;
 
 impl NodeConfigParser {
-    pub fn from_path(file: impl AsRef<Path>) -> Result<RawNodeConfig> {
+    pub fn from_path(file: impl AsRef<Path>) -> Result<ParsedNodeConfig> {
         let path = file.as_ref();
         let content = read_non_empty_file(path)?;
         Self::from_content(&content)
     }
 
     /// Takes a JSON5 content as parameter
-    pub fn from_content(content: &str) -> Result<RawNodeConfig> {
+    pub fn from_content(content: &str) -> Result<ParsedNodeConfig> {
         // Strict schema validation is handled by serde via #[serde(deny_unknown_fields)]
         let config: RawNodeConfig = serde_json5::from_str(content).map_err(ParsingError::from)?;
 
@@ -60,7 +60,7 @@ impl NodeConfigParser {
             (None, false) => return Err(ParsingError::MissingExecution.into()),
         }
 
-        Ok(config)
+        Ok(ParsedNodeConfig(config))
     }
 }
 
@@ -87,9 +87,10 @@ mod tests {
     use crate::{error::Error, launcher::PeppyLauncherParser, node::ContainerConfig};
     use tempfile::NamedTempFile;
 
-    /// Test helper: borrows the `ContainerConfig` from a parsed `RawNodeConfig`.
-    fn container(config: &RawNodeConfig) -> &ContainerConfig {
+    /// Test helper: borrows the `ContainerConfig` from a parsed config.
+    fn container(config: &ParsedNodeConfig) -> &ContainerConfig {
         config
+            .0
             .execution
             .as_ref()
             .expect("expected execution")
@@ -112,10 +113,11 @@ mod tests {
             },
         }"#;
         let config = NodeConfigParser::from_content(json5).unwrap();
-        assert_eq!(config.manifest.name.as_str(), "test_node");
-        assert_eq!(config.manifest.tag, "0.1.0");
+        assert_eq!(config.0.manifest.name.as_str(), "test_node");
+        assert_eq!(config.0.manifest.tag, "0.1.0");
         assert_eq!(
             config
+                .0
                 .execution
                 .as_ref()
                 .unwrap()
@@ -124,7 +126,7 @@ mod tests {
                 .unwrap(),
             &vec!["./target/release/test_node"]
         );
-        assert!(config.execution.as_ref().unwrap().parameters.is_empty());
+        assert!(config.0.execution.as_ref().unwrap().parameters.is_empty());
     }
 
     #[test]
@@ -148,14 +150,15 @@ mod tests {
             },
         }"#;
         let config = NodeConfigParser::from_content(json5).unwrap();
-        assert_eq!(config.manifest.name.as_str(), "camera_driver");
-        assert_eq!(config.manifest.tag, "2.1.0");
+        assert_eq!(config.0.manifest.name.as_str(), "camera_driver");
+        assert_eq!(config.0.manifest.tag, "2.1.0");
         assert_eq!(
-            config.execution.as_ref().unwrap().language,
+            config.0.execution.as_ref().unwrap().language,
             crate::node::PeppygenLanguage::Rust
         );
         assert_eq!(
             config
+                .0
                 .execution
                 .as_ref()
                 .unwrap()
@@ -164,7 +167,7 @@ mod tests {
                 .unwrap(),
             &vec!["./target/release/camera_driver"]
         );
-        assert!(config.interfaces.topics.is_some());
+        assert!(config.0.interfaces.topics.is_some());
     }
 
     #[test]
@@ -217,7 +220,7 @@ mod tests {
             },
         }"#;
         let config = NodeConfigParser::from_content(json5).unwrap();
-        assert!(config.execution.as_ref().unwrap().start_cmd.is_none());
+        assert!(config.0.execution.as_ref().unwrap().start_cmd.is_none());
         assert_eq!(container(&config).def_file, "apptainer.def");
     }
 
@@ -654,8 +657,8 @@ mod tests {
             },
         }"#;
         let config = NodeConfigParser::from_content(json5).unwrap();
-        assert_eq!(config.manifest.name.as_str(), "uvc_camera");
-        assert!(config.execution.is_none());
+        assert_eq!(config.0.manifest.name.as_str(), "uvc_camera");
+        assert!(config.0.execution.is_none());
         assert!(config.has_default_variant());
     }
 

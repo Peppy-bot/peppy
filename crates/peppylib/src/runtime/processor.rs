@@ -2,12 +2,14 @@ use std::path::Path;
 
 use crate::error::{Error, ParameterDeserializationError, Result};
 use config::{
-    NodeArguments,
+    AnyType, NodeArguments,
     consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME},
     launcher::Name,
     node::NodeConfig,
-    runtime::{NodeInstance, RawNodeArguments, RuntimeConfig},
+    runtime::{NodeInstance, RuntimeConfig},
+    validate_node_arguments,
 };
+use std::collections::BTreeMap;
 
 use super::builder::StandaloneConfig;
 
@@ -45,11 +47,10 @@ impl Processor {
 
         let node_config: NodeConfig =
             serde_json5::from_str(&std::fs::read_to_string(peppy_config.as_ref())?)?;
-        let validated_arguments = runtime_config
-            .node_instance
-            .arguments
-            .clone()
-            .into_resolved(&node_config.execution.parameters)?;
+        let validated_arguments = validate_node_arguments(
+            runtime_config.node_instance.arguments.clone(),
+            &node_config.execution.parameters,
+        )?;
 
         Ok(Self {
             runtime_config,
@@ -73,14 +74,15 @@ impl Processor {
         let node_config: NodeConfig =
             serde_json5::from_str(&std::fs::read_to_string(peppy_config.as_ref())?)?;
 
-        let arguments: RawNodeArguments = match &config.parameters {
+        let arguments: BTreeMap<String, AnyType> = match &config.parameters {
             Some(params) => serde_json::from_value(params.clone()).map_err(|e| {
                 ParameterDeserializationError::single(format!("failed to parse parameters: {}", e))
             })?,
-            None => RawNodeArguments::new(),
+            None => BTreeMap::new(),
         };
 
-        let validated_arguments = arguments.into_resolved(&node_config.execution.parameters)?;
+        let validated_arguments =
+            validate_node_arguments(arguments, &node_config.execution.parameters)?;
 
         let node_name: String = config
             .node_name
@@ -106,7 +108,7 @@ impl Processor {
             messaging_port,
             NodeInstance {
                 instance_id: instance_id_name,
-                arguments: RawNodeArguments::new(),
+                arguments: BTreeMap::new(),
             },
             &node_name,
             "standalone-core",
@@ -171,10 +173,7 @@ impl Processor {
 mod tests {
     use super::{PEPPYGEN_OUTPUT_PATH, Processor, RUNTIME_CONFIG_VAR_NAME};
     use crate::runtime::builder::StandaloneConfig;
-    use config::{
-        AnyType, ParameterSchema,
-        runtime::{RawNodeArguments, RuntimeConfig},
-    };
+    use config::{AnyType, ParameterSchema, runtime::RuntimeConfig, validate_node_arguments};
     use std::{collections::BTreeMap, env, path::Path, sync::Mutex};
     use tempfile::TempDir;
 
@@ -292,7 +291,7 @@ mod tests {
         let runtime_processor = Processor::new_daemon(&peppy_config_path)
             .expect("runtime processor should load config from env");
 
-        let mut expected_parameters: RawNodeArguments = RawNodeArguments::new();
+        let mut expected_parameters: BTreeMap<String, AnyType> = BTreeMap::new();
         expected_parameters.insert("exposure".into(), AnyType::Float(0.25));
         expected_parameters.insert(
             "flags".into(),
@@ -842,11 +841,12 @@ mod tests {
     #[test]
     fn validated_arguments_cannot_be_serialized_back_to_raw() {
         // NodeArguments derives Serialize but does not expose the inner
-        // RawNodeArguments — the only way to consume it is through
+        // data — the only way to consume it is through
         // deserialize_parameters, which parses into a typed struct.
-        let raw = RawNodeArguments::from([("x".to_string(), AnyType::Int(1))]);
+        let arguments = BTreeMap::from([("x".to_string(), AnyType::Int(1))]);
         let schema = ParameterSchema::from([("x".to_string(), AnyType::String("i64".to_string()))]);
-        let validated = raw.into_resolved(&schema).expect("validation should pass");
+        let validated =
+            validate_node_arguments(arguments, &schema).expect("validation should pass");
 
         // We can serialize (for deserialize_parameters) but cannot access
         // the inner map directly — this is a compile-time guarantee.

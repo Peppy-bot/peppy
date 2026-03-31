@@ -20,11 +20,11 @@ fn make_consumer_depend_on_provider(
     let topic_name = "stack_list_topic";
 
     let mut provider_cfg = NodeConfigParser::from_path(provider_peppy_json5)
-        .expect("provider peppy.json5 should read");
+        .expect("provider peppy.json5 should read")
+        .into_resolved()
+        .expect("should resolve");
 
-    if let Some(execution) = provider_cfg.execution.as_mut() {
-        execution.add_cmd = None;
-    }
+    provider_cfg.execution.add_cmd = None;
 
     let topic_ifaces = provider_cfg
         .interfaces
@@ -48,11 +48,11 @@ fn make_consumer_depend_on_provider(
     );
 
     let mut consumer_cfg = NodeConfigParser::from_path(consumer_peppy_json5)
-        .expect("consumer peppy.json5 should read");
+        .expect("consumer peppy.json5 should read")
+        .into_resolved()
+        .expect("should resolve");
 
-    if let Some(execution) = consumer_cfg.execution.as_mut() {
-        execution.add_cmd = None;
-    }
+    consumer_cfg.execution.add_cmd = None;
 
     consumer_cfg.manifest.depends_on = Some(DependsOn {
         nodes: vec![NodeDependency {

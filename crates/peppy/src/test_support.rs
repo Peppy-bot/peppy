@@ -14,13 +14,12 @@ use tokio::task::JoinHandle;
 use tracing_subscriber::fmt::MakeWriter;
 
 pub fn override_start_cmd(peppy_json5: &Path) {
-    let mut cfg = NodeConfigParser::from_path(peppy_json5).expect("peppy.json5 should read");
-    let execution = cfg
-        .execution
-        .as_mut()
-        .expect("test node should have execution");
-    execution.start_cmd = Some(vec!["sleep".to_string(), "4".to_string()]);
-    execution.add_cmd = None;
+    let mut cfg = NodeConfigParser::from_path(peppy_json5)
+        .expect("peppy.json5 should read")
+        .into_resolved()
+        .expect("test node should resolve");
+    cfg.execution.start_cmd = Some(vec!["sleep".to_string(), "4".to_string()]);
+    cfg.execution.add_cmd = None;
 
     let updated_content = serde_json::to_string_pretty(&cfg).expect("peppy.json5 should serialize");
     std::fs::write(peppy_json5, updated_content).expect("peppy.json5 should update");
@@ -32,11 +31,11 @@ pub fn override_start_cmd(peppy_json5: &Path) {
 /// exercise node operations (add, remove, runtime config) without triggering
 /// the actual build step. Regenerates the codegen fingerprint after writing.
 pub fn disable_add_cmd(peppy_json5: &Path) {
-    let mut cfg = NodeConfigParser::from_path(peppy_json5).expect("peppy.json5 should read");
-    cfg.execution
-        .as_mut()
-        .expect("test node should have execution")
-        .add_cmd = None;
+    let mut cfg = NodeConfigParser::from_path(peppy_json5)
+        .expect("peppy.json5 should read")
+        .into_resolved()
+        .expect("test node should resolve");
+    cfg.execution.add_cmd = None;
 
     let updated_content = serde_json::to_string_pretty(&cfg).expect("peppy.json5 should serialize");
     std::fs::write(peppy_json5, updated_content).expect("peppy.json5 should update");

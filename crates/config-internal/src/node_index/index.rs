@@ -6,11 +6,12 @@ use super::discovery::find_peppy_nodes_from_dir;
 use crate::error::{Error, ParsingError, Result};
 use tracing::{info, warn};
 
-use crate::{consts::NODE_CONFIG_FILE, node::RawNodeConfig};
+use crate::consts::NODE_CONFIG_FILE;
+use crate::node::ParsedNodeConfig;
 
 /// Aggregated state keyed by config file path. Each entry reflects the
 /// current parse result of the corresponding `peppy.json5` file.
-pub type NodeIndexState = HashMap<PathBuf, core::result::Result<RawNodeConfig, ParsingError>>;
+pub type NodeIndexState = HashMap<PathBuf, core::result::Result<ParsedNodeConfig, ParsingError>>;
 
 /// Builds an aggregated node configuration index for a directory tree.
 /// The index maps each `peppy.json5` file path to the parse result
@@ -106,12 +107,9 @@ mod tests {
         assert_eq!(state.len(), 2);
         assert!(state.contains_key(&base));
         assert!(state.contains_key(&nested));
+        assert_eq!(state[&base].as_ref().unwrap().manifest_name(), "base_node");
         assert_eq!(
-            state[&base].as_ref().unwrap().manifest.name.as_str(),
-            "base_node"
-        );
-        assert_eq!(
-            state[&nested].as_ref().unwrap().manifest.name.as_str(),
+            state[&nested].as_ref().unwrap().manifest_name(),
             "nested_node"
         );
         assert!(state.values().all(|e| e.is_ok()));

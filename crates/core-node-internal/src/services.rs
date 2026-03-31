@@ -12,13 +12,13 @@ use config::{
     consts::PeppyDirs,
     launcher::CURRENT_SCHEMA_VERSION,
     node::{Execution, Manifest, Name, NodeConfig, PeppygenLanguage},
-    runtime::RawNodeArguments,
 };
 use names_generator2::get_random;
 use node_stack::NodeStack;
 use peppylib::MessengerHandle;
 use pmi::Messenger;
 use rand::rng;
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -42,18 +42,18 @@ pub struct CoreNodeArguments {
     pub node_start_health_timeout: Duration,
 }
 
-impl From<CoreNodeArguments> for RawNodeArguments {
-    fn from(args: CoreNodeArguments) -> Self {
-        let mut raw = RawNodeArguments::new();
-        raw.insert(
+impl CoreNodeArguments {
+    fn into_parameters(self) -> BTreeMap<String, AnyType> {
+        let mut params = BTreeMap::new();
+        params.insert(
             "node_startup_timeout_ms".to_string(),
-            AnyType::UInt(args.node_startup_timeout.as_millis() as u64),
+            AnyType::UInt(self.node_startup_timeout.as_millis() as u64),
         );
-        raw.insert(
+        params.insert(
             "node_start_health_timeout_ms".to_string(),
-            AnyType::UInt(args.node_start_health_timeout.as_millis() as u64),
+            AnyType::UInt(self.node_start_health_timeout.as_millis() as u64),
         );
-        raw
+        params
     }
 }
 
@@ -107,7 +107,7 @@ impl CoreNode {
             },
             execution: Execution {
                 language: PeppygenLanguage::Rust,
-                parameters: RawNodeArguments::from(node_arguments).into_inner(),
+                parameters: node_arguments.into_parameters(),
                 add_cmd: None,
                 start_cmd: Some(vec![]),
                 container: None,

@@ -694,9 +694,11 @@ fn node_add_command_with_variant_succeeds() {
     let root_peppy_json5 = root_path.join("peppy.json5");
 
     // Read the generated config, add a variant declaration, and disable add_cmd
-    let mut root_cfg =
-        config::node::NodeConfigParser::from_path(&root_peppy_json5).expect("should parse config");
-    root_cfg.execution.as_mut().unwrap().add_cmd = None;
+    let mut root_cfg = config::node::NodeConfigParser::from_path(&root_peppy_json5)
+        .expect("should parse config")
+        .into_resolved()
+        .expect("should resolve");
+    root_cfg.execution.add_cmd = None;
     root_cfg.manifest.variants = Some(vec![config::node::Variant {
         name: config::node::Name::new("mock").expect("valid name"),
         source: config::source::DeploymentSource::Local(config::source::DeploymentLocalSource {
@@ -818,8 +820,10 @@ fn node_add_with_variant_uses_variant_in_preflight() {
     let root_peppy_json5 = root_path.join("peppy.json5");
 
     // Read the generated config, add a variant declaration
-    let mut root_cfg =
-        config::node::NodeConfigParser::from_path(&root_peppy_json5).expect("should parse config");
+    let mut root_cfg = config::node::NodeConfigParser::from_path(&root_peppy_json5)
+        .expect("should parse config")
+        .into_resolved()
+        .expect("should resolve");
     root_cfg.manifest.variants = Some(vec![config::node::Variant {
         name: config::node::Name::new("mock").expect("valid name"),
         source: config::source::DeploymentSource::Local(config::source::DeploymentLocalSource {

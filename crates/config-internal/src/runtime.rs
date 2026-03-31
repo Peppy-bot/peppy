@@ -1,6 +1,7 @@
-pub use crate::common::RawNodeArguments;
+use crate::common::AnyType;
 use crate::error::Result;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -14,7 +15,7 @@ use crate::launcher::Name;
 pub struct NodeInstance {
     pub instance_id: Name,
     #[serde(default)]
-    pub arguments: RawNodeArguments,
+    pub arguments: BTreeMap<String, AnyType>,
 }
 
 /// Configuration for the launcher to know how to configure spawned nodes' messaging.

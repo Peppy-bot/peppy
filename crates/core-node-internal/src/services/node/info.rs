@@ -7,7 +7,7 @@ use crate::encoding::{NodeInfoRequest, NodeInfoResponse, NodeSource};
 use crate::names;
 use config::consts::{NODE_CONFIG_FILE, PeppyDirs};
 use config::fingerprint::fingerprint_for_bytes;
-use config::node::{DEFAULT_VARIANT_NAME, NodeConfig, NodeConfigParser, RawNodeConfig};
+use config::node::{DEFAULT_VARIANT_NAME, NodeConfig, NodeConfigParser, ParsedNodeConfig};
 use node_stack::NodeStack;
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::types::Payload;
@@ -197,7 +197,7 @@ async fn resolve_node_config_with_source_path(
     source: NodeSource,
     peppy_dirs: &PeppyDirs,
     deadline: Option<Instant>,
-) -> std::result::Result<(RawNodeConfig, PathBuf, Option<PathBuf>), String> {
+) -> std::result::Result<(ParsedNodeConfig, PathBuf, Option<PathBuf>), String> {
     match source {
         NodeSource::Fs(path) => {
             if is_supported_fs_archive(&path) {
@@ -230,7 +230,7 @@ async fn resolve_node_config_with_source_path(
     }
 }
 
-fn parse_node_config_from_fs(node_path: &Path) -> std::result::Result<RawNodeConfig, String> {
+fn parse_node_config_from_fs(node_path: &Path) -> std::result::Result<ParsedNodeConfig, String> {
     if is_supported_fs_archive(node_path) {
         return parse_node_config_from_archive(node_path);
     }
@@ -252,7 +252,7 @@ fn parse_node_config_from_fs(node_path: &Path) -> std::result::Result<RawNodeCon
 
 fn parse_node_config_from_archive(
     archive_path: &Path,
-) -> std::result::Result<RawNodeConfig, String> {
+) -> std::result::Result<ParsedNodeConfig, String> {
     let resolved = resolve_local_archive_source(archive_path)?;
     Ok(resolved.node_config)
 }
@@ -264,7 +264,7 @@ async fn parse_node_config_from_git_with_path(
     repo_path: String,
     repo_ref: Option<String>,
     deadline: Option<Instant>,
-) -> std::result::Result<(RawNodeConfig, PathBuf, Option<PathBuf>), String> {
+) -> std::result::Result<(ParsedNodeConfig, PathBuf, Option<PathBuf>), String> {
     tokio::task::spawn_blocking(move || {
         let repo_relative_path = sanitize_repo_path(&repo_path)?;
 
@@ -328,7 +328,7 @@ async fn parse_node_config_from_http_with_path(
     url: url::Url,
     expected_sha256: Option<String>,
     peppy_dirs: &PeppyDirs,
-) -> std::result::Result<(RawNodeConfig, PathBuf, Option<PathBuf>), String> {
+) -> std::result::Result<(ParsedNodeConfig, PathBuf, Option<PathBuf>), String> {
     // For HTTP sources we can use the resolve_http_source from add.rs which already
     // extracts the archive and returns the source path.
     let resolved =

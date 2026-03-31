@@ -2,7 +2,7 @@ use super::add::{CleanupDir, download_and_extract_http_source};
 use super::{checkout_repo_ref, sanitize_repo_path};
 use crate::encoding::NodeSource;
 use config::consts::{NODE_CONFIG_FILE, PeppyDirs};
-use config::node::{Interfaces, NodeConfig, RawNodeConfig, VariantConfigParser};
+use config::node::{NodeConfig, ParsedNodeConfig, VariantConfigParser};
 use config::source::DeploymentSource;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -44,7 +44,7 @@ pub(crate) fn variant_label(variant: &NodeSource) -> String {
 ///   manifest lookup is skipped.
 pub(crate) async fn resolve_variant(
     variant: &NodeSource,
-    root_config: &RawNodeConfig,
+    root_config: &ParsedNodeConfig,
     root_source_path: &Path,
     peppy_dirs: &PeppyDirs,
     deadline: Option<Instant>,
@@ -57,26 +57,14 @@ pub(crate) async fn resolve_variant(
             // Name-based lookup: find in root manifest, then resolve its DeploymentSource.
             NodeSource::Fs(name) => {
                 let variant_name = name.to_string_lossy();
-                let variants = root_config.manifest.variants.as_ref().ok_or_else(|| {
+                let matched = root_config.find_variant(&variant_name).ok_or_else(|| {
                     format!(
-                        "variant '{}' not found: node '{}:{}' does not define any variants",
+                        "variant '{}' not found in manifest of node '{}:{}'",
                         variant_name,
-                        root_config.manifest.name.as_str(),
-                        root_config.manifest.tag,
+                        root_config.manifest_name(),
+                        root_config.manifest_tag(),
                     )
                 })?;
-
-                let matched = variants
-                    .iter()
-                    .find(|v| v.name.as_str() == variant_name.as_ref())
-                    .ok_or_else(|| {
-                        format!(
-                            "variant '{}' not found in manifest of node '{}:{}'",
-                            variant_name,
-                            root_config.manifest.name.as_str(),
-                            root_config.manifest.tag,
-                        )
-                    })?;
 
                 resolve_variant_deployment_source(
                     &matched.source,
@@ -161,38 +149,18 @@ pub(crate) async fn resolve_variant(
     // Guard ensures cleanup_dir is removed if we exit early (e.g. validation error).
     let mut cleanup_guard = CleanupDir::new(cleanup_dir);
 
-    // If the variant defines interfaces, validate they match the root's interfaces.
-    if let Some(ref variant_interfaces) = variant_config.interfaces
-        && *variant_interfaces != Interfaces::default()
-        && !root_config.interfaces.matches_unordered(variant_interfaces)
-    {
-        return Err(format!(
-            "VariantInterfaceMismatch: variant '{}' defines interfaces that differ from the root node '{}:{}'",
-            label,
-            root_config.manifest.name.as_str(),
-            root_config.manifest.tag,
-        ));
-    }
-
-    let manifest_ignored = variant_config.manifest.is_some();
-
-    // Build merged config: root's schema_version + manifest + interfaces + variant's execution
-    let merged_config = NodeConfig {
-        schema_version: root_config.schema_version,
-        manifest: root_config.manifest.clone(),
-        interfaces: root_config.interfaces.clone(),
-        execution: variant_config.execution,
-    };
+    // Validate interfaces and merge root config with variant execution.
+    let merged = root_config.merge_variant(variant_config, &label)?;
 
     // Defuse the guard — caller takes ownership of cleanup responsibility.
     let cleanup_dir = cleanup_guard.take();
 
     Ok(ResolvedVariant {
-        merged_config,
+        merged_config: merged.config,
         variant_source_path,
         verify_codegen_fingerprint,
         cleanup_dir,
-        manifest_ignored,
+        manifest_ignored: merged.manifest_ignored,
     })
 }
 

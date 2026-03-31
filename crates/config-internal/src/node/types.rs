@@ -68,13 +68,13 @@ impl Toolchain {
 /// [`NodeConfig`] with guaranteed `execution`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct RawNodeConfig {
-    pub schema_version: SchemaVersion,
-    pub manifest: Manifest,
+pub(crate) struct RawNodeConfig {
+    pub(crate) schema_version: SchemaVersion,
+    pub(crate) manifest: Manifest,
     #[serde(default)]
-    pub interfaces: Interfaces,
+    pub(crate) interfaces: Interfaces,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub execution: Option<Execution>,
+    pub(crate) execution: Option<Execution>,
 }
 
 /// Name reserved for the default variant.
@@ -82,7 +82,7 @@ pub const DEFAULT_VARIANT_NAME: &str = "default";
 
 impl RawNodeConfig {
     /// Returns `true` if the manifest contains a variant named `"default"`.
-    pub fn has_default_variant(&self) -> bool {
+    pub(crate) fn has_default_variant(&self) -> bool {
         self.manifest.has_default_variant()
     }
 
@@ -91,7 +91,7 @@ impl RawNodeConfig {
     ///
     /// Returns an error if `execution` is `None`
     /// (e.g., for configs with a default variant that has not been resolved yet).
-    pub fn into_resolved(self) -> crate::error::Result<NodeConfig> {
+    pub(crate) fn into_resolved(self) -> crate::error::Result<NodeConfig> {
         let execution = self.execution.ok_or(ParsingError::MissingExecution)?;
         Ok(NodeConfig {
             schema_version: self.schema_version,
@@ -100,6 +100,118 @@ impl RawNodeConfig {
             execution,
         })
     }
+}
+
+/// Opaque handle over a parsed node configuration.
+///
+/// Produced by [`NodeConfigParser`] when parsing a `peppy.json5` file or content
+/// string. The raw fields are not accessible outside of the `config` crate;
+/// use the provided methods to inspect or resolve the config.
+#[derive(Debug, Clone, Serialize)]
+pub struct ParsedNodeConfig(pub(crate) RawNodeConfig);
+
+impl ParsedNodeConfig {
+    /// Returns `true` if the manifest contains a variant named `"default"`.
+    pub fn has_default_variant(&self) -> bool {
+        self.0.has_default_variant()
+    }
+
+    /// Converts into a fully resolved [`NodeConfig`] when execution is already
+    /// present (non-variant configs).
+    ///
+    /// Returns an error if execution is absent (e.g. for configs with a default
+    /// variant that has not been resolved yet).
+    pub fn into_resolved(self) -> crate::error::Result<NodeConfig> {
+        self.0.into_resolved()
+    }
+
+    /// Returns the node name from the manifest.
+    pub fn manifest_name(&self) -> &str {
+        self.0.manifest.name.as_str()
+    }
+
+    /// Returns the node tag from the manifest.
+    pub fn manifest_tag(&self) -> &str {
+        &self.0.manifest.tag
+    }
+
+    /// Returns the schema version.
+    pub fn schema_version(&self) -> SchemaVersion {
+        self.0.schema_version
+    }
+
+    /// Looks up a variant by name in the manifest's variants list.
+    pub fn find_variant(&self, name: &str) -> Option<&Variant> {
+        self.0
+            .manifest
+            .variants
+            .as_ref()
+            .and_then(|variants| variants.iter().find(|v| v.name.as_str() == name))
+    }
+
+    /// Returns a reference to the node's manifest.
+    pub fn manifest(&self) -> &Manifest {
+        &self.0.manifest
+    }
+
+    /// Returns a reference to the node's execution config, if present.
+    ///
+    /// Configs with a default variant have no execution at the root level.
+    pub fn execution(&self) -> Option<&Execution> {
+        self.0.execution.as_ref()
+    }
+
+    /// Returns a reference to the node's interfaces.
+    pub fn interfaces(&self) -> &Interfaces {
+        &self.0.interfaces
+    }
+
+    /// Merges this config with a variant config, producing a fully resolved
+    /// [`NodeConfig`].
+    ///
+    /// Validates that any interfaces declared by the variant match the root's
+    /// interfaces. The merged config uses the root's schema_version, manifest,
+    /// and interfaces, combined with the variant's execution.
+    pub fn merge_variant(
+        &self,
+        variant_config: VariantConfig,
+        variant_label: &str,
+    ) -> Result<MergedVariant, String> {
+        if let Some(ref variant_interfaces) = variant_config.interfaces
+            && *variant_interfaces != Interfaces::default()
+            && !self.0.interfaces.matches_unordered(variant_interfaces)
+        {
+            return Err(format!(
+                "VariantInterfaceMismatch: variant '{}' defines interfaces that differ from the root node '{}:{}'",
+                variant_label,
+                self.0.manifest.name.as_str(),
+                self.0.manifest.tag,
+            ));
+        }
+
+        let manifest_ignored = variant_config.manifest.is_some();
+
+        let config = NodeConfig {
+            schema_version: self.0.schema_version,
+            manifest: self.0.manifest.clone(),
+            interfaces: self.0.interfaces.clone(),
+            execution: variant_config.execution,
+        };
+
+        Ok(MergedVariant {
+            config,
+            manifest_ignored,
+        })
+    }
+}
+
+/// Result of merging a [`ParsedNodeConfig`] with a [`VariantConfig`].
+#[derive(Debug)]
+pub struct MergedVariant {
+    /// The fully resolved merged config.
+    pub config: NodeConfig,
+    /// True when the variant's config defined a `manifest` section that was ignored.
+    pub manifest_ignored: bool,
 }
 
 /// Fully resolved node configuration with guaranteed `execution`.

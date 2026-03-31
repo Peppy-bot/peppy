@@ -227,55 +227,9 @@ pub type ParameterSchema = BTreeMap<String, AnyType>;
 /// [`ParameterSchema`] and obtain a [`NodeArguments`] value.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(transparent)]
-pub struct RawNodeArguments(BTreeMap<String, AnyType>);
+pub(crate) struct RawNodeArguments(BTreeMap<String, AnyType>);
 
 impl RawNodeArguments {
-    pub fn new() -> Self {
-        Self(BTreeMap::new())
-    }
-
-    pub fn insert(&mut self, key: String, value: AnyType) -> Option<AnyType> {
-        self.0.insert(key, value)
-    }
-
-    pub fn get(&self, key: &str) -> Option<&AnyType> {
-        self.0.get(key)
-    }
-
-    pub fn keys(&self) -> impl Iterator<Item = &String> {
-        self.0.keys()
-    }
-
-    pub fn contains_key(&self, key: &str) -> bool {
-        self.0.contains_key(key)
-    }
-
-    pub fn iter(&self) -> impl Iterator<Item = (&String, &AnyType)> {
-        self.0.iter()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-
-    pub fn len(&self) -> usize {
-        self.0.len()
-    }
-
-    pub fn as_inner(&self) -> &BTreeMap<String, AnyType> {
-        &self.0
-    }
-
-    pub fn into_inner(self) -> BTreeMap<String, AnyType> {
-        self.0
-    }
-
-    /// Resolve a dot-separated path (e.g. `"video.device_path"`) against these
-    /// arguments, returning the leaf [`AnyType`] value if found.
-    pub fn resolve_path(&self, dot_path: &str) -> Option<&AnyType> {
-        resolve_parameter_path(&self.0, dot_path)
-    }
-
     /// Validate these raw arguments against a [`ParameterSchema`] and produce
     /// a [`NodeArguments`] value.
     ///
@@ -283,10 +237,7 @@ impl RawNodeArguments {
     /// 1. Every key declared in the schema is present in the arguments.
     /// 2. Every argument value matches the type declared in the schema.
     /// 3. No unknown keys (absent from the schema) are present.
-    pub fn into_resolved(
-        self,
-        schema: &ParameterSchema,
-    ) -> Result<NodeArguments, NodeArgumentsError> {
+    fn into_resolved(self, schema: &ParameterSchema) -> Result<NodeArguments, NodeArgumentsError> {
         // 1. Check all schema keys are present.
         let missing: Vec<String> = schema
             .keys()
@@ -332,7 +283,7 @@ impl From<BTreeMap<String, AnyType>> for RawNodeArguments {
 #[derive(Clone, Debug, Serialize)]
 pub struct NodeArguments(BTreeMap<String, AnyType>);
 
-/// Error produced when [`RawNodeArguments::into_resolved`] fails.
+/// Error produced when node argument parsing or validation fails.
 #[derive(Debug)]
 pub enum NodeArgumentsError {
     /// One or more runtime argument values do not match the schema types.
@@ -341,6 +292,8 @@ pub enum NodeArgumentsError {
     MissingParameters(Vec<String>),
     /// An argument key is not declared in the schema.
     UnknownParameter { key: String },
+    /// The input string could not be deserialized.
+    Deserialization(String),
 }
 
 impl std::fmt::Display for NodeArgumentsError {
@@ -353,11 +306,41 @@ impl std::fmt::Display for NodeArgumentsError {
             Self::UnknownParameter { key } => {
                 write!(f, "unknown parameter `{key}` not declared in schema")
             }
+            Self::Deserialization(msg) => {
+                write!(f, "failed to deserialize arguments: {msg}")
+            }
         }
     }
 }
 
 impl std::error::Error for NodeArgumentsError {}
+
+/// Deserializes a JSON5 string into node arguments and validates them against a
+/// [`ParameterSchema`], producing a [`NodeArguments`] value.
+///
+/// This is the public entry point for parsing and validating node arguments from
+/// a raw string. The intermediate [`RawNodeArguments`] type is not exposed.
+pub fn parse_node_arguments(
+    content: &str,
+    schema: &ParameterSchema,
+) -> Result<NodeArguments, NodeArgumentsError> {
+    let raw: RawNodeArguments = serde_json5::from_str(content)
+        .map_err(|e| NodeArgumentsError::Deserialization(e.to_string()))?;
+    raw.into_resolved(schema)
+}
+
+/// Validates a `BTreeMap<String, AnyType>` against a [`ParameterSchema`] and
+/// produces a [`NodeArguments`] value.
+///
+/// Use this when arguments are constructed programmatically (e.g. from a
+/// deserialized runtime config) rather than parsed from a raw string.
+pub fn validate_node_arguments(
+    arguments: BTreeMap<String, AnyType>,
+    schema: &ParameterSchema,
+) -> Result<NodeArguments, NodeArgumentsError> {
+    let raw = RawNodeArguments::from(arguments);
+    raw.into_resolved(schema)
+}
 
 fn is_array_parameter_schema(map: &BTreeMap<String, AnyType>) -> bool {
     matches!(

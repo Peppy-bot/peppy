@@ -1,6 +1,5 @@
 use config::AnyType;
 use config::launcher::Name;
-use config::runtime::RawNodeArguments;
 use config::runtime::{NodeInstance, RuntimeConfig};
 use core_node::encoding::{
     NodeStartFeedback, NodeStartGoal, NodeStartGoalResponse, NodeStartResult,
@@ -8,6 +7,7 @@ use core_node::encoding::{
 use names_generator2::get_random;
 use peppylib::{ActionMessenger, MessengerHandle, PeppyError};
 use rand::rng;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::info;
@@ -23,7 +23,7 @@ const CALLER_INSTANCE_ID: &str = "peppy-cli";
 const GOAL_TIMEOUT: Duration = Duration::from_secs(30);
 const SCROLLING_OUTPUT_LINES: usize = 10;
 
-/// Converts a list of key=value string pairs into RawNodeArguments.
+/// Converts a list of key=value string pairs into node arguments.
 /// Dot-separated keys are converted into nested objects.
 /// For example: "device.physical=/dev/video0" becomes {"device": {"physical": "/dev/video0"}}
 ///
@@ -32,15 +32,15 @@ const SCROLLING_OUTPUT_LINES: usize = 10;
 /// - Integer strings -> Int
 /// - Float strings -> Float
 /// - Everything else -> String
-pub fn args_to_node_arguments(args: &[(String, String)]) -> RawNodeArguments {
-    let mut result: std::collections::BTreeMap<String, AnyType> = std::collections::BTreeMap::new();
+pub fn args_to_node_arguments(args: &[(String, String)]) -> BTreeMap<String, AnyType> {
+    let mut result: BTreeMap<String, AnyType> = BTreeMap::new();
 
     for (key, value) in args {
         let parsed_value = parse_value(value);
         insert_nested_value(&mut result, key, parsed_value);
     }
 
-    RawNodeArguments::from(result)
+    result
 }
 
 /// Inserts a value at a dot-separated path into a nested BTreeMap structure.
@@ -135,7 +135,7 @@ pub async fn start_instance_async(
     // Generate or use provided instance_id
     let instance_id = instance_id.unwrap_or_else(|| get_random(rng()));
 
-    // Convert CLI arguments to RawNodeArguments
+    // Convert CLI arguments to node arguments
     let arguments = args_to_node_arguments(args);
 
     info!(
