@@ -130,3 +130,60 @@ where
 {
     TaskHandle(tokio::spawn(future))
 }
+
+#[cfg(test)]
+pub(crate) mod test_utils {
+    use std::env;
+    use std::sync::Mutex;
+
+    /// Global mutex that serializes all env-var mutations across test threads
+    /// within this crate, preventing races between processor (daemon-mode) and
+    /// builder (standalone-mode) tests.
+    static ENV_VAR_MUTEX: Mutex<()> = Mutex::new(());
+
+    /// RAII guard that sets an env var while held and restores the previous
+    /// value on drop. All mutations are serialized via [`ENV_VAR_MUTEX`].
+    pub(crate) struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<String>,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl EnvVarGuard {
+        pub(crate) fn set(key: &'static str, value: &str) -> Self {
+            let _lock = ENV_VAR_MUTEX.lock().expect("env mutex should lock");
+            let previous = env::var(key).ok();
+            // SAFETY: environment mutation is guarded by a global mutex to avoid races.
+            unsafe { env::set_var(key, value) };
+            Self {
+                key,
+                previous,
+                _lock,
+            }
+        }
+
+        pub(crate) fn remove(key: &'static str) -> Self {
+            let _lock = ENV_VAR_MUTEX.lock().expect("env mutex should lock");
+            let previous = env::var(key).ok();
+            // SAFETY: environment mutation is guarded by a global mutex to avoid races.
+            unsafe { env::remove_var(key) };
+            Self {
+                key,
+                previous,
+                _lock,
+            }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            if let Some(ref value) = self.previous {
+                // SAFETY: environment mutation is guarded by a global mutex to avoid races.
+                unsafe { env::set_var(self.key, value) };
+            } else {
+                // SAFETY: environment mutation is guarded by a global mutex to avoid races.
+                unsafe { env::remove_var(self.key) };
+            }
+        }
+    }
+}

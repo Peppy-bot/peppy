@@ -484,18 +484,16 @@ async fn wait_for_handles(handles: Vec<TaskHandle<Result<()>>>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::runtime::test_utils::EnvVarGuard;
     use tempfile::TempDir;
 
     /// Ensure standalone mode is used regardless of env var state.
     ///
-    /// Other tests (e.g. integration tests in `runner.rs`) may set
-    /// `PEPPY_RUNTIME_CONFIG`, which would cause `resolve_mode()` to
-    /// pick daemon mode. Clearing it prevents cross-test interference.
-    fn ensure_standalone_mode() {
-        // SAFETY: acceptable in single-threaded unit tests for env isolation.
-        unsafe {
-            std::env::remove_var(config::consts::RUNTIME_CONFIG_VAR_NAME);
-        }
+    /// Returns an [`EnvVarGuard`] that holds the global env-var mutex for the
+    /// duration of the test, preventing processor (daemon-mode) tests from
+    /// setting `RUNTIME_CONFIG_VAR_NAME` concurrently.
+    fn ensure_standalone_mode() -> EnvVarGuard {
+        EnvVarGuard::remove(config::consts::RUNTIME_CONFIG_VAR_NAME)
     }
 
     #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -518,7 +516,7 @@ mod tests {
 
     #[test]
     fn parameters_can_only_be_taken_once() {
-        ensure_standalone_mode();
+        let _guard = ensure_standalone_mode();
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let peppy_config = write_peppy_config(temp_dir.path(), r#"value: "i64""#);
 
@@ -543,7 +541,7 @@ mod tests {
 
     #[test]
     fn init_fails_eagerly_on_invalid_parameter_types() {
-        ensure_standalone_mode();
+        let _guard = ensure_standalone_mode();
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let peppy_config = write_peppy_config(temp_dir.path(), r#"value: "i64""#);
 
@@ -568,7 +566,7 @@ mod tests {
 
     #[test]
     fn init_parses_parameters_eagerly() {
-        ensure_standalone_mode();
+        let _guard = ensure_standalone_mode();
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let peppy_config = write_peppy_config(temp_dir.path(), r#"value: "i64""#);
 

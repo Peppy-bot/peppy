@@ -173,43 +173,10 @@ impl Processor {
 mod tests {
     use super::{PEPPYGEN_OUTPUT_PATH, Processor, RUNTIME_CONFIG_VAR_NAME};
     use crate::runtime::builder::StandaloneConfig;
+    use crate::runtime::test_utils::EnvVarGuard;
     use config::{AnyType, ParameterSchema, runtime::RuntimeConfig, validate_node_arguments};
-    use std::{collections::BTreeMap, env, path::Path, sync::Mutex};
+    use std::{collections::BTreeMap, path::Path};
     use tempfile::TempDir;
-
-    static ENV_VAR_MUTEX: Mutex<()> = Mutex::new(());
-
-    struct EnvVarGuard {
-        key: &'static str,
-        previous: Option<String>,
-        _lock: std::sync::MutexGuard<'static, ()>,
-    }
-
-    impl EnvVarGuard {
-        fn set(key: &'static str, value: &str) -> Self {
-            let _lock = ENV_VAR_MUTEX.lock().expect("env mutex should lock");
-            let previous = env::var(key).ok();
-            // SAFETY: environment mutation is guarded by a global mutex to avoid races.
-            unsafe { env::set_var(key, value) };
-            Self {
-                key,
-                previous,
-                _lock,
-            }
-        }
-    }
-
-    impl Drop for EnvVarGuard {
-        fn drop(&mut self) {
-            if let Some(ref value) = self.previous {
-                // SAFETY: environment mutation is guarded by a global mutex to avoid races.
-                unsafe { env::set_var(self.key, value) };
-            } else {
-                // SAFETY: environment mutation is guarded by a global mutex to avoid races.
-                unsafe { env::remove_var(self.key) };
-            }
-        }
-    }
 
     #[test]
     fn loads_runtime_config_from_env() {
