@@ -77,7 +77,36 @@ pub(crate) fn ensure_lima_instance(limactl: &Path, lima_home: &Path, template: &
     };
 
     match instance_status.as_deref() {
-        Some("Running") => Ok(()),
+        Some("Running") => {
+            if is_ssh_alive(limactl, lima_home, LIMA_INSTANCE) {
+                return Ok(());
+            }
+            // VM reports Running but SSH is dead (zombie VM — VZ process crashed).
+            // Force-stop and restart.
+            tracing::warn!(
+                "Lima {} instance reports Running but SSH is unresponsive — restarting...",
+                LIMA_INSTANCE
+            );
+            let _ = Command::new(limactl)
+                .env("LIMA_HOME", lima_home)
+                .args(["stop", "--force", LIMA_INSTANCE])
+                .output();
+
+            let start = Command::new(limactl)
+                .env("LIMA_HOME", lima_home)
+                .args(["start", LIMA_INSTANCE])
+                .output()?;
+
+            if start.status.success() {
+                Ok(())
+            } else {
+                let stderr = String::from_utf8_lossy(&start.stderr);
+                Err(Error::LimaInstanceError(format!(
+                    "failed to restart zombie Lima {} instance: {stderr}",
+                    LIMA_INSTANCE
+                )))
+            }
+        }
         Some(_) => {
             tracing::info!("Starting Lima {} instance...", LIMA_INSTANCE);
             let start = Command::new(limactl)
@@ -125,6 +154,18 @@ pub(crate) fn ensure_lima_instance(limactl: &Path, lima_home: &Path, template: &
             }
         }
     }
+}
+
+/// Quick SSH liveness probe — returns true if we can reach the guest.
+fn is_ssh_alive(limactl: &Path, lima_home: &Path, instance: &str) -> bool {
+    Command::new(limactl)
+        .env("LIMA_HOME", lima_home)
+        .args(["shell", instance, "--", "true"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
 }
 
 /// Disable AppArmor's user namespace restriction inside the Lima guest.
