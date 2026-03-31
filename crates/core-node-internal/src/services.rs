@@ -27,6 +27,10 @@ use tracing::info;
 
 const CORE_NODE_TAG: &str = "core-node";
 
+#[cfg(test)]
+mod tests;
+
+
 /// Clears instance directories from previous runs.
 fn clear_instances_dir(peppy_dirs: &PeppyDirs) {
     let inst_dir = peppy_dirs.instances_dir();
@@ -109,7 +113,7 @@ impl CoreNode {
                 language: PeppygenLanguage::Rust,
                 parameters: node_arguments.into_parameters(),
                 add_cmd: None,
-                start_cmd: Some(vec![]),
+                start_cmd: None,
                 container: None,
             },
             interfaces: Default::default(),
