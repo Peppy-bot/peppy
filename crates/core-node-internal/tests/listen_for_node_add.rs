@@ -4035,7 +4035,7 @@ async fn listen_for_node_add_variant_not_found() {
             name: "test_node",
             tag: "0.1.0",
             variants: [
-                { name: "real", source: { local: "real_variant" } }
+                { name: "real", source: { local: "real_variant2" } }
             ]
         },
         execution: {
@@ -4303,6 +4303,9 @@ async fn listen_for_node_add_variant_no_interfaces() {
     );
 }
 
+/// Verifies that `NodeAddGoal` encode/decode roundtrips are lossless for every
+/// `NodeSource` variant (`Fs`, `Git`, `Http`) used as either the primary source
+/// or as a variant, as well as the case where no variant is set.
 #[test]
 fn listen_for_node_add_variant_encoding_roundtrip() {
     use core_node::encoding::NodeSource;
@@ -4470,16 +4473,8 @@ async fn listen_for_node_add_default_variant_auto_resolved() {
 
     let parent_dir = tempfile::tempdir().expect("failed to create parent dir");
     let root_dir = parent_dir.path().join("uvc_camera");
-    let default_variant_dir = parent_dir
-        .path()
-        .join("uvc_camera")
-        .join("variants")
-        .join("default");
-    let mujoco_variant_dir = parent_dir
-        .path()
-        .join("uvc_camera")
-        .join("variants")
-        .join("mujoco");
+    let default_variant_dir = root_dir.join("variants").join("default");
+    let mujoco_variant_dir = root_dir.join("variants").join("mujoco");
     std::fs::create_dir_all(&root_dir).unwrap();
     std::fs::create_dir_all(&default_variant_dir).unwrap();
     std::fs::create_dir_all(&mujoco_variant_dir).unwrap();
@@ -4652,4 +4647,72 @@ async fn listen_for_node_add_default_variant_explicit_other() {
         &vec!["sleep".to_string(), "3".to_string()],
         "execution should come from the mujoco variant, not the default"
     );
+}
+
+/// A root config that defines both an `execution` block AND a "default" variant
+/// is invalid — execution must come from the default variant, not the root.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_add_execution_with_default_variant_fails() {
+    let started_core_node = start_core_node_with_mock_messenger().await;
+    let node_stack = started_core_node.node_stack.clone();
+
+    let parent_dir = tempfile::tempdir().expect("failed to create parent dir");
+    let root_dir = parent_dir.path().join("uvc_camera");
+    let default_variant_dir = root_dir.join("variants").join("default");
+    let mujoco_variant_dir = root_dir.join("variants").join("mujoco");
+    std::fs::create_dir_all(&root_dir).unwrap();
+    std::fs::create_dir_all(&default_variant_dir).unwrap();
+    std::fs::create_dir_all(&mujoco_variant_dir).unwrap();
+
+    // Root config: has BOTH execution AND a "default" variant — this is invalid.
+    let root_config = r#"{
+        schema_version: 1,
+        manifest: {
+            name: "uvc_camera",
+            tag: "0.1.0",
+            variants: [
+                { name: "default", source: { local: "./variants/default" } },
+                { name: "mujoco", source: { local: "./variants/mujoco" } },
+            ]
+        },
+        interfaces: {
+            topics: {
+                emits: [
+                    { name: "image", qos_profile: "sensor_data", message_format: { width: "u32", height: "u32" } }
+                ]
+            }
+        },
+        execution: {
+            language: "rust",
+            start_cmd: ["sleep", "7"]
+        }
+    }"#;
+    write_peppy_json5(&root_dir, root_config);
+
+    let add_result = send_node_add_and_wait(
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        root_dir.as_path(),
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        None,
+    )
+    .await
+    .expect("node_add request should complete");
+
+    assert!(
+        !add_result.success,
+        "node_add should fail when both execution and a default variant are defined"
+    );
+    assert!(
+        add_result
+            .error_message
+            .as_ref()
+            .map(|msg| msg.contains("execution"))
+            .unwrap_or(false),
+        "error message should mention execution, got: {:?}",
+        add_result.error_message
+    );
+
+    assert_eq!(node_stack.len(), 1, "only root should exist");
 }
