@@ -1437,6 +1437,21 @@ async fn listen_for_node_sync_with_variant_succeeds() {
         variant_peppy_dir.display()
     );
 
+    // Verify git.hash in root .peppy
+    let node_dir_hash_path = node_dir.path().join(PEPPY_OUTPUT_DIR).join("git.hash");
+    assert!(
+        node_dir_hash_path.exists(),
+        "root git.hash should exist at {}",
+        node_dir_hash_path.display()
+    );
+    let stored_git_hash =
+        fs::read_to_string(&node_dir_hash_path).expect("failed to read root git.hash");
+    assert_eq!(
+        stored_git_hash.trim(),
+        expected_git_hash,
+        "root git.hash should contain the sync request git_hash"
+    );
+
     // Verify git.hash in variant .peppy
     let variant_git_hash_path = variant_peppy_dir.join("git.hash");
     assert!(
@@ -1450,6 +1465,14 @@ async fn listen_for_node_sync_with_variant_succeeds() {
         stored_git_hash.trim(),
         expected_git_hash,
         "variant git.hash should contain the sync request git_hash"
+    );
+
+    // Verify root peppygen was generated
+    let root_peppygen_dir = node_dir.path().join(PEPPYGEN_OUTPUT_PATH);
+    assert!(
+        root_peppygen_dir.exists(),
+        "root peppygen directory should exist at {}",
+        root_peppygen_dir.display()
     );
 
     // Verify variant peppygen was generated
@@ -1471,6 +1494,23 @@ async fn listen_for_node_sync_with_variant_succeeds() {
     assert!(
         variant_config_content.contains("start_cmd"),
         "variant peppy.json5 should still contain the original execution config"
+    );
+
+    // Verify the stored fingerprint for the root peppy.json5.
+    // Same sandbox principle: the root fingerprint covers only the raw root
+    // peppy.json5, not the merged config.
+    let root_fingerprint_path = root_peppygen_dir.join("peppy.json5.sha256");
+    let stored_root_fingerprint = fs::read_to_string(&root_fingerprint_path)
+        .expect("root fingerprint file should exist")
+        .trim()
+        .to_string();
+
+    let root_own_bytes = fs::read(node_dir.path().join(NODE_CONFIG_FILE))
+        .expect("root peppy.json5 should be readable");
+    let expected_root_fingerprint = config::fingerprint::fingerprint_for_bytes(&root_own_bytes);
+    assert_eq!(
+        stored_root_fingerprint, expected_root_fingerprint,
+        "stored fingerprint should match the root's own peppy.json5, not the merged config"
     );
 
     // Verify the stored fingerprint matches the variant's own peppy.json5.
@@ -1717,6 +1757,11 @@ async fn listen_for_node_sync_default_variant_skips_root_codegen() {
     );
 }
 
+/// Verifies that stale root `.peppy` output directories are cleaned up when a node's
+/// execution moves from the root level into a variant. The first sync creates a root
+/// `.peppy` directory (execution defined at root), then the config is rewritten to remove
+/// root execution and add a `"default"` variant with execution instead. The second sync
+/// should delete the now-stale root `.peppy` directory and create one under the variant.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_sync_default_variant_cleans_stale_root_peppy_dir() {
     let started_core_node = start_core_node_with_mock_messenger().await;
