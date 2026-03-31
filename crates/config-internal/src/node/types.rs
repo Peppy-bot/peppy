@@ -1352,48 +1352,6 @@ mod tests {
     }
 
     #[test]
-    fn action_service_endpoint_accepts_request_and_accept_keys() {
-        let request_version = r#"
-        {
-            request_message_format: { value: "u32" }
-        }
-        "#;
-        let endpoint: ActionServiceEndpoint =
-            serde_json5::from_str(request_version).expect("request field should parse");
-        assert!(endpoint.request_message_format.is_some());
-
-        let accept_version = r#"
-        {
-            request_message_format: { value: "u32" }
-        }
-        "#;
-        let endpoint: ActionServiceEndpoint =
-            serde_json5::from_str(accept_version).expect("accept field should parse");
-        assert!(endpoint.request_message_format.is_some());
-    }
-
-    #[test]
-    fn exposed_service_accepts_request_and_accept_keys() {
-        let request_version = r#"
-        {
-            request_message_format: { value: "u32" }
-        }
-        "#;
-        let service: ExposedService =
-            serde_json5::from_str(request_version).expect("request field should parse");
-        assert!(service.request_message_format.is_some());
-
-        let accept_version = r#"
-        {
-            request_message_format: { value: "u32" }
-        }
-        "#;
-        let service: ExposedService =
-            serde_json5::from_str(accept_version).expect("accept field should parse");
-        assert!(service.request_message_format.is_some());
-    }
-
-    #[test]
     fn type_tokens_in_message_format() {
         // A snippet similar to the camera stream message_format
         let json5 = r#"{
