@@ -113,40 +113,43 @@ impl NodeInfoRequest {
         let variant = if request.has_variant() {
             use crate::node_capnp::node_add_variant_source::source::Which;
             let variant_reader = request.get_variant()?;
-            match variant_reader.get_source().which()? {
+            Some(match variant_reader.get_source().which()? {
                 Which::Fs(fs) => {
                     let name = fs?.to_str()?;
                     if name.is_empty() {
-                        None
-                    } else {
-                        Some(NodeSource::decode_fs(name)?)
+                        return Err(crate::Error::Decoding(
+                            "empty fs path in variant source".into(),
+                        ));
                     }
+                    NodeSource::decode_fs(name)?
                 }
                 Which::Git(git) => {
                     let git = git?;
                     let repo_url_str = git.get_repo_url()?.to_str()?;
                     if repo_url_str.is_empty() {
-                        None
-                    } else {
-                        Some(NodeSource::decode_git(
-                            repo_url_str,
-                            git.get_repo_path()?.to_str()?,
-                            git.get_repo_ref()?.to_str()?,
-                        )?)
+                        return Err(crate::Error::Decoding(
+                            "empty git repo URL in variant source".into(),
+                        ));
                     }
+                    NodeSource::decode_git(
+                        repo_url_str,
+                        git.get_repo_path()?.to_str()?,
+                        git.get_repo_ref()?.to_str()?,
+                    )?
                 }
                 Which::Http(http) => {
                     let url_str = http?.to_str()?;
                     if url_str.is_empty() {
-                        None
-                    } else {
-                        Some(NodeSource::decode_http(
-                            url_str,
-                            Some(variant_reader.get_http_sha256()?.to_str()?),
-                        )?)
+                        return Err(crate::Error::Decoding(
+                            "empty http URL in variant source".into(),
+                        ));
                     }
+                    NodeSource::decode_http(
+                        url_str,
+                        Some(variant_reader.get_http_sha256()?.to_str()?),
+                    )?
                 }
-            }
+            })
         } else {
             None
         };
@@ -280,6 +283,63 @@ mod tests {
                 url,
                 sha256: Some(sha256)
             }
+        );
+    }
+
+    /// Helper: build a NodeInfoRequest message with a valid Fs source and a
+    /// variant whose source union is set by the caller-supplied closure, then
+    /// return the encoded bytes.
+    fn build_malformed_variant(
+        set_variant: impl FnOnce(crate::node_capnp::node_add_variant_source::Builder),
+    ) -> Payload {
+        let mut builder = capnp::message::Builder::new_default();
+        {
+            let mut request = builder.init_root::<crate::node_capnp::node_info_request::Builder>();
+            request.reborrow().init_source().set_fs("/root");
+            let variant_builder = request.reborrow().init_variant();
+            set_variant(variant_builder);
+        }
+        super::encode_message(&builder).expect("encoding should succeed")
+    }
+
+    #[test]
+    fn decode_rejects_variant_with_empty_fs_path() {
+        let data = build_malformed_variant(|mut v| {
+            v.reborrow().init_source().set_fs("");
+        });
+        let err = NodeInfoRequest::decode(&data).expect_err("should reject empty fs variant");
+        assert!(
+            err.to_string().contains("empty fs path in variant source"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn decode_rejects_variant_with_empty_git_repo_url() {
+        let data = build_malformed_variant(|mut v| {
+            let mut git = v.reborrow().init_source().init_git();
+            git.set_repo_url("");
+            git.set_repo_path("some/path");
+            git.set_repo_ref("main");
+        });
+        let err =
+            NodeInfoRequest::decode(&data).expect_err("should reject empty git repo URL variant");
+        assert!(
+            err.to_string()
+                .contains("empty git repo URL in variant source"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn decode_rejects_variant_with_empty_http_url() {
+        let data = build_malformed_variant(|mut v| {
+            v.reborrow().init_source().set_http("");
+        });
+        let err = NodeInfoRequest::decode(&data).expect_err("should reject empty http URL variant");
+        assert!(
+            err.to_string().contains("empty http URL in variant source"),
+            "unexpected error: {err}"
         );
     }
 
