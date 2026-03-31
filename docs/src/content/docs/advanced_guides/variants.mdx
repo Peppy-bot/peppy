@@ -72,10 +72,10 @@ depth_camera/             ← root node
           name: "point_cloud",
           qos_profile: "sensor_data",
           message_format: {
-            points: {
-              $type: "array",
-              $items: { x: "f32", y: "f32", z: "f32" },
-            },
+            num_points: "u32",
+            x: { $type: "array", $items: "f32" },
+            y: { $type: "array", $items: "f32" },
+            z: { $type: "array", $items: "f32" },
           },
         },
       ],
@@ -153,8 +153,9 @@ A node can also declare variants for different execution environments. For insta
 {
   schema_version: 1,
   execution: {
+    language: "rust",
     container: {
-      image: "ghcr.io/example/lidar:0.2.0",
+      def_file: "apptainer.def",
     },
   },
 }

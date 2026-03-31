@@ -57,7 +57,9 @@ Each topic defines a `name`, a `qos_profile`, and a `message_format`:
 
 The `qos_profile` controls delivery guarantees. Available profiles are:
 - **`sensor_data`** — optimised for high-frequency data where occasional drops are acceptable.
+- **`standard`** — balanced defaults suitable for most use cases. This is the default when `qos_profile` is omitted.
 - **`reliable`** — guarantees delivery at the cost of higher latency.
+- **`critical`** — strongest delivery guarantees for safety-critical data.
 
 ### Publishing messages
 
@@ -279,6 +281,7 @@ The `message_format` supports the following field types:
 | `"f32"`    | `f32`                  |
 | `"f64"`    | `f64`                  |
 | `"string"` | `String`               |
+| `"bytes"`  | `Vec<u8>`              |
 | `"time"`   | `std::time::SystemTime`|
 
 Fields can also use complex types:
