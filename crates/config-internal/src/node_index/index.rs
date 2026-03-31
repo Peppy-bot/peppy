@@ -27,11 +27,6 @@ impl FSNodeConfigIndex {
         Ok(Self { state })
     }
 
-    /// Returns the aggregated node index.
-    pub fn state(&self) -> &NodeIndexState {
-        &self.state
-    }
-
     /// Consumes the index and returns the aggregated node index.
     pub fn into_state(self) -> NodeIndexState {
         self.state

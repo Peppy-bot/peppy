@@ -1,6 +1,5 @@
 mod common;
 mod error;
-mod node_index;
 mod parsing;
 
 /// Private module that contains all implementation modules.
