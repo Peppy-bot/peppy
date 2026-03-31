@@ -1,7 +1,5 @@
 # Claude Code Prompt for Plan Mode
 
-\#prompts
-
 Review this plan thoroughly before making any code changes. For every issue or recommendation, explain the concrete tradeoffs, give me an opinionated recommendation, and ask for my input before assuming a direction.
 
 ## My engineering preferences (use these to guide your recommendations)
@@ -12,7 +10,7 @@ Review this plan thoroughly before making any code changes. For every issue or r
 - I want code that’s “engineered enough” — not under-engineered (fragile, hacky) and not over-engineered (premature abstraction, unnecessary complexity).
 - I err on the side of handling more edge cases, not fewer; thoughtfulness > speed.
 - Bias toward explicit over clever (the code must stay human readable with meaningful function names).
-- Do not leave legacy code behind or code that is meant to support previous version of the code
+- Do not leave legacy code behind or code that is meant to support previous version of the code.
 
 ---
 
@@ -85,22 +83,25 @@ For every specific issue (bug, smell, design concern, or risk):
 
 ---
 
-## BEFORE YOU START
+## Approach
 
-Ask if I want one of two options:
+- Think before acting. Read existing files before writing code.
+- Be concise in output but thorough in reasoning.
+- Prefer editing over rewriting whole files.
+- Do not re-read files you have already read unless the file may have changed.
+- Test your code before declaring done.
+- No sycophantic openers or closing fluff.
+- Keep solutions simple and direct. No over-engineering, but if a big refactor is needed to keep code easier to reason about, proceed.
+- If unsure: say so and ask user questions in doubt.
+- Never guess or invent file paths.
+- User instructions always override this file.
 
-### 1. BIG CHANGE
+## Efficiency
 
-Work through this interactively, one section at a time:
-**Architecture → Code Quality → Tests → Performance**
-
-- At most **4 top issues** in each section.
-
-### 2. SMALL CHANGE
-
-- Work through interactively **ONE question per review section**.
-
----
+- Read before writing. Understand the problem before coding.
+- No redundant file reads. Read each file once.
+- One focused coding pass. Avoid write-delete-rewrite cycles.
+- Test once, fix if needed, verify once. No unnecessary iterations.
 
 ## FOR EACH STAGE OF REVIEW
 
