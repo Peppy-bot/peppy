@@ -28,6 +28,45 @@ const ADD_CMD_MARKER_FILE: &str = "add_cmd_executed.marker";
 const GOAL_TIMEOUT: Duration = Duration::from_secs(30);
 const RESULT_TIMEOUT: Duration = Duration::from_secs(120);
 
+/// Creates a minimal node bundle (peppy.json5 + tar.zst) suitable for HTTP source tests.
+/// Returns the temp directory (must be kept alive) and the compressed bundle bytes.
+fn create_minimal_http_bundle(node_name: &str, node_tag: &str) -> (TempDir, Vec<u8>) {
+    let bundle_dir = tempfile::tempdir().expect("failed to create temp bundle dir");
+    let peppy_json5 = format!(
+        r#"{{
+            schema_version: 1,
+            manifest: {{
+                name: "{node_name}",
+                tag: "{node_tag}",
+            }},
+            interfaces: {{}},
+            execution: {{
+                language: "rust",
+                start_cmd: ["sleep", "10"]
+            }}
+        }}"#
+    );
+    let manifest_path = bundle_dir.path().join(NODE_CONFIG_FILE);
+    std::fs::write(&manifest_path, &peppy_json5).expect("failed to write manifest");
+    let bundle_path = bundle_dir.path().join("node.tar.zst");
+    create_tar_zst_from_dir(bundle_dir.path(), &bundle_path, ".");
+    let bundle_bytes = std::fs::read(&bundle_path).expect("failed to read bundle");
+    (bundle_dir, bundle_bytes)
+}
+
+/// Starts an HTTP mock server serving `bundle_bytes` at `/bundles/node.tar.zst`.
+/// Returns the server (must be kept alive) and the parsed URL.
+fn serve_bundle_over_http(bundle_bytes: Vec<u8>) -> (Server, url::Url) {
+    let server = Server::run();
+    server.expect(
+        Expectation::matching(request::method_path("GET", "/bundles/node.tar.zst"))
+            .respond_with(status_code(200).body(bundle_bytes)),
+    );
+    let url = url::Url::parse(&server.url("/bundles/node.tar.zst").to_string())
+        .expect("http bundle url should parse");
+    (server, url)
+}
+
 /// Returns true if the given tar.zst archive contains an entry matching `entry_name`.
 fn archive_contains_entry(archive_path: &Path, entry_name: &str) -> bool {
     let file = std::fs::File::open(archive_path).expect("failed to open archive");
@@ -709,36 +748,8 @@ async fn listen_for_node_http_add_rejects_wrong_sha256() {
     let started_core_node = start_core_node_with_mock_messenger().await;
     let node_stack = started_core_node.node_stack.clone();
 
-    let bundle_dir = tempfile::tempdir().expect("failed to create temp bundle dir");
-    let peppy_json5 = r#"{
-            schema_version: 1,
-            manifest: {
-                name: "{TARGET_NODE_NAME}",
-                tag: "{TARGET_NODE_TAG}",
-            },
-            interfaces: {},
-            execution: {
-                language: "rust",
-                start_cmd: ["sleep", "10"]
-            }
-        }"#
-    .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
-    .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
-
-    let manifest_path = bundle_dir.path().join(NODE_CONFIG_FILE);
-    std::fs::write(&manifest_path, &peppy_json5).expect("failed to write manifest");
-
-    let bundle_path = bundle_dir.path().join("node.tar.zst");
-    create_tar_zst_from_dir(bundle_dir.path(), &bundle_path, ".");
-    let bundle_bytes = std::fs::read(&bundle_path).expect("failed to read bundle");
-
-    let server = Server::run();
-    server.expect(
-        Expectation::matching(request::method_path("GET", "/bundles/node.tar.zst"))
-            .respond_with(status_code(200).body(bundle_bytes)),
-    );
-    let url = url::Url::parse(&server.url("/bundles/node.tar.zst").to_string())
-        .expect("http bundle url should parse");
+    let (_bundle_dir, bundle_bytes) = create_minimal_http_bundle(TARGET_NODE_NAME, TARGET_NODE_TAG);
+    let (_server, url) = serve_bundle_over_http(bundle_bytes);
 
     let wrong_sha256 = "a".repeat(64);
     let add_result = send_node_add_and_wait(
@@ -779,39 +790,12 @@ async fn listen_for_node_http_add_accepts_correct_sha256() {
     let started_core_node = start_core_node_with_mock_messenger().await;
     let node_stack = started_core_node.node_stack.clone();
 
-    let bundle_dir = tempfile::tempdir().expect("failed to create temp bundle dir");
-    let peppy_json5 = r#"{
-            schema_version: 1,
-            manifest: {
-                name: "{TARGET_NODE_NAME}",
-                tag: "{TARGET_NODE_TAG}",
-            },
-            interfaces: {},
-            execution: {
-                language: "rust",
-                start_cmd: ["sleep", "10"]
-            }
-        }"#
-    .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
-    .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
-
-    let manifest_path = bundle_dir.path().join(NODE_CONFIG_FILE);
-    std::fs::write(&manifest_path, &peppy_json5).expect("failed to write manifest");
-
-    let bundle_path = bundle_dir.path().join("node.tar.zst");
-    create_tar_zst_from_dir(bundle_dir.path(), &bundle_path, ".");
-    let bundle_bytes = std::fs::read(&bundle_path).expect("failed to read bundle");
+    let (_bundle_dir, bundle_bytes) = create_minimal_http_bundle(TARGET_NODE_NAME, TARGET_NODE_TAG);
 
     use sha2::{Digest, Sha256};
     let correct_sha256 = format!("{:x}", Sha256::digest(&bundle_bytes));
 
-    let server = Server::run();
-    server.expect(
-        Expectation::matching(request::method_path("GET", "/bundles/node.tar.zst"))
-            .respond_with(status_code(200).body(bundle_bytes)),
-    );
-    let url = url::Url::parse(&server.url("/bundles/node.tar.zst").to_string())
-        .expect("http bundle url should parse");
+    let (_server, url) = serve_bundle_over_http(bundle_bytes);
 
     let add_result = send_node_add_and_wait(
         &started_core_node.caller_handle,
