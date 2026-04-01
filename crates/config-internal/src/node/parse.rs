@@ -50,7 +50,7 @@ impl NodeConfigParser {
     /// Takes a JSON5 content as parameter
     pub fn from_content(content: &str) -> Result<ParsedNodeConfig> {
         // Strict schema validation is handled by serde via #[serde(deny_unknown_fields)]
-        let config: RawNodeConfig = serde_json5::from_str(content).map_err(ParsingError::from)?;
+        let config: RawNodeConfig = crate::error::deserialize_json5_with_path(content)?;
 
         let has_default = config.has_default_variant();
         match (&config.execution, has_default) {
@@ -78,7 +78,7 @@ impl VariantConfigParser {
     }
 
     pub fn from_content(content: &str) -> Result<VariantConfig> {
-        let config: VariantConfig = serde_json5::from_str(content).map_err(ParsingError::from)?;
+        let config: VariantConfig = crate::error::deserialize_json5_with_path(content)?;
         validate_execution(&config.execution)?;
         Ok(config)
     }
@@ -781,6 +781,50 @@ mod tests {
             result.is_ok(),
             "expected parsing to succeed when a 'default' variant is present, but got: {:?}",
             result.unwrap_err()
+        );
+    }
+
+    #[test]
+    fn test_node_error_message_includes_field_path() {
+        // start_cmd should be an array, not a map
+        let json5 = r#"{
+            schema_version: 1,
+            manifest: {
+                name: "test_node",
+                tag: "0.1.0",
+            },
+            execution: {
+                language: "rust",
+                start_cmd: { wrong: "type" },
+            },
+        }"#;
+        let result = NodeConfigParser::from_content(json5);
+        let Error::Parsing(ParsingError::CannotParseConfig(msg)) = result.unwrap_err() else {
+            panic!("expected CannotParseConfig error");
+        };
+        assert!(
+            msg.contains("execution.start_cmd"),
+            "error should include field path, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_variant_error_message_includes_field_path() {
+        // start_cmd should be an array, not a string
+        let json5 = r#"{
+            schema_version: 1,
+            execution: {
+                language: "rust",
+                start_cmd: "not_an_array",
+            },
+        }"#;
+        let result = VariantConfigParser::from_content(json5);
+        let Error::Parsing(ParsingError::CannotParseConfig(msg)) = result.unwrap_err() else {
+            panic!("expected CannotParseConfig error");
+        };
+        assert!(
+            msg.contains("execution.start_cmd"),
+            "error should include field path, got: {msg}"
         );
     }
 }
