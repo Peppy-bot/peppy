@@ -443,6 +443,111 @@ Bootstrap: docker
 From: nvidia/cuda:12.4.0-devel-ubuntu24.04
 ```
 
+### Using a pre-built base image for faster builds
+
+Every `peppy node add` runs the full `%post` section from scratch — installing system packages, toolchains, and compiling dependencies each time. For nodes with heavy dependencies this can be slow.
+
+You can speed things up by baking those slow steps into a custom Docker image and using it as your base. The first build pays the cost once; every subsequent `node add` starts from the cached image and only rebuilds your application code.
+
+1. **Create a `Dockerfile`** with the dependencies your node needs:
+
+<Tabs>
+  <TabItem label="Python">
+    ```dockerfile title="Dockerfile"
+    FROM ubuntu:24.04
+
+    RUN set -eux \
+        && export DEBIAN_FRONTEND=noninteractive \
+        && apt-get update \
+        && apt-get install -y --no-install-recommends \
+            ca-certificates curl python3 python3-venv \
+        && rm -rf /var/lib/apt/lists/* \
+        && curl -LsSf https://astral.sh/uv/install.sh | sh
+    ```
+  </TabItem>
+  <TabItem label="Rust">
+    ```dockerfile title="Dockerfile"
+    FROM ubuntu:24.04
+
+    RUN set -eux \
+        && export DEBIAN_FRONTEND=noninteractive \
+        && apt-get update \
+        && apt-get install -y --no-install-recommends \
+            ca-certificates curl build-essential pkg-config \
+        && rm -rf /var/lib/apt/lists/* \
+        && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+    ```
+  </TabItem>
+</Tabs>
+
+2. **Build and push the image** to a registry your build machine can reach:
+
+    ```sh
+    docker build -t my-registry/my_node-base:latest .
+    docker push my-registry/my_node-base:latest
+    ```
+
+3. **Point your `apptainer.def`** at the new image and remove the steps that are already baked in:
+
+<Tabs>
+  <TabItem label="Python">
+    ```apptainer title="apptainer.def"
+    Bootstrap: docker
+    From: my-registry/my_node-base:latest
+
+    %labels
+        Name my_node
+        Version 0.1.0
+
+    %environment
+        export PATH="/root/.local/bin:/opt/my_node/.venv/bin:$PATH"
+
+    %files
+        . /opt/my_node
+
+    %post
+        set -eux
+        cd /opt/my_node
+        uv sync --no-editable
+
+    %runscript
+        cd /opt/my_node
+        exec ./.venv/bin/python -m my_node
+    ```
+  </TabItem>
+  <TabItem label="Rust">
+    ```apptainer title="apptainer.def"
+    Bootstrap: docker
+    From: my-registry/my_node-base:latest
+
+    %labels
+        Name my_node
+        Version 0.1.0
+
+    %environment
+        export PATH="/root/.cargo/bin:$PATH"
+
+    %files
+        . /opt/my_node
+
+    %post
+        set -eux
+        cd /opt/my_node
+        cargo build --release
+
+    %runscript
+        cd /opt/my_node
+        exec ./target/release/my_node
+    ```
+  </TabItem>
+</Tabs>
+
+Now `peppy node add` only runs the application-specific build steps — package installation and toolchain setup are already in the base image.
+
+:::tip
+If multiple nodes share the same system dependencies, a single base image can serve all of them. Update the base image when dependencies change and tag it with a version so builds stay reproducible.
+:::
+
 ### Adding environment variables
 
 Add variables to the `%environment` section so they are available at runtime:
