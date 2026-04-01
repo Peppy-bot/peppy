@@ -412,6 +412,119 @@ mod tests {
     }
 
     #[test]
+    fn find_root_node_dir_walks_up_multiple_levels() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("workspace").join("nodes").join("my_node");
+        // Deeply nested: root/variants/mock_rust/src/impl
+        let deep = root
+            .join("variants")
+            .join("mock_rust")
+            .join("src")
+            .join("impl");
+        std::fs::create_dir_all(&deep).unwrap();
+
+        std::fs::write(
+            root.join(NODE_CONFIG_FILE),
+            r#"{
+                schema_version: 1,
+                manifest: {
+                    name: "my_node",
+                    tag: "0.1.0",
+                    variants: [
+                        { name: "default", source: { local: "./variants/mock_rust" } }
+                    ]
+                },
+                interfaces: {}
+            }"#,
+        )
+        .unwrap();
+
+        // No peppy.json5 in any intermediate directories — only at root
+        let found = find_root_node_dir(&deep);
+        assert_eq!(found.as_deref(), Some(root.as_path()));
+    }
+
+    #[test]
+    fn resolve_node_root_dir_walks_up_multiple_levels() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("my_node");
+        let variant = root.join("variants").join("mock_rust");
+        let deep = variant.join("src").join("impl");
+        std::fs::create_dir_all(&deep).unwrap();
+
+        std::fs::write(
+            root.join(NODE_CONFIG_FILE),
+            r#"{
+                schema_version: 1,
+                manifest: {
+                    name: "my_node",
+                    tag: "0.1.0",
+                    variants: [
+                        { name: "default", source: { local: "./variants/mock_rust" } }
+                    ]
+                },
+                interfaces: {}
+            }"#,
+        )
+        .unwrap();
+
+        // Variant dir has a config without manifest
+        std::fs::write(
+            variant.join(NODE_CONFIG_FILE),
+            r#"{
+                schema_version: 1,
+                execution: { language: "rust", start_cmd: ["sleep", "1"] }
+            }"#,
+        )
+        .unwrap();
+
+        let resolved = resolve_node_root_dir(&variant).unwrap();
+        assert_eq!(resolved, root);
+    }
+
+    #[test]
+    fn parse_node_source_resolves_from_deeply_nested_variant_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("my_node");
+        let variant = root.join("variants").join("platform").join("linux");
+        std::fs::create_dir_all(&variant).unwrap();
+
+        std::fs::write(
+            root.join(NODE_CONFIG_FILE),
+            r#"{
+                schema_version: 1,
+                manifest: {
+                    name: "my_node",
+                    tag: "0.1.0",
+                    variants: [
+                        { name: "default", source: { local: "./variants/platform/linux" } }
+                    ]
+                },
+                interfaces: {}
+            }"#,
+        )
+        .unwrap();
+
+        std::fs::write(
+            variant.join(NODE_CONFIG_FILE),
+            r#"{
+                schema_version: 1,
+                execution: { language: "rust", start_cmd: ["sleep", "1"] }
+            }"#,
+        )
+        .unwrap();
+
+        let source = parse_node_source(variant.to_str().unwrap(), None).unwrap();
+        let NodeSource::Fs(resolved) = &source else {
+            panic!("expected Fs source, got {:?}", source)
+        };
+        assert_eq!(
+            resolved.canonicalize().unwrap(),
+            root.canonicalize().unwrap()
+        );
+    }
+
+    #[test]
     fn parse_node_source_errors_when_no_root_found() {
         let tmp = tempfile::tempdir().unwrap();
         let orphan = tmp.path().join("orphan_variant");
