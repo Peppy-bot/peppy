@@ -157,7 +157,7 @@ Here is what `peppy node init --container` generates:
   <TabItem label="Python">
     ```apptainer title="apptainer.def"
 Bootstrap: docker
-From: ubuntu:24.04
+From: tuatini/peppy-python-uv-base
 
 %labels
     Name my_node
@@ -171,15 +171,6 @@ From: ubuntu:24.04
 
 %post
     set -eux
-    export DEBIAN_FRONTEND=noninteractive
-
-    apt-get update
-    apt-get install -y --no-install-recommends \
-        ca-certificates curl python3 python3-venv
-    rm -rf /var/lib/apt/lists/*
-
-    curl -LsSf https://astral.sh/uv/install.sh | sh
-    export PATH="/root/.local/bin:$PATH"
 
     cd /opt/my_node
     uv sync --no-editable
@@ -192,29 +183,17 @@ From: ubuntu:24.04
   <TabItem label="Rust">
     ```apptainer title="apptainer.def"
 Bootstrap: docker
-From: ubuntu:24.04
+From: tuatini/peppy-rust-cargo-base
 
 %labels
     Name my_node
     Version 0.1.0
-
-%environment
-    export PATH="/root/.cargo/bin:$PATH"
 
 %files
     . /opt/my_node
 
 %post
     set -eux
-    export DEBIAN_FRONTEND=noninteractive
-
-    apt-get update
-    apt-get install -y --no-install-recommends \
-        ca-certificates curl build-essential pkg-config
-    rm -rf /var/lib/apt/lists/*
-
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-    export PATH="/root/.cargo/bin:$PATH"
 
     cd /opt/my_node
     cargo build --release
@@ -429,7 +408,6 @@ Add packages to the `%post` section:
 %post
     apt-get update
     apt-get install -y --no-install-recommends \
-        ca-certificates curl build-essential pkg-config \
         libopencv-dev libudev-dev
     rm -rf /var/lib/apt/lists/*
 ```
