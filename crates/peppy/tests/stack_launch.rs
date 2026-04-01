@@ -36,19 +36,20 @@ fn write_node_config(
         .join(", ");
     fs::write(
         &node_config_path,
-        format!(
-            r#"{{
+        r#"{
                 schema_version: 1,
-                manifest: {{
+                manifest: {
                     name: "{node_name}",
                     tag: "{node_tag}",
-                    language: "rust"
-                }},
-                process: {{
+                },
+                execution: {
+                    language: "rust",
                     start_cmd: [{start_cmd_json5}]
-                }}
-            }}"#
-        ),
+                }
+            }"#
+        .replace("{node_name}", node_name)
+        .replace("{node_tag}", node_tag)
+        .replace("{start_cmd_json5}", &start_cmd_json5),
     )
     .expect("failed to write node config");
     config::fingerprint::create_codegen_fingerprint(
@@ -117,6 +118,7 @@ async fn node_launch_command_succeed() {
         command: NodeCommands::Add {
             source: node_a_path.display().to_string(),
             git_ref: None,
+            variant: None,
             start: false,
             args: Vec::new(),
             instance_id: None,
@@ -349,6 +351,7 @@ async fn node_launch_command_fails_when_node_never_becomes_healthy() {
         command: NodeCommands::Add {
             source: node_a_path.display().to_string(),
             git_ref: None,
+            variant: None,
             start: false,
             args: Vec::new(),
             instance_id: None,

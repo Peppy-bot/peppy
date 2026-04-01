@@ -1,13 +1,15 @@
 use std::path::Path;
 
-use crate::error::{Error, MissingStandaloneParameters, ParameterDeserializationError, Result};
+use crate::error::{Error, ParameterDeserializationError, Result};
 use config::{
-    NodeArguments,
+    AnyType, NodeArguments,
     consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME},
+    launcher::Name,
     node::NodeConfig,
-    peppy_config::Name,
     runtime::{NodeInstance, RuntimeConfig},
+    validate_node_arguments,
 };
+use std::collections::BTreeMap;
 
 use super::builder::StandaloneConfig;
 
@@ -15,6 +17,7 @@ use super::builder::StandaloneConfig;
 #[derive(Clone)]
 pub struct Processor {
     runtime_config: RuntimeConfig,
+    validated_arguments: NodeArguments,
 }
 
 impl Processor {
@@ -44,12 +47,15 @@ impl Processor {
 
         let node_config: NodeConfig =
             serde_json5::from_str(&std::fs::read_to_string(peppy_config.as_ref())?)?;
-        Self::validate_parameter_types(
-            &runtime_config.node_instance.arguments,
-            &node_config.parameters,
+        let validated_arguments = validate_node_arguments(
+            runtime_config.node_instance.arguments.clone(),
+            &node_config.execution.parameters,
         )?;
 
-        Ok(Self { runtime_config })
+        Ok(Self {
+            runtime_config,
+            validated_arguments,
+        })
     }
 
     /// Create processor for standalone mode.
@@ -68,14 +74,15 @@ impl Processor {
         let node_config: NodeConfig =
             serde_json5::from_str(&std::fs::read_to_string(peppy_config.as_ref())?)?;
 
-        let arguments = match &config.parameters {
+        let arguments: BTreeMap<String, AnyType> = match &config.parameters {
             Some(params) => serde_json::from_value(params.clone()).map_err(|e| {
                 ParameterDeserializationError::single(format!("failed to parse parameters: {}", e))
             })?,
-            None => NodeArguments::new(),
+            None => BTreeMap::new(),
         };
 
-        Self::validate_required_parameters(&arguments, &node_config.parameters)?;
+        let validated_arguments =
+            validate_node_arguments(arguments, &node_config.execution.parameters)?;
 
         let node_name: String = config
             .node_name
@@ -101,13 +108,16 @@ impl Processor {
             messaging_port,
             NodeInstance {
                 instance_id: instance_id_name,
-                arguments,
+                arguments: BTreeMap::new(),
             },
             &node_name,
             "standalone-core",
         )?;
 
-        Ok(Self { runtime_config })
+        Ok(Self {
+            runtime_config,
+            validated_arguments,
+        })
     }
 
     fn load_runtime_config(path: &str) -> Result<RuntimeConfig> {
@@ -134,43 +144,6 @@ impl Processor {
         }
     }
 
-    fn validate_parameter_types(
-        runtime_args: &NodeArguments,
-        compiled_params: &NodeArguments,
-    ) -> Result<()> {
-        for (key, runtime_value) in runtime_args {
-            let compiled_type = compiled_params
-                .get(key)
-                .ok_or_else(|| Error::MissingCompiledParameter { path: key.clone() })?;
-            runtime_value.matches_type_spec(compiled_type, key)?;
-        }
-        Ok(())
-    }
-
-    /// Validate that all required parameters defined in peppy.json5 are
-    /// provided when running in standalone mode. This catches missing
-    /// parameters early — before the Zenoh connection attempt — so the
-    /// developer sees a clear error instead of a hanging process.
-    fn validate_required_parameters(
-        runtime_args: &NodeArguments,
-        compiled_params: &NodeArguments,
-    ) -> Result<()> {
-        let missing: Vec<String> = compiled_params
-            .keys()
-            .filter(|key| !runtime_args.contains_key(key.as_str()))
-            .cloned()
-            .collect();
-
-        if !missing.is_empty() {
-            return Err(MissingStandaloneParameters {
-                parameters: missing,
-            }
-            .into());
-        }
-
-        Ok(())
-    }
-
     pub fn bound_instance_id(&self) -> &str {
         self.runtime_config.node_instance.instance_id.as_str()
     }
@@ -179,8 +152,8 @@ impl Processor {
         self.runtime_config.bound_core_node.as_str()
     }
 
-    pub fn input_arguments(&self) -> &NodeArguments {
-        &self.runtime_config.node_instance.arguments
+    pub(crate) fn input_arguments(&self) -> &NodeArguments {
+        &self.validated_arguments
     }
 
     pub fn node_name(&self) -> &str {
@@ -200,43 +173,10 @@ impl Processor {
 mod tests {
     use super::{PEPPYGEN_OUTPUT_PATH, Processor, RUNTIME_CONFIG_VAR_NAME};
     use crate::runtime::builder::StandaloneConfig;
-    use config::{AnyType, NodeArguments, runtime::RuntimeConfig};
-    use std::{collections::BTreeMap, env, path::Path, sync::Mutex};
+    use crate::runtime::test_utils::EnvVarGuard;
+    use config::{AnyType, ParameterSchema, runtime::RuntimeConfig, validate_node_arguments};
+    use std::{collections::BTreeMap, path::Path};
     use tempfile::TempDir;
-
-    static ENV_VAR_MUTEX: Mutex<()> = Mutex::new(());
-
-    struct EnvVarGuard {
-        key: &'static str,
-        previous: Option<String>,
-        _lock: std::sync::MutexGuard<'static, ()>,
-    }
-
-    impl EnvVarGuard {
-        fn set(key: &'static str, value: &str) -> Self {
-            let _lock = ENV_VAR_MUTEX.lock().expect("env mutex should lock");
-            let previous = env::var(key).ok();
-            // SAFETY: environment mutation is guarded by a global mutex to avoid races.
-            unsafe { env::set_var(key, value) };
-            Self {
-                key,
-                previous,
-                _lock,
-            }
-        }
-    }
-
-    impl Drop for EnvVarGuard {
-        fn drop(&mut self) {
-            if let Some(ref value) = self.previous {
-                // SAFETY: environment mutation is guarded by a global mutex to avoid races.
-                unsafe { env::set_var(self.key, value) };
-            } else {
-                // SAFETY: environment mutation is guarded by a global mutex to avoid races.
-                unsafe { env::remove_var(self.key) };
-            }
-        }
-    }
 
     #[test]
     fn loads_runtime_config_from_env() {
@@ -253,24 +193,24 @@ mod tests {
             manifest: {
                 name: "uvc_camera",
                 tag: "0.1.0",
-                language: "rust",
             },
-            process: {
+            execution: {
+                language: "rust",
+                parameters: {
+                    exposure: "f32",
+                    flags: {
+                        $type: "array",
+                        $items: "string"
+                    },
+                    nested: {
+                        $type: "object",
+                        enabled: "bool",
+                        gain: "i64"
+                    },
+                    mode: "string"
+                },
                 start_cmd: ["./target/debug/uvc_camera"]
             },
-            parameters: {
-                exposure: "f32",
-                flags: {
-                    $type: "array",
-                    $items: "string"
-                },
-                nested: {
-                    $type: "object",
-                    enabled: "bool",
-                    gain: "i64"
-                },
-                mode: "string"
-            }
         }"#;
         std::fs::write(&peppy_config_path, peppy_config_content)
             .expect("peppy config should be written");
@@ -318,7 +258,7 @@ mod tests {
         let runtime_processor = Processor::new_daemon(&peppy_config_path)
             .expect("runtime processor should load config from env");
 
-        let mut expected_parameters: NodeArguments = NodeArguments::new();
+        let mut expected_parameters: BTreeMap<String, AnyType> = BTreeMap::new();
         expected_parameters.insert("exposure".into(), AnyType::Float(0.25));
         expected_parameters.insert(
             "flags".into(),
@@ -339,7 +279,10 @@ mod tests {
         assert_eq!(runtime_processor.bound_instance_id(), bound_instance_id);
         assert_eq!(runtime_processor.bound_core_node(), bound_core_node);
         assert_eq!(runtime_processor.node_name(), bound_node_name);
-        assert_eq!(runtime_processor.input_arguments(), &expected_parameters);
+        assert_eq!(
+            serde_json::to_value(runtime_processor.input_arguments()).unwrap(),
+            serde_json::to_value(&expected_parameters).unwrap(),
+        );
     }
 
     #[test]
@@ -349,9 +292,9 @@ mod tests {
         let peppy_config_path = temp_dir.path().join("peppy_config.json5");
         let peppy_config_content = r#"{
             schema_version: 1,
-            manifest: { name: "test_node", tag: "0.1.0", language: "rust" },
-            process: { start_cmd: ["./target/debug/test_node"] },
-            parameters: { value: "i64" }
+            manifest: { name: "test_node", tag: "0.1.0" },
+
+            execution: { language: "rust", parameters: { value: "i64" }, start_cmd: ["./target/debug/test_node"] },
         }"#;
         std::fs::write(&peppy_config_path, peppy_config_content)
             .expect("peppy config should be written");
@@ -402,9 +345,9 @@ mod tests {
         let peppy_config_path = temp_dir.path().join("peppy_config.json5");
         let peppy_config_content = r#"{
             schema_version: 1,
-            manifest: { name: "test_node", tag: "0.1.0", language: "rust" },
-            process: { start_cmd: ["./target/debug/test_node"] },
-            parameters: { value: "i64" }
+            manifest: { name: "test_node", tag: "0.1.0" },
+
+            execution: { language: "rust", parameters: { value: "i64" }, start_cmd: ["./target/debug/test_node"] },
         }"#;
         std::fs::write(&peppy_config_path, peppy_config_content)
             .expect("peppy config should be written");
@@ -444,8 +387,8 @@ mod tests {
         };
         let err_string = err.to_string();
         assert!(
-            err_string.contains("missing parameter") && err_string.contains("extra_param"),
-            "expected missing parameter error for 'extra_param', got: {err_string}"
+            err_string.contains("unknown parameter") && err_string.contains("extra_param"),
+            "expected unknown parameter error for 'extra_param', got: {err_string}"
         );
     }
 
@@ -457,9 +400,9 @@ mod tests {
         let peppy_config_path = temp_dir.path().join("peppy_config.json5");
         let peppy_config_content = r#"{
             schema_version: 1,
-            manifest: { name: "test_node", tag: "0.1.0", language: "rust" },
-            process: { start_cmd: ["./target/debug/test_node"] },
-            parameters: { value: "i64" }
+            manifest: { name: "test_node", tag: "0.1.0" },
+
+            execution: { language: "rust", parameters: { value: "i64" }, start_cmd: ["./target/debug/test_node"] },
         }"#;
         std::fs::write(&peppy_config_path, peppy_config_content)
             .expect("peppy config should be written");
@@ -512,15 +455,19 @@ mod tests {
         let peppy_config_path = temp_dir.path().join("peppy_config.json5");
         let peppy_config_content = r#"{
             schema_version: 1,
-            manifest: { name: "test_node", tag: "0.1.0", language: "rust" },
-            process: { start_cmd: ["./target/debug/test_node"] },
-            parameters: {
-                config: {
-                    $type: "object",
-                    enabled: "bool",
-                    threshold: "f64"
-                }
-            }
+            manifest: { name: "test_node", tag: "0.1.0" },
+
+            execution: {
+                language: "rust",
+                parameters: {
+                    config: {
+                        $type: "object",
+                        enabled: "bool",
+                        threshold: "f64"
+                    }
+                },
+                start_cmd: ["./target/debug/test_node"]
+            },
         }"#;
         std::fs::write(&peppy_config_path, peppy_config_content)
             .expect("peppy config should be written");
@@ -573,14 +520,18 @@ mod tests {
         let peppy_config_path = temp_dir.path().join("peppy_config.json5");
         let peppy_config_content = r#"{
             schema_version: 1,
-            manifest: { name: "test_node", tag: "0.1.0", language: "rust" },
-            process: { start_cmd: ["./target/debug/test_node"] },
-            parameters: {
-                tags: {
-                    $type: "array",
-                    $items: "string"
-                }
-            }
+            manifest: { name: "test_node", tag: "0.1.0" },
+
+            execution: {
+                language: "rust",
+                parameters: {
+                    tags: {
+                        $type: "array",
+                        $items: "string"
+                    }
+                },
+                start_cmd: ["./target/debug/test_node"]
+            },
         }"#;
         std::fs::write(&peppy_config_path, peppy_config_content)
             .expect("peppy config should be written");
@@ -634,9 +585,9 @@ mod tests {
         let peppy_config_path = temp_dir.path().join("peppy_config.json5");
         let peppy_config_content = r#"{
             schema_version: 1,
-            manifest: { name: "test_node", tag: "0.1.0", language: "rust" },
-            process: { start_cmd: ["./target/debug/test_node"] },
-            parameters: { value: "i64" }
+            manifest: { name: "test_node", tag: "0.1.0" },
+
+            execution: { language: "rust", parameters: { value: "i64" }, start_cmd: ["./target/debug/test_node"] },
         }"#;
         std::fs::write(&peppy_config_path, peppy_config_content)
             .expect("peppy config should be written");
@@ -682,9 +633,9 @@ mod tests {
         let peppy_config_path = temp_dir.path().join("peppy.json5");
         let peppy_config_content = r#"{
             schema_version: 1,
-            manifest: { name: "my_node", tag: "0.1.0", language: "rust" },
-            process: { start_cmd: ["./target/debug/my_node"] },
-            parameters: {}
+            manifest: { name: "my_node", tag: "0.1.0" },
+
+            execution: { language: "rust", start_cmd: ["./target/debug/my_node"] },
         }"#;
         std::fs::write(&peppy_config_path, peppy_config_content)
             .expect("peppy config should be written");
@@ -707,9 +658,9 @@ mod tests {
         let peppy_config_path = temp_dir.path().join("peppy.json5");
         let peppy_config_content = r#"{
             schema_version: 1,
-            manifest: { name: "my_node", tag: "0.1.0", language: "rust" },
-            process: { start_cmd: ["./target/debug/my_node"] },
-            parameters: {}
+            manifest: { name: "my_node", tag: "0.1.0" },
+
+            execution: { language: "rust", start_cmd: ["./target/debug/my_node"] },
         }"#;
         std::fs::write(&peppy_config_path, peppy_config_content)
             .expect("peppy config should be written");
@@ -735,9 +686,9 @@ mod tests {
         let peppy_config_path = temp_dir.path().join("peppy.json5");
         let peppy_config_content = r#"{
             schema_version: 1,
-            manifest: { name: "my_node", tag: "0.1.0", language: "rust" },
-            process: { start_cmd: ["./target/debug/my_node"] },
-            parameters: { value: "i64" }
+            manifest: { name: "my_node", tag: "0.1.0" },
+
+            execution: { language: "rust", parameters: { value: "i64" }, start_cmd: ["./target/debug/my_node"] },
         }"#;
         std::fs::write(&peppy_config_path, peppy_config_content)
             .expect("peppy config should be written");
@@ -748,8 +699,8 @@ mod tests {
         let processor = Processor::new_standalone(&peppy_config_path, &config)
             .expect("should create processor");
 
-        let args = processor.input_arguments();
-        assert_eq!(args.get("value"), Some(&AnyType::Int(42)));
+        let args_json = serde_json::to_value(processor.input_arguments()).unwrap();
+        assert_eq!(args_json.get("value"), Some(&serde_json::json!(42)));
     }
 
     #[test]
@@ -767,9 +718,9 @@ mod tests {
         let peppy_config_path = temp_dir.path().join("peppy.json5");
         let peppy_config_content = r#"{
             schema_version: 1,
-            manifest: { name: "my_node", tag: "0.1.0", language: "rust" },
-            process: { start_cmd: ["./target/debug/my_node"] },
-            parameters: { threshold: "f64", enabled: "bool" }
+            manifest: { name: "my_node", tag: "0.1.0" },
+
+            execution: { language: "rust", parameters: { threshold: "f64", enabled: "bool" }, start_cmd: ["./target/debug/my_node"] },
         }"#;
         std::fs::write(&peppy_config_path, peppy_config_content)
             .expect("peppy config should be written");
@@ -783,9 +734,9 @@ mod tests {
         let processor = Processor::new_standalone(&peppy_config_path, &config)
             .expect("should create processor");
 
-        let args = processor.input_arguments();
-        assert_eq!(args.get("threshold"), Some(&AnyType::Float(0.75)));
-        assert_eq!(args.get("enabled"), Some(&AnyType::Bool(true)));
+        let args_json = serde_json::to_value(processor.input_arguments()).unwrap();
+        assert_eq!(args_json.get("threshold"), Some(&serde_json::json!(0.75)));
+        assert_eq!(args_json.get("enabled"), Some(&serde_json::json!(true)));
     }
 
     #[test]
@@ -795,9 +746,9 @@ mod tests {
         let peppy_config_path = temp_dir.path().join("peppy.json5");
         let peppy_config_content = r#"{
             schema_version: 1,
-            manifest: { name: "my_node", tag: "0.1.0", language: "rust" },
-            process: { start_cmd: ["./target/debug/my_node"] },
-            parameters: { value: "i64" }
+            manifest: { name: "my_node", tag: "0.1.0" },
+
+            execution: { language: "rust", parameters: { value: "i64" }, start_cmd: ["./target/debug/my_node"] },
         }"#;
         std::fs::write(&peppy_config_path, peppy_config_content)
             .expect("peppy config should be written");
@@ -810,8 +761,8 @@ mod tests {
             panic!("expected error when required parameters are missing");
         };
         assert!(
-            matches!(err, crate::error::Error::MissingStandaloneParameters(_)),
-            "expected MissingStandaloneParameters error, got: {err:?}"
+            matches!(err, crate::error::Error::NodeArgumentsValidation(_)),
+            "expected NodeArgumentsValidation error, got: {err:?}"
         );
         let err_string = err.to_string();
         assert!(
@@ -827,9 +778,9 @@ mod tests {
         let peppy_config_path = temp_dir.path().join("peppy.json5");
         let peppy_config_content = r#"{
             schema_version: 1,
-            manifest: { name: "my_node", tag: "0.1.0", language: "rust" },
-            process: { start_cmd: ["./target/debug/my_node"] },
-            parameters: { threshold: "f64", enabled: "bool", name: "string" }
+            manifest: { name: "my_node", tag: "0.1.0" },
+
+            execution: { language: "rust", parameters: { threshold: "f64", enabled: "bool", name: "string" }, start_cmd: ["./target/debug/my_node"] },
         }"#;
         std::fs::write(&peppy_config_path, peppy_config_content)
             .expect("peppy config should be written");
@@ -852,5 +803,21 @@ mod tests {
             !err_string.contains("threshold"),
             "error should not mention provided parameter 'threshold', got: {err_string}"
         );
+    }
+
+    #[test]
+    fn validated_arguments_cannot_be_serialized_back_to_raw() {
+        // NodeArguments derives Serialize but does not expose the inner
+        // data — the only way to consume it is through
+        // deserialize_parameters, which parses into a typed struct.
+        let arguments = BTreeMap::from([("x".to_string(), AnyType::Int(1))]);
+        let schema = ParameterSchema::from([("x".to_string(), AnyType::String("i64".to_string()))]);
+        let validated =
+            validate_node_arguments(arguments, &schema).expect("validation should pass");
+
+        // We can serialize (for deserialize_parameters) but cannot access
+        // the inner map directly — this is a compile-time guarantee.
+        let json = serde_json::to_value(&validated).expect("should serialize");
+        assert_eq!(json.get("x"), Some(&serde_json::json!(1)));
     }
 }

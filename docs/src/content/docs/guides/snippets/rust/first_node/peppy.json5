@@ -3,9 +3,10 @@
   manifest: {
     name: "hello_world",
     tag: "0.1.0",
-    language: "rust",
   },
-  process: {
+  interfaces: {},
+  execution: {
+    language: "rust",
     add_cmd: [
       "cargo",
       "build",
@@ -14,6 +15,5 @@
     start_cmd: [
       "./target/release/first_node"
     ]
-  },
-  interfaces: {}
+  }
 }

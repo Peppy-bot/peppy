@@ -45,12 +45,7 @@ An external consumed topic has a `name` and an inline `message_format`, but no `
       manifest: {
         name: "robot_arm",
         tag: "0.1.0",
-        language: "python",
         // No depends_on — robot_arm does not depend on arm_controller
-      },
-      process: {
-        add_cmd: ["uv", "sync"],
-        start_cmd: ["uv", "run", "robot_arm"]
       },
       interfaces: {
         topics: {
@@ -88,7 +83,12 @@ An external consumed topic has a `name` and an inline `message_format`, but no `
             }
           ],
         },
-      }
+      },
+      execution: {
+        language: "python",
+        add_cmd: ["uv", "sync"],
+        start_cmd: ["uv", "run", "robot_arm"]
+      },
     }
     ```
   </TabItem>
@@ -99,12 +99,7 @@ An external consumed topic has a `name` and an inline `message_format`, but no `
       manifest: {
         name: "robot_arm",
         tag: "0.1.0",
-        language: "rust",
         // No depends_on — robot_arm does not depend on arm_controller
-      },
-      process: {
-        add_cmd: ["cargo", "build", "--release"],
-        start_cmd: ["./target/release/robot_arm"]
       },
       interfaces: {
         topics: {
@@ -142,7 +137,12 @@ An external consumed topic has a `name` and an inline `message_format`, but no `
             }
           ],
         },
-      }
+      },
+      execution: {
+        language: "rust",
+        add_cmd: ["cargo", "build", "--release"],
+        start_cmd: ["./target/release/robot_arm"]
+      },
     }
     ```
   </TabItem>
@@ -158,16 +158,11 @@ Compare this with the `arm_controller` node, which uses a standard linked consum
       manifest: {
         name: "arm_controller",
         tag: "0.1.0",
-        language: "python",
         depends_on: {
           nodes: [
             { name: "robot_arm", tag: "0.1.0", local_id: "robot_arm" },
           ]
         },
-      },
-      process: {
-        add_cmd: ["uv", "sync"],
-        start_cmd: ["uv", "run", "arm_controller"]
       },
       interfaces: {
         topics: {
@@ -192,7 +187,12 @@ Compare this with the `arm_controller` node, which uses a standard linked consum
             },
           ],
         },
-      }
+      },
+      execution: {
+        language: "python",
+        add_cmd: ["uv", "sync"],
+        start_cmd: ["uv", "run", "arm_controller"]
+      },
     }
     ```
   </TabItem>
@@ -203,16 +203,11 @@ Compare this with the `arm_controller` node, which uses a standard linked consum
       manifest: {
         name: "arm_controller",
         tag: "0.1.0",
-        language: "rust",
         depends_on: {
           nodes: [
             { name: "robot_arm", tag: "0.1.0", local_id: "robot_arm" },
           ]
         },
-      },
-      process: {
-        add_cmd: ["cargo", "build", "--release"],
-        start_cmd: ["./target/release/arm_controller"]
       },
       interfaces: {
         topics: {
@@ -237,7 +232,12 @@ Compare this with the `arm_controller` node, which uses a standard linked consum
             },
           ],
         },
-      }
+      },
+      execution: {
+        language: "rust",
+        add_cmd: ["cargo", "build", "--release"],
+        start_cmd: ["./target/release/arm_controller"]
+      },
     }
     ```
   </TabItem>

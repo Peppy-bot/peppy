@@ -3,21 +3,6 @@
   manifest: {
     name: "hello_world_param",
     tag: "0.1.0",
-    language: "python",
-  },
-  process: {
-    add_cmd: [
-      "uv",
-      "sync"
-    ],
-    start_cmd: [
-      "uv",
-      "run",
-      "hello_world_param"
-    ]
-  },
-  parameters: {
-    name: "string",
   },
   interfaces: {
     topics: {
@@ -31,5 +16,20 @@
         }
       ],
     }
-  }
+  },
+  execution: {
+    language: "python",
+    parameters: {
+      name: "string",
+    },
+    add_cmd: [
+      "uv",
+      "sync"
+    ],
+    start_cmd: [
+      "uv",
+      "run",
+      "hello_world_param"
+    ]
+  },
 }

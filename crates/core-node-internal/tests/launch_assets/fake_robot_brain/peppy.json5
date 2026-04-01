@@ -4,7 +4,6 @@
     // This is a brain that can plug to any controller
     name: "fake_robot_brain",
     tag: "0.1.0",
-    language: "rust",
     labels: [
       "brain"
     ],
@@ -15,16 +14,6 @@
       ]
     },
   },
-  process: {
-    add_cmd: [
-      "true"
-    ],
-    start_cmd: [
-      "sleep",
-      "60"
-    ]
-  },
-  parameters: {},
   interfaces: {
     // The brain receives the inputs from the camera
     topics: {
@@ -59,5 +48,15 @@
         }
       ],
     },
-  }
+  },
+  execution: {
+    language: "rust",
+    add_cmd: [
+      "true"
+    ],
+    start_cmd: [
+      "sleep",
+      "60"
+    ]
+  },
 }

@@ -64,7 +64,7 @@ This generates the same project scaffolding as a regular node, plus an `apptaine
 
 ## The `peppy.json5` configuration
 
-A container node uses a `container` block instead of the usual `process` block. The two are mutually exclusive — a node is either a container node or a process node, never both.
+A container node includes a `container` block inside its `execution` section instead of the usual `add_cmd` and `start_cmd` fields. The two are mutually exclusive — a node is either a container node or a process node, never both.
 
 <Tabs>
   <TabItem label="Python">
@@ -74,12 +74,14 @@ A container node uses a `container` block instead of the usual `process` block. 
       manifest: {
         name: "my_node",
         tag: "0.1.0",
+      },
+      interfaces: {},
+      execution: {
         language: "python",
-      },
-      container: {
-        def_file: "apptainer.def",
-      },
-      interfaces: {}
+        container: {
+          def_file: "apptainer.def",
+        },
+      }
     }
     ```
   </TabItem>
@@ -90,12 +92,14 @@ A container node uses a `container` block instead of the usual `process` block. 
       manifest: {
         name: "my_node",
         tag: "0.1.0",
+      },
+      interfaces: {},
+      execution: {
         language: "rust",
-      },
-      container: {
-        def_file: "apptainer.def",
-      },
-      interfaces: {}
+        container: {
+          def_file: "apptainer.def",
+        },
+      }
     }
     ```
   </TabItem>
@@ -113,13 +117,13 @@ Compare this with a standard process node, which defines `add_cmd` and `start_cm
       manifest: {
         name: "my_node",
         tag: "0.1.0",
-        language: "python",
       },
-      process: {
+      interfaces: {},
+      execution: {
+        language: "python",
         add_cmd: ["uv", "sync", "--no-editable"],
         start_cmd: ["./.venv/bin/python", "-m", "my_node"]
-      },
-      interfaces: {}
+      }
     }
     ```
   </TabItem>
@@ -130,13 +134,13 @@ Compare this with a standard process node, which defines `add_cmd` and `start_cm
       manifest: {
         name: "my_node",
         tag: "0.1.0",
-        language: "rust",
       },
-      process: {
+      interfaces: {},
+      execution: {
+        language: "rust",
         add_cmd: ["cargo", "build", "--release"],
         start_cmd: ["./target/release/my_node"]
-      },
-      interfaces: {}
+      }
     }
     ```
   </TabItem>
@@ -271,7 +275,7 @@ The container executes the `%runscript` section, which runs the compiled binary 
 
 By default, a container is isolated from the host filesystem. Use `mount_paths` to bind-mount host directories into the running container — useful for sharing datasets, persisting output, or exposing device files.
 
-Add a `mount_paths` array to the `container` block in `peppy.json5`:
+Add a `mount_paths` array to the `container` block inside `execution` in `peppy.json5`:
 
 ```json5 title="peppy.json5"
 {
@@ -279,16 +283,18 @@ Add a `mount_paths` array to the `container` block in `peppy.json5`:
   manifest: {
     name: "my_node",
     tag: "0.1.0",
+  },
+  interfaces: {},
+  execution: {
     language: "python",
-  },
-  container: {
-    def_file: "apptainer.def",
-    mount_paths: [
-      "/data/models:/opt/models:ro",
-      "/tmp/my_node_output:/output:rw"
-    ]
-  },
-  interfaces: {}
+    container: {
+      def_file: "apptainer.def",
+      mount_paths: [
+        "/data/models:/opt/models:ro",
+        "/tmp/my_node_output:/output:rw"
+      ]
+    },
+  }
 }
 ```
 
@@ -320,18 +326,20 @@ Mount paths can reference runtime [parameters](/getting_started/parameters/) usi
   manifest: {
     name: "uvc_camera",
     tag: "0.1.0",
+  },
+  interfaces: {},
+  execution: {
     language: "rust",
+    parameters: {
+      device_path: "string",
+    },
+    container: {
+      def_file: "apptainer.def",
+      mount_paths: [
+        "${parameters:device_path}:/dev/video0:rw"
+      ]
+    },
   },
-  container: {
-    def_file: "apptainer.def",
-    mount_paths: [
-      "${parameters:device_path}:/dev/video0:rw"
-    ]
-  },
-  parameters: {
-    device_path: "string",
-  },
-  interfaces: {}
 }
 ```
 
@@ -342,16 +350,19 @@ For nested parameters, use dot notation:
 ```json5 title="peppy.json5 (nested example)"
 {
   // ...
-  container: {
-    def_file: "apptainer.def",
-    mount_paths: [
-      "${parameters:video.device_path}:/dev/video0:rw"
-    ]
-  },
-  parameters: {
-    video: {
-      device_path: "string",
-      frame_rate: "u16",
+  execution: {
+    // ...
+    parameters: {
+      video: {
+        device_path: "string",
+        frame_rate: "u16",
+      },
+    },
+    container: {
+      def_file: "apptainer.def",
+      mount_paths: [
+        "${parameters:video.device_path}:/dev/video0:rw"
+      ]
     },
   },
   // ...
@@ -368,7 +379,7 @@ Blocked system directory validation (e.g., rejecting `/tmp` as a mount source) i
 
 ## Extra runtime arguments
 
-You can pass additional command-line arguments directly to Apptainer or Lima using `apptainer_build_extra_args`, `apptainer_run_extra_args`, and `lima_shell_extra_args` in the `container` block.
+You can pass additional command-line arguments directly to Apptainer or Lima using `apptainer_build_extra_args`, `apptainer_run_extra_args`, and `lima_shell_extra_args` in the `container` block inside `execution`.
 
 ```json5 title="peppy.json5"
 {
@@ -376,14 +387,16 @@ You can pass additional command-line arguments directly to Apptainer or Lima usi
   manifest: {
     name: "my_node",
     tag: "0.1.0",
+  },
+  interfaces: {},
+  execution: {
     language: "python",
-  },
-  container: {
-    def_file: "apptainer.def",
-    apptainer_build_extra_args: ["--no-setgroups"],
-    apptainer_run_extra_args: ["--no-setgroups"],
-  },
-  interfaces: {}
+    container: {
+      def_file: "apptainer.def",
+      apptainer_build_extra_args: ["--no-setgroups"],
+      apptainer_run_extra_args: ["--no-setgroups"],
+    },
+  }
 }
 ```
 

@@ -55,7 +55,7 @@ use type_mapping::{render_tokens, unused_params_stmt};
 pub struct RustGenerator {
     sections: Vec<InterfaceArtifact>,
     schemas: HashMap<String, CapnpSchema>,
-    parameters: config::NodeArguments,
+    parameters: config::ParameterSchema,
 }
 
 impl RustGenerator {
@@ -64,7 +64,7 @@ impl RustGenerator {
     }
 
     /// Sets the node parameters for code generation.
-    pub fn set_parameters(&mut self, parameters: config::NodeArguments) {
+    pub fn set_parameters(&mut self, parameters: config::ParameterSchema) {
         self.parameters = parameters;
     }
 

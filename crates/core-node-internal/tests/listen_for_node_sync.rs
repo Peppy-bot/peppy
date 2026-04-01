@@ -25,9 +25,21 @@ async fn listen_for_node_sync_success() {
             manifest: {
                 name: "example_node",
                 tag: "0.1.0",
-                language: "rust",
             },
-            process: {
+            interfaces: {
+                topics: {
+                    emits: [],
+                    consumes: [],
+                },
+                services: {
+                    exposes: [],
+                },
+                actions: {
+                    exposes: [],
+                },
+            },
+            execution: {
+                language: "rust",
                 start_cmd: ["sleep", "10"]
             }
         }"#,
@@ -271,7 +283,6 @@ async fn listen_for_node_sync_missing_dependency_fails() {
             manifest: {
                 name: "my_robot_brain",
                 tag: "0.1.0",
-                language: "rust",
                 labels: ["brain"],
                 depends_on: {
                     nodes: [
@@ -279,11 +290,6 @@ async fn listen_for_node_sync_missing_dependency_fails() {
                     ]
                 },
             },
-            process: {
-                add_cmd: ["cargo", "build", "--release"],
-                start_cmd: ["./target/release/my_robot_brain"],
-            },
-            parameters: {},
             interfaces: {
                 topics: {
                     emits: [],
@@ -291,7 +297,11 @@ async fn listen_for_node_sync_missing_dependency_fails() {
                         {
                             local_node_id: "uvc_camera",
                             name: "video_stream",
-                        }
+                        },
+                        {
+                            local_node_id: "uvc_camera",
+                            name: "video_stream_rear",
+                        },
                     ],
                 },
                 services: {
@@ -300,6 +310,11 @@ async fn listen_for_node_sync_missing_dependency_fails() {
                 actions: {
                     exposes: [],
                 },
+            },
+            execution: {
+                language: "rust",
+                add_cmd: ["cargo", "build", "--release"],
+                start_cmd: ["./target/release/my_robot_brain"],
             },
         }
         "#,
@@ -349,49 +364,21 @@ async fn listen_for_node_sync_multiple_missing_dependencies_fails() {
             manifest: {
                 name: "my_robot_brain",
                 tag: "0.1.0",
-                language: "rust",
                 labels: ["brain"],
                 depends_on: {
                     nodes: [
                         { name: "uvc_camera", tag: "0.1.0", local_id: "uvc_camera" },
+                        { name: "uvc_camera", tag: "0.1.0", local_id: "uvc_camera_2" },
                         { name: "lidar_sensor", tag: "1.0.0", local_id: "lidar_sensor" },
                         { name: "gps_module", tag: "2.0.0", local_id: "gps_module" },
                     ]
                 },
             },
-            process: {
+            interfaces: {},
+            execution: {
+                language: "rust",
                 add_cmd: ["cargo", "build", "--release"],
                 start_cmd: ["./target/release/my_robot_brain"],
-            },
-            parameters: {},
-            interfaces: {
-                topics: {
-                    emits: [],
-                    consumes: [
-                        {
-                            local_node_id: "uvc_camera",
-                            name: "video_stream",
-                        },
-                        {
-                            local_node_id: "uvc_camera",
-                            name: "video_stream_rear",
-                        },
-                        {
-                            local_node_id: "lidar_sensor",
-                            name: "point_cloud",
-                        },
-                        {
-                            local_node_id: "gps_module",
-                            name: "location",
-                        }
-                    ],
-                },
-                services: {
-                    exposes: [],
-                },
-                actions: {
-                    exposes: [],
-                },
             },
         }
         "#,
@@ -460,14 +447,8 @@ async fn listen_for_node_sync_generates_rust_interfaces() {
             manifest: {
                 name: "uvc_camera",
                 tag: "0.1.0",
-                language: "rust",
                 labels: ["camera"],
             },
-            process: {
-                add_cmd: ["true"],
-                start_cmd: ["sleep", "10"],
-            },
-            parameters: {},
             interfaces: {
                 topics: {
                     emits: [
@@ -498,6 +479,11 @@ async fn listen_for_node_sync_generates_rust_interfaces() {
                 actions: {
                     exposes: [],
                 },
+            },
+            execution: {
+                language: "rust",
+                add_cmd: ["true"],
+                start_cmd: ["sleep", "10"],
             },
         }
         "#,
@@ -555,7 +541,6 @@ async fn listen_for_node_sync_generates_rust_interfaces() {
             manifest: {
                 name: "my_robot_brain",
                 tag: "0.1.0",
-                language: "rust",
                 labels: ["brain"],
                 depends_on: {
                     nodes: [
@@ -563,11 +548,6 @@ async fn listen_for_node_sync_generates_rust_interfaces() {
                     ]
                 },
             },
-            process: {
-                add_cmd: ["true"],
-                start_cmd: ["sleep", "10"],
-            },
-            parameters: {},
             interfaces: {
                 topics: {
                     emits: [],
@@ -584,6 +564,11 @@ async fn listen_for_node_sync_generates_rust_interfaces() {
                 actions: {
                     exposes: [],
                 },
+            },
+            execution: {
+                language: "rust",
+                add_cmd: ["true"],
+                start_cmd: ["sleep", "10"],
             },
         }
         "#,
@@ -676,14 +661,8 @@ async fn listen_for_node_sync_generates_rust_consumed_service_interfaces() {
             manifest: {
                 name: "uvc_camera",
                 tag: "0.1.0",
-                language: "rust",
                 labels: ["camera"],
             },
-            process: {
-                add_cmd: ["true"],
-                start_cmd: ["sleep", "10"],
-            },
-            parameters: {},
             interfaces: {
                 topics: {
                     emits: [],
@@ -701,6 +680,11 @@ async fn listen_for_node_sync_generates_rust_consumed_service_interfaces() {
                 actions: {
                     exposes: [],
                 },
+            },
+            execution: {
+                language: "rust",
+                add_cmd: ["true"],
+                start_cmd: ["sleep", "10"],
             },
         }
         "#,
@@ -755,7 +739,6 @@ async fn listen_for_node_sync_generates_rust_consumed_service_interfaces() {
             manifest: {
                 name: "my_robot_brain",
                 tag: "0.1.0",
-                language: "rust",
                 labels: ["brain"],
                 depends_on: {
                     nodes: [
@@ -763,11 +746,6 @@ async fn listen_for_node_sync_generates_rust_consumed_service_interfaces() {
                     ]
                 },
             },
-            process: {
-                add_cmd: ["true"],
-                start_cmd: ["sleep", "10"],
-            },
-            parameters: {},
             interfaces: {
                 topics: {
                     emits: [],
@@ -784,6 +762,11 @@ async fn listen_for_node_sync_generates_rust_consumed_service_interfaces() {
                 actions: {
                     exposes: [],
                 },
+            },
+            execution: {
+                language: "rust",
+                add_cmd: ["true"],
+                start_cmd: ["sleep", "10"],
             },
         }
         "#,
@@ -837,14 +820,8 @@ async fn listen_for_node_sync_generates_rust_consumed_topic_interfaces() {
             manifest: {
                 name: "uvc_camera",
                 tag: "0.1.0",
-                language: "rust",
                 labels: ["camera"],
             },
-            process: {
-                add_cmd: ["true"],
-                start_cmd: ["sleep", "10"],
-            },
-            parameters: {},
             interfaces: {
                 topics: {
                     emits: [
@@ -864,6 +841,11 @@ async fn listen_for_node_sync_generates_rust_consumed_topic_interfaces() {
                 actions: {
                     exposes: [],
                 },
+            },
+            execution: {
+                language: "rust",
+                add_cmd: ["true"],
+                start_cmd: ["sleep", "10"],
             },
         }
         "#,
@@ -918,7 +900,6 @@ async fn listen_for_node_sync_generates_rust_consumed_topic_interfaces() {
             manifest: {
                 name: "my_robot_brain",
                 tag: "0.1.0",
-                language: "rust",
                 labels: ["brain"],
                 depends_on: {
                     nodes: [
@@ -926,11 +907,6 @@ async fn listen_for_node_sync_generates_rust_consumed_topic_interfaces() {
                     ]
                 },
             },
-            process: {
-                add_cmd: ["true"],
-                start_cmd: ["sleep", "10"],
-            },
-            parameters: {},
             interfaces: {
                 topics: {
                     emits: [],
@@ -947,6 +923,11 @@ async fn listen_for_node_sync_generates_rust_consumed_topic_interfaces() {
                 actions: {
                     exposes: [],
                 },
+            },
+            execution: {
+                language: "rust",
+                add_cmd: ["true"],
+                start_cmd: ["sleep", "10"],
             },
         }
         "#,
@@ -1000,14 +981,8 @@ async fn listen_for_node_sync_generates_rust_consumed_action_interfaces() {
             manifest: {
                 name: "brain",
                 tag: "0.1.0",
-                language: "rust",
                 labels: ["brain"],
             },
-            process: {
-                add_cmd: ["true"],
-                start_cmd: ["sleep", "10"],
-            },
-            parameters: {},
             interfaces: {
                 topics: {
                     emits: [],
@@ -1033,6 +1008,11 @@ async fn listen_for_node_sync_generates_rust_consumed_action_interfaces() {
                       }
                     ],
                 },
+            },
+            execution: {
+                language: "rust",
+                add_cmd: ["true"],
+                start_cmd: ["sleep", "10"],
             },
         }
         "#,
@@ -1087,7 +1067,6 @@ async fn listen_for_node_sync_generates_rust_consumed_action_interfaces() {
             manifest: {
                 name: "controller",
                 tag: "0.1.0",
-                language: "rust",
                 labels: ["controller"],
                 depends_on: {
                     nodes: [
@@ -1095,11 +1074,6 @@ async fn listen_for_node_sync_generates_rust_consumed_action_interfaces() {
                     ]
                 },
             },
-            process: {
-                add_cmd: ["true"],
-                start_cmd: ["sleep", "10"],
-            },
-            parameters: {},
             interfaces: {
                 topics: {
                     emits: [],
@@ -1116,6 +1090,11 @@ async fn listen_for_node_sync_generates_rust_consumed_action_interfaces() {
                         }
                     ],
                 },
+            },
+            execution: {
+                language: "rust",
+                add_cmd: ["true"],
+                start_cmd: ["sleep", "10"],
             },
         }
         "#,
@@ -1170,29 +1149,28 @@ async fn listen_for_node_sync_generates_rust_parameters() {
             manifest: {
                 name: "uvc_camera",
                 tag: "0.1.0",
-                language: "rust",
                 labels: ["camera"],
             },
-            process: {
+            execution: {
+                language: "rust",
+                parameters: {
+                  device: {
+                    physical: "string",
+                    sim: "string",
+                    priority: "string"
+                  },
+                  video: {
+                    frame_rate: "u16",
+                    resolution: {
+                      width: "u16",
+                      height: "u16",
+                    },
+                    encoding: "string",
+                  },
+                },
                 add_cmd: ["true"],
                 start_cmd: ["sleep", "10"],
             },
-            parameters: {
-              device: {
-                physical: "string",
-                sim: "string",
-                priority: "string"
-              },
-              video: {
-                frame_rate: "u16",
-                resolution: {
-                  width: "u16",
-                  height: "u16",
-                },
-                encoding: "string",
-              },
-            },
-            interfaces: {},
         }
         "#,
     );
@@ -1285,9 +1263,9 @@ async fn listen_for_node_sync_deletes_previous_peppy_folder() {
             manifest: {
                 name: "example_node",
                 tag: "0.1.0",
-                language: "rust",
             },
-            process: {
+            execution: {
+                language: "rust",
                 start_cmd: ["sleep", "10"]
             }
         }"#,
@@ -1364,6 +1342,599 @@ async fn listen_for_node_sync_deletes_previous_peppy_folder() {
     assert!(
         peppygen_dir.exists(),
         "peppygen directory should exist at {}",
+        peppygen_dir.display()
+    );
+}
+
+fn write_variant_config(variant_dir: &Path, peppy_json5: &str) {
+    fs::create_dir_all(variant_dir).expect("failed to create variant directory");
+    let config_path = variant_dir.join(NODE_CONFIG_FILE);
+    fs::write(&config_path, peppy_json5).expect("failed to write variant peppy.json5");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_sync_with_variant_succeeds() {
+    let started_core_node = start_core_node_with_mock_messenger().await;
+
+    let node_dir = tempdir().expect("failed to create temp node directory");
+
+    // Create a variant subdirectory with a Rust VariantConfig
+    let variant_dir = node_dir.path().join("rust_variant");
+    write_variant_config(
+        &variant_dir,
+        r#"{
+            schema_version: 1,
+            execution: {
+                language: "rust",
+                start_cmd: ["sleep", "10"],
+            },
+        }"#,
+    );
+
+    // Root config declares the variant
+    write_node_config(
+        node_dir.path(),
+        r#"{
+            schema_version: 1,
+            manifest: {
+                name: "example_node",
+                tag: "0.1.0",
+                variants: [
+                    { name: "rust_variant", source: { local: "./rust_variant" } },
+                ],
+            },
+            interfaces: {
+                topics: {
+                    emits: [
+                        {
+                            name: "hello_world",
+                            qos_profile: "sensor_data",
+                            message_format: {
+                                message: "string",
+                            },
+                        },
+                    ],
+                },
+            },
+            execution: {
+                language: "rust",
+                start_cmd: ["sleep", "10"],
+            },
+        }"#,
+    );
+
+    let expected_git_hash = "deadbeef";
+    let response = NodeSyncRequest::new(node_dir.path(), expected_git_hash)
+        .poll(
+            &started_core_node.caller_handle,
+            &started_core_node.core_node_name,
+            CALLER_INSTANCE_ID,
+            &started_core_node.core_node_name,
+            Duration::from_secs(10),
+        )
+        .await
+        .expect("node_sync request should complete");
+
+    assert!(
+        response.success,
+        "node_sync should succeed, got error: {}",
+        response.error_message
+    );
+
+    // Verify root .peppy was generated
+    let root_peppygen_dir = node_dir.path().join(PEPPYGEN_OUTPUT_PATH);
+    assert!(
+        root_peppygen_dir.exists(),
+        "root peppygen directory should exist at {}",
+        root_peppygen_dir.display()
+    );
+
+    // Verify variant .peppy was generated
+    let variant_peppy_dir = variant_dir.join(PEPPY_OUTPUT_DIR);
+    assert!(
+        variant_peppy_dir.exists(),
+        "variant .peppy directory should exist at {}",
+        variant_peppy_dir.display()
+    );
+
+    // Verify git.hash in root .peppy
+    let node_dir_hash_path = node_dir.path().join(PEPPY_OUTPUT_DIR).join("git.hash");
+    assert!(
+        node_dir_hash_path.exists(),
+        "root git.hash should exist at {}",
+        node_dir_hash_path.display()
+    );
+    let stored_git_hash =
+        fs::read_to_string(&node_dir_hash_path).expect("failed to read root git.hash");
+    assert_eq!(
+        stored_git_hash.trim(),
+        expected_git_hash,
+        "root git.hash should contain the sync request git_hash"
+    );
+
+    // Verify git.hash in variant .peppy
+    let variant_git_hash_path = variant_peppy_dir.join("git.hash");
+    assert!(
+        variant_git_hash_path.exists(),
+        "variant git.hash should exist at {}",
+        variant_git_hash_path.display()
+    );
+    let stored_git_hash =
+        fs::read_to_string(&variant_git_hash_path).expect("failed to read variant git.hash");
+    assert_eq!(
+        stored_git_hash.trim(),
+        expected_git_hash,
+        "variant git.hash should contain the sync request git_hash"
+    );
+
+    // Verify root peppygen was generated
+    let root_peppygen_dir = node_dir.path().join(PEPPYGEN_OUTPUT_PATH);
+    assert!(
+        root_peppygen_dir.exists(),
+        "root peppygen directory should exist at {}",
+        root_peppygen_dir.display()
+    );
+
+    // Verify variant peppygen was generated
+    let variant_peppygen_dir = variant_dir.join(PEPPYGEN_OUTPUT_PATH);
+    assert!(
+        variant_peppygen_dir.exists(),
+        "variant peppygen directory should exist at {}",
+        variant_peppygen_dir.display()
+    );
+
+    // Verify the original variant peppy.json5 was NOT overwritten with the merged config
+    let variant_config_content = fs::read_to_string(variant_dir.join(NODE_CONFIG_FILE))
+        .expect("variant peppy.json5 should still exist");
+    assert!(
+        !variant_config_content.contains("example_node"),
+        "variant peppy.json5 should not contain the root manifest name — \
+         it should remain the original VariantConfig"
+    );
+    assert!(
+        variant_config_content.contains("start_cmd"),
+        "variant peppy.json5 should still contain the original execution config"
+    );
+
+    // Verify the stored fingerprint for the root peppy.json5.
+    // Same sandbox principle: the root fingerprint covers only the raw root
+    // peppy.json5, not the merged config.
+    let root_fingerprint_path = root_peppygen_dir.join("peppy.json5.sha256");
+    let stored_root_fingerprint = fs::read_to_string(&root_fingerprint_path)
+        .expect("root fingerprint file should exist")
+        .trim()
+        .to_string();
+
+    let root_own_bytes = fs::read(node_dir.path().join(NODE_CONFIG_FILE))
+        .expect("root peppy.json5 should be readable");
+    let expected_root_fingerprint = config::fingerprint::fingerprint_for_bytes(&root_own_bytes);
+    assert_eq!(
+        stored_root_fingerprint, expected_root_fingerprint,
+        "stored fingerprint should match the root's own peppy.json5, not the merged config"
+    );
+
+    // Verify the stored fingerprint matches the variant's own peppy.json5.
+    // Each variant lives in its own sandbox for fingerprinting — it is only
+    // aware of its own peppy.json5, not the merged config.
+    let variant_fingerprint_path = variant_peppygen_dir.join("peppy.json5.sha256");
+    let stored_fingerprint = fs::read_to_string(&variant_fingerprint_path)
+        .expect("variant fingerprint file should exist")
+        .trim()
+        .to_string();
+
+    let variant_own_bytes = fs::read(variant_dir.join(NODE_CONFIG_FILE))
+        .expect("variant peppy.json5 should be readable");
+    let expected_fingerprint = config::fingerprint::fingerprint_for_bytes(&variant_own_bytes);
+    assert_eq!(
+        stored_fingerprint, expected_fingerprint,
+        "stored fingerprint should match the variant's own peppy.json5"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_sync_variant_missing_directory_fails() {
+    let started_core_node = start_core_node_with_mock_messenger().await;
+
+    let node_dir = tempdir().expect("failed to create temp node directory");
+
+    // Root config declares a variant whose directory does not exist
+    write_node_config(
+        node_dir.path(),
+        r#"{
+            schema_version: 1,
+            manifest: {
+                name: "example_node",
+                tag: "0.1.0",
+                variants: [
+                    { name: "missing_variant", source: { local: "./missing_variant" } },
+                ],
+            },
+            interfaces: {},
+            execution: {
+                language: "rust",
+                start_cmd: ["sleep", "10"],
+            },
+        }"#,
+    );
+
+    let response = NodeSyncRequest::new(node_dir.path(), common::TEST_GIT_HASH)
+        .poll(
+            &started_core_node.caller_handle,
+            &started_core_node.core_node_name,
+            CALLER_INSTANCE_ID,
+            &started_core_node.core_node_name,
+            Duration::from_secs(5),
+        )
+        .await
+        .expect("node_sync request should complete");
+
+    assert!(!response.success, "node_sync should fail");
+    assert!(
+        response.error_message.contains("missing_variant"),
+        "error should mention the variant name, got: {}",
+        response.error_message
+    );
+    assert!(
+        response.error_message.contains("does not exist")
+            || response.error_message.contains("No such file"),
+        "error should mention missing variant directory, got: {}",
+        response.error_message
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_sync_variant_invalid_config_fails() {
+    let started_core_node = start_core_node_with_mock_messenger().await;
+
+    let node_dir = tempdir().expect("failed to create temp node directory");
+
+    // Create variant directory with invalid config
+    let variant_dir = node_dir.path().join("bad_variant");
+    write_variant_config(&variant_dir, r#"{ invalid: [unclosed"#);
+
+    // Root config declares the variant
+    write_node_config(
+        node_dir.path(),
+        r#"{
+            schema_version: 1,
+            manifest: {
+                name: "example_node",
+                tag: "0.1.0",
+                variants: [
+                    { name: "bad_variant", source: { local: "./bad_variant" } },
+                ],
+            },
+            interfaces: {},
+            execution: {
+                language: "rust",
+                start_cmd: ["sleep", "10"],
+            },
+        }"#,
+    );
+
+    let response = NodeSyncRequest::new(node_dir.path(), common::TEST_GIT_HASH)
+        .poll(
+            &started_core_node.caller_handle,
+            &started_core_node.core_node_name,
+            CALLER_INSTANCE_ID,
+            &started_core_node.core_node_name,
+            Duration::from_secs(5),
+        )
+        .await
+        .expect("node_sync request should complete");
+
+    assert!(!response.success, "node_sync should fail");
+    assert!(
+        response.error_message.contains("bad_variant"),
+        "error should mention the variant name, got: {}",
+        response.error_message
+    );
+    assert!(
+        response.error_message.contains("Failed to parse variant"),
+        "error should mention parse failure, got: {}",
+        response.error_message
+    );
+}
+
+/// When a root node has a "default" variant and no execution, sync should
+/// skip root codegen (no .peppy at root) but still generate the variant's .peppy.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_sync_default_variant_skips_root_codegen() {
+    let started_core_node = start_core_node_with_mock_messenger().await;
+
+    let node_dir = tempdir().expect("failed to create temp node directory");
+
+    // Default variant with its own execution
+    let default_variant_dir = node_dir.path().join("variants").join("default");
+    write_variant_config(
+        &default_variant_dir,
+        r#"{
+            schema_version: 1,
+            execution: {
+                language: "rust",
+                start_cmd: ["sleep", "10"],
+            },
+        }"#,
+    );
+
+    // Root config: default variant, NO execution
+    write_node_config(
+        node_dir.path(),
+        r#"{
+            schema_version: 1,
+            manifest: {
+                name: "default_variant_node",
+                tag: "0.1.0",
+                variants: [
+                    { name: "default", source: { local: "./variants/default" } },
+                ],
+            },
+            interfaces: {
+                topics: {
+                    emits: [
+                        {
+                            name: "hello_world",
+                            qos_profile: "sensor_data",
+                            message_format: {
+                                message: "string",
+                            },
+                        },
+                    ],
+                },
+            },
+        }"#,
+    );
+
+    let expected_git_hash = "abc12345";
+    let response = NodeSyncRequest::new(node_dir.path(), expected_git_hash)
+        .poll(
+            &started_core_node.caller_handle,
+            &started_core_node.core_node_name,
+            CALLER_INSTANCE_ID,
+            &started_core_node.core_node_name,
+            Duration::from_secs(10),
+        )
+        .await
+        .expect("node_sync request should complete");
+
+    assert!(
+        response.success,
+        "node_sync with default variant should succeed, got error: {}",
+        response.error_message
+    );
+
+    // Root peppygen should NOT be generated (no execution at root level)
+    let root_peppygen_dir = node_dir.path().join(PEPPYGEN_OUTPUT_PATH);
+    assert!(
+        !root_peppygen_dir.exists(),
+        "root peppygen directory should NOT exist for a default-variant node"
+    );
+
+    // Root .peppy should NOT be generated (no execution at root level)
+    let root_peppy_dir = node_dir.path().join(".peppy");
+    assert!(
+        !root_peppy_dir.exists(),
+        "root .peppy directory should NOT exist for a default-variant node"
+    );
+
+    // Variant .peppy should be generated
+    let variant_peppy_dir = default_variant_dir.join(PEPPY_OUTPUT_DIR);
+    assert!(
+        variant_peppy_dir.exists(),
+        "variant .peppy directory should exist at {}",
+        variant_peppy_dir.display()
+    );
+
+    // Verify variant peppygen was generated
+    let variant_peppygen_dir = default_variant_dir.join(PEPPYGEN_OUTPUT_PATH);
+    assert!(
+        variant_peppygen_dir.exists(),
+        "variant peppygen directory should exist at {}",
+        variant_peppygen_dir.display()
+    );
+
+    // Verify git.hash in variant .peppy
+    let variant_git_hash_path = variant_peppy_dir.join("git.hash");
+    let stored_git_hash =
+        fs::read_to_string(&variant_git_hash_path).expect("failed to read variant git.hash");
+    assert_eq!(
+        stored_git_hash.trim(),
+        expected_git_hash,
+        "variant git.hash should contain the sync request git_hash"
+    );
+
+    // Verify the original variant peppy.json5 was NOT overwritten with the merged config
+    let variant_config_content = fs::read_to_string(default_variant_dir.join(NODE_CONFIG_FILE))
+        .expect("variant peppy.json5 should still exist");
+    assert!(
+        !variant_config_content.contains("default_variant_node"),
+        "variant peppy.json5 should not contain the root manifest name — \
+         it should remain the original VariantConfig"
+    );
+    assert!(
+        variant_config_content.contains("start_cmd"),
+        "variant peppy.json5 should still contain the original execution config"
+    );
+}
+
+/// Verifies that stale root `.peppy` output directories are cleaned up when a node's
+/// execution moves from the root level into a variant. The first sync creates a root
+/// `.peppy` directory (execution defined at root), then the config is rewritten to remove
+/// root execution and add a `"default"` variant with execution instead. The second sync
+/// should delete the now-stale root `.peppy` directory and create one under the variant.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_sync_default_variant_cleans_stale_root_peppy_dir() {
+    let started_core_node = start_core_node_with_mock_messenger().await;
+
+    let node_dir = tempdir().expect("failed to create temp node directory");
+
+    // First sync: node WITH execution — creates a root .peppy directory
+    write_node_config(
+        node_dir.path(),
+        r#"{
+            schema_version: 1,
+            manifest: {
+                name: "example_node",
+                tag: "0.1.0",
+            },
+            execution: {
+                language: "rust",
+                start_cmd: ["sleep", "10"],
+            },
+        }"#,
+    );
+
+    let response = NodeSyncRequest::new(node_dir.path(), common::TEST_GIT_HASH)
+        .poll(
+            &started_core_node.caller_handle,
+            &started_core_node.core_node_name,
+            CALLER_INSTANCE_ID,
+            &started_core_node.core_node_name,
+            Duration::from_secs(5),
+        )
+        .await
+        .expect("first node_sync request should complete");
+
+    assert!(
+        response.success,
+        "first node_sync (with execution) should succeed, got error: {}",
+        response.error_message
+    );
+
+    let root_peppy_dir = node_dir.path().join(PEPPY_OUTPUT_DIR);
+    assert!(
+        root_peppy_dir.exists(),
+        "root .peppy directory should exist after first sync"
+    );
+
+    // Rewrite config: remove execution from root, add a default variant
+    let default_variant_dir = node_dir.path().join("variants").join("default");
+    write_variant_config(
+        &default_variant_dir,
+        r#"{
+            schema_version: 1,
+            execution: {
+                language: "rust",
+                start_cmd: ["sleep", "10"],
+            },
+        }"#,
+    );
+
+    write_node_config(
+        node_dir.path(),
+        r#"{
+            schema_version: 1,
+            manifest: {
+                name: "example_node",
+                tag: "0.1.0",
+                variants: [
+                    { name: "default", source: { local: "./variants/default" } },
+                ],
+            },
+        }"#,
+    );
+
+    // Second sync: language is None at root — should clean up stale root .peppy
+    let response = NodeSyncRequest::new(node_dir.path(), common::TEST_GIT_HASH)
+        .poll(
+            &started_core_node.caller_handle,
+            &started_core_node.core_node_name,
+            CALLER_INSTANCE_ID,
+            &started_core_node.core_node_name,
+            Duration::from_secs(10),
+        )
+        .await
+        .expect("second node_sync request should complete");
+
+    assert!(
+        response.success,
+        "second node_sync (without execution) should succeed, got error: {}",
+        response.error_message
+    );
+
+    // Root .peppy should have been cleaned up since language is now None
+    assert!(
+        !root_peppy_dir.exists(),
+        "root .peppy directory should NOT exist after sync with no execution — \
+         stale outputs from a previous sync should be cleaned up"
+    );
+
+    // Variant .peppy should be generated
+    let variant_peppy_dir = default_variant_dir.join(PEPPY_OUTPUT_DIR);
+    assert!(
+        variant_peppy_dir.exists(),
+        "variant .peppy directory should exist at {}",
+        variant_peppy_dir.display()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_sync_undeclared_local_node_id_fails() {
+    let started_core_node = start_core_node_with_mock_messenger().await;
+
+    let node_dir = tempdir().expect("failed to create temp node directory");
+    // The node consumes a topic from local_node_id "nonexistent", but this
+    // local_node_id is not declared in depends_on.nodes, so sync should fail.
+    write_node_config(
+        node_dir.path(),
+        r#"
+        {
+            schema_version: 1,
+            manifest: {
+                name: "my_robot_brain",
+                tag: "0.1.0",
+                depends_on: {
+                    nodes: []
+                },
+            },
+            interfaces: {
+                topics: {
+                    emits: [],
+                    consumes: [
+                        {
+                            local_node_id: "nonexistent",
+                            name: "video_stream",
+                        }
+                    ],
+                },
+                services: {
+                    exposes: [],
+                },
+                actions: {
+                    exposes: [],
+                },
+            },
+            execution: {
+                language: "rust",
+                start_cmd: ["sleep", "10"],
+            },
+        }
+        "#,
+    );
+
+    let peppygen_dir = node_dir.path().join(PEPPYGEN_OUTPUT_PATH);
+
+    let response = NodeSyncRequest::new(node_dir.path(), common::TEST_GIT_HASH)
+        .poll(
+            &started_core_node.caller_handle,
+            &started_core_node.core_node_name,
+            CALLER_INSTANCE_ID,
+            &started_core_node.core_node_name,
+            Duration::from_secs(5),
+        )
+        .await
+        .expect("node_sync request should complete");
+
+    assert!(!response.success, "node_sync should fail");
+    assert!(
+        response.error_message.contains("undeclared local_node_id"),
+        "error should mention undeclared local_node_id, got: {}",
+        response.error_message
+    );
+
+    assert!(
+        !peppygen_dir.exists(),
+        "peppygen directory should not exist at {}",
         peppygen_dir.display()
     );
 }

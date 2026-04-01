@@ -1,11 +1,13 @@
-use crate::{common::NodeArguments, error::Result};
+use crate::common::AnyType;
+use crate::error::Result;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::{
     fs,
     path::{Path, PathBuf},
 };
 
-use crate::config::Name;
+use crate::launcher::Name;
 
 /// Represents a node instance at runtime. Used by RuntimeConfig to identify the running node and its configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -13,7 +15,7 @@ use crate::config::Name;
 pub struct NodeInstance {
     pub instance_id: Name,
     #[serde(default)]
-    pub arguments: NodeArguments,
+    pub arguments: BTreeMap<String, AnyType>,
 }
 
 /// Configuration for the launcher to know how to configure spawned nodes' messaging.

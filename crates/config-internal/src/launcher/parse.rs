@@ -38,8 +38,8 @@ impl PeppyLauncherParser {
 #[cfg(test)]
 mod tests {
     use crate::{
-        config::DeploymentSource,
         error::{Error, ParsingError},
+        launcher::DeploymentSource,
     };
     use tempfile::tempdir;
 

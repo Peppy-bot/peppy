@@ -20,6 +20,7 @@ use tracing::info;
 use super::Command;
 use crate::{context::AppContext, error::Error as CommandError};
 
+pub use add::{AddNodeParams, add_node};
 pub use env::caller_env_overrides;
 pub use init::NodeInitBuilder;
 pub use types::NodeName;
@@ -30,7 +31,7 @@ pub(crate) const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 600;
 pub(crate) const DEFAULT_MAX_TIMEOUT_SECS: u64 = 3600;
 
 /// Idle + absolute-max timeout pair used by `node add` and `node start` polling loops.
-pub(crate) struct TimeoutConfig {
+pub struct TimeoutConfig {
     pub idle_secs: u64,
     pub max_secs: u64,
 }
@@ -103,6 +104,14 @@ pub enum NodeCommands {
         /// Git ref (tag/branch/commit) to checkout before reading `subpath` (git sources only).
         #[arg(long = "ref")]
         git_ref: Option<String>,
+        /// Optional variant to add instead of the root node.
+        ///
+        /// Supported formats:
+        /// - Variant name: `mock` (looked up in root manifest)
+        /// - Git URL: `https://github.com/org/repo.git/path`
+        /// - HTTP archive: `https://example.com/variant.tar.zst`
+        #[arg(long)]
+        variant: Option<String>,
         /// If set, will attempt to spawn an instance directly after adding the node to the node stack
         #[arg(long)]
         start: bool,
@@ -224,6 +233,7 @@ impl Command for NodeCommand {
             NodeCommands::Add {
                 source,
                 git_ref,
+                variant,
                 start,
                 args,
                 instance_id,
@@ -247,7 +257,18 @@ impl Command for NodeCommand {
                     idle_secs: idle_timeout,
                     max_secs: max_timeout,
                 };
-                add::add_node(ctx, source, git_ref, start_options, timeouts, force)
+                add::add_node(
+                    ctx,
+                    add::AddNodeParams {
+                        source,
+                        git_ref,
+                        variant,
+                        start_options,
+                        timeouts,
+                        force,
+                        confirm_reader: None,
+                    },
+                )
             }
             NodeCommands::Sync {} => {
                 info!("Syncing node interfaces...");

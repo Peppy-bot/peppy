@@ -337,6 +337,7 @@ impl Apptainer {
 
                 lima::ensure_lima_instance(limactl_path, lima_home, lima::LIMA_TEMPLATE)?;
                 lima::ensure_guest_userns(limactl_path, lima_home, lima::LIMA_INSTANCE)?;
+                lima::ensure_guest_uidmap(limactl_path, lima_home, lima::LIMA_INSTANCE)?;
 
                 *apptainer_bin = lima::ensure_guest_apptainer(
                     &self.apptainer_dir,

@@ -22,14 +22,14 @@ PEPPY_CONFIG = """{
   manifest: {
     name: "test_node",
     tag: "0.1.0",
-    language: "python",
   },
-  process: {
+  execution: {
+    language: "python",
+    parameters: {
+      frequency_hz: "f64"
+    },
     start_cmd: ["uv", "run"]
   },
-  parameters: {
-    frequency_hz: "f64"
-  }
 }"""
 
 

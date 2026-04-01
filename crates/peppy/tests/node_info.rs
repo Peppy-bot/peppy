@@ -27,46 +27,46 @@ async fn node_info_shows_dependencies_from_consumed_interfaces() {
 
     // Create a node directory with dependencies (consumes interfaces)
     let node_dir = tempfile::tempdir().expect("failed to create temp node dir");
-    let peppy_json5 = format!(
-        r#"{{
+    let peppy_json5 = r#"{
             schema_version: 1,
-            manifest: {{
+            manifest: {
                 name: "{NODE_NAME}",
                 tag: "{NODE_TAG}",
-                language: "rust",
-                depends_on: {{
+                depends_on: {
                     nodes: [
-                        {{ name: "camera_node", tag: "0.1.0", local_id: "camera_node" }},
-                        {{ name: "lidar_node", tag: "0.1.0", local_id: "lidar_node" }},
-                        {{ name: "config_node", tag: "0.1.0", local_id: "config_node" }},
-                        {{ name: "navigation_node", tag: "0.1.0", local_id: "navigation_node" }}
+                        { name: "camera_node", tag: "0.1.0", local_id: "camera_node" },
+                        { name: "lidar_node", tag: "0.1.0", local_id: "lidar_node" },
+                        { name: "config_node", tag: "0.1.0", local_id: "config_node" },
+                        { name: "navigation_node", tag: "0.1.0", local_id: "navigation_node" }
                     ]
-                }}
-            }},
-            process: {{
+                }
+            },
+            interfaces: {
+                topics: {
+                    consumes: [
+                        { local_node_id: "camera_node", name: "video_stream" },
+                        { local_node_id: "lidar_node", name: "point_cloud" },
+                        { local_node_id: "camera_node", name: "depth_stream" }
+                    ]
+                },
+                services: {
+                    consumes: [
+                        { local_node_id: "config_node", name: "get_config" }
+                    ]
+                },
+                actions: {
+                    consumes: [
+                        { local_node_id: "navigation_node", name: "go_to_pose" }
+                    ]
+                }
+            },
+            execution: {
+                language: "rust",
                 start_cmd: ["sleep", "10"]
-            }},
-            interfaces: {{
-                topics: {{
-                    consumes: [
-                        {{ local_node_id: "camera_node", name: "video_stream" }},
-                        {{ local_node_id: "lidar_node", name: "point_cloud" }},
-                        {{ local_node_id: "camera_node", name: "depth_stream" }}
-                    ]
-                }},
-                services: {{
-                    consumes: [
-                        {{ local_node_id: "config_node", name: "get_config" }}
-                    ]
-                }},
-                actions: {{
-                    consumes: [
-                        {{ local_node_id: "navigation_node", name: "go_to_pose" }}
-                    ]
-                }}
-            }}
-        }}"#
-    );
+            },
+        }"#
+    .replace("{NODE_NAME}", NODE_NAME)
+    .replace("{NODE_TAG}", NODE_TAG);
     write_peppy_json5(node_dir.path(), &peppy_json5);
 
     // Send NodeInfoRequest to the core node
@@ -185,26 +185,26 @@ async fn node_info_no_dependencies_when_no_consumes() {
 
     // Create a node with no dependencies (only exposes interfaces, doesn't subscribe)
     let node_dir = tempfile::tempdir().expect("failed to create temp node dir");
-    let peppy_json5 = format!(
-        r#"{{
+    let peppy_json5 = r#"{
             schema_version: 1,
-            manifest: {{
+            manifest: {
                 name: "{NODE_NAME}",
                 tag: "{NODE_TAG}",
-                language: "rust"
-            }},
-            process: {{
-                start_cmd: ["sleep", "10"]
-            }},
-            interfaces: {{
-                topics: {{
+            },
+            interfaces: {
+                topics: {
                     emits: [
-                        {{ name: "output_data", qos_profile: "standard" }}
+                        { name: "output_data", qos_profile: "standard" }
                     ]
-                }}
-            }}
-        }}"#
-    );
+                }
+            },
+            execution: {
+                language: "rust",
+                start_cmd: ["sleep", "10"]
+            },
+        }"#
+    .replace("{NODE_NAME}", NODE_NAME)
+    .replace("{NODE_TAG}", NODE_TAG);
     write_peppy_json5(node_dir.path(), &peppy_json5);
 
     // Send NodeInfoRequest

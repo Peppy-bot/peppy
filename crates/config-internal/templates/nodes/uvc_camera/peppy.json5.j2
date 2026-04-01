@@ -3,34 +3,11 @@
   manifest: {
     name: "{{ node_name }}",
     tag: "0.1.0",
-    language: "rust",
     labels: [
       "uvc",
       "camera",
       "usb",
     ],
-  },
-  process: {
-    start_cmd: [
-      "cargo",
-      "run",
-      "--release"
-    ]
-  },
-  parameters: {
-    device: {
-      physical: "string",
-      sim: "string",
-      priority: "string"
-    },
-    video: {
-      frame_rate: "u16",
-      resolution: {
-        width: "u16",
-        height: "u16",
-      },
-      encoding: "string",
-    },
   },
   interfaces: {
     topics: {
@@ -76,5 +53,28 @@
         },
       ],
     },
-  }
+  },
+  execution: {
+    language: "rust",
+    parameters: {
+      device: {
+        physical: "string",
+        sim: "string",
+        priority: "string"
+      },
+      video: {
+        frame_rate: "u16",
+        resolution: {
+          width: "u16",
+          height: "u16",
+        },
+        encoding: "string",
+      },
+    },
+    start_cmd: [
+      "cargo",
+      "run",
+      "--release"
+    ]
+  },
 }

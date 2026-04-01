@@ -174,7 +174,7 @@ fn write_node_config_with_options(
                   {emits_topics}
                   {expects_topics}
                 }}
-              }}"#
+              }},"#
         )
     } else {
         String::new()
@@ -193,22 +193,26 @@ fn write_node_config_with_options(
     let node_config_path = node_dir.join(NODE_CONFIG_FILE);
     fs::write(
         &node_config_path,
-        format!(
-            r#"{{
+        r#"{
               schema_version: 1,
-              manifest: {{
+              manifest: {
                 name: "{node_name}",
                 tag: "{node_tag}",
-                language: "rust",
                 {depends_on}
-              }},
-              process: {{
+              },
+              {interfaces}
+              execution: {
+                language: "rust",
                 add_cmd: [{add_cmd_json5}],
                 start_cmd: [{start_cmd_json5}]
-              }},
-              {interfaces}
-            }}"#
-        ),
+              }
+            }"#
+        .replace("{node_name}", node_name)
+        .replace("{node_tag}", node_tag)
+        .replace("{depends_on}", depends_on)
+        .replace("{add_cmd_json5}", &add_cmd_json5)
+        .replace("{start_cmd_json5}", &start_cmd_json5)
+        .replace("{interfaces}", &interfaces),
     )
     .expect("failed to write node config");
 
@@ -238,27 +242,26 @@ fn create_uvc_camera_repo(to_path: &Path, node_tag: &str) -> PathBuf {
     let rel_config_path = Path::new("uvc_camera").join(NODE_CONFIG_FILE);
     fs::write(
         repo_path.join(&rel_config_path),
-        format!(
-            r#"{{
+        r#"{
               schema_version: 1,
-              manifest: {{
+              manifest: {
                 name: "uvc_camera",
                 tag: "{node_tag}",
+              },
+              interfaces: {
+                topics: {
+                  emits: [
+                    { name: "camera_stream" }
+                  ]
+                }
+              },
+              execution: {
                 language: "rust",
-              }},
-              process: {{
                 add_cmd: ["true"],
                 start_cmd: ["sleep", "60"]
-              }},
-              interfaces: {{
-                topics: {{
-                  emits: [
-                    {{ name: "camera_stream" }}
-                  ]
-                }}
-              }}
-            }}"#
-        ),
+              }
+            }"#
+        .replace("{node_tag}", node_tag),
     )
     .expect("failed to write uvc_camera peppy.json5");
 
@@ -787,7 +790,9 @@ async fn listen_for_launch_configuration_launch_config_invalid_json5_returns_err
         false,
     );
     let existing_config = NodeConfigParser::from_path(existing_path.join(NODE_CONFIG_FILE))
-        .expect("existing node config should parse");
+        .expect("existing node config should parse")
+        .into_resolved()
+        .expect("test config has execution");
     node_stack
         .push_config(existing_config, false, &existing_path)
         .expect("should seed stack");
@@ -832,7 +837,9 @@ async fn listen_for_launch_configuration_launch_file_path_must_be_a_file() {
         false,
     );
     let existing_config = NodeConfigParser::from_path(existing_path.join(NODE_CONFIG_FILE))
-        .expect("existing node config should parse");
+        .expect("existing node config should parse")
+        .into_resolved()
+        .expect("test config has execution");
     node_stack
         .push_config(existing_config, false, &existing_path)
         .expect("should seed stack");
@@ -880,7 +887,9 @@ async fn listen_for_launch_config_missing_required_deployment_does_not_apply_par
         false,
     );
     let existing_config = NodeConfigParser::from_path(existing_path.join(NODE_CONFIG_FILE))
-        .expect("existing node config should parse");
+        .expect("existing node config should parse")
+        .into_resolved()
+        .expect("test config has execution");
     node_stack
         .push_config(existing_config, false, &existing_path)
         .expect("should seed stack");
@@ -958,7 +967,9 @@ async fn listen_for_launch_configuration_launch_config_dependency_errors_are_rej
         false,
     );
     let existing_config = NodeConfigParser::from_path(existing_path.join(NODE_CONFIG_FILE))
-        .expect("existing node config should parse");
+        .expect("existing node config should parse")
+        .into_resolved()
+        .expect("test config has execution");
     node_stack
         .push_config(existing_config, false, &existing_path)
         .expect("should seed stack");
@@ -1129,7 +1140,9 @@ async fn listen_for_launch_configuration_fails_when_one_node_never_becomes_healt
         false,
     );
     let existing_config = NodeConfigParser::from_path(existing_path.join(NODE_CONFIG_FILE))
-        .expect("existing node config should parse");
+        .expect("existing node config should parse")
+        .into_resolved()
+        .expect("test config has execution");
     node_stack
         .push_config(existing_config, false, &existing_path)
         .expect("should seed stack");
@@ -1211,7 +1224,9 @@ async fn listen_for_launch_configuration_fails_when_add_cmd_fails_and_restores_s
         false,
     );
     let existing_config = NodeConfigParser::from_path(existing_path.join(NODE_CONFIG_FILE))
-        .expect("existing node config should parse");
+        .expect("existing node config should parse")
+        .into_resolved()
+        .expect("test config has execution");
     node_stack
         .push_config(existing_config, false, &existing_path)
         .expect("should seed stack");
@@ -1287,7 +1302,9 @@ async fn listen_for_launch_configuration_fails_when_start_cmd_exits_with_error()
         false,
     );
     let existing_config = NodeConfigParser::from_path(existing_path.join(NODE_CONFIG_FILE))
-        .expect("existing node config should parse");
+        .expect("existing node config should parse")
+        .into_resolved()
+        .expect("test config has execution");
     node_stack
         .push_config(existing_config, false, &existing_path)
         .expect("should seed stack");

@@ -1,46 +1,82 @@
-use super::types::NodeConfig;
+use super::types::{Execution, ParsedNodeConfig, RawNodeConfig, VariantConfig};
 use crate::{
     error::{ParsingError, Result},
     parsing::read_non_empty_file,
 };
 use std::path::Path;
 
+/// Validates execution constraints shared by both full node configs and variant configs.
+fn validate_execution(execution: &Execution) -> Result<()> {
+    if let Some(cmds) = &execution.start_cmd
+        && cmds.is_empty()
+    {
+        return Err(ParsingError::EmptyStartCmd.into());
+    }
+
+    // `start_cmd` and `container` are mutually exclusive; exactly one must be present.
+    match (&execution.start_cmd, &execution.container) {
+        (Some(_), Some(_)) => return Err(ParsingError::ProcessAndContainerConflict.into()),
+        (None, None) => return Err(ParsingError::NoProcessOrContainer.into()),
+        _ => {}
+    }
+
+    // Validate container mount paths (reject top-level system directories).
+    if let Some(container) = &execution.container
+        && let Err((path, blocked_list)) = container.validate()
+    {
+        return Err(ParsingError::InvalidMountPath(path, blocked_list).into());
+    }
+
+    // Validate ${parameters:...} references in mount paths.
+    if let Some(container) = &execution.container
+        && let Err((ref_path, reason)) = container.validate_parameter_refs(&execution.parameters)
+    {
+        return Err(ParsingError::InvalidMountPathParameterRef(ref_path, reason).into());
+    }
+
+    Ok(())
+}
+
 /// Parser responsible for extracting configuration from JSON5 documents
 pub struct NodeConfigParser;
 
 impl NodeConfigParser {
-    pub fn from_path(file: impl AsRef<Path>) -> Result<NodeConfig> {
+    pub fn from_path(file: impl AsRef<Path>) -> Result<ParsedNodeConfig> {
         let path = file.as_ref();
         let content = read_non_empty_file(path)?;
         Self::from_content(&content)
     }
 
     /// Takes a JSON5 content as parameter
-    pub fn from_content(content: &str) -> Result<NodeConfig> {
+    pub fn from_content(content: &str) -> Result<ParsedNodeConfig> {
         // Strict schema validation is handled by serde via #[serde(deny_unknown_fields)]
-        let config: NodeConfig = serde_json5::from_str(content).map_err(ParsingError::from)?;
+        let config: RawNodeConfig = serde_json5::from_str(content).map_err(ParsingError::from)?;
 
-        // `process` and `container` are mutually exclusive; exactly one must be present.
-        match (&config.process, &config.container) {
-            (Some(_), Some(_)) => return Err(ParsingError::ProcessAndContainerConflict.into()),
-            (None, None) => return Err(ParsingError::NoProcessOrContainer.into()),
-            _ => {}
+        let has_default = config.has_default_variant();
+        match (&config.execution, has_default) {
+            (Some(execution), false) => validate_execution(execution)?,
+            (None, true) => { /* execution comes from default variant */ }
+            (Some(_), true) => return Err(ParsingError::ExecutionWithDefaultVariant.into()),
+            (None, false) => return Err(ParsingError::MissingExecution.into()),
         }
 
-        // Validate container mount paths (reject top-level system directories).
-        if let Some(container) = &config.container
-            && let Err((path, blocked_list)) = container.validate()
-        {
-            return Err(ParsingError::InvalidMountPath(path, blocked_list).into());
-        }
+        Ok(ParsedNodeConfig(config))
+    }
+}
 
-        // Validate ${parameters:...} references in mount paths.
-        if let Some(container) = &config.container
-            && let Err((ref_path, reason)) = container.validate_parameter_refs(&config.parameters)
-        {
-            return Err(ParsingError::InvalidMountPathParameterRef(ref_path, reason).into());
-        }
+/// Parser for variant node configs where `manifest` and `interfaces` are optional.
+pub struct VariantConfigParser;
 
+impl VariantConfigParser {
+    pub fn from_path(file: impl AsRef<Path>) -> Result<VariantConfig> {
+        let path = file.as_ref();
+        let content = read_non_empty_file(path)?;
+        Self::from_content(&content)
+    }
+
+    pub fn from_content(content: &str) -> Result<VariantConfig> {
+        let config: VariantConfig = serde_json5::from_str(content).map_err(ParsingError::from)?;
+        validate_execution(&config.execution)?;
         Ok(config)
     }
 }
@@ -48,8 +84,20 @@ impl NodeConfigParser {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{config::PeppyLauncherParser, error::Error};
+    use crate::{error::Error, launcher::PeppyLauncherParser, node::ContainerConfig};
     use tempfile::NamedTempFile;
+
+    /// Test helper: borrows the `ContainerConfig` from a parsed config.
+    fn container(config: &ParsedNodeConfig) -> &ContainerConfig {
+        config
+            .0
+            .execution
+            .as_ref()
+            .expect("expected execution")
+            .container
+            .as_ref()
+            .expect("expected container")
+    }
 
     #[test]
     fn test_parse_minimal_config() {
@@ -58,20 +106,27 @@ mod tests {
             manifest: {
                 name: "test_node",
                 tag: "0.1.0",
-                language: "rust",
             },
-            process: {
+            execution: {
+                language: "rust",
                 start_cmd: ["./target/release/test_node"],
             },
         }"#;
         let config = NodeConfigParser::from_content(json5).unwrap();
-        assert_eq!(config.manifest.name.as_str(), "test_node");
-        assert_eq!(config.manifest.tag, "0.1.0");
+        assert_eq!(config.0.manifest.name.as_str(), "test_node");
+        assert_eq!(config.0.manifest.tag, "0.1.0");
         assert_eq!(
-            config.process.as_ref().unwrap().start_cmd,
-            vec!["./target/release/test_node"]
+            config
+                .0
+                .execution
+                .as_ref()
+                .unwrap()
+                .start_cmd
+                .as_ref()
+                .unwrap(),
+            &vec!["./target/release/test_node"]
         );
-        assert!(config.parameters.is_empty());
+        assert!(config.0.execution.as_ref().unwrap().parameters.is_empty());
     }
 
     #[test]
@@ -81,10 +136,6 @@ mod tests {
             manifest: {
                 name: "camera_driver",
                 tag: "2.1.0",
-                language: "rust",
-            },
-            process: {
-                start_cmd: ["./target/release/camera_driver"],
             },
             interfaces: {
                 topics: {
@@ -92,20 +143,31 @@ mod tests {
                         { name: "/camera/image_raw" }
                     ]
                 }
-            }
+            },
+            execution: {
+                language: "rust",
+                start_cmd: ["./target/release/camera_driver"],
+            },
         }"#;
         let config = NodeConfigParser::from_content(json5).unwrap();
-        assert_eq!(config.manifest.name.as_str(), "camera_driver");
-        assert_eq!(config.manifest.tag, "2.1.0");
+        assert_eq!(config.0.manifest.name.as_str(), "camera_driver");
+        assert_eq!(config.0.manifest.tag, "2.1.0");
         assert_eq!(
-            config.manifest.language,
+            config.0.execution.as_ref().unwrap().language,
             crate::node::PeppygenLanguage::Rust
         );
         assert_eq!(
-            config.process.as_ref().unwrap().start_cmd,
-            vec!["./target/release/camera_driver"]
+            config
+                .0
+                .execution
+                .as_ref()
+                .unwrap()
+                .start_cmd
+                .as_ref()
+                .unwrap(),
+            &vec!["./target/release/camera_driver"]
         );
-        assert!(config.interfaces.topics.is_some());
+        assert!(config.0.interfaces.topics.is_some());
     }
 
     #[test]
@@ -149,16 +211,17 @@ mod tests {
             manifest: {
                 name: "container_node",
                 tag: "0.1.0",
-                language: "rust",
             },
-            container: {
-                def_file: "apptainer.def",
+            execution: {
+                language: "rust",
+                container: {
+                    def_file: "apptainer.def",
+                },
             },
         }"#;
         let config = NodeConfigParser::from_content(json5).unwrap();
-        assert!(config.process.is_none());
-        let container = config.container.as_ref().unwrap();
-        assert_eq!(container.def_file, "apptainer.def");
+        assert!(config.0.execution.as_ref().unwrap().start_cmd.is_none());
+        assert_eq!(container(&config).def_file, "apptainer.def");
     }
 
     #[test]
@@ -168,13 +231,13 @@ mod tests {
             manifest: {
                 name: "bad_node",
                 tag: "0.1.0",
+            },
+            execution: {
                 language: "rust",
-            },
-            process: {
                 start_cmd: ["./bin"],
-            },
-            container: {
-                def_file: "apptainer.def",
+                container: {
+                    def_file: "apptainer.def",
+                },
             },
         }"#;
         let result = NodeConfigParser::from_content(json5);
@@ -191,6 +254,8 @@ mod tests {
             manifest: {
                 name: "bare_node",
                 tag: "0.1.0",
+            },
+            execution: {
                 language: "rust",
             },
         }"#;
@@ -198,6 +263,26 @@ mod tests {
         assert!(matches!(
             result.unwrap_err(),
             Error::Parsing(ParsingError::NoProcessOrContainer)
+        ));
+    }
+
+    #[test]
+    fn test_empty_start_cmd() {
+        let json5 = r#"{
+            schema_version: 1,
+            manifest: {
+                name: "empty_cmd_node",
+                tag: "0.1.0",
+            },
+            execution: {
+                language: "rust",
+                start_cmd: [],
+            },
+        }"#;
+        let result = NodeConfigParser::from_content(json5);
+        assert!(matches!(
+            result.unwrap_err(),
+            Error::Parsing(ParsingError::EmptyStartCmd)
         ));
     }
 
@@ -219,6 +304,10 @@ mod tests {
         assert_eq!(msg, "local path cannot be empty");
     }
 
+    /// Top-level system directories (e.g. `/tmp`) are blocked as mount sources
+    /// because Lima 2.0+ rejects them as guest mount points and binding an
+    /// entire system directory into a container is almost always a mistake.
+    /// Users should mount a subdirectory instead (e.g. `/tmp/my_app`).
     #[test]
     fn test_container_config_rejects_system_path_mount() {
         let json5 = r#"{
@@ -226,11 +315,13 @@ mod tests {
             manifest: {
                 name: "bad_mount_node",
                 tag: "0.1.0",
-                language: "rust",
             },
-            container: {
-                def_file: "apptainer.def",
-                mount_paths: ["/tmp:/tmp:rw"],
+            execution: {
+                language: "rust",
+                container: {
+                    def_file: "apptainer.def",
+                    mount_paths: ["/tmp:/tmp:rw"],
+                },
             },
         }"#;
         let result = NodeConfigParser::from_content(json5);
@@ -244,6 +335,9 @@ mod tests {
         );
     }
 
+    /// macOS exposes `/private/tmp`, `/private/var`, etc. as aliases for
+    /// `/tmp`, `/var`, etc. The validation strips the `/private` prefix so
+    /// these paths are caught by the same blocked-mount-source check.
     #[test]
     fn test_container_config_rejects_private_system_path_mount() {
         let json5 = r#"{
@@ -251,11 +345,13 @@ mod tests {
             manifest: {
                 name: "bad_mount_node",
                 tag: "0.1.0",
-                language: "rust",
             },
-            container: {
-                def_file: "apptainer.def",
-                mount_paths: ["/private/tmp:/tmp:rw"],
+            execution: {
+                language: "rust",
+                container: {
+                    def_file: "apptainer.def",
+                    mount_paths: ["/private/tmp:/tmp:rw"],
+                },
             },
         }"#;
         let result = NodeConfigParser::from_content(json5);
@@ -276,17 +372,21 @@ mod tests {
             manifest: {
                 name: "good_mount_node",
                 tag: "0.1.0",
-                language: "rust",
             },
-            container: {
-                def_file: "apptainer.def",
-                mount_paths: ["/tmp/my_app_data:/tmp/my_app_data:rw"],
+            execution: {
+                language: "rust",
+                container: {
+                    def_file: "apptainer.def",
+                    mount_paths: ["/tmp/my_app_data:/tmp/my_app_data:rw"],
+                },
             },
         }"#;
         let config =
             NodeConfigParser::from_content(json5).expect("subdirectory mount should be accepted");
-        let mount_paths = config.container.unwrap().mount_paths.unwrap();
-        assert_eq!(mount_paths, vec!["/tmp/my_app_data:/tmp/my_app_data:rw"]);
+        assert_eq!(
+            container(&config).mount_paths.as_deref().unwrap(),
+            &["/tmp/my_app_data:/tmp/my_app_data:rw"]
+        );
     }
 
     #[test]
@@ -296,16 +396,22 @@ mod tests {
             manifest: {
                 name: "no_mount_node",
                 tag: "0.1.0",
-                language: "rust",
             },
-            container: {
-                def_file: "apptainer.def",
+            execution: {
+                language: "rust",
+                container: {
+                    def_file: "apptainer.def",
+                },
             },
         }"#;
         let config = NodeConfigParser::from_content(json5).expect("no mount_paths should be valid");
-        assert!(config.container.unwrap().mount_paths.is_none());
+        assert!(container(&config).mount_paths.is_none());
     }
 
+    // NOTE: These parse-time tests assert the raw `${parameters:...}` template
+    // strings. Actual substitution with concrete argument values happens at
+    // runtime in `resolve_mount_path_parameters()` (core-node-internal), which
+    // has its own test coverage.
     #[test]
     fn test_container_mount_path_with_parameter_ref() {
         let json5 = r#"{
@@ -313,22 +419,23 @@ mod tests {
             manifest: {
                 name: "camera_node",
                 tag: "0.1.0",
+            },
+            execution: {
                 language: "rust",
-            },
-            container: {
-                def_file: "apptainer.def",
-                mount_paths: ["${parameters:device_path}:/dev/video0:rw"],
-            },
-            parameters: {
-                device_path: "string",
+                parameters: {
+                    device_path: "string",
+                },
+                container: {
+                    def_file: "apptainer.def",
+                    mount_paths: ["${parameters:device_path}:/dev/video0:rw"],
+                },
             },
         }"#;
         let config = NodeConfigParser::from_content(json5)
             .expect("parameter ref in mount path should parse");
-        let mount_paths = config.container.unwrap().mount_paths.unwrap();
         assert_eq!(
-            mount_paths,
-            vec!["${parameters:device_path}:/dev/video0:rw"]
+            container(&config).mount_paths.as_deref().unwrap(),
+            &["${parameters:device_path}:/dev/video0:rw"]
         );
     }
 
@@ -339,25 +446,26 @@ mod tests {
             manifest: {
                 name: "camera_node",
                 tag: "0.1.0",
+            },
+            execution: {
                 language: "rust",
-            },
-            container: {
-                def_file: "apptainer.def",
-                mount_paths: ["${parameters:video.device_path}:/dev/video0:rw"],
-            },
-            parameters: {
-                video: {
-                    device_path: "string",
-                    frame_rate: "u16",
+                parameters: {
+                    video: {
+                        device_path: "string",
+                        frame_rate: "u16",
+                    },
+                },
+                container: {
+                    def_file: "apptainer.def",
+                    mount_paths: ["${parameters:video.device_path}:/dev/video0:rw"],
                 },
             },
         }"#;
         let config = NodeConfigParser::from_content(json5)
             .expect("nested parameter ref in mount path should parse");
-        let mount_paths = config.container.unwrap().mount_paths.unwrap();
         assert_eq!(
-            mount_paths,
-            vec!["${parameters:video.device_path}:/dev/video0:rw"]
+            container(&config).mount_paths.as_deref().unwrap(),
+            &["${parameters:video.device_path}:/dev/video0:rw"]
         );
     }
 
@@ -368,14 +476,16 @@ mod tests {
             manifest: {
                 name: "bad_ref_node",
                 tag: "0.1.0",
+            },
+            execution: {
                 language: "rust",
-            },
-            container: {
-                def_file: "apptainer.def",
-                mount_paths: ["${parameters:nonexistent}:/data:rw"],
-            },
-            parameters: {
-                device_path: "string",
+                parameters: {
+                    device_path: "string",
+                },
+                container: {
+                    def_file: "apptainer.def",
+                    mount_paths: ["${parameters:nonexistent}:/data:rw"],
+                },
             },
         }"#;
         let result = NodeConfigParser::from_content(json5);
@@ -397,14 +507,16 @@ mod tests {
             manifest: {
                 name: "bad_type_node",
                 tag: "0.1.0",
+            },
+            execution: {
                 language: "rust",
-            },
-            container: {
-                def_file: "apptainer.def",
-                mount_paths: ["${parameters:frame_rate}:/data:rw"],
-            },
-            parameters: {
-                frame_rate: "u16",
+                parameters: {
+                    frame_rate: "u16",
+                },
+                container: {
+                    def_file: "apptainer.def",
+                    mount_paths: ["${parameters:frame_rate}:/data:rw"],
+                },
             },
         }"#;
         let result = NodeConfigParser::from_content(json5);
@@ -428,20 +540,24 @@ mod tests {
             manifest: {
                 name: "dynamic_mount_node",
                 tag: "0.1.0",
+            },
+            execution: {
                 language: "rust",
-            },
-            container: {
-                def_file: "apptainer.def",
-                mount_paths: ["${parameters:path}:/container/data:rw"],
-            },
-            parameters: {
-                path: "string",
+                parameters: {
+                    path: "string",
+                },
+                container: {
+                    def_file: "apptainer.def",
+                    mount_paths: ["${parameters:path}:/container/data:rw"],
+                },
             },
         }"#;
         let config = NodeConfigParser::from_content(json5)
             .expect("parameter ref source should skip blocked-path check at parse time");
-        let mount_paths = config.container.unwrap().mount_paths.unwrap();
-        assert_eq!(mount_paths, vec!["${parameters:path}:/container/data:rw"]);
+        assert_eq!(
+            container(&config).mount_paths.as_deref().unwrap(),
+            &["${parameters:path}:/container/data:rw"]
+        );
     }
 
     #[test]
@@ -451,17 +567,18 @@ mod tests {
             manifest: {
                 name: "container_node",
                 tag: "0.1.0",
-                language: "rust",
             },
-            container: {
-                def_file: "apptainer.def",
+            execution: {
+                language: "rust",
+                container: {
+                    def_file: "apptainer.def",
+                },
             },
         }"#;
         let config = NodeConfigParser::from_content(json5).unwrap();
-        let container = config.container.as_ref().unwrap();
-        assert!(container.apptainer_build_extra_args.is_none());
-        assert!(container.apptainer_run_extra_args.is_none());
-        assert!(container.lima_shell_extra_args.is_none());
+        assert!(container(&config).apptainer_build_extra_args.is_none());
+        assert!(container(&config).apptainer_run_extra_args.is_none());
+        assert!(container(&config).lima_shell_extra_args.is_none());
     }
 
     #[test]
@@ -471,27 +588,29 @@ mod tests {
             manifest: {
                 name: "container_node",
                 tag: "0.1.0",
-                language: "rust",
             },
-            container: {
-                def_file: "apptainer.def",
-                apptainer_build_extra_args: ["--no-setgroups", "--force"],
-                apptainer_run_extra_args: ["--no-setgroups"],
-                lima_shell_extra_args: ["--timeout", "30"],
+            execution: {
+                language: "rust",
+                container: {
+                    def_file: "apptainer.def",
+                    apptainer_build_extra_args: ["--no-setgroups", "--force"],
+                    apptainer_run_extra_args: ["--no-setgroups"],
+                    lima_shell_extra_args: ["--timeout", "30"],
+                },
             },
         }"#;
         let config = NodeConfigParser::from_content(json5).unwrap();
-        let container = config.container.as_ref().unwrap();
+        let c = container(&config);
         assert_eq!(
-            container.apptainer_build_extra_args.as_deref().unwrap(),
+            c.apptainer_build_extra_args.as_deref().unwrap(),
             &["--no-setgroups", "--force"]
         );
         assert_eq!(
-            container.apptainer_run_extra_args.as_deref().unwrap(),
+            c.apptainer_run_extra_args.as_deref().unwrap(),
             &["--no-setgroups"]
         );
         assert_eq!(
-            container.lima_shell_extra_args.as_deref().unwrap(),
+            c.lima_shell_extra_args.as_deref().unwrap(),
             &["--timeout", "30"]
         );
     }
@@ -503,28 +622,116 @@ mod tests {
             manifest: {
                 name: "container_node",
                 tag: "0.1.0",
-                language: "rust",
             },
-            container: {
-                def_file: "apptainer.def",
-                apptainer_build_extra_args: [],
-                apptainer_run_extra_args: [],
-                lima_shell_extra_args: [],
+            execution: {
+                language: "rust",
+                container: {
+                    def_file: "apptainer.def",
+                    apptainer_build_extra_args: [],
+                    apptainer_run_extra_args: [],
+                    lima_shell_extra_args: [],
+                },
             },
         }"#;
         let config = NodeConfigParser::from_content(json5).unwrap();
-        let container = config.container.as_ref().unwrap();
+        let c = container(&config);
         assert_eq!(
-            container.apptainer_build_extra_args.as_deref().unwrap(),
+            c.apptainer_build_extra_args.as_deref().unwrap(),
             &[] as &[String]
         );
         assert_eq!(
-            container.apptainer_run_extra_args.as_deref().unwrap(),
+            c.apptainer_run_extra_args.as_deref().unwrap(),
             &[] as &[String]
         );
         assert_eq!(
-            container.lima_shell_extra_args.as_deref().unwrap(),
+            c.lima_shell_extra_args.as_deref().unwrap(),
             &[] as &[String]
+        );
+    }
+
+    #[test]
+    fn test_parse_config_with_default_variant_no_execution() {
+        let json5 = r#"{
+            schema_version: 1,
+            manifest: {
+                name: "uvc_camera",
+                tag: "0.1.0",
+                variants: [
+                    { name: "default", source: { local: "./variants/default" } },
+                    { name: "mujoco", source: { local: "./variants/mujoco" } },
+                ],
+            },
+            interfaces: {
+                topics: {
+                    emits: [{ name: "image" }],
+                },
+            },
+        }"#;
+        let config = NodeConfigParser::from_content(json5).unwrap();
+        assert_eq!(config.0.manifest.name.as_str(), "uvc_camera");
+        assert!(config.0.execution.is_none());
+        assert!(config.has_default_variant());
+    }
+
+    #[test]
+    fn test_parse_config_with_default_variant_and_execution_rejected() {
+        let json5 = r#"{
+            schema_version: 1,
+            manifest: {
+                name: "uvc_camera",
+                tag: "0.1.0",
+                variants: [
+                    { name: "default", source: { local: "./variants/default" } },
+                ],
+            },
+            execution: {
+                language: "rust",
+                start_cmd: ["./target/release/uvc_camera"],
+            },
+        }"#;
+        let result = NodeConfigParser::from_content(json5);
+        assert!(matches!(
+            result.unwrap_err(),
+            Error::Parsing(ParsingError::ExecutionWithDefaultVariant)
+        ));
+    }
+
+    #[test]
+    fn test_parse_config_no_execution_no_default_variant_rejected() {
+        let json5 = r#"{
+            schema_version: 1,
+            manifest: {
+                name: "uvc_camera",
+                tag: "0.1.0",
+                variants: [
+                    { name: "mujoco", source: { local: "./variants/mujoco" } },
+                ],
+            },
+        }"#;
+        let result = NodeConfigParser::from_content(json5);
+        assert!(matches!(
+            result.unwrap_err(),
+            Error::Parsing(ParsingError::MissingExecution)
+        ));
+    }
+
+    #[test]
+    fn test_parse_config_no_execution_with_default_variant_accepted() {
+        let json5 = r#"{
+            schema_version: 1,
+            manifest: {
+                name: "uvc_camera",
+                tag: "0.1.0",
+                variants: [
+                    { name: "default", source: { local: "./variants/my_default_variant" } },
+                ],
+            },
+        }"#;
+        let result = NodeConfigParser::from_content(json5);
+        assert!(
+            result.is_ok(),
+            "expected parsing to succeed when a 'default' variant is present, but got: {:?}",
+            result.unwrap_err()
         );
     }
 }

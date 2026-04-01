@@ -14,10 +14,12 @@ use tokio::task::JoinHandle;
 use tracing_subscriber::fmt::MakeWriter;
 
 pub fn override_start_cmd(peppy_json5: &Path) {
-    let mut cfg = NodeConfigParser::from_path(peppy_json5).expect("peppy.json5 should read");
-    let build = cfg.process.as_mut().unwrap();
-    build.start_cmd = vec!["sleep".to_string(), "4".to_string()];
-    build.add_cmd = None;
+    let mut cfg = NodeConfigParser::from_path(peppy_json5)
+        .expect("peppy.json5 should read")
+        .into_resolved()
+        .expect("test node should resolve");
+    cfg.execution.start_cmd = Some(vec!["sleep".to_string(), "4".to_string()]);
+    cfg.execution.add_cmd = None;
 
     let updated_content = serde_json::to_string_pretty(&cfg).expect("peppy.json5 should serialize");
     std::fs::write(peppy_json5, updated_content).expect("peppy.json5 should update");
@@ -25,9 +27,15 @@ pub fn override_start_cmd(peppy_json5: &Path) {
     config::fingerprint::create_codegen_fingerprint(peppy_json5, Path::new(PEPPYGEN_OUTPUT_PATH));
 }
 
+/// Removes the `add_cmd` from a node's config so that integration tests can
+/// exercise node operations (add, remove, runtime config) without triggering
+/// the actual build step. Regenerates the codegen fingerprint after writing.
 pub fn disable_add_cmd(peppy_json5: &Path) {
-    let mut cfg = NodeConfigParser::from_path(peppy_json5).expect("peppy.json5 should read");
-    cfg.process.as_mut().unwrap().add_cmd = None;
+    let mut cfg = NodeConfigParser::from_path(peppy_json5)
+        .expect("peppy.json5 should read")
+        .into_resolved()
+        .expect("test node should resolve");
+    cfg.execution.add_cmd = None;
 
     let updated_content = serde_json::to_string_pretty(&cfg).expect("peppy.json5 should serialize");
     std::fs::write(peppy_json5, updated_content).expect("peppy.json5 should update");

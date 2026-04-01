@@ -10,7 +10,7 @@ use chrono::Local;
 use config::consts::{PeppyDirs, RUNTIME_CONFIG_VAR_NAME};
 use config::node::{Name, PeppygenLanguage};
 use config::runtime::RuntimeConfig;
-use config::{AnyType, NodeArguments};
+use config::{AnyType, resolve_parameter_path};
 use futures::FutureExt;
 use node_stack::{NodeEntity, NodeStack};
 use peppylib::encoding::health::NodeHealthRequest;
@@ -20,6 +20,7 @@ use peppylib::messaging::{
 };
 use peppylib::types::Payload;
 use peppylib::{ActionMessenger, MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
+use std::collections::BTreeMap;
 use std::collections::VecDeque;
 use std::fs::File;
 use std::io::Write;
@@ -141,8 +142,8 @@ impl GoalHandler for NodeStartGoalHandler {
 /// Validates that all required parameters from the schema are present in the provided arguments.
 /// Returns a list of all missing parameter paths (e.g., ["device.physical", "video.frame_rate"]).
 fn validate_parameters(
-    schema: &NodeArguments,
-    arguments: &NodeArguments,
+    schema: &std::collections::BTreeMap<String, AnyType>,
+    arguments: &std::collections::BTreeMap<String, AnyType>,
     prefix: &str,
 ) -> Vec<String> {
     let mut missing = Vec::new();
@@ -594,7 +595,7 @@ async fn process_node_start(
     };
 
     let sccache_injected =
-        super::inject_rust_build_env(&mut env_vars, entity.config().manifest.language);
+        super::inject_rust_build_env(&mut env_vars, entity.config().execution.language);
     if sccache_injected {
         let _ = ctx.feedback_tx.send(FeedbackLine {
             stream: FeedbackStream::Stdout,
@@ -609,7 +610,7 @@ async fn process_node_start(
 
     // Validate that all required parameters are provided before starting the node
     let missing_params = validate_parameters(
-        &entity.config().parameters,
+        &entity.config().execution.parameters,
         &runtime_config.node_instance.arguments,
         "",
     );
@@ -619,7 +620,7 @@ async fn process_node_start(
         return NodeStartResult::failure(msg);
     }
 
-    let is_container = entity.config().container.is_some();
+    let is_container = entity.config().execution.container.is_some();
 
     // Prepare instance directory:
     // - Container nodes: create empty dir (SIF image is self-contained)
@@ -649,7 +650,7 @@ async fn process_node_start(
     // Spawn the node process:
     // - Container nodes: apptainer run <sif>
     // - Process nodes: execute start_cmd
-    let container_config = entity.config().container.as_ref();
+    let container_config = entity.config().execution.container.as_ref();
     let raw_mount_paths = container_config
         .and_then(|c| c.mount_paths.as_deref())
         .unwrap_or_default();
@@ -1050,13 +1051,13 @@ pub fn start_node(
 ) -> std::io::Result<Child> {
     let config = entity.config();
     let manifest = &config.manifest;
-    let build = config.process.as_ref().ok_or_else(|| {
-        std::io::Error::other(
-            "node has no process config (container nodes cannot be started this way)",
-        )
-    })?;
+    let start_cmd = config
+        .execution
+        .start_cmd
+        .as_ref()
+        .ok_or_else(|| std::io::Error::other("node has no execution.start_cmd"))?;
 
-    let Some((program, args)) = build.start_cmd.split_first() else {
+    let Some((program, args)) = start_cmd.split_first() else {
         return Err(std::io::Error::other("start_cmd is empty"));
     };
 
@@ -1071,7 +1072,7 @@ pub fn start_node(
 
     // Log the command being executed to the log file before attempting to spawn
     {
-        let full_cmd = build.start_cmd.join(" ");
+        let full_cmd = start_cmd.join(" ");
         if let Ok(mut file) = log_file.lock() {
             let timestamp = Local::now().format("%Y-%m-%dT%H:%M:%S%.3f");
             let _ = writeln!(
@@ -1113,12 +1114,12 @@ pub fn start_node(
 
     // Force unbuffered stdout/stderr for Python nodes. Without this, Python
     // defaults to full buffering when stdout is a pipe, delaying log capture.
-    if manifest.language == PeppygenLanguage::Python {
+    if config.execution.language == PeppygenLanguage::Python {
         command.env("PYTHONUNBUFFERED", "1");
     }
 
     command.spawn().map_err(|e| {
-        let full_cmd = build.start_cmd.join(" ");
+        let full_cmd = start_cmd.join(" ");
         std::io::Error::other(format!("failed to execute start_cmd `{}`: {}", full_cmd, e))
     })
 }
@@ -1132,7 +1133,7 @@ pub fn start_node(
 /// against the blocked system directories list.
 fn resolve_mount_path_parameters(
     mount_paths: &[String],
-    arguments: &NodeArguments,
+    arguments: &BTreeMap<String, AnyType>,
 ) -> std::result::Result<Vec<String>, String> {
     let mut resolved = Vec::with_capacity(mount_paths.len());
     for mount in mount_paths {
@@ -1147,7 +1148,7 @@ fn resolve_mount_path_parameters(
                 .ok_or_else(|| format!("Unclosed parameter reference in mount path: {mount}"))?;
             let dot_path = &after_prefix[..end];
 
-            match config::resolve_parameter_path(arguments, dot_path) {
+            match resolve_parameter_path(arguments, dot_path) {
                 Some(AnyType::String(value)) => {
                     result.push_str(value);
                 }
@@ -1542,7 +1543,7 @@ mod tests {
     #[test]
     fn test_resolve_mount_path_parameters_simple() {
         let mount_paths = vec!["${parameters:device_path}:/dev/video0:rw".to_string()];
-        let mut arguments = NodeArguments::new();
+        let mut arguments = BTreeMap::new();
         arguments.insert(
             "device_path".to_string(),
             AnyType::String("/dev/video0".to_string()),
@@ -1555,12 +1556,12 @@ mod tests {
     #[test]
     fn test_resolve_mount_path_parameters_nested() {
         let mount_paths = vec!["${parameters:video.device_path}:/dev/video0:rw".to_string()];
-        let mut video = std::collections::BTreeMap::new();
+        let mut video = BTreeMap::new();
         video.insert(
             "device_path".to_string(),
             AnyType::String("/dev/video1".to_string()),
         );
-        let mut arguments = NodeArguments::new();
+        let mut arguments = BTreeMap::new();
         arguments.insert("video".to_string(), AnyType::Object(video));
 
         let resolved = resolve_mount_path_parameters(&mount_paths, &arguments).unwrap();
@@ -1570,7 +1571,7 @@ mod tests {
     #[test]
     fn test_resolve_mount_path_parameters_passthrough() {
         let mount_paths = vec!["/data/models:/opt/models:ro".to_string()];
-        let arguments = NodeArguments::new();
+        let arguments = BTreeMap::new();
 
         let resolved = resolve_mount_path_parameters(&mount_paths, &arguments).unwrap();
         assert_eq!(resolved, vec!["/data/models:/opt/models:ro"]);
@@ -1579,7 +1580,7 @@ mod tests {
     #[test]
     fn test_resolve_mount_path_parameters_rejects_blocked_path() {
         let mount_paths = vec!["${parameters:path}:/container:rw".to_string()];
-        let mut arguments = NodeArguments::new();
+        let mut arguments = BTreeMap::new();
         arguments.insert("path".to_string(), AnyType::String("/tmp".to_string()));
 
         let result = resolve_mount_path_parameters(&mount_paths, &arguments);

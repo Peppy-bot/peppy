@@ -4,19 +4,10 @@
   manifest: {
     name: "{{ node_name }}",
     tag: "0.1.0",
-    language: "rust",
     labels: [
       "controller",
     ],
   },
-  process: {
-    start_cmd: [
-      "cargo",
-      "run",
-      "--release"
-    ]
-  },
-  parameters: {},
   interfaces: {
     actions: {
       exposes: [
@@ -60,5 +51,14 @@
         }
       ],
     },
-  }
+  },
+  execution: {
+    language: "rust",
+    parameters: {},
+    start_cmd: [
+      "cargo",
+      "run",
+      "--release"
+    ]
+  },
 }

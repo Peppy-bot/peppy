@@ -8,10 +8,10 @@ pub use node::FORBIDDEN_ENV_KEYS;
 
 use crate::Result;
 use config::{
-    AnyType, NodeArguments,
+    AnyType,
     consts::PeppyDirs,
-    node::{Manifest, Name, NodeConfig, PeppygenLanguage, Process},
-    peppy_config::CURRENT_SCHEMA_VERSION,
+    launcher::CURRENT_SCHEMA_VERSION,
+    node::{Execution, Manifest, Name, NodeConfig, PeppygenLanguage},
 };
 use names_generator2::get_random;
 use node_stack::NodeStack;
@@ -26,6 +26,9 @@ use tokio::sync::{Mutex, oneshot};
 use tracing::info;
 
 const CORE_NODE_TAG: &str = "core-node";
+
+#[cfg(test)]
+mod tests;
 
 /// Clears instance directories from previous runs.
 fn clear_instances_dir(peppy_dirs: &PeppyDirs) {
@@ -42,18 +45,18 @@ pub struct CoreNodeArguments {
     pub node_start_health_timeout: Duration,
 }
 
-impl From<CoreNodeArguments> for NodeArguments {
-    fn from(args: CoreNodeArguments) -> Self {
-        let mut map = BTreeMap::new();
-        map.insert(
+impl CoreNodeArguments {
+    fn into_parameters(self) -> BTreeMap<String, AnyType> {
+        let mut params = BTreeMap::new();
+        params.insert(
             "node_startup_timeout_ms".to_string(),
-            AnyType::UInt(args.node_startup_timeout.as_millis() as u64),
+            AnyType::UInt(self.node_startup_timeout.as_millis() as u64),
         );
-        map.insert(
+        params.insert(
             "node_start_health_timeout_ms".to_string(),
-            AnyType::UInt(args.node_start_health_timeout.as_millis() as u64),
+            AnyType::UInt(self.node_start_health_timeout.as_millis() as u64),
         );
-        map
+        params
     }
 }
 
@@ -101,16 +104,17 @@ impl CoreNode {
             manifest: Manifest {
                 name: manifest_name,
                 tag: CORE_NODE_TAG.to_string(),
-                language: PeppygenLanguage::Rust,
                 labels: None,
+                variants: None,
                 depends_on: None,
             },
-            process: Some(Process {
+            execution: Execution {
+                language: PeppygenLanguage::Rust,
+                parameters: node_arguments.into_parameters(),
                 add_cmd: None,
-                start_cmd: vec![],
-            }),
-            container: None,
-            parameters: node_arguments.into(),
+                start_cmd: None,
+                container: None,
+            },
             interfaces: Default::default(),
         };
 
@@ -227,6 +231,7 @@ impl CoreNode {
                 self.instance_id(),
                 self.node_name(),
                 Arc::clone(&self.node_stack),
+                self.peppy_dirs.clone(),
                 self.node_startup_timeout,
             )
             .await?,

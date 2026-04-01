@@ -2,7 +2,8 @@ use crate::Result;
 use crate::encoding::{NodeSyncRequest, NodeSyncResponse};
 use crate::names;
 use config::consts::PeppyDirs;
-use config::node::NodeConfigParser;
+use config::node::{NodeConfigParser, VariantConfigParser};
+use config::source::DeploymentSource;
 use generator::{ConsumedActionMessage, DeploymentInterface, InterfaceVariant};
 use node_stack::NodeStack;
 use peppylib::messaging::ServiceRequestContext;
@@ -153,7 +154,14 @@ async fn handle_node_sync_request_inner(
 
     // Validate dependencies before generation and collect consumed interfaces
     let node_config_path = request.node_root_dir.join(config::consts::NODE_CONFIG_FILE);
-    let (consumed_interfaces, language) = if !node_config_path.exists() {
+    let (
+        consumed_interfaces,
+        language,
+        variants,
+        root_manifest,
+        root_interfaces,
+        root_schema_version,
+    ) = if !node_config_path.exists() {
         return NodeSyncResponse::failure(format!(
             "Node config file does not exist: {}",
             node_config_path.display()
@@ -164,9 +172,10 @@ async fn handle_node_sync_request_inner(
             Ok(node_config) => {
                 // Validate dependencies exist in the node stack
                 let dep_errors = node_stack::validate_dependency_specs(
-                    &node_config,
-                    node_config.manifest.name.as_str(),
-                    &node_config.manifest.tag,
+                    node_config.manifest(),
+                    node_config.interfaces(),
+                    node_config.manifest_name(),
+                    node_config.manifest_tag(),
                     |name, tag| node_stack.find(name, tag).map(|e| e.config().clone()),
                 );
 
@@ -196,6 +205,14 @@ async fn handle_node_sync_request_inner(
                                 interface_name,
                                 dependency,
                                 dependency_tag
+                            ));
+                        }
+                        node_stack::NodeStackError::UndeclaredLocalNodeId {
+                            local_node_id, ..
+                        } => {
+                            missing_interfaces.push(format!(
+                                "references undeclared local_node_id `{}`",
+                                local_node_id
                             ));
                         }
                         _ => {}
@@ -229,17 +246,32 @@ async fn handle_node_sync_request_inner(
 
                     return NodeSyncResponse::failure(format!(
                         "`{}:{} {}",
-                        node_config.manifest.name.as_str(),
-                        node_config.manifest.tag,
+                        node_config.manifest_name(),
+                        node_config.manifest_tag(),
                         errors.join("; ")
                     ))
                     .encode();
                 }
 
                 // Collect consumed interfaces with resolved message formats
-                let interfaces = collect_consumed_interfaces(&node_config, node_stack);
-                let language = node_config.manifest.language;
-                (interfaces, language)
+                let interfaces = collect_consumed_interfaces(
+                    node_config.manifest(),
+                    node_config.interfaces(),
+                    node_stack,
+                );
+                let language = node_config.execution().map(|r| r.language);
+                let variants = node_config.manifest().variants.clone();
+                let root_manifest = node_config.manifest().clone();
+                let root_interfaces = node_config.interfaces().clone();
+                let root_schema_version = node_config.schema_version();
+                (
+                    interfaces,
+                    language,
+                    variants,
+                    root_manifest,
+                    root_interfaces,
+                    root_schema_version,
+                )
             }
             Err(e) => {
                 return NodeSyncResponse::failure(format!("Failed to parse node config: {}", e))
@@ -253,49 +285,203 @@ async fn handle_node_sync_request_inner(
         git_hash,
     } = request;
 
-    match tokio::task::spawn_blocking(move || -> Result<()> {
+    let node_root_dir_for_variants = node_root_dir.clone();
+    let git_hash_for_variants = git_hash.clone();
+    let consumed_interfaces_for_variants = consumed_interfaces.clone();
+    let peppy_dirs_for_variants = peppy_dirs.clone();
+
+    // Generate peppygen for the root node (skip if execution is absent, e.g. default-variant nodes).
+    if let Some(language) = language {
+        match tokio::task::spawn_blocking(move || -> Result<()> {
+            remove_previous_peppy_dir(&node_root_dir);
+            generate_peppygen_for_node(
+                language,
+                &node_root_dir,
+                consumed_interfaces,
+                &git_hash,
+                &peppy_dirs,
+                generator::CrateDeployMode::default(),
+                None,
+            )
+        })
+        .await
+        {
+            Ok(Ok(())) => {}
+            Ok(Err(crate::Error::GeneratorError(e))) => {
+                return NodeSyncResponse::failure(format!("Failed to generate peppygen: {}", e))
+                    .encode();
+            }
+            Ok(Err(crate::Error::Io(e))) => {
+                return NodeSyncResponse::failure(format!("Failed to write git hash file: {}", e))
+                    .encode();
+            }
+            Ok(Err(e)) => {
+                return NodeSyncResponse::failure(format!("Failed to sync node: {}", e)).encode();
+            }
+            Err(e) => {
+                return NodeSyncResponse::failure(format!(
+                    "Failed to generate peppygen (generate task failed): {}",
+                    e
+                ))
+                .encode();
+            }
+        };
+    } else {
         remove_previous_peppy_dir(&node_root_dir);
-        generate_peppygen_for_node(
-            language,
-            &node_root_dir,
-            consumed_interfaces,
-            &git_hash,
-            &peppy_dirs,
-            generator::CrateDeployMode::default(),
-        )
-    })
-    .await
-    {
-        Ok(Ok(())) => {}
-        Ok(Err(crate::Error::GeneratorError(e))) => {
-            return NodeSyncResponse::failure(format!("Failed to generate peppygen: {}", e))
+    }
+
+    // Sync variants: each variant gets its own .peppy directory using the root's interfaces
+    if let Some(variants) = variants {
+        for variant in &variants {
+            let DeploymentSource::Local(local) = &variant.source else {
+                debug!(
+                    "Skipping non-local variant '{}' during sync",
+                    variant.name.as_str()
+                );
+                continue;
+            };
+
+            let variant_dir = if local.local.is_relative() {
+                node_root_dir_for_variants.join(&local.local)
+            } else {
+                local.local.clone()
+            };
+
+            if !variant_dir.exists() {
+                return NodeSyncResponse::failure(format!(
+                    "Variant '{}' source directory does not exist: {}",
+                    variant.name.as_str(),
+                    variant_dir.display()
+                ))
                 .encode();
+            }
+
+            let variant_config_path = variant_dir.join(config::consts::NODE_CONFIG_FILE);
+            let variant_config = match VariantConfigParser::from_path(&variant_config_path) {
+                Ok(vc) => vc,
+                Err(e) => {
+                    return NodeSyncResponse::failure(format!(
+                        "Failed to parse variant '{}' config: {}",
+                        variant.name.as_str(),
+                        e
+                    ))
+                    .encode();
+                }
+            };
+
+            let variant_language = variant_config.execution.language;
+
+            // Write a merged NodeConfig (root manifest + root interfaces + variant execution)
+            // so the generator can read it as a standard NodeConfig.
+            // Strip the variants list — it is no longer relevant once resolved and
+            // would trigger a validation error with a "default" variant + execution.
+            let mut merged_manifest = root_manifest.clone();
+            merged_manifest.variants = None;
+            let merged_config = config::node::NodeConfig {
+                schema_version: root_schema_version,
+                manifest: merged_manifest,
+                interfaces: root_interfaces.clone(),
+                execution: variant_config.execution,
+            };
+            let merged_json5 = match serde_json5::to_string(&merged_config) {
+                Ok(json) => json,
+                Err(e) => {
+                    return NodeSyncResponse::failure(format!(
+                        "Failed to serialize merged config for variant '{}': {}",
+                        variant.name.as_str(),
+                        e
+                    ))
+                    .encode();
+                }
+            };
+            // Write the merged config to a temporary file so the generator can
+            // read a full NodeConfig without overwriting the user's peppy.json5.
+            let variant_merged_config_file = match tempfile::Builder::new()
+                .prefix(".peppy-merged-")
+                .suffix(".json5")
+                .tempfile()
+            {
+                Ok(mut f) => {
+                    if let Err(e) = std::io::Write::write_all(&mut f, merged_json5.as_bytes()) {
+                        return NodeSyncResponse::failure(format!(
+                            "Failed to write merged config for variant '{}': {}",
+                            variant.name.as_str(),
+                            e
+                        ))
+                        .encode();
+                    }
+                    f
+                }
+                Err(e) => {
+                    return NodeSyncResponse::failure(format!(
+                        "Failed to create temp file for variant '{}': {}",
+                        variant.name.as_str(),
+                        e
+                    ))
+                    .encode();
+                }
+            };
+            let variant_merged_config_path = variant_merged_config_file.path().to_path_buf();
+
+            let variant_interfaces = consumed_interfaces_for_variants.clone();
+            let variant_git_hash = git_hash_for_variants.clone();
+            let variant_peppy_dirs = peppy_dirs_for_variants.clone();
+
+            match tokio::task::spawn_blocking(move || -> Result<()> {
+                // Keep the temp file alive for the duration of generation;
+                // it is automatically deleted when `_merged_config` is dropped.
+                let _merged_config = variant_merged_config_file;
+                remove_previous_peppy_dir(&variant_dir);
+                generate_peppygen_for_node(
+                    variant_language,
+                    &variant_dir,
+                    variant_interfaces,
+                    &variant_git_hash,
+                    &variant_peppy_dirs,
+                    generator::CrateDeployMode::default(),
+                    Some(&variant_merged_config_path),
+                )?;
+                // Re-fingerprint using the variant's own peppy.json5 so that
+                // node-add verification (which reads the variant's config) finds
+                // a matching hash.
+                config::fingerprint::generate_node_config_fingerprint(
+                    variant_dir.join(config::consts::NODE_CONFIG_FILE),
+                    variant_dir.join(config::consts::PEPPYGEN_OUTPUT_PATH),
+                )
+                .map_err(generator::GeneratorError::Config)?;
+                Ok(())
+            })
+            .await
+            {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => {
+                    return NodeSyncResponse::failure(format!(
+                        "Failed to generate peppygen for variant '{}': {}",
+                        variant.name.as_str(),
+                        e
+                    ))
+                    .encode();
+                }
+                Err(e) => {
+                    return NodeSyncResponse::failure(format!(
+                        "Failed to generate peppygen for variant '{}' (task failed): {}",
+                        variant.name.as_str(),
+                        e
+                    ))
+                    .encode();
+                }
+            }
         }
-        Ok(Err(crate::Error::Io(e))) => {
-            return NodeSyncResponse::failure(format!("Failed to write git hash file: {}", e))
-                .encode();
-        }
-        Ok(Err(e)) => {
-            return NodeSyncResponse::failure(format!("Failed to sync node: {}", e)).encode();
-        }
-        Err(e) => {
-            return NodeSyncResponse::failure(format!(
-                "Failed to generate peppygen (generate task failed): {}",
-                e
-            ))
-            .encode();
-        }
-    };
+    }
 
     NodeSyncResponse::success().encode()
 }
 
 /// Builds a lookup from `local_id` → `(dep_name, dep_tag)` using the node's `depends_on.nodes`.
 fn build_dependency_lookup(
-    config: &config::node::NodeConfig,
+    manifest: &config::node::Manifest,
 ) -> std::collections::HashMap<String, (String, String)> {
-    config
-        .manifest
+    manifest
         .depends_on
         .as_ref()
         .map(|d| {
@@ -315,14 +501,15 @@ fn build_dependency_lookup(
 /// Collects consumed interfaces from a node config and resolves their message formats
 /// by looking up the exposed interfaces from dependency nodes in the node stack.
 pub fn collect_consumed_interfaces(
-    node_config: &config::node::NodeConfig,
+    manifest: &config::node::Manifest,
+    interfaces_cfg: &config::node::Interfaces,
     node_stack: &NodeStack,
 ) -> Vec<DeploymentInterface> {
     let mut interfaces = Vec::new();
-    let dep_lookup = build_dependency_lookup(node_config);
+    let dep_lookup = build_dependency_lookup(manifest);
 
     // Collect consumed topics
-    if let Some(topic_interfaces) = &node_config.interfaces.topics
+    if let Some(topic_interfaces) = &interfaces_cfg.topics
         && let Some(consumed_topics) = &topic_interfaces.consumes
     {
         for consumed_topic in consumed_topics {
@@ -362,7 +549,7 @@ pub fn collect_consumed_interfaces(
     }
 
     // Collect consumed services
-    if let Some(service_interfaces) = &node_config.interfaces.services
+    if let Some(service_interfaces) = &interfaces_cfg.services
         && let Some(consumed_services) = &service_interfaces.consumes
     {
         for consumed_service in consumed_services {
@@ -395,7 +582,7 @@ pub fn collect_consumed_interfaces(
     }
 
     // Collect consumed actions
-    if let Some(action_interfaces) = &node_config.interfaces.actions
+    if let Some(action_interfaces) = &interfaces_cfg.actions
         && let Some(consumed_actions) = &action_interfaces.consumes
     {
         for consumed_action in consumed_actions {
@@ -459,6 +646,7 @@ pub fn generate_peppygen_for_node(
     git_hash: &str,
     peppy_dirs: &PeppyDirs,
     deploy_mode: generator::CrateDeployMode,
+    config_path: Option<&std::path::Path>,
 ) -> crate::Result<()> {
     generator::generate_peppygen_lib(
         language,
@@ -467,6 +655,7 @@ pub fn generate_peppygen_for_node(
         git_hash,
         peppy_dirs,
         deploy_mode,
+        config_path,
     )?;
 
     Ok(())

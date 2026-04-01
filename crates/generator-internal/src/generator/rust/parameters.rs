@@ -9,14 +9,14 @@ use std::collections::BTreeMap;
 
 /// Generates Rust struct code from node parameters configuration.
 ///
-/// This function takes a `NodeArguments` map (where values are type specifications like "string", "u16", etc.
+/// This function takes a `ParameterSchema` map (where values are type specifications like "string", "u16", etc.
 /// or nested objects) and generates Rust struct definitions with proper typing.
 ///
 /// Each top-level parameter field gets its own module to namespace nested types.
 /// Always generates a `Parameters` struct, even if empty.
 ///
 /// Returns an error if any field name contains invalid characters.
-pub fn generate_parameters_struct(parameters: &config::NodeArguments) -> Result<String> {
+pub fn generate_parameters_struct(parameters: &config::ParameterSchema) -> Result<String> {
     validate_parameter_schema(parameters)?;
 
     let mut main_fields = Vec::new();
@@ -71,7 +71,7 @@ pub fn generate_parameters_struct(parameters: &config::NodeArguments) -> Result<
 }
 
 /// Validates that parameter specs only contain supported field names and schema shapes.
-pub fn validate_parameter_schema(parameters: &config::NodeArguments) -> Result<()> {
+pub fn validate_parameter_schema(parameters: &config::ParameterSchema) -> Result<()> {
     use config::consts::ALLOWED_CONFIG_CHARS;
 
     fn is_valid_field_name(name: &str, allowed: &str) -> bool {

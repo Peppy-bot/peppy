@@ -1,5 +1,5 @@
 use config::consts::PEPPYGEN_OUTPUT_PATH;
-use config::peppy_config::Name;
+use config::launcher::Name;
 use config::runtime::{NodeInstance, RuntimeConfig};
 use peppylib::encoding::health::{NodeHealthRequest, NodeHealthResponse};
 use peppylib::messaging::{NODE_HEALTH_SERVICE, NODE_READY_SERVICE, SHUTDOWN_SERVICE};
@@ -108,14 +108,14 @@ async fn daemon_runner_succeed() {
       manifest: {
         name: "test_node",
         tag: "0.1.0",
-        language: "rust",
       },
-      process: {
+      execution: {
+        language: "rust",
+        parameters: {
+          frequency_hz: "f64"
+        },
         start_cmd: ["./target/debug/test_node"]
       },
-      parameters: {
-        frequency_hz: "f64"
-      }
     }"#;
     std::fs::write(&peppy_config_path, peppy_config).expect("failed to write peppy config");
     config::fingerprint::create_codegen_fingerprint(
@@ -252,14 +252,14 @@ async fn standalone_runner_succeed() {
       manifest: {
         name: "test_node",
         tag: "0.1.0",
-        language: "rust",
       },
-      process: {
+      execution: {
+        language: "rust",
+        parameters: {
+          frequency_hz: "f64"
+        },
         start_cmd: ["./target/debug/test_node"]
       },
-      parameters: {
-        frequency_hz: "f64"
-      }
     }"#;
     std::fs::write(&peppy_config_path, peppy_config).expect("failed to write peppy config");
 
@@ -311,14 +311,14 @@ async fn node_ready_but_not_healthy() {
       manifest: {
         name: "test_node",
         tag: "0.1.0",
-        language: "rust",
       },
-      process: {
+      execution: {
+        language: "rust",
+        parameters: {
+          frequency_hz: "f64"
+        },
         start_cmd: ["./target/debug/test_node"]
       },
-      parameters: {
-        frequency_hz: "f64"
-      }
     }"#;
     std::fs::write(&peppy_config_path, peppy_config).expect("failed to write peppy config");
     config::fingerprint::create_codegen_fingerprint(
@@ -563,14 +563,14 @@ async fn daemon_cancellation_token_cancelled_on_shutdown() {
       manifest: {
         name: "test_node",
         tag: "0.1.0",
-        language: "rust",
       },
-      process: {
+      execution: {
+        language: "rust",
+        parameters: {
+          frequency_hz: "f64"
+        },
         start_cmd: ["./target/debug/test_node"]
       },
-      parameters: {
-        frequency_hz: "f64"
-      }
     }"#;
     std::fs::write(&peppy_config_path, peppy_config).expect("failed to write peppy config");
     config::fingerprint::create_codegen_fingerprint(
@@ -697,14 +697,14 @@ async fn node_runner_exposes_messenger_and_metadata() {
       manifest: {
         name: "test_node",
         tag: "0.1.0",
-        language: "rust",
       },
-      process: {
+      execution: {
+        language: "rust",
+        parameters: {
+          frequency_hz: "f64"
+        },
         start_cmd: ["./target/debug/test_node"]
       },
-      parameters: {
-        frequency_hz: "f64"
-      }
     }"#;
     std::fs::write(&peppy_config_path, peppy_config).expect("failed to write peppy config");
 

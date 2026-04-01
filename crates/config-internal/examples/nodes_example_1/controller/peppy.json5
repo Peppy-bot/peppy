@@ -4,23 +4,11 @@
   manifest: {
     name: "controller",
     tag: "0.1.0",
-    language: "rust",
     labels: [
       "controller",
       "openarm",
     ],
   },
-  process: {
-    add_cmd: [
-      "cargo",
-      "build",
-      "--release"
-    ],
-    start_cmd: [
-      "./target/release/controller"
-    ]
-  },
-  parameters: {},
   interfaces: {
     actions: {
       exposes: [
@@ -100,5 +88,16 @@
         }
       ],
     },
-  }
+  },
+  execution: {
+    language: "rust",
+    add_cmd: [
+      "cargo",
+      "build",
+      "--release"
+    ],
+    start_cmd: [
+      "./target/release/controller"
+    ]
+  },
 }

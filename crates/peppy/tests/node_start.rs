@@ -75,6 +75,7 @@ async fn node_run_command_succeeds() {
         command: NodeCommands::Add {
             source: node_path.display().to_string(),
             git_ref: None,
+            variant: None,
             start: false,
             args: Vec::new(),
             instance_id: None,
@@ -253,23 +254,8 @@ async fn node_run_command_with_args_succeeds() {
     // Overwrite peppy.json5 with a config that includes parameters
     let peppy_config = r#"{
   schema_version: 1,
-  manifest: {
-    name: "test_run_args_node",
-    tag: "0.1.0",
-    language: "rust"
-  },
-  process: {
-    start_cmd: [
-      "cargo",
-      "run",
-      "--release"
-    ]
-  },
-  parameters: {
-    resolution: "string",
-    frequency: "i64",
-    enabled: "bool"
-  },
+  manifest: { name: "test_run_args_node",
+    tag: "0.1.0" },
   interfaces: {
     topics: {
       emits: [
@@ -283,7 +269,20 @@ async fn node_run_command_with_args_succeeds() {
         }
       ],
     }
-  }
+  },
+  execution: {
+    language: "rust",
+    parameters: {
+      resolution: "string",
+      frequency: "i64",
+      enabled: "bool"
+    },
+    start_cmd: [
+      "cargo",
+      "run",
+      "--release"
+    ]
+  },
 }
 "#;
     std::fs::write(&peppy_json5_path, peppy_config).expect("peppy.json5 should be writable");
@@ -294,6 +293,7 @@ async fn node_run_command_with_args_succeeds() {
         command: NodeCommands::Add {
             source: node_path.display().to_string(),
             git_ref: None,
+            variant: None,
             start: false,
             args: Vec::new(),
             instance_id: None,
@@ -486,6 +486,7 @@ async fn node_run_command_with_custom_instance_id_succeeds() {
         command: NodeCommands::Add {
             source: node_path.display().to_string(),
             git_ref: None,
+            variant: None,
             start: false,
             args: Vec::new(),
             instance_id: None,

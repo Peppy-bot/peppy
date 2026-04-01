@@ -3,33 +3,14 @@
   manifest: {
     name: "{{ node_name }}",
     tag: "0.1.0",
-    language: "rust",
     depends_on: {
       nodes: [
-        { name: "{{ uvc_camera_node_name }}", tag: "0.1.0", local_id: "uvc_camera" },
+        {
+          name: "{{ uvc_camera_node_name }}",
+          tag: "0.1.0",
+          local_id: "uvc_camera"
+        },
       ]
-    },
-  },
-  process: {
-    start_cmd: [
-      "cargo",
-      "run",
-      "--release"
-    ]
-  },
-  parameters: {
-    http: {
-      host: "string",
-      port: "u16",
-      cors_enabled: "bool",
-      cors_origins: "string",
-      max_connections: "u32",
-      request_timeout_ms: "u32",
-    },
-    video_stream: {
-      format: "string",
-      quality: "u16",
-      max_fps: "u16",
     },
   },
   interfaces: {
@@ -41,5 +22,28 @@
         }
       ],
     },
+  },
+  execution: {
+    language: "rust",
+    parameters: {
+      http: {
+        host: "string",
+        port: "u16",
+        cors_enabled: "bool",
+        cors_origins: "string",
+        max_connections: "u32",
+        request_timeout_ms: "u32",
+      },
+      video_stream: {
+        format: "string",
+        quality: "u16",
+        max_fps: "u16",
+      },
+    },
+    start_cmd: [
+      "cargo",
+      "run",
+      "--release"
+    ]
   }
 }

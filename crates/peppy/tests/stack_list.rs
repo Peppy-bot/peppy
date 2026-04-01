@@ -20,9 +20,11 @@ fn make_consumer_depend_on_provider(
     let topic_name = "stack_list_topic";
 
     let mut provider_cfg = NodeConfigParser::from_path(provider_peppy_json5)
-        .expect("provider peppy.json5 should read");
+        .expect("provider peppy.json5 should read")
+        .into_resolved()
+        .expect("should resolve");
 
-    provider_cfg.process.as_mut().unwrap().add_cmd = None;
+    provider_cfg.execution.add_cmd = None;
 
     let topic_ifaces = provider_cfg
         .interfaces
@@ -46,9 +48,11 @@ fn make_consumer_depend_on_provider(
     );
 
     let mut consumer_cfg = NodeConfigParser::from_path(consumer_peppy_json5)
-        .expect("consumer peppy.json5 should read");
+        .expect("consumer peppy.json5 should read")
+        .into_resolved()
+        .expect("should resolve");
 
-    consumer_cfg.process.as_mut().unwrap().add_cmd = None;
+    consumer_cfg.execution.add_cmd = None;
 
     consumer_cfg.manifest.depends_on = Some(DependsOn {
         nodes: vec![NodeDependency {
@@ -157,6 +161,7 @@ async fn node_list_command_succeeds() {
         command: NodeCommands::Add {
             source: provider_path.display().to_string(),
             git_ref: None,
+            variant: None,
             start: false,
             args: Vec::new(),
             instance_id: None,
@@ -173,6 +178,7 @@ async fn node_list_command_succeeds() {
         command: NodeCommands::Add {
             source: consumer_path.display().to_string(),
             git_ref: None,
+            variant: None,
             start: false,
             args: Vec::new(),
             instance_id: None,
@@ -298,6 +304,7 @@ async fn node_list_command_with_dot_representation_succeeds() {
         command: NodeCommands::Add {
             source: provider_path.display().to_string(),
             git_ref: None,
+            variant: None,
             start: false,
             args: Vec::new(),
             instance_id: None,
@@ -313,6 +320,7 @@ async fn node_list_command_with_dot_representation_succeeds() {
         command: NodeCommands::Add {
             source: consumer_path.display().to_string(),
             git_ref: None,
+            variant: None,
             start: false,
             args: Vec::new(),
             instance_id: None,

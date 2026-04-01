@@ -10,15 +10,8 @@ use tempfile::TempDir;
 
 const PEPPY_JSON5_CONFIG: &str = r#"{
   schema_version: 1,
-  manifest: {
-    name: "test_node",
-    tag: "0.1.0",
-    language: "python"
-  },
-  process: {
-    add_cmd: ["uv", "sync"],
-    start_cmd: ["uv", "run", "test_node"]
-  },
+  manifest: { name: "test_node",
+    tag: "0.1.0" },
   interfaces: {
     topics: {
       emits: [
@@ -46,7 +39,12 @@ const PEPPY_JSON5_CONFIG: &str = r#"{
         }
       ]
     }
-  }
+  },
+
+  execution: { language: "python",
+    add_cmd: ["uv", "sync"],
+    start_cmd: ["uv", "run", "test_node"]
+  },
 }"#;
 
 #[test]
@@ -95,12 +93,10 @@ fn generate_peppygen_lib_minimal_config() {
     // Minimal config with no interfaces
     let minimal_config = r#"{
       schema_version: 1,
-      manifest: {
-        name: "minimal_node",
-        tag: "0.1.0",
-        language: "python"
-      },
-      process: {
+      manifest: { name: "minimal_node",
+        tag: "0.1.0" },
+
+      execution: { language: "python",
         add_cmd: ["uv", "sync"],
         start_cmd: ["uv", "run", "minimal_node"]
       }
@@ -117,6 +113,7 @@ fn generate_peppygen_lib_minimal_config() {
         "test-hash",
         &helpers::test_peppy_dirs(),
         Default::default(),
+        None,
     )
     .expect("failed to generate library for minimal config");
 
@@ -138,6 +135,7 @@ fn generate_peppygen_lib_missing_config() {
         "test-hash",
         &helpers::test_peppy_dirs(),
         Default::default(),
+        None,
     );
     assert!(result.is_err(), "should fail when peppy.json5 is missing");
 }
@@ -150,33 +148,32 @@ fn generate_peppygen_python_lib_emitted_and_consumed_topics() {
     let exposed_dir = TempDir::new().expect("failed to create temp directory");
     let exposed_node_dir = exposed_dir.path();
 
-    let exposed_config = format!(
-        r#"{{
+    let exposed_config = r#"{
           schema_version: 1,
-          manifest: {{
+          manifest: {
             name: "{EXPOSED_NODE_NAME}",
             tag: "0.1.0",
-            language: "python"
-          }},
-          process: {{
-            add_cmd: ["uv", "sync"],
-            start_cmd: ["uv", "run", "{EXPOSED_NODE_NAME}"]
-          }},
-          interfaces: {{
-            topics: {{
+          },
+          interfaces: {
+            topics: {
               emits: [
-                {{
+                {
                   name: "test_topic",
                   qos_profile: "sensor_data",
-                  message_format: {{
+                  message_format: {
                     value: "u32"
-                  }}
-                }}
+                  }
+                }
               ]
-            }}
-          }}
-        }}"#
-    );
+            }
+          },
+          execution: {
+            language: "python",
+            add_cmd: ["uv", "sync"],
+            start_cmd: ["uv", "run", "{EXPOSED_NODE_NAME}"]
+          },
+        }"#
+    .replace("{EXPOSED_NODE_NAME}", EXPOSED_NODE_NAME);
 
     fs::write(exposed_node_dir.join(NODE_CONFIG_FILE), exposed_config)
         .expect("failed to write exposed peppy.json5");
@@ -188,6 +185,7 @@ fn generate_peppygen_python_lib_emitted_and_consumed_topics() {
         "test-hash",
         &helpers::test_peppy_dirs(),
         Default::default(),
+        None,
     )
     .expect("failed to generate peppygen lib for exposed node");
 
@@ -203,20 +201,19 @@ fn generate_peppygen_python_lib_emitted_and_consumed_topics() {
     let consumer_dir = TempDir::new().expect("failed to create temp directory");
     let consumer_node_dir = consumer_dir.path();
 
-    let consumer_config = format!(
-        r#"{{
+    let consumer_config = r#"{
           schema_version: 1,
-          manifest: {{
+          manifest: {
             name: "{CONSUMER_NODE_NAME}",
             tag: "0.1.0",
-            language: "python"
-          }},
-          process: {{
+          },
+          execution: {
+            language: "python",
             add_cmd: ["uv", "sync"],
             start_cmd: ["uv", "run", "{CONSUMER_NODE_NAME}"]
-          }}
-        }}"#
-    );
+          }
+        }"#
+    .replace("{CONSUMER_NODE_NAME}", CONSUMER_NODE_NAME);
     fs::write(consumer_node_dir.join(NODE_CONFIG_FILE), consumer_config)
         .expect("failed to write consumer peppy.json5");
 
@@ -244,6 +241,7 @@ fn generate_peppygen_python_lib_emitted_and_consumed_topics() {
         "test-hash",
         &helpers::test_peppy_dirs(),
         Default::default(),
+        None,
     )
     .expect("failed to generate peppygen lib for consumer node");
 
@@ -265,36 +263,35 @@ fn generate_peppygen_python_lib_exposed_and_consumed_services() {
     let exposed_dir = TempDir::new().expect("failed to create temp directory");
     let exposed_node_dir = exposed_dir.path();
 
-    let exposed_config = format!(
-        r#"{{
+    let exposed_config = r#"{
           schema_version: 1,
-          manifest: {{
+          manifest: {
             name: "{EXPOSED_NODE_NAME}",
             tag: "0.1.0",
-            language: "python"
-          }},
-          process: {{
-            add_cmd: ["uv", "sync"],
-            start_cmd: ["uv", "run", "{EXPOSED_NODE_NAME}"]
-          }},
-          interfaces: {{
-            services: {{
+          },
+          interfaces: {
+            services: {
               exposes: [
-                {{
+                {
                   name: "test_service",
-                  request_message_format: {{
+                  request_message_format: {
                     input: "string"
-                  }},
-                  response_message_format: {{
+                  },
+                  response_message_format: {
                     output: "string",
                     success: "bool"
-                  }}
-                }}
+                  }
+                }
               ]
-            }}
-          }}
-        }}"#
-    );
+            }
+          },
+          execution: {
+            language: "python",
+            add_cmd: ["uv", "sync"],
+            start_cmd: ["uv", "run", "{EXPOSED_NODE_NAME}"]
+          },
+        }"#
+    .replace("{EXPOSED_NODE_NAME}", EXPOSED_NODE_NAME);
 
     fs::write(exposed_node_dir.join(NODE_CONFIG_FILE), exposed_config)
         .expect("failed to write exposed peppy.json5");
@@ -306,6 +303,7 @@ fn generate_peppygen_python_lib_exposed_and_consumed_services() {
         "test-hash",
         &helpers::test_peppy_dirs(),
         Default::default(),
+        None,
     )
     .expect("failed to generate peppygen lib for exposed node");
 
@@ -321,20 +319,19 @@ fn generate_peppygen_python_lib_exposed_and_consumed_services() {
     let consumer_dir = TempDir::new().expect("failed to create temp directory");
     let consumer_node_dir = consumer_dir.path();
 
-    let consumer_config = format!(
-        r#"{{
+    let consumer_config = r#"{
           schema_version: 1,
-          manifest: {{
+          manifest: {
             name: "{CONSUMER_NODE_NAME}",
             tag: "0.1.0",
-            language: "python"
-          }},
-          process: {{
+          },
+          execution: {
+            language: "python",
             add_cmd: ["uv", "sync"],
             start_cmd: ["uv", "run", "{CONSUMER_NODE_NAME}"]
-          }}
-        }}"#
-    );
+          }
+        }"#
+    .replace("{CONSUMER_NODE_NAME}", CONSUMER_NODE_NAME);
     fs::write(consumer_node_dir.join(NODE_CONFIG_FILE), consumer_config)
         .expect("failed to write consumer peppy.json5");
 
@@ -368,6 +365,7 @@ fn generate_peppygen_python_lib_exposed_and_consumed_services() {
         "test-hash",
         &helpers::test_peppy_dirs(),
         Default::default(),
+        None,
     )
     .expect("failed to generate peppygen lib for consumer node");
 
@@ -396,48 +394,47 @@ fn generate_peppygen_python_lib_exposed_and_consumed_actions() {
     let exposed_dir = TempDir::new().expect("failed to create temp directory");
     let exposed_node_dir = exposed_dir.path();
 
-    let exposed_config = format!(
-        r#"{{
+    let exposed_config = r#"{
           schema_version: 1,
-          manifest: {{
+          manifest: {
             name: "{EXPOSED_NODE_NAME}",
             tag: "0.1.0",
-            language: "python"
-          }},
-          process: {{
+          },
+          interfaces: {
+            actions: {
+              exposes: [
+                {
+                  name: "test_action",
+                  goal_service: {
+                    request_message_format: {
+                      value: "u32"
+                    },
+                    response_message_format: {
+                      accepted: "bool"
+                    }
+                  },
+                  feedback_topic: {
+                    qos_profile: "sensor_data",
+                    message_format: {
+                      progress: "u8"
+                    }
+                  },
+                  result_service: {
+                    response_message_format: {
+                      success: "bool"
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          execution: {
+            language: "python",
             add_cmd: ["uv", "sync"],
             start_cmd: ["uv", "run", "{EXPOSED_NODE_NAME}"]
-          }},
-          interfaces: {{
-            actions: {{
-              exposes: [
-                {{
-                  name: "test_action",
-                  goal_service: {{
-                    request_message_format: {{
-                      value: "u32"
-                    }},
-                    response_message_format: {{
-                      accepted: "bool"
-                    }}
-                  }},
-                  feedback_topic: {{
-                    qos_profile: "sensor_data",
-                    message_format: {{
-                      progress: "u8"
-                    }}
-                  }},
-                  result_service: {{
-                    response_message_format: {{
-                      success: "bool"
-                    }}
-                  }}
-                }}
-              ]
-            }}
-          }}
-        }}"#
-    );
+          },
+        }"#
+    .replace("{EXPOSED_NODE_NAME}", EXPOSED_NODE_NAME);
 
     fs::write(exposed_node_dir.join(NODE_CONFIG_FILE), exposed_config)
         .expect("failed to write exposed peppy.json5");
@@ -449,6 +446,7 @@ fn generate_peppygen_python_lib_exposed_and_consumed_actions() {
         "test-hash",
         &helpers::test_peppy_dirs(),
         Default::default(),
+        None,
     )
     .expect("failed to generate peppygen lib for exposed node");
 
@@ -464,20 +462,19 @@ fn generate_peppygen_python_lib_exposed_and_consumed_actions() {
     let consumer_dir = TempDir::new().expect("failed to create temp directory");
     let consumer_node_dir = consumer_dir.path();
 
-    let consumer_config = format!(
-        r#"{{
+    let consumer_config = r#"{
           schema_version: 1,
-          manifest: {{
+          manifest: {
             name: "{CONSUMER_NODE_NAME}",
             tag: "0.1.0",
-            language: "python"
-          }},
-          process: {{
+          },
+          execution: {
+            language: "python",
             add_cmd: ["uv", "sync"],
             start_cmd: ["uv", "run", "{CONSUMER_NODE_NAME}"]
-          }}
-        }}"#
-    );
+          }
+        }"#
+    .replace("{CONSUMER_NODE_NAME}", CONSUMER_NODE_NAME);
     fs::write(consumer_node_dir.join(NODE_CONFIG_FILE), consumer_config)
         .expect("failed to write consumer peppy.json5");
 
@@ -519,6 +516,7 @@ fn generate_peppygen_python_lib_exposed_and_consumed_actions() {
         "test-hash",
         &helpers::test_peppy_dirs(),
         Default::default(),
+        None,
     )
     .expect("failed to generate peppygen lib for consumer node");
 
