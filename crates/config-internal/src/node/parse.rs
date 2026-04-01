@@ -54,9 +54,12 @@ impl NodeConfigParser {
 
         let has_default = config.has_default_variant();
         match (&config.execution, has_default) {
-            (Some(execution), false) => validate_execution(execution)?,
-            (None, true) => { /* execution comes from default variant */ }
             (Some(_), true) => return Err(ParsingError::ExecutionWithDefaultVariant.into()),
+            (None, true) => { /* execution comes from default variant */ }
+            (Some(raw_exec), false) => {
+                let execution = raw_exec.clone().into_execution()?;
+                validate_execution(&execution)?;
+            }
             (None, false) => return Err(ParsingError::MissingExecution.into()),
         }
 
@@ -154,7 +157,7 @@ mod tests {
         assert_eq!(config.0.manifest.tag, "2.1.0");
         assert_eq!(
             config.0.execution.as_ref().unwrap().language,
-            crate::node::PeppygenLanguage::Rust
+            Some(crate::node::PeppygenLanguage::Rust)
         );
         assert_eq!(
             config
@@ -693,6 +696,52 @@ mod tests {
         assert!(matches!(
             result.unwrap_err(),
             Error::Parsing(ParsingError::ExecutionWithDefaultVariant)
+        ));
+    }
+
+    #[test]
+    fn test_parse_config_with_default_variant_and_execution_without_language_rejected() {
+        let json5 = r#"{
+            schema_version: 1,
+            manifest: {
+                name: "uvc_camera",
+                tag: "0.1.0",
+                variants: [
+                    { name: "default", source: { local: "./variants/linux" } },
+                ],
+            },
+            execution: {
+                container: {
+                    def_file: "apptainer.def",
+                },
+                parameters: {
+                    device_path: "string",
+                },
+            },
+        }"#;
+        let result = NodeConfigParser::from_content(json5);
+        assert!(matches!(
+            result.unwrap_err(),
+            Error::Parsing(ParsingError::ExecutionWithDefaultVariant)
+        ));
+    }
+
+    #[test]
+    fn test_parse_config_execution_without_language_rejected() {
+        let json5 = r#"{
+            schema_version: 1,
+            manifest: {
+                name: "test_node",
+                tag: "0.1.0",
+            },
+            execution: {
+                start_cmd: ["./bin"],
+            },
+        }"#;
+        let result = NodeConfigParser::from_content(json5);
+        assert!(matches!(
+            result.unwrap_err(),
+            Error::Parsing(ParsingError::MissingExecutionLanguage)
         ));
     }
 

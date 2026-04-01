@@ -259,7 +259,7 @@ async fn handle_node_sync_request_inner(
                     node_config.interfaces(),
                     node_stack,
                 );
-                let language = node_config.execution().map(|r| r.language);
+                let language = node_config.execution_language();
                 let variants = node_config.manifest().variants.clone();
                 let root_manifest = node_config.manifest().clone();
                 let root_interfaces = node_config.interfaces().clone();

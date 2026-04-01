@@ -60,6 +60,8 @@ pub enum ParsingError {
     ExecutionWithDefaultVariant,
     #[error("Node config must define an `execution` section (or declare a 'default' variant)")]
     MissingExecution,
+    #[error("Node config `execution.language` is required when an execution block is defined")]
+    MissingExecutionLanguage,
 
     // -- container config: mount paths
     #[error(
