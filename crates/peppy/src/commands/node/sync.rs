@@ -1,10 +1,10 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use config::consts::NODE_CONFIG_FILE;
 use core_node::encoding::NodeSyncRequest;
 use tracing::info;
 
+use super::source::resolve_node_root_dir;
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 
@@ -20,15 +20,9 @@ async fn sync_node_async(ctx: &Arc<AppContext>) -> Result<()> {
     let core_node_name = daemon_state.core_node_name;
     let git_hash = daemon_state.git_hash;
 
-    let node_root_dir = ctx.root_dir.clone();
-    let node_config_path = node_root_dir.join(NODE_CONFIG_FILE);
-    if !node_config_path.exists() {
-        return Err(Error::ExecutionFailed(format!(
-            "Missing '{}' in node directory: {}",
-            NODE_CONFIG_FILE,
-            node_root_dir.display()
-        )));
-    }
+    // If the current directory doesn't contain a valid root config (e.g. we're
+    // inside a variant subdirectory), walk up to find the root node directory.
+    let node_root_dir = resolve_node_root_dir(&ctx.root_dir)?;
 
     info!(
         "Syncing node at {} via daemon '{}'...",

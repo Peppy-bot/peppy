@@ -130,6 +130,16 @@ pub enum StructuredError {
     EmptyName,
 }
 
+impl ParsingError {
+    /// Returns `true` when the error indicates that the `manifest` field is
+    /// absent from the config.  This is the hallmark of a **variant** config
+    /// (which deliberately omits `manifest`) and is used by the CLI to decide
+    /// whether to walk up the directory tree to locate the root node config.
+    pub fn is_missing_manifest(&self) -> bool {
+        matches!(self, ParsingError::CannotParseConfig(msg) if msg.contains("missing field `manifest`"))
+    }
+}
+
 impl StructuredError {
     pub(crate) fn json5_message(&self) -> String {
         serde_json5::to_string(self).unwrap_or_else(|_| "serialization error".to_string())
