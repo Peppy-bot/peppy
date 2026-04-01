@@ -50,6 +50,7 @@ from .release_notes import (
     fetch_release_body_html,
     generate_release_notes_file,
 )
+from .docker import build_all_base_images, validate_docker_environment
 from .repo import get_current_branch, get_repo_root, has_uncommitted_changes
 
 
@@ -61,6 +62,11 @@ def _parse_args() -> argparse.Namespace:
         "--local",
         action="store_true",
         help="Build release artifacts locally without uploading to GitHub.",
+    )
+    parser.add_argument(
+        "--base-images",
+        action="store_true",
+        help="Build and push Docker base images to Docker Hub.",
     )
     return parser.parse_args()
 
@@ -299,9 +305,23 @@ def _run_full() -> None:
     )
 
 
+def _run_base_images() -> None:
+    """Build and push Docker base images to Docker Hub."""
+    validate_docker_environment()
+
+    tag = prompt("Tag for the base images (example: v0.0.1)")
+    if not tag:
+        raise ReleaseError("tag cannot be empty")
+
+    scripts_dir = Path(__file__).resolve().parent.parent
+    build_all_base_images(scripts_dir, tag)
+
+
 def main() -> None:
     args = _parse_args()
-    if args.local:
+    if args.base_images:
+        run_with_error_handling(_run_base_images)
+    elif args.local:
         run_with_error_handling(_run_local)
     else:
         run_with_error_handling(_run_full)
