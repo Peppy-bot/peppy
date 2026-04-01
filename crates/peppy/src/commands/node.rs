@@ -241,13 +241,6 @@ impl Command for NodeCommand {
                 max_timeout,
                 force,
             } => {
-                let display_source = if source::is_probably_remote_source(&source) {
-                    source.clone()
-                } else {
-                    let path = PathBuf::from(&source);
-                    path.canonicalize().unwrap_or(path).display().to_string()
-                };
-                info!("Adding node from {}...", display_source);
                 let start_options = if start {
                     Some(add::StartAfterAddOptions { args, instance_id })
                 } else {

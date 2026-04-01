@@ -73,6 +73,14 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
     let git_ref = validate_git_ref(git_ref.as_deref())?;
     let node_source = parse_node_source(&source, git_ref)?;
 
+    // Log the resolved source path (may differ from the original when the CLI
+    // walked up from a variant subdirectory to the root node directory).
+    let display_source = match &node_source {
+        NodeSource::Fs(p) => p.display().to_string(),
+        _ => source.clone(),
+    };
+    info!("Adding node from {}...", display_source);
+
     // Parse variant source early so the preflight check uses the same merged config
     // that the actual add will use.
     let variant_source = variant.as_deref().map(parse_variant_source).transpose()?;
