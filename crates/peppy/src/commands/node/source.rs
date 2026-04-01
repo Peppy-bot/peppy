@@ -1,5 +1,7 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
+use config::consts::NODE_CONFIG_FILE;
+use config::node::NodeConfigParser;
 use core_node::encoding::NodeSource;
 use gix_url::Url as GitUrl;
 
@@ -60,6 +62,21 @@ pub fn parse_node_source(source: &str, git_ref: Option<String>) -> Result<NodeSo
         .parent()
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."));
+
+    // If the config at this path is not a valid root config (e.g. the user
+    // ran `node add` from inside a variant directory), walk up the directory
+    // tree to locate the root peppy.json5 that contains the manifest.
+    let from_dir = if NodeConfigParser::from_path(&peppy_json5).is_err() {
+        find_root_node_dir(&from_dir).ok_or_else(|| {
+            Error::ExecutionFailed(format!(
+                "No root {} with a `manifest` section found at '{}' or any parent directory",
+                NODE_CONFIG_FILE,
+                from_dir.display(),
+            ))
+        })?
+    } else {
+        from_dir
+    };
 
     Ok(NodeSource::Fs(from_dir))
 }
@@ -169,6 +186,23 @@ pub fn parse_git_repo_url_and_path(source: &str) -> Result<(GitUrl, String)> {
     Ok((repo_url, repo_path))
 }
 
+/// Walks up from `start_dir` looking for a parent directory containing a valid
+/// root `peppy.json5` (one that includes a `manifest` section). Returns the
+/// first matching directory, or `None` if no root config is found.
+///
+/// This allows `peppy node add .` to work when invoked from inside a variant
+/// subdirectory: the CLI resolves upward to the root node that owns the variant.
+fn find_root_node_dir(start_dir: &Path) -> Option<PathBuf> {
+    let mut dir = start_dir.parent()?;
+    loop {
+        let candidate = dir.join(NODE_CONFIG_FILE);
+        if candidate.is_file() && NodeConfigParser::from_path(&candidate).is_ok() {
+            return Some(dir.to_path_buf());
+        }
+        dir = dir.parent()?;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -251,5 +285,104 @@ mod tests {
             panic!("expected Http variant, got {:?}", source)
         };
         assert_eq!(url.as_str(), "https://example.com/variant.tar.zst");
+    }
+
+    #[test]
+    fn find_root_node_dir_walks_up_from_variant_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("my_node");
+        let variant = root.join("variants").join("linux");
+        std::fs::create_dir_all(&variant).unwrap();
+
+        // Root has a valid peppy.json5 (with manifest, default variant, no execution)
+        std::fs::write(
+            root.join(NODE_CONFIG_FILE),
+            r#"{
+                schema_version: 1,
+                manifest: {
+                    name: "my_node",
+                    tag: "0.1.0",
+                    variants: [
+                        { name: "default", source: { local: "./variants/linux" } }
+                    ]
+                },
+                interfaces: {}
+            }"#,
+        )
+        .unwrap();
+
+        // Variant has a config without manifest
+        std::fs::write(
+            variant.join(NODE_CONFIG_FILE),
+            r#"{
+                schema_version: 1,
+                execution: { language: "rust", start_cmd: ["sleep", "1"] }
+            }"#,
+        )
+        .unwrap();
+
+        let found = find_root_node_dir(&variant);
+        assert_eq!(found.as_deref(), Some(root.as_path()));
+    }
+
+    #[test]
+    fn find_root_node_dir_returns_none_when_no_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let variant = tmp.path().join("orphan_variant");
+        std::fs::create_dir_all(&variant).unwrap();
+
+        std::fs::write(
+            variant.join(NODE_CONFIG_FILE),
+            r#"{
+                schema_version: 1,
+                execution: { language: "rust", start_cmd: ["sleep", "1"] }
+            }"#,
+        )
+        .unwrap();
+
+        assert!(find_root_node_dir(&variant).is_none());
+    }
+
+    #[test]
+    fn parse_node_source_resolves_from_variant_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("my_node");
+        let variant = root.join("variants").join("linux");
+        std::fs::create_dir_all(&variant).unwrap();
+
+        std::fs::write(
+            root.join(NODE_CONFIG_FILE),
+            r#"{
+                schema_version: 1,
+                manifest: {
+                    name: "my_node",
+                    tag: "0.1.0",
+                    variants: [
+                        { name: "default", source: { local: "./variants/linux" } }
+                    ]
+                },
+                interfaces: {}
+            }"#,
+        )
+        .unwrap();
+
+        std::fs::write(
+            variant.join(NODE_CONFIG_FILE),
+            r#"{
+                schema_version: 1,
+                execution: { language: "rust", start_cmd: ["sleep", "1"] }
+            }"#,
+        )
+        .unwrap();
+
+        let source = parse_node_source(variant.to_str().unwrap(), None).unwrap();
+        let NodeSource::Fs(resolved) = &source else {
+            panic!("expected Fs source, got {:?}", source)
+        };
+        // Should resolve to the root, not the variant
+        assert_eq!(
+            resolved.canonicalize().unwrap(),
+            root.canonicalize().unwrap()
+        );
     }
 }

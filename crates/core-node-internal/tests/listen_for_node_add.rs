@@ -3810,7 +3810,7 @@ async fn listen_for_node_add_variant_local_source_after_sync() {
 /// path, not the root.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_add_variant_only_node_after_sync() {
-    use core_node::encoding::NodeSyncRequest;
+    use core_node::encoding::{NodeInfoRequest, NodeSyncRequest};
 
     const ROOT_NODE_NAME: &str = "variant_only_robot";
     const ROOT_NODE_TAG: &str = "0.1.0";
@@ -3892,7 +3892,23 @@ async fn listen_for_node_add_variant_only_node_after_sync() {
         "variant .peppy directory should exist after sync"
     );
 
-    // Step 2: Run node add with the variant — must succeed despite no .peppy at root.
+    // Step 2: Preflight node_info check — mirrors what the CLI does before add.
+    // Must succeed for variant-only nodes (auto-resolves the default variant).
+    let info_response = NodeInfoRequest::new(core_node::encoding::NodeSource::Fs(root_dir.clone()))
+        .poll(
+            &started_core_node.caller_handle,
+            &started_core_node.core_node_name,
+            CALLER_INSTANCE_ID,
+            &started_core_node.core_node_name,
+            Duration::from_secs(5),
+        )
+        .await
+        .expect("node_info preflight should succeed for variant-only nodes");
+
+    assert_eq!(info_response.config.manifest.name.as_str(), ROOT_NODE_NAME);
+    assert_eq!(info_response.config.manifest.tag.as_str(), ROOT_NODE_TAG);
+
+    // Step 3: Run node add with the variant — must succeed despite no .peppy at root.
     let add_result = send_node_add_and_wait_with_variant(
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
