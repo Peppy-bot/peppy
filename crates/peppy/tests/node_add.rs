@@ -988,14 +988,218 @@ fn node_add_with_variant_uses_variant_in_preflight() {
     );
 }
 
-/// NOTE: For git-sourced nodes, we cannot check for existing instances BEFORE the add operation
-/// because we don't know the node name/tag until after cloning. By the time we check (after add),
-/// the core node has already stopped the existing instances. This is different from local
-/// filesystem sources where we can check and prompt before adding.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "Requires a call to `node info` on the existing node first"]
-async fn node_add_same_node_different_sources_show_ovewrite_prompt() {
-    todo!(
-        "If the first node is added from the local filesystem and then started, and then the same node is added to the node stack but this time it's added from git, we should still get the prompt `Adding this node will stop...`"
+/// When a node is first added from the local filesystem and started, then re-added
+/// from a git source, the overwrite prompt should still appear because the preflight
+/// `fetch_node_info` resolves the git source, discovers the same node name:tag, and
+/// finds the running instance.
+#[test]
+fn node_add_same_node_different_sources_show_overwrite_prompt() {
+    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
+    let serve = rt
+        .block_on(ServeCommandEmulation::with_mock())
+        .expect("failed to create serve emulation");
+    let shared_messenger = serve.messenger();
+    let core_node_name = serve.core_node_name().to_string();
+
+    let node_dir = tempfile::tempdir().expect("failed to create temp dir for node");
+    let node_name = "test_overwrite_git_source";
+    let instance_id = "test_overwrite_git_instance";
+
+    let node_ctx = Arc::new(
+        AppContext::with_messenger(node_dir.path(), Arc::clone(&shared_messenger))
+            .with_daemon_state_file(serve.daemon_state_path()),
+    );
+
+    let log_capture = LogCapture::new();
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .without_time()
+        .with_writer(log_capture.clone())
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+
+    // Init the node
+    NodeCommand {
+        command: NodeCommands::Init {
+            node_name: NodeName::new(node_name).expect("valid node name"),
+            to_dir: None,
+            toolchain: Toolchain::Cargo,
+            with_container: false,
+        },
+    }
+    .execute(&node_ctx)
+    .expect("node init command should succeed");
+
+    let node_path = node_dir.path().join(node_name);
+    let peppy_json5_path = node_path.join("peppy.json5");
+    assert!(
+        peppy_json5_path.exists(),
+        "peppy.json5 should exist at {}",
+        peppy_json5_path.display()
+    );
+
+    peppy::test_support::override_start_cmd(&peppy_json5_path);
+
+    let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
+    let _node_ready_handle = rt
+        .block_on(listen_for_node_ready(
+            &node_messenger,
+            &core_node_name,
+            instance_id,
+            node_name,
+        ))
+        .expect("node ready service should start");
+    let _node_health_handle = rt
+        .block_on(listen_for_node_health(
+            &node_messenger,
+            &core_node_name,
+            instance_id,
+            node_name,
+        ))
+        .expect("node health service should start");
+    let (_node_shutdown_handle, _shutdown_rx) = rt
+        .block_on(listen_for_shutdown(
+            &node_messenger,
+            &core_node_name,
+            instance_id,
+            node_name,
+        ))
+        .expect("node shutdown service should start");
+
+    // Step 1: Add the node from local filesystem with start=true
+    NodeCommand {
+        command: NodeCommands::Add {
+            source: node_path.display().to_string(),
+            git_ref: None,
+            variant: None,
+            start: true,
+            args: Vec::new(),
+            instance_id: Some(instance_id.to_string()),
+            idle_timeout: 60,
+            max_timeout: 3600,
+            force: false,
+        },
+    }
+    .execute(&node_ctx)
+    .expect("first node add from local filesystem should succeed");
+
+    // Step 2: Verify 1 instance running
+    let messenger_handle = node_ctx
+        .messenger_handle()
+        .expect("messenger handle should be available");
+
+    let response = rt
+        .block_on(NodeListRequest::new(false).poll(
+            messenger_handle,
+            &core_node_name,
+            CALLER_INSTANCE_ID,
+            &core_node_name,
+            Duration::from_secs(5),
+        ))
+        .expect("node_list request should complete");
+
+    let graph: SerializedNodeGraph =
+        serde_json::from_str(&response.graph_json).expect("graph_json should parse");
+
+    let node_before = graph
+        .nodes
+        .iter()
+        .find(|n| n.name == node_name && n.tag == "0.1.0")
+        .unwrap_or_else(|| {
+            panic!(
+                "graph should contain the node after first add. Got: {:?}",
+                graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+            )
+        });
+    assert_eq!(
+        node_before.instance_count(),
+        1,
+        "should have 1 instance running after first add from local filesystem"
+    );
+
+    // Step 3: Create a git repo containing the same node (same name:tag)
+    let git_dir = tempfile::tempdir().expect("failed to create temp dir for git repo");
+    let repo_dir = git_dir.path().join("repo");
+    let git_node_dir = repo_dir.join(node_name);
+    std::fs::create_dir_all(&git_node_dir).expect("should create node dir in git repo");
+    std::fs::copy(&peppy_json5_path, git_node_dir.join("peppy.json5"))
+        .expect("should copy peppy.json5 to git repo");
+
+    let run_git = |args: &[&str]| {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(&repo_dir)
+            .output()
+            .expect("git command should run");
+        assert!(
+            output.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+    run_git(&["init"]);
+    run_git(&["add", "."]);
+    run_git(&[
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@test.com",
+        "commit",
+        "-m",
+        "add test node",
+    ]);
+
+    // Step 4: Re-add the same node from the git source with force=false.
+    // The preflight fetch_node_info clones the git repo, reads peppy.json5,
+    // discovers the same node name:tag, and finds the running instance.
+    // confirm_overwrite then reads "y\n" from the cursor to approve.
+    let git_source = format!("file://{}/.git/{}", repo_dir.display(), node_name);
+
+    add_node(
+        &node_ctx,
+        AddNodeParams {
+            source: git_source,
+            git_ref: None,
+            variant: None,
+            start_options: None,
+            timeouts: TimeoutConfig {
+                idle_secs: 60,
+                max_secs: 3600,
+            },
+            force: false,
+            confirm_reader: Some(Box::new(std::io::Cursor::new(b"y\n" as &[u8]))),
+        },
     )
+    .expect("second node add from git should succeed through confirmation path");
+
+    // Step 5: Verify the existing instance was stopped and node was re-added
+    let response = rt
+        .block_on(NodeListRequest::new(false).poll(
+            messenger_handle,
+            &core_node_name,
+            CALLER_INSTANCE_ID,
+            &core_node_name,
+            Duration::from_secs(5),
+        ))
+        .expect("node_list request should complete after re-add from git");
+
+    let graph: SerializedNodeGraph =
+        serde_json::from_str(&response.graph_json).expect("graph_json should parse");
+
+    let node_after = graph
+        .nodes
+        .iter()
+        .find(|n| n.name == node_name && n.tag == "0.1.0")
+        .unwrap_or_else(|| {
+            panic!(
+                "graph should contain the node after git re-add. Got: {:?}",
+                graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+            )
+        });
+    assert_eq!(
+        node_after.instance_count(),
+        0,
+        "should have 0 instances after re-add from git (existing instance should be stopped)"
+    );
 }
