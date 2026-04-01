@@ -224,7 +224,7 @@ where
 /// Initialized node context for manual async execution.
 ///
 /// Returned by `NodeBuilder::init()`. Parameters are parsed eagerly
-/// during construction — call [`parameters`](Self::parameters) to
+/// during construction — call [`take_parameters`](Self::take_parameters) to
 /// take the already-validated, typed parameters.
 pub struct NodeContext<Params> {
     processor: Processor,
@@ -262,7 +262,7 @@ where
     /// Returns the parameters that were parsed and validated during
     /// [`NodeBuilder::init`]. Can only be called once — subsequent calls
     /// return [`Error::ParametersAlreadyTaken`].
-    pub fn parameters(&mut self) -> Result<Params> {
+    pub fn take_parameters(&mut self) -> Result<Params> {
         self.params.take().ok_or(Error::ParametersAlreadyTaken)
     }
 
@@ -307,7 +307,7 @@ where
         })?;
 
         rt.block_on(async move {
-            let parameters: Params = self.parameters()?;
+            let parameters: Params = self.take_parameters()?;
 
             if self.is_standalone() {
                 return self.run_standalone(parameters, setup_fn).await;
@@ -529,10 +529,10 @@ mod tests {
             .init()
             .expect("init should succeed");
 
-        let params = ctx.parameters().expect("first take should succeed");
+        let params = ctx.take_parameters().expect("first take should succeed");
         assert_eq!(params.value, 42);
 
-        let err = ctx.parameters().expect_err("second take should fail");
+        let err = ctx.take_parameters().expect_err("second take should fail");
         assert!(
             matches!(err, Error::ParametersAlreadyTaken),
             "expected ParametersAlreadyTaken, got: {err:?}"
@@ -581,7 +581,7 @@ mod tests {
 
         // Parameters are already parsed — no Result needed for validation,
         // only for the take-once check
-        let params = ctx.parameters().expect("should take parameters");
+        let params = ctx.take_parameters().expect("should take parameters");
         assert_eq!(params.value, 99);
     }
 }

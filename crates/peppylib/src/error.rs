@@ -194,7 +194,7 @@ pub enum Error {
     #[error(transparent)]
     MissingStandaloneParameters(#[from] MissingStandaloneParameters),
 
-    #[error("parameters have already been taken (parameters() can only be called once)")]
+    #[error("parameters have already been taken (take_parameters() can only be called once)")]
     ParametersAlreadyTaken,
 
     // --- Serialization
