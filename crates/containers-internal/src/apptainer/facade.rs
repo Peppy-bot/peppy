@@ -263,6 +263,24 @@ fn check_userns_prerequisites(apptainer_dir: &Path) -> Result<()> {
 }
 
 impl Apptainer {
+    /// Returns `true` if the Lima VM backend is already running and reachable.
+    ///
+    /// On Linux this always returns `true` (no VM needed). On macOS it checks
+    /// whether the Lima instance is booted and SSH-reachable without starting it.
+    pub fn is_lima_ready() -> bool {
+        if !cfg!(target_os = "macos") {
+            return true;
+        }
+        let Ok(lima_dir) = lima::resolve_lima_dir() else {
+            return false;
+        };
+        let limactl_path = lima_dir.join("bin/limactl");
+        let Ok(lima_home) = lima::resolve_lima_home() else {
+            return false;
+        };
+        lima::is_lima_instance_running(&limactl_path, &lima_home)
+    }
+
     /// Creates a new `Apptainer` by resolving the apptainer installation directory.
     ///
     /// Resolution order:

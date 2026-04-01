@@ -506,6 +506,13 @@ struct ContainerBuildContext<'a> {
 }
 
 async fn build_container_image(ctx: ContainerBuildContext<'_>) -> Result<()> {
+    if !containers::Apptainer::is_lima_ready() {
+        let _ = ctx.feedback_tx.send(FeedbackLine {
+            stream: FeedbackStream::Stdout,
+            line: "Initializing Lima VM for container build (first run may take a few minutes)..."
+                .to_string(),
+        });
+    }
     let apptainer = tokio::task::spawn_blocking(containers::Apptainer::new)
         .await
         .map_err(|e| std::io::Error::other(format!("Apptainer initialization task failed: {}", e)))?
@@ -1139,11 +1146,10 @@ pub(crate) async fn run_node_add(
         if goal.git_hash != STACK_LAUNCH_GIT_HASH
             && let NodeSource::Fs(original_path) = &goal.source
             && !is_supported_fs_archive(original_path)
+            && let Err(error_msg) = verify_git_hash(&root_source_path, &goal.git_hash)
         {
-            if let Err(error_msg) = verify_git_hash(&root_source_path, &goal.git_hash) {
-                write_error_to_log(&log_file, &error_msg);
-                return NodeAddResult::failure(&log_path, error_msg);
-            }
+            write_error_to_log(&log_file, &error_msg);
+            return NodeAddResult::failure(&log_path, error_msg);
         }
 
         let cleanup_dir = resolved_cleanup_guard.take();

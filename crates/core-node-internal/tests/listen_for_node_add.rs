@@ -27,6 +27,7 @@ use {
 const ADD_CMD_MARKER_FILE: &str = "add_cmd_executed.marker";
 const GOAL_TIMEOUT: Duration = Duration::from_secs(30);
 const RESULT_TIMEOUT: Duration = Duration::from_secs(120);
+const CONTAINER_RESULT_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Creates a minimal node bundle (peppy.json5 + tar.zst) suitable for HTTP source tests.
 /// Returns the temp directory (must be kept alive) and the compressed bundle bytes.
@@ -371,7 +372,7 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
         &started_core_node.core_node_name,
         source_dir.path(),
         GOAL_TIMEOUT,
-        RESULT_TIMEOUT,
+        CONTAINER_RESULT_TIMEOUT,
         None,
     )
     .await
@@ -2838,7 +2839,7 @@ From: nowhere
         &started_core_node.core_node_name,
         source_dir.path(),
         GOAL_TIMEOUT,
-        RESULT_TIMEOUT,
+        CONTAINER_RESULT_TIMEOUT,
         Some(feedback_tx),
     )
     .await
@@ -5025,7 +5026,7 @@ async fn listen_for_node_add_default_fs_variant_verifies_git_hash_at_root() {
             }
         }
     }"#;
-    write_peppy_json5(&root_dir, &root_config);
+    write_peppy_json5(&root_dir, root_config);
 
     let variant_config = r#"{
         schema_version: 1,
