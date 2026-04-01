@@ -25,7 +25,7 @@ async fn sync_node_async(ctx: &Arc<AppContext>) -> Result<()> {
     let node_root_dir = resolve_node_root_dir(&ctx.root_dir)?;
 
     info!(
-        "Syncing node at {} via daemon '{}'...",
+        "Syncing node from {} via daemon '{}'...",
         node_root_dir.display(),
         core_node_name
     );

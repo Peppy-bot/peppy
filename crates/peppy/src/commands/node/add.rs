@@ -79,7 +79,14 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
         NodeSource::Fs(p) => p.display().to_string(),
         _ => source.clone(),
     };
-    info!("Adding node from {}...", display_source);
+    if let Some(ref v) = variant {
+        info!(
+            "Adding node variant '{}' from root node {}...",
+            v, display_source
+        );
+    } else {
+        info!("Adding node from {}...", display_source);
+    }
 
     // Parse variant source early so the preflight check uses the same merged config
     // that the actual add will use.
