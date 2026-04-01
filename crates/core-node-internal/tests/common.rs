@@ -3,7 +3,8 @@
 use config::consts::{
     DEFAULT_MESSAGING_HOST, NODE_CONFIG_FILE, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH, PeppyDirs,
 };
-use config::node::{PeppygenLanguage, QoSProfile};
+use config::node::{NodeConfigParser, PeppygenLanguage, QoSProfile};
+use config::source::DeploymentSource;
 use core_node::encoding::{
     NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAddResult, NodeSource,
     NodeStartFeedback, NodeStartGoal, NodeStartGoalResponse, NodeStartResult,
@@ -272,6 +273,32 @@ async fn send_node_add_and_wait_internal<'a>(
                             e
                         )
                     })?;
+                }
+
+                // For local FS variants (explicit or auto-resolved default),
+                // also ensure git.hash exists in the variant directory since
+                // verify_git_hash runs on the resolved variant path, not the root.
+                if let Ok(root_cfg) = NodeConfigParser::from_path(path.join(NODE_CONFIG_FILE)) {
+                    // Determine which variant name to look up: explicit or default.
+                    let variant_name: Option<String> = match &variant {
+                        Some(NodeSource::Fs(name)) => Some(name.to_string_lossy().to_string()),
+                        None if root_cfg.has_default_variant() => Some("default".to_string()),
+                        _ => None,
+                    };
+                    if let Some(vname) = variant_name
+                        && let Some(matched) = root_cfg.find_variant(&vname)
+                        && let DeploymentSource::Local(ref local) = matched.source
+                    {
+                        let variant_path = path.join(&local.local);
+                        if variant_path.is_dir() {
+                            let vd = variant_path.join(PEPPY_OUTPUT_DIR);
+                            std::fs::create_dir_all(&vd).ok();
+                            let vh = vd.join("git.hash");
+                            if !vh.exists() {
+                                std::fs::write(&vh, TEST_GIT_HASH).ok();
+                            }
+                        }
+                    }
                 }
             }
             NodeAddGoal::new(path, TEST_GIT_HASH, result_timeout.as_secs())

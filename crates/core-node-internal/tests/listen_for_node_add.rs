@@ -3803,6 +3803,132 @@ async fn listen_for_node_add_variant_local_source_after_sync() {
     );
 }
 
+/// Variant-only nodes (no execution at root, only in variants) must work with
+/// `node sync` + `node add --variant`. Sync skips peppygen generation for the
+/// root when it has no execution block, so only the variant directory gets a
+/// `.peppy/git.hash`. The `node add` verification must use the resolved variant
+/// path, not the root.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_add_variant_only_node_after_sync() {
+    use core_node::encoding::NodeSyncRequest;
+
+    const ROOT_NODE_NAME: &str = "variant_only_robot";
+    const ROOT_NODE_TAG: &str = "0.1.0";
+
+    let started_core_node = start_core_node_with_mock_messenger().await;
+    let node_stack = started_core_node.node_stack.clone();
+
+    // Create root node directory with variant inside it
+    let parent_dir = tempfile::tempdir().expect("failed to create parent dir");
+    let root_dir = parent_dir.path().join("root_node");
+    let variant_dir = root_dir.join("mock_node");
+    std::fs::create_dir_all(&root_dir).unwrap();
+    std::fs::create_dir_all(&variant_dir).unwrap();
+
+    // Root config has NO execution block — only manifest with variants + interfaces.
+    // This is the variant-only pattern: the root defines the contract, variants
+    // provide the implementation. A "default" variant is required when there is
+    // no execution block at root.
+    let root_config = r#"{
+        schema_version: 1,
+        manifest: {
+            name: "variant_only_robot",
+            tag: "0.1.0",
+            variants: [
+                { name: "default", source: { local: "mock_node" } },
+                { name: "mock", source: { local: "mock_node" } }
+            ]
+        },
+        interfaces: {
+            topics: {
+                emits: [
+                    { name: "joint_positions", qos_profile: "sensor_data", message_format: { x: "f64", y: "f64" } }
+                ]
+            }
+        }
+    }"#;
+    let root_config_path = root_dir.join(NODE_CONFIG_FILE);
+    std::fs::write(&root_config_path, root_config).expect("failed to write root config");
+
+    // Variant config defines execution (the implementation)
+    let variant_config = r#"{
+        schema_version: 1,
+        execution: {
+            language: "rust",
+            start_cmd: ["sleep", "5"]
+        }
+    }"#;
+    let variant_config_path = variant_dir.join(NODE_CONFIG_FILE);
+    std::fs::write(&variant_config_path, variant_config).expect("failed to write variant config");
+
+    // Step 1: Run node sync — generates peppygen only for the variant (not root,
+    // since root has no execution block).
+    let sync_response = NodeSyncRequest::new(&root_dir, TEST_GIT_HASH)
+        .poll(
+            &started_core_node.caller_handle,
+            &started_core_node.core_node_name,
+            CALLER_INSTANCE_ID,
+            &started_core_node.core_node_name,
+            Duration::from_secs(10),
+        )
+        .await
+        .expect("node_sync request should complete");
+
+    assert!(
+        sync_response.success,
+        "node_sync should succeed, got error: {}",
+        sync_response.error_message
+    );
+
+    // Root should NOT have a .peppy directory (no execution → no peppygen).
+    assert!(
+        !root_dir.join(PEPPY_OUTPUT_DIR).exists(),
+        "root .peppy directory should NOT exist for variant-only nodes"
+    );
+
+    // Variant should have .peppy directory after sync.
+    assert!(
+        variant_dir.join(PEPPY_OUTPUT_DIR).exists(),
+        "variant .peppy directory should exist after sync"
+    );
+
+    // Step 2: Run node add with the variant — must succeed despite no .peppy at root.
+    let add_result = send_node_add_and_wait_with_variant(
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        root_dir.as_path(),
+        "mock",
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        None,
+    )
+    .await
+    .expect("node_add with variant should succeed");
+
+    assert!(
+        add_result.success,
+        "variant-only node_add after sync should succeed, got error: {:?}",
+        add_result.error_message
+    );
+
+    // Verify the node is in the stack with the expected merged config
+    assert!(node_stack.contains(ROOT_NODE_NAME, ROOT_NODE_TAG));
+
+    let entity = node_stack
+        .find(ROOT_NODE_NAME, ROOT_NODE_TAG)
+        .expect("node should exist in stack");
+    let config = entity.config();
+    assert!(
+        config.interfaces.topics.is_some(),
+        "interfaces should be inherited from root"
+    );
+    assert_eq!(
+        config.execution.start_cmd.as_ref().unwrap(),
+        &vec!["sleep".to_string(), "5".to_string()],
+        "execution should come from the variant"
+    );
+}
+
 /// After sync, modifying the variant's peppy.json5 must cause a fingerprint
 /// mismatch on the next `node add`, blocking the stale variant from being added.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

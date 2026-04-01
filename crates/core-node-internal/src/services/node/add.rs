@@ -995,9 +995,9 @@ async fn resolve_node_add_source(
                 });
             }
 
-            if !is_stack_launch {
-                verify_git_hash(path, &goal.git_hash)?;
-            }
+            // Git hash verification is deferred to run_node_add (after variant
+            // resolution) so that the check uses the final source_path — which
+            // may be a variant subdirectory that has no .peppy at the root level.
             let config_path = path.join(NODE_CONFIG_FILE);
             let node_config = NodeConfigParser::from_path(&config_path).map_err(|e| {
                 format!(
@@ -1123,6 +1123,21 @@ pub(crate) async fn run_node_add(
                     return NodeAddResult::failure(&log_path, error_msg);
                 }
             }
+        }
+
+        // Verify git hash now that source_path points to the final directory
+        // (variant subdirectory for variant adds, root for non-variant adds).
+        // For non-archive local FS sources this check is deferred from
+        // resolve_node_add_source so that variant-only nodes (no .peppy dir
+        // at the root level) are handled correctly.
+        if goal.git_hash != STACK_LAUNCH_GIT_HASH
+            && let NodeSource::Fs(original_path) = &goal.source
+            && !is_supported_fs_archive(original_path)
+            && let Err(error_msg) =
+                verify_git_hash(&resolved.source_path, &goal.git_hash)
+        {
+            write_error_to_log(&log_file, &error_msg);
+            return NodeAddResult::failure(&log_path, error_msg);
         }
 
         let cleanup_dir = resolved_cleanup_guard.take();
