@@ -1080,6 +1080,11 @@ pub(crate) async fn run_node_add(
             None => None,
         };
 
+        // Capture the root source path before variant resolution may overwrite it.
+        // The .peppy/git.hash file is written by `peppy node sync` at the root
+        // level; non-local variant directories (Git/Http clones) won't have it.
+        let root_source_path = resolved.source_path.clone();
+
         // If a variant is specified (or auto-resolved), resolve it from the root config.
         let mut variant_cleanup_dir: Option<PathBuf> = None;
         let node_config: NodeConfig;
@@ -1125,19 +1130,20 @@ pub(crate) async fn run_node_add(
             }
         }
 
-        // Verify git hash now that source_path points to the final directory
-        // (variant subdirectory for variant adds, root for non-variant adds).
-        // For non-archive local FS sources this check is deferred from
-        // resolve_node_add_source so that variant-only nodes (no .peppy dir
-        // at the root level) are handled correctly.
+        // Verify git hash for non-archive local FS sources.
+        //
+        // The .peppy/git.hash file is always written by `peppy node sync` at
+        // the root level (alongside the peppy.json5 that contains the manifest),
+        // regardless of whether the node has an execution block or uses variants.
+        // Verification always targets the root source path.
         if goal.git_hash != STACK_LAUNCH_GIT_HASH
             && let NodeSource::Fs(original_path) = &goal.source
             && !is_supported_fs_archive(original_path)
-            && let Err(error_msg) =
-                verify_git_hash(&resolved.source_path, &goal.git_hash)
         {
-            write_error_to_log(&log_file, &error_msg);
-            return NodeAddResult::failure(&log_path, error_msg);
+            if let Err(error_msg) = verify_git_hash(&root_source_path, &goal.git_hash) {
+                write_error_to_log(&log_file, &error_msg);
+                return NodeAddResult::failure(&log_path, error_msg);
+            }
         }
 
         let cleanup_dir = resolved_cleanup_guard.take();

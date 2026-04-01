@@ -327,7 +327,20 @@ async fn handle_node_sync_request_inner(
             }
         };
     } else {
+        // Variant-only node: no peppygen at root, but .peppy/git.hash must
+        // still exist alongside the manifest so that `node add` can verify
+        // the source is in sync.
         remove_previous_peppy_dir(&node_root_dir);
+        let peppy_dir = node_root_dir.join(config::consts::PEPPY_OUTPUT_DIR);
+        if let Err(e) = std::fs::create_dir_all(&peppy_dir)
+            .and_then(|()| std::fs::write(peppy_dir.join("git.hash"), git_hash.as_bytes()))
+        {
+            return NodeSyncResponse::failure(format!(
+                "Failed to write git hash at root for variant-only node: {}",
+                e
+            ))
+            .encode();
+        }
     }
 
     // Sync variants: each variant gets its own .peppy directory using the root's interfaces

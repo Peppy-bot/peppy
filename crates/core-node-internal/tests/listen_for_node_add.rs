@@ -3880,10 +3880,20 @@ async fn listen_for_node_add_variant_only_node_after_sync() {
         sync_response.error_message
     );
 
-    // Root should NOT have a .peppy directory (no execution → no peppygen).
+    // Root should have .peppy/git.hash (sync always writes it alongside the
+    // manifest) but no peppygen output (no execution block at root).
+    let root_peppy_dir = root_dir.join(PEPPY_OUTPUT_DIR);
     assert!(
-        !root_dir.join(PEPPY_OUTPUT_DIR).exists(),
-        "root .peppy directory should NOT exist for variant-only nodes"
+        root_peppy_dir.exists(),
+        "root .peppy directory should exist after sync (git.hash lives here)"
+    );
+    assert!(
+        root_peppy_dir.join("git.hash").exists(),
+        "root .peppy/git.hash should exist after sync"
+    );
+    assert!(
+        !root_dir.join(PEPPYGEN_OUTPUT_PATH).exists(),
+        "root should NOT have peppygen output (no execution block)"
     );
 
     // Variant should have .peppy directory after sync.
@@ -4857,4 +4867,211 @@ async fn listen_for_node_add_execution_with_default_variant_fails() {
     );
 
     assert_eq!(node_stack.len(), 1, "only root should exist");
+}
+
+/// When a variant is fetched from a git repository, the cloned temp directory
+/// does not contain `.peppy/git.hash`. The git hash verification must fall back
+/// to the root source path (where `peppy node sync` wrote the hash file).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_add_git_variant_verifies_git_hash_at_root() {
+    const ROOT_NODE_NAME: &str = "git_variant_hash_robot";
+    const ROOT_NODE_TAG: &str = "0.1.0";
+
+    let started_core_node = start_core_node_with_mock_messenger().await;
+    let node_stack = started_core_node.node_stack.clone();
+
+    // Create a local git repo containing the variant's execution-only config.
+    let git_repo_temp = TempDir::new().expect("failed to create git repo temp dir");
+    let git_repo_path = git_repo_temp.path().join("variant_repo.git");
+    std::fs::create_dir_all(&git_repo_path).expect("create git repo dir");
+
+    let repo = Repository::init(&git_repo_path).expect("init git repo");
+    let signature = Signature::now("Peppy", "peppy@example.com").expect("create signature");
+
+    let variant_config_rel = Path::new(NODE_CONFIG_FILE);
+    std::fs::write(
+        git_repo_path.join(variant_config_rel),
+        r#"{
+            schema_version: 1,
+            execution: {
+                language: "rust",
+                start_cmd: ["sleep", "5"]
+            }
+        }"#,
+    )
+    .expect("write variant config to git repo");
+
+    let mut index = repo.index().expect("open index");
+    index
+        .add_path(variant_config_rel)
+        .expect("add variant config");
+    index.write().expect("write index");
+
+    let tree_id = index.write_tree().expect("write tree");
+    let tree = repo.find_tree(tree_id).expect("find tree");
+    let commit_id = repo
+        .commit(
+            Some("HEAD"),
+            &signature,
+            &signature,
+            "variant v1",
+            &tree,
+            &[],
+        )
+        .expect("commit");
+    let commit = repo.find_commit(commit_id).expect("find commit");
+    repo.tag("v1.0", commit.as_object(), &signature, "v1.0", false)
+        .expect("create v1.0 tag");
+
+    // Build the root node directory.  The manifest declares a variant whose
+    // deployment source is the local git repository we just created.
+    let parent_dir = tempfile::tempdir().expect("create parent dir");
+    let root_dir = parent_dir.path().join("root_node");
+    std::fs::create_dir_all(&root_dir).unwrap();
+
+    let root_config = r#"{
+        schema_version: 1,
+        manifest: {
+            name: "ROOT_NODE_NAME",
+            tag: "ROOT_NODE_TAG",
+            variants: [
+                { name: "git_variant", source: { repo: "REPO_PATH", path: ".", ref: "v1.0" } }
+            ]
+        },
+        interfaces: {
+            topics: {
+                emits: [
+                    { name: "joint_positions", qos_profile: "sensor_data", message_format: { x: "f64", y: "f64" } }
+                ]
+            }
+        },
+        execution: {
+            language: "rust",
+            start_cmd: ["sleep", "10"]
+        }
+    }"#
+    .replace("ROOT_NODE_NAME", ROOT_NODE_NAME)
+    .replace("ROOT_NODE_TAG", ROOT_NODE_TAG)
+    .replace("REPO_PATH", &git_repo_path.display().to_string());
+    write_peppy_json5(&root_dir, &root_config);
+
+    // The test helper (send_node_add_and_wait_with_variant) auto-provisions
+    // .peppy/git.hash at the root.  The git-cloned variant temp directory will
+    // NOT have this file
+    let add_result = send_node_add_and_wait_with_variant(
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        root_dir.as_path(),
+        "git_variant",
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        None,
+    )
+    .await
+    .expect("node_add request should complete");
+
+    assert!(
+        add_result.success,
+        "git variant node_add should succeed (git hash verified at root, not variant temp dir): {:?}",
+        add_result.error_message
+    );
+
+    assert!(node_stack.contains(ROOT_NODE_NAME, ROOT_NODE_TAG));
+
+    let entity = node_stack
+        .find(ROOT_NODE_NAME, ROOT_NODE_TAG)
+        .expect("node should exist in stack");
+    let config = entity.config();
+    assert!(
+        config.interfaces.topics.is_some(),
+        "interfaces should be inherited from root"
+    );
+    assert_eq!(
+        config.execution.start_cmd.as_ref().unwrap(),
+        &vec!["sleep".to_string(), "5".to_string()],
+        "execution should come from the git variant"
+    );
+}
+
+/// `.peppy/git.hash` is always located at the root (alongside the manifest).
+/// When a default variant is auto-resolved, the root's git hash must still be
+/// verified.  A stale root hash must cause node_add to fail.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_add_default_fs_variant_verifies_git_hash_at_root() {
+    let started_core_node = start_core_node_with_mock_messenger().await;
+    let node_stack = started_core_node.node_stack.clone();
+
+    // Create root node directory with a "default" variant subdirectory.
+    let parent_dir = tempfile::tempdir().expect("create parent dir");
+    let root_dir = parent_dir.path().join("root_node");
+    let variant_dir = root_dir.join("default_impl");
+    std::fs::create_dir_all(&root_dir).unwrap();
+    std::fs::create_dir_all(&variant_dir).unwrap();
+
+    let root_config = r#"{
+        schema_version: 1,
+        manifest: {
+            name: "default_variant_hash_robot",
+            tag: "0.1.0",
+            variants: [
+                { name: "default", source: { local: "default_impl" } }
+            ]
+        },
+        interfaces: {
+            topics: {
+                emits: [
+                    { name: "joint_positions", qos_profile: "sensor_data", message_format: { x: "f64", y: "f64" } }
+                ]
+            }
+        }
+    }"#;
+    write_peppy_json5(&root_dir, &root_config);
+
+    let variant_config = r#"{
+        schema_version: 1,
+        execution: {
+            language: "rust",
+            start_cmd: ["sleep", "5"]
+        }
+    }"#;
+    write_peppy_json5(&variant_dir, variant_config);
+
+    // Pre-provision .peppy/git.hash at root with a STALE value before the
+    // test helper runs (it only writes when the file doesn't already exist).
+    // This simulates the root being modified after sync without re-syncing.
+    let root_peppy_dir = root_dir.join(PEPPY_OUTPUT_DIR);
+    std::fs::create_dir_all(&root_peppy_dir).expect("create root .peppy dir");
+    std::fs::write(root_peppy_dir.join("git.hash"), "stale-root-hash")
+        .expect("write stale root git.hash");
+
+    // No explicit variant — the "default" variant is auto-resolved by node_add.
+    let add_result = send_node_add_and_wait(
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        root_dir.as_path(),
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        None,
+    )
+    .await
+    .expect("node_add request should complete");
+
+    assert!(
+        !add_result.success,
+        "default variant node_add should FAIL when root git.hash is stale"
+    );
+    assert!(
+        add_result
+            .error_message
+            .as_ref()
+            .map(|msg| msg.contains("git hash mismatch"))
+            .unwrap_or(false),
+        "error should mention git hash mismatch, got: {:?}",
+        add_result.error_message
+    );
+    assert_eq!(
+        node_stack.len(),
+        1,
+        "only the core node should exist (stale root rejected)"
+    );
 }
