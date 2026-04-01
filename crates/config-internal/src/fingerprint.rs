@@ -153,7 +153,7 @@ mod tests {
         let generated_crate = prepare_generated_crate(&tmp);
 
         let config_contents = r#"{ schema_version: 1, manifest: { name: "camera", tag: "0.1.0" },
- runtime: { language: "rust", start_cmd: ["./target/release/camera"] } }"#;
+ execution: { language: "rust", start_cmd: ["./target/release/camera"] } }"#;
         fs::write(&config_path, config_contents).expect("failed to write config");
 
         generate_node_config_fingerprint(&config_path, &generated_crate)
@@ -178,7 +178,7 @@ mod tests {
         fs::write(&fingerprint_path, "old_fingerprint\n").expect("failed to write old fingerprint");
 
         let config_contents = r#"{ schema_version: 1, manifest: { name: "camera", tag: "0.1.0" },
- runtime: { language: "rust", start_cmd: ["./target/release/camera"] } }"#;
+ execution: { language: "rust", start_cmd: ["./target/release/camera"] } }"#;
         fs::write(&config_path, config_contents).expect("failed to write config");
 
         generate_node_config_fingerprint(&config_path, &generated_crate)
@@ -189,6 +189,31 @@ mod tests {
             written.trim(),
             fingerprint_for_bytes(config_contents.as_bytes())
         );
+    }
+
+    #[test]
+    fn generate_node_config_fingerprint_returns_err_on_read_only_output_dir() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = TempDir::new().expect("failed to create temp dir");
+        let config_path = tmp.path().join("peppy.json5");
+        fs::write(&config_path, "test config content").expect("failed to write config");
+
+        // Create output dir and make it read-only so the fingerprint file cannot be written
+        let output_dir = tmp.path().join("readonly_output");
+        fs::create_dir_all(&output_dir).expect("failed to create output dir");
+        fs::set_permissions(&output_dir, fs::Permissions::from_mode(0o555))
+            .expect("failed to set permissions");
+
+        let result = generate_node_config_fingerprint(&config_path, &output_dir);
+        assert!(
+            result.is_err(),
+            "should return Err when output directory is read-only"
+        );
+
+        // Restore write permissions for cleanup
+        fs::set_permissions(&output_dir, fs::Permissions::from_mode(0o755))
+            .expect("failed to restore permissions");
     }
 
     fn prepare_generated_crate(tmp: &TempDir) -> std::path::PathBuf {

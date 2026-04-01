@@ -50,6 +50,16 @@ pub enum ParsingError {
     ProcessAndContainerConflict,
     #[error("Node config must have either `process` or `container`")]
     NoProcessOrContainer,
+    #[error("Node config `execution.start_cmd` must not be empty")]
+    EmptyStartCmd,
+
+    // -- node config: default variant
+    #[error(
+        "Node config with a 'default' variant must not define an `execution` section — the execution comes from the default variant"
+    )]
+    ExecutionWithDefaultVariant,
+    #[error("Node config must define an `execution` section (or declare a 'default' variant)")]
+    MissingExecution,
 
     // -- container config: mount paths
     #[error(

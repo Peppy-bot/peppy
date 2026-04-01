@@ -182,7 +182,7 @@ pub fn add_capnp_schemas(schemas: &HashMap<String, CapnpSchema>, to_path: &Path)
     Ok(())
 }
 
-pub fn add_parameters_to_lib(parameters: &config::NodeArguments, to_path: &Path) -> Result<()> {
+pub fn add_parameters_to_lib(parameters: &config::ParameterSchema, to_path: &Path) -> Result<()> {
     let parameters_code = super::parameters::generate_python_parameters(parameters)?;
     let peppygen_dir = to_path.join("peppygen");
     fs::create_dir_all(&peppygen_dir)?;
@@ -363,7 +363,7 @@ mod tests {
     /// all release builds (including cross-compilation) originate.
     #[test]
     #[cfg(target_os = "macos")]
-    fn embedded_peppylib_contains_all_release_platform_sos() {
+    fn embedded_peppylib_contains_all_release_platform_dynamic_lib() {
         let required = [
             "_peppylib.abi3.macos-aarch64.so",
             "_peppylib.abi3.linux-aarch64.so",

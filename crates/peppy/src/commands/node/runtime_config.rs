@@ -2,8 +2,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use config::launcher::Name;
 use config::node::NodeConfigParser;
-use config::peppy_config::Name;
 use config::runtime::{NodeInstance, RuntimeConfig};
 use core_node::encoding::NodeListRequest;
 use names_generator2::get_random;
@@ -38,7 +38,7 @@ fn resolve_node_name(node_name: Option<String>, node_dir: Option<PathBuf>) -> Re
             let peppy_json5_path = dir.join("peppy.json5");
             let config =
                 NodeConfigParser::from_path(&peppy_json5_path).map_err(Error::PeppyConfig)?;
-            Ok(config.manifest.name.as_str().to_string())
+            Ok(config.manifest_name().to_string())
         }
         _ => Err(Error::ExecutionFailed(
             "Exactly one of --node-name or node_dir must be provided".to_string(),

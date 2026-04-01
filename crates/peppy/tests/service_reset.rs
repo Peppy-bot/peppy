@@ -37,7 +37,7 @@ fn write_node_config(
                     name: "{node_name}",
                     tag: "{node_tag}",
                 },
-                runtime: {
+                execution: {
                     language: "rust",
                     start_cmd: [{start_cmd_json5}]
                 }
@@ -104,6 +104,7 @@ async fn service_reset_command_resets_node_stack() {
         command: NodeCommands::Add {
             source: node_path.display().to_string(),
             git_ref: None,
+            variant: None,
             start: false,
             args: Vec::new(),
             instance_id: None,

@@ -1,4 +1,4 @@
-use crate::{common::NodeArguments, error::ParsingError};
+use crate::{common::AnyType, error::ParsingError};
 use serde::{
     Deserialize, Serialize,
     de::{self, Deserializer},
@@ -37,7 +37,7 @@ pub struct Deployment {
 pub struct DeploymentInstance {
     pub instance_id: Name,
     #[serde(default)]
-    pub arguments: NodeArguments,
+    pub arguments: BTreeMap<String, AnyType>,
     #[serde(default)]
     pub env_vars: BTreeMap<String, String>,
 }
@@ -212,6 +212,8 @@ mod tests {
         assert_eq!(duplicate, "camera_front");
     }
 
+    /// Verifies that optional fields (`arguments`, `env_vars`) default to empty
+    /// when omitted, and that partially specified instances deserialize correctly.
     #[test]
     fn deployment_instance_defaults() {
         let instance: DeploymentInstance =

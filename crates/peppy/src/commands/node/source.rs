@@ -20,7 +20,7 @@ pub fn parse_node_source(source: &str, git_ref: Option<String>) -> Result<NodeSo
                     "`--ref` is only supported for git sources".to_string(),
                 ));
             }
-            return Ok(NodeSource::Http { url });
+            return Ok(NodeSource::Http { url, sha256: None });
         }
 
         let (repo_url, repo_path) = parse_git_repo_url_and_path(source)?;
@@ -62,6 +62,64 @@ pub fn parse_node_source(source: &str, git_ref: Option<String>) -> Result<NodeSo
         .unwrap_or_else(|| PathBuf::from("."));
 
     Ok(NodeSource::Fs(from_dir))
+}
+
+/// Parses a variant source string into a [`NodeSource`].
+///
+/// Unlike [`parse_node_source`], this does **not** canonicalize local paths or
+/// check for `peppy.json5`. A plain string (non-URL) is treated as a variant
+/// name and wrapped as `NodeSource::Fs`.
+///
+/// For git sources, an `@ref` suffix on the path portion specifies the git ref:
+/// `https://github.com/org/repo.git/path@main`
+pub fn parse_variant_source(variant: &str) -> Result<NodeSource> {
+    if is_probably_remote_source(variant) {
+        if let Ok(url) = url::Url::parse(variant)
+            && matches!(url.scheme(), "http" | "https")
+            && is_supported_http_archive(&url)
+        {
+            return Ok(NodeSource::Http { url, sha256: None });
+        }
+
+        // Extract @ref from the end of the string before URL parsing.
+        // e.g., "https://github.com/org/repo.git/brain@main" → url part + ref="main"
+        // Only split on @ that appears after ".git" to avoid splitting on git@ prefixes.
+        let (url_part, repo_ref) = if let Some(git_pos) = variant.rfind(".git") {
+            let after_git = &variant[git_pos..];
+            if let Some(at_pos) = after_git.rfind('@') {
+                let split_pos = git_pos + at_pos;
+                let after_at = &variant[split_pos + 1..];
+                // Only treat '@' as a ref marker if there is no '/' after it;
+                // a '/' means this is a scoped-package segment (e.g. @scope/pkg).
+                if !after_at.contains('/') {
+                    (
+                        &variant[..split_pos],
+                        if after_at.is_empty() {
+                            None
+                        } else {
+                            Some(after_at.to_string())
+                        },
+                    )
+                } else {
+                    (variant, None)
+                }
+            } else {
+                (variant, None)
+            }
+        } else {
+            (variant, None)
+        };
+
+        let (repo_url, repo_path) = parse_git_repo_url_and_path(url_part)?;
+        return Ok(NodeSource::Git {
+            repo_url,
+            repo_path,
+            repo_ref,
+        });
+    }
+
+    // Plain string = variant name (looked up in root manifest)
+    Ok(NodeSource::Fs(PathBuf::from(variant)))
 }
 
 pub fn is_supported_http_archive(url: &url::Url) -> bool {
@@ -109,4 +167,89 @@ pub fn parse_git_repo_url_and_path(source: &str) -> Result<(GitUrl, String)> {
         Error::ExecutionFailed(format!("Invalid git URL '{}': {}", repo_url_str, e))
     })?;
     Ok((repo_url, repo_path))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_variant_source_name() {
+        let source = parse_variant_source("mock").unwrap();
+        let NodeSource::Fs(p) = &source else {
+            panic!("expected Fs variant, got {:?}", source)
+        };
+        assert_eq!(p.to_string_lossy(), "mock");
+    }
+
+    #[test]
+    fn parse_variant_source_git_with_ref() {
+        let source =
+            parse_variant_source("https://github.com/example/repo.git/brain@main").unwrap();
+        let NodeSource::Git {
+            repo_path,
+            repo_ref,
+            ..
+        } = &source
+        else {
+            panic!("expected Git variant, got {:?}", source)
+        };
+        assert_eq!(repo_path, "brain");
+        assert_eq!(repo_ref.as_deref(), Some("main"));
+    }
+
+    #[test]
+    fn parse_variant_source_git_without_ref() {
+        let source = parse_variant_source("https://github.com/example/repo.git/brain").unwrap();
+        let NodeSource::Git {
+            repo_path,
+            repo_ref,
+            ..
+        } = &source
+        else {
+            panic!("expected Git variant, got {:?}", source)
+        };
+        assert_eq!(repo_path, "brain");
+        assert_eq!(*repo_ref, None);
+    }
+
+    #[test]
+    fn parse_variant_source_git_ref_no_path() {
+        let source = parse_variant_source("https://github.com/example/repo.git@v1.0").unwrap();
+        let NodeSource::Git {
+            repo_path,
+            repo_ref,
+            ..
+        } = &source
+        else {
+            panic!("expected Git variant, got {:?}", source)
+        };
+        assert!(repo_path.is_empty());
+        assert_eq!(repo_ref.as_deref(), Some("v1.0"));
+    }
+
+    #[test]
+    fn parse_variant_source_git_scoped_package_not_treated_as_ref() {
+        let source =
+            parse_variant_source("https://github.com/org/repo.git/packages/@scope/node").unwrap();
+        let NodeSource::Git {
+            repo_path,
+            repo_ref,
+            ..
+        } = &source
+        else {
+            panic!("expected Git variant, got {:?}", source)
+        };
+        assert_eq!(repo_path, "packages/@scope/node");
+        assert_eq!(*repo_ref, None);
+    }
+
+    #[test]
+    fn parse_variant_source_http() {
+        let source = parse_variant_source("https://example.com/variant.tar.zst").unwrap();
+        let NodeSource::Http { url, .. } = &source else {
+            panic!("expected Http variant, got {:?}", source)
+        };
+        assert_eq!(url.as_str(), "https://example.com/variant.tar.zst");
+    }
 }

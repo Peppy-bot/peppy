@@ -5,7 +5,7 @@
     tag: "0.1.0",
   },
   interfaces: {},
-  runtime: {
+  execution: {
     language: "rust",
     // A bunch of fake parameters required to start our node
     parameters: {

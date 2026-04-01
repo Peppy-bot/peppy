@@ -42,7 +42,7 @@ const PEPPY_JSON5_CONFIG: &str = r#"{
     }
   },
 
-  runtime: { language: "rust",
+  execution: { language: "rust",
     start_cmd: ["./target/release/test_node"]
   },
 }"#;
@@ -58,7 +58,7 @@ fn generate_peppygen_lib_minimal_config() {
       manifest: { name: "minimal_node",
         tag: "0.1.0" },
 
-      runtime: { language: "rust",
+      execution: { language: "rust",
         start_cmd: ["./target/debug/minimal_node"]
       }
     }"#;
@@ -74,6 +74,7 @@ fn generate_peppygen_lib_minimal_config() {
         "test-hash",
         &helpers::test_peppy_dirs(),
         Default::default(),
+        None,
     )
     .expect("failed to generate library for minimal config");
 
@@ -213,6 +214,7 @@ fn generate_peppygen_lib_missing_config() {
         "test-hash",
         &helpers::test_peppy_dirs(),
         Default::default(),
+        None,
     );
     assert!(result.is_err(), "should fail when peppy.json5 is missing");
 }
@@ -244,7 +246,7 @@ fn generate_peppygen_rust_lib_emitted_and_consumed_topics() {
               ]
             }
           },
-          runtime: {
+          execution: {
             language: "rust",
             start_cmd: ["./target/debug/{EXPOSED_NODE_NAME}"]
           },
@@ -261,6 +263,7 @@ fn generate_peppygen_rust_lib_emitted_and_consumed_topics() {
         "test-hash",
         &helpers::test_peppy_dirs(),
         Default::default(),
+        None,
     )
     .expect("failed to generate peppygen lib for exposed node");
 
@@ -282,7 +285,7 @@ fn generate_peppygen_rust_lib_emitted_and_consumed_topics() {
             name: "{CONSUMER_NODE_NAME}",
             tag: "0.1.0",
           },
-          runtime: {
+          execution: {
             language: "rust",
             start_cmd: ["./target/debug/{CONSUMER_NODE_NAME}"]
           }
@@ -315,6 +318,7 @@ fn generate_peppygen_rust_lib_emitted_and_consumed_topics() {
         "test-hash",
         &helpers::test_peppy_dirs(),
         Default::default(),
+        None,
     )
     .expect("failed to generate peppygen lib for consumer node");
 
@@ -358,7 +362,7 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_services() {
               ]
             }
           },
-          runtime: {
+          execution: {
             language: "rust",
             start_cmd: ["./target/debug/{EXPOSED_NODE_NAME}"]
           },
@@ -375,6 +379,7 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_services() {
         "test-hash",
         &helpers::test_peppy_dirs(),
         Default::default(),
+        None,
     )
     .expect("failed to generate peppygen lib for exposed node");
 
@@ -396,7 +401,7 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_services() {
             name: "{CONSUMER_NODE_NAME}",
             tag: "0.1.0",
           },
-          runtime: {
+          execution: {
             language: "rust",
             start_cmd: ["./target/debug/{CONSUMER_NODE_NAME}"]
           }
@@ -435,6 +440,7 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_services() {
         "test-hash",
         &helpers::test_peppy_dirs(),
         Default::default(),
+        None,
     )
     .expect("failed to generate peppygen lib for consumer node");
 
@@ -497,7 +503,7 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_actions() {
               ]
             }
           },
-          runtime: {
+          execution: {
             language: "rust",
             start_cmd: ["./target/debug/{EXPOSED_NODE_NAME}"]
           },
@@ -514,6 +520,7 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_actions() {
         "test-hash",
         &helpers::test_peppy_dirs(),
         Default::default(),
+        None,
     )
     .expect("failed to generate peppygen lib for exposed node");
 
@@ -535,7 +542,7 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_actions() {
             name: "{CONSUMER_NODE_NAME}",
             tag: "0.1.0",
           },
-          runtime: {
+          execution: {
             language: "rust",
             start_cmd: ["./target/debug/{CONSUMER_NODE_NAME}"]
           }
@@ -582,6 +589,7 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_actions() {
         "test-hash",
         &helpers::test_peppy_dirs(),
         Default::default(),
+        None,
     )
     .expect("failed to generate peppygen lib for consumer node");
 

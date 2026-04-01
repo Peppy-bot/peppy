@@ -1,7 +1,6 @@
 use std::path::PathBuf;
 
 use config::ConfigError;
-use git2::Error as GitError;
 use thiserror::Error;
 
 pub type Result<T> = core::result::Result<T, Error>;
@@ -11,22 +10,10 @@ pub enum Error {
     // -- general
     #[error(transparent)]
     Io(#[from] std::io::Error),
-    #[error(transparent)]
-    Git(#[from] GitError),
     #[error("{0} not implemented yet")]
     NotImplemented(&'static str),
     #[error("{0} could not be found")]
     FileNotFound(PathBuf),
-    #[error("Failed to download bundle `{url}`: {reason}")]
-    HttpDownload { url: String, reason: String },
-    #[error("Failed to extract bundle `{url}`: {reason}")]
-    BundleExtraction { url: String, reason: String },
-    #[error("Checksum mismatch for bundle `{0}`")]
-    ChecksumMismatch(String),
-    #[error("Unsupported checksum algorithm `{0}`")]
-    UnsupportedChecksum(String),
-    #[error("Invalid checksum `{0}`: {1}")]
-    InvalidChecksum(String, String),
 
     // -- config-internal
     #[error(transparent)]
@@ -57,6 +44,14 @@ pub enum Error {
         dependency: String,
         dependency_tag: String,
     },
+    #[error(
+        "`{dependant}:{dependant_tag}` references undeclared local_node_id `{local_node_id}` in consumed interfaces"
+    )]
+    UndeclaredLocalNodeId {
+        dependant: String,
+        dependant_tag: String,
+        local_node_id: String,
+    },
 
     // -- node stack errors
     #[error("Cannot modify the root node (it always has exactly one instance)")]
@@ -75,26 +70,4 @@ pub enum Error {
     },
     #[error("Cannot remove node `{node_name}`:{node_tag} because it still has instances")]
     CannotRemoveNodeWithInstances { node_name: String, node_tag: String },
-
-    // -- deployment errors
-    // {0}: node_name + tag, {1}: Reason
-    #[error("Failed to resolve deployment {0}: {1}")]
-    DeploymentNotResolvable(String, String),
-    #[error(
-        "The deployment `{deployment}` contains wrong input parameters. Expected parameters: {expected:?}. Unexpected parameters: {unexpected:?}"
-    )]
-    WrongInputParameters {
-        deployment: String,
-        expected: Vec<String>,
-        unexpected: Vec<String>,
-    },
-    #[error(
-        "The deployment `{deployment}` has a parameter type mismatch at `{path}`: expected `{expected}`, got `{actual}`"
-    )]
-    WrongParameterType {
-        deployment: String,
-        path: String,
-        expected: String,
-        actual: String,
-    },
 }

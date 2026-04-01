@@ -1,5 +1,5 @@
 use config::consts::PEPPYGEN_OUTPUT_PATH;
-use config::peppy_config::Name;
+use config::launcher::Name;
 use config::runtime::{NodeInstance, RuntimeConfig};
 use peppylib::encoding::health::{NodeHealthRequest, NodeHealthResponse};
 use peppylib::messaging::{NODE_HEALTH_SERVICE, NODE_READY_SERVICE, SHUTDOWN_SERVICE};
@@ -109,7 +109,7 @@ async fn daemon_runner_succeed() {
         name: "test_node",
         tag: "0.1.0",
       },
-      runtime: {
+      execution: {
         language: "rust",
         parameters: {
           frequency_hz: "f64"
@@ -253,7 +253,7 @@ async fn standalone_runner_succeed() {
         name: "test_node",
         tag: "0.1.0",
       },
-      runtime: {
+      execution: {
         language: "rust",
         parameters: {
           frequency_hz: "f64"
@@ -312,7 +312,7 @@ async fn node_ready_but_not_healthy() {
         name: "test_node",
         tag: "0.1.0",
       },
-      runtime: {
+      execution: {
         language: "rust",
         parameters: {
           frequency_hz: "f64"
@@ -564,7 +564,7 @@ async fn daemon_cancellation_token_cancelled_on_shutdown() {
         name: "test_node",
         tag: "0.1.0",
       },
-      runtime: {
+      execution: {
         language: "rust",
         parameters: {
           frequency_hz: "f64"
@@ -698,7 +698,7 @@ async fn node_runner_exposes_messenger_and_metadata() {
         name: "test_node",
         tag: "0.1.0",
       },
-      runtime: {
+      execution: {
         language: "rust",
         parameters: {
           frequency_hz: "f64"

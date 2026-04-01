@@ -182,6 +182,9 @@ pub enum Error {
     #[error(transparent)]
     ParameterTypeMismatch(#[from] config::TypeMismatch),
 
+    #[error(transparent)]
+    NodeArgumentsValidation(#[from] config::NodeArgumentsError),
+
     #[error("missing parameter `{path}` in compiled node parameters")]
     MissingCompiledParameter { path: String },
 
@@ -190,6 +193,9 @@ pub enum Error {
 
     #[error(transparent)]
     MissingStandaloneParameters(#[from] MissingStandaloneParameters),
+
+    #[error("parameters have already been taken (take_parameters() can only be called once)")]
+    ParametersAlreadyTaken,
 
     // --- Serialization
     #[error("serialization error: {0}")]

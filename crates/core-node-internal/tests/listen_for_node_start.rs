@@ -7,8 +7,8 @@ use common::{
     start_core_node_with_real_messenger, write_peppy_json5,
 };
 use config::consts::DEFAULT_ALPINE_BASE_IMAGE;
+use config::launcher::Name;
 use config::node::Name as NodeName;
-use config::peppy_config::Name;
 use config::runtime::{NodeInstance, RuntimeConfig};
 use core_node::encoding::NodeStartFeedback;
 use peppylib::messaging::MessengerHandle;
@@ -147,7 +147,7 @@ async fn listen_for_node_start_timeout() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "0.1.0",
             },
-            runtime: {
+            execution: {
                 language: "rust",
                 start_cmd: ["sleep", "10"]
             }
@@ -337,7 +337,7 @@ async fn listen_for_node_start_streams_stdout_and_stderr() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
             },
-            runtime: {
+            execution: {
                 language: "rust",
                 start_cmd: ["sh", "-c", "echo {STDOUT_MARKER}; echo {STDERR_MARKER} 1>&2; sleep 5"]
             }
@@ -466,7 +466,7 @@ async fn listen_for_node_start_writes_log_file() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
             },
-            runtime: {
+            execution: {
                 language: "rust",
                 start_cmd: ["sh", "-c", "echo {STDOUT_MARKER}; echo {STDERR_MARKER} 1>&2; sleep 5"]
             }
@@ -612,7 +612,7 @@ async fn listen_for_node_start_reports_all_missing_parameters() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
             },
-            runtime: {
+            execution: {
                 language: "rust",
                 parameters: {
                     device: {
@@ -744,7 +744,7 @@ async fn listen_for_node_start_reports_only_missing_parameters_when_some_provide
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
             },
-            runtime: {
+            execution: {
                 language: "rust",
                 parameters: {
                     device: {
@@ -902,7 +902,7 @@ async fn listen_for_node_start_abandoned_action_does_not_block_next_goal() {
                 name: "{FIRST_NODE_NAME}",
                 tag: "{FIRST_NODE_TAG}",
             },
-            runtime: {
+            execution: {
                 language: "rust",
                 start_cmd: ["sleep", "30"]
             }
@@ -936,7 +936,7 @@ async fn listen_for_node_start_abandoned_action_does_not_block_next_goal() {
                 name: "{SECOND_NODE_NAME}",
                 tag: "{SECOND_NODE_TAG}",
             },
-            runtime: {
+            execution: {
                 language: "rust",
                 start_cmd: ["sleep", "30"]
             }
@@ -1133,7 +1133,7 @@ async fn listen_for_node_start_uses_env_overrides_for_path() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
             },
-            runtime: {
+            execution: {
                 language: "rust",
                 start_cmd: ["printout", "3"]
             }
@@ -1285,7 +1285,7 @@ async fn listen_for_node_start_injects_runtime_env_vars() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
             },
-            runtime: {
+            execution: {
                 language: "rust",
                 start_cmd: [
                     "sh",
@@ -1398,7 +1398,7 @@ async fn listen_for_node_start_with_container_success() {
             name: "TARGET_NODE_NAME",
             tag: "TARGET_NODE_TAG",
         },
-        runtime: {
+        execution: {
             language: "rust",
             container: {
                 def_file: "apptainer.def",
@@ -1613,7 +1613,7 @@ async fn listen_for_node_start_with_container_creates_missing_mount_dir() {
             name: "TARGET_NODE_NAME",
             tag: "TARGET_NODE_TAG",
         },
-        runtime: {
+        execution: {
             language: "rust",
             container: {
                 def_file: "apptainer.def",
@@ -1764,7 +1764,7 @@ async fn listen_for_node_start_container_failure_includes_stderr_in_error() {
             name: "TARGET_NODE_NAME",
             tag: "TARGET_NODE_TAG",
         },
-        runtime: {
+        execution: {
             language: "rust",
             container: {
                 def_file: "apptainer.def",
@@ -1817,7 +1817,7 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
         "127.0.0.1",
         config::consts::DEFAULT_MESSAGING_PORT,
         config::runtime::NodeInstance {
-            instance_id: config::peppy_config::Name::new(TARGET_INSTANCE_ID).unwrap(),
+            instance_id: config::launcher::Name::new(TARGET_INSTANCE_ID).unwrap(),
             arguments: Default::default(),
         },
         TARGET_NODE_NAME,
@@ -1895,7 +1895,7 @@ async fn listen_for_node_start_logs_error_on_spawn_failure() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
             },
-            runtime: {
+            execution: {
                 language: "rust",
                 start_cmd: ["nonexistent_binary_peppy_test_xyz"]
             }

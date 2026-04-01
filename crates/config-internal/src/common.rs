@@ -215,71 +215,214 @@ impl std::fmt::Display for TypeMismatch {
 
 impl std::error::Error for TypeMismatch {}
 
-// Node arguments with open-ended structure
-pub type NodeArguments = BTreeMap<String, AnyType>;
-
-/// Collect all leaf dot-paths from a parameter schema.
+/// Type alias for parameter type specifications declared in `peppy.json5`.
 ///
-/// For example, `{ device_path: "string", video: { fps: "u16" } }` yields
-/// `{"device_path", "video.fps"}`.
-pub fn parameter_leaf_paths(
-    parameters: &BTreeMap<String, AnyType>,
-) -> std::collections::BTreeSet<String> {
-    let mut acc = std::collections::BTreeSet::new();
-    for_each_parameter_leaf_path(parameters, |path| {
-        acc.insert(path.to_owned());
-    });
-    acc
-}
+/// Each key is a parameter name and each value describes the expected type
+/// (e.g. `AnyType::String("f64")` or an object/array type spec).
+pub type ParameterSchema = BTreeMap<String, AnyType>;
 
-/// Visit every leaf dot-path in a parameter schema, invoking `visit` for each.
-pub fn for_each_parameter_leaf_path(
-    parameters: &BTreeMap<String, AnyType>,
-    mut visit: impl FnMut(&str),
-) {
-    let mut path = String::new();
-    for (key, value) in parameters {
-        path.clear();
-        path.push_str(key);
-        visit_parameter_leaf_paths(value, &mut path, &mut visit);
+/// Unvalidated node arguments deserialized from a runtime or deployment config.
+///
+/// Use [`RawNodeArguments::into_resolved`] to validate against a
+/// [`ParameterSchema`] and obtain a [`NodeArguments`] value.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(transparent)]
+pub(crate) struct RawNodeArguments(BTreeMap<String, AnyType>);
+
+impl RawNodeArguments {
+    /// Validate these raw arguments against a [`ParameterSchema`] and produce
+    /// a [`NodeArguments`] value.
+    ///
+    /// Checks that:
+    /// 1. Every key declared in the schema is present in the arguments.
+    /// 2. Every argument value matches the type declared in the schema.
+    /// 3. No unknown keys (absent from the schema) are present.
+    fn into_resolved(self, schema: &ParameterSchema) -> Result<NodeArguments, NodeArgumentsError> {
+        // 1. Check all schema keys are present.
+        let missing: Vec<String> = schema
+            .keys()
+            .filter(|k| !self.0.contains_key(k.as_str()))
+            .cloned()
+            .collect();
+        if !missing.is_empty() {
+            return Err(NodeArgumentsError::MissingParameters(missing));
+        }
+
+        // 2. Validate types of each runtime arg against schema.
+        for (key, value) in &self.0 {
+            let type_spec = schema
+                .get(key)
+                .ok_or_else(|| NodeArgumentsError::UnknownParameter { key: key.clone() })?;
+            value
+                .matches_type_spec(type_spec, key)
+                .map_err(NodeArgumentsError::TypeMismatch)?;
+        }
+
+        Ok(NodeArguments(self.0))
     }
 }
 
-fn visit_parameter_leaf_paths(value: &AnyType, path: &mut String, visit: &mut dyn FnMut(&str)) {
-    match value {
-        AnyType::Object(map) if !map.is_empty() => {
-            if is_array_parameter_schema(map) {
-                visit(path.as_str());
-                return;
-            }
+impl<const N: usize> From<[(String, AnyType); N]> for RawNodeArguments {
+    fn from(arr: [(String, AnyType); N]) -> Self {
+        Self(BTreeMap::from(arr))
+    }
+}
 
-            for (child_key, child_value) in map {
-                let original_len = path.len();
-                path.push('.');
-                path.push_str(child_key);
-                visit_parameter_leaf_paths(child_value, path, visit);
-                path.truncate(original_len);
+impl From<BTreeMap<String, AnyType>> for RawNodeArguments {
+    fn from(map: BTreeMap<String, AnyType>) -> Self {
+        Self(map)
+    }
+}
+
+/// Node arguments that have passed validation against the manifest spec.
+///
+/// This type cannot be constructed directly — it is only produced by
+/// [`RawNodeArguments::into_resolved`]. The inner data is not accessible;
+/// consumers must parse into a typed struct via
+/// [`peppylib::config::deserialize_parameters`].
+#[derive(Clone, Debug, Serialize)]
+pub struct NodeArguments(BTreeMap<String, AnyType>);
+
+/// Error produced when node argument parsing or validation fails.
+#[derive(Debug)]
+pub enum NodeArgumentsError {
+    /// One or more runtime argument values do not match the schema types.
+    TypeMismatch(TypeMismatch),
+    /// One or more parameters declared in the schema are missing from the arguments.
+    MissingParameters(Vec<String>),
+    /// An argument key is not declared in the schema.
+    UnknownParameter { key: String },
+    /// The input string could not be deserialized.
+    Deserialization(String),
+}
+
+impl std::fmt::Display for NodeArgumentsError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TypeMismatch(tm) => write!(f, "{tm}"),
+            Self::MissingParameters(keys) => {
+                write!(f, "missing parameter(s): {}", keys.join(", "))
             }
-        }
-        _ => {
-            visit(path.as_str());
+            Self::UnknownParameter { key } => {
+                write!(f, "unknown parameter `{key}` not declared in schema")
+            }
+            Self::Deserialization(msg) => {
+                write!(f, "failed to deserialize arguments: {msg}")
+            }
         }
     }
 }
 
-pub fn is_array_parameter_schema(map: &BTreeMap<String, AnyType>) -> bool {
+impl std::error::Error for NodeArgumentsError {}
+
+/// Deserializes a JSON5 string into node arguments and validates them against a
+/// [`ParameterSchema`], producing a [`NodeArguments`] value.
+///
+/// This is the public entry point for parsing and validating node arguments from
+/// a raw string. The intermediate [`RawNodeArguments`] type is not exposed.
+pub fn parse_node_arguments(
+    content: &str,
+    schema: &ParameterSchema,
+) -> Result<NodeArguments, NodeArgumentsError> {
+    let raw: RawNodeArguments = serde_json5::from_str(content)
+        .map_err(|e| NodeArgumentsError::Deserialization(e.to_string()))?;
+    raw.into_resolved(schema)
+}
+
+/// Validates a `BTreeMap<String, AnyType>` against a [`ParameterSchema`] and
+/// produces a [`NodeArguments`] value.
+///
+/// Use this when arguments are constructed programmatically (e.g. from a
+/// deserialized runtime config) rather than parsed from a raw string.
+pub fn validate_node_arguments(
+    arguments: BTreeMap<String, AnyType>,
+    schema: &ParameterSchema,
+) -> Result<NodeArguments, NodeArgumentsError> {
+    let raw = RawNodeArguments::from(arguments);
+    raw.into_resolved(schema)
+}
+
+fn is_array_parameter_schema(map: &BTreeMap<String, AnyType>) -> bool {
     matches!(
         map.get("type"),
         Some(AnyType::String(kind)) if kind.eq_ignore_ascii_case("array")
     )
 }
 
-/// Resolve a dot-path (e.g., `"video.device_path"`) against a `NodeArguments` map,
+/// Validates that instance parameter values match the types declared in a parameter schema.
+/// Recursively walks through nested objects to validate each leaf value.
+///
+/// Returns `Ok(())` if all values match, or the first `TypeMismatch` found.
+pub fn validate_parameter_types(
+    instance_params: &BTreeMap<String, AnyType>,
+    manifest_params: &BTreeMap<String, AnyType>,
+    prefix: &str,
+) -> std::result::Result<(), TypeMismatch> {
+    for (key, instance_value) in instance_params {
+        let path = if prefix.is_empty() {
+            key.clone()
+        } else {
+            format!("{}.{}", prefix, key)
+        };
+
+        let Some(manifest_value) = manifest_params.get(key) else {
+            continue;
+        };
+
+        match (instance_value, manifest_value) {
+            // Both are objects - recurse into nested structure
+            (AnyType::Object(inst_map), AnyType::Object(man_map)) => {
+                if is_array_parameter_schema(man_map) {
+                    return Err(TypeMismatch {
+                        path,
+                        expected: "array".to_string(),
+                        actual: "object".to_string(),
+                    });
+                }
+                validate_parameter_types(inst_map, man_map, &path)?;
+            }
+            // Manifest declares a type (string like "f32", "bool", etc.)
+            (instance_value, AnyType::String(_)) => {
+                instance_value.matches_type_spec(manifest_value, &path)?;
+            }
+            // Manifest declares an object schema but instance provides a non-object
+            (instance_value, AnyType::Object(man_map)) => {
+                if is_array_parameter_schema(man_map) {
+                    if !matches!(instance_value, AnyType::Array(_)) {
+                        return Err(TypeMismatch {
+                            path,
+                            expected: "array".to_string(),
+                            actual: instance_value.type_name().to_string(),
+                        });
+                    }
+                    if let (AnyType::Array(items), Some(item_spec)) =
+                        (instance_value, man_map.get("items"))
+                    {
+                        for (i, item) in items.iter().enumerate() {
+                            let item_path = format!("{}[{}]", path, i);
+                            item.matches_type_spec(item_spec, &item_path)?;
+                        }
+                    }
+                } else {
+                    return Err(TypeMismatch {
+                        path,
+                        expected: "object".to_string(),
+                        actual: instance_value.type_name().to_string(),
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// Resolve a dot-path (e.g., `"video.device_path"`) against a parameter map,
 /// returning the leaf `AnyType` value if found.
 ///
 /// Descends into `AnyType::Object` values at each segment boundary.
 pub fn resolve_parameter_path<'a>(
-    parameters: &'a NodeArguments,
+    parameters: &'a BTreeMap<String, AnyType>,
     dot_path: &str,
 ) -> Option<&'a AnyType> {
     let mut segments = dot_path.split('.');
@@ -302,52 +445,56 @@ pub fn resolve_parameter_path<'a>(
 mod tests {
     use super::*;
 
+    fn json5<T: serde::de::DeserializeOwned>(s: &str) -> T {
+        serde_json5::from_str(s).unwrap()
+    }
+
     #[test]
     fn matches_simple_bool() {
-        let value = AnyType::Bool(true);
-        let spec = AnyType::String("bool".to_string());
+        let value: AnyType = json5("true");
+        let spec: AnyType = json5(r#""bool""#);
         assert!(value.matches_type_spec(&spec, "test").is_ok());
     }
 
     #[test]
     fn matches_simple_string() {
-        let value = AnyType::String("hello".to_string());
-        let spec = AnyType::String("string".to_string());
+        let value: AnyType = json5(r#""hello""#);
+        let spec: AnyType = json5(r#""string""#);
         assert!(value.matches_type_spec(&spec, "test").is_ok());
     }
 
     #[test]
     fn matches_simple_int() {
-        let value = AnyType::Int(42);
-        let spec = AnyType::String("i64".to_string());
+        let value: AnyType = json5("42");
+        let spec: AnyType = json5(r#""i64""#);
         assert!(value.matches_type_spec(&spec, "test").is_ok());
     }
 
     #[test]
     fn matches_simple_float() {
-        let value = AnyType::Float(1.0);
-        let spec = AnyType::String("f32".to_string());
+        let value: AnyType = json5("1.0");
+        let spec: AnyType = json5(r#""f32""#);
         assert!(value.matches_type_spec(&spec, "test").is_ok());
     }
 
     #[test]
     fn int_matches_float_spec() {
-        let value = AnyType::Int(42);
-        let spec = AnyType::String("f64".to_string());
+        let value: AnyType = json5("42");
+        let spec: AnyType = json5(r#""f64""#);
         assert!(value.matches_type_spec(&spec, "test").is_ok());
     }
 
     #[test]
     fn positive_int_matches_uint_spec() {
-        let value = AnyType::Int(42);
-        let spec = AnyType::String("u32".to_string());
+        let value: AnyType = json5("42");
+        let spec: AnyType = json5(r#""u32""#);
         assert!(value.matches_type_spec(&spec, "test").is_ok());
     }
 
     #[test]
     fn negative_int_fails_uint_spec() {
-        let value = AnyType::Int(-5);
-        let spec = AnyType::String("u32".to_string());
+        let value: AnyType = json5("-5");
+        let spec: AnyType = json5(r#""u32""#);
         let result = value.matches_type_spec(&spec, "test");
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -358,22 +505,23 @@ mod tests {
 
     #[test]
     fn matches_time_spec_with_int() {
-        let value = AnyType::Int(1696285145999);
-        let spec = AnyType::String("time".to_string());
+        let value: AnyType = json5("1696285145999");
+        let spec: AnyType = json5(r#""time""#);
         assert!(value.matches_type_spec(&spec, "test").is_ok());
     }
 
     #[test]
     fn matches_time_spec_with_uint() {
+        // UInt variant cannot be produced from json5 parsing — construct directly
         let value = AnyType::UInt(1696285145999);
-        let spec = AnyType::String("time".to_string());
+        let spec: AnyType = json5(r#""time""#);
         assert!(value.matches_type_spec(&spec, "test").is_ok());
     }
 
     #[test]
     fn string_fails_time_spec() {
-        let value = AnyType::String("2023-10-02T12:00:00Z".to_string());
-        let spec = AnyType::String("time".to_string());
+        let value: AnyType = json5(r#""2023-10-02T12:00:00Z""#);
+        let spec: AnyType = json5(r#""time""#);
         let result = value.matches_type_spec(&spec, "timestamp");
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -384,8 +532,8 @@ mod tests {
 
     #[test]
     fn fails_type_mismatch() {
-        let value = AnyType::String("not a bool".to_string());
-        let spec = AnyType::String("bool".to_string());
+        let value: AnyType = json5(r#""not a bool""#);
+        let spec: AnyType = json5(r#""bool""#);
         let result = value.matches_type_spec(&spec, "field");
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -396,24 +544,15 @@ mod tests {
 
     #[test]
     fn matches_array_spec() {
-        let value = AnyType::Array(vec![
-            AnyType::String("a".to_string()),
-            AnyType::String("b".to_string()),
-        ]);
-        let spec = AnyType::Object(BTreeMap::from([
-            ("$type".to_string(), AnyType::String("array".to_string())),
-            ("$items".to_string(), AnyType::String("string".to_string())),
-        ]));
+        let value: AnyType = json5(r#"["a", "b"]"#);
+        let spec: AnyType = json5(r#"{ $type: "array", $items: "string" }"#);
         assert!(value.matches_type_spec(&spec, "flags").is_ok());
     }
 
     #[test]
     fn fails_array_item_type_mismatch() {
-        let value = AnyType::Array(vec![AnyType::String("a".to_string()), AnyType::Int(42)]);
-        let spec = AnyType::Object(BTreeMap::from([
-            ("$type".to_string(), AnyType::String("array".to_string())),
-            ("$items".to_string(), AnyType::String("string".to_string())),
-        ]));
+        let value: AnyType = json5(r#"["a", 42]"#);
+        let spec: AnyType = json5(r#"{ $type: "array", $items: "string" }"#);
         let result = value.matches_type_spec(&spec, "flags");
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -424,29 +563,15 @@ mod tests {
 
     #[test]
     fn matches_object_spec() {
-        let value = AnyType::Object(BTreeMap::from([
-            ("enabled".to_string(), AnyType::Bool(true)),
-            ("gain".to_string(), AnyType::Int(10)),
-        ]));
-        let spec = AnyType::Object(BTreeMap::from([
-            ("$type".to_string(), AnyType::String("object".to_string())),
-            ("enabled".to_string(), AnyType::String("bool".to_string())),
-            ("gain".to_string(), AnyType::String("i64".to_string())),
-        ]));
+        let value: AnyType = json5(r#"{ enabled: true, gain: 10 }"#);
+        let spec: AnyType = json5(r#"{ $type: "object", enabled: "bool", gain: "i64" }"#);
         assert!(value.matches_type_spec(&spec, "nested").is_ok());
     }
 
     #[test]
     fn fails_object_field_type_mismatch() {
-        let value = AnyType::Object(BTreeMap::from([
-            ("enabled".to_string(), AnyType::String("yes".to_string())),
-            ("gain".to_string(), AnyType::Int(10)),
-        ]));
-        let spec = AnyType::Object(BTreeMap::from([
-            ("$type".to_string(), AnyType::String("object".to_string())),
-            ("enabled".to_string(), AnyType::String("bool".to_string())),
-            ("gain".to_string(), AnyType::String("i64".to_string())),
-        ]));
+        let value: AnyType = json5(r#"{ enabled: "yes", gain: 10 }"#);
+        let spec: AnyType = json5(r#"{ $type: "object", enabled: "bool", gain: "i64" }"#);
         let result = value.matches_type_spec(&spec, "nested");
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -457,8 +582,8 @@ mod tests {
 
     #[test]
     fn fails_unknown_type_spec() {
-        let value = AnyType::Int(42);
-        let spec = AnyType::String("unknown_type".to_string());
+        let value: AnyType = json5("42");
+        let spec: AnyType = json5(r#""unknown_type""#);
         let result = value.matches_type_spec(&spec, "field");
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -480,11 +605,7 @@ mod tests {
 
     #[test]
     fn resolve_parameter_path_simple() {
-        let mut params = BTreeMap::new();
-        params.insert(
-            "device_path".to_string(),
-            AnyType::String("string".to_string()),
-        );
+        let params: BTreeMap<String, AnyType> = json5(r#"{ device_path: "string" }"#);
         assert_eq!(
             resolve_parameter_path(&params, "device_path"),
             Some(&AnyType::String("string".to_string()))
@@ -493,14 +614,8 @@ mod tests {
 
     #[test]
     fn resolve_parameter_path_nested() {
-        let mut video = BTreeMap::new();
-        video.insert(
-            "device_path".to_string(),
-            AnyType::String("string".to_string()),
-        );
-        video.insert("fps".to_string(), AnyType::String("u16".to_string()));
-        let mut params = BTreeMap::new();
-        params.insert("video".to_string(), AnyType::Object(video));
+        let params: BTreeMap<String, AnyType> =
+            json5(r#"{ video: { device_path: "string", fps: "u16" } }"#);
         assert_eq!(
             resolve_parameter_path(&params, "video.device_path"),
             Some(&AnyType::String("string".to_string()))
@@ -513,28 +628,51 @@ mod tests {
 
     #[test]
     fn resolve_parameter_path_not_found() {
-        let mut params = BTreeMap::new();
-        params.insert(
-            "device_path".to_string(),
-            AnyType::String("string".to_string()),
-        );
+        let params: BTreeMap<String, AnyType> = json5(r#"{ device_path: "string" }"#);
         assert_eq!(resolve_parameter_path(&params, "nonexistent"), None);
         assert_eq!(resolve_parameter_path(&params, "device_path.nested"), None);
     }
 
     #[test]
-    fn parameter_leaf_paths_flat_and_nested() {
-        let mut video = BTreeMap::new();
-        video.insert("fps".to_string(), AnyType::String("u16".to_string()));
-        video.insert("device".to_string(), AnyType::String("string".to_string()));
-        let mut params = BTreeMap::new();
-        params.insert("name".to_string(), AnyType::String("string".to_string()));
-        params.insert("video".to_string(), AnyType::Object(video));
+    fn validate_parameter_types_flat_ok() {
+        let schema: BTreeMap<String, AnyType> = json5(r#"{ fps: "u16", name: "string" }"#);
+        let args: BTreeMap<String, AnyType> = json5(r#"{ fps: 30, name: "cam" }"#);
+        assert!(validate_parameter_types(&args, &schema, "").is_ok());
+    }
 
-        let paths = parameter_leaf_paths(&params);
-        assert!(paths.contains("name"));
-        assert!(paths.contains("video.device"));
-        assert!(paths.contains("video.fps"));
-        assert_eq!(paths.len(), 3);
+    #[test]
+    fn validate_parameter_types_nested_ok() {
+        let schema: BTreeMap<String, AnyType> = json5(r#"{ video: { fps: "u16" } }"#);
+        let args: BTreeMap<String, AnyType> = json5(r#"{ video: { fps: 30 } }"#);
+        assert!(validate_parameter_types(&args, &schema, "").is_ok());
+    }
+
+    #[test]
+    fn validate_parameter_types_type_mismatch() {
+        let schema: BTreeMap<String, AnyType> = json5(r#"{ fps: "u16" }"#);
+        let args: BTreeMap<String, AnyType> = json5(r#"{ fps: "not a number" }"#);
+        let err = validate_parameter_types(&args, &schema, "").unwrap_err();
+        assert_eq!(err.path, "fps");
+    }
+
+    #[test]
+    fn validate_parameter_types_array_schema_expects_array() {
+        let schema: BTreeMap<String, AnyType> =
+            json5(r#"{ flags: { type: "array", items: "string" } }"#);
+        let args: BTreeMap<String, AnyType> = json5(r#"{ flags: 42 }"#);
+        let err = validate_parameter_types(&args, &schema, "").unwrap_err();
+        assert_eq!(err.path, "flags");
+        assert_eq!(err.expected, "array");
+    }
+
+    #[test]
+    fn validate_parameter_types_object_given_for_array_schema() {
+        let schema: BTreeMap<String, AnyType> =
+            json5(r#"{ flags: { type: "array", items: "string" } }"#);
+        let args: BTreeMap<String, AnyType> = json5(r#"{ flags: { nested: true } }"#);
+        let err = validate_parameter_types(&args, &schema, "").unwrap_err();
+        assert_eq!(err.path, "flags");
+        assert_eq!(err.expected, "array");
+        assert_eq!(err.actual, "object");
     }
 }

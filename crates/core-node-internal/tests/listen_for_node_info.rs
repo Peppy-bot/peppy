@@ -1,25 +1,44 @@
 mod common;
 
 use common::{
-    AbortOnDrop, CALLER_INSTANCE_ID, start_core_node_with_mock_messenger, write_peppy_json5,
+    AbortOnDrop, CALLER_INSTANCE_ID, create_tar_zst_from_dir, start_core_node_with_mock_messenger,
+    write_peppy_json5,
 };
 use common::{NodeStartTestTimeouts, send_node_add_and_wait, send_node_start_and_wait};
 use config::consts::NODE_CONFIG_FILE;
-use config::node::Name;
-use config::peppy_config::Name as InstanceName;
+use config::launcher::Name as InstanceName;
+use config::node::{Name, PeppygenLanguage};
 use config::runtime::{NodeInstance, RuntimeConfig};
 use config::test_helpers;
 use core_node::encoding::{NodeInfoRequest, NodeInfoResponse, NodeSource};
 use core_node::names;
 use gix_url::Url as GitUrl;
+use peppylib::PeppyError;
 use peppylib::messaging::MessengerHandle;
 use peppylib::services::health::listen_for_node_health;
 use peppylib::services::ready::listen_for_node_ready;
-use peppylib::{PeppyError, ServiceMessenger};
+use sha2::{Digest, Sha256};
 use std::io::Write;
 use std::sync::Arc;
 use std::time::Duration;
 use tempfile::TempDir;
+
+/// Sends a `NODE_INFO` poll request to the given core node and returns the raw result.
+async fn poll_node_info(
+    started_core_node: &common::StartedCoreNode,
+    request: &NodeInfoRequest,
+    timeout: Duration,
+) -> core_node::Result<NodeInfoResponse> {
+    request
+        .poll(
+            &started_core_node.caller_handle,
+            &started_core_node.core_node_name,
+            CALLER_INSTANCE_ID,
+            &started_core_node.core_node_name,
+            timeout,
+        )
+        .await
+}
 use {
     httptest::Expectation, httptest::Server, httptest::matchers::request,
     httptest::responders::status_code,
@@ -41,7 +60,7 @@ async fn listen_for_node_info_on_fs_node_success() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
             },
-            runtime: {
+            execution: {
                 language: "rust",
                 start_cmd: ["sleep", "10"]
             }
@@ -51,24 +70,10 @@ async fn listen_for_node_info_on_fs_node_success() {
     write_peppy_json5(node_dir.path(), &peppy_json5);
 
     let request = NodeInfoRequest::new(NodeSource::Fs(node_dir.path().to_path_buf()));
-    let request_payload = request.encode().expect("encode should succeed");
 
-    let response = ServiceMessenger::poll(
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        CALLER_INSTANCE_ID,
-        &started_core_node.core_node_name,
-        names::NODE_INFO,
-        Some(&started_core_node.core_node_name),
-        None,
-        request_payload,
-        Duration::from_secs(5),
-    )
-    .await
-    .expect("node_info request should succeed");
-
-    let info_response =
-        NodeInfoResponse::decode(&response.payload()).expect("decode should succeed");
+    let info_response = poll_node_info(&started_core_node, &request, Duration::from_secs(5))
+        .await
+        .expect("node_info request should succeed");
 
     assert_eq!(
         info_response.config.manifest.name.as_str(),
@@ -99,24 +104,10 @@ async fn listen_for_node_info_on_fs_node_success() {
         .expect("add_instance should succeed");
 
     let request = NodeInfoRequest::new(NodeSource::Fs(node_dir.path().to_path_buf()));
-    let request_payload = request.encode().expect("encode should succeed");
 
-    let response = ServiceMessenger::poll(
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        CALLER_INSTANCE_ID,
-        &started_core_node.core_node_name,
-        names::NODE_INFO,
-        Some(&started_core_node.core_node_name),
-        None,
-        request_payload,
-        Duration::from_secs(5),
-    )
-    .await
-    .expect("node_info request should succeed");
-
-    let info_response =
-        NodeInfoResponse::decode(&response.payload()).expect("decode should succeed");
+    let info_response = poll_node_info(&started_core_node, &request, Duration::from_secs(5))
+        .await
+        .expect("node_info request should succeed");
 
     assert!(info_response.is_in_node_stack, "node should be in stack");
     assert_eq!(
@@ -144,24 +135,10 @@ async fn listen_for_node_info_on_git_node_success() {
         repo_path: TARGET_REPO_PATH.to_owned(),
         repo_ref: Some(TARGET_NODE_TAG.to_owned()),
     });
-    let request_payload = request.encode().expect("encode should succeed");
 
-    let response = ServiceMessenger::poll(
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        CALLER_INSTANCE_ID,
-        &started_core_node.core_node_name,
-        names::NODE_INFO,
-        Some(&started_core_node.core_node_name),
-        None,
-        request_payload,
-        Duration::from_secs(10),
-    )
-    .await
-    .expect("node_info request should succeed");
-
-    let info_response =
-        NodeInfoResponse::decode(&response.payload()).expect("decode should succeed");
+    let info_response = poll_node_info(&started_core_node, &request, Duration::from_secs(10))
+        .await
+        .expect("node_info request should succeed");
 
     assert_eq!(
         info_response.config.manifest.name.as_str(),
@@ -194,24 +171,10 @@ async fn listen_for_node_info_on_git_node_success() {
         repo_path: TARGET_REPO_PATH.to_owned(),
         repo_ref: Some(TARGET_NODE_TAG.to_owned()),
     });
-    let request_payload = request.encode().expect("encode should succeed");
 
-    let response = ServiceMessenger::poll(
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        CALLER_INSTANCE_ID,
-        &started_core_node.core_node_name,
-        names::NODE_INFO,
-        Some(&started_core_node.core_node_name),
-        None,
-        request_payload,
-        Duration::from_secs(10),
-    )
-    .await
-    .expect("node_info request should succeed");
-
-    let info_response =
-        NodeInfoResponse::decode(&response.payload()).expect("decode should succeed");
+    let info_response = poll_node_info(&started_core_node, &request, Duration::from_secs(10))
+        .await
+        .expect("node_info request should succeed");
 
     assert!(info_response.is_in_node_stack, "node should be in stack");
     assert_eq!(
@@ -236,7 +199,7 @@ async fn listen_for_node_info_on_http_node_success() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
             },
-            runtime: {
+            execution: {
                 language: "rust",
                 start_cmd: ["sleep", "10"]
             }
@@ -264,6 +227,7 @@ async fn listen_for_node_info_on_http_node_success() {
         .expect("failed to write compressed bundle");
     encoder.finish().expect("failed to finish encoder");
     let bundle_bytes = std::fs::read(&bundle_path).expect("failed to read bundle");
+    let bundle_sha256 = format!("{:x}", Sha256::digest(&bundle_bytes));
 
     let server = Server::run();
     server.expect(
@@ -274,25 +238,14 @@ async fn listen_for_node_info_on_http_node_success() {
     let url = url::Url::parse(&server.url("/bundles/http_node.tar.zst").to_string())
         .expect("http bundle url should parse");
 
-    let request = NodeInfoRequest::new(NodeSource::Http { url: url.clone() });
-    let request_payload = request.encode().expect("encode should succeed");
+    let request = NodeInfoRequest::new(NodeSource::Http {
+        url: url.clone(),
+        sha256: Some(bundle_sha256.clone()),
+    });
 
-    let response = ServiceMessenger::poll(
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        CALLER_INSTANCE_ID,
-        &started_core_node.core_node_name,
-        names::NODE_INFO,
-        Some(&started_core_node.core_node_name),
-        None,
-        request_payload,
-        Duration::from_secs(10),
-    )
-    .await
-    .expect("node_info request should succeed");
-
-    let info_response =
-        NodeInfoResponse::decode(&response.payload()).expect("decode should succeed");
+    let info_response = poll_node_info(&started_core_node, &request, Duration::from_secs(10))
+        .await
+        .expect("node_info request should succeed");
 
     assert_eq!(
         info_response.config.manifest.name.as_str(),
@@ -316,25 +269,14 @@ async fn listen_for_node_info_on_http_node_success() {
         .add_instance(TARGET_NODE_NAME, TARGET_NODE_TAG, Some(&instance_id), None)
         .expect("add_instance should succeed");
 
-    let request = NodeInfoRequest::new(NodeSource::Http { url });
-    let request_payload = request.encode().expect("encode should succeed");
+    let request = NodeInfoRequest::new(NodeSource::Http {
+        url,
+        sha256: Some(bundle_sha256),
+    });
 
-    let response = ServiceMessenger::poll(
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        CALLER_INSTANCE_ID,
-        &started_core_node.core_node_name,
-        names::NODE_INFO,
-        Some(&started_core_node.core_node_name),
-        None,
-        request_payload,
-        Duration::from_secs(10),
-    )
-    .await
-    .expect("node_info request should succeed");
-
-    let info_response =
-        NodeInfoResponse::decode(&response.payload()).expect("decode should succeed");
+    let info_response = poll_node_info(&started_core_node, &request, Duration::from_secs(10))
+        .await
+        .expect("node_info request should succeed");
 
     assert!(info_response.is_in_node_stack, "node should be in stack");
     assert_eq!(
@@ -359,7 +301,7 @@ async fn listen_for_node_info_has_instance_ids() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
             },
-            runtime: {
+            execution: {
                 language: "rust",
                 start_cmd: ["sleep", "10"]
             }
@@ -503,24 +445,10 @@ async fn listen_for_node_info_has_instance_ids() {
     );
 
     let request = NodeInfoRequest::new(NodeSource::Fs(add_result.snapshot_path.clone()));
-    let request_payload = request.encode().expect("encode should succeed");
 
-    let response = ServiceMessenger::poll(
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        CALLER_INSTANCE_ID,
-        &started_core_node.core_node_name,
-        names::NODE_INFO,
-        Some(&started_core_node.core_node_name),
-        None,
-        request_payload,
-        Duration::from_secs(5),
-    )
-    .await
-    .expect("node_info request should succeed");
-
-    let info_response =
-        NodeInfoResponse::decode(&response.payload()).expect("decode should succeed");
+    let info_response = poll_node_info(&started_core_node, &request, Duration::from_secs(5))
+        .await
+        .expect("node_info request should succeed");
 
     assert!(info_response.is_in_node_stack, "node should be in stack");
 
@@ -545,31 +473,20 @@ async fn listen_for_node_info_recovers_after_invalid_request() {
     // First, send a request that is guaranteed to fail quickly without performing I/O.
     let bad_url = url::Url::parse("https://example.com/bad_url")
         .expect("bad test URL should parse as a valid URL");
-    let bad_request = NodeInfoRequest::new(NodeSource::Http { url: bad_url });
-    let bad_payload = bad_request.encode().expect("encode should succeed");
+    let bad_request = NodeInfoRequest::new(NodeSource::Http {
+        url: bad_url,
+        sha256: None,
+    });
 
-    let err = match ServiceMessenger::poll(
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        CALLER_INSTANCE_ID,
-        &started_core_node.core_node_name,
-        names::NODE_INFO,
-        Some(&started_core_node.core_node_name),
-        None,
-        bad_payload,
-        Duration::from_secs(2),
-    )
-    .await
-    {
-        Ok(_) => panic!("node_info should return an error for invalid HTTP source"),
-        Err(err) => err,
-    };
+    let err = poll_node_info(&started_core_node, &bad_request, Duration::from_secs(2))
+        .await
+        .expect_err("node_info should return an error for invalid HTTP source");
 
-    let PeppyError::ServiceError {
+    let core_node::Error::Peppylib(PeppyError::ServiceError {
         service_name,
         reason,
         ..
-    } = err
+    }) = err
     else {
         panic!("expected ServiceError, got: {err:?}");
     };
@@ -588,7 +505,7 @@ async fn listen_for_node_info_recovers_after_invalid_request() {
                 name: "{TARGET_NODE_NAME}",
                 tag: "{TARGET_NODE_TAG}",
             },
-            runtime: {
+            execution: {
                 language: "rust",
                 start_cmd: ["sleep", "10"]
             }
@@ -598,27 +515,253 @@ async fn listen_for_node_info_recovers_after_invalid_request() {
     write_peppy_json5(node_dir.path(), &peppy_json5);
 
     let request = NodeInfoRequest::new(NodeSource::Fs(node_dir.path().to_path_buf()));
-    let request_payload = request.encode().expect("encode should succeed");
 
-    let response = ServiceMessenger::poll(
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        CALLER_INSTANCE_ID,
-        &started_core_node.core_node_name,
-        names::NODE_INFO,
-        Some(&started_core_node.core_node_name),
-        None,
-        request_payload,
-        Duration::from_secs(5),
-    )
-    .await
-    .expect("node_info should still work after a failed request");
-
-    let info_response =
-        NodeInfoResponse::decode(&response.payload()).expect("decode should succeed");
+    let info_response = poll_node_info(&started_core_node, &request, Duration::from_secs(5))
+        .await
+        .expect("node_info should still work after a failed request");
     assert_eq!(
         info_response.config.manifest.name.as_str(),
         TARGET_NODE_NAME
     );
     assert_eq!(info_response.config.manifest.tag, TARGET_NODE_TAG);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_info_without_variant_shows_available_variants() {
+    let started_core_node = start_core_node_with_mock_messenger().await;
+
+    // Create root node with variants declared in manifest.
+    let root_dir = tempfile::tempdir().expect("failed to create temp root dir");
+    let root_peppy_json5 = r#"{
+        schema_version: 1,
+        manifest: {
+            name: "multi_variant_node",
+            tag: "1.0.0",
+            variants: [
+                { name: "mock", source: { local: "./mock" } },
+                { name: "sim", source: { local: "./sim" } }
+            ]
+        },
+        execution: {
+            language: "rust",
+            start_cmd: ["sleep", "10"]
+        }
+    }"#;
+    write_peppy_json5(root_dir.path(), root_peppy_json5);
+
+    // Request WITHOUT variant on FS
+    let request = NodeInfoRequest::new(NodeSource::Fs(root_dir.path().to_path_buf()));
+
+    let info_response = poll_node_info(&started_core_node, &request, Duration::from_secs(5))
+        .await
+        .expect("node_info should succeed");
+
+    // No variant applied
+    assert!(
+        info_response.variant_name.is_none(),
+        "variant_name should be None when no variant requested"
+    );
+
+    // Manifest should contain variant declarations
+    let variants = info_response
+        .config
+        .manifest
+        .variants
+        .as_ref()
+        .expect("manifest should contain variants");
+    let variant_names: Vec<&str> = variants.iter().map(|v| v.name.as_str()).collect();
+    assert_eq!(variant_names, vec!["mock", "sim"]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_info_auto_resolves_default_variant() {
+    const ROOT_NODE_NAME: &str = "default_variant_node";
+    const ROOT_NODE_TAG: &str = "0.1.0";
+
+    let started_core_node = start_core_node_with_mock_messenger().await;
+
+    // Create root node with a "default" variant and NO execution in root config.
+    let root_dir = tempfile::tempdir().expect("failed to create temp root dir");
+    let root_peppy_json5 = r#"{
+        schema_version: 1,
+        manifest: {
+            name: "default_variant_node",
+            tag: "0.1.0",
+            variants: [
+                { name: "default", source: { local: "./default_variant" } }
+            ]
+        },
+        interfaces: {
+            topics: {
+                emits: [{ name: "sensor_data" }]
+            }
+        }
+    }"#;
+    write_peppy_json5(root_dir.path(), root_peppy_json5);
+
+    // Create the default variant subdirectory with execution.
+    let variant_dir = root_dir.path().join("default_variant");
+    std::fs::create_dir_all(&variant_dir).expect("failed to create default variant dir");
+    std::fs::write(
+        variant_dir.join(NODE_CONFIG_FILE),
+        r#"{
+            schema_version: 1,
+            execution: {
+                language: "python",
+                start_cmd: ["python", "main.py"]
+            }
+        }"#,
+    )
+    .expect("failed to write default variant config");
+
+    // Request WITHOUT specifying a variant — should auto-resolve "default".
+    let request = NodeInfoRequest::new(NodeSource::Fs(root_dir.path().to_path_buf()));
+
+    let info_response = poll_node_info(&started_core_node, &request, Duration::from_secs(5))
+        .await
+        .expect("node_info should auto-resolve default variant without panic");
+
+    // Manifest comes from root
+    assert_eq!(info_response.config.manifest.name.as_str(), ROOT_NODE_NAME);
+    assert_eq!(info_response.config.manifest.tag, ROOT_NODE_TAG);
+
+    // Interfaces inherited from root
+    assert!(
+        info_response.config.interfaces.topics.is_some(),
+        "interfaces should be inherited from root"
+    );
+
+    // Execution comes from the default variant
+    assert_eq!(
+        info_response.config.execution.language,
+        PeppygenLanguage::Python
+    );
+    assert_eq!(
+        info_response.config.execution.start_cmd.as_deref(),
+        Some(&["python".to_string(), "main.py".to_string()][..])
+    );
+
+    // Variant name should be reported as "default"
+    assert_eq!(
+        info_response.variant_name.as_deref(),
+        Some("default"),
+        "auto-resolved default variant name should be reported"
+    );
+}
+
+/// Verifies that default variant resolution from a filesystem archive (`.tar.zst`) uses the
+/// archived root directory, not the host filesystem. A decoy variant directory is placed
+/// on the host to catch incorrect path resolution.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_info_archive_default_variant_uses_archived_root() {
+    let started_core_node = start_core_node_with_mock_messenger().await;
+
+    let bundle_dir = tempfile::tempdir().expect("failed to create temp bundle dir");
+    let archived_root_dir = bundle_dir.path().join("archived_root");
+    let archived_variant_dir = archived_root_dir.join("default_variant");
+    std::fs::create_dir_all(&archived_variant_dir).expect("failed to create archived variant dir");
+
+    let root_peppy_json5 = r#"{
+        schema_version: 1,
+        manifest: {
+            name: "archive_variant_root",
+            tag: "0.3.0",
+            variants: [
+                { name: "default", source: { local: "./default_variant" } }
+            ]
+        }
+    }"#;
+    write_peppy_json5(&archived_root_dir, root_peppy_json5);
+
+    write_peppy_json5(
+        &archived_variant_dir,
+        r#"{
+            schema_version: 1,
+            execution: {
+                language: "python",
+                start_cmd: ["python", "from_archive.py"]
+            }
+        }"#,
+    );
+
+    // Place a decoy on the host to detect incorrect path resolution.
+    let host_decoy_variant_dir = bundle_dir.path().join("default_variant");
+    std::fs::create_dir_all(&host_decoy_variant_dir)
+        .expect("failed to create host decoy variant dir");
+    write_peppy_json5(
+        &host_decoy_variant_dir,
+        r#"{
+            schema_version: 1,
+            execution: {
+                language: "python",
+                start_cmd: ["python", "from_host_dir.py"]
+            }
+        }"#,
+    );
+
+    let bundle_path = bundle_dir.path().join("archive_variant_root.tar.zst");
+    create_tar_zst_from_dir(&archived_root_dir, &bundle_path, "root_node");
+
+    let request = NodeInfoRequest::new(NodeSource::Fs(bundle_path));
+
+    let info_response = poll_node_info(&started_core_node, &request, Duration::from_secs(5))
+        .await
+        .expect("node_info with archive default variant should succeed");
+
+    assert_eq!(
+        info_response.config.manifest.name.as_str(),
+        "archive_variant_root"
+    );
+    assert_eq!(info_response.config.manifest.tag, "0.3.0");
+    assert_eq!(
+        info_response.config.execution.language,
+        PeppygenLanguage::Python
+    );
+    assert_eq!(
+        info_response.config.execution.start_cmd.as_deref(),
+        Some(&["python".to_string(), "from_archive.py".to_string()][..]),
+        "execution should come from the archived variant, not the host decoy"
+    );
+    assert_eq!(info_response.variant_name.as_deref(), Some("default"));
+}
+
+/// When the default variant directory does not exist, the response should contain
+/// issues describing the failure and fall back to the root config.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_info_with_missing_default_variant_returns_issues() {
+    let started_core_node = start_core_node_with_mock_messenger().await;
+
+    // Root declares a default variant, but the directory doesn't exist.
+    let root_dir = tempfile::tempdir().expect("failed to create temp root dir");
+    let root_peppy_json5 = r#"{
+        schema_version: 1,
+        manifest: {
+            name: "broken_default_node",
+            tag: "0.1.0",
+            variants: [
+                { name: "default", source: { local: "./nonexistent" } }
+            ]
+        }
+    }"#;
+    write_peppy_json5(root_dir.path(), root_peppy_json5);
+
+    let request = NodeInfoRequest::new(NodeSource::Fs(root_dir.path().to_path_buf()));
+
+    let info_response = poll_node_info(&started_core_node, &request, Duration::from_secs(5))
+        .await
+        .expect("node_info with missing default variant should succeed with issues");
+
+    assert!(
+        !info_response.issues.is_empty(),
+        "response should contain issues for missing default variant"
+    );
+    assert!(
+        info_response.variant_name.is_none(),
+        "variant_name should be None when default variant resolution failed"
+    );
+    assert_eq!(
+        info_response.config.manifest.name.as_str(),
+        "broken_default_node",
+        "should return root config when default variant resolution fails"
+    );
 }

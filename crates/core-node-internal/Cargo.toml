@@ -39,6 +39,7 @@ ureq = "3.1"
 tar = "0.4"
 zstd = "0.13.3"
 tempfile = "3.10"
+sha2 = "0.10"
 
 [build-dependencies]
 build-helpers = { path = "../build-helpers-internal" }
@@ -49,3 +50,6 @@ libc = "0.2"
 tempfile = "3.10"
 tokio = { version = "1.47", features = ["full"] }
 httptest = "0.16.3"
+
+[features]
+container_e2e = []

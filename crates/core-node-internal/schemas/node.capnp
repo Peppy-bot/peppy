@@ -28,10 +28,16 @@ struct NodeAddGoal {
         # HTTP URL source
         http @3 :Text;
     }
+    # Optional SHA256 checksum for HTTP sources
+    httpSha256 @7 :Text;
     # Environment variables to apply when executing add_cmd (e.g. PATH)
     envVars @4 :List(EnvVar);
     # Timeout in seconds for the add operation (used to report remaining time when busy)
     timeoutSecs @5 :UInt64;
+    # Optional variant source — when set, the main source points to the root node
+    # and this identifies which variant to resolve and build.
+    # Fs = variant name (lookup in manifest), Git/Http = direct source.
+    variant @6 :NodeAddVariantSource;
 }
 
 struct EnvVar {
@@ -46,6 +52,19 @@ struct NodeAddGitSource {
     repoPath @1 :Text;
     # Optional git ref (tag/branch/commit) to checkout before reading repoPath
     repoRef @2 :Text;
+}
+
+struct NodeAddVariantSource {
+    source :union {
+        # Variant name (lookup in root manifest)
+        fs @0 :Text;
+        # Direct git source for the variant
+        git @1 :NodeAddGitSource;
+        # Direct HTTP URL for the variant
+        http @2 :Text;
+    }
+    # Optional SHA256 checksum for HTTP variant sources
+    httpSha256 @3 :Text;
 }
 
 struct NodeAddGoalResponse {
@@ -205,10 +224,16 @@ struct NodeInfoRequest {
         # HTTP URL source
         http @2 :Text;
     }
+    # Optional SHA256 checksum for HTTP sources
+    httpSha256 @4 :Text;
+    # Optional variant source — when set, the main source points to the root node
+    # and this identifies which variant to resolve and merge.
+    # Fs = variant name (lookup in manifest), Git/Http = direct source.
+    variant @3 :NodeAddVariantSource;
 }
 
 struct NodeInfoResponse {
-    # JSON5-serialized NodeConfig
+    # JSON5-serialized NodeConfig (merged with variant runtime when variant is requested)
     configJson5 @0 :Text;
     # Whether the node is already in the node stack
     isInNodeStack @1 :Bool;
@@ -216,4 +241,9 @@ struct NodeInfoResponse {
     instancesNames @2 :List(Text);
     # SHA256 of the entire NodeConfig file
     configSha256 @3 :Text;
+    # Name of the variant applied (empty string when no variant)
+    variantName @4 :Text;
+    # Non-fatal issues encountered during resolution (e.g. unknown variant).
+    # Empty when resolution was fully successful.
+    issues @5 :List(Text);
 }

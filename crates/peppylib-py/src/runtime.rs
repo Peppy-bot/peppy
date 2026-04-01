@@ -474,12 +474,15 @@ impl PyNodeBuilder {
             }
 
             run_result.map_err(|e| {
-                if let peppylib::PeppyError::MissingStandaloneParameters(ref missing) = e {
-                    return PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
-                        missing.format_with_hint(
-                            "Provide them via StandaloneConfig().with_parameters()",
-                        ),
-                    );
+                if let peppylib::PeppyError::NodeArgumentsValidation(
+                    config::NodeArgumentsError::MissingParameters(ref params),
+                ) = e
+                {
+                    return PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
+                        "missing required parameter(s) for standalone mode: {}. \
+                         Provide them via StandaloneConfig().with_parameters()",
+                        params.join(", ")
+                    ));
                 }
                 PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string())
             })

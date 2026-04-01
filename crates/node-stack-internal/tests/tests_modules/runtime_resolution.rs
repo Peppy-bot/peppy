@@ -24,7 +24,7 @@ fn add_instance_creates_new_entity() {
                     ]
                 }
             },
-            runtime: {
+            execution: {
               language: "rust",
               start_cmd: ["sensor"]
             }
@@ -117,7 +117,7 @@ fn add_instance_to_existing_entity() {
                     ]
                 }
             },
-            runtime: {
+            execution: {
               language: "rust",
               start_cmd: ["sensor"]
             }
@@ -193,7 +193,7 @@ fn add_instance_with_specific_id() {
                     ]
                 }
             },
-            runtime: {
+            execution: {
               language: "rust",
               start_cmd: ["sensor"]
             }
@@ -253,7 +253,7 @@ fn remove_instance_from_entity_with_multiple_instances() {
                     ]
                 }
             },
-            runtime: {
+            execution: {
               language: "rust",
               start_cmd: ["sensor"]
             }
@@ -323,7 +323,7 @@ fn remove_last_instance_keeps_entity_in_graph() {
                     ]
                 }
             },
-            runtime: {
+            execution: {
               language: "rust",
               start_cmd: ["sensor"]
             }
@@ -378,15 +378,14 @@ fn remove_nonexistent_instance_returns_false() {
             },
             interfaces: {
                 services: {
-                    consumes: [
+                    exposes: [
                         {
-                          local_node_id: "lidar",
                           name: "reset_sensor"
                         }
                     ]
                 }
             },
-            runtime: {
+            execution: {
               language: "rust",
               start_cmd: ["sensor"]
             }
@@ -434,15 +433,14 @@ fn reset_clears_all_except_core_node() {
             },
             interfaces: {
                 services: {
-                    consumes: [
+                    exposes: [
                         {
-                          local_node_id: "uvc_camera",
                           name: "reset_sensor"
                         }
                     ]
                 }
             },
-            runtime: {
+            execution: {
               language: "rust",
               start_cmd: ["sensor1"]
             }
@@ -476,7 +474,7 @@ fn reset_clears_all_except_core_node() {
                     ]
                 }
             },
-            runtime: {
+            execution: {
               language: "rust",
               start_cmd: ["sensor2"]
             }
@@ -521,15 +519,14 @@ fn spawning_multiple_instances_on_same_entity() {
             },
             interfaces: {
                 services: {
-                    consumes: [
+                    exposes: [
                         {
-                          local_node_id: "lidar",
                           name: "reset_sensor"
                         }
                     ]
                 }
             },
-            runtime: {
+            execution: {
               language: "rust",
               start_cmd: ["sensor"]
             }
@@ -604,7 +601,7 @@ fn adding_same_entity_with_different_interfaces_overwrites_when_no_dependents() 
                     ]
                 }
             },
-            runtime: {
+            execution: {
               language: "rust",
               start_cmd: ["sensor"]
             },
@@ -637,7 +634,7 @@ fn adding_same_entity_with_different_interfaces_overwrites_when_no_dependents() 
                     ]
                 }
             },
-            runtime: {
+            execution: {
               language: "rust",
               start_cmd: ["sensor"]
             },
@@ -689,7 +686,7 @@ fn adding_same_entity_with_different_interfaces_overwrites_when_no_dependents() 
 
 #[test]
 fn adding_same_name_with_different_tag_and_different_interfaces_succeeds() {
-    // First config: version 1.0.0 emits a topic
+    // First config: version 1.0.0 exposes a service
     let config_v1: config::node::NodeConfig = serde_json5::from_str(
         r#"{
             schema_version: 1,
@@ -699,15 +696,14 @@ fn adding_same_name_with_different_tag_and_different_interfaces_succeeds() {
             },
             interfaces: {
                 services: {
-                    consumes: [
+                    exposes: [
                         {
-                          local_node_id: "lidar",
                           name: "reset_sensor"
                         }
                     ]
                 }
             },
-            runtime: {
+            execution: {
               language: "rust",
               start_cmd: ["sensor"]
             },
@@ -730,7 +726,7 @@ fn adding_same_name_with_different_tag_and_different_interfaces_succeeds() {
                     ]
                 }
             },
-            runtime: {
+            execution: {
               language: "rust",
               start_cmd: ["sensor"]
             },
@@ -842,7 +838,7 @@ fn node_stack_wires_dependencies_for_dependants() {
                     ]
                 }
             },
-            runtime: {
+            execution: {
               language: "rust",
               start_cmd: ["lidar"]
             },
@@ -872,7 +868,7 @@ fn node_stack_wires_dependencies_for_dependants() {
                     ]
                 }
             },
-            runtime: {
+            execution: {
               language: "rust",
               start_cmd: ["brain"]
             },
@@ -918,7 +914,7 @@ fn dependency_fails_when_node_name_mismatches() {
                     ]
                 }
             },
-            runtime: {
+            execution: {
               language: "rust",
               start_cmd: ["brain"]
             },
@@ -933,7 +929,7 @@ fn dependency_fails_when_node_name_mismatches() {
               name: "lidar",
               tag: "1.0.0",
             },
-            runtime: {
+            execution: {
               language: "rust",
               start_cmd: ["lidar"]
             },
@@ -983,7 +979,7 @@ fn dependency_fails_when_node_tag_mismatches() {
                 ]
               },
             },
-            runtime: {
+            execution: {
               language: "rust",
               start_cmd: ["brain"]
             },
@@ -998,7 +994,7 @@ fn dependency_fails_when_node_tag_mismatches() {
               name: "lidar",
               tag: "2.0.0",
             },
-            runtime: {
+            execution: {
               language: "rust",
               start_cmd: ["lidar"]
             },
@@ -1049,7 +1045,7 @@ fn overwriting_existing_node_fails_if_node_has_dependencies() {
                     ]
                 }
             },
-            runtime: {
+            execution: {
               language: "rust",
               start_cmd: ["lidar"]
             },
@@ -1079,7 +1075,7 @@ fn overwriting_existing_node_fails_if_node_has_dependencies() {
                     ]
                 }
             },
-            runtime: {
+            execution: {
               language: "rust",
               start_cmd: ["brain"]
             },
@@ -1101,7 +1097,7 @@ fn overwriting_existing_node_fails_if_node_has_dependencies() {
                     ]
                 }
             },
-            runtime: {
+            execution: {
               language: "rust",
               start_cmd: ["lidar"]
             },
@@ -1163,7 +1159,7 @@ fn updating_start_cmd_without_changing_interfaces_applies_new_config() {
               name: "sensor",
               tag: "1.0.0",
             },
-            runtime: {
+            execution: {
               language: "rust",
               start_cmd: ["./old_binary"]
             }
@@ -1178,7 +1174,7 @@ fn updating_start_cmd_without_changing_interfaces_applies_new_config() {
               name: "sensor",
               tag: "1.0.0",
             },
-            runtime: {
+            execution: {
               language: "rust",
               start_cmd: ["./new_binary"]
             }
@@ -1195,7 +1191,7 @@ fn updating_start_cmd_without_changing_interfaces_applies_new_config() {
 
     let entity = stack.find("sensor", "1.0.0").expect("entity should exist");
     assert_eq!(
-        entity.config().runtime.start_cmd.as_ref().unwrap(),
+        entity.config().execution.start_cmd.as_ref().unwrap(),
         &vec!["./old_binary"],
         "entity should have the original start_cmd"
     );
@@ -1208,7 +1204,7 @@ fn updating_start_cmd_without_changing_interfaces_applies_new_config() {
 
     let entity = stack.find("sensor", "1.0.0").expect("entity should exist");
     assert_eq!(
-        entity.config().runtime.start_cmd.as_ref().unwrap(),
+        entity.config().execution.start_cmd.as_ref().unwrap(),
         &vec!["./new_binary"],
         "entity should have the updated start_cmd after re-push"
     );
@@ -1228,7 +1224,7 @@ fn updating_start_cmd_succeeds_even_when_node_has_dependents() {
               name: "lidar",
               tag: "1.0.0",
             },
-            runtime: {
+            execution: {
               language: "rust",
               start_cmd: ["./old_lidar"]
             },
@@ -1248,7 +1244,7 @@ fn updating_start_cmd_succeeds_even_when_node_has_dependents() {
                 ]
               },
             },
-            runtime: {
+            execution: {
               language: "rust",
               start_cmd: ["brain"]
             },
@@ -1264,7 +1260,7 @@ fn updating_start_cmd_succeeds_even_when_node_has_dependents() {
               name: "lidar",
               tag: "1.0.0",
             },
-            runtime: {
+            execution: {
               language: "rust",
               start_cmd: ["./new_lidar"]
             },
@@ -1288,7 +1284,7 @@ fn updating_start_cmd_succeeds_even_when_node_has_dependents() {
 
     let entity = stack.find("lidar", "1.0.0").expect("entity should exist");
     assert_eq!(
-        entity.config().runtime.start_cmd.as_ref().unwrap(),
+        entity.config().execution.start_cmd.as_ref().unwrap(),
         &vec!["./new_lidar"],
         "lidar should have the updated start_cmd"
     );

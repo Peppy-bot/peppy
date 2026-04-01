@@ -55,7 +55,7 @@
       ],
     },
   },
-  runtime: {
+  execution: {
     language: "rust",
     // Expected parameter types to start the node
     parameters: {

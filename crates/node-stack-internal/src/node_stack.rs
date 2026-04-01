@@ -1,5 +1,13 @@
+mod entity;
+mod validation;
+
+pub use entity::{
+    NodeEntity, SerializedEdge, SerializedNode, SerializedNodeGraph, TrackedNodeInstance,
+};
+pub use validation::{collect_dependency_specs, validate_dependency_specs};
+
 use crate::error::{Error, Result};
-use config::node::{InterfaceKind, Interfaces, Name, NodeConfig};
+use config::node::{Name, NodeConfig};
 use names_generator2::get_random;
 use petgraph::{
     Direction,
@@ -8,138 +16,12 @@ use petgraph::{
     visit::EdgeRef,
 };
 use rand::rng;
-use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::{Arc, RwLock},
 };
-
-/// Serializable representation of a node in the graph.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SerializedNode {
-    pub name: String,
-    pub tag: String,
-    pub instance_ids: Vec<String>,
-    pub fs_root_path: String,
-}
-
-impl SerializedNode {
-    /// Returns a display label in the format "name:tag".
-    pub fn label(&self) -> String {
-        format!("{}:{}", self.name, self.tag)
-    }
-
-    /// Returns the number of instances.
-    pub fn instance_count(&self) -> usize {
-        self.instance_ids.len()
-    }
-
-    /// Returns instance info in the format "N instance(s): ["id1", "id2"]".
-    pub fn instance_info(&self) -> String {
-        let count = self.instance_count();
-        let suffix = if count == 1 { "instance" } else { "instances" };
-        let ids: Vec<String> = self
-            .instance_ids
-            .iter()
-            .map(|id| format!("\"{}\"", id))
-            .collect();
-        format!("{} {}: [{}]", count, suffix, ids.join(", "))
-    }
-}
-
-/// Serializable representation of a dependency edge.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SerializedEdge {
-    pub from: SerializedNode,
-    pub to: SerializedNode,
-}
-
-/// Serializable representation of the entire node graph.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SerializedNodeGraph {
-    pub nodes: Vec<SerializedNode>,
-    pub edges: Vec<SerializedEdge>,
-}
-
-/// This represent a single entity with n instances inside the node_stack.
-/// A NodeEntity always has at least one instance.
-#[derive(Clone, Debug)]
-pub struct NodeEntity {
-    config: NodeConfig,
-    instances: Vec<TrackedNodeInstance>,
-    // TODO: In the future, for total isolation of the snapshot node we could use a solution like rootless Podman
-    // Every node has a root path, it's the directory where the configuration resides
-    fs_root_path: PathBuf,
-}
-
-impl NodeEntity {
-    /// Creates a new NodeEntity with a config only (no instances)
-    pub fn new<P: Into<PathBuf>>(config: NodeConfig, root_path: P) -> Self {
-        Self {
-            config,
-            instances: Vec::new(),
-            fs_root_path: root_path.into(),
-        }
-    }
-
-    pub fn config(&self) -> &NodeConfig {
-        &self.config
-    }
-
-    pub fn root_path(&self) -> &Path {
-        &self.fs_root_path
-    }
-
-    pub fn into_config(self) -> NodeConfig {
-        self.config
-    }
-
-    pub fn instances(&self) -> &[TrackedNodeInstance] {
-        &self.instances
-    }
-
-    /// Adds an instance to this entity
-    fn add_instance(&mut self, instance: TrackedNodeInstance) {
-        self.instances.push(instance);
-    }
-
-    /// Removes an instance by its ID. Returns true if the instance was found and removed.
-    fn remove_instance(&mut self, instance_id: &Name) -> bool {
-        if let Some(pos) = self
-            .instances
-            .iter()
-            .position(|i| i.instance_id() == instance_id)
-        {
-            self.instances.remove(pos);
-            true
-        } else {
-            false
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct TrackedNodeInstance {
-    instance_id: Name,
-    /// Process ID of the running instance. This is `None` for instances running on remote
-    /// locations (e.g., embedded systems) where a local PID is not available.
-    pid: Option<u32>,
-}
-
-impl TrackedNodeInstance {
-    pub fn new(instance_id: Name, pid: Option<u32>) -> Self {
-        Self { instance_id, pid }
-    }
-
-    pub fn instance_id(&self) -> &Name {
-        &self.instance_id
-    }
-
-    pub fn pid(&self) -> Option<u32> {
-        self.pid
-    }
-}
+use validation::interfaces_match;
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 struct NodeKey {
@@ -166,211 +48,22 @@ impl From<&NodeEntity> for NodeKey {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub(crate) struct InterfaceRequirement {
-    kind: InterfaceKind,
-    name: String,
+struct DependencyRequirement {
+    key: NodeKey,
 }
 
-impl InterfaceRequirement {
-    fn new(kind: InterfaceKind, name: &str) -> Self {
-        Self {
-            kind,
-            name: name.trim().to_owned(),
-        }
-    }
-
-    fn kind(&self) -> InterfaceKind {
-        self.kind
-    }
-
-    fn name(&self) -> &str {
-        &self.name
-    }
+#[derive(Clone, Debug)]
+struct PendingRequirement {
+    dependant: NodeIndex,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct DependencySpec {
-    pub node_name: String,
-    pub node_tag: String,
-}
-
-fn interfaces_match(a: &Interfaces, b: &Interfaces) -> bool {
-    a == b
-}
-
-pub fn collect_dependency_specs(node: &NodeConfig) -> Vec<DependencySpec> {
-    let Some(depends_on) = &node.manifest.depends_on else {
-        return Vec::new();
-    };
-
-    depends_on
-        .nodes
-        .iter()
-        .map(|dep| DependencySpec {
-            node_name: dep.name.as_str().to_owned(),
-            node_tag: dep.tag.clone(),
+fn dependency_requirements(node: &NodeConfig) -> Vec<DependencyRequirement> {
+    collect_dependency_specs(node)
+        .into_iter()
+        .map(|spec| DependencyRequirement {
+            key: NodeKey::new(&spec.node_name, &spec.node_tag),
         })
         .collect()
-}
-
-/// Validates that all dependencies of a node config exist and expose the required interfaces.
-///
-/// Uses the provided `resolve` closure to look up a dependency's `NodeConfig` by name and tag.
-/// Returns a list of all validation errors found (empty if all dependencies are satisfied).
-///
-/// Validation is two-phase:
-/// 1. **Node existence**: Each entry in `manifest.depends_on.nodes` must resolve to an existing node.
-/// 2. **Interface exposure**: Each consumed/expected interface must reference a valid `local_node_id`
-///    that maps to a dependency which exposes the required interface.
-pub fn validate_dependency_specs(
-    config: &NodeConfig,
-    dependant_name: &str,
-    dependant_tag: &str,
-    resolve: impl Fn(&str, &str) -> Option<NodeConfig>,
-) -> Vec<crate::error::Error> {
-    let mut errors = Vec::new();
-
-    // Build local_id → (name, tag, resolved_config) lookup from depends_on.nodes
-    let mut resolved_deps: HashMap<String, (String, String, NodeConfig)> = HashMap::new();
-
-    // Phase 1: Validate all declared dependency nodes exist
-    if let Some(depends_on) = &config.manifest.depends_on {
-        for dep in &depends_on.nodes {
-            let dep_name = dep.name.as_str().to_owned();
-            let dep_tag = dep.tag.clone();
-            let Some(dependency_config) = resolve(&dep_name, &dep_tag) else {
-                errors.push(crate::error::Error::MissingDependency {
-                    dependant: dependant_name.to_owned(),
-                    dependant_tag: dependant_tag.to_owned(),
-                    dependency: dep_name,
-                    dependency_tag: dep_tag,
-                });
-                continue;
-            };
-            resolved_deps.insert(dep.local_id.clone(), (dep_name, dep_tag, dependency_config));
-        }
-    }
-
-    // Phase 2: Validate consumed interfaces reference valid local_node_ids
-    // and that the dependency exposes the required interface
-    if let Some(topics) = &config.interfaces.topics
-        && let Some(expected) = &topics.consumes
-    {
-        for topic in expected {
-            if let config::node::ConsumedTopic::Linked(linked) = topic {
-                validate_consumed_interface(
-                    &linked.local_node_id,
-                    &linked.name,
-                    InterfaceKind::Topic,
-                    &resolved_deps,
-                    dependant_name,
-                    dependant_tag,
-                    &mut errors,
-                );
-            }
-        }
-    }
-
-    if let Some(services) = &config.interfaces.services
-        && let Some(consumed) = &services.consumes
-    {
-        for service in consumed {
-            validate_consumed_interface(
-                &service.local_node_id,
-                &service.name,
-                InterfaceKind::Service,
-                &resolved_deps,
-                dependant_name,
-                dependant_tag,
-                &mut errors,
-            );
-        }
-    }
-
-    if let Some(actions) = &config.interfaces.actions
-        && let Some(consumed) = &actions.consumes
-    {
-        for action in consumed {
-            validate_consumed_interface(
-                &action.local_node_id,
-                &action.name,
-                InterfaceKind::Action,
-                &resolved_deps,
-                dependant_name,
-                dependant_tag,
-                &mut errors,
-            );
-        }
-    }
-
-    errors
-}
-
-/// Validates that a consumed interface's `local_node_id` resolves to a dependency
-/// that exposes the required interface.
-fn validate_consumed_interface(
-    local_node_id: &str,
-    interface_name: &str,
-    kind: InterfaceKind,
-    resolved_deps: &HashMap<String, (String, String, NodeConfig)>,
-    dependant_name: &str,
-    dependant_tag: &str,
-    errors: &mut Vec<crate::error::Error>,
-) {
-    let Some((dep_name, dep_tag, dep_config)) = resolved_deps.get(local_node_id) else {
-        // The local_node_id doesn't map to any resolved dependency — either
-        // the dependency itself was missing (already reported in phase 1)
-        // or the local_node_id is invalid. Skip silently since phase 1 covers
-        // missing dependencies.
-        return;
-    };
-
-    let requirement = InterfaceRequirement::new(kind, interface_name);
-    if !exposes_interface(dep_config, &requirement) {
-        errors.push(crate::error::Error::MissingInterface {
-            dependant: dependant_name.to_owned(),
-            dependant_tag: dependant_tag.to_owned(),
-            dependency: dep_name.clone(),
-            dependency_tag: dep_tag.clone(),
-            interface_kind: format!("{:?}", kind),
-            interface_name: interface_name.to_owned(),
-        });
-    }
-}
-
-pub(crate) fn exposes_interface(node: &NodeConfig, requirement: &InterfaceRequirement) -> bool {
-    match requirement.kind() {
-        InterfaceKind::Topic => node
-            .interfaces
-            .topics
-            .as_ref()
-            .and_then(|t| t.emits.as_ref())
-            .is_some_and(|topics| {
-                topics
-                    .iter()
-                    .any(|topic| topic.name.trim() == requirement.name())
-            }),
-        InterfaceKind::Service => node
-            .interfaces
-            .services
-            .as_ref()
-            .and_then(|s| s.exposes.as_ref())
-            .is_some_and(|services| {
-                services
-                    .iter()
-                    .any(|service| service.name.trim() == requirement.name())
-            }),
-        InterfaceKind::Action => node
-            .interfaces
-            .actions
-            .as_ref()
-            .and_then(|a| a.exposes.as_ref())
-            .is_some_and(|actions| {
-                actions
-                    .iter()
-                    .any(|action| action.name.trim() == requirement.name())
-            }),
-    }
 }
 
 struct NodeStackInner {
@@ -433,7 +126,8 @@ impl NodeStackInner {
 
     fn validate_dependencies(&self, node: &NodeEntity) -> Result<()> {
         let errors = validate_dependency_specs(
-            node.config(),
+            &node.config().manifest,
+            &node.config().interfaces,
             node.config().manifest.name.as_str(),
             &node.config().manifest.tag,
             |name, tag| {
@@ -738,14 +432,12 @@ impl NodeStackInner {
         Ok(instance_id)
     }
 
-    /// Removes an instance from an entity. If the entity has no instances left, removes the entity.
+    /// Removes an instance from an entity.
     /// Returns Ok(true) if the instance was found and removed, Ok(false) if not found.
-    /// Returns Err(CannotRemoveRootNode) if trying to remove an instance from the root node.
-    /// The root node always has exactly one instance and cannot be modified.
+    /// Returns Err(CannotModifyRootNode) if trying to modify the root node.
     fn remove_instance(&mut self, name: &str, tag: &str, instance_id: &Name) -> Result<bool> {
         let key = NodeKey::new(name, tag);
 
-        // The root node always has exactly one instance and cannot be modified
         if self.is_root(&key) {
             return Err(Error::CannotModifyRootNode);
         }
@@ -765,7 +457,7 @@ impl NodeStackInner {
         Ok(true)
     }
 
-    /// Removes an entity entirely from the graph
+    /// Removes an entity entirely from the graph.
     fn remove_entity(&mut self, key: &NodeKey) {
         if let Some(index) = self.key_to_index.remove(key) {
             self.graph.remove_node(index);
@@ -774,17 +466,13 @@ impl NodeStackInner {
     }
 
     /// Clears all nodes except the root node from the stack.
-    /// The root node is preserved as it cannot be removed.
     fn clear(&mut self) {
-        // Get the root entity before clearing
         let root_entity = self.root();
 
-        // Clear everything
         self.graph.clear();
         self.key_to_index.clear();
         self.pending_requirements.clear();
 
-        // Re-insert the root node
         let idx = self.graph.add_node(root_entity);
         self.key_to_index.insert(self.root_key.clone(), idx);
     }
@@ -864,24 +552,9 @@ impl NodeStackInner {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-struct DependencyRequirement {
-    key: NodeKey,
-}
-
-#[derive(Clone, Debug)]
-struct PendingRequirement {
-    dependant: NodeIndex,
-}
-
-fn dependency_requirements(node: &NodeConfig) -> Vec<DependencyRequirement> {
-    collect_dependency_specs(node)
-        .into_iter()
-        .map(|spec| DependencyRequirement {
-            key: NodeKey::new(&spec.node_name, &spec.node_tag),
-        })
-        .collect()
-}
+// ---------------------------------------------------------------------------
+// Public thread-safe wrapper
+// ---------------------------------------------------------------------------
 
 #[derive(Clone)]
 pub struct NodeStack {
@@ -894,12 +567,6 @@ impl NodeStack {
     /// and cannot be removed from the stack.
     ///
     /// If `instance_id` is `None`, a random instance ID will be generated for the root node.
-    ///
-    /// # Arguments
-    ///
-    /// * `root_config` - The configuration for the root node (core node).
-    /// * `instance_id` - Optional instance ID for the root node. If `None`, a random ID is generated.
-    /// * `root_path` - The filesystem path where the root node will be stored.
     pub fn new<P: Into<PathBuf>>(
         root_config: NodeConfig,
         instance_id: Option<Name>,
@@ -942,14 +609,12 @@ impl NodeStack {
     }
 
     /// Finds a node instance by its instance_id across all entities in the stack.
-    /// Returns the NodeInstance if found, None otherwise.
     pub fn find_by_instance_id(&self, instance_id: &Name) -> Option<TrackedNodeInstance> {
         let guard = self.shared.read().expect("node stack poisoned");
         guard.find_by_instance_id(instance_id)
     }
 
     /// Finds a node entity by an instance_id it contains.
-    /// Returns the NodeEntity if found, None otherwise.
     pub fn find_entity_by_instance_id(&self, instance_id: &Name) -> Option<NodeEntity> {
         let guard = self.shared.read().expect("node stack poisoned");
         guard.find_entity_by_instance_id(instance_id)
@@ -972,9 +637,6 @@ impl NodeStack {
     /// Add a new instance for an existing config.
     /// If instance_id is None, generates a random one.
     /// Returns the instance_id that was used.
-    /// Returns Err(NoMatchingNode) if the config is not found in the stack.
-    /// Returns Err(CannotModifyRootNode) if trying to add an instance to the root node.
-    /// Returns Err(DuplicateInstanceId) if the instance_id already exists for this entity.
     pub fn add_instance(
         &self,
         node_name: &str,
@@ -1001,10 +663,8 @@ impl NodeStack {
         guard.dependents_of(&NodeKey::new(name, tag))
     }
 
-    /// Removes an instance from an entity. If the entity has no instances left, removes the entity.
+    /// Removes an instance from an entity.
     /// Returns Ok(true) if the instance was found and removed, Ok(false) if not found.
-    /// Returns Err(CannotModifyRootNode) if trying to modify the root node.
-    /// The root node always has exactly one instance and cannot be modified.
     pub fn remove_instance(&self, name: &str, tag: &str, instance_id: &Name) -> Result<bool> {
         let mut guard = self.shared.write().expect("node stack poisoned");
         guard.remove_instance(name, tag, instance_id)
@@ -1045,7 +705,6 @@ impl NodeStack {
     }
 
     /// Clears all nodes except the root node from the stack.
-    /// The root node is preserved as it cannot be removed.
     pub fn reset(&self) {
         let mut guard = self.shared.write().expect("node stack poisoned");
         guard.clear();
@@ -1055,8 +714,6 @@ impl NodeStack {
     ///
     /// This resets the current stack (preserving only the root node), then copies
     /// all non-root entities and their instances from the source stack.
-    ///
-    /// Returns an error if any config or instance fails to be added.
     pub fn apply_from(&self, source: &NodeStack) -> std::result::Result<(), String> {
         let target_root = self.root();
         let target_root_name = target_root.config().manifest.name.as_str().to_owned();

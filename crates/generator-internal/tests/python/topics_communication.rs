@@ -6,8 +6,8 @@ use crate::helpers::{
 use config::consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME};
 use config::runtime::NodeInstance;
 use config::{
+    launcher::Name,
     node::{ConsumedTopic, EmittedTopic, ExposedService, MessageFormat},
-    peppy_config::Name,
     runtime::RuntimeConfig,
 };
 use generator::LanguageGenerator;
@@ -167,7 +167,7 @@ if __name__ == "__main__":
     let emitted_topic: EmittedTopic = serde_json5::from_str(EMITTED_TOPIC_EXAMPLE).unwrap();
     let (mut generator, emitter_dir, user_node_emitter, peppy_node_config_path) =
         init_test_env::<generator::PythonGenerator>(&temp_dir_proj1, STUB_PYTHON_NODE_CONFIG);
-    let emitter_parameters: config::NodeArguments =
+    let emitter_parameters: config::ParameterSchema =
         serde_json5::from_str(r#"{ frequency: "f64" }"#).unwrap();
     generator.set_parameters(emitter_parameters.clone());
     generator.add_emitted_topic(&emitted_topic).unwrap();
@@ -180,7 +180,7 @@ if __name__ == "__main__":
     // Update the peppy node config to include the parameters schema
     let mut node_config: config::node::NodeConfig =
         serde_json5::from_str(&fs::read_to_string(&peppy_node_config_path).unwrap()).unwrap();
-    node_config.runtime.parameters = emitter_parameters;
+    node_config.execution.parameters = emitter_parameters;
     fs::write(
         &peppy_node_config_path,
         serde_json5::to_string(&node_config).unwrap(),

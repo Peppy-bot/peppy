@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use config::peppy_config::PeppyLauncherParser;
+use config::launcher::PeppyLauncherParser;
 use core_node::encoding::{
     LaunchFeedback, LaunchFeedbackStep, LaunchGoal, LaunchGoalResponse, LaunchResult,
     NodeAddLogEntry, NodeStartLogEntry,

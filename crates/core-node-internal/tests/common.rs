@@ -5,8 +5,8 @@ use config::consts::{
 };
 use config::node::{PeppygenLanguage, QoSProfile};
 use core_node::encoding::{
-    NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAddResult, NodeStartFeedback,
-    NodeStartGoal, NodeStartGoalResponse, NodeStartResult,
+    NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAddResult, NodeSource,
+    NodeStartFeedback, NodeStartGoal, NodeStartGoalResponse, NodeStartResult,
 };
 use core_node::names;
 use core_node::{CoreNode, CoreNodeArguments};
@@ -59,7 +59,10 @@ pub enum NodeAddSource<'a> {
         repo_ref: Option<&'a str>,
     },
     /// Add from an HTTP URL (for .tzst archives).
-    Http(url::Url),
+    Http {
+        url: url::Url,
+        sha256: Option<String>,
+    },
 }
 
 impl<'a> From<&'a Path> for NodeAddSource<'a> {
@@ -90,6 +93,21 @@ pub fn write_peppy_json5(dir: &Path, content: &str) {
     let config_path = dir.join(NODE_CONFIG_FILE);
     std::fs::write(&config_path, content).expect("failed to write peppy.json5");
     config::fingerprint::create_codegen_fingerprint(&config_path, Path::new(PEPPYGEN_OUTPUT_PATH));
+}
+
+pub fn create_tar_zst_from_dir(source_dir: &Path, archive_path: &Path, archive_root_name: &str) {
+    let bundle_file = std::fs::File::create(archive_path).expect("failed to create bundle file");
+    let encoder =
+        zstd::stream::write::Encoder::new(bundle_file, 0).expect("failed to create zstd encoder");
+    let mut tar_builder = tar::Builder::new(encoder);
+    tar_builder
+        .append_dir_all(archive_root_name, source_dir)
+        .expect("failed to append source dir to tar");
+    tar_builder.finish().expect("failed to finish tar");
+    let encoder = tar_builder
+        .into_inner()
+        .expect("failed to finish tar encoder");
+    encoder.finish().expect("failed to finalize zstd stream");
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -219,10 +237,12 @@ async fn send_node_start_and_wait_internal(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn send_node_add_and_wait_internal<'a>(
     messenger: &MessengerHandle,
     core_node_name: &str,
     source: impl Into<NodeAddSource<'a>>,
+    variant: Option<NodeSource>,
     goal_timeout: Duration,
     result_timeout: Duration,
     feedback_tx: Option<UnboundedSender<NodeAddFeedback>>,
@@ -230,26 +250,29 @@ async fn send_node_add_and_wait_internal<'a>(
 ) -> Result<NodeAddResult, String> {
     let source = source.into();
 
-    let goal = match &source {
+    let mut goal = match &source {
         NodeAddSource::Path(path) => {
-            // For filesystem sources, ensure the git hash file exists
-            let peppy_dir = path.join(PEPPY_OUTPUT_DIR);
-            std::fs::create_dir_all(&peppy_dir).map_err(|e| {
-                format!(
-                    "Failed to create peppy output dir {}: {}",
-                    peppy_dir.display(),
-                    e
-                )
-            })?;
-            let git_hash_path = peppy_dir.join("git.hash");
-            if !git_hash_path.exists() {
-                std::fs::write(&git_hash_path, TEST_GIT_HASH).map_err(|e| {
+            // For directory sources, ensure the git hash file exists. Archive sources must
+            // already contain the expected git hash within the bundle.
+            if path.is_dir() {
+                let peppy_dir = path.join(PEPPY_OUTPUT_DIR);
+                std::fs::create_dir_all(&peppy_dir).map_err(|e| {
                     format!(
-                        "Failed to write git hash file {}: {}",
-                        git_hash_path.display(),
+                        "Failed to create peppy output dir {}: {}",
+                        peppy_dir.display(),
                         e
                     )
                 })?;
+                let git_hash_path = peppy_dir.join("git.hash");
+                if !git_hash_path.exists() {
+                    std::fs::write(&git_hash_path, TEST_GIT_HASH).map_err(|e| {
+                        format!(
+                            "Failed to write git hash file {}: {}",
+                            git_hash_path.display(),
+                            e
+                        )
+                    })?;
+                }
             }
             NodeAddGoal::new(path, TEST_GIT_HASH, result_timeout.as_secs())
         }
@@ -264,11 +287,18 @@ async fn send_node_add_and_wait_internal<'a>(
             TEST_GIT_HASH,
             result_timeout.as_secs(),
         ),
-        NodeAddSource::Http(url) => {
-            NodeAddGoal::new_http(url.clone(), TEST_GIT_HASH, result_timeout.as_secs())
-        }
+        NodeAddSource::Http { url, sha256 } => NodeAddGoal::new_http(
+            url.clone(),
+            sha256.clone(),
+            TEST_GIT_HASH,
+            result_timeout.as_secs(),
+        ),
     }
     .with_env_vars(env_vars);
+
+    if let Some(v) = variant {
+        goal = goal.with_variant_source(v);
+    }
 
     let (caller_core_node, caller_instance_id) = if feedback_tx.is_some() {
         ("*", "*")
@@ -404,6 +434,7 @@ pub async fn send_node_add_and_wait<'a>(
         messenger,
         core_node_name,
         source,
+        None,
         goal_timeout,
         result_timeout,
         feedback_tx,
@@ -425,10 +456,33 @@ pub async fn send_node_add_and_wait_with_env<'a>(
         messenger,
         core_node_name,
         source,
+        None,
         goal_timeout,
         result_timeout,
         feedback_tx,
         env_vars,
+    )
+    .await
+}
+
+pub async fn send_node_add_and_wait_with_variant<'a>(
+    messenger: &MessengerHandle,
+    core_node_name: &str,
+    source: impl Into<NodeAddSource<'a>>,
+    variant: &str,
+    goal_timeout: Duration,
+    result_timeout: Duration,
+    feedback_tx: Option<UnboundedSender<NodeAddFeedback>>,
+) -> Result<NodeAddResult, String> {
+    send_node_add_and_wait_internal(
+        messenger,
+        core_node_name,
+        source,
+        Some(NodeSource::Fs(PathBuf::from(variant))),
+        goal_timeout,
+        result_timeout,
+        feedback_tx,
+        Vec::new(),
     )
     .await
 }
@@ -516,6 +570,7 @@ pub fn init_test_node_project(node_name: &str, node_tag: &str, build_project: bo
         "test-hash",
         &peppy_dirs,
         Default::default(),
+        None,
     )
     .expect("failed to generate peppygen for test node");
 
@@ -607,7 +662,7 @@ fn main() -> Result<()> {
     }
   },
   // Avoid `add_cmd` build step here to make the `add` tests faster
-  runtime: {
+  execution: {
     language: "rust",
     add_cmd: [
         "true"

@@ -12,7 +12,7 @@ use crate::services::node::{
 };
 use chrono::Local;
 use config::consts::{DEFAULT_MESSAGING_HOST, DEFAULT_MESSAGING_PORT, PeppyDirs};
-use config::peppy_config::{Deployment, DeploymentSource, PeppyLauncherParser};
+use config::launcher::{Deployment, DeploymentSource, PeppyLauncherParser};
 use config::runtime::RuntimeConfig;
 use node_stack::NodeStack;
 use peppylib::messaging::{ServiceRequestContext, TopicPublisher};
@@ -186,7 +186,10 @@ fn node_source_from_deployment_source(
         DeploymentSource::Url(spec) => {
             let url = url::Url::parse(&spec.url)
                 .map_err(|e| format!("invalid HTTP URL `{}`: {e}", spec.url))?;
-            Ok(NodeSource::Http { url })
+            Ok(NodeSource::Http {
+                url,
+                sha256: Some(spec.sha256.clone()),
+            })
         }
     }
 }
@@ -521,7 +524,7 @@ async fn resolve_deployments(
         )
         .await;
 
-        let config = match resolve_node_config(source.clone()).await {
+        let config = match resolve_node_config(source.clone(), &ctx.peppy_dirs).await {
             Ok(config) => config,
             Err(err) => {
                 planning_errors.push(format!(
@@ -612,7 +615,8 @@ async fn validate_and_order_dependencies(
         .iter()
         .flat_map(|item| {
             node_stack::validate_dependency_specs(
-                &item.config,
+                &item.config.manifest,
+                &item.config.interfaces,
                 &item.node_name,
                 &item.node_tag,
                 |name, tag| configs_by_key.get(&NodeKey::new(name, tag)).cloned(),
@@ -809,9 +813,12 @@ async fn add_nodes_to_stack(
                 STACK_LAUNCH_GIT_HASH,
                 goal_timeout_secs,
             ),
-            NodeSource::Http { url } => {
-                NodeAddGoal::new_http(url.clone(), STACK_LAUNCH_GIT_HASH, goal_timeout_secs)
-            }
+            NodeSource::Http { url, sha256 } => NodeAddGoal::new_http(
+                url.clone(),
+                sha256.clone(),
+                STACK_LAUNCH_GIT_HASH,
+                goal_timeout_secs,
+            ),
         }
         .with_env_vars(ctx.env_vars.clone());
 

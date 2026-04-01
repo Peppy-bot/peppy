@@ -34,6 +34,7 @@ async fn node_info_async(
     .map_err(|e| Error::ExecutionFailed(format!("Failed to connect to daemon: {}", e)))?;
 
     let request = NodeInfoRequest::new(node_source);
+
     let response = request
         .poll(
             &messenger,
@@ -61,7 +62,7 @@ fn print_node_info(response: &NodeInfoResponse) {
     // Basic info
     println!("Name:      {}", manifest.name.as_str());
     println!("Tag:       {}", manifest.tag);
-    println!("Language:  {:?}", config.runtime.language);
+    println!("Language:  {:?}", config.execution.language);
 
     // Labels
     if let Some(labels) = &manifest.labels
@@ -70,14 +71,27 @@ fn print_node_info(response: &NodeInfoResponse) {
         println!("Labels:    {}", labels.join(", "));
     }
 
+    // Variant info
+    if let Some(ref variant_name) = response.variant_name {
+        println!("Variant:   {}", variant_name);
+    }
+
+    // Available variants (from manifest)
+    if let Some(variants) = &manifest.variants
+        && !variants.is_empty()
+    {
+        let names: Vec<&str> = variants.iter().map(|v| v.name.as_str()).collect();
+        println!("Variants:  {}", names.join(", "));
+    }
+
     // Commands
-    if let Some(add_cmd) = &config.runtime.add_cmd {
+    if let Some(add_cmd) = &config.execution.add_cmd {
         println!("Add cmd:   {}", add_cmd.join(" "));
     }
-    if let Some(start_cmd) = &config.runtime.start_cmd {
+    if let Some(start_cmd) = &config.execution.start_cmd {
         println!("Start cmd: {}", start_cmd.join(" "));
     }
-    if let Some(container) = &config.runtime.container {
+    if let Some(container) = &config.execution.container {
         println!("Container: {}", container.def_file);
     }
 
@@ -283,6 +297,16 @@ fn print_node_info(response: &NodeInfoResponse) {
         }
     }
 
+    // Issues
+    if !response.issues.is_empty() {
+        println!();
+        println!("Issues");
+        println!("{}", "-".repeat(50));
+        for issue in &response.issues {
+            println!("  - {}", issue);
+        }
+    }
+
     // Integrity
     println!();
     println!("Integrity");
@@ -290,11 +314,11 @@ fn print_node_info(response: &NodeInfoResponse) {
     println!("Config SHA256: {}", response.config_integrity);
 
     // Parameters
-    if !config.runtime.parameters.is_empty() {
+    if !config.execution.parameters.is_empty() {
         println!();
         println!("Parameters");
         println!("{}", "-".repeat(50));
-        for (key, value) in &config.runtime.parameters {
+        for (key, value) in &config.execution.parameters {
             println!("  {}: {}", key, format_any_type(value));
         }
     }

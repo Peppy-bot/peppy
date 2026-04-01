@@ -468,24 +468,24 @@ DAEMON_PID=$!
 sleep 5
 
 # Create a Python node (default toolchain is uv = Python)
-cd /tmp
+cd /var/tmp
 rm -rf test-node
 peppy node init test-node
 
 # Add the node to the daemon (triggers peppylib .so extraction).
 # This may fail if uv is not installed — that's OK, we only need the
 # .so extraction which happens before add_cmd.
-peppy node add /tmp/test-node || true
+peppy node add /var/tmp/test-node || true
 
 # Find .abi3.so — it may be in the node working dir, the daemon's data
 # directory (~/.peppy), or the custom PEPPY_HOME.
-SO_FILE=$(find /tmp/test-node {home} $HOME/.peppy -name '*.abi3*.so' -type f 2>/dev/null | head -1)
+SO_FILE=$(find /var/tmp/test-node {home} $HOME/.peppy -name '*.abi3*.so' -type f 2>/dev/null | head -1)
 
 # Kill daemon before checking results to avoid SIGTERM exit codes
 kill $DAEMON_PID 2>/dev/null; wait $DAEMON_PID 2>/dev/null || true
 
 if [ -z "$SO_FILE" ]; then
-    echo "ERROR: No .abi3.so found in /tmp/test-node, {home}, or ~/.peppy"
+    echo "ERROR: No .abi3.so found in /var/tmp/test-node, {home}, or ~/.peppy"
     exit 1
 fi
 echo "FOUND_SO=$SO_FILE"

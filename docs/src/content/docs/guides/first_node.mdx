@@ -92,7 +92,7 @@ Let's open the `peppy.json5` file of the node we just created and explore it tog
         tag: "0.1.0",
       },
       interfaces: {},
-      runtime: {
+      execution: {
         language: "python",
         add_cmd: [
           "uv",
@@ -116,7 +116,7 @@ Let's open the `peppy.json5` file of the node we just created and explore it tog
         tag: "0.1.0",
       },
       interfaces: {},
-      runtime: {
+      execution: {
         language: "rust",
         add_cmd: [
           "cargo",
@@ -137,7 +137,7 @@ Let's open the `peppy.json5` file of the node we just created and explore it tog
 Let's go through the different options:
  - `schema_version`: Always set to version 1 for the moment, it allows the daemon to identify the structure of the configuration file
  - `manifest`: Contains information about the node. Each node is identified by its `name` and `tag`
- - `runtime`: Contains the language and execution commands for the node
+ - `execution`: Contains the language and execution commands for the node
    - `language`: The programming language used by the node (e.g. `"python"`, `"rust"`)
    - `add_cmd`: Command run when the node is added to the Node stack (more on this later). This is typically the place where you want to run heavy operations like code compilation.
    - `start_cmd`: Command run when a node instance is started

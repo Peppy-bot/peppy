@@ -19,7 +19,7 @@
       ],
     }
   },
-  runtime: {
+  execution: {
     language: "python",
     add_cmd: [
       "uv",

@@ -1,7 +1,7 @@
 use crate::{
-    common::{AnyType, NodeArguments, resolve_parameter_path},
-    config::SchemaVersion,
+    common::{AnyType, ParameterSchema, resolve_parameter_path},
     error::ParsingError,
+    launcher::SchemaVersion,
     source::DeploymentSource,
 };
 use indexmap::IndexMap;
@@ -62,6 +62,175 @@ impl Toolchain {
     }
 }
 
+/// Raw node configuration as deserialized from JSON5. The `execution` field is
+/// optional because configs with a `"default"` variant omit it — execution
+/// comes from the variant. Use [`RawNodeConfig::into_resolved`] to produce a
+/// [`NodeConfig`] with guaranteed `execution`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RawNodeConfig {
+    pub(crate) schema_version: SchemaVersion,
+    pub(crate) manifest: Manifest,
+    #[serde(default)]
+    pub(crate) interfaces: Interfaces,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) execution: Option<Execution>,
+}
+
+/// Name reserved for the default variant.
+pub const DEFAULT_VARIANT_NAME: &str = "default";
+
+impl RawNodeConfig {
+    /// Returns `true` if the manifest contains a variant named `"default"`.
+    pub(crate) fn has_default_variant(&self) -> bool {
+        self.manifest.has_default_variant()
+    }
+
+    /// Converts into a resolved [`NodeConfig`] when execution is already present
+    /// (non-variant configs).
+    ///
+    /// Returns an error if `execution` is `None`
+    /// (e.g., for configs with a default variant that has not been resolved yet).
+    pub(crate) fn into_resolved(self) -> crate::error::Result<NodeConfig> {
+        let execution = self.execution.ok_or(ParsingError::MissingExecution)?;
+        Ok(NodeConfig {
+            schema_version: self.schema_version,
+            manifest: self.manifest,
+            interfaces: self.interfaces,
+            execution,
+        })
+    }
+}
+
+/// Opaque handle over a parsed node configuration.
+///
+/// Produced by [`NodeConfigParser`] when parsing a `peppy.json5` file or content
+/// string. The raw fields are not accessible outside of the `config` crate;
+/// use the provided methods to inspect or resolve the config.
+#[derive(Debug, Clone, Serialize)]
+pub struct ParsedNodeConfig(pub(crate) RawNodeConfig);
+
+impl ParsedNodeConfig {
+    /// Returns `true` if the manifest contains a variant named `"default"`.
+    pub fn has_default_variant(&self) -> bool {
+        self.0.has_default_variant()
+    }
+
+    /// Converts into a fully resolved [`NodeConfig`] when execution is already
+    /// present (non-variant configs).
+    ///
+    /// Returns an error if execution is absent (e.g. for configs with a default
+    /// variant that has not been resolved yet).
+    pub fn into_resolved(self) -> crate::error::Result<NodeConfig> {
+        self.0.into_resolved()
+    }
+
+    /// Converts into a [`NodeConfig`], using a default `Execution` if none is
+    /// present. Intended for display-only paths (e.g. `node info`) where a
+    /// missing execution (due to failed variant resolution) should not prevent
+    /// returning useful information.
+    pub fn into_resolved_or_default(self) -> NodeConfig {
+        let execution = self.0.execution.unwrap_or_default();
+        NodeConfig {
+            schema_version: self.0.schema_version,
+            manifest: self.0.manifest,
+            interfaces: self.0.interfaces,
+            execution,
+        }
+    }
+
+    /// Returns the node name from the manifest.
+    pub fn manifest_name(&self) -> &str {
+        self.0.manifest.name.as_str()
+    }
+
+    /// Returns the node tag from the manifest.
+    pub fn manifest_tag(&self) -> &str {
+        &self.0.manifest.tag
+    }
+
+    /// Returns the schema version.
+    pub fn schema_version(&self) -> SchemaVersion {
+        self.0.schema_version
+    }
+
+    /// Looks up a variant by name in the manifest's variants list.
+    pub fn find_variant(&self, name: &str) -> Option<&Variant> {
+        self.0
+            .manifest
+            .variants
+            .as_ref()
+            .and_then(|variants| variants.iter().find(|v| v.name.as_str() == name))
+    }
+
+    /// Returns a reference to the node's manifest.
+    pub fn manifest(&self) -> &Manifest {
+        &self.0.manifest
+    }
+
+    /// Returns a reference to the node's execution config, if present.
+    ///
+    /// Configs with a default variant have no execution at the root level.
+    pub fn execution(&self) -> Option<&Execution> {
+        self.0.execution.as_ref()
+    }
+
+    /// Returns a reference to the node's interfaces.
+    pub fn interfaces(&self) -> &Interfaces {
+        &self.0.interfaces
+    }
+
+    /// Merges this config with a variant config, producing a fully resolved
+    /// [`NodeConfig`].
+    ///
+    /// Validates that any interfaces declared by the variant match the root's
+    /// interfaces. The merged config uses the root's schema_version, manifest,
+    /// and interfaces, combined with the variant's execution.
+    pub fn merge_variant(
+        &self,
+        variant_config: VariantConfig,
+        variant_label: &str,
+    ) -> Result<MergedVariant, String> {
+        if let Some(ref variant_interfaces) = variant_config.interfaces
+            && *variant_interfaces != Interfaces::default()
+            && !self.0.interfaces.matches_unordered(variant_interfaces)
+        {
+            return Err(format!(
+                "VariantInterfaceMismatch: variant '{}' defines interfaces that differ from the root node '{}:{}'",
+                variant_label,
+                self.0.manifest.name.as_str(),
+                self.0.manifest.tag,
+            ));
+        }
+
+        let manifest_ignored = variant_config.manifest.is_some();
+
+        let config = NodeConfig {
+            schema_version: self.0.schema_version,
+            manifest: self.0.manifest.clone(),
+            interfaces: self.0.interfaces.clone(),
+            execution: variant_config.execution,
+        };
+
+        Ok(MergedVariant {
+            config,
+            manifest_ignored,
+        })
+    }
+}
+
+/// Result of merging a [`ParsedNodeConfig`] with a [`VariantConfig`].
+#[derive(Debug)]
+pub struct MergedVariant {
+    /// The fully resolved merged config.
+    pub config: NodeConfig,
+    /// True when the variant's config defined a `manifest` section that was ignored.
+    pub manifest_ignored: bool,
+}
+
+/// Fully resolved node configuration with guaranteed `execution`.
+/// Produced from [`RawNodeConfig`] after variant resolution or after validation
+/// confirms that execution is present in the root config.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NodeConfig {
@@ -69,7 +238,7 @@ pub struct NodeConfig {
     pub manifest: Manifest,
     #[serde(default)]
     pub interfaces: Interfaces,
-    pub runtime: Runtime,
+    pub execution: Execution,
 }
 
 /// Validated node name. Lowercase letters, digits, '_' and '-' only.
@@ -467,6 +636,13 @@ impl ConsumedTopic {
             Self::External(t) => &t.name,
         }
     }
+
+    pub fn local_node_id(&self) -> Option<&str> {
+        match self {
+            Self::Linked(t) => Some(&t.local_node_id),
+            Self::External(_) => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -598,12 +774,12 @@ pub struct Variant {
     pub source: DeploymentSource,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Runtime {
+pub struct Execution {
     pub language: PeppygenLanguage,
     #[serde(default)]
-    pub parameters: NodeArguments,
+    pub parameters: ParameterSchema,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub add_cmd: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -623,6 +799,23 @@ pub struct Manifest {
     pub variants: Option<Vec<Variant>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub depends_on: Option<DependsOn>,
+}
+
+impl Manifest {
+    /// Returns `true` if the manifest contains a variant named `"default"`.
+    pub fn has_default_variant(&self) -> bool {
+        self.default_variant_source().is_some()
+    }
+
+    /// Returns the deployment source for the `"default"` variant, if one exists.
+    pub fn default_variant_source(&self) -> Option<&DeploymentSource> {
+        self.variants.as_ref().and_then(|variants| {
+            variants
+                .iter()
+                .find(|v| v.name.as_str() == DEFAULT_VARIANT_NAME)
+                .map(|v| &v.source)
+        })
+    }
 }
 
 /// Top-level system directories that cannot be used as mount sources.
@@ -724,7 +917,7 @@ impl ContainerConfig {
     /// Returns `Err((ref_path, reason))` on the first invalid reference found.
     pub fn validate_parameter_refs(
         &self,
-        parameters: &NodeArguments,
+        parameters: &ParameterSchema,
     ) -> Result<(), (String, String)> {
         let Some(mount_paths) = &self.mount_paths else {
             return Ok(());
@@ -776,6 +969,255 @@ pub struct Interfaces {
     pub services: Option<ServiceInterfaces>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub actions: Option<ActionInterfaces>,
+}
+
+/// Puts a value into canonical form so that derived `PartialEq` becomes
+/// order-independent: vecs are sorted by name, IndexMap keys are sorted
+/// recursively, and `Some(default)` is collapsed to `None`.
+trait Normalize {
+    fn normalize(&mut self);
+
+    fn normalized(mut self) -> Self
+    where
+        Self: Sized,
+    {
+        self.normalize();
+        self
+    }
+}
+
+fn normalize_schema_map(map: &mut IndexMap<String, SchemaType>) {
+    for value in map.values_mut() {
+        value.normalize();
+    }
+    map.sort_keys();
+}
+
+fn normalize_opt<T: Normalize>(opt: &mut Option<T>) {
+    if let Some(inner) = opt.as_mut() {
+        inner.normalize();
+    }
+}
+
+fn normalize_opt_default<T: Normalize + Default + PartialEq>(opt: &mut Option<T>) {
+    if let Some(inner) = opt.as_mut() {
+        inner.normalize();
+        let mut def = T::default();
+        def.normalize();
+        if *inner == def {
+            *opt = None;
+        }
+    }
+}
+
+fn normalize_opt_vec<T: Normalize>(
+    opt: &mut Option<Vec<T>>,
+    cmp: impl Fn(&T, &T) -> std::cmp::Ordering,
+) {
+    if let Some(items) = opt.as_mut() {
+        for item in items.iter_mut() {
+            item.normalize();
+        }
+        items.sort_by(|a, b| cmp(a, b));
+        if items.is_empty() {
+            *opt = None;
+        }
+    }
+}
+
+impl Normalize for SchemaType {
+    fn normalize(&mut self) {
+        match self {
+            SchemaType::Type(_) | SchemaType::Primitive(_) => {}
+            SchemaType::Array(arr) => arr.items.normalize(),
+            SchemaType::Object(obj) => normalize_schema_map(&mut obj.fields),
+        }
+    }
+}
+
+impl Normalize for MessageFormat {
+    fn normalize(&mut self) {
+        normalize_schema_map(&mut self.0);
+    }
+}
+
+impl Normalize for EmittedTopic {
+    fn normalize(&mut self) {
+        normalize_opt(&mut self.message_format);
+    }
+}
+
+impl Normalize for LinkedConsumedTopic {
+    fn normalize(&mut self) {}
+}
+
+impl Normalize for ExternalConsumedTopic {
+    fn normalize(&mut self) {
+        self.message_format.normalize();
+    }
+}
+
+impl Normalize for ConsumedTopic {
+    fn normalize(&mut self) {
+        match self {
+            ConsumedTopic::Linked(t) => t.normalize(),
+            ConsumedTopic::External(t) => t.normalize(),
+        }
+    }
+}
+
+impl Normalize for ExposedService {
+    fn normalize(&mut self) {
+        normalize_opt(&mut self.request_message_format);
+        normalize_opt(&mut self.response_message_format);
+    }
+}
+
+impl Normalize for ConsumedService {
+    fn normalize(&mut self) {}
+}
+
+impl Normalize for ConsumedAction {
+    fn normalize(&mut self) {}
+}
+
+impl Normalize for ActionServiceEndpoint {
+    fn normalize(&mut self) {
+        normalize_opt(&mut self.request_message_format);
+        normalize_opt(&mut self.response_message_format);
+    }
+}
+
+impl Normalize for ActionTopicEndpoint {
+    fn normalize(&mut self) {
+        normalize_opt(&mut self.message_format);
+    }
+}
+
+impl Normalize for ExposedAction {
+    fn normalize(&mut self) {
+        if let Some(gs) = &mut self.goal_service {
+            gs.normalize();
+        }
+        if let Some(ft) = &mut self.feedback_topic {
+            ft.normalize();
+        }
+        if let Some(rs) = &mut self.result_service {
+            rs.normalize();
+        }
+    }
+}
+
+impl Normalize for TopicInterfaces {
+    fn normalize(&mut self) {
+        normalize_opt_vec(&mut self.emits, |a, b| {
+            a.name
+                .cmp(&b.name)
+                .then_with(|| format!("{a:?}").cmp(&format!("{b:?}")))
+        });
+        normalize_opt_vec(&mut self.consumes, |a, b| {
+            a.name()
+                .cmp(b.name())
+                .then_with(|| a.local_node_id().cmp(&b.local_node_id()))
+                .then_with(|| format!("{a:?}").cmp(&format!("{b:?}")))
+        });
+    }
+}
+
+impl Normalize for ServiceInterfaces {
+    fn normalize(&mut self) {
+        normalize_opt_vec(&mut self.exposes, |a, b| {
+            a.name
+                .cmp(&b.name)
+                .then_with(|| format!("{a:?}").cmp(&format!("{b:?}")))
+        });
+        normalize_opt_vec(&mut self.consumes, |a, b| {
+            a.name
+                .cmp(&b.name)
+                .then_with(|| a.local_node_id.cmp(&b.local_node_id))
+        });
+    }
+}
+
+impl Normalize for ActionInterfaces {
+    fn normalize(&mut self) {
+        normalize_opt_vec(&mut self.exposes, |a, b| {
+            a.name
+                .cmp(&b.name)
+                .then_with(|| format!("{a:?}").cmp(&format!("{b:?}")))
+        });
+        normalize_opt_vec(&mut self.consumes, |a, b| {
+            a.name
+                .cmp(&b.name)
+                .then_with(|| a.local_node_id.cmp(&b.local_node_id))
+        });
+    }
+}
+
+impl Normalize for Interfaces {
+    fn normalize(&mut self) {
+        normalize_opt_default(&mut self.topics);
+        normalize_opt_default(&mut self.services);
+        normalize_opt_default(&mut self.actions);
+    }
+}
+
+impl Interfaces {
+    /// Compares two `Interfaces` for equivalence, ignoring the order of items
+    /// within each list and the order of fields within message formats.
+    pub fn matches_unordered(&self, other: &Interfaces) -> bool {
+        self.clone().normalized() == other.clone().normalized()
+    }
+}
+
+/// Trait shared by [`NodeConfig`] and [`VariantConfig`], providing access to
+/// common fields for validation and variant resolution.
+pub trait PeppyNodeConfig {
+    fn schema_version(&self) -> SchemaVersion;
+    fn interfaces(&self) -> Option<&Interfaces>;
+    fn execution(&self) -> &Execution;
+}
+
+impl PeppyNodeConfig for NodeConfig {
+    fn schema_version(&self) -> SchemaVersion {
+        self.schema_version
+    }
+
+    fn interfaces(&self) -> Option<&Interfaces> {
+        Some(&self.interfaces)
+    }
+
+    fn execution(&self) -> &Execution {
+        &self.execution
+    }
+}
+
+/// Configuration for a node variant. Unlike [`NodeConfig`], `manifest` and
+/// `interfaces` are optional — variants typically inherit these from the root
+/// node and only define their own `execution`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VariantConfig {
+    pub schema_version: SchemaVersion,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manifest: Option<Manifest>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interfaces: Option<Interfaces>,
+    pub execution: Execution,
+}
+
+impl PeppyNodeConfig for VariantConfig {
+    fn schema_version(&self) -> SchemaVersion {
+        self.schema_version
+    }
+
+    fn interfaces(&self) -> Option<&Interfaces> {
+        self.interfaces.as_ref()
+    }
+
+    fn execution(&self) -> &Execution {
+        &self.execution
+    }
 }
 
 #[cfg(test)]
@@ -921,48 +1363,6 @@ mod tests {
 
         let blank_local_node_id = r#"{ local_node_id: "   ", name: "enable_camera" }"#;
         assert!(serde_json5::from_str::<ConsumedService>(blank_local_node_id).is_err());
-    }
-
-    #[test]
-    fn action_service_endpoint_accepts_request_and_accept_keys() {
-        let request_version = r#"
-        {
-            request_message_format: { value: "u32" }
-        }
-        "#;
-        let endpoint: ActionServiceEndpoint =
-            serde_json5::from_str(request_version).expect("request field should parse");
-        assert!(endpoint.request_message_format.is_some());
-
-        let accept_version = r#"
-        {
-            request_message_format: { value: "u32" }
-        }
-        "#;
-        let endpoint: ActionServiceEndpoint =
-            serde_json5::from_str(accept_version).expect("accept field should parse");
-        assert!(endpoint.request_message_format.is_some());
-    }
-
-    #[test]
-    fn exposed_service_accepts_request_and_accept_keys() {
-        let request_version = r#"
-        {
-            request_message_format: { value: "u32" }
-        }
-        "#;
-        let service: ExposedService =
-            serde_json5::from_str(request_version).expect("request field should parse");
-        assert!(service.request_message_format.is_some());
-
-        let accept_version = r#"
-        {
-            request_message_format: { value: "u32" }
-        }
-        "#;
-        let service: ExposedService =
-            serde_json5::from_str(accept_version).expect("accept field should parse");
-        assert!(service.request_message_format.is_some());
     }
 
     #[test]
@@ -1195,13 +1595,140 @@ mod tests {
     }
 
     #[test]
+    fn variant_config_omits_none_interfaces_on_serialize() {
+        let json5 = r#"{
+            schema_version: 1,
+            execution: { language: "rust" }
+        }"#;
+        let config: VariantConfig =
+            serde_json5::from_str(json5).expect("minimal variant config should parse");
+        assert!(config.interfaces.is_none());
+
+        let serialized = serde_json5::to_string(&config).unwrap();
+        assert!(
+            !serialized.contains("interfaces"),
+            "interfaces should be omitted when None, got: {serialized}"
+        );
+        assert!(
+            !serialized.contains("manifest"),
+            "manifest should be omitted when None, got: {serialized}"
+        );
+    }
+
+    #[test]
     fn node_config_rejects_unknown_fields() {
         let json5 = r#"{
             schema_version: 1,
             manifest: { name: "node", tag: "0.1.0" },
-            runtime: { language: "rust", start_cmd: ["./run"] },
+            execution: { language: "rust", start_cmd: ["./run"] },
             extra: "bad"
         }"#;
         assert!(serde_json5::from_str::<NodeConfig>(json5).is_err());
+    }
+
+    #[test]
+    fn consume_normalization_sorts_by_name_and_local_node_id() {
+        // TopicInterfaces: two linked consumed topics with same name, different local_node_id
+        let mut topics_a = TopicInterfaces {
+            emits: None,
+            consumes: Some(vec![
+                ConsumedTopic::Linked(LinkedConsumedTopic {
+                    local_node_id: "node_b".into(),
+                    name: "topic".into(),
+                }),
+                ConsumedTopic::Linked(LinkedConsumedTopic {
+                    local_node_id: "node_a".into(),
+                    name: "topic".into(),
+                }),
+            ]),
+        };
+        let mut topics_b = TopicInterfaces {
+            emits: None,
+            consumes: Some(vec![
+                ConsumedTopic::Linked(LinkedConsumedTopic {
+                    local_node_id: "node_a".into(),
+                    name: "topic".into(),
+                }),
+                ConsumedTopic::Linked(LinkedConsumedTopic {
+                    local_node_id: "node_b".into(),
+                    name: "topic".into(),
+                }),
+            ]),
+        };
+        topics_a.normalize();
+        topics_b.normalize();
+        assert_eq!(topics_a, topics_b);
+        // Verify sorted order: node_a before node_b
+        let consumes = topics_a.consumes.unwrap();
+        assert!(matches!(&consumes[0], ConsumedTopic::Linked(t) if t.local_node_id == "node_a"));
+        assert!(matches!(&consumes[1], ConsumedTopic::Linked(t) if t.local_node_id == "node_b"));
+
+        // ServiceInterfaces: same name, different local_node_id
+        let mut services_a = ServiceInterfaces {
+            exposes: None,
+            consumes: Some(vec![
+                ConsumedService {
+                    local_node_id: "node_b".into(),
+                    name: "svc".into(),
+                },
+                ConsumedService {
+                    local_node_id: "node_a".into(),
+                    name: "svc".into(),
+                },
+            ]),
+        };
+        let mut services_b = ServiceInterfaces {
+            exposes: None,
+            consumes: Some(vec![
+                ConsumedService {
+                    local_node_id: "node_a".into(),
+                    name: "svc".into(),
+                },
+                ConsumedService {
+                    local_node_id: "node_b".into(),
+                    name: "svc".into(),
+                },
+            ]),
+        };
+        services_a.normalize();
+        services_b.normalize();
+        assert_eq!(services_a, services_b);
+        let consumes = services_a.consumes.unwrap();
+        assert_eq!(consumes[0].local_node_id, "node_a");
+        assert_eq!(consumes[1].local_node_id, "node_b");
+
+        // ActionInterfaces: same name, different local_node_id
+        let mut actions_a = ActionInterfaces {
+            exposes: None,
+            consumes: Some(vec![
+                ConsumedAction {
+                    local_node_id: "node_b".into(),
+                    name: "act".into(),
+                },
+                ConsumedAction {
+                    local_node_id: "node_a".into(),
+                    name: "act".into(),
+                },
+            ]),
+        };
+        let mut actions_b = ActionInterfaces {
+            exposes: None,
+            consumes: Some(vec![
+                ConsumedAction {
+                    local_node_id: "node_a".into(),
+                    name: "act".into(),
+                },
+                ConsumedAction {
+                    local_node_id: "node_b".into(),
+                    name: "act".into(),
+                },
+            ]),
+        };
+        actions_a.normalize();
+        actions_b.normalize();
+        assert_eq!(actions_a, actions_b);
+        let consumes = actions_a.consumes.unwrap();
+        assert_eq!(consumes[0].local_node_id, "node_a");
+        assert_eq!(consumes[1].local_node_id, "node_b");
     }
 }

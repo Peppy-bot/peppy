@@ -19,7 +19,8 @@ use types::{DeploymentInterface, InterfaceVariant, LanguageGenerator};
 
 /// Generate an interface library for the given language from a node directory.
 ///
-/// This function reads the `peppy.json5` configuration file from the `node_dir`,
+/// This function reads the node configuration (from `config_path` if provided,
+/// otherwise from `peppy.json5` inside `node_dir`),
 /// extracts the exposed interfaces, combines them with the provided consumed interfaces,
 /// and generates a library for the specified programming language.
 /// The library is generated at `node_dir/.peppy/libs/peppygen`.
@@ -28,10 +29,17 @@ use types::{DeploymentInterface, InterfaceVariant, LanguageGenerator};
 /// * `language` - The language to generate for (Rust or Python)
 /// * `node_dir` - Path to the node directory containing `peppy.json5`
 /// * `consumed_interfaces` - Consumed interfaces with resolved message formats from dependency nodes
+/// * `config_path` - An optional pre-resolved path to the configuration file
+///   (`Option<&Path>`). When `Some`, this borrowed path is used directly as the
+///   configuration source instead of the default `node_dir/peppy.json5`; the
+///   function does **not** canonicalize or otherwise transform the supplied path,
+///   so the caller must ensure it is already resolved. When `None`, the function
+///   falls back to reading `node_dir/peppy.json5`.
 ///
 /// # Errors
 /// Returns an error if:
-/// - The `peppy.json5` file is not found in `node_dir`
+/// - The configuration file (either `config_path` or the default
+///   `node_dir/peppy.json5`) does not exist
 /// - The configuration file cannot be parsed
 /// - Code generation fails
 pub fn generate_peppygen_lib(
@@ -41,20 +49,22 @@ pub fn generate_peppygen_lib(
     git_hash: &str,
     peppy_dirs: &PeppyDirs,
     deploy_mode: common::CrateDeployMode,
+    config_path: Option<&Path>,
 ) -> Result<()> {
     let node_dir = node_dir.as_ref();
-    let node_config_path = node_dir.join(NODE_CONFIG_FILE);
+    let node_config_path = config_path
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| node_dir.join(NODE_CONFIG_FILE));
 
     let peppy_dir = node_dir.join(config::consts::PEPPY_OUTPUT_DIR);
     std::fs::create_dir_all(&peppy_dir)?;
-    write_if_changed(&peppy_dir.join("git.hash"), git_hash.as_bytes())?;
-
     if !node_config_path.exists() {
-        return Err(Error::NodeNotFound(node_dir.display().to_string()));
+        return Err(Error::NodeNotFound(node_config_path.display().to_string()));
     }
 
     let node_config = NodeConfigParser::from_path(&node_config_path)
-        .map_err(|e| Error::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e)))?;
+        .map_err(|e| Error::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e)))?
+        .into_resolved()?;
 
     let mut interfaces = collect_exposed_interfaces(&node_config, consumed_interfaces.len());
     // Add the consumed interfaces with resolved message formats
@@ -64,10 +74,12 @@ pub fn generate_peppygen_lib(
     let output_dir = node_dir.join(config::consts::PEPPYGEN_OUTPUT_PATH);
     fs::create_dir_all(&output_dir)?;
 
+    let execution = node_config.execution;
+
     let result = match language {
         PeppygenLanguage::Rust => {
             let mut rust_generator = RustGenerator::new();
-            rust_generator.set_parameters(node_config.runtime.parameters);
+            rust_generator.set_parameters(execution.parameters);
             generate_with_backend(
                 rust_generator,
                 &interfaces,
@@ -81,8 +93,8 @@ pub fn generate_peppygen_lib(
         }
         PeppygenLanguage::Python => {
             let mut python_generator = PythonGenerator::new();
-            python_generator.set_parameters(node_config.runtime.parameters);
-            python_generator.set_container(node_config.runtime.container.is_some());
+            python_generator.set_parameters(execution.parameters);
+            python_generator.set_container(execution.container.is_some());
             generate_with_backend(
                 python_generator,
                 &interfaces,
@@ -93,11 +105,11 @@ pub fn generate_peppygen_lib(
         }
     };
 
-    // Lastly generate the codegen fingerprint based on the peppy.json5 config file
-    let node_config_path = node_dir.join(NODE_CONFIG_FILE);
+    // Only write git.hash and the fingerprint after successful generation.
+    result?;
+    write_if_changed(&peppy_dir.join("git.hash"), git_hash.as_bytes())?;
     config::fingerprint::generate_node_config_fingerprint(&node_config_path, &output_dir)?;
-
-    result
+    Ok(())
 }
 
 /// Collects all exposed interfaces from a NodeConfig into DeploymentInterface instances.
@@ -445,6 +457,113 @@ mod tests {
             peppylib_path,
             config::consts::PEPPYLIB_OUTPUT_PATH,
             "stale peppylib path should be overwritten"
+        );
+    }
+
+    #[test]
+    fn fingerprint_uses_resolved_config_path() {
+        let temp_dir = TempDir::new().expect("failed to create temp directory");
+        let node_dir = temp_dir.path().join("node");
+        fs::create_dir_all(&node_dir).unwrap();
+
+        // Write a canonical peppy.json5 at the default location
+        let canonical_config = r#"{
+          schema_version: 1,
+          manifest: { name: "canonical_node", tag: "0.1.0" },
+          execution: { language: "rust", start_cmd: ["./target/release/canonical_node"] }
+        }"#;
+        fs::write(node_dir.join(NODE_CONFIG_FILE), canonical_config).unwrap();
+
+        // Write a different config at a custom path
+        let custom_config = r#"{
+          schema_version: 1,
+          manifest: { name: "custom_node", tag: "0.2.0" },
+          execution: { language: "rust", start_cmd: ["./target/release/custom_node"] }
+        }"#;
+        let custom_path = temp_dir.path().join("custom_peppy.json5");
+        fs::write(&custom_path, custom_config).unwrap();
+
+        let peppy_dirs = config::consts::PeppyDirs::default();
+        generate_peppygen_lib(
+            config::node::PeppygenLanguage::Rust,
+            &node_dir,
+            Vec::new(),
+            "test-hash",
+            &peppy_dirs,
+            common::CrateDeployMode::default(),
+            Some(custom_path.as_path()),
+        )
+        .expect("generation should succeed");
+
+        // Read the fingerprint file directly from the output directory
+        let fingerprint_path = node_dir
+            .join(config::consts::PEPPYGEN_OUTPUT_PATH)
+            .join("peppy.json5.sha256");
+        let written_fingerprint = fs::read_to_string(&fingerprint_path)
+            .expect("fingerprint file should exist")
+            .trim()
+            .to_string();
+
+        let expected = config::fingerprint::fingerprint_for_bytes(custom_config.as_bytes());
+        let not_expected = config::fingerprint::fingerprint_for_bytes(canonical_config.as_bytes());
+
+        assert_eq!(
+            written_fingerprint, expected,
+            "fingerprint should match the custom config content"
+        );
+        assert_ne!(
+            written_fingerprint, not_expected,
+            "fingerprint should NOT match the canonical config content"
+        );
+
+        let git_hash_path = node_dir
+            .join(config::consts::PEPPY_OUTPUT_DIR)
+            .join("git.hash");
+        let written_hash = fs::read_to_string(&git_hash_path)
+            .expect("git.hash file should exist after successful generation");
+        assert_eq!(
+            written_hash, "test-hash",
+            "git.hash should contain the provided hash"
+        );
+    }
+
+    #[test]
+    fn no_fingerprint_written_on_generation_failure() {
+        let temp_dir = TempDir::new().expect("failed to create temp directory");
+        let node_dir = temp_dir.path().join("node");
+        fs::create_dir_all(&node_dir).unwrap();
+
+        // Do NOT write any peppy.json5 — generation should fail with NodeNotFound
+        let peppy_dirs = config::consts::PeppyDirs::default();
+        let result = generate_peppygen_lib(
+            config::node::PeppygenLanguage::Rust,
+            &node_dir,
+            Vec::new(),
+            "test-hash",
+            &peppy_dirs,
+            common::CrateDeployMode::default(),
+            None,
+        );
+
+        assert!(
+            result.is_err(),
+            "generation should fail when config is missing"
+        );
+
+        let fingerprint_path = node_dir
+            .join(config::consts::PEPPYGEN_OUTPUT_PATH)
+            .join("peppy.json5.sha256");
+        assert!(
+            !fingerprint_path.exists(),
+            "fingerprint file should not exist when generation fails"
+        );
+
+        let git_hash_path = node_dir
+            .join(config::consts::PEPPY_OUTPUT_DIR)
+            .join("git.hash");
+        assert!(
+            !git_hash_path.exists(),
+            "git.hash file should not exist when generation fails"
         );
     }
 }

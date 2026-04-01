@@ -20,20 +20,25 @@ The manifest defines a node's identity:
 
 | Field | Description |
 |-------|-------------|
-| `name` | A validated identifier (lowercase letters, digits, `_`, `-`) |
+| `name` | A validated identifier (ASCII letters, digits, `_`, `-`) |
 | `tag` | A version or variant identifier (e.g., `donut`, `v1.0.0`) |
 | `labels` | Optional metadata labels |
+| `variants` | Optional list of alternative node implementations |
+| `depends_on` | Optional dependency declarations on other nodes |
 
 A node is uniquely identified by its `name:tag` combination.
 
-### Process
+### Execution
 
-The process section defines how to prepare and launch the node:
+The execution section defines how to prepare and launch the node:
 
 | Field | Description |
 |-------|-------------|
+| `language` | The programming language of the node (`rust`, `python`) |
+| `parameters` | Optional parameter schema for runtime configuration |
 | `add_cmd` | Command to run before adding to the stack |
 | `start_cmd` | Command to launch the node |
+| `container` | Optional container configuration (mutually exclusive with `add_cmd`/`start_cmd`) |
 
 ### Interfaces
 

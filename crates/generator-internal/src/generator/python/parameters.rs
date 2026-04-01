@@ -23,7 +23,7 @@ struct ParameterField {
 ///
 /// Validates field names using the shared validator, then generates `@dataclass`
 /// definitions (with `from_dict` classmethods) for all parameter groups.
-pub fn generate_python_parameters(parameters: &config::NodeArguments) -> Result<String> {
+pub fn generate_python_parameters(parameters: &config::ParameterSchema) -> Result<String> {
     // Validate field names using the shared Rust validator
     validate_parameters(parameters)?;
 

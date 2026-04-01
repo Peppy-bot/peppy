@@ -1,6 +1,5 @@
 //! Cap'n Proto encoding utilities for node info messages.
 
-use std::path::PathBuf;
 use std::time::Duration;
 
 use capnp::message::Builder;
@@ -28,8 +27,8 @@ impl NodeInfoRequest {
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
-            let request = builder.init_root::<node_capnp::node_info_request::Builder>();
-            let mut source = request.init_source();
+            let mut request = builder.init_root::<node_capnp::node_info_request::Builder>();
+            let mut source = request.reborrow().init_source();
             match &self.source {
                 NodeSource::Fs(path) => {
                     source.set_fs(path.to_string_lossy().as_ref());
@@ -44,8 +43,11 @@ impl NodeInfoRequest {
                     git.set_repo_path(repo_path);
                     git.set_repo_ref(repo_ref.as_deref().unwrap_or(""));
                 }
-                NodeSource::Http { url } => {
+                NodeSource::Http { url, sha256 } => {
                     source.set_http(url.as_str());
+                    if let Some(digest) = NodeSource::normalize_http_sha256(sha256.as_deref()) {
+                        request.reborrow().set_http_sha256(&digest);
+                    }
                 }
             }
         }
@@ -54,37 +56,25 @@ impl NodeInfoRequest {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         use crate::node_capnp::node_info_request::source::Which;
-        use gix_url::Url as GitUrl;
 
         let reader = decode_message(data)?;
         let request = reader.get_root::<node_capnp::node_info_request::Reader>()?;
         let source = match request.get_source().which()? {
-            Which::Fs(fs) => NodeSource::Fs(PathBuf::from(fs?.to_str()?)),
+            Which::Fs(fs) => NodeSource::decode_fs(fs?.to_str()?)?,
             Which::Git(git) => {
                 let git = git?;
-                let repo_url_str = git.get_repo_url()?.to_str()?;
-                let repo_url = GitUrl::try_from(repo_url_str)
-                    .map_err(|e| crate::Error::Decoding(format!("invalid git URL: {}", e)))?;
-                let repo_path = git.get_repo_path()?.to_str()?.to_owned();
-                let repo_ref = git.get_repo_ref()?.to_str()?.trim().to_owned();
-                let repo_ref = if repo_ref.is_empty() {
-                    None
-                } else {
-                    Some(repo_ref)
-                };
-                NodeSource::Git {
-                    repo_url,
-                    repo_path,
-                    repo_ref,
-                }
+                NodeSource::decode_git(
+                    git.get_repo_url()?.to_str()?,
+                    git.get_repo_path()?.to_str()?,
+                    git.get_repo_ref()?.to_str()?,
+                )?
             }
-            Which::Http(http) => {
-                let url_str = http?.to_str()?;
-                let url = url::Url::parse(url_str)
-                    .map_err(|e| crate::Error::Decoding(format!("invalid HTTP URL: {}", e)))?;
-                NodeSource::Http { url }
-            }
+            Which::Http(http) => NodeSource::decode_http(
+                http?.to_str()?,
+                Some(request.get_http_sha256()?.to_str()?),
+            )?,
         };
+
         Ok(Self { source })
     }
 
@@ -120,6 +110,10 @@ pub struct NodeInfoResponse {
     pub instances_names: Vec<String>,
     /// SHA256 of the entire NodeConfig file taken from NodeSource
     pub config_integrity: String,
+    /// Name of the variant applied, if any.
+    pub variant_name: Option<String>,
+    /// Non-fatal issues encountered during resolution (e.g. unknown variant).
+    pub issues: Vec<String>,
 }
 
 impl NodeInfoResponse {
@@ -128,12 +122,16 @@ impl NodeInfoResponse {
         is_in_node_stack: bool,
         instances_names: Vec<String>,
         config_integrity: String,
+        variant_name: Option<String>,
+        issues: Vec<String>,
     ) -> Self {
         Self {
             config,
             is_in_node_stack,
             instances_names,
             config_integrity,
+            variant_name,
+            issues,
         }
     }
 
@@ -153,6 +151,11 @@ impl NodeInfoResponse {
                 instances.set(i as u32, name);
             }
             response.set_config_sha256(&self.config_integrity);
+            response.set_variant_name(self.variant_name.as_deref().unwrap_or(""));
+            let mut issues_builder = response.reborrow().init_issues(self.issues.len() as u32);
+            for (i, issue) in self.issues.iter().enumerate() {
+                issues_builder.set(i as u32, issue);
+            }
         }
         encode_message(&builder)
     }
@@ -170,11 +173,51 @@ impl NodeInfoResponse {
             instances_names.push(instances_names_reader.get(i)?.to_str()?.to_owned());
         }
         let config_integrity = response.get_config_sha256()?.to_str()?.to_owned();
+        let variant_name = response.get_variant_name()?.to_str()?.to_owned();
+        let variant_name = if variant_name.is_empty() {
+            None
+        } else {
+            Some(variant_name)
+        };
+        let issues_reader = response.get_issues()?;
+        let mut issues = Vec::with_capacity(issues_reader.len() as usize);
+        for i in 0..issues_reader.len() {
+            issues.push(issues_reader.get(i)?.to_str()?.to_owned());
+        }
         Ok(Self {
             config,
             is_in_node_stack,
             instances_names,
             config_integrity,
+            variant_name,
+            issues,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn node_info_request_http_source_roundtrips_sha256() {
+        let url = url::Url::parse("https://example.com/node.tar.zst").unwrap();
+        let sha256 = "c".repeat(64);
+
+        let encoded = NodeInfoRequest::new(NodeSource::Http {
+            url: url.clone(),
+            sha256: Some(sha256.clone()),
+        })
+        .encode()
+        .expect("encoding should succeed");
+        let decoded = NodeInfoRequest::decode(&encoded).expect("decoding should succeed");
+
+        assert_eq!(
+            decoded.source,
+            NodeSource::Http {
+                url,
+                sha256: Some(sha256)
+            }
+        );
     }
 }

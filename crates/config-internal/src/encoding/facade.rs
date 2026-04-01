@@ -1,9 +1,7 @@
 use crate::error::{Error, Result};
 use capnpc::CompilerCommand;
 use std::env;
-use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
 
 #[cfg(unix)]
 use std::fs;
@@ -26,52 +24,9 @@ impl CapnpFacade {
         Ok(Self { capnp_path })
     }
 
-    /// Creates a new facade using an explicit path, validating it exists.
-    pub fn with_path(path: impl Into<PathBuf>) -> Result<Self> {
-        let path = Self::validate_path(path.into())?;
-        Ok(Self { capnp_path: path })
-    }
-
     /// Returns the path to the Cap'n Proto binary managed by this facade.
     pub fn binary_path(&self) -> &Path {
         &self.capnp_path
-    }
-
-    /// Spawns a [`Command`] pre-configured with the Cap'n Proto binary.
-    pub fn command(&self) -> Command {
-        Command::new(&self.capnp_path)
-    }
-
-    /// Executes the Cap'n Proto binary with the provided arguments and returns the captured output.
-    /// The call fails when the process cannot be spawned or exits with a non-zero status.
-    pub fn run<I, S>(&self, args: I) -> Result<Output>
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<OsStr>,
-    {
-        let mut command = self.command();
-        command.args(args);
-        let output = command.output().map_err(Error::from)?;
-        if output.status.success() {
-            Ok(output)
-        } else {
-            Err(Error::Encoding(format!(
-                "capnp exited with status {}",
-                output.status
-            )))
-        }
-    }
-
-    /// Queries the Cap'n Proto version by calling `capnp --version`.
-    pub fn version(&self) -> Result<String> {
-        let output = self.run(["--version"])?;
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        Ok(stdout.trim().to_string())
-    }
-
-    /// Configures a [`CompilerCommand`] to use this facade's binary.
-    pub fn configure_compiler_command(&self, command: &mut CompilerCommand) {
-        command.capnp_executable(&self.capnp_path);
     }
 
     /// Compiles the provided Cap'n Proto schemas into Rust modules under the given `output_dir`.

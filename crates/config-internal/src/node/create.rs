@@ -24,7 +24,7 @@ struct LauncherConfigTemplate;
     name: "{{ name }}",
     tag: "0.1.0"
   },
-  runtime: {
+  execution: {
     language: "rust",
     start_cmd: {{ start_cmd | safe }}
   }
@@ -81,7 +81,7 @@ impl NodeConfigCreator {
 mod tests {
     use super::super::types::NodeConfig;
     use super::*;
-    use crate::config::PeppyLauncher;
+    use crate::launcher::PeppyLauncher;
     use std::fs;
     use tempfile::NamedTempFile;
 
@@ -103,7 +103,7 @@ mod tests {
                 name: "a_node",
                 tag: "0.1.0",
             },
-            runtime: {
+            execution: {
                 language: "rust",
                 start_cmd: ["./target/release/a_node"],
             }

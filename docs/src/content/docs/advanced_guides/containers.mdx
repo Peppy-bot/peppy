@@ -64,7 +64,7 @@ This generates the same project scaffolding as a regular node, plus an `apptaine
 
 ## The `peppy.json5` configuration
 
-A container node includes a `container` block inside its `runtime` section instead of the usual `add_cmd` and `start_cmd` fields. The two are mutually exclusive — a node is either a container node or a process node, never both.
+A container node includes a `container` block inside its `execution` section instead of the usual `add_cmd` and `start_cmd` fields. The two are mutually exclusive — a node is either a container node or a process node, never both.
 
 <Tabs>
   <TabItem label="Python">
@@ -76,7 +76,7 @@ A container node includes a `container` block inside its `runtime` section inste
         tag: "0.1.0",
       },
       interfaces: {},
-      runtime: {
+      execution: {
         language: "python",
         container: {
           def_file: "apptainer.def",
@@ -94,7 +94,7 @@ A container node includes a `container` block inside its `runtime` section inste
         tag: "0.1.0",
       },
       interfaces: {},
-      runtime: {
+      execution: {
         language: "rust",
         container: {
           def_file: "apptainer.def",
@@ -119,7 +119,7 @@ Compare this with a standard process node, which defines `add_cmd` and `start_cm
         tag: "0.1.0",
       },
       interfaces: {},
-      runtime: {
+      execution: {
         language: "python",
         add_cmd: ["uv", "sync", "--no-editable"],
         start_cmd: ["./.venv/bin/python", "-m", "my_node"]
@@ -136,7 +136,7 @@ Compare this with a standard process node, which defines `add_cmd` and `start_cm
         tag: "0.1.0",
       },
       interfaces: {},
-      runtime: {
+      execution: {
         language: "rust",
         add_cmd: ["cargo", "build", "--release"],
         start_cmd: ["./target/release/my_node"]
@@ -275,7 +275,7 @@ The container executes the `%runscript` section, which runs the compiled binary 
 
 By default, a container is isolated from the host filesystem. Use `mount_paths` to bind-mount host directories into the running container — useful for sharing datasets, persisting output, or exposing device files.
 
-Add a `mount_paths` array to the `container` block inside `runtime` in `peppy.json5`:
+Add a `mount_paths` array to the `container` block inside `execution` in `peppy.json5`:
 
 ```json5 title="peppy.json5"
 {
@@ -285,7 +285,7 @@ Add a `mount_paths` array to the `container` block inside `runtime` in `peppy.js
     tag: "0.1.0",
   },
   interfaces: {},
-  runtime: {
+  execution: {
     language: "python",
     container: {
       def_file: "apptainer.def",
@@ -328,7 +328,7 @@ Mount paths can reference runtime [parameters](/getting_started/parameters/) usi
     tag: "0.1.0",
   },
   interfaces: {},
-  runtime: {
+  execution: {
     language: "rust",
     parameters: {
       device_path: "string",
@@ -350,7 +350,7 @@ For nested parameters, use dot notation:
 ```json5 title="peppy.json5 (nested example)"
 {
   // ...
-  runtime: {
+  execution: {
     // ...
     parameters: {
       video: {
@@ -379,7 +379,7 @@ Blocked system directory validation (e.g., rejecting `/tmp` as a mount source) i
 
 ## Extra runtime arguments
 
-You can pass additional command-line arguments directly to Apptainer or Lima using `apptainer_build_extra_args`, `apptainer_run_extra_args`, and `lima_shell_extra_args` in the `container` block inside `runtime`.
+You can pass additional command-line arguments directly to Apptainer or Lima using `apptainer_build_extra_args`, `apptainer_run_extra_args`, and `lima_shell_extra_args` in the `container` block inside `execution`.
 
 ```json5 title="peppy.json5"
 {
@@ -389,7 +389,7 @@ You can pass additional command-line arguments directly to Apptainer or Lima usi
     tag: "0.1.0",
   },
   interfaces: {},
-  runtime: {
+  execution: {
     language: "python",
     container: {
       def_file: "apptainer.def",
