@@ -346,6 +346,7 @@ async fn handle_node_sync_request_inner(
             } else {
                 local.local.clone()
             };
+            let variant_dir = variant_dir.canonicalize().unwrap_or(variant_dir);
 
             if !variant_dir.exists() {
                 return NodeSyncResponse::failure(format!(
