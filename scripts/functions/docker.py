@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import base64
+import json
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from .cli import ReleaseError, console, need_cmd
+from .cli import ReleaseError, console, need_cmd, prompt, run_with_error_handling
 
 
 DOCKER_HUB_ACCOUNT = "tuatini"
@@ -35,6 +37,36 @@ BASE_IMAGES: list[BaseImage] = [
 ]
 
 
+DOCKER_HUB_REGISTRY = "https://index.docker.io/v1/"
+
+
+def _get_docker_hub_username() -> str | None:
+    """Extract the Docker Hub username from ~/.docker/config.json.
+
+    Returns the username if found, or None if not logged in.
+    """
+    config_path = Path.home() / ".docker" / "config.json"
+    if not config_path.is_file():
+        return None
+
+    try:
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+
+    auth_entry = config.get("auths", {}).get(DOCKER_HUB_REGISTRY, {}).get("auth")
+    if not auth_entry:
+        return None
+
+    try:
+        decoded = base64.b64decode(auth_entry).decode("utf-8")
+    except Exception:
+        return None
+
+    username, _, _ = decoded.partition(":")
+    return username or None
+
+
 def validate_docker_environment() -> None:
     """Check that docker and buildx are available and the user is logged in.
 
@@ -54,17 +86,12 @@ def validate_docker_environment() -> None:
             "Install it or upgrade Docker: https://docs.docker.com/buildx/install/"
         )
 
-    result = subprocess.run(
-        ["docker", "login", "--get-login"],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
+    logged_in_user = _get_docker_hub_username()
+    if logged_in_user is None:
         raise ReleaseError(
             "not logged into Docker Hub. Run 'docker login' first."
         )
 
-    logged_in_user = result.stdout.strip()
     if logged_in_user != DOCKER_HUB_ACCOUNT:
         raise ReleaseError(
             f"Docker Hub is logged in as '{logged_in_user}', "
@@ -114,3 +141,19 @@ def build_all_base_images(scripts_dir: Path, tag: str) -> None:
     console.print()
     for image in BASE_IMAGES:
         console.print(f"[green]Pushed:[/green] {image.repo}:{tag}")
+
+
+def _run() -> None:
+    """Interactive entry point: validate, prompt for tag, build and push."""
+    validate_docker_environment()
+
+    tag = prompt("Tag for the base images (example: v0.0.1)")
+    if not tag:
+        raise ReleaseError("tag cannot be empty")
+
+    scripts_dir = Path(__file__).resolve().parent.parent
+    build_all_base_images(scripts_dir, tag)
+
+
+def main() -> None:
+    run_with_error_handling(_run)
