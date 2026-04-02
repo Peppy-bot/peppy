@@ -119,6 +119,15 @@ impl ParsedNodeConfig {
         self.0.has_default_variant()
     }
 
+    /// Returns `true` if the manifest declares one or more variants.
+    pub fn has_variants(&self) -> bool {
+        self.0
+            .manifest
+            .variants
+            .as_ref()
+            .is_some_and(|v| !v.is_empty())
+    }
+
     /// Converts into a fully resolved [`NodeConfig`] when execution is already
     /// present (non-variant configs).
     ///
