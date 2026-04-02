@@ -31,7 +31,7 @@ impl PeppyLauncherParser {
     /// Takes a JSON5 content as parameter
     pub fn from_content(content: &str) -> Result<PeppyLauncher> {
         // Strict schema validation is handled by serde via #[serde(deny_unknown_fields)]
-        serde_json5::from_str::<PeppyLauncher>(content).map_err(|e| ParsingError::from(e).into())
+        crate::error::deserialize_json5_with_path(content)
     }
 }
 
@@ -115,7 +115,7 @@ mod tests {
         let DeploymentSource::Local(local) = &deployments[2].source else {
             panic!("expected local source");
         };
-        assert_eq!(local.local, std::path::PathBuf::from("./esp32_board"));
+        assert_eq!(local.local, std::path::PathBuf::from("esp32_board"));
         assert_eq!(deployments[2].instances.len(), 1);
         assert_eq!(deployments[2].instances[0].instance_id, "esp32_1");
         assert!(deployments[2].instances[0].arguments.is_empty());

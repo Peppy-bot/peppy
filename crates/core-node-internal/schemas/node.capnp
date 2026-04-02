@@ -38,6 +38,8 @@ struct NodeAddGoal {
     # and this identifies which variant to resolve and build.
     # Fs = variant name (lookup in manifest), Git/Http = direct source.
     variant @6 :NodeAddVariantSource;
+    # When true, cancel any in-progress add action and start a new one
+    force @8 :Bool;
 }
 
 struct EnvVar {

@@ -74,7 +74,7 @@ pub(crate) struct RawNodeConfig {
     #[serde(default)]
     pub(crate) interfaces: Interfaces,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) execution: Option<Execution>,
+    pub(crate) execution: Option<RawExecution>,
 }
 
 /// Name reserved for the default variant.
@@ -92,7 +92,10 @@ impl RawNodeConfig {
     /// Returns an error if `execution` is `None`
     /// (e.g., for configs with a default variant that has not been resolved yet).
     pub(crate) fn into_resolved(self) -> crate::error::Result<NodeConfig> {
-        let execution = self.execution.ok_or(ParsingError::MissingExecution)?;
+        let execution = self
+            .execution
+            .ok_or(ParsingError::MissingExecution)?
+            .into_execution()?;
         Ok(NodeConfig {
             schema_version: self.schema_version,
             manifest: self.manifest,
@@ -116,6 +119,15 @@ impl ParsedNodeConfig {
         self.0.has_default_variant()
     }
 
+    /// Returns `true` if the manifest declares one or more variants.
+    pub fn has_variants(&self) -> bool {
+        self.0
+            .manifest
+            .variants
+            .as_ref()
+            .is_some_and(|v| !v.is_empty())
+    }
+
     /// Converts into a fully resolved [`NodeConfig`] when execution is already
     /// present (non-variant configs).
     ///
@@ -130,7 +142,11 @@ impl ParsedNodeConfig {
     /// missing execution (due to failed variant resolution) should not prevent
     /// returning useful information.
     pub fn into_resolved_or_default(self) -> NodeConfig {
-        let execution = self.0.execution.unwrap_or_default();
+        let execution = self
+            .0
+            .execution
+            .and_then(|raw| raw.into_execution().ok())
+            .unwrap_or_default();
         NodeConfig {
             schema_version: self.0.schema_version,
             manifest: self.0.manifest,
@@ -168,11 +184,12 @@ impl ParsedNodeConfig {
         &self.0.manifest
     }
 
-    /// Returns a reference to the node's execution config, if present.
+    /// Returns the execution language, if an execution block is present and
+    /// specifies one.
     ///
     /// Configs with a default variant have no execution at the root level.
-    pub fn execution(&self) -> Option<&Execution> {
-        self.0.execution.as_ref()
+    pub fn execution_language(&self) -> Option<PeppygenLanguage> {
+        self.0.execution.as_ref().and_then(|e| e.language)
     }
 
     /// Returns a reference to the node's interfaces.
@@ -786,6 +803,40 @@ pub struct Execution {
     pub start_cmd: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub container: Option<ContainerConfig>,
+}
+
+/// Intermediate execution config used during initial parsing of [`RawNodeConfig`].
+///
+/// Unlike [`Execution`], `language` is optional so that semantic validation
+/// (e.g. "execution not permitted with default variant") can run before
+/// strict field validation.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RawExecution {
+    pub language: Option<PeppygenLanguage>,
+    #[serde(default)]
+    pub parameters: ParameterSchema,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub add_cmd: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub start_cmd: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub container: Option<ContainerConfig>,
+}
+
+impl RawExecution {
+    pub(crate) fn into_execution(self) -> crate::error::Result<Execution> {
+        let language = self
+            .language
+            .ok_or(ParsingError::MissingExecutionLanguage)?;
+        Ok(Execution {
+            language,
+            parameters: self.parameters,
+            add_cmd: self.add_cmd,
+            start_cmd: self.start_cmd,
+            container: self.container,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

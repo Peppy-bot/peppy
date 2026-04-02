@@ -135,7 +135,13 @@ fn sha256_file(path: &Path) -> Option<String> {
         hasher.update(&buffer[..n]);
     }
 
-    Some(format!("{:x}", hasher.finalize()))
+    let hash = hasher.finalize();
+    let mut hex = String::with_capacity(hash.len() * 2);
+    for byte in hash {
+        use std::fmt::Write;
+        write!(hex, "{:02x}", byte).unwrap();
+    }
+    Some(hex)
 }
 
 /// Verifies the SHA-256 hash of a file against an expected value.

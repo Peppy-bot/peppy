@@ -73,6 +73,21 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
     let git_ref = validate_git_ref(git_ref.as_deref())?;
     let node_source = parse_node_source(&source, git_ref)?;
 
+    // Log the resolved source path (may differ from the original when the CLI
+    // walked up from a variant subdirectory to the root node directory).
+    let display_source = match &node_source {
+        NodeSource::Fs(p) => p.display().to_string(),
+        _ => source.clone(),
+    };
+    if let Some(ref v) = variant {
+        info!(
+            "Adding node variant '{}' from root node {}...",
+            v, display_source
+        );
+    } else {
+        info!("Adding node from {}...", display_source);
+    }
+
     // Parse variant source early so the preflight check uses the same merged config
     // that the actual add will use.
     let variant_source = variant.as_deref().map(parse_variant_source).transpose()?;
@@ -115,7 +130,8 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
     // Create and send the goal to start the add action
     // Pass max timeout as the goal timeout for daemon-side busy reporting
     let mut add_goal = NodeAddGoal::from_source(node_source, git_hash, timeouts.max_secs)
-        .with_env_vars(caller_env_overrides());
+        .with_env_vars(caller_env_overrides())
+        .with_force(force);
     if let Some(variant_source) = variant_source {
         add_goal = add_goal.with_variant_source(variant_source);
     }

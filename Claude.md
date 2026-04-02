@@ -7,6 +7,7 @@ Review this plan thoroughly before making any code changes. For every issue or r
 - DRY is important—flag repetition aggressively.
 - Use the "Parse, don't validate" pattern when applicable
 - Well-tested code is non-negotiable.
+- Happy path is always on the left, avoid nested structures if possible
 - I want code that’s “engineered enough” — not under-engineered (fragile, hacky) and not over-engineered (premature abstraction, unnecessary complexity).
 - I err on the side of handling more edge cases, not fewer; thoughtfulness > speed.
 - Bias toward explicit over clever (the code must stay human readable with meaningful function names).

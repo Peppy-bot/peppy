@@ -63,6 +63,7 @@ pub async fn listen_for_node_add(
             peppy_dirs,
         },
         running_since: Arc::new(Mutex::new(None)),
+        running_task: Arc::new(Mutex::new(None)),
     };
 
     let handle = tokio::spawn(async move { run_action_loop(action, handler).await });
@@ -86,6 +87,8 @@ struct NodeAddGoalHandler {
     /// Tracks when the current action started and its timeout, used to format
     /// "action already in progress (times out in Xs)" rejection messages.
     running_since: Arc<Mutex<Option<(Instant, u64)>>>,
+    /// Handle to the currently running add task, used to abort it when `--force` is set.
+    running_task: Arc<Mutex<Option<JoinHandle<()>>>>,
 }
 
 impl GoalHandler for NodeAddGoalHandler {
@@ -103,6 +106,7 @@ impl GoalHandler for NodeAddGoalHandler {
             state,
             self.context.clone(),
             Arc::clone(&self.running_since),
+            Arc::clone(&self.running_task),
         )
         .await
     }
@@ -506,6 +510,13 @@ struct ContainerBuildContext<'a> {
 }
 
 async fn build_container_image(ctx: ContainerBuildContext<'_>) -> Result<()> {
+    if !containers::Apptainer::is_lima_ready() {
+        let _ = ctx.feedback_tx.send(FeedbackLine {
+            stream: FeedbackStream::Stdout,
+            line: "Initializing Lima VM for container build (first run may take a few minutes)..."
+                .to_string(),
+        });
+    }
     let apptainer = tokio::task::spawn_blocking(containers::Apptainer::new)
         .await
         .map_err(|e| std::io::Error::other(format!("Apptainer initialization task failed: {}", e)))?
@@ -995,9 +1006,9 @@ async fn resolve_node_add_source(
                 });
             }
 
-            if !is_stack_launch {
-                verify_git_hash(path, &goal.git_hash)?;
-            }
+            // Git hash verification is deferred to run_node_add (after variant
+            // resolution) so that the check uses the final source_path — which
+            // may be a variant subdirectory that has no .peppy at the root level.
             let config_path = path.join(NODE_CONFIG_FILE);
             let node_config = NodeConfigParser::from_path(&config_path).map_err(|e| {
                 format!(
@@ -1080,6 +1091,11 @@ pub(crate) async fn run_node_add(
             None => None,
         };
 
+        // Capture the root source path before variant resolution may overwrite it.
+        // The .peppy/git.hash file is written by `peppy node sync` at the root
+        // level; non-local variant directories (Git/Http clones) won't have it.
+        let root_source_path = resolved.source_path.clone();
+
         // If a variant is specified (or auto-resolved), resolve it from the root config.
         let mut variant_cleanup_dir: Option<PathBuf> = None;
         let node_config: NodeConfig;
@@ -1123,6 +1139,21 @@ pub(crate) async fn run_node_add(
                     return NodeAddResult::failure(&log_path, error_msg);
                 }
             }
+        }
+
+        // Verify git hash for non-archive local FS sources.
+        //
+        // The .peppy/git.hash file is always written by `peppy node sync` at
+        // the root level (alongside the peppy.json5 that contains the manifest),
+        // regardless of whether the node has an execution block or uses variants.
+        // Verification always targets the root source path.
+        if goal.git_hash != STACK_LAUNCH_GIT_HASH
+            && let NodeSource::Fs(original_path) = &goal.source
+            && !is_supported_fs_archive(original_path)
+            && let Err(error_msg) = verify_git_hash(&root_source_path, &goal.git_hash)
+        {
+            write_error_to_log(&log_file, &error_msg);
+            return NodeAddResult::failure(&log_path, error_msg);
         }
 
         let cleanup_dir = resolved_cleanup_guard.take();
@@ -1182,6 +1213,7 @@ async fn handle_goal_request(
     state: Arc<Mutex<ActionState<NodeAddResult>>>,
     action_context: NodeAddActionContext,
     running_since: Arc<Mutex<Option<(Instant, u64)>>>,
+    running_task: Arc<Mutex<Option<JoinHandle<()>>>>,
 ) -> PeppyResult<Payload> {
     let sender_instance_id = context.message().instance_id();
     let payload = context.message().payload();
@@ -1195,17 +1227,27 @@ async fn handle_goal_request(
     {
         let mut state_guard = state.lock().await;
         if matches!(*state_guard, ActionState::Running) {
-            let running_guard = running_since.lock().await;
-            let remaining = running_guard
-                .map(|(started_at, timeout_secs)| {
-                    Duration::from_secs(timeout_secs)
-                        .saturating_sub(started_at.elapsed())
-                        .as_secs()
-                })
-                .unwrap_or(0);
-            return encode_rejected_goal(format!(
-                "action already in progress (times out in {remaining}s)"
-            ));
+            if !goal.force {
+                let running_guard = running_since.lock().await;
+                let remaining = running_guard
+                    .map(|(started_at, timeout_secs)| {
+                        Duration::from_secs(timeout_secs)
+                            .saturating_sub(started_at.elapsed())
+                            .as_secs()
+                    })
+                    .unwrap_or(0);
+                return encode_rejected_goal(format!(
+                    "action already in progress (times out in {remaining}s), \
+                     use `--force` to force adding the node"
+                ));
+            }
+
+            // Force mode: abort the old task and reset state
+            debug!("Force flag set: aborting previous node_add task");
+            let mut task_guard = running_task.lock().await;
+            if let Some(handle) = task_guard.take() {
+                handle.abort();
+            }
         }
         *state_guard = ActionState::Running;
         *running_since.lock().await = Some((Instant::now(), goal.timeout_secs));
@@ -1251,7 +1293,7 @@ async fn handle_goal_request(
     // Process the add operation in a separate task to not block goal response.
     let state_clone = Arc::clone(&state);
     let log_path_clone = log_path.clone();
-    tokio::spawn(async move {
+    let task_handle = tokio::spawn(async move {
         // Create a channel for feedback and spawn a consumer that encodes
         // FeedbackLine values as NodeAddFeedback and publishes to the topic.
         let (feedback_tx, mut feedback_rx) = mpsc::unbounded_channel::<FeedbackLine>();
@@ -1283,6 +1325,9 @@ async fn handle_goal_request(
         let mut state_guard = state_clone.lock().await;
         *state_guard = ActionState::Completed { result };
     });
+
+    // Store the handle so a future --force call can abort this task.
+    *running_task.lock().await = Some(task_handle);
 
     let response = NodeAddGoalResponse::accepted(&log_path);
     response

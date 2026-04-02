@@ -2,8 +2,8 @@ mod common;
 
 use common::{
     AbortOnDrop, CALLER_INSTANCE_ID, NodeAddSource, TEST_GIT_HASH, create_tar_zst_from_dir,
-    send_node_add_and_wait, send_node_add_and_wait_with_env, send_node_add_and_wait_with_variant,
-    start_core_node_with_mock_messenger, write_peppy_json5,
+    send_node_add_and_wait, send_node_add_and_wait_with_env, send_node_add_and_wait_with_force,
+    send_node_add_and_wait_with_variant, start_core_node_with_mock_messenger, write_peppy_json5,
 };
 use config::consts::{
     DEFAULT_ALPINE_BASE_IMAGE, NODE_CONFIG_FILE, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH,
@@ -27,6 +27,7 @@ use {
 const ADD_CMD_MARKER_FILE: &str = "add_cmd_executed.marker";
 const GOAL_TIMEOUT: Duration = Duration::from_secs(30);
 const RESULT_TIMEOUT: Duration = Duration::from_secs(120);
+const CONTAINER_RESULT_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Creates a minimal node bundle (peppy.json5 + tar.zst) suitable for HTTP source tests.
 /// Returns the temp directory (must be kept alive) and the compressed bundle bytes.
@@ -371,7 +372,7 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
         &started_core_node.core_node_name,
         source_dir.path(),
         GOAL_TIMEOUT,
-        RESULT_TIMEOUT,
+        CONTAINER_RESULT_TIMEOUT,
         None,
     )
     .await
@@ -2838,7 +2839,7 @@ From: nowhere
         &started_core_node.core_node_name,
         source_dir.path(),
         GOAL_TIMEOUT,
-        RESULT_TIMEOUT,
+        CONTAINER_RESULT_TIMEOUT,
         Some(feedback_tx),
     )
     .await
@@ -3803,6 +3804,158 @@ async fn listen_for_node_add_variant_local_source_after_sync() {
     );
 }
 
+/// Variant-only nodes (no execution at root, only in variants) must work with
+/// `node sync` + `node add --variant`. Sync skips peppygen generation for the
+/// root when it has no execution block, so only the variant directory gets a
+/// `.peppy/git.hash`. The `node add` verification must use the resolved variant
+/// path, not the root.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_add_variant_only_node_after_sync() {
+    use core_node::encoding::{NodeInfoRequest, NodeSyncRequest};
+
+    const ROOT_NODE_NAME: &str = "variant_only_robot";
+    const ROOT_NODE_TAG: &str = "0.1.0";
+
+    let started_core_node = start_core_node_with_mock_messenger().await;
+    let node_stack = started_core_node.node_stack.clone();
+
+    // Create root node directory with variant inside it
+    let parent_dir = tempfile::tempdir().expect("failed to create parent dir");
+    let root_dir = parent_dir.path().join("root_node");
+    let variant_dir = root_dir.join("mock_node");
+    std::fs::create_dir_all(&root_dir).unwrap();
+    std::fs::create_dir_all(&variant_dir).unwrap();
+
+    // Root config has NO execution block — only manifest with variants + interfaces.
+    // This is the variant-only pattern: the root defines the contract, variants
+    // provide the implementation. A "default" variant is required when there is
+    // no execution block at root.
+    let root_config = r#"{
+        schema_version: 1,
+        manifest: {
+            name: "variant_only_robot",
+            tag: "0.1.0",
+            variants: [
+                { name: "default", source: { local: "mock_node" } },
+                { name: "mock", source: { local: "mock_node" } }
+            ]
+        },
+        interfaces: {
+            topics: {
+                emits: [
+                    { name: "joint_positions", qos_profile: "sensor_data", message_format: { x: "f64", y: "f64" } }
+                ]
+            }
+        }
+    }"#;
+    let root_config_path = root_dir.join(NODE_CONFIG_FILE);
+    std::fs::write(&root_config_path, root_config).expect("failed to write root config");
+
+    // Variant config defines execution (the implementation)
+    let variant_config = r#"{
+        schema_version: 1,
+        execution: {
+            language: "rust",
+            start_cmd: ["sleep", "5"]
+        }
+    }"#;
+    let variant_config_path = variant_dir.join(NODE_CONFIG_FILE);
+    std::fs::write(&variant_config_path, variant_config).expect("failed to write variant config");
+
+    // Step 1: Run node sync — generates peppygen only for the variant (not root,
+    // since root has no execution block).
+    let sync_response = NodeSyncRequest::new(&root_dir, TEST_GIT_HASH)
+        .poll(
+            &started_core_node.caller_handle,
+            &started_core_node.core_node_name,
+            CALLER_INSTANCE_ID,
+            &started_core_node.core_node_name,
+            Duration::from_secs(10),
+        )
+        .await
+        .expect("node_sync request should complete");
+
+    assert!(
+        sync_response.success,
+        "node_sync should succeed, got error: {}",
+        sync_response.error_message
+    );
+
+    // Root should have .peppy/git.hash (sync always writes it alongside the
+    // manifest) but no peppygen output (no execution block at root).
+    let root_peppy_dir = root_dir.join(PEPPY_OUTPUT_DIR);
+    assert!(
+        root_peppy_dir.exists(),
+        "root .peppy directory should exist after sync (git.hash lives here)"
+    );
+    assert!(
+        root_peppy_dir.join("git.hash").exists(),
+        "root .peppy/git.hash should exist after sync"
+    );
+    assert!(
+        !root_dir.join(PEPPYGEN_OUTPUT_PATH).exists(),
+        "root should NOT have peppygen output (no execution block)"
+    );
+
+    // Variant should have .peppy directory after sync.
+    assert!(
+        variant_dir.join(PEPPY_OUTPUT_DIR).exists(),
+        "variant .peppy directory should exist after sync"
+    );
+
+    // Step 2: Preflight node_info check — mirrors what the CLI does before add.
+    // Must succeed for variant-only nodes (auto-resolves the default variant).
+    let info_response = NodeInfoRequest::new(core_node::encoding::NodeSource::Fs(root_dir.clone()))
+        .poll(
+            &started_core_node.caller_handle,
+            &started_core_node.core_node_name,
+            CALLER_INSTANCE_ID,
+            &started_core_node.core_node_name,
+            Duration::from_secs(5),
+        )
+        .await
+        .expect("node_info preflight should succeed for variant-only nodes");
+
+    assert_eq!(info_response.config.manifest.name.as_str(), ROOT_NODE_NAME);
+    assert_eq!(info_response.config.manifest.tag.as_str(), ROOT_NODE_TAG);
+
+    // Step 3: Run node add with the variant — must succeed despite no .peppy variant file at the repo root.
+    let add_result = send_node_add_and_wait_with_variant(
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        root_dir.as_path(),
+        "mock",
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        None,
+    )
+    .await
+    .expect("node_add with variant should succeed");
+
+    assert!(
+        add_result.success,
+        "variant-only node_add after sync should succeed, got error: {:?}",
+        add_result.error_message
+    );
+
+    // Verify the node is in the stack with the expected merged config
+    assert!(node_stack.contains(ROOT_NODE_NAME, ROOT_NODE_TAG));
+
+    let entity = node_stack
+        .find(ROOT_NODE_NAME, ROOT_NODE_TAG)
+        .expect("node should exist in stack");
+    let config = entity.config();
+    assert!(
+        config.interfaces.topics.is_some(),
+        "interfaces should be inherited from root"
+    );
+    assert_eq!(
+        config.execution.start_cmd.as_ref().unwrap(),
+        &vec!["sleep".to_string(), "5".to_string()],
+        "execution should come from the variant"
+    );
+}
+
 /// After sync, modifying the variant's peppy.json5 must cause a fingerprint
 /// mismatch on the next `node add`, blocking the stale variant from being added.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -4715,4 +4868,382 @@ async fn listen_for_node_add_execution_with_default_variant_fails() {
     );
 
     assert_eq!(node_stack.len(), 1, "only root should exist");
+}
+
+/// When a variant is fetched from a git repository, the cloned temp directory
+/// does not contain `.peppy/git.hash`. The git hash verification must fall back
+/// to the root source path (where `peppy node sync` wrote the hash file).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_add_git_variant_verifies_git_hash_at_root() {
+    const ROOT_NODE_NAME: &str = "git_variant_hash_robot";
+    const ROOT_NODE_TAG: &str = "0.1.0";
+
+    let started_core_node = start_core_node_with_mock_messenger().await;
+    let node_stack = started_core_node.node_stack.clone();
+
+    // Create a local git repo containing the variant's execution-only config.
+    let git_repo_temp = TempDir::new().expect("failed to create git repo temp dir");
+    let git_repo_path = git_repo_temp.path().join("variant_repo.git");
+    std::fs::create_dir_all(&git_repo_path).expect("create git repo dir");
+
+    let repo = Repository::init(&git_repo_path).expect("init git repo");
+    let signature = Signature::now("Peppy", "peppy@example.com").expect("create signature");
+
+    let variant_config_rel = Path::new(NODE_CONFIG_FILE);
+    std::fs::write(
+        git_repo_path.join(variant_config_rel),
+        r#"{
+            schema_version: 1,
+            execution: {
+                language: "rust",
+                start_cmd: ["sleep", "5"]
+            }
+        }"#,
+    )
+    .expect("write variant config to git repo");
+
+    let mut index = repo.index().expect("open index");
+    index
+        .add_path(variant_config_rel)
+        .expect("add variant config");
+    index.write().expect("write index");
+
+    let tree_id = index.write_tree().expect("write tree");
+    let tree = repo.find_tree(tree_id).expect("find tree");
+    let commit_id = repo
+        .commit(
+            Some("HEAD"),
+            &signature,
+            &signature,
+            "variant v1",
+            &tree,
+            &[],
+        )
+        .expect("commit");
+    let commit = repo.find_commit(commit_id).expect("find commit");
+    repo.tag("v1.0", commit.as_object(), &signature, "v1.0", false)
+        .expect("create v1.0 tag");
+
+    // Build the root node directory.  The manifest declares a variant whose
+    // deployment source is the local git repository we just created.
+    let parent_dir = tempfile::tempdir().expect("create parent dir");
+    let root_dir = parent_dir.path().join("root_node");
+    std::fs::create_dir_all(&root_dir).unwrap();
+
+    let root_config = r#"{
+        schema_version: 1,
+        manifest: {
+            name: "ROOT_NODE_NAME",
+            tag: "ROOT_NODE_TAG",
+            variants: [
+                { name: "git_variant", source: { repo: "REPO_PATH", path: ".", ref: "v1.0" } }
+            ]
+        },
+        interfaces: {
+            topics: {
+                emits: [
+                    { name: "joint_positions", qos_profile: "sensor_data", message_format: { x: "f64", y: "f64" } }
+                ]
+            }
+        },
+        execution: {
+            language: "rust",
+            start_cmd: ["sleep", "10"]
+        }
+    }"#
+    .replace("ROOT_NODE_NAME", ROOT_NODE_NAME)
+    .replace("ROOT_NODE_TAG", ROOT_NODE_TAG)
+    .replace("REPO_PATH", &git_repo_path.display().to_string());
+    write_peppy_json5(&root_dir, &root_config);
+
+    // The test helper (send_node_add_and_wait_with_variant) auto-provisions
+    // .peppy/git.hash at the root.  The git-cloned variant temp directory will
+    // NOT have this file
+    let add_result = send_node_add_and_wait_with_variant(
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        root_dir.as_path(),
+        "git_variant",
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        None,
+    )
+    .await
+    .expect("node_add request should complete");
+
+    assert!(
+        add_result.success,
+        "git variant node_add should succeed (git hash verified at root, not variant temp dir): {:?}",
+        add_result.error_message
+    );
+
+    assert!(node_stack.contains(ROOT_NODE_NAME, ROOT_NODE_TAG));
+
+    let entity = node_stack
+        .find(ROOT_NODE_NAME, ROOT_NODE_TAG)
+        .expect("node should exist in stack");
+    let config = entity.config();
+    assert!(
+        config.interfaces.topics.is_some(),
+        "interfaces should be inherited from root"
+    );
+    assert_eq!(
+        config.execution.start_cmd.as_ref().unwrap(),
+        &vec!["sleep".to_string(), "5".to_string()],
+        "execution should come from the git variant"
+    );
+}
+
+/// `.peppy/git.hash` is always located at the root (alongside the manifest).
+/// When a default variant is auto-resolved, the root's git hash must still be
+/// verified.  A stale root hash must cause node_add to fail.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_add_default_fs_variant_verifies_git_hash_at_root() {
+    let started_core_node = start_core_node_with_mock_messenger().await;
+    let node_stack = started_core_node.node_stack.clone();
+
+    // Create root node directory with a "default" variant subdirectory.
+    let parent_dir = tempfile::tempdir().expect("create parent dir");
+    let root_dir = parent_dir.path().join("root_node");
+    let variant_dir = root_dir.join("default_impl");
+    std::fs::create_dir_all(&root_dir).unwrap();
+    std::fs::create_dir_all(&variant_dir).unwrap();
+
+    let root_config = r#"{
+        schema_version: 1,
+        manifest: {
+            name: "default_variant_hash_robot",
+            tag: "0.1.0",
+            variants: [
+                { name: "default", source: { local: "default_impl" } }
+            ]
+        },
+        interfaces: {
+            topics: {
+                emits: [
+                    { name: "joint_positions", qos_profile: "sensor_data", message_format: { x: "f64", y: "f64" } }
+                ]
+            }
+        }
+    }"#;
+    write_peppy_json5(&root_dir, root_config);
+
+    let variant_config = r#"{
+        schema_version: 1,
+        execution: {
+            language: "rust",
+            start_cmd: ["sleep", "5"]
+        }
+    }"#;
+    write_peppy_json5(&variant_dir, variant_config);
+
+    // Pre-provision .peppy/git.hash at root with a STALE value before the
+    // test helper runs (it only writes when the file doesn't already exist).
+    // This simulates the root being modified after sync without re-syncing.
+    let root_peppy_dir = root_dir.join(PEPPY_OUTPUT_DIR);
+    std::fs::create_dir_all(&root_peppy_dir).expect("create root .peppy dir");
+    std::fs::write(root_peppy_dir.join("git.hash"), "stale-root-hash")
+        .expect("write stale root git.hash");
+
+    // No explicit variant — the "default" variant is auto-resolved by node_add.
+    let add_result = send_node_add_and_wait(
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        root_dir.as_path(),
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        None,
+    )
+    .await
+    .expect("node_add request should complete");
+
+    assert!(
+        !add_result.success,
+        "default variant node_add should FAIL when root git.hash is stale"
+    );
+    assert!(
+        add_result
+            .error_message
+            .as_ref()
+            .map(|msg| msg.contains("git hash mismatch"))
+            .unwrap_or(false),
+        "error should mention git hash mismatch, got: {:?}",
+        add_result.error_message
+    );
+    assert_eq!(
+        node_stack.len(),
+        1,
+        "only the core node should exist (stale root rejected)"
+    );
+}
+
+/// Tests that a second goal is rejected when an action is already in progress,
+/// and that the rejection message suggests using `--force`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_add_rejects_second_goal_when_action_in_progress() {
+    let started_core_node = start_core_node_with_mock_messenger().await;
+
+    // Create a node with a slow add_cmd so the action stays in Running state.
+    let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
+    let peppy_json5 = r#"{
+            schema_version: 1,
+            manifest: {
+                name: "slow_add_node",
+                tag: "0.1.0",
+            },
+            execution: {
+                language: "rust",
+                add_cmd: ["sleep", "30"],
+                start_cmd: ["true"]
+            }
+        }"#;
+    write_peppy_json5(source_dir.path(), peppy_json5);
+
+    // Send first goal — should be accepted and start running the slow add_cmd.
+    let first_goal = NodeAddGoal::new(source_dir.path(), TEST_GIT_HASH, RESULT_TIMEOUT.as_secs());
+    let first_goal_payload = first_goal.encode().expect("failed to encode goal");
+
+    let first_action_handle = ActionMessenger::send_goal(
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        CALLER_INSTANCE_ID,
+        &started_core_node.core_node_name,
+        names::NODE_ADD_ACTION,
+        Some(&started_core_node.core_node_name),
+        None,
+        first_goal_payload,
+        QoSProfile::default(),
+        GOAL_TIMEOUT,
+    )
+    .await
+    .expect("first goal should be sent");
+
+    let first_response_payload = first_action_handle.goal_response().payload();
+    let first_response = NodeAddGoalResponse::decode(&first_response_payload)
+        .expect("failed to decode first goal response");
+    assert!(first_response.accepted, "first goal should be accepted");
+
+    // Send second goal (no force) — should be rejected.
+    let second_result = send_node_add_and_wait(
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        source_dir.path(),
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        None,
+    )
+    .await
+    .expect("second node_add request should complete");
+
+    assert!(
+        !second_result.success,
+        "second goal without --force should fail"
+    );
+    let error_msg = second_result
+        .error_message
+        .as_deref()
+        .expect("rejection should have an error message");
+    assert!(
+        error_msg.contains("action already in progress"),
+        "error should mention action in progress, got: {error_msg}"
+    );
+    assert!(
+        error_msg.contains("--force"),
+        "error should suggest --force, got: {error_msg}"
+    );
+}
+
+/// Tests that `--force` aborts an in-progress action and starts a new one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_add_force_overrides_in_progress_action() {
+    const SECOND_NODE_NAME: &str = "force_add_node";
+    const SECOND_NODE_TAG: &str = "0.1.0";
+
+    let started_core_node = start_core_node_with_mock_messenger().await;
+    let node_stack = started_core_node.node_stack.clone();
+
+    // Create a slow node so the first action stays running.
+    let slow_source_dir = tempfile::tempdir().expect("failed to create temp source dir");
+    let slow_peppy_json5 = r#"{
+            schema_version: 1,
+            manifest: {
+                name: "slow_node",
+                tag: "0.1.0",
+            },
+            execution: {
+                language: "rust",
+                add_cmd: ["sleep", "30"],
+                start_cmd: ["true"]
+            }
+        }"#;
+    write_peppy_json5(slow_source_dir.path(), slow_peppy_json5);
+
+    // Send first goal — starts the slow add.
+    let first_goal = NodeAddGoal::new(
+        slow_source_dir.path(),
+        TEST_GIT_HASH,
+        RESULT_TIMEOUT.as_secs(),
+    );
+    let first_goal_payload = first_goal.encode().expect("failed to encode goal");
+
+    let first_action_handle = ActionMessenger::send_goal(
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        CALLER_INSTANCE_ID,
+        &started_core_node.core_node_name,
+        names::NODE_ADD_ACTION,
+        Some(&started_core_node.core_node_name),
+        None,
+        first_goal_payload,
+        QoSProfile::default(),
+        GOAL_TIMEOUT,
+    )
+    .await
+    .expect("first goal should be sent");
+
+    let first_response_payload = first_action_handle.goal_response().payload();
+    let first_response = NodeAddGoalResponse::decode(&first_response_payload)
+        .expect("failed to decode first goal response");
+    assert!(first_response.accepted, "first goal should be accepted");
+
+    // Create a fast node for the second goal.
+    let fast_source_dir = tempfile::tempdir().expect("failed to create temp source dir");
+    let fast_peppy_json5 = format!(
+        r#"{{
+            schema_version: 1,
+            manifest: {{
+                name: "{SECOND_NODE_NAME}",
+                tag: "{SECOND_NODE_TAG}",
+            }},
+            execution: {{
+                language: "rust",
+                add_cmd: ["true"],
+                start_cmd: ["true"]
+            }}
+        }}"#
+    );
+    write_peppy_json5(fast_source_dir.path(), &fast_peppy_json5);
+
+    // Send second goal with force — should abort the slow action and succeed.
+    let second_result = send_node_add_and_wait_with_force(
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        fast_source_dir.path(),
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        None,
+    )
+    .await
+    .expect("force node_add request should complete");
+
+    assert!(
+        second_result.success,
+        "force node_add should succeed, got error: {:?}",
+        second_result.error_message
+    );
+
+    assert!(
+        node_stack.contains(SECOND_NODE_NAME, SECOND_NODE_TAG),
+        "force-added node should be in the stack"
+    );
 }
