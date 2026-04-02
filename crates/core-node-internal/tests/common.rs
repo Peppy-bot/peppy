@@ -247,6 +247,7 @@ async fn send_node_add_and_wait_internal<'a>(
     result_timeout: Duration,
     feedback_tx: Option<UnboundedSender<NodeAddFeedback>>,
     env_vars: Vec<(String, String)>,
+    force: bool,
 ) -> Result<NodeAddResult, String> {
     let source = source.into();
 
@@ -298,7 +299,8 @@ async fn send_node_add_and_wait_internal<'a>(
             result_timeout.as_secs(),
         ),
     }
-    .with_env_vars(env_vars);
+    .with_env_vars(env_vars)
+    .with_force(force);
 
     if let Some(v) = variant {
         goal = goal.with_variant_source(v);
@@ -443,6 +445,7 @@ pub async fn send_node_add_and_wait<'a>(
         result_timeout,
         feedback_tx,
         Vec::new(),
+        false,
     )
     .await
 }
@@ -465,6 +468,7 @@ pub async fn send_node_add_and_wait_with_env<'a>(
         result_timeout,
         feedback_tx,
         env_vars,
+        false,
     )
     .await
 }
@@ -487,6 +491,29 @@ pub async fn send_node_add_and_wait_with_variant<'a>(
         result_timeout,
         feedback_tx,
         Vec::new(),
+        false,
+    )
+    .await
+}
+
+pub async fn send_node_add_and_wait_with_force<'a>(
+    messenger: &MessengerHandle,
+    core_node_name: &str,
+    source: impl Into<NodeAddSource<'a>>,
+    goal_timeout: Duration,
+    result_timeout: Duration,
+    feedback_tx: Option<UnboundedSender<NodeAddFeedback>>,
+) -> Result<NodeAddResult, String> {
+    send_node_add_and_wait_internal(
+        messenger,
+        core_node_name,
+        source,
+        None,
+        goal_timeout,
+        result_timeout,
+        feedback_tx,
+        Vec::new(),
+        true,
     )
     .await
 }

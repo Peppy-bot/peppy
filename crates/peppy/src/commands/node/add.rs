@@ -130,7 +130,8 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
     // Create and send the goal to start the add action
     // Pass max timeout as the goal timeout for daemon-side busy reporting
     let mut add_goal = NodeAddGoal::from_source(node_source, git_hash, timeouts.max_secs)
-        .with_env_vars(caller_env_overrides());
+        .with_env_vars(caller_env_overrides())
+        .with_force(force);
     if let Some(variant_source) = variant_source {
         add_goal = add_goal.with_variant_source(variant_source);
     }
