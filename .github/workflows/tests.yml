@@ -28,5 +28,5 @@ jobs:
         run: cargo test --manifest-path docs/tests/integration/Cargo.toml
 
       - name: Run release scripts tests
-        if: github.event_name == 'pull_request' && github.base_ref == 'main'
+        if: (github.event_name == 'pull_request' && github.base_ref == 'main') || (github.event_name == 'pull_request' && contains(github.event.pull_request.title, 'release'))
         run: ./scripts/run_tests.sh --all
