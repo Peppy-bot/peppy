@@ -173,58 +173,65 @@ pub fn parse_git_repo_url_and_path(source: &str) -> Result<(GitUrl, String)> {
     Ok((repo_url, repo_path))
 }
 
-/// Returns `true` when the config at `path` fails to parse specifically because
-/// the `manifest` field is missing — the hallmark of a variant config.
-fn is_missing_manifest(path: &Path) -> bool {
-    match NodeConfigParser::from_path(path) {
-        Ok(_) => false,
-        Err(config::ConfigError::Parsing(ref e)) => e.is_missing_manifest(),
-        Err(_) => false,
-    }
-}
-
 /// Resolves the root node directory from a candidate path.
 ///
 /// If `dir` contains a valid root `peppy.json5` (with a `manifest` section),
 /// returns `dir` as-is. If the config is a variant config (missing `manifest`),
 /// walks up the directory tree to locate the root node. Returns an error when
-/// no root config can be found.
+/// no root config can be found or when the config contains parse errors.
 pub fn resolve_node_root_dir(dir: &Path) -> Result<PathBuf> {
     let config_path = dir.join(NODE_CONFIG_FILE);
-    if !config_path.exists() {
-        return Err(Error::ExecutionFailed(format!(
-            "Missing '{}' in directory: {}",
+    match NodeConfigParser::from_path(&config_path) {
+        Ok(_) => Ok(dir.to_path_buf()),
+        Err(config::ConfigError::Parsing(ref e)) if e.is_missing_manifest() => {
+            find_root_node_dir(dir)
+        }
+        Err(other) => Err(Error::ExecutionFailed(format!(
+            "Failed to parse '{}' in directory {}: {}",
             NODE_CONFIG_FILE,
-            dir.display()
-        )));
-    }
-    if is_missing_manifest(&config_path) {
-        find_root_node_dir(dir).ok_or_else(|| {
-            Error::ExecutionFailed(format!(
-                "No root {} with a `manifest` section found at '{}' or any parent directory",
-                NODE_CONFIG_FILE,
-                dir.display(),
-            ))
-        })
-    } else {
-        Ok(dir.to_path_buf())
+            dir.display(),
+            other,
+        ))),
     }
 }
 
 /// Walks up from `start_dir` looking for a parent directory containing a valid
 /// root `peppy.json5` (one that includes a `manifest` section). Returns the
-/// first matching directory, or `None` if no root config is found.
+/// first matching directory, or an error if no root config is found or a
+/// config file contains invalid syntax.
 ///
 /// This allows `peppy node add .` to work when invoked from inside a variant
 /// subdirectory: the CLI resolves upward to the root node that owns the variant.
-pub fn find_root_node_dir(start_dir: &Path) -> Option<PathBuf> {
-    let mut dir = start_dir.parent()?;
+pub fn find_root_node_dir(start_dir: &Path) -> Result<PathBuf> {
+    let mut dir = start_dir.parent().ok_or_else(|| {
+        Error::ExecutionFailed(format!(
+            "No root {} with a `manifest` section found at '{}' or any parent directory",
+            NODE_CONFIG_FILE,
+            start_dir.display(),
+        ))
+    })?;
     loop {
         let candidate = dir.join(NODE_CONFIG_FILE);
-        if candidate.is_file() && NodeConfigParser::from_path(&candidate).is_ok() {
-            return Some(dir.to_path_buf());
+        if candidate.is_file() {
+            match NodeConfigParser::from_path(&candidate) {
+                Ok(_) => return Ok(dir.to_path_buf()),
+                Err(config::ConfigError::Parsing(ref e)) if e.is_missing_manifest() => {}
+                Err(other) => {
+                    return Err(Error::ExecutionFailed(format!(
+                        "Failed to parse '{}': {}",
+                        candidate.display(),
+                        other,
+                    )));
+                }
+            }
         }
-        dir = dir.parent()?;
+        dir = dir.parent().ok_or_else(|| {
+            Error::ExecutionFailed(format!(
+                "No root {} with a `manifest` section found at '{}' or any parent directory",
+                NODE_CONFIG_FILE,
+                start_dir.display(),
+            ))
+        })?;
     }
 }
 
@@ -346,12 +353,12 @@ mod tests {
         )
         .unwrap();
 
-        let found = find_root_node_dir(&variant);
-        assert_eq!(found.as_deref(), Some(root.as_path()));
+        let found = find_root_node_dir(&variant).unwrap();
+        assert_eq!(found, root);
     }
 
     #[test]
-    fn find_root_node_dir_returns_none_when_no_root() {
+    fn find_root_node_dir_returns_err_when_no_root() {
         let tmp = tempfile::tempdir().unwrap();
         let variant = tmp.path().join("orphan_variant");
         std::fs::create_dir_all(&variant).unwrap();
@@ -365,7 +372,12 @@ mod tests {
         )
         .unwrap();
 
-        assert!(find_root_node_dir(&variant).is_none());
+        let err = find_root_node_dir(&variant).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("No root peppy.json5 with a `manifest` section found"),
+            "expected missing-manifest error, got: {msg}"
+        );
     }
 
     #[test]
@@ -440,8 +452,8 @@ mod tests {
         .unwrap();
 
         // No peppy.json5 in any intermediate directories — only at root
-        let found = find_root_node_dir(&deep);
-        assert_eq!(found.as_deref(), Some(root.as_path()));
+        let found = find_root_node_dir(&deep).unwrap();
+        assert_eq!(found, root);
     }
 
     #[test]
@@ -567,6 +579,55 @@ mod tests {
         assert!(
             msg.contains("No root peppy.json5 with a `manifest` section found"),
             "expected missing-manifest error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn resolve_node_root_dir_surfaces_parse_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("bad_node");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Write malformed JSON5 (unclosed brace, invalid syntax)
+        std::fs::write(dir.join(NODE_CONFIG_FILE), r#"{ manifest: [unclosed"#).unwrap();
+
+        let err = resolve_node_root_dir(&dir).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("Failed to parse"),
+            "expected parse error to be surfaced, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn find_root_node_dir_surfaces_parse_error_from_parent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("my_node");
+        let variant = root.join("variants").join("linux");
+        std::fs::create_dir_all(&variant).unwrap();
+
+        // Root has a malformed peppy.json5
+        std::fs::write(
+            root.join(NODE_CONFIG_FILE),
+            r#"{ this is totally broken json5 {{{"#,
+        )
+        .unwrap();
+
+        // Variant has a valid variant config (missing manifest)
+        std::fs::write(
+            variant.join(NODE_CONFIG_FILE),
+            r#"{
+                schema_version: 1,
+                execution: { language: "rust", start_cmd: ["sleep", "1"] }
+            }"#,
+        )
+        .unwrap();
+
+        let err = find_root_node_dir(&variant).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("Failed to parse"),
+            "expected parse error from parent to be surfaced, got: {msg}"
         );
     }
 }

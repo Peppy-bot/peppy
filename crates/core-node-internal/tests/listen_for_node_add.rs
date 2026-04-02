@@ -3919,7 +3919,7 @@ async fn listen_for_node_add_variant_only_node_after_sync() {
     assert_eq!(info_response.config.manifest.name.as_str(), ROOT_NODE_NAME);
     assert_eq!(info_response.config.manifest.tag.as_str(), ROOT_NODE_TAG);
 
-    // Step 3: Run node add with the variant — must succeed despite no .peppy at root.
+    // Step 3: Run node add with the variant — must succeed despite no .peppy variant file at the repo root.
     let add_result = send_node_add_and_wait_with_variant(
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
