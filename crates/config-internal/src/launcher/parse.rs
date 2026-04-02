@@ -115,7 +115,7 @@ mod tests {
         let DeploymentSource::Local(local) = &deployments[2].source else {
             panic!("expected local source");
         };
-        assert_eq!(local.local, std::path::PathBuf::from("./esp32_board"));
+        assert_eq!(local.local, std::path::PathBuf::from("esp32_board"));
         assert_eq!(deployments[2].instances.len(), 1);
         assert_eq!(deployments[2].instances[0].instance_id, "esp32_1");
         assert!(deployments[2].instances[0].arguments.is_empty());

@@ -164,9 +164,11 @@ impl<'de> Deserialize<'de> for DeploymentSource {
                     raw.local.expect("local is present"),
                     "local path cannot be empty",
                 )?;
-                Ok(DeploymentSource::Local(DeploymentLocalSource {
-                    local: PathBuf::from(local),
-                }))
+                let local: PathBuf = Path::new(&local)
+                    .components()
+                    .filter(|c| !matches!(c, Component::CurDir))
+                    .collect();
+                Ok(DeploymentSource::Local(DeploymentLocalSource { local }))
             }
             (false, true, false) => {
                 let repo = raw.repo.ok_or_else(|| {
@@ -220,7 +222,7 @@ mod tests {
         let DeploymentSource::Local(local) = local else {
             panic!("expected local source");
         };
-        assert_eq!(local.local, PathBuf::from("./uvc_camera"));
+        assert_eq!(local.local, PathBuf::from("uvc_camera"));
 
         let git: DeploymentSource = serde_json5::from_str(
             "{ repo: \"https://github.com/Peppy-bot/example_nodes.git\", path: \"fake_openarm01_controller\", ref: \"0.1.0\" }",
