@@ -5099,6 +5099,14 @@ async fn listen_for_node_add_rejects_second_goal_when_action_in_progress() {
         }"#;
     write_peppy_json5(source_dir.path(), peppy_json5);
 
+    // Create the .peppy/git.hash file so the first goal's background task does
+    // not fail fast on git-hash verification (which would transition the action
+    // state from Running → Completed before the second goal arrives, making the
+    // rejection check non-deterministic).
+    let peppy_dir = source_dir.path().join(PEPPY_OUTPUT_DIR);
+    std::fs::create_dir_all(&peppy_dir).expect("failed to create .peppy dir");
+    std::fs::write(peppy_dir.join("git.hash"), TEST_GIT_HASH).expect("failed to write git.hash");
+
     // Send first goal — should be accepted and start running the slow add_cmd.
     let first_goal = NodeAddGoal::new(source_dir.path(), TEST_GIT_HASH, RESULT_TIMEOUT.as_secs());
     let first_goal_payload = first_goal.encode().expect("failed to encode goal");
@@ -5177,6 +5185,12 @@ async fn listen_for_node_add_force_overrides_in_progress_action() {
             }
         }"#;
     write_peppy_json5(slow_source_dir.path(), slow_peppy_json5);
+
+    // Create the .peppy/git.hash file so the first goal's background task does
+    // not fail fast on git-hash verification (same race as the rejection test).
+    let peppy_dir = slow_source_dir.path().join(PEPPY_OUTPUT_DIR);
+    std::fs::create_dir_all(&peppy_dir).expect("failed to create .peppy dir");
+    std::fs::write(peppy_dir.join("git.hash"), TEST_GIT_HASH).expect("failed to write git.hash");
 
     // Send first goal — starts the slow add.
     let first_goal = NodeAddGoal::new(
