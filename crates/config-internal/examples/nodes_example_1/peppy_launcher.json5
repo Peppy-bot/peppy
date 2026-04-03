@@ -18,7 +18,7 @@
     {
       // the source property is mandatory
       source: {
-        repo: "https://github.com/Peppy-bot/example_nodes.git",
+        repo: "https://github.com/Peppy-bot/nodes_hub.git",
         path: "rust/fake_openarm01_controller",
         ref: "main"
       },

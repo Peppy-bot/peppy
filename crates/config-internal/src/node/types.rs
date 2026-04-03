@@ -1603,8 +1603,8 @@ mod tests {
                 {
                     name: "isaac-sim",
                     source: {
-                        repo: "https://github.com/Peppy-bot/example_nodes.git",
-                        path: "rust/fake_robot_brain",
+                        repo: "https://github.com/Peppy-bot/nodes_hub.git",
+                        path: "robot_brain_etcher1",
                         ref: "main"
                     }
                 },

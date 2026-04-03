@@ -7,44 +7,48 @@ sidebar:
 import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
 One of PeppyOS's key features is the ability to share nodes with other people.
-As an example, we'll try to pull the `fake_uvc_camera` node from [this repo](https://github.com/Peppy-bot/example_nodes) in a separate shell.
+As an example, we'll try to pull the `uvc_camera` node from [this repo](https://github.com/Peppy-bot/nodes_hub.git) in a separate shell.
 
 
 <Tabs>
   <TabItem label="Python">
 ```sh
-peppy node add https://github.com/Peppy-bot/example_nodes.git/python/fake_uvc_camera
+peppy node add --variant mock-python https://github.com/Peppy-bot/nodes_hub.git/uvc_camera
 ```
 or
 ```sh
-peppy node add --ref main https://github.com/Peppy-bot/example_nodes.git/python/fake_uvc_camera
+peppy node add --variant mock-python --ref main https://github.com/Peppy-bot/nodes_hub.git/uvc_camera
 ```  
   </TabItem>
   <TabItem label="Rust">
 ```sh
-peppy node add https://github.com/Peppy-bot/example_nodes.git/rust/fake_uvc_camera
+peppy node add --variant mock-rust https://github.com/Peppy-bot/nodes_hub.git/uvc_camera
 ```
 or
 ```sh
-peppy node add --ref main https://github.com/Peppy-bot/example_nodes.git/rust/fake_uvc_camera
+peppy node add --variant mock-rust --ref main https://github.com/Peppy-bot/nodes_hub.git/uvc_camera
 ```
   </TabItem>
 </Tabs>
 
 :::note
-When `--ref` is used during `peppy node add`, it corresponds to the git tag/release or hash of the repo. On the other hand, the tag in `peppy node start fake_uvc_camera:0.1.0` corresponds to the tag found in `peppy.json5`.
+When `--ref` is used during `peppy node add`, it corresponds to the git tag/release or hash of the repo. On the other hand, the tag in `peppy node start uvc_camera:0.1.0` corresponds to the tag found in `peppy.json5`.
+:::
+
+:::note
+[Variants](/advanced_guides/variants.mdx) (`--variant`) are a special kind of node, but for the moment you can imagine this is a regular node we're dealing with
 :::
 
 
 Now that this node is added, we can start it:
 ```sh
-peppy node start fake_uvc_camera:0.1.0 device_path="/dev/video1" video.encoding="rgb" video.frame_rate=30 video.resolution.width=1280 video.resolution.height=720
+peppy node start uvc_camera:0.1.0 device_path=/dev/video0 video.camera_encoding="mjpeg" video.topic_encoding="rgb8" video.frame_rate=25 video.resolution.width=1280 video.resolution.height=720
 ```
 
 and inspect its logs:
 ```sh
 ❯ tail /Users/tuatini/.peppy/logs/start/angry-ride-4256.log
-[2026-01-25T16:38:51.860] [stdout] [uvc_camera] Video params: 720x1280 @ 30 fps, encoding: rgb
+[2026-01-25T16:38:51.860] [stdout] [uvc_camera] Video params: 1280x720 @ 25 fps, encoding: rgb8
 [2026-01-25T16:38:51.860] [stdout] [uvc_camera] Starting video loop...
 [2026-01-25T16:38:51.860] [stdout] [uvc_camera] Video file found: /Users/tuatini/.peppy/added_nodes/fake_uvc_camera_0.1.0_093fa9/assets/robot.mp4
 [2026-01-25T16:38:51.860] [stdout] [uvc_camera] Opening video file for playback...
@@ -53,7 +57,7 @@ and inspect its logs:
 [2026-01-25T16:39:00.926] [stdout] [uvc_camera] Emitted frame 194
 ```
 
-We see that video frames are emitted from that node. We can pull a new node that depends on `fake_uvc_camera` to read those frames and reconstruct a short video.
+We see that video frames are emitted from that node. We can pull a new node that depends on `uvc_camera` to read those frames and reconstruct a short video.
 Pull another node from the same repository:
 <Tabs>
   <TabItem label="Python">

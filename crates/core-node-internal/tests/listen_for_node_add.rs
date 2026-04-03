@@ -5099,6 +5099,14 @@ async fn listen_for_node_add_rejects_second_goal_when_action_in_progress() {
         }"#;
     write_peppy_json5(source_dir.path(), peppy_json5);
 
+    // Create the .peppy/git.hash file so the first goal's background task does
+    // not fail fast on git-hash verification (which would transition the action
+    // state from Running → Completed before the second goal arrives, making the
+    // rejection check non-deterministic).
+    let peppy_dir = source_dir.path().join(PEPPY_OUTPUT_DIR);
+    std::fs::create_dir_all(&peppy_dir).expect("failed to create .peppy dir");
+    std::fs::write(peppy_dir.join("git.hash"), TEST_GIT_HASH).expect("failed to write git.hash");
+
     // Send first goal — should be accepted and start running the slow add_cmd.
     let first_goal = NodeAddGoal::new(source_dir.path(), TEST_GIT_HASH, RESULT_TIMEOUT.as_secs());
     let first_goal_payload = first_goal.encode().expect("failed to encode goal");
@@ -5178,6 +5186,12 @@ async fn listen_for_node_add_force_overrides_in_progress_action() {
         }"#;
     write_peppy_json5(slow_source_dir.path(), slow_peppy_json5);
 
+    // Create the .peppy/git.hash file so the first goal's background task does
+    // not fail fast on git-hash verification (same race as the rejection test).
+    let peppy_dir = slow_source_dir.path().join(PEPPY_OUTPUT_DIR);
+    std::fs::create_dir_all(&peppy_dir).expect("failed to create .peppy dir");
+    std::fs::write(peppy_dir.join("git.hash"), TEST_GIT_HASH).expect("failed to write git.hash");
+
     // Send first goal — starts the slow add.
     let first_goal = NodeAddGoal::new(
         slow_source_dir.path(),
@@ -5245,5 +5259,352 @@ async fn listen_for_node_add_force_overrides_in_progress_action() {
     assert!(
         node_stack.contains(SECOND_NODE_NAME, SECOND_NODE_TAG),
         "force-added node should be in the stack"
+    );
+}
+
+/// Adding a node from a git source whose config has a default variant with a
+/// local deployment source must succeed — fingerprint verification must not
+/// be triggered because git-cloned sources never have fingerprint files.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_git_add_with_default_local_variant_success() {
+    const ROOT_NODE_NAME: &str = "git_default_variant_robot";
+    const ROOT_NODE_TAG: &str = "0.1.0";
+
+    let started_core_node = start_core_node_with_mock_messenger().await;
+    let node_stack = started_core_node.node_stack.clone();
+
+    // Build a local git repo containing a node with a default local variant.
+    let git_repo_temp = TempDir::new().expect("failed to create git repo temp dir");
+    let git_repo_path = git_repo_temp.path().join("variant_repo.git");
+    std::fs::create_dir_all(&git_repo_path).expect("create git repo dir");
+
+    let repo = Repository::init(&git_repo_path).expect("init git repo");
+    let signature = Signature::now("Peppy", "peppy@example.com").expect("create signature");
+
+    // Root config: declares a default variant with a local deployment source.
+    let root_config_rel = Path::new("nodes/robot/peppy.json5");
+    let variant_config_rel = Path::new("nodes/robot/variants/default/peppy.json5");
+
+    let root_dir = git_repo_path.join("nodes/robot");
+    let variant_dir = git_repo_path.join("nodes/robot/variants/default");
+    std::fs::create_dir_all(&root_dir).expect("create root node dir");
+    std::fs::create_dir_all(&variant_dir).expect("create variant dir");
+
+    let root_config = format!(
+        r#"{{
+        schema_version: 1,
+        manifest: {{
+            name: "{ROOT_NODE_NAME}",
+            tag: "{ROOT_NODE_TAG}",
+            variants: [
+                {{ name: "default", source: {{ local: "./variants/default" }} }}
+            ]
+        }},
+        interfaces: {{
+            topics: {{
+                emits: [
+                    {{ name: "joint_positions", qos_profile: "sensor_data", message_format: {{ x: "f64", y: "f64" }} }}
+                ]
+            }}
+        }}
+    }}"#
+    );
+    std::fs::write(git_repo_path.join(root_config_rel), &root_config).expect("write root config");
+
+    let variant_config = r#"{
+        schema_version: 1,
+        execution: {
+            language: "rust",
+            start_cmd: ["sleep", "5"]
+        }
+    }"#;
+    std::fs::write(git_repo_path.join(variant_config_rel), variant_config)
+        .expect("write variant config");
+
+    let mut index = repo.index().expect("open index");
+    index.add_path(root_config_rel).expect("add root config");
+    index
+        .add_path(variant_config_rel)
+        .expect("add variant config");
+    index.write().expect("write index");
+
+    let tree_id = index.write_tree().expect("write tree");
+    let tree = repo.find_tree(tree_id).expect("find tree");
+    repo.commit(
+        Some("HEAD"),
+        &signature,
+        &signature,
+        "initial commit",
+        &tree,
+        &[],
+    )
+    .expect("commit");
+
+    let repo_url = GitUrl::try_from(git_repo_path.as_path()).expect("git repo path should parse");
+
+    // No explicit variant — the "default" variant is auto-resolved.
+    let add_result = send_node_add_and_wait(
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        NodeAddSource::Git {
+            repo_url,
+            repo_path: "nodes/robot",
+            repo_ref: None,
+        },
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        None,
+    )
+    .await
+    .expect("node_add request should succeed");
+
+    assert!(
+        add_result.success,
+        "git add with default local variant should succeed (no fingerprint verification): {:?}",
+        add_result.error_message
+    );
+
+    assert!(node_stack.contains(ROOT_NODE_NAME, ROOT_NODE_TAG));
+
+    let entity = node_stack
+        .find(ROOT_NODE_NAME, ROOT_NODE_TAG)
+        .expect("node should exist in stack");
+    let config = entity.config();
+    assert!(
+        config.interfaces.topics.is_some(),
+        "interfaces should be inherited from root"
+    );
+    assert_eq!(
+        config.execution.start_cmd.as_ref().unwrap(),
+        &vec!["sleep".to_string(), "5".to_string()],
+        "execution should come from the default variant"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_git_add_emits_clone_feedback() {
+    let git_repo_temp_dir = TempDir::new().unwrap();
+    let git_repo_path = test_helpers::create_nodes_git_repo(&git_repo_temp_dir);
+
+    const TARGET_REPO_PATH: &str = "nodes/uvc_camera";
+
+    let started_core_node = start_core_node_with_mock_messenger().await;
+
+    let repo_url = GitUrl::try_from(git_repo_path.as_path()).expect("git repo path should parse");
+
+    let (feedback_tx, mut feedback_rx) = tokio::sync::mpsc::unbounded_channel::<NodeAddFeedback>();
+    let add_result = send_node_add_and_wait(
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        NodeAddSource::Git {
+            repo_url,
+            repo_path: TARGET_REPO_PATH,
+            repo_ref: None,
+        },
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        Some(feedback_tx),
+    )
+    .await
+    .expect("node_add request should succeed");
+
+    assert!(
+        add_result.success,
+        "node_add should succeed, got error: {:?}",
+        add_result.error_message
+    );
+
+    let mut feedback = Vec::new();
+    while let Ok(entry) = feedback_rx.try_recv() {
+        feedback.push(entry);
+    }
+
+    let has_config_check = feedback
+        .iter()
+        .any(|f| f.is_stdout() && f.line.contains("Checking node config"));
+    assert!(
+        has_config_check,
+        "feedback should include 'Checking node config' message, got: {:?}",
+        feedback.iter().map(|f| &f.line).collect::<Vec<_>>()
+    );
+
+    let has_clone_feedback = feedback
+        .iter()
+        .any(|f| f.is_stdout() && f.line.contains("Cloning repository"));
+    assert!(
+        has_clone_feedback,
+        "feedback should include 'Cloning repository' message, got: {:?}",
+        feedback.iter().map(|f| &f.line).collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_http_add_emits_download_feedback() {
+    const TARGET_NODE_NAME: &str = "http_dl_feedback_node";
+    const TARGET_NODE_TAG: &str = "0.1.0";
+
+    let started_core_node = start_core_node_with_mock_messenger().await;
+
+    let (_bundle_dir, bundle_bytes) = create_minimal_http_bundle(TARGET_NODE_NAME, TARGET_NODE_TAG);
+    let (server, url) = serve_bundle_over_http(bundle_bytes);
+
+    let (feedback_tx, mut feedback_rx) = tokio::sync::mpsc::unbounded_channel::<NodeAddFeedback>();
+    let add_result = send_node_add_and_wait(
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        NodeAddSource::Http {
+            url: url.clone(),
+            sha256: None,
+        },
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        Some(feedback_tx),
+    )
+    .await
+    .expect("node_add request should succeed");
+
+    assert!(
+        add_result.success,
+        "node_add should succeed, got error: {:?}",
+        add_result.error_message
+    );
+
+    let mut feedback = Vec::new();
+    while let Ok(entry) = feedback_rx.try_recv() {
+        feedback.push(entry);
+    }
+
+    let has_download_feedback = feedback
+        .iter()
+        .any(|f| f.is_stdout() && f.line.contains("Downloading bundle from"));
+    assert!(
+        has_download_feedback,
+        "feedback should include 'Downloading bundle from' message, got: {:?}",
+        feedback.iter().map(|f| &f.line).collect::<Vec<_>>()
+    );
+
+    drop(server);
+}
+
+/// Creates a git repository containing a single invalid `peppy.json5`
+/// (missing required `execution` field and no default variant).
+fn create_git_repo_with_invalid_config(base_path: &Path) -> PathBuf {
+    let repo_path = base_path.join("invalid_config_repo.git");
+    std::fs::create_dir_all(&repo_path).expect("create repo dir");
+
+    let repo = Repository::init(&repo_path).expect("init repo");
+    let signature = Signature::now("Peppy", "peppy@example.com").expect("create signature");
+
+    let config_rel = Path::new("nodes/bad_node/peppy.json5");
+    std::fs::create_dir_all(repo_path.join("nodes/bad_node")).expect("create node dir");
+    // Invalid config: has manifest but no execution and no default variant.
+    std::fs::write(
+        repo_path.join(config_rel),
+        r#"{
+            schema_version: 1,
+            manifest: {
+                name: "bad_node",
+                tag: "0.1.0",
+            },
+            interfaces: {},
+        }"#,
+    )
+    .expect("write invalid config");
+
+    let mut index = repo.index().expect("open index");
+    index.add_path(config_rel).expect("add config");
+    index.write().expect("write index");
+
+    let tree_id = index.write_tree().expect("write tree");
+    let tree = repo.find_tree(tree_id).expect("find tree");
+    repo.commit(
+        Some("HEAD"),
+        &signature,
+        &signature,
+        "initial commit",
+        &tree,
+        &[],
+    )
+    .expect("commit");
+
+    repo_path
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_git_add_invalid_config_fails_fast() {
+    let git_repo_temp_dir = TempDir::new().unwrap();
+    let git_repo_path = create_git_repo_with_invalid_config(git_repo_temp_dir.path());
+
+    let started_core_node = start_core_node_with_mock_messenger().await;
+
+    let repo_url = GitUrl::try_from(git_repo_path.as_path()).expect("git repo path should parse");
+
+    let add_result = send_node_add_and_wait(
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        NodeAddSource::Git {
+            repo_url,
+            repo_path: "nodes/bad_node",
+            repo_ref: None,
+        },
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        None,
+    )
+    .await
+    .expect("node_add request should succeed");
+
+    assert!(
+        !add_result.success,
+        "node_add should fail for invalid config"
+    );
+    assert!(
+        add_result
+            .error_message
+            .as_deref()
+            .unwrap_or("")
+            .contains("Failed to parse node config"),
+        "error should mention config parse failure, got: {:?}",
+        add_result.error_message
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_git_add_missing_config_fails() {
+    let git_repo_temp_dir = TempDir::new().unwrap();
+    let git_repo_path = create_git_repo_with_invalid_config(git_repo_temp_dir.path());
+
+    let started_core_node = start_core_node_with_mock_messenger().await;
+
+    let repo_url = GitUrl::try_from(git_repo_path.as_path()).expect("git repo path should parse");
+
+    // Point to a path that doesn't exist in the repo.
+    let add_result = send_node_add_and_wait(
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        NodeAddSource::Git {
+            repo_url,
+            repo_path: "nodes/nonexistent_node",
+            repo_ref: None,
+        },
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        None,
+    )
+    .await
+    .expect("node_add request should succeed");
+
+    assert!(
+        !add_result.success,
+        "node_add should fail for missing config"
+    );
+    let err = add_result.error_message.as_deref().unwrap_or("");
+    // The shallow probe reports "not found in repository"; if the probe falls
+    // back (e.g. local transport doesn't support shallow fetch), the full clone
+    // path reports a filesystem read error instead.
+    assert!(
+        err.contains("not found in repository") || err.contains("Failed to parse node config"),
+        "error should mention config not found or parse failure, got: {:?}",
+        add_result.error_message
     );
 }
