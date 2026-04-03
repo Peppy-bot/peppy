@@ -6,7 +6,11 @@
       // Example of a node being pulled from an url
       source: {
         url: "https://example.com/fake_robot_brain.tar.zst",
-        sha256: "33e83da60a54e3bb487a9a3b67705918602143b30f158143b6909acaf017a36a"
+        sha256: "33e83da60a54e3bb487a9a3b67705918602143b30f158143b6909acaf017a36a",
+        variant: {
+          // When only the name is provided, the variant is searched inside the original repo in the `peppy_variants` folder
+          name: "mujoco"
+        }
       },
       instances: [
         {

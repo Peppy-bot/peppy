@@ -225,13 +225,13 @@ mod tests {
         assert_eq!(local.local, PathBuf::from("uvc_camera"));
 
         let git: DeploymentSource = serde_json5::from_str(
-            "{ repo: \"https://github.com/Peppy-bot/example_nodes.git\", path: \"fake_openarm01_controller\", ref: \"0.1.0\" }",
+            "{ repo: \"https://github.com/Peppy-bot/nodes_hub.git\", path: \"fake_openarm01_controller\", ref: \"0.1.0\" }",
         )
         .unwrap();
         let DeploymentSource::Git(git) = git else {
             panic!("expected git source");
         };
-        assert_eq!(git.repo, "https://github.com/Peppy-bot/example_nodes.git");
+        assert_eq!(git.repo, "https://github.com/Peppy-bot/nodes_hub.git");
         assert_eq!(git.path, "fake_openarm01_controller");
         assert_eq!(git.ref_, "0.1.0");
 
