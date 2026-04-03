@@ -36,8 +36,6 @@ pub struct AddNodeParams {
 const CALLER_INSTANCE_ID: &str = "peppy-cli";
 // Timeout for the goal to be accepted (should be fast)
 const GOAL_TIMEOUT: Duration = Duration::from_secs(30);
-// Timeout for the node info request
-const INFO_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 fn validate_git_ref(git_ref: Option<&str>) -> Result<Option<String>> {
     let git_ref = git_ref.map(str::trim);
@@ -103,7 +101,15 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
         .ok_or_else(|| Error::ExecutionFailed("Failed to connect to daemon".to_string()))?;
 
     let pre_add_node_info = if !force {
-        Some(fetch_node_info(messenger_handle, &core_node_name, node_source.clone()).await?)
+        Some(
+            fetch_node_info(
+                messenger_handle,
+                &core_node_name,
+                node_source.clone(),
+                Duration::from_secs(timeouts.max_secs),
+            )
+            .await?,
+        )
     } else {
         None
     };
@@ -311,6 +317,7 @@ async fn fetch_node_info(
     messenger: &MessengerHandle,
     core_node_name: &str,
     node_source: NodeSource,
+    timeout: Duration,
 ) -> Result<NodeInfoResponse> {
     NodeInfoRequest::new(node_source)
         .poll(
@@ -318,7 +325,7 @@ async fn fetch_node_info(
             core_node_name,
             CALLER_INSTANCE_ID,
             core_node_name,
-            INFO_REQUEST_TIMEOUT,
+            timeout,
         )
         .await
         .map_err(|e| {
