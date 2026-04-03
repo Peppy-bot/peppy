@@ -15,7 +15,7 @@ use chrono::Local;
 use config::consts::{NODE_CONFIG_FILE, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH, PeppyDirs};
 use config::node::{DEFAULT_VARIANT_NAME, NodeConfig, NodeConfigParser, ParsedNodeConfig};
 use futures::FutureExt;
-use git2::Repository;
+use git2::build::RepoBuilder;
 use node_stack::{NodeStack, validate_dependency_specs};
 use peppylib::messaging::{ServiceRequestContext, TopicPublisher};
 use peppylib::types::Payload;
@@ -657,6 +657,7 @@ async fn resolve_git_source(
     repo_url: &gix_url::Url,
     repo_path: &str,
     repo_ref: Option<&str>,
+    feedback_tx: mpsc::UnboundedSender<FeedbackLine>,
 ) -> std::result::Result<ResolvedNodeAddSource, String> {
     let repo_relative_path = sanitize_repo_path(repo_path)?;
 
@@ -673,7 +674,33 @@ async fn resolve_git_source(
     let clone_repo_url = repo_url_str.clone();
     let clone_repo_ref = repo_ref.map(str::to_owned);
     if let Err(err) = tokio::task::spawn_blocking(move || {
-        let repo = Repository::clone(&clone_repo_url, &clone_checkout_dir)
+        let mut last_report = Instant::now();
+        let mut callbacks = git2::RemoteCallbacks::new();
+        callbacks.transfer_progress(move |progress| {
+            if last_report.elapsed() >= Duration::from_millis(500) {
+                last_report = Instant::now();
+                let received = progress.received_objects();
+                let total = progress.total_objects();
+                let bytes = progress.received_bytes();
+                let _ = feedback_tx.send(FeedbackLine {
+                    stream: FeedbackStream::Stdout,
+                    line: format!(
+                        "Cloning: received {}/{} objects ({})",
+                        received,
+                        total,
+                        format_bytes(bytes),
+                    ),
+                });
+            }
+            true
+        });
+
+        let mut fetch_opts = git2::FetchOptions::new();
+        fetch_opts.remote_callbacks(callbacks);
+
+        let repo = RepoBuilder::new()
+            .fetch_options(fetch_opts)
+            .clone(&clone_repo_url, &clone_checkout_dir)
             .map_err(|e| format!("Failed to clone repository: {}", e))?;
         if let Some(repo_ref) = clone_repo_ref.as_deref() {
             checkout_repo_ref(&repo, repo_ref)
@@ -724,6 +751,19 @@ async fn resolve_git_source(
     })
 }
 
+fn format_bytes(bytes: usize) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = 1024.0 * 1024.0;
+    let b = bytes as f64;
+    if b >= MB {
+        format!("{:.1} MB", b / MB)
+    } else if b >= KB {
+        format!("{:.0} KB", b / KB)
+    } else {
+        format!("{} B", bytes)
+    }
+}
+
 fn sanitize_http_filename(name: &str) -> String {
     let sanitized: String = name
         .chars()
@@ -752,6 +792,7 @@ fn download_http_bundle(
     url: &url::Url,
     destination: &Path,
     expected_sha256: Option<&str>,
+    feedback_tx: Option<&mpsc::UnboundedSender<FeedbackLine>>,
 ) -> std::result::Result<(), String> {
     use sha2::{Digest, Sha256};
 
@@ -767,6 +808,12 @@ fn download_http_bundle(
         format!("Failed to download bundle from {}: {}", url, reason)
     })?;
 
+    let total_size: Option<u64> = response
+        .headers()
+        .get("content-length")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse().ok());
+
     let mut reader = response.into_body().into_reader();
     let mut file = File::create(destination).map_err(|e| {
         format!(
@@ -778,6 +825,8 @@ fn download_http_bundle(
 
     let mut hasher = expected_bytes.as_ref().map(|_| Sha256::new());
     let mut buffer = [0u8; 8 * 1024];
+    let mut bytes_downloaded: u64 = 0;
+    let mut last_report = Instant::now();
     loop {
         let read = reader
             .read(&mut buffer)
@@ -785,6 +834,7 @@ fn download_http_bundle(
         if read == 0 {
             break;
         }
+        bytes_downloaded += read as u64;
         file.write_all(&buffer[..read]).map_err(|e| {
             format!(
                 "Failed to write bundle file {}: {}",
@@ -794,6 +844,30 @@ fn download_http_bundle(
         })?;
         if let Some(ref mut h) = hasher {
             h.update(&buffer[..read]);
+        }
+        if let Some(tx) = feedback_tx
+            && last_report.elapsed() >= Duration::from_millis(500)
+        {
+            last_report = Instant::now();
+            let progress_msg = if let Some(total) = total_size {
+                let pct = if total > 0 {
+                    (bytes_downloaded as f64 / total as f64 * 100.0) as u64
+                } else {
+                    0
+                };
+                format!(
+                    "Downloading: {} / {} ({}%)",
+                    format_bytes(bytes_downloaded as usize),
+                    format_bytes(total as usize),
+                    pct,
+                )
+            } else {
+                format!("Downloading: {}", format_bytes(bytes_downloaded as usize))
+            };
+            let _ = tx.send(FeedbackLine {
+                stream: FeedbackStream::Stdout,
+                line: progress_msg,
+            });
         }
     }
     file.flush().map_err(|e| {
@@ -868,7 +942,21 @@ pub(crate) async fn resolve_http_source(
 ) -> std::result::Result<ResolvedNodeAddSource, String> {
     let url = url.clone();
     tokio::task::spawn_blocking(move || {
-        resolve_http_source_blocking(url, &peppy_dirs, expected_sha256)
+        resolve_http_source_blocking(url, &peppy_dirs, expected_sha256, None)
+    })
+    .await
+    .map_err(|e| format!("Failed to join HTTP download task: {}", e))?
+}
+
+async fn resolve_http_source_with_feedback(
+    url: &url::Url,
+    peppy_dirs: PeppyDirs,
+    expected_sha256: Option<String>,
+    feedback_tx: mpsc::UnboundedSender<FeedbackLine>,
+) -> std::result::Result<ResolvedNodeAddSource, String> {
+    let url = url.clone();
+    tokio::task::spawn_blocking(move || {
+        resolve_http_source_blocking(url, &peppy_dirs, expected_sha256, Some(&feedback_tx))
     })
     .await
     .map_err(|e| format!("Failed to join HTTP download task: {}", e))?
@@ -913,7 +1001,61 @@ fn download_and_extract_http_source_blocking(
     std::fs::create_dir_all(&extract_dir)
         .map_err(|e| format!("Failed to create bundle extract directory: {}", e))?;
 
-    download_http_bundle(&url, &bundle_path, expected_sha256.as_deref())?;
+    download_http_bundle(&url, &bundle_path, expected_sha256.as_deref(), None)?;
+    extract_http_bundle(&bundle_path, &extract_dir, &url)?;
+    std::fs::remove_file(&bundle_path).ok();
+
+    let node_root_dir = locate_node_root_dir(&extract_dir)?;
+
+    let operation_dir = operation_cleanup.take();
+
+    Ok(ExtractedHttpSource {
+        source_path: node_root_dir,
+        cleanup_dir: operation_dir,
+    })
+}
+
+fn resolve_http_source_download_and_extract(
+    url: url::Url,
+    peppy_dirs: &PeppyDirs,
+    expected_sha256: Option<String>,
+    feedback_tx: Option<&mpsc::UnboundedSender<FeedbackLine>>,
+) -> std::result::Result<ExtractedHttpSource, String> {
+    match url.scheme() {
+        "http" | "https" => {}
+        other => {
+            return Err(format!(
+                "HTTP source URL must use http or https (got scheme '{}')",
+                other
+            ));
+        }
+    }
+
+    if !is_supported_http_archive(&url) {
+        return Err(
+            "Only tar.zst (.tar.zstd/.tar.zst/.tzst) archives are supported for HTTP sources"
+                .to_string(),
+        );
+    }
+
+    let http_base_dir = peppy_dirs.http_downloads_dir();
+    std::fs::create_dir_all(&http_base_dir)
+        .map_err(|e| format!("Failed to create HTTP download directory: {}", e))?;
+
+    let timestamp = Local::now().format("%Y%m%d_%H%M%S_%3f");
+    let operation_dir =
+        http_base_dir.join(format!("node_add_{timestamp}_{}", generate_random_id()));
+    std::fs::create_dir_all(&operation_dir)
+        .map_err(|e| format!("Failed to create HTTP staging directory: {}", e))?;
+
+    let mut operation_cleanup = CleanupDir::new(Some(operation_dir.clone()));
+
+    let bundle_path = operation_dir.join(bundle_file_name(&url));
+    let extract_dir = operation_dir.join("extracted");
+    std::fs::create_dir_all(&extract_dir)
+        .map_err(|e| format!("Failed to create bundle extract directory: {}", e))?;
+
+    download_http_bundle(&url, &bundle_path, expected_sha256.as_deref(), feedback_tx)?;
     extract_http_bundle(&bundle_path, &extract_dir, &url)?;
     std::fs::remove_file(&bundle_path).ok();
 
@@ -931,8 +1073,10 @@ fn resolve_http_source_blocking(
     url: url::Url,
     peppy_dirs: &PeppyDirs,
     expected_sha256: Option<String>,
+    feedback_tx: Option<&mpsc::UnboundedSender<FeedbackLine>>,
 ) -> std::result::Result<ResolvedNodeAddSource, String> {
-    let extracted = download_and_extract_http_source_blocking(url, peppy_dirs, expected_sha256)?;
+    let extracted =
+        resolve_http_source_download_and_extract(url, peppy_dirs, expected_sha256, feedback_tx)?;
     let config_path = extracted.source_path.join(NODE_CONFIG_FILE);
     let node_config = NodeConfigParser::from_path(&config_path).map_err(|e| {
         format!(
@@ -982,6 +1126,7 @@ pub(crate) fn log_label_from_source(source: &NodeSource) -> String {
 async fn resolve_node_add_source(
     goal: &NodeAddGoal,
     peppy_dirs: &PeppyDirs,
+    feedback_tx: &mpsc::UnboundedSender<FeedbackLine>,
 ) -> std::result::Result<ResolvedNodeAddSource, String> {
     match &goal.source {
         NodeSource::Fs(path) => {
@@ -1023,9 +1168,31 @@ async fn resolve_node_add_source(
             repo_url,
             repo_path,
             repo_ref,
-        } => resolve_git_source(repo_url, repo_path, repo_ref.as_deref()).await,
+        } => {
+            let _ = feedback_tx.send(FeedbackLine {
+                stream: FeedbackStream::Stdout,
+                line: format!("Cloning repository {}...", repo_url.to_bstring()),
+            });
+            resolve_git_source(
+                repo_url,
+                repo_path,
+                repo_ref.as_deref(),
+                feedback_tx.clone(),
+            )
+            .await
+        }
         NodeSource::Http { url, sha256 } => {
-            resolve_http_source(url, peppy_dirs.clone(), sha256.clone()).await
+            let _ = feedback_tx.send(FeedbackLine {
+                stream: FeedbackStream::Stdout,
+                line: format!("Downloading bundle from {}...", url),
+            });
+            resolve_http_source_with_feedback(
+                url,
+                peppy_dirs.clone(),
+                sha256.clone(),
+                feedback_tx.clone(),
+            )
+            .await
         }
     }
 }
@@ -1065,7 +1232,7 @@ pub(crate) async fn run_node_add(
 
     match AssertUnwindSafe(async {
         // Resolve source (git clone, HTTP download, or local config check).
-        let mut resolved = match resolve_node_add_source(&goal, &action_context.peppy_dirs).await {
+        let mut resolved = match resolve_node_add_source(&goal, &action_context.peppy_dirs, &feedback_tx).await {
             Ok(r) => r,
             Err(error_msg) => {
                 write_error_to_log(&log_file, &error_msg);
@@ -1697,7 +1864,7 @@ mod tests {
         let dest = tmp.path().join("bundle.tar.zst");
 
         let wrong_hash = "a".repeat(64);
-        let result = download_http_bundle(&url, &dest, Some(&wrong_hash));
+        let result = download_http_bundle(&url, &dest, Some(&wrong_hash), None);
 
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -1726,7 +1893,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let dest = tmp.path().join("bundle.tar.zst");
 
-        let result = download_http_bundle(&url, &dest, Some(&correct_hash));
+        let result = download_http_bundle(&url, &dest, Some(&correct_hash), None);
         assert!(result.is_ok(), "expected Ok, got: {:?}", result);
         assert!(
             dest.exists(),
@@ -1747,7 +1914,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let dest = tmp.path().join("bundle.tar.zst");
 
-        let result = download_http_bundle(&url, &dest, None);
+        let result = download_http_bundle(&url, &dest, None, None);
         assert!(result.is_ok(), "expected Ok, got: {:?}", result);
         assert!(dest.exists(), "bundle file should exist");
     }

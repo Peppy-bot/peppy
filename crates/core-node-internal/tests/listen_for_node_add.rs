@@ -5366,3 +5366,99 @@ async fn listen_for_node_git_add_with_default_local_variant_success() {
         "execution should come from the default variant"
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_git_add_emits_clone_feedback() {
+    let git_repo_temp_dir = TempDir::new().unwrap();
+    let git_repo_path = test_helpers::create_nodes_git_repo(&git_repo_temp_dir);
+
+    const TARGET_REPO_PATH: &str = "nodes/uvc_camera";
+
+    let started_core_node = start_core_node_with_mock_messenger().await;
+
+    let repo_url = GitUrl::try_from(git_repo_path.as_path()).expect("git repo path should parse");
+
+    let (feedback_tx, mut feedback_rx) = tokio::sync::mpsc::unbounded_channel::<NodeAddFeedback>();
+    let add_result = send_node_add_and_wait(
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        NodeAddSource::Git {
+            repo_url,
+            repo_path: TARGET_REPO_PATH,
+            repo_ref: None,
+        },
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        Some(feedback_tx),
+    )
+    .await
+    .expect("node_add request should succeed");
+
+    assert!(
+        add_result.success,
+        "node_add should succeed, got error: {:?}",
+        add_result.error_message
+    );
+
+    let mut feedback = Vec::new();
+    while let Ok(entry) = feedback_rx.try_recv() {
+        feedback.push(entry);
+    }
+
+    let has_clone_feedback = feedback
+        .iter()
+        .any(|f| f.is_stdout() && f.line.contains("Cloning repository"));
+    assert!(
+        has_clone_feedback,
+        "feedback should include 'Cloning repository' message, got: {:?}",
+        feedback.iter().map(|f| &f.line).collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_http_add_emits_download_feedback() {
+    const TARGET_NODE_NAME: &str = "http_dl_feedback_node";
+    const TARGET_NODE_TAG: &str = "0.1.0";
+
+    let started_core_node = start_core_node_with_mock_messenger().await;
+
+    let (_bundle_dir, bundle_bytes) = create_minimal_http_bundle(TARGET_NODE_NAME, TARGET_NODE_TAG);
+    let (server, url) = serve_bundle_over_http(bundle_bytes);
+
+    let (feedback_tx, mut feedback_rx) = tokio::sync::mpsc::unbounded_channel::<NodeAddFeedback>();
+    let add_result = send_node_add_and_wait(
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        NodeAddSource::Http {
+            url: url.clone(),
+            sha256: None,
+        },
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        Some(feedback_tx),
+    )
+    .await
+    .expect("node_add request should succeed");
+
+    assert!(
+        add_result.success,
+        "node_add should succeed, got error: {:?}",
+        add_result.error_message
+    );
+
+    let mut feedback = Vec::new();
+    while let Ok(entry) = feedback_rx.try_recv() {
+        feedback.push(entry);
+    }
+
+    let has_download_feedback = feedback
+        .iter()
+        .any(|f| f.is_stdout() && f.line.contains("Downloading bundle from"));
+    assert!(
+        has_download_feedback,
+        "feedback should include 'Downloading bundle from' message, got: {:?}",
+        feedback.iter().map(|f| &f.line).collect::<Vec<_>>()
+    );
+
+    drop(server);
+}
