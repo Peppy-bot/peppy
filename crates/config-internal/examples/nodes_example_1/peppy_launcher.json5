@@ -6,11 +6,7 @@
       // Example of a node being pulled from an url
       source: {
         url: "https://example.com/fake_robot_brain.tar.zst",
-        sha256: "33e83da60a54e3bb487a9a3b67705918602143b30f158143b6909acaf017a36a",
-        variant: {
-          // When only the name is provided, the variant is searched inside the original repo in the `peppy_variants` folder
-          name: "mujoco"
-        }
+        sha256: "33e83da60a54e3bb487a9a3b67705918602143b30f158143b6909acaf017a36a"
       },
       instances: [
         {
@@ -22,7 +18,7 @@
     {
       // the source property is mandatory
       source: {
-        repo: "https://github.com/Peppy-bot/example_nodes.git",
+        repo: "https://github.com/Peppy-bot/nodes_hub.git",
         path: "rust/fake_openarm01_controller",
         ref: "main"
       },

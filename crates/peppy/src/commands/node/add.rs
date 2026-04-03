@@ -374,14 +374,14 @@ mod tests {
     #[test]
     fn parses_git_repo_url_and_repo_path_from_https_url() {
         let (repo_url, repo_path) =
-            parse_git_repo_url_and_path("https://github.com/Peppy-bot/nodes_hub.git")
+            parse_git_repo_url_and_path("https://github.com/Peppy-bot/nodes_hub.git/uvc_camera")
                 .expect("should parse git source");
 
         assert_eq!(
             repo_url.to_bstring().to_string(),
             "https://github.com/Peppy-bot/nodes_hub.git"
         );
-        assert_eq!(repo_path, "fake_uvc_camera");
+        assert_eq!(repo_path, "uvc_camera");
     }
 
     #[test]

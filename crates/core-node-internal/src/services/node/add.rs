@@ -628,7 +628,6 @@ impl Drop for CleanupDir {
 pub(crate) struct ResolvedNodeAddSource {
     pub(crate) source_path: PathBuf,
     pub(crate) node_config: ParsedNodeConfig,
-    pub(crate) verify_codegen_fingerprint: bool,
     pub(crate) cleanup_dir: Option<PathBuf>,
 }
 
@@ -721,7 +720,6 @@ async fn resolve_git_source(
     Ok(ResolvedNodeAddSource {
         source_path: node_root_dir,
         node_config,
-        verify_codegen_fingerprint: false,
         cleanup_dir: Some(checkout_dir),
     })
 }
@@ -947,7 +945,6 @@ fn resolve_http_source_blocking(
     Ok(ResolvedNodeAddSource {
         source_path: extracted.source_path,
         node_config,
-        verify_codegen_fingerprint: false,
         cleanup_dir: extracted.cleanup_dir,
     })
 }
@@ -1001,7 +998,6 @@ async fn resolve_node_add_source(
                 return Ok(ResolvedNodeAddSource {
                     source_path: resolved.source_path,
                     node_config: resolved.node_config,
-                    verify_codegen_fingerprint: !is_stack_launch,
                     cleanup_dir: Some(resolved.temp_dir.keep()),
                 });
             }
@@ -1020,7 +1016,6 @@ async fn resolve_node_add_source(
             Ok(ResolvedNodeAddSource {
                 source_path: path.clone(),
                 node_config,
-                verify_codegen_fingerprint: !is_stack_launch,
                 cleanup_dir: None,
             })
         }
@@ -1098,6 +1093,7 @@ pub(crate) async fn run_node_add(
 
         // If a variant is specified (or auto-resolved), resolve it from the root config.
         let mut variant_cleanup_dir: Option<PathBuf> = None;
+        let mut variant_source_is_local = true;
         let node_config: NodeConfig;
         if let Some(ref variant_source) = effective_variant {
             let label = variant_label(variant_source);
@@ -1122,7 +1118,7 @@ pub(crate) async fn run_node_add(
                     }
                     node_config = v.merged_config;
                     resolved.source_path = v.variant_source_path;
-                    resolved.verify_codegen_fingerprint = v.verify_codegen_fingerprint;
+                    variant_source_is_local = v.source_is_local;
                     variant_cleanup_dir = v.cleanup_dir;
                 }
                 Err(error_msg) => {
@@ -1158,7 +1154,12 @@ pub(crate) async fn run_node_add(
 
         let cleanup_dir = resolved_cleanup_guard.take();
         let source_path = resolved.source_path.clone();
-        let verify_codegen_fingerprint = resolved.verify_codegen_fingerprint;
+
+        // Fingerprints are only generated locally by `peppy node sync`.
+        // Git/Http sources never have them, so skip verification for remote sources.
+        let is_local_root =
+            matches!(&goal.source, NodeSource::Fs(_)) && goal.git_hash != STACK_LAUNCH_GIT_HASH;
+        let verify_codegen_fingerprint = is_local_root && variant_source_is_local;
 
         // Rename log file to the canonical {name}_{tag}_{timestamp}.log format
         // now that we know the node name and tag from the resolved config.
