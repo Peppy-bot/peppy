@@ -637,6 +637,123 @@ pub(crate) struct ExtractedHttpSource {
     pub(crate) cleanup_dir: Option<PathBuf>,
 }
 
+/// Distinguishes between a definitively invalid config (no point doing a full
+/// clone) and an infrastructure failure during the shallow probe (fall back to
+/// full clone).
+enum ShallowCheckError {
+    /// The config was found but is invalid — a full clone would fail the same way.
+    InvalidConfig(String),
+    /// The shallow fetch itself failed (e.g. server doesn't support shallow
+    /// clones, network error, ref not found). Fall back to full clone.
+    ShallowFetchFailed(String),
+}
+
+/// Performs a depth-1 shallow fetch into a bare repo and reads the node config
+/// blob directly from the git object database — no working-directory checkout.
+fn shallow_validate_config(
+    repo_url: &str,
+    repo_relative_path: &Path,
+    repo_ref: Option<&str>,
+) -> std::result::Result<ParsedNodeConfig, ShallowCheckError> {
+    let bare_dir = tempfile::tempdir().map_err(|e| {
+        ShallowCheckError::ShallowFetchFailed(format!("Failed to create temp dir: {}", e))
+    })?;
+
+    let bare_repo = git2::Repository::init_bare(bare_dir.path()).map_err(|e| {
+        ShallowCheckError::ShallowFetchFailed(format!("Failed to init bare repo: {}", e))
+    })?;
+
+    let mut remote = bare_repo.remote_anonymous(repo_url).map_err(|e| {
+        ShallowCheckError::ShallowFetchFailed(format!("Failed to create remote: {}", e))
+    })?;
+
+    // Build refspecs to try, in order of preference.
+    let refspecs: Vec<String> = match repo_ref {
+        None | Some("") => vec!["HEAD".to_string()],
+        Some(r) => vec![
+            r.to_string(),
+            format!("refs/heads/{r}"),
+            format!("refs/tags/{r}"),
+        ],
+    };
+
+    let mut last_err = None;
+    for refspec in &refspecs {
+        let mut fetch_opts = git2::FetchOptions::new();
+        fetch_opts.depth(1);
+        fetch_opts.download_tags(git2::AutotagOption::None);
+
+        match remote.fetch(&[refspec.as_str()], Some(&mut fetch_opts), None) {
+            Ok(()) => {
+                last_err = None;
+                break;
+            }
+            Err(e) => {
+                last_err = Some(e);
+                // Recreate the remote for a clean retry.
+                remote = bare_repo.remote_anonymous(repo_url).map_err(|e2| {
+                    ShallowCheckError::ShallowFetchFailed(format!(
+                        "Failed to recreate remote: {}",
+                        e2
+                    ))
+                })?;
+            }
+        }
+    }
+    if let Some(e) = last_err {
+        return Err(ShallowCheckError::ShallowFetchFailed(format!(
+            "shallow fetch failed: {}",
+            e
+        )));
+    }
+
+    // Resolve FETCH_HEAD to a commit.
+    let fetch_head = bare_repo.find_reference("FETCH_HEAD").map_err(|e| {
+        ShallowCheckError::ShallowFetchFailed(format!("Failed to find FETCH_HEAD: {}", e))
+    })?;
+    let commit = fetch_head.peel_to_commit().map_err(|e| {
+        ShallowCheckError::ShallowFetchFailed(format!("Failed to peel to commit: {}", e))
+    })?;
+    let tree = commit
+        .tree()
+        .map_err(|e| ShallowCheckError::ShallowFetchFailed(format!("Failed to get tree: {}", e)))?;
+
+    // Navigate the tree to find the config blob.
+    let config_tree_path = if repo_relative_path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("json5"))
+    {
+        repo_relative_path.to_path_buf()
+    } else {
+        repo_relative_path.join(NODE_CONFIG_FILE)
+    };
+
+    let entry = tree.get_path(&config_tree_path).map_err(|e| {
+        ShallowCheckError::InvalidConfig(format!(
+            "Config file '{}' not found in repository: {}",
+            config_tree_path.display(),
+            e
+        ))
+    })?;
+
+    let blob = bare_repo.find_blob(entry.id()).map_err(|e| {
+        ShallowCheckError::ShallowFetchFailed(format!("Failed to read config blob: {}", e))
+    })?;
+
+    let content = std::str::from_utf8(blob.content()).map_err(|_| {
+        ShallowCheckError::InvalidConfig("peppy.json5 is not valid UTF-8".to_string())
+    })?;
+
+    NodeConfigParser::from_content(content).map_err(|e| {
+        ShallowCheckError::InvalidConfig(format!(
+            "Failed to parse node config at {}: {}",
+            config_tree_path.display(),
+            e
+        ))
+    })
+}
+
 #[derive(Clone)]
 pub(crate) struct NodeAddActionContext {
     pub(crate) node_stack: Arc<NodeStack>,
@@ -661,14 +778,46 @@ async fn resolve_git_source(
 ) -> std::result::Result<ResolvedNodeAddSource, String> {
     let repo_relative_path = sanitize_repo_path(repo_path)?;
 
-    let checkout_dir = tempfile::tempdir()
-        .map_err(|e| format!("Failed to create temporary directory: {}", e))?
-        .keep();
-
     let repo_url_bstring = repo_url.to_bstring();
     let repo_url_str = std::str::from_utf8(repo_url_bstring.as_ref())
         .map_err(|_| "repo_url must be valid UTF-8".to_string())?
         .to_owned();
+
+    // --- Phase 1: Shallow probe — validate peppy.json5 without a full clone ---
+    let _ = feedback_tx.send(FeedbackLine {
+        stream: FeedbackStream::Stdout,
+        line: "Checking node config...".to_string(),
+    });
+
+    let probe_url = repo_url_str.clone();
+    let probe_path = repo_relative_path.clone();
+    let probe_ref = repo_ref.map(str::to_owned);
+
+    let phase1_result = tokio::task::spawn_blocking(move || {
+        shallow_validate_config(&probe_url, &probe_path, probe_ref.as_deref())
+    })
+    .await
+    .map_err(|e| format!("Failed to join shallow probe task: {}", e))?;
+
+    let validated_config: Option<ParsedNodeConfig> = match phase1_result {
+        Ok(config) => Some(config),
+        Err(ShallowCheckError::InvalidConfig(msg)) => return Err(msg),
+        Err(ShallowCheckError::ShallowFetchFailed(reason)) => {
+            let _ = feedback_tx.send(FeedbackLine {
+                stream: FeedbackStream::Stdout,
+                line: format!(
+                    "Shallow probe unavailable ({}), proceeding with full clone",
+                    reason
+                ),
+            });
+            None
+        }
+    };
+
+    // --- Phase 2: Full clone (only reached if config is valid or probe fell back) ---
+    let checkout_dir = tempfile::tempdir()
+        .map_err(|e| format!("Failed to create temporary directory: {}", e))?
+        .keep();
 
     let clone_checkout_dir = checkout_dir.clone();
     let clone_repo_url = repo_url_str.clone();
@@ -732,15 +881,20 @@ async fn resolve_git_source(
         .map(PathBuf::from)
         .ok_or_else(|| "Invalid repo_path: node config has no parent directory".to_string())?;
 
-    let node_config = match NodeConfigParser::from_path(&config_path) {
-        Ok(cfg) => cfg,
-        Err(e) => {
-            std::fs::remove_dir_all(&checkout_dir).ok();
-            return Err(format!(
-                "Failed to parse node config at {}: {}",
-                config_path.display(),
-                e
-            ));
+    // Reuse the config from Phase 1 if available; otherwise parse from disk (fallback path).
+    let node_config = if let Some(config) = validated_config {
+        config
+    } else {
+        match NodeConfigParser::from_path(&config_path) {
+            Ok(cfg) => cfg,
+            Err(e) => {
+                std::fs::remove_dir_all(&checkout_dir).ok();
+                return Err(format!(
+                    "Failed to parse node config at {}: {}",
+                    config_path.display(),
+                    e
+                ));
+            }
         }
     };
 

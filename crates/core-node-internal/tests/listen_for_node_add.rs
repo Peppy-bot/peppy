@@ -5405,6 +5405,15 @@ async fn listen_for_node_git_add_emits_clone_feedback() {
         feedback.push(entry);
     }
 
+    let has_config_check = feedback
+        .iter()
+        .any(|f| f.is_stdout() && f.line.contains("Checking node config"));
+    assert!(
+        has_config_check,
+        "feedback should include 'Checking node config' message, got: {:?}",
+        feedback.iter().map(|f| &f.line).collect::<Vec<_>>()
+    );
+
     let has_clone_feedback = feedback
         .iter()
         .any(|f| f.is_stdout() && f.line.contains("Cloning repository"));
@@ -5461,4 +5470,127 @@ async fn listen_for_node_http_add_emits_download_feedback() {
     );
 
     drop(server);
+}
+
+/// Creates a git repository containing a single invalid `peppy.json5`
+/// (missing required `execution` field and no default variant).
+fn create_git_repo_with_invalid_config(base_path: &Path) -> PathBuf {
+    let repo_path = base_path.join("invalid_config_repo.git");
+    std::fs::create_dir_all(&repo_path).expect("create repo dir");
+
+    let repo = Repository::init(&repo_path).expect("init repo");
+    let signature = Signature::now("Peppy", "peppy@example.com").expect("create signature");
+
+    let config_rel = Path::new("nodes/bad_node/peppy.json5");
+    std::fs::create_dir_all(repo_path.join("nodes/bad_node")).expect("create node dir");
+    // Invalid config: has manifest but no execution and no default variant.
+    std::fs::write(
+        repo_path.join(config_rel),
+        r#"{
+            schema_version: 1,
+            manifest: {
+                name: "bad_node",
+                tag: "0.1.0",
+            },
+            interfaces: {},
+        }"#,
+    )
+    .expect("write invalid config");
+
+    let mut index = repo.index().expect("open index");
+    index.add_path(config_rel).expect("add config");
+    index.write().expect("write index");
+
+    let tree_id = index.write_tree().expect("write tree");
+    let tree = repo.find_tree(tree_id).expect("find tree");
+    repo.commit(
+        Some("HEAD"),
+        &signature,
+        &signature,
+        "initial commit",
+        &tree,
+        &[],
+    )
+    .expect("commit");
+
+    repo_path
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_git_add_invalid_config_fails_fast() {
+    let git_repo_temp_dir = TempDir::new().unwrap();
+    let git_repo_path = create_git_repo_with_invalid_config(git_repo_temp_dir.path());
+
+    let started_core_node = start_core_node_with_mock_messenger().await;
+
+    let repo_url = GitUrl::try_from(git_repo_path.as_path()).expect("git repo path should parse");
+
+    let add_result = send_node_add_and_wait(
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        NodeAddSource::Git {
+            repo_url,
+            repo_path: "nodes/bad_node",
+            repo_ref: None,
+        },
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        None,
+    )
+    .await
+    .expect("node_add request should succeed");
+
+    assert!(
+        !add_result.success,
+        "node_add should fail for invalid config"
+    );
+    assert!(
+        add_result
+            .error_message
+            .as_deref()
+            .unwrap_or("")
+            .contains("Failed to parse node config"),
+        "error should mention config parse failure, got: {:?}",
+        add_result.error_message
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_git_add_missing_config_fails() {
+    let git_repo_temp_dir = TempDir::new().unwrap();
+    let git_repo_path = create_git_repo_with_invalid_config(git_repo_temp_dir.path());
+
+    let started_core_node = start_core_node_with_mock_messenger().await;
+
+    let repo_url = GitUrl::try_from(git_repo_path.as_path()).expect("git repo path should parse");
+
+    // Point to a path that doesn't exist in the repo.
+    let add_result = send_node_add_and_wait(
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        NodeAddSource::Git {
+            repo_url,
+            repo_path: "nodes/nonexistent_node",
+            repo_ref: None,
+        },
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        None,
+    )
+    .await
+    .expect("node_add request should succeed");
+
+    assert!(
+        !add_result.success,
+        "node_add should fail for missing config"
+    );
+    let err = add_result.error_message.as_deref().unwrap_or("");
+    // The shallow probe reports "not found in repository"; if the probe falls
+    // back (e.g. local transport doesn't support shallow fetch), the full clone
+    // path reports a filesystem read error instead.
+    assert!(
+        err.contains("not found in repository") || err.contains("Failed to parse node config"),
+        "error should mention config not found or parse failure, got: {:?}",
+        add_result.error_message
+    );
 }
