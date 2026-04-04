@@ -35,6 +35,66 @@ The `source` attribute supports three formats:
  - **Git repository**: Requires `repo`, `path` (location within the repo), and `ref` attributes
  - **Local path**: Specified via the `local` key, pointing to a directory on your filesystem. The path can be either absolute or relative to the `peppy_launcher.json5` file
 
+### Variants
+
+Each deployment source can optionally include a `variant` field to select a specific variant of the node (e.g., a mock implementation or an architecture-specific build). The `variant` object supports three formats:
+
+ - **Name**: Reference a variant by name — `{ name: "mock-rust" }`
+ - **Git repository**: Fetch a variant from a git repo — requires `repo`, with optional `path` and `ref`
+ - **URL**: Fetch a variant from an HTTP(S) URL — requires `url`, with optional `sha256`
+
+Examples:
+
+```json5
+// Named variant
+{
+  source: {
+    repo: "https://github.com/Peppy-bot/nodes_hub.git",
+    path: "rust/fake_openarm01_controller",
+    ref: "main",
+    variant: {
+      name: "mock-rust"
+    }
+  },
+  instances: [
+    { instance_id: "the_nervous_system" }
+  ]
+}
+```
+
+```json5
+// Git variant
+{
+  source: {
+    local: "./my_node",
+    variant: {
+      repo: "https://github.com/Peppy-bot/node_variants.git",
+      path: "mock",
+      ref: "v1.0.0"
+    }
+  },
+  instances: [
+    { instance_id: "my_node_1" }
+  ]
+}
+```
+
+```json5
+// URL variant
+{
+  source: {
+    local: "./my_node",
+    variant: {
+      url: "https://example.com/my_node_variant.tar.zst",
+      sha256: "33e83da60a54e3bb487a9a3b67705918602143b30f158143b6909acaf017a36a"
+    }
+  },
+  instances: [
+    { instance_id: "my_node_1" }
+  ]
+}
+```
+
 :::caution
 The git `ref` and `deployment.source` tag share the same format but are independent values.
 This means you could have a git `ref` of `v0.1.0` while `peppy.json5` specifies `v0.1.1`.
