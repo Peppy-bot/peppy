@@ -25,10 +25,13 @@ pub fn test_peppy_dirs() -> PeppyDirs {
 
 pub const STUB_NODE_CONFIG: &str = r#"{
   schema_version: 1,
-  manifest: { name: "generated_node",
-    tag: "0.1.0" },
+  manifest: {
+    name: "generated_node",
+    tag: "0.1.0"
+  },
 
-  execution: { language: "rust",
+  execution: {
+    language: "rust",
     start_cmd: ["./target/release/generated_node"]
   }
 }
