@@ -86,6 +86,42 @@ const EMITTED_TOPIC_FIXED_STRING_ARRAY_EXAMPLE: &str = r#"
 }
 "#;
 
+const EMITTED_TOPIC_FIXED_OBJECT_ARRAY_EXAMPLE: &str = r#"
+{
+  name: "detections",
+  qos_profile: "sensor_data",
+  message_format: {
+    objects: {
+      $type: "array",
+      $items: {
+        $type: "object",
+        x: "f32",
+        y: "f32"
+      },
+      $length: 4
+    }
+  }
+}
+"#;
+
+const EMITTED_TOPIC_DYNAMIC_OBJECT_ARRAY_EXAMPLE: &str = r#"
+{
+  name: "detections",
+  qos_profile: "sensor_data",
+  message_format: {
+    objects: {
+      $type: "array",
+      $items: {
+        $type: "object",
+        x: "f32",
+        y: "f32",
+        label: "string"
+      }
+    }
+  }
+}
+"#;
+
 const SUBSCRIBED_TOPIC_EXAMPLE1: &str = r#"
 {
     local_node_id: "uvc_camera",
@@ -306,6 +342,54 @@ fn emit_topic_rejects_fixed_string_array() {
         }
         other => panic!("expected UnsupportedFixedArrayItemType, got: {other:?}"),
     }
+}
+
+#[test]
+fn emit_topic_rejects_fixed_object_array() {
+    use crate::error::Error;
+
+    let topic = parse_emitted_topic(EMITTED_TOPIC_FIXED_OBJECT_ARRAY_EXAMPLE);
+    let mut generator = RustGenerator::new();
+
+    let err = generator.add_emitted_topic(&topic).unwrap_err();
+
+    match err {
+        Error::UnsupportedFixedArrayItemType {
+            language,
+            field,
+            item,
+        } => {
+            assert_eq!(language, PeppygenLanguage::Rust);
+            assert_eq!(field, "objects");
+            assert_eq!(item, "object");
+        }
+        other => panic!("expected UnsupportedFixedArrayItemType, got: {other:?}"),
+    }
+}
+
+#[test]
+fn emit_topic_with_dynamic_object_array() {
+    let topic = parse_emitted_topic(EMITTED_TOPIC_DYNAMIC_OBJECT_ARRAY_EXAMPLE);
+
+    let mut generator = RustGenerator::new();
+    generator.add_emitted_topic(&topic).unwrap();
+    let artifacts = render_artifacts(generator.into_artifacts());
+    assert_eq!(
+        artifacts.len(),
+        1,
+        "expected a single generated artifact, got {}",
+        artifacts.len()
+    );
+    let rendered = artifacts.into_iter().next().expect("artifact is present");
+
+    // Object array serialization: list init and element access
+    assert_contains_all(&rendered, &["init_objects(", ".reborrow().get(", ".len()"]);
+
+    // Dynamic-length path must not emit a fixed-length guard
+    assert!(
+        !rendered.contains("assert_eq"),
+        "dynamic object array must not emit a length check"
+    );
 }
 
 /// In the case of a topic, a "subscribed" topic is an entity expects to receive messages from another entity
