@@ -340,11 +340,11 @@ fn generate_array_reader(
         SchemaType::Object(object) => generate_object_array_reader(
             reader_expr,
             field_name,
-            &method_ident,
             &object.fields,
             struct_prefix,
             context_expr,
             names,
+            array.length,
         ),
         _ => match array.items.as_ref().as_type_token() {
             Some(TypeToken::U8) => Ok(generate_u8_array_reader(
@@ -541,12 +541,16 @@ fn generate_object_reader(
 fn generate_object_array_reader(
     reader_expr: &TokenStream,
     field_name: &str,
-    method_ident: &Ident,
     fields: &IndexMap<String, SchemaType>,
     struct_prefix: &str,
     context_expr: &TokenStream,
     names: &mut NameGenerator,
+    length: Option<usize>,
 ) -> Result<(Vec<TokenStream>, Ident)> {
+    let method_ident = Ident::new(
+        &format!("get_{}", sanitize_component(field_name)),
+        Span::call_site(),
+    );
     let list_ident = names.next("list");
     let result_ident = names.next("result");
     let value_ident = names.next(field_name);
@@ -587,16 +591,91 @@ fn generate_object_array_reader(
             })?;
     }];
 
-    statements.push(quote! {
-        let mut #result_ident = Vec::with_capacity(#list_ident.len() as usize);
-        for #element_ident in #list_ident.iter() {
-            #( #field_statements )*
-            #result_ident.push(#struct_ident {
-                #( #field_inits ),*
-            });
-        }
-        let #value_ident = #result_ident;
-    });
+    if let Some(len) = length {
+        let len_lit = Literal::usize_unsuffixed(len);
+        statements.push(quote! {
+            let mut #result_ident = Vec::with_capacity(#len_lit);
+            for #element_ident in #list_ident.iter() {
+                #( #field_statements )*
+                #result_ident.push(#struct_ident {
+                    #( #field_inits ),*
+                });
+            }
+            let #value_ident: [#struct_ident; #len_lit] = #result_ident.try_into().map_err(|v: Vec<_>| {
+                crate::Error::Deserialization(
+                    format!("invalid fixed list length for field '{}': expected {}, got {}", #field_literal, #len_lit, v.len())
+                )
+            })?;
+        });
+    } else {
+        statements.push(quote! {
+            let mut #result_ident = Vec::with_capacity(#list_ident.len() as usize);
+            for #element_ident in #list_ident.iter() {
+                #( #field_statements )*
+                #result_ident.push(#struct_ident {
+                    #( #field_inits ),*
+                });
+            }
+            let #value_ident = #result_ident;
+        });
+    }
 
     Ok((statements, value_ident))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn call_object_array_reader(length: Option<usize>) -> String {
+        let reader_expr = quote!(reader);
+        let mut fields = IndexMap::new();
+        fields.insert("x".to_string(), SchemaType::Type(TypeToken::I32));
+        let context_expr = quote!("TestMsg");
+        let mut names = NameGenerator::new();
+
+        let (statements, _) = generate_object_array_reader(
+            &reader_expr,
+            "frames",
+            &fields,
+            "Test",
+            &context_expr,
+            &mut names,
+            length,
+        )
+        .unwrap();
+
+        let combined = quote! { #( #statements )* };
+        combined.to_string()
+    }
+
+    #[test]
+    fn object_array_reader_fixed_length_uses_try_into() {
+        let code = call_object_array_reader(Some(4));
+        assert!(
+            code.contains("try_into"),
+            "fixed-length path must use try_into, got: {code}"
+        );
+        assert!(
+            code.contains("Vec :: with_capacity (4"),
+            "expected fixed literal 4 in Vec::with_capacity, got: {code}"
+        );
+        assert!(
+            code.contains(r#""frames" , 4 , v . len ()"#),
+            "error message must reference field name and expected length, got: {code}"
+        );
+    }
+
+    #[test]
+    fn object_array_reader_dynamic_length_uses_vec() {
+        let code = call_object_array_reader(None);
+        assert!(
+            !code.contains("try_into"),
+            "dynamic-length path must not use try_into, got: {code}"
+        );
+        assert!(
+            code.contains("Vec :: with_capacity"),
+            "dynamic-length path must use Vec::with_capacity, got: {code}"
+        );
+    }
 }

@@ -43,6 +43,7 @@ pub fn generate_field_reader_statements(
                 &object.fields,
                 struct_prefix,
                 counter,
+                array.length,
             ),
             _ => {
                 let is_u8 = matches!(array.items.as_ref().as_type_token(), Some(TypeToken::U8));
@@ -262,6 +263,7 @@ fn generate_object_array_reader(
     fields: &IndexMap<String, SchemaType>,
     struct_prefix: &str,
     counter: &mut u32,
+    length: Option<usize>,
 ) -> String {
     let capnp_name = sanitize_capnp_field_name(field_name);
     let python_name = sanitize_python_identifier(field_name);
@@ -311,5 +313,61 @@ fn generate_object_array_reader(
     ));
 
     builder.dedent();
+
+    if let Some(len) = length {
+        builder.line(&format!("if len({result_var}) != {len}:"));
+        builder.indent();
+        builder.line(&format!(
+            "raise ValueError(\"invalid fixed list length for field '{field_name}': expected {len}, got \" + str(len({result_var})))"
+        ));
+        builder.dedent();
+    }
+
     result_var
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn call_object_array_reader(length: Option<usize>) -> String {
+        let mut builder = PythonCodeBuilder::new();
+        let mut counter = 0u32;
+        let mut fields = IndexMap::new();
+        fields.insert("x".to_string(), SchemaType::Type(TypeToken::I32));
+
+        generate_object_array_reader(
+            &mut builder,
+            "reader",
+            "frames",
+            &fields,
+            "Test",
+            &mut counter,
+            length,
+        );
+
+        builder.build()
+    }
+
+    #[test]
+    fn object_array_reader_emits_length_check() {
+        let code = call_object_array_reader(Some(3));
+        assert!(
+            code.contains("raise ValueError"),
+            "fixed-length path must raise ValueError, got:\n{code}"
+        );
+        assert!(
+            code.contains("expected 3"),
+            "error message must mention expected length, got:\n{code}"
+        );
+    }
+
+    #[test]
+    fn object_array_reader_no_length_check_when_dynamic() {
+        let code = call_object_array_reader(None);
+        assert!(
+            !code.contains("raise ValueError"),
+            "dynamic-length path must not raise ValueError, got:\n{code}"
+        );
+    }
 }
