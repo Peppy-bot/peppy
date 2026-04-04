@@ -66,10 +66,10 @@ pub mod node {
         ConsumedService, ConsumedTopic, ContainerConfig, DEFAULT_VARIANT_NAME, DependsOn,
         EmittedTopic, Execution, ExposedAction, ExposedService, ExternalConsumedTopic,
         InterfaceKind, Interfaces, LinkedConsumedTopic, Manifest, MergedVariant, MessageFormat,
-        Name, NodeConfig, NodeConfigCreator, NodeConfigParser, NodeDependency, ParsedNodeConfig,
-        PeppyNodeConfig, PeppygenLanguage, PrimitiveSchema, QoSProfile, SchemaType,
-        ServiceInterfaces, Toolchain, TopicInterfaces, TypeToken, Variant, VariantConfig,
-        VariantConfigParser, extract_parameter_refs, is_blocked_mount_source,
+        Name, NodeConfig, NodeConfigCreator, NodeConfigParser, NodeDependency, ObjectKind,
+        ObjectSchema, ParsedNodeConfig, PeppyNodeConfig, PeppygenLanguage, PrimitiveSchema,
+        QoSProfile, SchemaType, ServiceInterfaces, Toolchain, TopicInterfaces, TypeToken, Variant,
+        VariantConfig, VariantConfigParser, extract_parameter_refs, is_blocked_mount_source,
     };
 }
 
