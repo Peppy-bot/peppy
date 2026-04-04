@@ -419,7 +419,7 @@ pub struct PrimitiveSchema {
 pub struct ArraySchema {
     #[serde(rename = "$type")]
     pub kind: ArrayKind,
-    #[serde(rename = "$items")]
+    #[serde(rename = "$items", deserialize_with = "deserialize_array_items")]
     pub items: Box<SchemaType>,
     #[serde(rename = "$length", default, skip_serializing_if = "Option::is_none")]
     pub length: Option<usize>,
@@ -447,6 +447,19 @@ pub struct ObjectSchema {
 #[serde(rename_all = "lowercase")]
 pub enum ObjectKind {
     Object,
+}
+
+fn deserialize_array_items<'de, D>(deserializer: D) -> Result<Box<SchemaType>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let schema = SchemaType::deserialize(deserializer)?;
+    if schema.is_optional() {
+        return Err(de::Error::custom(
+            "`$optional` is not supported on array items",
+        ));
+    }
+    Ok(Box::new(schema))
 }
 
 impl<'de> Deserialize<'de> for ObjectSchema {
@@ -489,11 +502,13 @@ impl<'de> Visitor<'de> for ObjectSchemaVisitor {
                 }
                 _ => {
                     let value: SchemaType = map.next_value()?;
-                    if fields.insert(key.clone(), value).is_some() {
+                    if value.is_optional() {
                         return Err(de::Error::custom(format!(
-                            "duplicate object field `{}`",
-                            key
+                            "`$optional` is not supported on nested field `{key}`"
                         )));
+                    }
+                    if fields.insert(key.clone(), value).is_some() {
+                        return Err(de::Error::custom(format!("duplicate object field `{key}`")));
                     }
                 }
             }
@@ -1587,6 +1602,64 @@ mod tests {
         let serialized = serde_json5::to_string(&parsed).expect("should serialize");
         let reparsed: MessageFormat = serde_json5::from_str(&serialized).expect("should re-parse");
         assert_eq!(parsed, reparsed);
+    }
+
+    #[test]
+    fn root_level_optional_is_accepted() {
+        let json5 = r#"{
+            error_msg: { $type: "string", $optional: true },
+            code: "u32"
+        }"#;
+
+        let parsed: MessageFormat = serde_json5::from_str(json5).expect("should parse");
+        assert!(parsed.0["error_msg"].is_optional());
+        assert!(!parsed.0["code"].is_optional());
+    }
+
+    #[test]
+    fn object_field_rejects_optional() {
+        let json5 = r#"{
+            header: {
+                $type: "object",
+                debug: { $type: "string", $optional: true }
+            }
+        }"#;
+
+        let parsed: Result<MessageFormat, _> = serde_json5::from_str(json5);
+        assert!(
+            parsed.is_err(),
+            "optional on nested object field should fail"
+        );
+    }
+
+    #[test]
+    fn array_items_rejects_optional() {
+        let json5 = r#"{
+            values: { $type: "array", $items: { $type: "u8", $optional: true } }
+        }"#;
+
+        let parsed: Result<MessageFormat, _> = serde_json5::from_str(json5);
+        assert!(parsed.is_err(), "optional on array items should fail");
+    }
+
+    #[test]
+    fn deeply_nested_rejects_optional() {
+        let json5 = r#"{
+            frames: {
+                $type: "array",
+                $items: {
+                    $type: "object",
+                    name: "string",
+                    debug: { $type: "string", $optional: true }
+                }
+            }
+        }"#;
+
+        let parsed: Result<MessageFormat, _> = serde_json5::from_str(json5);
+        assert!(
+            parsed.is_err(),
+            "optional on field inside array-of-objects should fail"
+        );
     }
 
     #[test]
