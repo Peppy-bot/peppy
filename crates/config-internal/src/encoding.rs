@@ -122,6 +122,17 @@ impl MessageFormatMapper {
                     {
                         *entry = rendered;
                     }
+                    if let SchemaType::Object(object) = array.items.as_ref() {
+                        for (field_name, field_schema) in &object.fields {
+                            let sanitized = sanitize_field_name(field_name);
+                            let next_key = if current_key.is_empty() {
+                                sanitized
+                            } else {
+                                format!("{current_key}.{sanitized}")
+                            };
+                            override_array_types(&next_key, field_schema, mapping);
+                        }
+                    }
                 }
                 SchemaType::Object(object) => {
                     for (field_name, field_schema) in &object.fields {
