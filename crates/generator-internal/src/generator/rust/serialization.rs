@@ -189,14 +189,18 @@ fn generate_field_assignment_inner(
             &primitive.kind,
         )),
         SchemaType::Array(array) => match array.items.as_ref() {
-            SchemaType::Object(object) => generate_object_list_assignment(
-                builder_expr,
-                &init_method,
-                value_expr,
-                &object.fields,
-                names,
-                value_is_ref,
-            ),
+            SchemaType::Object(object) => {
+                let length_expr = make_length_expr(array.length, value_expr, field_name)?;
+                generate_object_list_assignment(
+                    builder_expr,
+                    &init_method,
+                    value_expr,
+                    &object.fields,
+                    names,
+                    value_is_ref,
+                    &length_expr,
+                )
+            }
             _ => {
                 let item_token = array.items.as_ref().as_type_token();
                 if matches!(item_token, Some(TypeToken::U8)) {
@@ -291,6 +295,26 @@ fn generate_time_assignment(
     }
 }
 
+fn make_length_expr(
+    length: Option<usize>,
+    value_expr: &TokenStream,
+    field_name: &str,
+) -> Result<TokenStream> {
+    match length {
+        Some(len) => {
+            let len_lit = Literal::u32_unsuffixed(u32::try_from(len).map_err(|_| {
+                Error::InvariantViolation {
+                    context: format!("list length {len} for field `{field_name}` exceeds u32::MAX"),
+                }
+            })?);
+            Ok(quote!(#len_lit))
+        }
+        None => Ok(quote!(
+            u32::try_from((#value_expr).len()).expect("list length exceeds u32::MAX")
+        )),
+    }
+}
+
 fn generate_list_assignment(
     builder_expr: &TokenStream,
     init_method: &Ident,
@@ -304,17 +328,7 @@ fn generate_list_assignment(
     let idx_ident = names.next("idx");
     let element_ident = names.next("value");
 
-    let length_expr = match length {
-        Some(len) => {
-            let len_lit = Literal::u32_unsuffixed(u32::try_from(len).map_err(|_| {
-                Error::InvariantViolation {
-                    context: format!("list length {len} for field `{field_name}` exceeds u32::MAX"),
-                }
-            })?);
-            quote!(#len_lit)
-        }
-        None => quote!(u32::try_from((#value_expr).len()).expect("list length exceeds u32::MAX")),
-    };
+    let length_expr = make_length_expr(length, value_expr, field_name)?;
 
     let element_setter = match token {
         TypeToken::String => quote!(#list_ident.set(#idx_ident as u32, #element_ident.as_str());),
@@ -390,13 +404,11 @@ fn generate_object_list_assignment(
     fields: &IndexMap<String, SchemaType>,
     names: &mut NameGenerator,
     value_is_ref: bool,
+    length_expr: &TokenStream,
 ) -> Result<TokenStream> {
     let list_ident = names.next("list");
     let idx_ident = names.next("idx");
     let element_ident = names.next("element");
-
-    let length_expr =
-        quote!(u32::try_from((#value_expr).len()).expect("list length exceeds u32::MAX"));
 
     let element_builder_ident = names.next("builder");
     let mut nested = Vec::with_capacity(fields.len());
@@ -465,4 +477,74 @@ pub fn build_serialize_payload(
         })?;
         peppylib::Payload::from(buffer)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// When `length` is `Some`, the generated code must use the fixed literal
+    /// instead of a runtime `.len()` call.
+    #[test]
+    fn object_list_assignment_uses_fixed_length_literal() {
+        let builder = quote!(root);
+        let init = Ident::new("init_frames", Span::call_site());
+        let value = quote!(self.frames);
+        let mut fields = IndexMap::new();
+        fields.insert("x".to_string(), SchemaType::Type(TypeToken::I32));
+        let mut names = NameGenerator::new();
+
+        let length_expr = make_length_expr(Some(4), &value, "frames").unwrap();
+        let tokens = generate_object_list_assignment(
+            &builder,
+            &init,
+            &value,
+            &fields,
+            &mut names,
+            true,
+            &length_expr,
+        )
+        .unwrap();
+
+        let code = tokens.to_string();
+        // Must use the literal 4, not a runtime .len() call.
+        assert!(
+            code.contains("init_frames (4"),
+            "expected fixed literal 4 in generated code, got: {code}"
+        );
+        assert!(
+            !code.contains("len"),
+            "fixed-length path must not use .len(), got: {code}"
+        );
+    }
+
+    /// When `length` is `None`, the generated code must fall back to runtime
+    /// `.len()`.
+    #[test]
+    fn object_list_assignment_uses_runtime_len_when_no_fixed_length() {
+        let builder = quote!(root);
+        let init = Ident::new("init_frames", Span::call_site());
+        let value = quote!(self.frames);
+        let mut fields = IndexMap::new();
+        fields.insert("x".to_string(), SchemaType::Type(TypeToken::I32));
+        let mut names = NameGenerator::new();
+
+        let length_expr = make_length_expr(None, &value, "frames").unwrap();
+        let tokens = generate_object_list_assignment(
+            &builder,
+            &init,
+            &value,
+            &fields,
+            &mut names,
+            true,
+            &length_expr,
+        )
+        .unwrap();
+
+        let code = tokens.to_string();
+        assert!(
+            code.contains("len"),
+            "dynamic-length path must use .len(), got: {code}"
+        );
+    }
 }
