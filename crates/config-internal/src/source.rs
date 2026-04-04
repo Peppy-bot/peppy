@@ -220,10 +220,7 @@ impl<'de> Deserialize<'de> for VariantSource {
                     invalid_deployment_source::<D::Error>("variant git source requires `repo`")
                 })?;
                 let repo = trim_non_empty::<D::Error>(repo, "variant git repo cannot be empty")?;
-                let path = raw
-                    .path
-                    .map(normalize_git_path::<D::Error>)
-                    .transpose()?;
+                let path = raw.path.map(normalize_git_path::<D::Error>).transpose()?;
                 let ref_ = raw
                     .ref_
                     .map(|r| trim_non_empty::<D::Error>(r, "variant git ref cannot be empty"))

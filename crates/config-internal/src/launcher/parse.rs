@@ -171,46 +171,45 @@ mod tests {
     #[test]
     fn test_parse_peppy_config_with_variants() {
         let valid_sha = "33e83da60a54e3bb487a9a3b67705918602143b30f158143b6909acaf017a36a";
-        let json5 = format!(
-            r#"{{
+        let json5 = r#"{
             deployments: [
-                {{
-                    source: {{
+                {
+                    source: {
                         repo: "https://github.com/Peppy-bot/nodes_hub.git",
                         path: "robot_brain",
                         ref: "main",
-                        variant: {{ name: "mock-rust" }}
-                    }},
-                    instances: [{{ instance_id: "the_brain" }}]
-                }},
-                {{
-                    source: {{
+                        variant: { name: "mock-rust" }
+                    },
+                    instances: [{ instance_id: "the_brain" }]
+                },
+                {
+                    source: {
                         url: "https://example.com/node.tar.zst",
-                        sha256: "{valid_sha}",
-                        variant: {{
+                        sha256: "VALID_SHA",
+                        variant: {
                             url: "https://example.com/variant.tar.zst"
-                        }}
-                    }},
-                    instances: [{{ instance_id: "node_1" }}]
-                }},
-                {{
-                    source: {{
+                        }
+                    },
+                    instances: [{ instance_id: "node_1" }]
+                },
+                {
+                    source: {
                         local: "./my_node",
-                        variant: {{
+                        variant: {
                             repo: "https://github.com/Peppy-bot/variants.git",
                             path: "mock_node",
                             ref: "v2"
-                        }}
-                    }},
-                    instances: [{{ instance_id: "node_2" }}]
-                }},
-                {{
-                    source: {{ local: "./no_variant_node" }},
-                    instances: [{{ instance_id: "node_3" }}]
-                }}
+                        }
+                    },
+                    instances: [{ instance_id: "node_2" }]
+                },
+                {
+                    source: { local: "./no_variant_node" },
+                    instances: [{ instance_id: "node_3" }]
+                }
             ]
-        }}"#
-        );
+        }"#
+        .replace("VALID_SHA", valid_sha);
 
         let cfg = PeppyLauncherParser::from_content(&json5).unwrap();
         assert_eq!(cfg.deployments.len(), 4);
