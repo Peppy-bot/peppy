@@ -4,6 +4,7 @@ description: Release notes and version history for PeppyOS
 ---
 
 import { getCollection } from 'astro:content';
+import { releaseSlugFromVersion } from '../../../lib/releaseEntry.js';
 import HtmlContent from '../../../components/HtmlContent.astro';
 
 export const releases = (await getCollection('releases')).sort(
@@ -17,7 +18,7 @@ Subscribe to the [Atom feed](/changelog.xml) for updates.
 {releases.map((release, index) => (
   <details open={index === 0}>
     <summary>
-      <strong>v{release.data.version} (Alpha)</strong> — <em>{release.data.description}</em>
+      <strong><a href={`/releases/${releaseSlugFromVersion(release.data.version)}/`}>v{release.data.version} (Alpha)</a></strong> — <em>{release.data.description}</em>
     </summary>
     <HtmlContent html={release.body ?? ''} />
   </details>
