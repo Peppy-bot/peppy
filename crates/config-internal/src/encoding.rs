@@ -126,9 +126,9 @@ impl MessageFormatMapper {
                         for (field_name, field_schema) in &object.fields {
                             let sanitized = sanitize_field_name(field_name);
                             let next_key = if current_key.is_empty() {
-                                sanitized
+                                format!("[].{sanitized}")
                             } else {
-                                format!("{current_key}.{sanitized}")
+                                format!("{current_key}[].{sanitized}")
                             };
                             override_array_types(&next_key, field_schema, mapping);
                         }
@@ -951,6 +951,45 @@ mod tests {
         assert!(
             capnp_module_content.contains("pub mod frame_capnp;"),
             "capnp.rs should contain 'pub mod frame_capnp;'"
+        );
+    }
+
+    #[test]
+    fn test_override_array_types_for_nested_object_arrays() {
+        let msg_format: MessageFormat = serde_json5::from_str(
+            r#"
+            {
+              points: {
+                $type: "array",
+                $items: {
+                  $type: "object",
+                  coords: {
+                    $type: "array",
+                    $items: "f32",
+                    $length: 3
+                  },
+                  label: "string"
+                }
+              }
+            }
+            "#,
+        )
+        .expect("valid format");
+
+        let artifacts = MessageFormatMapper::new("test_nested_object_array", msg_format)
+            .map_message_format_to_capnpn()
+            .expect("artifacts generation succeeds");
+
+        let canonical_type_map = artifacts
+            .type_mapping()
+            .iter()
+            .map(|(key, value)| (key.clone(), canonicalize_literal(value)))
+            .collect::<std::collections::HashMap<_, _>>();
+
+        assert_eq!(
+            canonical_type_map.get("points[].coords"),
+            Some(&canonicalize_literal("[f32; 3]")),
+            "coords inside array-of-objects should be overridden to a fixed-size array via the [] key path"
         );
     }
 }
