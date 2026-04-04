@@ -406,8 +406,10 @@ mod tests {
     }
 
     #[test]
-    fn reject_optional_nested_scalar_for_rust() {
-        let format: MessageFormat = serde_json5::from_str(
+    fn reject_optional_nested_scalar_at_parse_time() {
+        // `$optional` on nested object fields is rejected at deserialization
+        // time by the ObjectSchema visitor, not at generator validation time.
+        let result: std::result::Result<MessageFormat, _> = serde_json5::from_str(
             r#"
             {
                 status: {
@@ -419,17 +421,11 @@ mod tests {
                 }
             }
             "#,
-        )
-        .unwrap();
-
-        let err = validate_optional_scalar_fields_for_rust(&format).unwrap_err();
-        match err {
-            Error::UnsupportedOptionalScalarType { field, item, .. } => {
-                assert_eq!(field, "status.healthy");
-                assert_eq!(item, "bool");
-            }
-            other => panic!("expected UnsupportedOptionalScalarType, got: {other:?}"),
-        }
+        );
+        assert!(
+            result.is_err(),
+            "optional on nested object field should be rejected at parse time"
+        );
     }
 
     #[test]

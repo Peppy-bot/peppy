@@ -180,9 +180,14 @@ fn generate_field_reader_statements_inner(
             context_expr,
             names,
         )),
-        SchemaType::Array(array) => {
-            generate_array_reader(reader_expr, field_name, array, context_expr, names)
-        }
+        SchemaType::Array(array) => generate_array_reader(
+            reader_expr,
+            field_name,
+            array,
+            struct_prefix,
+            context_expr,
+            names,
+        ),
         SchemaType::Object(object) => generate_object_reader(
             reader_expr,
             field_name,
@@ -323,6 +328,7 @@ fn generate_array_reader(
     reader_expr: &TokenStream,
     field_name: &str,
     array: &ArraySchema,
+    struct_prefix: &str,
     context_expr: &TokenStream,
     names: &mut NameGenerator,
 ) -> Result<(Vec<TokenStream>, Ident)> {
@@ -330,27 +336,38 @@ fn generate_array_reader(
         &format!("get_{}", sanitize_component(field_name)),
         Span::call_site(),
     );
-    match array.items.as_ref().as_type_token() {
-        Some(TypeToken::U8) => Ok(generate_u8_array_reader(
+    match array.items.as_ref() {
+        SchemaType::Object(object) => generate_object_array_reader(
             reader_expr,
             field_name,
             &method_ident,
-            array.length,
+            &object.fields,
+            struct_prefix,
             context_expr,
             names,
-        )),
-        Some(token) => Ok(generate_primitive_array_reader(
-            reader_expr,
-            field_name,
-            token,
-            &method_ident,
-            array.length,
-            context_expr,
-            names,
-        )),
-        None => Err(Error::UnsupportedArrayItemSchema {
-            field: field_name.to_string(),
-        }),
+        ),
+        _ => match array.items.as_ref().as_type_token() {
+            Some(TypeToken::U8) => Ok(generate_u8_array_reader(
+                reader_expr,
+                field_name,
+                &method_ident,
+                array.length,
+                context_expr,
+                names,
+            )),
+            Some(token) => Ok(generate_primitive_array_reader(
+                reader_expr,
+                field_name,
+                token,
+                &method_ident,
+                array.length,
+                context_expr,
+                names,
+            )),
+            None => Err(Error::UnsupportedArrayItemSchema {
+                field: field_name.to_string(),
+            }),
+        },
     }
 }
 
@@ -516,6 +533,69 @@ fn generate_object_reader(
         let #value_ident = #struct_ident {
             #( #field_inits ),*
         };
+    });
+
+    Ok((statements, value_ident))
+}
+
+fn generate_object_array_reader(
+    reader_expr: &TokenStream,
+    field_name: &str,
+    method_ident: &Ident,
+    fields: &IndexMap<String, SchemaType>,
+    struct_prefix: &str,
+    context_expr: &TokenStream,
+    names: &mut NameGenerator,
+) -> Result<(Vec<TokenStream>, Ident)> {
+    let list_ident = names.next("list");
+    let result_ident = names.next("result");
+    let value_ident = names.next(field_name);
+    let field_literal = Literal::string(field_name);
+
+    let item_field_name = format!("{field_name}_item");
+    let nested_prefix = format!("{struct_prefix}{}", to_camel_case(&item_field_name));
+    let struct_ident = Ident::new(&nested_prefix, Span::call_site());
+
+    let element_ident = names.next("element");
+    let mut field_statements = Vec::new();
+    let mut field_inits = Vec::new();
+
+    for (nested_name, nested_schema) in fields {
+        let (mut nested_statements, nested_value_ident) = generate_field_reader_statements(
+            &quote!(#element_ident),
+            nested_name.as_str(),
+            nested_schema,
+            &nested_prefix,
+            context_expr,
+            names,
+        )?;
+        field_statements.append(&mut nested_statements);
+        let field_ident = Ident::new(&sanitize_rust_identifier(nested_name), Span::call_site());
+        field_inits.push(quote!(#field_ident: #nested_value_ident));
+    }
+
+    let mut statements = vec![quote! {
+        let #list_ident = #reader_expr
+            .reborrow()
+            .#method_ident()
+            .map_err(|source| {
+                #[allow(clippy::all)]
+                let context = #context_expr;
+                crate::Error::Deserialization(
+                    format!("field '{}' in {}: {}", #field_literal, context, source)
+                )
+            })?;
+    }];
+
+    statements.push(quote! {
+        let mut #result_ident = Vec::with_capacity(#list_ident.len() as usize);
+        for #element_ident in #list_ident.iter() {
+            #( #field_statements )*
+            #result_ident.push(#struct_ident {
+                #( #field_inits ),*
+            });
+        }
+        let #value_ident = #result_ident;
     });
 
     Ok((statements, value_ident))

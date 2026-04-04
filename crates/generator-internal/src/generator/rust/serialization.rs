@@ -188,26 +188,36 @@ fn generate_field_assignment_inner(
             value_is_ref,
             &primitive.kind,
         )),
-        SchemaType::Array(array) => {
-            let item_token = array.items.as_ref().as_type_token();
-            if matches!(item_token, Some(TypeToken::U8)) {
-                Ok(quote!(#builder_expr.#set_method(#value_expr.as_ref());))
-            } else if let Some(token) = item_token {
-                generate_list_assignment(
-                    builder_expr,
-                    &init_method,
-                    value_expr,
-                    field_name,
-                    array.length,
-                    token,
-                    names,
-                )
-            } else {
-                Err(Error::UnsupportedArrayItemSchema {
-                    field: field_name.to_string(),
-                })
+        SchemaType::Array(array) => match array.items.as_ref() {
+            SchemaType::Object(object) => generate_object_list_assignment(
+                builder_expr,
+                &init_method,
+                value_expr,
+                &object.fields,
+                names,
+                value_is_ref,
+            ),
+            _ => {
+                let item_token = array.items.as_ref().as_type_token();
+                if matches!(item_token, Some(TypeToken::U8)) {
+                    Ok(quote!(#builder_expr.#set_method(#value_expr.as_ref());))
+                } else if let Some(token) = item_token {
+                    generate_list_assignment(
+                        builder_expr,
+                        &init_method,
+                        value_expr,
+                        field_name,
+                        array.length,
+                        token,
+                        names,
+                    )
+                } else {
+                    Err(Error::UnsupportedArrayItemSchema {
+                        field: field_name.to_string(),
+                    })
+                }
             }
-        }
+        },
         SchemaType::Object(object) => generate_object_assignment(
             builder_expr,
             &init_method,
@@ -370,6 +380,53 @@ fn generate_object_assignment(
     Ok(quote! {
         let mut #builder_ident = #builder_expr.reborrow().#init_method();
         #(#nested)*
+    })
+}
+
+fn generate_object_list_assignment(
+    builder_expr: &TokenStream,
+    init_method: &Ident,
+    value_expr: &TokenStream,
+    fields: &IndexMap<String, SchemaType>,
+    names: &mut NameGenerator,
+    value_is_ref: bool,
+) -> Result<TokenStream> {
+    let list_ident = names.next("list");
+    let idx_ident = names.next("idx");
+    let element_ident = names.next("element");
+
+    let length_expr =
+        quote!(u32::try_from((#value_expr).len()).expect("list length exceeds u32::MAX"));
+
+    let element_builder_ident = names.next("builder");
+    let mut nested = Vec::with_capacity(fields.len());
+    for (nested_name, nested_schema) in fields {
+        let nested_ident = Ident::new(
+            &sanitize_rust_identifier(nested_name.as_str()),
+            Span::call_site(),
+        );
+        let nested_value_expr = if value_is_ref {
+            quote!(&#element_ident.#nested_ident)
+        } else {
+            quote!(#element_ident.#nested_ident)
+        };
+        nested.push(generate_field_assignment_inner(
+            &quote!(#element_builder_ident),
+            nested_name,
+            nested_schema,
+            &nested_value_expr,
+            names,
+            true,
+            value_is_ref,
+        )?);
+    }
+
+    Ok(quote! {
+        let mut #list_ident = #builder_expr.reborrow().#init_method(#length_expr);
+        for (#idx_ident, #element_ident) in (#value_expr).iter().enumerate() {
+            let mut #element_builder_ident = #list_ident.reborrow().get(#idx_ident as u32);
+            #(#nested)*
+        }
     })
 }
 

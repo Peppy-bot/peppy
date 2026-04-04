@@ -459,6 +459,11 @@ where
             "`$optional` is not supported on array items",
         ));
     }
+    if matches!(schema, SchemaType::Array(_)) {
+        return Err(de::Error::custom(
+            "nested arrays (arrays of arrays) are not supported as array items",
+        ));
+    }
     Ok(Box::new(schema))
 }
 
@@ -1640,6 +1645,19 @@ mod tests {
 
         let parsed: Result<MessageFormat, _> = serde_json5::from_str(json5);
         assert!(parsed.is_err(), "optional on array items should fail");
+    }
+
+    #[test]
+    fn array_items_rejects_nested_arrays() {
+        let json5 = r#"{
+            data: { $type: "array", $items: { $type: "array", $items: "u8" } }
+        }"#;
+
+        let result: Result<MessageFormat, _> = serde_json5::from_str(json5);
+        assert!(
+            result.is_err(),
+            "nested arrays (arrays of arrays) should fail"
+        );
     }
 
     #[test]

@@ -18,12 +18,24 @@ pub fn schema_type_to_tokens(
         SchemaType::Type(token) => primitive_type_token(token),
         SchemaType::Primitive(primitive) => primitive_type_token(&primitive.kind),
         SchemaType::Array(array) => {
-            let item_ty = match array.items.as_ref().as_type_token() {
-                Some(token) => primitive_type_token(token),
-                None => {
-                    return Err(Error::UnsupportedArrayItemSchema {
-                        field: field_name.to_string(),
-                    });
+            let item_ty = match array.items.as_ref() {
+                SchemaType::Object(_) => {
+                    let item_field = format!("{field_name}_item");
+                    schema_type_to_tokens(
+                        array.items.as_ref(),
+                        struct_prefix,
+                        &item_field,
+                        context,
+                    )?
+                }
+                other => {
+                    let token =
+                        other
+                            .as_type_token()
+                            .ok_or_else(|| Error::UnsupportedArrayItemSchema {
+                                field: field_name.to_string(),
+                            })?;
+                    primitive_type_token(token)
                 }
             };
 

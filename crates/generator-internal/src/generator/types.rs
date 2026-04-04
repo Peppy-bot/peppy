@@ -229,6 +229,13 @@ fn validate_fixed_array_schema(
     match schema {
         SchemaType::Array(array) => {
             if array.length.is_some() {
+                if matches!(array.items.as_ref(), SchemaType::Object(_)) {
+                    return Err(Error::UnsupportedFixedArrayItemType {
+                        language,
+                        field: path.to_string(),
+                        item: "object",
+                    });
+                }
                 let token = array.items.as_ref().as_type_token().ok_or_else(|| {
                     Error::UnsupportedArrayItemSchema {
                         field: path.to_string(),
@@ -411,6 +418,39 @@ mod tests {
                 assert_eq!(language, PeppygenLanguage::Rust);
                 assert_eq!(field, "labels");
                 assert_eq!(item, "string");
+            }
+            other => panic!("expected UnsupportedFixedArrayItemType, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reject_fixed_object_array() {
+        let format: MessageFormat = serde_json5::from_str(
+            r#"
+            {
+                frames: {
+                    $type: "array",
+                    $items: {
+                        $type: "object",
+                        name: "string"
+                    },
+                    $length: 4
+                }
+            }
+            "#,
+        )
+        .unwrap();
+
+        let err = validate_fixed_length_array_items(&format, PeppygenLanguage::Rust).unwrap_err();
+        match err {
+            Error::UnsupportedFixedArrayItemType {
+                language,
+                field,
+                item,
+            } => {
+                assert_eq!(language, PeppygenLanguage::Rust);
+                assert_eq!(field, "frames");
+                assert_eq!(item, "object");
             }
             other => panic!("expected UnsupportedFixedArrayItemType, got: {other:?}"),
         }

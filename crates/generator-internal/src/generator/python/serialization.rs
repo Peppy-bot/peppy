@@ -70,9 +70,40 @@ fn emit_field_assignment(
         SchemaType::Type(_) | SchemaType::Primitive(_) => {
             builder.line(&capnp_assignment_stmt(builder_var, &capnp_name, value_expr));
         }
-        SchemaType::Array(_) => {
-            builder.line(&capnp_assignment_stmt(builder_var, &capnp_name, value_expr));
-        }
+        SchemaType::Array(array) => match array.items.as_ref() {
+            SchemaType::Object(object) => {
+                let idx = *counter;
+                *counter += 1;
+                let list_builder = format!("list_{idx}");
+                builder.line(&format!(
+                    "{list_builder} = {builder_var}.init(\"{capnp_name}\", len({value_expr}))"
+                ));
+                let loop_idx = format!("i_{idx}");
+                let loop_elem = format!("elem_{idx}");
+                builder.line(&format!(
+                    "for {loop_idx}, {loop_elem} in enumerate({value_expr}):"
+                ));
+                builder.indent();
+                let elem_builder = format!("eb_{idx}");
+                builder.line(&format!("{elem_builder} = {list_builder}[{loop_idx}]"));
+                for (nested_name, nested_schema) in &object.fields {
+                    let nested_python = sanitize_python_identifier(nested_name);
+                    let nested_value = format!("{loop_elem}.{nested_python}");
+                    emit_field_assignment(
+                        builder,
+                        &elem_builder,
+                        nested_name,
+                        nested_schema,
+                        &nested_value,
+                        counter,
+                    );
+                }
+                builder.dedent();
+            }
+            _ => {
+                builder.line(&capnp_assignment_stmt(builder_var, &capnp_name, value_expr));
+            }
+        },
         SchemaType::Object(object) => {
             let idx = *counter;
             *counter += 1;
