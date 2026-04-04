@@ -309,6 +309,10 @@ mod peppylib_build {
 
     fn register_rerun_triggers(peppylib_py_dir: &Path) {
         println!("cargo:rerun-if-changed=../peppylib-py/Cargo.toml");
+        println!(
+            "cargo:rerun-if-changed={}",
+            peppylib_py_dir.join("pixi.lock").display()
+        );
         let src_dir = peppylib_py_dir.join("src");
         if src_dir.is_dir() {
             for entry in super::walkdir(&src_dir) {
@@ -487,9 +491,8 @@ mod peppylib_build {
     /// Writes the source hash marker after a successful build.
     fn write_source_hash_marker(peppylib_dir: &Path, hash: &str) {
         let marker_path = peppylib_dir.join(SOURCE_HASH_MARKER);
-        // Use write_if_changed to avoid bumping mtime when the hash is
-        // identical — the marker is watched via cargo:rerun-if-changed and
-        // an unconditional write would create an infinite rebuild loop.
+        // Use write_if_changed to avoid unnecessary disk writes when the
+        // hash is identical (e.g. consecutive no-op builds).
         build_helpers::write_if_changed(&marker_path, hash.as_bytes());
     }
 
@@ -542,10 +545,6 @@ mod peppylib_build {
         let so_path = peppylib_dir.join("_peppylib.abi3.so");
 
         register_rerun_triggers(&peppylib_py_dir);
-        println!(
-            "cargo:rerun-if-changed={}",
-            peppylib_dir.join(SOURCE_HASH_MARKER).display()
-        );
 
         // Use a separate CARGO_TARGET_DIR so maturin's inner `cargo build`
         // does not deadlock on the workspace build lock held by the outer cargo.

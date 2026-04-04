@@ -15,13 +15,6 @@ From: {{ base_image }}
     set -eux
     export DEBIAN_FRONTEND=noninteractive
 
-    apt-get update
-    apt-get install -y --no-install-recommends ca-certificates curl
-    rm -rf /var/lib/apt/lists/*
-
-    curl -LsSf https://astral.sh/uv/install.sh | sh
-    export PATH="/root/.local/bin:$PATH"
-
     cd /opt/{{ node_name }}
     uv python install
     uv sync --no-editable

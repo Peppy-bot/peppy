@@ -50,6 +50,7 @@ from .release_notes import (
     fetch_release_body_html,
     generate_release_notes_file,
 )
+from .docker import main as build_base_images_main
 from .repo import get_current_branch, get_repo_root, has_uncommitted_changes
 
 
@@ -61,6 +62,11 @@ def _parse_args() -> argparse.Namespace:
         "--local",
         action="store_true",
         help="Build release artifacts locally without uploading to GitHub.",
+    )
+    parser.add_argument(
+        "--base-images",
+        action="store_true",
+        help="Build and push Docker base images to Docker Hub.",
     )
     return parser.parse_args()
 
@@ -301,7 +307,9 @@ def _run_full() -> None:
 
 def main() -> None:
     args = _parse_args()
-    if args.local:
+    if args.base_images:
+        build_base_images_main()
+    elif args.local:
         run_with_error_handling(_run_local)
     else:
         run_with_error_handling(_run_full)

@@ -15,7 +15,7 @@ use chrono::Local;
 use config::consts::{NODE_CONFIG_FILE, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH, PeppyDirs};
 use config::node::{DEFAULT_VARIANT_NAME, NodeConfig, NodeConfigParser, ParsedNodeConfig};
 use futures::FutureExt;
-use git2::Repository;
+use git2::build::RepoBuilder;
 use node_stack::{NodeStack, validate_dependency_specs};
 use peppylib::messaging::{ServiceRequestContext, TopicPublisher};
 use peppylib::types::Payload;
@@ -63,6 +63,7 @@ pub async fn listen_for_node_add(
             peppy_dirs,
         },
         running_since: Arc::new(Mutex::new(None)),
+        running_task: Arc::new(Mutex::new(None)),
     };
 
     let handle = tokio::spawn(async move { run_action_loop(action, handler).await });
@@ -86,6 +87,8 @@ struct NodeAddGoalHandler {
     /// Tracks when the current action started and its timeout, used to format
     /// "action already in progress (times out in Xs)" rejection messages.
     running_since: Arc<Mutex<Option<(Instant, u64)>>>,
+    /// Handle to the currently running add task, used to abort it when `--force` is set.
+    running_task: Arc<Mutex<Option<JoinHandle<()>>>>,
 }
 
 impl GoalHandler for NodeAddGoalHandler {
@@ -103,6 +106,7 @@ impl GoalHandler for NodeAddGoalHandler {
             state,
             self.context.clone(),
             Arc::clone(&self.running_since),
+            Arc::clone(&self.running_task),
         )
         .await
     }
@@ -506,6 +510,13 @@ struct ContainerBuildContext<'a> {
 }
 
 async fn build_container_image(ctx: ContainerBuildContext<'_>) -> Result<()> {
+    if !containers::Apptainer::is_lima_ready() {
+        let _ = ctx.feedback_tx.send(FeedbackLine {
+            stream: FeedbackStream::Stdout,
+            line: "Initializing Lima VM for container build (first run may take a few minutes)..."
+                .to_string(),
+        });
+    }
     let apptainer = tokio::task::spawn_blocking(containers::Apptainer::new)
         .await
         .map_err(|e| std::io::Error::other(format!("Apptainer initialization task failed: {}", e)))?
@@ -617,7 +628,6 @@ impl Drop for CleanupDir {
 pub(crate) struct ResolvedNodeAddSource {
     pub(crate) source_path: PathBuf,
     pub(crate) node_config: ParsedNodeConfig,
-    pub(crate) verify_codegen_fingerprint: bool,
     pub(crate) cleanup_dir: Option<PathBuf>,
 }
 
@@ -625,6 +635,123 @@ pub(crate) struct ResolvedNodeAddSource {
 pub(crate) struct ExtractedHttpSource {
     pub(crate) source_path: PathBuf,
     pub(crate) cleanup_dir: Option<PathBuf>,
+}
+
+/// Distinguishes between a definitively invalid config (no point doing a full
+/// clone) and an infrastructure failure during the shallow probe (fall back to
+/// full clone).
+enum ShallowCheckError {
+    /// The config was found but is invalid — a full clone would fail the same way.
+    InvalidConfig(String),
+    /// The shallow fetch itself failed (e.g. server doesn't support shallow
+    /// clones, network error, ref not found). Fall back to full clone.
+    ShallowFetchFailed(String),
+}
+
+/// Performs a depth-1 shallow fetch into a bare repo and reads the node config
+/// blob directly from the git object database — no working-directory checkout.
+fn shallow_validate_config(
+    repo_url: &str,
+    repo_relative_path: &Path,
+    repo_ref: Option<&str>,
+) -> std::result::Result<ParsedNodeConfig, ShallowCheckError> {
+    let bare_dir = tempfile::tempdir().map_err(|e| {
+        ShallowCheckError::ShallowFetchFailed(format!("Failed to create temp dir: {}", e))
+    })?;
+
+    let bare_repo = git2::Repository::init_bare(bare_dir.path()).map_err(|e| {
+        ShallowCheckError::ShallowFetchFailed(format!("Failed to init bare repo: {}", e))
+    })?;
+
+    let mut remote = bare_repo.remote_anonymous(repo_url).map_err(|e| {
+        ShallowCheckError::ShallowFetchFailed(format!("Failed to create remote: {}", e))
+    })?;
+
+    // Build refspecs to try, in order of preference.
+    let refspecs: Vec<String> = match repo_ref {
+        None | Some("") => vec!["HEAD".to_string()],
+        Some(r) => vec![
+            r.to_string(),
+            format!("refs/heads/{r}"),
+            format!("refs/tags/{r}"),
+        ],
+    };
+
+    let mut last_err = None;
+    for refspec in &refspecs {
+        let mut fetch_opts = git2::FetchOptions::new();
+        fetch_opts.depth(1);
+        fetch_opts.download_tags(git2::AutotagOption::None);
+
+        match remote.fetch(&[refspec.as_str()], Some(&mut fetch_opts), None) {
+            Ok(()) => {
+                last_err = None;
+                break;
+            }
+            Err(e) => {
+                last_err = Some(e);
+                // Recreate the remote for a clean retry.
+                remote = bare_repo.remote_anonymous(repo_url).map_err(|e2| {
+                    ShallowCheckError::ShallowFetchFailed(format!(
+                        "Failed to recreate remote: {}",
+                        e2
+                    ))
+                })?;
+            }
+        }
+    }
+    if let Some(e) = last_err {
+        return Err(ShallowCheckError::ShallowFetchFailed(format!(
+            "shallow fetch failed: {}",
+            e
+        )));
+    }
+
+    // Resolve FETCH_HEAD to a commit.
+    let fetch_head = bare_repo.find_reference("FETCH_HEAD").map_err(|e| {
+        ShallowCheckError::ShallowFetchFailed(format!("Failed to find FETCH_HEAD: {}", e))
+    })?;
+    let commit = fetch_head.peel_to_commit().map_err(|e| {
+        ShallowCheckError::ShallowFetchFailed(format!("Failed to peel to commit: {}", e))
+    })?;
+    let tree = commit
+        .tree()
+        .map_err(|e| ShallowCheckError::ShallowFetchFailed(format!("Failed to get tree: {}", e)))?;
+
+    // Navigate the tree to find the config blob.
+    let config_tree_path = if repo_relative_path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("json5"))
+    {
+        repo_relative_path.to_path_buf()
+    } else {
+        repo_relative_path.join(NODE_CONFIG_FILE)
+    };
+
+    let entry = tree.get_path(&config_tree_path).map_err(|e| {
+        ShallowCheckError::InvalidConfig(format!(
+            "Config file '{}' not found in repository: {}",
+            config_tree_path.display(),
+            e
+        ))
+    })?;
+
+    let blob = bare_repo.find_blob(entry.id()).map_err(|e| {
+        ShallowCheckError::ShallowFetchFailed(format!("Failed to read config blob: {}", e))
+    })?;
+
+    let content = std::str::from_utf8(blob.content()).map_err(|_| {
+        ShallowCheckError::InvalidConfig("peppy.json5 is not valid UTF-8".to_string())
+    })?;
+
+    NodeConfigParser::from_content(content).map_err(|e| {
+        ShallowCheckError::InvalidConfig(format!(
+            "Failed to parse node config at {}: {}",
+            config_tree_path.display(),
+            e
+        ))
+    })
 }
 
 #[derive(Clone)]
@@ -647,23 +774,82 @@ async fn resolve_git_source(
     repo_url: &gix_url::Url,
     repo_path: &str,
     repo_ref: Option<&str>,
+    feedback_tx: mpsc::UnboundedSender<FeedbackLine>,
 ) -> std::result::Result<ResolvedNodeAddSource, String> {
     let repo_relative_path = sanitize_repo_path(repo_path)?;
-
-    let checkout_dir = tempfile::tempdir()
-        .map_err(|e| format!("Failed to create temporary directory: {}", e))?
-        .keep();
 
     let repo_url_bstring = repo_url.to_bstring();
     let repo_url_str = std::str::from_utf8(repo_url_bstring.as_ref())
         .map_err(|_| "repo_url must be valid UTF-8".to_string())?
         .to_owned();
 
+    // --- Phase 1: Shallow probe — validate peppy.json5 without a full clone ---
+    let _ = feedback_tx.send(FeedbackLine {
+        stream: FeedbackStream::Stdout,
+        line: "Checking node config...".to_string(),
+    });
+
+    let probe_url = repo_url_str.clone();
+    let probe_path = repo_relative_path.clone();
+    let probe_ref = repo_ref.map(str::to_owned);
+
+    let phase1_result = tokio::task::spawn_blocking(move || {
+        shallow_validate_config(&probe_url, &probe_path, probe_ref.as_deref())
+    })
+    .await
+    .map_err(|e| format!("Failed to join shallow probe task: {}", e))?;
+
+    let validated_config: Option<ParsedNodeConfig> = match phase1_result {
+        Ok(config) => Some(config),
+        Err(ShallowCheckError::InvalidConfig(msg)) => return Err(msg),
+        Err(ShallowCheckError::ShallowFetchFailed(reason)) => {
+            let _ = feedback_tx.send(FeedbackLine {
+                stream: FeedbackStream::Stdout,
+                line: format!(
+                    "Shallow probe unavailable ({}), proceeding with full clone",
+                    reason
+                ),
+            });
+            None
+        }
+    };
+
+    // --- Phase 2: Full clone (only reached if config is valid or probe fell back) ---
+    let checkout_dir = tempfile::tempdir()
+        .map_err(|e| format!("Failed to create temporary directory: {}", e))?
+        .keep();
+
     let clone_checkout_dir = checkout_dir.clone();
     let clone_repo_url = repo_url_str.clone();
     let clone_repo_ref = repo_ref.map(str::to_owned);
     if let Err(err) = tokio::task::spawn_blocking(move || {
-        let repo = Repository::clone(&clone_repo_url, &clone_checkout_dir)
+        let mut last_report = Instant::now();
+        let mut callbacks = git2::RemoteCallbacks::new();
+        callbacks.transfer_progress(move |progress| {
+            if last_report.elapsed() >= Duration::from_millis(500) {
+                last_report = Instant::now();
+                let received = progress.received_objects();
+                let total = progress.total_objects();
+                let bytes = progress.received_bytes();
+                let _ = feedback_tx.send(FeedbackLine {
+                    stream: FeedbackStream::Stdout,
+                    line: format!(
+                        "Cloning: received {}/{} objects ({})",
+                        received,
+                        total,
+                        format_bytes(bytes),
+                    ),
+                });
+            }
+            true
+        });
+
+        let mut fetch_opts = git2::FetchOptions::new();
+        fetch_opts.remote_callbacks(callbacks);
+
+        let repo = RepoBuilder::new()
+            .fetch_options(fetch_opts)
+            .clone(&clone_repo_url, &clone_checkout_dir)
             .map_err(|e| format!("Failed to clone repository: {}", e))?;
         if let Some(repo_ref) = clone_repo_ref.as_deref() {
             checkout_repo_ref(&repo, repo_ref)
@@ -695,24 +881,41 @@ async fn resolve_git_source(
         .map(PathBuf::from)
         .ok_or_else(|| "Invalid repo_path: node config has no parent directory".to_string())?;
 
-    let node_config = match NodeConfigParser::from_path(&config_path) {
-        Ok(cfg) => cfg,
-        Err(e) => {
-            std::fs::remove_dir_all(&checkout_dir).ok();
-            return Err(format!(
-                "Failed to parse node config at {}: {}",
-                config_path.display(),
-                e
-            ));
+    // Reuse the config from Phase 1 if available; otherwise parse from disk (fallback path).
+    let node_config = if let Some(config) = validated_config {
+        config
+    } else {
+        match NodeConfigParser::from_path(&config_path) {
+            Ok(cfg) => cfg,
+            Err(e) => {
+                std::fs::remove_dir_all(&checkout_dir).ok();
+                return Err(format!(
+                    "Failed to parse node config at {}: {}",
+                    config_path.display(),
+                    e
+                ));
+            }
         }
     };
 
     Ok(ResolvedNodeAddSource {
         source_path: node_root_dir,
         node_config,
-        verify_codegen_fingerprint: false,
         cleanup_dir: Some(checkout_dir),
     })
+}
+
+fn format_bytes(bytes: usize) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = 1024.0 * 1024.0;
+    let b = bytes as f64;
+    if b >= MB {
+        format!("{:.1} MB", b / MB)
+    } else if b >= KB {
+        format!("{:.0} KB", b / KB)
+    } else {
+        format!("{} B", bytes)
+    }
 }
 
 fn sanitize_http_filename(name: &str) -> String {
@@ -743,6 +946,7 @@ fn download_http_bundle(
     url: &url::Url,
     destination: &Path,
     expected_sha256: Option<&str>,
+    feedback_tx: Option<&mpsc::UnboundedSender<FeedbackLine>>,
 ) -> std::result::Result<(), String> {
     use sha2::{Digest, Sha256};
 
@@ -758,6 +962,12 @@ fn download_http_bundle(
         format!("Failed to download bundle from {}: {}", url, reason)
     })?;
 
+    let total_size: Option<u64> = response
+        .headers()
+        .get("content-length")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse().ok());
+
     let mut reader = response.into_body().into_reader();
     let mut file = File::create(destination).map_err(|e| {
         format!(
@@ -769,6 +979,8 @@ fn download_http_bundle(
 
     let mut hasher = expected_bytes.as_ref().map(|_| Sha256::new());
     let mut buffer = [0u8; 8 * 1024];
+    let mut bytes_downloaded: u64 = 0;
+    let mut last_report = Instant::now();
     loop {
         let read = reader
             .read(&mut buffer)
@@ -776,6 +988,7 @@ fn download_http_bundle(
         if read == 0 {
             break;
         }
+        bytes_downloaded += read as u64;
         file.write_all(&buffer[..read]).map_err(|e| {
             format!(
                 "Failed to write bundle file {}: {}",
@@ -785,6 +998,30 @@ fn download_http_bundle(
         })?;
         if let Some(ref mut h) = hasher {
             h.update(&buffer[..read]);
+        }
+        if let Some(tx) = feedback_tx
+            && last_report.elapsed() >= Duration::from_millis(500)
+        {
+            last_report = Instant::now();
+            let progress_msg = if let Some(total) = total_size {
+                let pct = if total > 0 {
+                    (bytes_downloaded as f64 / total as f64 * 100.0) as u64
+                } else {
+                    0
+                };
+                format!(
+                    "Downloading: {} / {} ({}%)",
+                    format_bytes(bytes_downloaded as usize),
+                    format_bytes(total as usize),
+                    pct,
+                )
+            } else {
+                format!("Downloading: {}", format_bytes(bytes_downloaded as usize))
+            };
+            let _ = tx.send(FeedbackLine {
+                stream: FeedbackStream::Stdout,
+                line: progress_msg,
+            });
         }
     }
     file.flush().map_err(|e| {
@@ -859,7 +1096,21 @@ pub(crate) async fn resolve_http_source(
 ) -> std::result::Result<ResolvedNodeAddSource, String> {
     let url = url.clone();
     tokio::task::spawn_blocking(move || {
-        resolve_http_source_blocking(url, &peppy_dirs, expected_sha256)
+        resolve_http_source_blocking(url, &peppy_dirs, expected_sha256, None)
+    })
+    .await
+    .map_err(|e| format!("Failed to join HTTP download task: {}", e))?
+}
+
+async fn resolve_http_source_with_feedback(
+    url: &url::Url,
+    peppy_dirs: PeppyDirs,
+    expected_sha256: Option<String>,
+    feedback_tx: mpsc::UnboundedSender<FeedbackLine>,
+) -> std::result::Result<ResolvedNodeAddSource, String> {
+    let url = url.clone();
+    tokio::task::spawn_blocking(move || {
+        resolve_http_source_blocking(url, &peppy_dirs, expected_sha256, Some(&feedback_tx))
     })
     .await
     .map_err(|e| format!("Failed to join HTTP download task: {}", e))?
@@ -904,7 +1155,61 @@ fn download_and_extract_http_source_blocking(
     std::fs::create_dir_all(&extract_dir)
         .map_err(|e| format!("Failed to create bundle extract directory: {}", e))?;
 
-    download_http_bundle(&url, &bundle_path, expected_sha256.as_deref())?;
+    download_http_bundle(&url, &bundle_path, expected_sha256.as_deref(), None)?;
+    extract_http_bundle(&bundle_path, &extract_dir, &url)?;
+    std::fs::remove_file(&bundle_path).ok();
+
+    let node_root_dir = locate_node_root_dir(&extract_dir)?;
+
+    let operation_dir = operation_cleanup.take();
+
+    Ok(ExtractedHttpSource {
+        source_path: node_root_dir,
+        cleanup_dir: operation_dir,
+    })
+}
+
+fn resolve_http_source_download_and_extract(
+    url: url::Url,
+    peppy_dirs: &PeppyDirs,
+    expected_sha256: Option<String>,
+    feedback_tx: Option<&mpsc::UnboundedSender<FeedbackLine>>,
+) -> std::result::Result<ExtractedHttpSource, String> {
+    match url.scheme() {
+        "http" | "https" => {}
+        other => {
+            return Err(format!(
+                "HTTP source URL must use http or https (got scheme '{}')",
+                other
+            ));
+        }
+    }
+
+    if !is_supported_http_archive(&url) {
+        return Err(
+            "Only tar.zst (.tar.zstd/.tar.zst/.tzst) archives are supported for HTTP sources"
+                .to_string(),
+        );
+    }
+
+    let http_base_dir = peppy_dirs.http_downloads_dir();
+    std::fs::create_dir_all(&http_base_dir)
+        .map_err(|e| format!("Failed to create HTTP download directory: {}", e))?;
+
+    let timestamp = Local::now().format("%Y%m%d_%H%M%S_%3f");
+    let operation_dir =
+        http_base_dir.join(format!("node_add_{timestamp}_{}", generate_random_id()));
+    std::fs::create_dir_all(&operation_dir)
+        .map_err(|e| format!("Failed to create HTTP staging directory: {}", e))?;
+
+    let mut operation_cleanup = CleanupDir::new(Some(operation_dir.clone()));
+
+    let bundle_path = operation_dir.join(bundle_file_name(&url));
+    let extract_dir = operation_dir.join("extracted");
+    std::fs::create_dir_all(&extract_dir)
+        .map_err(|e| format!("Failed to create bundle extract directory: {}", e))?;
+
+    download_http_bundle(&url, &bundle_path, expected_sha256.as_deref(), feedback_tx)?;
     extract_http_bundle(&bundle_path, &extract_dir, &url)?;
     std::fs::remove_file(&bundle_path).ok();
 
@@ -922,8 +1227,10 @@ fn resolve_http_source_blocking(
     url: url::Url,
     peppy_dirs: &PeppyDirs,
     expected_sha256: Option<String>,
+    feedback_tx: Option<&mpsc::UnboundedSender<FeedbackLine>>,
 ) -> std::result::Result<ResolvedNodeAddSource, String> {
-    let extracted = download_and_extract_http_source_blocking(url, peppy_dirs, expected_sha256)?;
+    let extracted =
+        resolve_http_source_download_and_extract(url, peppy_dirs, expected_sha256, feedback_tx)?;
     let config_path = extracted.source_path.join(NODE_CONFIG_FILE);
     let node_config = NodeConfigParser::from_path(&config_path).map_err(|e| {
         format!(
@@ -936,7 +1243,6 @@ fn resolve_http_source_blocking(
     Ok(ResolvedNodeAddSource {
         source_path: extracted.source_path,
         node_config,
-        verify_codegen_fingerprint: false,
         cleanup_dir: extracted.cleanup_dir,
     })
 }
@@ -974,6 +1280,7 @@ pub(crate) fn log_label_from_source(source: &NodeSource) -> String {
 async fn resolve_node_add_source(
     goal: &NodeAddGoal,
     peppy_dirs: &PeppyDirs,
+    feedback_tx: &mpsc::UnboundedSender<FeedbackLine>,
 ) -> std::result::Result<ResolvedNodeAddSource, String> {
     match &goal.source {
         NodeSource::Fs(path) => {
@@ -990,14 +1297,13 @@ async fn resolve_node_add_source(
                 return Ok(ResolvedNodeAddSource {
                     source_path: resolved.source_path,
                     node_config: resolved.node_config,
-                    verify_codegen_fingerprint: !is_stack_launch,
                     cleanup_dir: Some(resolved.temp_dir.keep()),
                 });
             }
 
-            if !is_stack_launch {
-                verify_git_hash(path, &goal.git_hash)?;
-            }
+            // Git hash verification is deferred to run_node_add (after variant
+            // resolution) so that the check uses the final source_path — which
+            // may be a variant subdirectory that has no .peppy at the root level.
             let config_path = path.join(NODE_CONFIG_FILE);
             let node_config = NodeConfigParser::from_path(&config_path).map_err(|e| {
                 format!(
@@ -1009,7 +1315,6 @@ async fn resolve_node_add_source(
             Ok(ResolvedNodeAddSource {
                 source_path: path.clone(),
                 node_config,
-                verify_codegen_fingerprint: !is_stack_launch,
                 cleanup_dir: None,
             })
         }
@@ -1017,9 +1322,31 @@ async fn resolve_node_add_source(
             repo_url,
             repo_path,
             repo_ref,
-        } => resolve_git_source(repo_url, repo_path, repo_ref.as_deref()).await,
+        } => {
+            let _ = feedback_tx.send(FeedbackLine {
+                stream: FeedbackStream::Stdout,
+                line: format!("Cloning repository {}...", repo_url.to_bstring()),
+            });
+            resolve_git_source(
+                repo_url,
+                repo_path,
+                repo_ref.as_deref(),
+                feedback_tx.clone(),
+            )
+            .await
+        }
         NodeSource::Http { url, sha256 } => {
-            resolve_http_source(url, peppy_dirs.clone(), sha256.clone()).await
+            let _ = feedback_tx.send(FeedbackLine {
+                stream: FeedbackStream::Stdout,
+                line: format!("Downloading bundle from {}...", url),
+            });
+            resolve_http_source_with_feedback(
+                url,
+                peppy_dirs.clone(),
+                sha256.clone(),
+                feedback_tx.clone(),
+            )
+            .await
         }
     }
 }
@@ -1059,7 +1386,7 @@ pub(crate) async fn run_node_add(
 
     match AssertUnwindSafe(async {
         // Resolve source (git clone, HTTP download, or local config check).
-        let mut resolved = match resolve_node_add_source(&goal, &action_context.peppy_dirs).await {
+        let mut resolved = match resolve_node_add_source(&goal, &action_context.peppy_dirs, &feedback_tx).await {
             Ok(r) => r,
             Err(error_msg) => {
                 write_error_to_log(&log_file, &error_msg);
@@ -1080,8 +1407,14 @@ pub(crate) async fn run_node_add(
             None => None,
         };
 
+        // Capture the root source path before variant resolution may overwrite it.
+        // The .peppy/git.hash file is written by `peppy node sync` at the root
+        // level; non-local variant directories (Git/Http clones) won't have it.
+        let root_source_path = resolved.source_path.clone();
+
         // If a variant is specified (or auto-resolved), resolve it from the root config.
         let mut variant_cleanup_dir: Option<PathBuf> = None;
+        let mut variant_source_is_local = true;
         let node_config: NodeConfig;
         if let Some(ref variant_source) = effective_variant {
             let label = variant_label(variant_source);
@@ -1106,7 +1439,7 @@ pub(crate) async fn run_node_add(
                     }
                     node_config = v.merged_config;
                     resolved.source_path = v.variant_source_path;
-                    resolved.verify_codegen_fingerprint = v.verify_codegen_fingerprint;
+                    variant_source_is_local = v.source_is_local;
                     variant_cleanup_dir = v.cleanup_dir;
                 }
                 Err(error_msg) => {
@@ -1125,9 +1458,29 @@ pub(crate) async fn run_node_add(
             }
         }
 
+        // Verify git hash for non-archive local FS sources.
+        //
+        // The .peppy/git.hash file is always written by `peppy node sync` at
+        // the root level (alongside the peppy.json5 that contains the manifest),
+        // regardless of whether the node has an execution block or uses variants.
+        // Verification always targets the root source path.
+        if goal.git_hash != STACK_LAUNCH_GIT_HASH
+            && let NodeSource::Fs(original_path) = &goal.source
+            && !is_supported_fs_archive(original_path)
+            && let Err(error_msg) = verify_git_hash(&root_source_path, &goal.git_hash)
+        {
+            write_error_to_log(&log_file, &error_msg);
+            return NodeAddResult::failure(&log_path, error_msg);
+        }
+
         let cleanup_dir = resolved_cleanup_guard.take();
         let source_path = resolved.source_path.clone();
-        let verify_codegen_fingerprint = resolved.verify_codegen_fingerprint;
+
+        // Fingerprints are only generated locally by `peppy node sync`.
+        // Git/Http sources never have them, so skip verification for remote sources.
+        let is_local_root =
+            matches!(&goal.source, NodeSource::Fs(_)) && goal.git_hash != STACK_LAUNCH_GIT_HASH;
+        let verify_codegen_fingerprint = is_local_root && variant_source_is_local;
 
         // Rename log file to the canonical {name}_{tag}_{timestamp}.log format
         // now that we know the node name and tag from the resolved config.
@@ -1182,6 +1535,7 @@ async fn handle_goal_request(
     state: Arc<Mutex<ActionState<NodeAddResult>>>,
     action_context: NodeAddActionContext,
     running_since: Arc<Mutex<Option<(Instant, u64)>>>,
+    running_task: Arc<Mutex<Option<JoinHandle<()>>>>,
 ) -> PeppyResult<Payload> {
     let sender_instance_id = context.message().instance_id();
     let payload = context.message().payload();
@@ -1195,17 +1549,27 @@ async fn handle_goal_request(
     {
         let mut state_guard = state.lock().await;
         if matches!(*state_guard, ActionState::Running) {
-            let running_guard = running_since.lock().await;
-            let remaining = running_guard
-                .map(|(started_at, timeout_secs)| {
-                    Duration::from_secs(timeout_secs)
-                        .saturating_sub(started_at.elapsed())
-                        .as_secs()
-                })
-                .unwrap_or(0);
-            return encode_rejected_goal(format!(
-                "action already in progress (times out in {remaining}s)"
-            ));
+            if !goal.force {
+                let running_guard = running_since.lock().await;
+                let remaining = running_guard
+                    .map(|(started_at, timeout_secs)| {
+                        Duration::from_secs(timeout_secs)
+                            .saturating_sub(started_at.elapsed())
+                            .as_secs()
+                    })
+                    .unwrap_or(0);
+                return encode_rejected_goal(format!(
+                    "action already in progress (times out in {remaining}s), \
+                     use `--force` to force adding the node"
+                ));
+            }
+
+            // Force mode: abort the old task and reset state
+            debug!("Force flag set: aborting previous node_add task");
+            let mut task_guard = running_task.lock().await;
+            if let Some(handle) = task_guard.take() {
+                handle.abort();
+            }
         }
         *state_guard = ActionState::Running;
         *running_since.lock().await = Some((Instant::now(), goal.timeout_secs));
@@ -1251,7 +1615,7 @@ async fn handle_goal_request(
     // Process the add operation in a separate task to not block goal response.
     let state_clone = Arc::clone(&state);
     let log_path_clone = log_path.clone();
-    tokio::spawn(async move {
+    let task_handle = tokio::spawn(async move {
         // Create a channel for feedback and spawn a consumer that encodes
         // FeedbackLine values as NodeAddFeedback and publishes to the topic.
         let (feedback_tx, mut feedback_rx) = mpsc::unbounded_channel::<FeedbackLine>();
@@ -1283,6 +1647,9 @@ async fn handle_goal_request(
         let mut state_guard = state_clone.lock().await;
         *state_guard = ActionState::Completed { result };
     });
+
+    // Store the handle so a future --force call can abort this task.
+    *running_task.lock().await = Some(task_handle);
 
     let response = NodeAddGoalResponse::accepted(&log_path);
     response
@@ -1651,7 +2018,7 @@ mod tests {
         let dest = tmp.path().join("bundle.tar.zst");
 
         let wrong_hash = "a".repeat(64);
-        let result = download_http_bundle(&url, &dest, Some(&wrong_hash));
+        let result = download_http_bundle(&url, &dest, Some(&wrong_hash), None);
 
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -1680,7 +2047,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let dest = tmp.path().join("bundle.tar.zst");
 
-        let result = download_http_bundle(&url, &dest, Some(&correct_hash));
+        let result = download_http_bundle(&url, &dest, Some(&correct_hash), None);
         assert!(result.is_ok(), "expected Ok, got: {:?}", result);
         assert!(
             dest.exists(),
@@ -1701,7 +2068,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let dest = tmp.path().join("bundle.tar.zst");
 
-        let result = download_http_bundle(&url, &dest, None);
+        let result = download_http_bundle(&url, &dest, None, None);
         assert!(result.is_ok(), "expected Ok, got: {:?}", result);
         assert!(dest.exists(), "bundle file should exist");
     }

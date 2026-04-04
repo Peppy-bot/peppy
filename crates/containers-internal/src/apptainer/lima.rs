@@ -51,6 +51,24 @@ pub(crate) fn check_lima_version(limactl: &Path) -> Result<()> {
 /// * If the instance does not exist, create and start it with `template`.
 /// * If it exists but is stopped, start it.
 /// * If it is already running, this is a no-op.
+///
+/// Returns `true` if the Lima VM instance is already running and SSH-reachable.
+/// This is a lightweight check that avoids booting the VM.
+pub(crate) fn is_lima_instance_running(limactl: &Path, lima_home: &Path) -> bool {
+    let output = Command::new(limactl)
+        .env("LIMA_HOME", lima_home)
+        .args(["list", "--format", "{{.Status}}", LIMA_INSTANCE])
+        .output();
+
+    match &output {
+        Ok(o) if o.status.success() => {
+            let status = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            status == "Running" && is_ssh_alive(limactl, lima_home, LIMA_INSTANCE)
+        }
+        _ => false,
+    }
+}
+
 pub(crate) fn ensure_lima_instance(limactl: &Path, lima_home: &Path, template: &str) -> Result<()> {
     std::fs::create_dir_all(lima_home).map_err(|e| {
         Error::LimaInstanceError(format!(

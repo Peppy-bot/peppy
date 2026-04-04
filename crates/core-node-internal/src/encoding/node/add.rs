@@ -77,6 +77,7 @@ pub struct NodeAddGoal {
     pub env_vars: Vec<(String, String)>,
     pub timeout_secs: u64,
     pub variant: Option<NodeSource>,
+    pub force: bool,
 }
 
 impl NodeAddGoal {
@@ -88,6 +89,7 @@ impl NodeAddGoal {
             env_vars: Vec::new(),
             timeout_secs,
             variant: None,
+            force: false,
         }
     }
 
@@ -99,6 +101,7 @@ impl NodeAddGoal {
             env_vars: Vec::new(),
             timeout_secs,
             variant: None,
+            force: false,
         }
     }
 
@@ -120,6 +123,7 @@ impl NodeAddGoal {
             env_vars: Vec::new(),
             timeout_secs,
             variant: None,
+            force: false,
         }
     }
 
@@ -136,6 +140,7 @@ impl NodeAddGoal {
             env_vars: Vec::new(),
             timeout_secs,
             variant: None,
+            force: false,
         }
     }
 
@@ -151,6 +156,11 @@ impl NodeAddGoal {
 
     pub fn with_variant_source(mut self, source: NodeSource) -> Self {
         self.variant = Some(source);
+        self
+    }
+
+    pub fn with_force(mut self, force: bool) -> Self {
+        self.force = force;
         self
     }
 
@@ -198,6 +208,7 @@ impl NodeAddGoal {
             }
 
             goal.reborrow().set_timeout_secs(self.timeout_secs);
+            goal.reborrow().set_force(self.force);
 
             if let Some(ref variant) = self.variant {
                 let mut variant_builder = goal.reborrow().init_variant();
@@ -285,6 +296,7 @@ impl NodeAddGoal {
             env_vars,
             timeout_secs: goal.get_timeout_secs(),
             variant,
+            force: goal.get_force(),
         })
     }
 
@@ -346,6 +358,7 @@ mod tests {
             env_vars: vec![],
             timeout_secs: 30,
             variant: None,
+            force: false,
         };
         let encoded = goal.encode().expect("encoding should succeed");
         let result = NodeAddGoal::decode(&encoded);

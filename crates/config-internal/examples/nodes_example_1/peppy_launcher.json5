@@ -17,10 +17,14 @@
     },
     {
       // the source property is mandatory
+      // variant (optional) selects a specific variant of the node
       source: {
-        repo: "https://github.com/Peppy-bot/example_nodes.git",
+        repo: "https://github.com/Peppy-bot/nodes_hub.git",
         path: "rust/fake_openarm01_controller",
-        ref: "main"
+        ref: "main",
+        variant: {
+          name: "mock-rust"
+        }
       },
       instances: [
         {

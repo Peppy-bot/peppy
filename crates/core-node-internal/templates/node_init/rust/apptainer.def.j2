@@ -10,11 +10,6 @@ From: {{ base_image }}
 
 %post
     set -eux
-    export DEBIAN_FRONTEND=noninteractive
-
-    apt-get update
-    apt-get install -y --no-install-recommends pkg-config
-    rm -rf /var/lib/apt/lists/*
 
     cd /opt/{{ node_name }}
     cargo build --release

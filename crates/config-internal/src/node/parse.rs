@@ -50,13 +50,16 @@ impl NodeConfigParser {
     /// Takes a JSON5 content as parameter
     pub fn from_content(content: &str) -> Result<ParsedNodeConfig> {
         // Strict schema validation is handled by serde via #[serde(deny_unknown_fields)]
-        let config: RawNodeConfig = serde_json5::from_str(content).map_err(ParsingError::from)?;
+        let config: RawNodeConfig = crate::error::deserialize_json5_with_path(content)?;
 
         let has_default = config.has_default_variant();
         match (&config.execution, has_default) {
-            (Some(execution), false) => validate_execution(execution)?,
-            (None, true) => { /* execution comes from default variant */ }
             (Some(_), true) => return Err(ParsingError::ExecutionWithDefaultVariant.into()),
+            (None, true) => { /* execution comes from default variant */ }
+            (Some(raw_exec), false) => {
+                let execution = raw_exec.clone().into_execution()?;
+                validate_execution(&execution)?;
+            }
             (None, false) => return Err(ParsingError::MissingExecution.into()),
         }
 
@@ -75,7 +78,7 @@ impl VariantConfigParser {
     }
 
     pub fn from_content(content: &str) -> Result<VariantConfig> {
-        let config: VariantConfig = serde_json5::from_str(content).map_err(ParsingError::from)?;
+        let config: VariantConfig = crate::error::deserialize_json5_with_path(content)?;
         validate_execution(&config.execution)?;
         Ok(config)
     }
@@ -154,7 +157,7 @@ mod tests {
         assert_eq!(config.0.manifest.tag, "2.1.0");
         assert_eq!(
             config.0.execution.as_ref().unwrap().language,
-            crate::node::PeppygenLanguage::Rust
+            Some(crate::node::PeppygenLanguage::Rust)
         );
         assert_eq!(
             config
@@ -697,6 +700,52 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_config_with_default_variant_and_execution_without_language_rejected() {
+        let json5 = r#"{
+            schema_version: 1,
+            manifest: {
+                name: "uvc_camera",
+                tag: "0.1.0",
+                variants: [
+                    { name: "default", source: { local: "./variants/linux" } },
+                ],
+            },
+            execution: {
+                container: {
+                    def_file: "apptainer.def",
+                },
+                parameters: {
+                    device_path: "string",
+                },
+            },
+        }"#;
+        let result = NodeConfigParser::from_content(json5);
+        assert!(matches!(
+            result.unwrap_err(),
+            Error::Parsing(ParsingError::ExecutionWithDefaultVariant)
+        ));
+    }
+
+    #[test]
+    fn test_parse_config_execution_without_language_rejected() {
+        let json5 = r#"{
+            schema_version: 1,
+            manifest: {
+                name: "test_node",
+                tag: "0.1.0",
+            },
+            execution: {
+                start_cmd: ["./bin"],
+            },
+        }"#;
+        let result = NodeConfigParser::from_content(json5);
+        assert!(matches!(
+            result.unwrap_err(),
+            Error::Parsing(ParsingError::MissingExecutionLanguage)
+        ));
+    }
+
+    #[test]
     fn test_parse_config_no_execution_no_default_variant_rejected() {
         let json5 = r#"{
             schema_version: 1,
@@ -732,6 +781,50 @@ mod tests {
             result.is_ok(),
             "expected parsing to succeed when a 'default' variant is present, but got: {:?}",
             result.unwrap_err()
+        );
+    }
+
+    #[test]
+    fn test_node_error_message_includes_field_path() {
+        // start_cmd should be an array, not a map
+        let json5 = r#"{
+            schema_version: 1,
+            manifest: {
+                name: "test_node",
+                tag: "0.1.0",
+            },
+            execution: {
+                language: "rust",
+                start_cmd: { wrong: "type" },
+            },
+        }"#;
+        let result = NodeConfigParser::from_content(json5);
+        let Error::Parsing(ParsingError::CannotParseConfig(msg)) = result.unwrap_err() else {
+            panic!("expected CannotParseConfig error");
+        };
+        assert!(
+            msg.contains("execution.start_cmd"),
+            "error should include field path, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_variant_error_message_includes_field_path() {
+        // start_cmd should be an array, not a string
+        let json5 = r#"{
+            schema_version: 1,
+            execution: {
+                language: "rust",
+                start_cmd: "not_an_array",
+            },
+        }"#;
+        let result = VariantConfigParser::from_content(json5);
+        let Error::Parsing(ParsingError::CannotParseConfig(msg)) = result.unwrap_err() else {
+            panic!("expected CannotParseConfig error");
+        };
+        assert!(
+            msg.contains("execution.start_cmd"),
+            "error should include field path, got: {msg}"
         );
     }
 }

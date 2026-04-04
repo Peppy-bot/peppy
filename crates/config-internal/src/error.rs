@@ -2,6 +2,53 @@ use thiserror::Error;
 
 pub type Result<T> = core::result::Result<T, Error>;
 
+/// Deserializes JSON5 content with field-path tracking.
+///
+/// On error, prepends the JSON path (e.g. `execution.start_cmd`) to standard
+/// serde error messages. `StructuredError`s (custom validation) are propagated
+/// unchanged since they already contain descriptive messages.
+pub fn deserialize_json5_with_path<'de, T>(content: &'de str) -> Result<T>
+where
+    T: serde::de::Deserialize<'de>,
+{
+    // Phase 1: parse JSON5 syntax. If this fails, there's no field path.
+    let mut deserializer = serde_json5::Deserializer::from_str(content)
+        .map_err(|e| Error::Parsing(ParsingError::from(e)))?;
+
+    // Phase 2: deserialize with path tracking.
+    serde_path_to_error::deserialize(&mut deserializer).map_err(|path_err| {
+        let path = path_err.path().to_string();
+        let inner: serde_json5::Error = path_err.into_inner();
+
+        match inner {
+            serde_json5::Error::Message { ref msg, .. } => {
+                // Check if it's a StructuredError (custom validation).
+                // These already have rich messages; don't prepend path.
+                if let Ok(structured) = serde_json5::from_str::<StructuredError>(msg) {
+                    return Error::Parsing(match structured {
+                        StructuredError::InvalidDeploymentSource(detail) => {
+                            ParsingError::InvalidDeploymentSource(detail)
+                        }
+                        StructuredError::DuplicateName(id) => ParsingError::DuplicateName(id),
+                        StructuredError::InvalidName { name, allowed } => {
+                            ParsingError::InvalidName(name, allowed)
+                        }
+                        StructuredError::EmptyName => ParsingError::EmptyName,
+                    });
+                }
+
+                // Standard serde error: prepend path if non-empty.
+                let message = if path.is_empty() || path == "." {
+                    msg.clone()
+                } else {
+                    format!("{path}: {msg}")
+                };
+                Error::Parsing(ParsingError::CannotParseConfig(message))
+            }
+        }
+    })
+}
+
 #[derive(Debug, Error, Clone)]
 pub enum ParsingError {
     // -- General yaml syntax
@@ -60,6 +107,8 @@ pub enum ParsingError {
     ExecutionWithDefaultVariant,
     #[error("Node config must define an `execution` section (or declare a 'default' variant)")]
     MissingExecution,
+    #[error("Node config `execution.language` is required when an execution block is defined")]
+    MissingExecutionLanguage,
 
     // -- container config: mount paths
     #[error(
@@ -79,6 +128,16 @@ pub enum StructuredError {
     DuplicateName(String),
     InvalidName { name: String, allowed: String },
     EmptyName,
+}
+
+impl ParsingError {
+    /// Returns `true` when the error indicates that the `manifest` field is
+    /// absent from the config.  This is the hallmark of a **variant** config
+    /// (which deliberately omits `manifest`) and is used by the CLI to decide
+    /// whether to walk up the directory tree to locate the root node config.
+    pub fn is_missing_manifest(&self) -> bool {
+        matches!(self, ParsingError::CannotParseConfig(msg) if msg.contains("missing field `manifest`"))
+    }
 }
 
 impl StructuredError {

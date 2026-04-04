@@ -83,7 +83,8 @@ pub mod launcher {
     pub use crate::internal::launcher::{
         CURRENT_SCHEMA_VERSION, Deployment, DeploymentGitSource, DeploymentInstance,
         DeploymentLocalSource, DeploymentSource, DeploymentUrlSource, Name, PeppyLauncher,
-        PeppyLauncherParser, SchemaVersion,
+        PeppyLauncherParser, SchemaVersion, VariantGitSource, VariantNameSource, VariantSource,
+        VariantUrlSource,
     };
 }
 
@@ -91,6 +92,7 @@ pub mod launcher {
 pub mod source {
     pub use crate::internal::source::{
         DeploymentGitSource, DeploymentLocalSource, DeploymentSource, DeploymentUrlSource,
+        VariantGitSource, VariantNameSource, VariantSource, VariantUrlSource,
     };
 }
 

@@ -13,8 +13,8 @@ pub(crate) struct ResolvedVariant {
     pub(crate) merged_config: NodeConfig,
     /// Path to the variant's source directory.
     pub(crate) variant_source_path: PathBuf,
-    /// Whether to verify codegen fingerprint for the variant.
-    pub(crate) verify_codegen_fingerprint: bool,
+    /// Whether the variant's source directory is local (not cloned/downloaded).
+    pub(crate) source_is_local: bool,
     /// Directory to clean up after variant resolution (git clone / http download).
     pub(crate) cleanup_dir: Option<PathBuf>,
     /// True when the variant's config defined a `manifest` section that was ignored.
@@ -52,99 +52,93 @@ pub(crate) async fn resolve_variant(
     let label = variant_label(variant);
 
     // Resolve the variant's source to a directory path and parse its config.
-    let (variant_source_path, variant_config, verify_codegen_fingerprint, cleanup_dir) =
-        match variant {
-            // Name-based lookup: find in root manifest, then resolve its DeploymentSource.
-            NodeSource::Fs(name) => {
-                let variant_name = name.to_string_lossy();
-                let matched = root_config.find_variant(&variant_name).ok_or_else(|| {
-                    format!(
-                        "variant '{}' not found in manifest of node '{}:{}'",
-                        variant_name,
-                        root_config.manifest_name(),
-                        root_config.manifest_tag(),
-                    )
-                })?;
-
-                resolve_variant_deployment_source(
-                    &matched.source,
-                    &label,
-                    root_source_path,
-                    peppy_dirs,
-                    deadline,
+    let (variant_source_path, variant_config, source_is_local, cleanup_dir) = match variant {
+        // Name-based lookup: find in root manifest, then resolve its DeploymentSource.
+        NodeSource::Fs(name) => {
+            let variant_name = name.to_string_lossy();
+            let matched = root_config.find_variant(&variant_name).ok_or_else(|| {
+                format!(
+                    "variant '{}' not found in manifest of node '{}:{}'",
+                    variant_name,
+                    root_config.manifest_name(),
+                    root_config.manifest_tag(),
                 )
-                .await?
-            }
-            // Direct git source — skip manifest lookup.
-            NodeSource::Git {
-                repo_url,
-                repo_path,
-                repo_ref,
-            } => {
-                let repo_relative_path = sanitize_repo_path(repo_path)?;
+            })?;
 
-                let temp_dir = tempfile::tempdir()
-                    .map_err(|e| format!("Failed to create temporary directory: {}", e))?;
-                let dest = temp_dir.path().to_path_buf();
+            resolve_variant_deployment_source(
+                &matched.source,
+                &label,
+                root_source_path,
+                peppy_dirs,
+                deadline,
+            )
+            .await?
+        }
+        // Direct git source — skip manifest lookup.
+        NodeSource::Git {
+            repo_url,
+            repo_path,
+            repo_ref,
+        } => {
+            let repo_relative_path = sanitize_repo_path(repo_path)?;
 
-                let clone_dest = dest.clone();
-                let clone_repo_url = repo_url.to_bstring().to_string();
-                let clone_repo_ref = repo_ref.clone();
-                let clone_deadline = deadline;
-                tokio::task::spawn_blocking(move || {
-                    let repo = super::clone_repo_with_deadline(
-                        &clone_repo_url,
-                        &clone_dest,
-                        clone_deadline,
-                    )?;
-                    if let Some(repo_ref) = clone_repo_ref.as_deref() {
-                        checkout_repo_ref(&repo, repo_ref).map_err(|e| {
-                            format!("Failed to checkout git ref '{}': {}", repo_ref, e)
-                        })?;
-                    }
-                    Ok::<_, String>(())
-                })
-                .await
-                .map_err(|e| format!("Failed to join git clone task: {}", e))??;
+            let temp_dir = tempfile::tempdir()
+                .map_err(|e| format!("Failed to create temporary directory: {}", e))?;
+            let dest = temp_dir.path().to_path_buf();
 
-                let checkout_dir = temp_dir.keep();
-                let node_root_dir = checkout_dir.join(&repo_relative_path);
-                let config_path = node_root_dir.join(NODE_CONFIG_FILE);
-                let variant_config = match VariantConfigParser::from_path(&config_path) {
-                    Ok(cfg) => cfg,
-                    Err(e) => {
-                        std::fs::remove_dir_all(&checkout_dir).ok();
-                        return Err(format!(
-                            "Failed to parse variant config at {}: {}",
-                            config_path.display(),
-                            e
-                        ));
-                    }
-                };
-                (node_root_dir, variant_config, false, Some(checkout_dir))
-            }
-            // Direct HTTP source — skip manifest lookup.
-            NodeSource::Http { url, sha256 } => {
-                let extracted =
-                    download_and_extract_http_source(url, peppy_dirs.clone(), sha256.clone())
-                        .await?;
-                let mut http_guard = CleanupDir::new(extracted.cleanup_dir);
-                let config_path = extracted.source_path.join(NODE_CONFIG_FILE);
-                let variant_config = VariantConfigParser::from_path(&config_path).map_err(|e| {
-                    format!(
+            let clone_dest = dest.clone();
+            let clone_repo_url = repo_url.to_bstring().to_string();
+            let clone_repo_ref = repo_ref.clone();
+            let clone_deadline = deadline;
+            tokio::task::spawn_blocking(move || {
+                let repo =
+                    super::clone_repo_with_deadline(&clone_repo_url, &clone_dest, clone_deadline)?;
+                if let Some(repo_ref) = clone_repo_ref.as_deref() {
+                    checkout_repo_ref(&repo, repo_ref)
+                        .map_err(|e| format!("Failed to checkout git ref '{}': {}", repo_ref, e))?;
+                }
+                Ok::<_, String>(())
+            })
+            .await
+            .map_err(|e| format!("Failed to join git clone task: {}", e))??;
+
+            let checkout_dir = temp_dir.keep();
+            let node_root_dir = checkout_dir.join(&repo_relative_path);
+            let config_path = node_root_dir.join(NODE_CONFIG_FILE);
+            let variant_config = match VariantConfigParser::from_path(&config_path) {
+                Ok(cfg) => cfg,
+                Err(e) => {
+                    std::fs::remove_dir_all(&checkout_dir).ok();
+                    return Err(format!(
                         "Failed to parse variant config at {}: {}",
                         config_path.display(),
                         e
-                    )
-                })?;
-                (
-                    extracted.source_path,
-                    variant_config,
-                    false,
-                    http_guard.take(),
+                    ));
+                }
+            };
+            (node_root_dir, variant_config, false, Some(checkout_dir))
+        }
+        // Direct HTTP source — skip manifest lookup.
+        NodeSource::Http { url, sha256 } => {
+            let extracted =
+                download_and_extract_http_source(url, peppy_dirs.clone(), sha256.clone()).await?;
+            let mut http_guard = CleanupDir::new(extracted.cleanup_dir);
+            let config_path = extracted.source_path.join(NODE_CONFIG_FILE);
+            let variant_config = VariantConfigParser::from_path(&config_path).map_err(|e| {
+                format!(
+                    "Failed to parse variant config at {}: {}",
+                    config_path.display(),
+                    e
                 )
-            }
-        };
+            })?;
+            (
+                extracted.source_path,
+                variant_config,
+                false,
+                http_guard.take(),
+            )
+        }
+    };
 
     // Guard ensures cleanup_dir is removed if we exit early (e.g. validation error).
     let mut cleanup_guard = CleanupDir::new(cleanup_dir);
@@ -158,7 +152,7 @@ pub(crate) async fn resolve_variant(
     Ok(ResolvedVariant {
         merged_config: merged.config,
         variant_source_path,
-        verify_codegen_fingerprint,
+        source_is_local,
         cleanup_dir,
         manifest_ignored: merged.manifest_ignored,
     })

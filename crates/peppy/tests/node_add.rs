@@ -705,6 +705,7 @@ fn node_add_command_with_variant_succeeds() {
         name: config::node::Name::new("mock").expect("valid name"),
         source: config::source::DeploymentSource::Local(config::source::DeploymentLocalSource {
             local: std::path::PathBuf::from("mock_variant"),
+            variant: None,
         }),
     }]);
     let updated = serde_json::to_string_pretty(&root_cfg).expect("should serialize updated config");
@@ -730,6 +731,12 @@ fn node_add_command_with_variant_succeeds() {
         &variant_peppy_json5,
         std::path::Path::new(config::consts::PEPPYGEN_OUTPUT_PATH),
     );
+    // git.hash verification runs against the resolved variant path, so the
+    // variant directory needs a matching hash (same value as in daemon state).
+    let variant_peppy_dir = variant_dir.join(config::consts::PEPPY_OUTPUT_DIR);
+    std::fs::create_dir_all(&variant_peppy_dir).expect("should create variant .peppy dir");
+    std::fs::write(variant_peppy_dir.join("git.hash"), "test-git-hash")
+        .expect("should write variant git hash");
 
     // Add the root node with --variant mock
     NodeCommand {
@@ -830,6 +837,7 @@ fn node_add_with_variant_uses_variant_in_preflight() {
         name: config::node::Name::new("mock").expect("valid name"),
         source: config::source::DeploymentSource::Local(config::source::DeploymentLocalSource {
             local: std::path::PathBuf::from("mock_variant"),
+            variant: None,
         }),
     }]);
     let updated = serde_json::to_string_pretty(&root_cfg).expect("should serialize updated config");
@@ -855,6 +863,10 @@ fn node_add_with_variant_uses_variant_in_preflight() {
         &variant_peppy_json5,
         std::path::Path::new(config::consts::PEPPYGEN_OUTPUT_PATH),
     );
+    let variant_peppy_dir = variant_dir.join(config::consts::PEPPY_OUTPUT_DIR);
+    std::fs::create_dir_all(&variant_peppy_dir).expect("should create variant .peppy dir");
+    std::fs::write(variant_peppy_dir.join("git.hash"), "test-git-hash")
+        .expect("should write variant git hash");
 
     // Disable add_cmd to avoid spawning a real binary; provide node services in-process
     peppy::test_support::override_start_cmd(&root_peppy_json5);

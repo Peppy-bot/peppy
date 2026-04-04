@@ -1710,11 +1710,16 @@ async fn listen_for_node_sync_default_variant_skips_root_codegen() {
         "root peppygen directory should NOT exist for a default-variant node"
     );
 
-    // Root .peppy should NOT be generated (no execution at root level)
+    // Root .peppy should exist (git.hash is always written alongside the
+    // manifest) but should NOT contain peppygen output (no execution at root).
     let root_peppy_dir = node_dir.path().join(".peppy");
     assert!(
-        !root_peppy_dir.exists(),
-        "root .peppy directory should NOT exist for a default-variant node"
+        root_peppy_dir.exists(),
+        "root .peppy directory should exist (git.hash lives alongside the manifest)"
+    );
+    assert!(
+        root_peppy_dir.join("git.hash").exists(),
+        "root .peppy/git.hash should exist after sync"
     );
 
     // Variant .peppy should be generated
@@ -1852,11 +1857,19 @@ async fn listen_for_node_sync_default_variant_cleans_stale_root_peppy_dir() {
         response.error_message
     );
 
-    // Root .peppy should have been cleaned up since language is now None
+    // Root .peppy should still exist (git.hash is always written alongside
+    // the manifest) but stale peppygen output should have been cleaned up.
     assert!(
-        !root_peppy_dir.exists(),
-        "root .peppy directory should NOT exist after sync with no execution — \
-         stale outputs from a previous sync should be cleaned up"
+        root_peppy_dir.exists(),
+        "root .peppy directory should exist (git.hash lives alongside the manifest)"
+    );
+    assert!(
+        root_peppy_dir.join("git.hash").exists(),
+        "root .peppy/git.hash should exist after re-sync"
+    );
+    assert!(
+        !node_dir.path().join(PEPPYGEN_OUTPUT_PATH).exists(),
+        "stale root peppygen output should have been cleaned up after re-sync"
     );
 
     // Variant .peppy should be generated

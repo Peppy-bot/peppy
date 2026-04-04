@@ -36,8 +36,6 @@ pub struct AddNodeParams {
 const CALLER_INSTANCE_ID: &str = "peppy-cli";
 // Timeout for the goal to be accepted (should be fast)
 const GOAL_TIMEOUT: Duration = Duration::from_secs(30);
-// Timeout for the node info request
-const INFO_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 fn validate_git_ref(git_ref: Option<&str>) -> Result<Option<String>> {
     let git_ref = git_ref.map(str::trim);
@@ -73,6 +71,21 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
     let git_ref = validate_git_ref(git_ref.as_deref())?;
     let node_source = parse_node_source(&source, git_ref)?;
 
+    // Log the resolved source path (may differ from the original when the CLI
+    // walked up from a variant subdirectory to the root node directory).
+    let display_source = match &node_source {
+        NodeSource::Fs(p) => p.display().to_string(),
+        _ => source.clone(),
+    };
+    if let Some(ref v) = variant {
+        info!(
+            "Adding node variant '{}' from root node {}...",
+            v, display_source
+        );
+    } else {
+        info!("Adding node from {}...", display_source);
+    }
+
     // Parse variant source early so the preflight check uses the same merged config
     // that the actual add will use.
     let variant_source = variant.as_deref().map(parse_variant_source).transpose()?;
@@ -88,7 +101,15 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
         .ok_or_else(|| Error::ExecutionFailed("Failed to connect to daemon".to_string()))?;
 
     let pre_add_node_info = if !force {
-        Some(fetch_node_info(messenger_handle, &core_node_name, node_source.clone()).await?)
+        Some(
+            fetch_node_info(
+                messenger_handle,
+                &core_node_name,
+                node_source.clone(),
+                Duration::from_secs(timeouts.max_secs),
+            )
+            .await?,
+        )
     } else {
         None
     };
@@ -115,7 +136,8 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
     // Create and send the goal to start the add action
     // Pass max timeout as the goal timeout for daemon-side busy reporting
     let mut add_goal = NodeAddGoal::from_source(node_source, git_hash, timeouts.max_secs)
-        .with_env_vars(caller_env_overrides());
+        .with_env_vars(caller_env_overrides())
+        .with_force(force);
     if let Some(variant_source) = variant_source {
         add_goal = add_goal.with_variant_source(variant_source);
     }
@@ -295,6 +317,7 @@ async fn fetch_node_info(
     messenger: &MessengerHandle,
     core_node_name: &str,
     node_source: NodeSource,
+    timeout: Duration,
 ) -> Result<NodeInfoResponse> {
     NodeInfoRequest::new(node_source)
         .poll(
@@ -302,7 +325,7 @@ async fn fetch_node_info(
             core_node_name,
             CALLER_INSTANCE_ID,
             core_node_name,
-            INFO_REQUEST_TIMEOUT,
+            timeout,
         )
         .await
         .map_err(|e| {
@@ -357,16 +380,15 @@ mod tests {
 
     #[test]
     fn parses_git_repo_url_and_repo_path_from_https_url() {
-        let (repo_url, repo_path) = parse_git_repo_url_and_path(
-            "https://github.com/Peppy-bot/example_nodes.git/fake_uvc_camera",
-        )
-        .expect("should parse git source");
+        let (repo_url, repo_path) =
+            parse_git_repo_url_and_path("https://github.com/Peppy-bot/nodes_hub.git/uvc_camera")
+                .expect("should parse git source");
 
         assert_eq!(
             repo_url.to_bstring().to_string(),
-            "https://github.com/Peppy-bot/example_nodes.git"
+            "https://github.com/Peppy-bot/nodes_hub.git"
         );
-        assert_eq!(repo_path, "fake_uvc_camera");
+        assert_eq!(repo_path, "uvc_camera");
     }
 
     #[test]
@@ -385,7 +407,7 @@ mod tests {
     #[test]
     fn parses_git_source_with_ref() {
         let source = parse_node_source(
-            "https://github.com/Peppy-bot/example_nodes.git/uvc_camera",
+            "https://github.com/Peppy-bot/nodes_hub.git/uvc_camera",
             Some("v0.1.0".to_string()),
         )
         .expect("should parse git source");
@@ -398,7 +420,7 @@ mod tests {
             } => {
                 assert_eq!(
                     repo_url.to_bstring().to_string(),
-                    "https://github.com/Peppy-bot/example_nodes.git"
+                    "https://github.com/Peppy-bot/nodes_hub.git"
                 );
                 assert_eq!(repo_path, "uvc_camera");
                 assert_eq!(repo_ref.as_deref(), Some("v0.1.0"));
@@ -410,7 +432,7 @@ mod tests {
     #[test]
     fn parses_git_source_without_ref() {
         let source = parse_node_source(
-            "https://github.com/Peppy-bot/example_nodes.git/uvc_camera",
+            "https://github.com/Peppy-bot/nodes_hub.git/uvc_camera",
             None,
         )
         .expect("should parse git source");
