@@ -592,18 +592,19 @@ fn generate_object_array_reader(
 
     if let Some(len) = length {
         let len_lit = Literal::usize_unsuffixed(len);
+        let idx_ident = names.next("idx");
         statements.push(quote! {
-            let mut #result_ident = Vec::with_capacity(#len_lit);
-            for #element_ident in #list_ident.iter() {
-                #( #field_statements )*
-                #result_ident.push(#struct_ident {
-                    #( #field_inits ),*
-                });
+            if #list_ident.len() != #len_lit as u32 {
+                return Err(crate::Error::Deserialization(
+                    format!("invalid fixed list length for field '{}': expected {}, got {}", #field_literal, #len_lit, #list_ident.len())
+                ));
             }
-            let #value_ident: [#struct_ident; #len_lit] = #result_ident.try_into().map_err(|v: Vec<_>| {
-                crate::Error::Deserialization(
-                    format!("invalid fixed list length for field '{}': expected {}, got {}", #field_literal, #len_lit, v.len())
-                )
+            let #value_ident: [#struct_ident; #len_lit] = core::array::try_from_fn(|#idx_ident| {
+                let #element_ident = #list_ident.get(#idx_ident as u32);
+                #( #field_statements )*
+                Ok::<_, crate::Error>(#struct_ident {
+                    #( #field_inits ),*
+                })
             })?;
         });
     } else {
@@ -649,18 +650,18 @@ mod tests {
     }
 
     #[test]
-    fn object_array_reader_fixed_length_uses_try_into() {
+    fn object_array_reader_fixed_length_uses_array() {
         let code = call_object_array_reader(Some(4));
         assert!(
-            code.contains("try_into"),
-            "fixed-length path must use try_into, got: {code}"
+            code.contains("[TestFramesItem ; 4]"),
+            "fixed-length path must produce a [T; N] array, got: {code}"
         );
         assert!(
-            code.contains("Vec :: with_capacity (4"),
-            "expected fixed literal 4 in Vec::with_capacity, got: {code}"
+            code.contains("try_from_fn"),
+            "fixed-length path must use core::array::try_from_fn, got: {code}"
         );
         assert!(
-            code.contains(r#""frames" , 4 , v . len ()"#),
+            code.contains(r#""frames" , 4"#),
             "error message must reference field name and expected length, got: {code}"
         );
     }
