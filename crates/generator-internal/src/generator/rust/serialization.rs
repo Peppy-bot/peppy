@@ -190,7 +190,7 @@ fn generate_field_assignment_inner(
         )),
         SchemaType::Array(array) => match array.items.as_ref() {
             SchemaType::Object(object) => {
-                let list_length = ObjectListLength::new(array.length, value_expr, field_name)?;
+                let length_expr = make_length_expr(array.length, value_expr, field_name)?;
                 generate_object_list_assignment(
                     builder_expr,
                     &init_method,
@@ -198,7 +198,7 @@ fn generate_field_assignment_inner(
                     &object.fields,
                     names,
                     value_is_ref,
-                    &list_length,
+                    &length_expr,
                 )
             }
             _ => {
@@ -316,35 +316,6 @@ fn make_length_expr(
 }
 
 /// Pre-computed length tokens for object list serialization.
-struct ObjectListLength {
-    /// Expression passed to `init_method` (either a literal or runtime `.len()`).
-    init_expr: TokenStream,
-    /// Optional runtime assertion that the slice length matches the schema
-    /// (non-empty only for fixed-length arrays).
-    check: TokenStream,
-}
-
-impl ObjectListLength {
-    fn new(length: Option<usize>, value_expr: &TokenStream, field_name: &str) -> Result<Self> {
-        let init_expr = make_length_expr(length, value_expr, field_name)?;
-        let check = if let Some(len) = length {
-            let len_lit = Literal::usize_unsuffixed(len);
-            let field_literal = Literal::string(field_name);
-            quote! {
-                assert_eq!(
-                    (#value_expr).len(),
-                    #len_lit,
-                    "object array length mismatch for field `{}`: expected {}, got {}",
-                    #field_literal, #len_lit, (#value_expr).len(),
-                );
-            }
-        } else {
-            quote!()
-        };
-        Ok(Self { init_expr, check })
-    }
-}
-
 fn generate_list_assignment(
     builder_expr: &TokenStream,
     init_method: &Ident,
@@ -434,11 +405,8 @@ fn generate_object_list_assignment(
     fields: &IndexMap<String, SchemaType>,
     names: &mut NameGenerator,
     value_is_ref: bool,
-    list_length: &ObjectListLength,
+    length_expr: &TokenStream,
 ) -> Result<TokenStream> {
-    let length_expr = &list_length.init_expr;
-    let length_check = &list_length.check;
-
     let list_ident = names.next("list");
     let idx_ident = names.next("idx");
     let element_ident = names.next("element");
@@ -467,7 +435,6 @@ fn generate_object_list_assignment(
     }
 
     Ok(quote! {
-        #length_check
         let mut #list_ident = #builder_expr.reborrow().#init_method(#length_expr);
         for (#idx_ident, #element_ident) in (#value_expr).iter().enumerate() {
             let mut #element_builder_ident = #list_ident.reborrow().get(#idx_ident as u32);
@@ -528,7 +495,7 @@ mod tests {
         fields.insert("x".to_string(), SchemaType::Type(TypeToken::I32));
         let mut names = NameGenerator::new();
 
-        let list_length = ObjectListLength::new(Some(4), &value, "frames").unwrap();
+        let length_expr = make_length_expr(Some(4), &value, "frames").unwrap();
         let tokens = generate_object_list_assignment(
             &builder,
             &init,
@@ -536,7 +503,7 @@ mod tests {
             &fields,
             &mut names,
             true,
-            &list_length,
+            &length_expr,
         )
         .unwrap();
 
@@ -546,10 +513,9 @@ mod tests {
             code.contains("init_frames (4"),
             "expected fixed literal 4 in generated code, got: {code}"
         );
-        // Must emit a length check for the fixed-length path.
         assert!(
-            code.contains("assert_eq"),
-            "fixed-length path must emit a length check, got: {code}"
+            !code.contains("assert_eq"),
+            "fixed-length path must not emit a runtime length check, got: {code}"
         );
     }
 
@@ -564,7 +530,7 @@ mod tests {
         fields.insert("x".to_string(), SchemaType::Type(TypeToken::I32));
         let mut names = NameGenerator::new();
 
-        let list_length = ObjectListLength::new(None, &value, "frames").unwrap();
+        let length_expr = make_length_expr(None, &value, "frames").unwrap();
         let tokens = generate_object_list_assignment(
             &builder,
             &init,
@@ -572,7 +538,7 @@ mod tests {
             &fields,
             &mut names,
             true,
-            &list_length,
+            &length_expr,
         )
         .unwrap();
 
@@ -580,79 +546,6 @@ mod tests {
         assert!(
             code.contains("len"),
             "dynamic-length path must use .len(), got: {code}"
-        );
-        assert!(
-            !code.contains("assert_eq"),
-            "dynamic-length path must not emit a length check, got: {code}"
-        );
-    }
-
-    /// When `length` is `Some`, the `assert_eq!` length check must appear
-    /// before the list init call, and include the field name for diagnostics.
-    #[test]
-    fn object_list_assignment_emits_length_check_for_fixed_length() {
-        let builder = quote!(root);
-        let init = Ident::new("init_frames", Span::call_site());
-        let value = quote!(self.frames);
-        let mut fields = IndexMap::new();
-        fields.insert("x".to_string(), SchemaType::Type(TypeToken::I32));
-        let mut names = NameGenerator::new();
-
-        let list_length = ObjectListLength::new(Some(4), &value, "frames").unwrap();
-        let tokens = generate_object_list_assignment(
-            &builder,
-            &init,
-            &value,
-            &fields,
-            &mut names,
-            true,
-            &list_length,
-        )
-        .unwrap();
-
-        let code = tokens.to_string();
-        let assert_pos = code
-            .find("assert_eq")
-            .expect("expected assert_eq in generated code");
-        let init_pos = code
-            .find("init_frames")
-            .expect("expected init_frames in generated code");
-        assert!(
-            assert_pos < init_pos,
-            "length check must appear before list init, got: {code}"
-        );
-        assert!(
-            code.contains("frames"),
-            "length check must include field name, got: {code}"
-        );
-    }
-
-    /// When `length` is `None`, no `assert_eq!` length check should be emitted.
-    #[test]
-    fn object_list_assignment_no_length_check_for_dynamic() {
-        let builder = quote!(root);
-        let init = Ident::new("init_frames", Span::call_site());
-        let value = quote!(self.frames);
-        let mut fields = IndexMap::new();
-        fields.insert("x".to_string(), SchemaType::Type(TypeToken::I32));
-        let mut names = NameGenerator::new();
-
-        let list_length = ObjectListLength::new(None, &value, "frames").unwrap();
-        let tokens = generate_object_list_assignment(
-            &builder,
-            &init,
-            &value,
-            &fields,
-            &mut names,
-            true,
-            &list_length,
-        )
-        .unwrap();
-
-        let code = tokens.to_string();
-        assert!(
-            !code.contains("assert_eq"),
-            "dynamic-length path must not emit assert_eq, got: {code}"
         );
     }
 }
