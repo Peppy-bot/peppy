@@ -415,18 +415,17 @@ mod tests {
 
         let err = validate_message_format_field_names(&format, "test.topic").unwrap_err();
 
-        match err {
-            Error::UnauthorizedMessageFieldName {
-                field,
-                path,
-                context,
-            } => {
-                assert_eq!(field, "instance_id");
-                assert_eq!(path, "instance_id");
-                assert_eq!(context, "test.topic");
-            }
-            other => panic!("expected UnauthorizedMessageFieldName, got: {other:?}"),
-        }
+        let Error::UnauthorizedMessageFieldName {
+            field,
+            path,
+            context,
+        } = err
+        else {
+            panic!("expected UnauthorizedMessageFieldName, got: {err:?}");
+        };
+        assert_eq!(field, "instance_id");
+        assert_eq!(path, "instance_id");
+        assert_eq!(context, "test.topic");
     }
 
     #[test]
@@ -445,13 +444,11 @@ mod tests {
 
         let err = validate_message_format_field_names(&format, "test.topic").unwrap_err();
 
-        match err {
-            Error::UnauthorizedMessageFieldName { field, path, .. } => {
-                assert_eq!(field, "instance_id");
-                assert_eq!(path, "header.instance_id");
-            }
-            other => panic!("expected UnauthorizedMessageFieldName, got: {other:?}"),
-        }
+        let Error::UnauthorizedMessageFieldName { field, path, .. } = err else {
+            panic!("expected UnauthorizedMessageFieldName, got: {err:?}");
+        };
+        assert_eq!(field, "instance_id");
+        assert_eq!(path, "header.instance_id");
     }
 
     #[test]
@@ -470,18 +467,17 @@ mod tests {
         .unwrap();
 
         let err = validate_fixed_length_array_items(&format, PeppygenLanguage::Rust).unwrap_err();
-        match err {
-            Error::UnsupportedFixedArrayItemType {
-                language,
-                field,
-                item,
-            } => {
-                assert_eq!(language, PeppygenLanguage::Rust);
-                assert_eq!(field, "labels");
-                assert_eq!(item, "string");
-            }
-            other => panic!("expected UnsupportedFixedArrayItemType, got: {other:?}"),
-        }
+        let Error::UnsupportedFixedArrayItemType {
+            language,
+            field,
+            item,
+        } = err
+        else {
+            panic!("expected UnsupportedFixedArrayItemType, got: {err:?}");
+        };
+        assert_eq!(language, PeppygenLanguage::Rust);
+        assert_eq!(field, "labels");
+        assert_eq!(item, "string");
     }
 
     #[test]
@@ -503,18 +499,17 @@ mod tests {
         .unwrap();
 
         let err = validate_fixed_length_array_items(&format, PeppygenLanguage::Rust).unwrap_err();
-        match err {
-            Error::UnsupportedFixedArrayItemType {
-                language,
-                field,
-                item,
-            } => {
-                assert_eq!(language, PeppygenLanguage::Rust);
-                assert_eq!(field, "frames");
-                assert_eq!(item, "object");
-            }
-            other => panic!("expected UnsupportedFixedArrayItemType, got: {other:?}"),
-        }
+        let Error::UnsupportedFixedArrayItemType {
+            language,
+            field,
+            item,
+        } = err
+        else {
+            panic!("expected UnsupportedFixedArrayItemType, got: {err:?}");
+        };
+        assert_eq!(language, PeppygenLanguage::Rust);
+        assert_eq!(field, "frames");
+        assert_eq!(item, "object");
     }
 
     #[test]
@@ -559,20 +554,19 @@ mod tests {
         .unwrap();
 
         let err = validate_generated_type_name_collisions(&format, "Message").unwrap_err();
-        match err {
-            Error::GeneratedTypeNameCollision {
-                context,
-                type_name,
-                first_field,
-                second_field,
-            } => {
-                assert_eq!(context, "Message");
-                assert_eq!(type_name, "MessageFramesItem");
-                assert_eq!(first_field, "frames");
-                assert_eq!(second_field, "frames_item");
-            }
-            other => panic!("expected GeneratedTypeNameCollision, got: {other:?}"),
-        }
+        let Error::GeneratedTypeNameCollision {
+            context,
+            type_name,
+            first_field,
+            second_field,
+        } = err
+        else {
+            panic!("expected GeneratedTypeNameCollision, got: {err:?}");
+        };
+        assert_eq!(context, "Message");
+        assert_eq!(type_name, "MessageFramesItem");
+        assert_eq!(first_field, "frames");
+        assert_eq!(second_field, "frames_item");
     }
 
     #[test]
@@ -625,20 +619,19 @@ mod tests {
         .unwrap();
 
         let err = validate_generated_type_name_collisions(&format, "Message").unwrap_err();
-        match err {
-            Error::GeneratedTypeNameCollision {
-                context,
-                type_name,
-                first_field,
-                second_field,
-            } => {
-                assert_eq!(context, "MessageOuter");
-                assert_eq!(type_name, "MessageOuterFramesItem");
-                assert_eq!(first_field, "frames");
-                assert_eq!(second_field, "frames_item");
-            }
-            other => panic!("expected GeneratedTypeNameCollision, got: {other:?}"),
-        }
+        let Error::GeneratedTypeNameCollision {
+            context,
+            type_name,
+            first_field,
+            second_field,
+        } = err
+        else {
+            panic!("expected GeneratedTypeNameCollision, got: {err:?}");
+        };
+        assert_eq!(context, "MessageOuter");
+        assert_eq!(type_name, "MessageOuterFramesItem");
+        assert_eq!(first_field, "frames");
+        assert_eq!(second_field, "frames_item");
     }
 }
 
