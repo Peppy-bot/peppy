@@ -1,6 +1,6 @@
 use super::*;
 use crate::error::Error;
-use config::node::{ConsumedTopic, EmittedTopic, MessageFormat, PeppygenLanguage};
+use config::node::{ConsumedTopic, EmittedTopic, MessageFormat};
 
 const EMITTED_TOPIC_EXAMPLE: &str = r#"
 {
@@ -267,12 +267,7 @@ fn emit_topic_rejects_fixed_string_array() {
     let err = generator.add_emitted_topic(&topic).unwrap_err();
 
     match err {
-        Error::UnsupportedFixedArrayItemType {
-            language,
-            field,
-            item,
-        } => {
-            assert_eq!(language, PeppygenLanguage::Rust);
+        Error::UnsupportedFixedArrayItemType { field, item } => {
             assert_eq!(field, "labels");
             assert_eq!(item, "string");
         }
@@ -306,12 +301,7 @@ fn emit_topic_rejects_fixed_object_array() {
     let err = generator.add_emitted_topic(&topic).unwrap_err();
 
     match err {
-        Error::UnsupportedFixedArrayItemType {
-            language,
-            field,
-            item,
-        } => {
-            assert_eq!(language, PeppygenLanguage::Rust);
+        Error::UnsupportedFixedArrayItemType { field, item } => {
             assert_eq!(field, "objects");
             assert_eq!(item, "object");
         }

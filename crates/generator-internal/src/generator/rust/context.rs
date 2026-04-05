@@ -100,7 +100,7 @@ pub fn map_message_format(
         Some(format) => {
             validate_normalized_field_names_for_rust(format)?;
             validate_message_format_field_names(format, "message_format")?;
-            validate_fixed_length_array_items(format, PeppygenLanguage::Rust)?;
+            validate_fixed_length_array_items(format)?;
             validate_generated_type_name_collisions(format, "Message")?;
             validate_optional_scalar_fields_for_rust(format)?;
             MessageFormatMapper::new(schema_name, format.clone())

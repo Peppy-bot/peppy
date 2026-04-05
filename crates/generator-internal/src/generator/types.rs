@@ -4,7 +4,7 @@ use crate::generator::naming::{array_item_type_name, to_camel_case};
 use config::consts::PeppyDirs;
 use config::node::{
     ConsumedAction, ConsumedService, ConsumedTopic, EmittedTopic, ExposedAction, ExposedService,
-    MessageFormat, PeppygenLanguage, PrimitiveSchema, SchemaType, TypeToken,
+    MessageFormat, PrimitiveSchema, SchemaType, TypeToken,
 };
 use indexmap::IndexMap;
 use std::collections::HashMap;
@@ -223,17 +223,12 @@ fn is_fixed_array_item_copy_primitive(token: &TypeToken) -> bool {
     )
 }
 
-fn validate_fixed_array_schema(
-    schema: &SchemaType,
-    path: &str,
-    language: PeppygenLanguage,
-) -> Result<()> {
+fn validate_fixed_array_schema(schema: &SchemaType, path: &str) -> Result<()> {
     match schema {
         SchemaType::Array(array) => {
             if array.length.is_some() {
                 if matches!(array.items.as_ref(), SchemaType::Object(_)) {
                     return Err(Error::UnsupportedFixedArrayItemType {
-                        language,
                         field: path.to_string(),
                         item: "object",
                     });
@@ -245,19 +240,18 @@ fn validate_fixed_array_schema(
                 })?;
                 if !is_fixed_array_item_copy_primitive(token) {
                     return Err(Error::UnsupportedFixedArrayItemType {
-                        language,
                         field: path.to_string(),
                         item: type_token_name(token),
                     });
                 }
             }
 
-            validate_fixed_array_schema(array.items.as_ref(), path, language)
+            validate_fixed_array_schema(array.items.as_ref(), path)
         }
         SchemaType::Object(object) => {
             for (field_name, nested) in &object.fields {
                 let nested_path = format!("{path}.{field_name}");
-                validate_fixed_array_schema(nested, &nested_path, language)?;
+                validate_fixed_array_schema(nested, &nested_path)?;
             }
             Ok(())
         }
@@ -265,12 +259,9 @@ fn validate_fixed_array_schema(
     }
 }
 
-pub fn validate_fixed_length_array_items(
-    format: &MessageFormat,
-    language: PeppygenLanguage,
-) -> Result<()> {
+pub fn validate_fixed_length_array_items(format: &MessageFormat) -> Result<()> {
     for (field_name, schema) in &format.0 {
-        validate_fixed_array_schema(schema, field_name, language)?;
+        validate_fixed_array_schema(schema, field_name)?;
     }
     Ok(())
 }
@@ -452,7 +443,7 @@ mod tests {
     }
 
     #[test]
-    fn reject_fixed_string_array_for_rust() {
+    fn reject_fixed_string_array() {
         let format: MessageFormat = serde_json5::from_str(
             r#"
             {
@@ -466,16 +457,10 @@ mod tests {
         )
         .unwrap();
 
-        let err = validate_fixed_length_array_items(&format, PeppygenLanguage::Rust).unwrap_err();
-        let Error::UnsupportedFixedArrayItemType {
-            language,
-            field,
-            item,
-        } = err
-        else {
+        let err = validate_fixed_length_array_items(&format).unwrap_err();
+        let Error::UnsupportedFixedArrayItemType { field, item } = err else {
             panic!("expected UnsupportedFixedArrayItemType, got: {err:?}");
         };
-        assert_eq!(language, PeppygenLanguage::Rust);
         assert_eq!(field, "labels");
         assert_eq!(item, "string");
     }
@@ -498,22 +483,16 @@ mod tests {
         )
         .unwrap();
 
-        let err = validate_fixed_length_array_items(&format, PeppygenLanguage::Rust).unwrap_err();
-        let Error::UnsupportedFixedArrayItemType {
-            language,
-            field,
-            item,
-        } = err
-        else {
+        let err = validate_fixed_length_array_items(&format).unwrap_err();
+        let Error::UnsupportedFixedArrayItemType { field, item } = err else {
             panic!("expected UnsupportedFixedArrayItemType, got: {err:?}");
         };
-        assert_eq!(language, PeppygenLanguage::Rust);
         assert_eq!(field, "frames");
         assert_eq!(item, "object");
     }
 
     #[test]
-    fn allow_fixed_i32_array_for_rust() {
+    fn allow_fixed_i32_array() {
         let format: MessageFormat = serde_json5::from_str(
             r#"
             {
@@ -527,8 +506,7 @@ mod tests {
         )
         .unwrap();
 
-        validate_fixed_length_array_items(&format, PeppygenLanguage::Rust)
-            .expect("fixed i32 arrays are supported");
+        validate_fixed_length_array_items(&format).expect("fixed i32 arrays are supported");
     }
 
     #[test]

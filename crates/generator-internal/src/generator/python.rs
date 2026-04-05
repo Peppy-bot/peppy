@@ -23,7 +23,7 @@ use crate::error::{Error, Result};
 use config::encoding::MessageFormatMapper;
 use config::node::{
     ConsumedAction, ConsumedService, ConsumedTopic, EmittedTopic, ExposedAction, ExposedService,
-    MessageFormat, PeppygenLanguage,
+    MessageFormat,
 };
 use std::collections::HashMap;
 use std::path::Path;
@@ -80,7 +80,7 @@ impl PythonGenerator {
         format: &MessageFormat,
     ) -> Result<PythonSchemaInfo> {
         validate_message_format_field_names(format, schema_key)?;
-        validate_fixed_length_array_items(format, PeppygenLanguage::Python)?;
+        validate_fixed_length_array_items(format)?;
         validate_generated_type_name_collisions(format, "Message")?;
 
         let artifacts = MessageFormatMapper::new(schema_key, format.clone())
