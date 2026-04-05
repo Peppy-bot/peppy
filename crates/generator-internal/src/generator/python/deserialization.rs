@@ -1,7 +1,7 @@
 use super::PythonSchemaInfo;
 use super::code_builder::PythonCodeBuilder;
 use super::identifiers::{is_python_keyword, sanitize_python_identifier};
-use crate::generator::naming::{sanitize_capnp_field_name, to_camel_case};
+use crate::generator::naming::{array_item_type_name, sanitize_capnp_field_name, to_camel_case};
 use config::node::{MessageFormat, SchemaType, TypeToken};
 use indexmap::IndexMap;
 
@@ -268,8 +268,7 @@ fn generate_object_array_reader(
     let capnp_name = sanitize_capnp_field_name(field_name);
     let python_name = sanitize_python_identifier(field_name);
 
-    let item_field = format!("{field_name}_item");
-    let nested_prefix = format!("{struct_prefix}{}", to_camel_case(&item_field));
+    let nested_prefix = array_item_type_name(struct_prefix, field_name);
 
     let list_idx = *counter;
     *counter += 1;

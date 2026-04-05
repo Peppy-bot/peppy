@@ -2,7 +2,7 @@ use super::identifiers::sanitize_rust_identifier;
 use super::serialization::NameGenerator;
 use super::type_mapping::primitive_type_token;
 use crate::error::{Error, Result};
-use crate::generator::naming::{sanitize_component, to_camel_case};
+use crate::generator::naming::{array_item_type_name, sanitize_component, to_camel_case};
 use config::node::{ArraySchema, MessageFormat, SchemaType, TypeToken};
 use indexmap::IndexMap;
 use proc_macro2::{Ident, Literal, Span, TokenStream};
@@ -556,8 +556,7 @@ fn generate_object_array_reader(
     let value_ident = names.next(field_name);
     let field_literal = Literal::string(field_name);
 
-    let item_field_name = format!("{field_name}_item");
-    let nested_prefix = format!("{struct_prefix}{}", to_camel_case(&item_field_name));
+    let nested_prefix = array_item_type_name(struct_prefix, field_name);
     let struct_ident = Ident::new(&nested_prefix, Span::call_site());
 
     let element_ident = names.next("element");

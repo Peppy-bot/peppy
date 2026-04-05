@@ -1,7 +1,7 @@
 use super::context::GenerationContext;
 use super::identifiers::sanitize_rust_identifier;
 use crate::error::{Error, Result};
-use crate::generator::naming::to_camel_case;
+use crate::generator::naming::{array_item_field_name, to_camel_case};
 use config::encoding::FunctionParam;
 use config::node::{SchemaType, TypeToken};
 use proc_macro2::{Ident, Literal, Span, TokenStream};
@@ -20,7 +20,7 @@ pub fn schema_type_to_tokens(
         SchemaType::Array(array) => {
             let item_ty = match array.items.as_ref() {
                 SchemaType::Object(_) => {
-                    let item_field = format!("{field_name}_item");
+                    let item_field = array_item_field_name(field_name);
                     schema_type_to_tokens(
                         array.items.as_ref(),
                         struct_prefix,

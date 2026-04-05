@@ -17,7 +17,7 @@ use super::naming::{module_name_from_components, resolve_schema_file_stem, to_ca
 use super::types::{
     CapnpSchema, ConsumedActionMessage, InterfaceArtifact, InterfaceKind, LanguageGenerator,
     cancel_action_response_format, non_empty_message_format, validate_fixed_length_array_items,
-    validate_message_format_field_names,
+    validate_generated_type_name_collisions, validate_message_format_field_names,
 };
 use crate::error::{Error, Result};
 use config::encoding::MessageFormatMapper;
@@ -81,6 +81,7 @@ impl PythonGenerator {
     ) -> Result<PythonSchemaInfo> {
         validate_message_format_field_names(format, schema_key)?;
         validate_fixed_length_array_items(format, PeppygenLanguage::Python)?;
+        validate_generated_type_name_collisions(format, "Message")?;
 
         let artifacts = MessageFormatMapper::new(schema_key, format.clone())
             .map_message_format_to_capnpn()
