@@ -12,7 +12,7 @@ use peppylib::{ActionMessenger, MessengerHandle};
 use std::path::PathBuf;
 use std::time::Duration;
 
-use super::{decode_message, encode_message};
+use crate::encoding::{decode_message, encode_message, optional_text};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NodeSource {
@@ -449,16 +449,10 @@ impl NodeAddGoalResponse {
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
         let response = reader.get_root::<node_capnp::node_add_goal_response::Reader>()?;
-        let rejection_reason_str = response.get_rejection_reason()?.to_str()?;
-        let rejection_reason = if rejection_reason_str.is_empty() {
-            None
-        } else {
-            Some(rejection_reason_str.to_owned())
-        };
         Ok(Self {
             accepted: response.get_accepted(),
             log_path: PathBuf::from(response.get_log_path()?.to_str()?),
-            rejection_reason,
+            rejection_reason: optional_text(response.get_rejection_reason()?.to_str()?),
         })
     }
 }
@@ -575,14 +569,6 @@ impl NodeAddResult {
         encode_message(&builder)
     }
 
-    fn optional_text(s: &str) -> Option<String> {
-        if s.is_empty() {
-            None
-        } else {
-            Some(s.to_owned())
-        }
-    }
-
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
         let result = reader.get_root::<node_capnp::node_add_result::Reader>()?;
@@ -592,9 +578,9 @@ impl NodeAddResult {
             snapshot_path,
             log_path,
             success: result.get_success(),
-            error_message: Self::optional_text(result.get_error_message()?.to_str()?),
-            node_name: Self::optional_text(result.get_node_name()?.to_str()?),
-            node_tag: Self::optional_text(result.get_node_tag()?.to_str()?),
+            error_message: optional_text(result.get_error_message()?.to_str()?),
+            node_name: optional_text(result.get_node_name()?.to_str()?),
+            node_tag: optional_text(result.get_node_tag()?.to_str()?),
         })
     }
 

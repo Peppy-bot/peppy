@@ -12,7 +12,7 @@ use crate::names;
 use crate::node_capnp;
 
 use super::add::NodeSource;
-use super::{decode_message, encode_message};
+use crate::encoding::{decode_message, encode_message, optional_text};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeInfoRequest {
@@ -173,12 +173,7 @@ impl NodeInfoResponse {
             instances_names.push(instances_names_reader.get(i)?.to_str()?.to_owned());
         }
         let config_integrity = response.get_config_sha256()?.to_str()?.to_owned();
-        let variant_name = response.get_variant_name()?.to_str()?.to_owned();
-        let variant_name = if variant_name.is_empty() {
-            None
-        } else {
-            Some(variant_name)
-        };
+        let variant_name = optional_text(response.get_variant_name()?.to_str()?);
         let issues_reader = response.get_issues()?;
         let mut issues = Vec::with_capacity(issues_reader.len() as usize);
         for i in 0..issues_reader.len() {
