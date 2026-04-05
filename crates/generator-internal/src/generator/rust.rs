@@ -68,6 +68,12 @@ impl RustGenerator {
         self.parameters = parameters;
     }
 
+    fn push_section(&mut self, section: InterfaceArtifact) {
+        if !section.code_output.is_empty() {
+            self.sections.push(section);
+        }
+    }
+
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn into_artifacts(self) -> Vec<InterfaceArtifact> {
         self.sections
@@ -488,12 +494,6 @@ impl SchemaInfo {
 }
 
 impl LanguageGenerator for RustGenerator {
-    fn push_section(&mut self, section: InterfaceArtifact) {
-        if !section.code_output.is_empty() {
-            self.sections.push(section);
-        }
-    }
-
     fn add_emitted_topic(&mut self, topic: &EmittedTopic) -> Result<()> {
         let fn_name = prefixed_ident("", non_empty_str(topic.name.as_str()), "topic");
         let fn_name_str = fn_name.to_string();
