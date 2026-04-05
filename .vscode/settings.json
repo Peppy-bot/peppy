@@ -1,4 +1,11 @@
 {
+  "rust-analyzer.checkOnSave": true,
+  "rust-analyzer.check.overrideCommand": [
+    "cargo",
+    "check",
+    "--workspace",
+    "--message-format=json"
+  ],
   "python.defaultInterpreterPath": "${workspaceFolder}/crates/peppylib-py/.pixi/envs/default/bin/python",
   "python.testing.pytestEnabled": true,
   "python.testing.pytestArgs": [

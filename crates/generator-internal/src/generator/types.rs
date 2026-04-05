@@ -1,11 +1,13 @@
 use crate::error::{Error, Result};
 use crate::generator::common::CrateDeployMode;
+use crate::generator::naming::{array_item_type_name, to_camel_case};
 use config::consts::PeppyDirs;
 use config::node::{
     ConsumedAction, ConsumedService, ConsumedTopic, EmittedTopic, ExposedAction, ExposedService,
-    MessageFormat, PeppygenLanguage, PrimitiveSchema, SchemaType, TypeToken,
+    MessageFormat, PrimitiveSchema, SchemaType, TypeToken,
 };
 use indexmap::IndexMap;
+use std::collections::HashMap;
 use std::path::Path;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -221,14 +223,16 @@ fn is_fixed_array_item_copy_primitive(token: &TypeToken) -> bool {
     )
 }
 
-fn validate_fixed_array_schema(
-    schema: &SchemaType,
-    path: &str,
-    language: PeppygenLanguage,
-) -> Result<()> {
+fn validate_fixed_array_schema(schema: &SchemaType, path: &str) -> Result<()> {
     match schema {
         SchemaType::Array(array) => {
             if array.length.is_some() {
+                if matches!(array.items.as_ref(), SchemaType::Object(_)) {
+                    return Err(Error::UnsupportedFixedArrayItemType {
+                        field: path.to_string(),
+                        item: "object",
+                    });
+                }
                 let token = array.items.as_ref().as_type_token().ok_or_else(|| {
                     Error::UnsupportedArrayItemSchema {
                         field: path.to_string(),
@@ -236,19 +240,18 @@ fn validate_fixed_array_schema(
                 })?;
                 if !is_fixed_array_item_copy_primitive(token) {
                     return Err(Error::UnsupportedFixedArrayItemType {
-                        language,
                         field: path.to_string(),
                         item: type_token_name(token),
                     });
                 }
             }
 
-            validate_fixed_array_schema(array.items.as_ref(), path, language)
+            validate_fixed_array_schema(array.items.as_ref(), path)
         }
         SchemaType::Object(object) => {
             for (field_name, nested) in &object.fields {
                 let nested_path = format!("{path}.{field_name}");
-                validate_fixed_array_schema(nested, &nested_path, language)?;
+                validate_fixed_array_schema(nested, &nested_path)?;
             }
             Ok(())
         }
@@ -256,12 +259,9 @@ fn validate_fixed_array_schema(
     }
 }
 
-pub fn validate_fixed_length_array_items(
-    format: &MessageFormat,
-    language: PeppygenLanguage,
-) -> Result<()> {
+pub fn validate_fixed_length_array_items(format: &MessageFormat) -> Result<()> {
     for (field_name, schema) in &format.0 {
-        validate_fixed_array_schema(schema, field_name, language)?;
+        validate_fixed_array_schema(schema, field_name)?;
     }
     Ok(())
 }
@@ -329,6 +329,65 @@ pub fn cancel_action_response_format() -> MessageFormat {
     MessageFormat(fields)
 }
 
+/// Validates that generated type names for nested objects and array-of-object items
+/// do not collide within the same message format.
+///
+/// For example, a field `frames` (array of objects) generates `{prefix}FramesItem`,
+/// while a sibling field `frames_item` (object) also generates `{prefix}FramesItem`.
+/// This function detects such collisions and returns an error.
+pub fn validate_generated_type_name_collisions(
+    format: &MessageFormat,
+    struct_prefix: &str,
+) -> Result<()> {
+    validate_sibling_type_name_collisions(&format.0, struct_prefix)
+}
+
+fn validate_sibling_type_name_collisions(
+    fields: &IndexMap<String, SchemaType>,
+    struct_prefix: &str,
+) -> Result<()> {
+    let mut seen: HashMap<String, String> = HashMap::new();
+
+    for (field_name, schema) in fields {
+        let generated_name = match schema {
+            SchemaType::Object(_) => Some(format!("{struct_prefix}{}", to_camel_case(field_name))),
+            SchemaType::Array(array) if matches!(array.items.as_ref(), SchemaType::Object(_)) => {
+                Some(array_item_type_name(struct_prefix, field_name))
+            }
+            _ => None,
+        };
+
+        if let Some(name) = generated_name {
+            if let Some(previous_field) = seen.get(&name) {
+                return Err(Error::GeneratedTypeNameCollision {
+                    context: struct_prefix.to_string(),
+                    type_name: name,
+                    first_field: previous_field.clone(),
+                    second_field: field_name.clone(),
+                });
+            }
+            seen.insert(name, field_name.clone());
+        }
+
+        // Recurse into nested objects and array items.
+        match schema {
+            SchemaType::Object(object) => {
+                let nested_prefix = format!("{struct_prefix}{}", to_camel_case(field_name));
+                validate_sibling_type_name_collisions(&object.fields, &nested_prefix)?;
+            }
+            SchemaType::Array(array) => {
+                if let SchemaType::Object(object) = array.items.as_ref() {
+                    let nested_prefix = array_item_type_name(struct_prefix, field_name);
+                    validate_sibling_type_name_collisions(&object.fields, &nested_prefix)?;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -347,18 +406,17 @@ mod tests {
 
         let err = validate_message_format_field_names(&format, "test.topic").unwrap_err();
 
-        match err {
-            Error::UnauthorizedMessageFieldName {
-                field,
-                path,
-                context,
-            } => {
-                assert_eq!(field, "instance_id");
-                assert_eq!(path, "instance_id");
-                assert_eq!(context, "test.topic");
-            }
-            other => panic!("expected UnauthorizedMessageFieldName, got: {other:?}"),
-        }
+        let Error::UnauthorizedMessageFieldName {
+            field,
+            path,
+            context,
+        } = err
+        else {
+            panic!("expected UnauthorizedMessageFieldName, got: {err:?}");
+        };
+        assert_eq!(field, "instance_id");
+        assert_eq!(path, "instance_id");
+        assert_eq!(context, "test.topic");
     }
 
     #[test]
@@ -377,17 +435,15 @@ mod tests {
 
         let err = validate_message_format_field_names(&format, "test.topic").unwrap_err();
 
-        match err {
-            Error::UnauthorizedMessageFieldName { field, path, .. } => {
-                assert_eq!(field, "instance_id");
-                assert_eq!(path, "header.instance_id");
-            }
-            other => panic!("expected UnauthorizedMessageFieldName, got: {other:?}"),
-        }
+        let Error::UnauthorizedMessageFieldName { field, path, .. } = err else {
+            panic!("expected UnauthorizedMessageFieldName, got: {err:?}");
+        };
+        assert_eq!(field, "instance_id");
+        assert_eq!(path, "header.instance_id");
     }
 
     #[test]
-    fn reject_fixed_string_array_for_rust() {
+    fn reject_fixed_string_array() {
         let format: MessageFormat = serde_json5::from_str(
             r#"
             {
@@ -401,23 +457,42 @@ mod tests {
         )
         .unwrap();
 
-        let err = validate_fixed_length_array_items(&format, PeppygenLanguage::Rust).unwrap_err();
-        match err {
-            Error::UnsupportedFixedArrayItemType {
-                language,
-                field,
-                item,
-            } => {
-                assert_eq!(language, PeppygenLanguage::Rust);
-                assert_eq!(field, "labels");
-                assert_eq!(item, "string");
-            }
-            other => panic!("expected UnsupportedFixedArrayItemType, got: {other:?}"),
-        }
+        let err = validate_fixed_length_array_items(&format).unwrap_err();
+        let Error::UnsupportedFixedArrayItemType { field, item } = err else {
+            panic!("expected UnsupportedFixedArrayItemType, got: {err:?}");
+        };
+        assert_eq!(field, "labels");
+        assert_eq!(item, "string");
     }
 
     #[test]
-    fn allow_fixed_i32_array_for_rust() {
+    fn reject_fixed_object_array() {
+        let format: MessageFormat = serde_json5::from_str(
+            r#"
+            {
+                frames: {
+                    $type: "array",
+                    $items: {
+                        $type: "object",
+                        name: "string"
+                    },
+                    $length: 4
+                }
+            }
+            "#,
+        )
+        .unwrap();
+
+        let err = validate_fixed_length_array_items(&format).unwrap_err();
+        let Error::UnsupportedFixedArrayItemType { field, item } = err else {
+            panic!("expected UnsupportedFixedArrayItemType, got: {err:?}");
+        };
+        assert_eq!(field, "frames");
+        assert_eq!(item, "object");
+    }
+
+    #[test]
+    fn allow_fixed_i32_array() {
         let format: MessageFormat = serde_json5::from_str(
             r#"
             {
@@ -431,8 +506,110 @@ mod tests {
         )
         .unwrap();
 
-        validate_fixed_length_array_items(&format, PeppygenLanguage::Rust)
-            .expect("fixed i32 arrays are supported");
+        validate_fixed_length_array_items(&format).expect("fixed i32 arrays are supported");
+    }
+
+    #[test]
+    fn reject_array_item_type_name_collision() {
+        let format: MessageFormat = serde_json5::from_str(
+            r#"
+            {
+                frames: {
+                    $type: "array",
+                    $items: {
+                        $type: "object",
+                        x: "i32",
+                        y: "i32"
+                    }
+                },
+                frames_item: {
+                    $type: "object",
+                    id: "u16"
+                }
+            }
+            "#,
+        )
+        .unwrap();
+
+        let err = validate_generated_type_name_collisions(&format, "Message").unwrap_err();
+        let Error::GeneratedTypeNameCollision {
+            context,
+            type_name,
+            first_field,
+            second_field,
+        } = err
+        else {
+            panic!("expected GeneratedTypeNameCollision, got: {err:?}");
+        };
+        assert_eq!(context, "Message");
+        assert_eq!(type_name, "MessageFramesItem");
+        assert_eq!(first_field, "frames");
+        assert_eq!(second_field, "frames_item");
+    }
+
+    #[test]
+    fn allow_non_colliding_array_and_object_fields() {
+        let format: MessageFormat = serde_json5::from_str(
+            r#"
+            {
+                frames: {
+                    $type: "array",
+                    $items: {
+                        $type: "object",
+                        x: "i32"
+                    }
+                },
+                metadata: {
+                    $type: "object",
+                    id: "u16"
+                }
+            }
+            "#,
+        )
+        .unwrap();
+
+        validate_generated_type_name_collisions(&format, "Message")
+            .expect("non-colliding fields should pass");
+    }
+
+    #[test]
+    fn reject_nested_array_item_type_name_collision() {
+        let format: MessageFormat = serde_json5::from_str(
+            r#"
+            {
+                outer: {
+                    $type: "object",
+                    frames: {
+                        $type: "array",
+                        $items: {
+                            $type: "object",
+                            x: "i32"
+                        }
+                    },
+                    frames_item: {
+                        $type: "object",
+                        id: "u16"
+                    }
+                }
+            }
+            "#,
+        )
+        .unwrap();
+
+        let err = validate_generated_type_name_collisions(&format, "Message").unwrap_err();
+        let Error::GeneratedTypeNameCollision {
+            context,
+            type_name,
+            first_field,
+            second_field,
+        } = err
+        else {
+            panic!("expected GeneratedTypeNameCollision, got: {err:?}");
+        };
+        assert_eq!(context, "MessageOuter");
+        assert_eq!(type_name, "MessageOuterFramesItem");
+        assert_eq!(first_field, "frames");
+        assert_eq!(second_field, "frames_item");
     }
 }
 

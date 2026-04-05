@@ -11,8 +11,10 @@ use crate::helpers;
 
 const PEPPY_JSON5_CONFIG: &str = r#"{
   schema_version: 1,
-  manifest: { name: "test_node",
-    tag: "0.1.0" },
+  manifest: {
+    name: "test_node",
+    tag: "0.1.0"
+  },
   interfaces: {
     topics: {
       emits: [
@@ -42,7 +44,8 @@ const PEPPY_JSON5_CONFIG: &str = r#"{
     }
   },
 
-  execution: { language: "rust",
+  execution: {
+    language: "rust",
     start_cmd: ["./target/release/test_node"]
   },
 }"#;
@@ -55,10 +58,13 @@ fn generate_peppygen_lib_minimal_config() {
     // Minimal config with no interfaces
     let minimal_config = r#"{
       schema_version: 1,
-      manifest: { name: "minimal_node",
-        tag: "0.1.0" },
+      manifest: {
+        name: "minimal_node",
+        tag: "0.1.0"
+      },
 
-      execution: { language: "rust",
+      execution: {
+        language: "rust",
         start_cmd: ["./target/debug/minimal_node"]
       }
     }"#;

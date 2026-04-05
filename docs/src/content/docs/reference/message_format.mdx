@@ -1,0 +1,255 @@
+---
+title: Message Format
+description: Reference for all message format field types used in topics, services, and actions
+sidebar:
+  order: 2
+---
+
+The `message_format` defines the structure of messages exchanged between nodes through [topics](/advanced_guides/topics/), [services](/advanced_guides/services/), and [actions](/advanced_guides/actions/).
+It is a map of field names to schema types, declared inline in `peppy.json5`.
+
+```json5
+message_format: {
+  temperature: "f32",
+  label: "string",
+}
+```
+
+Each field value is a **schema type** — either a bare type token, or a structured schema with modifiers.
+
+---
+
+## Primitive types
+
+A bare type string is the simplest form. These map directly to language-native types.
+
+| Type       | Alias      | Rust type               | Python type |
+|------------|------------|-------------------------|-------------|
+| `"bool"`   |            | `bool`                  | `bool`      |
+| `"u8"`     |            | `u8`                    | `int`       |
+| `"u16"`    |            | `u16`                   | `int`       |
+| `"u32"`    |            | `u32`                   | `int`       |
+| `"u64"`    |            | `u64`                   | `int`       |
+| `"i8"`     |            | `i8`                    | `int`       |
+| `"i16"`    |            | `i16`                   | `int`       |
+| `"i32"`    |            | `i32`                   | `int`       |
+| `"i64"`    |            | `i64`                   | `int`       |
+| `"f32"`    | `"float"`  | `f32`                   | `float`     |
+| `"f64"`    | `"double"` | `f64`                   | `float`     |
+| `"string"` | `"str"`    | `String`                | `str`       |
+| `"bytes"`  |            | `Vec<u8>`               | `bytes`     |
+| `"time"`   |            | `std::time::SystemTime` | `float`     |
+
+Aliases can be used interchangeably with their canonical name (e.g. `"float"` is equivalent to `"f32"`).
+
+---
+
+## Optional modifier
+
+Any primitive type can be made optional by using the structured form with `$optional`:
+
+```json5
+error_msg: {
+  $type: "string",
+  $optional: true
+}
+```
+
+| Field       | Required | Description                            |
+|-------------|----------|----------------------------------------|
+| `$type`     | Yes      | Any primitive type token               |
+| `$optional` | No       | When `true`, the field may be absent. Defaults to `false` |
+
+:::note
+`$optional` can only be used on **root-level fields** of a `message_format` — direct children, not fields nested inside objects or array items. If a parent structure is present, all its fields must be present too.
+
+In practice, this is used on **service and action response fields** where a value may or may not be present depending on the outcome — for example, an `error_msg` that is only set when the operation fails.
+:::
+
+---
+
+## Object
+
+An object groups related fields into a nested structure. It generates a nested struct in Rust and a dataclass in Python.
+
+```json5
+header: {
+  stamp: "time",
+  frame_id: "u32"
+}
+```
+
+| Field       | Required | Description                                   |
+|-------------|----------|-----------------------------------------------|
+| `$type`     | No       | Only valid value is `"object"`. Can be omitted since the parser infers it from the structure |
+| `$optional` | No       | When `true`, the entire object may be absent  |
+| *other keys*| No       | Each additional key is a field with its own schema type |
+
+Object fields can be any schema type, including arrays and nested objects:
+
+```json5
+sensor_reading: {
+  $type: "object",
+  header: {
+    $type: "object",
+    stamp: "time",
+    frame_id: "u32"
+  },
+  samples: {
+    $type: "array",
+    $items: "f32"
+  }
+}
+```
+
+---
+
+## Array
+
+An array represents a list of items of the same type.
+
+```json5
+distances: {
+  $type: "array",
+  $items: "f32"
+}
+```
+
+| Field       | Required | Description                                         |
+|-------------|----------|-----------------------------------------------------|
+| `$type`     | Yes      | Must be `"array"`                                   |
+| `$items`    | Yes      | A primitive type or an object schema. Nested arrays (arrays of arrays) are not supported |
+| `$length`   | No       | Fixed number of elements. Only supported when `$items` is a numeric or boolean primitive — not supported for `string`, `time`, or object items. Omit for variable-length |
+| `$optional` | No       | When `true`, the entire array may be absent          |
+
+### Fixed-length array
+
+When `$length` is provided, the array has an exact number of elements:
+
+```json5
+position: {
+  $type: "array",
+  $items: "f32",
+  $length: 3
+}
+```
+
+This maps to `[f32; 3]` in Rust and `list[float]` in Python.
+
+### Variable-length array
+
+Without `$length`, the array can contain any number of elements:
+
+```json5
+frame: {
+  $type: "array",
+  $items: "u8"
+}
+```
+
+This maps to `Vec<u8>` in Rust and `bytes` in Python (for `u8` items) or `list[T]` for other types.
+
+### Array of objects
+
+`$items` can be an object, allowing arrays of structured records:
+
+```json5
+frames: {
+  $type: "array",
+  $items: {
+    $type: "object",
+    name: "string",
+    parent: "string",
+    position: {
+      $type: "array",
+      $items: "i32",
+      $length: 3
+    },
+    orientation: {
+      $type: "array",
+      $items: "i32",
+      $length: 4
+    }
+  }
+}
+```
+
+This accepts messages like:
+
+```json
+{
+  "frames": [
+    { "name": "link1", "parent": "world", "position": [0, 0, 1], "orientation": [1, 0, 0, 0] },
+    { "name": "link2", "parent": "link1", "position": [0, 1, 0], "orientation": [1, 0, 0, 0] }
+  ]
+}
+```
+
+---
+
+## Nesting rules
+
+Schema types can be nested arbitrarily:
+
+- **Object fields** can be primitives, arrays, or other objects
+- **Array items** can be primitives, objects, or other arrays
+
+This enables complex hierarchical message structures. For example, a robotics transform tree:
+
+```json5
+message_format: {
+  timestamp: "time",
+  root_frame: "string",
+  transforms: {
+    $type: "array",
+    $items: {
+      $type: "object",
+      name: "string",
+      parent: "string",
+      translation: { $type: "array", $items: "f64", $length: 3 },
+      rotation: { $type: "array", $items: "f64", $length: 4 }
+    }
+  }
+}
+```
+
+---
+
+## Complete example
+
+A full `peppy.json5` topic using multiple schema types:
+
+```json5
+{
+  schema_version: 1,
+  manifest: {
+    name: "arm_controller",
+    tag: "0.1.0"
+  },
+ execution: {
+    language: "rust",
+    start_cmd: ["./target/release/uvc_camera"],
+  },
+  interfaces: {
+    topics: {
+      emits: [
+        {
+          name: "arm_state",
+          qos_profile: "sensor_data",
+          message_format: {
+            timestamp: "time",
+            joint_positions: { $type: "array", $items: "f64", $length: 6 },
+            joint_velocities: { $type: "array", $items: "f64", $length: 6 },
+            end_effector: {
+              $type: "object",
+              position: { $type: "array", $items: "f64", $length: 3 },
+              orientation: { $type: "array", $items: "f64", $length: 4 },
+              gripper_open: "bool"
+            }
+          }
+        }
+      ]
+    }
+  }
+}
+```

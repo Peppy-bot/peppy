@@ -114,6 +114,21 @@ pub fn module_name_from_components(node: &str, name: &str) -> String {
     }
 }
 
+/// Returns the intermediate field name used when generating a struct for
+/// array-of-objects items.  E.g. `"frames"` → `"frames_item"`.
+pub(crate) fn array_item_field_name(field_name: &str) -> String {
+    format!("{field_name}_item")
+}
+
+/// Returns the full CamelCase type/class name for an array-of-objects item struct.
+/// E.g. `("Message", "frames")` → `"MessageFramesItem"`.
+pub(crate) fn array_item_type_name(struct_prefix: &str, field_name: &str) -> String {
+    format!(
+        "{struct_prefix}{}",
+        to_camel_case(&array_item_field_name(field_name))
+    )
+}
+
 /// Converts a snake_case or raw string to CamelCase.
 pub(crate) fn to_camel_case(raw: &str) -> String {
     let sanitized = sanitize_component(raw);
@@ -242,6 +257,24 @@ pub fn unique_module_name(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn array_item_field_name_appends_item_suffix() {
+        assert_eq!(array_item_field_name("frames"), "frames_item");
+        assert_eq!(array_item_field_name("data"), "data_item");
+    }
+
+    #[test]
+    fn array_item_type_name_produces_camel_case() {
+        assert_eq!(
+            array_item_type_name("Message", "frames"),
+            "MessageFramesItem"
+        );
+        assert_eq!(
+            array_item_type_name("MessageHeader", "points"),
+            "MessageHeaderPointsItem"
+        );
+    }
 
     #[test]
     fn capnp_field_name_camel_cases() {

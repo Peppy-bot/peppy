@@ -70,9 +70,51 @@ fn emit_field_assignment(
         SchemaType::Type(_) | SchemaType::Primitive(_) => {
             builder.line(&capnp_assignment_stmt(builder_var, &capnp_name, value_expr));
         }
-        SchemaType::Array(_) => {
-            builder.line(&capnp_assignment_stmt(builder_var, &capnp_name, value_expr));
-        }
+        SchemaType::Array(array) => match array.items.as_ref() {
+            SchemaType::Object(object) => {
+                let idx = *counter;
+                *counter += 1;
+                let list_builder = format!("list_{idx}");
+                let length_expr = if let Some(len) = array.length {
+                    builder.line(&format!("if len({value_expr}) != {len}:"));
+                    builder.indent();
+                    builder.line(&format!(
+                        "raise ValueError(\"invalid fixed list length for field '{field_name}': expected {len}, got \" + str(len({value_expr})))"
+                    ));
+                    builder.dedent();
+                    format!("{len}")
+                } else {
+                    format!("len({value_expr})")
+                };
+                builder.line(&format!(
+                    "{list_builder} = {builder_var}.init(\"{capnp_name}\", {length_expr})"
+                ));
+                let loop_idx = format!("i_{idx}");
+                let loop_elem = format!("elem_{idx}");
+                builder.line(&format!(
+                    "for {loop_idx}, {loop_elem} in enumerate({value_expr}):"
+                ));
+                builder.indent();
+                let elem_builder = format!("eb_{idx}");
+                builder.line(&format!("{elem_builder} = {list_builder}[{loop_idx}]"));
+                for (nested_name, nested_schema) in &object.fields {
+                    let nested_python = sanitize_python_identifier(nested_name);
+                    let nested_value = format!("{loop_elem}.{nested_python}");
+                    emit_field_assignment(
+                        builder,
+                        &elem_builder,
+                        nested_name,
+                        nested_schema,
+                        &nested_value,
+                        counter,
+                    );
+                }
+                builder.dedent();
+            }
+            _ => {
+                builder.line(&capnp_assignment_stmt(builder_var, &capnp_name, value_expr));
+            }
+        },
         SchemaType::Object(object) => {
             let idx = *counter;
             *counter += 1;
@@ -123,4 +165,73 @@ fn emit_time_assignment(
     ));
     builder.line(&format!("{ts_builder}.sec = {ts_var}.sec"));
     builder.line(&format!("{ts_builder}.nsec = {ts_var}.nsec"));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use config::node::{ArrayKind, ArraySchema, ObjectKind, ObjectSchema};
+    use indexmap::IndexMap;
+
+    fn emit_object_array(length: Option<usize>) -> String {
+        let mut fields = IndexMap::new();
+        fields.insert("x".to_string(), SchemaType::Type(TypeToken::I32));
+
+        let schema = SchemaType::Array(ArraySchema {
+            kind: ArrayKind::Array,
+            items: Box::new(SchemaType::Object(ObjectSchema {
+                kind: ObjectKind::Object,
+                fields,
+                optional: false,
+            })),
+            length,
+            optional: false,
+        });
+
+        let mut builder = PythonCodeBuilder::new();
+        let mut counter = 0u32;
+        emit_field_assignment(
+            &mut builder,
+            "msg",
+            "frames",
+            &schema,
+            "self.frames",
+            &mut counter,
+        );
+        builder.build()
+    }
+
+    #[test]
+    fn object_array_serialization_uses_fixed_length_and_validates() {
+        let code = emit_object_array(Some(4));
+        assert!(
+            code.contains("raise ValueError"),
+            "fixed-length path must validate with ValueError, got:\n{code}"
+        );
+        assert!(
+            code.contains("!= 4"),
+            "must check len against declared length 4, got:\n{code}"
+        );
+        assert!(
+            code.contains("init(\"frames\", 4)"),
+            "must pass fixed literal 4 to init, got:\n{code}"
+        );
+        assert!(
+            !code.contains("init(\"frames\", len("),
+            "fixed-length path must not use len() in init, got:\n{code}"
+        );
+    }
+
+    #[test]
+    fn object_array_serialization_uses_runtime_len_when_dynamic() {
+        let code = emit_object_array(None);
+        assert!(
+            !code.contains("raise ValueError"),
+            "dynamic-length path must not raise ValueError, got:\n{code}"
+        );
+        assert!(
+            code.contains("init(\"frames\", len(self.frames))"),
+            "dynamic-length path must use len(value_expr) in init, got:\n{code}"
+        );
+    }
 }

@@ -2,7 +2,7 @@ use super::identifiers::sanitize_rust_identifier;
 use super::serialization::NameGenerator;
 use super::type_mapping::primitive_type_token;
 use crate::error::{Error, Result};
-use crate::generator::naming::{sanitize_component, to_camel_case};
+use crate::generator::naming::{array_item_type_name, sanitize_component, to_camel_case};
 use config::node::{ArraySchema, MessageFormat, SchemaType, TypeToken};
 use indexmap::IndexMap;
 use proc_macro2::{Ident, Literal, Span, TokenStream};
@@ -180,9 +180,14 @@ fn generate_field_reader_statements_inner(
             context_expr,
             names,
         )),
-        SchemaType::Array(array) => {
-            generate_array_reader(reader_expr, field_name, array, context_expr, names)
-        }
+        SchemaType::Array(array) => generate_array_reader(
+            reader_expr,
+            field_name,
+            array,
+            struct_prefix,
+            context_expr,
+            names,
+        ),
         SchemaType::Object(object) => generate_object_reader(
             reader_expr,
             field_name,
@@ -323,6 +328,7 @@ fn generate_array_reader(
     reader_expr: &TokenStream,
     field_name: &str,
     array: &ArraySchema,
+    struct_prefix: &str,
     context_expr: &TokenStream,
     names: &mut NameGenerator,
 ) -> Result<(Vec<TokenStream>, Ident)> {
@@ -330,27 +336,38 @@ fn generate_array_reader(
         &format!("get_{}", sanitize_component(field_name)),
         Span::call_site(),
     );
-    match array.items.as_ref().as_type_token() {
-        Some(TypeToken::U8) => Ok(generate_u8_array_reader(
+    match array.items.as_ref() {
+        SchemaType::Object(object) => generate_object_array_reader(
             reader_expr,
             field_name,
-            &method_ident,
-            array.length,
+            &object.fields,
+            struct_prefix,
             context_expr,
             names,
-        )),
-        Some(token) => Ok(generate_primitive_array_reader(
-            reader_expr,
-            field_name,
-            token,
-            &method_ident,
             array.length,
-            context_expr,
-            names,
-        )),
-        None => Err(Error::UnsupportedArrayItemSchema {
-            field: field_name.to_string(),
-        }),
+        ),
+        _ => match array.items.as_ref().as_type_token() {
+            Some(TypeToken::U8) => Ok(generate_u8_array_reader(
+                reader_expr,
+                field_name,
+                &method_ident,
+                array.length,
+                context_expr,
+                names,
+            )),
+            Some(token) => Ok(generate_primitive_array_reader(
+                reader_expr,
+                field_name,
+                token,
+                &method_ident,
+                array.length,
+                context_expr,
+                names,
+            )),
+            None => Err(Error::UnsupportedArrayItemSchema {
+                field: field_name.to_string(),
+            }),
+        },
     }
 }
 
@@ -519,4 +536,146 @@ fn generate_object_reader(
     });
 
     Ok((statements, value_ident))
+}
+
+fn generate_object_array_reader(
+    reader_expr: &TokenStream,
+    field_name: &str,
+    fields: &IndexMap<String, SchemaType>,
+    struct_prefix: &str,
+    context_expr: &TokenStream,
+    names: &mut NameGenerator,
+    length: Option<usize>,
+) -> Result<(Vec<TokenStream>, Ident)> {
+    let method_ident = Ident::new(
+        &format!("get_{}", sanitize_component(field_name)),
+        Span::call_site(),
+    );
+    let list_ident = names.next("list");
+    let result_ident = names.next("result");
+    let value_ident = names.next(field_name);
+    let field_literal = Literal::string(field_name);
+
+    let nested_prefix = array_item_type_name(struct_prefix, field_name);
+    let struct_ident = Ident::new(&nested_prefix, Span::call_site());
+
+    let element_ident = names.next("element");
+    let mut field_statements = Vec::new();
+    let mut field_inits = Vec::new();
+
+    for (nested_name, nested_schema) in fields {
+        let (mut nested_statements, nested_value_ident) = generate_field_reader_statements(
+            &quote!(#element_ident),
+            nested_name.as_str(),
+            nested_schema,
+            &nested_prefix,
+            context_expr,
+            names,
+        )?;
+        field_statements.append(&mut nested_statements);
+        let field_ident = Ident::new(&sanitize_rust_identifier(nested_name), Span::call_site());
+        field_inits.push(quote!(#field_ident: #nested_value_ident));
+    }
+
+    let mut statements = vec![quote! {
+        let #list_ident = #reader_expr
+            .reborrow()
+            .#method_ident()
+            .map_err(|source| {
+                #[allow(clippy::all)]
+                let context = #context_expr;
+                crate::Error::Deserialization(
+                    format!("field '{}' in {}: {}", #field_literal, context, source)
+                )
+            })?;
+    }];
+
+    if let Some(len) = length {
+        let len_lit = Literal::usize_unsuffixed(len);
+        let idx_ident = names.next("idx");
+        statements.push(quote! {
+            if #list_ident.len() != #len_lit as u32 {
+                return Err(crate::Error::Deserialization(
+                    format!("invalid fixed list length for field '{}': expected {}, got {}", #field_literal, #len_lit, #list_ident.len())
+                ));
+            }
+            let #value_ident: [#struct_ident; #len_lit] = core::array::try_from_fn(|#idx_ident| {
+                let #element_ident = #list_ident.get(#idx_ident as u32);
+                #( #field_statements )*
+                Ok::<_, crate::Error>(#struct_ident {
+                    #( #field_inits ),*
+                })
+            })?;
+        });
+    } else {
+        statements.push(quote! {
+            let mut #result_ident = Vec::with_capacity(#list_ident.len() as usize);
+            for #element_ident in #list_ident.iter() {
+                #( #field_statements )*
+                #result_ident.push(#struct_ident {
+                    #( #field_inits ),*
+                });
+            }
+            let #value_ident = #result_ident;
+        });
+    }
+
+    Ok((statements, value_ident))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn call_object_array_reader(length: Option<usize>) -> String {
+        let reader_expr = quote!(reader);
+        let mut fields = IndexMap::new();
+        fields.insert("x".to_string(), SchemaType::Type(TypeToken::I32));
+        let context_expr = quote!("TestMsg");
+        let mut names = NameGenerator::new();
+
+        let (statements, _) = generate_object_array_reader(
+            &reader_expr,
+            "frames",
+            &fields,
+            "Test",
+            &context_expr,
+            &mut names,
+            length,
+        )
+        .unwrap();
+
+        let combined = quote! { #( #statements )* };
+        combined.to_string()
+    }
+
+    #[test]
+    fn object_array_reader_fixed_length_uses_array() {
+        let code = call_object_array_reader(Some(4));
+        assert!(
+            code.contains("[TestFramesItem ; 4]"),
+            "fixed-length path must produce a [T; N] array, got: {code}"
+        );
+        assert!(
+            code.contains("try_from_fn"),
+            "fixed-length path must use core::array::try_from_fn, got: {code}"
+        );
+        assert!(
+            code.contains(r#""frames" , 4"#),
+            "error message must reference field name and expected length, got: {code}"
+        );
+    }
+
+    #[test]
+    fn object_array_reader_dynamic_length_uses_vec() {
+        let code = call_object_array_reader(None);
+        assert!(
+            !code.contains("try_into"),
+            "dynamic-length path must not use try_into, got: {code}"
+        );
+        assert!(
+            code.contains("Vec :: with_capacity"),
+            "dynamic-length path must use Vec::with_capacity, got: {code}"
+        );
+    }
 }

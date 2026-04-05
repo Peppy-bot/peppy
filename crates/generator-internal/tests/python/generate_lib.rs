@@ -10,8 +10,10 @@ use tempfile::TempDir;
 
 const PEPPY_JSON5_CONFIG: &str = r#"{
   schema_version: 1,
-  manifest: { name: "test_node",
-    tag: "0.1.0" },
+  manifest: {
+    name: "test_node",
+    tag: "0.1.0"
+  },
   interfaces: {
     topics: {
       emits: [

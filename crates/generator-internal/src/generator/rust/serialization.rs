@@ -188,26 +188,40 @@ fn generate_field_assignment_inner(
             value_is_ref,
             &primitive.kind,
         )),
-        SchemaType::Array(array) => {
-            let item_token = array.items.as_ref().as_type_token();
-            if matches!(item_token, Some(TypeToken::U8)) {
-                Ok(quote!(#builder_expr.#set_method(#value_expr.as_ref());))
-            } else if let Some(token) = item_token {
-                generate_list_assignment(
+        SchemaType::Array(array) => match array.items.as_ref() {
+            SchemaType::Object(object) => {
+                let length_expr = make_length_expr(array.length, value_expr, field_name)?;
+                generate_object_list_assignment(
                     builder_expr,
                     &init_method,
                     value_expr,
-                    field_name,
-                    array.length,
-                    token,
+                    &object.fields,
                     names,
+                    value_is_ref,
+                    &length_expr,
                 )
-            } else {
-                Err(Error::UnsupportedArrayItemSchema {
-                    field: field_name.to_string(),
-                })
             }
-        }
+            _ => {
+                let item_token = array.items.as_ref().as_type_token();
+                if matches!(item_token, Some(TypeToken::U8)) {
+                    Ok(quote!(#builder_expr.#set_method(#value_expr.as_ref());))
+                } else if let Some(token) = item_token {
+                    generate_list_assignment(
+                        builder_expr,
+                        &init_method,
+                        value_expr,
+                        field_name,
+                        array.length,
+                        token,
+                        names,
+                    )
+                } else {
+                    Err(Error::UnsupportedArrayItemSchema {
+                        field: field_name.to_string(),
+                    })
+                }
+            }
+        },
         SchemaType::Object(object) => generate_object_assignment(
             builder_expr,
             &init_method,
@@ -281,6 +295,27 @@ fn generate_time_assignment(
     }
 }
 
+fn make_length_expr(
+    length: Option<usize>,
+    value_expr: &TokenStream,
+    field_name: &str,
+) -> Result<TokenStream> {
+    match length {
+        Some(len) => {
+            let len_lit = Literal::u32_unsuffixed(u32::try_from(len).map_err(|_| {
+                Error::InvariantViolation {
+                    context: format!("list length {len} for field `{field_name}` exceeds u32::MAX"),
+                }
+            })?);
+            Ok(quote!(#len_lit))
+        }
+        None => Ok(quote!(
+            u32::try_from((#value_expr).len()).expect("list length exceeds u32::MAX")
+        )),
+    }
+}
+
+/// Pre-computed length tokens for object list serialization.
 fn generate_list_assignment(
     builder_expr: &TokenStream,
     init_method: &Ident,
@@ -294,17 +329,7 @@ fn generate_list_assignment(
     let idx_ident = names.next("idx");
     let element_ident = names.next("value");
 
-    let length_expr = match length {
-        Some(len) => {
-            let len_lit = Literal::u32_unsuffixed(u32::try_from(len).map_err(|_| {
-                Error::InvariantViolation {
-                    context: format!("list length {len} for field `{field_name}` exceeds u32::MAX"),
-                }
-            })?);
-            quote!(#len_lit)
-        }
-        None => quote!(u32::try_from((#value_expr).len()).expect("list length exceeds u32::MAX")),
-    };
+    let length_expr = make_length_expr(length, value_expr, field_name)?;
 
     let element_setter = match token {
         TypeToken::String => quote!(#list_ident.set(#idx_ident as u32, #element_ident.as_str());),
@@ -373,6 +398,51 @@ fn generate_object_assignment(
     })
 }
 
+fn generate_object_list_assignment(
+    builder_expr: &TokenStream,
+    init_method: &Ident,
+    value_expr: &TokenStream,
+    fields: &IndexMap<String, SchemaType>,
+    names: &mut NameGenerator,
+    value_is_ref: bool,
+    length_expr: &TokenStream,
+) -> Result<TokenStream> {
+    let list_ident = names.next("list");
+    let idx_ident = names.next("idx");
+    let element_ident = names.next("element");
+
+    let element_builder_ident = names.next("builder");
+    let mut nested = Vec::with_capacity(fields.len());
+    for (nested_name, nested_schema) in fields {
+        let nested_ident = Ident::new(
+            &sanitize_rust_identifier(nested_name.as_str()),
+            Span::call_site(),
+        );
+        let nested_value_expr = if value_is_ref {
+            quote!(&#element_ident.#nested_ident)
+        } else {
+            quote!(#element_ident.#nested_ident)
+        };
+        nested.push(generate_field_assignment_inner(
+            &quote!(#element_builder_ident),
+            nested_name,
+            nested_schema,
+            &nested_value_expr,
+            names,
+            true,
+            value_is_ref,
+        )?);
+    }
+
+    Ok(quote! {
+        let mut #list_ident = #builder_expr.reborrow().#init_method(#length_expr);
+        for (#idx_ident, #element_ident) in (#value_expr).iter().enumerate() {
+            let mut #element_builder_ident = #list_ident.reborrow().get(#idx_ident as u32);
+            #(#nested)*
+        }
+    })
+}
+
 /// Generates a block expression that serializes fields into a Cap'n Proto message
 /// and returns `peppylib::Payload`.
 ///
@@ -408,4 +478,74 @@ pub fn build_serialize_payload(
         })?;
         peppylib::Payload::from(buffer)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// When `length` is `Some`, the generated code must use the fixed literal
+    /// instead of a runtime `.len()` call.
+    #[test]
+    fn object_list_assignment_uses_fixed_length_literal() {
+        let builder = quote!(root);
+        let init = Ident::new("init_frames", Span::call_site());
+        let value = quote!(self.frames);
+        let mut fields = IndexMap::new();
+        fields.insert("x".to_string(), SchemaType::Type(TypeToken::I32));
+        let mut names = NameGenerator::new();
+
+        let length_expr = make_length_expr(Some(4), &value, "frames").unwrap();
+        let tokens = generate_object_list_assignment(
+            &builder,
+            &init,
+            &value,
+            &fields,
+            &mut names,
+            true,
+            &length_expr,
+        )
+        .unwrap();
+
+        let code = tokens.to_string();
+        // Must use the literal 4, not a runtime .len() call.
+        assert!(
+            code.contains("init_frames (4"),
+            "expected fixed literal 4 in generated code, got: {code}"
+        );
+        assert!(
+            !code.contains("assert_eq"),
+            "fixed-length path must not emit a runtime length check, got: {code}"
+        );
+    }
+
+    /// When `length` is `None`, the generated code must fall back to runtime
+    /// `.len()`.
+    #[test]
+    fn object_list_assignment_uses_runtime_len_when_no_fixed_length() {
+        let builder = quote!(root);
+        let init = Ident::new("init_frames", Span::call_site());
+        let value = quote!(self.frames);
+        let mut fields = IndexMap::new();
+        fields.insert("x".to_string(), SchemaType::Type(TypeToken::I32));
+        let mut names = NameGenerator::new();
+
+        let length_expr = make_length_expr(None, &value, "frames").unwrap();
+        let tokens = generate_object_list_assignment(
+            &builder,
+            &init,
+            &value,
+            &fields,
+            &mut names,
+            true,
+            &length_expr,
+        )
+        .unwrap();
+
+        let code = tokens.to_string();
+        assert!(
+            code.contains("len"),
+            "dynamic-length path must use .len(), got: {code}"
+        );
+    }
 }

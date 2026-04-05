@@ -87,10 +87,7 @@ const EXPOSED_ACTION_WITH_NESTED_FEEDBACK_EXAMPLE: &str = r#"
       state: {
         $type: "object",
         position: "i32",
-        note: {
-          $type: "string",
-          $optional: true
-        }
+        note: "string"
       }
     }
   }
@@ -465,10 +462,9 @@ fn exposed_action_feedback_emits_nested_types() {
     assert_contains_all(
         &rendered,
         &[
-            "from typing import Optional",
             "class FeedbackState:",
             "position: int",
-            "note: Optional[str]",
+            "note: str",
             "async def emit_feedback(self, state: FeedbackState):",
         ],
     );
