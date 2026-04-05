@@ -259,8 +259,8 @@ pub struct NodeConfig {
 }
 
 /// Validated node name. Lowercase letters, digits, '_' and '-' only.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(try_from = "String", into = "String")]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
+#[serde(into = "String")]
 pub struct Name(String);
 
 use crate::consts::ALLOWED_CONFIG_CHARS;
@@ -284,18 +284,34 @@ impl TryFrom<String> for Name {
 
     fn try_from(value: String) -> Result<Self, Self::Error> {
         if value.is_empty() {
-            return Err(ParsingError::Structured(
-                crate::error::StructuredError::EmptyName.json5_message(),
-            ));
+            return Err(ParsingError::EmptyName);
         }
         if value.chars().all(Name::is_valid_char) {
             return Ok(Name(value));
         }
-        let err = crate::error::StructuredError::InvalidName {
-            name: value,
-            allowed: ALLOWED_CONFIG_CHARS.to_string(),
-        };
-        Err(ParsingError::Structured(err.json5_message()))
+        Err(ParsingError::InvalidName(
+            value,
+            ALLOWED_CONFIG_CHARS.to_string(),
+        ))
+    }
+}
+
+impl<'de> Deserialize<'de> for Name {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        Name::try_from(s).map_err(|err| {
+            let structured = match err {
+                ParsingError::EmptyName => crate::error::StructuredError::EmptyName,
+                ParsingError::InvalidName(name, allowed) => {
+                    crate::error::StructuredError::InvalidName { name, allowed }
+                }
+                _ => return de::Error::custom(err.to_string()),
+            };
+            de::Error::custom(structured.json5_message())
+        })
     }
 }
 
