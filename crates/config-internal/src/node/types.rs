@@ -1649,6 +1649,8 @@ mod tests {
     }
 
     #[test]
+    /// Verifies that a nested schema (array of objects containing a fixed-length array)
+    /// survives a serialize → deserialize roundtrip without data loss.
     fn nested_schema_roundtrip() {
         let json5 = r#"{
             frames: {
@@ -1670,7 +1672,10 @@ mod tests {
     #[test]
     fn root_level_optional_is_accepted() {
         let json5 = r#"{
-            error_msg: { $type: "string", $optional: true },
+            error_msg: { 
+              $type: "string", 
+              $optional: true 
+            },
             code: "u32"
         }"#;
 
@@ -1684,7 +1689,10 @@ mod tests {
         let json5 = r#"{
             header: {
                 $type: "object",
-                debug: { $type: "string", $optional: true }
+                debug: { 
+                  $type: "string", 
+                  $optional: true 
+                }
             }
         }"#;
 
@@ -1698,7 +1706,13 @@ mod tests {
     #[test]
     fn array_items_rejects_optional() {
         let json5 = r#"{
-            values: { $type: "array", $items: { $type: "u8", $optional: true } }
+            values: { 
+              $type: "array", 
+              $items: { 
+                $type: "u8", 
+                $optional: true 
+              }
+            }
         }"#;
 
         let parsed: Result<MessageFormat, _> = serde_json5::from_str(json5);
@@ -1708,7 +1722,13 @@ mod tests {
     #[test]
     fn array_items_rejects_nested_arrays() {
         let json5 = r#"{
-            data: { $type: "array", $items: { $type: "array", $items: "u8" } }
+            data: {
+              $type: "array", 
+              $items: {
+                $type: "array", 
+                $items: "u8" 
+              }
+            }
         }"#;
 
         let result: Result<MessageFormat, _> = serde_json5::from_str(json5);
@@ -1726,7 +1746,10 @@ mod tests {
                 $items: {
                     $type: "object",
                     name: "string",
-                    debug: { $type: "string", $optional: true }
+                    debug: {
+                      $type: "string",
+                      $optional: true 
+                    }
                 }
             }
         }"#;
