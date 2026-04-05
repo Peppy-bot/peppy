@@ -74,7 +74,6 @@ An object groups related fields into a nested structure. It generates a nested s
 
 ```json5
 header: {
-  $type: "object",
   stamp: "time",
   frame_id: "u32"
 }
@@ -82,7 +81,7 @@ header: {
 
 | Field       | Required | Description                                   |
 |-------------|----------|-----------------------------------------------|
-| `$type`     | Yes      | Must be `"object"`                            |
+| `$type`     | No       | Only valid value is `"object"`. Can be omitted since the parser infers it from the structure |
 | `$optional` | No       | When `true`, the entire object may be absent  |
 | *other keys*| No       | Each additional key is a field with its own schema type |
 
@@ -119,8 +118,8 @@ distances: {
 | Field       | Required | Description                                         |
 |-------------|----------|-----------------------------------------------------|
 | `$type`     | Yes      | Must be `"array"`                                   |
-| `$items`    | Yes      | The schema type of each element                     |
-| `$length`   | No       | Fixed number of elements. Omit for variable-length  |
+| `$items`    | Yes      | A primitive type or an object schema. Nested arrays (arrays of arrays) are not supported |
+| `$length`   | No       | Fixed number of elements. Only supported when `$items` is a numeric or boolean primitive — not supported for `string`, `time`, or object items. Omit for variable-length |
 | `$optional` | No       | When `true`, the entire array may be absent          |
 
 ### Fixed-length array
