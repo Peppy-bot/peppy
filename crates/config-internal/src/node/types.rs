@@ -519,7 +519,7 @@ impl<'de> Visitor<'de> for ObjectSchemaVisitor {
             }
         }
 
-        let kind = kind.ok_or_else(|| de::Error::missing_field("$type"))?;
+        let kind = kind.unwrap_or(ObjectKind::Object);
         Ok(ObjectSchema {
             kind,
             fields,
@@ -1478,13 +1478,17 @@ mod tests {
     }
 
     #[test]
-    fn object_schema_requires_type_field() {
+    fn object_schema_implies_type_when_omitted() {
         let json5 = r#"{
             header: { stamp: "time", frame_id: "u32" }
         }"#;
 
-        let parsed: Result<MessageFormat, _> = serde_json5::from_str(json5);
-        assert!(parsed.is_err(), "object without type should fail parsing");
+        let parsed: MessageFormat = serde_json5::from_str(json5).expect("should parse");
+        let SchemaType::Object(obj) = &parsed.0["header"] else {
+            panic!("expected Object");
+        };
+        assert_eq!(obj.fields["stamp"], SchemaType::Type(TypeToken::Time));
+        assert_eq!(obj.fields["frame_id"], SchemaType::Type(TypeToken::U32));
     }
 
     #[test]
@@ -1543,6 +1547,60 @@ mod tests {
                 $type: "array",
                 $items: {
                     $type: "object",
+                    name: "string",
+                    parent: "string",
+                    position: {
+                        $type: "array",
+                        $items: "i32",
+                        $length: 3
+                    },
+                    orientation: {
+                        $type: "array",
+                        $items: "i32",
+                        $length: 4
+                    },
+                },
+            }
+        }"#;
+
+        let parsed: MessageFormat = serde_json5::from_str(json5).expect("should parse");
+        let SchemaType::Array(frames_arr) = &parsed.0["frames"] else {
+            panic!("expected Array");
+        };
+        assert!(frames_arr.length.is_none());
+
+        let SchemaType::Object(frame_obj) = frames_arr.items.as_ref() else {
+            panic!("expected Object items");
+        };
+        assert_eq!(
+            frame_obj.fields["name"],
+            SchemaType::Type(TypeToken::String)
+        );
+        assert_eq!(
+            frame_obj.fields["parent"],
+            SchemaType::Type(TypeToken::String)
+        );
+
+        let SchemaType::Array(pos) = &frame_obj.fields["position"] else {
+            panic!("expected Array for position");
+        };
+        assert_eq!(*pos.items, SchemaType::Type(TypeToken::I32));
+        assert_eq!(pos.length, Some(3));
+
+        let SchemaType::Array(orient) = &frame_obj.fields["orientation"] else {
+            panic!("expected Array for orientation");
+        };
+        assert_eq!(*orient.items, SchemaType::Type(TypeToken::I32));
+        assert_eq!(orient.length, Some(4));
+    }
+
+    #[test]
+    fn array_items_can_be_objects_without_object_type() {
+        let json5 = r#"{
+            frames: {
+                $type: "array",
+                $items: {
+                    // $type: "object", This one is optional here since it's automatically implied
                     name: "string",
                     parent: "string",
                     position: {
