@@ -1,5 +1,6 @@
 use super::*;
-use config::node::{ConsumedTopic, EmittedTopic, MessageFormat, PeppygenLanguage};
+use crate::error::Error;
+use config::node::{ConsumedTopic, EmittedTopic, MessageFormat};
 
 const EMITTED_TOPIC_EXAMPLE: &str = r#"
 {
@@ -42,42 +43,6 @@ const EMITTED_TOPIC_EXAMPLE2: &str = r#"
 }
 "#;
 
-const EMITTED_TOPIC_WITH_PYTHON_KEYWORD_FIELDS: &str = r#"
-{
-  name: "keyword_topic",
-  qos_profile: "standard",
-  message_format: {
-    "class": "u32",
-    "from": "string"
-  }
-}
-"#;
-
-const EMITTED_TOPIC_RESERVED_FIELD_EXAMPLE: &str = r#"
-{
-  name: "robot_state",
-  qos_profile: "standard",
-  message_format: {
-    instance_id: "string",
-    status: "u8"
-  }
-}
-"#;
-
-const EMITTED_TOPIC_FIXED_STRING_ARRAY_EXAMPLE: &str = r#"
-{
-  name: "labels",
-  qos_profile: "standard",
-  message_format: {
-    labels: {
-      $type: "array",
-      $items: "string",
-      $length: 3
-    }
-  }
-}
-"#;
-
 const SUBSCRIBED_TOPIC_EXAMPLE1: &str = r#"
 {
     local_node_id: "uvc_camera",
@@ -109,13 +74,6 @@ const SUBSCRIBED_TOPIC_EXAMPLE2: &str = r#"
 }
 "#;
 
-const SUBSCRIBED_TOPIC_EXAMPLE_KEYWORDS: &str = r#"
-{
-    local_node_id: "keyword_source",
-    name: "keyword_topic",
-}
-"#;
-
 const SUBSCRIBED_TOPIC_FORMAT_EXAMPLE2: &str = r#"
 {
   header: {
@@ -131,13 +89,6 @@ const SUBSCRIBED_TOPIC_FORMAT_EXAMPLE2: &str = r#"
     $type: "array",
     $items: "u8",
   }
-}
-"#;
-
-const SUBSCRIBED_TOPIC_FORMAT_EXAMPLE_KEYWORDS: &str = r#"
-{
-    "class": "u32",
-    "from": "string"
 }
 "#;
 
@@ -306,7 +257,18 @@ fn emit_two_topics() {
 
 #[test]
 fn emit_topic_escapes_python_keyword_fields() {
-    let topic = parse_emitted_topic(EMITTED_TOPIC_WITH_PYTHON_KEYWORD_FIELDS);
+    let emitted_topic_with_python_keyword_fields: &str = r#"
+    {
+      name: "keyword_topic",
+      qos_profile: "standard",
+      message_format: {
+        "class": "u32",
+        "from": "string"
+      }
+    }
+    "#;
+
+    let topic = parse_emitted_topic(emitted_topic_with_python_keyword_fields);
 
     let mut generator = PythonGenerator::new();
     generator.add_emitted_topic(&topic).unwrap();
@@ -329,9 +291,17 @@ fn emit_topic_escapes_python_keyword_fields() {
 
 #[test]
 fn emit_topic_rejects_reserved_message_field_name() {
-    use crate::error::Error;
-
-    let topic = parse_emitted_topic(EMITTED_TOPIC_RESERVED_FIELD_EXAMPLE);
+    let emitted_topic_reserved_field_example: &str = r#"
+    {
+      name: "robot_state",
+      qos_profile: "standard",
+      message_format: {
+        instance_id: "string",
+        status: "u8"
+      }
+    }
+    "#;
+    let topic = parse_emitted_topic(emitted_topic_reserved_field_example);
 
     let mut generator = PythonGenerator::new();
     let err = generator.add_emitted_topic(&topic).unwrap_err();
@@ -352,25 +322,107 @@ fn emit_topic_rejects_reserved_message_field_name() {
 
 #[test]
 fn emit_topic_rejects_fixed_string_array() {
-    use crate::error::Error;
+    let emitted_topic_fixed_string_array_example: &str = r#"
+    {
+      name: "labels",
+      qos_profile: "standard",
+      message_format: {
+        labels: {
+          $type: "array",
+          $items: "string",
+          $length: 3
+        }
+      }
+    }
+    "#;
 
-    let topic = parse_emitted_topic(EMITTED_TOPIC_FIXED_STRING_ARRAY_EXAMPLE);
+    let topic = parse_emitted_topic(emitted_topic_fixed_string_array_example);
 
     let mut generator = PythonGenerator::new();
     let err = generator.add_emitted_topic(&topic).unwrap_err();
 
     match err {
-        Error::UnsupportedFixedArrayItemType {
-            language,
-            field,
-            item,
-        } => {
-            assert_eq!(language, PeppygenLanguage::Python);
+        Error::UnsupportedFixedArrayItemType { field, item } => {
             assert_eq!(field, "labels");
             assert_eq!(item, "string");
         }
         other => panic!("expected UnsupportedFixedArrayItemType, got: {other:?}"),
     }
+}
+
+#[test]
+fn emit_topic_rejects_fixed_object_array() {
+    let emitted_topic_fixed_object_array_example = r#"
+    {
+      name: "detections",
+      qos_profile: "sensor_data",
+      message_format: {
+        objects: {
+          $type: "array",
+          $length: 4,
+          $items: {
+            $type: "object",
+            x: "f32",
+            y: "f32"
+          },
+        }
+      }
+    }
+    "#;
+
+    let topic = parse_emitted_topic(emitted_topic_fixed_object_array_example);
+
+    let mut generator = PythonGenerator::new();
+    let err = generator.add_emitted_topic(&topic).unwrap_err();
+
+    match err {
+        Error::UnsupportedFixedArrayItemType { field, item } => {
+            assert_eq!(field, "objects");
+            assert_eq!(item, "object");
+        }
+        other => panic!("expected UnsupportedFixedArrayItemType, got: {other:?}"),
+    }
+}
+
+#[test]
+fn emit_topic_with_dynamic_object_array() {
+    let emitted_topic_dynamic_object_array_example: &str = r#"
+    {
+      name: "detections",
+      qos_profile: "sensor_data",
+      message_format: {
+        objects: {
+          $type: "array",
+          $items: {
+            x: "f32",
+            y: "f32",
+            label: "string"
+          }
+        }
+      }
+    }
+    "#;
+    let topic = parse_emitted_topic(emitted_topic_dynamic_object_array_example);
+
+    let mut generator = PythonGenerator::new();
+    generator.add_emitted_topic(&topic).unwrap();
+    let artifacts = render_artifacts(generator.into_artifacts());
+    assert_eq!(
+        artifacts.len(),
+        1,
+        "expected a single generated artifact, got {}",
+        artifacts.len()
+    );
+    let rendered = artifacts.into_iter().next().expect("artifact is present");
+
+    // Object array serialization: list init with runtime length and element iteration
+    assert_contains_all(&rendered, &[".init(\"objects\", len(", "in enumerate("]);
+
+    // Dynamic-length path must not emit a fixed-length guard
+    assert!(
+        !rendered.contains("raise ValueError"),
+        "dynamic object array must not emit a length check"
+    );
 }
 
 /// In the case of a topic, a "subscribed" topic is an entity that expects to receive messages
@@ -494,8 +546,22 @@ fn consumed_topic() {
 
 #[test]
 fn consumed_topic_escapes_python_keyword_fields() {
-    let topic = parse_consumed_topic(SUBSCRIBED_TOPIC_EXAMPLE_KEYWORDS);
-    let format = parse_message_format(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE_KEYWORDS);
+    let subscribed_topic_example_keywords: &str = r#"
+    {
+        local_node_id: "keyword_source",
+        name: "keyword_topic",
+    }
+    "#;
+
+    let topic = parse_consumed_topic(subscribed_topic_example_keywords);
+    let subscribed_topic_format_example_keywords: &str = r#"
+    {
+        "class": "u32",
+        "from": "string"
+    }
+    "#;
+
+    let format = parse_message_format(subscribed_topic_format_example_keywords);
 
     let mut generator = PythonGenerator::new();
     generator

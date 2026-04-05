@@ -59,14 +59,8 @@ This field name is reserved by peppy transport metadata and cannot be used insid
     UnsupportedArrayItemSchema { field: String },
     #[error("internal generator invariant violated: {context}")]
     InvariantViolation { context: String },
-    #[error(
-        "unsupported fixed-length array item type `{item}` in field `{field}` for `{language:?}` generator"
-    )]
-    UnsupportedFixedArrayItemType {
-        language: PeppygenLanguage,
-        field: String,
-        item: &'static str,
-    },
+    #[error("unsupported fixed-length array item type `{item}` in field `{field}`")]
+    UnsupportedFixedArrayItemType { field: String, item: &'static str },
     #[error(
         "unsupported optional scalar type `{item}` in field `{field}` for `{language:?}` generator"
     )]
@@ -74,6 +68,16 @@ This field name is reserved by peppy transport metadata and cannot be used insid
         language: PeppygenLanguage,
         field: String,
         item: &'static str,
+    },
+    #[error(
+        "generated type name collision in `{context}`: fields `{first_field}` and `{second_field}` \
+both produce the type name `{type_name}`"
+    )]
+    GeneratedTypeNameCollision {
+        context: String,
+        type_name: String,
+        first_field: String,
+        second_field: String,
     },
     #[error(
         "field name normalization collision in `{context}` for `{language:?}` generator: \

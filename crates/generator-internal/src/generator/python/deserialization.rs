@@ -1,7 +1,7 @@
 use super::PythonSchemaInfo;
 use super::code_builder::PythonCodeBuilder;
 use super::identifiers::{is_python_keyword, sanitize_python_identifier};
-use crate::generator::naming::{sanitize_capnp_field_name, to_camel_case};
+use crate::generator::naming::{array_item_type_name, sanitize_capnp_field_name, to_camel_case};
 use config::node::{MessageFormat, SchemaType, TypeToken};
 use indexmap::IndexMap;
 
@@ -35,10 +35,21 @@ pub fn generate_field_reader_statements(
         SchemaType::Type(_) | SchemaType::Primitive(_) => {
             generate_primitive_reader(builder, reader_var, field_name, counter)
         }
-        SchemaType::Array(array) => {
-            let is_u8 = matches!(array.items.as_ref().as_type_token(), Some(TypeToken::U8));
-            generate_array_reader(builder, reader_var, field_name, is_u8, counter)
-        }
+        SchemaType::Array(array) => match array.items.as_ref() {
+            SchemaType::Object(object) => generate_object_array_reader(
+                builder,
+                reader_var,
+                field_name,
+                &object.fields,
+                struct_prefix,
+                counter,
+                array.length,
+            ),
+            _ => {
+                let is_u8 = matches!(array.items.as_ref().as_type_token(), Some(TypeToken::U8));
+                generate_array_reader(builder, reader_var, field_name, is_u8, counter)
+            }
+        },
         SchemaType::Object(object) => generate_object_reader(
             builder,
             reader_var,
@@ -243,4 +254,119 @@ fn generate_object_reader(
     let kwargs_str = kwargs.join(", ");
     builder.line(&format!("{result_var} = {nested_prefix}({kwargs_str})"));
     result_var
+}
+
+fn generate_object_array_reader(
+    builder: &mut PythonCodeBuilder,
+    reader_var: &str,
+    field_name: &str,
+    fields: &IndexMap<String, SchemaType>,
+    struct_prefix: &str,
+    counter: &mut u32,
+    length: Option<usize>,
+) -> String {
+    let capnp_name = sanitize_capnp_field_name(field_name);
+    let python_name = sanitize_python_identifier(field_name);
+
+    let nested_prefix = array_item_type_name(struct_prefix, field_name);
+
+    let list_idx = *counter;
+    *counter += 1;
+    let list_var = format!("list_{list_idx}");
+    builder.line(&format!(
+        "{list_var} = {}",
+        capnp_read_expr(reader_var, &capnp_name)
+    ));
+
+    let result_idx = *counter;
+    *counter += 1;
+    let result_var = format!("{python_name}_{result_idx}");
+    builder.line(&format!("{result_var} = []"));
+
+    let elem_idx = *counter;
+    *counter += 1;
+    let elem_var = format!("elem_{elem_idx}");
+    builder.line(&format!("for {elem_var} in {list_var}:"));
+    builder.indent();
+
+    let mut nested_bindings = Vec::new();
+    for (nested_name, nested_schema) in fields {
+        let nested_var = generate_field_reader_statements(
+            builder,
+            &elem_var,
+            nested_name,
+            nested_schema,
+            &nested_prefix,
+            counter,
+        );
+        nested_bindings.push((sanitize_python_identifier(nested_name), nested_var));
+    }
+
+    let kwargs: Vec<String> = nested_bindings
+        .iter()
+        .map(|(name, var)| format!("{name}={var}"))
+        .collect();
+    let kwargs_str = kwargs.join(", ");
+    builder.line(&format!(
+        "{result_var}.append({nested_prefix}({kwargs_str}))"
+    ));
+
+    builder.dedent();
+
+    if let Some(len) = length {
+        builder.line(&format!("if len({result_var}) != {len}:"));
+        builder.indent();
+        builder.line(&format!(
+            "raise ValueError(\"invalid fixed list length for field '{field_name}': expected {len}, got \" + str(len({result_var})))"
+        ));
+        builder.dedent();
+    }
+
+    result_var
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn call_object_array_reader(length: Option<usize>) -> String {
+        let mut builder = PythonCodeBuilder::new();
+        let mut counter = 0u32;
+        let mut fields = IndexMap::new();
+        fields.insert("x".to_string(), SchemaType::Type(TypeToken::I32));
+
+        generate_object_array_reader(
+            &mut builder,
+            "reader",
+            "frames",
+            &fields,
+            "Test",
+            &mut counter,
+            length,
+        );
+
+        builder.build()
+    }
+
+    #[test]
+    fn object_array_reader_emits_length_check() {
+        let code = call_object_array_reader(Some(3));
+        assert!(
+            code.contains("raise ValueError"),
+            "fixed-length path must raise ValueError, got:\n{code}"
+        );
+        assert!(
+            code.contains("expected 3"),
+            "error message must mention expected length, got:\n{code}"
+        );
+    }
+
+    #[test]
+    fn object_array_reader_no_length_check_when_dynamic() {
+        let code = call_object_array_reader(None);
+        assert!(
+            !code.contains("raise ValueError"),
+            "dynamic-length path must not raise ValueError, got:\n{code}"
+        );
+    }
 }

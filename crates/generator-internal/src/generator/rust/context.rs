@@ -3,7 +3,8 @@ use super::type_mapping::schema_type_to_tokens;
 use crate::error::{Error, Result};
 use crate::generator::naming::sanitize_capnp_field_name;
 use crate::generator::types::{
-    validate_fixed_length_array_items, validate_message_format_field_names,
+    validate_fixed_length_array_items, validate_generated_type_name_collisions,
+    validate_message_format_field_names,
 };
 use config::encoding::{CapnpSchemaArtifacts, FunctionParam, MessageFormatMapper};
 use config::node::{MessageFormat, PeppygenLanguage, SchemaType, TypeToken};
@@ -99,7 +100,8 @@ pub fn map_message_format(
         Some(format) => {
             validate_normalized_field_names_for_rust(format)?;
             validate_message_format_field_names(format, "message_format")?;
-            validate_fixed_length_array_items(format, PeppygenLanguage::Rust)?;
+            validate_fixed_length_array_items(format)?;
+            validate_generated_type_name_collisions(format, "Message")?;
             validate_optional_scalar_fields_for_rust(format)?;
             MessageFormatMapper::new(schema_name, format.clone())
                 .map_message_format_to_capnpn()
@@ -406,8 +408,10 @@ mod tests {
     }
 
     #[test]
-    fn reject_optional_nested_scalar_for_rust() {
-        let format: MessageFormat = serde_json5::from_str(
+    fn reject_optional_nested_scalar_at_parse_time() {
+        // `$optional` on nested object fields is rejected at deserialization
+        // time by the ObjectSchema visitor, not at generator validation time.
+        let result: std::result::Result<MessageFormat, _> = serde_json5::from_str(
             r#"
             {
                 status: {
@@ -419,17 +423,11 @@ mod tests {
                 }
             }
             "#,
-        )
-        .unwrap();
-
-        let err = validate_optional_scalar_fields_for_rust(&format).unwrap_err();
-        match err {
-            Error::UnsupportedOptionalScalarType { field, item, .. } => {
-                assert_eq!(field, "status.healthy");
-                assert_eq!(item, "bool");
-            }
-            other => panic!("expected UnsupportedOptionalScalarType, got: {other:?}"),
-        }
+        );
+        assert!(
+            result.is_err(),
+            "optional on nested object field should be rejected at parse time"
+        );
     }
 
     #[test]

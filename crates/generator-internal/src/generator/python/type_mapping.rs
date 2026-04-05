@@ -1,6 +1,6 @@
 use super::identifiers::sanitize_python_identifier;
 use crate::error::{Error, Result};
-use crate::generator::naming::to_camel_case;
+use crate::generator::naming::{array_item_type_name, to_camel_case};
 use config::node::{PeppygenLanguage, QoSProfile, SchemaType, TypeToken};
 use std::collections::HashMap;
 
@@ -47,18 +47,43 @@ pub fn schema_type_to_python(
     let base_type = match schema {
         SchemaType::Type(token) => primitive_type_str(token).to_string(),
         SchemaType::Primitive(primitive) => primitive_type_str(&primitive.kind).to_string(),
-        SchemaType::Array(array) => {
-            let item_type = match array.items.as_ref().as_type_token() {
-                Some(TypeToken::U8) => return Ok(wrap_optional(schema, "bytes".to_string())),
-                Some(token) => primitive_type_str(token),
-                None => {
-                    return Err(Error::UnsupportedArrayItemSchema {
-                        field: field_name.to_string(),
+        SchemaType::Array(array) => match array.items.as_ref() {
+            SchemaType::Object(object) => {
+                let class_name = array_item_type_name(struct_prefix, field_name);
+                validate_python_identifier_collisions(object.fields.keys(), &class_name)?;
+                let mut fields = Vec::new();
+                for (nested_name, nested_schema) in &object.fields {
+                    let field_type = schema_type_to_python(
+                        nested_schema,
+                        &class_name,
+                        nested_name,
+                        nested_classes,
+                    )?;
+                    fields.push(PythonField {
+                        name: sanitize_python_identifier(nested_name),
+                        type_str: field_type,
+                        is_optional: nested_schema.is_optional(),
                     });
                 }
-            };
-            format!("list[{item_type}]")
-        }
+                nested_classes.push(NestedDataclass {
+                    name: class_name.clone(),
+                    fields,
+                });
+                format!("list[{class_name}]")
+            }
+            _ => {
+                let item_type = match array.items.as_ref().as_type_token() {
+                    Some(TypeToken::U8) => return Ok(wrap_optional(schema, "bytes".to_string())),
+                    Some(token) => primitive_type_str(token),
+                    None => {
+                        return Err(Error::UnsupportedArrayItemSchema {
+                            field: field_name.to_string(),
+                        });
+                    }
+                };
+                format!("list[{item_type}]")
+            }
+        },
         SchemaType::Object(object) => {
             let class_name = format!("{struct_prefix}{}", to_camel_case(field_name));
             validate_python_identifier_collisions(object.fields.keys(), &class_name)?;
