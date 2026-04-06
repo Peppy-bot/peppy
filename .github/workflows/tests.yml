@@ -25,7 +25,7 @@ jobs:
         run: cargo test -p core-node --features container_e2e --test container_e2e
 
       - name: Run documentation integration tests
-        run: cargo test --manifest-path docs/tests/integration/Cargo.toml
+        run: cargo test -p docs-integration-tests
 
       - name: Run release scripts tests
         if: (github.event_name == 'pull_request' && github.base_ref == 'main') || (github.event_name == 'pull_request' && contains(github.event.pull_request.title, 'release'))

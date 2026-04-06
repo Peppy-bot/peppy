@@ -1007,6 +1007,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "docs-integration-tests"
+version = "0.1.0"
+dependencies = [
+ "config",
+ "peppy",
+ "pmi",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "document-features"
 version = "0.2.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
