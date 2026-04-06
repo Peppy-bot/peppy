@@ -106,6 +106,32 @@ fn remove_previous_peppy_dir(node_root_dir: &std::path::Path) {
     }
 }
 
+/// Returns `true` when the `.peppy` directory under `node_root_dir` is absent
+/// or incomplete and must be (re-)generated.
+///
+/// A complete `.peppy` directory contains:
+/// - `git.hash` (non-empty)
+/// - `libs/peppygen/peppy.json5.sha256` (when `has_execution_language` is true)
+fn needs_sync(node_root_dir: &std::path::Path, has_execution_language: bool) -> bool {
+    let peppy_dir = node_root_dir.join(config::consts::PEPPY_OUTPUT_DIR);
+    if !peppy_dir.exists() {
+        return true;
+    }
+
+    // git.hash must exist and be non-empty
+    match std::fs::metadata(peppy_dir.join("git.hash")) {
+        Ok(meta) if meta.len() > 0 => {}
+        _ => return true,
+    }
+
+    // fingerprint file required when execution language is present
+    if has_execution_language && !peppy_dir.join("libs/peppygen/peppy.json5.sha256").exists() {
+        return true;
+    }
+
+    false
+}
+
 async fn handle_node_sync_request(
     context: ServiceRequestContext,
     node_stack: Arc<NodeStack>,
@@ -673,7 +699,9 @@ pub struct AutoSyncVariant<'a> {
 /// generates peppygen for the variant and re-fingerprints using the variant's
 /// own `peppy.json5`.
 ///
-/// Directories whose `.peppy` already exists are skipped (no-op).
+/// Directories whose `.peppy` already exists and contains all required files
+/// are skipped (no-op). If `.peppy` exists but is incomplete (e.g. missing
+/// `git.hash` or the peppygen fingerprint), it is removed and regenerated.
 pub fn auto_sync_if_missing(
     params: AutoSyncParams<'_>,
     node_stack: &NodeStack,
@@ -681,7 +709,8 @@ pub fn auto_sync_if_missing(
 ) -> crate::Result<()> {
     // Sync root
     let peppy_dir = params.node_dir.join(config::consts::PEPPY_OUTPUT_DIR);
-    if !peppy_dir.exists() {
+    if needs_sync(params.node_dir, params.execution_language.is_some()) {
+        remove_previous_peppy_dir(params.node_dir);
         if let Some(language) = params.execution_language {
             let consumed =
                 collect_consumed_interfaces(params.manifest, params.interfaces, node_stack);
@@ -705,44 +734,47 @@ pub fn auto_sync_if_missing(
     }
 
     // Sync variant
-    if let Some(v) = params.variant {
-        let variant_peppy_dir = v.dir.join(config::consts::PEPPY_OUTPUT_DIR);
-        if !variant_peppy_dir.exists() {
-            // Write the merged config (root manifest + variant execution) to a
-            // temp file so the generator can parse a full NodeConfig. The
-            // variant's own peppy.json5 lacks a `manifest` field.
-            let merged_json5 = serde_json5::to_string(v.merged_config)
-                .map_err(|e| crate::Error::Io(std::io::Error::other(e)))?;
-            let mut tmp = tempfile::Builder::new()
-                .prefix(".peppy-merged-")
-                .suffix(".json5")
-                .tempfile()
-                .map_err(crate::Error::from)?;
-            std::io::Write::write_all(&mut tmp, merged_json5.as_bytes())
-                .map_err(crate::Error::from)?;
-            let merged_config_path = tmp.path().to_path_buf();
+    if let Some(v) = params.variant
+        && needs_sync(v.dir, true)
+    {
+        remove_previous_peppy_dir(v.dir);
+        // Write the merged config (root manifest + variant execution) to a
+        // temp file so the generator can parse a full NodeConfig. The
+        // variant's own peppy.json5 lacks a `manifest` field.
+        // Strip variant declarations from the manifest to avoid the
+        // ExecutionWithDefaultVariant validation error when the generator
+        // re-parses the config.
+        let mut config_for_gen = v.merged_config.clone();
+        config_for_gen.manifest.variants = None;
+        let merged_json5 = serde_json5::to_string(&config_for_gen)
+            .map_err(|e| crate::Error::Io(std::io::Error::other(e)))?;
+        let mut tmp = tempfile::Builder::new()
+            .prefix(".peppy-merged-")
+            .suffix(".json5")
+            .tempfile()
+            .map_err(crate::Error::from)?;
+        std::io::Write::write_all(&mut tmp, merged_json5.as_bytes()).map_err(crate::Error::from)?;
+        let merged_config_path = tmp.path().to_path_buf();
 
-            let consumed =
-                collect_consumed_interfaces(params.manifest, params.interfaces, node_stack);
-            generate_peppygen_for_node(
-                v.language,
-                v.dir,
-                consumed,
-                params.git_hash,
-                peppy_dirs,
-                generator::CrateDeployMode::default(),
-                Some(&merged_config_path),
-            )?;
+        let consumed = collect_consumed_interfaces(params.manifest, params.interfaces, node_stack);
+        generate_peppygen_for_node(
+            v.language,
+            v.dir,
+            consumed,
+            params.git_hash,
+            peppy_dirs,
+            generator::CrateDeployMode::default(),
+            Some(&merged_config_path),
+        )?;
 
-            // Re-fingerprint using the variant's own peppy.json5 so that
-            // node-add verification (which reads the variant's config) finds
-            // a matching hash.
-            config::fingerprint::generate_node_config_fingerprint(
-                v.dir.join(config::consts::NODE_CONFIG_FILE),
-                v.dir.join(config::consts::PEPPYGEN_OUTPUT_PATH),
-            )
-            .map_err(generator::GeneratorError::Config)?;
-        }
+        // Re-fingerprint using the variant's own peppy.json5 so that
+        // node-add verification (which reads the variant's config) finds
+        // a matching hash.
+        config::fingerprint::generate_node_config_fingerprint(
+            v.dir.join(config::consts::NODE_CONFIG_FILE),
+            v.dir.join(config::consts::PEPPYGEN_OUTPUT_PATH),
+        )
+        .map_err(generator::GeneratorError::Config)?;
     }
 
     Ok(())
@@ -776,4 +808,63 @@ pub fn generate_peppygen_for_node(
     )?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn needs_sync_returns_true_when_dir_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(needs_sync(tmp.path(), true));
+        assert!(needs_sync(tmp.path(), false));
+    }
+
+    #[test]
+    fn needs_sync_returns_true_when_git_hash_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".peppy")).unwrap();
+        assert!(needs_sync(tmp.path(), false));
+    }
+
+    #[test]
+    fn needs_sync_returns_true_when_git_hash_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        let peppy = tmp.path().join(".peppy");
+        std::fs::create_dir_all(&peppy).unwrap();
+        std::fs::write(peppy.join("git.hash"), b"").unwrap();
+        assert!(needs_sync(tmp.path(), false));
+    }
+
+    #[test]
+    fn needs_sync_returns_true_when_fingerprint_missing_with_execution_language() {
+        let tmp = tempfile::tempdir().unwrap();
+        let peppy = tmp.path().join(".peppy");
+        std::fs::create_dir_all(&peppy).unwrap();
+        std::fs::write(peppy.join("git.hash"), b"abc123").unwrap();
+        // has_execution_language = true but no fingerprint file
+        assert!(needs_sync(tmp.path(), true));
+    }
+
+    #[test]
+    fn needs_sync_returns_false_when_complete() {
+        let tmp = tempfile::tempdir().unwrap();
+        let peppy = tmp.path().join(".peppy");
+        let peppygen = peppy.join("libs/peppygen");
+        std::fs::create_dir_all(&peppygen).unwrap();
+        std::fs::write(peppy.join("git.hash"), b"abc123").unwrap();
+        std::fs::write(peppygen.join("peppy.json5.sha256"), b"deadbeef").unwrap();
+        assert!(!needs_sync(tmp.path(), true));
+    }
+
+    #[test]
+    fn needs_sync_ignores_fingerprint_when_no_execution_language() {
+        let tmp = tempfile::tempdir().unwrap();
+        let peppy = tmp.path().join(".peppy");
+        std::fs::create_dir_all(&peppy).unwrap();
+        std::fs::write(peppy.join("git.hash"), b"abc123").unwrap();
+        // No fingerprint file, but has_execution_language = false
+        assert!(!needs_sync(tmp.path(), false));
+    }
 }
