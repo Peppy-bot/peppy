@@ -60,11 +60,10 @@ pub(crate) async fn poll_action_to_completion<R>(
 
         match ActionMessenger::request_result(messenger, action_handle, RESULT_POLL_TIMEOUT).await {
             Ok(msg) => {
-                last_activity = tokio::time::Instant::now();
                 let payload = msg.payload();
                 match decode_result(&payload) {
                     Ok(Some(result)) => return Ok(result),
-                    Ok(None) => {} // "result pending" — keep polling
+                    Ok(None) => {} // "result pending" — keep polling (don't reset idle timer)
                     Err(err) => {
                         scrolling_output.clear();
                         return Err(Error::ExecutionFailed(err));
