@@ -25,7 +25,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/linux-64/libstdcxx-15.2.0-h934c35e_18.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/libuuid-2.41.3-h5347b49_0.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/libzlib-1.3.2-h25fd6f3_2.conda
-      - conda: https://prefix.dev/github-releases/linux-64/lima-2.1.0-hb0f4dca_0.conda
+      - conda: https://prefix.dev/github-releases/linux-64/lima-2.1.1-hb0f4dca_0.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/ncurses-6.5-h2d0b736_3.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/openssl-3.6.1-h35e630c_1.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/pip-26.0.1-pyh145f28c_0.conda
@@ -69,7 +69,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/linux-aarch64/libstdcxx-15.2.0-hef695bb_18.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-aarch64/libuuid-2.41.3-h1022ec0_0.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-aarch64/libzlib-1.3.2-hdc9db2a_2.conda
-      - conda: https://prefix.dev/github-releases/linux-aarch64/lima-2.1.0-he8cfe8b_0.conda
+      - conda: https://prefix.dev/github-releases/linux-aarch64/lima-2.1.1-he8cfe8b_0.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-aarch64/ncurses-6.5-ha32ae93_3.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-aarch64/openssl-3.6.1-h546c87b_1.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/pip-26.0.1-pyh145f28c_0.conda
@@ -107,7 +107,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/osx-arm64/libmpdec-4.0.0-h84a0fba_1.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-arm64/libsqlite-3.52.0-h1ae2325_0.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-arm64/libzlib-1.3.2-h8088a28_2.conda
-      - conda: https://prefix.dev/github-releases/osx-arm64/lima-2.1.0-h60d57d3_0.conda
+      - conda: https://prefix.dev/github-releases/osx-arm64/lima-2.1.1-h60d57d3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-arm64/ncurses-6.5-h5e97a16_3.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-arm64/openssl-3.6.1-hd24854e_1.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/pip-26.0.1-pyh145f28c_0.conda
@@ -627,24 +627,24 @@ packages:
   purls: []
   size: 47759
   timestamp: 1774072956767
-- conda: https://prefix.dev/github-releases/linux-64/lima-2.1.0-hb0f4dca_0.conda
-  sha256: 62167b4ce656ffc158ac6b54e98fba0f61f1ad2028bba62582ee4af67f6ffbb5
-  md5: a9466fd89e4102259beb6d517251da27
+- conda: https://prefix.dev/github-releases/linux-64/lima-2.1.1-hb0f4dca_0.conda
+  sha256: cd86fa118d828e6bbb25544e5d08a7a447c7e520ae4adc305b87da81c1e88042
+  md5: fed17f9322703842adec875a03d3f875
   license: Apache-2.0
-  size: 22066206
-  timestamp: 1773742048725
-- conda: https://prefix.dev/github-releases/linux-aarch64/lima-2.1.0-he8cfe8b_0.conda
-  sha256: a303b5c98bb2bb340f5ac3ad29ff0a565ee3c711bdc4bcbc3f17983bc1162f20
-  md5: 5da1bac297ea2e9836f907888251bae0
+  size: 22098973
+  timestamp: 1775242818411
+- conda: https://prefix.dev/github-releases/linux-aarch64/lima-2.1.1-he8cfe8b_0.conda
+  sha256: 146aefcdb95b884d326aee9c13fd4e13194de4b58f8e20b3942a732e6f6d22e8
+  md5: eb35af1589ac5843b4ab2e14b706c469
   license: Apache-2.0
-  size: 19878408
-  timestamp: 1773742086181
-- conda: https://prefix.dev/github-releases/osx-arm64/lima-2.1.0-h60d57d3_0.conda
-  sha256: a40d898a31d41ae14f3b0b7fa43f1274a9d885ae6ea4b252f0193171f0122803
-  md5: c1ba241138a8fa770cbce3900c427598
+  size: 19910661
+  timestamp: 1775242791737
+- conda: https://prefix.dev/github-releases/osx-arm64/lima-2.1.1-h60d57d3_0.conda
+  sha256: 07f30815350a7a5021c87d7a6c97aa8438cf70865c29178b18fb26848eb9329f
+  md5: d043f69330454500273ebf16c264f8c4
   license: Apache-2.0
-  size: 34625551
-  timestamp: 1773742371915
+  size: 34677722
+  timestamp: 1775242759955
 - pypi: https://files.pythonhosted.org/packages/94/54/e7d793b573f298e1c9013b8c4dade17d481164aa517d1d7148619c2cedbf/markdown_it_py-4.0.0-py3-none-any.whl
   name: markdown-it-py
   version: 4.0.0
