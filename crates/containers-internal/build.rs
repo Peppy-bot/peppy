@@ -4,9 +4,9 @@ mod apptainer_build {
     use std::process::Command;
 
     const APPTAINER_VERSION: &str = "1.4.5";
-    const LIMA_VERSION: &str = "2.1.0";
+    const LIMA_VERSION: &str = "2.1.1";
     const LIMA_DARWIN_ARM64_ARCHIVE_SHA256: &str =
-        "1da852bce2f98b8310fb53e5047e08ff798880ddf9ae4b3161d4de4e73777b34";
+        "b6b0e6701189cd8c4e549cc39e6d054dc681487798b9b774ad2cbd30c08b2bd8";
     const LIMA_INSTANCE: &str = "peppy";
     const LIMA_TEMPLATE: &str = "template:ubuntu-24.04";
     /// Guest-side installation path for apptainer inside the Lima VM.
@@ -78,7 +78,7 @@ mod apptainer_build {
 
     fn lima_archive_sha256(version: &str, os: &str, arch: &str) -> Option<&'static str> {
         match (version, os, arch) {
-            ("2.1.0", "Darwin", "arm64") => Some(LIMA_DARWIN_ARM64_ARCHIVE_SHA256),
+            ("2.1.1", "Darwin", "arm64") => Some(LIMA_DARWIN_ARM64_ARCHIVE_SHA256),
             _ => None,
         }
     }

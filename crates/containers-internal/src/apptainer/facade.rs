@@ -659,6 +659,7 @@ impl Apptainer {
             "PEPPY_APPTAINER_DIR",
             "apptainer",
             option_env!("APPTAINER_INSTALL_DIR"),
+            "APPTAINER_INSTALL_DIR",
             || {
                 Error::ApptainerNotFound(
                     "Apptainer installation not found. Install apptainer or set PEPPY_APPTAINER_DIR."

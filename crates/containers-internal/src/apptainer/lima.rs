@@ -396,6 +396,7 @@ pub(crate) fn resolve_install_dir(
     env_var: &str,
     exe_subdir: &str,
     compile_time_dir: Option<&str>,
+    compile_time_label: &str,
     not_found_err: impl FnOnce() -> Error,
 ) -> Result<PathBuf> {
     // 1) Runtime override via environment variable
@@ -426,7 +427,7 @@ pub(crate) fn resolve_install_dir(
         if path.is_dir() {
             return Ok(path);
         }
-        tracing::debug!("Compile-time {env_var} path {dir} does not exist at runtime");
+        tracing::debug!("Compile-time {compile_time_label} path {dir} does not exist at runtime");
     }
 
     Err(not_found_err())
@@ -443,6 +444,7 @@ pub(crate) fn resolve_lima_dir() -> Result<PathBuf> {
         "PEPPY_LIMA_DIR",
         "lima",
         option_env!("LIMA_INSTALL_DIR"),
+        "LIMA_INSTALL_DIR",
         || Error::LimaRequired,
     )
 }
