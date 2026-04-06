@@ -62,20 +62,16 @@ fn is_service_probe_payload(payload: &[u8]) -> bool {
     payload == SERVICE_PROBE_PAYLOAD
 }
 
-fn encode_service_error_payload(reason: &str) -> Payload {
-    let mut payload = Vec::with_capacity(SERVICE_ERROR_PREFIX.len() + reason.len());
-    payload.extend_from_slice(SERVICE_ERROR_PREFIX);
-    payload.extend_from_slice(reason.as_bytes());
-    Payload::from(payload)
-}
-
 /// Encodes a service handler failure as a protocol-level error payload.
 ///
 /// External wrappers (for example Python bindings) can use this to ensure
 /// handler exceptions are reported to callers as `ServiceError` instead of
 /// surfacing as request timeouts.
 pub fn encode_service_handler_error(reason: &str) -> Payload {
-    encode_service_error_payload(reason)
+    let mut payload = Vec::with_capacity(SERVICE_ERROR_PREFIX.len() + reason.len());
+    payload.extend_from_slice(SERVICE_ERROR_PREFIX);
+    payload.extend_from_slice(reason.as_bytes());
+    Payload::from(payload)
 }
 
 fn decode_service_error_payload(payload: &[u8]) -> Option<String> {
@@ -112,13 +108,8 @@ fn generate_request_id() -> String {
     format!("{:x}", result)[..16].to_string() // Use first 16 hex chars for compactness
 }
 
-/// Formats an instance ID as a bound instance segment (appears right after CORE_NODE in key expressions)
-fn format_bound_instance_segment(instance_id: &str) -> Option<String> {
-    (instance_id != INSTANCE_ID_WILDCARD).then(|| instance_id.to_string())
-}
-
-/// Formats an instance ID as a target instance segment (identifies a specific target/source instance)
-fn format_target_instance_segment(instance_id: &str) -> Option<String> {
+/// Formats an instance ID as a key-expression segment, returning `None` for wildcards.
+fn format_instance_segment(instance_id: &str) -> Option<String> {
     (instance_id != INSTANCE_ID_WILDCARD).then(|| instance_id.to_string())
 }
 
@@ -290,10 +281,10 @@ impl MessengerHandle {
             message_type, target_node_name, target_service_name
         );
         // Caller's instance as TARGET (identifies who is calling in request)
-        let caller_target_instance_segment = format_target_instance_segment(as_instance_id)
+        let caller_target_instance_segment = format_instance_segment(as_instance_id)
             .unwrap_or_else(|| INSTANCE_ID_WILDCARD.to_string());
         // Caller's instance as BOUND (caller receives response)
-        let caller_bound_instance_segment = format_bound_instance_segment(as_instance_id)
+        let caller_bound_instance_segment = format_instance_segment(as_instance_id)
             .unwrap_or_else(|| INSTANCE_ID_WILDCARD.to_string());
 
         let target_instance_id = target_instance_id.map(str::to_string);
@@ -309,8 +300,7 @@ impl MessengerHandle {
             };
 
         // Target's instance as BOUND (service is bound to receive requests)
-        let target_bound_instance_segment =
-            format_bound_instance_segment(&effective_target_instance);
+        let target_bound_instance_segment = format_instance_segment(&effective_target_instance);
         let request_id = generate_request_id();
 
         // Format: target_core_node/caller_core_node/target_instance/caller_instance/service_root/request/id
@@ -458,8 +448,8 @@ impl MessengerHandle {
         let cancel_service_root = format!("{action_root}/cancel");
         let result_service_root = format!("{action_root}/result");
 
-        let bound_instance_segment = format_bound_instance_segment(as_instance_id)
-            .unwrap_or_else(|| as_instance_id.to_string());
+        let bound_instance_segment =
+            format_instance_segment(as_instance_id).unwrap_or_else(|| as_instance_id.to_string());
         let feedback_topic_suffix = format!(
             "*/{bound_core_node}/*/{bound_instance_segment}/{action_root}/feedback/{as_instance_id}"
         );
