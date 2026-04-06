@@ -99,7 +99,7 @@ pub(crate) fn normalize_snake_case(input: &str) -> String {
     result
 }
 
-/// Builds a module name from node and name components.
+/// Builds a sanitized module name from node and name components.
 ///
 /// Returns a combined `node_name` string, or the non-empty component if the other is empty.
 pub fn module_name_from_components(node: &str, name: &str) -> String {
@@ -110,6 +110,23 @@ pub fn module_name_from_components(node: &str, name: &str) -> String {
         (false, false) => format!("{node_component}_{name_component}"),
         (false, true) => node_component,
         (true, false) => name_component,
+        (true, true) => String::new(),
+    }
+}
+
+/// Builds a raw (unsanitized) label from node and name components.
+///
+/// Unlike [`module_name_from_components`], this preserves the original characters
+/// so that names which differ only in separator style (e.g. `foo-bar` vs `foo_bar`)
+/// remain distinct.  Used as the grouping key for artifacts before sanitization.
+pub fn raw_module_label(node: &str, name: &str) -> String {
+    let node = node.trim();
+    let name = name.trim();
+
+    match (node.is_empty(), name.is_empty()) {
+        (false, false) => format!("{node}_{name}"),
+        (false, true) => node.to_string(),
+        (true, false) => name.to_string(),
         (true, true) => String::new(),
     }
 }

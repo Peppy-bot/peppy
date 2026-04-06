@@ -641,9 +641,9 @@ impl LanguageGenerator for RustGenerator {
         service_tokens.push(method_token);
         service_tokens.extend(helper_tokens);
 
-        let mut module_name = sanitize_component(service.name.as_str());
-        if module_name.is_empty() {
-            module_name = fn_name_str.clone();
+        let mut module_label = service.name.trim().to_string();
+        if sanitize_component(&module_label).is_empty() {
+            module_label = fn_name_str.clone();
         }
 
         let tokens: TokenStream = quote! {
@@ -651,7 +651,7 @@ impl LanguageGenerator for RustGenerator {
         };
         let rendered = render_tokens(tokens);
         self.push_section(InterfaceArtifact::from_kind(
-            &module_name,
+            &module_label,
             InterfaceKind::ExposedService,
             rendered,
         ));
@@ -1353,9 +1353,9 @@ impl LanguageGenerator for RustGenerator {
             all_tokens.push(deserialize_fn);
         }
 
-        let mut module_name = module_name_from_components(&service.local_node_id, &service.name);
-        if module_name.is_empty() {
-            module_name = method_label
+        let mut module_label = raw_module_label(&service.local_node_id, &service.name);
+        if module_name_from_components(&service.local_node_id, &service.name).is_empty() {
+            module_label = method_label
                 .strip_prefix("poll_")
                 .map(|label| label.to_string())
                 .filter(|label| !label.is_empty())
@@ -1368,7 +1368,7 @@ impl LanguageGenerator for RustGenerator {
         let rendered = render_tokens(tokens);
 
         self.push_section(InterfaceArtifact::from_kind(
-            &module_name,
+            &module_label,
             InterfaceKind::ConsumedService,
             rendered,
         ));
@@ -1519,7 +1519,7 @@ impl LanguageGenerator for RustGenerator {
             #( #items )*
         };
         let rendered = render_tokens(tokens);
-        let module_label = module_name_from_components(&action.local_node_id, &action.name);
+        let module_label = raw_module_label(&action.local_node_id, &action.name);
         self.push_section(InterfaceArtifact::from_kind(
             &module_label,
             InterfaceKind::ConsumedAction,
@@ -1547,4 +1547,4 @@ fn prefixed_ident(prefix: &str, candidate: Option<&str>, fallback: &str) -> Iden
     Ident::new(&name, Span::call_site())
 }
 
-use super::naming::module_name_from_components;
+use super::naming::{module_name_from_components, raw_module_label};
