@@ -1141,6 +1141,8 @@ fn node_add_same_node_different_sources_show_overwrite_prompt() {
         let output = std::process::Command::new("git")
             .args(args)
             .current_dir(&repo_dir)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
             .output()
             .expect("git command should run");
         assert!(
