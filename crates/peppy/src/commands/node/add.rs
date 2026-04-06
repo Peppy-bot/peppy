@@ -174,10 +174,7 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
         |payload| match NodeAddResult::decode(payload) {
             Ok(result) => Ok(Some(result)),
             Err(err) => {
-                let pending = std::str::from_utf8(payload)
-                    .map(|text| text.starts_with("result pending"))
-                    .unwrap_or(false);
-                if pending {
+                if peppylib::encoding::is_result_pending(payload) {
                     Ok(None)
                 } else {
                     Err(format!("Failed to decode node_add result: {err}"))

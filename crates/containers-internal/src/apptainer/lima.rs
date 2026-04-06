@@ -73,27 +73,44 @@ pub(crate) fn check_lima_version(limactl: &Path) -> Result<()> {
 
 /// Query the status of a Lima instance (e.g. "Running", "Stopped").
 ///
-/// Returns `None` if the instance does not exist, the command fails, or the
-/// output is empty.
-fn query_instance_status(limactl: &Path, lima_home: &Path, instance: &str) -> Option<String> {
+/// Returns `Ok(None)` if the instance does not exist or the output is empty.
+/// Returns `Err` if the command fails for reasons other than "instance not found".
+fn query_instance_status(
+    limactl: &Path,
+    lima_home: &Path,
+    instance: &str,
+) -> Result<Option<String>> {
     let output = Command::new(limactl)
         .env("LIMA_HOME", lima_home)
         .args(["list", "--format", "{{.Status}}", instance])
-        .output();
+        .output()
+        .map_err(|e| Error::LimaInstanceError(format!("failed to run limactl list: {e}")))?;
 
-    match &output {
-        Ok(o) if o.status.success() => {
-            let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
-            if s.is_empty() { None } else { Some(s) }
-        }
-        _ => None,
+    if output.status.success() {
+        let s = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        return Ok(if s.is_empty() { None } else { Some(s) });
     }
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if stderr.contains("No instance matching") {
+        return Ok(None);
+    }
+
+    Err(Error::LimaInstanceError(format!(
+        "limactl list failed for instance '{}': {}",
+        instance,
+        stderr.trim()
+    )))
 }
 
 /// Returns `true` if the Lima VM instance is already running and SSH-reachable.
 /// This is a lightweight check that avoids booting the VM.
 pub(crate) fn is_lima_instance_running(limactl: &Path, lima_home: &Path) -> bool {
-    query_instance_status(limactl, lima_home, LIMA_INSTANCE) == Some("Running".to_string())
+    query_instance_status(limactl, lima_home, LIMA_INSTANCE)
+        .ok()
+        .flatten()
+        .as_deref()
+        == Some("Running")
         && is_ssh_alive(limactl, lima_home, LIMA_INSTANCE)
 }
 
@@ -105,7 +122,7 @@ pub(crate) fn ensure_lima_instance(limactl: &Path, lima_home: &Path, template: &
         ))
     })?;
 
-    let instance_status = query_instance_status(limactl, lima_home, LIMA_INSTANCE);
+    let instance_status = query_instance_status(limactl, lima_home, LIMA_INSTANCE)?;
 
     match instance_status.as_deref() {
         Some("Running") => {
@@ -503,7 +520,7 @@ pub(crate) fn parse_lima_version(version_output: &str) -> Option<(u32, u32, u32)
 /// Idempotent: returns `Ok(())` if the instance is already stopped or does not
 /// exist, so callers do not need to guard against these cases.
 pub(crate) fn stop_instance(limactl: &Path, lima_home: &Path, instance: &str) -> Result<()> {
-    let status = query_instance_status(limactl, lima_home, instance);
+    let status = query_instance_status(limactl, lima_home, instance)?;
 
     match status.as_deref() {
         Some("Running") => {

@@ -14,7 +14,7 @@ pub async fn listen_for_node_health(
         instance_id,
         node_name,
         NODE_HEALTH_SERVICE,
-        "node_health",
+        NODE_HEALTH_SERVICE,
     )
     .await
 }

@@ -339,10 +339,16 @@ impl TopicMessage {
         let core_node = segments
             .next()
             .ok_or_else(|| Error::CoreNodeNotFound(key_expr.to_string()))?;
+        if core_node.is_empty() {
+            return Err(Error::CoreNodeNotFound(key_expr.to_string()));
+        }
         let _target_instance = segments.next();
         let instance_id = segments
             .next()
             .ok_or_else(|| Error::InstanceIdNotFound(key_expr.to_string()))?;
+        if instance_id.is_empty() {
+            return Err(Error::InstanceIdNotFound(key_expr.to_string()));
+        }
         Ok((core_node.to_string(), instance_id.to_string()))
     }
 

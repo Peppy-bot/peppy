@@ -222,10 +222,7 @@ pub async fn start_instance_async(
         |payload| match NodeStartResult::decode(payload) {
             Ok(result) => Ok(Some(result)),
             Err(err) => {
-                let pending = std::str::from_utf8(payload)
-                    .map(|text| text.starts_with("result pending"))
-                    .unwrap_or(false);
-                if pending {
+                if peppylib::encoding::is_result_pending(payload) {
                     Ok(None)
                 } else {
                     Err(format!("Failed to decode node_start result: {err}"))

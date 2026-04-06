@@ -277,10 +277,7 @@ async fn launch_async(
                         return Ok(());
                     }
                     Err(err) => {
-                        let pending = std::str::from_utf8(payload.as_ref())
-                            .map(|text| text.starts_with("result pending"))
-                            .unwrap_or(false);
-                        if !pending {
+                        if !peppylib::encoding::is_result_pending(payload.as_ref()) {
                             return Err(Error::ExecutionFailed(format!(
                                 "Failed to decode launch result: {}",
                                 err

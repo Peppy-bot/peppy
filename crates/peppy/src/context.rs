@@ -58,8 +58,7 @@ impl AppContext {
         ctx
     }
 
-    pub(crate) async fn connect(&self) -> crate::error::Result<()> {
-        let messaging_port = self.read_daemon_state()?.messaging_port;
+    async fn connect_with_port(&self, messaging_port: u16) -> crate::error::Result<()> {
         self.messenger_handle
             .get_or_try_init(|| async {
                 MessengerHandle::from_host_port(
@@ -86,7 +85,7 @@ pub(crate) struct DaemonConnection<'a> {
 impl AppContext {
     pub(crate) async fn connect_to_daemon(&self) -> crate::error::Result<DaemonConnection<'_>> {
         let daemon_state = self.read_daemon_state()?;
-        self.connect().await?;
+        self.connect_with_port(daemon_state.messaging_port).await?;
         let messenger = self
             .messenger_handle()
             .ok_or_else(|| Error::ExecutionFailed("Failed to connect to daemon".to_string()))?;

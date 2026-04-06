@@ -302,16 +302,7 @@ impl<'de> Deserialize<'de> for Name {
         D: Deserializer<'de>,
     {
         let s = String::deserialize(deserializer)?;
-        Name::try_from(s).map_err(|err| {
-            let structured = match err {
-                ParsingError::EmptyName => crate::error::StructuredError::EmptyName,
-                ParsingError::InvalidName(name, allowed) => {
-                    crate::error::StructuredError::InvalidName { name, allowed }
-                }
-                _ => return de::Error::custom(err.to_string()),
-            };
-            de::Error::custom(structured.json5_message())
-        })
+        Name::try_from(s).map_err(|err| de::Error::custom(err.to_string()))
     }
 }
 

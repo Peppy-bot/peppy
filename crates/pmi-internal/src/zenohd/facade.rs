@@ -214,12 +214,27 @@ impl ZenohdFacade {
                 self.zenoh_endpoint.protocol,
                 connect_addr
             );
+            let start = std::time::Instant::now();
+            let timeout = std::time::Duration::from_secs(30);
+            let mut backoff = std::time::Duration::from_millis(10);
+            let max_backoff = std::time::Duration::from_millis(500);
+
             loop {
                 child = check_process_alive(child)?;
 
                 match TcpStream::connect(&connect_addr) {
                     Ok(_) => break,
-                    Err(_) => std::thread::yield_now(),
+                    Err(_) if start.elapsed() >= timeout => {
+                        return Err(Error::BackendError(format!(
+                            "zenohd readiness timeout after {}s (TCP {})",
+                            timeout.as_secs(),
+                            connect_addr
+                        )));
+                    }
+                    Err(_) => {
+                        std::thread::sleep(backoff);
+                        backoff = (backoff * 2).min(max_backoff);
+                    }
                 }
             }
         } else {
