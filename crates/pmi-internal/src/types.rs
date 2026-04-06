@@ -308,8 +308,7 @@ pub struct TopicMessage {
 
 impl TopicMessage {
     pub fn new(key_expr: &str, payload: impl Into<Payload>) -> Result<Self> {
-        let instance_id = TopicMessage::extract_instance_id(key_expr)?;
-        let core_node = TopicMessage::extract_core_node(key_expr)?;
+        let (core_node, instance_id) = Self::parse_key_expr(key_expr)?;
         Ok(Self {
             key_expr: key_expr.to_string(),
             instance_id,
@@ -320,8 +319,7 @@ impl TopicMessage {
 
     #[cfg(feature = "zenoh")]
     pub fn from_zbytes(key_expr: &str, zbytes: ZBytes) -> Result<Self> {
-        let instance_id = TopicMessage::extract_instance_id(key_expr)?;
-        let core_node = TopicMessage::extract_core_node(key_expr)?;
+        let (core_node, instance_id) = Self::parse_key_expr(key_expr)?;
         Ok(Self {
             key_expr: key_expr.to_string(),
             instance_id,
@@ -330,20 +328,22 @@ impl TopicMessage {
         })
     }
 
-    fn extract_instance_id(key_expr: &str) -> Result<String> {
-        let segments: Vec<&str> = key_expr.split('/').collect();
-        segments
-            .get(3)
-            .map(|s| s.to_string())
-            .ok_or_else(|| Error::InstanceIdNotFound(key_expr.to_string()))
-    }
-
-    fn extract_core_node(key_expr: &str) -> Result<String> {
-        let segments: Vec<&str> = key_expr.split('/').collect();
-        segments
-            .get(1)
-            .map(|s| s.to_string())
-            .ok_or_else(|| Error::CoreNodeNotFound(key_expr.to_string()))
+    /// Parses a key expression into its (core_node, instance_id) components.
+    ///
+    /// Key expression format: `target_core_node/caller_core_node/target_instance/caller_instance/...`
+    /// - core_node is at segment index 1 (caller_core_node)
+    /// - instance_id is at segment index 3 (caller_instance)
+    fn parse_key_expr(key_expr: &str) -> Result<(String, String)> {
+        let mut segments = key_expr.splitn(5, '/');
+        let _target_core = segments.next();
+        let core_node = segments
+            .next()
+            .ok_or_else(|| Error::CoreNodeNotFound(key_expr.to_string()))?;
+        let _target_instance = segments.next();
+        let instance_id = segments
+            .next()
+            .ok_or_else(|| Error::InstanceIdNotFound(key_expr.to_string()))?;
+        Ok((core_node.to_string(), instance_id.to_string()))
     }
 
     pub fn instance_id(&self) -> &str {
@@ -360,10 +360,6 @@ impl TopicMessage {
 
     pub fn into_payload(self) -> Payload {
         self.payload
-    }
-
-    pub fn into_parts(self) -> (String, Payload) {
-        (self.instance_id, self.payload)
     }
 
     pub fn key_expr(&self) -> &str {

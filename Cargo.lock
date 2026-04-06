@@ -2932,7 +2932,6 @@ dependencies = [
  "bytes",
  "config",
  "derive_more",
- "serde",
  "serde_json",
  "serde_json5",
  "tempfile",

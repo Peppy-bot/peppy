@@ -2862,7 +2862,6 @@ dependencies = [
  "bytes",
  "config",
  "derive_more",
- "serde",
  "serde_json",
  "tempfile",
  "tokio",

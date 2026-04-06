@@ -2,10 +2,7 @@
 #[test]
 fn test_with_zenoh_feature() {
     use bytes::Bytes;
-    use pmi::{
-        Message, PeppyMessagingInterfaceError, SubscriberQoS, ZenohClientConfigTemplate,
-        ZenohNetProtocol,
-    };
+    use pmi::{Message, PeppyMessagingInterfaceError, SubscriberQoS, ZenohNetProtocol};
 
     const { assert!(cfg!(feature = "zenoh"), "zenoh feature should be enabled") };
 
@@ -16,12 +13,7 @@ fn test_with_zenoh_feature() {
     let qos = SubscriberQoS::Standard;
     assert_eq!(qos.channel_size(), 128);
 
-    let client_template = ZenohClientConfigTemplate {
-        host: "127.0.0.1".into(),
-        port: config::consts::DEFAULT_MESSAGING_PORT,
-        protocol: ZenohNetProtocol::Tcp,
-    };
-    assert_eq!(client_template.protocol, ZenohNetProtocol::Tcp);
+    assert_eq!(ZenohNetProtocol::default(), ZenohNetProtocol::Tcp);
 
     let err = PeppyMessagingInterfaceError::UnsupportedEngine;
     assert_eq!(format!("{err}"), "UnsupportedEngine");

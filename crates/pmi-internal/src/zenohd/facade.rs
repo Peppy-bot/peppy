@@ -34,6 +34,33 @@ pub struct ZenohEndpoint {
     pub protocol: ZenohNetProtocol,
 }
 
+/// Checks whether a child process has exited prematurely.
+/// Returns the process back if still alive, or an error with stderr output if it exited.
+fn check_process_alive(mut child: Child) -> std::result::Result<Child, Error> {
+    match child.try_wait() {
+        Ok(Some(status)) => {
+            let output = child.wait_with_output().map_err(|e| {
+                Error::BackendError(format!("Failed to capture zenohd output: {}", e))
+            })?;
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            Err(Error::BackendError(format!(
+                "zenohd exited unexpectedly with status: {}{}",
+                status,
+                if stderr.trim().is_empty() {
+                    String::new()
+                } else {
+                    format!(" – {}", stderr.trim())
+                }
+            )))
+        }
+        Ok(None) => Ok(child),
+        Err(e) => Err(Error::BackendError(format!(
+            "Failed to check zenohd status: {}",
+            e
+        ))),
+    }
+}
+
 /// The Zenoh daemon binary facade. Zenohd is not accessible via the Rust API (or in a very limited fashion).
 /// This facade allows calling the binary in the background.
 pub struct ZenohdFacade {
@@ -99,7 +126,9 @@ impl ZenohdFacade {
     }
 
     fn get_endpoint_from_config(zenohd_config_path: impl AsRef<Path>) -> Result<ZenohEndpoint> {
-        let config = Config::from_file(zenohd_config_path).unwrap();
+        let config = Config::from_file(zenohd_config_path).map_err(|e| {
+            Error::ConfigurationError(format!("Failed to load zenoh config file: {}", e))
+        })?;
         let listen_json = config.get_json("listen").map_err(|e| {
             Error::ConfigurationError(format!("Failed to get listen config: {}", e))
         })?;
@@ -186,30 +215,7 @@ impl ZenohdFacade {
                 connect_addr
             );
             loop {
-                match child.try_wait() {
-                    Ok(Some(status)) => {
-                        let output = child.wait_with_output().map_err(|e| {
-                            Error::BackendError(format!("Failed to capture zenohd output: {}", e))
-                        })?;
-                        let stderr = String::from_utf8_lossy(&output.stderr);
-                        return Err(Error::BackendError(format!(
-                            "zenohd exited unexpectedly with status: {}{}",
-                            status,
-                            if stderr.trim().is_empty() {
-                                String::new()
-                            } else {
-                                format!(" – {}", stderr.trim())
-                            }
-                        )));
-                    }
-                    Ok(None) => {}
-                    Err(e) => {
-                        return Err(Error::BackendError(format!(
-                            "Failed to check zenohd status: {}",
-                            e
-                        )));
-                    }
-                }
+                child = check_process_alive(child)?;
 
                 match TcpStream::connect(&connect_addr) {
                     Ok(_) => break,
@@ -217,30 +223,7 @@ impl ZenohdFacade {
                 }
             }
         } else {
-            match child.try_wait() {
-                Ok(Some(status)) => {
-                    let output = child.wait_with_output().map_err(|e| {
-                        Error::BackendError(format!("Failed to capture zenohd output: {}", e))
-                    })?;
-                    let stderr = String::from_utf8_lossy(&output.stderr);
-                    return Err(Error::BackendError(format!(
-                        "zenohd exited unexpectedly with status: {}{}",
-                        status,
-                        if stderr.trim().is_empty() {
-                            String::new()
-                        } else {
-                            format!(" – {}", stderr.trim())
-                        }
-                    )));
-                }
-                Ok(None) => {}
-                Err(e) => {
-                    return Err(Error::BackendError(format!(
-                        "Failed to check zenohd status: {}",
-                        e
-                    )));
-                }
-            }
+            child = check_process_alive(child)?;
         }
 
         tracing::info!(
