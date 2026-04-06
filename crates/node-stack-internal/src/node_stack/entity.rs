@@ -49,6 +49,21 @@ pub struct SerializedNodeGraph {
     pub edges: Vec<SerializedEdge>,
 }
 
+impl From<&NodeEntity> for SerializedNode {
+    fn from(entity: &NodeEntity) -> Self {
+        Self {
+            name: entity.config().manifest.name.as_str().to_string(),
+            tag: entity.config().manifest.tag.clone(),
+            instance_ids: entity
+                .instances()
+                .iter()
+                .map(|i| i.instance_id().as_str().to_string())
+                .collect(),
+            fs_root_path: entity.root_path().display().to_string(),
+        }
+    }
+}
+
 /// A single entity with N instances inside the node stack.
 #[derive(Clone, Debug)]
 pub struct NodeEntity {

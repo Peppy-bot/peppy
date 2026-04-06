@@ -27,10 +27,6 @@ impl InterfaceRequirement {
     }
 }
 
-pub(super) fn interfaces_match(a: &Interfaces, b: &Interfaces) -> bool {
-    a == b
-}
-
 pub fn collect_dependency_specs(node: &NodeConfig) -> Vec<DependencySpec> {
     let Some(depends_on) = &node.manifest.depends_on else {
         return Vec::new();
@@ -96,86 +92,94 @@ pub fn validate_dependency_specs(
     // Phase 2: Validate consumed interfaces reference valid local_node_ids
     // and that the dependency exposes the required interface
     if let Some(topics) = &interfaces.topics
-        && let Some(expected) = &topics.consumes
+        && let Some(consumes) = &topics.consumes
     {
-        for topic in expected {
-            if let config::node::ConsumedTopic::Linked(linked) = topic {
-                if !resolved_deps.contains_key(linked.local_node_id.as_str()) {
-                    if !declared_local_ids.contains(linked.local_node_id.as_str()) {
-                        errors.push(crate::error::Error::UndeclaredLocalNodeId {
-                            dependant: dependant_name.to_owned(),
-                            dependant_tag: dependant_tag.to_owned(),
-                            local_node_id: linked.local_node_id.clone(),
-                        });
-                    }
-                    continue;
-                }
-                validate_consumed_interface(
-                    &linked.local_node_id,
-                    &linked.name,
-                    InterfaceKind::Topic,
-                    &resolved_deps,
-                    dependant_name,
-                    dependant_tag,
-                    &mut errors,
-                );
+        let items = consumes.iter().filter_map(|t| match t {
+            config::node::ConsumedTopic::Linked(linked) => {
+                Some((linked.local_node_id.as_str(), linked.name.as_str()))
             }
-        }
+            _ => None,
+        });
+        validate_consumed_items(
+            items,
+            InterfaceKind::Topic,
+            &resolved_deps,
+            &declared_local_ids,
+            dependant_name,
+            dependant_tag,
+            &mut errors,
+        );
     }
 
     if let Some(services) = &interfaces.services
-        && let Some(consumed) = &services.consumes
+        && let Some(consumes) = &services.consumes
     {
-        for service in consumed {
-            if !resolved_deps.contains_key(service.local_node_id.as_str()) {
-                if !declared_local_ids.contains(service.local_node_id.as_str()) {
-                    errors.push(crate::error::Error::UndeclaredLocalNodeId {
-                        dependant: dependant_name.to_owned(),
-                        dependant_tag: dependant_tag.to_owned(),
-                        local_node_id: service.local_node_id.clone(),
-                    });
-                }
-                continue;
-            }
-            validate_consumed_interface(
-                &service.local_node_id,
-                &service.name,
-                InterfaceKind::Service,
-                &resolved_deps,
-                dependant_name,
-                dependant_tag,
-                &mut errors,
-            );
-        }
+        let items = consumes
+            .iter()
+            .map(|s| (s.local_node_id.as_str(), s.name.as_str()));
+        validate_consumed_items(
+            items,
+            InterfaceKind::Service,
+            &resolved_deps,
+            &declared_local_ids,
+            dependant_name,
+            dependant_tag,
+            &mut errors,
+        );
     }
 
     if let Some(actions) = &interfaces.actions
-        && let Some(consumed) = &actions.consumes
+        && let Some(consumes) = &actions.consumes
     {
-        for action in consumed {
-            if !resolved_deps.contains_key(action.local_node_id.as_str()) {
-                if !declared_local_ids.contains(action.local_node_id.as_str()) {
-                    errors.push(crate::error::Error::UndeclaredLocalNodeId {
-                        dependant: dependant_name.to_owned(),
-                        dependant_tag: dependant_tag.to_owned(),
-                        local_node_id: action.local_node_id.clone(),
-                    });
-                }
-                continue;
-            }
-            validate_consumed_interface(
-                &action.local_node_id,
-                &action.name,
-                InterfaceKind::Action,
-                &resolved_deps,
-                dependant_name,
-                dependant_tag,
-                &mut errors,
-            );
-        }
+        let items = consumes
+            .iter()
+            .map(|a| (a.local_node_id.as_str(), a.name.as_str()));
+        validate_consumed_items(
+            items,
+            InterfaceKind::Action,
+            &resolved_deps,
+            &declared_local_ids,
+            dependant_name,
+            dependant_tag,
+            &mut errors,
+        );
     }
 
     errors
+}
+
+/// Validates a set of consumed interfaces, checking that each `local_node_id` is declared
+/// and that the referenced dependency exposes the required interface.
+fn validate_consumed_items<'a>(
+    items: impl Iterator<Item = (&'a str, &'a str)>,
+    kind: InterfaceKind,
+    resolved_deps: &HashMap<String, (String, String, NodeConfig)>,
+    declared_local_ids: &HashSet<&str>,
+    dependant_name: &str,
+    dependant_tag: &str,
+    errors: &mut Vec<crate::error::Error>,
+) {
+    for (local_node_id, name) in items {
+        if !resolved_deps.contains_key(local_node_id) {
+            if !declared_local_ids.contains(local_node_id) {
+                errors.push(crate::error::Error::UndeclaredLocalNodeId {
+                    dependant: dependant_name.to_owned(),
+                    dependant_tag: dependant_tag.to_owned(),
+                    local_node_id: local_node_id.to_owned(),
+                });
+            }
+            continue;
+        }
+        validate_consumed_interface(
+            local_node_id,
+            name,
+            kind,
+            resolved_deps,
+            dependant_name,
+            dependant_tag,
+            errors,
+        );
+    }
 }
 
 /// Validates that a consumed interface's `local_node_id` resolves to a dependency

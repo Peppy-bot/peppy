@@ -6,6 +6,6 @@ mod node_stack;
 pub use error::Error as NodeStackError;
 
 pub use node_stack::{
-    NodeEntity, NodeStack, SerializedEdge, SerializedNode, SerializedNodeGraph,
-    TrackedNodeInstance, collect_dependency_specs, validate_dependency_specs,
+    DependencySpec, NodeEntity, NodeStack, SerializedNodeGraph, collect_dependency_specs,
+    validate_dependency_specs,
 };
