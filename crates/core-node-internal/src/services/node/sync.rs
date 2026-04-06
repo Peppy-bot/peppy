@@ -118,15 +118,19 @@ fn needs_sync(node_root_dir: &std::path::Path, has_execution_language: bool) -> 
         return true;
     }
 
-    // git.hash must exist and be non-empty
+    // git.hash must be a regular non-empty file
     match std::fs::metadata(peppy_dir.join("git.hash")) {
-        Ok(meta) if meta.len() > 0 => {}
+        Ok(meta) if meta.is_file() && meta.len() > 0 => {}
         _ => return true,
     }
 
-    // fingerprint file required when execution language is present
-    if has_execution_language && !peppy_dir.join("libs/peppygen/peppy.json5.sha256").exists() {
-        return true;
+    // fingerprint file required when execution language is present;
+    // must be a regular non-empty file
+    if has_execution_language {
+        match std::fs::metadata(peppy_dir.join("libs/peppygen/peppy.json5.sha256")) {
+            Ok(meta) if meta.is_file() && meta.len() > 0 => {}
+            _ => return true,
+        }
     }
 
     false
@@ -710,26 +714,66 @@ pub fn auto_sync_if_missing(
     // Sync root
     let peppy_dir = params.node_dir.join(config::consts::PEPPY_OUTPUT_DIR);
     if needs_sync(params.node_dir, params.execution_language.is_some()) {
-        remove_previous_peppy_dir(params.node_dir);
-        if let Some(language) = params.execution_language {
-            let consumed =
-                collect_consumed_interfaces(params.manifest, params.interfaces, node_stack);
-            generate_peppygen_for_node(
-                language,
-                params.node_dir,
-                consumed,
-                params.git_hash,
-                peppy_dirs,
-                generator::CrateDeployMode::default(),
-                None,
-            )?;
-        } else {
-            // Variant-only node (no execution at root): just write git.hash
-            std::fs::create_dir_all(&peppy_dir)
-                .and_then(|()| {
-                    std::fs::write(peppy_dir.join("git.hash"), params.git_hash.as_bytes())
-                })
-                .map_err(crate::Error::from)?;
+        // Back up existing .peppy so we can restore it on failure.
+        let backup_dir = params.node_dir.join(format!(
+            ".peppy-backup-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0),
+        ));
+        let had_backup = match std::fs::rename(&peppy_dir, &backup_dir) {
+            Ok(()) => true,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+            Err(e) => return Err(crate::Error::Io(e)),
+        };
+
+        let gen_result: crate::Result<()> = (|| {
+            if let Some(language) = params.execution_language {
+                let consumed =
+                    collect_consumed_interfaces(params.manifest, params.interfaces, node_stack);
+                generate_peppygen_for_node(
+                    language,
+                    params.node_dir,
+                    consumed,
+                    params.git_hash,
+                    peppy_dirs,
+                    generator::CrateDeployMode::default(),
+                    None,
+                )?;
+            } else {
+                // Variant-only node (no execution at root): just write git.hash
+                std::fs::create_dir_all(&peppy_dir)
+                    .and_then(|()| {
+                        std::fs::write(peppy_dir.join("git.hash"), params.git_hash.as_bytes())
+                    })
+                    .map_err(crate::Error::from)?;
+            }
+            Ok(())
+        })();
+
+        match gen_result {
+            Ok(()) => {
+                // Generation succeeded — clean up backup in background.
+                if had_backup {
+                    std::thread::spawn(move || {
+                        std::fs::remove_dir_all(&backup_dir).ok();
+                    });
+                }
+            }
+            Err(e) => {
+                // Generation failed — remove partial .peppy and restore backup.
+                let _ = std::fs::remove_dir_all(&peppy_dir);
+                if had_backup && let Err(restore_err) = std::fs::rename(&backup_dir, &peppy_dir) {
+                    tracing::error!(
+                        "Failed to restore .peppy backup from {}: {}",
+                        backup_dir.display(),
+                        restore_err,
+                    );
+                }
+                return Err(e);
+            }
         }
     }
 
@@ -767,7 +811,11 @@ pub fn auto_sync_if_missing(
                 .map(|d| d.as_nanos())
                 .unwrap_or(0),
         ));
-        let had_backup = std::fs::rename(&peppy_dir, &backup_dir).is_ok();
+        let had_backup = match std::fs::rename(&peppy_dir, &backup_dir) {
+            Ok(()) => true,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+            Err(e) => return Err(crate::Error::Io(e)),
+        };
 
         let consumed = collect_consumed_interfaces(params.manifest, params.interfaces, node_stack);
         let gen_result: crate::Result<()> = (|| {
@@ -804,8 +852,12 @@ pub fn auto_sync_if_missing(
             Err(e) => {
                 // Generation failed — remove partial .peppy and restore backup.
                 let _ = std::fs::remove_dir_all(&peppy_dir);
-                if had_backup {
-                    let _ = std::fs::rename(&backup_dir, &peppy_dir);
+                if had_backup && let Err(restore_err) = std::fs::rename(&backup_dir, &peppy_dir) {
+                    tracing::error!(
+                        "Failed to restore .peppy backup from {}: {}",
+                        backup_dir.display(),
+                        restore_err,
+                    );
                 }
                 return Err(e);
             }
