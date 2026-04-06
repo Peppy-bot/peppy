@@ -57,7 +57,7 @@ async fn node_runtime_config_command_outputs_valid_config() {
 
     NodeCommand {
         command: NodeCommands::Add {
-            source: node_path.display().to_string(),
+            source: Some(node_path.display().to_string()),
             git_ref: None,
             variant: None,
             start: false,
@@ -167,7 +167,7 @@ async fn node_runtime_config_command_with_peppy_json5_outputs_valid_config() {
 
     NodeCommand {
         command: NodeCommands::Add {
-            source: node_path.display().to_string(),
+            source: Some(node_path.display().to_string()),
             git_ref: None,
             variant: None,
             start: false,

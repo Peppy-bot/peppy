@@ -645,6 +645,90 @@ pub fn collect_consumed_interfaces(
     interfaces
 }
 
+/// Parameters for [`auto_sync_if_missing`].
+pub struct AutoSyncParams<'a> {
+    pub node_dir: &'a std::path::Path,
+    pub execution_language: Option<config::node::PeppygenLanguage>,
+    pub manifest: &'a config::node::Manifest,
+    pub interfaces: &'a config::node::Interfaces,
+    pub git_hash: &'a str,
+    pub variant: Option<AutoSyncVariant<'a>>,
+}
+
+pub struct AutoSyncVariant<'a> {
+    pub dir: &'a std::path::Path,
+    pub language: config::node::PeppygenLanguage,
+}
+
+/// Auto-generates the `.peppy` directory for a node that has never been synced.
+///
+/// When the `.peppy` directory is entirely absent (e.g. fresh clone), this
+/// function generates peppygen (if the node has an execution block) or writes
+/// just the `git.hash` file (variant-only nodes without execution at root).
+///
+/// If a variant is provided and its `.peppy` directory is also absent,
+/// generates peppygen for the variant and re-fingerprints using the variant's
+/// own `peppy.json5`.
+///
+/// Directories whose `.peppy` already exists are skipped (no-op).
+pub fn auto_sync_if_missing(
+    params: AutoSyncParams<'_>,
+    node_stack: &NodeStack,
+    peppy_dirs: &PeppyDirs,
+) -> crate::Result<()> {
+    // Sync root
+    let peppy_dir = params.node_dir.join(config::consts::PEPPY_OUTPUT_DIR);
+    if !peppy_dir.exists() {
+        if let Some(language) = params.execution_language {
+            let consumed =
+                collect_consumed_interfaces(params.manifest, params.interfaces, node_stack);
+            generate_peppygen_for_node(
+                language,
+                params.node_dir,
+                consumed,
+                params.git_hash,
+                peppy_dirs,
+                generator::CrateDeployMode::default(),
+                None,
+            )?;
+        } else {
+            // Variant-only node (no execution at root): just write git.hash
+            std::fs::create_dir_all(&peppy_dir)
+                .and_then(|()| {
+                    std::fs::write(peppy_dir.join("git.hash"), params.git_hash.as_bytes())
+                })
+                .map_err(crate::Error::from)?;
+        }
+    }
+
+    // Sync variant
+    if let Some(v) = params.variant {
+        let variant_peppy_dir = v.dir.join(config::consts::PEPPY_OUTPUT_DIR);
+        if !variant_peppy_dir.exists() {
+            let consumed =
+                collect_consumed_interfaces(params.manifest, params.interfaces, node_stack);
+            generate_peppygen_for_node(
+                v.language,
+                v.dir,
+                consumed,
+                params.git_hash,
+                peppy_dirs,
+                generator::CrateDeployMode::default(),
+                None,
+            )?;
+
+            // Re-fingerprint using the variant's own peppy.json5
+            config::fingerprint::generate_node_config_fingerprint(
+                v.dir.join(config::consts::NODE_CONFIG_FILE),
+                v.dir.join(config::consts::PEPPYGEN_OUTPUT_PATH),
+            )
+            .map_err(generator::GeneratorError::Config)?;
+        }
+    }
+
+    Ok(())
+}
+
 /// Generates the peppygen library for a node.
 ///
 /// This function takes the pre-collected data and generates the peppygen

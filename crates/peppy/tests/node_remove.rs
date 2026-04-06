@@ -68,7 +68,7 @@ fn node_remove_command_succeeds() {
 
     NodeCommand {
         command: NodeCommands::Add {
-            source: node_path.display().to_string(),
+            source: Some(node_path.display().to_string()),
             git_ref: None,
             variant: None,
             start: false,
@@ -235,7 +235,7 @@ fn node_remove_command_force_bypasses_prompt_and_stops_instances() {
     // (avoids cross-runtime issues when using separate Add and Start commands)
     NodeCommand {
         command: NodeCommands::Add {
-            source: node_path.display().to_string(),
+            source: Some(node_path.display().to_string()),
             git_ref: None,
             variant: None,
             start: true,
@@ -377,7 +377,7 @@ fn node_remove_command_with_stop_instances_succeeds_and_stops_instances() {
     // (avoids cross-runtime issues when using separate Add and Start commands)
     NodeCommand {
         command: NodeCommands::Add {
-            source: node_path.display().to_string(),
+            source: Some(node_path.display().to_string()),
             git_ref: None,
             variant: None,
             start: true,

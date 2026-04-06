@@ -1,6 +1,8 @@
 use super::super::action_loop::{ActionResult, ActionState, GoalHandler, run_action_loop};
 use super::super::stack::STACK_LAUNCH_GIT_HASH;
-use super::sync::{collect_consumed_interfaces, generate_peppygen_for_node};
+use super::sync::{
+    self, AutoSyncParams, AutoSyncVariant, collect_consumed_interfaces, generate_peppygen_for_node,
+};
 use super::{
     checkout_repo_ref, extract_tar_zst, generate_random_id, is_supported_fs_archive,
     is_supported_http_archive, locate_node_root_dir, resolve_local_archive_source,
@@ -1411,6 +1413,7 @@ pub(crate) async fn run_node_add(
         // The .peppy/git.hash file is written by `peppy node sync` at the root
         // level; non-local variant directories (Git/Http clones) won't have it.
         let root_source_path = resolved.source_path.clone();
+        let root_execution_language = resolved.node_config.execution_language();
 
         // If a variant is specified (or auto-resolved), resolve it from the root config.
         let mut variant_cleanup_dir: Option<PathBuf> = None;
@@ -1455,6 +1458,42 @@ pub(crate) async fn run_node_add(
                     write_error_to_log(&log_file, &error_msg);
                     return NodeAddResult::failure(&log_path, error_msg);
                 }
+            }
+        }
+
+        // Auto-generate .peppy directory if missing (e.g. fresh clone never synced).
+        // Must run before git hash verification since sync also writes git.hash.
+        if goal.git_hash != STACK_LAUNCH_GIT_HASH
+            && let NodeSource::Fs(original_path) = &goal.source
+            && !is_supported_fs_archive(original_path)
+        {
+            let variant = if variant_source_is_local
+                && effective_variant.is_some()
+                && resolved.source_path != root_source_path
+            {
+                Some(AutoSyncVariant {
+                    dir: &resolved.source_path,
+                    language: node_config.execution.language,
+                })
+            } else {
+                None
+            };
+
+            if let Err(e) = sync::auto_sync_if_missing(
+                AutoSyncParams {
+                    node_dir: &root_source_path,
+                    execution_language: root_execution_language,
+                    manifest: &node_config.manifest,
+                    interfaces: &node_config.interfaces,
+                    git_hash: &goal.git_hash,
+                    variant,
+                },
+                &action_context.node_stack,
+                &action_context.peppy_dirs,
+            ) {
+                let msg = format!("Auto-sync failed: {}", e);
+                write_error_to_log(&log_file, &msg);
+                return NodeAddResult::failure(&log_path, msg);
             }
         }
 

@@ -1,4 +1,4 @@
-use config::consts::PEPPY_OUTPUT_DIR;
+use config::consts::{PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH};
 use config::node::Toolchain;
 use core_node::encoding::NodeListRequest;
 use node_stack::SerializedNodeGraph;
@@ -76,7 +76,7 @@ fn node_add_command_succeeds() {
     // Now add the node to the node stack
     NodeCommand {
         command: NodeCommands::Add {
-            source: node_path.display().to_string(),
+            source: Some(node_path.display().to_string()),
             git_ref: None,
             variant: None,
             start: false,
@@ -219,7 +219,7 @@ fn node_add_command_with_run_arg_succeeds() {
     // Add the node to the node stack with run=true to also start an instance
     NodeCommand {
         command: NodeCommands::Add {
-            source: node_path.display().to_string(),
+            source: Some(node_path.display().to_string()),
             git_ref: None,
             variant: None,
             start: true,
@@ -353,7 +353,7 @@ fn node_add_after_failed_sync_succeeds() {
     // 3. Run `node add .` on that node, it'll fail due to git hash mismatch
     let add_result = NodeCommand {
         command: NodeCommands::Add {
-            source: node_path.display().to_string(),
+            source: Some(node_path.display().to_string()),
             git_ref: None,
             variant: None,
             start: false,
@@ -393,7 +393,7 @@ fn node_add_after_failed_sync_succeeds() {
     // 5. Run `node add .` again. This time it should succeed
     NodeCommand {
         command: NodeCommands::Add {
-            source: node_path.display().to_string(),
+            source: Some(node_path.display().to_string()),
             git_ref: None,
             variant: None,
             start: false,
@@ -544,7 +544,7 @@ fn node_add_same_node_shutdown_existing_instances() {
     // Step 1: Add the node with start=true to create an instance
     NodeCommand {
         command: NodeCommands::Add {
-            source: node_path.display().to_string(),
+            source: Some(node_path.display().to_string()),
             git_ref: None,
             variant: None,
             start: true,
@@ -600,7 +600,7 @@ fn node_add_same_node_shutdown_existing_instances() {
     // This should shut down the existing instance and overwrite the node
     NodeCommand {
         command: NodeCommands::Add {
-            source: node_path.display().to_string(),
+            source: Some(node_path.display().to_string()),
             git_ref: None,
             variant: None,
             start: false, // Don't start a new instance this time
@@ -741,7 +741,7 @@ fn node_add_command_with_variant_succeeds() {
     // Add the root node with --variant mock
     NodeCommand {
         command: NodeCommands::Add {
-            source: root_path.display().to_string(),
+            source: Some(root_path.display().to_string()),
             git_ref: None,
             variant: Some("mock".to_string()),
             start: false,
@@ -900,7 +900,7 @@ fn node_add_with_variant_uses_variant_in_preflight() {
     // Step 1: Add the node with --variant mock, start=true, force=true to create a running instance
     NodeCommand {
         command: NodeCommands::Add {
-            source: root_path.display().to_string(),
+            source: Some(root_path.display().to_string()),
             git_ref: None,
             variant: Some("mock".to_string()),
             start: true,
@@ -1081,7 +1081,7 @@ fn node_add_same_node_different_sources_show_overwrite_prompt() {
     // Step 1: Add the node from local filesystem with start=true
     NodeCommand {
         command: NodeCommands::Add {
-            source: node_path.display().to_string(),
+            source: Some(node_path.display().to_string()),
             git_ref: None,
             variant: None,
             start: true,
@@ -1215,5 +1215,178 @@ fn node_add_same_node_different_sources_show_overwrite_prompt() {
         node_after.instance_count(),
         0,
         "should have 0 instances after re-add from git (existing instance should be stopped)"
+    );
+}
+
+/// When a node's `.peppy` directory is missing (e.g. fresh clone), `node add` should
+/// auto-sync it before proceeding. This test covers the variant case: root + variant
+/// both get auto-synced, and fingerprint files are verified.
+#[test]
+fn node_add_auto_syncs_when_peppy_dir_missing() {
+    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
+    let serve = rt
+        .block_on(ServeCommandEmulation::with_mock())
+        .expect("failed to create serve emulation");
+    let shared_messenger = serve.messenger();
+    let core_node_name = serve.core_node_name().to_string();
+
+    let node_dir = tempfile::tempdir().expect("failed to create temp dir for node");
+    let root_node_name = "test_auto_sync_variant";
+
+    let node_ctx = Arc::new(
+        AppContext::with_messenger(node_dir.path(), Arc::clone(&shared_messenger))
+            .with_daemon_state_file(serve.daemon_state_path()),
+    );
+
+    let log_capture = LogCapture::new();
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .without_time()
+        .with_writer(log_capture.clone())
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+
+    // 1. Create a node with `node init`
+    NodeCommand {
+        command: NodeCommands::Init {
+            node_name: NodeName::new(root_node_name).expect("valid node name"),
+            to_dir: None,
+            toolchain: Toolchain::Cargo,
+            with_container: false,
+        },
+    }
+    .execute(&node_ctx)
+    .expect("node init command should succeed");
+
+    let root_path = node_dir.path().join(root_node_name);
+    let root_peppy_json5 = root_path.join("peppy.json5");
+
+    // 2. Add a variant declaration to the root config
+    let mut root_cfg = config::node::NodeConfigParser::from_path(&root_peppy_json5)
+        .expect("should parse config")
+        .into_resolved()
+        .expect("should resolve");
+    root_cfg.execution.add_cmd = None;
+    root_cfg.manifest.variants = Some(vec![config::node::Variant {
+        name: config::node::Name::new("mock").expect("valid name"),
+        source: config::source::DeploymentSource::Local(config::source::DeploymentLocalSource {
+            local: std::path::PathBuf::from("mock_variant"),
+            variant: None,
+        }),
+    }]);
+    let updated = serde_json::to_string_pretty(&root_cfg).expect("should serialize");
+    std::fs::write(&root_peppy_json5, &updated).expect("should write updated config");
+
+    // 3. Create the variant directory with a minimal config
+    let variant_dir = root_path.join("mock_variant");
+    std::fs::create_dir_all(&variant_dir).expect("should create variant dir");
+    let variant_config = r#"{
+        "schema_version": 1,
+        "execution": {
+            "language": "rust",
+            "start_cmd": ["sleep", "42"]
+        }
+    }"#;
+    let variant_peppy_json5 = variant_dir.join("peppy.json5");
+    std::fs::write(&variant_peppy_json5, variant_config).expect("should write variant config");
+
+    // 4. Delete .peppy directories from root (simulating fresh clone; variant never had one)
+    let root_peppy_dir = root_path.join(PEPPY_OUTPUT_DIR);
+    assert!(root_peppy_dir.exists(), ".peppy should exist after init");
+    std::fs::remove_dir_all(&root_peppy_dir).expect("failed to remove root .peppy dir");
+    assert!(!root_peppy_dir.exists());
+    assert!(!variant_dir.join(PEPPY_OUTPUT_DIR).exists());
+
+    // 5. Run `node add --variant mock` — should auto-sync and succeed
+    NodeCommand {
+        command: NodeCommands::Add {
+            source: Some(root_path.display().to_string()),
+            git_ref: None,
+            variant: Some("mock".to_string()),
+            start: false,
+            args: Vec::new(),
+            instance_id: None,
+            idle_timeout: 60,
+            max_timeout: 3600,
+            force: false,
+        },
+    }
+    .execute(&node_ctx)
+    .expect("node add with variant should succeed via auto-sync");
+
+    // 6. Verify the node was added
+    let logs = log_capture.logs();
+    assert!(
+        logs.contains(&format!("Added node {}:", root_node_name)),
+        "logs should contain success message. Logs:\n{}",
+        logs
+    );
+
+    let messenger_handle = node_ctx
+        .messenger_handle()
+        .expect("messenger handle should be available");
+    let response = rt
+        .block_on(NodeListRequest::new(false).poll(
+            messenger_handle,
+            &core_node_name,
+            CALLER_INSTANCE_ID,
+            &core_node_name,
+            Duration::from_secs(5),
+        ))
+        .expect("node_list request should complete");
+    let graph: SerializedNodeGraph =
+        serde_json::from_str(&response.graph_json).expect("graph_json should parse");
+    graph
+        .nodes
+        .iter()
+        .find(|n| n.name == root_node_name && n.tag == "0.1.0")
+        .expect("graph should contain the added node");
+
+    // 7. Assert fingerprint files were created by auto-sync
+    // Root: git.hash should exist
+    let root_git_hash = root_peppy_dir.join("git.hash");
+    assert!(
+        root_git_hash.exists(),
+        "root .peppy/git.hash should have been created by auto-sync"
+    );
+
+    // Root: fingerprint should exist and match root peppy.json5
+    let root_fingerprint_path = root_path
+        .join(PEPPYGEN_OUTPUT_PATH)
+        .join("peppy.json5.sha256");
+    assert!(
+        root_fingerprint_path.exists(),
+        "root fingerprint file should have been created by auto-sync"
+    );
+    let root_fingerprint = std::fs::read_to_string(&root_fingerprint_path)
+        .expect("should read root fingerprint")
+        .trim()
+        .to_string();
+    let expected_root_fingerprint = config::fingerprint::fingerprint_for_bytes(
+        &std::fs::read(&root_peppy_json5).expect("should read root config"),
+    );
+    assert_eq!(
+        root_fingerprint, expected_root_fingerprint,
+        "root fingerprint should match peppy.json5 content"
+    );
+
+    // Variant: fingerprint should exist and match variant peppy.json5
+    let variant_fingerprint_path = variant_dir
+        .join(PEPPYGEN_OUTPUT_PATH)
+        .join("peppy.json5.sha256");
+    assert!(
+        variant_fingerprint_path.exists(),
+        "variant fingerprint file should have been created by auto-sync"
+    );
+    let variant_fingerprint = std::fs::read_to_string(&variant_fingerprint_path)
+        .expect("should read variant fingerprint")
+        .trim()
+        .to_string();
+    let expected_variant_fingerprint = config::fingerprint::fingerprint_for_bytes(
+        &std::fs::read(&variant_peppy_json5).expect("should read variant config"),
+    );
+    assert_eq!(
+        variant_fingerprint, expected_variant_fingerprint,
+        "variant fingerprint should match variant's peppy.json5 content"
     );
 }
