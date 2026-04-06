@@ -248,7 +248,7 @@ impl PyServiceMessenger {
 }
 
 /// Register the services submodule
-pub fn register(parent_module: &Bound<'_, PyModule>) -> PyResult<()> {
+pub(crate) fn register(parent_module: &Bound<'_, PyModule>) -> PyResult<()> {
     let services_module = PyModule::new(parent_module.py(), "services")?;
     services_module.add_class::<PyServiceMessenger>()?;
     services_module.add_class::<PyServiceEndpoint>()?;

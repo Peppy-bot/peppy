@@ -11,7 +11,7 @@ fn generate_name() -> String {
 }
 
 /// Register the names submodule
-pub fn register(parent_module: &Bound<'_, PyModule>) -> PyResult<()> {
+pub(crate) fn register(parent_module: &Bound<'_, PyModule>) -> PyResult<()> {
     let names_module = PyModule::new(parent_module.py(), "names")?;
     names_module.add_function(wrap_pyfunction!(generate_name, &names_module)?)?;
     parent_module.add_submodule(&names_module)?;

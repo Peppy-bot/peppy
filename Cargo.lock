@@ -2754,7 +2754,6 @@ name = "peppylib-py"
 version = "0.0.1"
 dependencies = [
  "build-helpers",
- "bytes",
  "config",
  "names-generator2",
  "peppylib",
@@ -2766,7 +2765,6 @@ dependencies = [
  "rand 0.10.0",
  "serde_json",
  "tokio",
- "tokio-util",
 ]
 
 [[package]]
