@@ -658,6 +658,9 @@ pub struct AutoSyncParams<'a> {
 pub struct AutoSyncVariant<'a> {
     pub dir: &'a std::path::Path,
     pub language: config::node::PeppygenLanguage,
+    /// The fully merged node config (root manifest + variant execution).
+    /// Needed because the variant's own `peppy.json5` lacks a `manifest`.
+    pub merged_config: &'a config::node::NodeConfig,
 }
 
 /// Auto-generates the `.peppy` directory for a node that has never been synced.
@@ -705,6 +708,20 @@ pub fn auto_sync_if_missing(
     if let Some(v) = params.variant {
         let variant_peppy_dir = v.dir.join(config::consts::PEPPY_OUTPUT_DIR);
         if !variant_peppy_dir.exists() {
+            // Write the merged config (root manifest + variant execution) to a
+            // temp file so the generator can parse a full NodeConfig. The
+            // variant's own peppy.json5 lacks a `manifest` field.
+            let merged_json5 = serde_json5::to_string(v.merged_config)
+                .map_err(|e| crate::Error::Io(std::io::Error::other(e)))?;
+            let mut tmp = tempfile::Builder::new()
+                .prefix(".peppy-merged-")
+                .suffix(".json5")
+                .tempfile()
+                .map_err(crate::Error::from)?;
+            std::io::Write::write_all(&mut tmp, merged_json5.as_bytes())
+                .map_err(crate::Error::from)?;
+            let merged_config_path = tmp.path().to_path_buf();
+
             let consumed =
                 collect_consumed_interfaces(params.manifest, params.interfaces, node_stack);
             generate_peppygen_for_node(
@@ -714,10 +731,12 @@ pub fn auto_sync_if_missing(
                 params.git_hash,
                 peppy_dirs,
                 generator::CrateDeployMode::default(),
-                None,
+                Some(&merged_config_path),
             )?;
 
-            // Re-fingerprint using the variant's own peppy.json5
+            // Re-fingerprint using the variant's own peppy.json5 so that
+            // node-add verification (which reads the variant's config) finds
+            // a matching hash.
             config::fingerprint::generate_node_config_fingerprint(
                 v.dir.join(config::consts::NODE_CONFIG_FILE),
                 v.dir.join(config::consts::PEPPYGEN_OUTPUT_PATH),

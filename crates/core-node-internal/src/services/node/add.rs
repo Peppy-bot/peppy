@@ -1474,6 +1474,7 @@ pub(crate) async fn run_node_add(
                 Some(AutoSyncVariant {
                     dir: &resolved.source_path,
                     language: node_config.execution.language,
+                    merged_config: &node_config,
                 })
             } else {
                 None
