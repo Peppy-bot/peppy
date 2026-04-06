@@ -94,13 +94,14 @@ pub enum NodeCommands {
     /// Add a node to the node stack based on its peppy.json5 file
     Add {
         /// Source location of a node (directory containing peppy.json5).
+        /// Defaults to the current directory if not specified.
         ///
         /// Supported formats:
         /// - Local path: `/path/to/node` or `./relative/path`
         /// - Git URL: `https://github.com/org/repo.git/subpath`
         /// - Git URL with ref: `https://github.com/org/repo.git/subpath --ref tag-or-branch`
         /// - HTTP archive: `https://example.com/node.tar.zst`
-        source: String,
+        source: Option<String>,
         /// Git ref (tag/branch/commit) to checkout before reading `subpath` (git sources only).
         #[arg(long = "ref")]
         git_ref: Option<String>,
@@ -253,6 +254,7 @@ impl Command for NodeCommand {
                     idle_secs: idle_timeout,
                     max_secs: max_timeout,
                 };
+                let source = source.unwrap_or_else(|| ".".to_string());
                 add::add_node(
                     ctx,
                     add::AddNodeParams {
