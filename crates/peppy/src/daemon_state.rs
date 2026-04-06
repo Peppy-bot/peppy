@@ -83,9 +83,6 @@ impl DaemonState {
         for path in Self::candidate_state_file_paths() {
             match Self::read_from(&path) {
                 Ok(state) => states.push((path, state)),
-                Err(err) if err.kind() == io::ErrorKind::NotFound => {
-                    last_err = Some(err);
-                }
                 Err(err) => {
                     last_err = Some(err);
                 }

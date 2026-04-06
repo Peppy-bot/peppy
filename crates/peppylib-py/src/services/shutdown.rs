@@ -67,7 +67,7 @@ impl PyShutdownService {
     }
 }
 
-pub fn register(parent_module: &Bound<'_, PyModule>) -> PyResult<()> {
+pub(crate) fn register(parent_module: &Bound<'_, PyModule>) -> PyResult<()> {
     parent_module.add_class::<PyShutdownService>()?;
     parent_module.add_class::<PyShutdownReceiver>()?;
     Ok(())

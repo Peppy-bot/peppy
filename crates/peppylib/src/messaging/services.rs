@@ -1,6 +1,6 @@
 use super::{
-    MessengerHandle, PROBE_TIMEOUT, SERVICE_ACK_PAYLOAD, SERVICE_PROBE_PAYLOAD,
-    encode_service_error_payload, format_target_instance_segment, is_service_probe_payload,
+    BROADCAST_MARKER, MessengerHandle, PROBE_TIMEOUT, SERVICE_ACK_PAYLOAD, SERVICE_PROBE_PAYLOAD,
+    encode_service_handler_error, format_instance_segment, is_service_probe_payload,
 };
 use crate::error::{Error, Result};
 use crate::runtime::{TaskHandle, spawn};
@@ -11,6 +11,22 @@ use pmi::{
 use std::{fmt, sync::Arc};
 use tokio::{sync::Mutex, time::Duration};
 use tracing::error;
+
+/// Runs a service handler and converts any error into a protocol-level error payload.
+async fn run_handler<F, Fut>(handler: F, context: ServiceRequestContext) -> Payload
+where
+    F: FnOnce(ServiceRequestContext) -> Fut,
+    Fut: std::future::Future<Output = Result<Payload>>,
+{
+    match handler(context).await {
+        Ok(payload) => payload,
+        Err(err) => {
+            let reason = err.to_string();
+            error!(%reason, "service handler returned error");
+            encode_service_handler_error(&reason)
+        }
+    }
+}
 
 pub struct ServiceMessenger;
 
@@ -100,15 +116,9 @@ impl ServiceEndpoint {
         let Some((context, responder)) = self.recv_next_request().await? else {
             return Ok(false);
         };
-        let response_payload = match handler(context).await {
-            Ok(payload) => payload,
-            Err(err) => {
-                let reason = err.to_string();
-                error!(%reason, "service handler returned error");
-                encode_service_error_payload(&reason)
-            }
-        };
-        responder.respond(response_payload).await?;
+        responder
+            .respond(run_handler(handler, context).await)
+            .await?;
         Ok(true)
     }
 
@@ -119,15 +129,9 @@ impl ServiceEndpoint {
         Fut: std::future::Future<Output = Result<Payload>>,
     {
         while let Some((context, responder)) = self.recv_next_request().await? {
-            let response_payload = match handler(context).await {
-                Ok(payload) => payload,
-                Err(err) => {
-                    let reason = err.to_string();
-                    error!(%reason, "service handler returned error");
-                    encode_service_error_payload(&reason)
-                }
-            };
-            responder.respond(response_payload).await?;
+            responder
+                .respond(run_handler(&mut handler, context).await)
+                .await?;
         }
         Ok(())
     }
@@ -145,17 +149,8 @@ impl ServiceEndpoint {
         let Some((context, responder)) = self.recv_next_request().await? else {
             return Ok(None);
         };
-        let task = spawn(async move {
-            let response_payload = match handler(context).await {
-                Ok(payload) => payload,
-                Err(err) => {
-                    let reason = err.to_string();
-                    error!(%reason, "service handler returned error");
-                    encode_service_error_payload(&reason)
-                }
-            };
-            responder.respond(response_payload).await
-        });
+        let task =
+            spawn(async move { responder.respond(run_handler(handler, context).await).await });
         Ok(Some(task))
     }
 
@@ -229,9 +224,8 @@ impl ServiceEndpoint {
             identifier: identifier.clone(),
             reason: "missing caller instance segment in request".to_string(),
         })?;
-        let response_target_instance_segment =
-            format_target_instance_segment(self.instance_id.as_str())
-                .unwrap_or_else(|| self.instance_id.clone());
+        let response_target_instance_segment = format_instance_segment(self.instance_id.as_str())
+            .unwrap_or_else(|| BROADCAST_MARKER.to_string());
 
         // Parse and validate service root segments
         let expected_root_segments: Vec<_> = self

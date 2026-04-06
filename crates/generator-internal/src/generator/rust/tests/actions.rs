@@ -724,8 +724,9 @@ fn consumed_two_actions_same_node() {
         .map(|artifact| (artifact.node_name, artifact.code_output))
         .collect();
 
-    let move_arm_module = module_name_from_components("brain", &move_arm_action.name);
-    let rotate_module = module_name_from_components("brain", &rotate_action.name);
+    let move_arm_module =
+        sanitize_node_display_name(&raw_module_label("brain", &move_arm_action.name));
+    let rotate_module = sanitize_node_display_name(&raw_module_label("brain", &rotate_action.name));
 
     let move_arm = artifact_map
         .get(&move_arm_module)

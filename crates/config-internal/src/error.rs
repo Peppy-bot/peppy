@@ -25,16 +25,7 @@ where
                 // Check if it's a StructuredError (custom validation).
                 // These already have rich messages; don't prepend path.
                 if let Ok(structured) = serde_json5::from_str::<StructuredError>(msg) {
-                    return Error::Parsing(match structured {
-                        StructuredError::InvalidDeploymentSource(detail) => {
-                            ParsingError::InvalidDeploymentSource(detail)
-                        }
-                        StructuredError::DuplicateName(id) => ParsingError::DuplicateName(id),
-                        StructuredError::InvalidName { name, allowed } => {
-                            ParsingError::InvalidName(name, allowed)
-                        }
-                        StructuredError::EmptyName => ParsingError::EmptyName,
-                    });
+                    return Error::Parsing(ParsingError::from(structured));
                 }
 
                 // Standard serde error: prepend path if non-empty.
@@ -69,21 +60,6 @@ pub enum ParsingError {
     #[error("Duplicate name: {0}")]
     DuplicateName(String),
 
-    // -- types
-    #[error("Invalid scalar type {0}: {1}")]
-    InvalidScalar(String, String), // type, value
-    #[error("Bad array found: {0}")]
-    BadArray(String),
-    #[error("Invalid QoS type {0}")]
-    InValidQoS(String),
-
-    // -- schema conformance
-    #[error("Unknown key in {0}: {1}")]
-    UnknownKey(String, String),
-
-    #[error("Deleted file {0}")]
-    DeletedFile(String),
-
     // -- deployments
     #[error("Invalid deployment source: {0}")]
     InvalidDeploymentSource(String),
@@ -117,9 +93,6 @@ pub enum ParsingError {
     InvalidMountPath(String, String),
     #[error("Invalid parameter reference `${{parameters:{0}}}` in mount path: {1}")]
     InvalidMountPathParameterRef(String, String),
-
-    #[error("{0}")]
-    Structured(String),
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -146,24 +119,28 @@ impl StructuredError {
     }
 }
 
+impl From<StructuredError> for ParsingError {
+    fn from(s: StructuredError) -> Self {
+        match s {
+            StructuredError::InvalidDeploymentSource(detail) => {
+                ParsingError::InvalidDeploymentSource(detail)
+            }
+            StructuredError::DuplicateName(id) => ParsingError::DuplicateName(id),
+            StructuredError::InvalidName { name, allowed } => {
+                ParsingError::InvalidName(name, allowed)
+            }
+            StructuredError::EmptyName => ParsingError::EmptyName,
+        }
+    }
+}
+
 impl From<serde_json5::Error> for ParsingError {
     fn from(err: serde_json5::Error) -> Self {
         match err {
             serde_json5::Error::Message { msg, .. } => {
-                // Try to deserialize the message as a StructuredError
                 if let Ok(structured) = serde_json5::from_str::<StructuredError>(&msg) {
-                    match structured {
-                        StructuredError::InvalidDeploymentSource(detail) => {
-                            ParsingError::InvalidDeploymentSource(detail)
-                        }
-                        StructuredError::DuplicateName(id) => ParsingError::DuplicateName(id),
-                        StructuredError::InvalidName { name, allowed } => {
-                            ParsingError::InvalidName(name, allowed)
-                        }
-                        StructuredError::EmptyName => ParsingError::EmptyName,
-                    }
+                    ParsingError::from(structured)
                 } else {
-                    // Fallback for standard serde errors or unparseable messages
                     ParsingError::CannotParseConfig(msg)
                 }
             }
@@ -184,16 +161,6 @@ pub enum Error {
     Parsing(#[from] ParsingError),
     #[error("Serialize error: {0}")]
     Serialize(String),
-    #[error("Duplicate instance id: {0}")]
-    DuplicateInstanceIdSerde(String),
-
-    // -- Domain specific
-    #[error("Unsupported language")]
-    UnsupportedLanguage,
-
-    // -- Askama
-    #[error("Askama error: {0}")]
-    AskamaError(String),
     #[error("Encoding error: {0}")]
     Encoding(String),
 

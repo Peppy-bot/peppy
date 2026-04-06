@@ -53,6 +53,9 @@ fn setup_env(peppy: &Path, node_dir: &Path) -> NodeSetup {
     let serve = rt
         .block_on(ServeCommandEmulation::with_zenoh())
         .expect("failed to start serve emulation");
+    // Allow the Zenoh router and core-node service subscriptions to stabilize
+    // before spawning peppy subprocesses that open new sessions.
+    std::thread::sleep(std::time::Duration::from_millis(200));
     let daemon_state_path = serve.daemon_state_path().to_path_buf();
 
     // Create a node in a tempdir with `peppy node init`

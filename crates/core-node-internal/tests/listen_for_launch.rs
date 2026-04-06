@@ -388,10 +388,7 @@ async fn send_node_launch_and_wait_with_env(
                 match LaunchResult::decode(&payload) {
                     Ok(result) => return Ok((goal_response, result)),
                     Err(err) => {
-                        let pending = std::str::from_utf8(payload.as_ref())
-                            .map(|text| text.starts_with("result pending"))
-                            .unwrap_or(false);
-                        if !pending {
+                        if !peppylib::encoding::is_result_pending(payload.as_ref()) {
                             return Err(format!("Failed to decode launch result: {err}"));
                         }
                     }

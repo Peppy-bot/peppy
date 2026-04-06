@@ -1,11 +1,49 @@
 pub mod health;
 pub mod ready;
-pub mod shutdown;
 
 use crate::error::Result;
 use crate::types::Payload;
+
+/// Generates an empty Cap'n Proto message struct with `new()`, `encode()`, `decode()`,
+/// and `Default` implementations.
+macro_rules! capnp_empty_message {
+    ($name:ident, $builder:path, $reader:path) => {
+        #[derive(Debug, Clone, PartialEq, Eq)]
+        pub struct $name {}
+
+        impl $name {
+            pub fn new() -> Self {
+                Self {}
+            }
+
+            pub fn encode(&self) -> $crate::error::Result<$crate::types::Payload> {
+                let mut builder = ::capnp::message::Builder::new_default();
+                {
+                    let _ = builder.init_root::<$builder>();
+                }
+                $crate::encoding::encode_message(&builder)
+            }
+
+            pub fn decode(data: &[u8]) -> $crate::error::Result<Self> {
+                let reader = $crate::encoding::decode_message(data)?;
+                let _ = reader
+                    .get_root::<$reader>()
+                    .map_err(|e| $crate::error::Error::Deserialization(e.to_string()))?;
+                Ok(Self {})
+            }
+        }
+
+        impl Default for $name {
+            fn default() -> Self {
+                Self::new()
+            }
+        }
+    };
+}
+
 use capnp::message::{Builder, HeapAllocator, ReaderOptions};
 use capnp::serialize;
+pub(crate) use capnp_empty_message;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const NANOS_PER_SEC: u32 = 1_000_000_000;
@@ -98,4 +136,14 @@ pub fn decode_message(
 ) -> Result<capnp::message::Reader<capnp::serialize::OwnedSegments>> {
     serialize::read_message(data, ReaderOptions::default())
         .map_err(|e| crate::error::Error::Deserialization(e.to_string()))
+}
+
+/// Prefix used by action services to indicate a result is not yet available.
+pub const RESULT_PENDING_PREFIX: &str = "result pending";
+
+/// Returns `true` if the payload is a "result pending" sentinel from an action service.
+pub fn is_result_pending(payload: &[u8]) -> bool {
+    std::str::from_utf8(payload)
+        .map(|text| text.starts_with(RESULT_PENDING_PREFIX))
+        .unwrap_or(false)
 }

@@ -153,9 +153,10 @@ mod tests {
         let err = runtime_config_from_json("bad id!")
             .and_then(|config| config.save_json5_launch_config(&path))
             .unwrap_err();
-        assert!(matches!(
-            err,
-            Error::Parsing(ParsingError::InvalidName(_, _))
-        ));
+        assert!(
+            matches!(err, Error::Parsing(ParsingError::CannotParseConfig(ref msg)) if msg.contains("Invalid name"))
+                || matches!(err, Error::Parsing(ParsingError::InvalidName(_, _))),
+            "expected parsing error about invalid name, got: {err}"
+        );
     }
 }

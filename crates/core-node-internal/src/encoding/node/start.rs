@@ -13,7 +13,7 @@ use crate::Result;
 use crate::names;
 use crate::node_capnp;
 
-use super::{decode_message, encode_message};
+use crate::encoding::{decode_message, encode_message, optional_text};
 
 /// Goal message for the NodeStart action.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -158,16 +158,10 @@ impl NodeStartGoalResponse {
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
         let response = reader.get_root::<node_capnp::node_start_goal_response::Reader>()?;
-        let rejection_reason_str = response.get_rejection_reason()?.to_str()?;
-        let rejection_reason = if rejection_reason_str.is_empty() {
-            None
-        } else {
-            Some(rejection_reason_str.to_owned())
-        };
         Ok(Self {
             accepted: response.get_accepted(),
             log_path: PathBuf::from(response.get_log_path()?.to_str()?),
-            rejection_reason,
+            rejection_reason: optional_text(response.get_rejection_reason()?.to_str()?),
         })
     }
 }
@@ -267,12 +261,7 @@ impl NodeStartResult {
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
         let result = reader.get_root::<node_capnp::node_start_result::Reader>()?;
-        let error_message_str = result.get_error_message()?.to_str()?;
-        let error_message = if error_message_str.is_empty() {
-            None
-        } else {
-            Some(error_message_str.to_owned())
-        };
+        let error_message = optional_text(result.get_error_message()?.to_str()?);
         let pid_value = result.get_pid();
         let pid = if pid_value == 0 {
             None

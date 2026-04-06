@@ -1,15 +1,14 @@
 use config::AnyType;
 use core_node::encoding::{NodeInfoRequest, NodeInfoResponse};
-use peppylib::MessengerHandle;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Duration;
 
 use super::source::parse_node_source;
+use crate::commands::CALLER_INSTANCE_ID;
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 
-const CALLER_INSTANCE_ID: &str = "peppy-cli";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub fn node_info(ctx: &Arc<AppContext>, source: String, git_ref: Option<String>) -> Result<()> {
@@ -21,26 +20,17 @@ async fn node_info_async(
     source: String,
     git_ref: Option<String>,
 ) -> Result<()> {
-    let daemon_state = ctx.read_daemon_state()?;
-    let core_node_name = daemon_state.core_node_name.clone();
-
     let node_source = parse_node_source(&source, git_ref)?;
-
-    let messenger = MessengerHandle::from_host_port(
-        config::consts::DEFAULT_MESSAGING_HOST,
-        daemon_state.messaging_port,
-    )
-    .await
-    .map_err(|e| Error::ExecutionFailed(format!("Failed to connect to daemon: {}", e)))?;
+    let conn = ctx.connect_to_daemon().await?;
 
     let request = NodeInfoRequest::new(node_source);
 
     let response = request
         .poll(
-            &messenger,
-            &core_node_name,
+            conn.messenger,
+            &conn.core_node_name,
             CALLER_INSTANCE_ID,
-            &core_node_name,
+            &conn.core_node_name,
             REQUEST_TIMEOUT,
         )
         .await

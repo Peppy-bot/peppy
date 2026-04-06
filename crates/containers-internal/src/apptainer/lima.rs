@@ -12,6 +12,31 @@ fn shell_escape(path: &Path) -> String {
     format!("'{}'", path.display().to_string().replace('\'', "'\\''"))
 }
 
+/// Build a `limactl shell <instance> --` command pre-configured with LIMA_HOME.
+///
+/// Callers chain additional `.arg()` / `.args()` for the guest-side command.
+fn lima_shell_cmd(limactl: &Path, lima_home: &Path, instance: &str) -> Command {
+    let mut cmd = Command::new(limactl);
+    cmd.env("LIMA_HOME", lima_home)
+        .args(["shell", instance, "--"]);
+    cmd
+}
+
+/// Check that a command completed successfully, returning an error built by
+/// `make_err` (which receives the trimmed stderr) on failure.
+fn check_output(
+    output: &std::process::Output,
+    make_err: impl FnOnce(String) -> Error,
+) -> Result<()> {
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(make_err(
+            String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        ))
+    }
+}
+
 /// Check that the bundled Lima version meets the minimum requirement.
 pub(crate) fn check_lima_version(limactl: &Path) -> Result<()> {
     let output = Command::new(limactl).arg("--version").output()?;
@@ -46,27 +71,47 @@ pub(crate) fn check_lima_version(limactl: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Ensure the peppy Lima instance exists and is running.
+/// Query the status of a Lima instance (e.g. "Running", "Stopped").
 ///
-/// * If the instance does not exist, create and start it with `template`.
-/// * If it exists but is stopped, start it.
-/// * If it is already running, this is a no-op.
-///
+/// Returns `Ok(None)` if the instance does not exist or the output is empty.
+/// Returns `Err` if the command fails for reasons other than "instance not found".
+fn query_instance_status(
+    limactl: &Path,
+    lima_home: &Path,
+    instance: &str,
+) -> Result<Option<String>> {
+    let output = Command::new(limactl)
+        .env("LIMA_HOME", lima_home)
+        .args(["list", "--format", "{{.Status}}", instance])
+        .output()
+        .map_err(|e| Error::LimaInstanceError(format!("failed to run limactl list: {e}")))?;
+
+    if output.status.success() {
+        let s = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        return Ok(if s.is_empty() { None } else { Some(s) });
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if stderr.contains("No instance matching") {
+        return Ok(None);
+    }
+
+    Err(Error::LimaInstanceError(format!(
+        "limactl list failed for instance '{}': {}",
+        instance,
+        stderr.trim()
+    )))
+}
+
 /// Returns `true` if the Lima VM instance is already running and SSH-reachable.
 /// This is a lightweight check that avoids booting the VM.
 pub(crate) fn is_lima_instance_running(limactl: &Path, lima_home: &Path) -> bool {
-    let output = Command::new(limactl)
-        .env("LIMA_HOME", lima_home)
-        .args(["list", "--format", "{{.Status}}", LIMA_INSTANCE])
-        .output();
-
-    match &output {
-        Ok(o) if o.status.success() => {
-            let status = String::from_utf8_lossy(&o.stdout).trim().to_string();
-            status == "Running" && is_ssh_alive(limactl, lima_home, LIMA_INSTANCE)
-        }
-        _ => false,
-    }
+    query_instance_status(limactl, lima_home, LIMA_INSTANCE)
+        .ok()
+        .flatten()
+        .as_deref()
+        == Some("Running")
+        && is_ssh_alive(limactl, lima_home, LIMA_INSTANCE)
 }
 
 pub(crate) fn ensure_lima_instance(limactl: &Path, lima_home: &Path, template: &str) -> Result<()> {
@@ -77,22 +122,7 @@ pub(crate) fn ensure_lima_instance(limactl: &Path, lima_home: &Path, template: &
         ))
     })?;
 
-    let list_output = Command::new(limactl)
-        .env("LIMA_HOME", lima_home)
-        .args(["list", "--format", "{{.Status}}", LIMA_INSTANCE])
-        .output();
-
-    let instance_status = match &list_output {
-        Ok(o) if o.status.success() => {
-            let status = String::from_utf8_lossy(&o.stdout).trim().to_string();
-            if status.is_empty() {
-                None
-            } else {
-                Some(status)
-            }
-        }
-        _ => None,
-    };
+    let instance_status = query_instance_status(limactl, lima_home, LIMA_INSTANCE)?;
 
     match instance_status.as_deref() {
         Some("Running") => {
@@ -115,15 +145,12 @@ pub(crate) fn ensure_lima_instance(limactl: &Path, lima_home: &Path, template: &
                 .args(["start", LIMA_INSTANCE])
                 .output()?;
 
-            if start.status.success() {
-                Ok(())
-            } else {
-                let stderr = String::from_utf8_lossy(&start.stderr);
-                Err(Error::LimaInstanceError(format!(
+            check_output(&start, |stderr| {
+                Error::LimaInstanceError(format!(
                     "failed to restart zombie Lima {} instance: {stderr}",
                     LIMA_INSTANCE
-                )))
-            }
+                ))
+            })
         }
         Some(_) => {
             tracing::info!("Starting Lima {} instance...", LIMA_INSTANCE);
@@ -132,15 +159,12 @@ pub(crate) fn ensure_lima_instance(limactl: &Path, lima_home: &Path, template: &
                 .args(["start", LIMA_INSTANCE])
                 .output()?;
 
-            if start.status.success() {
-                Ok(())
-            } else {
-                let stderr = String::from_utf8_lossy(&start.stderr);
-                Err(Error::LimaInstanceError(format!(
+            check_output(&start, |stderr| {
+                Error::LimaInstanceError(format!(
                     "failed to start Lima {} instance: {stderr}",
                     LIMA_INSTANCE
-                )))
-            }
+                ))
+            })
         }
         None => {
             tracing::info!(
@@ -161,24 +185,20 @@ pub(crate) fn ensure_lima_instance(limactl: &Path, lima_home: &Path, template: &
                 ])
                 .output()?;
 
-            if create.status.success() {
-                Ok(())
-            } else {
-                let stderr = String::from_utf8_lossy(&create.stderr);
-                Err(Error::LimaInstanceError(format!(
+            check_output(&create, |stderr| {
+                Error::LimaInstanceError(format!(
                     "failed to create Lima {} instance: {stderr}",
                     LIMA_INSTANCE
-                )))
-            }
+                ))
+            })
         }
     }
 }
 
 /// Quick SSH liveness probe — returns true if we can reach the guest.
 fn is_ssh_alive(limactl: &Path, lima_home: &Path, instance: &str) -> bool {
-    Command::new(limactl)
-        .env("LIMA_HOME", lima_home)
-        .args(["shell", instance, "--", "true"])
+    lima_shell_cmd(limactl, lima_home, instance)
+        .arg("true")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
@@ -194,12 +214,8 @@ fn is_ssh_alive(limactl: &Path, lima_home: &Path, instance: &str) -> bool {
 ///
 /// Note: `sudo` runs inside the Lima VM guest, which has passwordless sudo by default.
 pub(crate) fn ensure_guest_userns(limactl: &Path, lima_home: &Path, instance: &str) -> Result<()> {
-    let check = Command::new(limactl)
-        .env("LIMA_HOME", lima_home)
+    let check = lima_shell_cmd(limactl, lima_home, instance)
         .args([
-            "shell",
-            instance,
-            "--",
             "cat",
             "/proc/sys/kernel/apparmor_restrict_unprivileged_userns",
         ])
@@ -217,12 +233,8 @@ pub(crate) fn ensure_guest_userns(limactl: &Path, lima_home: &Path, instance: &s
 
     tracing::info!("Disabling AppArmor user namespace restriction in Lima guest...");
 
-    let apply = Command::new(limactl)
-        .env("LIMA_HOME", lima_home)
+    let apply = lima_shell_cmd(limactl, lima_home, instance)
         .args([
-            "shell",
-            instance,
-            "--",
             "sudo",
             "sh",
             "-c",
@@ -231,14 +243,11 @@ pub(crate) fn ensure_guest_userns(limactl: &Path, lima_home: &Path, instance: &s
         .output()
         .map_err(|e| Error::LimaInstanceError(format!("failed to apply userns sysctl: {e}")))?;
 
-    if !apply.status.success() {
-        let stderr = String::from_utf8_lossy(&apply.stderr);
-        return Err(Error::LimaInstanceError(format!(
+    check_output(&apply, |stderr| {
+        Error::LimaInstanceError(format!(
             "failed to disable AppArmor userns restriction in guest: {stderr}"
-        )));
-    }
-
-    Ok(())
+        ))
+    })
 }
 
 /// Ensure that `newuidmap` is available inside the Lima guest.
@@ -247,9 +256,8 @@ pub(crate) fn ensure_guest_userns(limactl: &Path, lima_home: &Path, instance: &s
 /// requires `newuidmap` (provided by the `uidmap` package on Debian/Ubuntu).
 /// The base Ubuntu 24.04 template does not include it by default.
 pub(crate) fn ensure_guest_uidmap(limactl: &Path, lima_home: &Path, instance: &str) -> Result<()> {
-    let check = Command::new(limactl)
-        .env("LIMA_HOME", lima_home)
-        .args(["shell", instance, "--", "which", "newuidmap"])
+    let check = lima_shell_cmd(limactl, lima_home, instance)
+        .args(["which", "newuidmap"])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status();
@@ -261,22 +269,14 @@ pub(crate) fn ensure_guest_uidmap(limactl: &Path, lima_home: &Path, instance: &s
 
     tracing::info!("Installing uidmap (newuidmap) in Lima guest...");
 
-    let install = Command::new(limactl)
-        .env("LIMA_HOME", lima_home)
-        .args([
-            "shell", instance, "--", "sudo", "apt-get", "install", "-y", "uidmap",
-        ])
+    let install = lima_shell_cmd(limactl, lima_home, instance)
+        .args(["sudo", "apt-get", "install", "-y", "uidmap"])
         .output()
         .map_err(|e| Error::LimaInstanceError(format!("failed to install uidmap: {e}")))?;
 
-    if !install.status.success() {
-        let stderr = String::from_utf8_lossy(&install.stderr);
-        return Err(Error::LimaInstanceError(format!(
-            "failed to install uidmap in guest: {stderr}"
-        )));
-    }
-
-    Ok(())
+    check_output(&install, |stderr| {
+        Error::LimaInstanceError(format!("failed to install uidmap in guest: {stderr}"))
+    })
 }
 
 /// Ensure the apptainer installation is available inside the Lima VM guest.
@@ -301,9 +301,8 @@ pub(crate) fn ensure_guest_apptainer(
     let marker_path = guest_dir.join(&marker_name);
 
     // Fast path: check if the version marker exists (sub-second limactl call).
-    let marker_exists = match Command::new(limactl)
-        .env("LIMA_HOME", lima_home)
-        .args(["shell", instance, "--", "test", "-f"])
+    let marker_exists = match lima_shell_cmd(limactl, lima_home, instance)
+        .args(["test", "-f"])
         .arg(&marker_path)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -329,27 +328,24 @@ pub(crate) fn ensure_guest_apptainer(
     tracing::info!("Syncing apptainer installation to Lima VM guest...");
 
     // Remove stale installation in guest.
-    let _ = Command::new(limactl)
-        .env("LIMA_HOME", lima_home)
-        .args(["shell", instance, "--", "rm", "-rf"])
+    let _ = lima_shell_cmd(limactl, lima_home, instance)
+        .args(["rm", "-rf"])
         .arg(&guest_dir)
         .status();
 
     // Create the target directory in the guest.
-    let mkdir = Command::new(limactl)
-        .env("LIMA_HOME", lima_home)
-        .args(["shell", instance, "--", "mkdir", "-p"])
+    let mkdir = lima_shell_cmd(limactl, lima_home, instance)
+        .args(["mkdir", "-p"])
         .arg(&guest_dir)
         .output()
         .map_err(|e| Error::LimaSyncFailed(format!("failed to create guest directory: {e}")))?;
 
-    if !mkdir.status.success() {
-        let stderr = String::from_utf8_lossy(&mkdir.stderr);
-        return Err(Error::LimaSyncFailed(format!(
+    check_output(&mkdir, |stderr| {
+        Error::LimaSyncFailed(format!(
             "mkdir in guest returned {}: {stderr}",
             mkdir.status
-        )));
-    }
+        ))
+    })?;
 
     // Copy host installation to guest via tar pipe.
     // `limactl copy -r` is unreliable with long or special-character paths,
@@ -369,18 +365,16 @@ pub(crate) fn ensure_guest_apptainer(
         .output()
         .map_err(|e| Error::LimaSyncFailed(format!("tar pipe to guest failed: {e}")))?;
 
-    if !tar_pipe.status.success() {
-        let stderr = String::from_utf8_lossy(&tar_pipe.stderr);
-        return Err(Error::LimaSyncFailed(format!(
+    check_output(&tar_pipe, |stderr| {
+        Error::LimaSyncFailed(format!(
             "tar pipe to guest returned {}: {stderr}",
             tar_pipe.status
-        )));
-    }
+        ))
+    })?;
 
     // Write the version marker so we skip the sync next time.
-    match Command::new(limactl)
-        .env("LIMA_HOME", lima_home)
-        .args(["shell", instance, "--", "touch"])
+    match lima_shell_cmd(limactl, lima_home, instance)
+        .arg("touch")
         .arg(&marker_path)
         .status()
     {
@@ -408,6 +402,54 @@ pub(crate) fn ensure_guest_apptainer(
     Ok(guest_bin)
 }
 
+/// Resolve an installation directory using a standard three-step fallback:
+///
+/// 1. Runtime override via `env_var` environment variable.
+/// 2. `exe_subdir` relative to the current executable (installed layout).
+/// 3. Compile-time path from build.rs (passed as `compile_time_dir`).
+///
+/// Returns the first directory that exists, or the error from `not_found_err`.
+pub(crate) fn resolve_install_dir(
+    env_var: &str,
+    exe_subdir: &str,
+    compile_time_dir: Option<&str>,
+    compile_time_label: &str,
+    not_found_err: impl FnOnce() -> Error,
+) -> Result<PathBuf> {
+    // 1) Runtime override via environment variable
+    if let Ok(dir) = std::env::var(env_var) {
+        let dir = dir.trim().to_string();
+        if !dir.is_empty() {
+            let path = PathBuf::from(&dir);
+            if path.is_dir() {
+                return Ok(path);
+            }
+            tracing::warn!("{env_var}={dir} does not exist or is not a directory");
+        }
+    }
+
+    // 2) Relative to the current executable
+    if let Ok(exe_path) = std::env::current_exe()
+        && let Some(exe_dir) = exe_path.parent()
+    {
+        let candidate = exe_dir.join(exe_subdir);
+        if candidate.is_dir() {
+            return Ok(candidate);
+        }
+    }
+
+    // 3) Compile-time path injected by build.rs
+    if let Some(dir) = compile_time_dir {
+        let path = PathBuf::from(dir);
+        if path.is_dir() {
+            return Ok(path);
+        }
+        tracing::debug!("Compile-time {compile_time_label} path {dir} does not exist at runtime");
+    }
+
+    Err(not_found_err())
+}
+
 /// Resolve the Lima installation directory (contains `bin/limactl`, `share/lima/`).
 ///
 /// Resolution order:
@@ -415,45 +457,13 @@ pub(crate) fn ensure_guest_apptainer(
 /// 2. `lima/` relative to the current executable (installed layout)
 /// 3. Compile-time `LIMA_INSTALL_DIR` set by build.rs
 pub(crate) fn resolve_lima_dir() -> Result<PathBuf> {
-    // 1) Runtime override via environment variable
-    if let Ok(dir) = std::env::var("PEPPY_LIMA_DIR") {
-        let dir = dir.trim().to_string();
-        if !dir.is_empty() {
-            let path = PathBuf::from(&dir);
-            if path.is_dir() {
-                return Ok(path);
-            }
-            tracing::warn!(
-                "PEPPY_LIMA_DIR={} does not exist or is not a directory",
-                dir
-            );
-        }
-    }
-
-    // 2) Relative to the current executable: {exe_dir}/lima/
-    //    This is the installed layout created by install.sh ($PEPPY_BIN_DIR/lima/).
-    if let Ok(exe_path) = std::env::current_exe()
-        && let Some(exe_dir) = exe_path.parent()
-    {
-        let candidate = exe_dir.join("lima");
-        if candidate.is_dir() {
-            return Ok(candidate);
-        }
-    }
-
-    // 3) Compile-time path injected by build.rs
-    if let Some(dir) = option_env!("LIMA_INSTALL_DIR") {
-        let path = PathBuf::from(dir);
-        if path.is_dir() {
-            return Ok(path);
-        }
-        tracing::debug!(
-            "Compile-time LIMA_INSTALL_DIR={} does not exist at runtime",
-            dir
-        );
-    }
-
-    Err(Error::LimaRequired)
+    resolve_install_dir(
+        "PEPPY_LIMA_DIR",
+        "lima",
+        option_env!("LIMA_INSTALL_DIR"),
+        "LIMA_INSTALL_DIR",
+        || Error::LimaRequired,
+    )
 }
 
 /// Resolve the LIMA_HOME directory for VM instance data.
@@ -510,18 +520,7 @@ pub(crate) fn parse_lima_version(version_output: &str) -> Option<(u32, u32, u32)
 /// Idempotent: returns `Ok(())` if the instance is already stopped or does not
 /// exist, so callers do not need to guard against these cases.
 pub(crate) fn stop_instance(limactl: &Path, lima_home: &Path, instance: &str) -> Result<()> {
-    let list_output = Command::new(limactl)
-        .env("LIMA_HOME", lima_home)
-        .args(["list", "--format", "{{.Status}}", instance])
-        .output();
-
-    let status = match &list_output {
-        Ok(o) if o.status.success() => {
-            let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
-            if s.is_empty() { None } else { Some(s) }
-        }
-        _ => None,
-    };
+    let status = query_instance_status(limactl, lima_home, instance)?;
 
     match status.as_deref() {
         Some("Running") => {
@@ -531,15 +530,12 @@ pub(crate) fn stop_instance(limactl: &Path, lima_home: &Path, instance: &str) ->
                 .args(["stop", instance])
                 .output()?;
 
-            if output.status.success() {
-                Ok(())
-            } else {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                Err(Error::LimaInstanceError(format!(
+            check_output(&output, |stderr| {
+                Error::LimaInstanceError(format!(
                     "failed to stop Lima {} instance: {stderr}",
                     instance
-                )))
-            }
+                ))
+            })
         }
         Some(other) => {
             tracing::info!(

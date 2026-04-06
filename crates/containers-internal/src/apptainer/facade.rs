@@ -655,48 +655,18 @@ impl Apptainer {
     // -----------------------------------------------------------------------
 
     pub fn resolve_apptainer_dir() -> Result<PathBuf> {
-        // 1) Runtime override via environment variable
-        if let Ok(dir) = std::env::var("PEPPY_APPTAINER_DIR") {
-            let dir = dir.trim().to_string();
-            if !dir.is_empty() {
-                let path = PathBuf::from(&dir);
-                if path.is_dir() {
-                    return Ok(path);
-                }
-                tracing::warn!(
-                    "PEPPY_APPTAINER_DIR={} does not exist or is not a directory",
-                    dir
-                );
-            }
-        }
-
-        // 2) Relative to the current executable: {exe_dir}/apptainer/
-        //    This is the installed layout created by install.sh ($PEPPY_BIN_DIR/apptainer/).
-        if let Ok(exe_path) = std::env::current_exe()
-            && let Some(exe_dir) = exe_path.parent()
-        {
-            let candidate = exe_dir.join("apptainer");
-            if candidate.is_dir() {
-                return Ok(candidate);
-            }
-        }
-
-        // 3) Compile-time path injected by build.rs
-        if let Some(dir) = option_env!("APPTAINER_INSTALL_DIR") {
-            let path = PathBuf::from(dir);
-            if path.is_dir() {
-                return Ok(path);
-            }
-            tracing::debug!(
-                "Compile-time APPTAINER_INSTALL_DIR={} does not exist at runtime",
-                dir
-            );
-        }
-
-        Err(Error::ApptainerNotFound(
-            "Apptainer installation not found. Install apptainer or set PEPPY_APPTAINER_DIR."
-                .to_string(),
-        ))
+        lima::resolve_install_dir(
+            "PEPPY_APPTAINER_DIR",
+            "apptainer",
+            option_env!("APPTAINER_INSTALL_DIR"),
+            "APPTAINER_INSTALL_DIR",
+            || {
+                Error::ApptainerNotFound(
+                    "Apptainer installation not found. Install apptainer or set PEPPY_APPTAINER_DIR."
+                        .to_string(),
+                )
+            },
+        )
     }
 }
 

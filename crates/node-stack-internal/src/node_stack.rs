@@ -1,10 +1,10 @@
 mod entity;
 mod validation;
 
-pub use entity::{
-    NodeEntity, SerializedEdge, SerializedNode, SerializedNodeGraph, TrackedNodeInstance,
-};
+pub use entity::{DependencySpec, NodeEntity, SerializedNodeGraph};
 pub use validation::{collect_dependency_specs, validate_dependency_specs};
+
+use entity::{SerializedEdge, SerializedNode, TrackedNodeInstance};
 
 use crate::error::{Error, Result};
 use config::node::{Name, NodeConfig};
@@ -21,7 +21,6 @@ use std::{
     path::PathBuf,
     sync::{Arc, RwLock},
 };
-use validation::interfaces_match;
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 struct NodeKey {
@@ -47,29 +46,17 @@ impl From<&NodeEntity> for NodeKey {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-struct DependencyRequirement {
-    key: NodeKey,
-}
-
-#[derive(Clone, Debug)]
-struct PendingRequirement {
-    dependant: NodeIndex,
-}
-
-fn dependency_requirements(node: &NodeConfig) -> Vec<DependencyRequirement> {
+fn dependency_keys(node: &NodeConfig) -> Vec<NodeKey> {
     collect_dependency_specs(node)
         .into_iter()
-        .map(|spec| DependencyRequirement {
-            key: NodeKey::new(&spec.node_name, &spec.node_tag),
-        })
+        .map(|spec| NodeKey::new(&spec.node_name, &spec.node_tag))
         .collect()
 }
 
 struct NodeStackInner {
     graph: StableDiGraph<NodeEntity, ()>,
     key_to_index: HashMap<NodeKey, NodeIndex>,
-    pending_requirements: HashMap<NodeKey, Vec<PendingRequirement>>,
+    pending_requirements: HashMap<NodeKey, Vec<NodeIndex>>,
     root_key: NodeKey,
 }
 
@@ -84,31 +71,16 @@ impl NodeStackInner {
         };
         // Root node has no dependencies, so this should never fail
         inner
-            .insert_entity(root)
+            .insert_entity(root, true)
             .expect("root node should have no dependencies");
         inner
     }
 
-    fn insert_entity(&mut self, node: NodeEntity) -> Result<()> {
-        // Validate all dependencies exist and expose the required interfaces
-        self.validate_dependencies(&node)?;
+    fn insert_entity(&mut self, node: NodeEntity, validate: bool) -> Result<()> {
+        if validate {
+            self.validate_dependencies(&node)?;
+        }
 
-        let key = NodeKey::from(&node);
-        let index = if let Some(&existing_index) = self.key_to_index.get(&key) {
-            self.graph[existing_index] = node;
-            existing_index
-        } else {
-            let idx = self.graph.add_node(node);
-            self.key_to_index.insert(key.clone(), idx);
-            idx
-        };
-
-        self.rewire_dependencies(index);
-        self.resolve_pending_requirements(&key);
-        Ok(())
-    }
-
-    fn insert_entity_lenient(&mut self, node: NodeEntity) -> Result<()> {
         let key = NodeKey::from(&node);
         let index = if let Some(&existing_index) = self.key_to_index.get(&key) {
             self.graph[existing_index] = node;
@@ -159,47 +131,35 @@ impl NodeStackInner {
     }
 
     fn attach_dependencies(&mut self, index: NodeIndex) {
-        let requirements = if let Some(node) = self.graph.node_weight(index) {
-            dependency_requirements(node.config())
+        let keys = if let Some(node) = self.graph.node_weight(index) {
+            dependency_keys(node.config())
         } else {
             return;
         };
         self.clear_pending_requirements_for(index);
-        for requirement in requirements {
-            if !self.try_attach_requirement(index, &requirement) {
-                self.register_pending_requirement(requirement, index);
+        for dep_key in keys {
+            if !self.try_attach_edge(index, &dep_key) {
+                self.register_pending_requirement(dep_key, index);
             }
         }
     }
 
     fn clear_pending_requirements_for(&mut self, dependant: NodeIndex) {
         self.pending_requirements.retain(|_, pending| {
-            pending.retain(|req| req.dependant != dependant);
+            pending.retain(|&idx| idx != dependant);
             !pending.is_empty()
         });
     }
 
-    fn register_pending_requirement(
-        &mut self,
-        requirement: DependencyRequirement,
-        dependant: NodeIndex,
-    ) {
-        let entry = self
-            .pending_requirements
-            .entry(requirement.key.clone())
-            .or_default();
-        if entry.iter().any(|pending| pending.dependant == dependant) {
-            return;
+    fn register_pending_requirement(&mut self, dep_key: NodeKey, dependant: NodeIndex) {
+        let entry = self.pending_requirements.entry(dep_key).or_default();
+        if !entry.contains(&dependant) {
+            entry.push(dependant);
         }
-        entry.push(PendingRequirement { dependant });
     }
 
-    fn try_attach_requirement(
-        &mut self,
-        dependant_index: NodeIndex,
-        requirement: &DependencyRequirement,
-    ) -> bool {
-        let Some(&dependency_index) = self.key_to_index.get(&requirement.key) else {
+    fn try_attach_edge(&mut self, dependant_index: NodeIndex, dep_key: &NodeKey) -> bool {
+        let Some(&dependency_index) = self.key_to_index.get(dep_key) else {
             return false;
         };
 
@@ -218,15 +178,14 @@ impl NodeStackInner {
             return;
         }
 
-        let Some(mut pending) = self.pending_requirements.remove(key) else {
+        let Some(pending) = self.pending_requirements.remove(key) else {
             return;
         };
 
         let mut remaining = Vec::new();
-        for requirement in pending.drain(..) {
-            let dependency_requirement = DependencyRequirement { key: key.clone() };
-            if !self.try_attach_requirement(requirement.dependant, &dependency_requirement) {
-                remaining.push(requirement);
+        for dependant_index in pending {
+            if !self.try_attach_edge(dependant_index, key) {
+                remaining.push(dependant_index);
             }
         }
 
@@ -330,9 +289,10 @@ impl NodeStackInner {
         }
 
         if let Some(&index) = self.key_to_index.get(&key) {
-            let interfaces_changed = self.graph.node_weight(index).is_some_and(|entity| {
-                !interfaces_match(&entity.config().interfaces, &config.interfaces)
-            });
+            let interfaces_changed = self
+                .graph
+                .node_weight(index)
+                .is_some_and(|entity| entity.config().interfaces != config.interfaces);
 
             // Dependency checks and rewiring are only needed when interfaces change,
             // because interface changes can break or create dependency relationships.
@@ -373,11 +333,7 @@ impl NodeStackInner {
         } else {
             // Entity doesn't exist, create new one without instances
             let entity = NodeEntity::new(config, root_path);
-            if allow_missing_dependencies {
-                self.insert_entity_lenient(entity)?;
-            } else {
-                self.insert_entity(entity)?;
-            }
+            self.insert_entity(entity, !allow_missing_dependencies)?;
         }
 
         Ok(())
@@ -501,22 +457,13 @@ impl NodeStackInner {
 
     /// Returns a serializable representation of the graph.
     fn to_serialized_graph(&self) -> SerializedNodeGraph {
-        let nodes: Vec<SerializedNode> = self
+        let nodes = self
             .graph
             .node_weights()
-            .map(|entity| SerializedNode {
-                name: entity.config().manifest.name.as_str().to_string(),
-                tag: entity.config().manifest.tag.clone(),
-                instance_ids: entity
-                    .instances()
-                    .iter()
-                    .map(|i| i.instance_id().as_str().to_string())
-                    .collect(),
-                fs_root_path: entity.root_path().display().to_string(),
-            })
+            .map(SerializedNode::from)
             .collect();
 
-        let edges: Vec<SerializedEdge> = self
+        let edges = self
             .graph
             .edge_indices()
             .filter_map(|edge_idx| {
@@ -524,26 +471,8 @@ impl NodeStackInner {
                 let src_entity = self.graph.node_weight(src_idx)?;
                 let dst_entity = self.graph.node_weight(dst_idx)?;
                 Some(SerializedEdge {
-                    from: SerializedNode {
-                        name: src_entity.config().manifest.name.as_str().to_string(),
-                        tag: src_entity.config().manifest.tag.clone(),
-                        instance_ids: src_entity
-                            .instances()
-                            .iter()
-                            .map(|i| i.instance_id().as_str().to_string())
-                            .collect(),
-                        fs_root_path: src_entity.root_path().display().to_string(),
-                    },
-                    to: SerializedNode {
-                        name: dst_entity.config().manifest.name.as_str().to_string(),
-                        tag: dst_entity.config().manifest.tag.clone(),
-                        instance_ids: dst_entity
-                            .instances()
-                            .iter()
-                            .map(|i| i.instance_id().as_str().to_string())
-                            .collect(),
-                        fs_root_path: dst_entity.root_path().display().to_string(),
-                    },
+                    from: SerializedNode::from(src_entity),
+                    to: SerializedNode::from(dst_entity),
                 })
             })
             .collect();

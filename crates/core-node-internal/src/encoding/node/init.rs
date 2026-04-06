@@ -9,7 +9,7 @@ use crate::Result;
 use crate::names;
 use crate::node_capnp;
 
-use super::{decode_message, encode_message};
+use crate::encoding::{decode_message, encode_message};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeInitRequest {

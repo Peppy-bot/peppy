@@ -325,7 +325,7 @@ impl PyActionMessenger {
 // ---------------------------------------------------------------------------
 
 /// Register the actions submodule.
-pub fn register(parent_module: &Bound<'_, PyModule>) -> PyResult<()> {
+pub(crate) fn register(parent_module: &Bound<'_, PyModule>) -> PyResult<()> {
     let actions_module = PyModule::new(parent_module.py(), "actions")?;
     actions_module.add_class::<PyActionMessenger>()?;
     actions_module.add_class::<PyActionGoalHandle>()?;

@@ -13,10 +13,6 @@ use crate::error::{Error, Result};
 pub use super::builder::ServeCommandBuilder;
 pub use tokio_util::sync::CancellationToken;
 
-pub trait ServeSyncCommand: Send + Sync {
-    fn execute(&self) -> Result<()>;
-}
-
 pub type ServeFuture = Pin<Box<dyn Future<Output = Result<()>> + Send + 'static>>;
 
 pub struct ServeAsyncHandle {
@@ -40,26 +36,16 @@ pub trait ServeAsyncCommand: Send + Sync {
 
 #[derive(Default)]
 pub struct CompositeCommand {
-    commands: Vec<Box<dyn ServeSyncCommand>>,
     async_commands: Vec<Box<dyn ServeAsyncCommand>>,
 }
 
 impl CompositeCommand {
-    pub fn _add_command(mut self, command: Box<dyn ServeSyncCommand>) -> Self {
-        self.commands.push(command);
-        self
-    }
-
     pub fn add_async_command(mut self, command: Box<dyn ServeAsyncCommand>) -> Self {
         self.async_commands.push(command);
         self
     }
 
     pub fn execute(self) -> Result<Vec<ServeAsyncHandle>> {
-        for command in self.commands {
-            command.execute()?;
-        }
-
         let mut futures: Vec<ServeAsyncHandle> = Vec::new();
         for async_command in self.async_commands {
             futures.push(async_command.run());

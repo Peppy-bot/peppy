@@ -491,7 +491,7 @@ impl PyNodeBuilder {
 }
 
 /// Register the runtime submodule
-pub fn register(parent_module: &Bound<'_, PyModule>) -> PyResult<()> {
+pub(crate) fn register(parent_module: &Bound<'_, PyModule>) -> PyResult<()> {
     let runtime_module = PyModule::new(parent_module.py(), "runtime")?;
     runtime_module.add_class::<PyCancellationToken>()?;
     runtime_module.add_class::<PyNodeRunner>()?;

@@ -31,15 +31,24 @@ use crate::Result;
 
 use peppylib::types::Payload;
 
+/// Converts an empty Cap'n Proto text field to `None`, non-empty to `Some(String)`.
+pub(crate) fn optional_text(s: &str) -> Option<String> {
+    if s.is_empty() {
+        None
+    } else {
+        Some(s.to_owned())
+    }
+}
+
 /// Encode a Cap'n Proto message builder into bytes.
-pub fn encode_message(message: &Builder<HeapAllocator>) -> Result<Payload> {
+pub(crate) fn encode_message(message: &Builder<HeapAllocator>) -> Result<Payload> {
     let mut buffer = Vec::new();
     serialize::write_message(&mut buffer, message)?;
     Ok(Payload::from(buffer))
 }
 
 /// Decode bytes into a Cap'n Proto message reader.
-pub fn decode_message(
+pub(crate) fn decode_message(
     data: &[u8],
 ) -> Result<capnp::message::Reader<capnp::serialize::OwnedSegments>> {
     Ok(serialize::read_message(data, ReaderOptions::default())?)

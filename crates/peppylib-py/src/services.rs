@@ -1,11 +1,11 @@
-mod health;
-mod ready;
 mod shutdown;
 
 use peppylib::PeppyResult;
 use peppylib::runtime::TaskHandle;
 use pyo3::prelude::*;
 use std::sync::Mutex;
+
+use crate::messaging::{PyMessengerHandle, to_py_err};
 
 /// Python wrapper for a running service task (TaskHandle).
 #[pyclass(name = "ServiceTask")]
@@ -43,12 +43,54 @@ impl PyServiceTask {
     }
 }
 
+/// Generates a thin PyO3 wrapper that exposes a `listen` static method
+/// delegating to the given `peppylib::services::*` function.
+macro_rules! service_listener {
+    ($py_name:literal, $struct_name:ident, $listen_fn:path) => {
+        #[pyclass(name = $py_name)]
+        pub struct $struct_name;
+
+        #[pymethods]
+        impl $struct_name {
+            /// Start listening for requests, returning a background `ServiceTask`.
+            #[staticmethod]
+            fn listen<'py>(
+                py: Python<'py>,
+                messenger: &PyMessengerHandle,
+                core_node: String,
+                instance_id: String,
+                node_name: String,
+            ) -> PyResult<Bound<'py, PyAny>> {
+                let handle = messenger.inner.clone();
+                pyo3_async_runtimes::tokio::future_into_py(py, async move {
+                    let join_handle = $listen_fn(&handle, &core_node, &instance_id, &node_name)
+                        .await
+                        .map_err(to_py_err)?;
+                    Ok(PyServiceTask::new(join_handle))
+                })
+            }
+        }
+    };
+}
+
+service_listener!(
+    "NodeHealthService",
+    PyNodeHealthService,
+    peppylib::services::health::listen_for_node_health
+);
+
+service_listener!(
+    "NodeReadyService",
+    PyNodeReadyService,
+    peppylib::services::ready::listen_for_node_ready
+);
+
 /// Register the services submodule.
-pub fn register(parent_module: &Bound<'_, PyModule>) -> PyResult<()> {
+pub(crate) fn register(parent_module: &Bound<'_, PyModule>) -> PyResult<()> {
     let services_module = PyModule::new(parent_module.py(), "services")?;
     services_module.add_class::<PyServiceTask>()?;
-    health::register(&services_module)?;
-    ready::register(&services_module)?;
+    services_module.add_class::<PyNodeHealthService>()?;
+    services_module.add_class::<PyNodeReadyService>()?;
     shutdown::register(&services_module)?;
     parent_module.add_submodule(&services_module)?;
     Ok(())

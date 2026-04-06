@@ -1,3 +1,5 @@
+mod action_poll;
+mod confirm;
 pub mod container;
 pub mod info;
 pub mod node;
@@ -6,8 +8,18 @@ pub mod stack;
 
 use std::future::Future;
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::{context::AppContext, error::Result};
+
+/// Instance ID used by the CLI when communicating with the daemon.
+pub(crate) const CALLER_INSTANCE_ID: &str = "peppy-cli";
+
+/// Timeout for action goals to be accepted by the daemon (should be fast).
+pub(crate) const GOAL_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Number of lines to display in the scrolling output region.
+pub(crate) const SCROLLING_OUTPUT_LINES: usize = 10;
 
 /// Trait for executable commands
 pub trait Command {

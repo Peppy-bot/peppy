@@ -7,22 +7,22 @@ mod services;
 
 // Generated Cap'n Proto types - must be at crate root for correct path resolution
 #[allow(clippy::all)]
-pub mod ping_capnp {
+pub(crate) mod ping_capnp {
     include!(concat!(env!("OUT_DIR"), "/ping_capnp.rs"));
 }
 
 #[allow(clippy::all)]
-pub mod info_capnp {
+pub(crate) mod info_capnp {
     include!(concat!(env!("OUT_DIR"), "/info_capnp.rs"));
 }
 
 #[allow(clippy::all)]
-pub mod launch_capnp {
+pub(crate) mod launch_capnp {
     include!(concat!(env!("OUT_DIR"), "/launch_capnp.rs"));
 }
 
 #[allow(clippy::all)]
-pub mod node_capnp {
+pub(crate) mod node_capnp {
     include!(concat!(env!("OUT_DIR"), "/node_capnp.rs"));
 }
 

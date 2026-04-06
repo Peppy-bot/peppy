@@ -29,7 +29,7 @@ impl From<PyQoSProfile> for QoSProfile {
 }
 
 /// Register the config submodule
-pub fn register(parent_module: &Bound<'_, PyModule>) -> PyResult<()> {
+pub(crate) fn register(parent_module: &Bound<'_, PyModule>) -> PyResult<()> {
     let config_module = PyModule::new(parent_module.py(), "config")?;
     config_module.add("DEFAULT_MESSAGING_PORT", DEFAULT_MESSAGING_PORT)?;
     config_module.add("NODE_HEALTH_SERVICE", NODE_HEALTH_SERVICE)?;
