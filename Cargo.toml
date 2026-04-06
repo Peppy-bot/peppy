@@ -9,18 +9,7 @@ resolver = "3"
 
 # Only build/test the main crates by default (integration tests are slow).
 # Run integration tests explicitly with: cargo test -p docs-integration-tests
-default-members = [
-  "crates/build-helpers-internal",
-  "crates/config-internal",
-  "crates/containers-internal",
-  "crates/core-node-internal",
-  "crates/generator-internal",
-  "crates/node-stack-internal",
-  "crates/peppy",
-  "crates/peppylib",
-  "crates/peppylib-py",
-  "crates/pmi-internal",
-]
+default-members = ["crates/*"]
 
 [workspace.package]
 version = "0.0.1"
