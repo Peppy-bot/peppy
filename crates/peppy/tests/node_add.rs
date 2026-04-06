@@ -385,7 +385,7 @@ fn node_add_after_failed_sync_succeeds() {
     );
 
     NodeCommand {
-        command: NodeCommands::Sync {},
+        command: NodeCommands::Sync { path: None },
     }
     .execute(&sync_ctx)
     .expect("node sync command should succeed");

@@ -133,7 +133,10 @@ pub enum NodeCommands {
         force: bool,
     },
     /// Regenerate the node's interface code (peppygen) based on peppy.json5
-    Sync {},
+    Sync {
+        /// Optional path to the node directory. Defaults to the current directory.
+        path: Option<PathBuf>,
+    },
     /// Runs an instance from a node added to the node stack
     ///
     /// Usage: `peppy node start <node_name>:<tag>` or `peppy node start --node-name <name> --tag <tag>`
@@ -263,9 +266,9 @@ impl Command for NodeCommand {
                     },
                 )
             }
-            NodeCommands::Sync {} => {
+            NodeCommands::Sync { path } => {
                 info!("Syncing node interfaces...");
-                sync::sync_node(ctx)
+                sync::sync_node(ctx, path)
             }
             NodeCommands::Start {
                 node_ref,
