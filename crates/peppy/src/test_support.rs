@@ -13,34 +13,32 @@ use tokio::sync::Mutex as TokioMutex;
 use tokio::task::JoinHandle;
 use tracing_subscriber::fmt::MakeWriter;
 
-pub fn override_start_cmd(peppy_json5: &Path) {
+/// Reads a node config, applies a mutation, writes it back, and regenerates the fingerprint.
+fn modify_node_config(peppy_json5: &Path, modify: impl FnOnce(&mut config::node::NodeConfig)) {
     let mut cfg = NodeConfigParser::from_path(peppy_json5)
         .expect("peppy.json5 should read")
         .into_resolved()
         .expect("test node should resolve");
-    cfg.execution.start_cmd = Some(vec!["sleep".to_string(), "4".to_string()]);
-    cfg.execution.add_cmd = None;
-
-    let updated_content = serde_json::to_string_pretty(&cfg).expect("peppy.json5 should serialize");
-    std::fs::write(peppy_json5, updated_content).expect("peppy.json5 should update");
-
+    modify(&mut cfg);
+    let content = serde_json::to_string_pretty(&cfg).expect("peppy.json5 should serialize");
+    std::fs::write(peppy_json5, content).expect("peppy.json5 should update");
     config::fingerprint::create_codegen_fingerprint(peppy_json5, Path::new(PEPPYGEN_OUTPUT_PATH));
+}
+
+pub fn override_start_cmd(peppy_json5: &Path) {
+    modify_node_config(peppy_json5, |cfg| {
+        cfg.execution.start_cmd = Some(vec!["sleep".to_string(), "4".to_string()]);
+        cfg.execution.add_cmd = None;
+    });
 }
 
 /// Removes the `add_cmd` from a node's config so that integration tests can
 /// exercise node operations (add, remove, runtime config) without triggering
 /// the actual build step. Regenerates the codegen fingerprint after writing.
 pub fn disable_add_cmd(peppy_json5: &Path) {
-    let mut cfg = NodeConfigParser::from_path(peppy_json5)
-        .expect("peppy.json5 should read")
-        .into_resolved()
-        .expect("test node should resolve");
-    cfg.execution.add_cmd = None;
-
-    let updated_content = serde_json::to_string_pretty(&cfg).expect("peppy.json5 should serialize");
-    std::fs::write(peppy_json5, updated_content).expect("peppy.json5 should update");
-
-    config::fingerprint::create_codegen_fingerprint(peppy_json5, Path::new(PEPPYGEN_OUTPUT_PATH));
+    modify_node_config(peppy_json5, |cfg| {
+        cfg.execution.add_cmd = None;
+    });
 }
 
 #[derive(Clone, Default)]

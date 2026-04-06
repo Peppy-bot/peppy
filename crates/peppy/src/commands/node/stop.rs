@@ -3,10 +3,10 @@ use std::sync::Arc;
 use std::time::Duration;
 use tracing::info;
 
+use crate::commands::CALLER_INSTANCE_ID;
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 
-const CALLER_INSTANCE_ID: &str = "peppy-cli";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub fn stop_node(ctx: &Arc<AppContext>, instance_id: String) -> Result<()> {
@@ -14,27 +14,21 @@ pub fn stop_node(ctx: &Arc<AppContext>, instance_id: String) -> Result<()> {
 }
 
 async fn stop_node_async(ctx: &Arc<AppContext>, instance_id: String) -> Result<()> {
-    let daemon_state = ctx.read_daemon_state()?;
-    let core_node_name = daemon_state.core_node_name;
+    let conn = ctx.connect_to_daemon().await?;
 
     info!(
         "Calling node_stop for instance_id '{}' on daemon '{}'...",
-        instance_id, core_node_name
+        instance_id, conn.core_node_name
     );
-
-    ctx.connect().await?;
-    let messenger_handle = ctx
-        .messenger_handle()
-        .ok_or_else(|| Error::ExecutionFailed("Failed to connect to daemon".to_string()))?;
 
     let stop_request = NodeStopRequest::new(instance_id.clone());
     let stop_response = stop_request
         .poll(
-            messenger_handle,
-            &core_node_name,
+            conn.messenger,
+            &conn.core_node_name,
             CALLER_INSTANCE_ID,
-            &core_node_name,
-            &core_node_name,
+            &conn.core_node_name,
+            &conn.core_node_name,
             REQUEST_TIMEOUT,
         )
         .await

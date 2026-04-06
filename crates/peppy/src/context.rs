@@ -48,10 +48,6 @@ impl AppContext {
         Ok(self.read_daemon_state()?.core_node_name)
     }
 
-    pub fn messaging_port(&self) -> crate::error::Result<u16> {
-        Ok(self.read_daemon_state()?.messaging_port)
-    }
-
     /// Creates an AppContext with a pre-initialized messenger handle.
     /// This is useful for testing with a shared mock messenger.
     pub fn with_messenger(root_dir: impl AsRef<Path>, messenger: Arc<Mutex<Messenger>>) -> Self {
@@ -62,8 +58,8 @@ impl AppContext {
         ctx
     }
 
-    pub async fn connect(&self) -> crate::error::Result<()> {
-        let messaging_port = self.messaging_port()?;
+    pub(crate) async fn connect(&self) -> crate::error::Result<()> {
+        let messaging_port = self.read_daemon_state()?.messaging_port;
         self.messenger_handle
             .get_or_try_init(|| async {
                 MessengerHandle::from_host_port(
@@ -78,6 +74,27 @@ impl AppContext {
 
     pub fn messenger_handle(&self) -> Option<&MessengerHandle> {
         self.messenger_handle.get()
+    }
+}
+
+pub(crate) struct DaemonConnection<'a> {
+    pub messenger: &'a MessengerHandle,
+    pub core_node_name: String,
+    pub git_hash: String,
+}
+
+impl AppContext {
+    pub(crate) async fn connect_to_daemon(&self) -> crate::error::Result<DaemonConnection<'_>> {
+        let daemon_state = self.read_daemon_state()?;
+        self.connect().await?;
+        let messenger = self
+            .messenger_handle()
+            .ok_or_else(|| Error::ExecutionFailed("Failed to connect to daemon".to_string()))?;
+        Ok(DaemonConnection {
+            messenger,
+            core_node_name: daemon_state.core_node_name,
+            git_hash: daemon_state.git_hash,
+        })
     }
 }
 

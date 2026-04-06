@@ -11,12 +11,12 @@ use node_stack::SerializedNodeGraph;
 use rand::rng;
 use tracing::info;
 
+use crate::commands::CALLER_INSTANCE_ID;
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 
 use super::start::args_to_node_arguments;
 
-const CALLER_INSTANCE_ID: &str = "peppy-cli";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Prints the contents of `PEPPY_RUNTIME_CONFIG` that would be passed to a node process.
@@ -51,21 +51,15 @@ async fn print_runtime_config_async(
     node_name: String,
     args: Vec<(String, String)>,
 ) -> Result<()> {
-    let daemon_state = ctx.read_daemon_state()?;
-    let core_node_name = daemon_state.core_node_name;
-
-    ctx.connect().await?;
-    let messenger_handle = ctx
-        .messenger_handle()
-        .ok_or_else(|| Error::ExecutionFailed("Failed to connect to daemon".to_string()))?;
+    let conn = ctx.connect_to_daemon().await?;
 
     // Validate that the node is present in the node stack so the output corresponds to a runnable node.
     let response = NodeListRequest::new(false)
         .poll(
-            messenger_handle,
-            &core_node_name,
+            conn.messenger,
+            &conn.core_node_name,
             CALLER_INSTANCE_ID,
-            &core_node_name,
+            &conn.core_node_name,
             REQUEST_TIMEOUT,
         )
         .await
@@ -95,15 +89,13 @@ async fn print_runtime_config_async(
         );
     }
 
-    let (messaging_host, messaging_port) = messenger_handle
-        .messaging_endpoint()
-        .await
-        .unwrap_or_else(|| {
-            (
-                config::consts::DEFAULT_MESSAGING_HOST.to_string(),
-                daemon_state.messaging_port,
-            )
-        });
+    let (messaging_host, messaging_port) = match conn.messenger.messaging_endpoint().await {
+        Some(endpoint) => endpoint,
+        None => (
+            config::consts::DEFAULT_MESSAGING_HOST.to_string(),
+            conn.messenger.messaging_port().await,
+        ),
+    };
 
     let instance_id = get_random(rng());
     let runtime_config = RuntimeConfig::new(
@@ -114,7 +106,7 @@ async fn print_runtime_config_async(
             arguments: args_to_node_arguments(&args),
         },
         node_name,
-        core_node_name,
+        conn.core_node_name,
     )
     .map_err(Error::PeppyConfig)?;
 

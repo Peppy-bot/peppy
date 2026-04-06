@@ -6,10 +6,10 @@ use core_node::encoding::NodeListRequest;
 use node_stack::SerializedNodeGraph;
 use tracing::info;
 
+use crate::commands::CALLER_INSTANCE_ID;
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 
-const CALLER_INSTANCE_ID: &str = "peppy-cli";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub fn list_nodes(ctx: &Arc<AppContext>, dot_graph_path: Option<PathBuf>) -> Result<()> {
@@ -17,25 +17,19 @@ pub fn list_nodes(ctx: &Arc<AppContext>, dot_graph_path: Option<PathBuf>) -> Res
 }
 
 async fn list_nodes_async(ctx: &Arc<AppContext>, dot_graph_path: Option<PathBuf>) -> Result<()> {
-    let daemon_state = ctx.read_daemon_state()?;
-    let core_node_name = daemon_state.core_node_name;
-
-    ctx.connect().await?;
-    let messenger_handle = ctx
-        .messenger_handle()
-        .ok_or_else(|| Error::ExecutionFailed("Failed to connect to daemon".to_string()))?;
+    let conn = ctx.connect_to_daemon().await?;
 
     info!(
         "Requesting node stack graph from core '{}'...",
-        core_node_name
+        conn.core_node_name
     );
 
     let response = NodeListRequest::new(dot_graph_path.is_some())
         .poll(
-            messenger_handle,
-            &core_node_name,
+            conn.messenger,
+            &conn.core_node_name,
             CALLER_INSTANCE_ID,
-            &core_node_name,
+            &conn.core_node_name,
             REQUEST_TIMEOUT,
         )
         .await
@@ -47,8 +41,8 @@ async fn list_nodes_async(ctx: &Arc<AppContext>, dot_graph_path: Option<PathBuf>
     // Sort nodes by label for consistent output, with core node first
     let mut nodes = graph.nodes.clone();
     nodes.sort_by(|a, b| {
-        let a_is_daemon = a.label().starts_with(&core_node_name);
-        let b_is_daemon = b.label().starts_with(&core_node_name);
+        let a_is_daemon = a.label().starts_with(&conn.core_node_name);
+        let b_is_daemon = b.label().starts_with(&conn.core_node_name);
         match (a_is_daemon, b_is_daemon) {
             (true, false) => std::cmp::Ordering::Less,
             (false, true) => std::cmp::Ordering::Greater,

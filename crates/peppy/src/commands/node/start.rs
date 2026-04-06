@@ -5,23 +5,19 @@ use core_node::encoding::{
     NodeStartFeedback, NodeStartGoal, NodeStartGoalResponse, NodeStartResult,
 };
 use names_generator2::get_random;
-use peppylib::{ActionMessenger, MessengerHandle, PeppyError};
+use peppylib::MessengerHandle;
 use rand::rng;
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::time::Duration;
 use tracing::info;
 
+use crate::commands::{CALLER_INSTANCE_ID, GOAL_TIMEOUT, SCROLLING_OUTPUT_LINES};
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 use crate::terminal::ScrollingOutput;
 
 use super::TimeoutConfig;
 use super::env::caller_env_overrides;
-
-const CALLER_INSTANCE_ID: &str = "peppy-cli";
-const GOAL_TIMEOUT: Duration = Duration::from_secs(30);
-const SCROLLING_OUTPUT_LINES: usize = 10;
 
 /// Converts a list of key=value string pairs into node arguments.
 /// Dot-separated keys are converted into nested objects.
@@ -213,93 +209,31 @@ pub async fn start_instance_async(
 
     let mut scrolling_output = ScrollingOutput::new(SCROLLING_OUTPUT_LINES);
 
-    let idle_timeout = Duration::from_secs(timeouts.idle_secs);
-    let absolute_deadline = tokio::time::Instant::now() + Duration::from_secs(timeouts.max_secs);
-    let mut last_activity = tokio::time::Instant::now();
-    let start_result = loop {
-        // Drain feedback so the publisher doesn't block on a full channel.
-        loop {
-            let now = tokio::time::Instant::now();
-            if now >= absolute_deadline {
-                scrolling_output.clear();
-                return Err(Error::ExecutionFailed(format!(
-                    "Timeout: max timeout of {}s exceeded. \
-                     Use --max-timeout <seconds> to increase.",
-                    timeouts.max_secs
-                )));
+    let start_result = crate::commands::action_poll::poll_action_to_completion(
+        messenger_handle,
+        &mut action_handle,
+        timeouts,
+        &mut scrolling_output,
+        |payload, output| {
+            if let Ok(feedback) = NodeStartFeedback::decode(payload) {
+                output.add_line(&feedback.line, feedback.is_stderr());
             }
-            if now.duration_since(last_activity) >= idle_timeout {
-                scrolling_output.clear();
-                return Err(Error::ExecutionFailed(format!(
-                    "Timeout: no output received for {}s. \
-                     Use --idle-timeout <seconds> to increase.",
-                    timeouts.idle_secs
-                )));
-            }
-            let drain_timeout = Duration::from_millis(50);
-            match tokio::time::timeout(drain_timeout, action_handle.on_next_feedback()).await {
-                Ok(Ok(msg)) => {
-                    last_activity = tokio::time::Instant::now();
-                    let payload = msg.payload();
-                    if let Ok(feedback) = NodeStartFeedback::decode(payload.as_ref()) {
-                        scrolling_output.add_line(&feedback.line, feedback.is_stderr());
-                    }
-                }
-                Ok(Err(_)) => break,
-                Err(_) => break,
-            }
-        }
-
-        let now = tokio::time::Instant::now();
-        if now >= absolute_deadline {
-            scrolling_output.clear();
-            return Err(Error::ExecutionFailed(format!(
-                "Timeout: max timeout of {}s exceeded. \
-                 Use --max-timeout <seconds> to increase.",
-                timeouts.max_secs
-            )));
-        }
-        if now.duration_since(last_activity) >= idle_timeout {
-            scrolling_output.clear();
-            return Err(Error::ExecutionFailed(format!(
-                "Timeout: no output received for {}s. \
-                 Use --idle-timeout <seconds> to increase.",
-                timeouts.idle_secs
-            )));
-        }
-        let poll_timeout = Duration::from_millis(200);
-        match ActionMessenger::request_result(messenger_handle, &action_handle, poll_timeout).await
-        {
-            Ok(msg) => {
-                let payload = msg.payload();
-                match NodeStartResult::decode(&payload) {
-                    Ok(result) => break result,
-                    Err(err) => {
-                        let pending = std::str::from_utf8(payload.as_ref())
-                            .map(|text| text.starts_with("result pending"))
-                            .unwrap_or(false);
-                        if !pending {
-                            scrolling_output.clear();
-                            return Err(Error::ExecutionFailed(format!(
-                                "Failed to decode node_start result: {}",
-                                err
-                            )));
-                        }
-                    }
-                }
-            }
-            Err(PeppyError::ActionResultTimeout { .. }) => {}
+        },
+        |payload| match NodeStartResult::decode(payload) {
+            Ok(result) => Ok(Some(result)),
             Err(err) => {
-                scrolling_output.clear();
-                return Err(Error::ExecutionFailed(format!(
-                    "Failed to get node_start result: {}",
-                    err
-                )));
+                let pending = std::str::from_utf8(payload)
+                    .map(|text| text.starts_with("result pending"))
+                    .unwrap_or(false);
+                if pending {
+                    Ok(None)
+                } else {
+                    Err(format!("Failed to decode node_start result: {err}"))
+                }
             }
-        }
-
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    };
+        },
+    )
+    .await?;
 
     scrolling_output.clear();
 
@@ -345,17 +279,11 @@ async fn run_node_async(
     instance_id: Option<String>,
     timeouts: TimeoutConfig,
 ) -> Result<()> {
-    let daemon_state = ctx.read_daemon_state()?;
-    let core_node_name = daemon_state.core_node_name;
-
-    ctx.connect().await?;
-    let messenger_handle = ctx
-        .messenger_handle()
-        .ok_or_else(|| Error::ExecutionFailed("Failed to connect to daemon".to_string()))?;
+    let conn = ctx.connect_to_daemon().await?;
 
     start_instance_async(
-        messenger_handle,
-        &core_node_name,
+        conn.messenger,
+        &conn.core_node_name,
         &node_name,
         &tag,
         &args,
