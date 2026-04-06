@@ -24,6 +24,19 @@ use tempfile::TempDir;
 use tokio::sync::Mutex;
 use tokio::sync::mpsc::UnboundedSender;
 
+/// Returns `Ok(())` if the payload is a "result pending" sentinel, or `Err` with a
+/// decode-failure message otherwise.
+fn check_pending_or_decode_error(
+    payload: &[u8],
+    err: impl std::fmt::Display,
+) -> Result<(), String> {
+    if peppylib::encoding::is_result_pending(payload) {
+        Ok(())
+    } else {
+        Err(format!("Failed to decode result: {}", err))
+    }
+}
+
 /// A wrapper around `TaskHandle` that aborts the task when dropped.
 pub struct AbortOnDrop<T>(pub TaskHandle<T>);
 
@@ -220,9 +233,7 @@ async fn send_node_start_and_wait_internal(
                         });
                     }
                     Err(err) => {
-                        if !peppylib::encoding::is_result_pending(payload.as_ref()) {
-                            return Err(format!("Failed to decode result: {}", err));
-                        }
+                        check_pending_or_decode_error(payload.as_ref(), err)?;
                     }
                 }
             }
@@ -403,9 +414,7 @@ async fn send_node_add_and_wait_internal<'a>(
                         return Ok(result);
                     }
                     Err(err) => {
-                        if !peppylib::encoding::is_result_pending(payload.as_ref()) {
-                            return Err(format!("Failed to decode result: {}", err));
-                        }
+                        check_pending_or_decode_error(payload.as_ref(), err)?;
                     }
                 }
             }

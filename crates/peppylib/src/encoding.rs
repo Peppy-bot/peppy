@@ -21,11 +21,11 @@ macro_rules! capnp_empty_message {
                 {
                     let _ = builder.init_root::<$builder>();
                 }
-                super::encode_message(&builder)
+                $crate::encoding::encode_message(&builder)
             }
 
             pub fn decode(data: &[u8]) -> $crate::error::Result<Self> {
-                let reader = super::decode_message(data)?;
+                let reader = $crate::encoding::decode_message(data)?;
                 let _ = reader
                     .get_root::<$reader>()
                     .map_err(|e| $crate::error::Error::Deserialization(e.to_string()))?;

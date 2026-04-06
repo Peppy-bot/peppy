@@ -1,7 +1,6 @@
 use super::adapters::mock::MockAdapter;
 use super::error::{Error, Result};
 use config::node::QoSProfile;
-#[cfg(feature = "zenoh")]
 use std::borrow::Cow;
 use std::future::Future;
 use std::net::SocketAddr;

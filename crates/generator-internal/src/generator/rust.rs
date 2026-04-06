@@ -538,7 +538,7 @@ impl LanguageGenerator for RustGenerator {
         }
 
         self.push_section(InterfaceArtifact::from_kind(
-            &module_label,
+            &sanitize_node_display_name(&module_label),
             InterfaceKind::EmittedTopic,
             rendered,
         ));
@@ -651,7 +651,7 @@ impl LanguageGenerator for RustGenerator {
         };
         let rendered = render_tokens(tokens);
         self.push_section(InterfaceArtifact::from_kind(
-            &module_label,
+            &sanitize_node_display_name(&module_label),
             InterfaceKind::ExposedService,
             rendered,
         ));
@@ -924,7 +924,7 @@ impl LanguageGenerator for RustGenerator {
         };
         let rendered = render_tokens(tokens);
         self.push_section(InterfaceArtifact::from_kind(
-            &action.name,
+            &sanitize_node_display_name(&action.name),
             InterfaceKind::ExposedAction,
             rendered,
         ));
@@ -1032,7 +1032,7 @@ impl LanguageGenerator for RustGenerator {
         let rendered = render_tokens(tokens);
 
         self.push_section(InterfaceArtifact::from_kind(
-            &module_label,
+            &sanitize_node_display_name(&module_label),
             InterfaceKind::ConsumedTopic,
             rendered,
         ));
@@ -1109,7 +1109,7 @@ impl LanguageGenerator for RustGenerator {
         let rendered = render_tokens(tokens);
 
         self.push_section(InterfaceArtifact::from_kind(
-            &module_label,
+            &sanitize_node_display_name(&module_label),
             InterfaceKind::ConsumedTopic,
             rendered,
         ));
@@ -1368,7 +1368,7 @@ impl LanguageGenerator for RustGenerator {
         let rendered = render_tokens(tokens);
 
         self.push_section(InterfaceArtifact::from_kind(
-            &module_label,
+            &sanitize_node_display_name(&module_label),
             InterfaceKind::ConsumedService,
             rendered,
         ));
@@ -1521,7 +1521,7 @@ impl LanguageGenerator for RustGenerator {
         let rendered = render_tokens(tokens);
         let module_label = raw_module_label(&action.local_node_id, &action.name);
         self.push_section(InterfaceArtifact::from_kind(
-            &module_label,
+            &sanitize_node_display_name(&module_label),
             InterfaceKind::ConsumedAction,
             rendered,
         ));
@@ -1547,4 +1547,4 @@ fn prefixed_ident(prefix: &str, candidate: Option<&str>, fallback: &str) -> Iden
     Ident::new(&name, Span::call_site())
 }
 
-use super::naming::{module_name_from_components, raw_module_label};
+use super::naming::{module_name_from_components, raw_module_label, sanitize_node_display_name};

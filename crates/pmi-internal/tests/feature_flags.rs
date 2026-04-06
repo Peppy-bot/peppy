@@ -28,6 +28,7 @@ fn test_with_zenoh_feature() {
 #[cfg(not(feature = "zenoh"))]
 #[test]
 fn test_without_zenoh_feature() {
+    use bytes::Bytes;
     use pmi::{Message, PeppyMessagingInterfaceError, SubscriberQoS};
 
     assert!(
@@ -36,8 +37,8 @@ fn test_without_zenoh_feature() {
     );
 
     let message = Message::new("test/topic", Bytes::from_static(b"test payload"));
-    assert_eq!(message.topic, "test/topic");
-    assert_eq!(&message.payload[..], b"test payload");
+    assert_eq!(message.identifier(), "test/topic");
+    assert_eq!(&message.payload()[..], b"test payload");
 
     let qos = SubscriberQoS::HighThroughput;
     assert_eq!(qos.channel_size(), 1024);

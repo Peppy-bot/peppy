@@ -48,7 +48,11 @@ pub(crate) async fn poll_action_to_completion<R>(
                     last_activity = tokio::time::Instant::now();
                     on_feedback(&msg.payload(), scrolling_output);
                 }
-                Ok(Err(_)) | Err(_) => break,
+                Ok(Err(_)) => {
+                    tracing::debug!("Feedback channel closed");
+                    break;
+                }
+                Err(_) => break, // timeout — drain complete
             }
         }
 

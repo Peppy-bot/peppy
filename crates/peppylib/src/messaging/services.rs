@@ -1,5 +1,5 @@
 use super::{
-    MessengerHandle, PROBE_TIMEOUT, SERVICE_ACK_PAYLOAD, SERVICE_PROBE_PAYLOAD,
+    BROADCAST_MARKER, MessengerHandle, PROBE_TIMEOUT, SERVICE_ACK_PAYLOAD, SERVICE_PROBE_PAYLOAD,
     encode_service_handler_error, format_instance_segment, is_service_probe_payload,
 };
 use crate::error::{Error, Result};
@@ -225,7 +225,7 @@ impl ServiceEndpoint {
             reason: "missing caller instance segment in request".to_string(),
         })?;
         let response_target_instance_segment = format_instance_segment(self.instance_id.as_str())
-            .unwrap_or_else(|| self.instance_id.clone());
+            .unwrap_or_else(|| BROADCAST_MARKER.to_string());
 
         // Parse and validate service root segments
         let expected_root_segments: Vec<_> = self

@@ -281,11 +281,11 @@ impl MessengerHandle {
             message_type, target_node_name, target_service_name
         );
         // Caller's instance as TARGET (identifies who is calling in request)
-        let caller_target_instance_segment = format_instance_segment(as_instance_id)
-            .unwrap_or_else(|| INSTANCE_ID_WILDCARD.to_string());
+        let caller_target_instance_segment =
+            format_instance_segment(as_instance_id).unwrap_or_else(|| BROADCAST_MARKER.to_string());
         // Caller's instance as BOUND (caller receives response)
-        let caller_bound_instance_segment = format_instance_segment(as_instance_id)
-            .unwrap_or_else(|| INSTANCE_ID_WILDCARD.to_string());
+        let caller_bound_instance_segment =
+            format_instance_segment(as_instance_id).unwrap_or_else(|| BROADCAST_MARKER.to_string());
 
         let target_instance_id = target_instance_id.map(str::to_string);
 
@@ -449,7 +449,7 @@ impl MessengerHandle {
         let result_service_root = format!("{action_root}/result");
 
         let bound_instance_segment =
-            format_instance_segment(as_instance_id).unwrap_or_else(|| as_instance_id.to_string());
+            format_instance_segment(as_instance_id).unwrap_or_else(|| BROADCAST_MARKER.to_string());
         let feedback_topic_suffix = format!(
             "*/{bound_core_node}/*/{bound_instance_segment}/{action_root}/feedback/{as_instance_id}"
         );

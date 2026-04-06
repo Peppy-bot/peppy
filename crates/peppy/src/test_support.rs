@@ -25,6 +25,8 @@ fn modify_node_config(peppy_json5: &Path, modify: impl FnOnce(&mut config::node:
     config::fingerprint::create_codegen_fingerprint(peppy_json5, Path::new(PEPPYGEN_OUTPUT_PATH));
 }
 
+/// Overrides the node start command to `sleep 4` and disables the add command,
+/// preventing the test from spawning a real binary.
 pub fn override_start_cmd(peppy_json5: &Path) {
     modify_node_config(peppy_json5, |cfg| {
         cfg.execution.start_cmd = Some(vec!["sleep".to_string(), "4".to_string()]);

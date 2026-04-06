@@ -38,6 +38,8 @@ async fn handle_echo_request(
     let sender_instance_id = context.message().instance_id();
     debug!("Received `{log_label}` request from {sender_instance_id}");
 
+    // Echo service validates connectivity, not message structure.
+    // Health and ready services share this handler for simplicity.
     let payload = context.message().payload();
     Ok(payload)
 }
