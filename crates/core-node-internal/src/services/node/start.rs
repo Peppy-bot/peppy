@@ -872,15 +872,17 @@ async fn process_node_start(
                 .expect("entity poisoned")
                 .start_instance(tracked);
             if let Err(e) = register_result {
-                if let Err(kill_err) = child.kill().await {
-                    debug!(
-                        "Failed to kill process for node instance '{}': {}",
-                        instance_id_str, kill_err
-                    );
-                }
                 let msg = format!("Failed to register instance: {}", e);
                 write_error_to_log(&ctx.log_file, &msg);
-                let result = NodeStartResult::failure(msg);
+                let result = kill_and_report_error(
+                    child,
+                    instance_id_str,
+                    &msg,
+                    stderr_buffer,
+                    output_reader_handles,
+                    Arc::clone(&ctx.log_file),
+                )
+                .await;
                 feedback_sync.flush_or_warn(instance_id_str).await;
                 publish_enabled.store(false, Ordering::Relaxed);
                 return result;

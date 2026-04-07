@@ -133,17 +133,16 @@ async fn handle_node_stop_request_inner(
             guard.config().manifest.tag.clone(),
         )
     };
-    let root_node_name = node_stack
-        .root()
-        .read()
-        .expect("entity poisoned")
-        .config()
-        .manifest
-        .name
-        .as_str()
-        .to_owned();
+    let (root_node_name, root_node_tag) = {
+        let root = node_stack.root();
+        let guard = root.read().expect("entity poisoned");
+        (
+            guard.config().manifest.name.as_str().to_owned(),
+            guard.config().manifest.tag.clone(),
+        )
+    };
 
-    if node_name == root_node_name {
+    if node_name == root_node_name && node_tag == root_node_tag {
         return NodeStopResponse::failure("Cannot stop the core node").encode();
     }
 

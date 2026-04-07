@@ -35,21 +35,22 @@ pub fn push_stderr_line(buffer: &Arc<StdMutex<VecDeque<String>>>, line: &str) {
     guard.push_back(line.to_string());
 }
 
-pub fn spawn_output_reader<R: Read + Send + 'static>(
+pub(crate) fn spawn_output_reader<R: Read + Send + 'static>(
     reader: R,
     feedback_tx: mpsc::UnboundedSender<FeedbackLine>,
     stream: FeedbackStream,
     log_file: Arc<StdMutex<File>>,
     stderr_tail: Option<Arc<StdMutex<VecDeque<String>>>>,
-) -> JoinHandle<()> {
+) -> JoinHandle<std::io::Result<()>> {
     let stream_prefix = match stream {
         FeedbackStream::Stdout => "stdout",
         FeedbackStream::Stderr => "stderr",
     };
 
-    tokio::task::spawn_blocking(move || {
+    tokio::task::spawn_blocking(move || -> std::io::Result<()> {
         let reader = BufReader::new(reader);
-        for line in reader.lines().map_while(|r| r.ok()) {
+        for line in reader.lines() {
+            let line = line?;
             // Always write to log file
             if let Ok(mut file) = log_file.lock() {
                 let timestamp = Local::now().format("%Y-%m-%dT%H:%M:%S%.3f");
@@ -65,6 +66,7 @@ pub fn spawn_output_reader<R: Read + Send + 'static>(
                 line: line.to_string(),
             });
         }
+        Ok(())
     })
 }
 
@@ -115,8 +117,27 @@ pub async fn stream_child_output(
         .map_err(|e| format!("failed to wait for process: {}", e))?
         .map_err(|e| format!("failed to wait for process: {}", e))?;
 
+    // Join reader tasks and surface the first error so build diagnostics receive
+    // failures instead of masked truncated output. Process wait already returned
+    // above, so we are guaranteed not to leak the child here.
+    let mut reader_error: Option<String> = None;
     for handle in reader_handles {
-        let _ = handle.await;
+        match handle.await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                if reader_error.is_none() {
+                    reader_error = Some(format!("output reader I/O error: {}", e));
+                }
+            }
+            Err(e) => {
+                if reader_error.is_none() {
+                    reader_error = Some(format!("output reader task join error: {}", e));
+                }
+            }
+        }
+    }
+    if let Some(err) = reader_error {
+        return Err(err);
     }
 
     let tail_lines = match stderr_tail {
@@ -128,4 +149,65 @@ pub async fn stream_child_output(
     };
 
     Ok((status, tail_lines))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io;
+    use tempfile::NamedTempFile;
+
+    /// Reader that yields `prefix` then errors. Used to verify that
+    /// `spawn_output_reader` propagates I/O errors instead of swallowing them.
+    struct ErroringReader {
+        prefix: Vec<u8>,
+        pos: usize,
+        errored: bool,
+    }
+
+    impl ErroringReader {
+        fn new(prefix: &[u8]) -> Self {
+            Self {
+                prefix: prefix.to_vec(),
+                pos: 0,
+                errored: false,
+            }
+        }
+    }
+
+    impl io::Read for ErroringReader {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            if self.pos < self.prefix.len() {
+                let n = (self.prefix.len() - self.pos).min(buf.len());
+                buf[..n].copy_from_slice(&self.prefix[self.pos..self.pos + n]);
+                self.pos += n;
+                return Ok(n);
+            }
+            if !self.errored {
+                self.errored = true;
+                return Err(io::Error::other("synthetic read error"));
+            }
+            Ok(0)
+        }
+    }
+
+    #[tokio::test]
+    async fn spawn_output_reader_propagates_io_error() {
+        let log_file = Arc::new(StdMutex::new(
+            NamedTempFile::new()
+                .expect("temp log")
+                .reopen()
+                .expect("reopen"),
+        ));
+        let (tx, _rx) = mpsc::unbounded_channel();
+        // No newline at the end of the prefix → BufRead::lines yields the
+        // partial line *and then* surfaces the next read error.
+        let reader = ErroringReader::new(b"first line\npartial");
+        let handle = spawn_output_reader(reader, tx, FeedbackStream::Stdout, log_file, None);
+        let result = handle.await.expect("join should succeed");
+        assert!(
+            result.is_err(),
+            "spawn_output_reader should propagate the synthetic read error"
+        );
+    }
 }

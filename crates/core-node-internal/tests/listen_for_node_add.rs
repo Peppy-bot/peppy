@@ -2095,14 +2095,18 @@ async fn listen_for_node_add_abandoned_action_does_not_block_next_goal() {
     // pushed into the stack as `Added` *before* the build starts, so a bare
     // `contains` check would fire too early and overlap the second goal
     // with the still-running first action.
-    loop {
-        if let Some(handle) = node_stack.find(FIRST_NODE_NAME, FIRST_NODE_TAG)
-            && handle.read().expect("entity poisoned").sif_path().is_some()
-        {
-            break;
+    tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            if let Some(handle) = node_stack.find(FIRST_NODE_NAME, FIRST_NODE_TAG)
+                && handle.read().expect("entity poisoned").sif_path().is_some()
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
         }
-        tokio::task::yield_now().await;
-    }
+    })
+    .await
+    .expect("first node never reached Built within 30s");
 
     // Now send second goal - this should succeed even though we never polled
     // for the first action's result

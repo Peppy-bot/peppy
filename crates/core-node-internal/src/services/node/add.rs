@@ -1772,7 +1772,20 @@ async fn process_node_add(
     if let Err(e) = build_result {
         // Roll back the half-pushed entity so the stack doesn't keep an
         // `Added` placeholder for a node that never built successfully.
-        let _ = ctx.action.node_stack.remove_config(&node_name, &node_tag);
+        // Only remove if the entity in the stack is still *our* `Added`
+        // placeholder — if a competing add already replaced it (different
+        // handle, or already advanced past `Added`), leave it alone so we
+        // don't delete a newer winner.
+        let still_ours = match ctx.action.node_stack.find(&node_name, &node_tag) {
+            Some(current) if Arc::ptr_eq(&current, &entity_handle) => match current.read() {
+                Ok(guard) => matches!(guard.stage(), node_stack::NodeStage::Added { .. }),
+                Err(_) => false,
+            },
+            _ => false,
+        };
+        if still_ours {
+            let _ = ctx.action.node_stack.remove_config(&node_name, &node_tag);
+        }
         let msg = format!("Failed to build node: {}", e);
         write_error_to_log(&ctx.log_file, &msg);
         return NodeAddResult::failure(&ctx.log_path, msg);

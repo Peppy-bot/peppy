@@ -137,16 +137,19 @@ async fn handle_node_info_request_inner(
     let node_tag = node_config.manifest.tag.as_str();
 
     let (is_in_node_stack, instances_names) = match node_stack.find(node_name, node_tag) {
-        Some(entity) => (
-            true,
-            entity
-                .read()
-                .expect("entity poisoned")
-                .instances()
-                .iter()
-                .map(|instance| instance.instance_id().as_str().to_owned())
-                .collect(),
-        ),
+        Some(entity) => match entity.read() {
+            Ok(guard) => (
+                true,
+                guard
+                    .instances()
+                    .iter()
+                    .map(|instance| instance.instance_id().as_str().to_owned())
+                    .collect(),
+            ),
+            Err(_) => {
+                return Err(format!("entity {}:{} lock poisoned", node_name, node_tag));
+            }
+        },
         None => (false, Vec::new()),
     };
 

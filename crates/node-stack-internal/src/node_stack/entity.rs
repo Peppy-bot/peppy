@@ -244,35 +244,61 @@ impl NodeEntity {
             )
         };
 
-        // ---- I/O phase: no entity lock held while apptainer/archive runs ----
+        // ---- I/O phase: no entity lock held while apptainer runs ----
+        // For container nodes, build the .sif inside `working_dir`. For both
+        // node kinds, defer publishing the artifact into shared storage until
+        // *after* we re-confirm the entity is still `Added` under the write
+        // lock — otherwise a stale build could orphan/overwrite an artifact
+        // installed by a competing winner.
+        let is_container = container_opt.is_some();
+        if let Some(container) = container_opt {
+            let apptainer_build_extra_args = container
+                .apptainer_build_extra_args
+                .as_deref()
+                .unwrap_or_default();
+            let lima_shell_extra_args = container
+                .lima_shell_extra_args
+                .as_deref()
+                .unwrap_or_default();
+
+            build_container_image(ContainerBuildInputs {
+                working_dir: ctx.working_dir,
+                node_name: &node_name,
+                node_tag: &node_tag,
+                def_file: &container.def_file,
+                apptainer_build_extra_args,
+                lima_shell_extra_args,
+                feedback_tx: ctx.feedback_tx,
+                log_file: Arc::clone(&ctx.log_file),
+            })
+            .await
+            .map_err(|reason| Error::BuildFailed {
+                node_name: node_name.clone(),
+                node_tag: node_tag.clone(),
+                reason,
+            })?;
+        }
+
+        // ---- Write phase: apply the transition under a brief write lock ----
+        // The per-entity `build_lock` already serializes builds against this
+        // entity, and the storage move/archive below is fast filesystem I/O,
+        // so it is safe to perform under the entity write lock here.
+        let mut guard = handle.write().expect("entity poisoned");
+        if !matches!(guard.stage, NodeStage::Added { .. }) {
+            // Someone mutated the entity while we were building. Surface this
+            // as a transition error rather than overwriting the new stage. We
+            // have not yet published any artifact into shared storage, so
+            // there is nothing to clean up.
+            return Err(Error::InvalidStageTransition {
+                node_name,
+                node_tag,
+                from: guard.stage.name(),
+                to: "Built",
+            });
+        }
+
         let sif_path =
-            if let Some(container) = container_opt {
-                let apptainer_build_extra_args = container
-                    .apptainer_build_extra_args
-                    .as_deref()
-                    .unwrap_or_default();
-                let lima_shell_extra_args = container
-                    .lima_shell_extra_args
-                    .as_deref()
-                    .unwrap_or_default();
-
-                build_container_image(ContainerBuildInputs {
-                    working_dir: ctx.working_dir,
-                    node_name: &node_name,
-                    node_tag: &node_tag,
-                    def_file: &container.def_file,
-                    apptainer_build_extra_args,
-                    lima_shell_extra_args,
-                    feedback_tx: ctx.feedback_tx,
-                    log_file: Arc::clone(&ctx.log_file),
-                })
-                .await
-                .map_err(|reason| Error::BuildFailed {
-                    node_name: node_name.clone(),
-                    node_tag: node_tag.clone(),
-                    reason,
-                })?;
-
+            if is_container {
                 move_sif_to_storage(ctx.working_dir, &node_name, &node_tag, ctx.peppy_dirs)
                     .map_err(|e| Error::BuildFailed {
                         node_name: node_name.clone(),
@@ -288,20 +314,6 @@ impl NodeEntity {
                     })?
             };
 
-        // ---- Write phase: apply the transition under a brief write lock ----
-        let mut guard = handle.write().expect("entity poisoned");
-        if !matches!(guard.stage, NodeStage::Added { .. }) {
-            // Someone mutated the entity while we were building. The on-disk
-            // artifact is in place, but the entity has moved on; surface this
-            // as a transition error rather than silently overwriting the new
-            // stage.
-            return Err(Error::InvalidStageTransition {
-                node_name,
-                node_tag,
-                from: guard.stage.name(),
-                to: "Built",
-            });
-        }
         guard.stage = NodeStage::Built {
             config_path,
             sif_path,

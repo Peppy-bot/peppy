@@ -222,22 +222,24 @@ async fn handle_node_remove_request_inner(
 
     for target in &targets {
         let Some(handle) = node_stack.find(&target.node_name, &target.node_tag) else {
-            return NodeRemoveResponse::failure(format!(
-                "Node '{}:{}' not found in node stack",
+            // Entity was concurrently removed; nothing to stop. Treat as
+            // success rather than failing the whole removal request.
+            debug!(
+                "Node '{}:{}' already absent from node stack; skipping instance stop",
                 target.node_name, target.node_tag
-            ))
-            .encode();
+            );
+            continue;
         };
         let removed = handle
             .write()
             .expect("entity poisoned")
             .stop_instance(&target.instance_id);
         if !removed {
-            return NodeRemoveResponse::failure(format!(
-                "Node instance '{}' not found in node stack",
+            // Instance was concurrently removed; treat as success.
+            debug!(
+                "Node instance '{}' already absent; skipping",
                 target.instance_id.as_str()
-            ))
-            .encode();
+            );
         }
     }
 
@@ -245,11 +247,11 @@ async fn handle_node_remove_request_inner(
         match node_stack.remove_config(&target.node_name, &target.node_tag) {
             Ok(true) => {}
             Ok(false) => {
-                return NodeRemoveResponse::failure(format!(
-                    "Node '{}:{}' not found in node stack",
+                // Concurrently removed — treat as success.
+                debug!(
+                    "Node '{}:{}' already absent from node stack during remove_config",
                     target.node_name, target.node_tag
-                ))
-                .encode();
+                );
             }
             Err(e) => {
                 return NodeRemoveResponse::failure(format!(
