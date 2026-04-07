@@ -746,6 +746,7 @@ pub struct StartedCoreNode {
     pub shared_messenger: Arc<Mutex<Messenger>>,
     pub caller_handle: MessengerHandle,
     pub core_node_name: String,
+    pub core_node_tag: String,
     pub node_stack: NodeStack,
     pub peppy_dirs: PeppyDirs,
     pub task: AbortOnDrop<core_node::Result<()>>,
@@ -836,6 +837,7 @@ async fn start_core_node_with_messenger(
         peppy_dirs.clone(),
     );
     let core_node_name = core_node.node_name().to_string();
+    let core_node_tag = core_node.node_config().manifest.tag.clone();
     let node_stack = core_node.node_stack().clone();
 
     // Use start_with_ready to properly synchronize instead of a time-based sleep
@@ -849,6 +851,7 @@ async fn start_core_node_with_messenger(
         shared_messenger,
         caller_handle,
         core_node_name,
+        core_node_tag,
         node_stack,
         peppy_dirs,
         task: AbortOnDrop(task),

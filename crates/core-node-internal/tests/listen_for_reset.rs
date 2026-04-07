@@ -157,7 +157,7 @@ async fn listen_for_node_reset_clears_node_stack() {
     );
     assert_eq!(
         root_after.config().manifest.tag,
-        "core-node",
+        started_core_node.core_node_tag,
         "root node tag should be preserved"
     );
     let root_instance_id_after = root_after
