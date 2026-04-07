@@ -77,7 +77,8 @@ async fn listen_for_node_list_returns_succeeds() {
 
     let has_root = nodes.iter().any(|node| {
         node.get("name").and_then(|v| v.as_str()) == Some(&started_core_node.core_node_name)
-            && node.get("tag").and_then(|v| v.as_str()) == Some("core-node")
+            && node.get("tag").and_then(|v| v.as_str())
+                == Some(started_core_node.core_node_tag.as_str())
     });
     assert!(
         has_root,
@@ -161,7 +162,10 @@ async fn listen_for_node_list_returns_dot_graph() {
         dot_graph
     );
     assert!(
-        dot_graph.contains(&format!("{}:core-node", started_core_node.core_node_name)),
+        dot_graph.contains(&format!(
+            "{}:{}",
+            started_core_node.core_node_name, started_core_node.core_node_tag
+        )),
         "dot_graph should include root node label, got:\n{}",
         dot_graph
     );
