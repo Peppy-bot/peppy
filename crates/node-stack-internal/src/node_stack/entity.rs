@@ -136,6 +136,11 @@ pub struct BuildContext<'a> {
 pub struct NodeEntity {
     config: NodeConfig,
     stage: NodeStage,
+    /// Per-entity async mutex used to serialize concurrent
+    /// [`NodeEntity::build`] calls. Wrapped in `Arc` so that clones of the
+    /// entity (and the `Arc<RwLock<NodeEntity>>` handles handed out by the
+    /// stack) all share the same lock.
+    build_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl NodeEntity {
@@ -148,6 +153,7 @@ impl NodeEntity {
             stage: NodeStage::Added {
                 config_path: config_path.into(),
             },
+            build_lock: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
@@ -207,6 +213,15 @@ impl NodeEntity {
     /// [`NodeStage::Added`], or [`Error::BuildFailed`] if the underlying
     /// apptainer/archive step fails.
     pub async fn build(handle: &Arc<RwLock<NodeEntity>>, ctx: BuildContext<'_>) -> Result<()> {
+        // ---- Serialize concurrent builds against the same entity ----
+        // Clone the per-entity build lock out from under a brief read lock so
+        // we can `.await` on it without holding the `RwLock`. Held for the
+        // entire build; a queued second caller will fall through to the
+        // stage check below and observe `Built`, returning
+        // `InvalidStageTransition` — the desired serialized behavior.
+        let build_lock = handle.read().expect("entity poisoned").build_lock.clone();
+        let _build_guard = build_lock.lock().await;
+
         // ---- Read phase: extract everything we need under a brief read lock ----
         let (node_name, node_tag, config_path, container_opt) = {
             let guard = handle.read().expect("entity poisoned");
