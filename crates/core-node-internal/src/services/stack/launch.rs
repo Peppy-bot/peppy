@@ -789,8 +789,18 @@ async fn snapshot_and_clear_stack(
     ctx: &ProcessLaunchContext,
 ) -> std::result::Result<NodeStack, LaunchResult> {
     let backup_stack = {
-        let root = ctx.node_stack.root();
-        let backup = NodeStack::new(root.config().clone(), None, root.root_path());
+        let root_handle = ctx.node_stack.root();
+        let (root_cfg, root_path) = {
+            let guard = root_handle.read().expect("entity poisoned");
+            (
+                guard.config().clone(),
+                guard
+                    .sif_path()
+                    .unwrap_or_else(|| guard.config_path())
+                    .to_path_buf(),
+            )
+        };
+        let backup = NodeStack::new(root_cfg, None, root_path);
         if let Err(err) = backup.apply_from(&ctx.node_stack) {
             let msg = format!("failed to snapshot current stack: {err}");
             publish_stderr(ctx, msg.clone(), LaunchFeedbackStep::LauncherStep).await;
@@ -1165,7 +1175,13 @@ async fn process_launch(goal: LaunchGoal, ctx: ProcessLaunchContext) -> LaunchRe
     };
 
     // Step 3: Validate dependencies and compute topological order
-    let root_config = ctx.node_stack.root().config().clone();
+    let root_config = ctx
+        .node_stack
+        .root()
+        .read()
+        .expect("entity poisoned")
+        .config()
+        .clone();
     let ordered = match validate_and_order_dependencies(&ctx, &planned, &root_config).await {
         Ok(result) => result,
         Err(launch_result) => return launch_result,

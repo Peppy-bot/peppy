@@ -140,6 +140,8 @@ async fn handle_node_info_request_inner(
         Some(entity) => (
             true,
             entity
+                .read()
+                .expect("entity poisoned")
                 .instances()
                 .iter()
                 .map(|instance| instance.instance_id().as_str().to_owned())

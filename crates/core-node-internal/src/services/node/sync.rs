@@ -206,7 +206,11 @@ async fn handle_node_sync_request_inner(
                     node_config.interfaces(),
                     node_config.manifest_name(),
                     node_config.manifest_tag(),
-                    |name, tag| node_stack.find(name, tag).map(|e| e.config().clone()),
+                    |name, tag| {
+                        node_stack
+                            .find(name, tag)
+                            .map(|e| e.read().expect("entity poisoned").config().clone())
+                    },
                 );
 
                 let mut missing_dependencies: HashSet<String> = HashSet::new();
@@ -563,21 +567,23 @@ pub fn collect_consumed_interfaces(
                     else {
                         continue;
                     };
-                    if let Some(dependency_entity) = node_stack.find(dep_name, dep_tag)
-                        && let Some(dep_topics) = &dependency_entity.config().interfaces.topics
-                        && let Some(emitted_topics) = &dep_topics.emits
-                        && let Some(emitted_topic) = emitted_topics
-                            .iter()
-                            .find(|t| t.name.trim() == linked.name.trim())
-                        && let Some(message_format) = &emitted_topic.message_format
-                    {
-                        interfaces.push(DeploymentInterface::new(
-                            InterfaceVariant::ConsumedTopic {
-                                topic: consumed_topic.clone(),
-                                message_format: message_format.clone(),
-                                dependency_node_name: dep_name.clone(),
-                            },
-                        ));
+                    if let Some(dep_handle) = node_stack.find(dep_name, dep_tag) {
+                        let guard = dep_handle.read().expect("entity poisoned");
+                        if let Some(dep_topics) = &guard.config().interfaces.topics
+                            && let Some(emitted_topics) = &dep_topics.emits
+                            && let Some(emitted_topic) = emitted_topics
+                                .iter()
+                                .find(|t| t.name.trim() == linked.name.trim())
+                            && let Some(message_format) = &emitted_topic.message_format
+                        {
+                            interfaces.push(DeploymentInterface::new(
+                                InterfaceVariant::ConsumedTopic {
+                                    topic: consumed_topic.clone(),
+                                    message_format: message_format.clone(),
+                                    dependency_node_name: dep_name.clone(),
+                                },
+                            ));
+                        }
                     }
                 }
                 config::node::ConsumedTopic::External(external) => {
@@ -600,27 +606,29 @@ pub fn collect_consumed_interfaces(
             let Some((dep_name, dep_tag)) = dep_lookup.get(&consumed_service.local_node_id) else {
                 continue;
             };
-            if let Some(dependency_entity) = node_stack.find(dep_name, dep_tag)
-                && let Some(dep_services) = &dependency_entity.config().interfaces.services
-                && let Some(exposed_services) = &dep_services.exposes
-                && let Some(exposed_service) = exposed_services
-                    .iter()
-                    .find(|s| s.name.trim() == consumed_service.name.trim())
-            {
-                interfaces.push(DeploymentInterface::new(
-                    InterfaceVariant::ConsumedService {
-                        service: consumed_service.clone(),
-                        request_format: exposed_service
-                            .request_message_format
-                            .clone()
-                            .unwrap_or_default(),
-                        response_format: exposed_service
-                            .response_message_format
-                            .clone()
-                            .unwrap_or_default(),
-                        dependency_node_name: dep_name.clone(),
-                    },
-                ));
+            if let Some(dep_handle) = node_stack.find(dep_name, dep_tag) {
+                let guard = dep_handle.read().expect("entity poisoned");
+                if let Some(dep_services) = &guard.config().interfaces.services
+                    && let Some(exposed_services) = &dep_services.exposes
+                    && let Some(exposed_service) = exposed_services
+                        .iter()
+                        .find(|s| s.name.trim() == consumed_service.name.trim())
+                {
+                    interfaces.push(DeploymentInterface::new(
+                        InterfaceVariant::ConsumedService {
+                            service: consumed_service.clone(),
+                            request_format: exposed_service
+                                .request_message_format
+                                .clone()
+                                .unwrap_or_default(),
+                            response_format: exposed_service
+                                .response_message_format
+                                .clone()
+                                .unwrap_or_default(),
+                            dependency_node_name: dep_name.clone(),
+                        },
+                    ));
+                }
             }
         }
     }
@@ -633,41 +641,43 @@ pub fn collect_consumed_interfaces(
             let Some((dep_name, dep_tag)) = dep_lookup.get(&consumed_action.local_node_id) else {
                 continue;
             };
-            if let Some(dependency_entity) = node_stack.find(dep_name, dep_tag)
-                && let Some(dep_actions) = &dependency_entity.config().interfaces.actions
-                && let Some(exposed_actions) = &dep_actions.exposes
-                && let Some(exposed_action) = exposed_actions
-                    .iter()
-                    .find(|a| a.name.trim() == consumed_action.name.trim())
-            {
-                let action_message = ConsumedActionMessage {
-                    goal_request: exposed_action
-                        .goal_service
-                        .as_ref()
-                        .and_then(|s| s.request_message_format.clone()),
-                    goal_response: exposed_action
-                        .goal_service
-                        .as_ref()
-                        .and_then(|s| s.response_message_format.clone()),
-                    feedback: exposed_action
-                        .feedback_topic
-                        .as_ref()
-                        .and_then(|t| t.message_format.clone()),
-                    result_request: exposed_action
-                        .result_service
-                        .as_ref()
-                        .and_then(|s| s.request_message_format.clone()),
-                    result_response: exposed_action
-                        .result_service
-                        .as_ref()
-                        .and_then(|s| s.response_message_format.clone()),
-                };
+            if let Some(dep_handle) = node_stack.find(dep_name, dep_tag) {
+                let guard = dep_handle.read().expect("entity poisoned");
+                if let Some(dep_actions) = &guard.config().interfaces.actions
+                    && let Some(exposed_actions) = &dep_actions.exposes
+                    && let Some(exposed_action) = exposed_actions
+                        .iter()
+                        .find(|a| a.name.trim() == consumed_action.name.trim())
+                {
+                    let action_message = ConsumedActionMessage {
+                        goal_request: exposed_action
+                            .goal_service
+                            .as_ref()
+                            .and_then(|s| s.request_message_format.clone()),
+                        goal_response: exposed_action
+                            .goal_service
+                            .as_ref()
+                            .and_then(|s| s.response_message_format.clone()),
+                        feedback: exposed_action
+                            .feedback_topic
+                            .as_ref()
+                            .and_then(|t| t.message_format.clone()),
+                        result_request: exposed_action
+                            .result_service
+                            .as_ref()
+                            .and_then(|s| s.request_message_format.clone()),
+                        result_response: exposed_action
+                            .result_service
+                            .as_ref()
+                            .and_then(|s| s.response_message_format.clone()),
+                    };
 
-                interfaces.push(DeploymentInterface::new(InterfaceVariant::ConsumedAction {
-                    action: consumed_action.clone(),
-                    messages: action_message,
-                    dependency_node_name: dep_name.clone(),
-                }));
+                    interfaces.push(DeploymentInterface::new(InterfaceVariant::ConsumedAction {
+                        action: consumed_action.clone(),
+                        messages: action_message,
+                        dependency_node_name: dep_name.clone(),
+                    }));
+                }
             }
         }
     }

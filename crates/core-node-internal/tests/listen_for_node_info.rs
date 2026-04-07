@@ -11,6 +11,33 @@ use config::node::{Name, PeppygenLanguage};
 use config::runtime::{NodeInstance, RuntimeConfig};
 use config::test_helpers;
 use core_node::encoding::{NodeInfoRequest, NodeInfoResponse, NodeSource};
+use node_stack::TrackedNodeInstance;
+use std::path::Path;
+
+/// Test helper: marks an entity at `(name, tag)` as `Built` (using `path`) and
+/// registers a single tracked instance. Used in tests that push a config
+/// directly (without going through `process_node_add`), leaving the entity in
+/// `Added` and requiring a fake build before `start_instance`.
+fn restore_built_and_start_instance(
+    node_stack: &node_stack::NodeStack,
+    name: &str,
+    tag: &str,
+    path: &Path,
+    instance_id: &Name,
+) {
+    let handle = node_stack.find(name, tag).expect("entity should exist");
+    handle
+        .write()
+        .expect("entity poisoned")
+        .restore_built(path.to_path_buf())
+        .expect("entity should be Added");
+    let instance = TrackedNodeInstance::new(instance_id.clone(), None);
+    handle
+        .write()
+        .expect("entity poisoned")
+        .start_instance(instance)
+        .expect("entity should be Built");
+}
 use core_node::names;
 use gix_url::Url as GitUrl;
 use peppylib::PeppyError;
@@ -99,9 +126,13 @@ async fn listen_for_node_info_on_fs_node_success() {
         .push_config(info_response.config.clone(), false, node_dir.path())
         .expect("push_config should succeed");
     let instance_id = Name::new(TARGET_INSTANCE_ID).expect("valid instance id");
-    node_stack
-        .add_instance(TARGET_NODE_NAME, TARGET_NODE_TAG, Some(&instance_id), None)
-        .expect("add_instance should succeed");
+    restore_built_and_start_instance(
+        &node_stack,
+        TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
+        node_dir.path(),
+        &instance_id,
+    );
 
     let request = NodeInfoRequest::new(NodeSource::Fs(node_dir.path().to_path_buf()));
 
@@ -154,17 +185,18 @@ async fn listen_for_node_info_on_git_node_success() {
         "no instances should be reported when node is not in stack"
     );
 
+    let git_node_path = git_repo_path.join(TARGET_REPO_PATH);
     node_stack
-        .push_config(
-            info_response.config.clone(),
-            false,
-            git_repo_path.join(TARGET_REPO_PATH),
-        )
+        .push_config(info_response.config.clone(), false, &git_node_path)
         .expect("push_config should succeed");
     let instance_id = Name::new(TARGET_INSTANCE_ID).expect("valid instance id");
-    node_stack
-        .add_instance(TARGET_NODE_NAME, TARGET_NODE_TAG, Some(&instance_id), None)
-        .expect("add_instance should succeed");
+    restore_built_and_start_instance(
+        &node_stack,
+        TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
+        &git_node_path,
+        &instance_id,
+    );
 
     let request = NodeInfoRequest::new(NodeSource::Git {
         repo_url: GitUrl::try_from(git_repo_path.as_path()).expect("git repo path should parse"),
@@ -268,9 +300,13 @@ async fn listen_for_node_info_on_http_node_success() {
         .push_config(info_response.config.clone(), false, bundle_dir.path())
         .expect("push_config should succeed");
     let instance_id = Name::new(TARGET_INSTANCE_ID).expect("valid instance id");
-    node_stack
-        .add_instance(TARGET_NODE_NAME, TARGET_NODE_TAG, Some(&instance_id), None)
-        .expect("add_instance should succeed");
+    restore_built_and_start_instance(
+        &node_stack,
+        TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
+        bundle_dir.path(),
+        &instance_id,
+    );
 
     let request = NodeInfoRequest::new(NodeSource::Http {
         url,

@@ -4,6 +4,7 @@ use config::node::Name;
 use node_stack::{NodeStack, NodeStackError};
 
 use crate::helpers::config_common::core_node_config;
+use crate::helpers::fixtures;
 
 #[test]
 fn add_instance_creates_new_entity() {
@@ -35,10 +36,8 @@ fn add_instance_creates_new_entity() {
     let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
     assert_eq!(stack.len(), 1, "stack should start with root node only");
 
-    // Push config first
-    stack
-        .push_config(config, false, PathBuf::from("/tmp"))
-        .expect("should push config");
+    // Push config + build (no I/O) first
+    fixtures::push_built(&stack, config, PathBuf::from("/tmp"));
 
     assert_eq!(stack.len(), 2, "stack should have core node + one entity");
     assert!(
@@ -47,34 +46,36 @@ fn add_instance_creates_new_entity() {
     );
 
     // Spawn an instance
-    let instance_id = stack
-        .add_instance("sensor", "1.0.0", None, None)
-        .expect("should spawn instance");
+    let instance_id = fixtures::start_instance_in_stack(&stack, "sensor", "1.0.0", None, None);
 
     let entity = stack.find("sensor", "1.0.0").expect("entity should exist");
+    let entity_guard = entity.read().expect("entity poisoned");
     assert_eq!(
-        entity.instances().len(),
+        entity_guard.instances().len(),
         1,
         "entity should have one instance"
     );
     assert_eq!(
-        entity.instances()[0].instance_id(),
+        entity_guard.instances()[0].instance_id(),
         &instance_id,
         "instance ID should match the returned one"
     );
 
     // Verify sensor is in the stack but is not the root (core node is the root/parent)
     let root = stack.root();
+    let root_guard = root.read().expect("entity poisoned");
     assert_eq!(
-        root.config().manifest.name.as_str(),
+        root_guard.config().manifest.name.as_str(),
         "core",
         "root should be core node, not sensor"
     );
     assert_ne!(
-        entity.config().manifest.name.as_str(),
-        root.config().manifest.name.as_str(),
+        entity_guard.config().manifest.name.as_str(),
+        root_guard.config().manifest.name.as_str(),
         "sensor should not be the root node"
     );
+    drop(root_guard);
+    drop(entity_guard);
 
     // Verify sensor is in the stack's snapshot alongside the core node
     let snapshot = stack.snapshot();
@@ -85,10 +86,24 @@ fn add_instance_creates_new_entity() {
     );
     let names: Vec<_> = snapshot
         .iter()
-        .map(|e| e.config().manifest.name.as_str())
+        .map(|e| {
+            e.read()
+                .expect("entity poisoned")
+                .config()
+                .manifest
+                .name
+                .as_str()
+                .to_owned()
+        })
         .collect();
-    assert!(names.contains(&"core"), "snapshot should contain core");
-    assert!(names.contains(&"sensor"), "snapshot should contain sensor");
+    assert!(
+        names.iter().any(|n| n == "core"),
+        "snapshot should contain core"
+    );
+    assert!(
+        names.iter().any(|n| n == "sensor"),
+        "snapshot should contain sensor"
+    );
 }
 
 #[test]
@@ -127,39 +142,46 @@ fn add_instance_to_existing_entity() {
 
     let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
 
-    // Push config first
-    stack
-        .push_config(config, false, PathBuf::from("/tmp"))
-        .expect("should push config");
+    // Push config + build first
+    fixtures::push_built(&stack, config, PathBuf::from("/tmp"));
 
     // Spawn first instance
-    let first_id = stack
-        .add_instance("sensor", "1.0.0", None, None)
-        .expect("should spawn first instance");
+    let first_id = fixtures::start_instance_in_stack(
+        &stack,
+        "sensor",
+        "1.0.0",
+        Some(&Name::new("first").expect("valid name")),
+        None,
+    );
 
     assert_eq!(stack.len(), 2, "stack should have core node + one entity");
     let entity = stack.find("sensor", "1.0.0").expect("entity should exist");
     assert_eq!(
-        entity.instances().len(),
+        entity.read().expect("entity poisoned").instances().len(),
         1,
         "entity should have one instance"
     );
 
     // Spawn second instance to same entity
-    let second_id = stack
-        .add_instance("sensor", "1.0.0", None, None)
-        .expect("should spawn second instance");
+    let second_id = fixtures::start_instance_in_stack(
+        &stack,
+        "sensor",
+        "1.0.0",
+        Some(&Name::new("second").expect("valid name")),
+        None,
+    );
 
     assert_eq!(stack.len(), 2, "stack should still have root + one entity");
 
     let entity = stack.find("sensor", "1.0.0").expect("entity should exist");
+    let entity_guard = entity.read().expect("entity poisoned");
     assert_eq!(
-        entity.instances().len(),
+        entity_guard.instances().len(),
         2,
         "entity should have two instances"
     );
 
-    let instance_ids: Vec<_> = entity
+    let instance_ids: Vec<_> = entity_guard
         .instances()
         .iter()
         .map(|i| i.instance_id().clone())
@@ -204,15 +226,12 @@ fn add_instance_with_specific_id() {
     let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
     let custom_id = Name::new("my-custom-instance").expect("valid name");
 
-    // First push the config
-    stack
-        .push_config(config, false, PathBuf::from("/tmp"))
-        .expect("should push config");
+    // First push the config + build
+    fixtures::push_built(&stack, config, PathBuf::from("/tmp"));
 
     // Then spawn an instance with the specific ID
-    let returned_id = stack
-        .add_instance("sensor", "1.0.0", Some(&custom_id), None)
-        .expect("should spawn instance");
+    let returned_id =
+        fixtures::start_instance_in_stack(&stack, "sensor", "1.0.0", Some(&custom_id), None);
 
     assert_eq!(
         returned_id, custom_id,
@@ -221,7 +240,7 @@ fn add_instance_with_specific_id() {
 
     let entity = stack.find("sensor", "1.0.0").expect("entity should exist");
     assert_eq!(
-        entity.instances()[0].instance_id(),
+        entity.read().expect("entity poisoned").instances()[0].instance_id(),
         &custom_id,
         "instance should have the custom ID"
     );
@@ -265,43 +284,36 @@ fn remove_instance_from_entity_with_multiple_instances() {
     let first_id = Name::new("instance-1").expect("valid name");
     let second_id = Name::new("instance-2").expect("valid name");
 
-    // Push config first
-    stack
-        .push_config(config, false, PathBuf::from("/tmp"))
-        .expect("should push config");
+    // Push config + build first
+    fixtures::push_built(&stack, config, PathBuf::from("/tmp"));
 
     // Spawn instances
-    stack
-        .add_instance("sensor", "1.0.0", Some(&first_id), None)
-        .expect("should spawn first instance");
-    stack
-        .add_instance("sensor", "1.0.0", Some(&second_id), None)
-        .expect("should spawn second instance");
+    fixtures::start_instance_in_stack(&stack, "sensor", "1.0.0", Some(&first_id), None);
+    fixtures::start_instance_in_stack(&stack, "sensor", "1.0.0", Some(&second_id), None);
 
     assert_eq!(stack.len(), 2, "stack should have core node + one entity");
     let entity = stack.find("sensor", "1.0.0").expect("entity should exist");
     assert_eq!(
-        entity.instances().len(),
+        entity.read().expect("entity poisoned").instances().len(),
         2,
         "entity should have two instances before removal"
     );
 
     // Remove first instance
-    let removed = stack
-        .remove_instance("sensor", "1.0.0", &first_id)
-        .expect("should succeed");
+    let removed = fixtures::stop_instance_in_stack(&stack, "sensor", "1.0.0", &first_id);
     assert!(removed, "instance should be removed");
 
     // Entity should still exist with one instance
     assert_eq!(stack.len(), 2, "entity should still exist");
     let entity = stack.find("sensor", "1.0.0").expect("entity should exist");
+    let entity_guard = entity.read().expect("entity poisoned");
     assert_eq!(
-        entity.instances().len(),
+        entity_guard.instances().len(),
         1,
         "entity should have one instance after removal"
     );
     assert_eq!(
-        entity.instances()[0].instance_id(),
+        entity_guard.instances()[0].instance_id(),
         &second_id,
         "remaining instance should be the second one"
     );
@@ -334,25 +346,19 @@ fn remove_last_instance_keeps_entity_in_graph() {
     let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
     let instance_id = Name::new("only-instance").expect("valid name");
 
-    // Push config and spawn instance
-    stack
-        .push_config(config, false, PathBuf::from("/tmp"))
-        .expect("should push config");
-    stack
-        .add_instance("sensor", "1.0.0", Some(&instance_id), None)
-        .expect("should spawn instance");
+    // Push config + build and spawn instance
+    fixtures::push_built(&stack, config, PathBuf::from("/tmp"));
+    fixtures::start_instance_in_stack(&stack, "sensor", "1.0.0", Some(&instance_id), None);
     assert_eq!(stack.len(), 2, "stack should have root + one entity");
     let entity = stack.find("sensor", "1.0.0").expect("entity should exist");
     assert_eq!(
-        entity.instances().len(),
+        entity.read().expect("entity poisoned").instances().len(),
         1,
         "entity should have one instance"
     );
 
     // Remove the only instance
-    let removed = stack
-        .remove_instance("sensor", "1.0.0", &instance_id)
-        .expect("should succeed");
+    let removed = fixtures::stop_instance_in_stack(&stack, "sensor", "1.0.0", &instance_id);
     assert!(removed, "instance should be removed");
 
     // Entity stays in the graph with 0 instances; dependency edges are preserved
@@ -361,7 +367,7 @@ fn remove_last_instance_keeps_entity_in_graph() {
         .find("sensor", "1.0.0")
         .expect("entity should still exist");
     assert_eq!(
-        entity.instances().len(),
+        entity.read().expect("entity poisoned").instances().len(),
         0,
         "entity should have no instances"
     );
@@ -397,29 +403,25 @@ fn remove_nonexistent_instance_returns_false() {
     let instance_id = Name::new("real-instance").expect("valid name");
     let fake_id = Name::new("fake-instance").expect("valid name");
 
-    // Push config and spawn instance
-    stack
-        .push_config(config, false, PathBuf::from("/tmp"))
-        .expect("should push config");
-    stack
-        .add_instance("sensor", "1.0.0", Some(&instance_id), None)
-        .expect("should spawn instance");
+    // Push config + build and spawn instance
+    fixtures::push_built(&stack, config, PathBuf::from("/tmp"));
+    fixtures::start_instance_in_stack(&stack, "sensor", "1.0.0", Some(&instance_id), None);
 
     // Try to remove non-existent instance
-    let removed = stack
-        .remove_instance("sensor", "1.0.0", &fake_id)
-        .expect("should succeed");
+    let removed = fixtures::stop_instance_in_stack(&stack, "sensor", "1.0.0", &fake_id);
     assert!(!removed, "should return false for non-existent instance");
 
     // Try to remove from non-existent entity
-    let removed = stack
-        .remove_instance("nonexistent", "1.0.0", &instance_id)
-        .expect("should succeed");
+    let removed = fixtures::stop_instance_in_stack(&stack, "nonexistent", "1.0.0", &instance_id);
     assert!(!removed, "should return false for non-existent entity");
 
     // Original instance should still be there
     let entity = stack.find("sensor", "1.0.0").expect("entity should exist");
-    assert_eq!(entity.instances().len(), 1, "instance should still exist");
+    assert_eq!(
+        entity.read().expect("entity poisoned").instances().len(),
+        1,
+        "instance should still exist"
+    );
 }
 
 #[test]
@@ -535,9 +537,7 @@ fn spawning_multiple_instances_on_same_entity() {
     .expect("valid node config");
 
     let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
-    stack
-        .push_config(config, false, PathBuf::from("/tmp"))
-        .expect("config has no dependencies");
+    fixtures::push_built(&stack, config, PathBuf::from("/tmp"));
     assert_eq!(
         stack.len(),
         2,
@@ -546,27 +546,35 @@ fn spawning_multiple_instances_on_same_entity() {
 
     let entity = stack.find("sensor", "1.0.0").expect("entity should exist");
     assert_eq!(
-        entity.instances().len(),
+        entity.read().expect("entity poisoned").instances().len(),
         0,
         "entity should have no instances after push_config"
     );
 
     // Spawn first instance
-    stack
-        .add_instance("sensor", "1.0.0", None, None)
-        .expect("should spawn instance");
+    fixtures::start_instance_in_stack(
+        &stack,
+        "sensor",
+        "1.0.0",
+        Some(&Name::new("first").expect("valid name")),
+        None,
+    );
 
     let entity = stack.find("sensor", "1.0.0").expect("entity should exist");
     assert_eq!(
-        entity.instances().len(),
+        entity.read().expect("entity poisoned").instances().len(),
         1,
         "entity should have one instance after first spawn"
     );
 
     // Spawn second instance on the same entity
-    stack
-        .add_instance("sensor", "1.0.0", None, None)
-        .expect("should spawn instance");
+    fixtures::start_instance_in_stack(
+        &stack,
+        "sensor",
+        "1.0.0",
+        Some(&Name::new("second").expect("valid name")),
+        None,
+    );
     assert_eq!(
         stack.len(),
         2,
@@ -575,7 +583,7 @@ fn spawning_multiple_instances_on_same_entity() {
 
     let entity = stack.find("sensor", "1.0.0").expect("entity should exist");
     assert_eq!(
-        entity.instances().len(),
+        entity.read().expect("entity poisoned").instances().len(),
         2,
         "entity should have two instances after second spawn"
     );
@@ -662,24 +670,27 @@ fn adding_same_entity_with_different_interfaces_overwrites_when_no_dependents() 
 
     // Entity should still exist (no instances since push_config doesn't create them)
     let entity = stack.find("sensor", "1.0.0").expect("entity should exist");
+    let entity_guard = entity.read().expect("entity poisoned");
     assert_eq!(
-        entity.instances().len(),
+        entity_guard.instances().len(),
         0,
         "entity should have no instances (push_config doesn't create instances)"
     );
     assert_eq!(
-        entity.root_path(),
+        entity_guard.config_path(),
         PathBuf::from("/tmp/sensor_v2").as_path(),
-        "entity should use the latest snapshot root path"
+        "entity should use the latest snapshot config path"
     );
     assert!(
-        entity
+        entity_guard
             .config()
             .interfaces
             .services
             .as_ref()
             .and_then(|services| services.exposes.as_ref())
-            .is_some_and(|exposes| exposes.iter().any(|s| s.name == "calibrate")),
+            .is_some_and(|exposes: &Vec<config::node::ExposedService>| exposes
+                .iter()
+                .any(|s| s.name == "calibrate")),
         "entity should have updated interfaces from the overwritten config"
     );
 }
@@ -761,12 +772,12 @@ fn adding_same_name_with_different_tag_and_different_interfaces_succeeds() {
         .expect("v2 entity should exist");
 
     assert_eq!(
-        entity_v1.instances().len(),
+        entity_v1.read().expect("entity poisoned").instances().len(),
         0,
         "v1 entity should have no instances (push_config doesn't create instances)"
     );
     assert_eq!(
-        entity_v2.instances().len(),
+        entity_v2.read().expect("entity poisoned").instances().len(),
         0,
         "v2 entity should have no instances (push_config doesn't create instances)"
     );
@@ -777,18 +788,19 @@ fn root_returns_the_core_node() {
     let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
 
     let root = stack.root();
+    let root_guard = root.read().expect("entity poisoned");
     assert_eq!(
-        root.config().manifest.name.as_str(),
+        root_guard.config().manifest.name.as_str(),
         "core",
         "root should be core node"
     );
     assert_eq!(
-        root.config().manifest.tag,
+        root_guard.config().manifest.tag,
         "1.0.0",
         "root should have correct tag"
     );
     assert_eq!(
-        root.instances().len(),
+        root_guard.instances().len(),
         1,
         "root should have exactly one instance"
     );
@@ -797,26 +809,28 @@ fn root_returns_the_core_node() {
 #[test]
 fn cannot_modify_root_node() {
     let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
-    let root_instance_id = stack.root().instances()[0].instance_id().clone();
+    let _root_instance_id = stack.root().read().expect("entity poisoned").instances()[0]
+        .instance_id()
+        .clone();
 
-    // Try to remove the root's instance
-    let result = stack.remove_instance("core", "1.0.0", &root_instance_id);
+    // Try to remove the root's config — must error with CannotModifyRootNode.
+    let result = stack.remove_config("core", "1.0.0");
     assert!(
         result.is_err(),
-        "should not be able to remove root node instance"
+        "should not be able to remove root node via remove_config"
     );
 
-    // Try to add another instance to root
+    // Try to push a new config that would overwrite root
     let result = stack.push_config(core_node_config(), false, PathBuf::from("/tmp"));
     assert!(
         result.is_err(),
-        "should not be able to add instance to root node"
+        "should not be able to overwrite root node via push_config"
     );
 
     // Root should still be intact
     let root = stack.root();
     assert_eq!(
-        root.instances().len(),
+        root.read().expect("entity poisoned").instances().len(),
         1,
         "root should still have exactly one instance"
     );
@@ -886,8 +900,16 @@ fn node_stack_wires_dependencies_for_dependants() {
 
     let deps = stack.dependencies_of("brain", "1.0.0");
     assert!(
-        deps.iter()
-            .any(|entity| entity.config().manifest.name.as_str() == "lidar"),
+        deps.iter().any(|entity| {
+            entity
+                .read()
+                .expect("entity poisoned")
+                .config()
+                .manifest
+                .name
+                .as_str()
+                == "lidar"
+        }),
         "brain should depend on lidar in the stack"
     );
 }
@@ -1136,16 +1158,23 @@ fn overwriting_existing_node_fails_if_node_has_dependencies() {
 
     let entity = stack.find("lidar", "1.0.0").expect("entity should exist");
     assert_eq!(
-        entity.root_path(),
+        entity.read().expect("entity poisoned").config_path(),
         PathBuf::from("/tmp/lidar_v1").as_path(),
-        "entity should still point to the original snapshot root path"
+        "entity should still point to the original snapshot config path"
     );
 
     let dependents = stack.dependents_of("lidar", "1.0.0");
     assert!(
-        dependents
-            .iter()
-            .any(|entity| entity.config().manifest.name.as_str() == "brain"),
+        dependents.iter().any(|entity| {
+            entity
+                .read()
+                .expect("entity poisoned")
+                .config()
+                .manifest
+                .name
+                .as_str()
+                == "brain"
+        }),
         "lidar should still have brain as a dependent"
     );
 }
@@ -1191,7 +1220,14 @@ fn updating_start_cmd_without_changing_interfaces_applies_new_config() {
 
     let entity = stack.find("sensor", "1.0.0").expect("entity should exist");
     assert_eq!(
-        entity.config().execution.start_cmd.as_ref().unwrap(),
+        entity
+            .read()
+            .expect("entity poisoned")
+            .config()
+            .execution
+            .start_cmd
+            .as_ref()
+            .unwrap(),
         &vec!["./old_binary"],
         "entity should have the original start_cmd"
     );
@@ -1203,15 +1239,16 @@ fn updating_start_cmd_without_changing_interfaces_applies_new_config() {
     assert_eq!(stack.len(), 2, "stack should still have core node + sensor");
 
     let entity = stack.find("sensor", "1.0.0").expect("entity should exist");
+    let entity_guard = entity.read().expect("entity poisoned");
     assert_eq!(
-        entity.config().execution.start_cmd.as_ref().unwrap(),
+        entity_guard.config().execution.start_cmd.as_ref().unwrap(),
         &vec!["./new_binary"],
         "entity should have the updated start_cmd after re-push"
     );
     assert_eq!(
-        entity.root_path(),
+        entity_guard.config_path(),
         PathBuf::from("/tmp/sensor").as_path(),
-        "root_path should remain unchanged"
+        "config_path should remain unchanged"
     );
 }
 
@@ -1284,7 +1321,14 @@ fn updating_start_cmd_succeeds_even_when_node_has_dependents() {
 
     let entity = stack.find("lidar", "1.0.0").expect("entity should exist");
     assert_eq!(
-        entity.config().execution.start_cmd.as_ref().unwrap(),
+        entity
+            .read()
+            .expect("entity poisoned")
+            .config()
+            .execution
+            .start_cmd
+            .as_ref()
+            .unwrap(),
         &vec!["./new_lidar"],
         "lidar should have the updated start_cmd"
     );
@@ -1292,9 +1336,16 @@ fn updating_start_cmd_succeeds_even_when_node_has_dependents() {
     // Dependency wiring should still be intact
     let dependents = stack.dependents_of("lidar", "1.0.0");
     assert!(
-        dependents
-            .iter()
-            .any(|entity| entity.config().manifest.name.as_str() == "brain"),
+        dependents.iter().any(|entity| {
+            entity
+                .read()
+                .expect("entity poisoned")
+                .config()
+                .manifest
+                .name
+                .as_str()
+                == "brain"
+        }),
         "lidar should still have brain as a dependent after non-breaking update"
     );
 }

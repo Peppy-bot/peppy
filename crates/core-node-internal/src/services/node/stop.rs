@@ -112,7 +112,7 @@ async fn handle_node_stop_request_inner(
         }
     };
 
-    let entity = match node_stack.find_entity_by_instance_id(&instance_id) {
+    let entity_handle = match node_stack.find_entity_by_instance_id(&instance_id) {
         Some(entity) => entity,
         None => {
             return NodeStopResponse::failure(format!(
@@ -126,14 +126,26 @@ async fn handle_node_stop_request_inner(
     // Get the PID for later verification (if available)
     let pid = instance.pid();
 
-    let root_node_name = node_stack.root().config().manifest.name.as_str().to_owned();
-    let node_name = entity.config().manifest.name.as_str().to_owned();
+    let (node_name, node_tag) = {
+        let guard = entity_handle.read().expect("entity poisoned");
+        (
+            guard.config().manifest.name.as_str().to_owned(),
+            guard.config().manifest.tag.clone(),
+        )
+    };
+    let root_node_name = node_stack
+        .root()
+        .read()
+        .expect("entity poisoned")
+        .config()
+        .manifest
+        .name
+        .as_str()
+        .to_owned();
 
     if node_name == root_node_name {
         return NodeStopResponse::failure("Cannot stop the core node").encode();
     }
-
-    let node_tag = entity.config().manifest.tag.clone();
 
     // Send shutdown signal and remove instance
     if let Err(e) = stop_instance(
@@ -214,13 +226,16 @@ pub(super) async fn stop_instance(
 
     debug!("Node instance '{}' shutdown acknowledged", instance_id_str);
 
-    match node_stack.remove_instance(node_name, node_tag, instance_id) {
-        Ok(_) => {}
-        Err(e) => {
-            return Err(format!(
-                "Failed to remove node instance '{}' from node stack: {}",
-                instance_id_str, e
-            ));
+    if let Some(handle) = node_stack.find(node_name, node_tag) {
+        let removed = handle
+            .write()
+            .expect("entity poisoned")
+            .stop_instance(instance_id);
+        if !removed {
+            debug!(
+                "Node instance '{}' was not tracked in entity {}:{}",
+                instance_id_str, node_name, node_tag
+            );
         }
     }
 

@@ -6,15 +6,20 @@ edition.workspace = true
 
 [dependencies]
 config = { path = "../config-internal", features = ["test_helpers"] }
+containers = { path = "../containers-internal" }
 petgraph = "0.8.3"
 serde = { version = "1.0", features = ["derive"] }
 thiserror = "2.0"
 rand = "0.10"
 names-generator2 = "0.2.1"
+tokio = { version = "1.47", features = ["io-util", "process", "sync", "rt", "time", "macros"] }
+tar = "0.4"
+zstd = "0.13.3"
+chrono = "0.4"
+tracing = "0.1"
 
 
 [dev-dependencies]
 serde_json5 = "0.2.1"
 tempfile = "3.10"
-tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

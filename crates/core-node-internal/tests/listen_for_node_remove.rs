@@ -6,10 +6,29 @@ use common::{
 };
 use config::node::Name;
 use core_node::encoding::NodeRemoveRequest;
+use node_stack::TrackedNodeInstance;
 use peppylib::messaging::MessengerHandle;
 use peppylib::services::shutdown::listen_for_shutdown;
 use std::sync::Arc;
 use std::time::Duration;
+
+/// Registers a tracked instance on the given (name, tag) entity.
+/// Assumes the entity is already in `Built`.
+fn register_instance(
+    node_stack: &node_stack::NodeStack,
+    name: &str,
+    tag: &str,
+    instance_id: &Name,
+    pid: Option<u32>,
+) {
+    let handle = node_stack.find(name, tag).expect("entity should exist");
+    let instance = TrackedNodeInstance::new(instance_id.clone(), pid);
+    handle
+        .write()
+        .expect("entity poisoned")
+        .start_instance(instance)
+        .expect("entity should be Built");
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_remove_success() {
@@ -58,7 +77,11 @@ async fn listen_for_node_remove_success() {
     let entity = node_stack
         .find(TARGET_NODE_NAME, TARGET_NODE_TAG)
         .expect("node should exist in stack");
-    assert_eq!(entity.instances().len(), 0, "node should have no instances");
+    assert_eq!(
+        entity.read().expect("entity poisoned").instances().len(),
+        0,
+        "node should have no instances"
+    );
 
     let response = NodeRemoveRequest::new(TARGET_NODE_NAME, TARGET_NODE_TAG)
         .poll(
@@ -172,9 +195,13 @@ async fn listen_for_node_remove_stop_running_instances_first() {
     );
 
     let instance_id = Name::new(TARGET_INSTANCE_ID).expect("valid instance id");
-    node_stack
-        .add_instance(TARGET_NODE_NAME, TARGET_NODE_TAG, Some(&instance_id), None)
-        .expect("add_instance should succeed");
+    register_instance(
+        &node_stack,
+        TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
+        &instance_id,
+        None,
+    );
 
     // Simulate the node exposing the shutdown service, so node_remove detects it as running.
     let shutdown_handle =
@@ -266,9 +293,13 @@ async fn listen_for_node_fails_when_stop_instances_parameter_not_set_and_instanc
     );
 
     let instance_id = Name::new(TARGET_INSTANCE_ID).expect("valid instance id");
-    node_stack
-        .add_instance(TARGET_NODE_NAME, TARGET_NODE_TAG, Some(&instance_id), None)
-        .expect("add_instance should succeed");
+    register_instance(
+        &node_stack,
+        TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
+        &instance_id,
+        None,
+    );
 
     // Simulate the node exposing the shutdown service, so node_remove detects it as running.
     let shutdown_handle =
@@ -331,15 +362,18 @@ async fn listen_for_node_fails_when_stop_instances_parameter_not_set_and_instanc
     let entity = node_stack
         .find(TARGET_NODE_NAME, TARGET_NODE_TAG)
         .expect("node entity should still exist in stack");
-    assert_eq!(
-        entity.instances().len(),
-        1,
-        "instance should not be removed"
-    );
-    assert_eq!(
-        entity.instances()[0].instance_id().as_str(),
-        TARGET_INSTANCE_ID
-    );
+    {
+        let entity_guard = entity.read().expect("entity poisoned");
+        assert_eq!(
+            entity_guard.instances().len(),
+            1,
+            "instance should not be removed"
+        );
+        assert_eq!(
+            entity_guard.instances()[0].instance_id().as_str(),
+            TARGET_INSTANCE_ID
+        );
+    }
 
     assert!(
         tokio::time::timeout(Duration::from_millis(100), shutdown_rx)

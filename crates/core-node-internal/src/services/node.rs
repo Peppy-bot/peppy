@@ -22,7 +22,6 @@ use rand::RngExt;
 pub use remove::listen_for_node_remove;
 pub(crate) use start::{NodeStartActionContext, run_node_start};
 pub use start::{NodeStartServiceConfig, listen_for_node_start};
-use std::collections::VecDeque;
 use std::fs::File;
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
@@ -34,30 +33,13 @@ pub use sync::listen_for_node_sync;
 use tar::Archive;
 use zstd::stream::read::Decoder;
 
-/// Maximum number of stderr lines to retain for error diagnostics.
-/// Used by both the `add` (container build) and `start` (node run) services.
-const STDERR_TAIL_LINES: usize = 20;
-
-#[derive(Clone, Copy)]
-pub(crate) enum FeedbackStream {
-    Stdout,
-    Stderr,
-}
-
-pub(crate) struct FeedbackLine {
-    pub(crate) stream: FeedbackStream,
-    pub(crate) line: String,
-}
-
-/// Pushes a line into a bounded ring buffer of stderr output.
-/// When the buffer is full, the oldest line is dropped.
-fn push_stderr_line(buffer: &Arc<StdMutex<VecDeque<String>>>, line: &str) {
-    let mut guard = buffer.lock().expect("stderr buffer lock poisoned");
-    if guard.len() == STDERR_TAIL_LINES {
-        guard.pop_front();
-    }
-    guard.push_back(line.to_string());
-}
+// Feedback streaming primitives have moved to `node-stack-internal::build_io`
+// so that `NodeEntity::build` can stream apptainer output without depending on
+// core-node-internal. The re-exports below keep the existing call sites in
+// `start.rs`, `info.rs`, etc. compiling unchanged.
+pub(crate) use node_stack::build_io::{
+    FeedbackLine, FeedbackStream, push_stderr_line, stream_child_output,
+};
 
 /// Extract a human-readable message from a panic payload.
 /// Used by spawned task handlers to convert panics into failure results.

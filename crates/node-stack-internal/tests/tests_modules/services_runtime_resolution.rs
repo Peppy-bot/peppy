@@ -92,9 +92,10 @@ fn service_dependency_resolved_when_dependency_added_first() {
         .dependencies_of("brain", "1.0.0")
         .into_iter()
         .map(|node| {
+            let guard = node.read().expect("entity poisoned");
             (
-                node.config().manifest.name.as_str().to_owned(),
-                node.config().manifest.tag.clone(),
+                guard.config().manifest.name.as_str().to_owned(),
+                guard.config().manifest.tag.clone(),
             )
         })
         .collect::<Vec<_>>();
@@ -107,7 +108,15 @@ fn service_dependency_resolved_when_dependency_added_first() {
     let dependants = stack
         .dependents_of("lidar", "1.0.0")
         .into_iter()
-        .map(|node| node.config().manifest.name.as_str().to_owned())
+        .map(|node| {
+            node.read()
+                .expect("entity poisoned")
+                .config()
+                .manifest
+                .name
+                .as_str()
+                .to_owned()
+        })
         .collect::<Vec<_>>();
     assert_eq!(
         dependants,

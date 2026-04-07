@@ -18,12 +18,12 @@ use config::consts::{NODE_CONFIG_FILE, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH, P
 use config::node::{DEFAULT_VARIANT_NAME, NodeConfig, NodeConfigParser, ParsedNodeConfig};
 use futures::FutureExt;
 use git2::build::RepoBuilder;
-use node_stack::{NodeStack, validate_dependency_specs};
+use node_stack::{BuildContext, NodeStack, validate_dependency_specs};
 use peppylib::messaging::{ServiceRequestContext, TopicPublisher};
 use peppylib::types::Payload;
 use peppylib::{ActionMessenger, MessengerHandle, PeppyResult};
 use std::fs::File;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{Read, Write};
 use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -33,11 +33,8 @@ use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinHandle;
 use tracing::debug;
 use ureq::Error as HttpError;
-use zstd::stream::write::Encoder as ZstdEncoder;
 
-use super::{
-    FeedbackLine, FeedbackStream, STDERR_TAIL_LINES, create_action_log_file, push_stderr_line,
-};
+use super::{FeedbackLine, FeedbackStream, create_action_log_file, stream_child_output};
 
 pub async fn listen_for_node_add(
     messenger: &MessengerHandle,
@@ -211,102 +208,6 @@ fn copy_dir_recursive(src: &Path, dest: &Path) -> Result<Vec<String>> {
     Ok(excluded)
 }
 
-fn spawn_output_reader<R: Read + Send + 'static>(
-    reader: R,
-    feedback_tx: mpsc::UnboundedSender<FeedbackLine>,
-    stream: FeedbackStream,
-    log_file: Arc<StdMutex<File>>,
-    stderr_tail: Option<Arc<StdMutex<std::collections::VecDeque<String>>>>,
-) -> JoinHandle<()> {
-    let stream_prefix = match stream {
-        FeedbackStream::Stdout => "stdout",
-        FeedbackStream::Stderr => "stderr",
-    };
-
-    tokio::task::spawn_blocking(move || {
-        let reader = BufReader::new(reader);
-        for line in reader.lines().map_while(|r| r.ok()) {
-            // Always write to log file
-            if let Ok(mut file) = log_file.lock() {
-                let timestamp = Local::now().format("%Y-%m-%dT%H:%M:%S%.3f");
-                let _ = writeln!(file, "[{}] [{}] {}", timestamp, stream_prefix, line);
-            }
-
-            if let Some(ref buffer) = stderr_tail {
-                push_stderr_line(buffer, &line);
-            }
-
-            let _ = feedback_tx.send(FeedbackLine {
-                stream,
-                line: line.to_string(),
-            });
-        }
-    })
-}
-
-/// Streams stdout/stderr from a spawned child process to both the feedback
-/// publisher and the log file. Optionally collects the last [`STDERR_TAIL_LINES`]
-/// lines of stderr for error diagnostics.
-///
-/// Returns the process exit status and (if `collect_stderr_tail` is true) the
-/// collected stderr tail lines.
-async fn stream_child_output(
-    mut child: std::process::Child,
-    feedback_tx: &mpsc::UnboundedSender<FeedbackLine>,
-    log_file: Arc<StdMutex<File>>,
-    collect_stderr_tail: bool,
-) -> std::result::Result<(std::process::ExitStatus, Vec<String>), String> {
-    let stderr_tail: Option<Arc<StdMutex<std::collections::VecDeque<String>>>> =
-        if collect_stderr_tail {
-            Some(Arc::new(StdMutex::new(
-                std::collections::VecDeque::with_capacity(STDERR_TAIL_LINES),
-            )))
-        } else {
-            None
-        };
-
-    let mut reader_handles = Vec::new();
-
-    if let Some(stdout) = child.stdout.take() {
-        reader_handles.push(spawn_output_reader(
-            stdout,
-            feedback_tx.clone(),
-            FeedbackStream::Stdout,
-            Arc::clone(&log_file),
-            None,
-        ));
-    }
-
-    if let Some(stderr) = child.stderr.take() {
-        reader_handles.push(spawn_output_reader(
-            stderr,
-            feedback_tx.clone(),
-            FeedbackStream::Stderr,
-            Arc::clone(&log_file),
-            stderr_tail.clone(),
-        ));
-    }
-
-    let status = tokio::task::spawn_blocking(move || child.wait())
-        .await
-        .map_err(|e| format!("failed to wait for process: {}", e))?
-        .map_err(|e| format!("failed to wait for process: {}", e))?;
-
-    for handle in reader_handles {
-        let _ = handle.await;
-    }
-
-    let tail_lines = match stderr_tail {
-        Some(ref tail) => tail
-            .lock()
-            .map(|t| t.iter().cloned().collect::<Vec<_>>())
-            .unwrap_or_default(),
-        None => Vec::new(),
-    };
-
-    Ok((status, tail_lines))
-}
-
 /// Expands `${VAR}` references in a string using the provided environment variables.
 fn expand_env_vars(s: &str, env_vars: &[(String, String)]) -> String {
     let mut result = s.to_string();
@@ -416,158 +317,6 @@ fn copy_node_to_temp_dir(from_dir: &Path, tmp_root: &Path) -> Result<(PathBuf, V
     excluded.sort();
 
     Ok((temp_dir, excluded))
-}
-
-/// Archives the contents of `source_dir` into a `.tar.zst` file in the
-/// peppy added nodes directory.
-///
-/// The archive path follows the format: `<storage_dir>/<node_name>_<tag>.tar.zst`
-///
-/// Uses zstd compression level 1 (fastest speed).
-fn archive_dir_to_storage(
-    source_dir: &Path,
-    node_name: &str,
-    node_tag: &str,
-    peppy_dirs: &PeppyDirs,
-) -> Result<PathBuf> {
-    let storage_dir = peppy_dirs.added_nodes_dir();
-    std::fs::create_dir_all(&storage_dir)?;
-
-    let archive_name = format!("{}_{}.tar.zst", node_name, node_tag);
-    let archive_path = storage_dir.join(&archive_name);
-    let tmp_path = storage_dir.join(format!("{}.tmp", archive_name));
-
-    let file = File::create(&tmp_path)?;
-    let encoder = ZstdEncoder::new(file, 1)?;
-    let mut tar_builder = tar::Builder::new(encoder);
-    // DO NOT follow symlinks, otherwise it could create unintended behavior for the user who modify files in the path pointed by the symlink
-    tar_builder.follow_symlinks(false);
-    tar_builder.append_dir_all(".", source_dir)?;
-    let encoder = tar_builder.into_inner()?;
-    encoder.finish()?;
-
-    std::fs::rename(&tmp_path, &archive_path)?;
-
-    Ok(archive_path)
-}
-
-/// Moves the built `.sif` container image from the working directory to peppy storage.
-///
-/// The image is expected at `working_dir/{node_name}_{node_tag}.sif`, which is the
-/// conventional output path produced by `apptainer build` in the node's `add_cmd`.
-///
-/// Returns the final storage path: `<added_nodes_dir>/<node_name>_<tag>.sif`.
-fn move_sif_to_storage(
-    working_dir: &Path,
-    node_name: &str,
-    node_tag: &str,
-    peppy_dirs: &PeppyDirs,
-) -> Result<PathBuf> {
-    let sif_name = format!("{}_{}.sif", node_name, node_tag);
-    let sif_source = working_dir.join(&sif_name);
-
-    if !sif_source.is_file() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            format!(
-                "Expected container image not found at {}",
-                sif_source.display()
-            ),
-        )
-        .into());
-    }
-
-    let storage_dir = peppy_dirs.added_nodes_dir();
-    std::fs::create_dir_all(&storage_dir)?;
-
-    let dest_path = storage_dir.join(&sif_name);
-    let tmp_path = storage_dir.join(format!("{}.tmp", sif_name));
-
-    // Copy + rename (not rename alone) because the working dir may be on a
-    // different filesystem than storage. Matches archive_dir_to_storage pattern.
-    std::fs::copy(&sif_source, &tmp_path)?;
-    std::fs::rename(&tmp_path, &dest_path)?;
-
-    Ok(dest_path)
-}
-
-/// Builds a container image using the Apptainer facade.
-///
-/// Runs `apptainer build {node_name}_{node_tag}.sif {def_file}` in the
-/// working directory. Build output is streamed to both the CLI (via the feedback
-/// publisher) and the log file. On failure, the last [`STDERR_TAIL_LINES`]
-/// lines of stderr are included in the error message.
-///
-/// The resulting `.sif` file is left in `working_dir` for
-/// [`move_sif_to_storage`] to relocate.
-struct ContainerBuildContext<'a> {
-    working_dir: &'a Path,
-    node_name: &'a str,
-    node_tag: &'a str,
-    def_file: &'a str,
-    apptainer_build_extra_args: &'a [String],
-    lima_shell_extra_args: &'a [String],
-    feedback_tx: &'a mpsc::UnboundedSender<FeedbackLine>,
-    log_file: Arc<StdMutex<File>>,
-}
-
-async fn build_container_image(ctx: ContainerBuildContext<'_>) -> Result<()> {
-    if !containers::Apptainer::is_lima_ready() {
-        let _ = ctx.feedback_tx.send(FeedbackLine {
-            stream: FeedbackStream::Stdout,
-            line: "Initializing Lima VM for container build (first run may take a few minutes)..."
-                .to_string(),
-        });
-    }
-    let apptainer = tokio::task::spawn_blocking(containers::Apptainer::new)
-        .await
-        .map_err(|e| std::io::Error::other(format!("Apptainer initialization task failed: {}", e)))?
-        .map_err(|e| {
-            std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                format!("Failed to initialize Apptainer runtime: {}", e),
-            )
-        })?;
-
-    let sif_name = format!("{}_{}.sif", ctx.node_name, ctx.node_tag);
-    let output_path = ctx.working_dir.join(&sif_name);
-    let def_path = ctx.working_dir.join(ctx.def_file);
-
-    let mut cmd_builder = apptainer.build(&output_path, &def_path);
-    for arg in ctx.apptainer_build_extra_args {
-        cmd_builder = cmd_builder.raw_flag(arg);
-    }
-    cmd_builder = cmd_builder.lima_shell_extra_args(ctx.lima_shell_extra_args);
-
-    let mut cmd = cmd_builder
-        .into_std_command()
-        .map_err(|e| std::io::Error::other(format!("Failed to build apptainer command: {}", e)))?;
-
-    // Set the working directory so `%files . /opt/{name}` in the .def file
-    // copies from the node's source directory, not the daemon's cwd.
-    cmd.current_dir(ctx.working_dir);
-    cmd.stdout(Stdio::piped());
-    cmd.stderr(Stdio::piped());
-    cmd.stdin(Stdio::null());
-
-    let child = cmd
-        .spawn()
-        .map_err(|e| std::io::Error::other(format!("Failed to spawn apptainer build: {}", e)))?;
-
-    let (status, stderr_tail) = stream_child_output(child, ctx.feedback_tx, ctx.log_file, true)
-        .await
-        .map_err(std::io::Error::other)?;
-
-    if !status.success() {
-        let mut msg = format!("apptainer build failed with status {}", status);
-        if !stderr_tail.is_empty() {
-            msg.push_str("\n\n--- stderr (last lines) ---\n");
-            msg.push_str(&stderr_tail.join("\n"));
-        }
-        return Err(std::io::Error::other(msg).into());
-    }
-
-    Ok(())
 }
 
 /// Verifies that the node directory is in sync with the currently running daemon
@@ -1741,15 +1490,17 @@ async fn shutdown_existing_instances(
         return Ok(());
     };
 
-    if entity.instances().is_empty() {
-        return Ok(());
-    }
-
-    let instances = entity
-        .instances()
-        .iter()
-        .map(|instance| instance.instance_id().clone())
-        .collect::<Vec<_>>();
+    let instances = {
+        let guard = entity.read().expect("entity poisoned");
+        if guard.instances().is_empty() {
+            return Ok(());
+        }
+        guard
+            .instances()
+            .iter()
+            .map(|instance| instance.instance_id().clone())
+            .collect::<Vec<_>>()
+    };
 
     for instance_id in instances {
         let instance_id_str = instance_id.as_str().to_owned();
@@ -1807,11 +1558,20 @@ async fn process_node_add(
     super::inject_node_runtime_env(&mut env_vars, &node_name, &node_tag);
     let _cleanup_guard = CleanupDir::new(cleanup_dir);
 
-    let previous_snapshot_path = ctx
-        .action
-        .node_stack
-        .find(&node_name, &node_tag)
-        .map(|entity| entity.root_path().to_path_buf());
+    // Capture the previous .sif/archive path (if any) so we can clean it up
+    // after the new entity is in place. Only nodes that have already reached
+    // `Built` have a sif_path.
+    let previous_snapshot_path =
+        ctx.action
+            .node_stack
+            .find(&node_name, &node_tag)
+            .and_then(|entity| {
+                entity
+                    .read()
+                    .expect("entity poisoned")
+                    .sif_path()
+                    .map(|p| p.to_path_buf())
+            });
 
     if verify_codegen_fingerprint {
         // Verify that the node config fingerprint matches the one in the generated folder.
@@ -1901,7 +1661,7 @@ async fn process_node_add(
             ctx.action
                 .node_stack
                 .find(name, tag)
-                .map(|e| e.config().clone())
+                .map(|e| e.read().expect("entity poisoned").config().clone())
         },
     );
     if let Some(err) = dep_errors.into_iter().next() {
@@ -1938,43 +1698,10 @@ async fn process_node_add(
         return NodeAddResult::failure(&ctx.log_path, msg);
     }
 
-    let snapshot_path = if let Some(container) = &node_config.execution.container {
-        // Container nodes: use the Apptainer facade to build the .sif image from
-        // the definition file, then move it to storage.
-        let apptainer_build_extra_args = container
-            .apptainer_build_extra_args
-            .as_deref()
-            .unwrap_or_default();
-        let lima_shell_extra_args = container
-            .lima_shell_extra_args
-            .as_deref()
-            .unwrap_or_default();
-        if let Err(e) = build_container_image(ContainerBuildContext {
-            working_dir: &working_dir,
-            node_name: &node_name,
-            node_tag: &node_tag,
-            def_file: &container.def_file,
-            apptainer_build_extra_args,
-            lima_shell_extra_args,
-            feedback_tx: &ctx.feedback_tx,
-            log_file: Arc::clone(&ctx.log_file),
-        })
-        .await
-        {
-            let msg = format!("Failed to build container image: {}", e);
-            write_error_to_log(&ctx.log_file, &msg);
-            return NodeAddResult::failure(&ctx.log_path, msg);
-        }
-        match move_sif_to_storage(&working_dir, &node_name, &node_tag, &ctx.action.peppy_dirs) {
-            Ok(path) => path,
-            Err(e) => {
-                let msg = format!("Failed to store container image: {}", e);
-                write_error_to_log(&ctx.log_file, &msg);
-                return NodeAddResult::failure(&ctx.log_path, msg);
-            }
-        }
-    } else {
-        // Regular nodes: run add_cmd then archive the working directory.
+    // For process nodes, run the user-defined add_cmd in the working dir
+    // before handing off to NodeEntity::build (which only does the
+    // archive/sif step that immediately follows it).
+    if node_config.execution.container.is_none() {
         let add_cmd = node_config.execution.add_cmd.as_ref();
         if let Err(e) = run_add_cmd_with_streaming(
             add_cmd,
@@ -1989,37 +1716,79 @@ async fn process_node_add(
             write_error_to_log(&ctx.log_file, &msg);
             return NodeAddResult::failure(&ctx.log_path, msg);
         }
-        match archive_dir_to_storage(&working_dir, &node_name, &node_tag, &ctx.action.peppy_dirs) {
-            Ok(path) => path,
-            Err(e) => {
-                let msg = format!("Failed to archive node: {}", e);
-                write_error_to_log(&ctx.log_file, &msg);
-                return NodeAddResult::failure(&ctx.log_path, msg);
-            }
-        }
-    };
+    }
 
-    // Working dir is no longer needed; clean it up immediately.
-    drop(working_dir_cleanup);
-
+    // Stop any pre-existing instances of this node before resetting the
+    // entity in the stack. push_config below replaces the entity wholesale
+    // with a fresh `Added` one, so any tracked instances would otherwise be
+    // forgotten without being shut down cleanly.
     if let Err(e) = shutdown_existing_instances(&node_name, &node_tag, &ctx).await {
-        std::fs::remove_file(&snapshot_path).ok();
         let msg = format!("Failed to shutdown existing node instances: {}", e);
         write_error_to_log(&ctx.log_file, &msg);
         return NodeAddResult::failure(&ctx.log_path, msg);
     }
 
-    // Add the node config to the stack
-    if let Err(e) = ctx
-        .action
-        .node_stack
-        .push_config(node_config, false, &snapshot_path)
+    // Push the node config into the stack as an `Added` entity. The
+    // config_path is the source `peppy.json5` (the user-owned location);
+    // the entity will move to `Built` once NodeEntity::build runs.
+    let config_path_for_stack = source_path.join(NODE_CONFIG_FILE);
+    if let Err(e) =
+        ctx.action
+            .node_stack
+            .push_config(node_config.clone(), false, &config_path_for_stack)
     {
-        std::fs::remove_file(&snapshot_path).ok();
         let msg = format!("Failed to add node config: {}", e);
         write_error_to_log(&ctx.log_file, &msg);
         return NodeAddResult::failure(&ctx.log_path, msg);
     }
+
+    // Drive the build via the entity itself. This either runs apptainer
+    // (container nodes) or archives `working_dir` (process nodes), and
+    // transitions the entity from `Added` to `Built` with the resulting
+    // `.sif`/archive path on success.
+    let entity_handle = match ctx.action.node_stack.find(&node_name, &node_tag) {
+        Some(handle) => handle,
+        None => {
+            let msg = format!(
+                "internal error: just-pushed entity {}:{} disappeared from the stack",
+                node_name, node_tag
+            );
+            write_error_to_log(&ctx.log_file, &msg);
+            return NodeAddResult::failure(&ctx.log_path, msg);
+        }
+    };
+
+    let build_result = node_stack::NodeEntity::build(
+        &entity_handle,
+        BuildContext {
+            working_dir: &working_dir,
+            peppy_dirs: &ctx.action.peppy_dirs,
+            feedback_tx: &ctx.feedback_tx,
+            log_file: Arc::clone(&ctx.log_file),
+        },
+    )
+    .await;
+
+    if let Err(e) = build_result {
+        // Roll back the half-pushed entity so the stack doesn't keep an
+        // `Added` placeholder for a node that never built successfully.
+        let _ = ctx.action.node_stack.remove_config(&node_name, &node_tag);
+        let msg = format!("Failed to build node: {}", e);
+        write_error_to_log(&ctx.log_file, &msg);
+        return NodeAddResult::failure(&ctx.log_path, msg);
+    }
+
+    // Re-read the entity to get the freshly recorded sif_path for cleanup
+    // and the success message.
+    let snapshot_path = entity_handle
+        .read()
+        .expect("entity poisoned")
+        .sif_path()
+        .expect("entity must have a sif_path after a successful build")
+        .to_path_buf();
+
+    // Working dir is no longer needed; clean it up immediately.
+    drop(working_dir_cleanup);
 
     // Clean up previous snapshot if it differs from the new one.
     if let Some(previous_snapshot_path) = previous_snapshot_path

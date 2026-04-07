@@ -6,6 +6,7 @@ use common::{
 };
 use config::node::Name;
 use core_node::encoding::NodeResetRequest;
+use node_stack::TrackedNodeInstance;
 use std::time::Duration;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -19,8 +20,10 @@ async fn listen_for_node_reset_clears_node_stack() {
 
     let started_core_node = start_core_node_with_mock_messenger().await;
     let node_stack = started_core_node.node_stack.clone();
-    let root_before = node_stack.root();
-    let root_instance_id_before = root_before
+    let root_instance_id_before = node_stack
+        .root()
+        .read()
+        .expect("entity poisoned")
         .instances()
         .first()
         .expect("root should have exactly one instance")
@@ -100,19 +103,22 @@ async fn listen_for_node_reset_clears_node_stack() {
     assert_eq!(node_stack.len(), 3, "root + two added nodes");
 
     let instance_id_a = Name::new(TARGET_NODE_A_INSTANCE_ID).expect("valid instance id");
-    node_stack
-        .add_instance(
-            TARGET_NODE_A_NAME,
-            TARGET_NODE_A_TAG,
-            Some(&instance_id_a),
-            None,
-        )
-        .expect("add_instance should succeed");
+    {
+        let handle = node_stack
+            .find(TARGET_NODE_A_NAME, TARGET_NODE_A_TAG)
+            .expect("node A should exist in stack");
+        let instance = TrackedNodeInstance::new(instance_id_a.clone(), None);
+        handle
+            .write()
+            .expect("entity poisoned")
+            .start_instance(instance)
+            .expect("entity should be Built");
+    }
     let entity_a = node_stack
         .find(TARGET_NODE_A_NAME, TARGET_NODE_A_TAG)
         .expect("node A should exist in stack");
     assert_eq!(
-        entity_a.instances().len(),
+        entity_a.read().expect("entity poisoned").instances().len(),
         1,
         "node A should have one instance"
     );
@@ -150,22 +156,25 @@ async fn listen_for_node_reset_clears_node_stack() {
     );
 
     let root_after = node_stack.root();
+    let root_guard = root_after.read().expect("entity poisoned");
     assert_eq!(
-        root_after.config().manifest.name.as_str(),
+        root_guard.config().manifest.name.as_str(),
         started_core_node.core_node_name,
         "root node name should be preserved"
     );
     assert_eq!(
-        root_after.config().manifest.tag,
+        root_guard.config().manifest.tag,
         started_core_node.core_node_tag,
         "root node tag should be preserved"
     );
-    let root_instance_id_after = root_after
+    let root_instance_id_after = root_guard
         .instances()
         .first()
         .expect("root should have exactly one instance")
         .instance_id()
-        .as_str();
+        .as_str()
+        .to_owned();
+    drop(root_guard);
     assert_eq!(
         root_instance_id_after, root_instance_id_before,
         "root instance id should be preserved"
@@ -178,8 +187,10 @@ async fn listen_for_node_reset_is_idempotent() {
     let node_stack = started_core_node.node_stack.clone();
     assert_eq!(node_stack.len(), 1, "only root should exist initially");
 
-    let root_before = node_stack.root();
-    let root_instance_id_before = root_before
+    let root_instance_id_before = node_stack
+        .root()
+        .read()
+        .expect("entity poisoned")
         .instances()
         .first()
         .expect("root should have exactly one instance")
@@ -201,13 +212,16 @@ async fn listen_for_node_reset_is_idempotent() {
     assert!(response.success, "node_reset should succeed");
     assert_eq!(node_stack.len(), 1, "only root should remain after reset");
 
-    let root_after = node_stack.root();
-    let root_instance_id_after = root_after
+    let root_instance_id_after = node_stack
+        .root()
+        .read()
+        .expect("entity poisoned")
         .instances()
         .first()
         .expect("root should have exactly one instance")
         .instance_id()
-        .as_str();
+        .as_str()
+        .to_owned();
     assert_eq!(
         root_instance_id_after, root_instance_id_before,
         "root instance id should be preserved"

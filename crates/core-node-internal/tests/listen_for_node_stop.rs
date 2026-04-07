@@ -6,6 +6,7 @@ use common::{
 };
 use config::node::Name;
 use core_node::encoding::NodeStopRequest;
+use node_stack::TrackedNodeInstance;
 use peppylib::messaging::MessengerHandle;
 use peppylib::services::shutdown::listen_for_shutdown;
 use std::process::{Command, Stdio};
@@ -80,14 +81,17 @@ async fn listen_for_node_stop_success() {
 
     // Register the instance with the actual PID
     let instance_id = Name::new(TARGET_INSTANCE_ID).expect("valid instance id");
-    node_stack
-        .add_instance(
-            TARGET_NODE_NAME,
-            TARGET_NODE_TAG,
-            Some(&instance_id),
-            Some(pid),
-        )
-        .expect("add_instance should succeed");
+    {
+        let handle = node_stack
+            .find(TARGET_NODE_NAME, TARGET_NODE_TAG)
+            .expect("entity should exist");
+        let instance = TrackedNodeInstance::new(instance_id.clone(), Some(pid));
+        handle
+            .write()
+            .expect("entity poisoned")
+            .start_instance(instance)
+            .expect("entity should be Built");
+    }
 
     // Verify the process is running before we try to stop it
     assert!(

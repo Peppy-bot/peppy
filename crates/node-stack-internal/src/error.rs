@@ -54,4 +54,19 @@ pub enum Error {
     },
     #[error("Cannot remove node `{node_name}`:{node_tag} because it still has instances")]
     CannotRemoveNodeWithInstances { node_name: String, node_tag: String },
+
+    // -- lifecycle errors
+    #[error("Invalid stage transition for `{node_name}`:{node_tag}: cannot go from {from} to {to}")]
+    InvalidStageTransition {
+        node_name: String,
+        node_tag: String,
+        from: &'static str,
+        to: &'static str,
+    },
+    #[error("Failed to build node `{node_name}`:{node_tag}: {reason}")]
+    BuildFailed {
+        node_name: String,
+        node_tag: String,
+        reason: String,
+    },
 }

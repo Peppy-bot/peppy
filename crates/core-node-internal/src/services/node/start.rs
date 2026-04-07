@@ -12,7 +12,7 @@ use config::node::{Name, PeppygenLanguage};
 use config::runtime::RuntimeConfig;
 use config::{AnyType, resolve_parameter_path};
 use futures::FutureExt;
-use node_stack::{NodeEntity, NodeStack};
+use node_stack::{self, NodeStack};
 use peppylib::encoding::health::NodeHealthRequest;
 use peppylib::encoding::ready::NodeReadyRequest;
 use peppylib::messaging::{
@@ -585,7 +585,7 @@ async fn process_node_start(
         node_name, tag, instance_id_str
     );
 
-    let entity = match ctx.action.node_stack.find(&node_name, &tag) {
+    let entity_handle = match ctx.action.node_stack.find(&node_name, &tag) {
         Some(entity) => entity,
         None => {
             let msg = format!("Node '{}:{}' not found in node stack", node_name, tag);
@@ -594,8 +594,29 @@ async fn process_node_start(
         }
     };
 
+    // Snapshot the entity's config and sif_path into local variables so we
+    // never hold a read lock across the many .await points below. The
+    // entity itself stays shared via `entity_handle` for the eventual
+    // start_instance write.
+    let (node_config, sif_path) = {
+        let guard = entity_handle.read().expect("entity poisoned");
+        let sif = match guard.sif_path() {
+            Some(p) => p.to_path_buf(),
+            None => {
+                let msg = format!(
+                    "Node '{}:{}' has not been built yet (still in Added stage)",
+                    node_name, tag
+                );
+                drop(guard);
+                write_error_to_log(&ctx.log_file, &msg);
+                return NodeStartResult::failure(msg);
+            }
+        };
+        (guard.config().clone(), sif)
+    };
+
     let sccache_injected =
-        super::inject_rust_build_env(&mut env_vars, entity.config().execution.language);
+        super::inject_rust_build_env(&mut env_vars, node_config.execution.language);
     if sccache_injected {
         let _ = ctx.feedback_tx.send(FeedbackLine {
             stream: FeedbackStream::Stdout,
@@ -604,13 +625,13 @@ async fn process_node_start(
     }
     super::inject_node_runtime_env(
         &mut env_vars,
-        entity.config().manifest.name.as_str(),
-        entity.config().manifest.tag.as_str(),
+        node_config.manifest.name.as_str(),
+        node_config.manifest.tag.as_str(),
     );
 
     // Validate that all required parameters are provided before starting the node
     let missing_params = validate_parameters(
-        &entity.config().execution.parameters,
+        &node_config.execution.parameters,
         &runtime_config.node_instance.arguments,
         "",
     );
@@ -620,7 +641,7 @@ async fn process_node_start(
         return NodeStartResult::failure(msg);
     }
 
-    let is_container = entity.config().execution.container.is_some();
+    let is_container = node_config.execution.container.is_some();
 
     // Prepare instance directory:
     // - Container nodes: create empty dir (SIF image is self-contained)
@@ -636,7 +657,7 @@ async fn process_node_start(
             }
         }
     } else {
-        match extract_node_archive(entity.root_path(), instance_id_str, &ctx.action.peppy_dirs) {
+        match extract_node_archive(&sif_path, instance_id_str, &ctx.action.peppy_dirs) {
             Ok(dir) => dir,
             Err(e) => {
                 let msg = format!("Failed to extract node archive: {}", e);
@@ -650,7 +671,7 @@ async fn process_node_start(
     // Spawn the node process:
     // - Container nodes: apptainer run <sif>
     // - Process nodes: execute start_cmd
-    let container_config = entity.config().execution.container.as_ref();
+    let container_config = node_config.execution.container.as_ref();
     let raw_mount_paths = container_config
         .and_then(|c| c.mount_paths.as_deref())
         .unwrap_or_default();
@@ -709,7 +730,7 @@ async fn process_node_start(
 
         match start_container_node(
             &mut apptainer,
-            entity.root_path(),
+            &sif_path,
             &instance_dir,
             &runtime_config_json5,
             &env_vars,
@@ -729,7 +750,7 @@ async fn process_node_start(
         }
     } else {
         match start_node(
-            &entity,
+            &node_config,
             &instance_dir,
             &runtime_config_json5,
             &env_vars,
@@ -845,11 +866,12 @@ async fn process_node_start(
                 instance_id_str
             );
             let pid = child.id().unwrap_or(0);
-            if let Err(e) =
-                ctx.action
-                    .node_stack
-                    .add_instance(&node_name, &tag, Some(&instance_id), Some(pid))
-            {
+            let tracked = node_stack::TrackedNodeInstance::new(instance_id.clone(), Some(pid));
+            let register_result = entity_handle
+                .write()
+                .expect("entity poisoned")
+                .start_instance(tracked);
+            if let Err(e) = register_result {
                 if let Err(kill_err) = child.kill().await {
                     debug!(
                         "Failed to kill process for node instance '{}': {}",
@@ -1042,14 +1064,13 @@ fn extract_node_archive(
 /// Runs a node using its build's start_cmd and passes the PEPPY_RUNTIME_CONFIG as an env var.
 /// Returns the spawned child process handle on success.
 pub fn start_node(
-    entity: &NodeEntity,
+    config: &config::node::NodeConfig,
     working_dir: &std::path::Path,
     runtime_config_json5: &str,
     env_vars: &[(String, String)],
     log_file: &Arc<StdMutex<File>>,
     peppy_dirs: &PeppyDirs,
 ) -> std::io::Result<Child> {
-    let config = entity.config();
     let manifest = &config.manifest;
     let start_cmd = config
         .execution
