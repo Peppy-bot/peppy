@@ -583,7 +583,10 @@ mod tests {
     #[tokio::test]
     async fn resolve_node_config_rejects_http_checksum_mismatch() {
         let bundle = create_http_node_bundle("http_checksum_node", "0.1.0");
-        let actual_sha256 = format!("{:x}", Sha256::digest(&bundle));
+        let actual_sha256: String = Sha256::digest(&bundle)
+            .iter()
+            .map(|b| format!("{:02x}", b))
+            .collect();
         let wrong_sha256 = if let Some(stripped) = actual_sha256.strip_prefix('0') {
             format!("1{}", stripped)
         } else {

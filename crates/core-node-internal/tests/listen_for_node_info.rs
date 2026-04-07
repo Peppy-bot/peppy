@@ -227,7 +227,10 @@ async fn listen_for_node_info_on_http_node_success() {
         .expect("failed to write compressed bundle");
     encoder.finish().expect("failed to finish encoder");
     let bundle_bytes = std::fs::read(&bundle_path).expect("failed to read bundle");
-    let bundle_sha256 = format!("{:x}", Sha256::digest(&bundle_bytes));
+    let bundle_sha256: String = Sha256::digest(&bundle_bytes)
+        .iter()
+        .map(|b| format!("{:02x}", b))
+        .collect();
 
     let server = Server::run();
     server.expect(
