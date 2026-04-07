@@ -27,7 +27,7 @@ use tracing::info;
 
 const CORE_NODE_TAG: &str = match option_env!("PEPPY_GIT_TAG") {
     Some(tag) => tag,
-    None => "unknown",
+    None => "dev",
 };
 
 #[cfg(test)]
@@ -97,8 +97,25 @@ impl CoreNode {
         let manifest_name = match node_name {
             Some(name) => Name::new(name).unwrap(),
             None => {
-                let uid = machine_uid::get().unwrap_or_else(|_| "unknown".to_string());
-                let sanitized: String = uid
+                let raw = machine_uid::get()
+                    .map_err(|e| {
+                        tracing::warn!("machine_uid::get() failed: {e}; falling back to hostname");
+                    })
+                    .ok()
+                    .filter(|s| !s.is_empty())
+                    .or_else(|| {
+                        hostname::get().ok().and_then(|h| {
+                            let s = h.to_string_lossy().into_owned();
+                            if s.is_empty() { None } else { Some(s) }
+                        })
+                    })
+                    .unwrap_or_else(|| {
+                        tracing::warn!(
+                            "hostname unavailable; falling back to random core node name"
+                        );
+                        get_random(&mut rng())
+                    });
+                let sanitized: String = raw
                     .chars()
                     .map(|c| {
                         if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
