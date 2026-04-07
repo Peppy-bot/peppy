@@ -781,20 +781,31 @@ mod tests {
         );
     }
 
+    /// Write a shell script and make it executable atomically to avoid ETXTBSY
+    /// races that occur when `fs::write` + `fs::set_permissions` are separate steps.
+    #[cfg(unix)]
+    fn write_executable_script(path: &std::path::Path, content: &str) {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+
+        let mut f = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o755)
+            .open(path)
+            .expect("create executable script");
+        f.write_all(content.as_bytes())
+            .expect("write script content");
+    }
+
     #[cfg(unix)]
     #[test]
     fn test_check_lima_version_returns_version_check_error_on_nonzero_exit() {
-        use std::os::unix::fs::PermissionsExt;
-
         let dir = tempdir().expect("create temp dir");
         let limactl = dir.path().join("limactl");
 
-        fs::write(&limactl, "#!/bin/sh\n>&2 echo 'bad lima'\nexit 42\n")
-            .expect("write fake limactl");
-
-        let mut perms = fs::metadata(&limactl).expect("read metadata").permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&limactl, perms).expect("set executable bit");
+        write_executable_script(&limactl, "#!/bin/sh\n>&2 echo 'bad lima'\nexit 42\n");
 
         let err = check_lima_version(&limactl).expect_err("expected version check failure");
         match err {
@@ -810,8 +821,6 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn test_stop_instance_is_idempotent_for_nonexistent() {
-        use std::os::unix::fs::PermissionsExt;
-
         let dir = tempdir().expect("create temp dir");
         let limactl = dir.path().join("limactl");
         let lima_home = dir.path().join("lima_home");
@@ -819,15 +828,10 @@ mod tests {
 
         // Fake limactl: `list` returns empty status (instance doesn't exist),
         // `stop` would fail — but should never be called.
-        fs::write(
+        write_executable_script(
             &limactl,
             "#!/bin/sh\nif [ \"$1\" = \"list\" ]; then echo ''; exit 0; else echo 'should not be called' >&2; exit 1; fi\n",
-        )
-        .expect("write fake limactl");
-
-        let mut perms = fs::metadata(&limactl).expect("read metadata").permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&limactl, perms).expect("set executable bit");
+        );
 
         let result = stop_instance(&limactl, &lima_home, "nonexistent_instance");
         assert!(
@@ -840,8 +844,6 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn test_stop_instance_is_idempotent_for_stopped() {
-        use std::os::unix::fs::PermissionsExt;
-
         let dir = tempdir().expect("create temp dir");
         let limactl = dir.path().join("limactl");
         let lima_home = dir.path().join("lima_home");
@@ -849,15 +851,10 @@ mod tests {
 
         // Fake limactl: `list` returns "Stopped" status.
         // `stop` would fail — but should never be called.
-        fs::write(
+        write_executable_script(
             &limactl,
             "#!/bin/sh\nif [ \"$1\" = \"list\" ]; then echo 'Stopped'; exit 0; else echo 'should not be called' >&2; exit 1; fi\n",
-        )
-        .expect("write fake limactl");
-
-        let mut perms = fs::metadata(&limactl).expect("read metadata").permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&limactl, perms).expect("set executable bit");
+        );
 
         let result = stop_instance(&limactl, &lima_home, "stopped_instance");
         assert!(

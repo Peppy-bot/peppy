@@ -159,7 +159,7 @@ async fn node_list_command_succeeds() {
     // Add the provider
     NodeCommand {
         command: NodeCommands::Add {
-            source: provider_path.display().to_string(),
+            source: Some(provider_path.display().to_string()),
             git_ref: None,
             variant: None,
             start: false,
@@ -176,7 +176,7 @@ async fn node_list_command_succeeds() {
     // Add the consumer, it depends on the provider
     NodeCommand {
         command: NodeCommands::Add {
-            source: consumer_path.display().to_string(),
+            source: Some(consumer_path.display().to_string()),
             git_ref: None,
             variant: None,
             start: false,
@@ -302,7 +302,7 @@ async fn node_list_command_with_dot_representation_succeeds() {
 
     NodeCommand {
         command: NodeCommands::Add {
-            source: provider_path.display().to_string(),
+            source: Some(provider_path.display().to_string()),
             git_ref: None,
             variant: None,
             start: false,
@@ -318,7 +318,7 @@ async fn node_list_command_with_dot_representation_succeeds() {
 
     NodeCommand {
         command: NodeCommands::Add {
-            source: consumer_path.display().to_string(),
+            source: Some(consumer_path.display().to_string()),
             git_ref: None,
             variant: None,
             start: false,

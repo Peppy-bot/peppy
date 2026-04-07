@@ -1,6 +1,8 @@
 use super::super::action_loop::{ActionResult, ActionState, GoalHandler, run_action_loop};
 use super::super::stack::STACK_LAUNCH_GIT_HASH;
-use super::sync::{collect_consumed_interfaces, generate_peppygen_for_node};
+use super::sync::{
+    self, AutoSyncParams, AutoSyncVariant, collect_consumed_interfaces, generate_peppygen_for_node,
+};
 use super::{
     checkout_repo_ref, extract_tar_zst, generate_random_id, is_supported_fs_archive,
     is_supported_http_archive, locate_node_root_dir, resolve_local_archive_source,
@@ -1411,6 +1413,7 @@ pub(crate) async fn run_node_add(
         // The .peppy/git.hash file is written by `peppy node sync` at the root
         // level; non-local variant directories (Git/Http clones) won't have it.
         let root_source_path = resolved.source_path.clone();
+        let root_execution_language = resolved.node_config.execution_language();
 
         // If a variant is specified (or auto-resolved), resolve it from the root config.
         let mut variant_cleanup_dir: Option<PathBuf> = None;
@@ -1454,6 +1457,75 @@ pub(crate) async fn run_node_add(
                     let error_msg = e.to_string();
                     write_error_to_log(&log_file, &error_msg);
                     return NodeAddResult::failure(&log_path, error_msg);
+                }
+            }
+        }
+
+        // Auto-generate .peppy directory if missing (e.g. fresh clone never synced).
+        // Must run before git hash verification since sync also writes git.hash.
+        //
+        // Generation and filesystem I/O are blocking; offload to spawn_blocking
+        // to avoid stalling the Tokio runtime (mirrors the daemon node-sync path).
+        if goal.git_hash != STACK_LAUNCH_GIT_HASH
+            && let NodeSource::Fs(original_path) = &goal.source
+            && !is_supported_fs_archive(original_path)
+        {
+            let sync_node_dir = root_source_path.clone();
+            let sync_execution_language = root_execution_language;
+            let sync_manifest = node_config.manifest.clone();
+            let sync_interfaces = node_config.interfaces.clone();
+            let sync_git_hash = goal.git_hash.clone();
+            let sync_node_stack = action_context.node_stack.clone();
+            let sync_peppy_dirs = action_context.peppy_dirs.clone();
+
+            let sync_variant = if variant_source_is_local
+                && effective_variant.is_some()
+                && resolved.source_path != root_source_path
+            {
+                Some((
+                    resolved.source_path.clone(),
+                    node_config.execution.language,
+                    node_config.clone(),
+                ))
+            } else {
+                None
+            };
+
+            let sync_result = tokio::task::spawn_blocking(move || {
+                let variant = sync_variant.as_ref().map(|(dir, language, cfg)| {
+                    AutoSyncVariant {
+                        dir,
+                        language: *language,
+                        merged_config: cfg,
+                    }
+                });
+
+                sync::auto_sync_if_missing(
+                    AutoSyncParams {
+                        node_dir: &sync_node_dir,
+                        execution_language: sync_execution_language,
+                        manifest: &sync_manifest,
+                        interfaces: &sync_interfaces,
+                        git_hash: &sync_git_hash,
+                        variant,
+                    },
+                    &sync_node_stack,
+                    &sync_peppy_dirs,
+                )
+            })
+            .await;
+
+            match sync_result {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => {
+                    let msg = format!("Auto-sync failed: {}", e);
+                    write_error_to_log(&log_file, &msg);
+                    return NodeAddResult::failure(&log_path, msg);
+                }
+                Err(e) => {
+                    let msg = format!("Auto-sync task failed: {}", e);
+                    write_error_to_log(&log_file, &msg);
+                    return NodeAddResult::failure(&log_path, msg);
                 }
             }
         }

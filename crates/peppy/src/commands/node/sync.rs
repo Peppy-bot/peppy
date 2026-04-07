@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -11,14 +12,18 @@ use crate::error::{Error, Result};
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
-pub fn sync_node(ctx: &Arc<AppContext>) -> Result<()> {
-    crate::commands::block_on(sync_node_async(ctx))
+pub fn sync_node(ctx: &Arc<AppContext>, path: Option<PathBuf>) -> Result<()> {
+    crate::commands::block_on(sync_node_async(ctx, path))
 }
 
-async fn sync_node_async(ctx: &Arc<AppContext>) -> Result<()> {
+async fn sync_node_async(ctx: &Arc<AppContext>, path: Option<PathBuf>) -> Result<()> {
     // If the current directory doesn't contain a valid root config (e.g. we're
     // inside a variant subdirectory), walk up to find the root node directory.
-    let node_root_dir = resolve_node_root_dir(&ctx.root_dir)?;
+    let base_dir = match path {
+        Some(p) => ctx.root_dir.join(p),
+        None => ctx.root_dir.clone(),
+    };
+    let node_root_dir = resolve_node_root_dir(&base_dir)?;
     let conn = ctx.connect_to_daemon().await?;
 
     info!(

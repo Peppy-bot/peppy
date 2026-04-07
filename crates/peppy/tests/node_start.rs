@@ -73,7 +73,7 @@ async fn node_run_command_succeeds() {
     // Add the node to the node stack (without running)
     NodeCommand {
         command: NodeCommands::Add {
-            source: node_path.display().to_string(),
+            source: Some(node_path.display().to_string()),
             git_ref: None,
             variant: None,
             start: false,
@@ -291,7 +291,7 @@ async fn node_run_command_with_args_succeeds() {
     // Add the node to the node stack (without running)
     NodeCommand {
         command: NodeCommands::Add {
-            source: node_path.display().to_string(),
+            source: Some(node_path.display().to_string()),
             git_ref: None,
             variant: None,
             start: false,
@@ -484,7 +484,7 @@ async fn node_run_command_with_custom_instance_id_succeeds() {
     // Add the node to the node stack (without running)
     NodeCommand {
         command: NodeCommands::Add {
-            source: node_path.display().to_string(),
+            source: Some(node_path.display().to_string()),
             git_ref: None,
             variant: None,
             start: false,

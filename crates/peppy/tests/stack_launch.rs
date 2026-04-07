@@ -116,7 +116,7 @@ async fn node_launch_command_succeed() {
 
     NodeCommand {
         command: NodeCommands::Add {
-            source: node_a_path.display().to_string(),
+            source: Some(node_a_path.display().to_string()),
             git_ref: None,
             variant: None,
             start: false,
@@ -349,7 +349,7 @@ async fn node_launch_command_fails_when_node_never_becomes_healthy() {
 
     NodeCommand {
         command: NodeCommands::Add {
-            source: node_a_path.display().to_string(),
+            source: Some(node_a_path.display().to_string()),
             git_ref: None,
             variant: None,
             start: false,
