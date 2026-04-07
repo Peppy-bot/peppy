@@ -594,13 +594,13 @@ async fn process_node_start(
         }
     };
 
-    // Snapshot the entity's config and sif_path into local variables so we
-    // never hold a read lock across the many .await points below. The
+    // Snapshot the entity's config and artifact_path into local variables so
+    // we never hold a read lock across the many .await points below. The
     // entity itself stays shared via `entity_handle` for the eventual
     // start_instance write.
-    let (node_config, sif_path) = {
+    let (node_config, artifact_path) = {
         let guard = entity_handle.read().expect("entity poisoned");
-        let sif = match guard.sif_path() {
+        let artifact = match guard.artifact_path() {
             Some(p) => p.to_path_buf(),
             None => {
                 let msg = format!(
@@ -612,7 +612,7 @@ async fn process_node_start(
                 return NodeStartResult::failure(msg);
             }
         };
-        (guard.config().clone(), sif)
+        (guard.config().clone(), artifact)
     };
 
     let sccache_injected =
@@ -657,7 +657,7 @@ async fn process_node_start(
             }
         }
     } else {
-        match extract_node_archive(&sif_path, instance_id_str, &ctx.action.peppy_dirs) {
+        match extract_node_archive(&artifact_path, instance_id_str, &ctx.action.peppy_dirs) {
             Ok(dir) => dir,
             Err(e) => {
                 let msg = format!("Failed to extract node archive: {}", e);
@@ -730,7 +730,7 @@ async fn process_node_start(
 
         match start_container_node(
             &mut apptainer,
-            &sif_path,
+            &artifact_path,
             &instance_dir,
             &runtime_config_json5,
             &env_vars,

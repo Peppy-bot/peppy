@@ -52,7 +52,7 @@ async fn list_nodes_async(ctx: &Arc<AppContext>, dot_graph_path: Option<PathBuf>
 
     info!("Node stack:");
     for node in &nodes {
-        let path_str = node.sif_path.as_deref().unwrap_or(&node.config_path);
+        let path_str = node.artifact_path.as_deref().unwrap_or(&node.config_path);
         info!(
             "  - {} ({}) ({})",
             node.label(),

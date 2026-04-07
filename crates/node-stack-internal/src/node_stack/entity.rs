@@ -24,7 +24,7 @@ pub struct SerializedNode {
     pub config_path: String,
     /// Path to the built `.sif`/archive in `~/.peppy/added_nodes`.
     /// `None` until the entity reaches `Built`.
-    pub sif_path: Option<String>,
+    pub artifact_path: Option<String>,
     /// IDs of running instances. Empty unless the entity is `Started`.
     pub instance_ids: Vec<String>,
 }
@@ -73,7 +73,7 @@ impl From<&NodeEntity> for SerializedNode {
             name: entity.config().manifest.name.as_str().to_string(),
             tag: entity.config().manifest.tag.clone(),
             config_path: entity.config_path().display().to_string(),
-            sif_path: entity.sif_path().map(|p| p.display().to_string()),
+            artifact_path: entity.artifact_path().map(|p| p.display().to_string()),
             instance_ids: entity
                 .instances()
                 .iter()
@@ -85,7 +85,7 @@ impl From<&NodeEntity> for SerializedNode {
 
 /// Lifecycle stage of a `NodeEntity`. Each variant carries every piece of state
 /// reached so far — once an entity progresses past `Added`, the original
-/// `config_path` is still available; once past `Built`, the `sif_path` is too.
+/// `config_path` is still available; once past `Built`, the `artifact_path` is too.
 #[derive(Debug, Clone)]
 pub enum NodeStage {
     Added {
@@ -93,11 +93,11 @@ pub enum NodeStage {
     },
     Built {
         config_path: PathBuf,
-        sif_path: PathBuf,
+        artifact_path: PathBuf,
     },
     Started {
         config_path: PathBuf,
-        sif_path: PathBuf,
+        artifact_path: PathBuf,
         instances: Vec<TrackedNodeInstance>,
     },
 }
@@ -177,11 +177,11 @@ impl NodeEntity {
 
     /// Returns the path to the built `.sif`/archive in
     /// `~/.peppy/added_nodes`. `None` until the entity has reached `Built`.
-    pub fn sif_path(&self) -> Option<&Path> {
+    pub fn artifact_path(&self) -> Option<&Path> {
         match &self.stage {
             NodeStage::Added { .. } => None,
-            NodeStage::Built { sif_path, .. } => Some(sif_path),
-            NodeStage::Started { sif_path, .. } => Some(sif_path),
+            NodeStage::Built { artifact_path, .. } => Some(artifact_path),
+            NodeStage::Started { artifact_path, .. } => Some(artifact_path),
         }
     }
 
@@ -297,7 +297,7 @@ impl NodeEntity {
             });
         }
 
-        let sif_path =
+        let artifact_path =
             if is_container {
                 move_sif_to_storage(ctx.working_dir, &node_name, &node_tag, ctx.peppy_dirs)
                     .map_err(|e| Error::BuildFailed {
@@ -316,12 +316,12 @@ impl NodeEntity {
 
         guard.stage = NodeStage::Built {
             config_path,
-            sif_path,
+            artifact_path,
         };
         Ok(())
     }
 
-    /// Forces the entity into the `Built` stage with the given `sif_path`,
+    /// Forces the entity into the `Built` stage with the given `artifact_path`,
     /// without performing any I/O.
     ///
     /// **Escape hatch — prefer [`NodeEntity::build`] in production code.**
@@ -333,7 +333,7 @@ impl NodeEntity {
     ///   disk.
     /// - Tests that need to set up entities in `Built`/`Started` without
     ///   actually invoking apptainer or archiving.
-    pub fn restore_built(&mut self, sif_path: PathBuf) -> Result<()> {
+    pub fn restore_built(&mut self, artifact_path: PathBuf) -> Result<()> {
         let config_path = match &self.stage {
             NodeStage::Added { config_path } => config_path.clone(),
             other => {
@@ -347,7 +347,7 @@ impl NodeEntity {
         };
         self.stage = NodeStage::Built {
             config_path,
-            sif_path,
+            artifact_path,
         };
         Ok(())
     }
@@ -362,7 +362,7 @@ impl NodeEntity {
         match &mut self.stage {
             NodeStage::Built { .. } => {
                 // Move out of the current stage to take ownership of the paths.
-                let (config_path, sif_path) = match std::mem::replace(
+                let (config_path, artifact_path) = match std::mem::replace(
                     &mut self.stage,
                     // Temporary placeholder; immediately overwritten below.
                     NodeStage::Added {
@@ -371,13 +371,13 @@ impl NodeEntity {
                 ) {
                     NodeStage::Built {
                         config_path,
-                        sif_path,
-                    } => (config_path, sif_path),
+                        artifact_path,
+                    } => (config_path, artifact_path),
                     _ => unreachable!("matched Built above"),
                 };
                 self.stage = NodeStage::Started {
                     config_path,
-                    sif_path,
+                    artifact_path,
                     instances: vec![instance],
                 };
                 Ok(())
@@ -407,7 +407,7 @@ impl NodeEntity {
 
     /// Removes the matching instance from a `Started` entity. If the resulting
     /// instance vec is empty, the entity falls back to `Built` (preserving
-    /// `config_path` and `sif_path`).
+    /// `config_path` and `artifact_path`).
     ///
     /// Returns `true` if an instance was removed, `false` if the instance id
     /// was not found or the entity is not in `Started`.
@@ -432,13 +432,13 @@ impl NodeEntity {
             };
             if let NodeStage::Started {
                 config_path,
-                sif_path,
+                artifact_path,
                 ..
             } = std::mem::replace(&mut self.stage, placeholder)
             {
                 self.stage = NodeStage::Built {
                     config_path,
-                    sif_path,
+                    artifact_path,
                 };
             }
         }

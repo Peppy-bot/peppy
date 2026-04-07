@@ -795,7 +795,7 @@ async fn snapshot_and_clear_stack(
             (
                 guard.config().clone(),
                 guard
-                    .sif_path()
+                    .artifact_path()
                     .unwrap_or_else(|| guard.config_path())
                     .to_path_buf(),
             )

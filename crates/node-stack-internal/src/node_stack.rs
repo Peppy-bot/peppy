@@ -302,7 +302,7 @@ impl NodeStackInner {
     /// When the entity already exists, this resets its lifecycle:
     /// - the stored config is replaced,
     /// - the stage is rolled back to `Added` with the supplied `config_path`,
-    /// - any previous `sif_path` and instance tracking are dropped.
+    /// - any previous `artifact_path` and instance tracking are dropped.
     ///
     /// Callers must therefore stop / remove any pre-existing instances of the
     /// entity *before* calling `push_config` for a re-add. (See
@@ -644,7 +644,7 @@ impl NodeStack {
             let name = config.manifest.name.as_str().to_owned();
             let tag = config.manifest.tag.clone();
             let config_path = source_guard.config_path().to_path_buf();
-            let sif_path = source_guard.sif_path().map(|p| p.to_path_buf());
+            let artifact_path = source_guard.artifact_path().map(|p| p.to_path_buf());
             let instances: Vec<TrackedNodeInstance> = source_guard.instances().to_vec();
             drop(source_guard);
 
@@ -656,14 +656,14 @@ impl NodeStack {
 
             // 2. If the source had progressed past Added, replay the path data
             //    via the internal restore_built shortcut.
-            if let Some(sif_path) = sif_path {
+            if let Some(artifact_path) = artifact_path {
                 let target_handle = self.find(&name, &tag).ok_or_else(|| {
                     format!("internal: just-pushed entity {}:{} not found", name, tag)
                 })?;
                 target_handle
                     .write()
                     .expect("entity poisoned")
-                    .restore_built(sif_path)
+                    .restore_built(artifact_path)
                     .map_err(|e| {
                         format!("failed to restore built state for {}:{}: {e}", name, tag)
                     })?;

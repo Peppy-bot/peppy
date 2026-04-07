@@ -29,19 +29,19 @@ const GOAL_TIMEOUT: Duration = Duration::from_secs(30);
 const RESULT_TIMEOUT: Duration = Duration::from_secs(120);
 const CONTAINER_RESULT_TIMEOUT: Duration = Duration::from_secs(300);
 
-/// Returns the current `sif_path` of the entity at `(name, tag)` as an owned
+/// Returns the current `artifact_path` of the entity at `(name, tag)` as an owned
 /// `PathBuf`. Panics if the entity is missing or is not yet `Built`.
 ///
 /// The entity lookup uses the new `Arc<RwLock<NodeEntity>>` API: most call
 /// sites used to call `entity.root_path()` directly; this helper encapsulates
-/// the `read()` + `sif_path().expect(...)` boilerplate.
-fn entity_sif_path(node_stack: &node_stack::NodeStack, name: &str, tag: &str) -> PathBuf {
+/// the `read()` + `artifact_path().expect(...)` boilerplate.
+fn entity_artifact_path(node_stack: &node_stack::NodeStack, name: &str, tag: &str) -> PathBuf {
     node_stack
         .find(name, tag)
         .expect("entity should exist")
         .read()
         .expect("entity poisoned")
-        .sif_path()
+        .artifact_path()
         .expect("entity should be built")
         .to_path_buf()
 }
@@ -338,7 +338,7 @@ async fn listen_for_node_fs_add_success() {
 
     // Verify the node was archived to the peppy storage directory
     let snapshot_path = add_result.snapshot_path.as_path();
-    let root_path = entity_sif_path(&node_stack, TARGET_NODE_NAME, TARGET_NODE_TAG);
+    let root_path = entity_artifact_path(&node_stack, TARGET_NODE_NAME, TARGET_NODE_TAG);
     assert_eq!(
         snapshot_path, root_path,
         "snapshot_path should match archive path"
@@ -442,7 +442,7 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
 
     // Verify the .sif image was stored in the peppy storage directory
     let snapshot_path = add_result.snapshot_path.as_path();
-    let root_path = entity_sif_path(&node_stack, TARGET_NODE_NAME, TARGET_NODE_TAG);
+    let root_path = entity_artifact_path(&node_stack, TARGET_NODE_NAME, TARGET_NODE_TAG);
     assert_eq!(
         snapshot_path, root_path,
         "snapshot_path should match root_path"
@@ -562,7 +562,7 @@ async fn listen_for_node_git_add_success() {
     );
 
     let snapshot_path = add_result.snapshot_path.as_path();
-    let root_path = entity_sif_path(&node_stack, TARGET_NODE_NAME, TARGET_NODE_TAG);
+    let root_path = entity_artifact_path(&node_stack, TARGET_NODE_NAME, TARGET_NODE_TAG);
     assert_eq!(snapshot_path, root_path);
     assert!(root_path.exists(), "archive should exist");
     assert!(
@@ -757,7 +757,7 @@ async fn listen_for_node_http_add_success() {
     );
 
     let snapshot_path = add_result.snapshot_path.as_path();
-    let root_path = entity_sif_path(&node_stack, TARGET_NODE_NAME, TARGET_NODE_TAG);
+    let root_path = entity_artifact_path(&node_stack, TARGET_NODE_NAME, TARGET_NODE_TAG);
     assert_eq!(snapshot_path, root_path);
     assert!(root_path.exists(), "archive should exist");
     assert!(
@@ -1170,7 +1170,7 @@ async fn listen_for_node_add_same_node_same_tags_overwrites_when_no_dependents()
 
     assert_eq!(node_stack.len(), 2, "root + v1");
     assert_eq!(entity_instance_count(&node_stack, NODE_NAME, NODE_TAG), 0);
-    let copied_path_v1 = entity_sif_path(&node_stack, NODE_NAME, NODE_TAG);
+    let copied_path_v1 = entity_artifact_path(&node_stack, NODE_NAME, NODE_TAG);
 
     // Second add: same name+tag but different interfaces -> should overwrite.
     let peppy_json5_v2 = r#"{
@@ -1221,7 +1221,7 @@ async fn listen_for_node_add_same_node_same_tags_overwrites_when_no_dependents()
         "should not have any instances"
     );
     let entity_root = entity_guard
-        .sif_path()
+        .artifact_path()
         .expect("entity should be built")
         .to_path_buf();
     assert_eq!(
@@ -1351,7 +1351,7 @@ async fn listen_for_node_add_same_node_same_tags_fails_when_node_has_dependents(
 
     assert_eq!(node_stack.len(), 3, "root + dependency + dependent");
     let dependency_snapshot_path =
-        entity_sif_path(&node_stack, DEPENDENCY_NODE_NAME, DEPENDENCY_NODE_TAG);
+        entity_artifact_path(&node_stack, DEPENDENCY_NODE_NAME, DEPENDENCY_NODE_TAG);
 
     // Overwrite attempt: same name+tag but different interfaces should fail due to dependent nodes.
     let dependency_peppy_json5_v2 = r#"{
@@ -1403,7 +1403,7 @@ async fn listen_for_node_add_same_node_same_tags_fails_when_node_has_dependents(
 
     assert_eq!(node_stack.len(), 3, "stack should be unchanged");
     assert_eq!(
-        entity_sif_path(&node_stack, DEPENDENCY_NODE_NAME, DEPENDENCY_NODE_TAG).as_path(),
+        entity_artifact_path(&node_stack, DEPENDENCY_NODE_NAME, DEPENDENCY_NODE_TAG).as_path(),
         dependency_snapshot_path.as_path(),
         "dependency should still point to the original snapshot path"
     );
@@ -1556,7 +1556,7 @@ async fn listen_for_node_add_copies_files_to_storage() {
         add_result.error_message
     );
 
-    let archive_path = entity_sif_path(&node_stack, TARGET_NODE_NAME, TARGET_NODE_TAG);
+    let archive_path = entity_artifact_path(&node_stack, TARGET_NODE_NAME, TARGET_NODE_TAG);
     assert_eq!(
         add_result.snapshot_path.as_path(),
         archive_path.as_path(),
@@ -1628,7 +1628,7 @@ async fn listen_for_node_add_runs_add_cmd() {
         add_result.error_message
     );
 
-    let archive_path = entity_sif_path(&node_stack, TARGET_NODE_NAME, TARGET_NODE_TAG);
+    let archive_path = entity_artifact_path(&node_stack, TARGET_NODE_NAME, TARGET_NODE_TAG);
 
     // Verify that add_cmd was executed in the working directory (not the source)
     // by checking the marker file exists in the archive
@@ -2091,14 +2091,18 @@ async fn listen_for_node_add_abandoned_action_does_not_block_next_goal() {
     );
 
     // Wait for the first action to complete by checking that the node has
-    // reached the `Built` stage (i.e. sif_path is Some). The entity is
+    // reached the `Built` stage (i.e. artifact_path is Some). The entity is
     // pushed into the stack as `Added` *before* the build starts, so a bare
     // `contains` check would fire too early and overlap the second goal
     // with the still-running first action.
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             if let Some(handle) = node_stack.find(FIRST_NODE_NAME, FIRST_NODE_TAG)
-                && handle.read().expect("entity poisoned").sif_path().is_some()
+                && handle
+                    .read()
+                    .expect("entity poisoned")
+                    .artifact_path()
+                    .is_some()
             {
                 break;
             }
@@ -2201,7 +2205,7 @@ async fn node_add_same_node_shutdown_existing_instances() {
         add_v1.error_message
     );
 
-    let snapshot_v1 = entity_sif_path(&node_stack, NODE_NAME, NODE_TAG);
+    let snapshot_v1 = entity_artifact_path(&node_stack, NODE_NAME, NODE_TAG);
 
     let instance_id_1 = config::node::Name::new(INSTANCE_1).expect("valid instance id 1");
     let instance_id_2 = config::node::Name::new(INSTANCE_2).expect("valid instance id 2");
@@ -2320,7 +2324,7 @@ async fn node_add_same_node_shutdown_existing_instances() {
         .expect("shutdown request for instance 1 should arrive within timeout")
         .expect("shutdown channel for instance 1 should not be dropped");
     assert_eq!(
-        entity_sif_path(&node_stack, NODE_NAME, NODE_TAG).as_path(),
+        entity_artifact_path(&node_stack, NODE_NAME, NODE_TAG).as_path(),
         snapshot_v1.as_path(),
         "node should not be overwritten before instance 1 is shutdown"
     );
@@ -2333,7 +2337,7 @@ async fn node_add_same_node_shutdown_existing_instances() {
         .expect("shutdown request for instance 2 should arrive within timeout")
         .expect("shutdown channel for instance 2 should not be dropped");
     assert_eq!(
-        entity_sif_path(&node_stack, NODE_NAME, NODE_TAG).as_path(),
+        entity_artifact_path(&node_stack, NODE_NAME, NODE_TAG).as_path(),
         snapshot_v1.as_path(),
         "node should not be overwritten before instance 2 is shutdown"
     );
@@ -2353,7 +2357,7 @@ async fn node_add_same_node_shutdown_existing_instances() {
     );
 
     assert_eq!(
-        entity_sif_path(&node_stack, NODE_NAME, NODE_TAG).as_path(),
+        entity_artifact_path(&node_stack, NODE_NAME, NODE_TAG).as_path(),
         add_v2.snapshot_path.as_path(),
         "node stack should point to the new snapshot path"
     );
@@ -3335,7 +3339,7 @@ async fn node_add_same_node_changing_interface_with_running_instance_and_depende
         dependent_add.error_message
     );
 
-    let snapshot_v1 = entity_sif_path(&node_stack, DEPENDENCY_NODE_NAME, DEPENDENCY_NODE_TAG);
+    let snapshot_v1 = entity_artifact_path(&node_stack, DEPENDENCY_NODE_NAME, DEPENDENCY_NODE_TAG);
 
     // Add a fake running instance to the dependency node
     let instance_id = config::node::Name::new(INSTANCE_ID).expect("valid instance id");
@@ -3418,7 +3422,7 @@ async fn node_add_same_node_changing_interface_with_running_instance_and_depende
 
     // Old config must be preserved, snapshot path unchanged
     assert_eq!(
-        entity_sif_path(&node_stack, DEPENDENCY_NODE_NAME, DEPENDENCY_NODE_TAG).as_path(),
+        entity_artifact_path(&node_stack, DEPENDENCY_NODE_NAME, DEPENDENCY_NODE_TAG).as_path(),
         snapshot_v1.as_path(),
         "snapshot path should be unchanged after failed overwrite"
     );

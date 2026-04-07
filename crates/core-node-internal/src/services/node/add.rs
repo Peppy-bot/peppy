@@ -1560,7 +1560,7 @@ async fn process_node_add(
 
     // Capture the previous .sif/archive path (if any) so we can clean it up
     // after the new entity is in place. Only nodes that have already reached
-    // `Built` have a sif_path.
+    // `Built` have an artifact_path.
     let previous_snapshot_path =
         ctx.action
             .node_stack
@@ -1569,7 +1569,7 @@ async fn process_node_add(
                 entity
                     .read()
                     .expect("entity poisoned")
-                    .sif_path()
+                    .artifact_path()
                     .map(|p| p.to_path_buf())
             });
 
@@ -1791,13 +1791,13 @@ async fn process_node_add(
         return NodeAddResult::failure(&ctx.log_path, msg);
     }
 
-    // Re-read the entity to get the freshly recorded sif_path for cleanup
-    // and the success message.
+    // Re-read the entity to get the freshly recorded artifact_path for
+    // cleanup and the success message.
     let snapshot_path = entity_handle
         .read()
         .expect("entity poisoned")
-        .sif_path()
-        .expect("entity must have a sif_path after a successful build")
+        .artifact_path()
+        .expect("entity must have an artifact_path after a successful build")
         .to_path_buf();
 
     // Working dir is no longer needed; clean it up immediately.
