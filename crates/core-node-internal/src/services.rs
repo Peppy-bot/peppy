@@ -25,7 +25,10 @@ use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, oneshot};
 use tracing::info;
 
-const CORE_NODE_TAG: &str = "core-node";
+const CORE_NODE_TAG: &str = match option_env!("PEPPY_GIT_TAG") {
+    Some(tag) => tag,
+    None => "unknown",
+};
 
 #[cfg(test)]
 mod tests;
@@ -93,7 +96,20 @@ impl CoreNode {
     ) -> Self {
         let manifest_name = match node_name {
             Some(name) => Name::new(name).unwrap(),
-            None => Name::new(get_random(rng())).unwrap(),
+            None => {
+                let uid = machine_uid::get().unwrap_or_else(|_| "unknown".to_string());
+                let sanitized: String = uid
+                    .chars()
+                    .map(|c| {
+                        if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                            c
+                        } else {
+                            '-'
+                        }
+                    })
+                    .collect();
+                Name::new(format!("core-node-{sanitized}")).unwrap()
+            }
         };
 
         let node_startup_timeout = node_arguments.node_startup_timeout;
