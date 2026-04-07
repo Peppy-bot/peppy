@@ -7,7 +7,7 @@ use crate::{
     error::{Error, Result},
     generator::{
         naming::{sanitize_component, unique_module_name},
-        types::{CapnpSchema, InterfaceArtifact, InterfaceKind},
+        types::{CapnpSchema, InterfaceArtifact, ModuleCategory},
     },
 };
 use config::encoding::compile_capnp;
@@ -303,37 +303,7 @@ fn deploy_rust_crates_to_shared_cache(
     Ok(())
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum ModuleCategory {
-    EmittedTopics,
-    ConsumedTopics,
-    ExposedServices,
-    ConsumedServices,
-    ExposedActions,
-    ConsumedActions,
-}
-
 impl ModuleCategory {
-    const ALL: [Self; 6] = [
-        Self::EmittedTopics,
-        Self::ConsumedTopics,
-        Self::ExposedServices,
-        Self::ConsumedServices,
-        Self::ExposedActions,
-        Self::ConsumedActions,
-    ];
-
-    fn from_kind(kind: InterfaceKind) -> Self {
-        match kind {
-            InterfaceKind::EmittedTopic => Self::EmittedTopics,
-            InterfaceKind::ConsumedTopic => Self::ConsumedTopics,
-            InterfaceKind::ExposedService => Self::ExposedServices,
-            InterfaceKind::ConsumedService => Self::ConsumedServices,
-            InterfaceKind::ExposedAction => Self::ExposedActions,
-            InterfaceKind::ConsumedAction => Self::ConsumedActions,
-        }
-    }
-
     fn struct_name(self) -> &'static str {
         match self {
             Self::EmittedTopics => "EmittedTopics",
@@ -342,17 +312,6 @@ impl ModuleCategory {
             Self::ConsumedServices => "ConsumedServices",
             Self::ExposedActions => "ExposedActions",
             Self::ConsumedActions => "ConsumedActions",
-        }
-    }
-
-    fn module_file_name(self) -> &'static str {
-        match self {
-            Self::EmittedTopics => "emitted_topics",
-            Self::ConsumedTopics => "consumed_topics",
-            Self::ExposedServices => "exposed_services",
-            Self::ConsumedServices => "consumed_services",
-            Self::ExposedActions => "exposed_actions",
-            Self::ConsumedActions => "consumed_actions",
         }
     }
 
@@ -395,7 +354,7 @@ fn group_artifacts_by_category(
 }
 
 fn prepare_category_dir(src_dir: &Path, category: ModuleCategory) -> Result<PathBuf> {
-    let category_dir = src_dir.join(category.module_file_name());
+    let category_dir = src_dir.join(category.dir_name());
     if category_dir.exists() {
         fs::remove_dir_all(&category_dir)?;
     }
@@ -410,7 +369,7 @@ fn prepare_category_dir(src_dir: &Path, category: ModuleCategory) -> Result<Path
 }
 
 fn category_module_path(src_dir: &Path, category: ModuleCategory) -> PathBuf {
-    src_dir.join(format!("{}.rs", category.module_file_name()))
+    src_dir.join(format!("{}.rs", category.dir_name()))
 }
 
 fn write_category_modules(
@@ -468,26 +427,7 @@ fn write_node_module(
     } else {
         original_name.to_string()
     };
-    let mut submodule_counts: HashMap<String, usize> = HashMap::new();
-    let module_dir = base_dir.join(module_name);
-
     for artifact in artifacts {
-        if let Some(submodule) = &artifact.submodule {
-            let submodule_name =
-                unique_module_name(submodule, &mut submodule_counts, sanitize_rust_module_name);
-            fs::create_dir_all(&module_dir)?;
-            let submodule_path = module_dir.join(format!("{submodule_name}.rs"));
-            let mut contents = artifact.code_output;
-            if !contents.ends_with('\n') {
-                contents.push('\n');
-            }
-            fs::write(&submodule_path, contents)?;
-            let ident = syn::Ident::new(&submodule_name, Span::call_site());
-            let mod_item: Item = parse_quote!(pub mod #ident;);
-            items.push(mod_item);
-            continue;
-        }
-
         let file =
             parse_file(&artifact.code_output).map_err(|source| Error::NodeModuleParseError {
                 node: node_label.clone(),

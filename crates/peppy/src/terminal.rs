@@ -168,18 +168,6 @@ impl ScrollingOutput {
         self.rendered_lines = 0;
         self.lines.clear();
     }
-
-    /// Finishes the scrolling output, leaving the final state visible.
-    ///
-    /// This moves the cursor below the output region so subsequent
-    /// output appears after it.
-    pub fn finish(&mut self) {
-        if self.is_terminal {
-            // Just flush to ensure everything is displayed
-            let _ = self.stdout.flush();
-        }
-        self.rendered_lines = 0;
-    }
 }
 
 impl Drop for ScrollingOutput {

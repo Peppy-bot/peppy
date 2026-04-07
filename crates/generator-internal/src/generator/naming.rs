@@ -99,7 +99,7 @@ pub(crate) fn normalize_snake_case(input: &str) -> String {
     result
 }
 
-/// Builds a module name from node and name components.
+/// Builds a sanitized module name from node and name components.
 ///
 /// Returns a combined `node_name` string, or the non-empty component if the other is empty.
 pub fn module_name_from_components(node: &str, name: &str) -> String {
@@ -112,6 +112,37 @@ pub fn module_name_from_components(node: &str, name: &str) -> String {
         (true, false) => name_component,
         (true, true) => String::new(),
     }
+}
+
+/// Builds a raw (unsanitized) label from node and name components.
+///
+/// Unlike [`module_name_from_components`], this preserves the original characters
+/// so that names which differ only in separator style (e.g. `foo-bar` vs `foo_bar`)
+/// remain distinct.  Used as the grouping key for artifacts before sanitization.
+pub fn raw_module_label(node: &str, name: &str) -> String {
+    let node = node.trim();
+    let name = name.trim();
+
+    match (node.is_empty(), name.is_empty()) {
+        (false, false) => format!("{node}::{name}"),
+        (false, true) => node.to_string(),
+        (true, false) => name.to_string(),
+        (true, true) => String::new(),
+    }
+}
+
+/// Sanitizes a display name for use in generated comments and doc attributes.
+///
+/// Trims whitespace, replaces control characters with spaces, and collapses
+/// consecutive whitespace into single spaces.
+pub(crate) fn sanitize_node_display_name(s: &str) -> String {
+    s.trim()
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Returns the intermediate field name used when generating a struct for
@@ -347,5 +378,46 @@ mod tests {
         let resolved = resolve_schema_file_stem("My-Topic");
         assert_eq!(resolved.base_name, "my_topic");
         assert_eq!(resolved.file_stem, "my_topic_message");
+    }
+
+    #[test]
+    fn sanitize_node_display_name_replaces_control_chars() {
+        assert_eq!(sanitize_node_display_name("hello\nworld"), "hello world");
+        assert_eq!(sanitize_node_display_name("foo\r\nbar"), "foo bar");
+        assert_eq!(sanitize_node_display_name("a\tb\0c"), "a b c");
+    }
+
+    #[test]
+    fn sanitize_node_display_name_trims_and_collapses_whitespace() {
+        assert_eq!(sanitize_node_display_name("  spaces  "), "spaces");
+        assert_eq!(sanitize_node_display_name("  a   b  "), "a b");
+    }
+
+    #[test]
+    fn sanitize_node_display_name_passthrough() {
+        assert_eq!(sanitize_node_display_name("normal_name"), "normal_name");
+        assert_eq!(sanitize_node_display_name(""), "");
+    }
+
+    #[test]
+    fn raw_module_label_uses_unambiguous_separator() {
+        assert_eq!(raw_module_label("sensor", "temp"), "sensor::temp");
+        assert_ne!(
+            raw_module_label("foo_bar", "baz"),
+            raw_module_label("foo", "bar_baz"),
+            "different (node, name) pairs must produce different labels"
+        );
+    }
+
+    #[test]
+    fn raw_module_label_handles_empty_components() {
+        assert_eq!(raw_module_label("", "name"), "name");
+        assert_eq!(raw_module_label("node", ""), "node");
+        assert_eq!(raw_module_label("", ""), "");
+    }
+
+    #[test]
+    fn raw_module_label_trims_whitespace() {
+        assert_eq!(raw_module_label("  node  ", "  name  "), "node::name");
     }
 }

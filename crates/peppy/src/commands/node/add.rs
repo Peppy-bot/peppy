@@ -2,8 +2,8 @@ use core_node::encoding::{
     NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAddResult, NodeInfoRequest,
     NodeInfoResponse, NodeSource,
 };
-use peppylib::{ActionMessenger, MessengerHandle, PeppyError};
-use std::io::{self, BufRead, Write};
+use peppylib::MessengerHandle;
+use std::io::BufRead;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::info;
@@ -12,6 +12,7 @@ use super::TimeoutConfig;
 use super::env::caller_env_overrides;
 use super::source::{parse_node_source, parse_variant_source};
 use super::start::start_instance_async;
+use crate::commands::{CALLER_INSTANCE_ID, GOAL_TIMEOUT, SCROLLING_OUTPUT_LINES};
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 use crate::terminal::ScrollingOutput;
@@ -32,10 +33,6 @@ pub struct AddNodeParams {
     pub force: bool,
     pub confirm_reader: Option<Box<dyn BufRead>>,
 }
-
-const CALLER_INSTANCE_ID: &str = "peppy-cli";
-// Timeout for the goal to be accepted (should be fast)
-const GOAL_TIMEOUT: Duration = Duration::from_secs(30);
 
 fn validate_git_ref(git_ref: Option<&str>) -> Result<Option<String>> {
     let git_ref = git_ref.map(str::trim);
@@ -63,10 +60,6 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
         force,
         mut confirm_reader,
     } = params;
-    let daemon_state = ctx.read_daemon_state()?;
-    let core_node_name = daemon_state.core_node_name.clone();
-    let git_hash = daemon_state.git_hash.clone();
-
     // Validate git_ref and parse the source into a NodeSource
     let git_ref = validate_git_ref(git_ref.as_deref())?;
     let node_source = parse_node_source(&source, git_ref)?;
@@ -90,21 +83,18 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
     // that the actual add will use.
     let variant_source = variant.as_deref().map(parse_variant_source).transpose()?;
 
+    let conn = ctx.connect_to_daemon().await?;
+
     info!(
         "Running `add_cmd` for '{}' on daemon '{}'...",
-        source, core_node_name
+        source, conn.core_node_name
     );
-
-    ctx.connect().await?;
-    let messenger_handle = ctx
-        .messenger_handle()
-        .ok_or_else(|| Error::ExecutionFailed("Failed to connect to daemon".to_string()))?;
 
     let pre_add_node_info = if !force {
         Some(
             fetch_node_info(
-                messenger_handle,
-                &core_node_name,
+                conn.messenger,
+                &conn.core_node_name,
                 node_source.clone(),
                 Duration::from_secs(timeouts.max_secs),
             )
@@ -135,7 +125,7 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
 
     // Create and send the goal to start the add action
     // Pass max timeout as the goal timeout for daemon-side busy reporting
-    let mut add_goal = NodeAddGoal::from_source(node_source, git_hash, timeouts.max_secs)
+    let mut add_goal = NodeAddGoal::from_source(node_source, conn.git_hash, timeouts.max_secs)
         .with_env_vars(caller_env_overrides())
         .with_force(force);
     if let Some(variant_source) = variant_source {
@@ -143,10 +133,10 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
     }
     let mut action_handle = add_goal
         .send_goal(
-            messenger_handle,
-            &core_node_name,
+            conn.messenger,
+            &conn.core_node_name,
             CALLER_INSTANCE_ID,
-            Some(&core_node_name),
+            Some(&conn.core_node_name),
             None,
             GOAL_TIMEOUT,
         )
@@ -169,99 +159,31 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
 
     info!("Log file: {}", goal_response.log_path.display());
 
-    // Number of lines to display in the scrolling output region
-    const SCROLLING_OUTPUT_LINES: usize = 10;
     let mut scrolling_output = ScrollingOutput::new(SCROLLING_OUTPUT_LINES);
 
-    let idle_timeout = Duration::from_secs(timeouts.idle_secs);
-    let absolute_deadline = tokio::time::Instant::now() + Duration::from_secs(timeouts.max_secs);
-    let mut last_activity = tokio::time::Instant::now();
-    let add_result = loop {
-        // Drain feedback so the publisher doesn't block on a full channel.
-        loop {
-            let now = tokio::time::Instant::now();
-            if now >= absolute_deadline {
-                scrolling_output.clear();
-                return Err(Error::ExecutionFailed(format!(
-                    "Timeout: max timeout of {}s exceeded. \
-                     Use --max-timeout <seconds> to increase.",
-                    timeouts.max_secs
-                )));
+    let add_result = crate::commands::action_poll::poll_action_to_completion(
+        conn.messenger,
+        &mut action_handle,
+        &timeouts,
+        &mut scrolling_output,
+        |payload, output| {
+            if let Ok(feedback) = NodeAddFeedback::decode(payload) {
+                output.add_line(&feedback.line, feedback.is_stderr());
             }
-            if now.duration_since(last_activity) >= idle_timeout {
-                scrolling_output.clear();
-                return Err(Error::ExecutionFailed(format!(
-                    "Timeout: no output received for {}s. \
-                     Use --idle-timeout <seconds> to increase.",
-                    timeouts.idle_secs
-                )));
-            }
-            let drain_timeout = Duration::from_millis(50);
-            match tokio::time::timeout(drain_timeout, action_handle.on_next_feedback()).await {
-                Ok(Ok(msg)) => {
-                    last_activity = tokio::time::Instant::now();
-                    let payload = msg.payload();
-                    if let Ok(feedback) = NodeAddFeedback::decode(payload.as_ref()) {
-                        scrolling_output.add_line(&feedback.line, feedback.is_stderr());
-                    }
-                }
-                Ok(Err(_)) => break,
-                Err(_) => break,
-            }
-        }
-
-        let now = tokio::time::Instant::now();
-        if now >= absolute_deadline {
-            scrolling_output.clear();
-            return Err(Error::ExecutionFailed(format!(
-                "Timeout: max timeout of {}s exceeded. \
-                 Use --max-timeout <seconds> to increase.",
-                timeouts.max_secs
-            )));
-        }
-        if now.duration_since(last_activity) >= idle_timeout {
-            scrolling_output.clear();
-            return Err(Error::ExecutionFailed(format!(
-                "Timeout: no output received for {}s. \
-                 Use --idle-timeout <seconds> to increase.",
-                timeouts.idle_secs
-            )));
-        }
-        let poll_timeout = Duration::from_millis(200);
-        match ActionMessenger::request_result(messenger_handle, &action_handle, poll_timeout).await
-        {
-            Ok(msg) => {
-                let payload = msg.payload();
-                match NodeAddResult::decode(&payload) {
-                    Ok(result) => break result,
-                    Err(err) => {
-                        let pending = std::str::from_utf8(payload.as_ref())
-                            .map(|text| text.starts_with("result pending"))
-                            .unwrap_or(false);
-                        if !pending {
-                            scrolling_output.clear();
-                            return Err(Error::ExecutionFailed(format!(
-                                "Failed to decode node_add result: {}",
-                                err
-                            )));
-                        }
-                    }
-                }
-            }
-            Err(PeppyError::ActionResultTimeout { .. }) => {}
+        },
+        |payload| match NodeAddResult::decode(payload) {
+            Ok(result) => Ok(Some(result)),
             Err(err) => {
-                scrolling_output.clear();
-                return Err(Error::ExecutionFailed(format!(
-                    "Failed to get node_add result: {}",
-                    err
-                )));
+                if peppylib::encoding::is_result_pending(payload) {
+                    Ok(None)
+                } else {
+                    Err(format!("Failed to decode node_add result: {err}"))
+                }
             }
-        }
+        },
+    )
+    .await?;
 
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    };
-
-    // Clear the scrolling output now that we're done processing feedback
     scrolling_output.clear();
 
     if !add_result.success {
@@ -298,8 +220,8 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
     })?;
 
     start_instance_async(
-        messenger_handle,
-        &core_node_name,
+        conn.messenger,
+        &conn.core_node_name,
         node_name,
         node_tag,
         &start_options.args,
@@ -339,38 +261,22 @@ fn confirm_overwrite(
     instance_ids: &[String],
     mut reader: Option<Box<dyn BufRead>>,
 ) -> Result<bool> {
+    use crate::commands::confirm::{confirm_prompt, format_instance_ids};
+
     let count = instance_ids.len();
     let suffix = if count == 1 { "instance" } else { "instances" };
-    let ids = instance_ids
-        .iter()
-        .map(|id| format!("\"{}\"", id))
-        .collect::<Vec<_>>()
-        .join(", ");
+    let ids = format_instance_ids(instance_ids);
+    let pronoun = if count == 1 { "it" } else { "them" };
 
-    print!(
-        "Node `{}:{}` already exists with {} running {} ({}). \
-         Adding this node will stop {} and overwrite the existing node. Continue? [y/n] ",
-        node_name,
-        tag,
-        count,
-        suffix,
-        ids,
-        if count == 1 { "it" } else { "them" }
+    let message = format!(
+        "Node `{node_name}:{tag}` already exists with {count} running {suffix} ({ids}). \
+         Adding this node will stop {pronoun} and overwrite the existing node. Continue? [y/n] ",
     );
-    io::stdout().flush().map_err(|e| {
-        Error::ExecutionFailed(format!("Failed to write confirmation prompt: {}", e))
-    })?;
 
-    let mut input = String::new();
-    if let Some(ref mut reader) = reader {
-        reader.read_line(&mut input)
-    } else {
-        io::stdin().read_line(&mut input)
-    }
-    .map_err(|e| Error::ExecutionFailed(format!("Failed to read confirmation response: {}", e)))?;
-
-    let response = input.trim().to_ascii_lowercase();
-    Ok(matches!(response.as_str(), "y" | "yes"))
+    confirm_prompt(
+        &message,
+        reader.as_mut().map(|r| r.as_mut() as &mut dyn BufRead),
+    )
 }
 
 #[cfg(test)]

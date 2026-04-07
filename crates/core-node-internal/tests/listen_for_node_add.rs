@@ -794,7 +794,10 @@ async fn listen_for_node_http_add_accepts_correct_sha256() {
     let (_bundle_dir, bundle_bytes) = create_minimal_http_bundle(TARGET_NODE_NAME, TARGET_NODE_TAG);
 
     use sha2::{Digest, Sha256};
-    let correct_sha256 = format!("{:x}", Sha256::digest(&bundle_bytes));
+    let correct_sha256: String = Sha256::digest(&bundle_bytes)
+        .iter()
+        .map(|b| format!("{:02x}", b))
+        .collect();
 
     let (_server, url) = serve_bundle_over_http(bundle_bytes);
 

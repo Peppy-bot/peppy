@@ -13,7 +13,7 @@ use crate::Result;
 use crate::launch_capnp;
 use crate::names;
 
-use super::{decode_message, encode_message};
+use super::{decode_message, encode_message, optional_text};
 
 /// Default idle timeout in seconds for operations (used as fallback when 0 is received on the wire).
 const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 600;
@@ -179,16 +179,10 @@ impl LaunchGoalResponse {
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
         let response = reader.get_root::<launch_capnp::launch_goal_response::Reader>()?;
-        let rejection_reason_str = response.get_rejection_reason()?.to_str()?;
-        let rejection_reason = if rejection_reason_str.is_empty() {
-            None
-        } else {
-            Some(rejection_reason_str.to_owned())
-        };
         Ok(Self {
             accepted: response.get_accepted(),
             log_path: PathBuf::from(response.get_log_path()?.to_str()?),
-            rejection_reason,
+            rejection_reason: optional_text(response.get_rejection_reason()?.to_str()?),
         })
     }
 }
@@ -362,12 +356,7 @@ impl LaunchResult {
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
         let result = reader.get_root::<launch_capnp::launch_result::Reader>()?;
-        let error_message_str = result.get_error_message()?.to_str()?;
-        let error_message = if error_message_str.is_empty() {
-            None
-        } else {
-            Some(error_message_str.to_owned())
-        };
+        let error_message = optional_text(result.get_error_message()?.to_str()?);
         let log_path = PathBuf::from(result.get_log_path()?.to_str()?);
 
         let add_logs_reader = result.get_node_add_logs()?;

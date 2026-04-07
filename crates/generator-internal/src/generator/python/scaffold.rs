@@ -2,7 +2,9 @@ use super::identifiers::is_python_keyword;
 use crate::error::Result;
 use crate::generator::common::{cache_sibling_path, copy_dir_recursive};
 use crate::generator::naming::{sanitize_component, unique_module_name};
-use crate::generator::types::{CapnpSchema, InterfaceArtifact, InterfaceKind};
+#[cfg(test)]
+use crate::generator::types::InterfaceKind;
+use crate::generator::types::{CapnpSchema, InterfaceArtifact, ModuleCategory};
 use rust_embed::Embed;
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
@@ -251,49 +253,6 @@ fn sanitize_python_module_name(raw: &str) -> String {
         out.push('_');
     }
     out
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum ModuleCategory {
-    EmittedTopics,
-    ConsumedTopics,
-    ExposedServices,
-    ConsumedServices,
-    ExposedActions,
-    ConsumedActions,
-}
-
-impl ModuleCategory {
-    const ALL: [Self; 6] = [
-        Self::EmittedTopics,
-        Self::ConsumedTopics,
-        Self::ExposedServices,
-        Self::ConsumedServices,
-        Self::ExposedActions,
-        Self::ConsumedActions,
-    ];
-
-    fn from_kind(kind: InterfaceKind) -> Self {
-        match kind {
-            InterfaceKind::EmittedTopic => Self::EmittedTopics,
-            InterfaceKind::ConsumedTopic => Self::ConsumedTopics,
-            InterfaceKind::ExposedService => Self::ExposedServices,
-            InterfaceKind::ConsumedService => Self::ConsumedServices,
-            InterfaceKind::ExposedAction => Self::ExposedActions,
-            InterfaceKind::ConsumedAction => Self::ConsumedActions,
-        }
-    }
-
-    fn dir_name(self) -> &'static str {
-        match self {
-            Self::EmittedTopics => "emitted_topics",
-            Self::ConsumedTopics => "consumed_topics",
-            Self::ExposedServices => "exposed_services",
-            Self::ConsumedServices => "consumed_services",
-            Self::ExposedActions => "exposed_actions",
-            Self::ConsumedActions => "consumed_actions",
-        }
-    }
 }
 
 #[cfg(test)]

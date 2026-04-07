@@ -3,11 +3,11 @@ use super::type_mapping::schema_type_to_tokens;
 use crate::error::{Error, Result};
 use crate::generator::naming::sanitize_capnp_field_name;
 use crate::generator::types::{
-    validate_fixed_length_array_items, validate_generated_type_name_collisions,
-    validate_message_format_field_names,
+    is_scalar_copy_type, type_token_name, validate_fixed_length_array_items,
+    validate_generated_type_name_collisions, validate_message_format_field_names,
 };
 use config::encoding::{CapnpSchemaArtifacts, FunctionParam, MessageFormatMapper};
-use config::node::{MessageFormat, PeppygenLanguage, SchemaType, TypeToken};
+use config::node::{MessageFormat, PeppygenLanguage, SchemaType};
 use proc_macro2::{Ident, Span, TokenStream};
 use quote::quote;
 use std::collections::HashMap;
@@ -112,46 +112,10 @@ pub fn map_message_format(
     }
 }
 
-fn type_token_name(token: &TypeToken) -> &'static str {
-    match token {
-        TypeToken::Bool => "bool",
-        TypeToken::String => "string",
-        TypeToken::Bytes => "bytes",
-        TypeToken::Time => "time",
-        TypeToken::U8 => "u8",
-        TypeToken::U16 => "u16",
-        TypeToken::U32 => "u32",
-        TypeToken::U64 => "u64",
-        TypeToken::I8 => "i8",
-        TypeToken::I16 => "i16",
-        TypeToken::I32 => "i32",
-        TypeToken::I64 => "i64",
-        TypeToken::F32 => "f32",
-        TypeToken::F64 => "f64",
-    }
-}
-
-fn is_optional_scalar_without_presence(token: &TypeToken) -> bool {
-    matches!(
-        token,
-        TypeToken::Bool
-            | TypeToken::U8
-            | TypeToken::U16
-            | TypeToken::U32
-            | TypeToken::U64
-            | TypeToken::I8
-            | TypeToken::I16
-            | TypeToken::I32
-            | TypeToken::I64
-            | TypeToken::F32
-            | TypeToken::F64
-    )
-}
-
 fn validate_optional_scalar_schema_for_rust(schema: &SchemaType, path: &str) -> Result<()> {
     match schema {
         SchemaType::Primitive(primitive) => {
-            if primitive.optional && is_optional_scalar_without_presence(&primitive.kind) {
+            if primitive.optional && is_scalar_copy_type(&primitive.kind) {
                 return Err(Error::UnsupportedOptionalScalarType {
                     language: PeppygenLanguage::Rust,
                     field: path.to_string(),

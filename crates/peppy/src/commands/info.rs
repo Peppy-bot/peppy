@@ -3,11 +3,9 @@ use std::time::Duration;
 
 use core_node::encoding::InfoRequest;
 
-use super::Command;
+use super::{CALLER_INSTANCE_ID, Command};
 use crate::context::AppContext;
-use crate::error::{Error, Result};
-
-const CALLER_INSTANCE_ID: &str = "peppy-cli";
+use crate::error::Result;
 
 #[cfg(target_os = "linux")]
 fn print_container_setup_status() {
@@ -53,23 +51,15 @@ async fn info_async(ctx: &Arc<AppContext>) -> Result<()> {
     print_container_setup_status();
 
     // Query core node for its version
-    let daemon_state = ctx.read_daemon_state()?;
-    let core_node_name = daemon_state.core_node_name.clone();
-
-    ctx.connect()
-        .await
-        .map_err(|e| Error::ExecutionFailed(format!("Failed to connect to daemon: {}", e)))?;
-    let messenger = ctx
-        .messenger_handle()
-        .expect("messenger should be initialized after connect");
+    let conn = ctx.connect_to_daemon().await?;
 
     let request = InfoRequest::new();
     match request
         .poll(
-            messenger,
-            &core_node_name,
+            conn.messenger,
+            &conn.core_node_name,
             CALLER_INSTANCE_ID,
-            &core_node_name,
+            &conn.core_node_name,
             REQUEST_TIMEOUT,
         )
         .await

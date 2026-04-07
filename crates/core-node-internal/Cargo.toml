@@ -14,6 +14,7 @@ containers = { path = "../containers-internal" }
 bytes = "1.10"
 chrono = "0.4"
 hostname = "0.4"
+machine-uid = "0.5"
 capnp = "0.25"
 futures = "0.3"
 names-generator2 = "0.2.1"
@@ -39,7 +40,7 @@ ureq = "3.1"
 tar = "0.4"
 zstd = "0.13.3"
 tempfile = "3.10"
-sha2 = "0.10"
+sha2 = "0.11"
 
 [build-dependencies]
 build-helpers = { path = "../build-helpers-internal" }

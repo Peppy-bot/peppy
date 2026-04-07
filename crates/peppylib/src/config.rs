@@ -2,8 +2,7 @@
 
 pub use config::NodeArguments;
 pub use config::consts::{NODE_CONFIG_FILE, RUNTIME_CONFIG_VAR_NAME};
-pub use config::node::*;
-pub use schemars::JsonSchema;
+pub use config::node::QoSProfile;
 
 /// Format a JSON schema validation error into a human-readable message.
 fn format_validation_error(error: &jsonschema::ValidationError) -> String {
@@ -37,7 +36,8 @@ fn format_validation_error(error: &jsonschema::ValidationError) -> String {
 ///
 /// ```ignore
 /// use serde::Deserialize;
-/// use peppylib::config::{NodeArguments, deserialize_parameters, JsonSchema};
+/// use schemars::JsonSchema;
+/// use peppylib::config::{NodeArguments, deserialize_parameters};
 ///
 /// #[derive(Deserialize, JsonSchema)]
 /// struct MyParams {

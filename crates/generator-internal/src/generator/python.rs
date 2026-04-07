@@ -117,10 +117,6 @@ impl PythonGenerator {
 }
 
 impl LanguageGenerator for PythonGenerator {
-    fn push_section(&mut self, section: InterfaceArtifact) {
-        PythonGenerator::push_section(self, section);
-    }
-
     fn add_emitted_topic(&mut self, topic: &EmittedTopic) -> Result<()> {
         let schema_info = topic
             .message_format

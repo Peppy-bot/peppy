@@ -1,4 +1,3 @@
-use std::io::{self, Write};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -6,10 +5,10 @@ use core_node::encoding::{NodeListRequest, NodeRemoveRequest};
 use node_stack::SerializedNodeGraph;
 use tracing::info;
 
+use crate::commands::CALLER_INSTANCE_ID;
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 
-const CALLER_INSTANCE_ID: &str = "peppy-cli";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub fn remove_node(
@@ -35,13 +34,7 @@ async fn remove_node_async(
     stop_instances: bool,
     force: bool,
 ) -> Result<()> {
-    let daemon_state = ctx.read_daemon_state()?;
-    let core_node_name = daemon_state.core_node_name;
-
-    ctx.connect().await?;
-    let messenger_handle = ctx
-        .messenger_handle()
-        .ok_or_else(|| Error::ExecutionFailed("Failed to connect to daemon".to_string()))?;
+    let conn = ctx.connect_to_daemon().await?;
 
     let mut stop_instances = stop_instances;
     if force {
@@ -49,7 +42,7 @@ async fn remove_node_async(
     }
     if !stop_instances {
         let instance_ids =
-            fetch_instance_ids(messenger_handle, &core_node_name, &node_name, &tag).await?;
+            fetch_instance_ids(conn.messenger, &conn.core_node_name, &node_name, &tag).await?;
 
         if !instance_ids.is_empty() {
             let confirm = confirm_removal(&node_name, &tag, &instance_ids)?;
@@ -64,17 +57,17 @@ async fn remove_node_async(
 
     info!(
         "Calling node_remove for '{}:{}' on daemon '{}' (stop_instances={})...",
-        node_name, tag, core_node_name, stop_instances
+        node_name, tag, conn.core_node_name, stop_instances
     );
 
     let remove_request =
         NodeRemoveRequest::new(&node_name, &tag).with_stop_instances(stop_instances);
     let remove_response = remove_request
         .poll(
-            messenger_handle,
-            &core_node_name,
+            conn.messenger,
+            &conn.core_node_name,
             CALLER_INSTANCE_ID,
-            &core_node_name,
+            &conn.core_node_name,
             REQUEST_TIMEOUT,
         )
         .await
@@ -128,28 +121,17 @@ async fn fetch_instance_ids(
 }
 
 fn confirm_removal(node_name: &str, tag: &str, instance_ids: &[String]) -> Result<bool> {
+    use crate::commands::confirm::{confirm_prompt, format_instance_ids};
+
     let count = instance_ids.len();
     let suffix = if count == 1 { "instance" } else { "instances" };
     let verb = if count == 1 { "is" } else { "are" };
-    let ids = instance_ids
-        .iter()
-        .map(|id| format!("\"{}\"", id))
-        .collect::<Vec<_>>()
-        .join(", ");
+    let ids = format_instance_ids(instance_ids);
 
-    print!(
-        "Are you sure you want to remove `{}:{}`? {} {} ({}) {} still running [y/n] ",
-        node_name, tag, count, suffix, ids, verb
+    let message = format!(
+        "Are you sure you want to remove `{node_name}:{tag}`? \
+         {count} {suffix} ({ids}) {verb} still running [y/n] ",
     );
-    io::stdout().flush().map_err(|e| {
-        Error::ExecutionFailed(format!("Failed to write confirmation prompt: {}", e))
-    })?;
 
-    let mut input = String::new();
-    io::stdin().read_line(&mut input).map_err(|e| {
-        Error::ExecutionFailed(format!("Failed to read confirmation response: {}", e))
-    })?;
-
-    let response = input.trim().to_ascii_lowercase();
-    Ok(matches!(response.as_str(), "y" | "yes"))
+    confirm_prompt(&message, None)
 }

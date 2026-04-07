@@ -39,6 +39,7 @@ tokio-util = "0.7"
 rand = "0.10"
 regex = "1"
 config = { path = "../config-internal", features = ["test_helpers"] }
+pmi = { path = "../pmi-internal", features = ["zenoh", "build_zenoh"] }
 
 [features]
 default = ["zenoh"]

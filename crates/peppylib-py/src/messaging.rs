@@ -10,7 +10,7 @@ use pyo3::prelude::*;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
-pub use topics::{PySubscription, PyTopicMessage, PyTopicMessenger};
+pub(crate) use topics::{PySubscription, PyTopicMessage, PyTopicMessenger};
 
 /// Convert a `peppylib::error::Error` into an appropriate Python exception.
 ///
@@ -172,7 +172,7 @@ impl PyMessengerHandle {
 }
 
 /// Register the messaging submodule
-pub fn register(parent_module: &Bound<'_, PyModule>) -> PyResult<()> {
+pub(crate) fn register(parent_module: &Bound<'_, PyModule>) -> PyResult<()> {
     let messaging_module = PyModule::new(parent_module.py(), "messaging")?;
     messaging_module.add_class::<PyZenohdInstance>()?;
     messaging_module.add_class::<PyMessengerHandle>()?;

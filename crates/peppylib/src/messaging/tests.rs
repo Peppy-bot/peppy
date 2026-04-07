@@ -2367,3 +2367,111 @@ async fn single_action_communication_multiple_polls() {
 
     router.shutdown().await;
 }
+
+/// Verifies that a caller using the wildcard instance ID ("**") can still
+/// send a service request and receive a response.  The wildcard triggers
+/// fallback logic in `poll_service` (caller segments) and
+/// `build_request_context` (response segment) which replaces "**" with
+/// BROADCAST_MARKER ("_any_") to produce valid Zenoh key expressions.
+/// Using the raw "**" wildcard would create invalid key expressions like
+/// `core/*/**/*/.../response/id` (Zenoh requires `*/**` not `**/*`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn service_communication_poll_wildcard_caller() {
+    let router = TestRouterContext::start().await;
+
+    let listener_node_name = "sensor";
+    let listener_service_name = "read_value";
+
+    // The caller uses "**" (INSTANCE_ID_WILDCARD) as its instance ID.
+    const CALLER_INSTANCE_ID: &str = "**";
+    const CALLER_CORE_NODE: &str = "wildcard_caller_core";
+
+    let request_payload = Payload::from_static(b"read");
+    let response_payload = Payload::from_static(b"value=42");
+
+    let (service_ready_tx, service_ready_rx) = oneshot::channel();
+    let service_wait_timeout = Duration::from_millis(1500);
+    let service_task_timeout = service_wait_timeout + Duration::from_millis(500);
+    let service_ready_timeout = Duration::from_secs(1);
+
+    let listener_core_node = "listener_core_node";
+    let listener_instance_id = "listener_instance";
+    let service_task = {
+        let service_expose_handle = router.messenger().await;
+        let mut service = ServiceMessenger::listen(
+            &service_expose_handle,
+            listener_core_node,
+            listener_instance_id,
+            listener_node_name,
+            listener_service_name,
+        )
+        .await
+        .expect("service should start");
+
+        let request_payload = request_payload.clone();
+        let response_payload = response_payload.clone();
+
+        tokio::spawn(async move {
+            let handler = service.handle_next_request(|request| {
+                let response_payload = response_payload.clone();
+                async move {
+                    assert_eq!(request.message().payload(), &request_payload);
+                    Ok(response_payload)
+                }
+            });
+
+            service_ready_tx.send(()).unwrap();
+            let handled = tokio::time::timeout(service_wait_timeout, handler)
+                .await
+                .expect("service handler timed out");
+            let handled = handled.expect("service should receive exactly one request");
+
+            assert!(
+                handled,
+                "service subscription closed before handling request"
+            );
+
+            Ok::<(), Error>(())
+        })
+    };
+
+    tokio::time::timeout(service_ready_timeout, service_ready_rx)
+        .await
+        .expect("service should signal readiness before timeout")
+        .expect("service should signal readiness");
+
+    // Allow service subscriptions to stabilize
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Poll with the wildcard caller instance ID — exercises the fallback path
+    {
+        let caller_handle = router.messenger().await;
+        let response = ServiceMessenger::poll(
+            &caller_handle,
+            CALLER_CORE_NODE,
+            CALLER_INSTANCE_ID,
+            listener_node_name,
+            listener_service_name,
+            None,
+            None,
+            request_payload.clone(),
+            Duration::from_secs(2),
+        )
+        .await
+        .expect("wildcard caller should receive response");
+
+        assert_eq!(response.instance_id(), listener_instance_id);
+        assert_eq!(response.core_node(), listener_core_node);
+        assert_eq!(response.payload(), &response_payload);
+    }
+
+    tokio::time::timeout(service_task_timeout, service_task)
+        .await
+        .expect("service task should finish within timeout")
+        .expect("service task panicked")
+        .expect("service task returned error");
+
+    tokio::time::timeout(service_task_timeout, router.shutdown())
+        .await
+        .expect("router shutdown timed out");
+}

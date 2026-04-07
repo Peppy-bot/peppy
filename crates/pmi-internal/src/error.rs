@@ -4,11 +4,9 @@ pub type Result<T> = core::result::Result<T, Error>;
 
 #[derive(Debug, From)]
 pub enum Error {
-    // -- general
     #[from]
     Io(std::io::Error),
 
-    ConnectionError,
     ConfigurationError(String),
     PublishError {
         topic: String,
@@ -24,16 +22,7 @@ pub enum Error {
     ZenohdError(String),
     ZenohDConfigurationNotFound,
     InstanceIdNotFound(String),
-    InstanceIdExtractionError(String),
     CoreNodeNotFound(String),
-
-    // Encoding
-    UnsupportedEncoding(String),
-    EncodingError(String),
-    DecodingError(String),
-
-    // -- libs
-    AskamaError(String),
 }
 
 impl core::fmt::Display for Error {

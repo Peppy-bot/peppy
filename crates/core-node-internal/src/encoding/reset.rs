@@ -8,7 +8,7 @@ use crate::Result;
 use crate::names;
 use crate::node_capnp;
 
-use super::{decode_message, encode_message};
+use super::{decode_message, encode_message, optional_text};
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct NodeResetRequest;
@@ -92,15 +92,9 @@ impl NodeResetResponse {
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
         let response = reader.get_root::<node_capnp::node_reset_response::Reader>()?;
-        let error_message_str = response.get_error_message()?.to_str()?;
-        let error_message = if error_message_str.is_empty() {
-            None
-        } else {
-            Some(error_message_str.to_owned())
-        };
         Ok(Self {
             success: response.get_success(),
-            error_message,
+            error_message: optional_text(response.get_error_message()?.to_str()?),
         })
     }
 }

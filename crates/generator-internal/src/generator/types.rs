@@ -80,35 +80,21 @@ impl DeploymentInterface {
 pub struct InterfaceArtifact {
     pub node_name: String,
     pub kind: InterfaceKind,
-    pub interface: Option<InterfaceVariant>,
     pub code_output: String,
-    pub submodule: Option<String>,
 }
 
 impl InterfaceArtifact {
     pub fn from_kind(node_name: &str, kind: InterfaceKind, code_output: String) -> Self {
-        Self::from_kind_with_submodule(node_name, kind, code_output, None)
-    }
-
-    pub fn from_kind_with_submodule(
-        node_name: &str,
-        kind: InterfaceKind,
-        code_output: String,
-        submodule: Option<String>,
-    ) -> Self {
         Self {
             node_name: node_name.to_string(),
             kind,
-            interface: None,
             code_output,
-            submodule,
         }
     }
 }
 
 /// Collects deployment interfaces and produces generated artifacts when finalized.
 pub trait LanguageGenerator {
-    fn push_section(&mut self, section: InterfaceArtifact);
     fn add_emitted_topic(&mut self, topic: &EmittedTopic) -> Result<()>;
     fn add_exposed_service(&mut self, service: &ExposedService) -> Result<()>;
     fn add_exposed_action(&mut self, action: &ExposedAction) -> Result<()>;
@@ -187,7 +173,7 @@ pub fn non_empty_message_format(format: Option<&MessageFormat>) -> Option<&Messa
 
 const RESERVED_MESSAGE_FIELD_NAMES: &[&str] = &["instance_id"];
 
-fn type_token_name(token: &TypeToken) -> &'static str {
+pub(crate) fn type_token_name(token: &TypeToken) -> &'static str {
     match token {
         TypeToken::Bool => "bool",
         TypeToken::String => "string",
@@ -206,7 +192,7 @@ fn type_token_name(token: &TypeToken) -> &'static str {
     }
 }
 
-fn is_fixed_array_item_copy_primitive(token: &TypeToken) -> bool {
+pub(crate) fn is_scalar_copy_type(token: &TypeToken) -> bool {
     matches!(
         token,
         TypeToken::Bool
@@ -238,7 +224,7 @@ fn validate_fixed_array_schema(schema: &SchemaType, path: &str) -> Result<()> {
                         field: path.to_string(),
                     }
                 })?;
-                if !is_fixed_array_item_copy_primitive(token) {
+                if !is_scalar_copy_type(token) {
                     return Err(Error::UnsupportedFixedArrayItemType {
                         field: path.to_string(),
                         item: type_token_name(token),
@@ -630,5 +616,48 @@ impl CapnpSchema {
 
     pub fn schema(&self) -> &str {
         &self.schema
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum ModuleCategory {
+    EmittedTopics,
+    ConsumedTopics,
+    ExposedServices,
+    ConsumedServices,
+    ExposedActions,
+    ConsumedActions,
+}
+
+impl ModuleCategory {
+    pub const ALL: [Self; 6] = [
+        Self::EmittedTopics,
+        Self::ConsumedTopics,
+        Self::ExposedServices,
+        Self::ConsumedServices,
+        Self::ExposedActions,
+        Self::ConsumedActions,
+    ];
+
+    pub fn from_kind(kind: InterfaceKind) -> Self {
+        match kind {
+            InterfaceKind::EmittedTopic => Self::EmittedTopics,
+            InterfaceKind::ConsumedTopic => Self::ConsumedTopics,
+            InterfaceKind::ExposedService => Self::ExposedServices,
+            InterfaceKind::ConsumedService => Self::ConsumedServices,
+            InterfaceKind::ExposedAction => Self::ExposedActions,
+            InterfaceKind::ConsumedAction => Self::ConsumedActions,
+        }
+    }
+
+    pub fn dir_name(self) -> &'static str {
+        match self {
+            Self::EmittedTopics => "emitted_topics",
+            Self::ConsumedTopics => "consumed_topics",
+            Self::ExposedServices => "exposed_services",
+            Self::ConsumedServices => "consumed_services",
+            Self::ExposedActions => "exposed_actions",
+            Self::ConsumedActions => "consumed_actions",
+        }
     }
 }

@@ -1,10 +1,8 @@
 [package]
 name = "docs-integration-tests"
 version = "0.1.0"
-edition = "2021"
+edition.workspace = true
 publish = false
-
-[workspace]
 
 [dependencies]
 peppy = { path = "../../../crates/peppy", features = ["test-support"] }

@@ -3,7 +3,6 @@ mod node_runner;
 mod processor;
 
 pub use builder::{NodeBuilder, NodeContext, StandaloneConfig};
-pub use config::NodeArguments;
 pub use node_runner::NodeRunner;
 pub use processor::Processor;
 

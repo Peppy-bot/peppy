@@ -74,6 +74,7 @@ pub(crate) async fn handle_result_request<R: ActionResult>(
     match std::mem::replace(&mut *state_guard, ActionState::Idle) {
         ActionState::Running => {
             *state_guard = ActionState::Running;
+            // Prefix must match peppylib::encoding::RESULT_PENDING_PREFIX
             Ok(Payload::from_static(
                 b"result pending: operation still in progress",
             ))
@@ -99,6 +100,7 @@ pub(crate) async fn handle_result_request<R: ActionResult>(
             Ok(payload)
         }
         ActionState::Idle | ActionState::Rejected => {
+            // Prefix must match peppylib::encoding::RESULT_PENDING_PREFIX
             Ok(Payload::from_static(b"result pending: no result available"))
         }
     }

@@ -179,6 +179,26 @@ pub fn write_if_changed(path: &Path, contents: &[u8]) -> bool {
     true
 }
 
+/// Returns `true` if both files exist, have the same size, and identical content.
+fn files_are_identical(a: &Path, b: &Path) -> bool {
+    let Ok(a_meta) = std::fs::metadata(a) else {
+        return false;
+    };
+    let Ok(b_meta) = std::fs::metadata(b) else {
+        return false;
+    };
+    if a_meta.len() != b_meta.len() {
+        return false;
+    }
+    let Ok(a_bytes) = std::fs::read(a) else {
+        return false;
+    };
+    let Ok(b_bytes) = std::fs::read(b) else {
+        return false;
+    };
+    a_bytes == b_bytes
+}
+
 /// Copy `src` to `dst` only if `dst` does not exist or differs in size/content.
 ///
 /// Avoids bumping the destination's mtime when the content is unchanged,
@@ -186,14 +206,7 @@ pub fn write_if_changed(path: &Path, contents: &[u8]) -> bool {
 ///
 /// Returns `true` if the copy was performed.
 pub fn copy_if_changed(src: &Path, dst: &Path) -> bool {
-    if dst.exists()
-        && let Ok(src_meta) = std::fs::metadata(src)
-        && let Ok(dst_meta) = std::fs::metadata(dst)
-        && src_meta.len() == dst_meta.len()
-        && let Ok(s) = std::fs::read(src)
-        && let Ok(d) = std::fs::read(dst)
-        && s == d
-    {
+    if files_are_identical(src, dst) {
         return false;
     }
     std::fs::copy(src, dst).unwrap_or_else(|e| {
@@ -283,6 +296,15 @@ pub fn acquire_file_lock(lock_path: &Path) -> std::fs::File {
     lock_file
 }
 
+/// Guard that removes a directory when dropped, ignoring errors.
+struct CleanupDir(PathBuf);
+
+impl Drop for CleanupDir {
+    fn drop(&mut self) {
+        std::fs::remove_dir_all(&self.0).ok();
+    }
+}
+
 /// Compile a Rust binary from crates.io using `cargo install` with cross-compilation support.
 ///
 /// Returns `Some(path)` to the cached binary on success, `None` on failure.
@@ -317,6 +339,10 @@ pub fn cargo_install_binary(
     std::fs::create_dir_all(&install_root).ok();
     std::fs::create_dir_all(&cargo_target_dir).ok();
 
+    // Guards ensure temp directories are cleaned up on all exit paths.
+    let _install_guard = CleanupDir(install_root.clone());
+    let _target_guard = CleanupDir(cargo_target_dir.clone());
+
     let crate_spec = format!("{name}@{version}");
     let mut cmd = Command::new("cargo");
     cmd.args([
@@ -332,7 +358,6 @@ pub fn cargo_install_binary(
     let label = format!("cargo-install-{name}");
     let output = run_command_streaming(&mut cmd, &label);
     if !output.success {
-        std::fs::remove_dir_all(&install_root).ok();
         return None;
     }
 
@@ -342,19 +367,13 @@ pub fn cargo_install_binary(
             "cargo:warning=cargo install succeeded but binary not found at {:?}",
             built_binary
         );
-        std::fs::remove_dir_all(&install_root).ok();
         return None;
     }
 
     if let Err(e) = std::fs::copy(&built_binary, &cached_binary) {
         println!("cargo:warning=Failed to cache compiled {name} binary: {e}");
-        std::fs::remove_dir_all(&install_root).ok();
         return None;
     }
-
-    // Clean up temp directories
-    std::fs::remove_dir_all(&install_root).ok();
-    std::fs::remove_dir_all(&cargo_target_dir).ok();
 
     println!("cargo:warning=Successfully compiled and cached {name} {version} for {target}");
     Some(cached_binary)

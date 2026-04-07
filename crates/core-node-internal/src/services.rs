@@ -17,7 +17,10 @@ use names_generator2::get_random;
 use node_stack::NodeStack;
 use peppylib::MessengerHandle;
 use pmi::Messenger;
+use rand::SeedableRng;
 use rand::rng;
+use rand::rngs::StdRng;
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -25,7 +28,10 @@ use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, oneshot};
 use tracing::info;
 
-const CORE_NODE_TAG: &str = "core-node";
+const CORE_NODE_TAG: &str = match option_env!("PEPPY_GIT_TAG") {
+    Some(tag) => tag,
+    None => "dev",
+};
 
 #[cfg(test)]
 mod tests;
@@ -93,7 +99,38 @@ impl CoreNode {
     ) -> Self {
         let manifest_name = match node_name {
             Some(name) => Name::new(name).unwrap(),
-            None => Name::new(get_random(rng())).unwrap(),
+            None => {
+                let seed_source = machine_uid::get()
+                    .map_err(|e| {
+                        tracing::warn!("machine_uid::get() failed: {e}; falling back to hostname");
+                    })
+                    .ok()
+                    .filter(|s| !s.is_empty())
+                    .or_else(|| {
+                        hostname::get().ok().and_then(|h| {
+                            let s = h.to_string_lossy().into_owned();
+                            if s.is_empty() { None } else { Some(s) }
+                        })
+                    });
+
+                let generated = match seed_source {
+                    Some(src) => {
+                        // Hash so the published name does not reveal the UID/hostname.
+                        let digest = Sha256::digest(src.as_bytes());
+                        let seed: [u8; 32] = digest.into();
+                        let mut seeded = StdRng::from_seed(seed);
+                        get_random(&mut seeded)
+                    }
+                    None => {
+                        tracing::warn!(
+                            "machine UID and hostname unavailable; falling back to non-deterministic core node name"
+                        );
+                        get_random(&mut rng())
+                    }
+                };
+
+                Name::new(format!("core-node-{generated}")).unwrap()
+            }
         };
 
         let node_startup_timeout = node_arguments.node_startup_timeout;

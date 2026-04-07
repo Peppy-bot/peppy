@@ -24,6 +24,19 @@ use tempfile::TempDir;
 use tokio::sync::Mutex;
 use tokio::sync::mpsc::UnboundedSender;
 
+/// Returns `Ok(())` if the payload is a "result pending" sentinel, or `Err` with a
+/// decode-failure message otherwise.
+fn check_pending_or_decode_error(
+    payload: &[u8],
+    err: impl std::fmt::Display,
+) -> Result<(), String> {
+    if peppylib::encoding::is_result_pending(payload) {
+        Ok(())
+    } else {
+        Err(format!("Failed to decode result: {}", err))
+    }
+}
+
 /// A wrapper around `TaskHandle` that aborts the task when dropped.
 pub struct AbortOnDrop<T>(pub TaskHandle<T>);
 
@@ -220,12 +233,7 @@ async fn send_node_start_and_wait_internal(
                         });
                     }
                     Err(err) => {
-                        let pending = std::str::from_utf8(payload.as_ref())
-                            .map(|text| text.starts_with("result pending"))
-                            .unwrap_or(false);
-                        if !pending {
-                            return Err(format!("Failed to decode result: {}", err));
-                        }
+                        check_pending_or_decode_error(payload.as_ref(), err)?;
                     }
                 }
             }
@@ -406,12 +414,7 @@ async fn send_node_add_and_wait_internal<'a>(
                         return Ok(result);
                     }
                     Err(err) => {
-                        let pending = std::str::from_utf8(payload.as_ref())
-                            .map(|text| text.starts_with("result pending"))
-                            .unwrap_or(false);
-                        if !pending {
-                            return Err(format!("Failed to decode result: {}", err));
-                        }
+                        check_pending_or_decode_error(payload.as_ref(), err)?;
                     }
                 }
             }
@@ -743,6 +746,7 @@ pub struct StartedCoreNode {
     pub shared_messenger: Arc<Mutex<Messenger>>,
     pub caller_handle: MessengerHandle,
     pub core_node_name: String,
+    pub core_node_tag: String,
     pub node_stack: NodeStack,
     pub peppy_dirs: PeppyDirs,
     pub task: AbortOnDrop<core_node::Result<()>>,
@@ -833,6 +837,7 @@ async fn start_core_node_with_messenger(
         peppy_dirs.clone(),
     );
     let core_node_name = core_node.node_name().to_string();
+    let core_node_tag = core_node.node_config().manifest.tag.clone();
     let node_stack = core_node.node_stack().clone();
 
     // Use start_with_ready to properly synchronize instead of a time-based sleep
@@ -846,6 +851,7 @@ async fn start_core_node_with_messenger(
         shared_messenger,
         caller_handle,
         core_node_name,
+        core_node_tag,
         node_stack,
         peppy_dirs,
         task: AbortOnDrop(task),

@@ -7,10 +7,10 @@ use core_node::encoding::NodeInitRequest;
 use tracing::info;
 
 use super::types::NodeName;
+use crate::commands::CALLER_INSTANCE_ID;
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 
-const CALLER_INSTANCE_ID: &str = "peppy-cli";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub struct NodeInitBuilder {
@@ -55,40 +55,29 @@ impl NodeInitBuilder {
     }
 
     async fn build_async(self) -> Result<()> {
-        // Read the daemon state to discover the core node name
-        let daemon_state = self.ctx.read_daemon_state()?;
-        let core_node_name = &daemon_state.core_node_name;
-        let git_hash = &daemon_state.git_hash;
+        let conn = self.ctx.connect_to_daemon().await?;
 
         info!(
             "Creating node '{}' in {} and core node '{}'",
             self.node_name,
             self.to_dir.display(),
-            &core_node_name
+            &conn.core_node_name
         );
-
-        // Connect to the daemon if not already connected
-        self.ctx.connect().await?;
-
-        let messenger_handle = self
-            .ctx
-            .messenger_handle()
-            .ok_or_else(|| Error::ExecutionFailed("Failed to connect to daemon".to_string()))?;
 
         let request = NodeInitRequest::new(
             &self.to_dir,
             self.node_name.as_str(),
-            git_hash,
+            &conn.git_hash,
             self.with_container,
             self.toolchain,
         );
 
         let response = request
             .poll(
-                messenger_handle,
-                core_node_name,
+                conn.messenger,
+                &conn.core_node_name,
                 CALLER_INSTANCE_ID,
-                core_node_name,
+                &conn.core_node_name,
                 self.timeout,
             )
             .await
