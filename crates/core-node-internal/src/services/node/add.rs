@@ -1404,12 +1404,23 @@ async fn shutdown_existing_instances(
         if guard.instances().is_empty() {
             return Ok(());
         }
+        // Fail fast if any instance is mid-start: stop_instance cannot reach
+        // it (no messenger subscriptions yet) and proceeding to push_config
+        // could leave the node partially down. The caller can retry once the
+        // start has either committed (Running) or aborted.
+        if guard
+            .instances()
+            .iter()
+            .any(|instance| instance.state() == InstanceState::Starting)
+        {
+            return Err(format!(
+                "node '{}:{}' has an instance in Starting state; cannot overwrite a node with live instances",
+                node_name, node_tag
+            ));
+        }
         guard
             .instances()
             .iter()
-            // Skip in-flight `Starting` instances: they have no messenger
-            // subscriptions yet, so `stop::stop_instance` cannot reach them
-            // and would only produce confusing errors.
             .filter(|instance| instance.state() == InstanceState::Running)
             .map(|instance| instance.instance_id().clone())
             .collect::<Vec<_>>()

@@ -228,7 +228,12 @@ pub(super) fn extract_node_archive(
     peppy_dirs: &PeppyDirs,
 ) -> std::result::Result<PathBuf, String> {
     let instance_dir = create_instance_dir(instance_id, peppy_dirs)?;
-    extract_tar_zst(archive_path, &instance_dir)?;
+    if let Err(e) = extract_tar_zst(archive_path, &instance_dir) {
+        // Best-effort cleanup of the partially-extracted instance dir so a
+        // failed extraction doesn't leave orphaned data on disk.
+        let _ = std::fs::remove_dir_all(&instance_dir);
+        return Err(e);
+    }
     Ok(instance_dir)
 }
 
@@ -401,8 +406,21 @@ pub(super) async fn spawn_container_node(
 
     // Ensure host-side source directories exist for user-specified bind mounts.
     // Skip binds[0] (runtime config file) — its parent dir is already created above.
+    //
+    // For each bind: if the path already exists, leave it alone (it may be a
+    // file, device, or socket). If it does not exist, create only its parent
+    // directory — never create the bind path itself, since blindly turning
+    // missing file/device binds into directories would silently break the mount.
     for bind in &binds[1..] {
-        std::fs::create_dir_all(Path::new(&bind.src))?;
+        let src_path = Path::new(&bind.src);
+        if src_path.exists() {
+            continue;
+        }
+        if let Some(parent) = src_path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)?;
+            }
+        }
     }
 
     // Ensure host paths outside $HOME are accessible in the Lima VM.

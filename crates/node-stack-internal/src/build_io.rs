@@ -113,10 +113,9 @@ pub(crate) fn spawn_output_reader<R: Read + Send + 'static>(
                 push_stderr_line(buffer, &line);
             }
 
-            let _ = feedback_tx.send(FeedbackLine {
-                stream,
-                line: line.to_string(),
-            });
+            // `line` is already an owned String — move it into the FeedbackLine
+            // instead of cloning via `to_string()`.
+            let _ = feedback_tx.send(FeedbackLine { stream, line });
         }
         Ok(())
     })

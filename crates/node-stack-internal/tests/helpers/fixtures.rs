@@ -111,6 +111,18 @@ pub fn start_instance_in_stack(
     let NodeStage::Ready { instances, .. } = guard.__test_stage_mut() else {
         panic!("test fixture: start_instance_in_stack requires Ready stage");
     };
+    // Mirror prepare_and_spawn's DuplicateInstanceId rejection so test
+    // fixtures cannot accidentally produce a state production code would
+    // never allow.
+    assert!(
+        !instances
+            .iter()
+            .any(|inst| inst.instance_id() == &instance_id),
+        "test fixture: DuplicateInstanceId — instance '{}' already tracked on {}:{}",
+        instance_id.as_str(),
+        name,
+        tag
+    );
     instances.push(instance);
     instance_id
 }

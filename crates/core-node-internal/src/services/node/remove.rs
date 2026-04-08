@@ -91,23 +91,37 @@ async fn handle_node_remove_request_inner(
     );
 
     let root_handle = node_stack.root();
-    let (root_node_name, root_node_tag) = {
-        let guard = root_handle.read().expect("entity poisoned");
-        (
+    let (root_node_name, root_node_tag) = match root_handle.read() {
+        Ok(guard) => (
             guard.config().manifest.name.as_str().to_owned(),
             guard.config().manifest.tag.clone(),
-        )
+        ),
+        Err(_) => {
+            return NodeRemoveResponse::failure("entity lock poisoned (root)").encode();
+        }
     };
     if request.node_name == root_node_name && request.tag == root_node_tag {
         return NodeRemoveResponse::failure("Cannot remove the core node from the node stack")
             .encode();
     }
 
-    let matching_entity = node_stack.snapshot().into_iter().find(|handle| {
-        let guard = handle.read().expect("entity poisoned");
-        guard.config().manifest.name.as_str() == request.node_name
-            && guard.config().manifest.tag == request.tag
-    });
+    let mut snapshot_poisoned = false;
+    let matching_entity = node_stack
+        .snapshot()
+        .into_iter()
+        .find(|handle| match handle.read() {
+            Ok(guard) => {
+                guard.config().manifest.name.as_str() == request.node_name
+                    && guard.config().manifest.tag == request.tag
+            }
+            Err(_) => {
+                snapshot_poisoned = true;
+                false
+            }
+        });
+    if snapshot_poisoned {
+        return NodeRemoveResponse::failure("entity lock poisoned during snapshot scan").encode();
+    }
 
     let Some(matching_entity) = matching_entity else {
         return NodeRemoveResponse::failure(format!(
@@ -135,7 +149,12 @@ async fn handle_node_remove_request_inner(
     let mut targets: Vec<RemovalTarget> = Vec::new();
     let mut config_targets: Vec<ConfigRemovalTarget> = Vec::new();
     for handle in matching_entities {
-        let guard = handle.read().expect("entity poisoned");
+        let guard = match handle.read() {
+            Ok(g) => g,
+            Err(_) => {
+                return NodeRemoveResponse::failure("entity lock poisoned").encode();
+            }
+        };
         let node_tag = guard.config().manifest.tag.clone();
         let node_name = guard.config().manifest.name.as_str().to_owned();
         config_targets.push(ConfigRemovalTarget {
@@ -143,6 +162,12 @@ async fn handle_node_remove_request_inner(
             node_tag: node_tag.clone(),
         });
         for instance in guard.instances() {
+            // Skip Starting instances: they will resolve via the
+            // prepare_and_spawn → abort_started path; calling stop_instance on
+            // them is a no-op at best and racy at worst.
+            if instance.state() != node_stack::InstanceState::Running {
+                continue;
+            }
             targets.push(RemovalTarget {
                 node_name: node_name.clone(),
                 node_tag: node_tag.clone(),
@@ -230,10 +255,12 @@ async fn handle_node_remove_request_inner(
             );
             continue;
         };
-        let removed = handle
-            .write()
-            .expect("entity poisoned")
-            .stop_instance(&target.instance_id);
+        let removed = match handle.write() {
+            Ok(mut guard) => guard.stop_instance(&target.instance_id),
+            Err(_) => {
+                return NodeRemoveResponse::failure("entity lock poisoned").encode();
+            }
+        };
         if !removed {
             // Instance was concurrently removed; treat as success.
             debug!(

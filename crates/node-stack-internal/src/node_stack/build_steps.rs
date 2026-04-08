@@ -18,6 +18,10 @@ use zstd::stream::write::Encoder as ZstdEncoder;
 
 use crate::build_io::{FeedbackLine, FeedbackStream, stream_child_output};
 
+/// Per-process counter used to make build-staging tmp filenames unique so
+/// concurrent builds for the same node:tag cannot clobber each other.
+static STAGING_TMP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// Archives the contents of `source_dir` into a `.tar.zst` file in the
 /// peppy added nodes directory.
 ///
@@ -35,16 +39,36 @@ pub(super) fn archive_dir_to_storage(
 
     let archive_name = format!("{}_{}.tar.zst", node_name, node_tag);
     let archive_path = storage_dir.join(&archive_name);
-    let tmp_path = storage_dir.join(format!("{}.tmp", archive_name));
+    // Per-build unique staging path so concurrent builds for the same
+    // node:tag cannot clobber each other's in-flight tmp file. The final
+    // rename to `archive_path` is atomic and is what publishes the artifact.
+    let tmp_path = storage_dir.join(format!(
+        "{}.{}.{}.tmp",
+        archive_name,
+        std::process::id(),
+        STAGING_TMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+    ));
 
     let file = File::create(&tmp_path)?;
     let encoder = ZstdEncoder::new(file, 1)?;
     let mut tar_builder = tar::Builder::new(encoder);
     // DO NOT follow symlinks, otherwise it could create unintended behavior for the user who modify files in the path pointed by the symlink
     tar_builder.follow_symlinks(false);
-    tar_builder.append_dir_all(".", source_dir)?;
-    let encoder = tar_builder.into_inner()?;
-    encoder.finish()?;
+    if let Err(e) = tar_builder.append_dir_all(".", source_dir) {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(e);
+    }
+    let encoder = match tar_builder.into_inner() {
+        Ok(e) => e,
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp_path);
+            return Err(e);
+        }
+    };
+    if let Err(e) = encoder.finish() {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(e);
+    }
 
     std::fs::rename(&tmp_path, &archive_path)?;
 
@@ -80,12 +104,24 @@ pub(super) fn move_sif_to_storage(
     std::fs::create_dir_all(&storage_dir)?;
 
     let dest_path = storage_dir.join(&sif_name);
-    let tmp_path = storage_dir.join(format!("{}.tmp", sif_name));
+    // Per-build unique staging path; see archive_dir_to_storage for rationale.
+    let tmp_path = storage_dir.join(format!(
+        "{}.{}.{}.tmp",
+        sif_name,
+        std::process::id(),
+        STAGING_TMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+    ));
 
     // Copy + rename (not rename alone) because the working dir may be on a
     // different filesystem than storage. Matches archive_dir_to_storage pattern.
-    std::fs::copy(&sif_source, &tmp_path)?;
-    std::fs::rename(&tmp_path, &dest_path)?;
+    if let Err(e) = std::fs::copy(&sif_source, &tmp_path) {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(e);
+    }
+    if let Err(e) = std::fs::rename(&tmp_path, &dest_path) {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(e);
+    }
 
     Ok(dest_path)
 }
@@ -208,7 +244,6 @@ pub(super) async fn run_add_cmd(
     // `${SECRET}` in `add_cmd` would end up in the on-disk log file and in
     // every error string surfaced to clients.
     let display_cmd: Vec<String> = cmd.clone();
-    let expanded_cmd: Vec<String> = cmd.iter().map(|s| expand_env_vars(s, env_vars)).collect();
 
     let (display_program, display_args) = if display_cmd.len() == 1 {
         (
@@ -218,12 +253,23 @@ pub(super) async fn run_add_cmd(
     } else {
         (display_cmd[0].clone(), display_cmd[1..].to_vec())
     };
-    let (program, args) = if expanded_cmd.len() == 1 {
+
+    // For the shell form (single string), do NOT pre-expand `${VAR}`
+    // references — let `sh -c` expand them at runtime against the env vars
+    // already set on the spawned command via `.env()`. Pre-expansion would
+    // splice user-supplied values straight into the shell command line,
+    // turning any metacharacters in env values into shell injection.
+    //
+    // For the exec form (multi-element), we still expand because the child
+    // is launched directly (not via a shell), so no shell will perform the
+    // expansion for us.
+    let (program, args) = if display_cmd.len() == 1 {
         (
             "sh".to_string(),
-            vec!["-c".to_string(), expanded_cmd[0].clone()],
+            vec!["-c".to_string(), display_cmd[0].clone()],
         )
     } else {
+        let expanded_cmd: Vec<String> = cmd.iter().map(|s| expand_env_vars(s, env_vars)).collect();
         (expanded_cmd[0].clone(), expanded_cmd[1..].to_vec())
     };
 

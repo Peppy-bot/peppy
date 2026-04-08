@@ -126,20 +126,26 @@ async fn handle_node_stop_request_inner(
     // Get the PID for later verification (if available)
     let pid = instance.pid();
 
-    let (node_name, node_tag) = {
-        let guard = entity_handle.read().expect("entity poisoned");
-        (
+    let (node_name, node_tag) = match entity_handle.read() {
+        Ok(guard) => (
             guard.config().manifest.name.as_str().to_owned(),
             guard.config().manifest.tag.clone(),
-        )
+        ),
+        Err(_) => {
+            return NodeStopResponse::failure("entity lock poisoned").encode();
+        }
     };
     let (root_node_name, root_node_tag) = {
         let root = node_stack.root();
-        let guard = root.read().expect("entity poisoned");
-        (
-            guard.config().manifest.name.as_str().to_owned(),
-            guard.config().manifest.tag.clone(),
-        )
+        match root.read() {
+            Ok(guard) => (
+                guard.config().manifest.name.as_str().to_owned(),
+                guard.config().manifest.tag.clone(),
+            ),
+            Err(_) => {
+                return NodeStopResponse::failure("entity lock poisoned (root)").encode();
+            }
+        }
     };
 
     if node_name == root_node_name && node_tag == root_node_tag {
@@ -226,15 +232,33 @@ pub(super) async fn stop_instance(
     debug!("Node instance '{}' shutdown acknowledged", instance_id_str);
 
     if let Some(handle) = node_stack.find(node_name, node_tag) {
-        let removed = handle
-            .write()
-            .expect("entity poisoned")
-            .stop_instance(instance_id);
+        let mut guard = match handle.write() {
+            Ok(g) => g,
+            Err(_) => {
+                return Err(format!("entity {}:{} lock poisoned", node_name, node_tag));
+            }
+        };
+        let removed = guard.stop_instance(instance_id);
         if !removed {
-            debug!(
-                "Node instance '{}' was not tracked in entity {}:{}",
-                instance_id_str, node_name, node_tag
-            );
+            // Distinguish "absent" from "exists but in Starting state"
+            // (find_by_instance_id only matches Running, so we may be hitting
+            // a Starting instance the abort_started path will resolve).
+            let starting = guard.instances().iter().any(|inst| {
+                inst.instance_id() == instance_id
+                    && inst.state() == node_stack::InstanceState::Starting
+            });
+            if starting {
+                debug!(
+                    "Node instance '{}' is in Starting state on {}:{}; cannot stop via stop_instance \
+                     (will resolve via abort_started)",
+                    instance_id_str, node_name, node_tag
+                );
+            } else {
+                debug!(
+                    "Node instance '{}' was not tracked in entity {}:{}",
+                    instance_id_str, node_name, node_tag
+                );
+            }
         }
     }
 

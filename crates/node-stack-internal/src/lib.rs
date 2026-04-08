@@ -6,6 +6,7 @@ mod node_stack;
 
 pub use error::Error as NodeStackError;
 
+pub use build_io::{FeedbackLine, FeedbackStream};
 pub use node_stack::{
     BuildContext, DependencySpec, EntityHandle, InstanceState, NodeEntity, NodeStack, NodeStage,
     OutputSinks, SerializedNodeGraph, StartContext, StartedInstanceCtx, TrackedNodeInstance,
