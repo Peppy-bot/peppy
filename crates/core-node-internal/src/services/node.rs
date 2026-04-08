@@ -35,7 +35,7 @@ pub use sync::listen_for_node_sync;
 // so that `NodeEntity::build` can stream apptainer output without depending on
 // core-node-internal. The re-exports below keep the existing call sites in
 // `start.rs`, `info.rs`, etc. compiling unchanged.
-pub(crate) use node_stack::build_io::{FeedbackLine, FeedbackStream};
+pub(crate) use node_stack::{FeedbackLine, FeedbackStream};
 
 /// Extract a human-readable message from a panic payload.
 /// Used by spawned task handlers to convert panics into failure results.

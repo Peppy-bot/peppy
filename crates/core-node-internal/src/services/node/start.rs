@@ -302,7 +302,7 @@ impl FeedbackSync {
     }
 }
 
-impl node_stack::build_io::OutputReaderHooks for FeedbackSync {
+impl node_stack::OutputReaderHooks for FeedbackSync {
     fn on_first_stdout_line(&self) {
         self.signal_stdout();
     }
@@ -543,8 +543,17 @@ async fn process_node_start(
     // under its own brief lock, so we don't need it here. We still validate
     // that the entity is at least Built so we can fail fast with a friendly
     // message before constructing the rest of the StartContext.
-    let node_config = {
-        let guard = entity_handle.read().expect("entity poisoned");
+    // Snapshot the entity generation so we can detect a concurrent
+    // push_config that races with the parameter/env work below.
+    let (node_config, snapshot_generation) = {
+        let guard = match entity_handle.read() {
+            Ok(g) => g,
+            Err(_) => {
+                let msg = format!("entity {}:{} lock poisoned", node_name, tag);
+                write_error_to_log(&ctx.log_file, &msg);
+                return NodeStartResult::failure(msg);
+            }
+        };
         if guard.artifact_path().is_none() {
             let msg = format!(
                 "Node '{}:{}' has not been built yet (still in Added stage)",
@@ -554,7 +563,7 @@ async fn process_node_start(
             write_error_to_log(&ctx.log_file, &msg);
             return NodeStartResult::failure(msg);
         }
-        guard.config().clone()
+        (guard.config().clone(), guard.generation())
     };
 
     let sccache_injected =
@@ -659,6 +668,34 @@ async fn process_node_start(
         }
     });
 
+    // Re-check the entity generation right before handing off to the
+    // entity. If a concurrent push_config has bumped the generation, the
+    // sccache/env injection, parameter validation, mount-path resolution,
+    // and runtime_config rewrite above all operated on a stale clone — bail
+    // out with a retryable error so the caller can re-issue against the
+    // fresh entity. (prepare_and_spawn itself will also reject the start
+    // because its own write-lock validation sees the new generation, but
+    // catching it here gives a clearer error message.)
+    {
+        let guard = match entity_handle.read() {
+            Ok(g) => g,
+            Err(_) => {
+                let msg = format!("entity {}:{} lock poisoned", node_name, tag);
+                write_error_to_log(&ctx.log_file, &msg);
+                return NodeStartResult::failure(msg);
+            }
+        };
+        if guard.generation() != snapshot_generation {
+            let msg = format!(
+                "Node '{}:{}' was modified concurrently (generation mismatch); retry the start",
+                node_name, tag
+            );
+            drop(guard);
+            write_error_to_log(&ctx.log_file, &msg);
+            return NodeStartResult::failure(msg);
+        }
+    }
+
     // Hand off to the entity. prepare_and_spawn does:
     //   - Built → Starting transition (under a brief write lock)
     //   - instance dir extraction / process spawn / output reader setup
@@ -682,7 +719,7 @@ async fn process_node_start(
                 let msg = e.to_string();
                 write_error_to_log(&ctx.log_file, &msg);
                 feedback_sync.flush_or_warn(instance_id_str).await;
-                publish_enabled.store(false, Ordering::Relaxed);
+                publish_enabled.store(false, Ordering::Release);
                 return NodeStartResult::failure(msg);
             }
         };
@@ -719,7 +756,7 @@ async fn process_node_start(
         )
         .await;
         feedback_sync.flush_or_warn(instance_id_str).await;
-        publish_enabled.store(false, Ordering::Relaxed);
+        publish_enabled.store(false, Ordering::Release);
         return NodeStartResult::failure(msg);
     }
 
@@ -764,14 +801,14 @@ async fn process_node_start(
                         .await;
                     let result = NodeStartResult::success(pid);
                     feedback_sync.flush_or_warn(instance_id_str).await;
-                    publish_enabled.store(false, Ordering::Relaxed);
+                    publish_enabled.store(false, Ordering::Release);
                     result
                 }
                 Err(e) => {
                     let msg = format!("Failed to register instance: {}", e);
                     write_error_to_log(&ctx.log_file, &msg);
                     feedback_sync.flush_or_warn(instance_id_str).await;
-                    publish_enabled.store(false, Ordering::Relaxed);
+                    publish_enabled.store(false, Ordering::Release);
                     NodeStartResult::failure(msg)
                 }
             }
@@ -790,7 +827,7 @@ async fn process_node_start(
             )
             .await;
             feedback_sync.flush_or_warn(instance_id_str).await;
-            publish_enabled.store(false, Ordering::Relaxed);
+            publish_enabled.store(false, Ordering::Release);
             NodeStartResult::failure(msg)
         }
     }

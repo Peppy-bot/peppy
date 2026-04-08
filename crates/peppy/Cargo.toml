@@ -6,7 +6,7 @@ autotests = false
 
 [dependencies]
 pmi = { path = "../pmi-internal", features = ["zenoh", "build_zenoh"] }
-config = { path = "../config-internal" }
+config = { path = "../config-internal", features = ["test_helpers"] }
 containers = { path = "../containers-internal" }
 peppylib = { path = "../peppylib" }
 core-node = { path = "../core-node-internal" }

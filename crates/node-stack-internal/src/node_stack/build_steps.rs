@@ -7,7 +7,7 @@
 use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::{Arc, Mutex as StdMutex};
 
 use chrono::Local;
@@ -174,10 +174,11 @@ pub(super) async fn build_container_image(
     }
     cmd_builder = cmd_builder.lima_shell_extra_args(inputs.lima_shell_extra_args);
 
-    let mut cmd = cmd_builder
+    let std_cmd = cmd_builder
         .into_std_command()
         .map_err(|e| format!("Failed to build apptainer command: {}", e))?;
 
+    let mut cmd = tokio::process::Command::from(std_cmd);
     // Set the working directory so `%files . /opt/{name}` in the .def file
     // copies from the node's source directory, not the daemon's cwd.
     cmd.current_dir(inputs.working_dir);
@@ -298,7 +299,7 @@ pub(super) async fn run_add_cmd(
         }
     }
 
-    let mut command = Command::new(&program);
+    let mut command = tokio::process::Command::new(&program);
     command.args(&args);
     command.current_dir(working_dir);
     command.stdout(Stdio::piped());

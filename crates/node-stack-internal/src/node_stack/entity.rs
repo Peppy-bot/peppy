@@ -233,9 +233,16 @@ pub struct OutputSinks {
 #[derive(Debug)]
 pub struct StartedInstanceCtx {
     pub instance_dir: PathBuf,
+    pub runtime_config_path: PathBuf,
     pub stderr_buffer: Arc<StdMutex<VecDeque<String>>>,
     pub output_reader_handles: Vec<JoinHandle<std::io::Result<()>>>,
     pub log_file: Arc<StdMutex<File>>,
+    /// Snapshot of the entity's `generation` taken at `prepare_and_spawn`
+    /// time. `commit_started`/`abort_started` compare this against the
+    /// current entity generation and refuse to mutate the replacement entity
+    /// if a concurrent `push_config` has bumped the generation in the
+    /// meantime — they only clean up the stale child/context.
+    pub generation: u64,
 }
 
 /// Process-wide monotonic counter that assigns each `NodeEntity` instance a
@@ -558,8 +565,9 @@ impl NodeEntity {
         ctx: StartContext<'_>,
     ) -> Result<(Child, StartedInstanceCtx)> {
         // ---- Phase 1: register the Starting instance under a brief write lock ----
-        let (node_name, node_tag, node_config, artifact_path) = {
+        let (node_name, node_tag, node_config, artifact_path, start_generation) = {
             let mut guard = handle.write().expect("entity poisoned");
+            let entity_generation = guard.generation;
             let NodeStage::Ready {
                 artifact_path,
                 instances,
@@ -600,6 +608,7 @@ impl NodeEntity {
                 guard.config.manifest.tag.clone(),
                 guard.config.clone(),
                 snapshot_artifact,
+                entity_generation,
             )
         };
 
@@ -623,49 +632,50 @@ impl NodeEntity {
         })?;
 
         // ---- Phase 3: spawn the child process ----
-        let mut child = if let Some(container) = node_config.execution.container.as_ref() {
-            let apptainer_run_extra_args = container
-                .apptainer_run_extra_args
-                .as_deref()
-                .unwrap_or_default();
-            let lima_shell_extra_args = container
-                .lima_shell_extra_args
-                .as_deref()
-                .unwrap_or_default();
-            spawn_container_node(
-                &artifact_path,
-                &instance_dir,
-                ctx.runtime_config_json5,
-                ctx.env_vars,
-                ctx.mount_paths_resolved,
-                apptainer_run_extra_args,
-                lima_shell_extra_args,
-                &ctx.output_sinks.log_file,
-                ctx.peppy_dirs,
-            )
-            .await
-        } else {
-            spawn_process_node(
-                &node_config,
-                &instance_dir,
-                ctx.runtime_config_json5,
-                ctx.env_vars,
-                &ctx.output_sinks.log_file,
-                ctx.peppy_dirs,
-            )
-        }
-        .map_err(|e| {
-            // Best-effort cleanup of the instance dir we just materialized.
-            // The container/process spawn never started, so nothing else
-            // references this directory.
-            let _ = std::fs::remove_dir_all(&instance_dir);
-            Self::remove_starting_instance(handle, ctx.instance_id);
-            Error::StartFailed {
-                node_name: node_name.clone(),
-                node_tag: node_tag.clone(),
-                reason: format!("failed to spawn child: {}", e),
+        let (mut child, runtime_config_path) =
+            if let Some(container) = node_config.execution.container.as_ref() {
+                let apptainer_run_extra_args = container
+                    .apptainer_run_extra_args
+                    .as_deref()
+                    .unwrap_or_default();
+                let lima_shell_extra_args = container
+                    .lima_shell_extra_args
+                    .as_deref()
+                    .unwrap_or_default();
+                spawn_container_node(
+                    &artifact_path,
+                    &instance_dir,
+                    ctx.runtime_config_json5,
+                    ctx.env_vars,
+                    ctx.mount_paths_resolved,
+                    apptainer_run_extra_args,
+                    lima_shell_extra_args,
+                    &ctx.output_sinks.log_file,
+                    ctx.peppy_dirs,
+                )
+                .await
+            } else {
+                spawn_process_node(
+                    &node_config,
+                    &instance_dir,
+                    ctx.runtime_config_json5,
+                    ctx.env_vars,
+                    &ctx.output_sinks.log_file,
+                    ctx.peppy_dirs,
+                )
             }
-        })?;
+            .map_err(|e| {
+                // Best-effort cleanup of the instance dir we just materialized.
+                // The container/process spawn never started, so nothing else
+                // references this directory.
+                let _ = std::fs::remove_dir_all(&instance_dir);
+                Self::remove_starting_instance(handle, ctx.instance_id);
+                Error::StartFailed {
+                    node_name: node_name.clone(),
+                    node_tag: node_tag.clone(),
+                    reason: format!("failed to spawn child: {}", e),
+                }
+            })?;
 
         // ---- Phase 4: wire output streaming ----
         let stderr_buffer = Arc::new(StdMutex::new(VecDeque::with_capacity(
@@ -702,9 +712,11 @@ impl NodeEntity {
             child,
             StartedInstanceCtx {
                 instance_dir,
+                runtime_config_path,
                 stderr_buffer,
                 output_reader_handles,
                 log_file: ctx.output_sinks.log_file,
+                generation: start_generation,
             },
         ))
     }
@@ -725,7 +737,7 @@ impl NodeEntity {
     pub async fn commit_started(
         handle: &Arc<RwLock<NodeEntity>>,
         mut child: Child,
-        _started_ctx: StartedInstanceCtx,
+        started_ctx: StartedInstanceCtx,
         instance_id: Name,
     ) -> Result<u32> {
         let pid = child.id().unwrap_or(0);
@@ -738,42 +750,70 @@ impl NodeEntity {
             let _ = child.wait().await;
         }
 
+        // Take the on-disk paths out of `started_ctx` so we can both persist
+        // them onto the running instance (success) and clean them up
+        // (failure) without partial moves.
+        let StartedInstanceCtx {
+            instance_dir,
+            runtime_config_path,
+            generation: start_generation,
+            ..
+        } = started_ctx;
+
         let validation_result: Result<()> = {
             let mut guard = handle.write().expect("entity poisoned");
             let node_name = guard.config.manifest.name.as_str().to_owned();
             let node_tag = guard.config.manifest.tag.clone();
-            match &mut guard.stage {
-                NodeStage::Ready { instances, .. } => {
-                    if let Some(inst) = instances
-                        .iter_mut()
-                        .find(|inst| inst.instance_id() == &instance_id)
-                    {
-                        if inst.state() != InstanceState::Starting {
+            // Generation guard: if a concurrent `push_config` replaced the
+            // entity wholesale, the new entity has a different generation
+            // and is *not* ours to mutate. Fall through to the cleanup
+            // branch (kill child + remove temp files) without touching the
+            // replacement entity's instances list.
+            if guard.generation != start_generation {
+                Err(Error::InvalidStageTransition {
+                    node_name,
+                    node_tag,
+                    from: "stale-generation",
+                    to: "Running",
+                })
+            } else {
+                match &mut guard.stage {
+                    NodeStage::Ready { instances, .. } => {
+                        if let Some(inst) = instances
+                            .iter_mut()
+                            .find(|inst| inst.instance_id() == &instance_id)
+                        {
+                            if inst.state() != InstanceState::Starting {
+                                Err(Error::InvalidStageTransition {
+                                    node_name,
+                                    node_tag,
+                                    from: "Running",
+                                    to: "Running",
+                                })
+                            } else {
+                                inst.set_running(
+                                    Some(pid),
+                                    instance_dir.clone(),
+                                    runtime_config_path.clone(),
+                                );
+                                Ok(())
+                            }
+                        } else {
                             Err(Error::InvalidStageTransition {
                                 node_name,
                                 node_tag,
-                                from: "Running",
+                                from: "missing",
                                 to: "Running",
                             })
-                        } else {
-                            inst.set_running(Some(pid));
-                            Ok(())
                         }
-                    } else {
-                        Err(Error::InvalidStageTransition {
-                            node_name,
-                            node_tag,
-                            from: "missing",
-                            to: "Running",
-                        })
                     }
+                    other => Err(Error::InvalidStageTransition {
+                        node_name,
+                        node_tag,
+                        from: other.name(),
+                        to: "Ready",
+                    }),
                 }
-                other => Err(Error::InvalidStageTransition {
-                    node_name,
-                    node_tag,
-                    from: other.name(),
-                    to: "Ready",
-                }),
             }
         };
 
@@ -785,10 +825,14 @@ impl NodeEntity {
                 Ok(pid)
             }
             Err(e) => {
-                // Concurrent push_config or inconsistent state: the entity
-                // is no longer ours, but the spawned process is — kill it
-                // before returning so it does not orphan.
+                // Concurrent push_config / stale generation / inconsistent
+                // state: the entity is no longer ours, but the spawned
+                // process and the on-disk artifacts created during this
+                // start *are* — kill the child and clean up the temp files
+                // before returning so nothing orphans.
                 kill_child(&mut child).await;
+                let _ = std::fs::remove_dir_all(&instance_dir);
+                let _ = std::fs::remove_file(&runtime_config_path);
                 Err(e)
             }
         }
@@ -810,25 +854,43 @@ impl NodeEntity {
         error: String,
         instance_id: &Name,
     ) -> String {
+        let StartedInstanceCtx {
+            instance_dir,
+            runtime_config_path,
+            stderr_buffer,
+            output_reader_handles,
+            log_file,
+            generation: start_generation,
+        } = started_ctx;
+
         let msg = kill_and_collect_error(
             child,
             instance_id.as_str(),
             &error,
-            started_ctx.stderr_buffer,
-            started_ctx.output_reader_handles,
-            started_ctx.log_file,
+            stderr_buffer,
+            output_reader_handles,
+            log_file,
         )
         .await;
 
-        // Best-effort cleanup of the on-disk instance directory. Once the
-        // child has been killed and the readers drained, nothing else holds
-        // file descriptors into this directory.
-        let _ = std::fs::remove_dir_all(&started_ctx.instance_dir);
+        // Best-effort cleanup of the on-disk instance directory and the
+        // runtime config temp file. Once the child has been killed and the
+        // readers drained, nothing else holds file descriptors into them.
+        let _ = std::fs::remove_dir_all(&instance_dir);
+        let _ = std::fs::remove_file(&runtime_config_path);
 
-        // Best-effort: remove the Starting instance we registered in
-        // prepare_and_spawn. Skip if a concurrent push_config replaced the
-        // entity in the meantime.
-        Self::remove_starting_instance(handle, instance_id);
+        // Generation guard: only touch the entity's instances list if it is
+        // still the same entity we registered against. A concurrent
+        // `push_config` would have bumped the generation, in which case the
+        // replacement entity owns its own instances and we must not poke at
+        // them.
+        let same_generation = handle
+            .read()
+            .map(|g| g.generation == start_generation)
+            .unwrap_or(false);
+        if same_generation {
+            Self::remove_starting_instance(handle, instance_id);
+        }
 
         msg
     }
@@ -931,7 +993,17 @@ impl NodeEntity {
         }) else {
             return false;
         };
-        instances.remove(pos);
+        let removed = instances.remove(pos);
+        // Best-effort cleanup of the on-disk artifacts the start path
+        // recorded on the running instance. We ignore errors so a removed
+        // file or a missing directory does not block the lifecycle
+        // transition.
+        if let Some(dir) = removed.instance_dir() {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+        if let Some(path) = removed.runtime_config_path() {
+            let _ = std::fs::remove_file(path);
+        }
         true
     }
 }
@@ -964,6 +1036,15 @@ pub struct TrackedNodeInstance {
     /// locations (e.g., embedded systems) where a local PID is not available.
     pid: Option<u32>,
     state: InstanceState,
+    /// On-disk instance directory created during start (extracted archive
+    /// or freshly-created container instance dir). Persisted on the
+    /// `Running` instance so `stop_instance` can clean it up. `None` for
+    /// snapshot-restored or test-fixture instances.
+    instance_dir: Option<PathBuf>,
+    /// On-disk runtime config temp file created by `write_runtime_config_temp`.
+    /// Persisted so it can be removed when the instance stops or aborts. `None`
+    /// for snapshot-restored or test-fixture instances.
+    runtime_config_path: Option<PathBuf>,
 }
 
 impl TrackedNodeInstance {
@@ -977,6 +1058,8 @@ impl TrackedNodeInstance {
             instance_id,
             pid,
             state,
+            instance_dir: None,
+            runtime_config_path: None,
         }
     }
 
@@ -992,11 +1075,30 @@ impl TrackedNodeInstance {
         self.state
     }
 
+    /// Returns the on-disk instance directory recorded during start, if any.
+    pub fn instance_dir(&self) -> Option<&Path> {
+        self.instance_dir.as_deref()
+    }
+
+    /// Returns the on-disk runtime config temp file recorded during start,
+    /// if any.
+    pub fn runtime_config_path(&self) -> Option<&Path> {
+        self.runtime_config_path.as_deref()
+    }
+
     /// Same-module mutator used by `NodeEntity::commit_started` to flip a
-    /// `Starting` instance to `Running` and record its pid. Not exported.
-    fn set_running(&mut self, pid: Option<u32>) {
+    /// `Starting` instance to `Running` and record its pid plus the on-disk
+    /// paths produced by `prepare_and_spawn`. Not exported.
+    fn set_running(
+        &mut self,
+        pid: Option<u32>,
+        instance_dir: PathBuf,
+        runtime_config_path: PathBuf,
+    ) {
         self.state = InstanceState::Running;
         self.pid = pid;
+        self.instance_dir = Some(instance_dir);
+        self.runtime_config_path = Some(runtime_config_path);
     }
 }
 

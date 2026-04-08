@@ -467,7 +467,15 @@ async fn concurrent_builds_are_rejected_immediately() {
 // ===========================================================================
 
 /// Returns a sensor config whose `execution.add_cmd` runs the given shell snippet.
+///
+/// Builds the config programmatically (rather than format!-ing JSON) so the
+/// shell snippet can contain quotes, backslashes, and braces without breaking
+/// the JSON5 parser.
 fn sensor_config_with_add_cmd(add_cmd_shell: &str) -> config::node::NodeConfig {
+    // Embed the snippet via serde_json so any special characters are escaped
+    // correctly into a JSON string literal.
+    let escaped_snippet = serde_json5::to_string(&add_cmd_shell.to_string())
+        .expect("snippet should be JSON-encodable");
     let json = format!(
         r#"{{
             schema_version: 1,
@@ -484,11 +492,11 @@ fn sensor_config_with_add_cmd(add_cmd_shell: &str) -> config::node::NodeConfig {
             }},
             execution: {{
                 language: "rust",
-                add_cmd: ["sh", "-c", "{}"],
+                add_cmd: ["sh", "-c", {snippet}],
                 start_cmd: ["sensor"]
             }}
         }}"#,
-        add_cmd_shell
+        snippet = escaped_snippet
     );
     serde_json5::from_str::<config::node::NodeConfig>(&json).expect("valid sensor+add_cmd config")
 }
@@ -663,6 +671,13 @@ struct StartHarness {
     feedback_tx: tokio::sync::mpsc::UnboundedSender<node_stack::build_io::FeedbackLine>,
     publish_enabled: Arc<std::sync::atomic::AtomicBool>,
     hooks: Arc<dyn node_stack::build_io::OutputReaderHooks>,
+    /// Tracked drain task that consumes feedback so the internal channel
+    /// never fills up. The task naturally terminates when `feedback_tx` is
+    /// dropped (the receiver returns None and the loop exits), so the
+    /// handle exists primarily so callers can `.abort()` it explicitly in
+    /// tests that need deterministic teardown before the harness drops.
+    #[allow(dead_code)]
+    feedback_drain_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl StartHarness {
@@ -684,10 +699,13 @@ fn start_harness(instance_id_str: &str) -> StartHarness {
         std::fs::File::create(&log_path).expect("create log"),
     ));
 
-    // Drain feedback so the internal channel never fills up.
+    // Drain feedback so the internal channel never fills up. The handle is
+    // tracked on the harness and aborted in `Drop` so the task does not
+    // outlive the test.
     let (feedback_tx, mut feedback_rx) =
         tokio::sync::mpsc::unbounded_channel::<node_stack::build_io::FeedbackLine>();
-    tokio::spawn(async move { while feedback_rx.recv().await.is_some() {} });
+    let feedback_drain_handle =
+        tokio::spawn(async move { while feedback_rx.recv().await.is_some() {} });
 
     StartHarness {
         instance_id: Name::new(instance_id_str).expect("valid instance id"),
@@ -697,6 +715,7 @@ fn start_harness(instance_id_str: &str) -> StartHarness {
         feedback_tx,
         publish_enabled: Arc::new(std::sync::atomic::AtomicBool::new(true)),
         hooks: Arc::new(NoOpTestHooks),
+        feedback_drain_handle: Some(feedback_drain_handle),
     }
 }
 

@@ -21,7 +21,9 @@
 use chrono::Local;
 use std::collections::VecDeque;
 use std::fs::File;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::Write;
+#[cfg(test)]
+use std::io::{BufRead, BufReader, Read};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use tokio::io::AsyncBufReadExt;
@@ -96,31 +98,6 @@ pub fn push_stderr_line(buffer: &Arc<StdMutex<VecDeque<String>>>, line: &str) {
     guard.push_back(line.to_string());
 }
 
-pub(crate) fn spawn_output_reader<R: Read + Send + 'static>(
-    reader: R,
-    feedback_tx: mpsc::UnboundedSender<FeedbackLine>,
-    stream: FeedbackStream,
-    log_file: Arc<StdMutex<File>>,
-    stderr_tail: Option<Arc<StdMutex<VecDeque<String>>>>,
-) -> JoinHandle<std::io::Result<()>> {
-    tokio::task::spawn_blocking(move || -> std::io::Result<()> {
-        let reader = BufReader::new(reader);
-        for line in reader.lines() {
-            let line = line?;
-            write_feedback_log_line(&log_file, stream, &line);
-
-            if let Some(ref buffer) = stderr_tail {
-                push_stderr_line(buffer, &line);
-            }
-
-            // `line` is already an owned String — move it into the FeedbackLine
-            // instead of cloning via `to_string()`.
-            let _ = feedback_tx.send(FeedbackLine { stream, line });
-        }
-        Ok(())
-    })
-}
-
 /// Streams stdout/stderr from a spawned child process to both the feedback
 /// publisher and the log file. Optionally collects the last [`STDERR_TAIL_LINES`]
 /// lines of stderr for error diagnostics.
@@ -128,7 +105,7 @@ pub(crate) fn spawn_output_reader<R: Read + Send + 'static>(
 /// Returns the process exit status and (if `collect_stderr_tail` is true) the
 /// collected stderr tail lines.
 pub async fn stream_child_output(
-    mut child: std::process::Child,
+    mut child: tokio::process::Child,
     feedback_tx: &mpsc::UnboundedSender<FeedbackLine>,
     log_file: Arc<StdMutex<File>>,
     collect_stderr_tail: bool,
@@ -143,8 +120,10 @@ pub async fn stream_child_output(
 
     let mut reader_handles = Vec::new();
 
+    // Drain stdout/stderr using tokio's async line reader so the wait
+    // below can run concurrently and the future stays cancellation-safe.
     if let Some(stdout) = child.stdout.take() {
-        reader_handles.push(spawn_output_reader(
+        reader_handles.push(spawn_async_output_reader(
             stdout,
             feedback_tx.clone(),
             FeedbackStream::Stdout,
@@ -154,7 +133,7 @@ pub async fn stream_child_output(
     }
 
     if let Some(stderr) = child.stderr.take() {
-        reader_handles.push(spawn_output_reader(
+        reader_handles.push(spawn_async_output_reader(
             stderr,
             feedback_tx.clone(),
             FeedbackStream::Stderr,
@@ -163,10 +142,31 @@ pub async fn stream_child_output(
         ));
     }
 
-    let status = tokio::task::spawn_blocking(move || child.wait())
+    // Cancellation safety: if this future is dropped before `child.wait()`
+    // returns (e.g. the task is cancelled), kill the child synchronously
+    // from the Drop impl so the OS process does not orphan. tokio::process
+    // does not enable kill_on_drop by default.
+    struct KillGuard<'a> {
+        child: &'a mut tokio::process::Child,
+        completed: bool,
+    }
+    impl Drop for KillGuard<'_> {
+        fn drop(&mut self) {
+            if !self.completed {
+                let _ = self.child.start_kill();
+            }
+        }
+    }
+    let mut guard = KillGuard {
+        child: &mut child,
+        completed: false,
+    };
+    let status = guard
+        .child
+        .wait()
         .await
-        .map_err(|e| format!("failed to wait for process: {}", e))?
         .map_err(|e| format!("failed to wait for process: {}", e))?;
+    guard.completed = true;
 
     // Join reader tasks and surface the first error so build diagnostics receive
     // failures instead of masked truncated output. Process wait already returned
@@ -200,6 +200,59 @@ pub async fn stream_child_output(
     };
 
     Ok((status, tail_lines))
+}
+
+/// Test-only blocking line reader retained so the existing
+/// `spawn_output_reader_propagates_io_error` regression test can continue
+/// exercising `BufRead::lines` error semantics.
+#[cfg(test)]
+fn spawn_output_reader<R: Read + Send + 'static>(
+    reader: R,
+    feedback_tx: mpsc::UnboundedSender<FeedbackLine>,
+    stream: FeedbackStream,
+    log_file: Arc<StdMutex<File>>,
+    stderr_tail: Option<Arc<StdMutex<VecDeque<String>>>>,
+) -> JoinHandle<std::io::Result<()>> {
+    tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+        let reader = BufReader::new(reader);
+        for line in reader.lines() {
+            let line = line?;
+            write_feedback_log_line(&log_file, stream, &line);
+            if let Some(ref buffer) = stderr_tail {
+                push_stderr_line(buffer, &line);
+            }
+            let _ = feedback_tx.send(FeedbackLine { stream, line });
+        }
+        Ok(())
+    })
+}
+
+/// Drains an async reader (typically a `tokio::process::ChildStdout`/`Stderr`)
+/// line-by-line on a tokio task, mirroring the behaviour of
+/// [`spawn_output_reader`] but without going through `spawn_blocking`. Used
+/// by [`stream_child_output`] so the surrounding `child.wait().await` stays
+/// cancellation-safe.
+fn spawn_async_output_reader<R>(
+    reader: R,
+    feedback_tx: mpsc::UnboundedSender<FeedbackLine>,
+    stream: FeedbackStream,
+    log_file: Arc<StdMutex<File>>,
+    stderr_tail: Option<Arc<StdMutex<VecDeque<String>>>>,
+) -> JoinHandle<std::io::Result<()>>
+where
+    R: tokio::io::AsyncRead + Unpin + Send + 'static,
+{
+    tokio::spawn(async move {
+        let mut lines = tokio::io::BufReader::new(reader).lines();
+        while let Some(line) = lines.next_line().await? {
+            write_feedback_log_line(&log_file, stream, &line);
+            if let Some(ref buffer) = stderr_tail {
+                push_stderr_line(buffer, &line);
+            }
+            let _ = feedback_tx.send(FeedbackLine { stream, line });
+        }
+        Ok(())
+    })
 }
 
 /// Async sibling of [`spawn_output_reader`], used by the start path.
@@ -251,7 +304,7 @@ where
                 push_stderr_line(buffer, &line);
             }
 
-            if !publish_enabled.load(Ordering::Relaxed) {
+            if !publish_enabled.load(Ordering::Acquire) {
                 continue;
             }
 

@@ -1417,6 +1417,38 @@ async fn listen_for_node_add_same_node_same_tags_fails_when_node_has_dependents(
         node_stack.contains(DEPENDENT_NODE_NAME, DEPENDENT_NODE_TAG),
         "dependent node should still exist after failed overwrite"
     );
+
+    // Path equality alone isn't enough — assert the live entity config still
+    // exposes the v1-only interface (`reset_sensor`) and does NOT expose the
+    // v2-only interface (`new_service`). This proves the failed overwrite
+    // truly preserved the original revision rather than just the path.
+    {
+        let handle = node_stack
+            .find(DEPENDENCY_NODE_NAME, DEPENDENCY_NODE_TAG)
+            .expect("dependency entity should exist");
+        let guard = handle.read().expect("entity poisoned");
+        let services = guard
+            .config()
+            .interfaces
+            .services
+            .as_ref()
+            .expect("services section should be present");
+        let exposed: Vec<&str> = services
+            .exposes
+            .as_ref()
+            .map(|v| v.iter().map(|s| s.name.as_str()).collect())
+            .unwrap_or_default();
+        assert!(
+            exposed.contains(&"reset_sensor"),
+            "v1-only service `reset_sensor` should still be exposed; got {:?}",
+            exposed
+        );
+        assert!(
+            !exposed.contains(&"new_service"),
+            "v2-only service `new_service` should NOT be exposed; got {:?}",
+            exposed
+        );
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2096,21 +2128,25 @@ async fn listen_for_node_add_abandoned_action_does_not_block_next_goal() {
         "first goal should be accepted"
     );
 
-    // Wait for the first action to complete by checking that the node has
-    // reached the `Built` stage (i.e. artifact_path is Some). The entity is
-    // pushed into the stack as `Added` *before* the build starts, so a bare
-    // `contains` check would fire too early and overlap the second goal
-    // with the still-running first action.
+    // Wait for the first action to *fully* complete. Polling
+    // `artifact_path().is_some()` alone can fire while the action is still
+    // committing (the entity transitions to Ready inside the build, but the
+    // action result publication happens slightly later). To be sure the
+    // first action is fully done, also require the entity stage to be
+    // `Ready` (not `Building`) and require no Starting instances —
+    // i.e. the lifecycle has settled.
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
-            if let Some(handle) = node_stack.find(FIRST_NODE_NAME, FIRST_NODE_TAG)
-                && handle
-                    .read()
-                    .expect("entity poisoned")
-                    .artifact_path()
-                    .is_some()
-            {
-                break;
+            if let Some(handle) = node_stack.find(FIRST_NODE_NAME, FIRST_NODE_TAG) {
+                let guard = handle.read().expect("entity poisoned");
+                let is_ready = matches!(guard.stage(), node_stack::NodeStage::Ready { .. });
+                let no_starting = guard
+                    .instances()
+                    .iter()
+                    .all(|inst| inst.state() != node_stack::InstanceState::Starting);
+                if is_ready && guard.artifact_path().is_some() && no_starting {
+                    break;
+                }
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
@@ -2212,6 +2248,12 @@ async fn node_add_same_node_shutdown_existing_instances() {
     );
 
     let snapshot_v1 = entity_artifact_path(&node_stack, NODE_NAME, NODE_TAG);
+    // Capture the v1 archive bytes so we can later detect whether the v2
+    // overwrite actually mutated the on-disk artifact mid-overwrite. With
+    // deterministic archive naming v1 and v2 share the same path; only the
+    // *bytes* can prove the overwrite ordering invariant.
+    let snapshot_v1_bytes =
+        std::fs::read(&snapshot_v1).expect("v1 archive should be readable on disk");
 
     let instance_id_1 = config::node::Name::new(INSTANCE_1).expect("valid instance id 1");
     let instance_id_2 = config::node::Name::new(INSTANCE_2).expect("valid instance id 2");
@@ -2306,6 +2348,17 @@ async fn node_add_same_node_shutdown_existing_instances() {
     .replace("{NODE_TAG}", NODE_TAG);
     write_peppy_json5(source_dir_v2.path(), &peppy_json5_v2);
 
+    // Drop a v2-only marker into the source directory so the rebuilt
+    // archive bytes diverge from v1. Without this the deterministic
+    // archive naming would produce identical artifact bytes and the
+    // mid-overwrite assertions below couldn't distinguish "still v1" from
+    // "already v2".
+    std::fs::write(
+        source_dir_v2.path().join("v2_marker.txt"),
+        b"v2-only payload",
+    )
+    .expect("write v2 marker");
+
     // Use wildcard caller IDs so mock pub/sub can match feedback topics with "*" segments.
     let (feedback_tx, mut feedback_rx) = tokio::sync::mpsc::unbounded_channel::<NodeAddFeedback>();
 
@@ -2334,6 +2387,13 @@ async fn node_add_same_node_shutdown_existing_instances() {
         snapshot_v1.as_path(),
         "node should not be overwritten before instance 1 is shutdown"
     );
+    // Path equality is not enough — verify the on-disk archive bytes still
+    // match v1 (so we can be sure the v2 build hasn't yet rewritten them).
+    assert_eq!(
+        std::fs::read(&snapshot_v1).expect("v1 archive should still exist"),
+        snapshot_v1_bytes,
+        "archive bytes should still match v1 before instance 1 shutdown completes"
+    );
 
     // Allow instance 1 shutdown response, then wait for instance 2 shutdown request.
     allow_shutdown_1.notify_one();
@@ -2346,6 +2406,11 @@ async fn node_add_same_node_shutdown_existing_instances() {
         entity_artifact_path(&node_stack, NODE_NAME, NODE_TAG).as_path(),
         snapshot_v1.as_path(),
         "node should not be overwritten before instance 2 is shutdown"
+    );
+    assert_eq!(
+        std::fs::read(&snapshot_v1).expect("v1 archive should still exist"),
+        snapshot_v1_bytes,
+        "archive bytes should still match v1 between the two instance shutdowns"
     );
 
     // Allow instance 2 shutdown response so the overwrite can proceed.
@@ -2377,6 +2442,15 @@ async fn node_add_same_node_shutdown_existing_instances() {
     assert!(
         add_v2.snapshot_path.exists(),
         "archive should exist after overwrite"
+    );
+    // After overwrite the archive bytes must have changed (v1 had no
+    // `v2_marker.txt`, v2 does), proving the artifact was actually
+    // replaced rather than just left in place.
+    let snapshot_v2_bytes =
+        std::fs::read(&add_v2.snapshot_path).expect("v2 archive should be readable");
+    assert_ne!(
+        snapshot_v2_bytes, snapshot_v1_bytes,
+        "v2 archive should differ from v1 (the v2 source includes v2_marker.txt)"
     );
 
     let mut feedback = Vec::new();

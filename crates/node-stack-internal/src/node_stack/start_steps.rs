@@ -250,7 +250,7 @@ pub(super) fn spawn_process_node(
     env_vars: &[(String, String)],
     log_file: &Arc<StdMutex<File>>,
     peppy_dirs: &PeppyDirs,
-) -> std::io::Result<Child> {
+) -> std::io::Result<(Child, PathBuf)> {
     let manifest = &config.manifest;
     let start_cmd = config
         .execution
@@ -311,10 +311,11 @@ pub(super) fn spawn_process_node(
         command.env("PYTHONUNBUFFERED", "1");
     }
 
-    command.spawn().map_err(|e| {
+    let child = command.spawn().map_err(|e| {
         let full_cmd = start_cmd.join(" ");
         std::io::Error::other(format!("failed to execute start_cmd `{}`: {}", full_cmd, e))
-    })
+    })?;
+    Ok((child, runtime_config_path))
 }
 
 /// Describes a bind mount for a container node.
@@ -385,7 +386,7 @@ pub(super) async fn spawn_container_node(
     lima_shell_extra_args: &[String],
     log_file: &Arc<StdMutex<File>>,
     peppy_dirs: &PeppyDirs,
-) -> std::io::Result<Child> {
+) -> std::io::Result<(Child, PathBuf)> {
     // Apptainer initialization is expensive (it may bootstrap a Lima VM on
     // macOS). Run it on a blocking pool so the tokio runtime isn't stalled.
     let mut apptainer = tokio::task::spawn_blocking(containers::Apptainer::new)
@@ -407,20 +408,28 @@ pub(super) async fn spawn_container_node(
     // Ensure host-side source directories exist for user-specified bind mounts.
     // Skip binds[0] (runtime config file) — its parent dir is already created above.
     //
-    // For each bind: if the path already exists, leave it alone (it may be a
-    // file, device, or socket). If it does not exist, create only its parent
-    // directory — never create the bind path itself, since blindly turning
-    // missing file/device binds into directories would silently break the mount.
+    // Behaviour:
+    //   - If the path already exists, leave it alone (it may be a file,
+    //     device, socket, or directory; we must not touch it).
+    //   - If the path is under a device/virtual filesystem (`/dev`, `/proc`,
+    //     `/sys`), do nothing — it must be created by the kernel, not by us,
+    //     and turning a missing device node into a directory would silently
+    //     break the mount.
+    //   - Otherwise, treat the missing path as a directory bind and create
+    //     it (via `create_dir_all`) so the user can mount an empty volume
+    //     into the container without having to mkdir it first.
     for bind in &binds[1..] {
         let src_path = Path::new(&bind.src);
         if src_path.exists() {
             continue;
         }
-        if let Some(parent) = src_path.parent() {
-            if !parent.as_os_str().is_empty() {
-                std::fs::create_dir_all(parent)?;
-            }
+        let in_special_fs = src_path.starts_with("/dev")
+            || src_path.starts_with("/proc")
+            || src_path.starts_with("/sys");
+        if in_special_fs {
+            continue;
         }
+        std::fs::create_dir_all(src_path)?;
     }
 
     // Ensure host paths outside $HOME are accessible in the Lima VM.
@@ -500,13 +509,14 @@ pub(super) async fn spawn_container_node(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    command.spawn().map_err(|e| {
+    let child = command.spawn().map_err(|e| {
         std::io::Error::other(format!(
             "failed to execute apptainer run for `{}`: {}",
             sif_path.display(),
             e
         ))
-    })
+    })?;
+    Ok((child, runtime_config_path))
 }
 
 /// Kills a child process, drains its output readers (so the stderr buffer

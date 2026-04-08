@@ -5,7 +5,7 @@ authors.workspace = true
 edition.workspace = true
 
 [dependencies]
-config = { path = "../config-internal", features = ["test_helpers"] }
+config = { path = "../config-internal" }
 containers = { path = "../containers-internal" }
 petgraph = "0.8.3"
 serde = { version = "1.0", features = ["derive"] }
@@ -23,7 +23,7 @@ tracing = "0.1"
 # Exposes the `NodeEntity::__test_set_stage` escape hatch and other test
 # fixtures so that consumer crates can drive lifecycle stages directly in
 # their own test suites without going through `build`/`prepare_and_spawn`.
-test_helpers = []
+test_helpers = ["config/test_helpers"]
 
 [dev-dependencies]
 node-stack = { path = ".", features = ["test_helpers"] }

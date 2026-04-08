@@ -54,6 +54,20 @@ pub async fn listen_for_node_info(
     Ok(handle)
 }
 
+/// Failure mode of `handle_node_info_request_inner`. Routed to a different
+/// `PeppyError` variant by the outer wrapper so that lock-poison and other
+/// internal faults are not classified as caller-fault `InvalidServiceRequest`.
+enum InfoError {
+    Invalid(String),
+    Internal(String),
+}
+
+impl<E: std::fmt::Display> From<E> for InfoError {
+    fn from(e: E) -> Self {
+        InfoError::Invalid(e.to_string())
+    }
+}
+
 async fn handle_node_info_request(
     context: ServiceRequestContext,
     node_stack: Arc<NodeStack>,
@@ -73,8 +87,13 @@ async fn handle_node_info_request(
     .await
     {
         Ok(Ok(bytes)) => Ok(bytes),
-        Ok(Err(reason)) => Err(PeppyError::InvalidServiceRequest {
+        Ok(Err(InfoError::Invalid(reason))) => Err(PeppyError::InvalidServiceRequest {
             identifier: sender_instance_id,
+            reason,
+        }),
+        Ok(Err(InfoError::Internal(reason))) => Err(PeppyError::ServiceError {
+            instance_id: Some(sender_instance_id),
+            service_name: names::NODE_INFO.to_string(),
             reason,
         }),
         Err(_) => Err(PeppyError::ServiceTimeout {
@@ -89,7 +108,7 @@ async fn handle_node_info_request_inner(
     node_stack: Arc<NodeStack>,
     peppy_dirs: PeppyDirs,
     deadline: Option<Instant>,
-) -> std::result::Result<Payload, String> {
+) -> std::result::Result<Payload, InfoError> {
     let sender_instance_id = context.message().instance_id();
     let payload = context.message().payload();
 
@@ -177,7 +196,10 @@ async fn handle_node_info_request_inner(
                     )
                 }
                 Err(_) => {
-                    return Err(format!("entity {}:{} lock poisoned", node_name, node_tag));
+                    return Err(InfoError::Internal(format!(
+                        "entity {}:{} lock poisoned",
+                        node_name, node_tag
+                    )));
                 }
             },
             None => (false, Vec::new(), None, Vec::new(), None, Vec::new()),
@@ -199,7 +221,7 @@ async fn handle_node_info_request_inner(
         start_log_paths,
     )
     .encode()
-    .map_err(|e| format!("{}", e))
+    .map_err(|e| InfoError::Invalid(format!("{}", e)))
 }
 
 fn merged_config_with_variant_cleanup(resolved: super::variant::ResolvedVariant) -> NodeConfig {

@@ -1603,11 +1603,18 @@ async fn process_node_add(
     } else {
         generator::CrateDeployMode::Symlink
     };
-    let consumed_interfaces = collect_consumed_interfaces(
+    let consumed_interfaces = match collect_consumed_interfaces(
         &node_config.manifest,
         &node_config.interfaces,
         &ctx.action.node_stack,
-    );
+    ) {
+        Ok(v) => v,
+        Err(reason) => {
+            let msg = format!("Failed to resolve consumed interfaces: {}", reason);
+            write_error_to_log(&ctx.log_file, &msg);
+            return NodeAddResult::failure(&ctx.log_path, msg);
+        }
+    };
     if let Err(e) = generate_peppygen_for_node(
         language,
         &working_dir,
