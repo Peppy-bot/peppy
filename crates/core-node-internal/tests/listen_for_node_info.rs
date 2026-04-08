@@ -157,6 +157,53 @@ async fn listen_for_node_info_on_fs_node_success() {
         info_response.instances_names,
         vec![TARGET_INSTANCE_ID.to_string()]
     );
+
+    // New fields surfaced for `peppy node info`: stage name, per-instance
+    // state, start log paths (derived from peppy_dirs + instance id), and
+    // add log path. The latter is exercised via the entity setter because
+    // `force_built_and_start_instance` bypasses `process_node_add`.
+    assert_eq!(
+        info_response.stage.as_deref(),
+        Some("Ready"),
+        "stage should be exposed when in stack"
+    );
+    assert_eq!(info_response.instances.len(), 1);
+    assert_eq!(info_response.instances[0].instance_id, TARGET_INSTANCE_ID);
+    assert_eq!(info_response.instances[0].state, "running");
+    assert_eq!(info_response.start_log_paths.len(), 1);
+    let expected_start_log = started_core_node
+        .peppy_dirs
+        .logs_dir_start()
+        .join(format!("{}.log", TARGET_INSTANCE_ID));
+    assert_eq!(info_response.start_log_paths[0], expected_start_log);
+    assert!(
+        info_response.add_log_path.is_none(),
+        "force_built bypass does not record an add log"
+    );
+
+    // Now record an add log path via the public setter and re-poll —
+    // the response should pick it up.
+    let recorded_add_log = started_core_node
+        .peppy_dirs
+        .logs_dir_add()
+        .join("recorded.log");
+    {
+        let handle = node_stack
+            .find(TARGET_NODE_NAME, TARGET_NODE_TAG)
+            .expect("entity should exist");
+        handle
+            .write()
+            .expect("entity poisoned")
+            .set_last_add_log_path(recorded_add_log.clone());
+    }
+    let request = NodeInfoRequest::new(NodeSource::Fs(node_dir.path().to_path_buf()));
+    let info_response = poll_node_info(&started_core_node, &request, Duration::from_secs(5))
+        .await
+        .expect("node_info request should succeed");
+    assert_eq!(
+        info_response.add_log_path.as_deref(),
+        Some(recorded_add_log.as_path())
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

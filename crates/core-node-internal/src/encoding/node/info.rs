@@ -1,5 +1,6 @@
 //! Cap'n Proto encoding utilities for node info messages.
 
+use std::path::PathBuf;
 use std::time::Duration;
 
 use capnp::message::Builder;
@@ -103,10 +104,20 @@ impl NodeInfoRequest {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NodeInstanceInfo {
+    pub instance_id: String,
+    /// Per-instance lifecycle state, as a lowercase string ("starting" or "running").
+    pub state: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct NodeInfoResponse {
     pub config: NodeConfig,
     pub is_in_node_stack: bool,
+    /// IDs of `Running` instances only — kept for back-compat with existing
+    /// consumers. New code should prefer `instances`, which includes
+    /// in-flight `Starting` instances and exposes their state.
     pub instances_names: Vec<String>,
     /// SHA256 of the entire NodeConfig file taken from NodeSource
     pub config_integrity: String,
@@ -114,9 +125,19 @@ pub struct NodeInfoResponse {
     pub variant_name: Option<String>,
     /// Non-fatal issues encountered during resolution (e.g. unknown variant).
     pub issues: Vec<String>,
+    /// Lifecycle stage of the in-stack entity. `None` when not in stack.
+    pub stage: Option<String>,
+    /// All tracked instances of this entity, including in-flight `Starting`
+    /// ones, with their per-instance state. Empty when not in stack.
+    pub instances: Vec<NodeInstanceInfo>,
+    /// Most-recent add/build log file produced for this entity, if any.
+    pub add_log_path: Option<PathBuf>,
+    /// Per-instance start log paths, aligned with `instances` (same order).
+    pub start_log_paths: Vec<PathBuf>,
 }
 
 impl NodeInfoResponse {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         config: NodeConfig,
         is_in_node_stack: bool,
@@ -124,6 +145,10 @@ impl NodeInfoResponse {
         config_integrity: String,
         variant_name: Option<String>,
         issues: Vec<String>,
+        stage: Option<String>,
+        instances: Vec<NodeInstanceInfo>,
+        add_log_path: Option<PathBuf>,
+        start_log_paths: Vec<PathBuf>,
     ) -> Self {
         Self {
             config,
@@ -132,6 +157,10 @@ impl NodeInfoResponse {
             config_integrity,
             variant_name,
             issues,
+            stage,
+            instances,
+            add_log_path,
+            start_log_paths,
         }
     }
 
@@ -152,9 +181,37 @@ impl NodeInfoResponse {
             }
             response.set_config_sha256(&self.config_integrity);
             response.set_variant_name(self.variant_name.as_deref().unwrap_or(""));
-            let mut issues_builder = response.reborrow().init_issues(self.issues.len() as u32);
-            for (i, issue) in self.issues.iter().enumerate() {
-                issues_builder.set(i as u32, issue);
+            {
+                let mut issues_builder = response.reborrow().init_issues(self.issues.len() as u32);
+                for (i, issue) in self.issues.iter().enumerate() {
+                    issues_builder.set(i as u32, issue);
+                }
+            }
+            response.set_stage(self.stage.as_deref().unwrap_or(""));
+            {
+                let mut instances_builder = response
+                    .reborrow()
+                    .init_instances(self.instances.len() as u32);
+                for (i, info) in self.instances.iter().enumerate() {
+                    let mut entry = instances_builder.reborrow().get(i as u32);
+                    entry.set_instance_id(&info.instance_id);
+                    entry.set_state(&info.state);
+                }
+            }
+            response.set_add_log_path(
+                self.add_log_path
+                    .as_ref()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .unwrap_or_default()
+                    .as_str(),
+            );
+            {
+                let mut paths_builder = response
+                    .reborrow()
+                    .init_start_log_paths(self.start_log_paths.len() as u32);
+                for (i, path) in self.start_log_paths.iter().enumerate() {
+                    paths_builder.set(i as u32, path.to_string_lossy().as_ref());
+                }
             }
         }
         encode_message(&builder)
@@ -179,6 +236,22 @@ impl NodeInfoResponse {
         for i in 0..issues_reader.len() {
             issues.push(issues_reader.get(i)?.to_str()?.to_owned());
         }
+        let stage = optional_text(response.get_stage()?.to_str()?);
+        let instances_reader = response.get_instances()?;
+        let mut instances = Vec::with_capacity(instances_reader.len() as usize);
+        for i in 0..instances_reader.len() {
+            let entry = instances_reader.get(i);
+            instances.push(NodeInstanceInfo {
+                instance_id: entry.get_instance_id()?.to_str()?.to_owned(),
+                state: entry.get_state()?.to_str()?.to_owned(),
+            });
+        }
+        let add_log_path = optional_text(response.get_add_log_path()?.to_str()?).map(PathBuf::from);
+        let start_log_paths_reader = response.get_start_log_paths()?;
+        let mut start_log_paths = Vec::with_capacity(start_log_paths_reader.len() as usize);
+        for i in 0..start_log_paths_reader.len() {
+            start_log_paths.push(PathBuf::from(start_log_paths_reader.get(i)?.to_str()?));
+        }
         Ok(Self {
             config,
             is_in_node_stack,
@@ -186,6 +259,10 @@ impl NodeInfoResponse {
             config_integrity,
             variant_name,
             issues,
+            stage,
+            instances,
+            add_log_path,
+            start_log_paths,
         })
     }
 }

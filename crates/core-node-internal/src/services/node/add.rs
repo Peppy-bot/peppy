@@ -1651,6 +1651,14 @@ async fn process_node_add(
         }
     };
 
+    // Record the add log path on the entity so `peppy node info` can surface
+    // it. Done under the same write lock that any concurrent reader uses, so
+    // observers see a consistent (entity, log path) pair.
+    entity_handle
+        .write()
+        .expect("entity poisoned")
+        .set_last_add_log_path(ctx.log_path.clone());
+
     let build_result = node_stack::NodeEntity::build(
         &entity_handle,
         BuildContext {

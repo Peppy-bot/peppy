@@ -132,6 +132,7 @@ pub enum NodeStage {
         artifact_path: PathBuf,
         instances: Vec<TrackedNodeInstance>,
     },
+    // Special kind
     Root {
         config_path: PathBuf,
         instance: TrackedNodeInstance,
@@ -139,7 +140,7 @@ pub enum NodeStage {
 }
 
 impl NodeStage {
-    fn name(&self) -> &'static str {
+    pub fn name(&self) -> &'static str {
         match self {
             NodeStage::Added { .. } => "Added",
             NodeStage::Building { .. } => "Building",
@@ -258,6 +259,13 @@ pub struct NodeEntity {
     /// `root` construction. The build path captures this value at Phase 1 and
     /// re-checks it at Phase 3 before publishing artifacts.
     generation: u64,
+    /// Path to the most-recent add/build log file produced for this entity.
+    /// Set by the add/launch services after `create_action_log_file`
+    /// succeeds. Reset to `None` whenever the entity is replaced wholesale
+    /// (a fresh `NodeEntity::new` is constructed for the same key by
+    /// `push_config_impl`). `None` for the synthetic root entity, which
+    /// has no add log.
+    last_add_log_path: Option<PathBuf>,
 }
 
 impl NodeEntity {
@@ -271,7 +279,22 @@ impl NodeEntity {
                 config_path: config_path.into(),
             },
             generation: next_entity_generation(),
+            last_add_log_path: None,
         }
+    }
+
+    /// Returns the path to the most-recent add/build log produced for this
+    /// entity, if any. See [`NodeEntity::set_last_add_log_path`].
+    pub fn last_add_log_path(&self) -> Option<&Path> {
+        self.last_add_log_path.as_deref()
+    }
+
+    /// Records the path of the add/build log file the daemon just opened
+    /// for this entity. Called by the add/launch services right after
+    /// `create_action_log_file` succeeds, under the same write lock as the
+    /// rest of the entity transition.
+    pub fn set_last_add_log_path(&mut self, path: PathBuf) {
+        self.last_add_log_path = Some(path);
     }
 
     /// Returns the entity's monotonic generation token. Bumped on every
@@ -829,6 +852,7 @@ impl NodeEntity {
                 instance,
             },
             generation: next_entity_generation(),
+            last_add_log_path: None,
         }
     }
 
@@ -869,6 +893,7 @@ impl NodeEntity {
             config,
             stage,
             generation: next_entity_generation(),
+            last_add_log_path: None,
         }
     }
 

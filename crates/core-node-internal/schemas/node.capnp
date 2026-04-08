@@ -234,12 +234,19 @@ struct NodeInfoRequest {
     variant @3 :NodeAddVariantSource;
 }
 
+struct NodeInstanceInfo {
+    # Instance identifier
+    instanceId @0 :Text;
+    # Per-instance state: "starting" or "running"
+    state @1 :Text;
+}
+
 struct NodeInfoResponse {
     # JSON5-serialized NodeConfig (merged with variant runtime when variant is requested)
     configJson5 @0 :Text;
     # Whether the node is already in the node stack
     isInNodeStack @1 :Bool;
-    # Names of running instances of this node
+    # Names of running instances of this node (Running only — kept for back-compat)
     instancesNames @2 :List(Text);
     # SHA256 of the entire NodeConfig file
     configSha256 @3 :Text;
@@ -248,4 +255,15 @@ struct NodeInfoResponse {
     # Non-fatal issues encountered during resolution (e.g. unknown variant).
     # Empty when resolution was fully successful.
     issues @5 :List(Text);
+    # Lifecycle stage of the in-stack entity ("Added"/"Building"/"Ready"/"Root").
+    # Empty string when the node is not in the stack.
+    stage @6 :Text;
+    # All tracked instances of this entity, including in-flight `Starting` ones.
+    # Empty when the node is not in the stack.
+    instances @7 :List(NodeInstanceInfo);
+    # Path to the most-recent add/build log file for this entity.
+    # Empty string when not in stack or no add log has been produced yet.
+    addLogPath @8 :Text;
+    # Per-instance start log paths, aligned with `instances` (same order).
+    startLogPaths @9 :List(Text);
 }

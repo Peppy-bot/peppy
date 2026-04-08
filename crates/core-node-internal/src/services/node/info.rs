@@ -3,11 +3,12 @@ use super::{
     checkout_repo_ref, is_supported_fs_archive, resolve_local_archive_source, sanitize_repo_path,
 };
 use crate::Result;
-use crate::encoding::{NodeInfoRequest, NodeInfoResponse, NodeSource};
+use crate::encoding::{NodeInfoRequest, NodeInfoResponse, NodeInstanceInfo, NodeSource};
 use crate::names;
 use config::consts::{NODE_CONFIG_FILE, PeppyDirs};
 use config::fingerprint::fingerprint_for_bytes;
 use config::node::{DEFAULT_VARIANT_NAME, NodeConfig, NodeConfigParser, ParsedNodeConfig};
+use node_stack::InstanceState;
 use node_stack::NodeStack;
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::types::Payload;
@@ -136,22 +137,51 @@ async fn handle_node_info_request_inner(
     let node_name = node_config.manifest.name.as_str();
     let node_tag = node_config.manifest.tag.as_str();
 
-    let (is_in_node_stack, instances_names) = match node_stack.find(node_name, node_tag) {
-        Some(entity) => match entity.read() {
-            Ok(guard) => (
-                true,
-                guard
-                    .instances()
-                    .iter()
-                    .map(|instance| instance.instance_id().as_str().to_owned())
-                    .collect(),
-            ),
-            Err(_) => {
-                return Err(format!("entity {}:{} lock poisoned", node_name, node_tag));
-            }
-        },
-        None => (false, Vec::new()),
-    };
+    let (is_in_node_stack, instances_names, stage, instances, add_log_path, start_log_paths) =
+        match node_stack.find(node_name, node_tag) {
+            Some(entity) => match entity.read() {
+                Ok(guard) => {
+                    let stage = Some(guard.stage().name().to_string());
+                    let tracked = guard.instances();
+                    let instances: Vec<NodeInstanceInfo> = tracked
+                        .iter()
+                        .map(|instance| NodeInstanceInfo {
+                            instance_id: instance.instance_id().as_str().to_owned(),
+                            state: match instance.state() {
+                                InstanceState::Starting => "starting".to_string(),
+                                InstanceState::Running => "running".to_string(),
+                            },
+                        })
+                        .collect();
+                    let instances_names: Vec<String> = tracked
+                        .iter()
+                        .filter(|instance| instance.state() == InstanceState::Running)
+                        .map(|instance| instance.instance_id().as_str().to_owned())
+                        .collect();
+                    let start_log_paths: Vec<PathBuf> = tracked
+                        .iter()
+                        .map(|instance| {
+                            peppy_dirs
+                                .logs_dir_start()
+                                .join(format!("{}.log", instance.instance_id().as_str()))
+                        })
+                        .collect();
+                    let add_log_path = guard.last_add_log_path().map(Path::to_path_buf);
+                    (
+                        true,
+                        instances_names,
+                        stage,
+                        instances,
+                        add_log_path,
+                        start_log_paths,
+                    )
+                }
+                Err(_) => {
+                    return Err(format!("entity {}:{} lock poisoned", node_name, node_tag));
+                }
+            },
+            None => (false, Vec::new(), None, Vec::new(), None, Vec::new()),
+        };
 
     let config_json = serde_json5::to_string(&node_config).map_err(|e| format!("{}", e))?;
     let config_integrity = fingerprint_for_bytes(config_json.as_bytes());
@@ -163,6 +193,10 @@ async fn handle_node_info_request_inner(
         config_integrity,
         variant_name,
         issues,
+        stage,
+        instances,
+        add_log_path,
+        start_log_paths,
     )
     .encode()
     .map_err(|e| format!("{}", e))
