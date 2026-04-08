@@ -591,7 +591,9 @@ impl NodeEntity {
         })?;
 
         // ---- Phase 4: wire output streaming ----
-        let stderr_buffer = Arc::new(StdMutex::new(VecDeque::new()));
+        let stderr_buffer = Arc::new(StdMutex::new(VecDeque::with_capacity(
+            crate::build_io::STDERR_TAIL_LINES,
+        )));
         let mut output_reader_handles = Vec::new();
 
         if let Some(stdout) = child.stdout.take() {

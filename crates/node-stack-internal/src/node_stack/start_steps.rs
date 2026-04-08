@@ -193,14 +193,16 @@ pub(super) fn create_instance_dir(
 
     // Clean up any leftover instance directory from a previous failed attempt,
     // since the instance ID is deterministic and may be retried.
-    if instance_dir.exists() {
-        std::fs::remove_dir_all(&instance_dir).map_err(|e| {
-            format!(
+    match std::fs::remove_dir_all(&instance_dir) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => {
+            return Err(format!(
                 "Failed to clean up existing instance directory {}: {}",
                 instance_dir.display(),
                 e
-            )
-        })?;
+            ));
+        }
     }
 
     std::fs::create_dir(&instance_dir).map_err(|e| {
@@ -400,10 +402,7 @@ pub(super) async fn spawn_container_node(
     // Ensure host-side source directories exist for user-specified bind mounts.
     // Skip binds[0] (runtime config file) — its parent dir is already created above.
     for bind in &binds[1..] {
-        let src = Path::new(&bind.src);
-        if !src.exists() {
-            std::fs::create_dir_all(src)?;
-        }
+        std::fs::create_dir_all(Path::new(&bind.src))?;
     }
 
     // Ensure host paths outside $HOME are accessible in the Lima VM.

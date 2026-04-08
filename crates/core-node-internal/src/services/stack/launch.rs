@@ -286,15 +286,7 @@ fn spawn_feedback_forwarder(
     let log_file = Arc::clone(log_file);
     let handle = tokio::spawn(async move {
         while let Some(line) = feedback_rx.recv().await {
-            // Write to the launch log file
-            if let Ok(mut file) = log_file.lock() {
-                let timestamp = Local::now().format("%Y-%m-%dT%H:%M:%S%.3f");
-                let stream_label = match line.stream {
-                    FeedbackStream::Stdout => "stdout",
-                    FeedbackStream::Stderr => "stderr",
-                };
-                let _ = writeln!(file, "[{}] [{}] {}", timestamp, stream_label, line.line);
-            }
+            node_stack::build_io::write_feedback_log_line(&log_file, line.stream, &line.line);
 
             let launch_feedback = match line.stream {
                 FeedbackStream::Stdout => LaunchFeedback::stdout(&line.line, step.clone()),

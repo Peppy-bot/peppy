@@ -38,6 +38,25 @@ pub enum FeedbackStream {
     Stderr,
 }
 
+impl FeedbackStream {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            FeedbackStream::Stdout => "stdout",
+            FeedbackStream::Stderr => "stderr",
+        }
+    }
+}
+
+/// Writes a single feedback line to the log file in the canonical
+/// `[timestamp] [stream] line` format. Errors are swallowed — log writes are
+/// best-effort.
+pub fn write_feedback_log_line(log_file: &Arc<StdMutex<File>>, stream: FeedbackStream, line: &str) {
+    if let Ok(mut file) = log_file.lock() {
+        let timestamp = Local::now().format("%Y-%m-%dT%H:%M:%S%.3f");
+        let _ = writeln!(file, "[{}] [{}] {}", timestamp, stream.as_str(), line);
+    }
+}
+
 pub struct FeedbackLine {
     pub stream: FeedbackStream,
     pub line: String,
@@ -84,20 +103,11 @@ pub(crate) fn spawn_output_reader<R: Read + Send + 'static>(
     log_file: Arc<StdMutex<File>>,
     stderr_tail: Option<Arc<StdMutex<VecDeque<String>>>>,
 ) -> JoinHandle<std::io::Result<()>> {
-    let stream_prefix = match stream {
-        FeedbackStream::Stdout => "stdout",
-        FeedbackStream::Stderr => "stderr",
-    };
-
     tokio::task::spawn_blocking(move || -> std::io::Result<()> {
         let reader = BufReader::new(reader);
         for line in reader.lines() {
             let line = line?;
-            // Always write to log file
-            if let Ok(mut file) = log_file.lock() {
-                let timestamp = Local::now().format("%Y-%m-%dT%H:%M:%S%.3f");
-                let _ = writeln!(file, "[{}] [{}] {}", timestamp, stream_prefix, line);
-            }
+            write_feedback_log_line(&log_file, stream, &line);
 
             if let Some(ref buffer) = stderr_tail {
                 push_stderr_line(buffer, &line);
@@ -217,11 +227,6 @@ pub fn spawn_output_reader_async<R>(
 where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
 {
-    let stream_prefix = match stream {
-        FeedbackStream::Stdout => "stdout",
-        FeedbackStream::Stderr => "stderr",
-    };
-
     tokio::spawn(async move {
         let mut lines = tokio::io::BufReader::new(reader).lines();
 
@@ -232,11 +237,7 @@ where
                 Err(_) => break,
             };
 
-            // Always write to log file, regardless of publish_enabled state
-            if let Ok(mut file) = log_file.lock() {
-                let timestamp = Local::now().format("%Y-%m-%dT%H:%M:%S%.3f");
-                let _ = writeln!(file, "[{}] [{}] {}", timestamp, stream_prefix, line);
-            }
+            write_feedback_log_line(&log_file, stream, &line);
 
             // Signal when the first stdout line arrives so container quiescence
             // detection can wait for the runscript to actually produce output.
