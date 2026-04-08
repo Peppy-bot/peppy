@@ -310,10 +310,18 @@ fn remove_instance_from_registry(
     Ok(())
 }
 
-/// Sends a `SHUTDOWN_SERVICE` signal to a running node instance and removes it from the
-/// node stack. The entity remains in the graph with zero instances, preserving dependency
-/// edges so that a subsequent `push_config` call can correctly validate interface changes
-/// against dependents.
+/// Sends a `SHUTDOWN_SERVICE` signal to a running node instance, waits for the
+/// underlying OS process to actually exit, and then removes the instance from
+/// the node stack. The entity remains in the graph with zero instances,
+/// preserving dependency edges so that a subsequent `push_config` call can
+/// correctly validate interface changes against dependents.
+///
+/// Mirrors the three-step contract used by `handle_node_stop_request_inner`:
+/// 1. Send shutdown and wait for ACK, without touching the registry.
+/// 2. Verify the PID is gone via `wait_for_process_termination`, so a
+///    slow-to-die child cannot be dropped from tracking while still running.
+/// 3. Only after confirmed termination, remove the entry via
+///    `remove_instance_from_registry`.
 pub(super) async fn stop_instance(
     messenger: &MessengerHandle,
     core_node_node: &str,
@@ -325,65 +333,38 @@ pub(super) async fn stop_instance(
 ) -> std::result::Result<(), String> {
     let instance_id_str = instance_id.as_str();
 
-    debug!(
-        "Sending shutdown request to node instance '{}'",
-        instance_id_str
-    );
+    // Capture the PID up front so we can verify termination after the ACK.
+    // Reading it from the live entry (rather than after shutdown) avoids a
+    // race with any concurrent registry mutation and matches the shape of
+    // `handle_node_stop_request_inner`.
+    let pid = node_stack.find(node_name, node_tag).and_then(|handle| {
+        let guard = handle.read().ok()?;
+        guard
+            .instances()
+            .iter()
+            .find(|inst| inst.instance_id() == instance_id)
+            .and_then(|inst| inst.pid())
+    });
 
-    ServiceMessenger::poll(
+    send_shutdown_signal(
         messenger,
         core_node_node,
         core_instance_id,
         node_name,
-        SHUTDOWN_SERVICE,
-        Some(core_node_node),
-        Some(instance_id_str),
-        Payload::from_static(b"shutdown"),
-        SHUTDOWN_TIMEOUT,
+        instance_id,
     )
-    .await
-    .map_err(|e| {
-        crate::error::Error::ShutdownInstanceFailed {
-            instance_id: instance_id_str.to_owned(),
-            reason: e.to_string(),
-        }
-        .to_string()
-    })?;
+    .await?;
 
-    debug!("Node instance '{}' shutdown acknowledged", instance_id_str);
-
-    if let Some(handle) = node_stack.find(node_name, node_tag) {
-        let mut guard = match handle.write() {
-            Ok(g) => g,
-            Err(_) => {
-                return Err(format!("entity {}:{} lock poisoned", node_name, node_tag));
-            }
-        };
-        let removed = guard.stop_instance(instance_id);
-        if !removed {
-            // Distinguish "absent" from "exists but in Starting state"
-            // (find_by_instance_id only matches Running, so we may be hitting
-            // a Starting instance the abort_started path will resolve).
-            let starting = guard.instances().iter().any(|inst| {
-                inst.instance_id() == instance_id
-                    && inst.state() == node_stack::InstanceState::Starting
-            });
-            if starting {
-                debug!(
-                    "Node instance '{}' is in Starting state on {}:{}; cannot stop via stop_instance \
-                     (will resolve via abort_started)",
-                    instance_id_str, node_name, node_tag
-                );
-            } else {
-                debug!(
-                    "Node instance '{}' was not tracked in entity {}:{}",
-                    instance_id_str, node_name, node_tag
-                );
-            }
-        }
+    if let Some(pid) = pid
+        && !wait_for_process_termination(pid).await
+    {
+        return Err(format!(
+            "Process {} for node instance '{}' did not terminate within timeout",
+            pid, instance_id_str
+        ));
     }
 
-    Ok(())
+    remove_instance_from_registry(node_stack, node_name, node_tag, instance_id)
 }
 
 /// Waits for a process to terminate, polling at regular intervals.

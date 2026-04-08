@@ -860,6 +860,18 @@ pub fn auto_sync_if_missing(
         std::io::Write::write_all(&mut tmp, merged_json5.as_bytes()).map_err(crate::Error::from)?;
         let merged_config_path = tmp.path().to_path_buf();
 
+        // Resolve consumed interfaces *before* touching the filesystem: an
+        // error here must not leave the variant's `.peppy` dir missing.
+        // Doing this after the rename would short-circuit past the
+        // `gen_result` restore path below.
+        let consumed = collect_consumed_interfaces(params.manifest, params.interfaces, node_stack)
+            .map_err(|reason| {
+                crate::Error::Io(std::io::Error::other(format!(
+                    "failed to resolve consumed interfaces: {}",
+                    reason
+                )))
+            })?;
+
         // Back up existing .peppy so we can restore it on failure.
         let peppy_dir = v.dir.join(config::consts::PEPPY_OUTPUT_DIR);
         let backup_dir = v.dir.join(format!(
@@ -875,14 +887,6 @@ pub fn auto_sync_if_missing(
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
             Err(e) => return Err(crate::Error::Io(e)),
         };
-
-        let consumed = collect_consumed_interfaces(params.manifest, params.interfaces, node_stack)
-            .map_err(|reason| {
-                crate::Error::Io(std::io::Error::other(format!(
-                    "failed to resolve consumed interfaces: {}",
-                    reason
-                )))
-            })?;
         let gen_result: crate::Result<()> = (|| {
             generate_peppygen_for_node(
                 v.language,

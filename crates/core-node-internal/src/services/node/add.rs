@@ -1482,20 +1482,26 @@ async fn process_node_add(
     super::inject_node_runtime_env(&mut env_vars, &node_name, &node_tag);
     let _cleanup_guard = CleanupDir::new(cleanup_dir);
 
-    // Capture the previous .sif/archive path (if any) so we can clean it up
-    // after the new entity is in place. Only nodes that have already reached
-    // `Built` have an artifact_path.
-    let previous_snapshot_path =
+    // Capture the previous entity's full state so we can both (a) clean up
+    // its artifact after the new entity is in place on success, and (b) roll
+    // back to the prior `Ready` state if the rebuild fails after
+    // `push_config` has already replaced the entity in-place. Only nodes
+    // that have already reached `Built` have an artifact_path.
+    let previous_entity_snapshot =
         ctx.action
             .node_stack
             .find(&node_name, &node_tag)
-            .and_then(|entity| {
-                entity
-                    .read()
-                    .expect("entity poisoned")
-                    .artifact_path()
-                    .map(|p| p.to_path_buf())
+            .map(|entity| {
+                let guard = entity.read().expect("entity poisoned");
+                (
+                    guard.config().clone(),
+                    guard.config_path().to_path_buf(),
+                    guard.artifact_path().map(|p| p.to_path_buf()),
+                )
             });
+    let previous_snapshot_path = previous_entity_snapshot
+        .as_ref()
+        .and_then(|(_, _, artifact)| artifact.clone());
 
     if verify_codegen_fingerprint {
         // Verify that the node config fingerprint matches the one in the generated folder.
@@ -1700,18 +1706,37 @@ async fn process_node_add(
 
     if let Err(e) = build_result {
         // `NodeEntity::build` leaves the entity in `Building` on failure;
-        // the caller owns removal. See the failure contract on
+        // the caller owns rollback. See the failure contract on
         // `NodeEntity::build`.
         //
-        // Use the generation-aware variant with the pre-build generation
-        // so a concurrent `push_config` that replaced the entity in-place
-        // between our failure and this cleanup is not silently clobbered.
-        let _ = ctx.action.node_stack.remove_config_if_matches(
-            &node_name,
-            &node_tag,
-            &entity_handle,
-            expected_generation_before_build,
-        );
+        // If there was a previously-ready entity in this slot, restore it
+        // from the snapshot we captured before `push_config` replaced it.
+        // Otherwise (fresh add), remove the entity entirely. Both code
+        // paths use the pre-build handle+generation so a concurrent
+        // `push_config` that replaced the entity in-place between our
+        // failure and this cleanup is not silently clobbered.
+        if let Some((prev_config, prev_config_path, prev_artifact)) = previous_entity_snapshot {
+            let _ = ctx.action.node_stack.restore_snapshot_if_matches(
+                node_stack::RestoreTarget {
+                    name: &node_name,
+                    tag: &node_tag,
+                    expected_handle: &entity_handle,
+                    expected_generation: expected_generation_before_build,
+                },
+                node_stack::EntitySnapshot {
+                    config: prev_config,
+                    config_path: prev_config_path,
+                    artifact_path: prev_artifact,
+                },
+            );
+        } else {
+            let _ = ctx.action.node_stack.remove_config_if_matches(
+                &node_name,
+                &node_tag,
+                &entity_handle,
+                expected_generation_before_build,
+            );
+        }
         let msg = format!("Failed to build node: {}", e);
         write_error_to_log(&ctx.log_file, &msg);
         return NodeAddResult::failure(&ctx.log_path, msg);

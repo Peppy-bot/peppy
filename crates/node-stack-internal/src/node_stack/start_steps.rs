@@ -293,6 +293,7 @@ pub(super) fn spawn_process_node(
     command.current_dir(working_dir);
     command
         .args(args)
+        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     for (key, value) in env_vars {
@@ -503,6 +504,7 @@ pub(super) async fn spawn_container_node(
     let mut command = Command::from(std_cmd);
     command
         .current_dir(working_dir)
+        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 

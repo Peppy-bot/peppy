@@ -56,6 +56,26 @@ fn key_from_entity(entity: &NodeEntity) -> NodeKey {
     )
 }
 
+/// Identifies the slot that [`NodeStack::restore_snapshot_if_matches`]
+/// should roll back, together with the handle+generation the caller captured
+/// before the failed rebuild.
+pub struct RestoreTarget<'a> {
+    pub name: &'a str,
+    pub tag: &'a str,
+    pub expected_handle: &'a Arc<RwLock<NodeEntity>>,
+    pub expected_generation: u64,
+}
+
+/// Previously-captured entity state used by
+/// [`NodeStack::restore_snapshot_if_matches`] to rematerialize a `Ready` /
+/// `Added` entity in place of a failed rebuild. Instances are intentionally
+/// omitted — any prior instances are shut down before the rebuild begins.
+pub struct EntitySnapshot {
+    pub config: NodeConfig,
+    pub config_path: PathBuf,
+    pub artifact_path: Option<PathBuf>,
+}
+
 fn dependency_keys(node: &NodeConfig) -> Vec<NodeKey> {
     collect_dependency_specs(node)
         .into_iter()
@@ -680,6 +700,68 @@ impl NodeStack {
         true
     }
 
+    /// Slot identity for [`NodeStack::restore_snapshot_if_matches`]: the
+    /// name/tag key plus the handle+generation the caller captured before
+    /// starting the rebuild. Bundled so callers can express the rollback
+    /// target as a single value.
+    ///
+    /// See the free-standing [`RestoreTarget`] and [`EntitySnapshot`] structs
+    /// defined below — they are intentionally kept as plain data so the
+    /// call-site reads as `stack.restore_snapshot_if_matches(target, snap)`.
+    ///
+    /// Atomically restore an entity to a previously captured snapshot, iff the
+    /// slot still holds the expected handle+generation. Used by the node-add
+    /// rebuild path to roll back to the prior `Ready` state when a rebuild
+    /// fails after `push_config` has already replaced the entity in-place.
+    ///
+    /// Returns `true` if the slot matched and was restored. Returns `false`
+    /// (without mutating) if the handle was replaced concurrently, the
+    /// generation drifted, or the entity is no longer in `Building`.
+    pub fn restore_snapshot_if_matches(
+        &self,
+        target: RestoreTarget<'_>,
+        snapshot: EntitySnapshot,
+    ) -> bool {
+        let guard = self.shared.write().expect("node stack poisoned");
+        let key = NodeKey::new(target.name, target.tag);
+
+        if guard.is_root(&key) {
+            return false;
+        }
+
+        let Some(&index) = guard.key_to_index.get(&key) else {
+            return false;
+        };
+
+        let Some(current) = guard.graph.node_weight(index) else {
+            return false;
+        };
+        if !Arc::ptr_eq(current, target.expected_handle) {
+            return false;
+        }
+        {
+            let entity = current.read().expect("entity poisoned");
+            if entity.generation() != target.expected_generation
+                || !matches!(entity.stage(), NodeStage::Building { .. })
+            {
+                return false;
+            }
+        }
+
+        // Rebuild a fresh `Ready`/`Added` entity from the captured snapshot
+        // and swap it into place under the same handle. Instances are
+        // intentionally empty — any prior instances were shut down before the
+        // rebuild began (see `shutdown_existing_instances` in the add path).
+        let restored = NodeEntity::from_snapshot(
+            snapshot.config,
+            snapshot.config_path,
+            snapshot.artifact_path,
+            Vec::new(),
+        );
+        *current.write().expect("entity poisoned") = restored;
+        true
+    }
+
     /// Clears all nodes except the root node from the stack.
     pub fn reset(&self) {
         let mut guard = self.shared.write().expect("node stack poisoned");
@@ -701,8 +783,12 @@ impl NodeStack {
         let target_root_tag = target_root_guard.config().manifest.tag.clone();
         drop(target_root_guard);
 
-        self.reset();
-
+        // Phase 1: validate every source entity and pre-build its replacement
+        // `NodeEntity` without touching `self`. This keeps the apply
+        // all-or-nothing: if any source entity is in a transient state we
+        // return `Err` with the target stack still intact, instead of
+        // clearing it first and leaving the caller with an empty stack.
+        let mut prepared: Vec<(String, NodeEntity)> = Vec::new();
         for source_handle in source.snapshot() {
             let source_guard = source_handle.read().expect("entity poisoned");
             let config = source_guard.config().clone();
@@ -753,7 +839,6 @@ impl NodeStack {
                 NodeStage::Root { .. } => {
                     // Should already be skipped by the root-name guard above,
                     // but be defensive — never replay a Root variant.
-                    drop(source_guard);
                     continue;
                 }
             }
@@ -763,10 +848,18 @@ impl NodeStack {
             // `from_snapshot` constructor bypasses the lifecycle because the
             // source artifact already exists on disk.
             let entity = NodeEntity::from_snapshot(config, config_path, artifact_path, instances);
+            prepared.push((format!("{}:{}", name, tag), entity));
+        }
+
+        // Phase 2: only after *every* source entity has validated, clear the
+        // target and insert the prepared entities under a single sequence of
+        // write locks.
+        self.reset();
+        for (label, entity) in prepared {
             let mut guard = self.shared.write().expect("node stack poisoned");
             guard
                 .insert_entity(entity, false)
-                .map_err(|e| format!("failed to insert snapshot for {}:{}: {e}", name, tag))?;
+                .map_err(|e| format!("failed to insert snapshot for {}: {e}", label))?;
         }
 
         Ok(())

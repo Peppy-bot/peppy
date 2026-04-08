@@ -9,7 +9,7 @@ use peppylib::{MessengerHandle, PeppyError, PeppyResult};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::task::JoinHandle;
-use tracing::debug;
+use tracing::{debug, warn};
 
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -176,7 +176,13 @@ async fn handle_node_remove_request_inner(
         }
     }
 
+    // Classify each tracked instance as reachable, unreachable, or probe-failed.
+    // `running_targets` drives the actual shutdown loop below (only reachable
+    // instances can accept the shutdown RPC). `unreachable_targets` is tracked
+    // separately so the safety gate can decide what to do about them without
+    // silently dropping their existence.
     let mut running_targets: Vec<RemovalTarget> = Vec::new();
+    let mut unreachable_targets: Vec<RemovalTarget> = Vec::new();
     for target in &targets {
         let reachable = match ServiceMessenger::is_reachable(
             messenger,
@@ -202,16 +208,41 @@ async fn handle_node_remove_request_inner(
 
         if reachable {
             running_targets.push(target.clone());
+        } else {
+            unreachable_targets.push(target.clone());
         }
     }
 
-    if !request.stop_instances && !running_targets.is_empty() {
+    // Safety gate: without `stop_instances`, any tracked instance — reachable
+    // or not — blocks the remove. Previously only reachable instances were
+    // counted, which let a tracked-but-unreachable instance sneak the node
+    // out from under a still-running child.
+    if !request.stop_instances && (!running_targets.is_empty() || !unreachable_targets.is_empty()) {
+        let example = running_targets
+            .first()
+            .or_else(|| unreachable_targets.first())
+            .expect("one of the lists is non-empty");
         return NodeRemoveResponse::failure(format!(
             "Node '{}' has running instances (e.g. '{}'); set stop_instances=true to stop them before removing",
             request.node_name,
-            running_targets[0].instance_id.as_str(),
+            example.instance_id.as_str(),
         ))
         .encode();
+    }
+
+    // With `stop_instances=true`, we proceed despite unreachable instances —
+    // typically they correspond to a peer that already exited — but log a
+    // warning per skipped instance so the divergence is never silent.
+    if request.stop_instances {
+        for target in &unreachable_targets {
+            warn!(
+                "Instance '{}' of node '{}:{}' is tracked but its shutdown service is unreachable; \
+                 removing without sending shutdown",
+                target.instance_id.as_str(),
+                target.node_name,
+                target.node_tag,
+            );
+        }
     }
 
     if request.stop_instances {

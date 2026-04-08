@@ -6,8 +6,8 @@ use std::sync::{Arc, Mutex as StdMutex};
 
 use config::node::Name;
 use node_stack::{
-    BuildContext, InstanceState, NodeEntity, NodeStack, NodeStackError, NodeStage,
-    TrackedNodeInstance,
+    BuildContext, EntitySnapshot, InstanceState, NodeEntity, NodeStack, NodeStackError, NodeStage,
+    RestoreTarget, TrackedNodeInstance,
 };
 
 use crate::helpers::config_common::core_node_config;
@@ -1223,5 +1223,153 @@ mod backwards_transitions_are_rejected {
             }
             other => panic!("expected InvalidStageTransition, got {:?}", other),
         }
+    }
+}
+
+/// Regression for the failed-rebuild rollback bug in the node-add path.
+///
+/// Scenario: a node is already `Ready` (built, with an artifact_path) when a
+/// rebuild is started. `push_config` replaces the entity in-place and the
+/// caller then drives `NodeEntity::build`. If build fails, the add path must
+/// restore the previously-ready entity — otherwise the stack is left with a
+/// dangling `Building` entity (or nothing at all) and the previously-ready
+/// artifact is silently lost. This exercises
+/// `NodeStack::restore_snapshot_if_matches`, which is the node-stack API the
+/// add path calls on the build-failure branch.
+#[test]
+fn restore_snapshot_if_matches_rolls_back_failed_rebuild() {
+    let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
+    let config_path_v1 = PathBuf::from("/tmp/sensor/v1/peppy.json5");
+    let config_path_v2 = PathBuf::from("/tmp/sensor/v2/peppy.json5");
+    let artifact_v1 = PathBuf::from("/tmp/sensor-v1.sif");
+
+    // Ready v1 entity — this is what must survive a failed rebuild.
+    stack
+        .push_config(sensor_config(), false, &config_path_v1)
+        .expect("initial push_config should succeed");
+    let handle_v1 = stack.find("sensor", "1.0.0").expect("entity should exist");
+    let v1_config = handle_v1.read().unwrap().config().clone();
+    handle_v1
+        .write()
+        .expect("entity poisoned")
+        .__test_set_stage(NodeStage::Ready {
+            config_path: config_path_v1.clone(),
+            artifact_path: artifact_v1.clone(),
+            instances: vec![],
+        });
+
+    // Simulate the add path: push v2 (replaces v1 in-place with an Added
+    // entity carrying the new config_path), grab the handle+generation the
+    // caller captures before driving build, then force the entity into
+    // Building to mimic `NodeEntity::build` being in progress.
+    stack
+        .push_config(sensor_config(), false, &config_path_v2)
+        .expect("rebuild push_config should succeed");
+    let handle_after_push = stack.find("sensor", "1.0.0").expect("entity should exist");
+    let captured_generation = handle_after_push.read().unwrap().generation();
+    handle_after_push
+        .write()
+        .expect("entity poisoned")
+        .__test_set_stage(NodeStage::Building {
+            config_path: config_path_v2.clone(),
+        });
+
+    // Build "fails" — the caller rolls back by restoring the v1 snapshot it
+    // captured before calling push_config.
+    let restored = stack.restore_snapshot_if_matches(
+        RestoreTarget {
+            name: "sensor",
+            tag: "1.0.0",
+            expected_handle: &handle_after_push,
+            expected_generation: captured_generation,
+        },
+        EntitySnapshot {
+            config: v1_config,
+            config_path: config_path_v1.clone(),
+            artifact_path: Some(artifact_v1.clone()),
+        },
+    );
+    assert!(
+        restored,
+        "restore should succeed when handle+generation match"
+    );
+
+    let handle_final = stack.find("sensor", "1.0.0").expect("entity should exist");
+    let guard = handle_final.read().expect("entity poisoned");
+    match guard.stage() {
+        NodeStage::Ready {
+            config_path,
+            artifact_path,
+            instances,
+        } => {
+            assert_eq!(config_path, &config_path_v1);
+            assert_eq!(artifact_path, &artifact_v1);
+            assert!(instances.is_empty());
+        }
+        other => panic!("expected Ready after rollback, got {:?}", other),
+    }
+    assert_eq!(
+        guard.artifact_path(),
+        Some(artifact_v1.as_path()),
+        "previous artifact must be restored after a failed rebuild",
+    );
+}
+
+/// `restore_snapshot_if_matches` must not clobber a concurrent replacement:
+/// if the handle+generation drift (because another `push_config` landed
+/// between the caller's capture and the build failure), the rollback should
+/// be a no-op and the newer entity must stay in place.
+#[test]
+fn restore_snapshot_if_matches_no_op_on_generation_drift() {
+    let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
+    let config_path_v1 = PathBuf::from("/tmp/sensor/v1/peppy.json5");
+    let config_path_v2 = PathBuf::from("/tmp/sensor/v2/peppy.json5");
+
+    stack
+        .push_config(sensor_config(), false, &config_path_v1)
+        .expect("initial push_config should succeed");
+    let handle = stack.find("sensor", "1.0.0").expect("entity should exist");
+    let stale_generation = handle.read().unwrap().generation();
+    let stale_config = handle.read().unwrap().config().clone();
+    handle
+        .write()
+        .expect("entity poisoned")
+        .__test_set_stage(NodeStage::Building {
+            config_path: config_path_v1.clone(),
+        });
+
+    // A concurrent push replaces the entity under the same handle, bumping
+    // its generation.
+    stack
+        .push_config(sensor_config(), false, &config_path_v2)
+        .expect("concurrent push_config should succeed");
+
+    let restored = stack.restore_snapshot_if_matches(
+        RestoreTarget {
+            name: "sensor",
+            tag: "1.0.0",
+            expected_handle: &handle,
+            expected_generation: stale_generation,
+        },
+        EntitySnapshot {
+            config: stale_config,
+            config_path: config_path_v1.clone(),
+            artifact_path: Some(PathBuf::from("/tmp/sensor-v1.sif")),
+        },
+    );
+    assert!(
+        !restored,
+        "restore must be a no-op when the generation has drifted"
+    );
+
+    let guard = handle.read().expect("entity poisoned");
+    match guard.stage() {
+        NodeStage::Added { config_path } => {
+            assert_eq!(
+                config_path, &config_path_v2,
+                "concurrent replacement must stay in place"
+            );
+        }
+        other => panic!("expected Added (from the concurrent push), got {:?}", other),
     }
 }
