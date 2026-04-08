@@ -23,7 +23,11 @@ use config::node::{NodeConfig, PeppygenLanguage};
 use tar::Archive;
 use tokio::process::{Child, Command};
 use tokio::task::JoinHandle;
-use tracing::debug;
+use tracing::{debug, warn};
+
+use tokio::sync::mpsc;
+
+use crate::build_io::{FeedbackLine, FeedbackStream, write_feedback_log_line};
 use zstd::stream::read::Decoder;
 
 /// Per-process counter used to name temporary runtime config files uniquely.
@@ -390,6 +394,7 @@ pub(super) async fn spawn_container_node(
     apptainer_run_extra_args: &[String],
     lima_shell_extra_args: &[String],
     log_file: &Arc<StdMutex<File>>,
+    feedback_tx: &mpsc::UnboundedSender<FeedbackLine>,
     peppy_dirs: &PeppyDirs,
 ) -> std::io::Result<(Child, PathBuf)> {
     // Apptainer initialization is expensive (it may bootstrap a Lima VM on
@@ -415,7 +420,7 @@ pub(super) async fn spawn_container_node(
     // Collect all bind mounts (runtime config + user-specified mount_paths).
     let binds = collect_container_binds(&runtime_config_path, mount_paths);
 
-    // Validate user-specified bind mount sources.
+    // Ensure user-specified bind mount sources exist on the host.
     // Skip binds[0] (runtime config file) — its parent dir is already created above.
     //
     // Behaviour:
@@ -424,11 +429,12 @@ pub(super) async fn spawn_container_node(
     //   - If the path is under a device/virtual filesystem (`/dev`, `/proc`,
     //     `/sys`), accept it — those nodes are created by the kernel and
     //     may not exist on the host running the daemon.
-    //   - Otherwise, a missing source is a configuration error: previously
-    //     we silently `mkdir -p`'d the path, which turned a missing **file**
-    //     bind into an empty directory and masked typos. Reject explicitly
-    //     instead so the user gets a clear error.
-    validate_bind_sources(&binds[1..])?;
+    //   - Otherwise, `mkdir -p` the source so node-owned scratch / output
+    //     directories Just Work. This used to be silent, which masked file
+    //     bind typos by turning them into empty directories. We now emit a
+    //     loud warning to the per-instance start log for every auto-create
+    //     so an unintended mkdir is still visible to the operator.
+    ensure_bind_sources(&binds[1..], log_file, feedback_tx)?;
 
     // Ensure host paths outside $HOME are accessible in the Lima VM.
     // Skip binds[0] (runtime config) — it's always under $HOME.
@@ -519,10 +525,27 @@ pub(super) async fn spawn_container_node(
     Ok((child, runtime_config_path))
 }
 
-/// Validates that every bind mount source path exists, with the exception of
-/// kernel-managed virtual filesystems (`/dev`, `/proc`, `/sys`). Returns a
-/// descriptive `NotFound` error on the first missing source.
-pub(super) fn validate_bind_sources(binds: &[ContainerBind]) -> std::io::Result<()> {
+/// Ensures every bind mount source path is usable by the container runtime.
+///
+/// For each entry:
+///   - existing paths are left untouched (they may be files, sockets, devices,
+///     or directories — we must not modify them);
+///   - paths under kernel-managed virtual filesystems (`/dev`, `/proc`,
+///     `/sys`) are accepted as-is, since the kernel materializes them and the
+///     daemon's host may legitimately not have the device node;
+///   - any other missing path is auto-created with `mkdir -p`, and a warning
+///     line is emitted both to the daemon `tracing` log and to the
+///     per-instance start log via `feedback_sink`. The warning is the only
+///     line of defence against a typo'd file bind being silently turned into
+///     an empty directory, so callers MUST pass the per-instance log sink.
+///
+/// Returns the underlying `io::Error` (with the offending path embedded in
+/// the message) if `create_dir_all` fails.
+pub(super) fn ensure_bind_sources(
+    binds: &[ContainerBind],
+    feedback_sink: &Arc<StdMutex<File>>,
+    feedback_tx: &mpsc::UnboundedSender<FeedbackLine>,
+) -> std::io::Result<()> {
     for bind in binds {
         let src_path = Path::new(&bind.src);
         if src_path.exists() {
@@ -534,10 +557,26 @@ pub(super) fn validate_bind_sources(binds: &[ContainerBind]) -> std::io::Result<
         if in_special_fs {
             continue;
         }
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            format!("bind mount source does not exist: {}", bind.src),
-        ));
+        std::fs::create_dir_all(src_path).map_err(|e| {
+            std::io::Error::new(
+                e.kind(),
+                format!(
+                    "bind mount source does not exist: {} (auto-create failed: {})",
+                    bind.src, e
+                ),
+            )
+        })?;
+        let warning = format!(
+            "auto-created missing bind mount source: {} \
+             (if you intended to bind an existing file, this is a typo)",
+            bind.src
+        );
+        warn!("{}", warning);
+        write_feedback_log_line(feedback_sink, FeedbackStream::Warning, &warning);
+        let _ = feedback_tx.send(FeedbackLine {
+            stream: FeedbackStream::Warning,
+            line: warning,
+        });
     }
     Ok(())
 }
@@ -663,19 +702,41 @@ pub(super) fn extract_stderr_from_log(log_file: &Arc<StdMutex<File>>) -> String 
 mod tests {
     use super::*;
 
+    fn make_log_sink() -> (Arc<StdMutex<File>>, tempfile::NamedTempFile) {
+        let tmp = tempfile::NamedTempFile::new().expect("tempfile");
+        let file = tmp.reopen().expect("reopen tempfile");
+        (Arc::new(StdMutex::new(file)), tmp)
+    }
+
+    fn make_feedback_channel() -> (
+        mpsc::UnboundedSender<FeedbackLine>,
+        mpsc::UnboundedReceiver<FeedbackLine>,
+    ) {
+        mpsc::unbounded_channel()
+    }
+
     #[test]
-    fn validate_bind_sources_accepts_existing_paths() {
+    fn ensure_bind_sources_leaves_existing_paths_alone() {
         let tmp = tempfile::tempdir().expect("tempdir");
+        let (sink, log_file) = make_log_sink();
         let binds = vec![ContainerBind {
             src: tmp.path().to_string_lossy().into_owned(),
             dest: None,
             opts: None,
         }];
-        validate_bind_sources(&binds).expect("existing dir should be accepted");
+        let (tx, mut rx) = make_feedback_channel();
+        ensure_bind_sources(&binds, &sink, &tx).expect("existing dir should be accepted");
+        assert!(rx.try_recv().is_err(), "no warning should be sent");
+        let log_contents = std::fs::read_to_string(log_file.path()).unwrap_or_default();
+        assert!(
+            !log_contents.contains("auto-created"),
+            "no warning expected on happy path, got: {log_contents}"
+        );
     }
 
     #[test]
-    fn validate_bind_sources_accepts_special_fs_paths() {
+    fn ensure_bind_sources_accepts_special_fs_paths_without_creating() {
+        let (sink, log_file) = make_log_sink();
         let binds = vec![
             ContainerBind {
                 src: "/dev/does-not-exist-xyz".to_string(),
@@ -693,20 +754,109 @@ mod tests {
                 opts: None,
             },
         ];
-        validate_bind_sources(&binds).expect("special-fs paths should be accepted");
+        let (tx, mut rx) = make_feedback_channel();
+        ensure_bind_sources(&binds, &sink, &tx).expect("special-fs paths should be accepted");
+        assert!(rx.try_recv().is_err(), "no warning should be sent");
+        assert!(!Path::new("/dev/does-not-exist-xyz").exists());
+        let log_contents = std::fs::read_to_string(log_file.path()).unwrap_or_default();
+        assert!(!log_contents.contains("auto-created"));
     }
 
     #[test]
-    fn validate_bind_sources_rejects_missing_path() {
+    fn ensure_bind_sources_creates_missing_dir_and_warns() {
+        let parent = tempfile::tempdir().expect("tempdir");
+        let target = parent.path().join("scratch").join("nested");
+        assert!(!target.exists());
+        let (sink, log_file) = make_log_sink();
         let binds = vec![ContainerBind {
-            src: "/tmp/peppy-test-definitely-does-not-exist-9f3a2b".to_string(),
+            src: target.to_string_lossy().into_owned(),
             dest: None,
             opts: None,
         }];
-        let err =
-            validate_bind_sources(&binds).expect_err("missing non-special path should be rejected");
-        assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
-        assert!(err.to_string().contains("does not exist"));
+
+        let (tx, mut rx) = make_feedback_channel();
+        ensure_bind_sources(&binds, &sink, &tx).expect("missing dir should be auto-created");
+
+        assert!(target.is_dir(), "target dir must have been created");
+        // Drop the sink mutex's writer view so the warning bytes are flushed.
+        drop(sink);
+        let log_contents = std::fs::read_to_string(log_file.path()).expect("read log");
+        assert!(
+            log_contents.contains("auto-created missing bind mount source:"),
+            "warning line missing from feedback log, got: {log_contents}"
+        );
+        assert!(
+            log_contents.contains(target.to_string_lossy().as_ref()),
+            "warning should mention the offending path, got: {log_contents}"
+        );
+        // The warning must also be pushed onto the feedback channel as a
+        // Warning-stream line so launch forwarders can route it to a
+        // high-visibility sink.
+        let received = rx
+            .try_recv()
+            .expect("warning should be pushed to feedback channel");
+        assert_eq!(received.stream, FeedbackStream::Warning);
+        assert!(
+            received
+                .line
+                .contains("auto-created missing bind mount source:")
+        );
+        assert!(received.line.contains(target.to_string_lossy().as_ref()));
+        assert!(rx.try_recv().is_err(), "exactly one warning expected");
+    }
+
+    #[test]
+    fn ensure_bind_sources_propagates_create_dir_failures() {
+        // /proc/1/<x> is a kernel-managed path that mkdir cannot create. We
+        // bypass the /proc shortcut by using /proc/1 as the parent (the
+        // shortcut only applies to paths whose top-level component is
+        // /dev|/proc|/sys, and ours starts with /proc, so we use a sibling
+        // path under a non-special root that we make non-writable instead).
+        let parent = tempfile::tempdir().expect("tempdir");
+        let ro_parent = parent.path().join("ro");
+        std::fs::create_dir(&ro_parent).expect("mkdir ro");
+        // Make the parent read-only so create_dir_all fails on the child.
+        let mut perms = std::fs::metadata(&ro_parent)
+            .expect("metadata")
+            .permissions();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            perms.set_mode(0o500);
+        }
+        std::fs::set_permissions(&ro_parent, perms).expect("set perms");
+        let target = ro_parent.join("child");
+
+        let (sink, _log) = make_log_sink();
+        let binds = vec![ContainerBind {
+            src: target.to_string_lossy().into_owned(),
+            dest: None,
+            opts: None,
+        }];
+
+        let (tx, _rx) = make_feedback_channel();
+        let err = ensure_bind_sources(&binds, &sink, &tx)
+            .expect_err("read-only parent should make auto-create fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("bind mount source does not exist"),
+            "error must preserve the canonical phrase, got: {msg}"
+        );
+        assert!(
+            msg.contains(target.to_string_lossy().as_ref()),
+            "error must mention the offending path, got: {msg}"
+        );
+
+        // Restore permissions so the tempdir can be cleaned up.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&ro_parent)
+                .expect("metadata")
+                .permissions();
+            perms.set_mode(0o700);
+            std::fs::set_permissions(&ro_parent, perms).expect("restore perms");
+        }
     }
 
     #[test]

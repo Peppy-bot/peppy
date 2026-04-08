@@ -461,6 +461,7 @@ async fn handle_goal_request(
                 let feedback = match line.stream {
                     FeedbackStream::Stdout => NodeStartFeedback::stdout(&line.line),
                     FeedbackStream::Stderr => NodeStartFeedback::stderr(&line.line),
+                    FeedbackStream::Warning => NodeStartFeedback::warning(&line.line),
                 };
                 if let Ok(payload) = feedback.encode() {
                     let _ = feedback_publisher_for_consumer.publish(payload).await;

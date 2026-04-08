@@ -1484,14 +1484,15 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
     );
 }
 
-/// Verifies that `start_container_node` rejects bind mounts whose host-side
-/// source does not exist instead of silently auto-creating them. A missing
-/// bind source is a configuration error (e.g. a typo), and the previous
-/// `mkdir -p` behaviour masked file-bind typos by turning them into empty
-/// directories. The daemon must return a clear error and must NOT create
-/// the missing path on the host.
+/// Verifies that `start_container_node` auto-creates a missing bind-mount
+/// source directory AND emits a loud warning about it to the per-instance
+/// start log. The auto-create restores the dev-branch ergonomics for nodes
+/// that declare scratch / output directories (e.g. `/tmp/<node>`); the
+/// warning is the contract that prevents a typo'd file bind from silently
+/// becoming an empty directory. Both halves of the contract are asserted —
+/// if a future refactor drops the warning, this test must fail.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_start_with_container_rejects_missing_mount_dir() {
+async fn listen_for_node_start_with_container_creates_missing_mount_dir_and_warns() {
     let _guard = CONTAINER_TEST_MUTEX.lock().await;
 
     const TARGET_NODE_NAME: &str = "container_mount_create_node";
@@ -1501,8 +1502,7 @@ async fn listen_for_node_start_with_container_rejects_missing_mount_dir() {
     let started = start_core_node_with_mock_messenger().await;
 
     // Use a non-existent subdirectory inside a temp dir as the mount source.
-    // The framework must reject this with a clear error and must NOT create
-    // the directory on the host.
+    // The framework must auto-create it and emit a warning about doing so.
     let parent_dir = tempfile::tempdir().expect("failed to create temp parent dir");
     let mount_dir = parent_dir.path().join("nonexistent_subdir");
     assert!(!mount_dir.exists(), "mount dir should not exist yet");
@@ -1565,9 +1565,8 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
         add_response.error_message
     );
 
-    // Set up ready/health services for the container instance. These will
-    // never fire (start should fail before the container launches), but the
-    // spawner wires them up regardless.
+    // Set up ready/health services for the container instance. The container
+    // will actually launch (auto-create succeeds), so these need to be live.
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
     let _ready_task = AbortOnDrop(
         listen_for_node_ready(
@@ -1613,42 +1612,44 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
     .await
     .expect("node_start action should complete");
 
-    // The start must fail because the bind mount source does not exist.
+    // The start must succeed: the framework auto-creates the missing dir.
     assert!(
-        !start_response.result.success,
-        "node_start should fail when a bind mount source is missing"
-    );
-    let error_message = start_response
-        .result
-        .error_message
-        .as_deref()
-        .unwrap_or_default();
-    assert!(
-        error_message.contains("bind mount source does not exist"),
-        "error should explain the missing bind source, got: {:?}",
+        start_response.result.success,
+        "node_start should succeed after auto-creating the bind source, got error: {:?}",
         start_response.result.error_message
     );
+
+    // The host-side directory must now exist as a directory.
     assert!(
-        error_message.contains(&mount_dir_str),
-        "error should reference the offending path {:?}, got: {:?}",
+        mount_dir.is_dir(),
+        "mount dir should have been auto-created by the framework"
+    );
+
+    // The per-instance start log must contain the warning line so that an
+    // unintended mkdir (e.g. a typo'd file bind) is visible to the operator.
+    let log_path = &start_response.goal_response.log_path;
+    let log_content =
+        std::fs::read_to_string(log_path).expect("should be able to read instance start log");
+    assert!(
+        log_content.contains("auto-created missing bind mount source:"),
+        "feedback log should contain the auto-create warning, got:\n{}",
+        log_content
+    );
+    assert!(
+        log_content.contains(&mount_dir_str),
+        "feedback log warning should reference the offending path {:?}, got:\n{}",
         mount_dir_str,
-        start_response.result.error_message
+        log_content
     );
 
-    // Verify the host-side directory was NOT created by the framework.
-    assert!(
-        !mount_dir.exists(),
-        "mount dir must not be auto-created on the host"
-    );
-
-    // Verify the instance was NOT registered in the node stack, since start failed.
+    // The instance should now be registered in the node stack.
     let instance_id = NodeName::new(TARGET_INSTANCE_ID).expect("valid instance id");
     assert!(
         started
             .node_stack
             .find_by_instance_id(&instance_id)
-            .is_none(),
-        "instance must not be registered after a failed start"
+            .is_some(),
+        "instance should be registered in the node stack after successful start"
     );
 }
 

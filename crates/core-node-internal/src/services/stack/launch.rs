@@ -291,6 +291,12 @@ fn spawn_feedback_forwarder(
             let launch_feedback = match line.stream {
                 FeedbackStream::Stdout => LaunchFeedback::stdout(&line.line, step.clone()),
                 FeedbackStream::Stderr => LaunchFeedback::stderr(&line.line, step.clone()),
+                // Warnings bypass the per-node scrolling step and surface as
+                // persistent LauncherStep stderr lines so the operator sees
+                // them even after the step buffer scrolls past.
+                FeedbackStream::Warning => {
+                    LaunchFeedback::stderr(&line.line, LaunchFeedbackStep::LauncherStep)
+                }
             };
             if let Ok(payload) = launch_feedback.encode() {
                 let _ = publisher.publish(payload).await;

@@ -657,6 +657,7 @@ impl NodeEntity {
                     apptainer_run_extra_args,
                     lima_shell_extra_args,
                     &ctx.output_sinks.log_file,
+                    &ctx.output_sinks.feedback_tx,
                     ctx.peppy_dirs,
                 )
                 .await
