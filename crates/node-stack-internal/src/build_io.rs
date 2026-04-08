@@ -1,12 +1,30 @@
 //! I/O primitives for streaming child-process output to a feedback channel and
-//! a log file. These are used by [`crate::node_stack::NodeEntity::build`] (and
-//! by `core-node-internal` services for non-build process spawns).
+//! a log file.
+//!
+//! Two reader variants exist because build and start use different child types:
+//!
+//! - [`spawn_output_reader`] is **synchronous**: it consumes a `std::io::Read`
+//!   inside `tokio::task::spawn_blocking`. This is the right shape for the
+//!   build path, where the child is launched via `std::process::Command` (see
+//!   `node_stack::build_steps::build_container_image`) and we wait for it to
+//!   exit before continuing — no concurrent monitoring of `child.try_wait()`
+//!   is needed.
+//!
+//! - [`spawn_output_reader_async`] uses `tokio::io::AsyncBufReadExt` on a
+//!   `tokio::process::ChildStdout`/`ChildStderr`. This is required by the
+//!   start path, where the daemon must call `child.try_wait()` concurrently
+//!   with reading stdout/stderr (so it can detect early child exit while
+//!   polling the ready/health signals). The reader tasks also outlive the
+//!   `prepare_and_spawn` call — they remain alive as long as the spawned
+//!   node is running so its stdout/stderr keeps streaming.
 
 use chrono::Local;
 use std::collections::VecDeque;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
+use tokio::io::AsyncBufReadExt;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
@@ -24,6 +42,30 @@ pub struct FeedbackLine {
     pub stream: FeedbackStream,
     pub line: String,
 }
+
+/// Hooks called by [`spawn_output_reader_async`] at meaningful moments in the
+/// reader loop. This trait exists so `node-stack-internal` doesn't have to know
+/// about the daemon's `FeedbackSync` quiescence-detection primitive — the
+/// daemon implements `OutputReaderHooks` for its `FeedbackSync` and threads it
+/// through `StartContext`.
+///
+/// Both methods default to no-ops so tests can use `NoOpHooks` directly.
+pub trait OutputReaderHooks: Send + Sync {
+    /// Called once when the first stdout line of the run arrives. Idempotent
+    /// — the implementation is responsible for swallowing repeat calls.
+    fn on_first_stdout_line(&self) {}
+    /// Called after each line is successfully forwarded to the internal
+    /// feedback channel (the one the reader writes to). The daemon's
+    /// `FeedbackSync` increments its `read_count` here so that
+    /// `flush_with_timeout` knows how many lines need to be drained.
+    fn on_line_read(&self) {}
+}
+
+/// No-op implementation of [`OutputReaderHooks`] used by tests and any caller
+/// that doesn't need quiescence tracking.
+pub struct NoOpHooks;
+
+impl OutputReaderHooks for NoOpHooks {}
 
 /// Pushes a line into a bounded ring buffer of stderr output.
 /// When the buffer is full, the oldest line is dropped.
@@ -149,6 +191,75 @@ pub async fn stream_child_output(
     };
 
     Ok((status, tail_lines))
+}
+
+/// Async sibling of [`spawn_output_reader`], used by the start path.
+///
+/// Reads lines from a `tokio::io::AsyncRead` (typically a
+/// `tokio::process::ChildStdout`/`ChildStderr`), writes each line to the log
+/// file, captures stderr lines into the optional `stderr_buffer`, and forwards
+/// each line over `feedback_tx` (gated by `publish_enabled`).
+///
+/// The reader task is spawned via `tokio::spawn` and remains alive as long as
+/// the underlying reader yields data. On the start path, this means the reader
+/// continues running past the return of `prepare_and_spawn`/`commit_started`
+/// for as long as the spawned node is alive — which is the desired behavior so
+/// the daemon keeps streaming the running node's stdout/stderr.
+pub fn spawn_output_reader_async<R>(
+    reader: R,
+    feedback_tx: mpsc::UnboundedSender<FeedbackLine>,
+    publish_enabled: Arc<AtomicBool>,
+    hooks: Arc<dyn OutputReaderHooks>,
+    stream: FeedbackStream,
+    stderr_buffer: Option<Arc<StdMutex<VecDeque<String>>>>,
+    log_file: Arc<StdMutex<File>>,
+) -> JoinHandle<()>
+where
+    R: tokio::io::AsyncRead + Unpin + Send + 'static,
+{
+    let stream_prefix = match stream {
+        FeedbackStream::Stdout => "stdout",
+        FeedbackStream::Stderr => "stderr",
+    };
+
+    tokio::spawn(async move {
+        let mut lines = tokio::io::BufReader::new(reader).lines();
+
+        loop {
+            let line = match lines.next_line().await {
+                Ok(Some(line)) => line,
+                Ok(None) => break,
+                Err(_) => break,
+            };
+
+            // Always write to log file, regardless of publish_enabled state
+            if let Ok(mut file) = log_file.lock() {
+                let timestamp = Local::now().format("%Y-%m-%dT%H:%M:%S%.3f");
+                let _ = writeln!(file, "[{}] [{}] {}", timestamp, stream_prefix, line);
+            }
+
+            // Signal when the first stdout line arrives so container quiescence
+            // detection can wait for the runscript to actually produce output.
+            if matches!(stream, FeedbackStream::Stdout) {
+                hooks.on_first_stdout_line();
+            }
+
+            // Always capture stderr for error diagnostics, regardless of publish state
+            if matches!(stream, FeedbackStream::Stderr)
+                && let Some(buffer) = &stderr_buffer
+            {
+                push_stderr_line(buffer, &line);
+            }
+
+            if !publish_enabled.load(Ordering::Relaxed) {
+                continue;
+            }
+
+            if feedback_tx.send(FeedbackLine { stream, line }).is_ok() {
+                hooks.on_line_read();
+            }
+        }
+    })
 }
 
 #[cfg(test)]

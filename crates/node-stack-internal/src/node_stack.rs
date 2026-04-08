@@ -1,10 +1,13 @@
 mod build_steps;
 mod entity;
+mod start_steps;
 mod validation;
 
 pub use entity::{
-    BuildContext, DependencySpec, NodeEntity, NodeStage, SerializedNodeGraph, TrackedNodeInstance,
+    BuildContext, DependencySpec, NodeEntity, NodeStage, SerializedNodeGraph, StartContext,
+    StartedInstanceCtx, TrackedNodeInstance,
 };
+pub use start_steps::extract_tar_zst;
 pub use validation::{collect_dependency_specs, validate_dependency_specs};
 
 use entity::{SerializedEdge, SerializedNode};
@@ -468,9 +471,8 @@ impl NodeStack {
     ///
     /// If `instance_id` is `None`, a random instance ID will be generated for
     /// the root node. The root entity's lifecycle is degenerate: it represents
-    /// the running daemon itself, so it bypasses [`NodeEntity::build`] via the
-    /// internal `restore_built` shortcut and is then transitioned straight
-    /// into `Started` with one instance whose PID is the daemon's PID.
+    /// the running daemon itself and has no buildable artifact, so it is
+    /// constructed directly in `Started` via [`NodeEntity::root`].
     pub fn new<P: Into<PathBuf>>(
         root_config: NodeConfig,
         instance_id: Option<Name>,
@@ -481,13 +483,7 @@ impl NodeStack {
             Name::new(get_random(rng())).expect("random name generation failed")
         });
         let instance = TrackedNodeInstance::new(instance_id, Some(std::process::id()));
-        let mut root_entity = NodeEntity::new(root_config, root_path.clone());
-        root_entity
-            .restore_built(root_path)
-            .expect("root entity is freshly constructed in Added");
-        root_entity
-            .start_instance(instance)
-            .expect("root entity is freshly built");
+        let root_entity = NodeEntity::root(root_config, root_path, instance);
         Self {
             shared: Arc::new(RwLock::new(NodeStackInner::new(root_entity))),
         }
@@ -619,8 +615,9 @@ impl NodeStack {
     /// This resets the current stack (preserving only the root node), then
     /// copies all non-root entities and their built/started state from the
     /// source stack. Because the source artifacts already exist on disk, this
-    /// uses the internal `restore_built` shortcut instead of re-running the
-    /// I/O-heavy `build()` step.
+    /// uses [`NodeEntity::from_snapshot`] to materialize each entity directly
+    /// in the appropriate stage instead of re-running the I/O-heavy `build()`
+    /// step or the `prepare_and_spawn` lifecycle.
     pub fn apply_from(&self, source: &NodeStack) -> std::result::Result<(), String> {
         let target_root = self.root();
         let target_root_guard = target_root.read().expect("entity poisoned");
@@ -648,39 +645,14 @@ impl NodeStack {
             let instances: Vec<TrackedNodeInstance> = source_guard.instances().to_vec();
             drop(source_guard);
 
-            // 1. Push the config (creates an Added entity in this stack)
-            self.push_config(config.clone(), true, config_path)
-                .map_err(
-                    |e| format!("failed to add config {}:{} to node stack: {e}", name, tag,),
-                )?;
-
-            // 2. If the source had progressed past Added, replay the path data
-            //    via the internal restore_built shortcut.
-            if let Some(artifact_path) = artifact_path {
-                let target_handle = self.find(&name, &tag).ok_or_else(|| {
-                    format!("internal: just-pushed entity {}:{} not found", name, tag)
-                })?;
-                target_handle
-                    .write()
-                    .expect("entity poisoned")
-                    .restore_built(artifact_path)
-                    .map_err(|e| {
-                        format!("failed to restore built state for {}:{}: {e}", name, tag)
-                    })?;
-            }
-
-            // 3. Replay each instance through start_instance.
-            if !instances.is_empty() {
-                let target_handle = self.find(&name, &tag).ok_or_else(|| {
-                    format!("internal: just-pushed entity {}:{} not found", name, tag)
-                })?;
-                let mut guard = target_handle.write().expect("entity poisoned");
-                for instance in instances {
-                    guard.start_instance(instance).map_err(|e| {
-                        format!("failed to replay instance for {}:{}: {e}", name, tag)
-                    })?;
-                }
-            }
+            // Materialize the entity directly in the appropriate stage. The
+            // `from_snapshot` constructor bypasses the lifecycle because the
+            // source artifact already exists on disk.
+            let entity = NodeEntity::from_snapshot(config, config_path, artifact_path, instances);
+            let mut guard = self.shared.write().expect("node stack poisoned");
+            guard
+                .insert_entity(entity, false)
+                .map_err(|e| format!("failed to insert snapshot for {}:{}: {e}", name, tag))?;
         }
 
         Ok(())

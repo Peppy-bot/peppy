@@ -1,14 +1,10 @@
 use super::super::action_loop::{ActionResult, ActionState, GoalHandler, run_action_loop};
-use super::{
-    FeedbackLine, FeedbackStream, create_action_log_file, extract_tar_zst, push_stderr_line,
-    write_error_to_log,
-};
+use super::{FeedbackLine, FeedbackStream, create_action_log_file, write_error_to_log};
 use crate::Result;
 use crate::encoding::{NodeStartFeedback, NodeStartGoal, NodeStartGoalResponse, NodeStartResult};
 use crate::names;
-use chrono::Local;
-use config::consts::{PeppyDirs, RUNTIME_CONFIG_VAR_NAME};
-use config::node::{Name, PeppygenLanguage};
+use config::consts::PeppyDirs;
+use config::node::Name;
 use config::runtime::RuntimeConfig;
 use config::{AnyType, resolve_parameter_path};
 use futures::FutureExt;
@@ -21,16 +17,12 @@ use peppylib::messaging::{
 use peppylib::types::Payload;
 use peppylib::{ActionMessenger, MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
 use std::collections::BTreeMap;
-use std::collections::VecDeque;
 use std::fs::File;
-use std::io::Write;
 use std::panic::AssertUnwindSafe;
-use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
-use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::process::{Child, Command};
+use tokio::process::Child;
 use tokio::sync::{Mutex, Notify, mpsc};
 use tokio::task::JoinHandle;
 use tracing::debug;
@@ -40,8 +32,6 @@ const STARTUP_OUTPUT_QUIET_WINDOW: Duration = Duration::from_millis(10);
 const CONTAINER_STARTUP_OUTPUT_MAX_WAIT: Duration = Duration::from_secs(2);
 const CONTAINER_STARTUP_OUTPUT_QUIET_WINDOW: Duration = Duration::from_millis(100);
 const FEEDBACK_FLUSH_TIMEOUT: Duration = Duration::from_secs(5);
-
-static RUNTIME_CONFIG_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone)]
 pub struct NodeStartServiceConfig {
@@ -312,61 +302,14 @@ impl FeedbackSync {
     }
 }
 
-fn spawn_output_reader<R>(
-    reader: R,
-    feedback_tx: mpsc::UnboundedSender<FeedbackLine>,
-    publish_enabled: Arc<AtomicBool>,
-    feedback_sync: FeedbackSync,
-    stream: FeedbackStream,
-    stderr_buffer: Option<Arc<StdMutex<VecDeque<String>>>>,
-    log_file: Arc<StdMutex<File>>,
-) -> JoinHandle<()>
-where
-    R: tokio::io::AsyncRead + Unpin + Send + 'static,
-{
-    let stream_prefix = match stream {
-        FeedbackStream::Stdout => "stdout",
-        FeedbackStream::Stderr => "stderr",
-    };
+impl node_stack::build_io::OutputReaderHooks for FeedbackSync {
+    fn on_first_stdout_line(&self) {
+        self.signal_stdout();
+    }
 
-    tokio::spawn(async move {
-        let mut lines = BufReader::new(reader).lines();
-
-        loop {
-            let line = match lines.next_line().await {
-                Ok(Some(line)) => line,
-                Ok(None) => break,
-                Err(_) => break,
-            };
-
-            // Always write to log file, regardless of publish_enabled state
-            if let Ok(mut file) = log_file.lock() {
-                let timestamp = Local::now().format("%Y-%m-%dT%H:%M:%S%.3f");
-                let _ = writeln!(file, "[{}] [{}] {}", timestamp, stream_prefix, line);
-            }
-
-            // Signal when the first stdout line arrives so container quiescence
-            // detection can wait for the runscript to actually produce output.
-            if matches!(stream, FeedbackStream::Stdout) {
-                feedback_sync.signal_stdout();
-            }
-
-            // Always capture stderr for error diagnostics, regardless of publish state
-            if matches!(stream, FeedbackStream::Stderr)
-                && let Some(buffer) = &stderr_buffer
-            {
-                push_stderr_line(buffer, &line);
-            }
-
-            if !publish_enabled.load(Ordering::Relaxed) {
-                continue;
-            }
-
-            if feedback_tx.send(FeedbackLine { stream, line }).is_ok() {
-                feedback_sync.increment_read();
-            }
-        }
-    })
+    fn on_line_read(&self) {
+        self.increment_read();
+    }
 }
 
 /// Runs the node-start pipeline: calls [`process_node_start`] and catches panics.
@@ -594,25 +537,24 @@ async fn process_node_start(
         }
     };
 
-    // Snapshot the entity's config and artifact_path into local variables so
-    // we never hold a read lock across the many .await points below. The
-    // entity itself stays shared via `entity_handle` for the eventual
-    // start_instance write.
-    let (node_config, artifact_path) = {
+    // Snapshot the entity's config into a local variable. The entity itself
+    // stays shared via `entity_handle` for the eventual prepare_and_spawn /
+    // commit_started transitions; the artifact_path is read by the entity
+    // under its own brief lock, so we don't need it here. We still validate
+    // that the entity is at least Built so we can fail fast with a friendly
+    // message before constructing the rest of the StartContext.
+    let node_config = {
         let guard = entity_handle.read().expect("entity poisoned");
-        let artifact = match guard.artifact_path() {
-            Some(p) => p.to_path_buf(),
-            None => {
-                let msg = format!(
-                    "Node '{}:{}' has not been built yet (still in Added stage)",
-                    node_name, tag
-                );
-                drop(guard);
-                write_error_to_log(&ctx.log_file, &msg);
-                return NodeStartResult::failure(msg);
-            }
-        };
-        (guard.config().clone(), artifact)
+        if guard.artifact_path().is_none() {
+            let msg = format!(
+                "Node '{}:{}' has not been built yet (still in Added stage)",
+                node_name, tag
+            );
+            drop(guard);
+            write_error_to_log(&ctx.log_file, &msg);
+            return NodeStartResult::failure(msg);
+        }
+        guard.config().clone()
     };
 
     let sccache_injected =
@@ -643,46 +585,12 @@ async fn process_node_start(
 
     let is_container = node_config.execution.container.is_some();
 
-    // Prepare instance directory:
-    // - Container nodes: create empty dir (SIF image is self-contained)
-    // - Process nodes: extract .tar.zst archive into the directory
-    let instance_dir = if is_container {
-        match create_instance_dir(instance_id_str, &ctx.action.peppy_dirs) {
-            Ok(dir) => dir,
-            Err(e) => {
-                let msg = format!("Failed to create instance directory: {}", e);
-                debug!("{}", msg);
-                write_error_to_log(&ctx.log_file, &msg);
-                return NodeStartResult::failure(msg);
-            }
-        }
-    } else {
-        match extract_node_archive(&artifact_path, instance_id_str, &ctx.action.peppy_dirs) {
-            Ok(dir) => dir,
-            Err(e) => {
-                let msg = format!("Failed to extract node archive: {}", e);
-                debug!("{}", msg);
-                write_error_to_log(&ctx.log_file, &msg);
-                return NodeStartResult::failure(msg);
-            }
-        }
-    };
-
-    // Spawn the node process:
-    // - Container nodes: apptainer run <sif>
-    // - Process nodes: execute start_cmd
+    // Mount-path parameter resolution stays in core-node — it depends on
+    // RuntimeConfig + the daemon's blocked-source security policy.
     let container_config = node_config.execution.container.as_ref();
     let raw_mount_paths = container_config
         .and_then(|c| c.mount_paths.as_deref())
         .unwrap_or_default();
-    let apptainer_run_extra_args = container_config
-        .and_then(|c| c.apptainer_run_extra_args.as_deref())
-        .unwrap_or_default();
-    let lima_shell_extra_args = container_config
-        .and_then(|c| c.lima_shell_extra_args.as_deref())
-        .unwrap_or_default();
-
-    // Resolve ${parameters:...} references in mount paths using runtime arguments.
     let resolved_mount_paths = match resolve_mount_path_parameters(
         raw_mount_paths,
         &runtime_config.node_instance.arguments,
@@ -694,8 +602,11 @@ async fn process_node_start(
         }
     };
 
-    let mut child = if is_container {
-        let mut apptainer = match tokio::task::spawn_blocking(containers::Apptainer::new).await {
+    // Container nodes need their runtime config rewritten with the apptainer
+    // host_gateway so that requests inside the container can reach the daemon.
+    // This stays in core-node because it touches RuntimeConfig serialization.
+    let runtime_config_json5 = if is_container {
+        let apptainer = match tokio::task::spawn_blocking(containers::Apptainer::new).await {
             Ok(Ok(a)) => a,
             Ok(Err(e)) => {
                 let msg = format!("Failed to initialize Apptainer: {}", e);
@@ -708,11 +619,7 @@ async fn process_node_start(
                 return NodeStartResult::failure(msg);
             }
         };
-
-        // Set the correct messaging host for the container environment.
-        // On macOS (Lima), 127.0.0.1 inside the VM is the VM's localhost,
-        // not the macOS host. Use Lima's host gateway hostname instead.
-        let runtime_config_json5 = match apptainer.host_gateway() {
+        match apptainer.host_gateway() {
             Some(gateway) => {
                 let mut cfg = runtime_config.clone();
                 cfg.messaging_host = gateway.to_string();
@@ -726,56 +633,24 @@ async fn process_node_start(
                 }
             }
             None => runtime_config_json5,
-        };
-
-        match start_container_node(
-            &mut apptainer,
-            &artifact_path,
-            &instance_dir,
-            &runtime_config_json5,
-            &env_vars,
-            &resolved_mount_paths,
-            apptainer_run_extra_args,
-            lima_shell_extra_args,
-            &ctx.log_file,
-            &ctx.action.peppy_dirs,
-        ) {
-            Ok(child) => child,
-            Err(e) => {
-                let msg = format!("Failed to start container node: {}", e);
-                debug!("{}", msg);
-                write_error_to_log(&ctx.log_file, &msg);
-                return NodeStartResult::failure(msg);
-            }
         }
     } else {
-        match start_node(
-            &node_config,
-            &instance_dir,
-            &runtime_config_json5,
-            &env_vars,
-            &ctx.log_file,
-            &ctx.action.peppy_dirs,
-        ) {
-            Ok(child) => child,
-            Err(e) => {
-                let msg = format!("Failed to start node: {}", e);
-                debug!("Failed to start node instance '{}': {}", instance_id_str, e);
-                write_error_to_log(&ctx.log_file, &msg);
-                return NodeStartResult::failure(msg);
-            }
-        }
+        runtime_config_json5
     };
 
+    // Set up the FeedbackSync + two-channel forwarder. The internal channel
+    // feeds the entity's output readers; the forwarder copies lines onto the
+    // daemon's external feedback topic and increments published_count so
+    // FeedbackSync can detect quiescence.
     let publish_enabled = Arc::new(AtomicBool::new(true));
     let feedback_sync = FeedbackSync::new();
-    let stderr_buffer = Arc::new(StdMutex::new(VecDeque::new()));
 
-    let (feedback_tx, mut feedback_rx) = mpsc::unbounded_channel::<FeedbackLine>();
+    let (internal_feedback_tx, mut internal_feedback_rx) =
+        mpsc::unbounded_channel::<FeedbackLine>();
     let external_feedback_tx = ctx.feedback_tx.clone();
     let feedback_sync_publisher = feedback_sync.clone();
     tokio::spawn(async move {
-        while let Some(line) = feedback_rx.recv().await {
+        while let Some(line) = internal_feedback_rx.recv().await {
             let _ = external_feedback_tx.send(FeedbackLine {
                 stream: line.stream,
                 line: line.line,
@@ -784,31 +659,31 @@ async fn process_node_start(
         }
     });
 
-    let mut output_reader_handles = Vec::new();
-
-    if let Some(stdout) = child.stdout.take() {
-        output_reader_handles.push(spawn_output_reader(
-            stdout,
-            feedback_tx.clone(),
-            Arc::clone(&publish_enabled),
-            feedback_sync.clone(),
-            FeedbackStream::Stdout,
-            None,
-            Arc::clone(&ctx.log_file),
-        ));
-    }
-
-    if let Some(stderr) = child.stderr.take() {
-        output_reader_handles.push(spawn_output_reader(
-            stderr,
-            feedback_tx,
-            Arc::clone(&publish_enabled),
-            feedback_sync.clone(),
-            FeedbackStream::Stderr,
-            Some(Arc::clone(&stderr_buffer)),
-            Arc::clone(&ctx.log_file),
-        ));
-    }
+    // Hand off to the entity. prepare_and_spawn does:
+    //   - Built → Starting transition (under a brief write lock)
+    //   - instance dir extraction / process spawn / output reader setup
+    let start_ctx = node_stack::StartContext {
+        instance_id: &instance_id,
+        runtime_config_json5: &runtime_config_json5,
+        env_vars: &env_vars,
+        mount_paths_resolved: &resolved_mount_paths,
+        peppy_dirs: &ctx.action.peppy_dirs,
+        feedback_tx: &internal_feedback_tx,
+        log_file: Arc::clone(&ctx.log_file),
+        publish_enabled: Arc::clone(&publish_enabled),
+        hooks: Arc::new(feedback_sync.clone()),
+    };
+    let (mut child, started_ctx) =
+        match node_stack::NodeEntity::prepare_and_spawn(&entity_handle, start_ctx).await {
+            Ok(t) => t,
+            Err(e) => {
+                let msg = e.to_string();
+                write_error_to_log(&ctx.log_file, &msg);
+                feedback_sync.flush_or_warn(instance_id_str).await;
+                publish_enabled.store(false, Ordering::Relaxed);
+                return NodeStartResult::failure(msg);
+            }
+        };
 
     let signal_target = NodeSignalTarget {
         messenger: &ctx.action.messenger,
@@ -833,18 +708,17 @@ async fn process_node_start(
             "Ready signal failed for node instance '{}': {}, killing process",
             instance_id_str, e
         );
-        let result = kill_and_report_error(
+        let msg = node_stack::NodeEntity::abort_started(
+            &entity_handle,
             child,
-            instance_id_str,
-            &e,
-            stderr_buffer,
-            output_reader_handles,
-            Arc::clone(&ctx.log_file),
+            started_ctx,
+            e,
+            &instance_id,
         )
         .await;
         feedback_sync.flush_or_warn(instance_id_str).await;
         publish_enabled.store(false, Ordering::Relaxed);
-        return result;
+        return NodeStartResult::failure(msg);
     }
 
     debug!(
@@ -866,285 +740,58 @@ async fn process_node_start(
                 instance_id_str
             );
             let pid = child.id().unwrap_or(0);
-            let tracked = node_stack::TrackedNodeInstance::new(instance_id.clone(), Some(pid));
-            let register_result = entity_handle
-                .write()
-                .expect("entity poisoned")
-                .start_instance(tracked);
-            if let Err(e) = register_result {
-                let msg = format!("Failed to register instance: {}", e);
-                write_error_to_log(&ctx.log_file, &msg);
-                let result = kill_and_report_error(
-                    child,
-                    instance_id_str,
-                    &msg,
-                    stderr_buffer,
-                    output_reader_handles,
-                    Arc::clone(&ctx.log_file),
-                )
-                .await;
-                feedback_sync.flush_or_warn(instance_id_str).await;
-                publish_enabled.store(false, Ordering::Relaxed);
-                return result;
+            let commit_result = node_stack::NodeEntity::commit_started(
+                &entity_handle,
+                child,
+                started_ctx,
+                instance_id.clone(),
+            )
+            .await;
+            match commit_result {
+                Ok(_) => {
+                    let (max_wait, quiet_window) = if is_container {
+                        (
+                            CONTAINER_STARTUP_OUTPUT_MAX_WAIT,
+                            CONTAINER_STARTUP_OUTPUT_QUIET_WINDOW,
+                        )
+                    } else {
+                        (STARTUP_OUTPUT_MAX_WAIT, STARTUP_OUTPUT_QUIET_WINDOW)
+                    };
+                    feedback_sync
+                        .wait_for_read_quiescence(max_wait, quiet_window, is_container)
+                        .await;
+                    let result = NodeStartResult::success(pid);
+                    feedback_sync.flush_or_warn(instance_id_str).await;
+                    publish_enabled.store(false, Ordering::Relaxed);
+                    result
+                }
+                Err(e) => {
+                    let msg = format!("Failed to register instance: {}", e);
+                    write_error_to_log(&ctx.log_file, &msg);
+                    feedback_sync.flush_or_warn(instance_id_str).await;
+                    publish_enabled.store(false, Ordering::Relaxed);
+                    NodeStartResult::failure(msg)
+                }
             }
-            let (max_wait, quiet_window) = if is_container {
-                (
-                    CONTAINER_STARTUP_OUTPUT_MAX_WAIT,
-                    CONTAINER_STARTUP_OUTPUT_QUIET_WINDOW,
-                )
-            } else {
-                (STARTUP_OUTPUT_MAX_WAIT, STARTUP_OUTPUT_QUIET_WINDOW)
-            };
-            feedback_sync
-                .wait_for_read_quiescence(max_wait, quiet_window, is_container)
-                .await;
-            let result = NodeStartResult::success(pid);
-            feedback_sync.flush_or_warn(instance_id_str).await;
-            publish_enabled.store(false, Ordering::Relaxed);
-            result
         }
         Err(e) => {
             debug!(
                 "Health check failed for node instance '{}': {}, killing process",
                 instance_id_str, e
             );
-            let result = kill_and_report_error(
+            let msg = node_stack::NodeEntity::abort_started(
+                &entity_handle,
                 child,
-                instance_id_str,
-                &e,
-                stderr_buffer,
-                output_reader_handles,
-                Arc::clone(&ctx.log_file),
+                started_ctx,
+                e,
+                &instance_id,
             )
             .await;
             feedback_sync.flush_or_warn(instance_id_str).await;
             publish_enabled.store(false, Ordering::Relaxed);
-            result
+            NodeStartResult::failure(msg)
         }
     }
-}
-
-/// Helper function to kill a child process and report an error with stderr tail capture.
-async fn kill_and_report_error(
-    mut child: Child,
-    instance_id_str: &str,
-    error: &str,
-    stderr_buffer: Arc<StdMutex<VecDeque<String>>>,
-    output_reader_handles: Vec<JoinHandle<()>>,
-    log_file: Arc<StdMutex<File>>,
-) -> NodeStartResult {
-    if let Err(kill_err) = child.kill().await {
-        debug!(
-            "Failed to kill process for node instance '{}': {}",
-            instance_id_str, kill_err
-        );
-    }
-
-    let _ = child.wait().await;
-
-    // Drain any remaining output that was already in-flight so error reporting is stable.
-    // We intentionally ignore join errors so we don't mask the actual node start failure.
-    for handle in output_reader_handles {
-        let _ = handle.await;
-    }
-
-    let stderr_output = {
-        let guard = stderr_buffer.lock().expect("stderr buffer lock poisoned");
-        let buffer_lines: Vec<String> = guard.iter().cloned().collect();
-        if !buffer_lines.is_empty() {
-            buffer_lines.join("\n")
-        } else {
-            // Fall back to the log file for stderr lines — the log write is unconditional
-            // and may have captured output that the stderr_buffer missed due to timing
-            // (e.g. the async reader hadn't processed the line before we read the buffer).
-            extract_stderr_from_log(&log_file)
-        }
-    };
-
-    if !stderr_output.is_empty() {
-        debug!(
-            "Node instance '{}' stderr (tail): {}",
-            instance_id_str, stderr_output
-        );
-    }
-
-    let error_msg = if stderr_output.is_empty() {
-        error.to_string()
-    } else {
-        format!(
-            "{}\n\n--- stderr (last lines) ---\n{}",
-            error, stderr_output
-        )
-    };
-
-    NodeStartResult::failure(error_msg)
-}
-
-/// Extracts stderr lines from the log file.
-///
-/// The log file captures all output unconditionally (before any async processing),
-/// so it serves as a reliable fallback when the stderr_buffer is empty due to
-/// async scheduling timing (e.g., the reader task hadn't processed the line before
-/// the buffer was read).
-fn extract_stderr_from_log(log_file: &Arc<StdMutex<File>>) -> String {
-    use std::io::{Read, Seek};
-
-    let content = match log_file.lock() {
-        Ok(mut f) => {
-            if f.seek(std::io::SeekFrom::Start(0)).is_err() {
-                return String::new();
-            }
-            let mut buf = String::new();
-            if f.read_to_string(&mut buf).is_err() {
-                return String::new();
-            }
-            buf
-        }
-        Err(_) => return String::new(),
-    };
-
-    content
-        .lines()
-        .filter(|l| l.contains("[stderr]"))
-        .filter_map(|l| l.split_once("[stderr] ").map(|(_, rest)| rest))
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-/// Creates (or recreates) a clean instance directory under the instances dir.
-/// Returns the path to the newly created directory.
-fn create_instance_dir(
-    instance_id: &str,
-    peppy_dirs: &PeppyDirs,
-) -> std::result::Result<std::path::PathBuf, String> {
-    let instances_dir = peppy_dirs.instances_dir();
-    std::fs::create_dir_all(&instances_dir).map_err(|e| {
-        format!(
-            "Failed to create instances directory {}: {}",
-            instances_dir.display(),
-            e
-        )
-    })?;
-
-    let instance_dir = instances_dir.join(instance_id);
-
-    // Clean up any leftover instance directory from a previous failed attempt,
-    // since the instance ID is deterministic and may be retried.
-    if instance_dir.exists() {
-        std::fs::remove_dir_all(&instance_dir).map_err(|e| {
-            format!(
-                "Failed to clean up existing instance directory {}: {}",
-                instance_dir.display(),
-                e
-            )
-        })?;
-    }
-
-    std::fs::create_dir(&instance_dir).map_err(|e| {
-        format!(
-            "Failed to create instance directory {}: {}",
-            instance_dir.display(),
-            e
-        )
-    })?;
-
-    Ok(instance_dir)
-}
-
-/// Extracts a `.tar.zst` node archive to a new instance directory.
-/// Returns the path to the extracted instance directory.
-fn extract_node_archive(
-    archive_path: &std::path::Path,
-    instance_id: &str,
-    peppy_dirs: &PeppyDirs,
-) -> std::result::Result<std::path::PathBuf, String> {
-    let instance_dir = create_instance_dir(instance_id, peppy_dirs)?;
-    extract_tar_zst(archive_path, &instance_dir)?;
-    Ok(instance_dir)
-}
-
-/// Runs a node using its build's start_cmd and passes the PEPPY_RUNTIME_CONFIG as an env var.
-/// Returns the spawned child process handle on success.
-pub fn start_node(
-    config: &config::node::NodeConfig,
-    working_dir: &std::path::Path,
-    runtime_config_json5: &str,
-    env_vars: &[(String, String)],
-    log_file: &Arc<StdMutex<File>>,
-    peppy_dirs: &PeppyDirs,
-) -> std::io::Result<Child> {
-    let manifest = &config.manifest;
-    let start_cmd = config
-        .execution
-        .start_cmd
-        .as_ref()
-        .ok_or_else(|| std::io::Error::other("node has no execution.start_cmd"))?;
-
-    let Some((program, args)) = start_cmd.split_first() else {
-        return Err(std::io::Error::other("start_cmd is empty"));
-    };
-
-    debug!(
-        "Running node '{}:{}' with command: {} {:?} in dir {:?}",
-        manifest.name.as_str(),
-        manifest.tag,
-        program,
-        args,
-        working_dir
-    );
-
-    // Log the command being executed to the log file before attempting to spawn
-    {
-        let full_cmd = start_cmd.join(" ");
-        if let Ok(mut file) = log_file.lock() {
-            let timestamp = Local::now().format("%Y-%m-%dT%H:%M:%S%.3f");
-            let _ = writeln!(
-                file,
-                "[{}] Executing start_cmd: {} (working_dir: {})",
-                timestamp,
-                full_cmd,
-                working_dir.display()
-            );
-            let _ = file.flush();
-        }
-    }
-
-    // Write runtime config to a unique file per spawned process.
-    // Using a shared path can cause cross-test and cross-instance races where a node reads the
-    // wrong config (instance_id/port), leading to hangs waiting for ready/health responses.
-    let runtime_dir = peppy_dirs.runtime_config_dir();
-    std::fs::create_dir_all(&runtime_dir)?;
-    let counter = RUNTIME_CONFIG_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let pid = std::process::id();
-    let runtime_config_path = runtime_dir.join(format!("runtime_config_{pid}_{counter}.json5"));
-    std::fs::write(&runtime_config_path, runtime_config_json5)?;
-
-    let mut command = Command::new(program);
-    command.current_dir(working_dir);
-    command
-        .args(args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    for (key, value) in env_vars {
-        command.env(key, value);
-    }
-    // Set PWD to match the actual working directory so tools that read this
-    // variable (e.g. capnproto's KJ) see a consistent value. The caller's
-    // PWD is stripped by caller_env_overrides() since it refers to the
-    // caller's directory, not the node's instance dir.
-    command.env("PWD", working_dir);
-    command.env(RUNTIME_CONFIG_VAR_NAME, &runtime_config_path);
-
-    // Force unbuffered stdout/stderr for Python nodes. Without this, Python
-    // defaults to full buffering when stdout is a pipe, delaying log capture.
-    if config.execution.language == PeppygenLanguage::Python {
-        command.env("PYTHONUNBUFFERED", "1");
-    }
-
-    command.spawn().map_err(|e| {
-        let full_cmd = start_cmd.join(" ");
-        std::io::Error::other(format!("failed to execute start_cmd `{}`: {}", full_cmd, e))
-    })
 }
 
 /// Replaces `${parameters:...}` tokens in mount paths with actual argument values.
@@ -1202,185 +849,6 @@ fn resolve_mount_path_parameters(
         resolved.push(result);
     }
     Ok(resolved)
-}
-
-/// Describes a bind mount for a container node.
-struct ContainerBind {
-    src: String,
-    dest: Option<String>,
-    opts: Option<String>,
-}
-
-/// Collect all bind mounts needed for a container node.
-///
-/// Always includes the runtime config file as the first entry so it is
-/// accessible inside the container regardless of Apptainer's `$HOME` auto-bind
-/// behavior (which may not cover `~/.peppy/` when running inside a Lima VM).
-fn collect_container_binds(
-    runtime_config_path: &std::path::Path,
-    mount_paths: &[String],
-) -> Vec<ContainerBind> {
-    let mut binds = Vec::with_capacity(1 + mount_paths.len());
-
-    // Runtime config must always be bound into the container.
-    binds.push(ContainerBind {
-        src: runtime_config_path.to_string_lossy().into_owned(),
-        dest: None,
-        opts: None,
-    });
-
-    // User-specified mount paths (format: "host:container[:opts]")
-    for m in mount_paths {
-        let parts: Vec<&str> = m.splitn(3, ':').collect();
-        binds.push(match parts.len() {
-            1 => ContainerBind {
-                src: parts[0].into(),
-                dest: None,
-                opts: None,
-            },
-            2 => ContainerBind {
-                src: parts[0].into(),
-                dest: Some(parts[1].into()),
-                opts: None,
-            },
-            _ => ContainerBind {
-                src: parts[0].into(),
-                dest: Some(parts[1].into()),
-                opts: Some(parts[2].into()),
-            },
-        });
-    }
-
-    binds
-}
-
-/// Starts a container node using the Apptainer runtime.
-///
-/// Builds an `apptainer run <sif_path>` command with environment variables
-/// passed into the container via `--env` flags and optional bind mounts from
-/// `mount_paths`. Returns a tokio [`Child`] with piped stdout/stderr for
-/// async output capture.
-#[allow(clippy::too_many_arguments)]
-fn start_container_node(
-    apptainer: &mut containers::Apptainer,
-    sif_path: &std::path::Path,
-    working_dir: &std::path::Path,
-    runtime_config_json5: &str,
-    env_vars: &[(String, String)],
-    mount_paths: &[String],
-    apptainer_run_extra_args: &[String],
-    lima_shell_extra_args: &[String],
-    log_file: &Arc<StdMutex<File>>,
-    peppy_dirs: &PeppyDirs,
-) -> std::io::Result<Child> {
-    // Write runtime config to a unique file (same pattern as start_node).
-    let runtime_dir = peppy_dirs.runtime_config_dir();
-    std::fs::create_dir_all(&runtime_dir)?;
-    let counter = RUNTIME_CONFIG_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let pid = std::process::id();
-    let runtime_config_path = runtime_dir.join(format!("runtime_config_{pid}_{counter}.json5"));
-    std::fs::write(&runtime_config_path, runtime_config_json5)?;
-
-    let sif_str = sif_path
-        .to_str()
-        .ok_or_else(|| std::io::Error::other("SIF path is not valid UTF-8"))?;
-
-    // Collect all bind mounts (runtime config + user-specified mount_paths).
-    let binds = collect_container_binds(&runtime_config_path, mount_paths);
-
-    // Ensure host-side source directories exist for user-specified bind mounts.
-    // Skip binds[0] (runtime config file) — its parent dir is already created above.
-    for bind in &binds[1..] {
-        let src = std::path::Path::new(&bind.src);
-        if !src.exists() {
-            std::fs::create_dir_all(src)?;
-        }
-    }
-
-    // Ensure host paths outside $HOME are accessible in the Lima VM.
-    // Skip binds[0] (runtime config) — it's always under $HOME.
-    if binds.len() > 1 {
-        let src_paths: Vec<&str> = binds[1..].iter().map(|b| b.src.as_str()).collect();
-        apptainer
-            .ensure_host_mounts(&src_paths)
-            .map_err(|e| std::io::Error::other(format!("Failed to ensure host mounts: {}", e)))?;
-    }
-
-    // Build apptainer run command. Environment variables are passed into the
-    // container via --env flags (not host-side process env) so they are
-    // visible inside the container.
-    let mut apptainer_cmd = apptainer.run(sif_str);
-    for arg in apptainer_run_extra_args {
-        apptainer_cmd = apptainer_cmd.raw_flag(arg);
-    }
-    apptainer_cmd = apptainer_cmd.lima_shell_extra_args(lima_shell_extra_args);
-    for (key, value) in env_vars {
-        // Apptainer manages HOME itself; passing it via --env triggers a warning.
-        if key.eq_ignore_ascii_case("HOME") {
-            continue;
-        }
-        apptainer_cmd = apptainer_cmd.env(key, value);
-    }
-    apptainer_cmd = apptainer_cmd.env(
-        RUNTIME_CONFIG_VAR_NAME,
-        runtime_config_path.to_str().unwrap_or_default(),
-    );
-
-    // Add all bind mounts (runtime config + user-specified).
-    // Device passthrough mounts (src under /dev/ with no dest or same dest)
-    // are skipped: Apptainer applies `nodev` to --bind mounts
-    // which blocks device-node access. Host devices are already available
-    // inside the container via `mount dev = yes` in apptainer.conf.
-    // Remapped device mounts (e.g. /dev/video0:/dev/my_video0) still need
-    // an explicit --bind.
-    for bind in &binds {
-        if bind.src.starts_with("/dev/") {
-            let is_passthrough = match bind.dest.as_deref() {
-                None => true,
-                Some(dest) => dest == bind.src,
-            };
-            if is_passthrough {
-                continue;
-            }
-        }
-        apptainer_cmd = apptainer_cmd.bind(&bind.src, bind.dest.as_deref(), bind.opts.as_deref());
-    }
-
-    // Log the command being executed
-    {
-        if let Ok(mut file) = log_file.lock() {
-            let timestamp = Local::now().format("%Y-%m-%dT%H:%M:%S%.3f");
-            let _ = writeln!(
-                file,
-                "[{}] Executing apptainer run: {} (working_dir: {}, bind_mounts: [{}])",
-                timestamp,
-                sif_path.display(),
-                working_dir.display(),
-                mount_paths.join(", ")
-            );
-            let _ = file.flush();
-        }
-    }
-
-    // Get the fully-built std::process::Command from the Apptainer facade,
-    // then convert to tokio::process::Command for async stdio piping.
-    let std_cmd = apptainer_cmd
-        .into_std_command()
-        .map_err(|e| std::io::Error::other(format!("Failed to build apptainer command: {}", e)))?;
-
-    let mut command = Command::from(std_cmd);
-    command
-        .current_dir(working_dir)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-
-    command.spawn().map_err(|e| {
-        std::io::Error::other(format!(
-            "failed to execute apptainer run for `{}`: {}",
-            sif_path.display(),
-            e
-        ))
-    })
 }
 
 struct NodeSignalTarget<'a> {
@@ -1523,45 +991,6 @@ async fn wait_for_ready_signal(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
-
-    #[test]
-    fn test_collect_container_binds_always_includes_runtime_config() {
-        let rc = PathBuf::from("/home/user/.peppy/runtime/runtime_config_99_0.json5");
-        let binds = collect_container_binds(&rc, &[]);
-
-        assert_eq!(binds.len(), 1);
-        assert_eq!(
-            binds[0].src,
-            "/home/user/.peppy/runtime/runtime_config_99_0.json5"
-        );
-        assert!(binds[0].dest.is_none());
-        assert!(binds[0].opts.is_none());
-    }
-
-    #[test]
-    fn test_collect_container_binds_includes_user_mounts() {
-        let rc = PathBuf::from("/home/user/.peppy/runtime/rc.json5");
-        let user_mounts = vec![
-            "/data/input:/container/input:ro".to_string(),
-            "/dev/ttyUSB0".to_string(),
-        ];
-
-        let binds = collect_container_binds(&rc, &user_mounts);
-
-        assert_eq!(binds.len(), 3);
-        // First entry is always the runtime config
-        assert_eq!(binds[0].src, "/home/user/.peppy/runtime/rc.json5");
-        assert!(binds[0].dest.is_none());
-        assert!(binds[0].opts.is_none());
-        // User mounts follow
-        assert_eq!(binds[1].src, "/data/input");
-        assert_eq!(binds[1].dest.as_deref(), Some("/container/input"));
-        assert_eq!(binds[1].opts.as_deref(), Some("ro"));
-        assert_eq!(binds[2].src, "/dev/ttyUSB0");
-        assert!(binds[2].dest.is_none());
-        assert!(binds[2].opts.is_none());
-    }
 
     #[test]
     fn test_resolve_mount_path_parameters_simple() {

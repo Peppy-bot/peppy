@@ -11,7 +11,7 @@ use config::node::{Name, PeppygenLanguage};
 use config::runtime::{NodeInstance, RuntimeConfig};
 use config::test_helpers;
 use core_node::encoding::{NodeInfoRequest, NodeInfoResponse, NodeSource};
-use node_stack::TrackedNodeInstance;
+use node_stack::{NodeStage, TrackedNodeInstance};
 /// Test helper: marks an entity at `(name, tag)` as `Built` with a synthetic
 /// built-artifact file inside an ephemeral tempdir, then registers a single
 /// tracked instance. Used in tests that push a config directly (without going
@@ -21,7 +21,7 @@ use node_stack::TrackedNodeInstance;
 /// Returns the `TempDir` containing the synthetic artifact; callers must keep
 /// it alive for the duration of the test so the recorded path remains valid.
 #[must_use = "TempDir must be kept alive for the duration of the test"]
-fn restore_built_and_start_instance(
+fn force_built_and_start_instance(
     node_stack: &node_stack::NodeStack,
     name: &str,
     tag: &str,
@@ -32,11 +32,18 @@ fn restore_built_and_start_instance(
     std::fs::File::create(&artifact_path).expect("failed to create synthetic artifact file");
 
     let handle = node_stack.find(name, tag).expect("entity should exist");
+    let config_path = handle
+        .read()
+        .expect("entity poisoned")
+        .config_path()
+        .to_path_buf();
     handle
         .write()
         .expect("entity poisoned")
-        .restore_built(artifact_path)
-        .expect("entity should be Added");
+        .__test_set_stage(NodeStage::Built {
+            config_path,
+            artifact_path,
+        });
     let instance = TrackedNodeInstance::new(instance_id.clone(), None);
     handle
         .write()
@@ -133,7 +140,7 @@ async fn listen_for_node_info_on_fs_node_success() {
         .push_config(info_response.config.clone(), false, node_dir.path())
         .expect("push_config should succeed");
     let instance_id = Name::new(TARGET_INSTANCE_ID).expect("valid instance id");
-    let _artifact_dir = restore_built_and_start_instance(
+    let _artifact_dir = force_built_and_start_instance(
         &node_stack,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
@@ -196,7 +203,7 @@ async fn listen_for_node_info_on_git_node_success() {
         .push_config(info_response.config.clone(), false, &git_node_path)
         .expect("push_config should succeed");
     let instance_id = Name::new(TARGET_INSTANCE_ID).expect("valid instance id");
-    let _artifact_dir = restore_built_and_start_instance(
+    let _artifact_dir = force_built_and_start_instance(
         &node_stack,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
@@ -305,7 +312,7 @@ async fn listen_for_node_info_on_http_node_success() {
         .push_config(info_response.config.clone(), false, bundle_dir.path())
         .expect("push_config should succeed");
     let instance_id = Name::new(TARGET_INSTANCE_ID).expect("valid instance id");
-    let _artifact_dir = restore_built_and_start_instance(
+    let _artifact_dir = force_built_and_start_instance(
         &node_stack,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,

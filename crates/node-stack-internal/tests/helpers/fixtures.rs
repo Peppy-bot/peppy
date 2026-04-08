@@ -9,7 +9,7 @@
 use std::path::{Path, PathBuf};
 
 use config::node::{Name, NodeConfig};
-use node_stack::{NodeStack, TrackedNodeInstance};
+use node_stack::{NodeStack, NodeStage, TrackedNodeInstance};
 
 /// Pushes a config into the stack and immediately marks the resulting entity
 /// as `Built` with the same `path` (no I/O). Returns nothing — call
@@ -29,8 +29,10 @@ pub fn push_built(stack: &NodeStack, config: NodeConfig, path: impl Into<PathBuf
     handle
         .write()
         .expect("entity poisoned")
-        .restore_built(path)
-        .expect("test fixture: restore_built should succeed on a fresh Added entity");
+        .__test_set_stage(NodeStage::Built {
+            config_path: path.clone(),
+            artifact_path: path,
+        });
 }
 
 /// Pushes a config, marks it Built, and registers a single instance — the
@@ -110,7 +112,8 @@ pub fn stop_instance_in_stack(
 }
 
 /// Returns the path to a (deterministic) fake `.sif` for tests. The path is
-/// not created on disk — it's just a placeholder for `restore_built`.
+/// not created on disk — it's just a placeholder used by `push_built` /
+/// `__test_set_stage` to fake the artifact location.
 pub fn fake_sif_path(name: &str, tag: &str) -> PathBuf {
     Path::new("/tmp")
         .join("peppy-test")

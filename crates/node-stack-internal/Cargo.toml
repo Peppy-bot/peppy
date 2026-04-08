@@ -19,7 +19,14 @@ chrono = "0.4"
 tracing = "0.1"
 
 
+[features]
+# Exposes the `NodeEntity::__test_set_stage` escape hatch and other test
+# fixtures so that consumer crates can drive lifecycle stages directly in
+# their own test suites without going through `build`/`prepare_and_spawn`.
+test_helpers = []
+
 [dev-dependencies]
+node-stack = { path = ".", features = ["test_helpers"] }
 serde_json5 = "0.2.1"
 tempfile = "3.10"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

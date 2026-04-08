@@ -26,7 +26,6 @@ use std::fs::File;
 use std::io::{Read, Write};
 use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, mpsc};
@@ -34,7 +33,7 @@ use tokio::task::JoinHandle;
 use tracing::debug;
 use ureq::Error as HttpError;
 
-use super::{FeedbackLine, FeedbackStream, create_action_log_file, stream_child_output};
+use super::{FeedbackLine, FeedbackStream, create_action_log_file};
 
 pub async fn listen_for_node_add(
     messenger: &MessengerHandle,
@@ -206,96 +205,6 @@ fn copy_dir_recursive(src: &Path, dest: &Path) -> Result<Vec<String>> {
         }
     }
     Ok(excluded)
-}
-
-/// Expands `${VAR}` references in a string using the provided environment variables.
-fn expand_env_vars(s: &str, env_vars: &[(String, String)]) -> String {
-    let mut result = s.to_string();
-    for (key, value) in env_vars {
-        let pattern = format!("${{{}}}", key);
-        if result.contains(&pattern) {
-            result = result.replace(&pattern, value);
-        }
-    }
-    result
-}
-
-/// Runs the add_cmd for a node and streams output via the feedback publisher.
-/// Returns Ok(()) if add_cmd is None or executes successfully.
-async fn run_add_cmd_with_streaming(
-    add_cmd: Option<&Vec<String>>,
-    working_dir: &Path,
-    env_vars: &[(String, String)],
-    feedback_tx: &mpsc::UnboundedSender<FeedbackLine>,
-    log_file: Arc<StdMutex<File>>,
-) -> std::result::Result<(), String> {
-    let Some(cmd) = add_cmd else {
-        return Ok(());
-    };
-
-    if cmd.is_empty() {
-        return Err("add_cmd is empty".to_string());
-    };
-
-    // Expand ${VAR} references in add_cmd strings using the injected env vars.
-    // This is necessary because multi-element commands are executed directly
-    // (not through a shell), so shell-style variable expansion doesn't happen.
-    let cmd: Vec<String> = cmd.iter().map(|s| expand_env_vars(s, env_vars)).collect();
-
-    let (program, args) = if cmd.len() == 1 {
-        ("sh".to_string(), vec!["-c".to_string(), cmd[0].clone()])
-    } else {
-        (cmd[0].clone(), cmd[1..].to_vec())
-    };
-
-    debug!(
-        "Running add_cmd: {} {:?} in dir {:?}",
-        program, args, working_dir
-    );
-
-    let full_cmd = std::iter::once(program.as_str())
-        .chain(args.iter().map(String::as_str))
-        .collect::<Vec<_>>()
-        .join(" ");
-
-    // Log the command being executed to the log file before attempting to spawn
-    {
-        if let Ok(mut file) = log_file.lock() {
-            let timestamp = Local::now().format("%Y-%m-%dT%H:%M:%S%.3f");
-            let _ = writeln!(
-                file,
-                "[{}] Executing add_cmd: {} (working_dir: {})",
-                timestamp,
-                full_cmd,
-                working_dir.display()
-            );
-            let _ = file.flush();
-        }
-    }
-
-    let mut command = Command::new(&program);
-    command.args(&args);
-    command.current_dir(working_dir);
-    command.stdout(Stdio::piped());
-    command.stderr(Stdio::piped());
-    for (key, value) in env_vars {
-        command.env(key, value);
-    }
-    let child = command
-        .spawn()
-        .map_err(|e| format!("failed to execute add_cmd `{}`: {}", full_cmd, e))?;
-
-    let (status, _) = stream_child_output(child, feedback_tx, log_file, false).await?;
-
-    if !status.success() {
-        return Err(format!(
-            "add_cmd `{}` failed with status {}",
-            full_cmd, status
-        ));
-    }
-
-    debug!("add_cmd completed successfully");
-    Ok(())
 }
 
 /// Copies a node folder to a temporary working directory.
@@ -1698,26 +1607,6 @@ async fn process_node_add(
         return NodeAddResult::failure(&ctx.log_path, msg);
     }
 
-    // For process nodes, run the user-defined add_cmd in the working dir
-    // before handing off to NodeEntity::build (which only does the
-    // archive/sif step that immediately follows it).
-    if node_config.execution.container.is_none() {
-        let add_cmd = node_config.execution.add_cmd.as_ref();
-        if let Err(e) = run_add_cmd_with_streaming(
-            add_cmd,
-            &working_dir,
-            &env_vars,
-            &ctx.feedback_tx,
-            Arc::clone(&ctx.log_file),
-        )
-        .await
-        {
-            let msg = format!("add_cmd failed: {}", e);
-            write_error_to_log(&ctx.log_file, &msg);
-            return NodeAddResult::failure(&ctx.log_path, msg);
-        }
-    }
-
     // Stop any pre-existing instances of this node before resetting the
     // entity in the stack. push_config below replaces the entity wholesale
     // with a fresh `Added` one, so any tracked instances would otherwise be
@@ -1765,6 +1654,7 @@ async fn process_node_add(
             peppy_dirs: &ctx.action.peppy_dirs,
             feedback_tx: &ctx.feedback_tx,
             log_file: Arc::clone(&ctx.log_file),
+            env_vars: &env_vars,
         },
     )
     .await;

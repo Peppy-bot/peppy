@@ -5,12 +5,15 @@
 //! without crossing the crate boundary back into core-node-internal.
 
 use std::fs::File;
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
+use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex as StdMutex};
 
+use chrono::Local;
 use config::consts::PeppyDirs;
 use tokio::sync::mpsc;
+use tracing::debug;
 use zstd::stream::write::Encoder as ZstdEncoder;
 
 use crate::build_io::{FeedbackLine, FeedbackStream, stream_child_output};
@@ -163,4 +166,118 @@ pub(super) async fn build_container_image(
     }
 
     Ok(())
+}
+
+/// Expands `${VAR}` references in a string using the provided environment
+/// variables. Used by [`run_add_cmd`] before spawning the user-defined
+/// `add_cmd` so that variable references in multi-element commands work even
+/// though the command is executed directly (not through a shell).
+pub(super) fn expand_env_vars(s: &str, env_vars: &[(String, String)]) -> String {
+    let mut result = s.to_string();
+    for (key, value) in env_vars {
+        let pattern = format!("${{{}}}", key);
+        if result.contains(&pattern) {
+            result = result.replace(&pattern, value);
+        }
+    }
+    result
+}
+
+/// Runs the user-defined `add_cmd` for a process node and streams output via
+/// the feedback channel. Returns Ok(()) if `add_cmd` is `None` or executes
+/// successfully. Used by [`super::entity::NodeEntity::build`] for process
+/// nodes after the entity has transitioned to `Building`.
+pub(super) async fn run_add_cmd(
+    add_cmd: Option<&Vec<String>>,
+    working_dir: &Path,
+    env_vars: &[(String, String)],
+    feedback_tx: &mpsc::UnboundedSender<FeedbackLine>,
+    log_file: Arc<StdMutex<File>>,
+) -> std::result::Result<(), String> {
+    let Some(cmd) = add_cmd else {
+        return Ok(());
+    };
+
+    if cmd.is_empty() {
+        return Err("add_cmd is empty".to_string());
+    };
+
+    // Expand ${VAR} references in add_cmd strings using the injected env vars.
+    // This is necessary because multi-element commands are executed directly
+    // (not through a shell), so shell-style variable expansion doesn't happen.
+    let cmd: Vec<String> = cmd.iter().map(|s| expand_env_vars(s, env_vars)).collect();
+
+    let (program, args) = if cmd.len() == 1 {
+        ("sh".to_string(), vec!["-c".to_string(), cmd[0].clone()])
+    } else {
+        (cmd[0].clone(), cmd[1..].to_vec())
+    };
+
+    debug!(
+        "Running add_cmd: {} {:?} in dir {:?}",
+        program, args, working_dir
+    );
+
+    let full_cmd = std::iter::once(program.as_str())
+        .chain(args.iter().map(String::as_str))
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    // Log the command being executed to the log file before attempting to spawn
+    {
+        if let Ok(mut file) = log_file.lock() {
+            let timestamp = Local::now().format("%Y-%m-%dT%H:%M:%S%.3f");
+            let _ = writeln!(
+                file,
+                "[{}] Executing add_cmd: {} (working_dir: {})",
+                timestamp,
+                full_cmd,
+                working_dir.display()
+            );
+            let _ = file.flush();
+        }
+    }
+
+    let mut command = Command::new(&program);
+    command.args(&args);
+    command.current_dir(working_dir);
+    command.stdout(Stdio::piped());
+    command.stderr(Stdio::piped());
+    for (key, value) in env_vars {
+        command.env(key, value);
+    }
+    let child = command
+        .spawn()
+        .map_err(|e| format!("failed to execute add_cmd `{}`: {}", full_cmd, e))?;
+
+    let (status, _) = stream_child_output(child, feedback_tx, log_file, false).await?;
+
+    if !status.success() {
+        return Err(format!(
+            "add_cmd `{}` failed with status {}",
+            full_cmd, status
+        ));
+    }
+
+    debug!("add_cmd completed successfully");
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn expand_env_vars_replaces_braced_refs() {
+        let env = vec![
+            ("FOO".to_string(), "bar".to_string()),
+            ("BAZ".to_string(), "qux".to_string()),
+        ];
+        assert_eq!(expand_env_vars("hello ${FOO}", &env), "hello bar");
+        assert_eq!(expand_env_vars("${FOO}-${BAZ}-${FOO}", &env), "bar-qux-bar");
+        // Unknown variables are left alone (no expansion).
+        assert_eq!(expand_env_vars("${UNKNOWN}", &env), "${UNKNOWN}");
+        // Plain strings pass through unchanged.
+        assert_eq!(expand_env_vars("nothing here", &env), "nothing here");
+    }
 }

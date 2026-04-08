@@ -69,4 +69,10 @@ pub enum Error {
         node_tag: String,
         reason: String,
     },
+    #[error("Failed to start node `{node_name}`:{node_tag}: {reason}")]
+    StartFailed {
+        node_name: String,
+        node_tag: String,
+        reason: String,
+    },
 }
