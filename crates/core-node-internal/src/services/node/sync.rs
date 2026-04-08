@@ -814,11 +814,14 @@ pub fn auto_sync_if_missing(
 
         match gen_result {
             Ok(()) => {
-                // Generation succeeded — clean up backup in background.
+                // Clean up the backup synchronously. We *must not* defer this
+                // to a background thread: the next stage (`process_node_add`)
+                // copies the source directory recursively, walks
+                // `.peppy-backup-PID-NANOS` (which is not in the excluded
+                // list), and would race with a concurrent deletion — surfacing
+                // as intermittent "No such file or directory" errors.
                 if had_backup {
-                    std::thread::spawn(move || {
-                        std::fs::remove_dir_all(&backup_dir).ok();
-                    });
+                    let _ = std::fs::remove_dir_all(&backup_dir);
                 }
             }
             Err(e) => {
@@ -911,11 +914,11 @@ pub fn auto_sync_if_missing(
 
         match gen_result {
             Ok(()) => {
-                // Generation succeeded — clean up backup in background.
+                // Clean up the backup synchronously — see the matching comment
+                // in the root-sync branch above for why a background thread
+                // would race with the subsequent recursive copy.
                 if had_backup {
-                    std::thread::spawn(move || {
-                        std::fs::remove_dir_all(&backup_dir).ok();
-                    });
+                    let _ = std::fs::remove_dir_all(&backup_dir);
                 }
             }
             Err(e) => {
