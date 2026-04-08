@@ -215,8 +215,8 @@ async fn handle_node_info_request_inner(
         .map_err(|e| InfoError::Internal(format!("failed to serialize node config: {}", e)))?;
     let config_integrity = fingerprint_for_bytes(config_json.as_bytes());
 
-    NodeInfoResponse::new(
-        node_config,
+    NodeInfoResponse {
+        config: node_config,
         is_in_node_stack,
         instances_names,
         config_integrity,
@@ -226,7 +226,7 @@ async fn handle_node_info_request_inner(
         instances,
         add_log_path,
         start_log_paths,
-    )
+    }
     .encode()
     .map_err(|e| InfoError::Internal(format!("failed to encode NodeInfoResponse: {}", e)))
 }

@@ -137,33 +137,6 @@ pub struct NodeInfoResponse {
 }
 
 impl NodeInfoResponse {
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        config: NodeConfig,
-        is_in_node_stack: bool,
-        instances_names: Vec<String>,
-        config_integrity: String,
-        variant_name: Option<String>,
-        issues: Vec<String>,
-        stage: Option<String>,
-        instances: Vec<NodeInstanceInfo>,
-        add_log_path: Option<PathBuf>,
-        start_log_paths: Vec<PathBuf>,
-    ) -> Self {
-        Self {
-            config,
-            is_in_node_stack,
-            instances_names,
-            config_integrity,
-            variant_name,
-            issues,
-            stage,
-            instances,
-            add_log_path,
-            start_log_paths,
-        }
-    }
-
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
