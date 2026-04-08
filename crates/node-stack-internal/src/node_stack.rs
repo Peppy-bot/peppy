@@ -634,6 +634,52 @@ impl NodeStack {
         Ok(true)
     }
 
+    /// Removes the config at `(name, tag)` only if its current entity is in
+    /// `Building` AND the underlying `Arc<RwLock<NodeEntity>>` is the same
+    /// handle the caller already holds and the entity's `generation` matches.
+    ///
+    /// Used by the `process_node_add` failure path: after a build error, the
+    /// caller wants to remove the entity it created — but a concurrent
+    /// `push_config` may have replaced the entity in-place between the
+    /// failure and the cleanup. The pointer + generation check rules out the
+    /// race: if either differs, the entity is no longer the one we built and
+    /// we leave the new state untouched.
+    ///
+    /// Returns `true` if the entity was removed, `false` otherwise.
+    pub fn remove_config_if_matches(
+        &self,
+        name: &str,
+        tag: &str,
+        expected_handle: &Arc<RwLock<NodeEntity>>,
+        expected_generation: u64,
+    ) -> bool {
+        let mut guard = self.shared.write().expect("node stack poisoned");
+        let key = NodeKey::new(name, tag);
+
+        if guard.is_root(&key) {
+            return false;
+        }
+
+        let Some(&index) = guard.key_to_index.get(&key) else {
+            return false;
+        };
+
+        let matches = guard.graph.node_weight(index).is_some_and(|current| {
+            Arc::ptr_eq(current, expected_handle) && {
+                let entity = current.read().expect("entity poisoned");
+                entity.generation() == expected_generation
+                    && matches!(entity.stage(), NodeStage::Building { .. })
+            }
+        });
+
+        if !matches {
+            return false;
+        }
+
+        guard.remove_entity(&key);
+        true
+    }
+
     /// Clears all nodes except the root node from the stack.
     pub fn reset(&self) {
         let mut guard = self.shared.write().expect("node stack poisoned");
@@ -673,6 +719,44 @@ impl NodeStack {
             let config_path = source_guard.config_path().to_path_buf();
             let artifact_path = source_guard.artifact_path().map(|p| p.to_path_buf());
             let instances: Vec<TrackedNodeInstance> = source_guard.instances().to_vec();
+
+            // Reject transient lifecycle state from the source: snapshot
+            // replay only makes sense for entities that are quiescent (no
+            // in-flight build, no in-flight start). A `Building` source has
+            // no artifact yet, and `Starting` instances reference live
+            // child/reader handles that we cannot recreate from a snapshot.
+            match source_guard.stage() {
+                NodeStage::Added { .. } => {}
+                NodeStage::Ready {
+                    instances: src_instances,
+                    ..
+                } => {
+                    if let Some(bad) = src_instances
+                        .iter()
+                        .find(|i| i.state() != InstanceState::Running)
+                    {
+                        return Err(format!(
+                            "cannot replay live entity {}:{}: instance {} is in transient state {:?}",
+                            name,
+                            tag,
+                            bad.instance_id().as_str(),
+                            bad.state(),
+                        ));
+                    }
+                }
+                NodeStage::Building { .. } => {
+                    return Err(format!(
+                        "cannot replay live entity {}:{}: source is currently Building",
+                        name, tag
+                    ));
+                }
+                NodeStage::Root { .. } => {
+                    // Should already be skipped by the root-name guard above,
+                    // but be defensive — never replay a Root variant.
+                    drop(source_guard);
+                    continue;
+                }
+            }
             drop(source_guard);
 
             // Materialize the entity directly in the appropriate stage. The

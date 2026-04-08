@@ -223,7 +223,7 @@ pub fn spawn_output_reader_async<R>(
     stream: FeedbackStream,
     stderr_buffer: Option<Arc<StdMutex<VecDeque<String>>>>,
     log_file: Arc<StdMutex<File>>,
-) -> JoinHandle<()>
+) -> JoinHandle<std::io::Result<()>>
 where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
 {
@@ -234,7 +234,7 @@ where
             let line = match lines.next_line().await {
                 Ok(Some(line)) => line,
                 Ok(None) => break,
-                Err(_) => break,
+                Err(e) => return Err(e),
             };
 
             write_feedback_log_line(&log_file, stream, &line);
@@ -260,6 +260,7 @@ where
                 hooks.on_line_read();
             }
         }
+        Ok(())
     })
 }
 

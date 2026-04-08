@@ -11,6 +11,7 @@ use node_stack::{
 };
 
 use crate::helpers::config_common::core_node_config;
+use crate::helpers::fixtures::start_instance_in_stack;
 
 fn sensor_config() -> config::node::NodeConfig {
     serde_json5::from_str::<config::node::NodeConfig>(
@@ -59,17 +60,6 @@ fn push_config_creates_entity_in_added_stage() {
     assert!(guard.instances().is_empty());
 }
 
-/// Helper: append a `Running` instance directly into a `Ready` entity via
-/// the `__test_stage_mut` backdoor. Replaces the old `start_instance(...)`
-/// pattern that no longer exists on `NodeEntity`.
-fn append_running_instance(handle: &node_stack::EntityHandle, id: Name, pid: Option<u32>) {
-    let mut guard = handle.write().expect("entity poisoned");
-    let NodeStage::Ready { instances, .. } = guard.__test_stage_mut() else {
-        panic!("expected Ready stage to append running instance");
-    };
-    instances.push(TrackedNodeInstance::new(id, pid, InstanceState::Running));
-}
-
 #[test]
 fn ready_with_running_instance_round_trip() {
     let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
@@ -90,7 +80,13 @@ fn ready_with_running_instance_round_trip() {
             instances: vec![],
         });
 
-    append_running_instance(&handle, Name::new("inst-1").unwrap(), Some(42));
+    start_instance_in_stack(
+        &stack,
+        "sensor",
+        "1.0.0",
+        Some(&Name::new("inst-1").unwrap()),
+        Some(42),
+    );
 
     let guard = handle.read().expect("entity poisoned");
     match guard.stage() {
@@ -131,7 +127,7 @@ fn stop_instance_removes_last_instance_keeps_ready() {
         });
 
     let instance_id = Name::new("only-inst").unwrap();
-    append_running_instance(&handle, instance_id.clone(), Some(42));
+    start_instance_in_stack(&stack, "sensor", "1.0.0", Some(&instance_id), Some(42));
 
     // Remove the only instance: entity stays in Ready with an empty list.
     let removed = handle
@@ -182,8 +178,8 @@ fn stop_instance_keeps_other_instances_when_one_removed() {
 
     let id_a = Name::new("inst-a").unwrap();
     let id_b = Name::new("inst-b").unwrap();
-    append_running_instance(&handle, id_a.clone(), Some(1));
-    append_running_instance(&handle, id_b.clone(), Some(2));
+    start_instance_in_stack(&stack, "sensor", "1.0.0", Some(&id_a), Some(1));
+    start_instance_in_stack(&stack, "sensor", "1.0.0", Some(&id_b), Some(2));
 
     let removed = handle
         .write()
@@ -216,7 +212,13 @@ fn stop_instance_returns_false_when_instance_not_tracked() {
             artifact_path: PathBuf::from("/tmp/sensor.sif"),
             instances: vec![],
         });
-    append_running_instance(&handle, Name::new("only").unwrap(), Some(1));
+    start_instance_in_stack(
+        &stack,
+        "sensor",
+        "1.0.0",
+        Some(&Name::new("only").unwrap()),
+        Some(1),
+    );
 
     let removed = handle
         .write()
@@ -352,8 +354,13 @@ async fn concurrent_builds_are_rejected_immediately() {
         PathBuf::from("/tmp"),
     );
     let config_path = PathBuf::from("/tmp/sensor/peppy.json5");
+    // Use an `add_cmd` that sleeps long enough to keep the winning task in
+    // `Building` while the loser observes the stage. Without this, archiving
+    // a tiny working dir is fast enough that the winner can reach `Ready`
+    // before the loser even gets scheduled — that race produced the
+    // ambiguous "from: Ready" rejection the assertion below now refuses.
     stack
-        .push_config(sensor_config(), false, &config_path)
+        .push_config(sensor_config_with_add_cmd("sleep 0.5"), false, &config_path)
         .expect("push_config should succeed");
 
     let handle = stack.find("sensor", "1.0.0").expect("entity should exist");
@@ -434,7 +441,7 @@ async fn concurrent_builds_are_rejected_immediately() {
     let (ok_count, transition_err_count) = [&r1, &r2].iter().fold((0, 0), |(o, e), r| match r {
         Ok(()) => (o + 1, e),
         Err(NodeStackError::InvalidStageTransition { from, to, .. })
-            if (*from == "Building" || *from == "Ready") && *to == "Ready" =>
+            if *from == "Building" && *to == "Ready" =>
         {
             (o, e + 1)
         }
@@ -443,7 +450,7 @@ async fn concurrent_builds_are_rejected_immediately() {
     assert_eq!(ok_count, 1, "exactly one build should succeed");
     assert_eq!(
         transition_err_count, 1,
-        "the loser should fail immediately with InvalidStageTransition (Building→Ready or Ready→Ready)"
+        "the loser should fail immediately with InvalidStageTransition (Building→Ready)"
     );
 
     // Entity ended up in Built.

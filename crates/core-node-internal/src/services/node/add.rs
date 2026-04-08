@@ -18,7 +18,7 @@ use config::consts::{NODE_CONFIG_FILE, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH, P
 use config::node::{DEFAULT_VARIANT_NAME, NodeConfig, NodeConfigParser, ParsedNodeConfig};
 use futures::FutureExt;
 use git2::build::RepoBuilder;
-use node_stack::{BuildContext, NodeStack, validate_dependency_specs};
+use node_stack::{BuildContext, InstanceState, NodeStack, validate_dependency_specs};
 use peppylib::messaging::{ServiceRequestContext, TopicPublisher};
 use peppylib::types::Payload;
 use peppylib::{ActionMessenger, MessengerHandle, PeppyResult};
@@ -1407,6 +1407,10 @@ async fn shutdown_existing_instances(
         guard
             .instances()
             .iter()
+            // Skip in-flight `Starting` instances: they have no messenger
+            // subscriptions yet, so `stop::stop_instance` cannot reach them
+            // and would only produce confusing errors.
+            .filter(|instance| instance.state() == InstanceState::Running)
             .map(|instance| instance.instance_id().clone())
             .collect::<Vec<_>>()
     };
@@ -1663,7 +1667,17 @@ async fn process_node_add(
         // `NodeEntity::build` leaves the entity in `Building` on failure;
         // the caller owns removal. See the failure contract on
         // `NodeEntity::build`.
-        let _ = ctx.action.node_stack.remove_config(&node_name, &node_tag);
+        //
+        // Use the generation-aware variant so a concurrent `push_config`
+        // that replaced the entity in-place between our failure and this
+        // cleanup is not silently clobbered.
+        let expected_generation = entity_handle.read().expect("entity poisoned").generation();
+        let _ = ctx.action.node_stack.remove_config_if_matches(
+            &node_name,
+            &node_tag,
+            &entity_handle,
+            expected_generation,
+        );
         let msg = format!("Failed to build node: {}", e);
         write_error_to_log(&ctx.log_file, &msg);
         return NodeAddResult::failure(&ctx.log_path, msg);

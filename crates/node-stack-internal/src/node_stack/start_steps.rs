@@ -503,7 +503,7 @@ pub(super) async fn kill_and_collect_error(
     instance_id_str: &str,
     error: &str,
     stderr_buffer: Arc<StdMutex<VecDeque<String>>>,
-    output_reader_handles: Vec<JoinHandle<()>>,
+    output_reader_handles: Vec<JoinHandle<std::io::Result<()>>>,
     log_file: Arc<StdMutex<File>>,
 ) -> String {
     if let Err(kill_err) = child.kill().await {

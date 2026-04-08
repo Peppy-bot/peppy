@@ -9,9 +9,21 @@
 #![allow(dead_code)] // Some helpers are reserved for future tests.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use config::node::{Name, NodeConfig};
 use node_stack::{InstanceState, NodeStack, NodeStage, TrackedNodeInstance};
+
+/// Process-wide counter so the default fallback instance id is unique
+/// across calls (otherwise repeated `push_started`/`start_instance_in_stack`
+/// invocations would collide on `Name::new("test-instance")` and trip the
+/// `DuplicateInstanceId` check exposed by the lifecycle path).
+static FALLBACK_INSTANCE_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+fn fallback_instance_name() -> Name {
+    let n = FALLBACK_INSTANCE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    Name::new(format!("test-instance-{}", n)).expect("test fixture: name")
+}
 
 /// Pushes a config into the stack and immediately marks the resulting entity
 /// as `Ready` with an empty instances list (the equivalent of the old
@@ -62,7 +74,7 @@ pub fn push_started(
 
     let instance_id = match instance_id {
         Some(id) => id.clone(),
-        None => Name::new("test-instance").expect("test fixture: name"),
+        None => fallback_instance_name(),
     };
     let instance = TrackedNodeInstance::new(instance_id.clone(), pid, InstanceState::Running);
     handle
@@ -92,7 +104,7 @@ pub fn start_instance_in_stack(
         .expect("test fixture: entity should exist for start_instance_in_stack");
     let instance_id = match instance_id {
         Some(id) => id.clone(),
-        None => Name::new("test-instance").expect("test fixture: name"),
+        None => fallback_instance_name(),
     };
     let instance = TrackedNodeInstance::new(instance_id.clone(), pid, InstanceState::Running);
     let mut guard = handle.write().expect("entity poisoned");

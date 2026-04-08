@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 use std::fs::File;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, RwLock};
 
 use config::consts::PeppyDirs;
@@ -233,14 +233,31 @@ pub struct OutputSinks {
 pub struct StartedInstanceCtx {
     pub instance_dir: PathBuf,
     pub stderr_buffer: Arc<StdMutex<VecDeque<String>>>,
-    pub output_reader_handles: Vec<JoinHandle<()>>,
+    pub output_reader_handles: Vec<JoinHandle<std::io::Result<()>>>,
     pub log_file: Arc<StdMutex<File>>,
+}
+
+/// Process-wide monotonic counter that assigns each `NodeEntity` instance a
+/// unique generation. The build path snapshots this when transitioning into
+/// `Building`, and rejects the publish if the entity it observes after I/O
+/// has a different generation — i.e. a concurrent `push_config` replaced the
+/// entity contents in the meantime.
+static NEXT_ENTITY_GENERATION: AtomicU64 = AtomicU64::new(1);
+
+fn next_entity_generation() -> u64 {
+    NEXT_ENTITY_GENERATION.fetch_add(1, Ordering::Relaxed)
 }
 
 #[derive(Clone, Debug)]
 pub struct NodeEntity {
     config: NodeConfig,
     stage: NodeStage,
+    /// Unique-per-construction token used to detect when an in-flight `build`
+    /// is racing against a wholesale entity replacement (`push_config_impl`'s
+    /// in-place overwrite). Bumped on every `new`, `from_snapshot`, and
+    /// `root` construction. The build path captures this value at Phase 1 and
+    /// re-checks it at Phase 3 before publishing artifacts.
+    generation: u64,
 }
 
 impl NodeEntity {
@@ -253,7 +270,16 @@ impl NodeEntity {
             stage: NodeStage::Added {
                 config_path: config_path.into(),
             },
+            generation: next_entity_generation(),
         }
+    }
+
+    /// Returns the entity's monotonic generation token. Bumped on every
+    /// `new`/`from_snapshot`/`root` construction so the build path can
+    /// distinguish "still the entity I started building" from "wholesale
+    /// replaced by a concurrent push_config".
+    pub fn generation(&self) -> u64 {
+        self.generation
     }
 
     pub fn config(&self) -> &NodeConfig {
@@ -322,7 +348,7 @@ impl NodeEntity {
     /// `add_cmd` / apptainer / archive step fails.
     pub async fn build(handle: &Arc<RwLock<NodeEntity>>, ctx: BuildContext<'_>) -> Result<()> {
         // ---- Phase 1: Added → Building, snapshot inputs (brief write lock) ----
-        let (node_name, node_tag, config_path, container_opt, add_cmd) = {
+        let (node_name, node_tag, config_path, container_opt, add_cmd, build_generation) = {
             let mut guard = handle.write().expect("entity poisoned");
             let config_path = match &guard.stage {
                 NodeStage::Added { config_path } => config_path.clone(),
@@ -341,6 +367,7 @@ impl NodeEntity {
                 config_path.clone(),
                 guard.config.execution.container.clone(),
                 guard.config.execution.add_cmd.clone(),
+                guard.generation,
             );
             // Atomic transition Added → Building under the same write lock as
             // the validation. Any second concurrent call now sees Building.
@@ -407,8 +434,14 @@ impl NodeEntity {
         let mut guard = handle.write().expect("entity poisoned");
         // A concurrent `push_config` could have replaced the entity wholesale
         // while we were running I/O. If we are no longer the in-flight build,
-        // silently discard the result rather than clobbering the new state.
-        if !matches!(guard.stage, NodeStage::Building { .. }) {
+        // discard the result rather than clobbering the new state. The
+        // wholesale-replacement case is detected via the `generation` token:
+        // even if the new entity has been re-pushed AND a fresh `build`
+        // started (so the stage is `Building` again), the generation will
+        // differ from what we captured in Phase 1.
+        if !matches!(guard.stage, NodeStage::Building { .. })
+            || guard.generation != build_generation
+        {
             return Err(Error::InvalidStageTransition {
                 node_name,
                 node_tag,
@@ -599,6 +632,10 @@ impl NodeEntity {
             )
         }
         .map_err(|e| {
+            // Best-effort cleanup of the instance dir we just materialized.
+            // The container/process spawn never started, so nothing else
+            // references this directory.
+            let _ = std::fs::remove_dir_all(&instance_dir);
             Self::remove_starting_instance(handle, ctx.instance_id);
             Error::StartFailed {
                 node_name: node_name.clone(),
@@ -657,64 +694,81 @@ impl NodeEntity {
     ///
     /// If a concurrent `push_config` replaced the entity wholesale while the
     /// daemon was running its messenger checks, this returns
-    /// [`Error::InvalidStageTransition`] without disturbing the new state.
-    /// The caller is responsible for cleaning up the still-running child in
-    /// that case (e.g. by calling `child.kill()` after the error).
+    /// [`Error::InvalidStageTransition`] **and kills the spawned child** so
+    /// no orphan process is left behind. On the success path the `Child` is
+    /// dropped without `kill_on_drop`, so the OS process continues running
+    /// under its own pid (the daemon manages termination via PID polling in
+    /// `stop_instance`).
     pub async fn commit_started(
         handle: &Arc<RwLock<NodeEntity>>,
-        child: Child,
+        mut child: Child,
         _started_ctx: StartedInstanceCtx,
         instance_id: Name,
     ) -> Result<u32> {
         let pid = child.id().unwrap_or(0);
-        // Drop the Child to release the tokio handle. tokio::process::Child
-        // does NOT have kill_on_drop unless explicitly configured (and we
-        // don't), so the OS process keeps running. The daemon will manage
-        // termination later via PID polling in stop_instance.
-        drop(child);
 
-        let mut guard = handle.write().expect("entity poisoned");
-        let node_name = guard.config.manifest.name.as_str().to_owned();
-        let node_tag = guard.config.manifest.tag.clone();
-        let NodeStage::Ready { instances, .. } = &mut guard.stage else {
-            // A concurrent push_config replaced the entity. The caller will
-            // see this error and the still-running child is theirs to clean
-            // up; the entity isn't ours to mutate anymore.
-            let from = guard.stage.name();
-            return Err(Error::InvalidStageTransition {
-                node_name,
-                node_tag,
-                from,
-                to: "Ready",
-            });
-        };
-
-        // Find the instance by id and flip Starting → Running. If it's
-        // missing or already Running, the caller is in an inconsistent state
-        // (most likely a concurrent abort_started or push_config) — surface
-        // it as an InvalidStageTransition.
-        let Some(inst) = instances
-            .iter_mut()
-            .find(|inst| inst.instance_id() == &instance_id)
-        else {
-            return Err(Error::InvalidStageTransition {
-                node_name,
-                node_tag,
-                from: "missing",
-                to: "Running",
-            });
-        };
-        if inst.state() != InstanceState::Starting {
-            return Err(Error::InvalidStageTransition {
-                node_name,
-                node_tag,
-                from: "Running",
-                to: "Running",
-            });
+        // Helper: on every error path we must kill the still-running child
+        // before returning, otherwise we leak an untracked OS process. tokio
+        // `Child` does NOT have kill_on_drop set in the spawn helpers.
+        async fn kill_child(child: &mut Child) {
+            let _ = child.start_kill();
+            let _ = child.wait().await;
         }
-        inst.set_running(Some(pid));
 
-        Ok(pid)
+        let validation_result: Result<()> = {
+            let mut guard = handle.write().expect("entity poisoned");
+            let node_name = guard.config.manifest.name.as_str().to_owned();
+            let node_tag = guard.config.manifest.tag.clone();
+            match &mut guard.stage {
+                NodeStage::Ready { instances, .. } => {
+                    if let Some(inst) = instances
+                        .iter_mut()
+                        .find(|inst| inst.instance_id() == &instance_id)
+                    {
+                        if inst.state() != InstanceState::Starting {
+                            Err(Error::InvalidStageTransition {
+                                node_name,
+                                node_tag,
+                                from: "Running",
+                                to: "Running",
+                            })
+                        } else {
+                            inst.set_running(Some(pid));
+                            Ok(())
+                        }
+                    } else {
+                        Err(Error::InvalidStageTransition {
+                            node_name,
+                            node_tag,
+                            from: "missing",
+                            to: "Running",
+                        })
+                    }
+                }
+                other => Err(Error::InvalidStageTransition {
+                    node_name,
+                    node_tag,
+                    from: other.name(),
+                    to: "Ready",
+                }),
+            }
+        };
+
+        match validation_result {
+            Ok(()) => {
+                // Successful commit: drop the Child without killing. The
+                // OS process keeps running and the daemon owns its lifetime.
+                drop(child);
+                Ok(pid)
+            }
+            Err(e) => {
+                // Concurrent push_config or inconsistent state: the entity
+                // is no longer ours, but the spawned process is — kill it
+                // before returning so it does not orphan.
+                kill_child(&mut child).await;
+                Err(e)
+            }
+        }
     }
 
     /// Phase 2 (failure): kills the spawned child, joins the reader tasks (so
@@ -743,6 +797,11 @@ impl NodeEntity {
         )
         .await;
 
+        // Best-effort cleanup of the on-disk instance directory. Once the
+        // child has been killed and the readers drained, nothing else holds
+        // file descriptors into this directory.
+        let _ = std::fs::remove_dir_all(&started_ctx.instance_dir);
+
         // Best-effort: remove the Starting instance we registered in
         // prepare_and_spawn. Skip if a concurrent push_config replaced the
         // entity in the meantime.
@@ -769,6 +828,7 @@ impl NodeEntity {
                 config_path: root_path,
                 instance,
             },
+            generation: next_entity_generation(),
         }
     }
 
@@ -805,7 +865,11 @@ impl NodeEntity {
                 instances,
             },
         };
-        Self { config, stage }
+        Self {
+            config,
+            stage,
+            generation: next_entity_generation(),
+        }
     }
 
     /// Test-only: directly inject a stage for transition-rejection tests and

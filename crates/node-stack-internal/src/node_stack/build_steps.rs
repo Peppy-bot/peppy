@@ -202,24 +202,38 @@ pub(super) async fn run_add_cmd(
         return Err("add_cmd is empty".to_string());
     };
 
-    // Expand ${VAR} references in add_cmd strings using the injected env vars.
-    // This is necessary because multi-element commands are executed directly
-    // (not through a shell), so shell-style variable expansion doesn't happen.
-    let cmd: Vec<String> = cmd.iter().map(|s| expand_env_vars(s, env_vars)).collect();
+    // Build a *display* form (with `${VAR}` references intact) for logs and
+    // error messages, and a separate *expanded* form used only to actually
+    // spawn the child. Without this split, anything referenced as
+    // `${SECRET}` in `add_cmd` would end up in the on-disk log file and in
+    // every error string surfaced to clients.
+    let display_cmd: Vec<String> = cmd.clone();
+    let expanded_cmd: Vec<String> = cmd.iter().map(|s| expand_env_vars(s, env_vars)).collect();
 
-    let (program, args) = if cmd.len() == 1 {
-        ("sh".to_string(), vec!["-c".to_string(), cmd[0].clone()])
+    let (display_program, display_args) = if display_cmd.len() == 1 {
+        (
+            "sh".to_string(),
+            vec!["-c".to_string(), display_cmd[0].clone()],
+        )
     } else {
-        (cmd[0].clone(), cmd[1..].to_vec())
+        (display_cmd[0].clone(), display_cmd[1..].to_vec())
+    };
+    let (program, args) = if expanded_cmd.len() == 1 {
+        (
+            "sh".to_string(),
+            vec!["-c".to_string(), expanded_cmd[0].clone()],
+        )
+    } else {
+        (expanded_cmd[0].clone(), expanded_cmd[1..].to_vec())
     };
 
     debug!(
         "Running add_cmd: {} {:?} in dir {:?}",
-        program, args, working_dir
+        display_program, display_args, working_dir
     );
 
-    let full_cmd = std::iter::once(program.as_str())
-        .chain(args.iter().map(String::as_str))
+    let full_cmd_display = std::iter::once(display_program.as_str())
+        .chain(display_args.iter().map(String::as_str))
         .collect::<Vec<_>>()
         .join(" ");
 
@@ -231,7 +245,7 @@ pub(super) async fn run_add_cmd(
                 file,
                 "[{}] Executing add_cmd: {} (working_dir: {})",
                 timestamp,
-                full_cmd,
+                full_cmd_display,
                 working_dir.display()
             );
             let _ = file.flush();
@@ -248,14 +262,14 @@ pub(super) async fn run_add_cmd(
     }
     let child = command
         .spawn()
-        .map_err(|e| format!("failed to execute add_cmd `{}`: {}", full_cmd, e))?;
+        .map_err(|e| format!("failed to execute add_cmd `{}`: {}", full_cmd_display, e))?;
 
     let (status, _) = stream_child_output(child, feedback_tx, log_file, false).await?;
 
     if !status.success() {
         return Err(format!(
             "add_cmd `{}` failed with status {}",
-            full_cmd, status
+            full_cmd_display, status
         ));
     }
 
