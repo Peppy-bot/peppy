@@ -340,6 +340,20 @@ impl NodeStackInner {
         }
 
         if let Some(&index) = self.key_to_index.get(&key) {
+            // Refuse to clobber an entity that still has live instances. Callers
+            // must shut them down first; otherwise the wholesale replacement
+            // below would silently orphan tracked instances.
+            let existing_has_instances = self
+                .graph
+                .node_weight(index)
+                .is_some_and(|h| !h.read().expect("entity poisoned").instances().is_empty());
+            if existing_has_instances {
+                return Err(Error::CannotOverwriteNodeWithLiveInstances {
+                    node_name: key.name.clone(),
+                    node_tag: key.tag.clone(),
+                });
+            }
+
             let interfaces_changed = self.graph.node_weight(index).is_some_and(|handle| {
                 handle.read().expect("entity poisoned").config().interfaces != config.interfaces
             });

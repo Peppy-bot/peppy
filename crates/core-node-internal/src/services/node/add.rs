@@ -1607,10 +1607,10 @@ async fn process_node_add(
         return NodeAddResult::failure(&ctx.log_path, msg);
     }
 
-    // Stop any pre-existing instances of this node before resetting the
-    // entity in the stack. push_config below replaces the entity wholesale
-    // with a fresh `Added` one, so any tracked instances would otherwise be
-    // forgotten without being shut down cleanly.
+    // Stop any pre-existing instances of this node before pushing the new
+    // config. `push_config` rejects replacements that still have live
+    // instances (it would otherwise orphan them), so we shut them down
+    // first to satisfy that precondition.
     if let Err(e) = shutdown_existing_instances(&node_name, &node_tag, &ctx).await {
         let msg = format!("Failed to shutdown existing node instances: {}", e);
         write_error_to_log(&ctx.log_file, &msg);
@@ -1660,22 +1660,10 @@ async fn process_node_add(
     .await;
 
     if let Err(e) = build_result {
-        // Roll back the half-pushed entity so the stack doesn't keep an
-        // `Added` placeholder for a node that never built successfully.
-        // Only remove if the entity in the stack is still *our* `Added`
-        // placeholder — if a competing add already replaced it (different
-        // handle, or already advanced past `Added`), leave it alone so we
-        // don't delete a newer winner.
-        let still_ours = match ctx.action.node_stack.find(&node_name, &node_tag) {
-            Some(current) if Arc::ptr_eq(&current, &entity_handle) => match current.read() {
-                Ok(guard) => matches!(guard.stage(), node_stack::NodeStage::Added { .. }),
-                Err(_) => false,
-            },
-            _ => false,
-        };
-        if still_ours {
-            let _ = ctx.action.node_stack.remove_config(&node_name, &node_tag);
-        }
+        // `NodeEntity::build` leaves the entity in `Building` on failure;
+        // the caller owns removal. See the failure contract on
+        // `NodeEntity::build`.
+        let _ = ctx.action.node_stack.remove_config(&node_name, &node_tag);
         let msg = format!("Failed to build node: {}", e);
         write_error_to_log(&ctx.log_file, &msg);
         return NodeAddResult::failure(&ctx.log_path, msg);

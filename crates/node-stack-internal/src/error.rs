@@ -46,6 +46,8 @@ pub enum Error {
     CannotModifyRootNode,
     #[error("Cannot overwrite node `{node_name}`:{node_tag} because other nodes depend on it")]
     CannotOverwriteNodeWithDependents { node_name: String, node_tag: String },
+    #[error("Cannot overwrite node `{node_name}`:{node_tag} because it still has live instances")]
+    CannotOverwriteNodeWithLiveInstances { node_name: String, node_tag: String },
     #[error("Instance ID `{instance_id}` already exists for node `{node_name}`:{node_tag}")]
     DuplicateInstanceId {
         instance_id: String,

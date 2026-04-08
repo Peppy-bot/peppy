@@ -301,6 +301,44 @@ fn push_config_resets_existing_entity_to_added() {
     assert!(guard.instances().is_empty());
 }
 
+#[test]
+fn push_config_rejects_replacement_with_live_instances() {
+    let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
+    let config_path_v1 = PathBuf::from("/tmp/sensor/v1/peppy.json5");
+    let config_path_v2 = PathBuf::from("/tmp/sensor/v2/peppy.json5");
+
+    stack
+        .push_config(sensor_config(), false, &config_path_v1)
+        .expect("first push_config should succeed");
+    let handle = stack.find("sensor", "1.0.0").expect("entity should exist");
+    let id = Name::new("inst-1").expect("valid name");
+    handle
+        .write()
+        .expect("entity poisoned")
+        .__test_set_stage(NodeStage::Ready {
+            config_path: config_path_v1,
+            artifact_path: PathBuf::from("/tmp/sensor.sif"),
+            instances: vec![TrackedNodeInstance::new(id, None, InstanceState::Running)],
+        });
+
+    let err = stack
+        .push_config(sensor_config(), false, &config_path_v2)
+        .expect_err("re-push should be rejected when live instances exist");
+    match err {
+        NodeStackError::CannotOverwriteNodeWithLiveInstances {
+            node_name,
+            node_tag,
+        } => {
+            assert_eq!(node_name, "sensor");
+            assert_eq!(node_tag, "1.0.0");
+        }
+        other => panic!(
+            "expected CannotOverwriteNodeWithLiveInstances, got {:?}",
+            other
+        ),
+    }
+}
+
 #[tokio::test]
 async fn concurrent_builds_are_rejected_immediately() {
     use std::time::Duration;
@@ -531,65 +569,6 @@ async fn build_runs_add_cmd_for_process_node() {
     assert!(found, "marker.txt produced by add_cmd should be in archive");
 
     // Keep harness alive (so tempdirs survive until the assertions above).
-    drop(h.peppy_root);
-    drop(h.working_dir);
-}
-
-#[tokio::test]
-async fn build_rolls_back_to_added_when_add_cmd_fails() {
-    let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
-    let config_path = PathBuf::from("/tmp/sensor/peppy.json5");
-    stack
-        .push_config(sensor_config_with_add_cmd("exit 7"), false, &config_path)
-        .expect("push_config should succeed");
-
-    let handle = stack.find("sensor", "1.0.0").expect("entity should exist");
-    let h = build_harness();
-
-    let err = NodeEntity::build(
-        &handle,
-        BuildContext {
-            working_dir: h.working_dir.path(),
-            peppy_dirs: &h.peppy_dirs,
-            feedback_tx: &h.feedback_tx,
-            log_file: Arc::clone(&h.log_file),
-            env_vars: &[],
-        },
-    )
-    .await
-    .expect_err("build should fail when add_cmd exits non-zero");
-
-    match &err {
-        NodeStackError::BuildFailed { reason, .. } => {
-            assert!(
-                reason.contains("add_cmd failed"),
-                "reason should mention 'add_cmd failed', got: {}",
-                reason
-            );
-            assert!(
-                reason.contains("7"),
-                "reason should include exit status 7, got: {}",
-                reason
-            );
-        }
-        other => panic!("expected BuildFailed, got {:?}", other),
-    }
-
-    // Entity rolled back to Added (not stuck in Building).
-    let guard = handle.read().expect("entity poisoned");
-    assert!(
-        matches!(guard.stage(), NodeStage::Added { .. }),
-        "entity should be back in Added after add_cmd failure, got {:?}",
-        guard.stage()
-    );
-
-    // No archive on disk.
-    let archive = h.peppy_dirs.added_nodes_dir().join("sensor_1.0.0.tar.zst");
-    assert!(
-        !archive.exists(),
-        "no archive should exist after failed add_cmd"
-    );
-
     drop(h.peppy_root);
     drop(h.working_dir);
 }

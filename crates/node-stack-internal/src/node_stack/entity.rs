@@ -299,8 +299,7 @@ impl NodeEntity {
     }
 
     /// Performs the actual `.sif`/archive build for the entity behind `handle`
-    /// and transitions its stage `Added → Building → Built` (or rolls back to
-    /// `Added` on failure).
+    /// and transitions its stage `Added → Building → Ready` on success.
     ///
     /// For container nodes, this runs `apptainer build` and moves the resulting
     /// `.sif` into `peppy_dirs.added_nodes_dir()`. For process nodes, this
@@ -311,8 +310,12 @@ impl NodeEntity {
     /// while the first is still running observes the `Building` stage and is
     /// rejected immediately with [`Error::InvalidStageTransition`]. There is
     /// no queueing — once an entity is in `Building`, no other lifecycle
-    /// transition is allowed until either success (`Built`) or failure
-    /// (rolled back to `Added`).
+    /// transition is allowed until the build resolves.
+    ///
+    /// Failure contract: on any failure (I/O, storage, archive), the entity
+    /// is left in `Building` and is **not** rolled back to `Added`. The caller
+    /// owns cleanup — typically by removing the entity from the stack via
+    /// `NodeStack::remove_config`. Failed builds are not retryable in place.
     ///
     /// Returns [`Error::InvalidStageTransition`] if the entity is not in
     /// [`NodeStage::Added`], or [`Error::BuildFailed`] if the underlying
@@ -418,28 +421,17 @@ impl NodeEntity {
             Ok(()) => {
                 let artifact_path = if is_container {
                     move_sif_to_storage(ctx.working_dir, &node_name, &node_tag, ctx.peppy_dirs)
-                        .map_err(|e| {
-                            // Rollback Building → Added on storage failure too.
-                            guard.stage = NodeStage::Added {
-                                config_path: config_path.clone(),
-                            };
-                            Error::BuildFailed {
-                                node_name: node_name.clone(),
-                                node_tag: node_tag.clone(),
-                                reason: format!("failed to move container image to storage: {}", e),
-                            }
+                        .map_err(|e| Error::BuildFailed {
+                            node_name: node_name.clone(),
+                            node_tag: node_tag.clone(),
+                            reason: format!("failed to move container image to storage: {}", e),
                         })?
                 } else {
                     archive_dir_to_storage(ctx.working_dir, &node_name, &node_tag, ctx.peppy_dirs)
-                        .map_err(|e| {
-                        guard.stage = NodeStage::Added {
-                            config_path: config_path.clone(),
-                        };
-                        Error::BuildFailed {
-                            node_name: node_name.clone(),
-                            node_tag: node_tag.clone(),
-                            reason: format!("failed to archive node directory: {}", e),
-                        }
+                        .map_err(|e| Error::BuildFailed {
+                        node_name: node_name.clone(),
+                        node_tag: node_tag.clone(),
+                        reason: format!("failed to archive node directory: {}", e),
                     })?
                 };
 
@@ -451,8 +443,9 @@ impl NodeEntity {
                 Ok(())
             }
             Err(e) => {
-                // Roll back Building → Added so the entity can be retried.
-                guard.stage = NodeStage::Added { config_path };
+                // Leave the entity in `Building`. The caller owns cleanup
+                // (typically `NodeStack::remove_config`). See the doc comment
+                // on this method for the failure contract.
                 Err(e)
             }
         }
