@@ -22,6 +22,45 @@ use crate::build_io::{FeedbackLine, FeedbackStream, stream_child_output};
 /// concurrent builds for the same node:tag cannot clobber each other.
 static STAGING_TMP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+/// Validates that `node_tag` is safe to splice into a filename joined under
+/// the storage directory. Manifest names are constrained by `Name`'s parser,
+/// but `Manifest::tag` is a raw `String` — so we re-validate it here before
+/// it ever reaches `storage_dir.join(...)` to prevent path traversal or
+/// absolute-path injection (e.g. a tag like `../etc/passwd`).
+pub(super) fn validate_node_tag(node_tag: &str) -> std::io::Result<()> {
+    if node_tag.is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "node tag must not be empty",
+        ));
+    }
+    if node_tag == "." || node_tag == ".." || node_tag.starts_with('.') {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("node tag must not start with '.': {}", node_tag),
+        ));
+    }
+    if node_tag.contains("..") {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("node tag must not contain '..': {}", node_tag),
+        ));
+    }
+    for c in node_tag.chars() {
+        let ok = c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-';
+        if !ok {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "node tag contains disallowed character {:?}: {}",
+                    c, node_tag
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Archives the contents of `source_dir` into a `.tar.zst` file in the
 /// peppy added nodes directory.
 ///
@@ -34,6 +73,7 @@ pub(super) fn archive_dir_to_storage(
     node_tag: &str,
     peppy_dirs: &PeppyDirs,
 ) -> std::io::Result<PathBuf> {
+    validate_node_tag(node_tag)?;
     let storage_dir = peppy_dirs.added_nodes_dir();
     std::fs::create_dir_all(&storage_dir)?;
 
@@ -87,6 +127,7 @@ pub(super) fn move_sif_to_storage(
     node_tag: &str,
     peppy_dirs: &PeppyDirs,
 ) -> std::io::Result<PathBuf> {
+    validate_node_tag(node_tag)?;
     let sif_name = format!("{}_{}.sif", node_name, node_tag);
     let sif_source = working_dir.join(&sif_name);
 
@@ -304,6 +345,9 @@ pub(super) async fn run_add_cmd(
     command.current_dir(working_dir);
     command.stdout(Stdio::piped());
     command.stderr(Stdio::piped());
+    // Detach stdin so a misbehaving `add_cmd` cannot read from (or block
+    // on) the daemon's stdin. Mirrors `build_container_image`.
+    command.stdin(Stdio::null());
     for (key, value) in env_vars {
         command.env(key, value);
     }
@@ -327,6 +371,30 @@ pub(super) async fn run_add_cmd(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn validate_node_tag_accepts_safe_tags() {
+        for tag in ["1.2.3", "v1.0", "latest", "1.0.0-rc1", "abc_def", "A1", "0"] {
+            assert!(
+                validate_node_tag(tag).is_ok(),
+                "expected {:?} to be accepted",
+                tag
+            );
+        }
+    }
+
+    #[test]
+    fn validate_node_tag_rejects_unsafe_tags() {
+        for tag in [
+            "", "..", ".", ".hidden", "../etc", "foo/bar", "a\\b", "a b", "tag$", "/abs",
+        ] {
+            assert!(
+                validate_node_tag(tag).is_err(),
+                "expected {:?} to be rejected",
+                tag
+            );
+        }
+    }
 
     #[test]
     fn expand_env_vars_replaces_braced_refs() {

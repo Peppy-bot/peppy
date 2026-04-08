@@ -1677,6 +1677,15 @@ async fn process_node_add(
         .expect("entity poisoned")
         .set_last_add_log_path(ctx.log_path.clone());
 
+    // Capture the entity generation *before* the build runs so the
+    // failure-path cleanup below removes only the entity that we actually
+    // attempted to build. Reading the generation after `build()` returns
+    // would race with a concurrent `push_config` that replaced the entity
+    // in-place between our failure and the cleanup, causing us to clobber
+    // the new entity.
+    let expected_generation_before_build =
+        entity_handle.read().expect("entity poisoned").generation();
+
     let build_result = node_stack::NodeEntity::build(
         &entity_handle,
         BuildContext {
@@ -1694,15 +1703,14 @@ async fn process_node_add(
         // the caller owns removal. See the failure contract on
         // `NodeEntity::build`.
         //
-        // Use the generation-aware variant so a concurrent `push_config`
-        // that replaced the entity in-place between our failure and this
-        // cleanup is not silently clobbered.
-        let expected_generation = entity_handle.read().expect("entity poisoned").generation();
+        // Use the generation-aware variant with the pre-build generation
+        // so a concurrent `push_config` that replaced the entity in-place
+        // between our failure and this cleanup is not silently clobbered.
         let _ = ctx.action.node_stack.remove_config_if_matches(
             &node_name,
             &node_tag,
             &entity_handle,
-            expected_generation,
+            expected_generation_before_build,
         );
         let msg = format!("Failed to build node: {}", e);
         write_error_to_log(&ctx.log_file, &msg);

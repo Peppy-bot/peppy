@@ -2128,23 +2128,20 @@ async fn listen_for_node_add_abandoned_action_does_not_block_next_goal() {
         "first goal should be accepted"
     );
 
-    // Wait for the first action to *fully* complete. Polling
-    // `artifact_path().is_some()` alone can fire while the action is still
-    // committing (the entity transitions to Ready inside the build, but the
-    // action result publication happens slightly later). To be sure the
-    // first action is fully done, also require the entity stage to be
-    // `Ready` (not `Building`) and require no Starting instances —
-    // i.e. the lifecycle has settled.
+    // Wait for the first action to *fully* settle without polling its
+    // action result (the whole point of this test is that the result is
+    // never requested). We can't rely on the previous `no_starting` clause
+    // — `node add` never registers `Starting` instances, so it was always
+    // true and added nothing — so settling is detected purely via
+    // `stage == Ready` (which the entity transitions to inside `build`)
+    // and `artifact_path().is_some()` (which is recorded under the same
+    // write lock as the stage transition).
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             if let Some(handle) = node_stack.find(FIRST_NODE_NAME, FIRST_NODE_TAG) {
                 let guard = handle.read().expect("entity poisoned");
                 let is_ready = matches!(guard.stage(), node_stack::NodeStage::Ready { .. });
-                let no_starting = guard
-                    .instances()
-                    .iter()
-                    .all(|inst| inst.state() != node_stack::InstanceState::Starting);
-                if is_ready && guard.artifact_path().is_some() && no_starting {
+                if is_ready && guard.artifact_path().is_some() {
                     break;
                 }
             }
@@ -2152,7 +2149,7 @@ async fn listen_for_node_add_abandoned_action_does_not_block_next_goal() {
         }
     })
     .await
-    .expect("first node never reached Built within 30s");
+    .expect("first node never reached Ready within 30s");
 
     // Now send second goal - this should succeed even though we never polled
     // for the first action's result
@@ -3516,6 +3513,33 @@ async fn node_add_same_node_changing_interface_with_running_instance_and_depende
         node_stack.contains(DEPENDENT_NODE_NAME, DEPENDENT_NODE_TAG),
         "dependent node should still be in the stack after failed overwrite"
     );
+
+    // The dependency's interface must remain the v1 shape: `reset_sensor`
+    // is still exposed and the v2 `new_service` was never spliced in.
+    {
+        let handle = node_stack
+            .find(DEPENDENCY_NODE_NAME, DEPENDENCY_NODE_TAG)
+            .expect("dependency entity missing");
+        let guard = handle.read().expect("entity poisoned");
+        let exposes = guard
+            .config()
+            .interfaces
+            .services
+            .as_ref()
+            .and_then(|s| s.exposes.as_ref())
+            .expect("v1 services.exposes should be present");
+        let names: Vec<&str> = exposes.iter().map(|svc| svc.name.as_str()).collect();
+        assert!(
+            names.contains(&"reset_sensor"),
+            "v1 `reset_sensor` should still be exposed after failed overwrite, got: {:?}",
+            names
+        );
+        assert!(
+            !names.contains(&"new_service"),
+            "v2 `new_service` must not have leaked through the failed overwrite, got: {:?}",
+            names
+        );
+    }
 }
 
 /// When a running node instance does not respond to SHUTDOWN_SERVICE (e.g. the process is frozen),

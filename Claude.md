@@ -47,6 +47,8 @@ Review this plan thoroughly before making any code changes. For every issue or r
 - Missing edge case coverage—be thorough.
 - Untested failure modes and error paths.
 - Tests must be human readable, prefer code clarity here over optimisation.
+- When you modify code, add or update tests only if the change materially affects behavior, correctness, edge cases, interfaces, regression risk, or business logic.
+- Do not add tests for trivial, cosmetic, or low-signal changes unless existing tests must be adjusted to stay consistent.
 
 ---
 

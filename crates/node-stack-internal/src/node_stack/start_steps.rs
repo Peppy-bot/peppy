@@ -312,6 +312,10 @@ pub(super) fn spawn_process_node(
     }
 
     let child = command.spawn().map_err(|e| {
+        // Spawn failed: the temp runtime config file we just wrote will
+        // never be owned by `StartedInstanceCtx`, so clean it up here to
+        // avoid orphaning `runtime_config_*.json5` under the peppy tmp dir.
+        let _ = std::fs::remove_file(&runtime_config_path);
         let full_cmd = start_cmd.join(" ");
         std::io::Error::other(format!("failed to execute start_cmd `{}`: {}", full_cmd, e))
     })?;
@@ -397,6 +401,11 @@ pub(super) async fn spawn_container_node(
         })?;
 
     let runtime_config_path = write_runtime_config_temp(peppy_dirs, runtime_config_json5)?;
+    // Guard that deletes `runtime_config_path` on any early return between
+    // here and the successful spawn. On success we `defuse()` it so that
+    // ownership of the temp file transfers to `StartedInstanceCtx`, which
+    // already removes it during instance teardown.
+    let mut runtime_config_guard = TempFileGuard::new(runtime_config_path.clone());
 
     let sif_str = sif_path
         .to_str()
@@ -405,32 +414,20 @@ pub(super) async fn spawn_container_node(
     // Collect all bind mounts (runtime config + user-specified mount_paths).
     let binds = collect_container_binds(&runtime_config_path, mount_paths);
 
-    // Ensure host-side source directories exist for user-specified bind mounts.
+    // Validate user-specified bind mount sources.
     // Skip binds[0] (runtime config file) — its parent dir is already created above.
     //
     // Behaviour:
     //   - If the path already exists, leave it alone (it may be a file,
     //     device, socket, or directory; we must not touch it).
     //   - If the path is under a device/virtual filesystem (`/dev`, `/proc`,
-    //     `/sys`), do nothing — it must be created by the kernel, not by us,
-    //     and turning a missing device node into a directory would silently
-    //     break the mount.
-    //   - Otherwise, treat the missing path as a directory bind and create
-    //     it (via `create_dir_all`) so the user can mount an empty volume
-    //     into the container without having to mkdir it first.
-    for bind in &binds[1..] {
-        let src_path = Path::new(&bind.src);
-        if src_path.exists() {
-            continue;
-        }
-        let in_special_fs = src_path.starts_with("/dev")
-            || src_path.starts_with("/proc")
-            || src_path.starts_with("/sys");
-        if in_special_fs {
-            continue;
-        }
-        std::fs::create_dir_all(src_path)?;
-    }
+    //     `/sys`), accept it — those nodes are created by the kernel and
+    //     may not exist on the host running the daemon.
+    //   - Otherwise, a missing source is a configuration error: previously
+    //     we silently `mkdir -p`'d the path, which turned a missing **file**
+    //     bind into an empty directory and masked typos. Reject explicitly
+    //     instead so the user gets a clear error.
+    validate_bind_sources(&binds[1..])?;
 
     // Ensure host paths outside $HOME are accessible in the Lima VM.
     // Skip binds[0] (runtime config) — it's always under $HOME.
@@ -516,7 +513,57 @@ pub(super) async fn spawn_container_node(
             e
         ))
     })?;
+    runtime_config_guard.defuse();
     Ok((child, runtime_config_path))
+}
+
+/// Validates that every bind mount source path exists, with the exception of
+/// kernel-managed virtual filesystems (`/dev`, `/proc`, `/sys`). Returns a
+/// descriptive `NotFound` error on the first missing source.
+pub(super) fn validate_bind_sources(binds: &[ContainerBind]) -> std::io::Result<()> {
+    for bind in binds {
+        let src_path = Path::new(&bind.src);
+        if src_path.exists() {
+            continue;
+        }
+        let in_special_fs = src_path.starts_with("/dev")
+            || src_path.starts_with("/proc")
+            || src_path.starts_with("/sys");
+        if in_special_fs {
+            continue;
+        }
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("bind mount source does not exist: {}", bind.src),
+        ));
+    }
+    Ok(())
+}
+
+/// Drop guard that removes a temp file unless explicitly defused. Used by
+/// the start-steps spawners to make sure a freshly-written
+/// `runtime_config_*.json5` is cleaned up if any later step fails before
+/// ownership can be transferred to `StartedInstanceCtx`.
+struct TempFileGuard {
+    path: Option<PathBuf>,
+}
+
+impl TempFileGuard {
+    fn new(path: PathBuf) -> Self {
+        Self { path: Some(path) }
+    }
+
+    fn defuse(&mut self) {
+        self.path = None;
+    }
+}
+
+impl Drop for TempFileGuard {
+    fn drop(&mut self) {
+        if let Some(path) = self.path.take() {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
 }
 
 /// Kills a child process, drains its output readers (so the stderr buffer
@@ -613,6 +660,52 @@ pub(super) fn extract_stderr_from_log(log_file: &Arc<StdMutex<File>>) -> String 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn validate_bind_sources_accepts_existing_paths() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let binds = vec![ContainerBind {
+            src: tmp.path().to_string_lossy().into_owned(),
+            dest: None,
+            opts: None,
+        }];
+        validate_bind_sources(&binds).expect("existing dir should be accepted");
+    }
+
+    #[test]
+    fn validate_bind_sources_accepts_special_fs_paths() {
+        let binds = vec![
+            ContainerBind {
+                src: "/dev/does-not-exist-xyz".to_string(),
+                dest: None,
+                opts: None,
+            },
+            ContainerBind {
+                src: "/proc/missing".to_string(),
+                dest: None,
+                opts: None,
+            },
+            ContainerBind {
+                src: "/sys/missing".to_string(),
+                dest: None,
+                opts: None,
+            },
+        ];
+        validate_bind_sources(&binds).expect("special-fs paths should be accepted");
+    }
+
+    #[test]
+    fn validate_bind_sources_rejects_missing_path() {
+        let binds = vec![ContainerBind {
+            src: "/tmp/peppy-test-definitely-does-not-exist-9f3a2b".to_string(),
+            dest: None,
+            opts: None,
+        }];
+        let err =
+            validate_bind_sources(&binds).expect_err("missing non-special path should be rejected");
+        assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+        assert!(err.to_string().contains("does not exist"));
+    }
 
     #[test]
     fn collect_container_binds_always_includes_runtime_config() {

@@ -62,9 +62,15 @@ enum InfoError {
     Internal(String),
 }
 
-impl<E: std::fmt::Display> From<E> for InfoError {
-    fn from(e: E) -> Self {
-        InfoError::Invalid(e.to_string())
+// Only `String` is convertible into `InfoError` via `?`, and only as the
+// `Invalid` (caller-fault) variant. The previous blanket
+// `From<E: Display>` swept *every* error type into `Invalid`, which
+// silently routed things like serializer faults and lock poisoning to
+// `InvalidServiceRequest` instead of `ServiceError`. With this restricted
+// impl, internal-fault sites must call `InfoError::Internal(...)` explicitly.
+impl From<String> for InfoError {
+    fn from(reason: String) -> Self {
+        InfoError::Invalid(reason)
     }
 }
 
@@ -205,7 +211,8 @@ async fn handle_node_info_request_inner(
             None => (false, Vec::new(), None, Vec::new(), None, Vec::new()),
         };
 
-    let config_json = serde_json5::to_string(&node_config).map_err(|e| format!("{}", e))?;
+    let config_json = serde_json5::to_string(&node_config)
+        .map_err(|e| InfoError::Internal(format!("failed to serialize node config: {}", e)))?;
     let config_integrity = fingerprint_for_bytes(config_json.as_bytes());
 
     NodeInfoResponse::new(
@@ -221,7 +228,7 @@ async fn handle_node_info_request_inner(
         start_log_paths,
     )
     .encode()
-    .map_err(|e| InfoError::Invalid(format!("{}", e)))
+    .map_err(|e| InfoError::Internal(format!("failed to encode NodeInfoResponse: {}", e)))
 }
 
 fn merged_config_with_variant_cleanup(resolved: super::variant::ResolvedVariant) -> NodeConfig {
