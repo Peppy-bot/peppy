@@ -6,9 +6,7 @@ use common::{
 };
 use common::{NodeStartTestTimeouts, send_node_add_and_wait, send_node_start_and_wait};
 use config::consts::NODE_CONFIG_FILE;
-use config::launcher::Name as InstanceName;
 use config::node::{Name, PeppygenLanguage};
-use config::runtime::{NodeInstance, RuntimeConfig};
 use config::test_helpers;
 use core_node::encoding::{NodeInfoRequest, NodeInfoResponse, NodeSource};
 use node_stack::{InstanceState, NodeStage, TrackedNodeInstance};
@@ -470,19 +468,11 @@ async fn listen_for_node_info_has_instance_ids() {
 
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    let runtime_config_1 = RuntimeConfig::new(
-        "127.0.0.1",
-        config::consts::DEFAULT_MESSAGING_PORT,
-        NodeInstance {
-            instance_id: InstanceName::new(TARGET_INSTANCE_ID_1).expect("valid instance id"),
-            arguments: Default::default(),
-        },
-        TARGET_NODE_NAME,
+    let runtime_config_json5_1 = common::default_runtime_config_json5(
         &started_core_node.core_node_name,
-    )
-    .expect("runtime config should be valid");
-    let runtime_config_json5_1 =
-        serde_json5::to_string(&runtime_config_1).expect("runtime config should serialize");
+        TARGET_NODE_NAME,
+        TARGET_INSTANCE_ID_1,
+    );
 
     let start_response_1 = send_node_start_and_wait(
         &started_core_node.caller_handle,
@@ -505,19 +495,11 @@ async fn listen_for_node_info_has_instance_ids() {
         start_response_1.result.error_message
     );
 
-    let runtime_config_2 = RuntimeConfig::new(
-        "127.0.0.1",
-        config::consts::DEFAULT_MESSAGING_PORT,
-        NodeInstance {
-            instance_id: InstanceName::new(TARGET_INSTANCE_ID_2).expect("valid instance id"),
-            arguments: Default::default(),
-        },
-        TARGET_NODE_NAME,
+    let runtime_config_json5_2 = common::default_runtime_config_json5(
         &started_core_node.core_node_name,
-    )
-    .expect("runtime config should be valid");
-    let runtime_config_json5_2 =
-        serde_json5::to_string(&runtime_config_2).expect("runtime config should serialize");
+        TARGET_NODE_NAME,
+        TARGET_INSTANCE_ID_2,
+    );
 
     let start_response_2 = send_node_start_and_wait(
         &started_core_node.caller_handle,

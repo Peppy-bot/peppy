@@ -101,6 +101,47 @@ pub struct NodeStartTestResponse {
     pub result: NodeStartResult,
 }
 
+/// Builds a `RuntimeConfig` from the given parts and returns its JSON5 serialization,
+/// ready to be passed to a `node_start` request.
+pub fn build_runtime_config_json5(
+    host: &str,
+    port: u16,
+    core_node_name: &str,
+    node_name: &str,
+    instance_id: &str,
+    arguments: std::collections::BTreeMap<String, config::AnyType>,
+) -> String {
+    let runtime_config = config::runtime::RuntimeConfig::new(
+        host,
+        port,
+        config::runtime::NodeInstance {
+            instance_id: config::launcher::Name::new(instance_id).expect("valid instance id"),
+            arguments,
+        },
+        node_name,
+        core_node_name,
+    )
+    .expect("runtime config should be valid");
+    serde_json5::to_string(&runtime_config).expect("runtime config should serialize")
+}
+
+/// Convenience wrapper around `build_runtime_config_json5` using `127.0.0.1`,
+/// the default messaging port, and no node arguments — the shape used by most tests.
+pub fn default_runtime_config_json5(
+    core_node_name: &str,
+    node_name: &str,
+    instance_id: &str,
+) -> String {
+    build_runtime_config_json5(
+        "127.0.0.1",
+        config::consts::DEFAULT_MESSAGING_PORT,
+        core_node_name,
+        node_name,
+        instance_id,
+        Default::default(),
+    )
+}
+
 /// Writes a node config file and the corresponding fingerprint file expected by `node_add`.
 pub fn write_peppy_json5(dir: &Path, content: &str) {
     let config_path = dir.join(NODE_CONFIG_FILE);

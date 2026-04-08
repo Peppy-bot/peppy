@@ -7,10 +7,8 @@ mod container_e2e_tests {
         CALLER_INSTANCE_ID, NodeStartTestTimeouts, send_node_add_and_wait,
         send_node_start_and_wait, start_core_node_with_real_messenger_and_timeouts,
     };
-    use config::launcher::Name;
     use config::node::Name as NodeName;
     use config::node::Toolchain;
-    use config::runtime::{NodeInstance, RuntimeConfig};
     use core_node::encoding::NodeInitRequest;
     use std::time::Duration;
     use tempfile::tempdir;
@@ -113,20 +111,14 @@ mod container_e2e_tests {
             .await
             .expect("zenoh endpoint should be available");
 
-        let runtime_config = RuntimeConfig::new(
+        let runtime_config_json5 = common::build_runtime_config_json5(
             messaging_host.as_str(),
             messaging_port,
-            NodeInstance {
-                instance_id: Name::new(INSTANCE_ID).unwrap(),
-                arguments: Default::default(),
-            },
-            NODE_NAME,
             &started.core_node_name,
-        )
-        .expect("runtime config should be valid");
-
-        let runtime_config_json5 =
-            serde_json5::to_string(&runtime_config).expect("runtime config should serialize");
+            NODE_NAME,
+            INSTANCE_ID,
+            Default::default(),
+        );
 
         let start_response = send_node_start_and_wait(
             &started.caller_handle,
@@ -268,20 +260,14 @@ mod container_e2e_tests {
             .await
             .expect("zenoh endpoint should be available");
 
-        let runtime_config = RuntimeConfig::new(
+        let runtime_config_json5 = common::build_runtime_config_json5(
             messaging_host.as_str(),
             messaging_port,
-            NodeInstance {
-                instance_id: Name::new(INSTANCE_ID).unwrap(),
-                arguments: Default::default(),
-            },
-            NODE_NAME,
             &started.core_node_name,
-        )
-        .expect("runtime config should be valid");
-
-        let runtime_config_json5 =
-            serde_json5::to_string(&runtime_config).expect("runtime config should serialize");
+            NODE_NAME,
+            INSTANCE_ID,
+            Default::default(),
+        );
 
         let start_response = send_node_start_and_wait(
             &started.caller_handle,
