@@ -6,14 +6,14 @@ use common::{
 };
 use config::node::Name;
 use core_node::encoding::NodeRemoveRequest;
-use node_stack::TrackedNodeInstance;
+use node_stack::{InstanceState, NodeStage, TrackedNodeInstance};
 use peppylib::messaging::MessengerHandle;
 use peppylib::services::shutdown::listen_for_shutdown;
 use std::sync::Arc;
 use std::time::Duration;
 
-/// Registers a tracked instance on the given (name, tag) entity.
-/// Assumes the entity is already in `Built`.
+/// Registers a tracked `Running` instance on the given (name, tag) entity.
+/// Assumes the entity is already in `Ready`.
 fn register_instance(
     node_stack: &node_stack::NodeStack,
     name: &str,
@@ -22,12 +22,12 @@ fn register_instance(
     pid: Option<u32>,
 ) {
     let handle = node_stack.find(name, tag).expect("entity should exist");
-    let instance = TrackedNodeInstance::new(instance_id.clone(), pid);
-    handle
-        .write()
-        .expect("entity poisoned")
-        .start_instance(instance)
-        .expect("entity should be Built");
+    let instance = TrackedNodeInstance::new(instance_id.clone(), pid, InstanceState::Running);
+    let mut guard = handle.write().expect("entity poisoned");
+    let NodeStage::Ready { instances, .. } = guard.__test_stage_mut() else {
+        panic!("register_instance: entity should be in Ready stage");
+    };
+    instances.push(instance);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -6,7 +6,7 @@ use common::{
 };
 use config::node::Name;
 use core_node::encoding::NodeResetRequest;
-use node_stack::TrackedNodeInstance;
+use node_stack::{InstanceState, NodeStage, TrackedNodeInstance};
 use std::time::Duration;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -107,12 +107,13 @@ async fn listen_for_node_reset_clears_node_stack() {
         let handle = node_stack
             .find(TARGET_NODE_A_NAME, TARGET_NODE_A_TAG)
             .expect("node A should exist in stack");
-        let instance = TrackedNodeInstance::new(instance_id_a.clone(), None);
-        handle
-            .write()
-            .expect("entity poisoned")
-            .start_instance(instance)
-            .expect("entity should be Built");
+        let instance =
+            TrackedNodeInstance::new(instance_id_a.clone(), None, InstanceState::Running);
+        let mut guard = handle.write().expect("entity poisoned");
+        let NodeStage::Ready { instances, .. } = guard.__test_stage_mut() else {
+            panic!("node A should be in Ready stage");
+        };
+        instances.push(instance);
     }
     let entity_a = node_stack
         .find(TARGET_NODE_A_NAME, TARGET_NODE_A_TAG)

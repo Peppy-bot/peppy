@@ -57,9 +57,11 @@ fn entity_instance_count(node_stack: &node_stack::NodeStack, name: &str, tag: &s
         .len()
 }
 
-/// Registers a tracked instance on the entity at `(name, tag)`. Assumes the
-/// entity is already `Built` (i.e. the test went through the real
-/// `process_node_add` path).
+/// Registers a tracked `Running` instance on the entity at `(name, tag)`.
+/// Assumes the entity is already in `Ready` (i.e. the test went through the
+/// real `process_node_add` path). Appends the instance directly via the
+/// `__test_stage_mut` backdoor since the production lifecycle method is
+/// `prepare_and_spawn`/`commit_started`, which would actually spawn a child.
 fn register_instance(
     node_stack: &node_stack::NodeStack,
     name: &str,
@@ -68,12 +70,16 @@ fn register_instance(
     pid: Option<u32>,
 ) {
     let handle = node_stack.find(name, tag).expect("entity should exist");
-    let instance = node_stack::TrackedNodeInstance::new(instance_id.clone(), pid);
-    handle
-        .write()
-        .expect("entity poisoned")
-        .start_instance(instance)
-        .expect("entity should be Built");
+    let instance = node_stack::TrackedNodeInstance::new(
+        instance_id.clone(),
+        pid,
+        node_stack::InstanceState::Running,
+    );
+    let mut guard = handle.write().expect("entity poisoned");
+    let node_stack::NodeStage::Ready { instances, .. } = guard.__test_stage_mut() else {
+        panic!("register_instance: entity should be in Ready stage");
+    };
+    instances.push(instance);
 }
 
 /// Creates a minimal node bundle (peppy.json5 + tar.zst) suitable for HTTP source tests.

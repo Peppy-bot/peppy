@@ -6,7 +6,8 @@ use std::sync::{Arc, Mutex as StdMutex};
 
 use config::node::Name;
 use node_stack::{
-    BuildContext, NodeEntity, NodeStack, NodeStackError, NodeStage, TrackedNodeInstance,
+    BuildContext, InstanceState, NodeEntity, NodeStack, NodeStackError, NodeStage,
+    TrackedNodeInstance,
 };
 
 use crate::helpers::config_common::core_node_config;
@@ -58,34 +59,19 @@ fn push_config_creates_entity_in_added_stage() {
     assert!(guard.instances().is_empty());
 }
 
-#[test]
-fn start_instance_rejects_when_only_added() {
-    let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
-
-    stack
-        .push_config(sensor_config(), false, PathBuf::from("/tmp/sensor"))
-        .expect("push_config should succeed");
-
-    let handle = stack.find("sensor", "1.0.0").expect("entity should exist");
-    let instance = TrackedNodeInstance::new(Name::new("inst").unwrap(), Some(42));
-
-    let err = handle
-        .write()
-        .expect("entity poisoned")
-        .start_instance(instance)
-        .expect_err("start_instance on Added should fail");
-
-    match err {
-        NodeStackError::InvalidStageTransition { from, to, .. } => {
-            assert_eq!(from, "Added");
-            assert_eq!(to, "Started");
-        }
-        other => panic!("expected InvalidStageTransition, got {:?}", other),
-    }
+/// Helper: append a `Running` instance directly into a `Ready` entity via
+/// the `__test_stage_mut` backdoor. Replaces the old `start_instance(...)`
+/// pattern that no longer exists on `NodeEntity`.
+fn append_running_instance(handle: &node_stack::EntityHandle, id: Name, pid: Option<u32>) {
+    let mut guard = handle.write().expect("entity poisoned");
+    let NodeStage::Ready { instances, .. } = guard.__test_stage_mut() else {
+        panic!("expected Ready stage to append running instance");
+    };
+    instances.push(TrackedNodeInstance::new(id, pid, InstanceState::Running));
 }
 
 #[test]
-fn start_instance_transitions_built_to_started() {
+fn ready_with_running_instance_round_trip() {
     let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
     let config_path = PathBuf::from("/tmp/sensor");
     let artifact_path = PathBuf::from("/tmp/sensor.sif");
@@ -98,37 +84,34 @@ fn start_instance_transitions_built_to_started() {
     handle
         .write()
         .expect("entity poisoned")
-        .__test_set_stage(NodeStage::Built {
+        .__test_set_stage(NodeStage::Ready {
             config_path: config_path.clone(),
             artifact_path: artifact_path.clone(),
+            instances: vec![],
         });
 
-    let instance = TrackedNodeInstance::new(Name::new("inst-1").unwrap(), Some(42));
-    handle
-        .write()
-        .expect("entity poisoned")
-        .start_instance(instance)
-        .expect("start_instance should succeed");
+    append_running_instance(&handle, Name::new("inst-1").unwrap(), Some(42));
 
     let guard = handle.read().expect("entity poisoned");
     match guard.stage() {
-        NodeStage::Started {
+        NodeStage::Ready {
             config_path: cp,
             artifact_path: sp,
             instances,
         } => {
-            assert_eq!(cp, &PathBuf::from("/tmp/sensor"));
+            assert_eq!(cp, &config_path);
             assert_eq!(sp, &artifact_path);
             assert_eq!(instances.len(), 1);
             assert_eq!(instances[0].instance_id().as_str(), "inst-1");
             assert_eq!(instances[0].pid(), Some(42));
+            assert_eq!(instances[0].state(), InstanceState::Running);
         }
-        other => panic!("expected Started, got {:?}", other),
+        other => panic!("expected Ready, got {:?}", other),
     }
 }
 
 #[test]
-fn stop_instance_falls_back_to_built_when_last_instance_removed() {
+fn stop_instance_removes_last_instance_keeps_ready() {
     let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
     let config_path = PathBuf::from("/tmp/sensor");
     let artifact_path = PathBuf::from("/tmp/sensor.sif");
@@ -141,19 +124,16 @@ fn stop_instance_falls_back_to_built_when_last_instance_removed() {
     handle
         .write()
         .expect("entity poisoned")
-        .__test_set_stage(NodeStage::Built {
+        .__test_set_stage(NodeStage::Ready {
             config_path: config_path.clone(),
             artifact_path: artifact_path.clone(),
+            instances: vec![],
         });
 
     let instance_id = Name::new("only-inst").unwrap();
-    handle
-        .write()
-        .expect("entity poisoned")
-        .start_instance(TrackedNodeInstance::new(instance_id.clone(), Some(42)))
-        .expect("start_instance should succeed");
+    append_running_instance(&handle, instance_id.clone(), Some(42));
 
-    // Remove the only instance: entity should fall back to Built.
+    // Remove the only instance: entity stays in Ready with an empty list.
     let removed = handle
         .write()
         .expect("entity poisoned")
@@ -162,24 +142,26 @@ fn stop_instance_falls_back_to_built_when_last_instance_removed() {
 
     let guard = handle.read().expect("entity poisoned");
     match guard.stage() {
-        NodeStage::Built {
+        NodeStage::Ready {
             config_path: cp,
             artifact_path: sp,
+            instances,
         } => {
             assert_eq!(cp, &config_path);
             assert_eq!(sp, &artifact_path);
+            assert!(
+                instances.is_empty(),
+                "instances list should be empty after removing the only instance"
+            );
         }
-        other => panic!(
-            "expected Built after removing last instance, got {:?}",
-            other
-        ),
+        other => panic!("expected Ready, got {:?}", other),
     }
     assert_eq!(guard.artifact_path(), Some(artifact_path.as_path()));
     assert!(guard.instances().is_empty());
 }
 
 #[test]
-fn stop_instance_keeps_started_when_other_instances_remain() {
+fn stop_instance_keeps_other_instances_when_one_removed() {
     let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
     let config_path = PathBuf::from("/tmp/sensor");
     let artifact_path = PathBuf::from("/tmp/sensor.sif");
@@ -192,22 +174,16 @@ fn stop_instance_keeps_started_when_other_instances_remain() {
     handle
         .write()
         .expect("entity poisoned")
-        .__test_set_stage(NodeStage::Built {
+        .__test_set_stage(NodeStage::Ready {
             config_path,
             artifact_path: artifact_path.clone(),
+            instances: vec![],
         });
 
     let id_a = Name::new("inst-a").unwrap();
     let id_b = Name::new("inst-b").unwrap();
-    {
-        let mut guard = handle.write().expect("entity poisoned");
-        guard
-            .start_instance(TrackedNodeInstance::new(id_a.clone(), Some(1)))
-            .expect("start instance a");
-        guard
-            .start_instance(TrackedNodeInstance::new(id_b.clone(), Some(2)))
-            .expect("start instance b");
-    }
+    append_running_instance(&handle, id_a.clone(), Some(1));
+    append_running_instance(&handle, id_b.clone(), Some(2));
 
     let removed = handle
         .write()
@@ -217,11 +193,11 @@ fn stop_instance_keeps_started_when_other_instances_remain() {
 
     let guard = handle.read().expect("entity poisoned");
     match guard.stage() {
-        NodeStage::Started { instances, .. } => {
+        NodeStage::Ready { instances, .. } => {
             assert_eq!(instances.len(), 1);
             assert_eq!(instances[0].instance_id(), &id_b);
         }
-        other => panic!("expected Started with one instance, got {:?}", other),
+        other => panic!("expected Ready with one instance, got {:?}", other),
     }
 }
 
@@ -235,18 +211,12 @@ fn stop_instance_returns_false_when_instance_not_tracked() {
     handle
         .write()
         .expect("entity poisoned")
-        .__test_set_stage(NodeStage::Built {
+        .__test_set_stage(NodeStage::Ready {
             config_path: PathBuf::from("/tmp/sensor"),
             artifact_path: PathBuf::from("/tmp/sensor.sif"),
+            instances: vec![],
         });
-    handle
-        .write()
-        .expect("entity poisoned")
-        .start_instance(TrackedNodeInstance::new(
-            Name::new("only").unwrap(),
-            Some(1),
-        ))
-        .expect("start instance");
+    append_running_instance(&handle, Name::new("only").unwrap(), Some(1));
 
     let removed = handle
         .write()
@@ -256,37 +226,38 @@ fn stop_instance_returns_false_when_instance_not_tracked() {
 }
 
 #[test]
-fn duplicate_instance_id_is_rejected() {
+fn stop_instance_skips_starting_instances() {
+    // stop_instance only acts on Running instances. A Starting instance is
+    // an in-flight prepare_and_spawn that hasn't been committed yet — it
+    // can't be stopped via the messenger because it hasn't subscribed.
     let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
     stack
         .push_config(sensor_config(), false, PathBuf::from("/tmp/sensor"))
         .expect("push_config should succeed");
     let handle = stack.find("sensor", "1.0.0").expect("entity should exist");
+    let id = Name::new("starting-inst").unwrap();
     handle
         .write()
         .expect("entity poisoned")
-        .__test_set_stage(NodeStage::Built {
+        .__test_set_stage(NodeStage::Ready {
             config_path: PathBuf::from("/tmp/sensor"),
             artifact_path: PathBuf::from("/tmp/sensor.sif"),
+            instances: vec![TrackedNodeInstance::new(
+                id.clone(),
+                None,
+                InstanceState::Starting,
+            )],
         });
 
-    let id = Name::new("dup").unwrap();
-    handle
-        .write()
-        .expect("entity poisoned")
-        .start_instance(TrackedNodeInstance::new(id.clone(), Some(1)))
-        .expect("first start should succeed");
-
-    let err = handle
-        .write()
-        .expect("entity poisoned")
-        .start_instance(TrackedNodeInstance::new(id, Some(2)))
-        .expect_err("second start with same id should fail");
-
-    match err {
-        NodeStackError::DuplicateInstanceId { .. } => {}
-        other => panic!("expected DuplicateInstanceId, got {:?}", other),
-    }
+    let removed = handle.write().expect("entity poisoned").stop_instance(&id);
+    assert!(
+        !removed,
+        "stop_instance must not remove a Starting instance"
+    );
+    // The Starting instance is still in the list.
+    let guard = handle.read().expect("entity poisoned");
+    assert_eq!(guard.instances().len(), 1);
+    assert_eq!(guard.instances()[0].state(), InstanceState::Starting);
 }
 
 #[test]
@@ -304,9 +275,10 @@ fn push_config_resets_existing_entity_to_added() {
     handle
         .write()
         .expect("entity poisoned")
-        .__test_set_stage(NodeStage::Built {
+        .__test_set_stage(NodeStage::Ready {
             config_path: config_path_v1.clone(),
             artifact_path,
+            instances: vec![],
         });
 
     assert!(handle.read().unwrap().artifact_path().is_some());
@@ -424,7 +396,7 @@ async fn concurrent_builds_are_rejected_immediately() {
     let (ok_count, transition_err_count) = [&r1, &r2].iter().fold((0, 0), |(o, e), r| match r {
         Ok(()) => (o + 1, e),
         Err(NodeStackError::InvalidStageTransition { from, to, .. })
-            if (*from == "Building" || *from == "Built") && *to == "Built" =>
+            if (*from == "Building" || *from == "Ready") && *to == "Ready" =>
         {
             (o, e + 1)
         }
@@ -433,12 +405,12 @@ async fn concurrent_builds_are_rejected_immediately() {
     assert_eq!(ok_count, 1, "exactly one build should succeed");
     assert_eq!(
         transition_err_count, 1,
-        "the loser should fail immediately with InvalidStageTransition (Building→Built or Built→Built)"
+        "the loser should fail immediately with InvalidStageTransition (Building→Ready or Ready→Ready)"
     );
 
     // Entity ended up in Built.
     let guard = handle.read().expect("entity poisoned");
-    assert!(matches!(guard.stage(), NodeStage::Built { .. }));
+    assert!(matches!(guard.stage(), NodeStage::Ready { .. }));
 
     // The on-disk archive exists exactly once.
     let archive = peppy_dirs.added_nodes_dir().join("sensor_1.0.0.tar.zst");
@@ -536,7 +508,7 @@ async fn build_runs_add_cmd_for_process_node() {
 
     // Entity is in Built.
     let guard = handle.read().expect("entity poisoned");
-    assert!(matches!(guard.stage(), NodeStage::Built { .. }));
+    assert!(matches!(guard.stage(), NodeStage::Ready { .. }));
     drop(guard);
 
     // The archive exists and contains the marker file produced by add_cmd.
@@ -683,9 +655,10 @@ fn push_built_long_running_sensor(stack: &NodeStack, peppy_dirs: &config::consts
     handle
         .write()
         .expect("entity poisoned")
-        .__test_set_stage(NodeStage::Built {
+        .__test_set_stage(NodeStage::Ready {
             config_path: PathBuf::from("/tmp/sensor"),
             artifact_path: archive_path,
+            instances: vec![],
         });
 }
 
@@ -759,7 +732,7 @@ async fn prepare_and_spawn_rejects_when_not_built() {
     match err {
         NodeStackError::InvalidStageTransition { from, to, .. } => {
             assert_eq!(from, "Added");
-            assert_eq!(to, "Started");
+            assert_eq!(to, "Ready");
         }
         other => panic!("expected InvalidStageTransition, got {:?}", other),
     }
@@ -771,7 +744,7 @@ async fn prepare_and_spawn_rejects_when_not_built() {
 }
 
 #[tokio::test]
-async fn prepare_and_spawn_then_commit_transitions_through_starting_to_started() {
+async fn prepare_and_spawn_marks_instance_starting_then_commit_marks_running() {
     let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
     let h = start_harness("test-inst-2");
     push_built_long_running_sensor(&stack, &h.peppy_dirs);
@@ -792,15 +765,25 @@ async fn prepare_and_spawn_then_commit_transitions_through_starting_to_started()
         },
     )
     .await
-    .expect("prepare_and_spawn should succeed on Built entity");
+    .expect("prepare_and_spawn should succeed on Ready entity");
 
-    // Entity is now in Starting (not yet Started).
+    // Entity is in Ready with the new instance in Starting state.
     {
         let guard = handle.read().expect("entity poisoned");
         assert!(
-            matches!(guard.stage(), NodeStage::Starting { .. }),
-            "entity should be in Starting after prepare_and_spawn, got {:?}",
+            matches!(guard.stage(), NodeStage::Ready { .. }),
+            "entity should remain in Ready during prepare_and_spawn, got {:?}",
             guard.stage()
+        );
+        let inst = guard
+            .instances()
+            .iter()
+            .find(|i| i.instance_id() == &h.instance_id)
+            .expect("just-registered instance should be present");
+        assert_eq!(
+            inst.state(),
+            InstanceState::Starting,
+            "instance should be in Starting state until commit_started runs"
         );
     }
 
@@ -810,19 +793,20 @@ async fn prepare_and_spawn_then_commit_transitions_through_starting_to_started()
     let returned_pid =
         NodeEntity::commit_started(&handle, child, started_ctx, h.instance_id.clone())
             .await
-            .expect("commit_started should succeed on Starting entity");
+            .expect("commit_started should succeed");
     assert_eq!(returned_pid, pid);
 
-    // Entity is now in Started with one instance.
+    // Entity is still in Ready, but the instance is now Running.
     {
         let guard = handle.read().expect("entity poisoned");
         match guard.stage() {
-            NodeStage::Started { instances, .. } => {
+            NodeStage::Ready { instances, .. } => {
                 assert_eq!(instances.len(), 1);
                 assert_eq!(instances[0].instance_id(), &h.instance_id);
                 assert_eq!(instances[0].pid(), Some(pid));
+                assert_eq!(instances[0].state(), InstanceState::Running);
             }
-            other => panic!("expected Started, got {:?}", other),
+            other => panic!("expected Ready, got {:?}", other),
         }
     }
 
@@ -839,7 +823,7 @@ async fn prepare_and_spawn_then_commit_transitions_through_starting_to_started()
 }
 
 #[tokio::test]
-async fn abort_started_rolls_back_to_built() {
+async fn abort_started_removes_starting_instance_and_kills_child() {
     let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
     let h = start_harness("test-inst-3");
     push_built_long_running_sensor(&stack, &h.peppy_dirs);
@@ -878,13 +862,18 @@ async fn abort_started_rolls_back_to_built() {
         msg
     );
 
-    // Entity rolled back to Built (not Starting).
+    // Entity is still in Ready, but the Starting instance was removed.
     {
         let guard = handle.read().expect("entity poisoned");
         assert!(
-            matches!(guard.stage(), NodeStage::Built { .. }),
-            "entity should be in Built after abort, got {:?}",
+            matches!(guard.stage(), NodeStage::Ready { .. }),
+            "entity should remain in Ready after abort, got {:?}",
             guard.stage()
+        );
+        assert!(
+            guard.instances().is_empty(),
+            "the in-flight Starting instance should have been removed, got {:?}",
+            guard.instances()
         );
     }
 
@@ -906,40 +895,30 @@ async fn abort_started_rolls_back_to_built() {
 }
 
 #[tokio::test]
-async fn prepare_and_spawn_starts_additional_instance_from_started() {
+async fn prepare_and_spawn_starts_additional_instance_alongside_existing() {
     // This is the multi-instance launch case: a node is already running and
     // the daemon launches a *second* instance of the same node. The entity
-    // must transition Started → Starting (carrying the existing instances
-    // forward) → Started [existing..., new].
+    // stays in Ready throughout; the new instance is appended to the
+    // existing instances list, in Starting state, and flipped to Running by
+    // commit_started.
     let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
     let h = start_harness("test-inst-second");
     push_built_long_running_sensor(&stack, &h.peppy_dirs);
     let handle = stack.find("sensor", "1.0.0").expect("entity should exist");
 
-    // Pre-populate the entity with one running instance via __test_set_stage.
+    // Pre-populate the entity with one running instance via __test_stage_mut.
     let existing_id = Name::new("existing-inst").unwrap();
     let existing_pid = 99999u32; // fake PID — never actually killed
     {
-        let guard = handle.read().expect("entity poisoned");
-        let (config_path, artifact_path) = match guard.stage() {
-            NodeStage::Built {
-                config_path,
-                artifact_path,
-            } => (config_path.clone(), artifact_path.clone()),
-            other => panic!("expected Built, got {:?}", other),
+        let mut guard = handle.write().expect("entity poisoned");
+        let NodeStage::Ready { instances, .. } = guard.__test_stage_mut() else {
+            panic!("expected Ready");
         };
-        drop(guard);
-        handle
-            .write()
-            .expect("entity poisoned")
-            .__test_set_stage(NodeStage::Started {
-                config_path,
-                artifact_path,
-                instances: vec![TrackedNodeInstance::new(
-                    existing_id.clone(),
-                    Some(existing_pid),
-                )],
-            });
+        instances.push(TrackedNodeInstance::new(
+            existing_id.clone(),
+            Some(existing_pid),
+            InstanceState::Running,
+        ));
     }
 
     // Now spawn a second instance via the regular start API.
@@ -958,23 +937,29 @@ async fn prepare_and_spawn_starts_additional_instance_from_started() {
         },
     )
     .await
-    .expect("prepare_and_spawn should succeed on Started entity");
+    .expect("prepare_and_spawn should succeed on Ready entity with existing instances");
 
-    // While in Starting, the existing instance is still visible to observers.
+    // Entity is still in Ready. Both instances visible: existing Running
+    // and new Starting.
     {
         let guard = handle.read().expect("entity poisoned");
         assert!(
-            matches!(guard.stage(), NodeStage::Starting { .. }),
-            "expected Starting, got {:?}",
+            matches!(guard.stage(), NodeStage::Ready { .. }),
+            "expected Ready, got {:?}",
             guard.stage()
         );
         let visible = guard.instances();
-        assert_eq!(
-            visible.len(),
-            1,
-            "the prior instance should still be visible during Starting"
-        );
-        assert_eq!(visible[0].instance_id(), &existing_id);
+        assert_eq!(visible.len(), 2, "both instances should be visible");
+        let existing = visible
+            .iter()
+            .find(|i| i.instance_id() == &existing_id)
+            .expect("existing instance still present");
+        assert_eq!(existing.state(), InstanceState::Running);
+        let new_inst = visible
+            .iter()
+            .find(|i| i.instance_id() == &h.instance_id)
+            .expect("new instance present");
+        assert_eq!(new_inst.state(), InstanceState::Starting);
     }
 
     let new_pid = child.id().expect("child has pid");
@@ -984,17 +969,22 @@ async fn prepare_and_spawn_starts_additional_instance_from_started() {
             .expect("commit_started should succeed");
     assert_eq!(returned_pid, new_pid);
 
-    // Entity is now in Started with BOTH instances.
+    // After commit, both instances are Running.
     {
         let guard = handle.read().expect("entity poisoned");
         match guard.stage() {
-            NodeStage::Started { instances, .. } => {
+            NodeStage::Ready { instances, .. } => {
                 assert_eq!(instances.len(), 2, "should have both instances");
-                assert_eq!(instances[0].instance_id(), &existing_id);
-                assert_eq!(instances[1].instance_id(), &h.instance_id);
-                assert_eq!(instances[1].pid(), Some(new_pid));
+                for inst in instances {
+                    assert_eq!(inst.state(), InstanceState::Running);
+                }
+                let new_inst = instances
+                    .iter()
+                    .find(|i| i.instance_id() == &h.instance_id)
+                    .unwrap();
+                assert_eq!(new_inst.pid(), Some(new_pid));
             }
-            other => panic!("expected Started, got {:?}", other),
+            other => panic!("expected Ready, got {:?}", other),
         }
     }
 
@@ -1011,33 +1001,27 @@ async fn prepare_and_spawn_starts_additional_instance_from_started() {
 }
 
 #[tokio::test]
-async fn prepare_and_spawn_rejects_duplicate_instance_id_from_started() {
-    // Even when an entity is in Started, prepare_and_spawn must reject an
-    // instance_id that's already tracked, *before* spawning anything.
+async fn prepare_and_spawn_rejects_duplicate_instance_id_when_running_already_present() {
+    // prepare_and_spawn must reject an instance_id that's already tracked,
+    // *before* spawning anything. The check is atomic with the append under
+    // the same write lock.
     let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
     let h = start_harness("dup-inst");
     push_built_long_running_sensor(&stack, &h.peppy_dirs);
     let handle = stack.find("sensor", "1.0.0").expect("entity should exist");
 
-    // Inject Started with an instance whose id collides with the harness id.
-    let (config_path, artifact_path) = {
-        let guard = handle.read().expect("entity poisoned");
-        match guard.stage() {
-            NodeStage::Built {
-                config_path,
-                artifact_path,
-            } => (config_path.clone(), artifact_path.clone()),
-            other => panic!("expected Built, got {:?}", other),
-        }
-    };
-    handle
-        .write()
-        .expect("entity poisoned")
-        .__test_set_stage(NodeStage::Started {
-            config_path: config_path.clone(),
-            artifact_path: artifact_path.clone(),
-            instances: vec![TrackedNodeInstance::new(h.instance_id.clone(), Some(1))],
-        });
+    // Append a Running instance whose id collides with the harness id.
+    {
+        let mut guard = handle.write().expect("entity poisoned");
+        let NodeStage::Ready { instances, .. } = guard.__test_stage_mut() else {
+            panic!("expected Ready");
+        };
+        instances.push(TrackedNodeInstance::new(
+            h.instance_id.clone(),
+            Some(1),
+            InstanceState::Running,
+        ));
+    }
 
     let err = NodeEntity::prepare_and_spawn(
         &handle,
@@ -1063,15 +1047,16 @@ async fn prepare_and_spawn_rejects_duplicate_instance_id_from_started() {
         other => panic!("expected DuplicateInstanceId, got {:?}", other),
     }
 
-    // The entity remained in Started with the same instance — no rollback,
-    // no Starting transition.
+    // The entity remained in Ready with exactly the original instance —
+    // no Starting instance was registered.
     let guard = handle.read().expect("entity poisoned");
     match guard.stage() {
-        NodeStage::Started { instances, .. } => {
+        NodeStage::Ready { instances, .. } => {
             assert_eq!(instances.len(), 1);
             assert_eq!(instances[0].instance_id(), &h.instance_id);
+            assert_eq!(instances[0].state(), InstanceState::Running);
         }
-        other => panic!("expected Started, got {:?}", other),
+        other => panic!("expected Ready, got {:?}", other),
     }
     drop(h.peppy_root);
 }
@@ -1144,51 +1129,41 @@ mod backwards_transitions_are_rejected {
                 config_path: PathBuf::from("/tmp/sensor"),
             },
         );
-        assert_rejected_to(run_build(&handle).await, "Building", "Built");
+        assert_rejected_to(run_build(&handle).await, "Building", "Ready");
     }
 
     #[tokio::test]
-    async fn build_rejected_from_built() {
+    async fn build_rejected_from_ready_empty() {
+        // Ready with no instances — equivalent to the old `Built` case.
         let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
         let handle = make_entity_in(
             &stack,
-            NodeStage::Built {
+            NodeStage::Ready {
                 config_path: PathBuf::from("/tmp/sensor"),
                 artifact_path: PathBuf::from("/tmp/sensor.sif"),
+                instances: vec![],
             },
         );
-        assert_rejected_to(run_build(&handle).await, "Built", "Built");
+        assert_rejected_to(run_build(&handle).await, "Ready", "Ready");
     }
 
     #[tokio::test]
-    async fn build_rejected_from_starting() {
+    async fn build_rejected_from_ready_with_instances() {
+        // Ready with one Running instance — equivalent to the old `Started` case.
         let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
         let handle = make_entity_in(
             &stack,
-            NodeStage::Starting {
-                config_path: PathBuf::from("/tmp/sensor"),
-                artifact_path: PathBuf::from("/tmp/sensor.sif"),
-                prior_instances: vec![],
-            },
-        );
-        assert_rejected_to(run_build(&handle).await, "Starting", "Built");
-    }
-
-    #[tokio::test]
-    async fn build_rejected_from_started() {
-        let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
-        let handle = make_entity_in(
-            &stack,
-            NodeStage::Started {
+            NodeStage::Ready {
                 config_path: PathBuf::from("/tmp/sensor"),
                 artifact_path: PathBuf::from("/tmp/sensor.sif"),
                 instances: vec![TrackedNodeInstance::new(
                     Name::new("inst").unwrap(),
                     Some(1),
+                    InstanceState::Running,
                 )],
             },
         );
-        assert_rejected_to(run_build(&handle).await, "Started", "Built");
+        assert_rejected_to(run_build(&handle).await, "Ready", "Ready");
     }
 
     async fn run_prepare_and_spawn(
@@ -1228,74 +1203,25 @@ mod backwards_transitions_are_rejected {
         match run_prepare_and_spawn(&handle).await {
             Err(NodeStackError::InvalidStageTransition { from, to, .. }) => {
                 assert_eq!(from, "Building");
-                assert_eq!(to, "Started");
+                assert_eq!(to, "Ready");
             }
             other => panic!("expected InvalidStageTransition, got {:?}", other),
         }
     }
 
     #[tokio::test]
-    async fn prepare_and_spawn_rejected_from_starting() {
+    async fn prepare_and_spawn_rejected_from_added() {
         let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
         let handle = make_entity_in(
             &stack,
-            NodeStage::Starting {
+            NodeStage::Added {
                 config_path: PathBuf::from("/tmp/sensor"),
-                artifact_path: PathBuf::from("/tmp/sensor.sif"),
-                prior_instances: vec![],
             },
         );
         match run_prepare_and_spawn(&handle).await {
             Err(NodeStackError::InvalidStageTransition { from, to, .. }) => {
-                assert_eq!(from, "Starting");
-                assert_eq!(to, "Started");
-            }
-            other => panic!("expected InvalidStageTransition, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn start_instance_rejected_from_building_and_starting() {
-        let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
-        let handle = make_entity_in(
-            &stack,
-            NodeStage::Building {
-                config_path: PathBuf::from("/tmp/sensor"),
-            },
-        );
-        let inst = TrackedNodeInstance::new(Name::new("a").unwrap(), Some(1));
-        let err = handle
-            .write()
-            .expect("entity poisoned")
-            .start_instance(inst)
-            .expect_err("start_instance from Building should fail");
-        match err {
-            NodeStackError::InvalidStageTransition { from, to, .. } => {
-                assert_eq!(from, "Building");
-                assert_eq!(to, "Started");
-            }
-            other => panic!("expected InvalidStageTransition, got {:?}", other),
-        }
-
-        // Switch the same entity to Starting and try again.
-        handle
-            .write()
-            .expect("entity poisoned")
-            .__test_set_stage(NodeStage::Starting {
-                config_path: PathBuf::from("/tmp/sensor"),
-                artifact_path: PathBuf::from("/tmp/sensor.sif"),
-                prior_instances: vec![],
-            });
-        let inst = TrackedNodeInstance::new(Name::new("b").unwrap(), Some(2));
-        let err = handle
-            .write()
-            .expect("entity poisoned")
-            .start_instance(inst)
-            .expect_err("start_instance from Starting should fail");
-        match err {
-            NodeStackError::InvalidStageTransition { from, to, .. } => {
-                assert_eq!(from, "Starting");
-                assert_eq!(to, "Started");
+                assert_eq!(from, "Added");
+                assert_eq!(to, "Ready");
             }
             other => panic!("expected InvalidStageTransition, got {:?}", other),
         }

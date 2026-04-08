@@ -7,7 +7,7 @@ mod node_stack;
 pub use error::Error as NodeStackError;
 
 pub use node_stack::{
-    BuildContext, DependencySpec, EntityHandle, NodeEntity, NodeStack, NodeStage,
+    BuildContext, DependencySpec, EntityHandle, InstanceState, NodeEntity, NodeStack, NodeStage,
     SerializedNodeGraph, StartContext, StartedInstanceCtx, TrackedNodeInstance,
     collect_dependency_specs, extract_tar_zst, validate_dependency_specs,
 };

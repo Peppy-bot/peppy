@@ -83,23 +83,36 @@ impl From<&NodeEntity> for SerializedNode {
             tag: entity.config().manifest.tag.clone(),
             config_path: entity.config_path().display().to_string(),
             artifact_path: entity.artifact_path().map(|p| p.display().to_string()),
+            // Externally visible instance ids — only `Running` instances.
+            // In-flight `Starting` instances are intentionally hidden from
+            // CLI/dashboard consumers because the externally-visible meaning
+            // of "instance_ids" is "what's currently running and reachable".
+            // Exposing Starting instances here would let external observers
+            // try to interact with something that hasn't subscribed to
+            // messenger services yet.
             instance_ids: entity
                 .instances()
                 .iter()
+                .filter(|i| i.state() == InstanceState::Running)
                 .map(|i| i.instance_id().as_str().to_string())
                 .collect(),
         }
     }
 }
 
-/// Lifecycle stage of a `NodeEntity`. Each variant carries every piece of state
-/// reached so far — once an entity progresses past `Added`, the original
-/// `config_path` is still available; once past `Built`, the `artifact_path` is too.
+/// Lifecycle stage of a `NodeEntity`. Describes *artifact readiness only* —
+/// per-instance state (Starting/Running) lives on each
+/// [`TrackedNodeInstance`] inside `Ready.instances`.
 ///
-/// `Building` and `Starting` are explicit "in progress" stages that act as the
-/// concurrency barrier: a second concurrent `build` (or `prepare_and_spawn`) on
-/// the same entity sees these stages and is rejected immediately, with no
-/// queueing or async wait.
+/// - `Added` — config registered, no artifact, no instances.
+/// - `Building` — `build()` is running its I/O. Acts as the concurrency
+///   barrier: a second concurrent `build()` on the same entity sees this
+///   stage and is rejected immediately with no queueing.
+/// - `Ready` — artifact is on disk. The instances list may be empty (no
+///   instances spawned yet, equivalent to the old `Built` stage), contain
+///   only `Running` instances (equivalent to the old `Started` stage), or
+///   contain a mix of `Starting` and `Running` instances (in-flight
+///   `prepare_and_spawn` calls coexisting with already-running instances).
 #[derive(Debug, Clone)]
 pub enum NodeStage {
     Added {
@@ -108,23 +121,7 @@ pub enum NodeStage {
     Building {
         config_path: PathBuf,
     },
-    Built {
-        config_path: PathBuf,
-        artifact_path: PathBuf,
-    },
-    Starting {
-        config_path: PathBuf,
-        artifact_path: PathBuf,
-        /// Instances that already existed before `prepare_and_spawn` was
-        /// called. Empty when transitioning from `Built`; non-empty when
-        /// transitioning from `Started` (i.e. starting a *second* / Nth
-        /// instance of an already-running node). On commit, the new instance
-        /// is appended to this list. On abort, the entity rolls back to
-        /// `Built` (if empty) or `Started` (if non-empty), preserving the
-        /// previously-running instances.
-        prior_instances: Vec<TrackedNodeInstance>,
-    },
-    Started {
+    Ready {
         config_path: PathBuf,
         artifact_path: PathBuf,
         instances: Vec<TrackedNodeInstance>,
@@ -136,9 +133,7 @@ impl NodeStage {
         match self {
             NodeStage::Added { .. } => "Added",
             NodeStage::Building { .. } => "Building",
-            NodeStage::Built { .. } => "Built",
-            NodeStage::Starting { .. } => "Starting",
-            NodeStage::Started { .. } => "Started",
+            NodeStage::Ready { .. } => "Ready",
         }
     }
 }
@@ -254,35 +249,27 @@ impl NodeEntity {
         match &self.stage {
             NodeStage::Added { config_path } => config_path,
             NodeStage::Building { config_path } => config_path,
-            NodeStage::Built { config_path, .. } => config_path,
-            NodeStage::Starting { config_path, .. } => config_path,
-            NodeStage::Started { config_path, .. } => config_path,
+            NodeStage::Ready { config_path, .. } => config_path,
         }
     }
 
     /// Returns the path to the built `.sif`/archive in
-    /// `~/.peppy/added_nodes`. `None` until the entity has reached `Built`.
+    /// `~/.peppy/added_nodes`. `None` until the entity has reached `Ready`.
     pub fn artifact_path(&self) -> Option<&Path> {
         match &self.stage {
             NodeStage::Added { .. } | NodeStage::Building { .. } => None,
-            NodeStage::Built { artifact_path, .. } => Some(artifact_path),
-            NodeStage::Starting { artifact_path, .. } => Some(artifact_path),
-            NodeStage::Started { artifact_path, .. } => Some(artifact_path),
+            NodeStage::Ready { artifact_path, .. } => Some(artifact_path),
         }
     }
 
-    /// Returns the running instances of this entity. For `Started` returns
-    /// the registered instances. For `Starting` returns the *prior* instances
-    /// (those that were already running before the in-flight start) so that
-    /// external observers don't see existing instances disappear during the
-    /// brief window where a new instance is being spawned. Returns an empty
-    /// slice for `Added`, `Building`, and `Built`.
+    /// Returns the tracked instances of this entity, including both
+    /// `Starting` (in-flight) and `Running` (committed) instances. Observers
+    /// that only care about fully-started instances should filter by
+    /// [`TrackedNodeInstance::state`]. Returns an empty slice for `Added`
+    /// and `Building`.
     pub fn instances(&self) -> &[TrackedNodeInstance] {
         match &self.stage {
-            NodeStage::Started { instances, .. } => instances,
-            NodeStage::Starting {
-                prior_instances, ..
-            } => prior_instances,
+            NodeStage::Ready { instances, .. } => instances,
             _ => &[],
         }
     }
@@ -317,7 +304,7 @@ impl NodeEntity {
                         node_name: guard.config.manifest.name.as_str().to_owned(),
                         node_tag: guard.config.manifest.tag.clone(),
                         from: other.name(),
-                        to: "Built",
+                        to: "Ready",
                     });
                 }
             };
@@ -399,7 +386,7 @@ impl NodeEntity {
                 node_name,
                 node_tag,
                 from: guard.stage.name(),
-                to: "Built",
+                to: "Ready",
             });
         }
 
@@ -432,9 +419,10 @@ impl NodeEntity {
                     })?
                 };
 
-                guard.stage = NodeStage::Built {
+                guard.stage = NodeStage::Ready {
                     config_path,
                     artifact_path,
+                    instances: Vec::new(),
                 };
                 Ok(())
             }
@@ -446,146 +434,100 @@ impl NodeEntity {
         }
     }
 
-    /// Best-effort rollback from `Starting`. Used by both [`prepare_and_spawn`]
-    /// (on I/O failure during phases 2–4) and [`abort_started`] (on
-    /// caller-side ready/health failure).
+    /// Best-effort removal of an in-flight `Starting` instance. Used by
+    /// [`prepare_and_spawn`] (on I/O failure during the spawn/wire phases)
+    /// and [`abort_started`] (on caller-side ready/health failure).
     ///
-    /// If the `Starting` stage carries no `prior_instances`, rolls back to
-    /// `Built`. If it carries `prior_instances` (i.e. we were starting an
-    /// additional instance of an already-running node), rolls back to
-    /// `Started` with those prior instances preserved — the existing
-    /// instances are unaffected by the failed start of the new one.
-    ///
-    /// Skips the rollback if a concurrent `push_config` replaced the entity
-    /// wholesale — the new state takes precedence in that case.
-    fn try_rollback_starting(handle: &Arc<RwLock<NodeEntity>>) {
+    /// Looks up the instance by id and removes it from the `Ready.instances`
+    /// list. Silent no-op if the entity is no longer in `Ready` (concurrent
+    /// `push_config` replaced it) or if the instance is missing (already
+    /// removed). Also a no-op if the instance is in `Running` state — that
+    /// case shouldn't happen in practice (we only remove things we just
+    /// inserted as `Starting`), but defensively we don't touch committed
+    /// instances.
+    fn remove_starting_instance(handle: &Arc<RwLock<NodeEntity>>, instance_id: &Name) {
         let mut guard = handle.write().expect("entity poisoned");
-        if !matches!(guard.stage, NodeStage::Starting { .. }) {
+        let NodeStage::Ready { instances, .. } = &mut guard.stage else {
             return;
-        }
-        let placeholder = NodeStage::Added {
-            config_path: PathBuf::new(),
         };
-        if let NodeStage::Starting {
-            config_path,
-            artifact_path,
-            prior_instances,
-        } = std::mem::replace(&mut guard.stage, placeholder)
-        {
-            guard.stage = if prior_instances.is_empty() {
-                NodeStage::Built {
-                    config_path,
-                    artifact_path,
-                }
-            } else {
-                NodeStage::Started {
-                    config_path,
-                    artifact_path,
-                    instances: prior_instances,
-                }
-            };
+        if let Some(pos) = instances.iter().position(|inst| {
+            inst.instance_id() == instance_id && inst.state() == InstanceState::Starting
+        }) {
+            instances.remove(pos);
         }
     }
 
-    /// Phase 1 of the start lifecycle: validates the entity is in `Built` or
-    /// `Started`, transitions it to `Starting`, prepares the instance
+    /// Phase 1 of the start lifecycle: validates the entity is in `Ready`,
+    /// atomically registers a new `Starting` instance, prepares the instance
     /// directory, spawns the child process, and wires up output streaming.
     /// Returns the spawned `Child` along with a [`StartedInstanceCtx`] that
     /// the caller must hand back to either [`NodeEntity::commit_started`]
     /// (success) or [`NodeEntity::abort_started`] (failure).
     ///
-    /// Allowed source stages:
-    /// - `Built` → first instance of this node (Starting carries no prior
-    ///   instances).
-    /// - `Started` → additional (Nth) instance of an already-running node
-    ///   (Starting carries the existing instances forward, so they remain
-    ///   visible to external observers via [`Self::instances`] and survive a
-    ///   failed start of the new instance).
+    /// Concurrency: parallel `prepare_and_spawn` calls with **different**
+    /// `instance_id`s on the same entity are allowed and run independently.
+    /// Each one atomically appends its own `Starting` instance under the
+    /// write lock, then runs its I/O without holding the lock. The instances
+    /// list is the only shared state and it's updated under the lock.
     ///
-    /// Concurrency: a second concurrent `prepare_and_spawn` on the same
-    /// entity observes the `Starting` stage and is rejected immediately with
-    /// [`Error::InvalidStageTransition`]. Only one start can be in flight
-    /// at a time per entity, regardless of how many instances are already
-    /// running.
+    /// Parallel calls with the **same** `instance_id` are rejected via the
+    /// duplicate-id check, which happens under the same write lock as the
+    /// append (so it is atomic with respect to other parallel callers).
     ///
-    /// Returns [`Error::DuplicateInstanceId`] if `ctx.instance_id` is already
-    /// tracked by the entity.
+    /// Returns [`Error::InvalidStageTransition`] if the entity is not in
+    /// `Ready` (e.g. still `Added` or currently `Building`), or
+    /// [`Error::DuplicateInstanceId`] if `ctx.instance_id` is already tracked.
     ///
-    /// On any I/O failure inside this function, the entity is rolled back to
-    /// its prior stage (`Built` or `Started` with the prior instances) before
-    /// returning.
+    /// On any I/O failure inside this function, the just-registered
+    /// `Starting` instance is removed before returning.
     pub async fn prepare_and_spawn(
         handle: &Arc<RwLock<NodeEntity>>,
         ctx: StartContext<'_>,
     ) -> Result<(Child, StartedInstanceCtx)> {
-        // ---- Phase 1: {Built, Started} → Starting, snapshot (brief write lock) ----
+        // ---- Phase 1: register the Starting instance under a brief write lock ----
         let (node_name, node_tag, node_config, artifact_path) = {
             let mut guard = handle.write().expect("entity poisoned");
-            // Move out of the current stage so we can take ownership of its
-            // fields without holding multiple borrows. We swap in a temporary
-            // Added placeholder and either replace it with Starting (success)
-            // or restore the original stage (failure).
-            let placeholder = NodeStage::Added {
-                config_path: PathBuf::new(),
+            let NodeStage::Ready {
+                artifact_path,
+                instances,
+                ..
+            } = &mut guard.stage
+            else {
+                let from = guard.stage.name();
+                return Err(Error::InvalidStageTransition {
+                    node_name: guard.config.manifest.name.as_str().to_owned(),
+                    node_tag: guard.config.manifest.tag.clone(),
+                    from,
+                    to: "Ready",
+                });
             };
-            let original = std::mem::replace(&mut guard.stage, placeholder);
-            let (config_path, artifact_path, prior_instances) = match original {
-                NodeStage::Built {
-                    config_path,
-                    artifact_path,
-                } => (config_path, artifact_path, Vec::new()),
-                NodeStage::Started {
-                    config_path,
-                    artifact_path,
-                    instances,
-                } => {
-                    // Reject duplicate instance ids early — before any I/O.
-                    if instances
-                        .iter()
-                        .any(|inst| inst.instance_id() == ctx.instance_id)
-                    {
-                        let err = Error::DuplicateInstanceId {
-                            instance_id: ctx.instance_id.as_str().to_owned(),
-                            node_name: guard.config.manifest.name.as_str().to_owned(),
-                            node_tag: guard.config.manifest.tag.clone(),
-                        };
-                        // Restore the original stage before returning.
-                        guard.stage = NodeStage::Started {
-                            config_path,
-                            artifact_path,
-                            instances,
-                        };
-                        return Err(err);
-                    }
-                    (config_path, artifact_path, instances)
-                }
-                other => {
-                    let from = other.name();
-                    let err = Error::InvalidStageTransition {
-                        node_name: guard.config.manifest.name.as_str().to_owned(),
-                        node_tag: guard.config.manifest.tag.clone(),
-                        from,
-                        to: "Started",
-                    };
-                    // Restore the original stage before returning.
-                    guard.stage = other;
-                    return Err(err);
-                }
-            };
-            let snapshot = (
+
+            // Reject duplicate instance ids before any I/O. Atomic with the
+            // append below — both happen under this write lock.
+            if instances
+                .iter()
+                .any(|inst| inst.instance_id() == ctx.instance_id)
+            {
+                return Err(Error::DuplicateInstanceId {
+                    instance_id: ctx.instance_id.as_str().to_owned(),
+                    node_name: guard.config.manifest.name.as_str().to_owned(),
+                    node_tag: guard.config.manifest.tag.clone(),
+                });
+            }
+
+            let snapshot_artifact = artifact_path.clone();
+            instances.push(TrackedNodeInstance::new(
+                ctx.instance_id.clone(),
+                None,
+                InstanceState::Starting,
+            ));
+
+            (
                 guard.config.manifest.name.as_str().to_owned(),
                 guard.config.manifest.tag.clone(),
                 guard.config.clone(),
-                artifact_path.clone(),
-            );
-            // Atomic transition into Starting. Any second concurrent call
-            // now sees Starting.
-            guard.stage = NodeStage::Starting {
-                config_path,
-                artifact_path,
-                prior_instances,
-            };
-            snapshot
+                snapshot_artifact,
+            )
         };
 
         // ---- Phase 2/3/4: I/O without any entity lock ----
@@ -599,7 +541,7 @@ impl NodeEntity {
             extract_node_archive(&artifact_path, instance_id_str, ctx.peppy_dirs)
         }
         .map_err(|reason| {
-            Self::try_rollback_starting(handle);
+            Self::remove_starting_instance(handle, ctx.instance_id);
             Error::StartFailed {
                 node_name: node_name.clone(),
                 node_tag: node_tag.clone(),
@@ -640,7 +582,7 @@ impl NodeEntity {
             )
         }
         .map_err(|e| {
-            Self::try_rollback_starting(handle);
+            Self::remove_starting_instance(handle, ctx.instance_id);
             Error::StartFailed {
                 node_name: node_name.clone(),
                 node_tag: node_tag.clone(),
@@ -712,51 +654,58 @@ impl NodeEntity {
         drop(child);
 
         let mut guard = handle.write().expect("entity poisoned");
-        // Verify we're still in Starting (a concurrent push_config could have
-        // replaced the entity), then take ownership of its fields so we can
-        // append the new instance to the prior_instances list.
-        if !matches!(guard.stage, NodeStage::Starting { .. }) {
+        let node_name = guard.config.manifest.name.as_str().to_owned();
+        let node_tag = guard.config.manifest.tag.clone();
+        let NodeStage::Ready { instances, .. } = &mut guard.stage else {
+            // A concurrent push_config replaced the entity. The caller will
+            // see this error and the still-running child is theirs to clean
+            // up; the entity isn't ours to mutate anymore.
+            let from = guard.stage.name();
             return Err(Error::InvalidStageTransition {
-                node_name: guard.config.manifest.name.as_str().to_owned(),
-                node_tag: guard.config.manifest.tag.clone(),
-                from: guard.stage.name(),
-                to: "Started",
+                node_name,
+                node_tag,
+                from,
+                to: "Ready",
+            });
+        };
+
+        // Find the instance by id and flip Starting → Running. If it's
+        // missing or already Running, the caller is in an inconsistent state
+        // (most likely a concurrent abort_started or push_config) — surface
+        // it as an InvalidStageTransition.
+        let Some(inst) = instances
+            .iter_mut()
+            .find(|inst| inst.instance_id() == &instance_id)
+        else {
+            return Err(Error::InvalidStageTransition {
+                node_name,
+                node_tag,
+                from: "missing",
+                to: "Running",
+            });
+        };
+        if inst.state() != InstanceState::Starting {
+            return Err(Error::InvalidStageTransition {
+                node_name,
+                node_tag,
+                from: "Running",
+                to: "Running",
             });
         }
-        let placeholder = NodeStage::Added {
-            config_path: PathBuf::new(),
-        };
-        let (config_path, artifact_path, mut instances) =
-            match std::mem::replace(&mut guard.stage, placeholder) {
-                NodeStage::Starting {
-                    config_path,
-                    artifact_path,
-                    prior_instances,
-                } => (config_path, artifact_path, prior_instances),
-                _ => unreachable!("matched Starting above"),
-            };
-
-        let tracked = TrackedNodeInstance::new(instance_id, Some(pid));
-        instances.push(tracked);
-        guard.stage = NodeStage::Started {
-            config_path,
-            artifact_path,
-            instances,
-        };
+        inst.set_running(Some(pid));
 
         Ok(pid)
     }
 
     /// Phase 2 (failure): kills the spawned child, joins the reader tasks (so
-    /// the stderr buffer flushes), rolls the entity back from `Starting` to
-    /// its prior stage (`Built` if no prior instances, `Started` if there
-    /// were prior instances), and returns a formatted error message
-    /// including a stderr tail.
+    /// the stderr buffer flushes), removes the in-flight `Starting` instance
+    /// from the entity's instances list, and returns a formatted error
+    /// message including a stderr tail.
     ///
     /// If a concurrent `push_config` replaced the entity wholesale while the
-    /// daemon was running its messenger checks, the rollback is silently
-    /// skipped — the new state takes precedence. The child is still killed
-    /// either way.
+    /// daemon was running its messenger checks, the instance removal is
+    /// silently skipped — the new state takes precedence. The child is still
+    /// killed either way.
     pub async fn abort_started(
         handle: &Arc<RwLock<NodeEntity>>,
         child: Child,
@@ -774,9 +723,10 @@ impl NodeEntity {
         )
         .await;
 
-        // Best-effort rollback Starting → Built. Skip if a concurrent
-        // push_config replaced the entity in the meantime.
-        Self::try_rollback_starting(handle);
+        // Best-effort: remove the Starting instance we registered in
+        // prepare_and_spawn. Skip if a concurrent push_config replaced the
+        // entity in the meantime.
+        Self::remove_starting_instance(handle, instance_id);
 
         msg
     }
@@ -795,7 +745,7 @@ impl NodeEntity {
     ) -> Self {
         Self {
             config,
-            stage: NodeStage::Started {
+            stage: NodeStage::Ready {
                 config_path: root_path.clone(),
                 artifact_path: root_path,
                 instances: vec![instance],
@@ -809,12 +759,14 @@ impl NodeEntity {
     ///
     /// Used only by [`crate::node_stack::NodeStack::apply_from`] when cloning
     /// state from another stack at startup, where the artifact already exists
-    /// on disk and the source instances are still tracked. The resulting stage
-    /// is determined by the `(artifact_path, instances)` combination:
+    /// on disk and the source instances are still tracked. The resulting
+    /// stage is determined by the `(artifact_path, instances)` combination:
     ///
     /// - `(None, [])` → `Added`
-    /// - `(Some, [])` → `Built`
-    /// - `(Some, instances)` → `Started`
+    /// - `(Some, [])` → `Ready { instances: [] }`
+    /// - `(Some, instances)` → `Ready { instances }` (callers are responsible
+    ///   for the instances having `state == Running` — this constructor does
+    ///   not enforce it)
     /// - `(None, instances)` → invalid; panics
     pub(crate) fn from_snapshot(
         config: NodeConfig,
@@ -826,13 +778,9 @@ impl NodeEntity {
             (None, true) => NodeStage::Added { config_path },
             (None, false) => unreachable!(
                 "snapshot with instances must have an artifact_path — \
-                 a node cannot be Started without first being Built"
+                 a node cannot have instances without a built artifact"
             ),
-            (Some(artifact_path), true) => NodeStage::Built {
-                config_path,
-                artifact_path,
-            },
-            (Some(artifact_path), false) => NodeStage::Started {
+            (Some(artifact_path), _) => NodeStage::Ready {
                 config_path,
                 artifact_path,
                 instances,
@@ -849,99 +797,56 @@ impl NodeEntity {
         self.stage = stage;
     }
 
-    /// Records a freshly-spawned instance and transitions `Built → Started`
-    /// (or appends to the existing `Started` vec).
-    ///
-    /// Returns [`Error::DuplicateInstanceId`] if the instance id is already
-    /// tracked, or [`Error::InvalidStageTransition`] if the entity has not
-    /// yet been built.
-    pub fn start_instance(&mut self, instance: TrackedNodeInstance) -> Result<()> {
-        match &mut self.stage {
-            NodeStage::Built { .. } => {
-                // Move out of the current stage to take ownership of the paths.
-                let (config_path, artifact_path) = match std::mem::replace(
-                    &mut self.stage,
-                    // Temporary placeholder; immediately overwritten below.
-                    NodeStage::Added {
-                        config_path: PathBuf::new(),
-                    },
-                ) {
-                    NodeStage::Built {
-                        config_path,
-                        artifact_path,
-                    } => (config_path, artifact_path),
-                    _ => unreachable!("matched Built above"),
-                };
-                self.stage = NodeStage::Started {
-                    config_path,
-                    artifact_path,
-                    instances: vec![instance],
-                };
-                Ok(())
-            }
-            NodeStage::Started { instances, .. } => {
-                if instances
-                    .iter()
-                    .any(|inst| inst.instance_id() == instance.instance_id())
-                {
-                    return Err(Error::DuplicateInstanceId {
-                        instance_id: instance.instance_id().as_str().to_owned(),
-                        node_name: self.config.manifest.name.as_str().to_owned(),
-                        node_tag: self.config.manifest.tag.clone(),
-                    });
-                }
-                instances.push(instance);
-                Ok(())
-            }
-            other => Err(Error::InvalidStageTransition {
-                node_name: self.config.manifest.name.as_str().to_owned(),
-                node_tag: self.config.manifest.tag.clone(),
-                from: other.name(),
-                to: "Started",
-            }),
-        }
+    /// Test-only: borrow the stage mutably so test fixtures can append a
+    /// pre-constructed `TrackedNodeInstance` directly into a `Ready`
+    /// entity's instances list. This is the only test backdoor for instance
+    /// manipulation — production code goes through
+    /// `prepare_and_spawn`/`commit_started`/`abort_started`.
+    #[cfg(any(test, feature = "test_helpers"))]
+    pub fn __test_stage_mut(&mut self) -> &mut NodeStage {
+        &mut self.stage
     }
 
-    /// Removes the matching instance from a `Started` entity. If the resulting
-    /// instance vec is empty, the entity falls back to `Built` (preserving
-    /// `config_path` and `artifact_path`).
+    /// Removes a `Running` instance from a `Ready` entity. The entity stays
+    /// in `Ready` regardless of whether the instance list becomes empty.
+    /// `Starting` instances are intentionally left alone — to clean those
+    /// up, the caller must use `abort_started`.
     ///
-    /// Returns `true` if an instance was removed, `false` if the instance id
-    /// was not found or the entity is not in `Started`.
+    /// Returns `true` if a `Running` instance was removed, `false` otherwise
+    /// (instance missing, in `Starting` state, or entity not in `Ready`).
     pub fn stop_instance(&mut self, instance_id: &Name) -> bool {
-        let NodeStage::Started { instances, .. } = &mut self.stage else {
+        let NodeStage::Ready { instances, .. } = &mut self.stage else {
             return false;
         };
-
-        let Some(pos) = instances
-            .iter()
-            .position(|inst| inst.instance_id() == instance_id)
-        else {
+        let Some(pos) = instances.iter().position(|inst| {
+            inst.instance_id() == instance_id && inst.state() == InstanceState::Running
+        }) else {
             return false;
         };
-
         instances.remove(pos);
-
-        if instances.is_empty() {
-            // Transition Started → Built, preserving the paths.
-            let placeholder = NodeStage::Added {
-                config_path: PathBuf::new(),
-            };
-            if let NodeStage::Started {
-                config_path,
-                artifact_path,
-                ..
-            } = std::mem::replace(&mut self.stage, placeholder)
-            {
-                self.stage = NodeStage::Built {
-                    config_path,
-                    artifact_path,
-                };
-            }
-        }
-
         true
     }
+}
+
+/// Per-instance state. Lives on `TrackedNodeInstance` rather than on
+/// `NodeStage` because each instance manages its own lifecycle: starting and
+/// running are properties of *this particular spawn*, not of the parent entity.
+///
+/// The entity-level [`NodeStage`] only describes artifact readiness; once an
+/// entity is in [`NodeStage::Ready`], it can have any combination of
+/// `Starting` and `Running` instances in its instances list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InstanceState {
+    /// `prepare_and_spawn` has registered the instance and the child process
+    /// is running, but `commit_started` has not yet been called (the daemon
+    /// is still running its messenger-bound ready/health checks). Visible to
+    /// observers via `entity.instances()` so they can see "this instance is
+    /// currently starting" — but `find_by_instance_id` skips it because
+    /// messenger services like `SHUTDOWN_SERVICE` haven't subscribed yet.
+    Starting,
+    /// `commit_started` has flipped the state. The instance is fully
+    /// registered and reachable through messenger services.
+    Running,
 }
 
 #[derive(Debug, Clone)]
@@ -950,11 +855,21 @@ pub struct TrackedNodeInstance {
     /// Process ID of the running instance. This is `None` for instances running on remote
     /// locations (e.g., embedded systems) where a local PID is not available.
     pid: Option<u32>,
+    state: InstanceState,
 }
 
 impl TrackedNodeInstance {
-    pub fn new(instance_id: Name, pid: Option<u32>) -> Self {
-        Self { instance_id, pid }
+    /// Constructs a new tracked instance. The `state` must be supplied
+    /// explicitly — there is no default. Callers that have just spawned a
+    /// child process and have not yet committed it pass `InstanceState::Starting`;
+    /// callers that are reconstructing an entity from a snapshot or test
+    /// fixture pass `InstanceState::Running`.
+    pub fn new(instance_id: Name, pid: Option<u32>, state: InstanceState) -> Self {
+        Self {
+            instance_id,
+            pid,
+            state,
+        }
     }
 
     pub fn instance_id(&self) -> &Name {
@@ -963,6 +878,17 @@ impl TrackedNodeInstance {
 
     pub fn pid(&self) -> Option<u32> {
         self.pid
+    }
+
+    pub fn state(&self) -> InstanceState {
+        self.state
+    }
+
+    /// Same-module mutator used by `NodeEntity::commit_started` to flip a
+    /// `Starting` instance to `Running` and record its pid. Not exported.
+    fn set_running(&mut self, pid: Option<u32>) {
+        self.state = InstanceState::Running;
+        self.pid = pid;
     }
 }
 

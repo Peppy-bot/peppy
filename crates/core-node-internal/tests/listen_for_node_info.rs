@@ -11,7 +11,7 @@ use config::node::{Name, PeppygenLanguage};
 use config::runtime::{NodeInstance, RuntimeConfig};
 use config::test_helpers;
 use core_node::encoding::{NodeInfoRequest, NodeInfoResponse, NodeSource};
-use node_stack::{NodeStage, TrackedNodeInstance};
+use node_stack::{InstanceState, NodeStage, TrackedNodeInstance};
 /// Test helper: marks an entity at `(name, tag)` as `Built` with a synthetic
 /// built-artifact file inside an ephemeral tempdir, then registers a single
 /// tracked instance. Used in tests that push a config directly (without going
@@ -40,16 +40,15 @@ fn force_built_and_start_instance(
     handle
         .write()
         .expect("entity poisoned")
-        .__test_set_stage(NodeStage::Built {
+        .__test_set_stage(NodeStage::Ready {
             config_path,
             artifact_path,
+            instances: vec![TrackedNodeInstance::new(
+                instance_id.clone(),
+                None,
+                InstanceState::Running,
+            )],
         });
-    let instance = TrackedNodeInstance::new(instance_id.clone(), None);
-    handle
-        .write()
-        .expect("entity poisoned")
-        .start_instance(instance)
-        .expect("entity should be Built");
     artifact_dir
 }
 use core_node::names;

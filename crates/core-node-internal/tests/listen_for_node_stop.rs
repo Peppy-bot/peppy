@@ -6,7 +6,7 @@ use common::{
 };
 use config::node::Name;
 use core_node::encoding::NodeStopRequest;
-use node_stack::TrackedNodeInstance;
+use node_stack::{InstanceState, NodeStage, TrackedNodeInstance};
 use peppylib::messaging::MessengerHandle;
 use peppylib::services::shutdown::listen_for_shutdown;
 use std::process::{Command, Stdio};
@@ -85,12 +85,13 @@ async fn listen_for_node_stop_success() {
         let handle = node_stack
             .find(TARGET_NODE_NAME, TARGET_NODE_TAG)
             .expect("entity should exist");
-        let instance = TrackedNodeInstance::new(instance_id.clone(), Some(pid));
-        handle
-            .write()
-            .expect("entity poisoned")
-            .start_instance(instance)
-            .expect("entity should be Built");
+        let instance =
+            TrackedNodeInstance::new(instance_id.clone(), Some(pid), InstanceState::Running);
+        let mut guard = handle.write().expect("entity poisoned");
+        let NodeStage::Ready { instances, .. } = guard.__test_stage_mut() else {
+            panic!("entity should be in Ready stage");
+        };
+        instances.push(instance);
     }
 
     // Verify the process is running before we try to stop it

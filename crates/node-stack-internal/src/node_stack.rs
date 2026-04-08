@@ -4,8 +4,8 @@ mod start_steps;
 mod validation;
 
 pub use entity::{
-    BuildContext, DependencySpec, NodeEntity, NodeStage, SerializedNodeGraph, StartContext,
-    StartedInstanceCtx, TrackedNodeInstance,
+    BuildContext, DependencySpec, InstanceState, NodeEntity, NodeStage, SerializedNodeGraph,
+    StartContext, StartedInstanceCtx, TrackedNodeInstance,
 };
 pub use start_steps::extract_tar_zst;
 pub use validation::{collect_dependency_specs, validate_dependency_specs};
@@ -227,13 +227,21 @@ impl NodeStackInner {
             .cloned()
     }
 
+    /// Looks up a tracked instance by id across all entities. **Only matches
+    /// `Running` instances** — `Starting` instances are skipped because they
+    /// haven't subscribed to messenger services yet, so a handle to one would
+    /// let callers reach into something that can't respond. Callers wanting
+    /// to clean up an in-flight start should use `NodeEntity::abort_started`
+    /// instead.
     fn find_by_instance_id(&self, instance_id: &Name) -> Option<TrackedNodeInstance> {
         for handle in self.graph.node_weights() {
             let guard = handle.read().expect("entity poisoned");
             if let Some(found) = guard
                 .instances()
                 .iter()
-                .find(|inst| inst.instance_id() == instance_id)
+                .find(|inst| {
+                    inst.instance_id() == instance_id && inst.state() == InstanceState::Running
+                })
                 .cloned()
             {
                 return Some(found);
@@ -242,14 +250,15 @@ impl NodeStackInner {
         None
     }
 
+    /// Same filtering rule as [`find_by_instance_id`]: only entities
+    /// containing a `Running` instance with the given id are returned.
     fn find_entity_by_instance_id(&self, instance_id: &Name) -> Option<EntityHandle> {
         for handle in self.graph.node_weights() {
             let has_instance = {
                 let guard = handle.read().expect("entity poisoned");
-                guard
-                    .instances()
-                    .iter()
-                    .any(|inst| inst.instance_id() == instance_id)
+                guard.instances().iter().any(|inst| {
+                    inst.instance_id() == instance_id && inst.state() == InstanceState::Running
+                })
             };
             if has_instance {
                 return Some(handle.clone());
@@ -472,7 +481,10 @@ impl NodeStack {
     /// If `instance_id` is `None`, a random instance ID will be generated for
     /// the root node. The root entity's lifecycle is degenerate: it represents
     /// the running daemon itself and has no buildable artifact, so it is
-    /// constructed directly in `Started` via [`NodeEntity::root`].
+    /// constructed directly in `Ready { instances: [Running] }` via
+    /// [`NodeEntity::root`]. The root instance is in `Running` state because
+    /// the daemon process is already alive — there's no spawn-then-commit to
+    /// model.
     pub fn new<P: Into<PathBuf>>(
         root_config: NodeConfig,
         instance_id: Option<Name>,
@@ -482,7 +494,11 @@ impl NodeStack {
         let instance_id = instance_id.unwrap_or_else(|| {
             Name::new(get_random(rng())).expect("random name generation failed")
         });
-        let instance = TrackedNodeInstance::new(instance_id, Some(std::process::id()));
+        let instance = TrackedNodeInstance::new(
+            instance_id,
+            Some(std::process::id()),
+            InstanceState::Running,
+        );
         let root_entity = NodeEntity::root(root_config, root_path, instance);
         Self {
             shared: Arc::new(RwLock::new(NodeStackInner::new(root_entity))),
