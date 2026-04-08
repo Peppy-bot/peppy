@@ -376,7 +376,13 @@ impl NodeEntity {
     /// Returns [`Error::InvalidStageTransition`] if the entity is not in
     /// [`NodeStage::Added`], or [`Error::BuildFailed`] if the underlying
     /// `add_cmd` / apptainer / archive step fails.
-    pub async fn build(handle: &Arc<RwLock<NodeEntity>>, ctx: BuildContext<'_>) -> Result<()> {
+    /// Drives the entity from `Added` to `Ready`. On success, returns the
+    /// `PathBuf` of the artifact freshly installed in storage; the caller
+    /// MUST use this returned path rather than re-reading
+    /// `entity.artifact_path()` afterwards, because a concurrent
+    /// `push_config` could replace the entity in-place between the build
+    /// completing and the re-read.
+    pub async fn build(handle: &Arc<RwLock<NodeEntity>>, ctx: BuildContext<'_>) -> Result<PathBuf> {
         // ---- Phase 1: Added → Building, snapshot inputs (brief write lock) ----
         let (node_name, node_tag, config_path, container_opt, add_cmd, build_generation) = {
             let mut guard = handle.write().expect("entity poisoned");
@@ -500,10 +506,10 @@ impl NodeEntity {
 
                 guard.stage = NodeStage::Ready {
                     config_path,
-                    artifact_path,
+                    artifact_path: artifact_path.clone(),
                     instances: Vec::new(),
                 };
-                Ok(())
+                Ok(artifact_path)
             }
             Err(e) => {
                 // Leave the entity in `Building`. The caller owns cleanup

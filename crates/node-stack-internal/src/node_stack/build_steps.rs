@@ -192,6 +192,14 @@ pub(super) struct ContainerBuildInputs<'a> {
 pub(super) async fn build_container_image(
     inputs: ContainerBuildInputs<'_>,
 ) -> std::result::Result<(), String> {
+    // Validate the tag *before* it gets spliced into the SIF filename and
+    // joined onto the working dir. Without this, a tag like `../evil` would
+    // make `output_path` escape `working_dir` and apptainer would happily
+    // write the image outside the build sandbox. The downstream
+    // `move_sif_to_storage` already calls `validate_node_tag`, but only
+    // *after* apptainer has run — too late to prevent the escape.
+    validate_node_tag(inputs.node_tag).map_err(|e| format!("invalid node tag: {}", e))?;
+
     if !containers::Apptainer::is_lima_ready() {
         let _ = inputs.feedback_tx.send(FeedbackLine {
             stream: FeedbackStream::Stdout,
@@ -381,6 +389,38 @@ mod tests {
                 tag
             );
         }
+    }
+
+    #[tokio::test]
+    async fn build_container_image_rejects_unsafe_tag_before_spawning_apptainer() {
+        // Drives the public entry point with a `..` tag and asserts the
+        // function fails before any apptainer subprocess is invoked. We
+        // detect "before spawn" by passing a working_dir that does not
+        // exist on disk: spawning apptainer with a missing cwd would
+        // surface a different error (a spawn IO error), whereas the
+        // up-front validation rejects with the "invalid node tag" prefix.
+        let working_dir = std::path::Path::new("/nonexistent-peppy-test-dir");
+        let (feedback_tx, _feedback_rx) = mpsc::unbounded_channel();
+        let log_file = Arc::new(StdMutex::new(
+            tempfile::tempfile().expect("tempfile should succeed"),
+        ));
+        let err = build_container_image(ContainerBuildInputs {
+            working_dir,
+            node_name: "sensor",
+            node_tag: "../evil",
+            def_file: "sensor.def",
+            apptainer_build_extra_args: &[],
+            lima_shell_extra_args: &[],
+            feedback_tx: &feedback_tx,
+            log_file,
+        })
+        .await
+        .expect_err("unsafe tag must be rejected");
+        assert!(
+            err.starts_with("invalid node tag"),
+            "expected up-front validation rejection, got: {}",
+            err
+        );
     }
 
     #[test]

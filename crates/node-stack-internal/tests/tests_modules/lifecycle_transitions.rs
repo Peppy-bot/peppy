@@ -304,6 +304,126 @@ fn push_config_resets_existing_entity_to_added() {
 }
 
 #[test]
+fn push_config_rewires_when_dependency_keys_change_with_unchanged_interfaces() {
+    // Two producer nodes with identical interfaces; a consumer that
+    // references one of them via `local_node_id`. Re-pushing the consumer
+    // pointed at the *other* producer keeps the consumer's `interfaces`
+    // identical (the consumer's emits/exposes haven't changed) but does
+    // change the dependency-spec keys. Before the fix, `interfaces_changed`
+    // was the only trigger for rewire, so the dependency edge stayed wired
+    // to the original producer.
+    let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
+
+    let producer_a: config::node::NodeConfig = serde_json5::from_str(
+        r#"{
+            schema_version: 1,
+            manifest: { name: "producer_a", tag: "1.0.0" },
+            interfaces: { services: { exposes: [ { name: "reset_sensor" } ] } },
+            execution: { language: "rust", start_cmd: ["producer_a"] }
+        }"#,
+    )
+    .expect("valid producer_a config");
+
+    let producer_b: config::node::NodeConfig = serde_json5::from_str(
+        r#"{
+            schema_version: 1,
+            manifest: { name: "producer_b", tag: "1.0.0" },
+            interfaces: { services: { exposes: [ { name: "reset_sensor" } ] } },
+            execution: { language: "rust", start_cmd: ["producer_b"] }
+        }"#,
+    )
+    .expect("valid producer_b config");
+
+    let consumer_pointing_at = |producer_name: &str| -> config::node::NodeConfig {
+        let local_id = format!("p_{}", producer_name);
+        serde_json5::from_str(
+            &r#"{
+                schema_version: 1,
+                manifest: {
+                    name: "consumer",
+                    tag: "1.0.0",
+                    depends_on: {
+                        nodes: [
+                            { name: "PRODUCER", tag: "1.0.0", local_id: "LOCAL_ID" }
+                        ]
+                    },
+                },
+                interfaces: {
+                    services: {
+                        consumes: [
+                            { local_node_id: "LOCAL_ID", name: "reset_sensor" }
+                        ]
+                    }
+                },
+                execution: { language: "rust", start_cmd: ["consumer"] }
+            }"#
+            .replace("PRODUCER", producer_name)
+            .replace("LOCAL_ID", &local_id),
+        )
+        .expect("valid consumer config")
+    };
+
+    stack
+        .push_config(producer_a, false, PathBuf::from("/tmp/producer_a.json5"))
+        .expect("push producer_a");
+    stack
+        .push_config(producer_b, false, PathBuf::from("/tmp/producer_b.json5"))
+        .expect("push producer_b");
+    stack
+        .push_config(
+            consumer_pointing_at("producer_a"),
+            false,
+            PathBuf::from("/tmp/consumer_v1.json5"),
+        )
+        .expect("first consumer push");
+
+    // Initially the consumer depends on producer_a.
+    let deps_a: Vec<String> = stack
+        .dependencies_of("consumer", "1.0.0")
+        .iter()
+        .map(|h| {
+            h.read()
+                .expect("entity poisoned")
+                .config()
+                .manifest
+                .name
+                .as_str()
+                .to_owned()
+        })
+        .collect();
+    assert_eq!(deps_a, vec!["producer_a".to_string()]);
+
+    // Re-push the consumer with the same interfaces, but pointed at
+    // producer_b. With the fix, dependency_keys drift triggers rewire.
+    stack
+        .push_config(
+            consumer_pointing_at("producer_b"),
+            false,
+            PathBuf::from("/tmp/consumer_v2.json5"),
+        )
+        .expect("second consumer push");
+
+    let deps_b: Vec<String> = stack
+        .dependencies_of("consumer", "1.0.0")
+        .iter()
+        .map(|h| {
+            h.read()
+                .expect("entity poisoned")
+                .config()
+                .manifest
+                .name
+                .as_str()
+                .to_owned()
+        })
+        .collect();
+    assert_eq!(
+        deps_b,
+        vec!["producer_b".to_string()],
+        "consumer must be rewired to producer_b after dependency-spec drift"
+    );
+}
+
+#[test]
 fn push_config_rejects_replacement_with_live_instances() {
     let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
     let config_path_v1 = PathBuf::from("/tmp/sensor/v1/peppy.json5");
@@ -439,7 +559,7 @@ async fn concurrent_builds_are_rejected_immediately() {
     // Building (it might also see the eventual Built stage if the winner was
     // already in Phase 3). Both shapes are valid rejections.
     let (ok_count, transition_err_count) = [&r1, &r2].iter().fold((0, 0), |(o, e), r| match r {
-        Ok(()) => (o + 1, e),
+        Ok(_) => (o + 1, e),
         Err(NodeStackError::InvalidStageTransition { from, to, .. })
             if *from == "Building" && *to == "Ready" =>
         {
@@ -1103,7 +1223,7 @@ mod backwards_transitions_are_rejected {
         .await;
         drop(h.peppy_root);
         drop(h.working_dir);
-        result
+        result.map(|_| ())
     }
 
     fn assert_rejected_to(

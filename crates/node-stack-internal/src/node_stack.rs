@@ -360,59 +360,70 @@ impl NodeStackInner {
         }
 
         if let Some(&index) = self.key_to_index.get(&key) {
-            // Refuse to clobber an entity that still has live instances. Callers
-            // must shut them down first; otherwise the wholesale replacement
-            // below would silently orphan tracked instances.
-            let existing_has_instances = self
-                .graph
-                .node_weight(index)
-                .is_some_and(|h| !h.read().expect("entity poisoned").instances().is_empty());
-            if existing_has_instances {
-                return Err(Error::CannotOverwriteNodeWithLiveInstances {
-                    node_name: key.name.clone(),
-                    node_tag: key.tag.clone(),
-                });
-            }
+            // We must perform the "no live instances" check, the
+            // interfaces/dependency drift checks, AND the wholesale entity
+            // replacement under a *single* held write lock on the entity.
+            // Dropping the lock between the check and the replacement would
+            // let an in-flight `prepare_and_spawn` (which only holds an
+            // `Arc<RwLock<NodeEntity>>` and not the stack lock) append a
+            // `Starting` instance that the replacement would silently orphan.
+            let Some(handle) = self.graph.node_weight(index).cloned() else {
+                return Ok(());
+            };
 
-            let interfaces_changed = self.graph.node_weight(index).is_some_and(|handle| {
-                handle.read().expect("entity poisoned").config().interfaces != config.interfaces
-            });
+            let (interfaces_changed, dependencies_changed) = {
+                let mut guard = handle.write().expect("entity poisoned");
 
-            // Dependency checks and rewiring are only needed when interfaces change,
-            // because interface changes can break or create dependency relationships.
-            if interfaces_changed {
-                let has_dependents = self
-                    .graph
-                    .neighbors_directed(index, Direction::Incoming)
-                    .next()
-                    .is_some()
-                    || self
-                        .pending_requirements
-                        .get(&key)
-                        .is_some_and(|requirements| !requirements.is_empty());
-
-                if has_dependents {
-                    return Err(Error::CannotOverwriteNodeWithDependents {
-                        node_name: key.name,
-                        node_tag: key.tag,
+                if !guard.instances().is_empty() {
+                    return Err(Error::CannotOverwriteNodeWithLiveInstances {
+                        node_name: key.name.clone(),
+                        node_tag: key.tag.clone(),
                     });
                 }
 
-                if !allow_missing_dependencies {
+                let interfaces_changed = guard.config().interfaces != config.interfaces;
+                let old_dependency_keys = dependency_keys(guard.config());
+                let new_dependency_keys = dependency_keys(&config);
+                let dependencies_changed = old_dependency_keys != new_dependency_keys;
+
+                // Interface changes can break dependents that consume this
+                // node, so they need an explicit gate. Dependency-spec
+                // changes (e.g. swapping `local_node_id` of a consumed
+                // topic) only affect *this* node's outbound edges, so they
+                // don't need the dependents check.
+                if interfaces_changed {
+                    let has_dependents = self
+                        .graph
+                        .neighbors_directed(index, Direction::Incoming)
+                        .next()
+                        .is_some()
+                        || self
+                            .pending_requirements
+                            .get(&key)
+                            .is_some_and(|requirements| !requirements.is_empty());
+
+                    if has_dependents {
+                        return Err(Error::CannotOverwriteNodeWithDependents {
+                            node_name: key.name,
+                            node_tag: key.tag,
+                        });
+                    }
+                }
+
+                if (interfaces_changed || dependencies_changed) && !allow_missing_dependencies {
                     let candidate = NodeEntity::new(config.clone(), config_path.clone());
                     self.validate_dependencies(&candidate)?;
                 }
-            }
 
-            // Replace the entity wholesale with a fresh Added entity. The
-            // same `Arc` handle is preserved so any external readers see the
-            // new state.
-            if let Some(handle) = self.graph.node_weight(index) {
-                let new_entity = NodeEntity::new(config, config_path);
-                *handle.write().expect("entity poisoned") = new_entity;
-            }
+                // Replace the entity in-place under the still-held write
+                // lock. The same `Arc` handle is preserved so any external
+                // readers see the new state.
+                *guard = NodeEntity::new(config, config_path);
 
-            if interfaces_changed {
+                (interfaces_changed, dependencies_changed)
+            };
+
+            if interfaces_changed || dependencies_changed {
                 self.rewire_dependencies(index);
             }
         } else {

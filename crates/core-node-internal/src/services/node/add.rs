@@ -1704,52 +1704,46 @@ async fn process_node_add(
     )
     .await;
 
-    if let Err(e) = build_result {
-        // `NodeEntity::build` leaves the entity in `Building` on failure;
-        // the caller owns rollback. See the failure contract on
-        // `NodeEntity::build`.
-        //
-        // If there was a previously-ready entity in this slot, restore it
-        // from the snapshot we captured before `push_config` replaced it.
-        // Otherwise (fresh add), remove the entity entirely. Both code
-        // paths use the pre-build handle+generation so a concurrent
-        // `push_config` that replaced the entity in-place between our
-        // failure and this cleanup is not silently clobbered.
-        if let Some((prev_config, prev_config_path, prev_artifact)) = previous_entity_snapshot {
-            let _ = ctx.action.node_stack.restore_snapshot_if_matches(
-                node_stack::RestoreTarget {
-                    name: &node_name,
-                    tag: &node_tag,
-                    expected_handle: &entity_handle,
-                    expected_generation: expected_generation_before_build,
-                },
-                node_stack::EntitySnapshot {
-                    config: prev_config,
-                    config_path: prev_config_path,
-                    artifact_path: prev_artifact,
-                },
-            );
-        } else {
-            let _ = ctx.action.node_stack.remove_config_if_matches(
-                &node_name,
-                &node_tag,
-                &entity_handle,
-                expected_generation_before_build,
-            );
+    let snapshot_path = match build_result {
+        Ok(path) => path,
+        Err(e) => {
+            // `NodeEntity::build` leaves the entity in `Building` on failure;
+            // the caller owns rollback. See the failure contract on
+            // `NodeEntity::build`.
+            //
+            // If there was a previously-ready entity in this slot, restore it
+            // from the snapshot we captured before `push_config` replaced it.
+            // Otherwise (fresh add), remove the entity entirely. Both code
+            // paths use the pre-build handle+generation so a concurrent
+            // `push_config` that replaced the entity in-place between our
+            // failure and this cleanup is not silently clobbered.
+            if let Some((prev_config, prev_config_path, prev_artifact)) = previous_entity_snapshot {
+                let _ = ctx.action.node_stack.restore_snapshot_if_matches(
+                    node_stack::RestoreTarget {
+                        name: &node_name,
+                        tag: &node_tag,
+                        expected_handle: &entity_handle,
+                        expected_generation: expected_generation_before_build,
+                    },
+                    node_stack::EntitySnapshot {
+                        config: prev_config,
+                        config_path: prev_config_path,
+                        artifact_path: prev_artifact,
+                    },
+                );
+            } else {
+                let _ = ctx.action.node_stack.remove_config_if_matches(
+                    &node_name,
+                    &node_tag,
+                    &entity_handle,
+                    expected_generation_before_build,
+                );
+            }
+            let msg = format!("Failed to build node: {}", e);
+            write_error_to_log(&ctx.log_file, &msg);
+            return NodeAddResult::failure(&ctx.log_path, msg);
         }
-        let msg = format!("Failed to build node: {}", e);
-        write_error_to_log(&ctx.log_file, &msg);
-        return NodeAddResult::failure(&ctx.log_path, msg);
-    }
-
-    // Re-read the entity to get the freshly recorded artifact_path for
-    // cleanup and the success message.
-    let snapshot_path = entity_handle
-        .read()
-        .expect("entity poisoned")
-        .artifact_path()
-        .expect("entity must have an artifact_path after a successful build")
-        .to_path_buf();
+    };
 
     // Working dir is no longer needed; clean it up immediately.
     drop(working_dir_cleanup);
