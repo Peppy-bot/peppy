@@ -668,10 +668,12 @@ async fn process_node_start(
         env_vars: &env_vars,
         mount_paths_resolved: &resolved_mount_paths,
         peppy_dirs: &ctx.action.peppy_dirs,
-        feedback_tx: &internal_feedback_tx,
-        log_file: Arc::clone(&ctx.log_file),
-        publish_enabled: Arc::clone(&publish_enabled),
-        hooks: Arc::new(feedback_sync.clone()),
+        output_sinks: node_stack::OutputSinks {
+            feedback_tx: internal_feedback_tx.clone(),
+            log_file: Arc::clone(&ctx.log_file),
+            publish_enabled: Arc::clone(&publish_enabled),
+            hooks: Arc::new(feedback_sync.clone()),
+        },
     };
     let (mut child, started_ctx) =
         match node_stack::NodeEntity::prepare_and_spawn(&entity_handle, start_ctx).await {

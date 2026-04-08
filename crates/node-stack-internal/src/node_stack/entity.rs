@@ -113,6 +113,12 @@ impl From<&NodeEntity> for SerializedNode {
 ///   only `Running` instances (equivalent to the old `Started` stage), or
 ///   contain a mix of `Starting` and `Running` instances (in-flight
 ///   `prepare_and_spawn` calls coexisting with already-running instances).
+/// - `Root` — the synthetic daemon entity. Has no buildable artifact and
+///   exactly one `Running` instance (the daemon process itself). The
+///   lifecycle methods (`build`, `prepare_and_spawn`, `commit_started`,
+///   `stop_instance`, …) all reject this variant: the root cannot be
+///   built, started, stopped, or removed. It exists so the daemon can
+///   appear in the same `NodeStack` graph as user nodes.
 #[derive(Debug, Clone)]
 pub enum NodeStage {
     Added {
@@ -126,6 +132,10 @@ pub enum NodeStage {
         artifact_path: PathBuf,
         instances: Vec<TrackedNodeInstance>,
     },
+    Root {
+        config_path: PathBuf,
+        instance: TrackedNodeInstance,
+    },
 }
 
 impl NodeStage {
@@ -134,6 +144,7 @@ impl NodeStage {
             NodeStage::Added { .. } => "Added",
             NodeStage::Building { .. } => "Building",
             NodeStage::Ready { .. } => "Ready",
+            NodeStage::Root { .. } => "Root",
         }
     }
 }
@@ -189,9 +200,19 @@ pub struct StartContext<'a> {
     /// Resolved peppy directory layout. Used for `runtime_config_dir()` and
     /// `instances_dir()`.
     pub peppy_dirs: &'a PeppyDirs,
+    /// Output-pipeline plumbing. The entity does not inspect these fields —
+    /// it forwards them verbatim into `spawn_output_reader_async`.
+    pub output_sinks: OutputSinks,
+}
+
+/// Output-pipeline plumbing forwarded by [`NodeEntity::prepare_and_spawn`]
+/// into the spawned reader tasks. Grouped into its own struct so the
+/// entity's `StartContext` surface only carries fields the entity actually
+/// reasons about.
+pub struct OutputSinks {
     /// Channel that receives stdout/stderr lines from the running child. The
     /// reader tasks remain alive past `prepare_and_spawn`'s return.
-    pub feedback_tx: &'a mpsc::UnboundedSender<FeedbackLine>,
+    pub feedback_tx: mpsc::UnboundedSender<FeedbackLine>,
     /// Log file the start output is also written to.
     pub log_file: Arc<StdMutex<File>>,
     /// Gate that the daemon flips to `false` after `commit_started` /
@@ -250,14 +271,16 @@ impl NodeEntity {
             NodeStage::Added { config_path } => config_path,
             NodeStage::Building { config_path } => config_path,
             NodeStage::Ready { config_path, .. } => config_path,
+            NodeStage::Root { config_path, .. } => config_path,
         }
     }
 
     /// Returns the path to the built `.sif`/archive in
-    /// `~/.peppy/added_nodes`. `None` until the entity has reached `Ready`.
+    /// `~/.peppy/added_nodes`. `None` until the entity has reached `Ready`,
+    /// and `None` for the synthetic root entity (which has no artifact).
     pub fn artifact_path(&self) -> Option<&Path> {
         match &self.stage {
-            NodeStage::Added { .. } | NodeStage::Building { .. } => None,
+            NodeStage::Added { .. } | NodeStage::Building { .. } | NodeStage::Root { .. } => None,
             NodeStage::Ready { artifact_path, .. } => Some(artifact_path),
         }
     }
@@ -270,7 +293,8 @@ impl NodeEntity {
     pub fn instances(&self) -> &[TrackedNodeInstance] {
         match &self.stage {
             NodeStage::Ready { instances, .. } => instances,
-            _ => &[],
+            NodeStage::Root { instance, .. } => std::slice::from_ref(instance),
+            NodeStage::Added { .. } | NodeStage::Building { .. } => &[],
         }
     }
 
@@ -567,7 +591,7 @@ impl NodeEntity {
                 ctx.mount_paths_resolved,
                 apptainer_run_extra_args,
                 lima_shell_extra_args,
-                &ctx.log_file,
+                &ctx.output_sinks.log_file,
                 ctx.peppy_dirs,
             )
             .await
@@ -577,7 +601,7 @@ impl NodeEntity {
                 &instance_dir,
                 ctx.runtime_config_json5,
                 ctx.env_vars,
-                &ctx.log_file,
+                &ctx.output_sinks.log_file,
                 ctx.peppy_dirs,
             )
         }
@@ -596,27 +620,28 @@ impl NodeEntity {
         )));
         let mut output_reader_handles = Vec::new();
 
+        let sinks = &ctx.output_sinks;
         if let Some(stdout) = child.stdout.take() {
             output_reader_handles.push(spawn_output_reader_async(
                 stdout,
-                ctx.feedback_tx.clone(),
-                Arc::clone(&ctx.publish_enabled),
-                Arc::clone(&ctx.hooks),
+                sinks.feedback_tx.clone(),
+                Arc::clone(&sinks.publish_enabled),
+                Arc::clone(&sinks.hooks),
                 FeedbackStream::Stdout,
                 None,
-                Arc::clone(&ctx.log_file),
+                Arc::clone(&sinks.log_file),
             ));
         }
 
         if let Some(stderr) = child.stderr.take() {
             output_reader_handles.push(spawn_output_reader_async(
                 stderr,
-                ctx.feedback_tx.clone(),
-                Arc::clone(&ctx.publish_enabled),
-                Arc::clone(&ctx.hooks),
+                sinks.feedback_tx.clone(),
+                Arc::clone(&sinks.publish_enabled),
+                Arc::clone(&sinks.hooks),
                 FeedbackStream::Stderr,
                 Some(Arc::clone(&stderr_buffer)),
-                Arc::clone(&ctx.log_file),
+                Arc::clone(&sinks.log_file),
             ));
         }
 
@@ -626,7 +651,7 @@ impl NodeEntity {
                 instance_dir,
                 stderr_buffer,
                 output_reader_handles,
-                log_file: ctx.log_file,
+                log_file: ctx.output_sinks.log_file,
             },
         ))
     }
@@ -747,10 +772,9 @@ impl NodeEntity {
     ) -> Self {
         Self {
             config,
-            stage: NodeStage::Ready {
-                config_path: root_path.clone(),
-                artifact_path: root_path,
-                instances: vec![instance],
+            stage: NodeStage::Root {
+                config_path: root_path,
+                instance,
             },
         }
     }

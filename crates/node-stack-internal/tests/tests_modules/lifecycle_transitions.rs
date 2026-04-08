@@ -679,6 +679,17 @@ struct StartHarness {
     hooks: Arc<dyn node_stack::build_io::OutputReaderHooks>,
 }
 
+impl StartHarness {
+    fn output_sinks(&self) -> node_stack::OutputSinks {
+        node_stack::OutputSinks {
+            feedback_tx: self.feedback_tx.clone(),
+            log_file: Arc::clone(&self.log_file),
+            publish_enabled: Arc::clone(&self.publish_enabled),
+            hooks: Arc::clone(&self.hooks),
+        }
+    }
+}
+
 fn start_harness(instance_id_str: &str) -> StartHarness {
     let peppy_root = tempfile::tempdir().expect("tempdir peppy_root");
     let peppy_dirs = config::consts::PeppyDirs::new(peppy_root.path().to_path_buf());
@@ -720,10 +731,7 @@ async fn prepare_and_spawn_rejects_when_not_built() {
             env_vars: &[],
             mount_paths_resolved: &[],
             peppy_dirs: &h.peppy_dirs,
-            feedback_tx: &h.feedback_tx,
-            log_file: Arc::clone(&h.log_file),
-            publish_enabled: Arc::clone(&h.publish_enabled),
-            hooks: Arc::clone(&h.hooks),
+            output_sinks: h.output_sinks(),
         },
     )
     .await
@@ -758,10 +766,7 @@ async fn prepare_and_spawn_marks_instance_starting_then_commit_marks_running() {
             env_vars: &[],
             mount_paths_resolved: &[],
             peppy_dirs: &h.peppy_dirs,
-            feedback_tx: &h.feedback_tx,
-            log_file: Arc::clone(&h.log_file),
-            publish_enabled: Arc::clone(&h.publish_enabled),
-            hooks: Arc::clone(&h.hooks),
+            output_sinks: h.output_sinks(),
         },
     )
     .await
@@ -837,10 +842,7 @@ async fn abort_started_removes_starting_instance_and_kills_child() {
             env_vars: &[],
             mount_paths_resolved: &[],
             peppy_dirs: &h.peppy_dirs,
-            feedback_tx: &h.feedback_tx,
-            log_file: Arc::clone(&h.log_file),
-            publish_enabled: Arc::clone(&h.publish_enabled),
-            hooks: Arc::clone(&h.hooks),
+            output_sinks: h.output_sinks(),
         },
     )
     .await
@@ -930,10 +932,7 @@ async fn prepare_and_spawn_starts_additional_instance_alongside_existing() {
             env_vars: &[],
             mount_paths_resolved: &[],
             peppy_dirs: &h.peppy_dirs,
-            feedback_tx: &h.feedback_tx,
-            log_file: Arc::clone(&h.log_file),
-            publish_enabled: Arc::clone(&h.publish_enabled),
-            hooks: Arc::clone(&h.hooks),
+            output_sinks: h.output_sinks(),
         },
     )
     .await
@@ -1031,10 +1030,7 @@ async fn prepare_and_spawn_rejects_duplicate_instance_id_when_running_already_pr
             env_vars: &[],
             mount_paths_resolved: &[],
             peppy_dirs: &h.peppy_dirs,
-            feedback_tx: &h.feedback_tx,
-            log_file: Arc::clone(&h.log_file),
-            publish_enabled: Arc::clone(&h.publish_enabled),
-            hooks: Arc::clone(&h.hooks),
+            output_sinks: h.output_sinks(),
         },
     )
     .await
@@ -1179,10 +1175,7 @@ mod backwards_transitions_are_rejected {
                 env_vars: &[],
                 mount_paths_resolved: &[],
                 peppy_dirs: &h.peppy_dirs,
-                feedback_tx: &h.feedback_tx,
-                log_file: Arc::clone(&h.log_file),
-                publish_enabled: Arc::clone(&h.publish_enabled),
-                hooks: Arc::clone(&h.hooks),
+                output_sinks: h.output_sinks(),
             },
         )
         .await;

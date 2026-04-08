@@ -4,8 +4,8 @@ mod start_steps;
 mod validation;
 
 pub use entity::{
-    BuildContext, DependencySpec, InstanceState, NodeEntity, NodeStage, SerializedNodeGraph,
-    StartContext, StartedInstanceCtx, TrackedNodeInstance,
+    BuildContext, DependencySpec, InstanceState, NodeEntity, NodeStage, OutputSinks,
+    SerializedNodeGraph, StartContext, StartedInstanceCtx, TrackedNodeInstance,
 };
 pub use start_steps::extract_tar_zst;
 pub use validation::{collect_dependency_specs, validate_dependency_specs};
