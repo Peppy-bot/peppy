@@ -1,7 +1,7 @@
 mod common;
 
 use common::{
-    AbortOnDrop, NodeStartTestTimeouts, create_test_node_with_name, send_node_add_and_wait,
+    AbortOnDrop, NodeStartTestTimeouts, create_test_node_with_name, send_node_add_then_build,
     send_node_start_and_wait, send_node_start_and_wait_with_env,
     start_core_node_with_health_timeout, start_core_node_with_mock_messenger,
     start_core_node_with_real_messenger, write_peppy_json5,
@@ -41,7 +41,7 @@ async fn listen_for_node_start_success() {
     let node_dir = create_test_node_with_name(TARGET_NODE_NAME, TARGET_NODE_TAG);
 
     // Add the node to the core node's node stack
-    let add_response = send_node_add_and_wait(
+    let add_response = send_node_add_then_build(
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
         &node_dir,
@@ -49,7 +49,6 @@ async fn listen_for_node_start_success() {
         // Longer timeout to account for build_cmd execution and copying the test node folder,
         // which may include build artifacts.
         Duration::from_secs(120),
-        None,
     )
     .await
     .expect("node_add should succeed");
@@ -61,7 +60,7 @@ async fn listen_for_node_start_success() {
     );
     // Intentionally keep the started node process running: nodes are expected to linger
     // and the test should still tear down cleanly.
-    let _snapshot_node_path = add_response.snapshot_path;
+    let _snapshot_node_path = add_response.artifact_path;
 
     // Get the actual messaging endpoint from the Zenoh session
     let (messaging_host, messaging_port) = started_core_node
@@ -150,13 +149,12 @@ async fn listen_for_node_start_timeout() {
     let temp_dir = create_node_config_dir(&peppy_json5);
 
     // Add the node to the core node's node stack
-    let add_response = send_node_add_and_wait(
+    let add_response = send_node_add_then_build(
         &started.caller_handle,
         &started.core_node_name,
         temp_dir.path(),
         Duration::from_secs(5),
         Duration::from_secs(5),
-        None,
     )
     .await
     .expect("node_add should succeed");
@@ -322,13 +320,12 @@ async fn listen_for_node_start_streams_stdout_and_stderr() {
     .replace("{STDERR_MARKER}", STDERR_MARKER);
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
-    let add_response = send_node_add_and_wait(
+    let add_response = send_node_add_then_build(
         &started.caller_handle,
         &started.core_node_name,
         source_dir.path(),
         Duration::from_secs(5),
         Duration::from_secs(5),
-        None,
     )
     .await
     .expect("node_add should succeed");
@@ -442,13 +439,12 @@ async fn listen_for_node_start_writes_log_file() {
     .replace("{STDERR_MARKER}", STDERR_MARKER);
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
-    let add_response = send_node_add_and_wait(
+    let add_response = send_node_add_then_build(
         &started.caller_handle,
         &started.core_node_name,
         source_dir.path(),
         Duration::from_secs(5),
         Duration::from_secs(5),
-        None,
     )
     .await
     .expect("node_add should succeed");
@@ -587,13 +583,12 @@ async fn listen_for_node_start_reports_all_missing_parameters() {
     .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
-    let add_response = send_node_add_and_wait(
+    let add_response = send_node_add_then_build(
         &started.caller_handle,
         &started.core_node_name,
         source_dir.path(),
         Duration::from_secs(5),
         Duration::from_secs(5),
-        None,
     )
     .await
     .expect("node_add should succeed");
@@ -710,13 +705,12 @@ async fn listen_for_node_start_reports_only_missing_parameters_when_some_provide
     .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
-    let add_response = send_node_add_and_wait(
+    let add_response = send_node_add_then_build(
         &started.caller_handle,
         &started.core_node_name,
         source_dir.path(),
         Duration::from_secs(5),
         Duration::from_secs(5),
-        None,
     )
     .await
     .expect("node_add should succeed");
@@ -852,13 +846,12 @@ async fn listen_for_node_start_abandoned_action_does_not_block_next_goal() {
     .replace("{FIRST_NODE_TAG}", FIRST_NODE_TAG);
     write_peppy_json5(first_source_dir.path(), &first_peppy_json5);
 
-    let first_add_response = send_node_add_and_wait(
+    let first_add_response = send_node_add_then_build(
         &started.caller_handle,
         &started.core_node_name,
         first_source_dir.path(),
         Duration::from_secs(5),
         Duration::from_secs(5),
-        None,
     )
     .await
     .expect("first node_add should succeed");
@@ -886,13 +879,12 @@ async fn listen_for_node_start_abandoned_action_does_not_block_next_goal() {
     .replace("{SECOND_NODE_TAG}", SECOND_NODE_TAG);
     write_peppy_json5(second_source_dir.path(), &second_peppy_json5);
 
-    let second_add_response = send_node_add_and_wait(
+    let second_add_response = send_node_add_then_build(
         &started.caller_handle,
         &started.core_node_name,
         second_source_dir.path(),
         Duration::from_secs(5),
         Duration::from_secs(5),
-        None,
     )
     .await
     .expect("second node_add should succeed");
@@ -1065,13 +1057,12 @@ async fn listen_for_node_start_uses_env_overrides_for_path() {
     .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
-    let add_response = send_node_add_and_wait(
+    let add_response = send_node_add_then_build(
         &started.caller_handle,
         &started.core_node_name,
         source_dir.path(),
         Duration::from_secs(30),
         Duration::from_secs(120),
-        None,
     )
     .await
     .expect("node_add should succeed");
@@ -1213,13 +1204,12 @@ async fn listen_for_node_start_injects_runtime_env_vars() {
     .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
-    let add_response = send_node_add_and_wait(
+    let add_response = send_node_add_then_build(
         &started.caller_handle,
         &started.core_node_name,
         source_dir.path(),
         Duration::from_secs(30),
         Duration::from_secs(120),
-        None,
     )
     .await
     .expect("node_add should succeed");
@@ -1341,13 +1331,12 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
         .expect("failed to write apptainer definition");
 
     // Add the node first (container add flow).
-    let add_response = send_node_add_and_wait(
+    let add_response = send_node_add_then_build(
         &started.caller_handle,
         &started.core_node_name,
         source_dir.path(),
         Duration::from_secs(30),
         Duration::from_secs(120),
-        None,
     )
     .await
     .expect("node_add should succeed");
@@ -1548,13 +1537,12 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
         .expect("failed to write apptainer definition");
 
     // Add the node first (container add flow).
-    let add_response = send_node_add_and_wait(
+    let add_response = send_node_add_then_build(
         &started.caller_handle,
         &started.core_node_name,
         source_dir.path(),
         Duration::from_secs(30),
         Duration::from_secs(120),
-        None,
     )
     .await
     .expect("node_add should succeed");
@@ -1703,13 +1691,12 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
         .expect("failed to write apptainer definition");
 
     // Add the node first (builds the .sif image).
-    let add_response = send_node_add_and_wait(
+    let add_response = send_node_add_then_build(
         &started.caller_handle,
         &started.core_node_name,
         source_dir.path(),
         Duration::from_secs(30),
         Duration::from_secs(120),
-        None,
     )
     .await
     .expect("node_add should succeed");
@@ -1805,13 +1792,12 @@ async fn listen_for_node_start_logs_error_on_spawn_failure() {
     .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
-    let add_response = send_node_add_and_wait(
+    let add_response = send_node_add_then_build(
         &started.caller_handle,
         &started.core_node_name,
         source_dir.path(),
         Duration::from_secs(5),
         Duration::from_secs(5),
-        None,
     )
     .await
     .expect("node_add should succeed");

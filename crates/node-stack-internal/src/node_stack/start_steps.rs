@@ -151,7 +151,7 @@ pub(super) fn spawn_process_node(
     );
 
     crate::build_io::log_cmd_header(
-        &log_file,
+        log_file,
         "start_cmd",
         &start_cmd.join(" "),
         working_dir,
@@ -354,7 +354,7 @@ pub(super) async fn spawn_container_node(
 
     let bind_mounts_str = format!("[{}]", mount_paths.join(", "));
     crate::build_io::log_cmd_header(
-        &log_file,
+        log_file,
         "apptainer run",
         &sif_path.display().to_string(),
         working_dir,

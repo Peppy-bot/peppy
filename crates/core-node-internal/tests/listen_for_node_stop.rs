@@ -1,8 +1,8 @@
 mod common;
 
 use common::{
-    AbortOnDrop, CALLER_INSTANCE_ID, send_node_add_and_wait, spawn_real_running_instance,
-    start_core_node_with_mock_messenger, write_peppy_json5,
+    AbortOnDrop, CALLER_INSTANCE_ID, build_staged_node, send_node_add_and_wait,
+    spawn_real_running_instance, start_core_node_with_mock_messenger, write_peppy_json5,
 };
 use config::node::Name;
 use core_node::encoding::NodeStopRequest;
@@ -68,6 +68,7 @@ async fn listen_for_node_stop_success() {
         add_response.error_message
     );
     assert!(node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG));
+    build_staged_node(&started_core_node, TARGET_NODE_NAME, TARGET_NODE_TAG).await;
 
     // Drive the real start lifecycle so the entity tracks a live child
     // process (spawned from the node's `start_cmd = ["sleep", "10"]`).

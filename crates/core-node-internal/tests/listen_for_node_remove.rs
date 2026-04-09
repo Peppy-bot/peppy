@@ -1,8 +1,8 @@
 mod common;
 
 use common::{
-    AbortOnDrop, CALLER_INSTANCE_ID, send_node_add_and_wait, spawn_real_running_instance,
-    start_core_node_with_mock_messenger, write_peppy_json5,
+    AbortOnDrop, CALLER_INSTANCE_ID, build_staged_node, send_node_add_and_wait,
+    spawn_real_running_instance, start_core_node_with_mock_messenger, write_peppy_json5,
 };
 use config::node::Name;
 use core_node::encoding::NodeRemoveRequest;
@@ -174,6 +174,7 @@ async fn listen_for_node_remove_stop_running_instances_first() {
         "node_add should succeed, got error: {:?}",
         add_response.error_message
     );
+    build_staged_node(&started_core_node, TARGET_NODE_NAME, TARGET_NODE_TAG).await;
 
     let instance_id = Name::new(TARGET_INSTANCE_ID).expect("valid instance id");
     let _running = spawn_real_running_instance(
@@ -272,6 +273,7 @@ async fn listen_for_node_fails_when_stop_instances_parameter_not_set_and_instanc
         "node_add should succeed, got error: {:?}",
         add_response.error_message
     );
+    build_staged_node(&started_core_node, TARGET_NODE_NAME, TARGET_NODE_TAG).await;
 
     let instance_id = Name::new(TARGET_INSTANCE_ID).expect("valid instance id");
     let _running = spawn_real_running_instance(
