@@ -1,6 +1,7 @@
 mod add;
 mod info;
 mod init;
+mod node_build;
 mod remove;
 mod start;
 mod stop;
@@ -18,6 +19,9 @@ use config::node::{NodeConfig, NodeConfigParser, ParsedNodeConfig, PeppygenLangu
 use git2::{Repository, build::CheckoutBuilder, build::RepoBuilder};
 pub use info::listen_for_node_info;
 pub use init::listen_for_node_init;
+pub use node_build::listen_for_node_build;
+#[allow(unused_imports)]
+pub(crate) use node_build::{NodeBuildActionContext, run_node_build};
 use parking_lot::Mutex as StdMutex;
 use rand::RngExt;
 pub use remove::listen_for_node_remove;

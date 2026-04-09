@@ -1,6 +1,8 @@
+use crate::context::DaemonConnection;
 use core_node::encoding::{
-    NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAddResult, NodeInfoRequest,
-    NodeInfoResponse, NodeSource,
+    NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAddResult, NodeBuildFeedback,
+    NodeBuildGoal, NodeBuildGoalResponse, NodeBuildResult, NodeInfoRequest, NodeInfoResponse,
+    NodeSource,
 };
 use peppylib::MessengerHandle;
 use std::io::BufRead;
@@ -125,9 +127,10 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
 
     // Create and send the goal to start the add action
     // Pass max timeout as the goal timeout for daemon-side busy reporting
-    let mut add_goal = NodeAddGoal::from_source(node_source, conn.git_hash, timeouts.max_secs)
-        .with_env_vars(caller_env_overrides())
-        .with_force(force);
+    let mut add_goal =
+        NodeAddGoal::from_source(node_source, conn.git_hash.clone(), timeouts.max_secs)
+            .with_env_vars(caller_env_overrides())
+            .with_force(force);
     if let Some(variant_source) = variant_source {
         add_goal = add_goal.with_variant_source(variant_source);
     }
@@ -194,30 +197,33 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
         ));
     }
 
-    if let (Some(name), Some(tag)) = (&add_result.node_name, &add_result.node_tag) {
-        info!("Added node {}:{} to the node stack", name, tag);
-    } else {
-        info!("Added node to the node stack");
-    }
+    let node_name = add_result.node_name.clone().ok_or_else(|| {
+        Error::ExecutionFailed(
+            "Failed to determine node name after adding. Try running `peppy node list`.".into(),
+        )
+    })?;
+    let node_tag = add_result.node_tag.clone().ok_or_else(|| {
+        Error::ExecutionFailed(
+            "Failed to determine node tag after adding. Try running `peppy node list`.".into(),
+        )
+    })?;
+    info!("Added node {}:{} to the node stack", node_name, node_tag);
+
+    // node_add only registers the entity in `Added`. The build is now a
+    // separate daemon goal — drive it before optionally starting an instance.
+    let build_result = run_node_build_goal(&conn, &node_name, &node_tag, &timeouts, force).await?;
     info!(
-        "Snapshot path: {}",
-        add_result.snapshot_path.to_string_lossy()
+        "Built node {}:{} (snapshot: {})",
+        node_name,
+        node_tag,
+        build_result.snapshot_path.display()
     );
 
     let Some(start_options) = start_options else {
         return Ok(());
     };
-
-    let node_name = add_result.node_name.as_deref().ok_or_else(|| {
-        Error::ExecutionFailed(
-            "Failed to determine node name after adding. Try running `peppy node list`.".into(),
-        )
-    })?;
-    let node_tag = add_result.node_tag.as_deref().ok_or_else(|| {
-        Error::ExecutionFailed(
-            "Failed to determine node tag after adding. Try running `peppy node list`.".into(),
-        )
-    })?;
+    let node_name = node_name.as_str();
+    let node_tag = node_tag.as_str();
 
     start_instance_async(
         conn.messenger,
@@ -231,6 +237,83 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
     .await?;
 
     Ok(())
+}
+
+/// Sends a `node_build` goal to the daemon for an already-`Added` entity and
+/// polls it to completion. Mirrors the `node_add` goal lifecycle: send goal,
+/// validate goal response, stream feedback, decode result, surface failures.
+async fn run_node_build_goal(
+    conn: &DaemonConnection<'_>,
+    node_name: &str,
+    node_tag: &str,
+    timeouts: &TimeoutConfig,
+    force: bool,
+) -> Result<NodeBuildResult> {
+    let build_goal = NodeBuildGoal::new(node_name, node_tag, timeouts.max_secs).with_force(force);
+    let mut action_handle = build_goal
+        .send_goal(
+            conn.messenger,
+            &conn.core_node_name,
+            CALLER_INSTANCE_ID,
+            Some(&conn.core_node_name),
+            None,
+            GOAL_TIMEOUT,
+        )
+        .await
+        .map_err(|e| Error::ExecutionFailed(format!("Failed to send node_build goal: {}", e)))?;
+
+    let goal_response_payload = action_handle.goal_response().payload();
+    let goal_response = NodeBuildGoalResponse::decode(&goal_response_payload).map_err(|e| {
+        Error::ExecutionFailed(format!("Failed to decode build goal response: {}", e))
+    })?;
+
+    if !goal_response.accepted {
+        return Err(Error::ExecutionFailed(format!(
+            "Build goal rejected: {}",
+            goal_response
+                .rejection_reason
+                .unwrap_or_else(|| "unknown reason".to_string())
+        )));
+    }
+
+    info!("Build log file: {}", goal_response.log_path.display());
+
+    let mut scrolling_output = ScrollingOutput::new(SCROLLING_OUTPUT_LINES);
+
+    let build_result = crate::commands::action_poll::poll_action_to_completion(
+        conn.messenger,
+        &mut action_handle,
+        timeouts,
+        &mut scrolling_output,
+        |payload, output| {
+            if let Ok(feedback) = NodeBuildFeedback::decode(payload) {
+                output.add_line(&feedback.line, feedback.is_stderr());
+            }
+        },
+        |payload| match NodeBuildResult::decode(payload) {
+            Ok(result) => Ok(Some(result)),
+            Err(err) => {
+                if peppylib::encoding::is_result_pending(payload) {
+                    Ok(None)
+                } else {
+                    Err(format!("Failed to decode node_build result: {err}"))
+                }
+            }
+        },
+    )
+    .await?;
+
+    scrolling_output.clear();
+
+    if !build_result.success {
+        return Err(Error::ExecutionFailed(
+            build_result
+                .error_message
+                .unwrap_or_else(|| "node_build failed with no error message".to_string()),
+        ));
+    }
+
+    Ok(build_result)
 }
 
 /// Fetches node info for a given source using NodeInfoRequest.

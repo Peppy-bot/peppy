@@ -17,9 +17,11 @@ pub use node::{
     add::NodeAddFeedback, add::NodeAddGoal, add::NodeAddGoalResponse, add::NodeAddResult,
     add::NodeSource, info::NodeInfoRequest, info::NodeInfoResponse, info::NodeInstanceInfo,
     init::NodeInitRequest, init::NodeInitResponse, list::NodeListRequest, list::NodeListResponse,
-    remove::NodeRemoveRequest, remove::NodeRemoveResponse, start::NodeStartFeedback,
-    start::NodeStartGoal, start::NodeStartGoalResponse, start::NodeStartResult,
-    stop::NodeStopRequest, stop::NodeStopResponse, sync::NodeSyncRequest, sync::NodeSyncResponse,
+    node_build::NodeBuildFeedback, node_build::NodeBuildGoal, node_build::NodeBuildGoalResponse,
+    node_build::NodeBuildResult, remove::NodeRemoveRequest, remove::NodeRemoveResponse,
+    start::NodeStartFeedback, start::NodeStartGoal, start::NodeStartGoalResponse,
+    start::NodeStartResult, stop::NodeStopRequest, stop::NodeStopResponse, sync::NodeSyncRequest,
+    sync::NodeSyncResponse,
 };
 pub use ping::{PingRequest, PingResponse};
 pub use reset::{NodeResetRequest, NodeResetResponse};

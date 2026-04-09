@@ -262,6 +262,15 @@ impl CoreNode {
                 self.peppy_dirs.clone(),
             )
             .await?,
+            node::listen_for_node_build(
+                &self.messenger,
+                core_node_name,
+                self.instance_id(),
+                self.node_name(),
+                Arc::clone(&self.node_stack),
+                self.peppy_dirs.clone(),
+            )
+            .await?,
             node::listen_for_node_info(
                 &self.messenger,
                 core_node_name,

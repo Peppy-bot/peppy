@@ -524,7 +524,6 @@ impl NodeAddFeedback {
 /// Result message for the NodeAdd action.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeAddResult {
-    pub snapshot_path: PathBuf,
     pub log_path: PathBuf,
     pub success: bool,
     pub error_message: Option<String>,
@@ -534,13 +533,11 @@ pub struct NodeAddResult {
 
 impl NodeAddResult {
     pub fn success(
-        snapshot_path: impl Into<PathBuf>,
         log_path: impl Into<PathBuf>,
         node_name: impl Into<String>,
         node_tag: impl Into<String>,
     ) -> Self {
         Self {
-            snapshot_path: snapshot_path.into(),
             log_path: log_path.into(),
             success: true,
             error_message: None,
@@ -551,7 +548,6 @@ impl NodeAddResult {
 
     pub fn failure(log_path: impl Into<PathBuf>, error_message: impl Into<String>) -> Self {
         Self {
-            snapshot_path: PathBuf::new(),
             log_path: log_path.into(),
             success: false,
             error_message: Some(error_message.into()),
@@ -568,7 +564,6 @@ impl NodeAddResult {
             if let Some(ref error_message) = self.error_message {
                 result.set_error_message(error_message);
             }
-            result.set_snapshot_path(self.snapshot_path.to_string_lossy().as_ref());
             result.set_log_path(self.log_path.to_string_lossy().as_ref());
             if let Some(ref node_name) = self.node_name {
                 result.set_node_name(node_name);
@@ -583,10 +578,8 @@ impl NodeAddResult {
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
         let result = reader.get_root::<node_capnp::node_add_result::Reader>()?;
-        let snapshot_path = PathBuf::from(result.get_snapshot_path()?.to_str()?);
         let log_path = PathBuf::from(result.get_log_path()?.to_str()?);
         Ok(Self {
-            snapshot_path,
             log_path,
             success: result.get_success(),
             error_message: optional_text(result.get_error_message()?.to_str()?),

@@ -698,11 +698,12 @@ async fn listen_for_launch_configuration_succeed() {
         "robot_brain should have 1 instance"
     );
 
-    // Each deployed node should have an add log entry with a valid path and not marked as failed.
+    // Each deployed node now produces two log entries — one for `node_add`
+    // and one for `node_build` (the build step is a separate daemon goal).
     assert_eq!(
         result.node_add_logs.len(),
-        2,
-        "should have 2 add log entries (uvc_camera and robot_brain)"
+        4,
+        "should have 4 add+build log entries (uvc_camera and robot_brain × add+build)"
     );
     assert!(
         result
@@ -1361,15 +1362,16 @@ async fn listen_for_launch_configuration_fails_when_start_cmd_exits_with_error()
         "{NODE_NAME} should not be present after failed launch"
     );
 
-    // The node was successfully added before the start failed, so we expect one add log entry.
+    // The node was successfully added AND built before the start failed,
+    // so we expect two log entries (add + build).
     assert_eq!(
         result.node_add_logs.len(),
-        1,
-        "should have 1 add log entry for the node that was added before start failed"
+        2,
+        "should have 2 log entries (add + build) for the node that was built before start failed"
     );
     assert!(
-        !result.node_add_logs[0].failed,
-        "add log entry should not be marked failed (add succeeded)"
+        result.node_add_logs.iter().all(|entry| !entry.failed),
+        "add and build log entries should not be marked failed (both succeeded)"
     );
     assert_eq!(
         result.node_add_logs[0].node_label,

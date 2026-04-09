@@ -3,12 +3,13 @@ use crate::encoding::{
     LaunchFeedback, LaunchFeedbackStep, LaunchGoal, LaunchGoalResponse, LaunchResult, NodeAddGoal,
     NodeAddLogEntry, NodeAddResult, NodeSource, NodeStartGoal, NodeStartLogEntry, NodeStartResult,
 };
+use crate::encoding::{NodeBuildGoal, NodeBuildResult};
 use crate::names;
 use crate::services::action_loop::{ActionResult, ActionState, GoalHandler, run_action_loop};
 use crate::services::node::{
-    FeedbackLine, FeedbackStream, NodeAddActionContext, NodeStartActionContext,
-    create_action_log_file, log_label_from_source, resolve_node_config, run_node_add,
-    run_node_start, write_error_to_log,
+    FeedbackLine, FeedbackStream, NodeAddActionContext, NodeBuildActionContext,
+    NodeStartActionContext, create_action_log_file, log_label_from_source, resolve_node_config,
+    run_node_add, run_node_build, run_node_start, write_error_to_log,
 };
 use chrono::Local;
 use config::consts::{DEFAULT_MESSAGING_HOST, DEFAULT_MESSAGING_PORT, PeppyDirs};
@@ -371,6 +372,65 @@ async fn add_node_directly(
             .error_message
             .clone()
             .unwrap_or_else(|| "node_add failed".to_string());
+        (Err(err), final_log_path)
+    }
+}
+
+async fn build_node_directly(
+    ctx: &ProcessLaunchContext,
+    node_name: &str,
+    node_tag: &str,
+) -> (
+    std::result::Result<NodeBuildResult, String>,
+    Option<PathBuf>,
+) {
+    let log_dir = ctx.peppy_dirs.logs_dir_build();
+    let timestamp = Local::now().format("%Y%m%d_%H%M%S_%3f").to_string();
+    let log_filename = format!("{}_{}_{}.log", node_name, node_tag, timestamp);
+    let (log_file, log_path) = match create_action_log_file(&log_dir, &log_filename) {
+        Ok(r) => r,
+        Err(e) => return (Err(e), None),
+    };
+
+    let (feedback_tx, forwarder_handle) = spawn_feedback_forwarder(
+        &ctx.feedback_publisher,
+        LaunchFeedbackStep::AddingNode,
+        &ctx.log_file,
+    );
+
+    let action_context = NodeBuildActionContext {
+        node_stack: Arc::clone(&ctx.node_stack),
+        peppy_dirs: ctx.peppy_dirs.clone(),
+    };
+
+    let goal = NodeBuildGoal::new(node_name, node_tag, ctx.max_timeout_secs);
+    let log_file_for_timeout = log_file.clone();
+    let log_path_for_timeout = log_path.clone();
+    let max_timeout = Duration::from_secs(ctx.max_timeout_secs);
+
+    let result = match tokio::time::timeout(
+        max_timeout,
+        run_node_build(goal, action_context, feedback_tx, log_file, log_path),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => {
+            write_error_to_log(&log_file_for_timeout, "max timeout exceeded");
+            NodeBuildResult::failure(&log_path_for_timeout, "timeout: max timeout exceeded")
+        }
+    };
+
+    let _ = forwarder_handle.await;
+
+    let final_log_path = Some(result.log_path.clone());
+    if result.success {
+        (Ok(result), final_log_path)
+    } else {
+        let err = result
+            .error_message
+            .clone()
+            .unwrap_or_else(|| "node_build failed".to_string());
         (Err(err), final_log_path)
     }
 }
@@ -901,6 +961,35 @@ async fn add_nodes_to_stack(
             }
             Err(err) => {
                 let reason = format!("failed to add node {}: {}", key.label(), err);
+                return Err(restore_stack(ctx, backup_stack, reason).await);
+            }
+        }
+
+        // Now drive the build for the just-added entity. Add and build are
+        // separate daemon goals — `node_add` only registers the entity in
+        // `Added`; `node_build` advances it to `Ready`.
+        let (build_result, build_log_path) =
+            build_node_directly(ctx, &item.node_name, &item.node_tag).await;
+        let build_failed = build_result.as_ref().map(|r| !r.success).unwrap_or(true);
+        if let Some(path) = build_log_path {
+            add_log_paths.push(NodeAddLogEntry {
+                node_label: format!("{} (build)", key.label()),
+                log_path: path,
+                failed: build_failed,
+            });
+        }
+        match build_result {
+            Ok(result) => {
+                if !result.success {
+                    let inner = result
+                        .error_message
+                        .unwrap_or_else(|| "node_build failed".to_string());
+                    let reason = format!("failed to build node {}: {}", key.label(), inner);
+                    return Err(restore_stack(ctx, backup_stack, reason).await);
+                }
+            }
+            Err(err) => {
+                let reason = format!("failed to build node {}: {}", key.label(), err);
                 return Err(restore_stack(ctx, backup_stack, reason).await);
             }
         }

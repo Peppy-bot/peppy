@@ -281,6 +281,22 @@ fn next_entity_generation() -> u64 {
     NEXT_ENTITY_GENERATION.fetch_add(1, Ordering::Relaxed)
 }
 
+/// Build inputs populated by `node_add` and consumed by `node_build`. Lives
+/// on [`NodeEntity`] (not on [`NodeStage::Added`]) so add-time state can be
+/// threaded across the two daemon goals without widening the stage enum.
+///
+/// The `working_dir` is a temporary directory that holds the copied node
+/// source plus any generated peppygen; `node_build` hands it to
+/// [`NodeEntity::build`] inside [`BuildContext::working_dir`]. Both `node_add`
+/// (on overwrite) and [`crate::node_stack::NodeStack::remove_config`] are
+/// responsible for deleting an un-consumed `working_dir` to avoid leaking
+/// temp storage when the entity is discarded before build runs.
+#[derive(Debug, Clone)]
+pub struct PendingBuildInput {
+    pub working_dir: PathBuf,
+    pub env_vars: Vec<(String, String)>,
+}
+
 #[derive(Clone, Debug)]
 pub struct NodeEntity {
     config: NodeConfig,
@@ -298,6 +314,12 @@ pub struct NodeEntity {
     /// `push_config_impl`). `None` for the synthetic root entity, which
     /// has no add log.
     last_add_log_path: Option<PathBuf>,
+    /// Working dir + env vars prepared by `node_add` and consumed by
+    /// `node_build`. `Some` only while the entity is in `Added` waiting for
+    /// an explicit build. Taken (via `take_pending_build_input`) by the
+    /// build service before driving [`NodeEntity::build`], and cleaned up by
+    /// `NodeStack::push_config`/`remove_config` if the entity is discarded.
+    pending_build_input: Option<PendingBuildInput>,
 }
 
 impl NodeEntity {
@@ -312,6 +334,7 @@ impl NodeEntity {
             },
             generation: next_entity_generation(),
             last_add_log_path: None,
+            pending_build_input: None,
         }
     }
 
@@ -327,6 +350,29 @@ impl NodeEntity {
     /// rest of the entity transition.
     pub fn set_last_add_log_path(&mut self, path: PathBuf) {
         self.last_add_log_path = Some(path);
+    }
+
+    /// Stores the working dir + env vars that `node_build` will feed into
+    /// [`NodeEntity::build`]. Called by the `node_add` service immediately
+    /// after `push_config` publishes the entity in `Added`. Replaces any
+    /// previous pending input.
+    pub fn set_pending_build_input(&mut self, input: PendingBuildInput) {
+        self.pending_build_input = Some(input);
+    }
+
+    /// Removes and returns the pending build input stashed by `node_add`.
+    /// The `node_build` service calls this under a write lock before
+    /// driving [`NodeEntity::build`], so the stored working_dir can only be
+    /// consumed once.
+    pub fn take_pending_build_input(&mut self) -> Option<PendingBuildInput> {
+        self.pending_build_input.take()
+    }
+
+    /// Returns a reference to the currently-stashed pending build input, if
+    /// any. Used by cleanup paths (`push_config` overwrite,
+    /// `remove_config`) that need to delete the working_dir on disk.
+    pub fn pending_build_input(&self) -> Option<&PendingBuildInput> {
+        self.pending_build_input.as_ref()
     }
 
     /// Returns the entity's monotonic generation token. Bumped on every
@@ -946,6 +992,7 @@ impl NodeEntity {
             },
             generation: next_entity_generation(),
             last_add_log_path: None,
+            pending_build_input: None,
         }
     }
 
@@ -987,6 +1034,7 @@ impl NodeEntity {
             stage,
             generation: next_entity_generation(),
             last_add_log_path: None,
+            pending_build_input: None,
         }
     }
 
