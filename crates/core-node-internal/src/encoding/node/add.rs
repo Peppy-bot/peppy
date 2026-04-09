@@ -6,6 +6,7 @@ use crate::node_capnp;
 use capnp::message::Builder;
 use config::node::QoSProfile;
 use gix_url::Url as GitUrl;
+use node_stack::build_io::FeedbackStream;
 use peppylib::messaging::ActionGoalHandle;
 use peppylib::types::Payload;
 use peppylib::{ActionMessenger, MessengerHandle};
@@ -410,13 +411,13 @@ mod tests {
 
 /// Response to the NodeAdd goal request.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NodeAddGoalResponse {
+pub struct NodeActionGoalResponse {
     pub accepted: bool,
     pub log_path: PathBuf,
     pub rejection_reason: Option<String>,
 }
 
-impl NodeAddGoalResponse {
+impl NodeActionGoalResponse {
     pub fn accepted(log_path: impl Into<PathBuf>) -> Self {
         Self {
             accepted: true,
@@ -436,7 +437,8 @@ impl NodeAddGoalResponse {
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
-            let mut response = builder.init_root::<node_capnp::node_add_goal_response::Builder>();
+            let mut response =
+                builder.init_root::<node_capnp::node_action_goal_response::Builder>();
             response.set_accepted(self.accepted);
             response.set_log_path(self.log_path.to_string_lossy().as_ref());
             if let Some(ref reason) = self.rejection_reason {
@@ -448,7 +450,7 @@ impl NodeAddGoalResponse {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let response = reader.get_root::<node_capnp::node_add_goal_response::Reader>()?;
+        let response = reader.get_root::<node_capnp::node_action_goal_response::Reader>()?;
         Ok(Self {
             accepted: response.get_accepted(),
             log_path: PathBuf::from(response.get_log_path()?.to_str()?),
@@ -457,55 +459,53 @@ impl NodeAddGoalResponse {
     }
 }
 
-/// Feedback message for the NodeAdd action.
-/// Represents a single line of output from the add_cmd process.
+/// Feedback message for the NodeAdd / NodeBuild actions.
+/// Represents a single line of output from the spawned process or daemon.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NodeAddFeedback {
-    /// The stream type: "stdout", "stderr" or "warning"
-    pub stream: String,
-    /// The line of output
+pub struct NodeActionFeedback {
+    pub stream: FeedbackStream,
     pub line: String,
 }
 
-impl NodeAddFeedback {
+impl NodeActionFeedback {
     pub fn stdout(line: impl Into<String>) -> Self {
         Self {
-            stream: "stdout".to_string(),
+            stream: FeedbackStream::Stdout,
             line: line.into(),
         }
     }
 
     pub fn stderr(line: impl Into<String>) -> Self {
         Self {
-            stream: "stderr".to_string(),
+            stream: FeedbackStream::Stderr,
             line: line.into(),
         }
     }
 
     pub fn warning(line: impl Into<String>) -> Self {
         Self {
-            stream: "warning".to_string(),
+            stream: FeedbackStream::Warning,
             line: line.into(),
         }
     }
 
     pub fn is_stdout(&self) -> bool {
-        self.stream == "stdout"
+        matches!(self.stream, FeedbackStream::Stdout)
     }
 
     pub fn is_stderr(&self) -> bool {
-        self.stream == "stderr"
+        matches!(self.stream, FeedbackStream::Stderr)
     }
 
     pub fn is_warning(&self) -> bool {
-        self.stream == "warning"
+        matches!(self.stream, FeedbackStream::Warning)
     }
 
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
-            let mut feedback = builder.init_root::<node_capnp::node_add_feedback::Builder>();
-            feedback.set_stream(&self.stream);
+            let mut feedback = builder.init_root::<node_capnp::node_action_feedback::Builder>();
+            feedback.set_stream(self.stream.as_str());
             feedback.set_line(&self.line);
         }
         encode_message(&builder)
@@ -513,9 +513,19 @@ impl NodeAddFeedback {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let feedback = reader.get_root::<node_capnp::node_add_feedback::Reader>()?;
+        let feedback = reader.get_root::<node_capnp::node_action_feedback::Reader>()?;
+        let stream = match feedback.get_stream()?.to_str()? {
+            "stdout" => FeedbackStream::Stdout,
+            "stderr" => FeedbackStream::Stderr,
+            "warning" => FeedbackStream::Warning,
+            other => {
+                return Err(crate::Error::Decoding(format!(
+                    "unknown feedback stream: {other}"
+                )));
+            }
+        };
         Ok(Self {
-            stream: feedback.get_stream()?.to_str()?.to_owned(),
+            stream,
             line: feedback.get_line()?.to_str()?.to_owned(),
         })
     }

@@ -11,7 +11,7 @@ use config::consts::{
 };
 use config::node::QoSProfile;
 use config::test_helpers;
-use core_node::encoding::{NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse};
+use core_node::encoding::{NodeActionFeedback, NodeActionGoalResponse, NodeAddGoal};
 use core_node::names;
 use git2::{Repository, Signature};
 use gix_url::Url as GitUrl;
@@ -1824,7 +1824,8 @@ async fn listen_for_node_add_streams_stdout_and_stderr() {
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
     // Use wildcard caller IDs so mock pub/sub can match feedback topics with "*" segments.
-    let (feedback_tx, mut feedback_rx) = tokio::sync::mpsc::unbounded_channel::<NodeAddFeedback>();
+    let (feedback_tx, mut feedback_rx) =
+        tokio::sync::mpsc::unbounded_channel::<NodeActionFeedback>();
     let add_result = send_node_add_and_wait(
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
@@ -2095,7 +2096,7 @@ async fn listen_for_node_add_abandoned_action_does_not_block_next_goal() {
 
     // Verify first goal was accepted
     let first_goal_response_payload = first_action_handle.goal_response().payload();
-    let first_goal_response = NodeAddGoalResponse::decode(&first_goal_response_payload)
+    let first_goal_response = NodeActionGoalResponse::decode(&first_goal_response_payload)
         .expect("failed to decode first goal response");
     assert!(
         first_goal_response.accepted,
@@ -2330,7 +2331,8 @@ async fn node_add_same_node_shutdown_existing_instances() {
     .expect("write v2 marker");
 
     // Use wildcard caller IDs so mock pub/sub can match feedback topics with "*" segments.
-    let (feedback_tx, mut feedback_rx) = tokio::sync::mpsc::unbounded_channel::<NodeAddFeedback>();
+    let (feedback_tx, mut feedback_rx) =
+        tokio::sync::mpsc::unbounded_channel::<NodeActionFeedback>();
 
     let caller_handle = started_core_node.caller_handle.clone();
     let core_node_name = started_core_node.core_node_name.clone();
@@ -2831,7 +2833,8 @@ async fn listen_for_node_add_reports_excluded_dirs_in_feedback() {
     .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
-    let (feedback_tx, mut feedback_rx) = tokio::sync::mpsc::unbounded_channel::<NodeAddFeedback>();
+    let (feedback_tx, mut feedback_rx) =
+        tokio::sync::mpsc::unbounded_channel::<NodeActionFeedback>();
     let add_result = send_node_add_and_wait(
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
@@ -2920,7 +2923,8 @@ From: nowhere
     std::fs::write(source_dir.path().join("apptainer.def"), broken_def)
         .expect("failed to write broken apptainer definition");
 
-    let (feedback_tx, mut feedback_rx) = tokio::sync::mpsc::unbounded_channel::<NodeAddFeedback>();
+    let (feedback_tx, mut feedback_rx) =
+        tokio::sync::mpsc::unbounded_channel::<NodeActionFeedback>();
     let add_result = send_node_add_and_wait(
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
@@ -4675,7 +4679,8 @@ async fn listen_for_node_add_variant_manifest_ignored_warning() {
     }"#;
     write_peppy_json5(&variant_dir, variant_config);
 
-    let (feedback_tx, mut feedback_rx) = tokio::sync::mpsc::unbounded_channel::<NodeAddFeedback>();
+    let (feedback_tx, mut feedback_rx) =
+        tokio::sync::mpsc::unbounded_channel::<NodeActionFeedback>();
 
     let add_result = send_node_add_and_wait_with_variant(
         &started_core_node.caller_handle,
@@ -5239,7 +5244,7 @@ async fn listen_for_node_add_rejects_second_goal_when_action_in_progress() {
     .expect("first goal should be sent");
 
     let first_response_payload = first_action_handle.goal_response().payload();
-    let first_response = NodeAddGoalResponse::decode(&first_response_payload)
+    let first_response = NodeActionGoalResponse::decode(&first_response_payload)
         .expect("failed to decode first goal response");
     assert!(first_response.accepted, "first goal should be accepted");
 
@@ -5328,7 +5333,7 @@ async fn listen_for_node_add_force_overrides_in_progress_action() {
     .expect("first goal should be sent");
 
     let first_response_payload = first_action_handle.goal_response().payload();
-    let first_response = NodeAddGoalResponse::decode(&first_response_payload)
+    let first_response = NodeActionGoalResponse::decode(&first_response_payload)
         .expect("failed to decode first goal response");
     assert!(first_response.accepted, "first goal should be accepted");
 
@@ -5505,7 +5510,8 @@ async fn listen_for_node_git_add_emits_clone_feedback() {
 
     let repo_url = GitUrl::try_from(git_repo_path.as_path()).expect("git repo path should parse");
 
-    let (feedback_tx, mut feedback_rx) = tokio::sync::mpsc::unbounded_channel::<NodeAddFeedback>();
+    let (feedback_tx, mut feedback_rx) =
+        tokio::sync::mpsc::unbounded_channel::<NodeActionFeedback>();
     let add_result = send_node_add_and_wait(
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
@@ -5561,7 +5567,8 @@ async fn listen_for_node_http_add_emits_download_feedback() {
     let (_bundle_dir, bundle_bytes) = create_minimal_http_bundle(TARGET_NODE_NAME, TARGET_NODE_TAG);
     let (server, url) = serve_bundle_over_http(bundle_bytes);
 
-    let (feedback_tx, mut feedback_rx) = tokio::sync::mpsc::unbounded_channel::<NodeAddFeedback>();
+    let (feedback_tx, mut feedback_rx) =
+        tokio::sync::mpsc::unbounded_channel::<NodeActionFeedback>();
     let add_result = send_node_add_and_wait(
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,

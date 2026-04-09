@@ -50,7 +50,10 @@ fn push_config_creates_entity_in_added_stage() {
     let handle = stack.find("sensor", "1.0.0").expect("entity should exist");
     let guard = handle.read();
 
-    if let NodeStage::Added { config_path: cp } = guard.stage() {
+    if let NodeStage::Added {
+        config_path: cp, ..
+    } = guard.stage()
+    {
         assert_eq!(cp, &config_path);
     } else {
         panic!("expected Added stage, got {:?}", guard.stage());
@@ -240,7 +243,9 @@ async fn push_config_resets_existing_entity_to_added() {
     let handle_after = stack.find("sensor", "1.0.0").expect("entity should exist");
     let guard = handle_after.read();
     match guard.stage() {
-        NodeStage::Added { config_path: cp } => {
+        NodeStage::Added {
+            config_path: cp, ..
+        } => {
             assert_eq!(cp, &config_path_v2);
         }
         other => panic!("expected Added after re-push, got {:?}", other),
@@ -1043,6 +1048,7 @@ mod backwards_transitions_are_rejected {
     fn added() -> NodeStage {
         NodeStage::Added {
             config_path: PathBuf::from("/tmp/sensor"),
+            pending: None,
         }
     }
 
@@ -1318,7 +1324,7 @@ async fn restore_snapshot_if_matches_no_op_on_generation_drift() {
     {
         let guard = handle.read();
         match guard.stage() {
-            NodeStage::Added { config_path } => {
+            NodeStage::Added { config_path, .. } => {
                 assert_eq!(
                     config_path, &config_path_v2,
                     "concurrent replacement must stay in place"

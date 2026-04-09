@@ -124,6 +124,86 @@ pub(crate) fn create_action_log_file(
     Ok((Arc::new(StdMutex::new(file)), log_path))
 }
 
+use crate::encoding::NodeActionFeedback;
+use peppylib::messaging::TopicPublisher;
+use tokio::sync::{Mutex, mpsc};
+use tokio::task::JoinHandle;
+
+/// Handle to the "currently-running goal" slot shared by `node_add` and
+/// `node_build`. Both goals treat an in-flight run as either a rejection
+/// (without `--force`) or an abort-and-replace (with `--force`).
+pub(crate) type RunningSlot = (
+    Arc<Mutex<Option<(Instant, u64)>>>,
+    Arc<Mutex<Option<JoinHandle<()>>>>,
+);
+
+/// Outcome of [`try_acquire_running_slot`]. On success the caller has
+/// transitioned the action state to `Running` and stored the `(start, timeout)`
+/// stamp; on rejection the caller should return the produced payload verbatim.
+pub(crate) enum RunningSlotOutcome {
+    Acquired,
+    Rejected { remaining_secs: u64 },
+}
+
+/// Acquires the shared running-slot guard used by `node_add` and
+/// `node_build` goal handlers. If the action is already `Running` and
+/// `force` is false, returns `Rejected { remaining_secs }` so the caller
+/// can format an action-specific rejection message. If `force` is true the
+/// previous task is aborted and the slot is taken over.
+pub(crate) async fn try_acquire_running_slot<R: super::action_loop::ActionResult>(
+    state: &Arc<Mutex<super::action_loop::ActionState<R>>>,
+    slot: &RunningSlot,
+    force: bool,
+    timeout_secs: u64,
+) -> RunningSlotOutcome {
+    use super::action_loop::ActionState;
+    let (running_since, running_task) = slot;
+    let mut state_guard = state.lock().await;
+    if matches!(*state_guard, ActionState::Running) {
+        if !force {
+            let running_guard = running_since.lock().await;
+            let remaining_secs = running_guard
+                .map(|(started_at, timeout_secs)| {
+                    std::time::Duration::from_secs(timeout_secs)
+                        .saturating_sub(started_at.elapsed())
+                        .as_secs()
+                })
+                .unwrap_or(0);
+            return RunningSlotOutcome::Rejected { remaining_secs };
+        }
+        let mut task_guard = running_task.lock().await;
+        if let Some(handle) = task_guard.take() {
+            handle.abort();
+        }
+    }
+    *state_guard = ActionState::Running;
+    *running_since.lock().await = Some((Instant::now(), timeout_secs));
+    RunningSlotOutcome::Acquired
+}
+
+/// Spawns a task that reads [`FeedbackLine`] values from the returned
+/// sender and publishes them as [`NodeActionFeedback`] on the given topic.
+/// Drop the sender to signal completion, then `.await` the join handle to
+/// drain remaining messages.
+pub(crate) fn spawn_node_feedback_consumer(
+    feedback_publisher: TopicPublisher,
+) -> (mpsc::UnboundedSender<FeedbackLine>, JoinHandle<()>) {
+    let (feedback_tx, mut feedback_rx) = mpsc::unbounded_channel::<FeedbackLine>();
+    let handle = tokio::spawn(async move {
+        while let Some(line) = feedback_rx.recv().await {
+            let feedback = match line.stream {
+                FeedbackStream::Stdout => NodeActionFeedback::stdout(&line.line),
+                FeedbackStream::Stderr => NodeActionFeedback::stderr(&line.line),
+                FeedbackStream::Warning => NodeActionFeedback::warning(&line.line),
+            };
+            if let Ok(payload) = feedback.encode() {
+                let _ = feedback_publisher.publish(payload).await;
+            }
+        }
+    });
+    (feedback_tx, handle)
+}
+
 static SCCACHE_AVAILABLE: OnceLock<bool> = OnceLock::new();
 
 /// Checks whether `sccache` is available on the system PATH.

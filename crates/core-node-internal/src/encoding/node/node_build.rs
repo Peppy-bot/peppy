@@ -1,4 +1,7 @@
 //! Encoding types for the NodeBuild action (streaming version with feedback).
+//!
+//! `NodeBuild` uses [`NodeActionGoalResponse`] and [`NodeActionFeedback`] —
+//! the shared streaming-node-action schemas defined alongside `NodeAdd`.
 
 use crate::Result;
 use crate::encoding::{decode_message, encode_message, optional_text};
@@ -94,137 +97,20 @@ impl NodeBuildGoal {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NodeBuildGoalResponse {
-    pub accepted: bool,
-    pub log_path: PathBuf,
-    pub rejection_reason: Option<String>,
-}
-
-impl NodeBuildGoalResponse {
-    pub fn accepted(log_path: impl Into<PathBuf>) -> Self {
-        Self {
-            accepted: true,
-            log_path: log_path.into(),
-            rejection_reason: None,
-        }
-    }
-
-    pub fn rejected(reason: impl Into<String>) -> Self {
-        Self {
-            accepted: false,
-            log_path: PathBuf::new(),
-            rejection_reason: Some(reason.into()),
-        }
-    }
-
-    pub fn encode(&self) -> Result<Payload> {
-        let mut builder = Builder::new_default();
-        {
-            let mut response = builder.init_root::<node_capnp::node_build_goal_response::Builder>();
-            response.set_accepted(self.accepted);
-            response.set_log_path(self.log_path.to_string_lossy().as_ref());
-            if let Some(ref reason) = self.rejection_reason {
-                response.set_rejection_reason(reason);
-            }
-        }
-        encode_message(&builder)
-    }
-
-    pub fn decode(data: &[u8]) -> Result<Self> {
-        let reader = decode_message(data)?;
-        let response = reader.get_root::<node_capnp::node_build_goal_response::Reader>()?;
-        Ok(Self {
-            accepted: response.get_accepted(),
-            log_path: PathBuf::from(response.get_log_path()?.to_str()?),
-            rejection_reason: optional_text(response.get_rejection_reason()?.to_str()?),
-        })
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NodeBuildFeedback {
-    pub stream: String,
-    pub line: String,
-}
-
-impl NodeBuildFeedback {
-    pub fn stdout(line: impl Into<String>) -> Self {
-        Self {
-            stream: "stdout".to_string(),
-            line: line.into(),
-        }
-    }
-
-    pub fn stderr(line: impl Into<String>) -> Self {
-        Self {
-            stream: "stderr".to_string(),
-            line: line.into(),
-        }
-    }
-
-    pub fn warning(line: impl Into<String>) -> Self {
-        Self {
-            stream: "warning".to_string(),
-            line: line.into(),
-        }
-    }
-
-    pub fn is_stdout(&self) -> bool {
-        self.stream == "stdout"
-    }
-
-    pub fn is_stderr(&self) -> bool {
-        self.stream == "stderr"
-    }
-
-    pub fn is_warning(&self) -> bool {
-        self.stream == "warning"
-    }
-
-    pub fn encode(&self) -> Result<Payload> {
-        let mut builder = Builder::new_default();
-        {
-            let mut feedback = builder.init_root::<node_capnp::node_build_feedback::Builder>();
-            feedback.set_stream(&self.stream);
-            feedback.set_line(&self.line);
-        }
-        encode_message(&builder)
-    }
-
-    pub fn decode(data: &[u8]) -> Result<Self> {
-        let reader = decode_message(data)?;
-        let feedback = reader.get_root::<node_capnp::node_build_feedback::Reader>()?;
-        Ok(Self {
-            stream: feedback.get_stream()?.to_str()?.to_owned(),
-            line: feedback.get_line()?.to_str()?.to_owned(),
-        })
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeBuildResult {
     pub snapshot_path: PathBuf,
     pub log_path: PathBuf,
     pub success: bool,
     pub error_message: Option<String>,
-    pub node_name: Option<String>,
-    pub node_tag: Option<String>,
 }
 
 impl NodeBuildResult {
-    pub fn success(
-        snapshot_path: impl Into<PathBuf>,
-        log_path: impl Into<PathBuf>,
-        node_name: impl Into<String>,
-        node_tag: impl Into<String>,
-    ) -> Self {
+    pub fn success(snapshot_path: impl Into<PathBuf>, log_path: impl Into<PathBuf>) -> Self {
         Self {
             snapshot_path: snapshot_path.into(),
             log_path: log_path.into(),
             success: true,
             error_message: None,
-            node_name: Some(node_name.into()),
-            node_tag: Some(node_tag.into()),
         }
     }
 
@@ -234,8 +120,6 @@ impl NodeBuildResult {
             log_path: log_path.into(),
             success: false,
             error_message: Some(error_message.into()),
-            node_name: None,
-            node_tag: None,
         }
     }
 
@@ -249,12 +133,6 @@ impl NodeBuildResult {
             }
             result.set_snapshot_path(self.snapshot_path.to_string_lossy().as_ref());
             result.set_log_path(self.log_path.to_string_lossy().as_ref());
-            if let Some(ref node_name) = self.node_name {
-                result.set_node_name(node_name);
-            }
-            if let Some(ref node_tag) = self.node_tag {
-                result.set_node_tag(node_tag);
-            }
         }
         encode_message(&builder)
     }
@@ -267,8 +145,6 @@ impl NodeBuildResult {
             log_path: PathBuf::from(result.get_log_path()?.to_str()?),
             success: result.get_success(),
             error_message: optional_text(result.get_error_message()?.to_str()?),
-            node_name: optional_text(result.get_node_name()?.to_str()?),
-            node_tag: optional_text(result.get_node_tag()?.to_str()?),
         })
     }
 

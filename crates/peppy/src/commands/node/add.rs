@@ -1,8 +1,7 @@
 use crate::context::DaemonConnection;
 use core_node::encoding::{
-    NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAddResult, NodeBuildFeedback,
-    NodeBuildGoal, NodeBuildGoalResponse, NodeBuildResult, NodeInfoRequest, NodeInfoResponse,
-    NodeSource,
+    NodeActionFeedback, NodeActionGoalResponse, NodeAddGoal, NodeAddResult, NodeBuildGoal,
+    NodeBuildResult, NodeInfoRequest, NodeInfoResponse, NodeSource,
 };
 use peppylib::MessengerHandle;
 use std::io::BufRead;
@@ -148,7 +147,7 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
 
     // Read the goal response to get the log file path
     let goal_response_payload = action_handle.goal_response().payload();
-    let goal_response = NodeAddGoalResponse::decode(&goal_response_payload)
+    let goal_response = NodeActionGoalResponse::decode(&goal_response_payload)
         .map_err(|e| Error::ExecutionFailed(format!("Failed to decode goal response: {}", e)))?;
 
     if !goal_response.accepted {
@@ -170,7 +169,7 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
         &timeouts,
         &mut scrolling_output,
         |payload, output| {
-            if let Ok(feedback) = NodeAddFeedback::decode(payload) {
+            if let Ok(feedback) = NodeActionFeedback::decode(payload) {
                 output.add_line(&feedback.line, feedback.is_stderr());
             }
         },
@@ -263,7 +262,7 @@ async fn run_node_build_goal(
         .map_err(|e| Error::ExecutionFailed(format!("Failed to send node_build goal: {}", e)))?;
 
     let goal_response_payload = action_handle.goal_response().payload();
-    let goal_response = NodeBuildGoalResponse::decode(&goal_response_payload).map_err(|e| {
+    let goal_response = NodeActionGoalResponse::decode(&goal_response_payload).map_err(|e| {
         Error::ExecutionFailed(format!("Failed to decode build goal response: {}", e))
     })?;
 
@@ -286,7 +285,7 @@ async fn run_node_build_goal(
         timeouts,
         &mut scrolling_output,
         |payload, output| {
-            if let Ok(feedback) = NodeBuildFeedback::decode(payload) {
+            if let Ok(feedback) = NodeActionFeedback::decode(payload) {
                 output.add_line(&feedback.line, feedback.is_stderr());
             }
         },

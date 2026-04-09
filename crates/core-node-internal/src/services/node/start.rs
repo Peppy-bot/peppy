@@ -1,7 +1,7 @@
 use super::super::action_loop::{ActionResult, ActionState, GoalHandler, run_action_loop};
 use super::{FeedbackLine, FeedbackStream, create_action_log_file, write_error_to_log};
 use crate::Result;
-use crate::encoding::{NodeStartFeedback, NodeStartGoal, NodeStartGoalResponse, NodeStartResult};
+use crate::encoding::{NodeActionFeedback, NodeActionGoalResponse, NodeStartGoal, NodeStartResult};
 use crate::names;
 use config::consts::PeppyDirs;
 use config::node::Name;
@@ -365,7 +365,7 @@ async fn handle_goal_request(
     let goal = match NodeStartGoal::decode(payload.as_ref()) {
         Ok(goal) => goal,
         Err(e) => {
-            let response = NodeStartGoalResponse::rejected(format!("invalid payload: {}", e));
+            let response = NodeActionGoalResponse::rejected(format!("invalid payload: {}", e));
             return response
                 .encode()
                 .map_err(|e| peppylib::PeppyError::InvalidServiceRequest {
@@ -386,7 +386,7 @@ async fn handle_goal_request(
                         .as_secs()
                 })
                 .unwrap_or(0);
-            let response = NodeStartGoalResponse::rejected(format!(
+            let response = NodeActionGoalResponse::rejected(format!(
                 "action already in progress (times out in {remaining}s)"
             ));
             return response
@@ -407,7 +407,7 @@ async fn handle_goal_request(
             let error_msg = format!("Failed to parse PEPPY_RUNTIME_CONFIG: {}", e);
             let mut state_guard = state.lock().await;
             *state_guard = ActionState::Rejected;
-            let response = NodeStartGoalResponse::rejected(&error_msg);
+            let response = NodeActionGoalResponse::rejected(&error_msg);
             return response
                 .encode()
                 .map_err(|e| peppylib::PeppyError::InvalidServiceRequest {
@@ -436,7 +436,7 @@ async fn handle_goal_request(
             debug!("{}", error_msg);
             let mut state_guard = state.lock().await;
             *state_guard = ActionState::Rejected;
-            let response = NodeStartGoalResponse::rejected(&error_msg);
+            let response = NodeActionGoalResponse::rejected(&error_msg);
             return response
                 .encode()
                 .map_err(|e| peppylib::PeppyError::InvalidServiceRequest {
@@ -454,15 +454,15 @@ async fn handle_goal_request(
     let state_clone = Arc::clone(&state);
     tokio::spawn(async move {
         // Create a channel for feedback and spawn a consumer that encodes
-        // FeedbackLine values as NodeStartFeedback and publishes to the topic.
+        // FeedbackLine values as NodeActionFeedback and publishes to the topic.
         let (feedback_tx, mut feedback_rx) = mpsc::unbounded_channel::<FeedbackLine>();
         let feedback_publisher_for_consumer = feedback_publisher.clone();
         let _consumer_handle = tokio::spawn(async move {
             while let Some(line) = feedback_rx.recv().await {
                 let feedback = match line.stream {
-                    FeedbackStream::Stdout => NodeStartFeedback::stdout(&line.line),
-                    FeedbackStream::Stderr => NodeStartFeedback::stderr(&line.line),
-                    FeedbackStream::Warning => NodeStartFeedback::warning(&line.line),
+                    FeedbackStream::Stdout => NodeActionFeedback::stdout(&line.line),
+                    FeedbackStream::Stderr => NodeActionFeedback::stderr(&line.line),
+                    FeedbackStream::Warning => NodeActionFeedback::warning(&line.line),
                 };
                 if let Ok(payload) = feedback.encode() {
                     let _ = feedback_publisher_for_consumer.publish(payload).await;
@@ -484,7 +484,7 @@ async fn handle_goal_request(
         *state_guard = ActionState::Completed { result };
     });
 
-    let response = NodeStartGoalResponse::accepted(&log_path);
+    let response = NodeActionGoalResponse::accepted(&log_path);
     response
         .encode()
         .map_err(|e| peppylib::PeppyError::InvalidServiceRequest {

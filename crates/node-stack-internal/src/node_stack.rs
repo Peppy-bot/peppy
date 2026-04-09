@@ -6,6 +6,7 @@ mod validation;
 pub use entity::{
     BuildContext, DependencySpec, InstanceState, NodeEntity, NodeStage, OutputSinks,
     PendingBuildInput, SerializedNodeGraph, StartContext, StartedInstanceCtx, TrackedNodeInstance,
+    WorkingDir,
 };
 pub use start_steps::extract_tar_zst;
 pub use validation::{collect_dependency_specs, validate_dependency_specs};
@@ -424,12 +425,9 @@ impl NodeStackInner {
                     artifact_path: guard.artifact_path().map(|p| p.to_path_buf()),
                 };
 
-                // If the entity we're replacing had a pending build input
-                // (Added but never built), remove its working_dir before we
-                // drop the reference — otherwise the temp directory leaks.
-                if let Some(pending) = guard.pending_build_input() {
-                    let _ = std::fs::remove_dir_all(&pending.working_dir);
-                }
+                // The entity's `PendingBuildInput` (if any) is dropped
+                // along with the old state below; its `WorkingDir` RAII
+                // handle removes the temp dir on last-reference drop.
 
                 // Replace the entity in-place under the still-held write
                 // lock. The same `Arc` handle is preserved so any external
@@ -696,9 +694,8 @@ impl NodeStack {
                 node_tag: tag.to_string(),
             });
         }
-        if let Some(pending) = entity_guard.pending_build_input() {
-            let _ = std::fs::remove_dir_all(&pending.working_dir);
-        }
+        // Dropping `entity_guard` below will drop any `PendingBuildInput`,
+        // whose `WorkingDir` RAII handle cleans up the temp dir.
         guard.remove_entity(&key);
         // Keep `entity_guard` alive until *after* the unlink so an outside
         // thread holding a clone of the handle still cannot mutate the
@@ -752,11 +749,8 @@ impl NodeStack {
             return false;
         }
 
-        if let Some(current) = guard.graph.node_weight(index)
-            && let Some(pending) = current.read().pending_build_input()
-        {
-            let _ = std::fs::remove_dir_all(&pending.working_dir);
-        }
+        // `WorkingDir` RAII handle inside the dropped entity cleans up
+        // the pending temp dir automatically.
         guard.remove_entity(&key);
         true
     }

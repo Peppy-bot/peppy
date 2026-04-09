@@ -8,7 +8,7 @@ use common::{
 };
 use config::consts::DEFAULT_ALPINE_BASE_IMAGE;
 use config::node::Name as NodeName;
-use core_node::encoding::NodeStartFeedback;
+use core_node::encoding::NodeActionFeedback;
 use peppylib::messaging::MessengerHandle;
 use peppylib::services::health::listen_for_node_health;
 use peppylib::services::ready::listen_for_node_ready;
@@ -371,7 +371,7 @@ async fn listen_for_node_start_streams_stdout_and_stderr() {
     );
 
     let (feedback_tx, mut feedback_rx) =
-        tokio::sync::mpsc::unbounded_channel::<NodeStartFeedback>();
+        tokio::sync::mpsc::unbounded_channel::<NodeActionFeedback>();
     let start_response = send_node_start_and_wait(
         &started.caller_handle,
         &started.core_node_name,
@@ -985,7 +985,7 @@ async fn listen_for_node_start_abandoned_action_does_not_block_next_goal() {
     // Verify first goal was accepted
     let first_goal_response_payload = first_action_handle.goal_response().payload();
     let first_goal_response =
-        core_node::encoding::NodeStartGoalResponse::decode(&first_goal_response_payload)
+        core_node::encoding::NodeActionGoalResponse::decode(&first_goal_response_payload)
             .expect("failed to decode first goal response");
     assert!(
         first_goal_response.accepted,

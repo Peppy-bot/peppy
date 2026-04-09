@@ -9,9 +9,7 @@ use super::{
     sanitize_repo_path, write_error_to_log,
 };
 use crate::Result;
-use crate::encoding::{
-    NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAddResult, NodeSource,
-};
+use crate::encoding::{NodeActionGoalResponse, NodeAddGoal, NodeAddResult, NodeSource};
 use crate::names;
 use chrono::Local;
 use config::consts::{NODE_CONFIG_FILE, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH, PeppyDirs};
@@ -1016,12 +1014,12 @@ use super::variant::{resolve_variant, variant_label};
 
 /// Encodes a rejected goal response, mapping encoding errors to `PeppyError`.
 fn encode_rejected_goal(reason: impl Into<String>) -> PeppyResult<Payload> {
-    NodeAddGoalResponse::rejected(reason).encode().map_err(|e| {
-        peppylib::PeppyError::InvalidServiceRequest {
+    NodeActionGoalResponse::rejected(reason)
+        .encode()
+        .map_err(|e| peppylib::PeppyError::InvalidServiceRequest {
             identifier: "node_add_goal".to_string(),
             reason: format!("Failed to encode response: {}", e),
-        }
-    })
+        })
 }
 
 /// Runs the full node-add pipeline: resolves the source, renames the log file
@@ -1276,34 +1274,18 @@ async fn handle_goal_request(
         Err(e) => return encode_rejected_goal(format!("invalid payload: {}", e)),
     };
 
-    // Check if already running and mark as running if not
-    {
-        let mut state_guard = state.lock().await;
-        if matches!(*state_guard, ActionState::Running) {
-            if !goal.force {
-                let running_guard = running_since.lock().await;
-                let remaining = running_guard
-                    .map(|(started_at, timeout_secs)| {
-                        Duration::from_secs(timeout_secs)
-                            .saturating_sub(started_at.elapsed())
-                            .as_secs()
-                    })
-                    .unwrap_or(0);
-                return encode_rejected_goal(format!(
-                    "action already in progress (times out in {remaining}s), \
-                     use `--force` to force adding the node"
-                ));
-            }
-
-            // Force mode: abort the old task and reset state
-            debug!("Force flag set: aborting previous node_add task");
-            let mut task_guard = running_task.lock().await;
-            if let Some(handle) = task_guard.take() {
-                handle.abort();
-            }
+    let slot = (running_since.clone(), running_task.clone());
+    match super::try_acquire_running_slot(&state, &slot, goal.force, goal.timeout_secs).await {
+        super::RunningSlotOutcome::Acquired => {}
+        super::RunningSlotOutcome::Rejected { remaining_secs } => {
+            return encode_rejected_goal(format!(
+                "action already in progress (times out in {remaining_secs}s), \
+                 use `--force` to force adding the node"
+            ));
         }
-        *state_guard = ActionState::Running;
-        *running_since.lock().await = Some((Instant::now(), goal.timeout_secs));
+    }
+    if goal.force {
+        debug!("Force flag set: aborting previous node_add task");
     }
 
     match &goal.source {
@@ -1343,26 +1325,11 @@ async fn handle_goal_request(
 
     debug!("Created log file for node add: {}", log_path.display());
 
-    // Process the add operation in a separate task to not block goal response.
     let state_clone = Arc::clone(&state);
     let log_path_clone = log_path.clone();
     let task_handle = tokio::spawn(async move {
-        // Create a channel for feedback and spawn a consumer that encodes
-        // FeedbackLine values as NodeAddFeedback and publishes to the topic.
-        let (feedback_tx, mut feedback_rx) = mpsc::unbounded_channel::<FeedbackLine>();
-        let feedback_publisher_for_consumer = feedback_publisher.clone();
-        let consumer_handle = tokio::spawn(async move {
-            while let Some(line) = feedback_rx.recv().await {
-                let feedback = match line.stream {
-                    FeedbackStream::Stdout => NodeAddFeedback::stdout(&line.line),
-                    FeedbackStream::Stderr => NodeAddFeedback::stderr(&line.line),
-                    FeedbackStream::Warning => NodeAddFeedback::warning(&line.line),
-                };
-                if let Ok(payload) = feedback.encode() {
-                    let _ = feedback_publisher_for_consumer.publish(payload).await;
-                }
-            }
-        });
+        let (feedback_tx, consumer_handle) =
+            super::spawn_node_feedback_consumer(feedback_publisher);
 
         let result = run_node_add(
             goal,
@@ -1383,7 +1350,7 @@ async fn handle_goal_request(
     // Store the handle so a future --force call can abort this task.
     *running_task.lock().await = Some(task_handle);
 
-    let response = NodeAddGoalResponse::accepted(&log_path);
+    let response = NodeActionGoalResponse::accepted(&log_path);
     response
         .encode()
         .map_err(|e| peppylib::PeppyError::InvalidServiceRequest {
@@ -1627,14 +1594,9 @@ async fn process_node_add(
     }
 
     // Push the node config into the stack as an `Added` entity. The
-    // config_path is the source `peppy.json5` (the user-owned location);
-    // the entity will be advanced to `Building`/`Ready` by the separate
-    // `node_build` daemon goal, which consumes the pending build input we
-    // stash on the entity below.
-    //
-    // The previous entity (if any) is replaced in-place by `push_config`.
-    // `node_add` no longer owns build-failure rollback — that responsibility
-    // moved to `node_build` along with the build phase itself.
+    // config_path is the source `peppy.json5` (the user-owned location).
+    // The `node_build` goal consumes the pending build input we stash
+    // on the entity below.
     let config_path_for_stack = source_path.join(NODE_CONFIG_FILE);
     if let Err(e) = ctx.action.node_stack.push_config_capturing_previous(
         node_config.clone(),
@@ -1662,19 +1624,30 @@ async fn process_node_add(
     // consume, and record the add log path on the entity so `peppy node info`
     // can surface it. All under the same write lock so observers see a
     // consistent state.
+    //
+    // Ownership of `working_dir` transfers to the entity here; suppress the
+    // RAII guard so cleanup happens via the build path or via node_stack on
+    // entity removal/overwrite.
+    let owned_working_dir = working_dir_cleanup
+        .take()
+        .unwrap_or_else(|| working_dir.clone());
     {
         let mut guard = entity_handle.write();
         guard.set_last_add_log_path(ctx.log_path.clone());
-        guard.set_pending_build_input(node_stack::PendingBuildInput {
-            working_dir: working_dir.clone(),
-            env_vars: env_vars.clone(),
-        });
+        if let Err(stage) = guard.set_pending_build_input(node_stack::PendingBuildInput {
+            working_dir: Arc::new(node_stack::WorkingDir::new(owned_working_dir)),
+            env_vars,
+        }) {
+            // Would happen only if `push_config` above somehow landed the
+            // entity in a non-`Added` stage — which the stack API forbids.
+            let msg = format!(
+                "internal error: just-pushed entity {}:{} is in stage {stage} instead of Added",
+                node_name, node_tag
+            );
+            write_error_to_log(&ctx.log_file, &msg);
+            return NodeAddResult::failure(&ctx.log_path, msg);
+        }
     }
-
-    // The temp working_dir is now owned by the entity (via pending_build_input).
-    // Suppress the RAII guard so cleanup happens via the build path or via
-    // node_stack on entity removal/overwrite — not when this function returns.
-    let _ = working_dir_cleanup.take();
 
     debug!("Added node {}:{} (pending build)", node_name, node_tag);
 

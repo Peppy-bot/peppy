@@ -69,7 +69,11 @@ struct NodeAddVariantSource {
     httpSha256 @3 :Text;
 }
 
-struct NodeAddGoalResponse {
+# Shared goal-response and feedback schemas for streaming node-level
+# actions (NodeAdd, NodeBuild). Both actions produce the same
+# accepted/logPath/rejectionReason trio on goal submission and stream
+# stdout/stderr/warning lines via the same feedback shape.
+struct NodeActionGoalResponse {
     # Whether the goal was accepted
     accepted @0 :Bool;
     # Path to the log file (empty if rejected)
@@ -78,8 +82,8 @@ struct NodeAddGoalResponse {
     rejectionReason @2 :Text;
 }
 
-struct NodeAddFeedback {
-    # Type of output: "stdout" or "stderr"
+struct NodeActionFeedback {
+    # Type of output: "stdout", "stderr", or "warning"
     stream @0 :Text;
     # The line of output
     line @1 :Text;
@@ -110,24 +114,11 @@ struct NodeBuildGoal {
     force @3 :Bool;
 }
 
-struct NodeBuildGoalResponse {
-    accepted @0 :Bool;
-    logPath @1 :Text;
-    rejectionReason @2 :Text;
-}
-
-struct NodeBuildFeedback {
-    stream @0 :Text;
-    line @1 :Text;
-}
-
 struct NodeBuildResult {
     success @0 :Bool;
     errorMessage @1 :Text;
     snapshotPath @2 :Text;
     logPath @3 :Text;
-    nodeName @4 :Text;
-    nodeTag @5 :Text;
 }
 
 # Node Init service
@@ -177,22 +168,6 @@ struct NodeStartGoal {
     envVars @3 :List(EnvVar);
     # Timeout in seconds for the start operation (used to report remaining time when busy)
     timeoutSecs @4 :UInt64;
-}
-
-struct NodeStartGoalResponse {
-    # Whether the goal was accepted
-    accepted @0 :Bool;
-    # Path to the log file (empty if rejected)
-    logPath @1 :Text;
-    # Rejection reason (empty if accepted)
-    rejectionReason @2 :Text;
-}
-
-struct NodeStartFeedback {
-    # Type of output: "stdout" or "stderr"
-    stream @0 :Text;
-    # The line of output
-    line @1 :Text;
 }
 
 struct NodeStartResult {

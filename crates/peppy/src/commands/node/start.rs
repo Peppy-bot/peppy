@@ -2,7 +2,7 @@ use config::AnyType;
 use config::launcher::Name;
 use config::runtime::{NodeInstanceConfig, RuntimeConfig};
 use core_node::encoding::{
-    NodeStartFeedback, NodeStartGoal, NodeStartGoalResponse, NodeStartResult,
+    NodeActionFeedback, NodeActionGoalResponse, NodeStartGoal, NodeStartResult,
 };
 use names_generator2::get_random;
 use peppylib::MessengerHandle;
@@ -193,7 +193,7 @@ pub async fn start_instance_async(
 
     // Decode the goal response to get log_path
     let goal_response_payload = action_handle.goal_response().payload();
-    let goal_response = NodeStartGoalResponse::decode(&goal_response_payload)
+    let goal_response = NodeActionGoalResponse::decode(&goal_response_payload)
         .map_err(|e| Error::ExecutionFailed(format!("Failed to decode goal response: {}", e)))?;
 
     if !goal_response.accepted {
@@ -215,7 +215,7 @@ pub async fn start_instance_async(
         timeouts,
         &mut scrolling_output,
         |payload, output| {
-            if let Ok(feedback) = NodeStartFeedback::decode(payload) {
+            if let Ok(feedback) = NodeActionFeedback::decode(payload) {
                 output.add_line(&feedback.line, feedback.is_stderr());
             }
         },

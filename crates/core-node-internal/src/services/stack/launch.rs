@@ -394,7 +394,7 @@ async fn build_node_directly(
 
     let (feedback_tx, forwarder_handle) = spawn_feedback_forwarder(
         &ctx.feedback_publisher,
-        LaunchFeedbackStep::AddingNode,
+        LaunchFeedbackStep::BuildingNode,
         &ctx.log_file,
     );
 

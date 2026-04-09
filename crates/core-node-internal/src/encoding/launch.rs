@@ -191,6 +191,7 @@ impl LaunchGoalResponse {
 pub enum LaunchFeedbackStep {
     LauncherStep,
     AddingNode,
+    BuildingNode,
     StartingNode,
 }
 /// Feedback message for the Launch action.
@@ -239,6 +240,7 @@ impl LaunchFeedback {
             feedback.set_step(match self.step {
                 LaunchFeedbackStep::LauncherStep => launch_capnp::LaunchFeedbackStep::LauncherStep,
                 LaunchFeedbackStep::AddingNode => launch_capnp::LaunchFeedbackStep::AddingNode,
+                LaunchFeedbackStep::BuildingNode => launch_capnp::LaunchFeedbackStep::BuildingNode,
                 LaunchFeedbackStep::StartingNode => launch_capnp::LaunchFeedbackStep::StartingNode,
             });
         }
@@ -251,6 +253,7 @@ impl LaunchFeedback {
         let step = match feedback.get_step()? {
             launch_capnp::LaunchFeedbackStep::LauncherStep => LaunchFeedbackStep::LauncherStep,
             launch_capnp::LaunchFeedbackStep::AddingNode => LaunchFeedbackStep::AddingNode,
+            launch_capnp::LaunchFeedbackStep::BuildingNode => LaunchFeedbackStep::BuildingNode,
             launch_capnp::LaunchFeedbackStep::StartingNode => LaunchFeedbackStep::StartingNode,
         };
         Ok(Self {

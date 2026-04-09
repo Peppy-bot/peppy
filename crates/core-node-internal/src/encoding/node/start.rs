@@ -1,6 +1,5 @@
 //! Encoding types for the NodeStart action (streaming version with feedback).
 
-use std::path::PathBuf;
 use std::time::Duration;
 
 use capnp::message::Builder;
@@ -114,119 +113,6 @@ impl NodeStartGoal {
         )
         .await?;
         Ok(handle)
-    }
-}
-
-/// Response to the NodeStart goal request.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NodeStartGoalResponse {
-    pub accepted: bool,
-    pub log_path: PathBuf,
-    pub rejection_reason: Option<String>,
-}
-
-impl NodeStartGoalResponse {
-    pub fn accepted(log_path: impl Into<PathBuf>) -> Self {
-        Self {
-            accepted: true,
-            log_path: log_path.into(),
-            rejection_reason: None,
-        }
-    }
-
-    pub fn rejected(reason: impl Into<String>) -> Self {
-        Self {
-            accepted: false,
-            log_path: PathBuf::new(),
-            rejection_reason: Some(reason.into()),
-        }
-    }
-
-    pub fn encode(&self) -> Result<Payload> {
-        let mut builder = Builder::new_default();
-        {
-            let mut response = builder.init_root::<node_capnp::node_start_goal_response::Builder>();
-            response.set_accepted(self.accepted);
-            response.set_log_path(self.log_path.to_string_lossy().as_ref());
-            if let Some(ref reason) = self.rejection_reason {
-                response.set_rejection_reason(reason);
-            }
-        }
-        encode_message(&builder)
-    }
-
-    pub fn decode(data: &[u8]) -> Result<Self> {
-        let reader = decode_message(data)?;
-        let response = reader.get_root::<node_capnp::node_start_goal_response::Reader>()?;
-        Ok(Self {
-            accepted: response.get_accepted(),
-            log_path: PathBuf::from(response.get_log_path()?.to_str()?),
-            rejection_reason: optional_text(response.get_rejection_reason()?.to_str()?),
-        })
-    }
-}
-
-/// Feedback message for the NodeStart action.
-/// Represents a single line of output from the start_cmd process.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NodeStartFeedback {
-    /// The stream type: "stdout", "stderr" or "warning"
-    pub stream: String,
-    /// The line of output
-    pub line: String,
-}
-
-impl NodeStartFeedback {
-    pub fn stdout(line: impl Into<String>) -> Self {
-        Self {
-            stream: "stdout".to_string(),
-            line: line.into(),
-        }
-    }
-
-    pub fn stderr(line: impl Into<String>) -> Self {
-        Self {
-            stream: "stderr".to_string(),
-            line: line.into(),
-        }
-    }
-
-    pub fn warning(line: impl Into<String>) -> Self {
-        Self {
-            stream: "warning".to_string(),
-            line: line.into(),
-        }
-    }
-
-    pub fn is_stdout(&self) -> bool {
-        self.stream == "stdout"
-    }
-
-    pub fn is_stderr(&self) -> bool {
-        self.stream == "stderr"
-    }
-
-    pub fn is_warning(&self) -> bool {
-        self.stream == "warning"
-    }
-
-    pub fn encode(&self) -> Result<Payload> {
-        let mut builder = Builder::new_default();
-        {
-            let mut feedback = builder.init_root::<node_capnp::node_start_feedback::Builder>();
-            feedback.set_stream(&self.stream);
-            feedback.set_line(&self.line);
-        }
-        encode_message(&builder)
-    }
-
-    pub fn decode(data: &[u8]) -> Result<Self> {
-        let reader = decode_message(data)?;
-        let feedback = reader.get_root::<node_capnp::node_start_feedback::Reader>()?;
-        Ok(Self {
-            stream: feedback.get_stream()?.to_str()?.to_owned(),
-            line: feedback.get_line()?.to_str()?.to_owned(),
-        })
     }
 }
 

@@ -1,21 +1,21 @@
 use super::super::action_loop::{ActionResult, ActionState, GoalHandler, run_action_loop};
-use super::{FeedbackLine, FeedbackStream, create_action_log_file, write_error_to_log};
+use super::{create_action_log_file, write_error_to_log};
 use crate::Result;
-use crate::encoding::{NodeBuildFeedback, NodeBuildGoal, NodeBuildGoalResponse, NodeBuildResult};
+use crate::encoding::{NodeActionGoalResponse, NodeBuildGoal, NodeBuildResult};
 use crate::names;
 use chrono::Local;
 use config::consts::PeppyDirs;
 use futures::FutureExt;
-use node_stack::{BuildContext, NodeStack};
+use node_stack::{BuildContext, FeedbackLine, NodeStack};
 use parking_lot::Mutex as StdMutex;
 use peppylib::messaging::{ServiceRequestContext, TopicPublisher};
 use peppylib::types::Payload;
 use peppylib::{ActionMessenger, MessengerHandle, PeppyResult};
 use std::fs::File;
 use std::panic::AssertUnwindSafe;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinHandle;
 use tracing::debug;
@@ -95,7 +95,7 @@ impl GoalHandler for NodeBuildGoalHandler {
 }
 
 fn encode_rejected_goal(reason: impl Into<String>) -> PeppyResult<Payload> {
-    NodeBuildGoalResponse::rejected(reason)
+    NodeActionGoalResponse::rejected(reason)
         .encode()
         .map_err(|e| peppylib::PeppyError::InvalidServiceRequest {
             identifier: "node_build_goal".to_string(),
@@ -119,32 +119,18 @@ async fn handle_goal_request(
         Err(e) => return encode_rejected_goal(format!("invalid payload: {}", e)),
     };
 
-    {
-        let mut state_guard = state.lock().await;
-        if matches!(*state_guard, ActionState::Running) {
-            if !goal.force {
-                let running_guard = running_since.lock().await;
-                let remaining = running_guard
-                    .map(|(started_at, timeout_secs)| {
-                        Duration::from_secs(timeout_secs)
-                            .saturating_sub(started_at.elapsed())
-                            .as_secs()
-                    })
-                    .unwrap_or(0);
-                return encode_rejected_goal(format!(
-                    "action already in progress (times out in {remaining}s), \
-                     use `--force` to force building the node"
-                ));
-            }
-
-            debug!("Force flag set: aborting previous node_build task");
-            let mut task_guard = running_task.lock().await;
-            if let Some(handle) = task_guard.take() {
-                handle.abort();
-            }
+    let slot = (running_since.clone(), running_task.clone());
+    match super::try_acquire_running_slot(&state, &slot, goal.force, goal.timeout_secs).await {
+        super::RunningSlotOutcome::Acquired => {}
+        super::RunningSlotOutcome::Rejected { remaining_secs } => {
+            return encode_rejected_goal(format!(
+                "action already in progress (times out in {remaining_secs}s), \
+                 use `--force` to force building the node"
+            ));
         }
-        *state_guard = ActionState::Running;
-        *running_since.lock().await = Some((Instant::now(), goal.timeout_secs));
+    }
+    if goal.force {
+        debug!("Force flag set: aborting previous node_build task");
     }
 
     debug!(
@@ -172,20 +158,8 @@ async fn handle_goal_request(
     let state_clone = Arc::clone(&state);
     let log_path_clone = log_path.clone();
     let task_handle = tokio::spawn(async move {
-        let (feedback_tx, mut feedback_rx) = mpsc::unbounded_channel::<FeedbackLine>();
-        let feedback_publisher_for_consumer = feedback_publisher.clone();
-        let consumer_handle = tokio::spawn(async move {
-            while let Some(line) = feedback_rx.recv().await {
-                let feedback = match line.stream {
-                    FeedbackStream::Stdout => NodeBuildFeedback::stdout(&line.line),
-                    FeedbackStream::Stderr => NodeBuildFeedback::stderr(&line.line),
-                    FeedbackStream::Warning => NodeBuildFeedback::warning(&line.line),
-                };
-                if let Ok(payload) = feedback.encode() {
-                    let _ = feedback_publisher_for_consumer.publish(payload).await;
-                }
-            }
-        });
+        let (feedback_tx, consumer_handle) =
+            super::spawn_node_feedback_consumer(feedback_publisher);
 
         let result =
             run_node_build(goal, action_context, feedback_tx, log_file, log_path_clone).await;
@@ -197,7 +171,7 @@ async fn handle_goal_request(
 
     *running_task.lock().await = Some(task_handle);
 
-    let response = NodeBuildGoalResponse::accepted(&log_path);
+    let response = NodeActionGoalResponse::accepted(&log_path);
     response
         .encode()
         .map_err(|e| peppylib::PeppyError::InvalidServiceRequest {
@@ -220,98 +194,27 @@ pub(crate) async fn run_node_build(
     let log_file_for_panic = log_file.clone();
     let log_path_for_panic = log_path.clone();
 
-    match AssertUnwindSafe(async {
-        let entity_handle = match action_context
-            .node_stack
-            .find(&goal.node_name, &goal.node_tag)
-        {
-            Some(handle) => handle,
-            None => {
-                let msg = format!(
-                    "node {}:{} is not in the node stack — run `peppy node add` first",
-                    goal.node_name, goal.node_tag
-                );
-                write_error_to_log(&log_file, &msg);
-                return NodeBuildResult::failure(&log_path, msg);
-            }
-        };
-
-        // Take the pending build input under a write lock and record the
-        // build log path on the entity. If there is no pending input, the
-        // entity is not in a state where we can build it (already built, or
-        // never received an add).
-        let pending_input = {
-            let mut guard = entity_handle.write();
-            guard.set_last_add_log_path(log_path.clone());
-            match guard.take_pending_build_input() {
-                Some(input) => input,
-                None => {
-                    let msg = format!(
-                        "node {}:{} has no pending build input — current stage is {}",
-                        goal.node_name,
-                        goal.node_tag,
-                        guard.stage().name()
-                    );
-                    write_error_to_log(&log_file, &msg);
-                    return NodeBuildResult::failure(&log_path, msg);
-                }
-            }
-        };
-
-        // Capture the entity generation before the build runs so the
-        // failure-path cleanup only removes the entity we actually built.
-        let expected_generation = entity_handle.read().generation();
-
-        let build_result = node_stack::NodeEntity::build(
-            &entity_handle,
-            BuildContext {
-                working_dir: &pending_input.working_dir,
-                peppy_dirs: &action_context.peppy_dirs,
-                feedback_tx: &feedback_tx,
-                log_file: Arc::clone(&log_file),
-                env_vars: &pending_input.env_vars,
-            },
-        )
-        .await;
-
-        let snapshot_path = match build_result {
-            Ok(path) => path,
-            Err(e) => {
-                // `NodeEntity::build` leaves the entity in `Building` on
-                // failure. Remove it so the user can re-run `peppy node add`
-                // cleanly. The pointer + generation check guards against a
-                // concurrent `push_config` racing in between.
-                let _ = action_context.node_stack.remove_config_if_matches(
-                    &goal.node_name,
-                    &goal.node_tag,
-                    &entity_handle,
-                    expected_generation,
-                );
-                // Best-effort cleanup of the working dir, since the entity
-                // is gone and the failed build never moved the artifact.
-                let _ = std::fs::remove_dir_all(&pending_input.working_dir);
-                let msg = format!("Failed to build node: {}", e);
-                write_error_to_log(&log_file, &msg);
-                return NodeBuildResult::failure(&log_path, msg);
-            }
-        };
-
-        // Working dir is no longer needed; remove it.
-        let _ = std::fs::remove_dir_all(&pending_input.working_dir);
-
-        debug!(
-            "Built node {}:{} at {}",
-            goal.node_name,
-            goal.node_tag,
-            snapshot_path.display()
-        );
-
-        NodeBuildResult::success(snapshot_path, &log_path, goal.node_name, goal.node_tag)
-    })
-    .catch_unwind()
-    .await
-    {
-        Ok(result) => result,
+    let fut = AssertUnwindSafe(try_run_build(
+        &goal,
+        &action_context,
+        &feedback_tx,
+        &log_file,
+        &log_path,
+    ));
+    match fut.catch_unwind().await {
+        Ok(Ok(snapshot_path)) => {
+            debug!(
+                "Built node {}:{} at {}",
+                goal.node_name,
+                goal.node_tag,
+                snapshot_path.display()
+            );
+            NodeBuildResult::success(snapshot_path, &log_path)
+        }
+        Ok(Err(msg)) => {
+            write_error_to_log(&log_file, &msg);
+            NodeBuildResult::failure(&log_path, msg)
+        }
         Err(panic_payload) => {
             let msg = format!(
                 "node_build task panicked: {}",
@@ -322,4 +225,71 @@ pub(crate) async fn run_node_build(
             NodeBuildResult::failure(log_path_for_panic, msg)
         }
     }
+}
+
+async fn try_run_build(
+    goal: &NodeBuildGoal,
+    action_context: &NodeBuildActionContext,
+    feedback_tx: &mpsc::UnboundedSender<FeedbackLine>,
+    log_file: &Arc<StdMutex<File>>,
+    log_path: &Path,
+) -> std::result::Result<PathBuf, String> {
+    let entity_handle = action_context
+        .node_stack
+        .find(&goal.node_name, &goal.node_tag)
+        .ok_or_else(|| {
+            format!(
+                "node {}:{} is not in the node stack — run `peppy node add` first",
+                goal.node_name, goal.node_tag
+            )
+        })?;
+
+    // Take the pending build input under a write lock. If there is no
+    // pending input, the entity is not in a state where we can build it —
+    // bail without mutating `last_add_log_path` so a rejected build doesn't
+    // overwrite the previous successful add's recorded log.
+    let pending_input = {
+        let mut guard = entity_handle.write();
+        let Some(input) = guard.take_pending_build_input() else {
+            return Err(format!(
+                "node {}:{} has no pending build input — current stage is {}",
+                goal.node_name,
+                goal.node_tag,
+                guard.stage().name()
+            ));
+        };
+        guard.set_last_add_log_path(log_path.to_path_buf());
+        input
+    };
+
+    // Capture the entity generation before the build runs so the
+    // failure-path cleanup only removes the entity we actually built.
+    let expected_generation = entity_handle.read().generation();
+
+    let build_result = node_stack::NodeEntity::build(
+        &entity_handle,
+        BuildContext {
+            working_dir: pending_input.working_dir.path(),
+            peppy_dirs: &action_context.peppy_dirs,
+            feedback_tx,
+            log_file: Arc::clone(log_file),
+            env_vars: &pending_input.env_vars,
+        },
+    )
+    .await;
+
+    // `pending_input` drops at end of this scope; its `WorkingDir` RAII
+    // handle removes the temp dir automatically.
+
+    build_result.map_err(|e| {
+        // `NodeEntity::build` leaves the entity in `Building` on failure.
+        // Remove it so the user can re-run `peppy node add` cleanly.
+        let _ = action_context.node_stack.remove_config_if_matches(
+            &goal.node_name,
+            &goal.node_tag,
+            &entity_handle,
+            expected_generation,
+        );
+        format!("Failed to build node: {}", e)
+    })
 }
