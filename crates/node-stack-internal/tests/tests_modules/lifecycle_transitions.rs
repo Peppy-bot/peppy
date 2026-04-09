@@ -251,13 +251,9 @@ async fn push_config_resets_existing_entity_to_added() {
 
 #[test]
 fn push_config_rewires_when_dependency_keys_change_with_unchanged_interfaces() {
-    // Two producer nodes with identical interfaces; a consumer that
-    // references one of them via `local_node_id`. Re-pushing the consumer
-    // pointed at the *other* producer keeps the consumer's `interfaces`
-    // identical (the consumer's emits/exposes haven't changed) but does
-    // change the dependency-spec keys. Before the fix, `interfaces_changed`
-    // was the only trigger for rewire, so the dependency edge stayed wired
-    // to the original producer.
+    // This test checks a specific bug fix: when you re-push a node config that keeps the same interfaces
+    // but changes which producer it depends on, the system must actually rewire the dependencies
+    // (not skip the work thinking "nothing changed").
     let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
 
     let producer_a: config::node::NodeConfig = serde_json5::from_str(
@@ -481,13 +477,16 @@ async fn concurrent_builds_are_rejected_immediately() {
     .await
     .expect("concurrent builds should not deadlock");
 
-    // Exactly one Ok; exactly one InvalidStageTransition where the loser saw
-    // Building (it might also see the eventual Built stage if the winner was
-    // already in Phase 3). Both shapes are valid rejections.
+    // Exactly one Ok; exactly one InvalidStageTransition. The loser typically
+    // observes `Building` (winner is mid-Phase 2 `sleep 0.5`), but on a slow
+    // or heavily-loaded runner the loser could be starved past the 500 ms
+    // window and observe `Ready` (winner already completed Phase 3). Both
+    // shapes are valid rejections — the point of the test is that the loser
+    // is rejected immediately, regardless of which post-Added stage it sees.
     let (ok_count, transition_err_count) = [&r1, &r2].iter().fold((0, 0), |(o, e), r| match r {
         Ok(_) => (o + 1, e),
         Err(NodeStackError::InvalidStageTransition { from, to, .. })
-            if *from == "Building" && *to == "Ready" =>
+            if (*from == "Building" || *from == "Ready") && *to == "Ready" =>
         {
             (o, e + 1)
         }
@@ -496,10 +495,10 @@ async fn concurrent_builds_are_rejected_immediately() {
     assert_eq!(ok_count, 1, "exactly one build should succeed");
     assert_eq!(
         transition_err_count, 1,
-        "the loser should fail immediately with InvalidStageTransition (Building→Ready)"
+        "the loser should fail immediately with InvalidStageTransition (Building→Ready or Ready→Ready)"
     );
 
-    // Entity ended up in Built.
+    // Entity ended up in Ready.
     let guard = handle.read();
     assert!(matches!(guard.stage(), NodeStage::Ready { .. }));
 
