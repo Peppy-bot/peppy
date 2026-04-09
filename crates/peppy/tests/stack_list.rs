@@ -24,7 +24,7 @@ fn make_consumer_depend_on_provider(
         .into_resolved()
         .expect("should resolve");
 
-    provider_cfg.execution.add_cmd = None;
+    provider_cfg.execution.build_cmd = None;
 
     let topic_ifaces = provider_cfg
         .interfaces
@@ -52,7 +52,7 @@ fn make_consumer_depend_on_provider(
         .into_resolved()
         .expect("should resolve");
 
-    consumer_cfg.execution.add_cmd = None;
+    consumer_cfg.execution.build_cmd = None;
 
     consumer_cfg.manifest.depends_on = Some(DependsOn {
         nodes: vec![NodeDependency {

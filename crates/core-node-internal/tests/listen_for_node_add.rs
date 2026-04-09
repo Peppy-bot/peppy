@@ -25,7 +25,7 @@ use {
     httptest::responders::status_code,
 };
 
-const ADD_CMD_MARKER_FILE: &str = "add_cmd_executed.marker";
+const BUILD_CMD_MARKER_FILE: &str = "build_cmd_executed.marker";
 const GOAL_TIMEOUT: Duration = Duration::from_secs(30);
 const RESULT_TIMEOUT: Duration = Duration::from_secs(120);
 const CONTAINER_RESULT_TIMEOUT: Duration = Duration::from_secs(300);
@@ -1605,7 +1605,7 @@ async fn listen_for_node_add_runs_add_cmd() {
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
 
-    // add_cmd creates a marker file to prove it was executed
+    // build_cmd creates a marker file to prove it was executed
     let peppy_json5 = r#"{
             schema_version: 1,
             manifest: {
@@ -1614,13 +1614,13 @@ async fn listen_for_node_add_runs_add_cmd() {
             },
             execution: {
                 language: "rust",
-                add_cmd: ["touch", "{ADD_CMD_MARKER_FILE}"],
+                build_cmd: ["touch", "{BUILD_CMD_MARKER_FILE}"],
                 start_cmd: ["sleep", "10"]
             }
         }"#
     .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
     .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG)
-    .replace("{ADD_CMD_MARKER_FILE}", ADD_CMD_MARKER_FILE);
+    .replace("{BUILD_CMD_MARKER_FILE}", BUILD_CMD_MARKER_FILE);
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
     let add_result = send_node_add_and_wait(
@@ -1642,18 +1642,18 @@ async fn listen_for_node_add_runs_add_cmd() {
 
     let archive_path = entity_artifact_path(&node_stack, TARGET_NODE_NAME, TARGET_NODE_TAG);
 
-    // Verify that add_cmd was executed in the working directory (not the source)
+    // Verify that build_cmd was executed in the working directory (not the source)
     // by checking the marker file exists in the archive
     assert!(
-        archive_contains_entry(&archive_path, ADD_CMD_MARKER_FILE),
-        "add_cmd should have created marker file in the archive"
+        archive_contains_entry(&archive_path, BUILD_CMD_MARKER_FILE),
+        "build_cmd should have created marker file in the archive"
     );
 
-    // Verify add_cmd did NOT run on the source directory
-    let source_marker = source_dir.path().join(ADD_CMD_MARKER_FILE);
+    // Verify build_cmd did NOT run on the source directory
+    let source_marker = source_dir.path().join(BUILD_CMD_MARKER_FILE);
     assert!(
         !source_marker.exists(),
-        "add_cmd should NOT have created marker file in source dir at {}",
+        "build_cmd should NOT have created marker file in source dir at {}",
         source_marker.display()
     );
 }
@@ -1668,7 +1668,7 @@ async fn listen_for_node_add_cmd_failure_fails_add() {
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
 
-    // add_cmd that will fail (non-existent command)
+    // build_cmd that will fail (non-existent command)
     let peppy_json5 = r#"{
             schema_version: 1,
             manifest: {
@@ -1677,7 +1677,7 @@ async fn listen_for_node_add_cmd_failure_fails_add() {
             },
             execution: {
                 language: "rust",
-                add_cmd: ["this_command_does_not_exist_12345"],
+                build_cmd: ["this_command_does_not_exist_12345"],
                 start_cmd: ["sleep", "10"]
             }
         }"#
@@ -1698,15 +1698,15 @@ async fn listen_for_node_add_cmd_failure_fails_add() {
 
     assert!(
         !add_result.success,
-        "node_add should fail when add_cmd fails"
+        "node_add should fail when build_cmd fails"
     );
     assert!(
         add_result
             .error_message
             .as_ref()
-            .map(|msg| msg.contains("add_cmd failed"))
+            .map(|msg| msg.contains("build_cmd failed"))
             .unwrap_or(false),
-        "error message should mention add_cmd failure, got: {:?}",
+        "error message should mention build_cmd failure, got: {:?}",
         add_result.error_message
     );
     assert!(
@@ -1722,7 +1722,7 @@ async fn listen_for_node_add_cmd_failure_fails_add() {
     // Node should not be in the stack
     assert!(
         !node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG),
-        "node should not be added when add_cmd fails"
+        "node should not be added when build_cmd fails"
     );
     assert_eq!(node_stack.len(), 1, "only root should exist");
 }
@@ -1737,7 +1737,7 @@ async fn listen_for_node_add_cmd_nonzero_exit_fails_add() {
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
 
-    // add_cmd that exits with non-zero status
+    // build_cmd that exits with non-zero status
     let peppy_json5 = r#"{
             schema_version: 1,
             manifest: {
@@ -1746,7 +1746,7 @@ async fn listen_for_node_add_cmd_nonzero_exit_fails_add() {
             },
             execution: {
                 language: "rust",
-                add_cmd: ["sh", "-c", "exit 1"],
+                build_cmd: ["sh", "-c", "exit 1"],
                 start_cmd: ["sleep", "10"]
             }
         }"#
@@ -1767,15 +1767,15 @@ async fn listen_for_node_add_cmd_nonzero_exit_fails_add() {
 
     assert!(
         !add_result.success,
-        "node_add should fail when add_cmd exits with non-zero status"
+        "node_add should fail when build_cmd exits with non-zero status"
     );
     assert!(
         add_result
             .error_message
             .as_ref()
-            .map(|msg| msg.contains("add_cmd failed"))
+            .map(|msg| msg.contains("build_cmd failed"))
             .unwrap_or(false),
-        "error message should mention add_cmd failure, got: {:?}",
+        "error message should mention build_cmd failure, got: {:?}",
         add_result.error_message
     );
     assert!(
@@ -1791,7 +1791,7 @@ async fn listen_for_node_add_cmd_nonzero_exit_fails_add() {
     // Node should not be in the stack
     assert!(
         !node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG),
-        "node should not be added when add_cmd fails"
+        "node should not be added when build_cmd fails"
     );
 }
 
@@ -1813,7 +1813,7 @@ async fn listen_for_node_add_streams_stdout_and_stderr() {
             },
             execution: {
                 language: "rust",
-                add_cmd: ["sh", "-c", "echo {STDOUT_MARKER}; echo {STDERR_MARKER} 1>&2"],
+                build_cmd: ["sh", "-c", "echo {STDOUT_MARKER}; echo {STDERR_MARKER} 1>&2"],
                 start_cmd: ["sleep", "10"]
             }
         }"#
@@ -1950,7 +1950,7 @@ async fn listen_for_node_add_writes_log_file() {
             },
             execution: {
                 language: "rust",
-                add_cmd: ["sh", "-c", "echo {STDOUT_MARKER}; echo {STDERR_MARKER} 1>&2"],
+                build_cmd: ["sh", "-c", "echo {STDOUT_MARKER}; echo {STDERR_MARKER} 1>&2"],
                 start_cmd: ["sleep", "10"]
             }
         }"#
@@ -2461,7 +2461,7 @@ async fn listen_for_node_add_uses_env_overrides_for_path() {
             },
             execution: {
                 language: "rust",
-                add_cmd: ["printout {STDOUT_MARKER}; printout {STDERR_MARKER} 1>&2"],
+                build_cmd: ["printout {STDOUT_MARKER}; printout {STDERR_MARKER} 1>&2"],
                 start_cmd: ["sleep", "10"]
             }
         }"#
@@ -2548,7 +2548,7 @@ async fn listen_for_node_add_injects_runtime_env_vars() {
             },
             execution: {
                 language: "rust",
-                add_cmd: [
+                build_cmd: [
                     "sh",
                     "-c",
                     "test -n \"$PEPPY_APPTAINER_BIN\" && test \"$PEPPY_NODE_NAME\" = \"{TARGET_NODE_NAME}\" && test \"$PEPPY_NODE_TAG\" = \"{TARGET_NODE_TAG}\""
@@ -2581,7 +2581,7 @@ async fn listen_for_node_add_injects_runtime_env_vars() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_add_fails_runs_add_cmd_on_missing_node_dependency() {
     // If there is a missing dependency, the NODE_ADD_ACTION should fail with a MissingDependency error
-    // BEFORE running add_cmd. This mimics real nodes (e.g. fake_video_reconstruction) where
+    // BEFORE running build_cmd. This mimics real nodes (e.g. fake_video_reconstruction) where
     // `cargo build` fails because peppygen interfaces are incomplete when dependencies are missing.
     const TARGET_NODE_NAME: &str = "add_cmd_node";
     const TARGET_NODE_TAG: &str = "0.1.0";
@@ -2591,9 +2591,9 @@ async fn listen_for_node_add_fails_runs_add_cmd_on_missing_node_dependency() {
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
     let marker_dir = tempfile::tempdir().expect("failed to create temp marker dir");
-    let marker_path = marker_dir.path().join(ADD_CMD_MARKER_FILE);
+    let marker_path = marker_dir.path().join(BUILD_CMD_MARKER_FILE);
 
-    // add_cmd creates a marker file then fails (simulating a build that fails due to
+    // build_cmd creates a marker file then fails (simulating a build that fails due to
     // incomplete peppygen interfaces from missing dependencies). We use an absolute path
     // for the marker so it survives the copied-dir cleanup on failure.
     let peppy_json5 = r#"{
@@ -2619,7 +2619,7 @@ async fn listen_for_node_add_fails_runs_add_cmd_on_missing_node_dependency() {
         },
         execution: {
           language: "rust",
-          add_cmd: ["sh", "-c", "touch MARKER_PATH && exit 1"],
+          build_cmd: ["sh", "-c", "touch MARKER_PATH && exit 1"],
           start_cmd: ["sleep", "10"]
         },
     }"#
@@ -2654,10 +2654,10 @@ async fn listen_for_node_add_fails_runs_add_cmd_on_missing_node_dependency() {
         add_result.error_message
     );
 
-    // add_cmd should NOT have been executed — dependency validation must happen before add_cmd
+    // build_cmd should NOT have been executed — dependency validation must happen before build_cmd
     assert!(
         !marker_path.exists(),
-        "add_cmd should NOT have been executed when dependency is missing"
+        "build_cmd should NOT have been executed when dependency is missing"
     );
 
     assert!(
@@ -2671,7 +2671,7 @@ async fn listen_for_node_add_fails_runs_add_cmd_on_missing_node_dependency() {
 async fn listen_for_node_add_fails_on_missing_interface_even_when_dependency_exists() {
     // The dependency node (fake_uvc_camera:0.1.0) exists in the stack but emits a
     // DIFFERENT topic name than what the dependent node subscribes to. The node add should
-    // fail with a MissingInterface error BEFORE running add_cmd. This mimics the real
+    // fail with a MissingInterface error BEFORE running build_cmd. This mimics the real
     // scenario where `fake_uvc_camera` is added first, but `fake_video_reconstruction`
     // fails because the interface names don't match.
     const DEPENDENCY_NODE_NAME: &str = "fake_uvc_camera";
@@ -2726,7 +2726,7 @@ async fn listen_for_node_add_fails_on_missing_interface_even_when_dependency_exi
     // dependency does NOT emit (node name+tag matches, but interface doesn't).
     let target_source_dir = tempfile::tempdir().expect("failed to create temp target source dir");
     let marker_dir = tempfile::tempdir().expect("failed to create temp marker dir");
-    let marker_path = marker_dir.path().join(ADD_CMD_MARKER_FILE);
+    let marker_path = marker_dir.path().join(BUILD_CMD_MARKER_FILE);
 
     let target_peppy_json5 = r#"{
         schema_version: 1,
@@ -2751,7 +2751,7 @@ async fn listen_for_node_add_fails_on_missing_interface_even_when_dependency_exi
         },
         execution: {
           language: "rust",
-          add_cmd: ["sh", "-c", "touch MARKER_PATH && exit 1"],
+          build_cmd: ["sh", "-c", "touch MARKER_PATH && exit 1"],
           start_cmd: ["sleep", "10"]
         },
     }"#
@@ -2788,10 +2788,10 @@ async fn listen_for_node_add_fails_on_missing_interface_even_when_dependency_exi
         add_result.error_message
     );
 
-    // add_cmd should NOT have been executed — interface validation must happen before add_cmd
+    // build_cmd should NOT have been executed — interface validation must happen before build_cmd
     assert!(
         !marker_path.exists(),
-        "add_cmd should NOT have been executed when interface is missing"
+        "build_cmd should NOT have been executed when interface is missing"
     );
 
     assert!(
@@ -3000,7 +3000,7 @@ async fn listen_for_node_add_logs_error_on_spawn_failure() {
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
 
-    // Multi-element add_cmd with a nonexistent binary.
+    // Multi-element build_cmd with a nonexistent binary.
     // Multi-element commands are executed directly (not via shell), so
     // command.spawn() will fail with a "No such file or directory" error.
     let peppy_json5 = r#"{
@@ -3011,7 +3011,7 @@ async fn listen_for_node_add_logs_error_on_spawn_failure() {
             },
             execution: {
                 language: "rust",
-                add_cmd: ["nonexistent_binary_peppy_test_xyz", "--flag"],
+                build_cmd: ["nonexistent_binary_peppy_test_xyz", "--flag"],
                 start_cmd: ["sleep", "10"]
             }
         }"#
@@ -3037,8 +3037,8 @@ async fn listen_for_node_add_logs_error_on_spawn_failure() {
         .as_ref()
         .expect("error_message should be present");
     assert!(
-        error_msg.contains("add_cmd failed"),
-        "error should mention add_cmd failure, got: {}",
+        error_msg.contains("build_cmd failed"),
+        "error should mention build_cmd failure, got: {}",
         error_msg
     );
     assert!(
@@ -3066,7 +3066,7 @@ async fn listen_for_node_add_logs_error_on_spawn_failure() {
         log_content
     );
     assert!(
-        log_content.contains("add_cmd failed"),
+        log_content.contains("build_cmd failed"),
         "log file should contain the failure message, got:\n{}",
         log_content
     );
@@ -3079,7 +3079,7 @@ async fn listen_for_node_add_logs_error_on_spawn_failure() {
     // Node should not be in the stack
     assert!(
         !node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG),
-        "node should not be added when add_cmd fails"
+        "node should not be added when build_cmd fails"
     );
 }
 
@@ -5195,7 +5195,7 @@ async fn listen_for_node_add_default_fs_variant_verifies_git_hash_at_root() {
 async fn listen_for_node_add_rejects_second_goal_when_action_in_progress() {
     let started_core_node = start_core_node_with_mock_messenger().await;
 
-    // Create a node with a slow add_cmd so the action stays in Running state.
+    // Create a node with a slow build_cmd so the action stays in Running state.
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
     let peppy_json5 = r#"{
             schema_version: 1,
@@ -5205,7 +5205,7 @@ async fn listen_for_node_add_rejects_second_goal_when_action_in_progress() {
             },
             execution: {
                 language: "rust",
-                add_cmd: ["sleep", "30"],
+                build_cmd: ["sleep", "30"],
                 start_cmd: ["true"]
             }
         }"#;
@@ -5219,7 +5219,7 @@ async fn listen_for_node_add_rejects_second_goal_when_action_in_progress() {
     std::fs::create_dir_all(&peppy_dir).expect("failed to create .peppy dir");
     std::fs::write(peppy_dir.join("git.hash"), TEST_GIT_HASH).expect("failed to write git.hash");
 
-    // Send first goal — should be accepted and start running the slow add_cmd.
+    // Send first goal — should be accepted and start running the slow build_cmd.
     let first_goal = NodeAddGoal::new(source_dir.path(), TEST_GIT_HASH, RESULT_TIMEOUT.as_secs());
     let first_goal_payload = first_goal.encode().expect("failed to encode goal");
 
@@ -5292,7 +5292,7 @@ async fn listen_for_node_add_force_overrides_in_progress_action() {
             },
             execution: {
                 language: "rust",
-                add_cmd: ["sleep", "30"],
+                build_cmd: ["sleep", "30"],
                 start_cmd: ["true"]
             }
         }"#;
@@ -5343,7 +5343,7 @@ async fn listen_for_node_add_force_overrides_in_progress_action() {
             }},
             execution: {{
                 language: "rust",
-                add_cmd: ["true"],
+                build_cmd: ["true"],
                 start_cmd: ["true"]
             }}
         }}"#

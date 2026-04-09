@@ -148,7 +148,7 @@ impl CoreNode {
             execution: Execution {
                 language: PeppygenLanguage::Rust,
                 parameters: node_arguments.into_parameters(),
-                add_cmd: None,
+                build_cmd: None,
                 start_cmd: None,
                 container: None,
             },

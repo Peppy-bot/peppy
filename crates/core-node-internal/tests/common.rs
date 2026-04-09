@@ -929,10 +929,10 @@ fn main() -> Result<()> {
       ],
     }
   },
-  // Avoid `add_cmd` build step here to make the `add` tests faster
+  // Avoid `build_cmd` build step here to make the `add` tests faster
   execution: {
     language: "rust",
-    add_cmd: [
+    build_cmd: [
         "true"
     ],
     start_cmd: [

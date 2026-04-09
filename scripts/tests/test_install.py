@@ -451,9 +451,9 @@ def test_peppylib_so_architecture(lima_vm: VMConfig) -> None:
     # Start daemon, init a Python node, add it, then check .so arch.
     # peppy node init creates a directory with peppy.json5; peppy node add
     # registers it with the daemon and triggers peppylib extraction.
-    # The add_cmd (uv sync) may fail if uv isn't installed in the VM, but
-    # the peppylib .so is extracted before add_cmd runs, so we check for
-    # its presence regardless of the add_cmd outcome.
+    # The build_cmd (uv sync) may fail if uv isn't installed in the VM, but
+    # the peppylib .so is extracted before build_cmd runs, so we check for
+    # its presence regardless of the build_cmd outcome.
     #
     # The script captures the `file` output before killing the daemon to
     # avoid SIGTERM-related exit codes (143).
@@ -474,7 +474,7 @@ peppy node init test-node
 
 # Add the node to the daemon (triggers peppylib .so extraction).
 # This may fail if uv is not installed — that's OK, we only need the
-# .so extraction which happens before add_cmd.
+# .so extraction which happens before build_cmd.
 peppy node add /var/tmp/test-node || true
 
 # Find .abi3.so — it may be in the node working dir, the daemon's data

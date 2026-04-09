@@ -802,7 +802,7 @@ pub struct Execution {
     #[serde(default)]
     pub parameters: ParameterSchema,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub add_cmd: Option<Vec<String>>,
+    pub build_cmd: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub start_cmd: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -821,7 +821,7 @@ pub(crate) struct RawExecution {
     #[serde(default)]
     pub parameters: ParameterSchema,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub add_cmd: Option<Vec<String>>,
+    pub build_cmd: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub start_cmd: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -836,7 +836,7 @@ impl RawExecution {
         Ok(Execution {
             language,
             parameters: self.parameters,
-            add_cmd: self.add_cmd,
+            build_cmd: self.build_cmd,
             start_cmd: self.start_cmd,
             container: self.container,
         })

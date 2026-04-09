@@ -90,7 +90,7 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
     let conn = ctx.connect_to_daemon().await?;
 
     info!(
-        "Running `add_cmd` for '{}' on daemon '{}'...",
+        "Running `build_cmd` for '{}' on daemon '{}'...",
         source, conn.core_node_name
     );
 

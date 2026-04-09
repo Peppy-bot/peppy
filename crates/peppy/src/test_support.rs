@@ -30,16 +30,16 @@ fn modify_node_config(peppy_json5: &Path, modify: impl FnOnce(&mut config::node:
 pub fn override_start_cmd(peppy_json5: &Path) {
     modify_node_config(peppy_json5, |cfg| {
         cfg.execution.start_cmd = Some(vec!["sleep".to_string(), "4".to_string()]);
-        cfg.execution.add_cmd = None;
+        cfg.execution.build_cmd = None;
     });
 }
 
-/// Removes the `add_cmd` from a node's config so that integration tests can
+/// Removes the `build_cmd` from a node's config so that integration tests can
 /// exercise node operations (add, remove, runtime config) without triggering
 /// the actual build step. Regenerates the codegen fingerprint after writing.
 pub fn disable_add_cmd(peppy_json5: &Path) {
     modify_node_config(peppy_json5, |cfg| {
-        cfg.execution.add_cmd = None;
+        cfg.execution.build_cmd = None;
     });
 }
 

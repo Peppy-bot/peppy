@@ -43,7 +43,7 @@ Run:
     :::note
     [`uv`](https://docs.astral.sh/uv/) is the default Python toolchain in PeppyOS, but you can use any toolchain you prefer ([`pixi`](https://prefix.dev/), [`poetry`](https://python-poetry.org/), [`pip`](https://pip.pypa.io/en/stable), etc.). 
     To do so, first initialize the node with `peppy node init --toolchain uv`, then add `peppygen = { path = ".peppy/libs/peppygen" }` as a dependency in your toolchain's configuration, 
-    and update `add_cmd` and `start_cmd` in `peppy.json5` to match your toolchain's commands. PeppyOS is designed to work with whichever tools you prefer.
+    and update `build_cmd` and `start_cmd` in `peppy.json5` to match your toolchain's commands. PeppyOS is designed to work with whichever tools you prefer.
     :::
   </TabItem>
   <TabItem label="Rust">
@@ -61,7 +61,7 @@ Run:
     :::note
     [`cargo`](https://doc.rust-lang.org/cargo/) is the default Rust toolchain in PeppyOS, but you can use any build system you prefer.
     To do so, first initialize the node with `peppy node init --toolchain cargo`, then add `peppygen = { path = ".peppy/libs/peppygen" }` as a dependency in your build configuration,
-    and update `add_cmd` and `start_cmd` in `peppy.json5` to match your build system's commands. PeppyOS is designed to work with whichever tools you prefer.
+    and update `build_cmd` and `start_cmd` in `peppy.json5` to match your build system's commands. PeppyOS is designed to work with whichever tools you prefer.
     :::
   </TabItem>
 </Tabs>
@@ -94,7 +94,7 @@ Let's open the `peppy.json5` file of the node we just created and explore it tog
       interfaces: {},
       execution: {
         language: "python",
-        add_cmd: [
+        build_cmd: [
           "uv",
           "sync"
         ],
@@ -118,7 +118,7 @@ Let's open the `peppy.json5` file of the node we just created and explore it tog
       interfaces: {},
       execution: {
         language: "rust",
-        add_cmd: [
+        build_cmd: [
           "cargo",
           "build",
           "--release"
@@ -139,7 +139,7 @@ Let's go through the different options:
  - `manifest`: Contains information about the node. Each node is identified by its `name` and `tag`
  - `execution`: Contains the language and execution commands for the node
    - `language`: The programming language used by the node (e.g. `"python"`, `"rust"`)
-   - `add_cmd`: Command run when the node is added to the Node stack (more on this later). This is typically the place where you want to run heavy operations like code compilation.
+   - `build_cmd`: Command run when the node is added to the Node stack (more on this later). This is typically the place where you want to run heavy operations like code compilation.
    - `start_cmd`: Command run when a node instance is started
  - `interfaces`: This is where the interfaces that communicate with the other nodes is defined
 

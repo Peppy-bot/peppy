@@ -96,7 +96,7 @@
       instances: [
         {
           instance_id: "esp32_1",
-          // This env var becomes available during the execution of `add_cmd` and `start_cmd`
+          // This env var becomes available during the execution of `build_cmd` and `start_cmd`
           env_vars: {
             ESP32_DEVICE: "/dev/tty.usbmodem585A0076841"
           },

@@ -348,7 +348,7 @@ fn node_add_after_failed_sync_succeeds() {
     );
     std::fs::write(&git_hash_path, "wrong-hash\n").expect("failed to write wrong git hash");
 
-    // Disable add_cmd to avoid build step
+    // Disable build_cmd to avoid build step
     let peppy_json5_path = node_path.join("peppy.json5");
     peppy::test_support::disable_add_cmd(&peppy_json5_path);
 
@@ -701,12 +701,12 @@ fn node_add_command_with_variant_succeeds() {
     let root_path = node_dir.path().join(root_node_name);
     let root_peppy_json5 = root_path.join("peppy.json5");
 
-    // Read the generated config, add a variant declaration, and disable add_cmd
+    // Read the generated config, add a variant declaration, and disable build_cmd
     let mut root_cfg = config::node::NodeConfigParser::from_path(&root_peppy_json5)
         .expect("should parse config")
         .into_resolved()
         .expect("should resolve");
-    root_cfg.execution.add_cmd = None;
+    root_cfg.execution.build_cmd = None;
     root_cfg.manifest.variants = Some(vec![config::node::Variant {
         name: config::node::Name::new("mock").expect("valid name"),
         source: config::source::DeploymentSource::Local(config::source::DeploymentLocalSource {
@@ -875,7 +875,7 @@ fn node_add_with_variant_uses_variant_in_preflight() {
     std::fs::write(variant_peppy_dir.join("git.hash"), "test-git-hash")
         .expect("should write variant git hash");
 
-    // Disable add_cmd to avoid spawning a real binary; provide node services in-process
+    // Disable build_cmd to avoid spawning a real binary; provide node services in-process
     peppy::test_support::override_start_cmd(&root_peppy_json5);
 
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
@@ -1277,7 +1277,7 @@ fn node_add_auto_syncs_when_peppy_dir_missing() {
         .expect("should parse config")
         .into_resolved()
         .expect("should resolve");
-    root_cfg.execution.add_cmd = None;
+    root_cfg.execution.build_cmd = None;
     root_cfg.manifest.variants = Some(vec![config::node::Variant {
         name: config::node::Name::new("mock").expect("valid name"),
         source: config::source::DeploymentSource::Local(config::source::DeploymentLocalSource {

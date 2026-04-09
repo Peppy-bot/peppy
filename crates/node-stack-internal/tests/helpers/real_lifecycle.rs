@@ -91,12 +91,12 @@ pub fn lifecycle_harness() -> LifecycleHarness {
 }
 
 /// Rewrites `config.execution` so that the build path runs the trivial
-/// `archive_dir_to_storage` branch (no apptainer, no user add_cmd) and the
+/// `archive_dir_to_storage` branch (no apptainer, no user build_cmd) and the
 /// later spawn uses the portable long-running shell loop. Fixture callers
 /// that pass arbitrary configs are opting into this override.
 pub fn override_execution_for_fixture(mut config: NodeConfig) -> NodeConfig {
     config.execution.container = None;
-    config.execution.add_cmd = None;
+    config.execution.build_cmd = None;
     config.execution.start_cmd = Some(
         LONG_RUNNING_START_CMD
             .iter()

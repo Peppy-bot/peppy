@@ -46,7 +46,7 @@ async fn listen_for_node_start_success() {
         &started_core_node.core_node_name,
         &node_dir,
         Duration::from_secs(30),
-        // Longer timeout to account for add_cmd execution and copying the test node folder,
+        // Longer timeout to account for build_cmd execution and copying the test node folder,
         // which may include build artifacts.
         Duration::from_secs(120),
         None,

@@ -183,7 +183,7 @@ impl NodeStage {
 pub struct BuildContext<'a> {
     /// Temporary working directory containing the node sources and (for
     /// container nodes) the apptainer `.def` file. For process nodes, the
-    /// user-defined `add_cmd` is executed inside this directory before
+    /// user-defined `build_cmd` is executed inside this directory before
     /// archiving. The build artifact is produced inside this directory and
     /// then moved to peppy storage.
     pub working_dir: &'a Path,
@@ -191,11 +191,11 @@ pub struct BuildContext<'a> {
     /// inside `peppy_dirs.added_nodes_dir()`.
     pub peppy_dirs: &'a PeppyDirs,
     /// Channel that streams stdout/stderr lines from the build child process
-    /// (and from `add_cmd`, for process nodes) back to the caller.
+    /// (and from `build_cmd`, for process nodes) back to the caller.
     pub feedback_tx: &'a mpsc::UnboundedSender<FeedbackLine>,
     /// Log file the build output is also written to.
     pub log_file: Arc<StdMutex<File>>,
-    /// Environment variables passed to `add_cmd` (process nodes only). The
+    /// Environment variables passed to `build_cmd` (process nodes only). The
     /// daemon prepares this list via `validate_goal_env_vars`,
     /// `inject_rust_build_env`, and `inject_node_runtime_env`. Container
     /// nodes ignore this field — apptainer build does not consume it.
@@ -437,7 +437,7 @@ impl NodeEntity {
     ///
     /// For container nodes, this runs `apptainer build` and moves the resulting
     /// `.sif` into `peppy_dirs.added_nodes_dir()`. For process nodes, this
-    /// runs the user-defined `add_cmd` (if any) inside `working_dir` and then
+    /// runs the user-defined `build_cmd` (if any) inside `working_dir` and then
     /// archives the working directory into a `.tar.zst` in the same location.
     ///
     /// Concurrency: a second `build` call on the same entity that arrives
@@ -453,7 +453,7 @@ impl NodeEntity {
     ///
     /// Returns [`Error::InvalidStageTransition`] if the entity is not in
     /// [`NodeStage::Added`], or [`Error::BuildFailed`] if the underlying
-    /// `add_cmd` / apptainer / archive step fails.
+    /// `build_cmd` / apptainer / archive step fails.
     /// Drives the entity from `Added` to `Ready`. On success, returns the
     /// `PathBuf` of the artifact freshly installed in storage; the caller
     /// MUST use this returned path rather than re-reading
@@ -462,7 +462,7 @@ impl NodeEntity {
     /// completing and the re-read.
     pub async fn build(handle: &Arc<RwLock<NodeEntity>>, ctx: BuildContext<'_>) -> Result<PathBuf> {
         // ---- Phase 1: Added → Building, snapshot inputs (brief write lock) ----
-        let (node_name, node_tag, config_path, container_opt, add_cmd, build_generation) = {
+        let (node_name, node_tag, config_path, container_opt, build_cmd, build_generation) = {
             let mut guard = handle.write();
             if let Err(from) = guard.stage.ensure_buildable() {
                 return Err(Error::InvalidStageTransition {
@@ -481,7 +481,7 @@ impl NodeEntity {
                 guard.config.manifest.tag.clone(),
                 config_path.clone(),
                 guard.config.execution.container.clone(),
-                guard.config.execution.add_cmd.clone(),
+                guard.config.execution.build_cmd.clone(),
                 guard.generation,
             );
             // Atomic transition Added → Building under the same write lock as
@@ -492,7 +492,7 @@ impl NodeEntity {
 
         // ---- Phase 2: I/O without any entity lock ----
         // For container nodes, build the .sif via apptainer.
-        // For process nodes, run the user-defined add_cmd (if any).
+        // For process nodes, run the user-defined build_cmd (if any).
         // Defer publishing the artifact into shared storage until *after*
         // we re-confirm the entity is still `Building` under the write
         // lock — otherwise a stale build could orphan/overwrite an artifact
@@ -526,9 +526,9 @@ impl NodeEntity {
                     reason,
                 })?;
             } else {
-                // Process node: run add_cmd inside the working dir.
+                // Process node: run build_cmd inside the working dir.
                 run_add_cmd(
-                    add_cmd.as_ref(),
+                    build_cmd.as_ref(),
                     ctx.working_dir,
                     ctx.env_vars,
                     ctx.feedback_tx,
@@ -538,7 +538,7 @@ impl NodeEntity {
                 .map_err(|reason| Error::BuildFailed {
                     node_name: node_name.clone(),
                     node_tag: node_tag.clone(),
-                    reason: format!("add_cmd failed: {}", reason),
+                    reason: format!("build_cmd failed: {}", reason),
                 })?;
             }
             Ok(())

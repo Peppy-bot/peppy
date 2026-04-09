@@ -83,7 +83,7 @@ depth_camera/             ← root node
   },
   execution: {
     language: "rust",
-    add_cmd: ["cargo", "build", "--release"],
+    build_cmd: ["cargo", "build", "--release"],
     start_cmd: ["./target/release/depth_camera"],
   },
 }
@@ -101,7 +101,7 @@ A `mock` variant lets you test the rest of the stack without real hardware. It p
   schema_version: 1,
   execution: {
     language: "python",
-    add_cmd: ["uv", "sync"],
+    build_cmd: ["uv", "sync"],
     start_cmd: ["uv", "run", "mock_depth_camera"],
   },
 }
@@ -142,7 +142,7 @@ A node can also declare variants for different execution environments. For insta
   },
   execution: {
     language: "rust",
-    add_cmd: ["cargo", "build", "--release"],
+    build_cmd: ["cargo", "build", "--release"],
     start_cmd: ["./target/release/lidar"],
   },
 }
@@ -214,7 +214,7 @@ Each flavor has its own manifest and interfaces tailored to its target robot:
   },
   execution: {
     language: "python",
-    add_cmd: ["uv", "sync"],
+    build_cmd: ["uv", "sync"],
     start_cmd: ["uv", "run", "openarm01_brain"],
   },
 }
@@ -258,7 +258,7 @@ A downstream OpenArm01 robot project can then reference this flavor as a variant
   },
   execution: {
     language: "rust",
-    add_cmd: ["cargo", "build", "--release"],
+    build_cmd: ["cargo", "build", "--release"],
     start_cmd: ["./target/release/brain"],
   },
 }
@@ -304,7 +304,7 @@ Variants are declared in the root node's `manifest.variants` array. Each entry h
   },
   execution: {
     language: "rust",
-    add_cmd: ["cargo", "build", "--release"],
+    build_cmd: ["cargo", "build", "--release"],
     start_cmd: ["./target/release/robot_brain"],
   },
 }
@@ -364,7 +364,7 @@ uvc_camera/                   ← root node (no execution)
   schema_version: 1,
   execution: {
     language: "rust",
-    add_cmd: ["cargo", "build", "--release"],
+    build_cmd: ["cargo", "build", "--release"],
     start_cmd: ["./target/release/uvc_camera"],
   },
 }
@@ -393,7 +393,7 @@ A variant's `peppy.json5` only needs a `schema_version` and an `execution`. The 
 
 Each variant has its own `execution`, which means:
 - Its own `language` (Rust or Python).
-- Its own `add_cmd` for build steps.
+- Its own `build_cmd` for build steps.
 - Its own `start_cmd` or `container` configuration.
 - Its own `parameters` schema.
 
@@ -426,7 +426,7 @@ If the interfaces do not match, the add operation fails with a `VariantInterface
   },
   execution: {
     language: "python",
-    add_cmd: ["uv", "sync"],
+    build_cmd: ["uv", "sync"],
     start_cmd: ["uv", "run", "mock_brain"],
   },
 }

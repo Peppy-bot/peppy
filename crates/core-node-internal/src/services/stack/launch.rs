@@ -1256,7 +1256,7 @@ async fn process_launch(goal: LaunchGoal, ctx: ProcessLaunchContext) -> LaunchRe
         Err(launch_result) => return launch_result,
     };
 
-    // Step 4: Snapshot and clear stack (the snapshot helps in case an `add_cmd` or `start_cmd` fails on one of the nodes)
+    // Step 4: Snapshot and clear stack (the snapshot helps in case an `build_cmd` or `start_cmd` fails on one of the nodes)
     let backup_stack = match snapshot_and_clear_stack(&ctx).await {
         Ok(result) => result,
         Err(launch_result) => return launch_result,

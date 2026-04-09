@@ -313,7 +313,7 @@ async fn listen_for_node_sync_missing_dependency_fails() {
             },
             execution: {
                 language: "rust",
-                add_cmd: ["cargo", "build", "--release"],
+                build_cmd: ["cargo", "build", "--release"],
                 start_cmd: ["./target/release/my_robot_brain"],
             },
         }
@@ -377,7 +377,7 @@ async fn listen_for_node_sync_multiple_missing_dependencies_fails() {
             interfaces: {},
             execution: {
                 language: "rust",
-                add_cmd: ["cargo", "build", "--release"],
+                build_cmd: ["cargo", "build", "--release"],
                 start_cmd: ["./target/release/my_robot_brain"],
             },
         }
@@ -482,7 +482,7 @@ async fn listen_for_node_sync_generates_rust_interfaces() {
             },
             execution: {
                 language: "rust",
-                add_cmd: ["true"],
+                build_cmd: ["true"],
                 start_cmd: ["sleep", "10"],
             },
         }
@@ -567,7 +567,7 @@ async fn listen_for_node_sync_generates_rust_interfaces() {
             },
             execution: {
                 language: "rust",
-                add_cmd: ["true"],
+                build_cmd: ["true"],
                 start_cmd: ["sleep", "10"],
             },
         }
@@ -683,7 +683,7 @@ async fn listen_for_node_sync_generates_rust_consumed_service_interfaces() {
             },
             execution: {
                 language: "rust",
-                add_cmd: ["true"],
+                build_cmd: ["true"],
                 start_cmd: ["sleep", "10"],
             },
         }
@@ -765,7 +765,7 @@ async fn listen_for_node_sync_generates_rust_consumed_service_interfaces() {
             },
             execution: {
                 language: "rust",
-                add_cmd: ["true"],
+                build_cmd: ["true"],
                 start_cmd: ["sleep", "10"],
             },
         }
@@ -844,7 +844,7 @@ async fn listen_for_node_sync_generates_rust_consumed_topic_interfaces() {
             },
             execution: {
                 language: "rust",
-                add_cmd: ["true"],
+                build_cmd: ["true"],
                 start_cmd: ["sleep", "10"],
             },
         }
@@ -926,7 +926,7 @@ async fn listen_for_node_sync_generates_rust_consumed_topic_interfaces() {
             },
             execution: {
                 language: "rust",
-                add_cmd: ["true"],
+                build_cmd: ["true"],
                 start_cmd: ["sleep", "10"],
             },
         }
@@ -1011,7 +1011,7 @@ async fn listen_for_node_sync_generates_rust_consumed_action_interfaces() {
             },
             execution: {
                 language: "rust",
-                add_cmd: ["true"],
+                build_cmd: ["true"],
                 start_cmd: ["sleep", "10"],
             },
         }
@@ -1093,7 +1093,7 @@ async fn listen_for_node_sync_generates_rust_consumed_action_interfaces() {
             },
             execution: {
                 language: "rust",
-                add_cmd: ["true"],
+                build_cmd: ["true"],
                 start_cmd: ["sleep", "10"],
             },
         }
@@ -1168,7 +1168,7 @@ async fn listen_for_node_sync_generates_rust_parameters() {
                     encoding: "string",
                   },
                 },
-                add_cmd: ["true"],
+                build_cmd: ["true"],
                 start_cmd: ["sleep", "10"],
             },
         }

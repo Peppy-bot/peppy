@@ -403,7 +403,7 @@ mod tests {
         encoding: "string",
       },
     },
-    add_cmd: [
+    build_cmd: [
       "cargo",
       "build",
       "--release",

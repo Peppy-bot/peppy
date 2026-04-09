@@ -257,7 +257,7 @@ pub(super) async fn build_container_image(
 
 /// Expands `${VAR}` references in a string using the provided environment
 /// variables. Used by [`run_add_cmd`] before spawning the user-defined
-/// `add_cmd` so that variable references in multi-element commands work even
+/// `build_cmd` so that variable references in multi-element commands work even
 /// though the command is executed directly (not through a shell).
 pub(super) fn expand_env_vars(s: &str, env_vars: &[(String, String)]) -> String {
     let mut result = s.to_string();
@@ -270,29 +270,29 @@ pub(super) fn expand_env_vars(s: &str, env_vars: &[(String, String)]) -> String 
     result
 }
 
-/// Runs the user-defined `add_cmd` for a process node and streams output via
-/// the feedback channel. Returns Ok(()) if `add_cmd` is `None` or executes
+/// Runs the user-defined `build_cmd` for a process node and streams output via
+/// the feedback channel. Returns Ok(()) if `build_cmd` is `None` or executes
 /// successfully. Used by [`super::entity::NodeEntity::build`] for process
 /// nodes after the entity has transitioned to `Building`.
 pub(super) async fn run_add_cmd(
-    add_cmd: Option<&Vec<String>>,
+    build_cmd: Option<&Vec<String>>,
     working_dir: &Path,
     env_vars: &[(String, String)],
     feedback_tx: &mpsc::UnboundedSender<FeedbackLine>,
     log_file: Arc<StdMutex<File>>,
 ) -> std::result::Result<(), String> {
-    let Some(cmd) = add_cmd else {
+    let Some(cmd) = build_cmd else {
         return Ok(());
     };
 
     if cmd.is_empty() {
-        return Err("add_cmd is empty".to_string());
+        return Err("build_cmd is empty".to_string());
     };
 
     // Build a *display* form (with `${VAR}` references intact) for logs and
     // error messages, and a separate *expanded* form used only to actually
     // spawn the child. Without this split, anything referenced as
-    // `${SECRET}` in `add_cmd` would end up in the on-disk log file and in
+    // `${SECRET}` in `build_cmd` would end up in the on-disk log file and in
     // every error string surfaced to clients.
     let display_cmd: Vec<String> = cmd.clone();
 
@@ -325,7 +325,7 @@ pub(super) async fn run_add_cmd(
     };
 
     debug!(
-        "Running add_cmd: {} {:?} in dir {:?}",
+        "Running build_cmd: {} {:?} in dir {:?}",
         display_program, display_args, working_dir
     );
 
@@ -340,7 +340,7 @@ pub(super) async fn run_add_cmd(
         let timestamp = Local::now().format("%Y-%m-%dT%H:%M:%S%.3f");
         let _ = writeln!(
             file,
-            "[{}] Executing add_cmd: {} (working_dir: {})",
+            "[{}] Executing build_cmd: {} (working_dir: {})",
             timestamp,
             full_cmd_display,
             working_dir.display()
@@ -353,7 +353,7 @@ pub(super) async fn run_add_cmd(
     command.current_dir(working_dir);
     command.stdout(Stdio::piped());
     command.stderr(Stdio::piped());
-    // Detach stdin so a misbehaving `add_cmd` cannot read from (or block
+    // Detach stdin so a misbehaving `build_cmd` cannot read from (or block
     // on) the daemon's stdin. Mirrors `build_container_image`.
     command.stdin(Stdio::null());
     for (key, value) in env_vars {
@@ -361,18 +361,18 @@ pub(super) async fn run_add_cmd(
     }
     let child = command
         .spawn()
-        .map_err(|e| format!("failed to execute add_cmd `{}`: {}", full_cmd_display, e))?;
+        .map_err(|e| format!("failed to execute build_cmd `{}`: {}", full_cmd_display, e))?;
 
     let (status, _) = stream_child_output(child, feedback_tx, log_file, false).await?;
 
     if !status.success() {
         return Err(format!(
-            "add_cmd `{}` failed with status {}",
+            "build_cmd `{}` failed with status {}",
             full_cmd_display, status
         ));
     }
 
-    debug!("add_cmd completed successfully");
+    debug!("build_cmd completed successfully");
     Ok(())
 }
 

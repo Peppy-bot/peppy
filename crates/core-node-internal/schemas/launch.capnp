@@ -10,7 +10,7 @@ struct EnvVar {
 struct LaunchGoal {
     # Path to the peppy launch file
     peppyLaunchFilePath @0 :Text;
-    # Environment variables to apply when executing add_cmd and start_cmd (e.g. PATH)
+    # Environment variables to apply when executing build_cmd and start_cmd (e.g. PATH)
     envVars @1 :List(EnvVar);
     # Idle timeout in seconds for each node add operation (resets on feedback)
     nodeAddIdleTimeoutSecs @2 :UInt64;

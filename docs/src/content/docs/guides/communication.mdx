@@ -41,7 +41,7 @@ Each node is only aware of the interfaces it exposes and the ones it consumes, a
       },
       execution: {
         language: "python",
-        add_cmd: ["uv", "sync"],
+        build_cmd: ["uv", "sync"],
         start_cmd: ["uv", "run", "controller"]
       },
     }
@@ -71,7 +71,7 @@ Each node is only aware of the interfaces it exposes and the ones it consumes, a
       },
       execution: {
         language: "rust",
-        add_cmd: ["cargo", "build", "--release"],
+        build_cmd: ["cargo", "build", "--release"],
         start_cmd: ["./target/release/controller"]
       },
     }

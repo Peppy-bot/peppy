@@ -19,7 +19,7 @@ use tempfile::tempdir;
 use crate::common::start_core_node_with_mock_messenger;
 
 struct NodeConfigOptions<'a> {
-    add_cmd: &'a [&'a str],
+    build_cmd: &'a [&'a str],
     start_cmd: &'a [&'a str],
     expects_uvc_camera: bool,
     emits_camera_stream: bool,
@@ -28,7 +28,7 @@ struct NodeConfigOptions<'a> {
 impl Default for NodeConfigOptions<'_> {
     fn default() -> Self {
         Self {
-            add_cmd: &["true"],
+            build_cmd: &["true"],
             start_cmd: &[],
             expects_uvc_camera: false,
             emits_camera_stream: false,
@@ -131,7 +131,7 @@ fn write_node_config_with_options(
     options: NodeConfigOptions<'_>,
 ) -> PathBuf {
     let NodeConfigOptions {
-        add_cmd,
+        build_cmd,
         start_cmd,
         expects_uvc_camera,
         emits_camera_stream,
@@ -139,9 +139,9 @@ fn write_node_config_with_options(
     let node_dir = nodes_directory.join(node_name);
     fs::create_dir_all(&node_dir).expect("failed to create node directory");
 
-    let add_cmd_json5 = add_cmd
+    let add_cmd_json5 = build_cmd
         .iter()
-        .map(|arg| serde_json::to_string(arg).expect("add_cmd arg should serialize"))
+        .map(|arg| serde_json::to_string(arg).expect("build_cmd arg should serialize"))
         .collect::<Vec<_>>()
         .join(", ");
 
@@ -203,7 +203,7 @@ fn write_node_config_with_options(
               {interfaces}
               execution: {
                 language: "rust",
-                add_cmd: [{add_cmd_json5}],
+                build_cmd: [{add_cmd_json5}],
                 start_cmd: [{start_cmd_json5}]
               }
             }"#
@@ -257,7 +257,7 @@ fn create_uvc_camera_repo(to_path: &Path, node_tag: &str) -> PathBuf {
               },
               execution: {
                 language: "rust",
-                add_cmd: ["true"],
+                build_cmd: ["true"],
                 start_cmd: ["sleep", "60"]
               }
             }"#
@@ -1228,14 +1228,14 @@ async fn listen_for_launch_configuration_fails_when_add_cmd_fails_and_restores_s
         .push_config(existing_config, false, &existing_path)
         .expect("should seed stack");
 
-    // Node with a failing add_cmd.
+    // Node with a failing build_cmd.
     let _failing_node_path = write_node_config_with_options(
         nodes_dir.path(),
         "failing_node",
         NODE_TAG,
         "test-hash",
         NodeConfigOptions {
-            add_cmd: &["false"], // This command always fails with exit code 1
+            build_cmd: &["false"], // This command always fails with exit code 1
             start_cmd: &["sleep", "60"],
             ..Default::default()
         },
@@ -1257,11 +1257,11 @@ async fn listen_for_launch_configuration_fails_when_add_cmd_fails_and_restores_s
     .await
     .expect("launch should complete");
 
-    assert!(!result.success, "launch should fail because add_cmd fails");
+    assert!(!result.success, "launch should fail because build_cmd fails");
 
     let error_message = result
         .error_message
-        .expect("error_message should be set on add_cmd failure");
+        .expect("error_message should be set on build_cmd failure");
     assert!(
         error_message.contains("failing_node:0.1.0"),
         "error message should contain the node name:tag, got: {error_message}"
@@ -1269,7 +1269,7 @@ async fn listen_for_launch_configuration_fails_when_add_cmd_fails_and_restores_s
 
     assert!(
         node_stack.contains("existing_node", NODE_TAG),
-        "stack should be restored on add_cmd failure"
+        "stack should be restored on build_cmd failure"
     );
     assert!(
         !node_stack.contains("failing_node", NODE_TAG),
@@ -1313,7 +1313,7 @@ async fn listen_for_launch_configuration_fails_when_start_cmd_exits_with_error()
         NODE_TAG,
         "test-hash",
         NodeConfigOptions {
-            add_cmd: &["true"],
+            build_cmd: &["true"],
             start_cmd: &["false"], // exits immediately with status 1
             ..Default::default()
         },

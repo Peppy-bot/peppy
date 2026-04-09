@@ -458,7 +458,7 @@ impl NodeAddGoalResponse {
 }
 
 /// Feedback message for the NodeAdd action.
-/// Represents a single line of output from the add_cmd process.
+/// Represents a single line of output from the build_cmd process.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeAddFeedback {
     /// The stream type: "stdout", "stderr" or "warning"
