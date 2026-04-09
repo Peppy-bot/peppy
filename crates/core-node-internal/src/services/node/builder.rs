@@ -285,11 +285,7 @@ async fn handle_goal_request(
         let feedback_publisher_for_consumer = feedback_publisher.clone();
         let consumer_handle = tokio::spawn(async move {
             while let Some(line) = feedback_rx.recv().await {
-                let feedback = match line.stream {
-                    FeedbackStream::Stdout => NodeBuildFeedback::stdout(&line.line),
-                    FeedbackStream::Stderr => NodeBuildFeedback::stderr(&line.line),
-                    FeedbackStream::Warning => NodeBuildFeedback::warning(&line.line),
-                };
+                let feedback = NodeBuildFeedback::from_stream(line.stream, &line.line);
                 if let Ok(payload) = feedback.encode() {
                     let _ = feedback_publisher_for_consumer.publish(payload).await;
                 }

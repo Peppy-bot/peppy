@@ -86,7 +86,7 @@ impl NodeBuildResultFeedbackBridge {
         let feedback =
             core_node::encoding::NodeBuildFeedback::decode(payload).map_err(|e| e.to_string())?;
         Ok(NodeAddFeedback {
-            stream: feedback.stream,
+            stream: feedback.stream.as_str().to_string(),
             line: feedback.line,
         })
     }

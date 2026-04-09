@@ -6,6 +6,7 @@ use crate::names;
 use crate::node_capnp;
 use capnp::message::Builder;
 use config::node::QoSProfile;
+use node_stack::FeedbackStream;
 use peppylib::messaging::ActionGoalHandle;
 use peppylib::types::Payload;
 use peppylib::{ActionMessenger, MessengerHandle};
@@ -169,49 +170,47 @@ impl NodeBuildGoalResponse {
 /// Feedback message for the NodeBuild action.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeBuildFeedback {
-    pub stream: String,
+    pub stream: FeedbackStream,
     pub line: String,
 }
 
 impl NodeBuildFeedback {
-    pub fn stdout(line: impl Into<String>) -> Self {
+    pub fn from_stream(stream: FeedbackStream, line: impl Into<String>) -> Self {
         Self {
-            stream: "stdout".to_string(),
+            stream,
             line: line.into(),
         }
+    }
+
+    pub fn stdout(line: impl Into<String>) -> Self {
+        Self::from_stream(FeedbackStream::Stdout, line)
     }
 
     pub fn stderr(line: impl Into<String>) -> Self {
-        Self {
-            stream: "stderr".to_string(),
-            line: line.into(),
-        }
+        Self::from_stream(FeedbackStream::Stderr, line)
     }
 
     pub fn warning(line: impl Into<String>) -> Self {
-        Self {
-            stream: "warning".to_string(),
-            line: line.into(),
-        }
+        Self::from_stream(FeedbackStream::Warning, line)
     }
 
     pub fn is_stdout(&self) -> bool {
-        self.stream == "stdout"
+        self.stream == FeedbackStream::Stdout
     }
 
     pub fn is_stderr(&self) -> bool {
-        self.stream == "stderr"
+        self.stream == FeedbackStream::Stderr
     }
 
     pub fn is_warning(&self) -> bool {
-        self.stream == "warning"
+        self.stream == FeedbackStream::Warning
     }
 
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
             let mut feedback = builder.init_root::<node_capnp::node_build_feedback::Builder>();
-            feedback.set_stream(&self.stream);
+            feedback.set_stream(self.stream.as_str());
             feedback.set_line(&self.line);
         }
         encode_message(&builder)
@@ -220,8 +219,20 @@ impl NodeBuildFeedback {
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
         let feedback = reader.get_root::<node_capnp::node_build_feedback::Reader>()?;
+        let stream_str = feedback.get_stream()?.to_str()?;
+        let stream = match stream_str {
+            "stdout" => FeedbackStream::Stdout,
+            "stderr" => FeedbackStream::Stderr,
+            "warning" => FeedbackStream::Warning,
+            other => {
+                return Err(crate::Error::Decoding(format!(
+                    "unknown NodeBuildFeedback stream: {}",
+                    other
+                )));
+            }
+        };
         Ok(Self {
-            stream: feedback.get_stream()?.to_str()?.to_owned(),
+            stream,
             line: feedback.get_line()?.to_str()?.to_owned(),
         })
     }
