@@ -1,11 +1,6 @@
 //! Concrete start I/O steps invoked from
-//! [`super::entity::NodeEntity::prepare_and_spawn`].
-//!
-//! These helpers were originally part of `core-node-internal::services::node::start`
-//! and were moved here so that the lifecycle transition `Built → Starting` (and
-//! the eventual `Starting → Started` commit) can run without crossing the crate
-//! boundary back into core-node-internal. Messenger-bound logic (ready check,
-//! health check) stays in core-node and is run between
+//! [`super::entity::NodeEntity::prepare_and_spawn`]. Messenger-bound logic
+//! (ready check, health check) stays in core-node and runs between
 //! [`super::entity::NodeEntity::prepare_and_spawn`] and
 //! [`super::entity::NodeEntity::commit_started`].
 

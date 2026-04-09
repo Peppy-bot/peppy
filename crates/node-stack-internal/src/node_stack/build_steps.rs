@@ -1,8 +1,4 @@
 //! Concrete build I/O steps invoked from [`super::entity::NodeEntity::build`].
-//!
-//! These helpers were originally part of `core-node-internal::services::node::add`
-//! and were moved here so that the lifecycle transition `Added → Built` can run
-//! without crossing the crate boundary back into core-node-internal.
 
 use parking_lot::Mutex as StdMutex;
 use std::fs::File;

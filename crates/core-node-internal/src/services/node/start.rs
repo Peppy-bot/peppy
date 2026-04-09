@@ -539,14 +539,9 @@ async fn process_node_start(
         }
     };
 
-    // Snapshot the entity's config into a local variable. The entity itself
-    // stays shared via `entity_handle` for the eventual prepare_and_spawn /
-    // commit_started transitions; the artifact_path is read by the entity
-    // under its own brief lock, so we don't need it here. We still validate
-    // that the entity is at least Built so we can fail fast with a friendly
-    // message before constructing the rest of the StartContext.
-    // Snapshot the entity generation so we can detect a concurrent
-    // push_config that races with the parameter/env work below.
+    // Snapshot config + generation so the parameter/env work below operates
+    // on a stable view; a concurrent push_config is detected via the
+    // generation re-check before hand-off.
     let (node_config, snapshot_generation) = {
         let guard = entity_handle.read();
         if guard.artifact_path().is_none() {
@@ -589,8 +584,6 @@ async fn process_node_start(
 
     let is_container = node_config.execution.container.is_some();
 
-    // Mount-path parameter resolution stays in core-node — it depends on
-    // RuntimeConfig + the daemon's blocked-source security policy.
     let container_config = node_config.execution.container.as_ref();
     let raw_mount_paths = container_config
         .and_then(|c| c.mount_paths.as_deref())
@@ -608,7 +601,6 @@ async fn process_node_start(
 
     // Container nodes need their runtime config rewritten with the apptainer
     // host_gateway so that requests inside the container can reach the daemon.
-    // This stays in core-node because it touches RuntimeConfig serialization.
     let runtime_config_json5 = if is_container {
         let apptainer = match tokio::task::spawn_blocking(containers::Apptainer::new).await {
             Ok(Ok(a)) => a,
@@ -663,14 +655,8 @@ async fn process_node_start(
         }
     });
 
-    // Re-check the entity generation right before handing off to the
-    // entity. If a concurrent push_config has bumped the generation, the
-    // sccache/env injection, parameter validation, mount-path resolution,
-    // and runtime_config rewrite above all operated on a stale clone — bail
-    // out with a retryable error so the caller can re-issue against the
-    // fresh entity. (prepare_and_spawn itself will also reject the start
-    // because its own write-lock validation sees the new generation, but
-    // catching it here gives a clearer error message.)
+    // Surface a clearer error than `prepare_and_spawn`'s inner write-lock
+    // rejection when a concurrent push_config has invalidated the snapshot.
     {
         let guard = entity_handle.read();
         if guard.generation() != snapshot_generation {
@@ -684,9 +670,6 @@ async fn process_node_start(
         }
     }
 
-    // Hand off to the entity. prepare_and_spawn does:
-    //   - Built → Starting transition (under a brief write lock)
-    //   - instance dir extraction / process spawn / output reader setup
     let start_ctx = node_stack::StartContext {
         instance_id: &instance_id,
         runtime_config_json5: &runtime_config_json5,

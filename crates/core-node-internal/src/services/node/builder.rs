@@ -345,8 +345,6 @@ async fn run_node_build(run: NodeBuildRun) -> NodeBuildResult {
     let log_path_for_panic = log_path.clone();
 
     match AssertUnwindSafe(async {
-        // Validate + inject env vars at build time so callers can pass a
-        // fresh environment per build.
         let mut env_vars = match super::validate_goal_env_vars(&goal_env_vars) {
             Ok(v) => v,
             Err(e) => {
@@ -366,13 +364,11 @@ async fn run_node_build(run: NodeBuildRun) -> NodeBuildResult {
         }
         super::inject_node_runtime_env(&mut env_vars, &node_name, &node_tag);
 
-        // Take the working dir from the entity so a concurrent (rejected)
-        // build cannot reuse it once we start mutating it.
+        // Detach the entity-side working dir so a concurrent (rejected) build
+        // cannot reuse it; the local `working_dir_guard` Arc keeps it alive
+        // until this build finishes.
         {
             let mut guard = entity_handle.write();
-            // Drop the entity-side reference; the local `working_dir_guard`
-            // keeps the dir alive for the duration of the build, and the
-            // shared Arc means cleanup happens once the last clone drops.
             let _ = guard.take_pending_working_dir();
         }
 

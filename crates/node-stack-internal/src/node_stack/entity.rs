@@ -29,13 +29,8 @@ use super::start_steps::{
 pub struct SerializedNode {
     pub name: String,
     pub tag: String,
-    /// Path to the `peppy.json5` config that registered this node.
-    /// Always present (set when the entity reaches `Added`).
     pub config_path: String,
-    /// Path to the built `.sif`/archive in `~/.peppy/added_nodes`.
-    /// `None` until the entity reaches `Built`.
     pub artifact_path: Option<String>,
-    /// IDs of running instances. Empty unless the entity is `Started`.
     pub instance_ids: Vec<String>,
 }
 
@@ -257,17 +252,17 @@ pub struct OutputSinks {
 /// either [`NodeEntity::commit_started`] or [`NodeEntity::abort_started`].
 #[derive(Debug)]
 pub struct StartedInstanceCtx {
-    pub instance_dir: PathBuf,
-    pub runtime_config_path: PathBuf,
-    pub stderr_buffer: Arc<StdMutex<VecDeque<String>>>,
-    pub output_reader_handles: Vec<JoinHandle<std::io::Result<()>>>,
-    pub log_file: Arc<StdMutex<File>>,
+    pub(crate) instance_dir: PathBuf,
+    pub(crate) runtime_config_path: PathBuf,
+    pub(crate) stderr_buffer: Arc<StdMutex<VecDeque<String>>>,
+    pub(crate) output_reader_handles: Vec<JoinHandle<std::io::Result<()>>>,
+    pub(crate) log_file: Arc<StdMutex<File>>,
     /// Snapshot of the entity's `generation` taken at `prepare_and_spawn`
     /// time. `commit_started`/`abort_started` compare this against the
     /// current entity generation and refuse to mutate the replacement entity
     /// if a concurrent `push_config` has bumped the generation in the
     /// meantime — they only clean up the stale child/context.
-    pub generation: u64,
+    pub(crate) generation: u64,
 }
 
 /// Process-wide monotonic counter that assigns each `NodeEntity` instance a
