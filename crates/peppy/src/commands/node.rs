@@ -246,13 +246,14 @@ impl Command for NodeCommand {
                 toolchain,
                 with_container,
             } => {
-                let mut builderer = NodeInitBuilder::new(ctx, node_name, toolchain, with_container);
+                let mut node_init_builder =
+                    NodeInitBuilder::new(ctx, node_name, toolchain, with_container);
 
                 if let Some(dir) = to_dir {
-                    builderer = builderer.to_dir(dir);
+                    node_init_builder = node_init_builder.to_dir(dir);
                 }
 
-                builderer.build()
+                node_init_builder.build()
             }
             NodeCommands::Add {
                 source,

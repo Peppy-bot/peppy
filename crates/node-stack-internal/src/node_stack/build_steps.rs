@@ -294,17 +294,7 @@ pub(super) async fn run_add_cmd(
     // spawn the child. Without this split, anything referenced as
     // `${SECRET}` in `build_cmd` would end up in the on-disk log file and in
     // every error string surfaced to clients.
-    let display_cmd: Vec<String> = cmd.clone();
-
-    let (display_program, display_args) = if display_cmd.len() == 1 {
-        (
-            "sh".to_string(),
-            vec!["-c".to_string(), display_cmd[0].clone()],
-        )
-    } else {
-        (display_cmd[0].clone(), display_cmd[1..].to_vec())
-    };
-
+    //
     // For the shell form (single string), do NOT pre-expand `${VAR}`
     // references — let `sh -c` expand them at runtime against the env vars
     // already set on the spawned command via `.env()`. Pre-expansion would
@@ -314,14 +304,22 @@ pub(super) async fn run_add_cmd(
     // For the exec form (multi-element), we still expand because the child
     // is launched directly (not via a shell), so no shell will perform the
     // expansion for us.
-    let (program, args) = if display_cmd.len() == 1 {
+    let (display_program, display_args, program, args) = if cmd.len() == 1 {
+        let shell_args = vec!["-c".to_string(), cmd[0].clone()];
         (
             "sh".to_string(),
-            vec!["-c".to_string(), display_cmd[0].clone()],
+            shell_args.clone(),
+            "sh".to_string(),
+            shell_args,
         )
     } else {
         let expanded_cmd: Vec<String> = cmd.iter().map(|s| expand_env_vars(s, env_vars)).collect();
-        (expanded_cmd[0].clone(), expanded_cmd[1..].to_vec())
+        (
+            cmd[0].clone(),
+            cmd[1..].to_vec(),
+            expanded_cmd[0].clone(),
+            expanded_cmd[1..].to_vec(),
+        )
     };
 
     debug!(

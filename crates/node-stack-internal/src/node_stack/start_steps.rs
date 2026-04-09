@@ -673,11 +673,20 @@ pub(super) async fn kill_and_collect_error(
 /// async scheduling timing (e.g., the reader task hadn't processed the line before
 /// the buffer was read).
 pub(super) fn extract_stderr_from_log(log_file: &Arc<StdMutex<File>>) -> String {
-    use std::io::{Read, Seek};
+    use std::io::{Read, Seek, SeekFrom};
+
+    // Read only the tail of the log: chatty nodes can produce many MB and we
+    // only need the last `STDERR_TAIL_LINES` `[stderr]` lines anyway.
+    const TAIL_BYTES: u64 = 64 * 1024;
 
     let content = {
         let mut f = log_file.lock();
-        if f.seek(std::io::SeekFrom::Start(0)).is_err() {
+        let end = match f.seek(SeekFrom::End(0)) {
+            Ok(p) => p,
+            Err(_) => return String::new(),
+        };
+        let start = end.saturating_sub(TAIL_BYTES);
+        if f.seek(SeekFrom::Start(start)).is_err() {
             return String::new();
         }
         let mut buf = String::new();

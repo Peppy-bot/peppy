@@ -302,9 +302,7 @@ impl WorkingDirGuard {
 
 impl Drop for WorkingDirGuard {
     fn drop(&mut self) {
-        if self.path.exists() {
-            let _ = std::fs::remove_dir_all(&self.path);
-        }
+        let _ = std::fs::remove_dir_all(&self.path);
     }
 }
 

@@ -744,7 +744,7 @@ pub(crate) async fn download_and_extract_http_source(
 ) -> std::result::Result<ExtractedHttpSource, String> {
     let url = url.clone();
     tokio::task::spawn_blocking(move || {
-        download_and_extract_http_source_blocking(url, &peppy_dirs, expected_sha256)
+        resolve_http_source_download_and_extract(url, &peppy_dirs, expected_sha256, None)
     })
     .await
     .map_err(|e| format!("Failed to join HTTP download task: {}", e))?
@@ -775,59 +775,6 @@ async fn resolve_http_source_with_feedback(
     })
     .await
     .map_err(|e| format!("Failed to join HTTP download task: {}", e))?
-}
-
-fn download_and_extract_http_source_blocking(
-    url: url::Url,
-    peppy_dirs: &PeppyDirs,
-    expected_sha256: Option<String>,
-) -> std::result::Result<ExtractedHttpSource, String> {
-    match url.scheme() {
-        "http" | "https" => {}
-        other => {
-            return Err(format!(
-                "HTTP source URL must use http or https (got scheme '{}')",
-                other
-            ));
-        }
-    }
-
-    if !is_supported_http_archive(&url) {
-        return Err(
-            "Only tar.zst (.tar.zstd/.tar.zst/.tzst) archives are supported for HTTP sources"
-                .to_string(),
-        );
-    }
-
-    let http_base_dir = peppy_dirs.http_downloads_dir();
-    std::fs::create_dir_all(&http_base_dir)
-        .map_err(|e| format!("Failed to create HTTP download directory: {}", e))?;
-
-    let timestamp = Local::now().format("%Y%m%d_%H%M%S_%3f");
-    let operation_dir =
-        http_base_dir.join(format!("node_add_{timestamp}_{}", generate_random_id()));
-    std::fs::create_dir_all(&operation_dir)
-        .map_err(|e| format!("Failed to create HTTP staging directory: {}", e))?;
-
-    let mut operation_cleanup = CleanupDir::new(Some(operation_dir.clone()));
-
-    let bundle_path = operation_dir.join(bundle_file_name(&url));
-    let extract_dir = operation_dir.join("extracted");
-    std::fs::create_dir_all(&extract_dir)
-        .map_err(|e| format!("Failed to create bundle extract directory: {}", e))?;
-
-    download_http_bundle(&url, &bundle_path, expected_sha256.as_deref(), None)?;
-    extract_http_bundle(&bundle_path, &extract_dir, &url)?;
-    std::fs::remove_file(&bundle_path).ok();
-
-    let node_root_dir = locate_node_root_dir(&extract_dir)?;
-
-    let operation_dir = operation_cleanup.take();
-
-    Ok(ExtractedHttpSource {
-        source_path: node_root_dir,
-        cleanup_dir: operation_dir,
-    })
 }
 
 fn resolve_http_source_download_and_extract(
