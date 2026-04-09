@@ -211,23 +211,21 @@ pub async fn stream_child_output(
         .map_err(|e| format!("failed to wait for process: {}", e))?;
     guard.completed = true;
 
-    // Join reader tasks and surface the first error so build diagnostics receive
-    // failures instead of masked truncated output. Process wait already returned
-    // above, so we are guaranteed not to leak the child here.
+    // Join reader tasks and surface the first error so build diagnostics
+    // receive failures instead of masked truncated output. The tasks were
+    // already spawned, so awaiting them sequentially here does not stall
+    // concurrency — each completes as soon as its reader drains. Process
+    // wait already returned above, so we are guaranteed not to leak the
+    // child here.
     let mut reader_error: Option<String> = None;
     for handle in reader_handles {
-        match handle.await {
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => {
-                if reader_error.is_none() {
-                    reader_error = Some(format!("output reader I/O error: {}", e));
-                }
-            }
-            Err(e) => {
-                if reader_error.is_none() {
-                    reader_error = Some(format!("output reader task join error: {}", e));
-                }
-            }
+        let outcome = match handle.await {
+            Ok(Ok(())) => None,
+            Ok(Err(e)) => Some(format!("output reader I/O error: {}", e)),
+            Err(e) => Some(format!("output reader task join error: {}", e)),
+        };
+        if reader_error.is_none() {
+            reader_error = outcome;
         }
     }
     if let Some(err) = reader_error {

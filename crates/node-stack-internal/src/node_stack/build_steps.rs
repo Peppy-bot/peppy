@@ -251,14 +251,34 @@ pub(super) async fn build_container_image(
 /// `build_cmd` so that variable references in multi-element commands work even
 /// though the command is executed directly (not through a shell).
 pub(super) fn expand_env_vars(s: &str, env_vars: &[(String, String)]) -> String {
-    let mut result = s.to_string();
-    for (key, value) in env_vars {
-        let pattern = format!("${{{}}}", key);
-        if result.contains(&pattern) {
-            result = result.replace(&pattern, value);
+    // Single-pass scanner: walk the string looking for `${...}`, resolve each
+    // match against `env_vars`, and leave unknown references untouched. The
+    // previous implementation did a linear `contains` + `replace` per env var,
+    // which reallocated the whole string for every match and scaled with
+    // O(len(s) * len(env_vars)) even when nothing needed expanding.
+    let bytes = s.as_bytes();
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'$'
+            && i + 1 < bytes.len()
+            && bytes[i + 1] == b'{'
+            && let Some(end_rel) = s[i + 2..].find('}')
+        {
+            let end = i + 2 + end_rel;
+            let key = &s[i + 2..end];
+            if let Some((_, value)) = env_vars.iter().find(|(k, _)| k == key) {
+                out.push_str(value);
+            } else {
+                out.push_str(&s[i..end + 1]);
+            }
+            i = end + 1;
+            continue;
         }
+        out.push(s[i..].chars().next().unwrap());
+        i += s[i..].chars().next().unwrap().len_utf8();
     }
-    result
+    out
 }
 
 /// Runs the user-defined `build_cmd` for a process node and streams output via

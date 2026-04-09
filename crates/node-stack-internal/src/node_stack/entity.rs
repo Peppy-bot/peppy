@@ -545,6 +545,56 @@ impl NodeEntity {
         }
         .await;
 
+        // ---- Phase 2.5: publish the artifact into shared storage ----
+        // This is blocking I/O (tar+zstd or fs::copy on potentially multi-GB
+        // images) so we run it via `spawn_blocking` off the tokio runtime
+        // worker. Done *before* acquiring the phase 3 write lock so the
+        // parking_lot guard is never held across blocking I/O.
+        let publish_result: std::result::Result<Option<PathBuf>, Error> = match &io_result {
+            Ok(()) => {
+                let working_dir = ctx.working_dir.to_path_buf();
+                let peppy_dirs = ctx.peppy_dirs.clone();
+                let node_name_pub = node_name.clone();
+                let node_tag_pub = node_tag.clone();
+                let join_res = tokio::task::spawn_blocking(move || -> std::io::Result<PathBuf> {
+                    if is_container {
+                        move_sif_to_storage(
+                            &working_dir,
+                            &node_name_pub,
+                            &node_tag_pub,
+                            &peppy_dirs,
+                        )
+                    } else {
+                        archive_dir_to_storage(
+                            &working_dir,
+                            &node_name_pub,
+                            &node_tag_pub,
+                            &peppy_dirs,
+                        )
+                    }
+                })
+                .await;
+                match join_res {
+                    Ok(Ok(path)) => Ok(Some(path)),
+                    Ok(Err(e)) => Err(Error::BuildFailed {
+                        node_name: node_name.clone(),
+                        node_tag: node_tag.clone(),
+                        reason: if is_container {
+                            format!("failed to move container image to storage: {}", e)
+                        } else {
+                            format!("failed to archive node directory: {}", e)
+                        },
+                    }),
+                    Err(e) => Err(Error::BuildFailed {
+                        node_name: node_name.clone(),
+                        node_tag: node_tag.clone(),
+                        reason: format!("storage publish task failed: {}", e),
+                    }),
+                }
+            }
+            Err(_) => Ok(None),
+        };
+
         // ---- Phase 3: apply transition or rollback (brief write lock) ----
         let mut guard = handle.write();
         // A concurrent `push_config` could have replaced the entity wholesale
@@ -567,21 +617,8 @@ impl NodeEntity {
 
         match io_result {
             Ok(()) => {
-                let artifact_path = if is_container {
-                    move_sif_to_storage(ctx.working_dir, &node_name, &node_tag, ctx.peppy_dirs)
-                        .map_err(|e| Error::BuildFailed {
-                            node_name: node_name.clone(),
-                            node_tag: node_tag.clone(),
-                            reason: format!("failed to move container image to storage: {}", e),
-                        })?
-                } else {
-                    archive_dir_to_storage(ctx.working_dir, &node_name, &node_tag, ctx.peppy_dirs)
-                        .map_err(|e| Error::BuildFailed {
-                        node_name: node_name.clone(),
-                        node_tag: node_tag.clone(),
-                        reason: format!("failed to archive node directory: {}", e),
-                    })?
-                };
+                let artifact_path =
+                    publish_result?.expect("publish_result is Some when io_result is Ok");
 
                 guard.stage = NodeStage::Ready {
                     config_path,
