@@ -603,7 +603,7 @@ impl NodeEntity {
                     node_name: guard.config.manifest.name.as_str().to_owned(),
                     node_tag: guard.config.manifest.tag.clone(),
                     from,
-                    to: "Ready",
+                    to: "spawn instance",
                 });
             }
             let entity_generation = guard.generation;
