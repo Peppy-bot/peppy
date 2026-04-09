@@ -732,7 +732,7 @@ async fn prepare_and_spawn_rejects_when_not_built() {
     match err {
         NodeStackError::InvalidStageTransition { from, to, .. } => {
             assert_eq!(from, "Added");
-            assert_eq!(to, "Ready");
+            assert_eq!(to, "spawn instance");
         }
         other => panic!("expected InvalidStageTransition, got {:?}", other),
     }
