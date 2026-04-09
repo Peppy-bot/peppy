@@ -9,13 +9,14 @@
 //! [`super::entity::NodeEntity::prepare_and_spawn`] and
 //! [`super::entity::NodeEntity::commit_started`].
 
+use parking_lot::Mutex as StdMutex;
 use std::collections::VecDeque;
 use std::fs::File;
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex as StdMutex};
 
 use chrono::Local;
 use config::consts::{PeppyDirs, RUNTIME_CONFIG_VAR_NAME};
@@ -278,17 +279,16 @@ pub(super) fn spawn_process_node(
     // Log the command being executed to the log file before attempting to spawn
     {
         let full_cmd = start_cmd.join(" ");
-        if let Ok(mut file) = log_file.lock() {
-            let timestamp = Local::now().format("%Y-%m-%dT%H:%M:%S%.3f");
-            let _ = writeln!(
-                file,
-                "[{}] Executing start_cmd: {} (working_dir: {})",
-                timestamp,
-                full_cmd,
-                working_dir.display()
-            );
-            let _ = file.flush();
-        }
+        let mut file = log_file.lock();
+        let timestamp = Local::now().format("%Y-%m-%dT%H:%M:%S%.3f");
+        let _ = writeln!(
+            file,
+            "[{}] Executing start_cmd: {} (working_dir: {})",
+            timestamp,
+            full_cmd,
+            working_dir.display()
+        );
+        let _ = file.flush();
     }
 
     let runtime_config_path = write_runtime_config_temp(peppy_dirs, runtime_config_json5)?;
@@ -487,18 +487,17 @@ pub(super) async fn spawn_container_node(
 
     // Log the command being executed
     {
-        if let Ok(mut file) = log_file.lock() {
-            let timestamp = Local::now().format("%Y-%m-%dT%H:%M:%S%.3f");
-            let _ = writeln!(
-                file,
-                "[{}] Executing apptainer run: {} (working_dir: {}, bind_mounts: [{}])",
-                timestamp,
-                sif_path.display(),
-                working_dir.display(),
-                mount_paths.join(", ")
-            );
-            let _ = file.flush();
-        }
+        let mut file = log_file.lock();
+        let timestamp = Local::now().format("%Y-%m-%dT%H:%M:%S%.3f");
+        let _ = writeln!(
+            file,
+            "[{}] Executing apptainer run: {} (working_dir: {}, bind_mounts: [{}])",
+            timestamp,
+            sif_path.display(),
+            working_dir.display(),
+            mount_paths.join(", ")
+        );
+        let _ = file.flush();
     }
 
     // Get the fully-built std::process::Command from the Apptainer facade,
@@ -638,7 +637,7 @@ pub(super) async fn kill_and_collect_error(
     }
 
     let stderr_output = {
-        let guard = stderr_buffer.lock().expect("stderr buffer lock poisoned");
+        let guard = stderr_buffer.lock();
         let buffer_lines: Vec<String> = guard.iter().cloned().collect();
         if !buffer_lines.is_empty() {
             buffer_lines.join("\n")
@@ -676,18 +675,16 @@ pub(super) async fn kill_and_collect_error(
 pub(super) fn extract_stderr_from_log(log_file: &Arc<StdMutex<File>>) -> String {
     use std::io::{Read, Seek};
 
-    let content = match log_file.lock() {
-        Ok(mut f) => {
-            if f.seek(std::io::SeekFrom::Start(0)).is_err() {
-                return String::new();
-            }
-            let mut buf = String::new();
-            if f.read_to_string(&mut buf).is_err() {
-                return String::new();
-            }
-            buf
+    let content = {
+        let mut f = log_file.lock();
+        if f.seek(std::io::SeekFrom::Start(0)).is_err() {
+            return String::new();
         }
-        Err(_) => return String::new(),
+        let mut buf = String::new();
+        if f.read_to_string(&mut buf).is_err() {
+            return String::new();
+        }
+        buf
     };
 
     content

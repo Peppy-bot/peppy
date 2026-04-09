@@ -18,6 +18,7 @@ use config::node::{NodeConfig, NodeConfigParser, ParsedNodeConfig, PeppygenLangu
 use git2::{Repository, build::CheckoutBuilder, build::RepoBuilder};
 pub use info::listen_for_node_info;
 pub use init::listen_for_node_init;
+use parking_lot::Mutex as StdMutex;
 use rand::RngExt;
 pub use remove::listen_for_node_remove;
 pub(crate) use start::{NodeStartActionContext, run_node_start};
@@ -26,7 +27,7 @@ use std::fs::File;
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex as StdMutex, OnceLock};
+use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 pub use stop::listen_for_node_stop;
 pub use sync::listen_for_node_sync;
@@ -96,11 +97,10 @@ fn validate_goal_env_vars(env_vars: &[(String, String)]) -> Result<Vec<(String, 
 /// Best-effort: silently ignores lock/write failures since the error is also
 /// returned in the result encoding.
 pub(crate) fn write_error_to_log(log_file: &Arc<StdMutex<File>>, error_msg: &str) {
-    if let Ok(mut file) = log_file.lock() {
-        let timestamp = Local::now().format("%Y-%m-%dT%H:%M:%S%.3f");
-        let _ = writeln!(file, "[{}] [error] {}", timestamp, error_msg);
-        let _ = file.flush();
-    }
+    let mut file = log_file.lock();
+    let timestamp = Local::now().format("%Y-%m-%dT%H:%M:%S%.3f");
+    let _ = writeln!(file, "[{}] [error] {}", timestamp, error_msg);
+    let _ = file.flush();
 }
 
 /// Creates a log file inside `log_dir` with the given filename.

@@ -938,7 +938,7 @@ fn make_real_output_sinks(
     tokio::sync::mpsc::UnboundedSender<node_stack::build_io::FeedbackLine>,
     tokio::task::JoinHandle<()>,
 ) {
-    use std::sync::Mutex as StdMutex;
+    use parking_lot::Mutex as StdMutex;
     use std::sync::atomic::AtomicBool;
 
     let log_dir = peppy_dirs.logs_dir_start();
@@ -1074,7 +1074,7 @@ pub async fn real_build_and_spawn_instance(
     tag: &str,
     instance_id: &config::node::Name,
 ) -> TestRunningInstance {
-    use std::sync::Mutex as StdMutex;
+    use parking_lot::Mutex as StdMutex;
 
     let handle = started
         .node_stack

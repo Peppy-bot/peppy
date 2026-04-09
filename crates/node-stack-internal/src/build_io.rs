@@ -19,13 +19,14 @@
 //!   node is running so its stdout/stderr keeps streaming.
 
 use chrono::Local;
+use parking_lot::Mutex as StdMutex;
 use std::collections::VecDeque;
 use std::fs::File;
 use std::io::Write;
 #[cfg(test)]
 use std::io::{BufRead, BufReader, Read};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex as StdMutex};
 use tokio::io::AsyncBufReadExt;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -58,10 +59,9 @@ impl FeedbackStream {
 /// `[timestamp] [stream] line` format. Errors are swallowed — log writes are
 /// best-effort.
 pub fn write_feedback_log_line(log_file: &Arc<StdMutex<File>>, stream: FeedbackStream, line: &str) {
-    if let Ok(mut file) = log_file.lock() {
-        let timestamp = Local::now().format("%Y-%m-%dT%H:%M:%S%.3f");
-        let _ = writeln!(file, "[{}] [{}] {}", timestamp, stream.as_str(), line);
-    }
+    let mut file = log_file.lock();
+    let timestamp = Local::now().format("%Y-%m-%dT%H:%M:%S%.3f");
+    let _ = writeln!(file, "[{}] [{}] {}", timestamp, stream.as_str(), line);
 }
 
 pub struct FeedbackLine {
@@ -96,7 +96,7 @@ impl OutputReaderHooks for NoOpHooks {}
 /// Pushes a line into a bounded ring buffer of stderr output.
 /// When the buffer is full, the oldest line is dropped.
 pub fn push_stderr_line(buffer: &Arc<StdMutex<VecDeque<String>>>, line: &str) {
-    let mut guard = buffer.lock().expect("stderr buffer lock poisoned");
+    let mut guard = buffer.lock();
     if guard.len() == STDERR_TAIL_LINES {
         guard.pop_front();
     }
@@ -197,10 +197,7 @@ pub async fn stream_child_output(
     }
 
     let tail_lines = match stderr_tail {
-        Some(ref tail) => tail
-            .lock()
-            .map(|t| t.iter().cloned().collect::<Vec<_>>())
-            .unwrap_or_default(),
+        Some(ref tail) => tail.lock().iter().cloned().collect::<Vec<_>>(),
         None => Vec::new(),
     };
 

@@ -19,6 +19,7 @@ use config::node::{DEFAULT_VARIANT_NAME, NodeConfig, NodeConfigParser, ParsedNod
 use futures::FutureExt;
 use git2::build::RepoBuilder;
 use node_stack::{BuildContext, InstanceState, NodeStack, validate_dependency_specs};
+use parking_lot::Mutex as StdMutex;
 use peppylib::messaging::{ServiceRequestContext, TopicPublisher};
 use peppylib::types::Payload;
 use peppylib::{ActionMessenger, MessengerHandle, PeppyResult};
@@ -26,7 +27,7 @@ use std::fs::File;
 use std::io::{Read, Write};
 use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex as StdMutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinHandle;

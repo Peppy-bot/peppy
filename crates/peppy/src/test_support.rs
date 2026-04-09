@@ -45,7 +45,7 @@ pub fn disable_add_cmd(peppy_json5: &Path) {
 
 #[derive(Clone, Default)]
 pub struct LogCapture {
-    buffer: Arc<std::sync::Mutex<Vec<u8>>>,
+    buffer: Arc<parking_lot::Mutex<Vec<u8>>>,
 }
 
 impl LogCapture {
@@ -54,13 +54,12 @@ impl LogCapture {
     }
 
     pub fn logs(&self) -> String {
-        let buffer = self.buffer.lock().expect("log buffer poisoned");
-        String::from_utf8(buffer.clone()).expect("captured logs are valid UTF-8")
+        String::from_utf8(self.buffer.lock().clone()).expect("captured logs are valid UTF-8")
     }
 }
 
 pub struct LogCaptureWriter {
-    buffer: Arc<std::sync::Mutex<Vec<u8>>>,
+    buffer: Arc<parking_lot::Mutex<Vec<u8>>>,
 }
 
 impl<'a> MakeWriter<'a> for LogCapture {
@@ -75,8 +74,7 @@ impl<'a> MakeWriter<'a> for LogCapture {
 
 impl Write for LogCaptureWriter {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let mut buffer = self.buffer.lock().expect("log buffer poisoned");
-        buffer.extend_from_slice(buf);
+        self.buffer.lock().extend_from_slice(buf);
         Ok(buf.len())
     }
 

@@ -4,11 +4,12 @@
 //! and were moved here so that the lifecycle transition `Added → Built` can run
 //! without crossing the crate boundary back into core-node-internal.
 
+use parking_lot::Mutex as StdMutex;
 use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::{Arc, Mutex as StdMutex};
+use std::sync::Arc;
 
 use chrono::Local;
 use config::consts::PeppyDirs;
@@ -335,17 +336,16 @@ pub(super) async fn run_add_cmd(
 
     // Log the command being executed to the log file before attempting to spawn
     {
-        if let Ok(mut file) = log_file.lock() {
-            let timestamp = Local::now().format("%Y-%m-%dT%H:%M:%S%.3f");
-            let _ = writeln!(
-                file,
-                "[{}] Executing add_cmd: {} (working_dir: {})",
-                timestamp,
-                full_cmd_display,
-                working_dir.display()
-            );
-            let _ = file.flush();
-        }
+        let mut file = log_file.lock();
+        let timestamp = Local::now().format("%Y-%m-%dT%H:%M:%S%.3f");
+        let _ = writeln!(
+            file,
+            "[{}] Executing add_cmd: {} (working_dir: {})",
+            timestamp,
+            full_cmd_display,
+            working_dir.display()
+        );
+        let _ = file.flush();
     }
 
     let mut command = tokio::process::Command::new(&program);

@@ -55,8 +55,9 @@ pub async fn listen_for_node_info(
 }
 
 /// Failure mode of `handle_node_info_request_inner`. Routed to a different
-/// `PeppyError` variant by the outer wrapper so that lock-poison and other
-/// internal faults are not classified as caller-fault `InvalidServiceRequest`.
+/// `PeppyError` variant by the outer wrapper so that internal faults
+/// (serializer/encoder errors) are not classified as caller-fault
+/// `InvalidServiceRequest`.
 enum InfoError {
     Invalid(String),
     Internal(String),
@@ -65,9 +66,9 @@ enum InfoError {
 // Only `String` is convertible into `InfoError` via `?`, and only as the
 // `Invalid` (caller-fault) variant. The previous blanket
 // `From<E: Display>` swept *every* error type into `Invalid`, which
-// silently routed things like serializer faults and lock poisoning to
-// `InvalidServiceRequest` instead of `ServiceError`. With this restricted
-// impl, internal-fault sites must call `InfoError::Internal(...)` explicitly.
+// silently routed things like serializer faults to `InvalidServiceRequest`
+// instead of `ServiceError`. With this restricted impl, internal-fault
+// sites must call `InfoError::Internal(...)` explicitly.
 impl From<String> for InfoError {
     fn from(reason: String) -> Self {
         InfoError::Invalid(reason)

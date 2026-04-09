@@ -9,6 +9,7 @@ use config::runtime::RuntimeConfig;
 use config::{AnyType, resolve_parameter_path};
 use futures::FutureExt;
 use node_stack::{self, NodeStack};
+use parking_lot::Mutex as StdMutex;
 use peppylib::encoding::health::NodeHealthRequest;
 use peppylib::encoding::ready::NodeReadyRequest;
 use peppylib::messaging::{
@@ -19,8 +20,8 @@ use peppylib::{ActionMessenger, MessengerHandle, PeppyError, PeppyResult, Servic
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::panic::AssertUnwindSafe;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 use tokio::process::Child;
 use tokio::sync::{Mutex, Notify, mpsc};

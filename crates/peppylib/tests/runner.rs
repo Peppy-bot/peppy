@@ -35,7 +35,7 @@ impl EnvAndDirGuard {
         let lock = ENV_LOCK
             .get_or_init(|| Mutex::new(()))
             .lock()
-            .expect("lock poisoned");
+            .expect("env lock poisoned by a previous test panic");
 
         let previous_runtime_config = std::env::var(peppylib::config::RUNTIME_CONFIG_VAR_NAME).ok();
         let previous_dir = std::env::current_dir().expect("current dir should be readable");
@@ -62,7 +62,7 @@ impl EnvAndDirGuard {
         let lock = ENV_LOCK
             .get_or_init(|| Mutex::new(()))
             .lock()
-            .expect("lock poisoned");
+            .expect("env lock poisoned by a previous test panic");
 
         let previous_runtime_config = std::env::var(peppylib::config::RUNTIME_CONFIG_VAR_NAME).ok();
         let previous_dir = std::env::current_dir().expect("current dir should be readable");

@@ -1,9 +1,9 @@
-use parking_lot::RwLock;
+use parking_lot::{Mutex as StdMutex, RwLock};
 use std::collections::VecDeque;
 use std::fs::File;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex as StdMutex};
 
 use config::consts::PeppyDirs;
 use config::node::{Name, NodeConfig};

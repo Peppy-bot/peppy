@@ -1,8 +1,9 @@
 //! Tests focused on the `NodeStage` lifecycle transitions managed by
 //! `NodeEntity`.
 
+use parking_lot::Mutex as StdMutex;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex as StdMutex};
+use std::sync::Arc;
 
 use config::node::Name;
 use node_stack::{

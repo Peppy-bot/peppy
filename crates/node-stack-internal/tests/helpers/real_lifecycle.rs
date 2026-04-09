@@ -1,8 +1,9 @@
 //! Real-lifecycle test helpers.
 
+use parking_lot::Mutex as StdMutex;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex as StdMutex};
 
 use config::consts::PeppyDirs;
 use config::node::{Name, NodeConfig};

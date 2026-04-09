@@ -15,6 +15,7 @@ use config::consts::{DEFAULT_MESSAGING_HOST, DEFAULT_MESSAGING_PORT, PeppyDirs};
 use config::launcher::{Deployment, DeploymentSource, PeppyLauncherParser, VariantSource};
 use config::runtime::RuntimeConfig;
 use node_stack::NodeStack;
+use parking_lot::Mutex as StdMutex;
 use peppylib::messaging::{ServiceRequestContext, TopicPublisher};
 use peppylib::types::Payload;
 use peppylib::{ActionMessenger, MessengerHandle, PeppyResult};
@@ -22,7 +23,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex as StdMutex};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinHandle;
@@ -240,7 +241,8 @@ fn variant_source_to_node_source(
 pub const STACK_LAUNCH_GIT_HASH: &str = "stack-launch";
 
 async fn publish_feedback(ctx: &ProcessLaunchContext, feedback: LaunchFeedback) {
-    if let Ok(mut file) = ctx.log_file.lock() {
+    {
+        let mut file = ctx.log_file.lock();
         let timestamp = Local::now().format("%Y-%m-%dT%H:%M:%S%.3f");
         let _ = writeln!(
             file,
