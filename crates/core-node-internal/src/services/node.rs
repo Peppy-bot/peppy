@@ -96,6 +96,41 @@ fn validate_goal_env_vars(env_vars: &[(String, String)]) -> Result<Vec<(String, 
     Ok(result)
 }
 
+/// Maps an encoding `Result` to a `PeppyResult`, wrapping the error as an
+/// `InvalidServiceRequest` so it can be returned directly from a goal handler.
+/// Used in place of open-coding the same `map_err` at every rejection and
+/// accepted-response encoding site in the add/build/start handlers.
+pub(crate) fn encode_response_or_err(
+    identifier: &'static str,
+    result: crate::Result<peppylib::types::Payload>,
+) -> peppylib::PeppyResult<peppylib::types::Payload> {
+    result.map_err(|e| peppylib::PeppyError::InvalidServiceRequest {
+        identifier: identifier.to_string(),
+        reason: format!("Failed to encode response: {}", e),
+    })
+}
+
+/// Spawns a task that consumes `FeedbackLine` values from `feedback_rx`,
+/// converts each one via `encode` and publishes the resulting payload. Shared
+/// by the add/build/start goal handlers, which all run the same
+/// consumer-side forwarder over differently-typed feedback encoders.
+pub(crate) fn spawn_feedback_forwarder<F>(
+    mut feedback_rx: tokio::sync::mpsc::UnboundedReceiver<FeedbackLine>,
+    publisher: peppylib::messaging::TopicPublisher,
+    encode: F,
+) -> tokio::task::JoinHandle<()>
+where
+    F: Fn(FeedbackLine) -> crate::Result<peppylib::types::Payload> + Send + 'static,
+{
+    tokio::spawn(async move {
+        while let Some(line) = feedback_rx.recv().await {
+            if let Ok(payload) = encode(line) {
+                let _ = publisher.publish(payload).await;
+            }
+        }
+    })
+}
+
 /// Write an error message to the node's log file with a timestamp.
 ///
 /// Best-effort: silently ignores lock/write failures since the error is also

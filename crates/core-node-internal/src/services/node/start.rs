@@ -366,32 +366,19 @@ async fn handle_goal_request(
     let goal = match NodeStartGoal::decode(payload.as_ref()) {
         Ok(goal) => goal,
         Err(e) => {
-            let response = NodeStartGoalResponse::rejected(format!("invalid payload: {}", e));
-            return response
-                .encode()
-                .map_err(|e| peppylib::PeppyError::InvalidServiceRequest {
-                    identifier: "node_start_goal".to_string(),
-                    reason: format!("Failed to encode response: {}", e),
-                });
+            return encode_rejected_start_goal(format!("invalid payload: {}", e));
         }
     };
 
     {
         let mut state_guard = state.lock().await;
-        if matches!(*state_guard, ActionState::Running) {
-            let remaining = gate.remaining_secs();
-            let response = NodeStartGoalResponse::rejected(format!(
-                "action already in progress (times out in {remaining}s)"
+        if let super::gate::Admission::AlreadyRunning { remaining_secs } =
+            gate.try_admit(&mut state_guard, goal.timeout_secs, false)
+        {
+            return encode_rejected_start_goal(format!(
+                "action already in progress (times out in {remaining_secs}s)"
             ));
-            return response
-                .encode()
-                .map_err(|e| peppylib::PeppyError::InvalidServiceRequest {
-                    identifier: "node_start_goal".to_string(),
-                    reason: format!("Failed to encode response: {}", e),
-                });
         }
-        *state_guard = ActionState::Running;
-        gate.mark_running(goal.timeout_secs);
     }
 
     // Parse runtime config to get instance_id for log file naming
@@ -401,13 +388,7 @@ async fn handle_goal_request(
             let error_msg = format!("Failed to parse PEPPY_RUNTIME_CONFIG: {}", e);
             let mut state_guard = state.lock().await;
             *state_guard = ActionState::Rejected;
-            let response = NodeStartGoalResponse::rejected(&error_msg);
-            return response
-                .encode()
-                .map_err(|e| peppylib::PeppyError::InvalidServiceRequest {
-                    identifier: "node_start_goal".to_string(),
-                    reason: format!("Failed to encode response: {}", e),
-                });
+            return encode_rejected_start_goal(error_msg);
         }
     };
 
@@ -430,13 +411,7 @@ async fn handle_goal_request(
             debug!("{}", error_msg);
             let mut state_guard = state.lock().await;
             *state_guard = ActionState::Rejected;
-            let response = NodeStartGoalResponse::rejected(&error_msg);
-            return response
-                .encode()
-                .map_err(|e| peppylib::PeppyError::InvalidServiceRequest {
-                    identifier: "node_start_goal".to_string(),
-                    reason: format!("Failed to encode response: {}", e),
-                });
+            return encode_rejected_start_goal(error_msg);
         }
     };
 
@@ -447,22 +422,11 @@ async fn handle_goal_request(
     // the state stuck on Running, causing clients to time out.
     let state_clone = Arc::clone(&state);
     tokio::spawn(async move {
-        // Create a channel for feedback and spawn a consumer that encodes
-        // FeedbackLine values as NodeStartFeedback and publishes to the topic.
-        let (feedback_tx, mut feedback_rx) = mpsc::unbounded_channel::<FeedbackLine>();
-        let feedback_publisher_for_consumer = feedback_publisher.clone();
-        let _consumer_handle = tokio::spawn(async move {
-            while let Some(line) = feedback_rx.recv().await {
-                let feedback = match line.stream {
-                    FeedbackStream::Stdout => NodeStartFeedback::stdout(&line.line),
-                    FeedbackStream::Stderr => NodeStartFeedback::stderr(&line.line),
-                    FeedbackStream::Warning => NodeStartFeedback::warning(&line.line),
-                };
-                if let Ok(payload) = feedback.encode() {
-                    let _ = feedback_publisher_for_consumer.publish(payload).await;
-                }
-            }
-        });
+        let (feedback_tx, feedback_rx) = mpsc::unbounded_channel::<FeedbackLine>();
+        let _consumer_handle =
+            super::spawn_feedback_forwarder(feedback_rx, feedback_publisher.clone(), |line| {
+                NodeStartFeedback::from_stream(line.stream, &line.line).encode()
+            });
 
         let result = run_node_start(
             goal,
@@ -478,13 +442,17 @@ async fn handle_goal_request(
         *state_guard = ActionState::Completed { result };
     });
 
-    let response = NodeStartGoalResponse::accepted(&log_path);
-    response
-        .encode()
-        .map_err(|e| peppylib::PeppyError::InvalidServiceRequest {
-            identifier: "node_start_goal".to_string(),
-            reason: format!("Failed to encode response: {}", e),
-        })
+    super::encode_response_or_err(
+        "node_start_goal",
+        NodeStartGoalResponse::accepted(&log_path).encode(),
+    )
+}
+
+fn encode_rejected_start_goal(reason: impl Into<String>) -> PeppyResult<Payload> {
+    super::encode_response_or_err(
+        "node_start_goal",
+        NodeStartGoalResponse::rejected(reason).encode(),
+    )
 }
 
 async fn process_node_start(

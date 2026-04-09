@@ -11,10 +11,21 @@
 //! decisions never await — replacing four sequential `tokio::Mutex` lock
 //! awaits in the previous per-handler implementation.
 
+use super::super::action_loop::{ActionResult, ActionState};
 use parking_lot::Mutex;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::task::JoinHandle;
+
+/// Outcome of [`ConcurrencyGate::try_admit`].
+pub(crate) enum Admission {
+    /// The new goal was admitted. State has been transitioned to `Running` and
+    /// the gate clock started.
+    Admitted,
+    /// A goal is already in flight and force was not requested. State is
+    /// left unchanged.
+    AlreadyRunning { remaining_secs: u64 },
+}
 
 #[derive(Default)]
 struct GateState {
@@ -71,5 +82,30 @@ impl ConcurrencyGate {
     /// Stores the spawned task handle so a future `--force` call can abort it.
     pub(crate) fn set_task(&self, task: JoinHandle<()>) {
         self.state.lock().running_task = Some(task);
+    }
+
+    /// Admits a new goal by transitioning the caller-held `ActionState` to
+    /// `Running` and recording the gate clock. When a goal is already in
+    /// flight and `force_abort_if_running` is true, the previous task is
+    /// aborted before admission proceeds. Otherwise the in-flight goal's
+    /// `remaining_secs` is returned and the state is left unchanged so the
+    /// caller can encode a rejection.
+    pub(crate) fn try_admit<R: ActionResult>(
+        &self,
+        state_guard: &mut ActionState<R>,
+        timeout_secs: u64,
+        force_abort_if_running: bool,
+    ) -> Admission {
+        if matches!(*state_guard, ActionState::Running) {
+            if !force_abort_if_running {
+                return Admission::AlreadyRunning {
+                    remaining_secs: self.remaining_secs(),
+                };
+            }
+            self.force_abort();
+        }
+        *state_guard = ActionState::Running;
+        self.mark_running(timeout_secs);
+        Admission::Admitted
     }
 }

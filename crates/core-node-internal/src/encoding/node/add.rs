@@ -468,6 +468,13 @@ pub struct NodeAddFeedback {
 }
 
 impl NodeAddFeedback {
+    pub fn from_stream(stream: node_stack::FeedbackStream, line: impl Into<String>) -> Self {
+        Self {
+            stream: stream.as_str().to_string(),
+            line: line.into(),
+        }
+    }
+
     pub fn stdout(line: impl Into<String>) -> Self {
         Self {
             stream: "stdout".to_string(),

@@ -162,12 +162,10 @@ impl GoalHandler for NodeBuildGoalHandler {
 }
 
 fn encode_rejected_goal(reason: impl Into<String>) -> PeppyResult<Payload> {
-    NodeBuildGoalResponse::rejected(reason)
-        .encode()
-        .map_err(|e| peppylib::PeppyError::InvalidServiceRequest {
-            identifier: "node_build_goal".to_string(),
-            reason: format!("Failed to encode response: {}", e),
-        })
+    super::encode_response_or_err(
+        "node_build_goal",
+        NodeBuildGoalResponse::rejected(reason).encode(),
+    )
 }
 
 impl NodeBuildGoalHandler {
@@ -187,19 +185,18 @@ impl NodeBuildGoalHandler {
 
         {
             let mut state_guard = state.lock().await;
-            if matches!(*state_guard, ActionState::Running) {
-                if !goal.force {
-                    let remaining = self.gate.remaining_secs();
-                    return encode_rejected_goal(format!(
-                        "action already in progress (times out in {remaining}s), \
-                         use `--force` to force building the node"
-                    ));
-                }
+            if goal.force && matches!(*state_guard, ActionState::Running) {
                 debug!("Force flag set: aborting previous node_build task");
-                self.gate.force_abort();
             }
-            *state_guard = ActionState::Running;
-            self.gate.mark_running(goal.timeout_secs);
+            if let super::gate::Admission::AlreadyRunning { remaining_secs } =
+                self.gate
+                    .try_admit(&mut state_guard, goal.timeout_secs, goal.force)
+            {
+                return encode_rejected_goal(format!(
+                    "action already in progress (times out in {remaining_secs}s), \
+                     use `--force` to force building the node"
+                ));
+            }
         }
 
         debug!(
@@ -275,16 +272,11 @@ impl NodeBuildGoalHandler {
         let action_context = self.context.clone();
         let log_path_clone = log_path.clone();
         let task_handle = tokio::spawn(async move {
-            let (feedback_tx, mut feedback_rx) = mpsc::unbounded_channel::<FeedbackLine>();
-            let feedback_publisher_for_consumer = feedback_publisher.clone();
-            let consumer_handle = tokio::spawn(async move {
-                while let Some(line) = feedback_rx.recv().await {
-                    let feedback = NodeBuildFeedback::from_stream(line.stream, &line.line);
-                    if let Ok(payload) = feedback.encode() {
-                        let _ = feedback_publisher_for_consumer.publish(payload).await;
-                    }
-                }
-            });
+            let (feedback_tx, feedback_rx) = mpsc::unbounded_channel::<FeedbackLine>();
+            let consumer_handle =
+                super::spawn_feedback_forwarder(feedback_rx, feedback_publisher.clone(), |line| {
+                    NodeBuildFeedback::from_stream(line.stream, &line.line).encode()
+                });
 
             let result = run_node_build(NodeBuildRun {
                 node_name: goal.node_name,
@@ -306,13 +298,10 @@ impl NodeBuildGoalHandler {
 
         self.gate.set_task(task_handle);
 
-        let response = NodeBuildGoalResponse::accepted(&log_path);
-        response
-            .encode()
-            .map_err(|e| peppylib::PeppyError::InvalidServiceRequest {
-                identifier: "node_build_goal".to_string(),
-                reason: format!("Failed to encode response: {}", e),
-            })
+        super::encode_response_or_err(
+            "node_build_goal",
+            NodeBuildGoalResponse::accepted(&log_path).encode(),
+        )
     }
 }
 

@@ -30,6 +30,32 @@ fn staging_tmp_path(storage_dir: &Path, final_name: &str) -> PathBuf {
     ))
 }
 
+/// Publishes an artifact into `storage_dir/final_name` atomically: allocates a
+/// unique tmp path, lets `write` populate it, then renames. If `write` (or
+/// any later step) fails, the tmp path is cleaned up before the error is
+/// returned. Used by both [`archive_dir_to_storage`] and [`move_sif_to_storage`].
+fn publish_to_storage_atomic<F>(
+    storage_dir: &Path,
+    final_name: &str,
+    write: F,
+) -> std::io::Result<PathBuf>
+where
+    F: FnOnce(&Path) -> std::io::Result<()>,
+{
+    std::fs::create_dir_all(storage_dir)?;
+    let tmp_path = staging_tmp_path(storage_dir, final_name);
+    let final_path = storage_dir.join(final_name);
+    if let Err(e) = write(&tmp_path) {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(e);
+    }
+    if let Err(e) = std::fs::rename(&tmp_path, &final_path) {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(e);
+    }
+    Ok(final_path)
+}
+
 /// Validates that `node_tag` is safe to splice into a filename joined under
 /// the storage directory. Manifest names are constrained by `Name`'s parser,
 /// but `Manifest::tag` is a raw `String` — so we re-validate it here before
@@ -83,36 +109,19 @@ pub(super) fn archive_dir_to_storage(
 ) -> std::io::Result<PathBuf> {
     validate_node_tag(node_tag)?;
     let storage_dir = peppy_dirs.added_nodes_dir();
-    std::fs::create_dir_all(&storage_dir)?;
-
     let archive_name = format!("{}_{}.tar.zst", node_name, node_tag);
-    let archive_path = storage_dir.join(&archive_name);
-    let tmp_path = staging_tmp_path(&storage_dir, &archive_name);
-
-    let file = File::create(&tmp_path)?;
-    let encoder = ZstdEncoder::new(file, 1)?;
-    let mut tar_builder = tar::Builder::new(encoder);
-    // DO NOT follow symlinks, otherwise it could create unintended behavior for the user who modify files in the path pointed by the symlink
-    tar_builder.follow_symlinks(false);
-    if let Err(e) = tar_builder.append_dir_all(".", source_dir) {
-        let _ = std::fs::remove_file(&tmp_path);
-        return Err(e);
-    }
-    let encoder = match tar_builder.into_inner() {
-        Ok(e) => e,
-        Err(e) => {
-            let _ = std::fs::remove_file(&tmp_path);
-            return Err(e);
-        }
-    };
-    if let Err(e) = encoder.finish() {
-        let _ = std::fs::remove_file(&tmp_path);
-        return Err(e);
-    }
-
-    std::fs::rename(&tmp_path, &archive_path)?;
-
-    Ok(archive_path)
+    publish_to_storage_atomic(&storage_dir, &archive_name, |tmp_path| {
+        let file = File::create(tmp_path)?;
+        let encoder = ZstdEncoder::new(file, 1)?;
+        let mut tar_builder = tar::Builder::new(encoder);
+        // DO NOT follow symlinks, otherwise it could create unintended behavior
+        // for the user who modify files in the path pointed by the symlink
+        tar_builder.follow_symlinks(false);
+        tar_builder.append_dir_all(".", source_dir)?;
+        let encoder = tar_builder.into_inner()?;
+        encoder.finish()?;
+        Ok(())
+    })
 }
 
 /// Moves the built `.sif` container image from the working directory to peppy storage.
@@ -130,32 +139,24 @@ pub(super) fn move_sif_to_storage(
     validate_node_tag(node_tag)?;
     let sif_name = format!("{}_{}.sif", node_name, node_tag);
     let sif_source = working_dir.join(&sif_name);
-
     let storage_dir = peppy_dirs.added_nodes_dir();
-    std::fs::create_dir_all(&storage_dir)?;
-
-    let dest_path = storage_dir.join(&sif_name);
-    let tmp_path = staging_tmp_path(&storage_dir, &sif_name);
 
     // Copy + rename (not rename alone) because the working dir may be on a
-    // different filesystem than storage. Matches archive_dir_to_storage pattern.
-    if let Err(e) = std::fs::copy(&sif_source, &tmp_path) {
-        let _ = std::fs::remove_file(&tmp_path);
-        return Err(std::io::Error::new(
-            e.kind(),
-            format!(
-                "Expected container image at {}: {}",
-                sif_source.display(),
-                e
-            ),
-        ));
-    }
-    if let Err(e) = std::fs::rename(&tmp_path, &dest_path) {
-        let _ = std::fs::remove_file(&tmp_path);
-        return Err(e);
-    }
-
-    Ok(dest_path)
+    // different filesystem than storage.
+    publish_to_storage_atomic(&storage_dir, &sif_name, |tmp_path| {
+        std::fs::copy(&sif_source, tmp_path)
+            .map(|_| ())
+            .map_err(|e| {
+                std::io::Error::new(
+                    e.kind(),
+                    format!(
+                        "Expected container image at {}: {}",
+                        sif_source.display(),
+                        e
+                    ),
+                )
+            })
+    })
 }
 
 /// Inputs needed to drive an apptainer container build to completion.

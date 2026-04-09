@@ -12,10 +12,9 @@ use super::TimeoutConfig;
 use super::env::caller_env_overrides;
 use super::source::{parse_node_source, parse_variant_source};
 use super::start::start_instance_async;
-use crate::commands::{CALLER_INSTANCE_ID, GOAL_TIMEOUT, SCROLLING_OUTPUT_LINES};
+use crate::commands::{CALLER_INSTANCE_ID, GOAL_TIMEOUT};
 use crate::context::AppContext;
 use crate::error::{Error, Result};
-use crate::terminal::ScrollingOutput;
 
 /// Options for starting a node instance immediately after adding it.
 pub struct StartAfterAddOptions {
@@ -147,56 +146,12 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
         .await
         .map_err(|e| Error::ExecutionFailed(format!("Failed to send node_add goal: {}", e)))?;
 
-    // Read the goal response to get the log file path
-    let goal_response_payload = action_handle.goal_response().payload();
-    let goal_response = NodeAddGoalResponse::decode(&goal_response_payload)
-        .map_err(|e| Error::ExecutionFailed(format!("Failed to decode goal response: {}", e)))?;
-
-    if !goal_response.accepted {
-        return Err(Error::ExecutionFailed(format!(
-            "Goal rejected: {}",
-            goal_response
-                .rejection_reason
-                .unwrap_or_else(|| "unknown reason".to_string())
-        )));
-    }
-
-    info!("Log file: {}", goal_response.log_path.display());
-
-    let mut scrolling_output = ScrollingOutput::new(SCROLLING_OUTPUT_LINES);
-
-    let add_result = crate::commands::action_poll::poll_action_to_completion(
-        conn.messenger,
-        &mut action_handle,
-        &timeouts,
-        &mut scrolling_output,
-        |payload, output| {
-            if let Ok(feedback) = NodeAddFeedback::decode(payload) {
-                output.add_line(&feedback.line, feedback.is_stderr());
-            }
-        },
-        |payload| match NodeAddResult::decode(payload) {
-            Ok(result) => Ok(Some(result)),
-            Err(err) => {
-                if peppylib::encoding::is_result_pending(payload) {
-                    Ok(None)
-                } else {
-                    Err(format!("Failed to decode node_add result: {err}"))
-                }
-            }
-        },
-    )
+    let add_result = crate::commands::action_poll::run_action_with_feedback::<
+        NodeAddGoalResponse,
+        NodeAddFeedback,
+        NodeAddResult,
+    >(conn.messenger, &mut action_handle, &timeouts, "node_add")
     .await?;
-
-    scrolling_output.clear();
-
-    if !add_result.success {
-        return Err(Error::ExecutionFailed(
-            add_result
-                .error_message
-                .unwrap_or_else(|| "node_add failed with no error message".to_string()),
-        ));
-    }
 
     if let (Some(name), Some(tag)) = (&add_result.node_name, &add_result.node_tag) {
         info!("Added node {}:{} to the node stack", name, tag);
