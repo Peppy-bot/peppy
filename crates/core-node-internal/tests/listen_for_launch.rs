@@ -1257,7 +1257,10 @@ async fn listen_for_launch_configuration_fails_when_add_cmd_fails_and_restores_s
     .await
     .expect("launch should complete");
 
-    assert!(!result.success, "launch should fail because build_cmd fails");
+    assert!(
+        !result.success,
+        "launch should fail because build_cmd fails"
+    );
 
     let error_message = result
         .error_message

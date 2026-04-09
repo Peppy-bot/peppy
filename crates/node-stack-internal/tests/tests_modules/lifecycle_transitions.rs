@@ -626,7 +626,10 @@ async fn build_runs_add_cmd_for_process_node() {
             break;
         }
     }
-    assert!(found, "marker.txt produced by build_cmd should be in archive");
+    assert!(
+        found,
+        "marker.txt produced by build_cmd should be in archive"
+    );
 
     // Keep harness alive (so tempdirs survive until the assertions above).
     drop(h.peppy_root);

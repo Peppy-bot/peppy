@@ -264,44 +264,19 @@ async fn handle_goal_request(
         Ok(Some(g)) => g,
     };
 
-    // Reuse the entity's add log file if available (open in append mode) so
-    // tests and CLI consumers see add+build output in a single file. Fall
-    // back to a fresh file in `logs_dir_build` otherwise.
-    let existing_add_log = entity_handle.read().last_add_log_path().map(PathBuf::from);
-    let (log_file, log_path) = if let Some(path) = existing_add_log {
-        match std::fs::OpenOptions::new()
-            .append(true)
-            .create(true)
-            .open(&path)
-        {
-            Ok(file) => (Arc::new(StdMutex::new(file)), path),
-            Err(e) => {
-                let mut state_guard = state.lock().await;
-                *state_guard = ActionState::Rejected;
-                return encode_rejected_goal(format!("Failed to open add log for append: {}", e));
-            }
-        }
-    } else {
-        let log_dir = action_context.peppy_dirs.logs_dir_build();
-        let timestamp = Local::now().format("%Y%m%d_%H%M%S_%3f").to_string();
-        let log_filename = format!("{}_{}_{}.log", goal.node_name, goal.node_tag, timestamp);
-        match create_action_log_file(&log_dir, &log_filename) {
-            Ok(result) => result,
-            Err(error_msg) => {
-                debug!("{}", error_msg);
-                let mut state_guard = state.lock().await;
-                *state_guard = ActionState::Rejected;
-                return encode_rejected_goal(error_msg);
-            }
+    let log_dir = action_context.peppy_dirs.logs_dir_build();
+    let timestamp = Local::now().format("%Y%m%d_%H%M%S_%3f").to_string();
+    let log_filename = format!("{}_{}_{}.log", goal.node_name, goal.node_tag, timestamp);
+    let (log_file, log_path) = match create_action_log_file(&log_dir, &log_filename) {
+        Ok(result) => result,
+        Err(error_msg) => {
+            debug!("{}", error_msg);
+            let mut state_guard = state.lock().await;
+            *state_guard = ActionState::Rejected;
+            return encode_rejected_goal(error_msg);
         }
     };
     debug!("Build log file: {}", log_path.display());
-
-    // Record the build log path on the entity so `peppy node info` can
-    // surface it (parallel to the add path).
-    entity_handle
-        .write()
-        .set_last_add_log_path(log_path.clone());
 
     let state_clone = Arc::clone(&state);
     let log_path_clone = log_path.clone();
