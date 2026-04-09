@@ -32,6 +32,9 @@ pub struct AddNodeParams {
     pub timeouts: TimeoutConfig,
     pub force: bool,
     pub confirm_reader: Option<Box<dyn BufRead>>,
+    /// Whether to chain a `node build` after the add succeeds. Set by the
+    /// CLI when the user passes `--build` (or `--start`, which implies it).
+    pub chain_build: bool,
 }
 
 fn validate_git_ref(git_ref: Option<&str>) -> Result<Option<String>> {
@@ -59,6 +62,7 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
         timeouts,
         force,
         mut confirm_reader,
+        chain_build,
     } = params;
     // Validate git_ref and parse the source into a NodeSource
     let git_ref = validate_git_ref(git_ref.as_deref())?;
@@ -199,14 +203,10 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
     } else {
         info!("Added node to the node stack");
     }
-    info!(
-        "Snapshot path: {}",
-        add_result.snapshot_path.to_string_lossy()
-    );
 
-    let Some(start_options) = start_options else {
+    if !chain_build && start_options.is_none() {
         return Ok(());
-    };
+    }
 
     let node_name = add_result.node_name.as_deref().ok_or_else(|| {
         Error::ExecutionFailed(
@@ -218,6 +218,20 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
             "Failed to determine node tag after adding. Try running `peppy node list`.".into(),
         )
     })?;
+
+    crate::commands::node::builder::build_node_async(
+        conn.messenger,
+        &conn.core_node_name,
+        node_name,
+        node_tag,
+        &timeouts,
+        false,
+    )
+    .await?;
+
+    let Some(start_options) = start_options else {
+        return Ok(());
+    };
 
     start_instance_async(
         conn.messenger,

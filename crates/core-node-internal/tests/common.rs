@@ -5,8 +5,9 @@ use config::consts::{
 };
 use config::node::{PeppygenLanguage, QoSProfile};
 use core_node::encoding::{
-    NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAddResult, NodeSource,
-    NodeStartFeedback, NodeStartGoal, NodeStartGoalResponse, NodeStartResult,
+    NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAddResult, NodeBuildGoal,
+    NodeBuildGoalResponse, NodeBuildResult, NodeSource, NodeStartFeedback, NodeStartGoal,
+    NodeStartGoalResponse, NodeStartResult,
 };
 use core_node::names;
 use core_node::{CoreNode, CoreNodeArguments};
@@ -59,6 +60,61 @@ fn init_test_data_dir() -> (TempDir, PeppyDirs) {
 
 pub const CALLER_INSTANCE_ID: &str = "caller_instance";
 pub const TEST_GIT_HASH: &str = "test-hash";
+
+/// Combined result of `node_add` followed (on success) by `node_build`. The
+/// daemon side now exposes `add` and `build` as two separate actions; tests
+/// almost always want the full pipeline, so the helpers below transparently
+/// chain build and merge both results into this struct. `snapshot_path`
+/// holds the build artifact path on success and is empty otherwise.
+#[derive(Debug, Clone)]
+pub struct NodeAddTestResult {
+    pub success: bool,
+    pub error_message: Option<String>,
+    pub node_name: Option<String>,
+    pub node_tag: Option<String>,
+    pub snapshot_path: PathBuf,
+    pub log_path: PathBuf,
+}
+
+/// Tiny helper that decodes a `NodeBuildFeedback` payload but exposes it as a
+/// `NodeAddFeedback` so the existing test feedback channels keep working
+/// during the build phase too.
+struct NodeBuildResultFeedbackBridge;
+
+impl NodeBuildResultFeedbackBridge {
+    fn decode(payload: &[u8]) -> Result<NodeAddFeedback, String> {
+        let feedback =
+            core_node::encoding::NodeBuildFeedback::decode(payload).map_err(|e| e.to_string())?;
+        Ok(NodeAddFeedback {
+            stream: feedback.stream,
+            line: feedback.line,
+        })
+    }
+}
+
+impl NodeAddTestResult {
+    fn from_add_failure(add: NodeAddResult) -> Self {
+        Self {
+            success: false,
+            error_message: add.error_message,
+            node_name: add.node_name,
+            node_tag: add.node_tag,
+            snapshot_path: PathBuf::new(),
+            log_path: add.log_path,
+        }
+    }
+
+    fn from_build(build: NodeBuildResult) -> Self {
+        Self {
+            success: build.success,
+            error_message: build.error_message,
+            node_name: build.node_name,
+            node_tag: build.node_tag,
+            snapshot_path: build.artifact_path,
+            log_path: build.log_path,
+        }
+    }
+}
 
 /// Source for a node to be added. Used by `send_node_add_and_wait` to support
 /// filesystem paths, git repositories, and HTTP URLs.
@@ -297,8 +353,10 @@ async fn send_node_add_and_wait_internal<'a>(
     feedback_tx: Option<UnboundedSender<NodeAddFeedback>>,
     env_vars: Vec<(String, String)>,
     force: bool,
-) -> Result<NodeAddResult, String> {
+) -> Result<NodeAddTestResult, String> {
     let source = source.into();
+    let build_env_vars = env_vars.clone();
+    let feedback_tx = feedback_tx;
 
     let mut goal = match &source {
         NodeAddSource::Path(path) => {
@@ -387,12 +445,12 @@ async fn send_node_add_and_wait_internal<'a>(
         .map_err(|e| format!("Failed to decode goal response: {}", e))?;
 
     if !goal_response.accepted {
-        return Ok(NodeAddResult::failure(
+        return Ok(NodeAddTestResult::from_add_failure(NodeAddResult::failure(
             PathBuf::new(),
             goal_response
                 .rejection_reason
                 .unwrap_or_else(|| "Goal rejected without reason".to_string()),
-        ));
+        )));
     }
 
     let absolute_deadline = tokio::time::Instant::now() + result_timeout;
@@ -452,7 +510,30 @@ async fn send_node_add_and_wait_internal<'a>(
                                 let _ = tx.send(feedback);
                             }
                         }
-                        return Ok(result);
+                        if !result.success {
+                            return Ok(NodeAddTestResult::from_add_failure(result));
+                        }
+                        // Add succeeded — chain into a build call so the
+                        // helper's return value matches the pre-split
+                        // semantics (artifact ready in storage).
+                        let node_name = result.node_name.clone().ok_or_else(|| {
+                            "node_name missing from successful add result".to_string()
+                        })?;
+                        let node_tag = result.node_tag.clone().ok_or_else(|| {
+                            "node_tag missing from successful add result".to_string()
+                        })?;
+                        return send_node_build_and_wait_internal(
+                            messenger,
+                            core_node_name,
+                            &node_name,
+                            &node_tag,
+                            goal_timeout,
+                            result_timeout,
+                            build_env_vars,
+                            feedback_tx,
+                            result.log_path.clone(),
+                        )
+                        .await;
                     }
                     Err(err) => {
                         check_pending_or_decode_error(payload.as_ref(), err)?;
@@ -461,6 +542,118 @@ async fn send_node_add_and_wait_internal<'a>(
             }
             Err(PeppyError::ActionResultTimeout { .. }) => {}
             Err(err) => return Err(format!("Failed to get result: {}", err)),
+        }
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn send_node_build_and_wait_internal(
+    messenger: &MessengerHandle,
+    core_node_name: &str,
+    node_name: &str,
+    node_tag: &str,
+    goal_timeout: Duration,
+    result_timeout: Duration,
+    env_vars: Vec<(String, String)>,
+    feedback_tx: Option<&UnboundedSender<NodeAddFeedback>>,
+    add_log_path: PathBuf,
+) -> Result<NodeAddTestResult, String> {
+    let goal =
+        NodeBuildGoal::new(node_name, node_tag, result_timeout.as_secs()).with_env_vars(env_vars);
+    let goal_payload = goal
+        .encode()
+        .map_err(|e| format!("Failed to encode build goal: {}", e))?;
+
+    let (caller_core_node, caller_instance_id) = if feedback_tx.is_some() {
+        ("*", "*")
+    } else {
+        (core_node_name, CALLER_INSTANCE_ID)
+    };
+    let mut action_handle = ActionMessenger::send_goal(
+        messenger,
+        caller_core_node,
+        caller_instance_id,
+        core_node_name,
+        names::NODE_BUILD_ACTION,
+        Some(core_node_name),
+        None,
+        goal_payload,
+        QoSProfile::default(),
+        goal_timeout,
+    )
+    .await
+    .map_err(|e| format!("Failed to send build goal: {}", e))?;
+
+    let goal_response_payload = action_handle.goal_response().payload();
+    let goal_response = NodeBuildGoalResponse::decode(&goal_response_payload)
+        .map_err(|e| format!("Failed to decode build goal response: {}", e))?;
+
+    if !goal_response.accepted {
+        return Ok(NodeAddTestResult::from_build(NodeBuildResult::failure(
+            PathBuf::new(),
+            goal_response
+                .rejection_reason
+                .unwrap_or_else(|| "Build goal rejected without reason".to_string()),
+        )));
+    }
+
+    let absolute_deadline = tokio::time::Instant::now() + result_timeout;
+    let mut last_activity = tokio::time::Instant::now();
+
+    loop {
+        loop {
+            let now = tokio::time::Instant::now();
+            if now >= absolute_deadline {
+                return Err("Timeout waiting for node_build result".to_string());
+            }
+            if now.duration_since(last_activity) >= result_timeout {
+                return Err("Timeout waiting for node_build result (idle)".to_string());
+            }
+            let drain_timeout = Duration::from_millis(50);
+            match tokio::time::timeout(drain_timeout, action_handle.on_next_feedback()).await {
+                Ok(Ok(msg)) => {
+                    last_activity = tokio::time::Instant::now();
+                    if let Some(tx) = feedback_tx
+                        && let Ok(feedback) =
+                            NodeBuildResultFeedbackBridge::decode(msg.payload().as_ref())
+                    {
+                        let _ = tx.send(feedback);
+                    }
+                }
+                Ok(Err(_)) => break,
+                Err(_) => break,
+            }
+        }
+
+        let now = tokio::time::Instant::now();
+        if now >= absolute_deadline {
+            return Err("Timeout waiting for node_build result".to_string());
+        }
+        if now.duration_since(last_activity) >= result_timeout {
+            return Err("Timeout waiting for node_build result (idle)".to_string());
+        }
+        let poll_timeout = Duration::from_millis(200);
+
+        match ActionMessenger::request_result(messenger, &action_handle, poll_timeout).await {
+            Ok(msg) => {
+                let payload = msg.payload();
+                match NodeBuildResult::decode(&payload) {
+                    Ok(result) => {
+                        let mut test_result = NodeAddTestResult::from_build(result);
+                        // Tests assert the log_path lives in `logs_dir_add()`,
+                        // so preserve the *add* log even when build succeeded.
+                        test_result.log_path = add_log_path;
+                        return Ok(test_result);
+                    }
+                    Err(err) => {
+                        check_pending_or_decode_error(payload.as_ref(), err)?;
+                    }
+                }
+            }
+            Err(PeppyError::ActionResultTimeout { .. }) => {}
+            Err(err) => return Err(format!("Failed to get build result: {}", err)),
         }
 
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -479,7 +672,7 @@ pub async fn send_node_add_and_wait<'a>(
     goal_timeout: Duration,
     result_timeout: Duration,
     feedback_tx: Option<UnboundedSender<NodeAddFeedback>>,
-) -> Result<NodeAddResult, String> {
+) -> Result<NodeAddTestResult, String> {
     send_node_add_and_wait_internal(
         messenger,
         core_node_name,
@@ -502,7 +695,7 @@ pub async fn send_node_add_and_wait_with_env<'a>(
     result_timeout: Duration,
     feedback_tx: Option<UnboundedSender<NodeAddFeedback>>,
     env_vars: Vec<(String, String)>,
-) -> Result<NodeAddResult, String> {
+) -> Result<NodeAddTestResult, String> {
     send_node_add_and_wait_internal(
         messenger,
         core_node_name,
@@ -525,7 +718,7 @@ pub async fn send_node_add_and_wait_with_variant<'a>(
     goal_timeout: Duration,
     result_timeout: Duration,
     feedback_tx: Option<UnboundedSender<NodeAddFeedback>>,
-) -> Result<NodeAddResult, String> {
+) -> Result<NodeAddTestResult, String> {
     send_node_add_and_wait_internal(
         messenger,
         core_node_name,
@@ -547,7 +740,7 @@ pub async fn send_node_add_and_wait_with_force<'a>(
     goal_timeout: Duration,
     result_timeout: Duration,
     feedback_tx: Option<UnboundedSender<NodeAddFeedback>>,
-) -> Result<NodeAddResult, String> {
+) -> Result<NodeAddTestResult, String> {
     send_node_add_and_wait_internal(
         messenger,
         core_node_name,

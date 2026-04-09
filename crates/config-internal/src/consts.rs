@@ -91,6 +91,11 @@ impl PeppyDirs {
         self.root.join("logs").join("add")
     }
 
+    /// Log directory for `node build` operations.
+    pub fn logs_dir_build(&self) -> PathBuf {
+        self.root.join("logs").join("build")
+    }
+
     /// Log directory for `node start` operations.
     pub fn logs_dir_start(&self) -> PathBuf {
         self.root.join("logs").join("start")

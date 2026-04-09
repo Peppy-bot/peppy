@@ -281,6 +281,33 @@ fn next_entity_generation() -> u64 {
     NEXT_ENTITY_GENERATION.fetch_add(1, Ordering::Relaxed)
 }
 
+/// RAII guard for a temporary working directory staged by `node add` and
+/// consumed by `node build`. Removes the directory when the last clone is
+/// dropped — so removing an `Added` entity from the stack also cleans up
+/// its pending working dir on disk.
+#[derive(Debug)]
+pub struct WorkingDirGuard {
+    path: PathBuf,
+}
+
+impl WorkingDirGuard {
+    pub fn new(path: PathBuf) -> Self {
+        Self { path }
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for WorkingDirGuard {
+    fn drop(&mut self) {
+        if self.path.exists() {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct NodeEntity {
     config: NodeConfig,
@@ -298,6 +325,13 @@ pub struct NodeEntity {
     /// `push_config_impl`). `None` for the synthetic root entity, which
     /// has no add log.
     last_add_log_path: Option<PathBuf>,
+    /// In-memory only: the temporary working directory staged by `node add`
+    /// and consumed by `node build`. Set to `Some` while the entity is
+    /// `Added`, taken (set to `None`) by the build path. Wrapped in `Arc`
+    /// so cloning the entity (snapshot/restore) shares the same backing
+    /// directory and the directory is only cleaned up when the last clone
+    /// drops. Never persisted.
+    pending_working_dir: Option<Arc<WorkingDirGuard>>,
 }
 
 impl NodeEntity {
@@ -312,7 +346,26 @@ impl NodeEntity {
             },
             generation: next_entity_generation(),
             last_add_log_path: None,
+            pending_working_dir: None,
         }
+    }
+
+    /// Returns the in-memory working directory guard staged by `node add`
+    /// for a future `node build`, if any. The build path consumes this via
+    /// [`take_pending_working_dir`].
+    pub fn pending_working_dir(&self) -> Option<Arc<WorkingDirGuard>> {
+        self.pending_working_dir.clone()
+    }
+
+    /// Stores the working-directory guard the add path just created so a
+    /// later `node build` can reuse it without re-cloning the source.
+    pub fn set_pending_working_dir(&mut self, guard: Arc<WorkingDirGuard>) {
+        self.pending_working_dir = Some(guard);
+    }
+
+    /// Takes the staged working-directory guard, leaving `None` in place.
+    pub fn take_pending_working_dir(&mut self) -> Option<Arc<WorkingDirGuard>> {
+        self.pending_working_dir.take()
     }
 
     /// Returns the path to the most-recent add/build log produced for this
@@ -946,6 +999,7 @@ impl NodeEntity {
             },
             generation: next_entity_generation(),
             last_add_log_path: None,
+            pending_working_dir: None,
         }
     }
 
@@ -987,6 +1041,7 @@ impl NodeEntity {
             stage,
             generation: next_entity_generation(),
             last_add_log_path: None,
+            pending_working_dir: None,
         }
     }
 

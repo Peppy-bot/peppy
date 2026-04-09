@@ -79,6 +79,7 @@ async fn node_stop_command_succeeds() {
             source: Some(node_path.display().to_string()),
             git_ref: None,
             variant: None,
+            build: true,
             start: false,
             args: Vec::new(),
             instance_id: None,

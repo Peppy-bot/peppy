@@ -6,9 +6,9 @@ use crate::encoding::{
 use crate::names;
 use crate::services::action_loop::{ActionResult, ActionState, GoalHandler, run_action_loop};
 use crate::services::node::{
-    FeedbackLine, FeedbackStream, NodeAddActionContext, NodeStartActionContext,
-    create_action_log_file, log_label_from_source, resolve_node_config, run_node_add,
-    run_node_start, write_error_to_log,
+    FeedbackLine, FeedbackStream, NodeAddActionContext, NodeBuildActionContext,
+    NodeStartActionContext, create_action_log_file, log_label_from_source, resolve_node_config,
+    run_node_add, run_node_build_for_entity, run_node_start, write_error_to_log,
 };
 use chrono::Local;
 use config::consts::{DEFAULT_MESSAGING_HOST, DEFAULT_MESSAGING_PORT, PeppyDirs};
@@ -372,6 +372,68 @@ async fn add_node_directly(
             .clone()
             .unwrap_or_else(|| "node_add failed".to_string());
         (Err(err), final_log_path)
+    }
+}
+
+async fn build_node_directly(
+    ctx: &ProcessLaunchContext,
+    node_name: String,
+    node_tag: String,
+    env_vars: Vec<(String, String)>,
+) -> std::result::Result<(), String> {
+    let log_dir = ctx.peppy_dirs.logs_dir_build();
+    let timestamp = Local::now().format("%Y%m%d_%H%M%S_%3f").to_string();
+    let log_filename = format!("{}_{}_{}.log", node_name, node_tag, timestamp);
+    let (log_file, log_path) =
+        create_action_log_file(&log_dir, &log_filename).map_err(|e| e.to_string())?;
+
+    let (feedback_tx, forwarder_handle) = spawn_feedback_forwarder(
+        &ctx.feedback_publisher,
+        LaunchFeedbackStep::AddingNode,
+        &ctx.log_file,
+    );
+
+    let action_context = NodeBuildActionContext {
+        node_stack: Arc::clone(&ctx.node_stack),
+        peppy_dirs: ctx.peppy_dirs.clone(),
+    };
+
+    let max_timeout = Duration::from_secs(ctx.max_timeout_secs);
+    let log_file_for_timeout = log_file.clone();
+    let log_path_for_timeout = log_path.clone();
+
+    let result = match tokio::time::timeout(
+        max_timeout,
+        run_node_build_for_entity(
+            node_name.clone(),
+            node_tag.clone(),
+            env_vars,
+            action_context,
+            feedback_tx,
+            log_file,
+            log_path,
+        ),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => {
+            write_error_to_log(&log_file_for_timeout, "max timeout exceeded");
+            crate::encoding::NodeBuildResult::failure(
+                &log_path_for_timeout,
+                "timeout: max timeout exceeded",
+            )
+        }
+    };
+
+    let _ = forwarder_handle.await;
+
+    if result.success {
+        Ok(())
+    } else {
+        Err(result
+            .error_message
+            .unwrap_or_else(|| "node_build failed".to_string()))
     }
 }
 
@@ -896,6 +958,19 @@ async fn add_nodes_to_stack(
                         .error_message
                         .unwrap_or_else(|| "node_add failed".to_string());
                     let reason = format!("failed to add node {}: {}", key.label(), inner);
+                    return Err(restore_stack(ctx, backup_stack, reason).await);
+                }
+                let node_name = result.node_name.clone().unwrap_or_else(|| key.name.clone());
+                let node_tag = result.node_tag.clone().unwrap_or_else(|| key.tag.clone());
+
+                // Stack launch chains directly from add into build, since the
+                // launcher's contract is "the stack is up and running" — an
+                // `Added` entity isn't actually buildable from the user's
+                // perspective until `node build` has run.
+                if let Err(err) =
+                    build_node_directly(ctx, node_name, node_tag, ctx.env_vars.clone()).await
+                {
+                    let reason = format!("failed to build node {}: {}", key.label(), err);
                     return Err(restore_stack(ctx, backup_stack, reason).await);
                 }
             }

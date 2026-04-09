@@ -2102,20 +2102,17 @@ async fn listen_for_node_add_abandoned_action_does_not_block_next_goal() {
         "first goal should be accepted"
     );
 
-    // Wait for the first action to *fully* settle without polling its
-    // action result (the whole point of this test is that the result is
-    // never requested). We can't rely on the previous `no_starting` clause
-    // — `node add` never registers `Starting` instances, so it was always
-    // true and added nothing — so settling is detected purely via
-    // `stage == Ready` (which the entity transitions to inside `build`)
-    // and `artifact_path().is_some()` (which is recorded under the same
-    // write lock as the stage transition).
+    // Wait for the first action to settle without polling its action
+    // result (the whole point of this test is that the result is never
+    // requested). With `node_add` and `node_build` now split into two
+    // separate actions, settling means the entity reached `Added` (the
+    // terminal stage of `node_add`); a follow-up `node_build` would be a
+    // separate goal.
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             if let Some(handle) = node_stack.find(FIRST_NODE_NAME, FIRST_NODE_TAG) {
                 let guard = handle.read();
-                let is_ready = matches!(guard.stage(), node_stack::NodeStage::Ready { .. });
-                if is_ready && guard.artifact_path().is_some() {
+                if matches!(guard.stage(), node_stack::NodeStage::Added { .. }) {
                     break;
                 }
             }
@@ -2123,7 +2120,7 @@ async fn listen_for_node_add_abandoned_action_does_not_block_next_goal() {
         }
     })
     .await
-    .expect("first node never reached Ready within 30s");
+    .expect("first node never reached Added within 30s");
 
     // Now send second goal - this should succeed even though we never polled
     // for the first action's result

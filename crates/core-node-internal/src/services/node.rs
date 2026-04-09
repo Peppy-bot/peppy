@@ -1,4 +1,5 @@
 mod add;
+mod builder;
 mod info;
 mod init;
 mod remove;
@@ -12,6 +13,8 @@ use crate::encoding::NodeSource;
 use crate::{Error, Result};
 pub use add::listen_for_node_add;
 pub(crate) use add::{NodeAddActionContext, log_label_from_source, run_node_add};
+pub use builder::listen_for_node_build;
+pub(crate) use builder::{NodeBuildActionContext, run_node_build_for_entity};
 use chrono::Local;
 use config::consts::NODE_CONFIG_FILE;
 use config::node::{NodeConfig, NodeConfigParser, ParsedNodeConfig, PeppygenLanguage};

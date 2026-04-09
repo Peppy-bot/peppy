@@ -1,4 +1,5 @@
 mod add;
+mod builder;
 mod env;
 mod info;
 mod init;
@@ -21,6 +22,7 @@ use super::Command;
 use crate::{context::AppContext, error::Error as CommandError};
 
 pub use add::{AddNodeParams, add_node};
+pub use builder::{BuildNodeParams, build_node, build_node_async};
 pub use env::caller_env_overrides;
 pub use init::NodeInitBuilder;
 pub use types::NodeName;
@@ -113,7 +115,11 @@ pub enum NodeCommands {
         /// - HTTP archive: `https://example.com/variant.tar.zst`
         #[arg(long)]
         variant: Option<String>,
-        /// If set, will attempt to spawn an instance directly after adding the node to the node stack
+        /// If set, will trigger a `node build` immediately after adding the node
+        #[arg(long)]
+        build: bool,
+        /// If set, will attempt to spawn an instance directly after adding the
+        /// node to the node stack. Implies `--build`.
         #[arg(long)]
         start: bool,
         /// Runtime arguments as key=value pairs (e.g., resolution=1280x720 frequency=30)
@@ -130,6 +136,21 @@ pub enum NodeCommands {
         #[arg(long, default_value_t = DEFAULT_MAX_TIMEOUT_SECS)]
         max_timeout: u64,
         /// When set, bypass the confirmation prompt and stop running instances before overwriting
+        #[arg(long)]
+        force: bool,
+    },
+    /// Build a node previously added to the node stack
+    Build {
+        /// Node reference in the format node_name:tag (e.g., my_node:v1)
+        #[arg(value_parser = parse_node_ref)]
+        node_ref: (String, String),
+        /// Idle timeout in seconds — resets whenever output is received
+        #[arg(long, default_value_t = DEFAULT_IDLE_TIMEOUT_SECS)]
+        idle_timeout: u64,
+        /// Absolute max timeout in seconds (safety net)
+        #[arg(long, default_value_t = DEFAULT_MAX_TIMEOUT_SECS)]
+        max_timeout: u64,
+        /// Cancel any in-progress build for this node and start a new one
         #[arg(long)]
         force: bool,
     },
@@ -225,19 +246,19 @@ impl Command for NodeCommand {
                 toolchain,
                 with_container,
             } => {
-                let mut node_builder =
-                    NodeInitBuilder::new(ctx, node_name, toolchain, with_container);
+                let mut builderer = NodeInitBuilder::new(ctx, node_name, toolchain, with_container);
 
                 if let Some(dir) = to_dir {
-                    node_builder = node_builder.to_dir(dir);
+                    builderer = builderer.to_dir(dir);
                 }
 
-                node_builder.build()
+                builderer.build()
             }
             NodeCommands::Add {
                 source,
                 git_ref,
                 variant,
+                build,
                 start,
                 args,
                 instance_id,
@@ -255,6 +276,9 @@ impl Command for NodeCommand {
                     max_secs: max_timeout,
                 };
                 let source = source.unwrap_or_else(|| ".".to_string());
+                // `--start` implies `--build`: you can't start an instance of
+                // an unbuilt node.
+                let chain_build = build || start;
                 add::add_node(
                     ctx,
                     add::AddNodeParams {
@@ -265,6 +289,27 @@ impl Command for NodeCommand {
                         timeouts,
                         force,
                         confirm_reader: None,
+                        chain_build,
+                    },
+                )
+            }
+            NodeCommands::Build {
+                node_ref: (node_name, node_tag),
+                idle_timeout,
+                max_timeout,
+                force,
+            } => {
+                let timeouts = TimeoutConfig {
+                    idle_secs: idle_timeout,
+                    max_secs: max_timeout,
+                };
+                builder::build_node(
+                    ctx,
+                    builder::BuildNodeParams {
+                        node_name,
+                        node_tag,
+                        timeouts,
+                        force,
                     },
                 )
             }

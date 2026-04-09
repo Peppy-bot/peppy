@@ -18,7 +18,7 @@ use config::consts::{NODE_CONFIG_FILE, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH, P
 use config::node::{DEFAULT_VARIANT_NAME, NodeConfig, NodeConfigParser, ParsedNodeConfig};
 use futures::FutureExt;
 use git2::build::RepoBuilder;
-use node_stack::{BuildContext, InstanceState, NodeStack, validate_dependency_specs};
+use node_stack::{InstanceState, NodeStack, WorkingDirGuard, validate_dependency_specs};
 use parking_lot::Mutex as StdMutex;
 use peppylib::messaging::{ServiceRequestContext, TopicPublisher};
 use peppylib::types::Payload;
@@ -1463,25 +1463,16 @@ async fn process_node_add(
     cleanup_dir: Option<PathBuf>,
     ctx: ProcessNodeAddContext,
 ) -> NodeAddResult {
-    let mut env_vars = match super::validate_goal_env_vars(&goal.env_vars) {
-        Ok(vars) => vars,
-        Err(e) => {
-            let msg = e.to_string();
-            write_error_to_log(&ctx.log_file, &msg);
-            return NodeAddResult::failure(&ctx.log_path, msg);
-        }
-    };
+    // Reject any forbidden env vars early so the user gets a fast failure;
+    // the values themselves are not used by the add path (env vars are
+    // consumed by `node_build`'s `add_cmd` execution).
+    if let Err(e) = super::validate_goal_env_vars(&goal.env_vars) {
+        let msg = e.to_string();
+        write_error_to_log(&ctx.log_file, &msg);
+        return NodeAddResult::failure(&ctx.log_path, msg);
+    }
     let node_name = node_config.manifest.name.as_str().to_owned();
     let node_tag = node_config.manifest.tag.clone();
-    let sccache_injected =
-        super::inject_rust_build_env(&mut env_vars, node_config.execution.language);
-    if sccache_injected {
-        let _ = ctx.feedback_tx.send(FeedbackLine {
-            stream: FeedbackStream::Stdout,
-            line: "Using sccache for Rust compilation".to_string(),
-        });
-    }
-    super::inject_node_runtime_env(&mut env_vars, &node_name, &node_tag);
     let _cleanup_guard = CleanupDir::new(cleanup_dir);
 
     if verify_codegen_fingerprint {
@@ -1509,7 +1500,7 @@ async fn process_node_add(
             }
         };
     // RAII guard: cleans up the temp working dir on any exit path.
-    let working_dir_cleanup = CleanupDir::new(Some(working_dir.clone()));
+    let mut working_dir_cleanup = CleanupDir::new(Some(working_dir.clone()));
 
     // For variant adds (including auto-resolved default variants), write the
     // merged config (root manifest + interfaces + variant execution) into the
@@ -1627,34 +1618,20 @@ async fn process_node_add(
     }
 
     // Push the node config into the stack as an `Added` entity. The
-    // config_path is the source `peppy.json5` (the user-owned location);
-    // the entity will move to `Built` once NodeEntity::build runs.
-    //
-    // `push_config` returns the previous entity snapshot (if any) captured
-    // under the same write lock that performed the in-place replacement,
-    // which we use below for both rollback on build failure and cleanup of
-    // the prior artifact on success.
+    // config_path is the source `peppy.json5` (the user-owned location).
+    // The entity stays in `Added` until a follow-up `node_build` action
+    // runs `NodeEntity::build` against it.
     let config_path_for_stack = source_path.join(NODE_CONFIG_FILE);
-    let previous_entity_snapshot = match ctx.action.node_stack.push_config_capturing_previous(
-        node_config.clone(),
-        false,
-        &config_path_for_stack,
-    ) {
-        Ok(snapshot) => snapshot,
-        Err(e) => {
-            let msg = format!("Failed to add node config: {}", e);
-            write_error_to_log(&ctx.log_file, &msg);
-            return NodeAddResult::failure(&ctx.log_path, msg);
-        }
-    };
-    let previous_snapshot_path = previous_entity_snapshot
-        .as_ref()
-        .and_then(|snap| snap.artifact_path.clone());
+    if let Err(e) =
+        ctx.action
+            .node_stack
+            .push_config(node_config.clone(), false, &config_path_for_stack)
+    {
+        let msg = format!("Failed to add node config: {}", e);
+        write_error_to_log(&ctx.log_file, &msg);
+        return NodeAddResult::failure(&ctx.log_path, msg);
+    }
 
-    // Drive the build via the entity itself. This either runs apptainer
-    // (container nodes) or archives `working_dir` (process nodes), and
-    // transitions the entity from `Added` to `Built` with the resulting
-    // `.sif`/archive path on success.
     let entity_handle = match ctx.action.node_stack.find(&node_name, &node_tag) {
         Some(handle) => handle,
         None => {
@@ -1667,95 +1644,23 @@ async fn process_node_add(
         }
     };
 
-    // Record the add log path on the entity so `peppy node info` can surface
-    // it. Done under the same write lock that any concurrent reader uses, so
-    // observers see a consistent (entity, log path) pair.
-    entity_handle
-        .write()
-        .set_last_add_log_path(ctx.log_path.clone());
-
-    // Capture the entity generation *before* the build runs so the
-    // failure-path cleanup below removes only the entity that we actually
-    // attempted to build. Reading the generation after `build()` returns
-    // would race with a concurrent `push_config` that replaced the entity
-    // in-place between our failure and the cleanup, causing us to clobber
-    // the new entity.
-    let expected_generation_before_build = entity_handle.read().generation();
-
-    let build_result = node_stack::NodeEntity::build(
-        &entity_handle,
-        BuildContext {
-            working_dir: &working_dir,
-            peppy_dirs: &ctx.action.peppy_dirs,
-            feedback_tx: &ctx.feedback_tx,
-            log_file: Arc::clone(&ctx.log_file),
-            env_vars: &env_vars,
-        },
-    )
-    .await;
-
-    let snapshot_path = match build_result {
-        Ok(path) => path,
-        Err(e) => {
-            // `NodeEntity::build` leaves the entity in `Building` on failure;
-            // the caller owns rollback. See the failure contract on
-            // `NodeEntity::build`.
-            //
-            // If there was a previously-ready entity in this slot, restore it
-            // from the snapshot we captured before `push_config` replaced it.
-            // Otherwise (fresh add), remove the entity entirely. Both code
-            // paths use the pre-build handle+generation so a concurrent
-            // `push_config` that replaced the entity in-place between our
-            // failure and this cleanup is not silently clobbered.
-            if let Some(snapshot) = previous_entity_snapshot {
-                let _ = ctx.action.node_stack.restore_snapshot_if_matches(
-                    node_stack::RestoreTarget {
-                        name: &node_name,
-                        tag: &node_tag,
-                        expected_handle: &entity_handle,
-                        expected_generation: expected_generation_before_build,
-                    },
-                    snapshot,
-                );
-            } else {
-                let _ = ctx.action.node_stack.remove_config_if_matches(
-                    &node_name,
-                    &node_tag,
-                    &entity_handle,
-                    expected_generation_before_build,
-                );
-            }
-            let msg = format!("Failed to build node: {}", e);
-            write_error_to_log(&ctx.log_file, &msg);
-            return NodeAddResult::failure(&ctx.log_path, msg);
-        }
-    };
-
-    // Working dir is no longer needed; clean it up immediately.
-    drop(working_dir_cleanup);
-
-    // Clean up previous snapshot if it differs from the new one.
-    if let Some(previous_snapshot_path) = previous_snapshot_path
-        && previous_snapshot_path != snapshot_path
+    // Hand over the temporary working dir to the entity so a follow-up
+    // `node_build` can reuse it without re-cloning the source. The
+    // `WorkingDirGuard` cleans the directory up on entity removal.
+    let working_dir_guard = Arc::new(WorkingDirGuard::new(
+        working_dir_cleanup
+            .take()
+            .expect("working_dir_cleanup was just constructed Some"),
+    ));
     {
-        let storage_dir = ctx.action.peppy_dirs.added_nodes_dir();
-        if previous_snapshot_path.starts_with(&storage_dir) {
-            if previous_snapshot_path.is_dir() {
-                std::fs::remove_dir_all(&previous_snapshot_path).ok();
-            } else {
-                std::fs::remove_file(&previous_snapshot_path).ok();
-            }
-        }
+        let mut guard = entity_handle.write();
+        guard.set_last_add_log_path(ctx.log_path.clone());
+        guard.set_pending_working_dir(Arc::clone(&working_dir_guard));
     }
 
-    debug!(
-        "Added node {}:{} at {}",
-        node_name,
-        node_tag,
-        snapshot_path.display()
-    );
+    debug!("Added node {}:{} (pending build)", node_name, node_tag);
 
-    NodeAddResult::success(snapshot_path, &ctx.log_path, node_name, node_tag)
+    NodeAddResult::success(&ctx.log_path, node_name, node_tag)
 }
 
 #[cfg(test)]
