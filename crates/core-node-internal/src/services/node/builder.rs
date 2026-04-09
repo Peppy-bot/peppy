@@ -62,8 +62,14 @@ impl ActionResult for NodeBuildResult {
 }
 
 /// Inputs required to drive a single `node_build` run to completion.
+///
+/// Holds only the fields `run_node_build` actually consumes — the
+/// `timeout_secs` / `force` fields of `NodeBuildGoal` are admission-gate
+/// concerns owned by the goal handler and have no meaning past that point.
 struct NodeBuildRun {
-    goal: NodeBuildGoal,
+    node_name: String,
+    node_tag: String,
+    env_vars: Vec<(String, String)>,
     entity_handle: node_stack::EntityHandle,
     working_dir_guard: Arc<node_stack::WorkingDirGuard>,
     action_context: NodeBuildActionContext,
@@ -117,13 +123,9 @@ pub(crate) async fn run_node_build_for_entity(
     };
 
     run_node_build(NodeBuildRun {
-        goal: NodeBuildGoal {
-            node_name,
-            node_tag,
-            env_vars,
-            timeout_secs: 0,
-            force: false,
-        },
+        node_name,
+        node_tag,
+        env_vars,
         entity_handle,
         working_dir_guard,
         action_context,
@@ -297,7 +299,9 @@ impl NodeBuildGoalHandler {
             });
 
             let result = run_node_build(NodeBuildRun {
-                goal,
+                node_name: goal.node_name,
+                node_tag: goal.node_tag,
+                env_vars: goal.env_vars,
                 entity_handle,
                 working_dir_guard,
                 action_context,
@@ -326,7 +330,9 @@ impl NodeBuildGoalHandler {
 
 async fn run_node_build(run: NodeBuildRun) -> NodeBuildResult {
     let NodeBuildRun {
-        goal,
+        node_name,
+        node_tag,
+        env_vars: goal_env_vars,
         entity_handle,
         working_dir_guard,
         action_context,
@@ -341,7 +347,7 @@ async fn run_node_build(run: NodeBuildRun) -> NodeBuildResult {
     match AssertUnwindSafe(async {
         // Validate + inject env vars at build time so callers can pass a
         // fresh environment per build.
-        let mut env_vars = match super::validate_goal_env_vars(&goal.env_vars) {
+        let mut env_vars = match super::validate_goal_env_vars(&goal_env_vars) {
             Ok(v) => v,
             Err(e) => {
                 let msg = e.to_string();
@@ -358,7 +364,7 @@ async fn run_node_build(run: NodeBuildRun) -> NodeBuildResult {
                 line: "Using sccache for Rust compilation".to_string(),
             });
         }
-        super::inject_node_runtime_env(&mut env_vars, &goal.node_name, &goal.node_tag);
+        super::inject_node_runtime_env(&mut env_vars, &node_name, &node_tag);
 
         // Take the working dir from the entity so a concurrent (rejected)
         // build cannot reuse it once we start mutating it.
@@ -389,18 +395,18 @@ async fn run_node_build(run: NodeBuildRun) -> NodeBuildResult {
             Ok(artifact_path) => {
                 debug!(
                     "Built node {}:{} at {}",
-                    goal.node_name,
-                    goal.node_tag,
+                    node_name,
+                    node_tag,
                     artifact_path.display()
                 );
-                NodeBuildResult::success(artifact_path, &log_path, goal.node_name, goal.node_tag)
+                NodeBuildResult::success(artifact_path, &log_path, node_name, node_tag)
             }
             Err(e) => {
                 // `NodeEntity::build` leaves the entity in `Building` on
                 // failure. Roll it out of the stack so the user can re-add.
                 let _ = action_context.node_stack.remove_config_if_matches(
-                    &goal.node_name,
-                    &goal.node_tag,
+                    &node_name,
+                    &node_tag,
                     &entity_handle,
                     expected_generation,
                 );

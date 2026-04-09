@@ -253,7 +253,7 @@ pub(super) async fn build_container_image(
 }
 
 /// Expands `${VAR}` references in a string using the provided environment
-/// variables. Used by [`run_add_cmd`] before spawning the user-defined
+/// variables. Used by [`run_build_cmd`] before spawning the user-defined
 /// `build_cmd` so that variable references in multi-element commands work even
 /// though the command is executed directly (not through a shell).
 pub(super) fn expand_env_vars(s: &str, env_vars: &[(String, String)]) -> String {
@@ -271,7 +271,7 @@ pub(super) fn expand_env_vars(s: &str, env_vars: &[(String, String)]) -> String 
 /// the feedback channel. Returns Ok(()) if `build_cmd` is `None` or executes
 /// successfully. Used by [`super::entity::NodeEntity::build`] for process
 /// nodes after the entity has transitioned to `Building`.
-pub(super) async fn run_add_cmd(
+pub(super) async fn run_build_cmd(
     build_cmd: Option<&Vec<String>>,
     working_dir: &Path,
     env_vars: &[(String, String)],

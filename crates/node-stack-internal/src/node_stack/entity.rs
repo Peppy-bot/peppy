@@ -17,7 +17,7 @@ use crate::error::{Error, Result};
 
 use super::build_steps::{
     ContainerBuildInputs, archive_dir_to_storage, build_container_image, move_sif_to_storage,
-    run_add_cmd,
+    run_build_cmd,
 };
 use super::start_steps::{
     create_instance_dir, extract_node_archive, kill_and_collect_error, spawn_container_node,
@@ -525,7 +525,7 @@ impl NodeEntity {
                 })?;
             } else {
                 // Process node: run build_cmd inside the working dir.
-                run_add_cmd(
+                run_build_cmd(
                     build_cmd.as_ref(),
                     ctx.working_dir,
                     ctx.env_vars,
