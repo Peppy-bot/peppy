@@ -1,4 +1,5 @@
 use super::super::action_loop::{ActionResult, ActionState, GoalHandler, run_action_loop};
+use super::gate::ConcurrencyGate;
 use super::write_error_to_log;
 use super::{FeedbackLine, FeedbackStream, create_action_log_file};
 use crate::Result;
@@ -16,7 +17,6 @@ use std::fs::File;
 use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinHandle;
 use tracing::debug;
@@ -43,8 +43,7 @@ pub async fn listen_for_node_build(
             node_stack,
             peppy_dirs,
         },
-        running_since: Arc::new(Mutex::new(None)),
-        running_task: Arc::new(Mutex::new(None)),
+        gate: ConcurrencyGate::new(),
     };
 
     let handle = tokio::spawn(async move { run_action_loop(action, handler).await });
@@ -145,8 +144,7 @@ pub(crate) struct NodeBuildActionContext {
 #[derive(Clone)]
 struct NodeBuildGoalHandler {
     context: NodeBuildActionContext,
-    running_since: Arc<Mutex<Option<(Instant, u64)>>>,
-    running_task: Arc<Mutex<Option<JoinHandle<()>>>>,
+    gate: ConcurrencyGate,
 }
 
 impl GoalHandler for NodeBuildGoalHandler {
@@ -191,27 +189,17 @@ impl NodeBuildGoalHandler {
             let mut state_guard = state.lock().await;
             if matches!(*state_guard, ActionState::Running) {
                 if !goal.force {
-                    let running_guard = self.running_since.lock().await;
-                    let remaining = running_guard
-                        .map(|(started_at, timeout_secs)| {
-                            Duration::from_secs(timeout_secs)
-                                .saturating_sub(started_at.elapsed())
-                                .as_secs()
-                        })
-                        .unwrap_or(0);
+                    let remaining = self.gate.remaining_secs();
                     return encode_rejected_goal(format!(
                         "action already in progress (times out in {remaining}s), \
                          use `--force` to force building the node"
                     ));
                 }
                 debug!("Force flag set: aborting previous node_build task");
-                let mut task_guard = self.running_task.lock().await;
-                if let Some(handle) = task_guard.take() {
-                    handle.abort();
-                }
+                self.gate.force_abort();
             }
             *state_guard = ActionState::Running;
-            *self.running_since.lock().await = Some((Instant::now(), goal.timeout_secs));
+            self.gate.mark_running(goal.timeout_secs);
         }
 
         debug!(
@@ -316,7 +304,7 @@ impl NodeBuildGoalHandler {
             *state_guard = ActionState::Completed { result };
         });
 
-        *self.running_task.lock().await = Some(task_handle);
+        self.gate.set_task(task_handle);
 
         let response = NodeBuildGoalResponse::accepted(&log_path);
         response

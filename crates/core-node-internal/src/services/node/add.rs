@@ -1,5 +1,6 @@
 use super::super::action_loop::{ActionResult, ActionState, GoalHandler, run_action_loop};
 use super::super::stack::STACK_LAUNCH_GIT_HASH;
+use super::gate::ConcurrencyGate;
 use super::sync::{
     self, AutoSyncParams, AutoSyncVariant, collect_consumed_interfaces, generate_peppygen_for_node,
 };
@@ -61,8 +62,7 @@ pub async fn listen_for_node_add(
             core_instance_id: instance_id.to_string(),
             peppy_dirs,
         },
-        running_since: Arc::new(Mutex::new(None)),
-        running_task: Arc::new(Mutex::new(None)),
+        gate: ConcurrencyGate::new(),
     };
 
     let handle = tokio::spawn(async move { run_action_loop(action, handler).await });
@@ -83,11 +83,7 @@ impl ActionResult for NodeAddResult {
 #[derive(Clone)]
 struct NodeAddGoalHandler {
     context: NodeAddActionContext,
-    /// Tracks when the current action started and its timeout, used to format
-    /// "action already in progress (times out in Xs)" rejection messages.
-    running_since: Arc<Mutex<Option<(Instant, u64)>>>,
-    /// Handle to the currently running add task, used to abort it when `--force` is set.
-    running_task: Arc<Mutex<Option<JoinHandle<()>>>>,
+    gate: ConcurrencyGate,
 }
 
 impl GoalHandler for NodeAddGoalHandler {
@@ -104,8 +100,7 @@ impl GoalHandler for NodeAddGoalHandler {
             feedback_publisher,
             state,
             self.context.clone(),
-            Arc::clone(&self.running_since),
-            Arc::clone(&self.running_task),
+            self.gate.clone(),
         )
         .await
     }
@@ -1212,8 +1207,7 @@ async fn handle_goal_request(
     feedback_publisher: TopicPublisher,
     state: Arc<Mutex<ActionState<NodeAddResult>>>,
     action_context: NodeAddActionContext,
-    running_since: Arc<Mutex<Option<(Instant, u64)>>>,
-    running_task: Arc<Mutex<Option<JoinHandle<()>>>>,
+    gate: ConcurrencyGate,
 ) -> PeppyResult<Payload> {
     let sender_instance_id = context.message().instance_id();
     let payload = context.message().payload();
@@ -1223,34 +1217,21 @@ async fn handle_goal_request(
         Err(e) => return encode_rejected_goal(format!("invalid payload: {}", e)),
     };
 
-    // Check if already running and mark as running if not
     {
         let mut state_guard = state.lock().await;
         if matches!(*state_guard, ActionState::Running) {
             if !goal.force {
-                let running_guard = running_since.lock().await;
-                let remaining = running_guard
-                    .map(|(started_at, timeout_secs)| {
-                        Duration::from_secs(timeout_secs)
-                            .saturating_sub(started_at.elapsed())
-                            .as_secs()
-                    })
-                    .unwrap_or(0);
+                let remaining = gate.remaining_secs();
                 return encode_rejected_goal(format!(
                     "action already in progress (times out in {remaining}s), \
                      use `--force` to force adding the node"
                 ));
             }
-
-            // Force mode: abort the old task and reset state
             debug!("Force flag set: aborting previous node_add task");
-            let mut task_guard = running_task.lock().await;
-            if let Some(handle) = task_guard.take() {
-                handle.abort();
-            }
+            gate.force_abort();
         }
         *state_guard = ActionState::Running;
-        *running_since.lock().await = Some((Instant::now(), goal.timeout_secs));
+        gate.mark_running(goal.timeout_secs);
     }
 
     match &goal.source {
@@ -1327,8 +1308,7 @@ async fn handle_goal_request(
         *state_guard = ActionState::Completed { result };
     });
 
-    // Store the handle so a future --force call can abort this task.
-    *running_task.lock().await = Some(task_handle);
+    gate.set_task(task_handle);
 
     let response = NodeAddGoalResponse::accepted(&log_path);
     response

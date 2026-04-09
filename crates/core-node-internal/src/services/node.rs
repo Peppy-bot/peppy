@@ -1,5 +1,6 @@
 mod add;
 mod builder;
+mod gate;
 mod info;
 mod init;
 mod remove;

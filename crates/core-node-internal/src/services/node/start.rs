@@ -1,4 +1,5 @@
 use super::super::action_loop::{ActionResult, ActionState, GoalHandler, run_action_loop};
+use super::gate::ConcurrencyGate;
 use super::{FeedbackLine, FeedbackStream, create_action_log_file, write_error_to_log};
 use crate::Result;
 use crate::encoding::{NodeStartFeedback, NodeStartGoal, NodeStartGoalResponse, NodeStartResult};
@@ -86,7 +87,7 @@ pub async fn listen_for_node_start(
             node_start_health_timeout: config.node_start_health_timeout,
             peppy_dirs: config.peppy_dirs,
         },
-        running_since: Arc::new(Mutex::new(None)),
+        gate: ConcurrencyGate::new(),
     };
 
     let handle = tokio::spawn(async move { run_action_loop(action, handler).await });
@@ -107,7 +108,7 @@ impl ActionResult for NodeStartResult {
 #[derive(Clone)]
 struct NodeStartGoalHandler {
     context: NodeStartActionContext,
-    running_since: Arc<Mutex<Option<(Instant, u64)>>>,
+    gate: ConcurrencyGate,
 }
 
 impl GoalHandler for NodeStartGoalHandler {
@@ -124,7 +125,7 @@ impl GoalHandler for NodeStartGoalHandler {
             feedback_publisher,
             state,
             self.context.clone(),
-            Arc::clone(&self.running_since),
+            self.gate.clone(),
         )
         .await
     }
@@ -357,7 +358,7 @@ async fn handle_goal_request(
     feedback_publisher: TopicPublisher,
     state: Arc<Mutex<ActionState<NodeStartResult>>>,
     action_context: NodeStartActionContext,
-    running_since: Arc<Mutex<Option<(Instant, u64)>>>,
+    gate: ConcurrencyGate,
 ) -> PeppyResult<Payload> {
     let sender_instance_id = context.message().instance_id().to_string();
     let payload = context.message().payload();
@@ -378,14 +379,7 @@ async fn handle_goal_request(
     {
         let mut state_guard = state.lock().await;
         if matches!(*state_guard, ActionState::Running) {
-            let running_guard = running_since.lock().await;
-            let remaining = running_guard
-                .map(|(started_at, timeout_secs)| {
-                    Duration::from_secs(timeout_secs)
-                        .saturating_sub(started_at.elapsed())
-                        .as_secs()
-                })
-                .unwrap_or(0);
+            let remaining = gate.remaining_secs();
             let response = NodeStartGoalResponse::rejected(format!(
                 "action already in progress (times out in {remaining}s)"
             ));
@@ -397,7 +391,7 @@ async fn handle_goal_request(
                 });
         }
         *state_guard = ActionState::Running;
-        *running_since.lock().await = Some((Instant::now(), goal.timeout_secs));
+        gate.mark_running(goal.timeout_secs);
     }
 
     // Parse runtime config to get instance_id for log file naming
