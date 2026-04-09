@@ -25,6 +25,7 @@ use std::fs::File;
 use std::io::Write;
 #[cfg(test)]
 use std::io::{BufRead, BufReader, Read};
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::io::AsyncBufReadExt;
@@ -62,6 +63,35 @@ pub fn write_feedback_log_line(log_file: &Arc<StdMutex<File>>, stream: FeedbackS
     let mut file = log_file.lock();
     let timestamp = Local::now().format("%Y-%m-%dT%H:%M:%S%.3f");
     let _ = writeln!(file, "[{}] [{}] {}", timestamp, stream.as_str(), line);
+}
+
+/// Writes the canonical "executing a command" header to a log file in the
+/// `[timestamp] Executing {label}: {cmd} (working_dir: {dir}[, k: v...])`
+/// format used by every spawn-and-stream step. `extras` is appended as
+/// comma-separated `key: value` pairs inside the trailing parenthesis. Errors
+/// are swallowed — log writes are best-effort.
+pub fn log_cmd_header(
+    log_file: &Arc<StdMutex<File>>,
+    label: &str,
+    cmd: &str,
+    working_dir: &Path,
+    extras: &[(&str, &str)],
+) {
+    let mut file = log_file.lock();
+    let timestamp = Local::now().format("%Y-%m-%dT%H:%M:%S%.3f");
+    let mut line = format!(
+        "[{}] Executing {}: {} (working_dir: {}",
+        timestamp,
+        label,
+        cmd,
+        working_dir.display()
+    );
+    for (k, v) in extras {
+        line.push_str(&format!(", {}: {}", k, v));
+    }
+    line.push(')');
+    let _ = writeln!(file, "{}", line);
+    let _ = file.flush();
 }
 
 pub struct FeedbackLine {

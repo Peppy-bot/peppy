@@ -6,12 +6,10 @@
 
 use parking_lot::Mutex as StdMutex;
 use std::fs::File;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 
-use chrono::Local;
 use config::consts::PeppyDirs;
 use tokio::sync::mpsc;
 use tracing::debug;
@@ -22,6 +20,19 @@ use crate::build_io::{FeedbackLine, FeedbackStream, stream_child_output};
 /// Per-process counter used to make build-staging tmp filenames unique so
 /// concurrent builds for the same node:tag cannot clobber each other.
 static STAGING_TMP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Builds a per-build unique staging path next to `final_name` inside
+/// `storage_dir`. The final rename to the publish location is what makes the
+/// artifact visible — the tmp suffix prevents concurrent builds for the same
+/// `node:tag` from clobbering each other's in-flight file.
+fn staging_tmp_path(storage_dir: &Path, final_name: &str) -> PathBuf {
+    storage_dir.join(format!(
+        "{}.{}.{}.tmp",
+        final_name,
+        std::process::id(),
+        STAGING_TMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+    ))
+}
 
 /// Validates that `node_tag` is safe to splice into a filename joined under
 /// the storage directory. Manifest names are constrained by `Name`'s parser,
@@ -80,15 +91,7 @@ pub(super) fn archive_dir_to_storage(
 
     let archive_name = format!("{}_{}.tar.zst", node_name, node_tag);
     let archive_path = storage_dir.join(&archive_name);
-    // Per-build unique staging path so concurrent builds for the same
-    // node:tag cannot clobber each other's in-flight tmp file. The final
-    // rename to `archive_path` is atomic and is what publishes the artifact.
-    let tmp_path = storage_dir.join(format!(
-        "{}.{}.{}.tmp",
-        archive_name,
-        std::process::id(),
-        STAGING_TMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
-    ));
+    let tmp_path = staging_tmp_path(&storage_dir, &archive_name);
 
     let file = File::create(&tmp_path)?;
     let encoder = ZstdEncoder::new(file, 1)?;
@@ -146,13 +149,7 @@ pub(super) fn move_sif_to_storage(
     std::fs::create_dir_all(&storage_dir)?;
 
     let dest_path = storage_dir.join(&sif_name);
-    // Per-build unique staging path; see archive_dir_to_storage for rationale.
-    let tmp_path = storage_dir.join(format!(
-        "{}.{}.{}.tmp",
-        sif_name,
-        std::process::id(),
-        STAGING_TMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
-    ));
+    let tmp_path = staging_tmp_path(&storage_dir, &sif_name);
 
     // Copy + rename (not rename alone) because the working dir may be on a
     // different filesystem than storage. Matches archive_dir_to_storage pattern.
@@ -332,19 +329,7 @@ pub(super) async fn run_add_cmd(
         .collect::<Vec<_>>()
         .join(" ");
 
-    // Log the command being executed to the log file before attempting to spawn
-    {
-        let mut file = log_file.lock();
-        let timestamp = Local::now().format("%Y-%m-%dT%H:%M:%S%.3f");
-        let _ = writeln!(
-            file,
-            "[{}] Executing build_cmd: {} (working_dir: {})",
-            timestamp,
-            full_cmd_display,
-            working_dir.display()
-        );
-        let _ = file.flush();
-    }
+    crate::build_io::log_cmd_header(&log_file, "build_cmd", &full_cmd_display, working_dir, &[]);
 
     let mut command = tokio::process::Command::new(&program);
     command.args(&args);

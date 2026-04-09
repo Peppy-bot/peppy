@@ -12,13 +12,11 @@
 use parking_lot::Mutex as StdMutex;
 use std::collections::VecDeque;
 use std::fs::File;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use chrono::Local;
 use config::consts::{PeppyDirs, RUNTIME_CONFIG_VAR_NAME};
 use config::node::{NodeConfig, PeppygenLanguage};
 use tokio::process::{Child, Command};
@@ -157,20 +155,13 @@ pub(super) fn spawn_process_node(
         working_dir
     );
 
-    // Log the command being executed to the log file before attempting to spawn
-    {
-        let full_cmd = start_cmd.join(" ");
-        let mut file = log_file.lock();
-        let timestamp = Local::now().format("%Y-%m-%dT%H:%M:%S%.3f");
-        let _ = writeln!(
-            file,
-            "[{}] Executing start_cmd: {} (working_dir: {})",
-            timestamp,
-            full_cmd,
-            working_dir.display()
-        );
-        let _ = file.flush();
-    }
+    crate::build_io::log_cmd_header(
+        &log_file,
+        "start_cmd",
+        &start_cmd.join(" "),
+        working_dir,
+        &[],
+    );
 
     let runtime_config_path = write_runtime_config_temp(peppy_dirs, runtime_config_json5)?;
 
@@ -366,20 +357,14 @@ pub(super) async fn spawn_container_node(
         apptainer_cmd = apptainer_cmd.bind(&bind.src, bind.dest.as_deref(), bind.opts.as_deref());
     }
 
-    // Log the command being executed
-    {
-        let mut file = log_file.lock();
-        let timestamp = Local::now().format("%Y-%m-%dT%H:%M:%S%.3f");
-        let _ = writeln!(
-            file,
-            "[{}] Executing apptainer run: {} (working_dir: {}, bind_mounts: [{}])",
-            timestamp,
-            sif_path.display(),
-            working_dir.display(),
-            mount_paths.join(", ")
-        );
-        let _ = file.flush();
-    }
+    let bind_mounts_str = format!("[{}]", mount_paths.join(", "));
+    crate::build_io::log_cmd_header(
+        &log_file,
+        "apptainer run",
+        &sif_path.display().to_string(),
+        working_dir,
+        &[("bind_mounts", &bind_mounts_str)],
+    );
 
     // Get the fully-built std::process::Command from the Apptainer facade,
     // then convert to tokio::process::Command for async stdio piping.
