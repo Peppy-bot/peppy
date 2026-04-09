@@ -13,7 +13,7 @@ use parking_lot::Mutex as StdMutex;
 use std::collections::VecDeque;
 use std::fs::File;
 use std::io::Write;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -21,15 +21,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use chrono::Local;
 use config::consts::{PeppyDirs, RUNTIME_CONFIG_VAR_NAME};
 use config::node::{NodeConfig, PeppygenLanguage};
-use tar::Archive;
 use tokio::process::{Child, Command};
 use tokio::task::JoinHandle;
 use tracing::{debug, warn};
 
 use tokio::sync::mpsc;
 
+use crate::archive::extract_tar_zst;
 use crate::build_io::{FeedbackLine, FeedbackStream, write_feedback_log_line};
-use zstd::stream::read::Decoder;
 
 /// Per-process counter used to name temporary runtime config files uniquely.
 ///
@@ -56,124 +55,6 @@ pub(super) fn write_runtime_config_temp(
     let runtime_config_path = runtime_dir.join(format!("runtime_config_{pid}_{counter}.json5"));
     std::fs::write(&runtime_config_path, json5)?;
     Ok(runtime_config_path)
-}
-
-/// Extracts a `.tar.zst` archive into `destination` with path safety checks.
-/// Rejects entries containing `..`, root, or prefix path components.
-/// Directories are applied last to avoid permission interference during extraction.
-///
-/// This is `pub` (not `pub(super)`) because `core-node-internal` re-exports it
-/// via `node-stack`'s lib.rs for use in node-add source resolution
-/// (`resolve_local_archive_source`), which is unrelated to the start lifecycle
-/// but uses the same archive format.
-pub fn extract_tar_zst(archive_path: &Path, destination: &Path) -> std::result::Result<(), String> {
-    let file = std::fs::File::open(archive_path)
-        .map_err(|e| format!("Failed to open archive {}: {}", archive_path.display(), e))?;
-
-    let decoder = Decoder::new(file).map_err(|e| {
-        format!(
-            "Failed to decode zstd archive {}: {}",
-            archive_path.display(),
-            e
-        )
-    })?;
-    let mut archive = Archive::new(decoder);
-
-    let entries = archive.entries().map_err(|e| {
-        format!(
-            "Failed to read archive entries from {}: {}",
-            archive_path.display(),
-            e
-        )
-    })?;
-
-    let mut directories = Vec::new();
-    for entry in entries {
-        let mut entry = entry.map_err(|e| {
-            format!(
-                "Failed to read archive entry from {}: {}",
-                archive_path.display(),
-                e
-            )
-        })?;
-
-        let entry_path = entry
-            .path()
-            .map_err(|e| {
-                format!(
-                    "Failed to read entry path from {}: {}",
-                    archive_path.display(),
-                    e
-                )
-            })?
-            .into_owned();
-
-        if entry_path.components().any(|component| {
-            matches!(
-                component,
-                Component::ParentDir | Component::RootDir | Component::Prefix(..)
-            )
-        }) {
-            return Err(format!(
-                "Archive {} contains unsafe path: {}",
-                archive_path.display(),
-                entry_path.display()
-            ));
-        }
-
-        if entry.header().entry_type().is_dir() {
-            directories.push(entry);
-        } else {
-            let unpacked = entry.unpack_in(destination).map_err(|e| {
-                format!(
-                    "Failed to unpack entry {} from {}: {}",
-                    entry_path.display(),
-                    archive_path.display(),
-                    e
-                )
-            })?;
-            if !unpacked {
-                return Err(format!(
-                    "Archive {} contains unsafe path: {}",
-                    archive_path.display(),
-                    entry_path.display()
-                ));
-            }
-        }
-    }
-
-    // Apply directory entries at the end, matching tar::Archive::unpack behavior (avoids
-    // directory permissions interfering with descendant extraction).
-    directories.sort_by(|a, b| b.path_bytes().cmp(&a.path_bytes()));
-    for mut dir in directories {
-        let entry_path = dir
-            .path()
-            .map_err(|e| {
-                format!(
-                    "Failed to read entry path from {}: {}",
-                    archive_path.display(),
-                    e
-                )
-            })?
-            .into_owned();
-        let unpacked = dir.unpack_in(destination).map_err(|e| {
-            format!(
-                "Failed to unpack entry {} from {}: {}",
-                entry_path.display(),
-                archive_path.display(),
-                e
-            )
-        })?;
-        if !unpacked {
-            return Err(format!(
-                "Archive {} contains unsafe path: {}",
-                archive_path.display(),
-                entry_path.display()
-            ));
-        }
-    }
-
-    Ok(())
 }
 
 /// Creates (or recreates) a clean instance directory under `peppy_dirs.instances_dir()`.

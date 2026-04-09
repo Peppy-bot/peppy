@@ -7,7 +7,6 @@ pub use entity::{
     BuildContext, DependencySpec, InstanceState, NodeEntity, NodeStage, OutputSinks,
     SerializedNodeGraph, StartContext, StartedInstanceCtx, TrackedNodeInstance, WorkingDirGuard,
 };
-pub use start_steps::extract_tar_zst;
 pub use validation::{collect_dependency_specs, validate_dependency_specs};
 
 use entity::{SerializedEdge, SerializedNode};

@@ -213,10 +213,6 @@ pub(crate) struct ResolvedLocalArchiveSource {
     pub(crate) temp_dir: tempfile::TempDir,
 }
 
-// `extract_tar_zst` was moved into `node-stack-internal::node_stack::start_steps`
-// alongside the rest of the start I/O. The re-export below preserves the
-// existing call sites in `start.rs` (the start lifecycle path) and in
-// `add::resolve_local_archive_source` (the add source-resolution path).
 pub(crate) use node_stack::extract_tar_zst;
 
 pub(crate) fn sanitize_repo_path(repo_path: &str) -> std::result::Result<PathBuf, String> {
