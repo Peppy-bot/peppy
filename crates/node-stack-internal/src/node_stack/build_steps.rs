@@ -131,16 +131,6 @@ pub(super) fn move_sif_to_storage(
     let sif_name = format!("{}_{}.sif", node_name, node_tag);
     let sif_source = working_dir.join(&sif_name);
 
-    if !sif_source.is_file() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            format!(
-                "Expected container image not found at {}",
-                sif_source.display()
-            ),
-        ));
-    }
-
     let storage_dir = peppy_dirs.added_nodes_dir();
     std::fs::create_dir_all(&storage_dir)?;
 
@@ -151,7 +141,14 @@ pub(super) fn move_sif_to_storage(
     // different filesystem than storage. Matches archive_dir_to_storage pattern.
     if let Err(e) = std::fs::copy(&sif_source, &tmp_path) {
         let _ = std::fs::remove_file(&tmp_path);
-        return Err(e);
+        return Err(std::io::Error::new(
+            e.kind(),
+            format!(
+                "Expected container image at {}: {}",
+                sif_source.display(),
+                e
+            ),
+        ));
     }
     if let Err(e) = std::fs::rename(&tmp_path, &dest_path) {
         let _ = std::fs::remove_file(&tmp_path);
