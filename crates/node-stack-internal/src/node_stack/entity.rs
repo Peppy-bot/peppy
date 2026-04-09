@@ -301,7 +301,7 @@ impl Drop for WorkingDirGuard {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct NodeEntity {
     config: NodeConfig,
     stage: NodeStage,
@@ -311,19 +311,26 @@ pub struct NodeEntity {
     /// `root` construction. The build path captures this value at Phase 1 and
     /// re-checks it at Phase 3 before publishing artifacts.
     generation: u64,
-    /// Path to the most-recent add/build log file produced for this entity.
-    /// Set by the add/launch services after `create_action_log_file`
-    /// succeeds. Reset to `None` whenever the entity is replaced wholesale
-    /// (a fresh `NodeEntity::new` is constructed for the same key by
-    /// `push_config_impl`). `None` for the synthetic root entity, which
-    /// has no add log.
+    /// Path to the most-recent add log file produced for this entity. Set by
+    /// the add/launch services after `create_action_log_file` succeeds. Reset
+    /// to `None` whenever the entity is replaced wholesale (a fresh
+    /// `NodeEntity::new` is constructed for the same key by
+    /// `push_config_impl`). `None` for the synthetic root entity, which has
+    /// no add log. Not persisted across daemon restarts — `from_snapshot`
+    /// always restores it as `None`.
+    ///
+    /// Cached on the entity rather than derived from `logs_dir_add()` so the
+    /// `info` RPC can answer in O(1) without listing the log directory and
+    /// pattern-matching filenames; the cached value is also guaranteed to
+    /// point at *this* add's log even if a same-named file gets recreated
+    /// later.
     last_add_log_path: Option<PathBuf>,
     /// In-memory only: the temporary working directory staged by `node add`
     /// and consumed by `node build`. Set to `Some` while the entity is
-    /// `Added`, taken (set to `None`) by the build path. Wrapped in `Arc`
-    /// so cloning the entity (snapshot/restore) shares the same backing
-    /// directory and the directory is only cleaned up when the last clone
-    /// drops. Never persisted.
+    /// `Added`, taken (set to `None`) by the build path. The `Arc` lets the
+    /// build task hold its own reference for the duration of the build after
+    /// `take_pending_working_dir` clears the entity-side slot. Never
+    /// persisted.
     pending_working_dir: Option<Arc<WorkingDirGuard>>,
 }
 
