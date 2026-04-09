@@ -148,6 +148,30 @@ impl NodeStage {
             NodeStage::Root { .. } => "Root",
         }
     }
+
+    /// Pure validator: returns `Ok(())` if `NodeEntity::build` is allowed
+    /// from this stage (only `Added` is), or `Err(current_stage_name)`
+    /// otherwise. The production `build()` method calls this before its
+    /// own field-extracting match, so the rejection rule lives in exactly
+    /// one place and the parametric rejection tests can exercise it
+    /// without needing to inject stages into a real entity.
+    pub fn ensure_buildable(&self) -> std::result::Result<(), &'static str> {
+        match self {
+            NodeStage::Added { .. } => Ok(()),
+            other => Err(other.name()),
+        }
+    }
+
+    /// Pure validator: returns `Ok(())` if `NodeEntity::prepare_and_spawn`
+    /// is allowed from this stage (only `Ready` is), or
+    /// `Err(current_stage_name)` otherwise. Mirrors the structural shape
+    /// of [`NodeStage::ensure_buildable`] — see its doc for the rationale.
+    pub fn ensure_spawnable(&self) -> std::result::Result<(), &'static str> {
+        match self {
+            NodeStage::Ready { .. } => Ok(()),
+            other => Err(other.name()),
+        }
+    }
 }
 
 /// Inputs required to drive [`NodeEntity::build`] to completion.
@@ -386,17 +410,18 @@ impl NodeEntity {
         // ---- Phase 1: Added → Building, snapshot inputs (brief write lock) ----
         let (node_name, node_tag, config_path, container_opt, add_cmd, build_generation) = {
             let mut guard = handle.write().expect("entity poisoned");
-            let config_path = match &guard.stage {
-                NodeStage::Added { config_path } => config_path.clone(),
-                other => {
-                    return Err(Error::InvalidStageTransition {
-                        node_name: guard.config.manifest.name.as_str().to_owned(),
-                        node_tag: guard.config.manifest.tag.clone(),
-                        from: other.name(),
-                        to: "Ready",
-                    });
-                }
+            if let Err(from) = guard.stage.ensure_buildable() {
+                return Err(Error::InvalidStageTransition {
+                    node_name: guard.config.manifest.name.as_str().to_owned(),
+                    node_tag: guard.config.manifest.tag.clone(),
+                    from,
+                    to: "Ready",
+                });
+            }
+            let NodeStage::Added { config_path } = &guard.stage else {
+                unreachable!("ensure_buildable just verified Added")
             };
+            let config_path = config_path.clone();
             let snapshot = (
                 guard.config.manifest.name.as_str().to_owned(),
                 guard.config.manifest.tag.clone(),
@@ -573,6 +598,14 @@ impl NodeEntity {
         // ---- Phase 1: register the Starting instance under a brief write lock ----
         let (node_name, node_tag, node_config, artifact_path, start_generation) = {
             let mut guard = handle.write().expect("entity poisoned");
+            if let Err(from) = guard.stage.ensure_spawnable() {
+                return Err(Error::InvalidStageTransition {
+                    node_name: guard.config.manifest.name.as_str().to_owned(),
+                    node_tag: guard.config.manifest.tag.clone(),
+                    from,
+                    to: "Ready",
+                });
+            }
             let entity_generation = guard.generation;
             let NodeStage::Ready {
                 artifact_path,
@@ -580,13 +613,7 @@ impl NodeEntity {
                 ..
             } = &mut guard.stage
             else {
-                let from = guard.stage.name();
-                return Err(Error::InvalidStageTransition {
-                    node_name: guard.config.manifest.name.as_str().to_owned(),
-                    node_tag: guard.config.manifest.tag.clone(),
-                    from,
-                    to: "Ready",
-                });
+                unreachable!("ensure_spawnable just verified Ready")
             };
 
             // Reject duplicate instance ids before any I/O. Atomic with the
@@ -964,24 +991,6 @@ impl NodeEntity {
             generation: next_entity_generation(),
             last_add_log_path: None,
         }
-    }
-
-    /// Test-only: directly inject a stage for transition-rejection tests and
-    /// fixtures. Production code must drive transitions via `build`,
-    /// `prepare_and_spawn`, etc.
-    #[cfg(any(test, feature = "test_helpers"))]
-    pub fn __test_set_stage(&mut self, stage: NodeStage) {
-        self.stage = stage;
-    }
-
-    /// Test-only: borrow the stage mutably so test fixtures can append a
-    /// pre-constructed `TrackedNodeInstance` directly into a `Ready`
-    /// entity's instances list. This is the only test backdoor for instance
-    /// manipulation — production code goes through
-    /// `prepare_and_spawn`/`commit_started`/`abort_started`.
-    #[cfg(any(test, feature = "test_helpers"))]
-    pub fn __test_stage_mut(&mut self) -> &mut NodeStage {
-        &mut self.stage
     }
 
     /// Removes a `Running` instance from a `Ready` entity. The entity stays

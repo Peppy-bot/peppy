@@ -48,7 +48,8 @@ capnpc = "0.25"
 
 [dev-dependencies]
 libc = "0.2"
-node-stack = { path = "../node-stack-internal", features = ["test_helpers"] }
+node-stack = { path = "../node-stack-internal" }
+config = { path = "../config-internal", features = ["test_helpers"] }
 tempfile = "3.10"
 tokio = { version = "1.47", features = ["full"] }
 httptest = "0.16.3"

@@ -3,7 +3,8 @@ mod common;
 use common::{
     AbortOnDrop, CALLER_INSTANCE_ID, NodeAddSource, TEST_GIT_HASH, create_tar_zst_from_dir,
     send_node_add_and_wait, send_node_add_and_wait_with_env, send_node_add_and_wait_with_force,
-    send_node_add_and_wait_with_variant, start_core_node_with_mock_messenger, write_peppy_json5,
+    send_node_add_and_wait_with_variant, spawn_real_running_instance, spawn_real_stuck_instance,
+    start_core_node_with_mock_messenger, write_peppy_json5,
 };
 use config::consts::{
     DEFAULT_ALPINE_BASE_IMAGE, NODE_CONFIG_FILE, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH,
@@ -55,31 +56,6 @@ fn entity_instance_count(node_stack: &node_stack::NodeStack, name: &str, tag: &s
         .expect("entity poisoned")
         .instances()
         .len()
-}
-
-/// Registers a tracked `Running` instance on the entity at `(name, tag)`.
-/// Assumes the entity is already in `Ready` (i.e. the test went through the
-/// real `process_node_add` path). Appends the instance directly via the
-/// `__test_stage_mut` backdoor since the production lifecycle method is
-/// `prepare_and_spawn`/`commit_started`, which would actually spawn a child.
-fn register_instance(
-    node_stack: &node_stack::NodeStack,
-    name: &str,
-    tag: &str,
-    instance_id: &config::node::Name,
-    pid: Option<u32>,
-) {
-    let handle = node_stack.find(name, tag).expect("entity should exist");
-    let instance = node_stack::TrackedNodeInstance::new(
-        instance_id.clone(),
-        pid,
-        node_stack::InstanceState::Running,
-    );
-    let mut guard = handle.write().expect("entity poisoned");
-    let node_stack::NodeStage::Ready { instances, .. } = guard.__test_stage_mut() else {
-        panic!("register_instance: entity should be in Ready stage");
-    };
-    instances.push(instance);
 }
 
 /// Creates a minimal node bundle (peppy.json5 + tar.zst) suitable for HTTP source tests.
@@ -2254,8 +2230,10 @@ async fn node_add_same_node_shutdown_existing_instances() {
 
     let instance_id_1 = config::node::Name::new(INSTANCE_1).expect("valid instance id 1");
     let instance_id_2 = config::node::Name::new(INSTANCE_2).expect("valid instance id 2");
-    register_instance(&node_stack, NODE_NAME, NODE_TAG, &instance_id_1, None);
-    register_instance(&node_stack, NODE_NAME, NODE_TAG, &instance_id_2, None);
+    let _running_1 =
+        spawn_real_running_instance(&started_core_node, NODE_NAME, NODE_TAG, &instance_id_1).await;
+    let _running_2 =
+        spawn_real_running_instance(&started_core_node, NODE_NAME, NODE_TAG, &instance_id_2).await;
 
     let instance_messenger =
         MessengerHandle::from_shared(Arc::clone(&started_core_node.shared_messenger));
@@ -3217,13 +3195,13 @@ async fn node_add_same_node_with_running_instance_and_dependents_succeeds() {
 
     // Add a fake running instance to the dependency node
     let instance_id = config::node::Name::new(INSTANCE_ID).expect("valid instance id");
-    register_instance(
-        &node_stack,
+    let _running = spawn_real_running_instance(
+        &started_core_node,
         DEPENDENCY_NODE_NAME,
         DEPENDENCY_NODE_TAG,
         &instance_id,
-        None,
-    );
+    )
+    .await;
 
     // Mock the shutdown service for the running instance
     let instance_messenger =
@@ -3420,13 +3398,13 @@ async fn node_add_same_node_changing_interface_with_running_instance_and_depende
 
     // Add a fake running instance to the dependency node
     let instance_id = config::node::Name::new(INSTANCE_ID).expect("valid instance id");
-    register_instance(
-        &node_stack,
+    let _running = spawn_real_running_instance(
+        &started_core_node,
         DEPENDENCY_NODE_NAME,
         DEPENDENCY_NODE_TAG,
         &instance_id,
-        None,
-    );
+    )
+    .await;
 
     // Register a SHUTDOWN_SERVICE handler that responds immediately.
     // Shutdown succeeds; push_config then rejects the overwrite due to the interface change.
@@ -3633,15 +3611,17 @@ async fn node_add_same_node_with_running_instance_and_dependents_fails_on_stoppe
         dependent_add.error_message
     );
 
-    // Add a fake running instance to the dependency node
+    // Spawn a real running instance WITHOUT the auto-shutdown listener so
+    // the production shutdown path observes a stuck process that never
+    // responds or terminates.
     let instance_id = config::node::Name::new(INSTANCE_ID).expect("valid instance id");
-    register_instance(
-        &node_stack,
+    let _running = spawn_real_stuck_instance(
+        &started_core_node,
         DEPENDENCY_NODE_NAME,
         DEPENDENCY_NODE_TAG,
         &instance_id,
-        None,
-    );
+    )
+    .await;
 
     // Register a SHUTDOWN_SERVICE handler that blocks forever — simulates a frozen/unresponsive node.
     // `notify_one` is never called, so the handler never returns, causing the poll to time out.

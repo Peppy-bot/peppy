@@ -7,11 +7,11 @@ use std::sync::{Arc, Mutex as StdMutex};
 use config::node::Name;
 use node_stack::{
     BuildContext, EntitySnapshot, InstanceState, NodeEntity, NodeStack, NodeStackError, NodeStage,
-    RestoreTarget, TrackedNodeInstance,
+    RestoreTarget,
 };
 
 use crate::helpers::config_common::core_node_config;
-use crate::helpers::fixtures::start_instance_in_stack;
+use crate::helpers::real_lifecycle;
 
 fn sensor_config() -> config::node::NodeConfig {
     serde_json5::from_str::<config::node::NodeConfig>(
@@ -49,44 +49,29 @@ fn push_config_creates_entity_in_added_stage() {
     let handle = stack.find("sensor", "1.0.0").expect("entity should exist");
     let guard = handle.read().expect("entity poisoned");
 
-    match guard.stage() {
-        NodeStage::Added { config_path: cp } => {
-            assert_eq!(cp, &config_path);
-        }
-        other => panic!("expected Added stage, got {:?}", other),
+    if let NodeStage::Added { config_path: cp } = guard.stage() {
+        assert_eq!(cp, &config_path);
+    } else {
+        panic!("expected Added stage, got {:?}", guard.stage());
     }
     assert_eq!(guard.config_path(), config_path.as_path());
     assert!(guard.artifact_path().is_none());
     assert!(guard.instances().is_empty());
 }
 
-#[test]
-fn ready_with_running_instance_round_trip() {
+#[tokio::test]
+async fn ready_with_running_instance_round_trip() {
     let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
-    let config_path = PathBuf::from("/tmp/sensor");
-    let artifact_path = PathBuf::from("/tmp/sensor.sif");
+    let harness = real_lifecycle::lifecycle_harness();
+    let config_path = harness.peppy_root.path().join("sensor.json5");
 
-    stack
-        .push_config(sensor_config(), false, &config_path)
-        .expect("push_config should succeed");
-
-    let handle = stack.find("sensor", "1.0.0").expect("entity should exist");
-    handle
-        .write()
-        .expect("entity poisoned")
-        .__test_set_stage(NodeStage::Ready {
-            config_path: config_path.clone(),
-            artifact_path: artifact_path.clone(),
-            instances: vec![],
-        });
-
-    start_instance_in_stack(
-        &stack,
-        "sensor",
-        "1.0.0",
-        Some(&Name::new("inst-1").unwrap()),
-        Some(42),
-    );
+    let handle = real_lifecycle::build_ready(&stack, &harness, sensor_config(), &config_path).await;
+    let _guard = real_lifecycle::spawn_running_instance(
+        Arc::clone(&handle),
+        &harness,
+        Name::new("inst-1").unwrap(),
+    )
+    .await;
 
     let guard = handle.read().expect("entity poisoned");
     match guard.stage() {
@@ -96,38 +81,27 @@ fn ready_with_running_instance_round_trip() {
             instances,
         } => {
             assert_eq!(cp, &config_path);
-            assert_eq!(sp, &artifact_path);
+            assert!(sp.is_file(), "archive should exist on disk");
             assert_eq!(instances.len(), 1);
             assert_eq!(instances[0].instance_id().as_str(), "inst-1");
-            assert_eq!(instances[0].pid(), Some(42));
+            assert!(instances[0].pid().is_some());
             assert_eq!(instances[0].state(), InstanceState::Running);
         }
         other => panic!("expected Ready, got {:?}", other),
     }
 }
 
-#[test]
-fn stop_instance_removes_last_instance_keeps_ready() {
+#[tokio::test]
+async fn stop_instance_removes_last_instance_keeps_ready() {
     let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
-    let config_path = PathBuf::from("/tmp/sensor");
-    let artifact_path = PathBuf::from("/tmp/sensor.sif");
+    let harness = real_lifecycle::lifecycle_harness();
+    let config_path = harness.peppy_root.path().join("sensor.json5");
 
-    stack
-        .push_config(sensor_config(), false, &config_path)
-        .expect("push_config should succeed");
-
-    let handle = stack.find("sensor", "1.0.0").expect("entity should exist");
-    handle
-        .write()
-        .expect("entity poisoned")
-        .__test_set_stage(NodeStage::Ready {
-            config_path: config_path.clone(),
-            artifact_path: artifact_path.clone(),
-            instances: vec![],
-        });
-
+    let handle = real_lifecycle::build_ready(&stack, &harness, sensor_config(), &config_path).await;
     let instance_id = Name::new("only-inst").unwrap();
-    start_instance_in_stack(&stack, "sensor", "1.0.0", Some(&instance_id), Some(42));
+    let _running =
+        real_lifecycle::spawn_running_instance(Arc::clone(&handle), &harness, instance_id.clone())
+            .await;
 
     // Remove the only instance: entity stays in Ready with an empty list.
     let removed = handle
@@ -144,7 +118,7 @@ fn stop_instance_removes_last_instance_keeps_ready() {
             instances,
         } => {
             assert_eq!(cp, &config_path);
-            assert_eq!(sp, &artifact_path);
+            assert!(sp.is_file(), "archive should exist on disk");
             assert!(
                 instances.is_empty(),
                 "instances list should be empty after removing the only instance"
@@ -152,34 +126,24 @@ fn stop_instance_removes_last_instance_keeps_ready() {
         }
         other => panic!("expected Ready, got {:?}", other),
     }
-    assert_eq!(guard.artifact_path(), Some(artifact_path.as_path()));
+    assert!(guard.artifact_path().is_some());
     assert!(guard.instances().is_empty());
 }
 
-#[test]
-fn stop_instance_keeps_other_instances_when_one_removed() {
+#[tokio::test]
+async fn stop_instance_keeps_other_instances_when_one_removed() {
     let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
-    let config_path = PathBuf::from("/tmp/sensor");
-    let artifact_path = PathBuf::from("/tmp/sensor.sif");
+    let harness = real_lifecycle::lifecycle_harness();
+    let config_path = harness.peppy_root.path().join("sensor.json5");
 
-    stack
-        .push_config(sensor_config(), false, &config_path)
-        .expect("push_config should succeed");
-
-    let handle = stack.find("sensor", "1.0.0").expect("entity should exist");
-    handle
-        .write()
-        .expect("entity poisoned")
-        .__test_set_stage(NodeStage::Ready {
-            config_path,
-            artifact_path: artifact_path.clone(),
-            instances: vec![],
-        });
+    let handle = real_lifecycle::build_ready(&stack, &harness, sensor_config(), &config_path).await;
 
     let id_a = Name::new("inst-a").unwrap();
     let id_b = Name::new("inst-b").unwrap();
-    start_instance_in_stack(&stack, "sensor", "1.0.0", Some(&id_a), Some(1));
-    start_instance_in_stack(&stack, "sensor", "1.0.0", Some(&id_b), Some(2));
+    let _a =
+        real_lifecycle::spawn_running_instance(Arc::clone(&handle), &harness, id_a.clone()).await;
+    let _b =
+        real_lifecycle::spawn_running_instance(Arc::clone(&handle), &harness, id_b.clone()).await;
 
     let removed = handle
         .write()
@@ -197,28 +161,18 @@ fn stop_instance_keeps_other_instances_when_one_removed() {
     }
 }
 
-#[test]
-fn stop_instance_returns_false_when_instance_not_tracked() {
+#[tokio::test]
+async fn stop_instance_returns_false_when_instance_not_tracked() {
     let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
-    stack
-        .push_config(sensor_config(), false, PathBuf::from("/tmp/sensor"))
-        .expect("push_config should succeed");
-    let handle = stack.find("sensor", "1.0.0").expect("entity should exist");
-    handle
-        .write()
-        .expect("entity poisoned")
-        .__test_set_stage(NodeStage::Ready {
-            config_path: PathBuf::from("/tmp/sensor"),
-            artifact_path: PathBuf::from("/tmp/sensor.sif"),
-            instances: vec![],
-        });
-    start_instance_in_stack(
-        &stack,
-        "sensor",
-        "1.0.0",
-        Some(&Name::new("only").unwrap()),
-        Some(1),
-    );
+    let harness = real_lifecycle::lifecycle_harness();
+    let config_path = harness.peppy_root.path().join("sensor.json5");
+    let handle = real_lifecycle::build_ready(&stack, &harness, sensor_config(), &config_path).await;
+    let _only = real_lifecycle::spawn_running_instance(
+        Arc::clone(&handle),
+        &harness,
+        Name::new("only").unwrap(),
+    )
+    .await;
 
     let removed = handle
         .write()
@@ -227,29 +181,32 @@ fn stop_instance_returns_false_when_instance_not_tracked() {
     assert!(!removed);
 }
 
-#[test]
-fn stop_instance_skips_starting_instances() {
+#[tokio::test]
+async fn stop_instance_skips_starting_instances() {
     // stop_instance only acts on Running instances. A Starting instance is
     // an in-flight prepare_and_spawn that hasn't been committed yet — it
     // can't be stopped via the messenger because it hasn't subscribed.
     let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
-    stack
-        .push_config(sensor_config(), false, PathBuf::from("/tmp/sensor"))
-        .expect("push_config should succeed");
-    let handle = stack.find("sensor", "1.0.0").expect("entity should exist");
+    let harness = real_lifecycle::lifecycle_harness();
+    let config_path = harness.peppy_root.path().join("sensor.json5");
+    let handle = real_lifecycle::build_ready(&stack, &harness, sensor_config(), &config_path).await;
+
+    // Drive prepare_and_spawn to produce a Starting instance, but do NOT
+    // commit_started — the instance stays in Starting.
     let id = Name::new("starting-inst").unwrap();
-    handle
-        .write()
-        .expect("entity poisoned")
-        .__test_set_stage(NodeStage::Ready {
-            config_path: PathBuf::from("/tmp/sensor"),
-            artifact_path: PathBuf::from("/tmp/sensor.sif"),
-            instances: vec![TrackedNodeInstance::new(
-                id.clone(),
-                None,
-                InstanceState::Starting,
-            )],
-        });
+    let (mut child, _started_ctx) = NodeEntity::prepare_and_spawn(
+        &handle,
+        node_stack::StartContext {
+            instance_id: &id,
+            runtime_config_json5: "{}",
+            env_vars: &[],
+            mount_paths_resolved: &[],
+            peppy_dirs: &harness.peppy_dirs,
+            output_sinks: harness.output_sinks(),
+        },
+    )
+    .await
+    .expect("prepare_and_spawn should succeed");
 
     let removed = handle.write().expect("entity poisoned").stop_instance(&id);
     assert!(
@@ -257,31 +214,26 @@ fn stop_instance_skips_starting_instances() {
         "stop_instance must not remove a Starting instance"
     );
     // The Starting instance is still in the list.
-    let guard = handle.read().expect("entity poisoned");
-    assert_eq!(guard.instances().len(), 1);
-    assert_eq!(guard.instances()[0].state(), InstanceState::Starting);
+    {
+        let guard = handle.read().expect("entity poisoned");
+        assert_eq!(guard.instances().len(), 1);
+        assert_eq!(guard.instances()[0].state(), InstanceState::Starting);
+    }
+
+    // Cleanup: kill the still-starting child.
+    let _ = child.kill().await;
 }
 
-#[test]
-fn push_config_resets_existing_entity_to_added() {
+#[tokio::test]
+async fn push_config_resets_existing_entity_to_added() {
     let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
-    let config_path_v1 = PathBuf::from("/tmp/sensor/v1/peppy.json5");
-    let config_path_v2 = PathBuf::from("/tmp/sensor/v2/peppy.json5");
-    let artifact_path = PathBuf::from("/tmp/sensor.sif");
+    let harness = real_lifecycle::lifecycle_harness();
+    let config_path_v1 = harness.peppy_root.path().join("sensor_v1.json5");
+    let config_path_v2 = harness.peppy_root.path().join("sensor_v2.json5");
 
-    // Initial push + build.
-    stack
-        .push_config(sensor_config(), false, &config_path_v1)
-        .expect("first push_config should succeed");
-    let handle = stack.find("sensor", "1.0.0").expect("entity should exist");
-    handle
-        .write()
-        .expect("entity poisoned")
-        .__test_set_stage(NodeStage::Ready {
-            config_path: config_path_v1.clone(),
-            artifact_path,
-            instances: vec![],
-        });
+    // Initial push + real build.
+    let handle =
+        real_lifecycle::build_ready(&stack, &harness, sensor_config(), &config_path_v1).await;
 
     assert!(handle.read().unwrap().artifact_path().is_some());
 
@@ -423,25 +375,21 @@ fn push_config_rewires_when_dependency_keys_change_with_unchanged_interfaces() {
     );
 }
 
-#[test]
-fn push_config_rejects_replacement_with_live_instances() {
+#[tokio::test]
+async fn push_config_rejects_replacement_with_live_instances() {
     let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
-    let config_path_v1 = PathBuf::from("/tmp/sensor/v1/peppy.json5");
-    let config_path_v2 = PathBuf::from("/tmp/sensor/v2/peppy.json5");
+    let harness = real_lifecycle::lifecycle_harness();
+    let config_path_v1 = harness.peppy_root.path().join("sensor_v1.json5");
+    let config_path_v2 = harness.peppy_root.path().join("sensor_v2.json5");
 
-    stack
-        .push_config(sensor_config(), false, &config_path_v1)
-        .expect("first push_config should succeed");
-    let handle = stack.find("sensor", "1.0.0").expect("entity should exist");
-    let id = Name::new("inst-1").expect("valid name");
-    handle
-        .write()
-        .expect("entity poisoned")
-        .__test_set_stage(NodeStage::Ready {
-            config_path: config_path_v1,
-            artifact_path: PathBuf::from("/tmp/sensor.sif"),
-            instances: vec![TrackedNodeInstance::new(id, None, InstanceState::Running)],
-        });
+    let handle =
+        real_lifecycle::build_ready(&stack, &harness, sensor_config(), &config_path_v1).await;
+    let _running = real_lifecycle::spawn_running_instance(
+        Arc::clone(&handle),
+        &harness,
+        Name::new("inst-1").unwrap(),
+    )
+    .await;
 
     let err = stack
         .push_config(sensor_config(), false, &config_path_v2)
@@ -738,105 +686,24 @@ fn long_running_sensor_config() -> config::node::NodeConfig {
     .expect("valid long-running sensor config")
 }
 
-/// Pushes a sensor with the given start_cmd into the stack and forces it into
-/// `Built` via `__test_set_stage`. The artifact_path points at a fake `.tar.zst`
-/// — for the start path, the entity reads `artifact_path` only when extracting
-/// the archive (process node case). To avoid that, we make the entity behave
-/// as if it had no archive to extract by populating an empty placeholder file.
-fn push_built_long_running_sensor(stack: &NodeStack, peppy_dirs: &config::consts::PeppyDirs) {
-    stack
-        .push_config(
-            long_running_sensor_config(),
-            false,
-            PathBuf::from("/tmp/sensor"),
-        )
-        .expect("push_config should succeed");
-    let handle = stack.find("sensor", "1.0.0").expect("entity should exist");
-
-    // Create a fake archive containing nothing — extract_node_archive will
-    // unpack it into a fresh instance dir without complaining.
-    let added_nodes_dir = peppy_dirs.added_nodes_dir();
-    std::fs::create_dir_all(&added_nodes_dir).expect("create added_nodes_dir");
-    let archive_path = added_nodes_dir.join("sensor_1.0.0.tar.zst");
-    let f = std::fs::File::create(&archive_path).expect("create archive");
-    let mut encoder = zstd::stream::write::Encoder::new(f, 1).expect("zstd encoder");
-    {
-        let mut tar = tar::Builder::new(&mut encoder);
-        tar.finish().expect("empty tar");
-    }
-    encoder.finish().expect("finish zstd");
-
-    handle
-        .write()
-        .expect("entity poisoned")
-        .__test_set_stage(NodeStage::Ready {
-            config_path: PathBuf::from("/tmp/sensor"),
-            artifact_path: archive_path,
-            instances: vec![],
-        });
+/// Pushes a long-running sensor into the stack and drives the real build path
+/// to land it in `Ready`
+async fn push_built_long_running_sensor(
+    stack: &NodeStack,
+    harness: &real_lifecycle::LifecycleHarness,
+) -> node_stack::EntityHandle {
+    let config_path = harness.peppy_root.path().join("long_running_sensor.json5");
+    real_lifecycle::build_ready(stack, harness, long_running_sensor_config(), config_path).await
 }
 
-/// Hooks impl that does nothing — used for tests that don't care about
-/// quiescence detection.
-struct NoOpTestHooks;
-impl node_stack::build_io::OutputReaderHooks for NoOpTestHooks {}
-
-/// Sets up the StartContext fields shared across start tests, including a
-/// draining feedback consumer that prevents the internal channel from filling.
-struct StartHarness {
-    instance_id: Name,
-    peppy_root: tempfile::TempDir,
-    peppy_dirs: config::consts::PeppyDirs,
-    log_file: Arc<StdMutex<std::fs::File>>,
-    feedback_tx: tokio::sync::mpsc::UnboundedSender<node_stack::build_io::FeedbackLine>,
-    publish_enabled: Arc<std::sync::atomic::AtomicBool>,
-    hooks: Arc<dyn node_stack::build_io::OutputReaderHooks>,
-    /// Tracked drain task that consumes feedback so the internal channel
-    /// never fills up. The task naturally terminates when `feedback_tx` is
-    /// dropped (the receiver returns None and the loop exits), so the
-    /// handle exists primarily so callers can `.abort()` it explicitly in
-    /// tests that need deterministic teardown before the harness drops.
-    #[allow(dead_code)]
-    feedback_drain_handle: Option<tokio::task::JoinHandle<()>>,
-}
-
-impl StartHarness {
-    fn output_sinks(&self) -> node_stack::OutputSinks {
-        node_stack::OutputSinks {
-            feedback_tx: self.feedback_tx.clone(),
-            log_file: Arc::clone(&self.log_file),
-            publish_enabled: Arc::clone(&self.publish_enabled),
-            hooks: Arc::clone(&self.hooks),
-        }
-    }
-}
-
-fn start_harness(instance_id_str: &str) -> StartHarness {
-    let peppy_root = tempfile::tempdir().expect("tempdir peppy_root");
-    let peppy_dirs = config::consts::PeppyDirs::new(peppy_root.path().to_path_buf());
-    let log_path = peppy_root.path().join("start.log");
-    let log_file = Arc::new(StdMutex::new(
-        std::fs::File::create(&log_path).expect("create log"),
-    ));
-
-    // Drain feedback so the internal channel never fills up. The handle is
-    // tracked on the harness and aborted in `Drop` so the task does not
-    // outlive the test.
-    let (feedback_tx, mut feedback_rx) =
-        tokio::sync::mpsc::unbounded_channel::<node_stack::build_io::FeedbackLine>();
-    let feedback_drain_handle =
-        tokio::spawn(async move { while feedback_rx.recv().await.is_some() {} });
-
-    StartHarness {
-        instance_id: Name::new(instance_id_str).expect("valid instance id"),
-        peppy_root,
-        peppy_dirs,
-        log_file,
-        feedback_tx,
-        publish_enabled: Arc::new(std::sync::atomic::AtomicBool::new(true)),
-        hooks: Arc::new(NoOpTestHooks),
-        feedback_drain_handle: Some(feedback_drain_handle),
-    }
+/// Sets up a start-test harness: a `real_lifecycle::LifecycleHarness` plus a
+/// pre-baked instance id. The lifecycle harness provides peppy_dirs, log_file,
+/// feedback_tx + drain task, publish_enabled, and output_sinks().
+fn start_harness(instance_id_str: &str) -> (Name, real_lifecycle::LifecycleHarness) {
+    (
+        Name::new(instance_id_str).expect("valid instance id"),
+        real_lifecycle::lifecycle_harness(),
+    )
 }
 
 #[tokio::test]
@@ -846,12 +713,12 @@ async fn prepare_and_spawn_rejects_when_not_built() {
         .push_config(sensor_config(), false, PathBuf::from("/tmp/sensor"))
         .expect("push_config should succeed");
     let handle = stack.find("sensor", "1.0.0").expect("entity should exist");
-    let h = start_harness("test-inst-1");
+    let (instance_id, h) = start_harness("test-inst-1");
 
     let err = NodeEntity::prepare_and_spawn(
         &handle,
         node_stack::StartContext {
-            instance_id: &h.instance_id,
+            instance_id: &instance_id,
             runtime_config_json5: "{}",
             env_vars: &[],
             mount_paths_resolved: &[],
@@ -873,20 +740,18 @@ async fn prepare_and_spawn_rejects_when_not_built() {
     // Entity remained in Added.
     let guard = handle.read().expect("entity poisoned");
     assert!(matches!(guard.stage(), NodeStage::Added { .. }));
-    drop(h.peppy_root);
 }
 
 #[tokio::test]
 async fn prepare_and_spawn_marks_instance_starting_then_commit_marks_running() {
     let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
-    let h = start_harness("test-inst-2");
-    push_built_long_running_sensor(&stack, &h.peppy_dirs);
-    let handle = stack.find("sensor", "1.0.0").expect("entity should exist");
+    let (instance_id, h) = start_harness("test-inst-2");
+    let handle = push_built_long_running_sensor(&stack, &h).await;
 
     let (child, started_ctx) = NodeEntity::prepare_and_spawn(
         &handle,
         node_stack::StartContext {
-            instance_id: &h.instance_id,
+            instance_id: &instance_id,
             runtime_config_json5: "{}",
             env_vars: &[],
             mount_paths_resolved: &[],
@@ -908,7 +773,7 @@ async fn prepare_and_spawn_marks_instance_starting_then_commit_marks_running() {
         let inst = guard
             .instances()
             .iter()
-            .find(|i| i.instance_id() == &h.instance_id)
+            .find(|i| i.instance_id() == &instance_id)
             .expect("just-registered instance should be present");
         assert_eq!(
             inst.state(),
@@ -920,10 +785,9 @@ async fn prepare_and_spawn_marks_instance_starting_then_commit_marks_running() {
     let pid = child.id().expect("child has pid");
     assert!(pid > 0, "spawned child should have a valid pid");
 
-    let returned_pid =
-        NodeEntity::commit_started(&handle, child, started_ctx, h.instance_id.clone())
-            .await
-            .expect("commit_started should succeed");
+    let returned_pid = NodeEntity::commit_started(&handle, child, started_ctx, instance_id.clone())
+        .await
+        .expect("commit_started should succeed");
     assert_eq!(returned_pid, pid);
 
     // Entity is still in Ready, but the instance is now Running.
@@ -932,7 +796,7 @@ async fn prepare_and_spawn_marks_instance_starting_then_commit_marks_running() {
         match guard.stage() {
             NodeStage::Ready { instances, .. } => {
                 assert_eq!(instances.len(), 1);
-                assert_eq!(instances[0].instance_id(), &h.instance_id);
+                assert_eq!(instances[0].instance_id(), &instance_id);
                 assert_eq!(instances[0].pid(), Some(pid));
                 assert_eq!(instances[0].state(), InstanceState::Running);
             }
@@ -944,25 +808,23 @@ async fn prepare_and_spawn_marks_instance_starting_then_commit_marks_running() {
     handle
         .write()
         .expect("entity poisoned")
-        .stop_instance(&h.instance_id);
+        .stop_instance(&instance_id);
     let _ = std::process::Command::new("kill")
         .arg("-TERM")
         .arg(pid.to_string())
         .status();
-    drop(h.peppy_root);
 }
 
 #[tokio::test]
 async fn abort_started_removes_starting_instance_and_kills_child() {
     let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
-    let h = start_harness("test-inst-3");
-    push_built_long_running_sensor(&stack, &h.peppy_dirs);
-    let handle = stack.find("sensor", "1.0.0").expect("entity should exist");
+    let (instance_id, h) = start_harness("test-inst-3");
+    let handle = push_built_long_running_sensor(&stack, &h).await;
 
     let (child, started_ctx) = NodeEntity::prepare_and_spawn(
         &handle,
         node_stack::StartContext {
-            instance_id: &h.instance_id,
+            instance_id: &instance_id,
             runtime_config_json5: "{}",
             env_vars: &[],
             mount_paths_resolved: &[],
@@ -980,7 +842,7 @@ async fn abort_started_removes_starting_instance_and_kills_child() {
         child,
         started_ctx,
         "synthetic failure".to_string(),
-        &h.instance_id,
+        &instance_id,
     )
     .await;
     assert!(
@@ -1018,7 +880,6 @@ async fn abort_started_removes_starting_instance_and_kills_child() {
         "child PID {} should be dead after abort_started, but kill -0 reported alive",
         pid
     );
-    drop(h.peppy_root);
 }
 
 #[tokio::test]
@@ -1029,30 +890,19 @@ async fn prepare_and_spawn_starts_additional_instance_alongside_existing() {
     // existing instances list, in Starting state, and flipped to Running by
     // commit_started.
     let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
-    let h = start_harness("test-inst-second");
-    push_built_long_running_sensor(&stack, &h.peppy_dirs);
-    let handle = stack.find("sensor", "1.0.0").expect("entity should exist");
+    let (instance_id, h) = start_harness("test-inst-second");
+    let handle = push_built_long_running_sensor(&stack, &h).await;
 
-    // Pre-populate the entity with one running instance via __test_stage_mut.
+    // Pre-populate with one real Running instance via spawn_running_instance.
     let existing_id = Name::new("existing-inst").unwrap();
-    let existing_pid = 99999u32; // fake PID — never actually killed
-    {
-        let mut guard = handle.write().expect("entity poisoned");
-        let NodeStage::Ready { instances, .. } = guard.__test_stage_mut() else {
-            panic!("expected Ready");
-        };
-        instances.push(TrackedNodeInstance::new(
-            existing_id.clone(),
-            Some(existing_pid),
-            InstanceState::Running,
-        ));
-    }
+    let _existing_guard =
+        real_lifecycle::spawn_running_instance(Arc::clone(&handle), &h, existing_id.clone()).await;
 
     // Now spawn a second instance via the regular start API.
     let (child, started_ctx) = NodeEntity::prepare_and_spawn(
         &handle,
         node_stack::StartContext {
-            instance_id: &h.instance_id,
+            instance_id: &instance_id,
             runtime_config_json5: "{}",
             env_vars: &[],
             mount_paths_resolved: &[],
@@ -1081,16 +931,15 @@ async fn prepare_and_spawn_starts_additional_instance_alongside_existing() {
         assert_eq!(existing.state(), InstanceState::Running);
         let new_inst = visible
             .iter()
-            .find(|i| i.instance_id() == &h.instance_id)
+            .find(|i| i.instance_id() == &instance_id)
             .expect("new instance present");
         assert_eq!(new_inst.state(), InstanceState::Starting);
     }
 
     let new_pid = child.id().expect("child has pid");
-    let returned_pid =
-        NodeEntity::commit_started(&handle, child, started_ctx, h.instance_id.clone())
-            .await
-            .expect("commit_started should succeed");
+    let returned_pid = NodeEntity::commit_started(&handle, child, started_ctx, instance_id.clone())
+        .await
+        .expect("commit_started should succeed");
     assert_eq!(returned_pid, new_pid);
 
     // After commit, both instances are Running.
@@ -1104,7 +953,7 @@ async fn prepare_and_spawn_starts_additional_instance_alongside_existing() {
                 }
                 let new_inst = instances
                     .iter()
-                    .find(|i| i.instance_id() == &h.instance_id)
+                    .find(|i| i.instance_id() == &instance_id)
                     .unwrap();
                 assert_eq!(new_inst.pid(), Some(new_pid));
             }
@@ -1116,12 +965,11 @@ async fn prepare_and_spawn_starts_additional_instance_alongside_existing() {
     handle
         .write()
         .expect("entity poisoned")
-        .stop_instance(&h.instance_id);
+        .stop_instance(&instance_id);
     let _ = std::process::Command::new("kill")
         .arg("-TERM")
         .arg(new_pid.to_string())
         .status();
-    drop(h.peppy_root);
 }
 
 #[tokio::test]
@@ -1130,27 +978,18 @@ async fn prepare_and_spawn_rejects_duplicate_instance_id_when_running_already_pr
     // *before* spawning anything. The check is atomic with the append under
     // the same write lock.
     let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
-    let h = start_harness("dup-inst");
-    push_built_long_running_sensor(&stack, &h.peppy_dirs);
-    let handle = stack.find("sensor", "1.0.0").expect("entity should exist");
+    let (instance_id, h) = start_harness("dup-inst");
+    let handle = push_built_long_running_sensor(&stack, &h).await;
 
-    // Append a Running instance whose id collides with the harness id.
-    {
-        let mut guard = handle.write().expect("entity poisoned");
-        let NodeStage::Ready { instances, .. } = guard.__test_stage_mut() else {
-            panic!("expected Ready");
-        };
-        instances.push(TrackedNodeInstance::new(
-            h.instance_id.clone(),
-            Some(1),
-            InstanceState::Running,
-        ));
-    }
+    // Spawn a real Running instance whose id will collide with the next
+    // prepare_and_spawn attempt.
+    let _existing =
+        real_lifecycle::spawn_running_instance(Arc::clone(&handle), &h, instance_id.clone()).await;
 
     let err = NodeEntity::prepare_and_spawn(
         &handle,
         node_stack::StartContext {
-            instance_id: &h.instance_id,
+            instance_id: &instance_id,
             runtime_config_json5: "{}",
             env_vars: &[],
             mount_paths_resolved: &[],
@@ -1162,8 +1001,10 @@ async fn prepare_and_spawn_rejects_duplicate_instance_id_when_running_already_pr
     .expect_err("prepare_and_spawn should reject duplicate instance id");
 
     match err {
-        NodeStackError::DuplicateInstanceId { instance_id, .. } => {
-            assert_eq!(instance_id, h.instance_id.as_str());
+        NodeStackError::DuplicateInstanceId {
+            instance_id: id, ..
+        } => {
+            assert_eq!(id, instance_id.as_str());
         }
         other => panic!("expected DuplicateInstanceId, got {:?}", other),
     }
@@ -1174,175 +1015,107 @@ async fn prepare_and_spawn_rejects_duplicate_instance_id_when_running_already_pr
     match guard.stage() {
         NodeStage::Ready { instances, .. } => {
             assert_eq!(instances.len(), 1);
-            assert_eq!(instances[0].instance_id(), &h.instance_id);
+            assert_eq!(instances[0].instance_id(), &instance_id);
             assert_eq!(instances[0].state(), InstanceState::Running);
         }
         other => panic!("expected Ready, got {:?}", other),
     }
-    drop(h.peppy_root);
 }
 
 // ===========================================================================
 // Backwards / sideways transition rejection (exhaustive)
 // ===========================================================================
 //
-// These tests use `__test_set_stage` to inject the entity into each non-allowed
-// source stage and verify that every lifecycle method rejects with the
-// expected `InvalidStageTransition` error. They are exhaustive coverage of
-// the rejection table in the entity API documentation.
+// These tests verify the rejection rules embedded in `NodeEntity::build` and
+// `NodeEntity::prepare_and_spawn` by exercising the pure validators
+// (`NodeStage::ensure_buildable` / `ensure_spawnable`) that production code
+// dispatches through. They construct `NodeStage` values directly — no entity,
+// no backdoor — which is why they cover stages like `Building` that have no
+// non-racy real-lifecycle production path.
+//
+// The happy path (and the rejection-from-Added integration cases) are still
+// covered against real entities elsewhere in this file:
+// `prepare_and_spawn_rejects_when_not_built` exercises an `Added` entity
+// through the real lifecycle method, which proves the validator is actually
+// dispatched from production code.
 
 mod backwards_transitions_are_rejected {
     use super::*;
+    use node_stack::TrackedNodeInstance;
 
-    fn make_entity_in(stack: &NodeStack, stage: NodeStage) -> node_stack::EntityHandle {
-        stack
-            .push_config(sensor_config(), false, PathBuf::from("/tmp/sensor"))
-            .expect("push_config");
-        let handle = stack.find("sensor", "1.0.0").expect("entity should exist");
-        handle
-            .write()
-            .expect("entity poisoned")
-            .__test_set_stage(stage);
-        handle
-    }
-
-    async fn run_build(
-        handle: &node_stack::EntityHandle,
-    ) -> std::result::Result<(), NodeStackError> {
-        let h = build_harness();
-        let result = NodeEntity::build(
-            handle,
-            BuildContext {
-                working_dir: h.working_dir.path(),
-                peppy_dirs: &h.peppy_dirs,
-                feedback_tx: &h.feedback_tx,
-                log_file: Arc::clone(&h.log_file),
-                env_vars: &[],
-            },
-        )
-        .await;
-        drop(h.peppy_root);
-        drop(h.working_dir);
-        result.map(|_| ())
-    }
-
-    fn assert_rejected_to(
-        result: std::result::Result<(), NodeStackError>,
-        expected_from: &str,
-        expected_to: &str,
-    ) {
-        match result {
-            Err(NodeStackError::InvalidStageTransition { from, to, .. }) => {
-                assert_eq!(from, expected_from, "unexpected `from` stage");
-                assert_eq!(to, expected_to, "unexpected `to` stage");
-            }
-            Err(other) => panic!("expected InvalidStageTransition, got {:?}", other),
-            Ok(()) => panic!("expected rejection, got Ok"),
+    fn ready_empty() -> NodeStage {
+        NodeStage::Ready {
+            config_path: PathBuf::from("/tmp/sensor"),
+            artifact_path: PathBuf::from("/tmp/sensor.sif"),
+            instances: vec![],
         }
     }
 
-    #[tokio::test]
-    async fn build_rejected_from_building() {
-        let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
-        let handle = make_entity_in(
-            &stack,
-            NodeStage::Building {
-                config_path: PathBuf::from("/tmp/sensor"),
-            },
-        );
-        assert_rejected_to(run_build(&handle).await, "Building", "Ready");
-    }
-
-    #[tokio::test]
-    async fn build_rejected_from_ready_empty() {
-        // Ready with no instances — equivalent to the old `Built` case.
-        let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
-        let handle = make_entity_in(
-            &stack,
-            NodeStage::Ready {
-                config_path: PathBuf::from("/tmp/sensor"),
-                artifact_path: PathBuf::from("/tmp/sensor.sif"),
-                instances: vec![],
-            },
-        );
-        assert_rejected_to(run_build(&handle).await, "Ready", "Ready");
-    }
-
-    #[tokio::test]
-    async fn build_rejected_from_ready_with_instances() {
-        // Ready with one Running instance — equivalent to the old `Started` case.
-        let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
-        let handle = make_entity_in(
-            &stack,
-            NodeStage::Ready {
-                config_path: PathBuf::from("/tmp/sensor"),
-                artifact_path: PathBuf::from("/tmp/sensor.sif"),
-                instances: vec![TrackedNodeInstance::new(
-                    Name::new("inst").unwrap(),
-                    Some(1),
-                    InstanceState::Running,
-                )],
-            },
-        );
-        assert_rejected_to(run_build(&handle).await, "Ready", "Ready");
-    }
-
-    async fn run_prepare_and_spawn(
-        handle: &node_stack::EntityHandle,
-    ) -> std::result::Result<(tokio::process::Child, node_stack::StartedInstanceCtx), NodeStackError>
-    {
-        let h = start_harness("rejection-test");
-        let result = NodeEntity::prepare_and_spawn(
-            handle,
-            node_stack::StartContext {
-                instance_id: &h.instance_id,
-                runtime_config_json5: "{}",
-                env_vars: &[],
-                mount_paths_resolved: &[],
-                peppy_dirs: &h.peppy_dirs,
-                output_sinks: h.output_sinks(),
-            },
-        )
-        .await;
-        // Hold the harness alive until the result is returned.
-        drop(h.peppy_root);
-        result
-    }
-
-    #[tokio::test]
-    async fn prepare_and_spawn_rejected_from_building() {
-        let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
-        let handle = make_entity_in(
-            &stack,
-            NodeStage::Building {
-                config_path: PathBuf::from("/tmp/sensor"),
-            },
-        );
-        match run_prepare_and_spawn(&handle).await {
-            Err(NodeStackError::InvalidStageTransition { from, to, .. }) => {
-                assert_eq!(from, "Building");
-                assert_eq!(to, "Ready");
-            }
-            other => panic!("expected InvalidStageTransition, got {:?}", other),
+    fn ready_with_running_instance() -> NodeStage {
+        NodeStage::Ready {
+            config_path: PathBuf::from("/tmp/sensor"),
+            artifact_path: PathBuf::from("/tmp/sensor.sif"),
+            instances: vec![TrackedNodeInstance::new(
+                Name::new("inst").unwrap(),
+                Some(1),
+                InstanceState::Running,
+            )],
         }
     }
 
-    #[tokio::test]
-    async fn prepare_and_spawn_rejected_from_added() {
-        let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
-        let handle = make_entity_in(
-            &stack,
-            NodeStage::Added {
-                config_path: PathBuf::from("/tmp/sensor"),
-            },
-        );
-        match run_prepare_and_spawn(&handle).await {
-            Err(NodeStackError::InvalidStageTransition { from, to, .. }) => {
-                assert_eq!(from, "Added");
-                assert_eq!(to, "Ready");
-            }
-            other => panic!("expected InvalidStageTransition, got {:?}", other),
+    fn building() -> NodeStage {
+        NodeStage::Building {
+            config_path: PathBuf::from("/tmp/sensor"),
         }
+    }
+
+    fn added() -> NodeStage {
+        NodeStage::Added {
+            config_path: PathBuf::from("/tmp/sensor"),
+        }
+    }
+
+    #[test]
+    fn build_rejected_from_building() {
+        assert_eq!(building().ensure_buildable(), Err("Building"));
+    }
+
+    #[test]
+    fn build_rejected_from_ready_empty() {
+        assert_eq!(ready_empty().ensure_buildable(), Err("Ready"));
+    }
+
+    #[test]
+    fn build_rejected_from_ready_with_instances() {
+        assert_eq!(
+            ready_with_running_instance().ensure_buildable(),
+            Err("Ready")
+        );
+    }
+
+    #[test]
+    fn build_accepted_from_added() {
+        assert_eq!(added().ensure_buildable(), Ok(()));
+    }
+
+    #[test]
+    fn prepare_and_spawn_rejected_from_added() {
+        assert_eq!(added().ensure_spawnable(), Err("Added"));
+    }
+
+    #[test]
+    fn prepare_and_spawn_rejected_from_building() {
+        assert_eq!(building().ensure_spawnable(), Err("Building"));
+    }
+
+    #[test]
+    fn prepare_and_spawn_accepted_from_ready_empty() {
+        assert_eq!(ready_empty().ensure_spawnable(), Ok(()));
+    }
+
+    #[test]
+    fn prepare_and_spawn_accepted_from_ready_with_running_instance() {
+        assert_eq!(ready_with_running_instance().ensure_spawnable(), Ok(()));
     }
 }
 
@@ -1356,43 +1129,80 @@ mod backwards_transitions_are_rejected {
 /// artifact is silently lost. This exercises
 /// `NodeStack::restore_snapshot_if_matches`, which is the node-stack API the
 /// add path calls on the build-failure branch.
-#[test]
-fn restore_snapshot_if_matches_rolls_back_failed_rebuild() {
+#[tokio::test]
+async fn restore_snapshot_if_matches_rolls_back_failed_rebuild() {
     let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
-    let config_path_v1 = PathBuf::from("/tmp/sensor/v1/peppy.json5");
-    let config_path_v2 = PathBuf::from("/tmp/sensor/v2/peppy.json5");
-    let artifact_v1 = PathBuf::from("/tmp/sensor-v1.sif");
+    let harness = real_lifecycle::lifecycle_harness();
+    let config_path_v1 = harness.peppy_root.path().join("sensor_v1.json5");
+    let config_path_v2 = harness.peppy_root.path().join("sensor_v2.json5");
 
-    // Ready v1 entity — this is what must survive a failed rebuild.
-    stack
-        .push_config(sensor_config(), false, &config_path_v1)
-        .expect("initial push_config should succeed");
-    let handle_v1 = stack.find("sensor", "1.0.0").expect("entity should exist");
+    // Build v1 Ready for real — this is what must survive a failed rebuild.
+    let handle_v1 =
+        real_lifecycle::build_ready(&stack, &harness, sensor_config(), &config_path_v1).await;
     let v1_config = handle_v1.read().unwrap().config().clone();
-    handle_v1
-        .write()
-        .expect("entity poisoned")
-        .__test_set_stage(NodeStage::Ready {
-            config_path: config_path_v1.clone(),
-            artifact_path: artifact_v1.clone(),
-            instances: vec![],
-        });
+    let artifact_v1 = handle_v1
+        .read()
+        .unwrap()
+        .artifact_path()
+        .expect("v1 artifact should exist")
+        .to_path_buf();
 
-    // Simulate the add path: push v2 (replaces v1 in-place with an Added
-    // entity carrying the new config_path), grab the handle+generation the
-    // caller captures before driving build, then force the entity into
-    // Building to mimic `NodeEntity::build` being in progress.
+    // Simulate the rebuild: re-push with a blocking add_cmd so the next
+    // `NodeEntity::build` call sits in `Building` while we run the restore
+    // assertions. The marker/proceed files give us a real-lifecycle way to
+    // observe + control the `Building` stage without any backdoor.
+    let control_dir = tempfile::tempdir().expect("control tempdir");
+    let proceed_file = control_dir.path().join("proceed");
+    let proceed_file_disp = proceed_file.display().to_string();
+    let blocking_config = sensor_config_with_add_cmd(&format!(
+        "while [ ! -f '{}' ]; do sleep 0.02; done; exit 0",
+        proceed_file_disp
+    ));
     stack
-        .push_config(sensor_config(), false, &config_path_v2)
+        .push_config(blocking_config, false, &config_path_v2)
         .expect("rebuild push_config should succeed");
     let handle_after_push = stack.find("sensor", "1.0.0").expect("entity should exist");
     let captured_generation = handle_after_push.read().unwrap().generation();
-    handle_after_push
-        .write()
-        .expect("entity poisoned")
-        .__test_set_stage(NodeStage::Building {
-            config_path: config_path_v2.clone(),
-        });
+
+    // Kick off the rebuild in a task. It will sit in `Building` until we
+    // touch the proceed file — and by the time we do, the restore below will
+    // have replaced the entity, so the build task's Phase 3 commit will
+    // observe the generation drift and return InvalidStageTransition instead
+    // of clobbering our restore.
+    let working_dir = tempfile::tempdir().expect("working_dir tempdir");
+    let working_path = working_dir.path().to_path_buf();
+    let peppy_dirs_clone = harness.peppy_dirs.clone();
+    let feedback_tx_clone = harness.feedback_tx.clone();
+    let log_file_clone = Arc::clone(&harness.log_file);
+    let build_handle_clone = Arc::clone(&handle_after_push);
+    let build_task = tokio::spawn(async move {
+        NodeEntity::build(
+            &build_handle_clone,
+            BuildContext {
+                working_dir: &working_path,
+                peppy_dirs: &peppy_dirs_clone,
+                feedback_tx: &feedback_tx_clone,
+                log_file: log_file_clone,
+                env_vars: &[],
+            },
+        )
+        .await
+    });
+
+    // Wait until the entity is observably in `Building`.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        {
+            let guard = handle_after_push.read().expect("entity poisoned");
+            if matches!(guard.stage(), NodeStage::Building { .. }) {
+                break;
+            }
+        }
+        if std::time::Instant::now() > deadline {
+            panic!("entity did not enter Building within 10s");
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
 
     // Build "fails" — the caller rolls back by restoring the v1 snapshot it
     // captured before calling push_config.
@@ -1412,6 +1222,16 @@ fn restore_snapshot_if_matches_rolls_back_failed_rebuild() {
     assert!(
         restored,
         "restore should succeed when handle+generation match"
+    );
+
+    // Unblock the build task and wait for it to finish. The task's Phase 3
+    // check (generation + stage == Building) will fail because the restore
+    // replaced the entity, so the task returns Err and our restore stays.
+    std::fs::write(&proceed_file, b"").expect("touch proceed file");
+    let build_result = build_task.await.expect("build task should not panic");
+    assert!(
+        build_result.is_err(),
+        "build task should fail its Phase 3 commit after the restore drifted the generation, got Ok"
     );
 
     let handle_final = stack.find("sensor", "1.0.0").expect("entity should exist");
@@ -1439,27 +1259,70 @@ fn restore_snapshot_if_matches_rolls_back_failed_rebuild() {
 /// if the handle+generation drift (because another `push_config` landed
 /// between the caller's capture and the build failure), the rollback should
 /// be a no-op and the newer entity must stay in place.
-#[test]
-fn restore_snapshot_if_matches_no_op_on_generation_drift() {
+#[tokio::test]
+async fn restore_snapshot_if_matches_no_op_on_generation_drift() {
     let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
-    let config_path_v1 = PathBuf::from("/tmp/sensor/v1/peppy.json5");
-    let config_path_v2 = PathBuf::from("/tmp/sensor/v2/peppy.json5");
+    let harness = real_lifecycle::lifecycle_harness();
+    let config_path_v1 = harness.peppy_root.path().join("sensor_v1.json5");
+    let config_path_v2 = harness.peppy_root.path().join("sensor_v2.json5");
 
+    // Push a blocking config so the next build call sits in `Building`
+    // while the "concurrent push" bumps the entity's generation under it.
+    let control_dir = tempfile::tempdir().expect("control tempdir");
+    let proceed_file = control_dir.path().join("proceed");
+    let proceed_file_disp = proceed_file.display().to_string();
+    let blocking_config = sensor_config_with_add_cmd(&format!(
+        "while [ ! -f '{}' ]; do sleep 0.02; done; exit 0",
+        proceed_file_disp
+    ));
     stack
-        .push_config(sensor_config(), false, &config_path_v1)
+        .push_config(blocking_config, false, &config_path_v1)
         .expect("initial push_config should succeed");
     let handle = stack.find("sensor", "1.0.0").expect("entity should exist");
     let stale_generation = handle.read().unwrap().generation();
     let stale_config = handle.read().unwrap().config().clone();
-    handle
-        .write()
-        .expect("entity poisoned")
-        .__test_set_stage(NodeStage::Building {
-            config_path: config_path_v1.clone(),
-        });
+
+    // Drive a real build in the background so the entity transitions through
+    // `Building`. We keep the task alive for the rest of the test.
+    let working_dir = tempfile::tempdir().expect("working_dir tempdir");
+    let working_path = working_dir.path().to_path_buf();
+    let peppy_dirs_clone = harness.peppy_dirs.clone();
+    let feedback_tx_clone = harness.feedback_tx.clone();
+    let log_file_clone = Arc::clone(&harness.log_file);
+    let build_handle_clone = Arc::clone(&handle);
+    let build_task = tokio::spawn(async move {
+        NodeEntity::build(
+            &build_handle_clone,
+            BuildContext {
+                working_dir: &working_path,
+                peppy_dirs: &peppy_dirs_clone,
+                feedback_tx: &feedback_tx_clone,
+                log_file: log_file_clone,
+                env_vars: &[],
+            },
+        )
+        .await
+    });
+
+    // Wait until we observe `Building` on the entity.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        {
+            let guard = handle.read().expect("entity poisoned");
+            if matches!(guard.stage(), NodeStage::Building { .. }) {
+                break;
+            }
+        }
+        if std::time::Instant::now() > deadline {
+            panic!("entity did not enter Building within 10s");
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
 
     // A concurrent push replaces the entity under the same handle, bumping
-    // its generation.
+    // its generation. push_config accepts the replacement even while the
+    // entity is in Building — the in-flight build task will then fail its
+    // Phase 3 check via the generation token.
     stack
         .push_config(sensor_config(), false, &config_path_v2)
         .expect("concurrent push_config should succeed");
@@ -1482,14 +1345,20 @@ fn restore_snapshot_if_matches_no_op_on_generation_drift() {
         "restore must be a no-op when the generation has drifted"
     );
 
-    let guard = handle.read().expect("entity poisoned");
-    match guard.stage() {
-        NodeStage::Added { config_path } => {
-            assert_eq!(
-                config_path, &config_path_v2,
-                "concurrent replacement must stay in place"
-            );
+    {
+        let guard = handle.read().expect("entity poisoned");
+        match guard.stage() {
+            NodeStage::Added { config_path } => {
+                assert_eq!(
+                    config_path, &config_path_v2,
+                    "concurrent replacement must stay in place"
+                );
+            }
+            other => panic!("expected Added (from the concurrent push), got {:?}", other),
         }
-        other => panic!("expected Added (from the concurrent push), got {:?}", other),
     }
+
+    // Unblock + drain the build task to avoid leaking the sh child.
+    std::fs::write(&proceed_file, b"").expect("touch proceed file");
+    let _ = build_task.await;
 }

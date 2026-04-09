@@ -5,9 +5,10 @@ use node_stack::{NodeStack, NodeStackError};
 
 use crate::helpers::config_common::core_node_config;
 use crate::helpers::fixtures;
+use crate::helpers::real_lifecycle;
 
-#[test]
-fn add_instance_creates_new_entity() {
+#[tokio::test]
+async fn add_instance_creates_new_entity() {
     let config: config::node::NodeConfig = serde_json5::from_str(
         r#"{
             schema_version: 1,
@@ -34,10 +35,11 @@ fn add_instance_creates_new_entity() {
     .expect("valid node config");
 
     let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
+    let harness = real_lifecycle::lifecycle_harness();
     assert_eq!(stack.len(), 1, "stack should start with root node only");
 
     // Push config + build (no I/O) first
-    fixtures::push_built(&stack, config, PathBuf::from("/tmp"));
+    fixtures::push_built(&stack, &harness, config).await;
 
     assert_eq!(stack.len(), 2, "stack should have core node + one entity");
     assert!(
@@ -46,7 +48,8 @@ fn add_instance_creates_new_entity() {
     );
 
     // Spawn an instance
-    let instance_id = fixtures::start_instance_in_stack(&stack, "sensor", "1.0.0", None, None);
+    let _guard = fixtures::start_instance_in_stack(&stack, &harness, "sensor", "1.0.0", None).await;
+    let instance_id = _guard.instance_id.clone();
 
     let entity = stack.find("sensor", "1.0.0").expect("entity should exist");
     let entity_guard = entity.read().expect("entity poisoned");
@@ -106,8 +109,8 @@ fn add_instance_creates_new_entity() {
     );
 }
 
-#[test]
-fn add_instance_to_existing_entity() {
+#[tokio::test]
+async fn add_instance_to_existing_entity() {
     let config: config::node::NodeConfig = serde_json5::from_str(
         r#"{
             schema_version: 1,
@@ -141,18 +144,21 @@ fn add_instance_to_existing_entity() {
     .expect("valid node config");
 
     let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
+    let harness = real_lifecycle::lifecycle_harness();
 
     // Push config + build first
-    fixtures::push_built(&stack, config, PathBuf::from("/tmp"));
+    fixtures::push_built(&stack, &harness, config).await;
 
     // Spawn first instance
-    let first_id = fixtures::start_instance_in_stack(
+    let _g1 = fixtures::start_instance_in_stack(
         &stack,
+        &harness,
         "sensor",
         "1.0.0",
         Some(&Name::new("first").expect("valid name")),
-        None,
-    );
+    )
+    .await;
+    let first_id = _g1.instance_id.clone();
 
     assert_eq!(stack.len(), 2, "stack should have core node + one entity");
     let entity = stack.find("sensor", "1.0.0").expect("entity should exist");
@@ -163,13 +169,15 @@ fn add_instance_to_existing_entity() {
     );
 
     // Spawn second instance to same entity
-    let second_id = fixtures::start_instance_in_stack(
+    let _g2 = fixtures::start_instance_in_stack(
         &stack,
+        &harness,
         "sensor",
         "1.0.0",
         Some(&Name::new("second").expect("valid name")),
-        None,
-    );
+    )
+    .await;
+    let second_id = _g2.instance_id.clone();
 
     assert_eq!(stack.len(), 2, "stack should still have root + one entity");
 
@@ -196,8 +204,8 @@ fn add_instance_to_existing_entity() {
     );
 }
 
-#[test]
-fn add_instance_with_specific_id() {
+#[tokio::test]
+async fn add_instance_with_specific_id() {
     let config: config::node::NodeConfig = serde_json5::from_str(
         r#"{
             schema_version: 1,
@@ -224,14 +232,17 @@ fn add_instance_with_specific_id() {
     .expect("valid node config");
 
     let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
+    let harness = real_lifecycle::lifecycle_harness();
     let custom_id = Name::new("my-custom-instance").expect("valid name");
 
     // First push the config + build
-    fixtures::push_built(&stack, config, PathBuf::from("/tmp"));
+    fixtures::push_built(&stack, &harness, config).await;
 
     // Then spawn an instance with the specific ID
-    let returned_id =
-        fixtures::start_instance_in_stack(&stack, "sensor", "1.0.0", Some(&custom_id), None);
+    let _guard =
+        fixtures::start_instance_in_stack(&stack, &harness, "sensor", "1.0.0", Some(&custom_id))
+            .await;
+    let returned_id = _guard.instance_id.clone();
 
     assert_eq!(
         returned_id, custom_id,
@@ -246,8 +257,8 @@ fn add_instance_with_specific_id() {
     );
 }
 
-#[test]
-fn remove_instance_from_entity_with_multiple_instances() {
+#[tokio::test]
+async fn remove_instance_from_entity_with_multiple_instances() {
     let config: config::node::NodeConfig = serde_json5::from_str(
         r#"{
             schema_version: 1,
@@ -281,15 +292,20 @@ fn remove_instance_from_entity_with_multiple_instances() {
     .expect("valid node config");
 
     let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
+    let harness = real_lifecycle::lifecycle_harness();
     let first_id = Name::new("instance-1").expect("valid name");
     let second_id = Name::new("instance-2").expect("valid name");
 
     // Push config + build first
-    fixtures::push_built(&stack, config, PathBuf::from("/tmp"));
+    fixtures::push_built(&stack, &harness, config).await;
 
     // Spawn instances
-    fixtures::start_instance_in_stack(&stack, "sensor", "1.0.0", Some(&first_id), None);
-    fixtures::start_instance_in_stack(&stack, "sensor", "1.0.0", Some(&second_id), None);
+    let _g1 =
+        fixtures::start_instance_in_stack(&stack, &harness, "sensor", "1.0.0", Some(&first_id))
+            .await;
+    let _g2 =
+        fixtures::start_instance_in_stack(&stack, &harness, "sensor", "1.0.0", Some(&second_id))
+            .await;
 
     assert_eq!(stack.len(), 2, "stack should have core node + one entity");
     let entity = stack.find("sensor", "1.0.0").expect("entity should exist");
@@ -319,8 +335,8 @@ fn remove_instance_from_entity_with_multiple_instances() {
     );
 }
 
-#[test]
-fn remove_last_instance_keeps_entity_in_graph() {
+#[tokio::test]
+async fn remove_last_instance_keeps_entity_in_graph() {
     let config: config::node::NodeConfig = serde_json5::from_str(
         r#"{
             schema_version: 1,
@@ -344,11 +360,14 @@ fn remove_last_instance_keeps_entity_in_graph() {
     .expect("valid node config");
 
     let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
+    let harness = real_lifecycle::lifecycle_harness();
     let instance_id = Name::new("only-instance").expect("valid name");
 
     // Push config + build and spawn instance
-    fixtures::push_built(&stack, config, PathBuf::from("/tmp"));
-    fixtures::start_instance_in_stack(&stack, "sensor", "1.0.0", Some(&instance_id), None);
+    fixtures::push_built(&stack, &harness, config).await;
+    let _guard =
+        fixtures::start_instance_in_stack(&stack, &harness, "sensor", "1.0.0", Some(&instance_id))
+            .await;
     assert_eq!(stack.len(), 2, "stack should have root + one entity");
     let entity = stack.find("sensor", "1.0.0").expect("entity should exist");
     assert_eq!(
@@ -373,8 +392,8 @@ fn remove_last_instance_keeps_entity_in_graph() {
     );
 }
 
-#[test]
-fn remove_nonexistent_instance_returns_false() {
+#[tokio::test]
+async fn remove_nonexistent_instance_returns_false() {
     let config: config::node::NodeConfig = serde_json5::from_str(
         r#"{
             schema_version: 1,
@@ -400,12 +419,15 @@ fn remove_nonexistent_instance_returns_false() {
     .expect("valid node config");
 
     let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
+    let harness = real_lifecycle::lifecycle_harness();
     let instance_id = Name::new("real-instance").expect("valid name");
     let fake_id = Name::new("fake-instance").expect("valid name");
 
     // Push config + build and spawn instance
-    fixtures::push_built(&stack, config, PathBuf::from("/tmp"));
-    fixtures::start_instance_in_stack(&stack, "sensor", "1.0.0", Some(&instance_id), None);
+    fixtures::push_built(&stack, &harness, config).await;
+    let _guard =
+        fixtures::start_instance_in_stack(&stack, &harness, "sensor", "1.0.0", Some(&instance_id))
+            .await;
 
     // Try to remove non-existent instance
     let removed = fixtures::stop_instance_in_stack(&stack, "sensor", "1.0.0", &fake_id);
@@ -510,8 +532,8 @@ fn reset_clears_all_except_core_node() {
     );
 }
 
-#[test]
-fn spawning_multiple_instances_on_same_entity() {
+#[tokio::test]
+async fn spawning_multiple_instances_on_same_entity() {
     let config: config::node::NodeConfig = serde_json5::from_str(
         r#"{
             schema_version: 1,
@@ -537,7 +559,8 @@ fn spawning_multiple_instances_on_same_entity() {
     .expect("valid node config");
 
     let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
-    fixtures::push_built(&stack, config, PathBuf::from("/tmp"));
+    let harness = real_lifecycle::lifecycle_harness();
+    fixtures::push_built(&stack, &harness, config).await;
     assert_eq!(
         stack.len(),
         2,
@@ -552,13 +575,14 @@ fn spawning_multiple_instances_on_same_entity() {
     );
 
     // Spawn first instance
-    fixtures::start_instance_in_stack(
+    let _g1 = fixtures::start_instance_in_stack(
         &stack,
+        &harness,
         "sensor",
         "1.0.0",
         Some(&Name::new("first").expect("valid name")),
-        None,
-    );
+    )
+    .await;
 
     let entity = stack.find("sensor", "1.0.0").expect("entity should exist");
     assert_eq!(
@@ -568,13 +592,14 @@ fn spawning_multiple_instances_on_same_entity() {
     );
 
     // Spawn second instance on the same entity
-    fixtures::start_instance_in_stack(
+    let _g2 = fixtures::start_instance_in_stack(
         &stack,
+        &harness,
         "sensor",
         "1.0.0",
         Some(&Name::new("second").expect("valid name")),
-        None,
-    );
+    )
+    .await;
     assert_eq!(
         stack.len(),
         2,

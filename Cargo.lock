@@ -2380,7 +2380,6 @@ dependencies = [
  "config",
  "containers",
  "names-generator2",
- "node-stack",
  "petgraph",
  "rand 0.10.0",
  "serde",

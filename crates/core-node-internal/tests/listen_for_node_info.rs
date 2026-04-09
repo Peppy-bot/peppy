@@ -1,54 +1,14 @@
 mod common;
 
 use common::{
-    AbortOnDrop, CALLER_INSTANCE_ID, create_tar_zst_from_dir, start_core_node_with_mock_messenger,
-    write_peppy_json5,
+    AbortOnDrop, CALLER_INSTANCE_ID, create_tar_zst_from_dir, real_build_and_spawn_instance,
+    start_core_node_with_mock_messenger, write_peppy_json5,
 };
 use common::{NodeStartTestTimeouts, send_node_add_and_wait, send_node_start_and_wait};
 use config::consts::NODE_CONFIG_FILE;
 use config::node::{Name, PeppygenLanguage};
 use config::test_helpers;
 use core_node::encoding::{NodeInfoRequest, NodeInfoResponse, NodeSource};
-use node_stack::{InstanceState, NodeStage, TrackedNodeInstance};
-/// Test helper: marks an entity at `(name, tag)` as `Built` with a synthetic
-/// built-artifact file inside an ephemeral tempdir, then registers a single
-/// tracked instance. Used in tests that push a config directly (without going
-/// through `process_node_add`), leaving the entity in `Added` and requiring a
-/// fake build before `start_instance`.
-///
-/// Returns the `TempDir` containing the synthetic artifact; callers must keep
-/// it alive for the duration of the test so the recorded path remains valid.
-#[must_use = "TempDir must be kept alive for the duration of the test"]
-fn force_built_and_start_instance(
-    node_stack: &node_stack::NodeStack,
-    name: &str,
-    tag: &str,
-    instance_id: &Name,
-) -> TempDir {
-    let artifact_dir = tempfile::tempdir().expect("failed to create artifact tempdir");
-    let artifact_path = artifact_dir.path().join(format!("{}_{}.sif", name, tag));
-    std::fs::File::create(&artifact_path).expect("failed to create synthetic artifact file");
-
-    let handle = node_stack.find(name, tag).expect("entity should exist");
-    let config_path = handle
-        .read()
-        .expect("entity poisoned")
-        .config_path()
-        .to_path_buf();
-    handle
-        .write()
-        .expect("entity poisoned")
-        .__test_set_stage(NodeStage::Ready {
-            config_path,
-            artifact_path,
-            instances: vec![TrackedNodeInstance::new(
-                instance_id.clone(),
-                None,
-                InstanceState::Running,
-            )],
-        });
-    artifact_dir
-}
 use core_node::names;
 use gix_url::Url as GitUrl;
 use peppylib::PeppyError;
@@ -137,12 +97,13 @@ async fn listen_for_node_info_on_fs_node_success() {
         .push_config(info_response.config.clone(), false, node_dir.path())
         .expect("push_config should succeed");
     let instance_id = Name::new(TARGET_INSTANCE_ID).expect("valid instance id");
-    let _artifact_dir = force_built_and_start_instance(
-        &node_stack,
+    let _running = real_build_and_spawn_instance(
+        &started_core_node,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
         &instance_id,
-    );
+    )
+    .await;
 
     let request = NodeInfoRequest::new(NodeSource::Fs(node_dir.path().to_path_buf()));
 
@@ -247,12 +208,13 @@ async fn listen_for_node_info_on_git_node_success() {
         .push_config(info_response.config.clone(), false, &git_node_path)
         .expect("push_config should succeed");
     let instance_id = Name::new(TARGET_INSTANCE_ID).expect("valid instance id");
-    let _artifact_dir = force_built_and_start_instance(
-        &node_stack,
+    let _running = real_build_and_spawn_instance(
+        &started_core_node,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
         &instance_id,
-    );
+    )
+    .await;
 
     let request = NodeInfoRequest::new(NodeSource::Git {
         repo_url: GitUrl::try_from(git_repo_path.as_path()).expect("git repo path should parse"),
@@ -356,12 +318,13 @@ async fn listen_for_node_info_on_http_node_success() {
         .push_config(info_response.config.clone(), false, bundle_dir.path())
         .expect("push_config should succeed");
     let instance_id = Name::new(TARGET_INSTANCE_ID).expect("valid instance id");
-    let _artifact_dir = force_built_and_start_instance(
-        &node_stack,
+    let _running = real_build_and_spawn_instance(
+        &started_core_node,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
         &instance_id,
-    );
+    )
+    .await;
 
     let request = NodeInfoRequest::new(NodeSource::Http {
         url,

@@ -1,12 +1,11 @@
 mod common;
 
 use common::{
-    CALLER_INSTANCE_ID, send_node_add_and_wait, start_core_node_with_mock_messenger,
-    write_peppy_json5,
+    CALLER_INSTANCE_ID, send_node_add_and_wait, spawn_real_running_instance,
+    start_core_node_with_mock_messenger, write_peppy_json5,
 };
 use config::node::Name;
 use core_node::encoding::NodeResetRequest;
-use node_stack::{InstanceState, NodeStage, TrackedNodeInstance};
 use std::time::Duration;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -103,18 +102,13 @@ async fn listen_for_node_reset_clears_node_stack() {
     assert_eq!(node_stack.len(), 3, "root + two added nodes");
 
     let instance_id_a = Name::new(TARGET_NODE_A_INSTANCE_ID).expect("valid instance id");
-    {
-        let handle = node_stack
-            .find(TARGET_NODE_A_NAME, TARGET_NODE_A_TAG)
-            .expect("node A should exist in stack");
-        let instance =
-            TrackedNodeInstance::new(instance_id_a.clone(), None, InstanceState::Running);
-        let mut guard = handle.write().expect("entity poisoned");
-        let NodeStage::Ready { instances, .. } = guard.__test_stage_mut() else {
-            panic!("node A should be in Ready stage");
-        };
-        instances.push(instance);
-    }
+    let _running_a = spawn_real_running_instance(
+        &started_core_node,
+        TARGET_NODE_A_NAME,
+        TARGET_NODE_A_TAG,
+        &instance_id_a,
+    )
+    .await;
     let entity_a = node_stack
         .find(TARGET_NODE_A_NAME, TARGET_NODE_A_TAG)
         .expect("node A should exist in stack");

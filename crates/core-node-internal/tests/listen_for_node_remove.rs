@@ -1,34 +1,15 @@
 mod common;
 
 use common::{
-    AbortOnDrop, CALLER_INSTANCE_ID, send_node_add_and_wait, start_core_node_with_mock_messenger,
-    write_peppy_json5,
+    AbortOnDrop, CALLER_INSTANCE_ID, send_node_add_and_wait, spawn_real_running_instance,
+    start_core_node_with_mock_messenger, write_peppy_json5,
 };
 use config::node::Name;
 use core_node::encoding::NodeRemoveRequest;
-use node_stack::{InstanceState, NodeStage, TrackedNodeInstance};
 use peppylib::messaging::MessengerHandle;
 use peppylib::services::shutdown::listen_for_shutdown;
 use std::sync::Arc;
 use std::time::Duration;
-
-/// Registers a tracked `Running` instance on the given (name, tag) entity.
-/// Assumes the entity is already in `Ready`.
-fn register_instance(
-    node_stack: &node_stack::NodeStack,
-    name: &str,
-    tag: &str,
-    instance_id: &Name,
-    pid: Option<u32>,
-) {
-    let handle = node_stack.find(name, tag).expect("entity should exist");
-    let instance = TrackedNodeInstance::new(instance_id.clone(), pid, InstanceState::Running);
-    let mut guard = handle.write().expect("entity poisoned");
-    let NodeStage::Ready { instances, .. } = guard.__test_stage_mut() else {
-        panic!("register_instance: entity should be in Ready stage");
-    };
-    instances.push(instance);
-}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_remove_success() {
@@ -195,13 +176,13 @@ async fn listen_for_node_remove_stop_running_instances_first() {
     );
 
     let instance_id = Name::new(TARGET_INSTANCE_ID).expect("valid instance id");
-    register_instance(
-        &node_stack,
+    let _running = spawn_real_running_instance(
+        &started_core_node,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
         &instance_id,
-        None,
-    );
+    )
+    .await;
 
     // Simulate the node exposing the shutdown service, so node_remove detects it as running.
     let shutdown_handle =
@@ -293,13 +274,13 @@ async fn listen_for_node_fails_when_stop_instances_parameter_not_set_and_instanc
     );
 
     let instance_id = Name::new(TARGET_INSTANCE_ID).expect("valid instance id");
-    register_instance(
-        &node_stack,
+    let _running = spawn_real_running_instance(
+        &started_core_node,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
         &instance_id,
-        None,
-    );
+    )
+    .await;
 
     // Simulate the node exposing the shutdown service, so node_remove detects it as running.
     let shutdown_handle =

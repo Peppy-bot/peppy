@@ -899,3 +899,217 @@ async fn start_core_node_with_messenger(
         _data_dir: data_dir,
     }
 }
+
+// =============================================================================
+// Real-lifecycle test helpers with calls to NodeEntity::build + prepare_and_spawn + commit_started.
+// =============================================================================
+
+/// RAII guard for a test-spawned `Running` instance. On drop it calls
+/// `stop_instance` on the entity and SIGTERMs the real child process.
+#[must_use = "guard keeps the spawned child alive; drop it to tear down the instance"]
+pub struct TestRunningInstance {
+    pub pid: u32,
+    pub instance_id: config::node::Name,
+    handle: std::sync::Arc<std::sync::RwLock<node_stack::NodeEntity>>,
+    _working_dir: Option<TempDir>,
+    _feedback_drain: tokio::task::JoinHandle<()>,
+    _shutdown_listener: Option<AbortOnDrop<peppylib::PeppyResult<()>>>,
+}
+
+impl Drop for TestRunningInstance {
+    fn drop(&mut self) {
+        if let Ok(mut guard) = self.handle.write() {
+            guard.stop_instance(&self.instance_id);
+        }
+        let _ = std::process::Command::new("kill")
+            .arg("-TERM")
+            .arg(self.pid.to_string())
+            .status();
+        self._feedback_drain.abort();
+    }
+}
+
+struct NoOpOutputHooks;
+impl node_stack::build_io::OutputReaderHooks for NoOpOutputHooks {}
+
+fn make_real_output_sinks(
+    peppy_dirs: &PeppyDirs,
+    instance_id: &config::node::Name,
+) -> (
+    node_stack::OutputSinks,
+    tokio::sync::mpsc::UnboundedSender<node_stack::build_io::FeedbackLine>,
+    tokio::task::JoinHandle<()>,
+) {
+    use std::sync::Mutex as StdMutex;
+    use std::sync::atomic::AtomicBool;
+
+    let log_dir = peppy_dirs.logs_dir_start();
+    std::fs::create_dir_all(&log_dir).ok();
+    let log_file = Arc::new(StdMutex::new(
+        std::fs::File::create(log_dir.join(format!("{}.log", instance_id.as_str())))
+            .expect("create start log"),
+    ));
+    let (feedback_tx, mut feedback_rx) =
+        tokio::sync::mpsc::unbounded_channel::<node_stack::build_io::FeedbackLine>();
+    let drain = tokio::spawn(async move { while feedback_rx.recv().await.is_some() {} });
+    let output_sinks = node_stack::OutputSinks {
+        feedback_tx: feedback_tx.clone(),
+        log_file,
+        publish_enabled: Arc::new(AtomicBool::new(true)),
+        hooks: Arc::new(NoOpOutputHooks),
+    };
+    (output_sinks, feedback_tx, drain)
+}
+
+/// Drives a real `prepare_and_spawn` + `commit_started` on the entity at
+/// `(name, tag)`, which must already be in `Ready`. Spawns a real child via
+/// the entity's existing `start_cmd` — callers are responsible for ensuring
+/// the node config's start_cmd is spawnable in the test environment (the
+/// listener tests use `["sleep", "10"]`). Also installs a `listen_for_shutdown`
+/// task on the messenger that SIGKILLs the entity-tracked pid when the
+/// production stop/remove flow sends a shutdown signal. This lets production
+/// code paths that wait on `wait_for_process_termination` observe the child
+/// as terminated rather than timing out against a stubborn `sleep 10`.
+/// Returns a guard that SIGTERMs the child on drop.
+pub async fn spawn_real_running_instance(
+    started: &StartedCoreNode,
+    name: &str,
+    tag: &str,
+    instance_id: &config::node::Name,
+) -> TestRunningInstance {
+    spawn_real_running_instance_inner(started, name, tag, instance_id, true).await
+}
+
+/// Variant of [`spawn_real_running_instance`] that skips installing a
+/// shutdown listener. Used by tests that specifically want the production
+/// shutdown path to observe a stuck process that never terminates (e.g. the
+/// `node_add_same_node_with_running_instance_and_dependents_fails_on_stopped_node_stuck`
+/// regression test).
+pub async fn spawn_real_stuck_instance(
+    started: &StartedCoreNode,
+    name: &str,
+    tag: &str,
+    instance_id: &config::node::Name,
+) -> TestRunningInstance {
+    spawn_real_running_instance_inner(started, name, tag, instance_id, false).await
+}
+
+async fn spawn_real_running_instance_inner(
+    started: &StartedCoreNode,
+    name: &str,
+    tag: &str,
+    instance_id: &config::node::Name,
+    install_shutdown_listener: bool,
+) -> TestRunningInstance {
+    let handle = started
+        .node_stack
+        .find(name, tag)
+        .expect("spawn_real_running_instance: entity should exist");
+    let (output_sinks, _feedback_tx, drain) =
+        make_real_output_sinks(&started.peppy_dirs, instance_id);
+
+    let (child, started_ctx) = node_stack::NodeEntity::prepare_and_spawn(
+        &handle,
+        node_stack::StartContext {
+            instance_id,
+            runtime_config_json5: "{}",
+            env_vars: &[],
+            mount_paths_resolved: &[],
+            peppy_dirs: &started.peppy_dirs,
+            output_sinks,
+        },
+    )
+    .await
+    .expect("prepare_and_spawn should succeed on Ready entity");
+    let pid = child.id().expect("child should have pid");
+    node_stack::NodeEntity::commit_started(&handle, child, started_ctx, instance_id.clone())
+        .await
+        .expect("commit_started should succeed");
+
+    // Optionally install a messenger-side shutdown listener that kills the
+    // child when the production stop/remove flow fires a SHUTDOWN_SERVICE
+    // signal. This replaces the old behavior where tests set fake pids so
+    // the production `wait_for_process_termination` quickly observed "no
+    // such pid". Tests that want the production shutdown path to observe
+    // a stuck process use `spawn_real_stuck_instance` which skips this.
+    let shutdown_listener = if install_shutdown_listener {
+        let shutdown_handle = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
+        let (shutdown_task, shutdown_rx) = peppylib::services::shutdown::listen_for_shutdown(
+            &shutdown_handle,
+            &started.core_node_name,
+            instance_id.as_str(),
+            name,
+        )
+        .await
+        .expect("failed to start shutdown listener for test instance");
+        let pid_for_kill = pid;
+        tokio::spawn(async move {
+            if shutdown_rx.await.is_ok() {
+                let _ = std::process::Command::new("kill")
+                    .arg("-KILL")
+                    .arg(pid_for_kill.to_string())
+                    .status();
+            }
+        });
+        Some(AbortOnDrop(shutdown_task))
+    } else {
+        None
+    };
+
+    TestRunningInstance {
+        pid,
+        instance_id: instance_id.clone(),
+        handle,
+        _working_dir: None,
+        _feedback_drain: drain,
+        _shutdown_listener: shutdown_listener,
+    }
+}
+
+/// For tests that push a config directly (bypassing `process_node_add`): drives
+/// the real `NodeEntity::build` (process-node archive path, no container) and
+/// then a real `prepare_and_spawn` + `commit_started`. Replaces the old
+/// `force_built_and_start_instance` backdoor helper.
+pub async fn real_build_and_spawn_instance(
+    started: &StartedCoreNode,
+    name: &str,
+    tag: &str,
+    instance_id: &config::node::Name,
+) -> TestRunningInstance {
+    use std::sync::Mutex as StdMutex;
+
+    let handle = started
+        .node_stack
+        .find(name, tag)
+        .expect("real_build_and_spawn_instance: entity should exist");
+
+    let working_dir = TempDir::new().expect("working_dir tempdir");
+    let log_dir = started.peppy_dirs.logs_dir_add();
+    std::fs::create_dir_all(&log_dir).ok();
+    let build_log = Arc::new(StdMutex::new(
+        std::fs::File::create(log_dir.join(format!("{}-build.log", instance_id.as_str())))
+            .expect("create build log"),
+    ));
+    let (build_feedback_tx, mut build_feedback_rx) =
+        tokio::sync::mpsc::unbounded_channel::<node_stack::build_io::FeedbackLine>();
+    let build_drain =
+        tokio::spawn(async move { while build_feedback_rx.recv().await.is_some() {} });
+
+    node_stack::NodeEntity::build(
+        &handle,
+        node_stack::BuildContext {
+            working_dir: working_dir.path(),
+            peppy_dirs: &started.peppy_dirs,
+            feedback_tx: &build_feedback_tx,
+            log_file: build_log,
+            env_vars: &[],
+        },
+    )
+    .await
+    .expect("real build should succeed on process node");
+    build_drain.abort();
+
+    let mut running = spawn_real_running_instance(started, name, tag, instance_id).await;
+    running._working_dir = Some(working_dir);
+    running
+}

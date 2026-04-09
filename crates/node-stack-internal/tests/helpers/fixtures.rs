@@ -1,134 +1,68 @@
-//! Test fixtures for setting up `NodeEntity` lifecycle states without
-//! invoking the real apptainer/archive build I/O.
+//! Thin async wrappers around [`real_lifecycle`] helpers, preserved so test
+//! modules can migrate incrementally.
 //!
-//! Production code should always go through `NodeEntity::build` and the
-//! `prepare_and_spawn`/`commit_started`/`abort_started` lifecycle. These
-//! helpers exist purely so tests can set up `Ready` entities (with optional
-//! `Running` instances) without orchestrating the real spawn pipeline.
+//! Every call that formerly produced a `Ready` entity now spawns a real
+//! subprocess (a portable `sh` loop), so callers must hold onto the returned
+//! [`RunningInstanceGuard`] for the duration of the test — dropping it calls
+//! `stop_instance` and SIGTERMs the child.
 
 #![allow(dead_code)] // Some helpers are reserved for future tests.
 
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
-
 use config::node::{Name, NodeConfig};
-use node_stack::{InstanceState, NodeStack, NodeStage, TrackedNodeInstance};
+use node_stack::{EntityHandle, NodeStack};
 
-/// Process-wide counter so the default fallback instance id is unique
-/// across calls (otherwise repeated `push_started`/`start_instance_in_stack`
-/// invocations would collide on `Name::new("test-instance")` and trip the
-/// `DuplicateInstanceId` check exposed by the lifecycle path).
-static FALLBACK_INSTANCE_COUNTER: AtomicUsize = AtomicUsize::new(0);
+use crate::helpers::real_lifecycle::{
+    self, LifecycleHarness, RunningInstanceGuard, fixture_instance_name,
+};
 
-fn fallback_instance_name() -> Name {
-    let n = FALLBACK_INSTANCE_COUNTER.fetch_add(1, Ordering::Relaxed);
-    Name::new(format!("test-instance-{}", n)).expect("test fixture: name")
-}
-
-/// Pushes a config into the stack and immediately marks the resulting entity
-/// as `Ready` with an empty instances list (the equivalent of the old
-/// `Built` stage). The artifact path is set to the same value as
-/// `config_path` for convenience — tests don't actually read it.
-pub fn push_built(stack: &NodeStack, config: NodeConfig, path: impl Into<PathBuf>) {
-    let path = path.into();
-    let name = config.manifest.name.as_str().to_owned();
-    let tag = config.manifest.tag.clone();
-
-    stack
-        .push_config(config, false, &path)
-        .expect("test fixture: push_config should succeed");
-
-    let handle = stack
-        .find(&name, &tag)
-        .expect("test fixture: just-pushed entity should exist");
-    handle
-        .write()
-        .expect("entity poisoned")
-        .__test_set_stage(NodeStage::Ready {
-            config_path: path.clone(),
-            artifact_path: path,
-            instances: Vec::new(),
-        });
-}
-
-/// Pushes a config and marks it `Ready` with a single `Running` instance —
-/// the equivalent of the old `Started` stage with one instance.
-pub fn push_started(
+/// Pushes a config and drives the real `build` lifecycle so the resulting
+/// entity lands in `Ready { instances: [] }`. The `execution` fields of the
+/// config are overridden by the fixture (see
+/// [`real_lifecycle::override_execution_for_fixture`]) so tests must not
+/// assert on `start_cmd`/`container`/`add_cmd` after this call.
+pub async fn push_built(
     stack: &NodeStack,
+    harness: &LifecycleHarness,
     config: NodeConfig,
-    path: impl Into<PathBuf>,
-    instance_id: Option<&Name>,
-    pid: Option<u32>,
-) -> Name {
-    let path = path.into();
-    let name = config.manifest.name.as_str().to_owned();
-    let tag = config.manifest.tag.clone();
-
-    stack
-        .push_config(config, false, &path)
-        .expect("test fixture: push_config should succeed");
-
-    let handle = stack
-        .find(&name, &tag)
-        .expect("test fixture: just-pushed entity should exist");
-
-    let instance_id = match instance_id {
-        Some(id) => id.clone(),
-        None => fallback_instance_name(),
-    };
-    let instance = TrackedNodeInstance::new(instance_id.clone(), pid, InstanceState::Running);
-    handle
-        .write()
-        .expect("entity poisoned")
-        .__test_set_stage(NodeStage::Ready {
-            config_path: path.clone(),
-            artifact_path: path,
-            instances: vec![instance],
-        });
-    instance_id
+) -> EntityHandle {
+    let config_path = harness.peppy_root.path().join("fixture_config.json5");
+    real_lifecycle::build_ready(stack, harness, config, config_path).await
 }
 
-/// Appends a `Running` instance to a `Ready` entity at `(name, tag)`.
-/// Equivalent to the old `start_instance` test pattern, but writes directly
-/// into the instances list via the `__test_stage_mut` backdoor instead of
-/// going through a production lifecycle method.
-pub fn start_instance_in_stack(
+/// Pushes a config, builds, and spawns one `Running` instance — the
+/// equivalent of the old `Started` stage with one instance. Returns the
+/// guard; drop it to clean up the child process.
+pub async fn push_started(
     stack: &NodeStack,
+    harness: &LifecycleHarness,
+    config: NodeConfig,
+    instance_id: Option<&Name>,
+) -> RunningInstanceGuard {
+    let handle = push_built(stack, harness, config).await;
+    let instance_id = instance_id.cloned().unwrap_or_else(fixture_instance_name);
+    real_lifecycle::spawn_running_instance(handle, harness, instance_id).await
+}
+
+/// Spawns a real `Running` instance on the existing entity at `(name, tag)`.
+/// Caller must hold the returned guard for the test lifetime.
+pub async fn start_instance_in_stack(
+    stack: &NodeStack,
+    harness: &LifecycleHarness,
     name: &str,
     tag: &str,
     instance_id: Option<&Name>,
-    pid: Option<u32>,
-) -> Name {
+) -> RunningInstanceGuard {
     let handle = stack
         .find(name, tag)
         .expect("test fixture: entity should exist for start_instance_in_stack");
-    let instance_id = match instance_id {
-        Some(id) => id.clone(),
-        None => fallback_instance_name(),
-    };
-    let instance = TrackedNodeInstance::new(instance_id.clone(), pid, InstanceState::Running);
-    let mut guard = handle.write().expect("entity poisoned");
-    let NodeStage::Ready { instances, .. } = guard.__test_stage_mut() else {
-        panic!("test fixture: start_instance_in_stack requires Ready stage");
-    };
-    // Mirror prepare_and_spawn's DuplicateInstanceId rejection so test
-    // fixtures cannot accidentally produce a state production code would
-    // never allow.
-    assert!(
-        !instances
-            .iter()
-            .any(|inst| inst.instance_id() == &instance_id),
-        "test fixture: DuplicateInstanceId — instance '{}' already tracked on {}:{}",
-        instance_id.as_str(),
-        name,
-        tag
-    );
-    instances.push(instance);
-    instance_id
+    let instance_id = instance_id.cloned().unwrap_or_else(fixture_instance_name);
+    real_lifecycle::spawn_running_instance(handle, harness, instance_id).await
 }
 
 /// Calls `stop_instance` on the entity at `(name, tag)`. Returns whether an
-/// instance was actually removed.
+/// instance was actually removed. Idempotent with the guard's Drop cleanup:
+/// a subsequent drop will just re-call `stop_instance` (returning `false`)
+/// and send SIGTERM to the already-stopped child.
 pub fn stop_instance_in_stack(
     stack: &NodeStack,
     name: &str,
@@ -142,13 +76,4 @@ pub fn stop_instance_in_stack(
         .write()
         .expect("entity poisoned")
         .stop_instance(instance_id)
-}
-
-/// Returns the path to a (deterministic) fake `.sif` for tests. The path is
-/// not created on disk — it's just a placeholder used by `push_built` /
-/// `__test_set_stage` to fake the artifact location.
-pub fn fake_sif_path(name: &str, tag: &str) -> PathBuf {
-    Path::new("/tmp")
-        .join("peppy-test")
-        .join(format!("{}_{}.sif", name, tag))
 }
