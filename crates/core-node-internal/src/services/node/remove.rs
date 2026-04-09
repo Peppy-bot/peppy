@@ -2,7 +2,7 @@ use crate::Result;
 use crate::encoding::{NodeRemoveRequest, NodeRemoveResponse};
 use crate::names;
 use config::node::Name;
-use node_stack::{EntityHandle, NodeStack};
+use node_stack::NodeStack;
 use peppylib::messaging::{SHUTDOWN_SERVICE, ServiceMessenger, ServiceRequestContext};
 use peppylib::types::Payload;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult};
@@ -91,43 +91,23 @@ async fn handle_node_remove_request_inner(
     );
 
     let root_handle = node_stack.root();
-    let (root_node_name, root_node_tag) = match root_handle.read() {
-        Ok(guard) => (
+    let (root_node_name, root_node_tag) = {
+        let guard = root_handle.read();
+        (
             guard.config().manifest.name.as_str().to_owned(),
             guard.config().manifest.tag.clone(),
-        ),
-        Err(_) => {
-            return NodeRemoveResponse::failure("entity lock poisoned (root)").encode();
-        }
+        )
     };
     if request.node_name == root_node_name && request.tag == root_node_tag {
         return NodeRemoveResponse::failure("Cannot remove the core node from the node stack")
             .encode();
     }
 
-    // Visit every handle so a poisoned lock is always reported regardless of
-    // whether the matching entity comes before or after it in iteration order.
-    let mut snapshot_poisoned = false;
-    let mut matching_entity: Option<EntityHandle> = None;
-    for handle in node_stack.snapshot() {
-        let is_match = match handle.read() {
-            Ok(guard) => {
-                guard.config().manifest.name.as_str() == request.node_name
-                    && guard.config().manifest.tag == request.tag
-            }
-            Err(_) => {
-                snapshot_poisoned = true;
-                false
-            }
-        };
-        if is_match && matching_entity.is_none() {
-            matching_entity = Some(handle);
-        }
-    }
-    if snapshot_poisoned {
-        return NodeRemoveResponse::failure("entity lock poisoned during snapshot scan").encode();
-    }
-
+    let matching_entity = node_stack.snapshot().into_iter().find(|handle| {
+        let guard = handle.read();
+        guard.config().manifest.name.as_str() == request.node_name
+            && guard.config().manifest.tag == request.tag
+    });
     let Some(matching_entity) = matching_entity else {
         return NodeRemoveResponse::failure(format!(
             "Node '{}:{}' not found in node stack",
@@ -154,12 +134,7 @@ async fn handle_node_remove_request_inner(
     let mut targets: Vec<RemovalTarget> = Vec::new();
     let mut config_targets: Vec<ConfigRemovalTarget> = Vec::new();
     for handle in matching_entities {
-        let guard = match handle.read() {
-            Ok(g) => g,
-            Err(_) => {
-                return NodeRemoveResponse::failure("entity lock poisoned").encode();
-            }
-        };
+        let guard = handle.read();
         let node_tag = guard.config().manifest.tag.clone();
         let node_name = guard.config().manifest.name.as_str().to_owned();
         config_targets.push(ConfigRemovalTarget {
@@ -291,12 +266,7 @@ async fn handle_node_remove_request_inner(
             );
             continue;
         };
-        let removed = match handle.write() {
-            Ok(mut guard) => guard.stop_instance(&target.instance_id),
-            Err(_) => {
-                return NodeRemoveResponse::failure("entity lock poisoned").encode();
-            }
-        };
+        let removed = handle.write().stop_instance(&target.instance_id);
         if !removed {
             // Instance was concurrently removed; treat as success.
             debug!(

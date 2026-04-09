@@ -1401,7 +1401,7 @@ async fn shutdown_existing_instances(
     };
 
     let instances = {
-        let guard = entity.read().expect("entity poisoned");
+        let guard = entity.read();
         if guard.instances().is_empty() {
             return Ok(());
         }
@@ -1571,7 +1571,7 @@ async fn process_node_add(
             ctx.action
                 .node_stack
                 .find(name, tag)
-                .map(|e| e.read().expect("entity poisoned").config().clone())
+                .map(|e| e.read().config().clone())
         },
     );
     if let Some(err) = dep_errors.into_iter().next() {
@@ -1671,7 +1671,6 @@ async fn process_node_add(
     // observers see a consistent (entity, log path) pair.
     entity_handle
         .write()
-        .expect("entity poisoned")
         .set_last_add_log_path(ctx.log_path.clone());
 
     // Capture the entity generation *before* the build runs so the
@@ -1680,8 +1679,7 @@ async fn process_node_add(
     // would race with a concurrent `push_config` that replaced the entity
     // in-place between our failure and the cleanup, causing us to clobber
     // the new entity.
-    let expected_generation_before_build =
-        entity_handle.read().expect("entity poisoned").generation();
+    let expected_generation_before_build = entity_handle.read().generation();
 
     let build_result = node_stack::NodeEntity::build(
         &entity_handle,

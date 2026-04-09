@@ -543,11 +543,7 @@ async fn listen_for_launch_configuration_succeed_with_complex_dependencies() {
         .find(FAKE_UVC_CAMERA, NODE_TAG)
         .expect("fake_uvc_camera should be in stack");
     assert_eq!(
-        uvc_camera
-            .read()
-            .expect("entity poisoned")
-            .instances()
-            .len(),
+        uvc_camera.read().instances().len(),
         2,
         "fake_uvc_camera should have 2 instances"
     );
@@ -556,11 +552,7 @@ async fn listen_for_launch_configuration_succeed_with_complex_dependencies() {
         .find(FAKE_ROBOT_BRAIN, NODE_TAG)
         .expect("fake_robot_brain should be in stack");
     assert_eq!(
-        robot_brain
-            .read()
-            .expect("entity poisoned")
-            .instances()
-            .len(),
+        robot_brain.read().instances().len(),
         1,
         "fake_robot_brain should have 1 instance"
     );
@@ -569,11 +561,7 @@ async fn listen_for_launch_configuration_succeed_with_complex_dependencies() {
         .find(FAKE_OPENARM01_CONTROLLER, NODE_TAG)
         .expect("fake_openarm01_controller should be in stack");
     assert_eq!(
-        controller
-            .read()
-            .expect("entity poisoned")
-            .instances()
-            .len(),
+        controller.read().instances().len(),
         1,
         "fake_openarm01_controller should have 1 instance"
     );
@@ -696,7 +684,7 @@ async fn listen_for_launch_configuration_succeed() {
         .find(UVC_NODE_NAME, NODE_TAG)
         .expect("uvc_camera should be in stack");
     assert_eq!(
-        uvc.read().expect("entity poisoned").instances().len(),
+        uvc.read().instances().len(),
         2,
         "uvc_camera should have 2 instances"
     );
@@ -705,7 +693,7 @@ async fn listen_for_launch_configuration_succeed() {
         .find(ROBOT_NODE_NAME, NODE_TAG)
         .expect("robot_brain should be in stack");
     assert_eq!(
-        brain.read().expect("entity poisoned").instances().len(),
+        brain.read().instances().len(),
         1,
         "robot_brain should have 1 instance"
     );

@@ -47,7 +47,7 @@ fn push_config_creates_entity_in_added_stage() {
         .expect("push_config should succeed");
 
     let handle = stack.find("sensor", "1.0.0").expect("entity should exist");
-    let guard = handle.read().expect("entity poisoned");
+    let guard = handle.read();
 
     if let NodeStage::Added { config_path: cp } = guard.stage() {
         assert_eq!(cp, &config_path);
@@ -73,7 +73,7 @@ async fn ready_with_running_instance_round_trip() {
     )
     .await;
 
-    let guard = handle.read().expect("entity poisoned");
+    let guard = handle.read();
     match guard.stage() {
         NodeStage::Ready {
             config_path: cp,
@@ -104,13 +104,10 @@ async fn stop_instance_removes_last_instance_keeps_ready() {
             .await;
 
     // Remove the only instance: entity stays in Ready with an empty list.
-    let removed = handle
-        .write()
-        .expect("entity poisoned")
-        .stop_instance(&instance_id);
+    let removed = handle.write().stop_instance(&instance_id);
     assert!(removed, "stop_instance should report success");
 
-    let guard = handle.read().expect("entity poisoned");
+    let guard = handle.read();
     match guard.stage() {
         NodeStage::Ready {
             config_path: cp,
@@ -145,13 +142,10 @@ async fn stop_instance_keeps_other_instances_when_one_removed() {
     let _b =
         real_lifecycle::spawn_running_instance(Arc::clone(&handle), &harness, id_b.clone()).await;
 
-    let removed = handle
-        .write()
-        .expect("entity poisoned")
-        .stop_instance(&id_a);
+    let removed = handle.write().stop_instance(&id_a);
     assert!(removed);
 
-    let guard = handle.read().expect("entity poisoned");
+    let guard = handle.read();
     match guard.stage() {
         NodeStage::Ready { instances, .. } => {
             assert_eq!(instances.len(), 1);
@@ -176,7 +170,6 @@ async fn stop_instance_returns_false_when_instance_not_tracked() {
 
     let removed = handle
         .write()
-        .expect("entity poisoned")
         .stop_instance(&Name::new("nonexistent").unwrap());
     assert!(!removed);
 }
@@ -208,14 +201,14 @@ async fn stop_instance_skips_starting_instances() {
     .await
     .expect("prepare_and_spawn should succeed");
 
-    let removed = handle.write().expect("entity poisoned").stop_instance(&id);
+    let removed = handle.write().stop_instance(&id);
     assert!(
         !removed,
         "stop_instance must not remove a Starting instance"
     );
     // The Starting instance is still in the list.
     {
-        let guard = handle.read().expect("entity poisoned");
+        let guard = handle.read();
         assert_eq!(guard.instances().len(), 1);
         assert_eq!(guard.instances()[0].state(), InstanceState::Starting);
     }
@@ -235,7 +228,7 @@ async fn push_config_resets_existing_entity_to_added() {
     let handle =
         real_lifecycle::build_ready(&stack, &harness, sensor_config(), &config_path_v1).await;
 
-    assert!(handle.read().unwrap().artifact_path().is_some());
+    assert!(handle.read().artifact_path().is_some());
 
     // Re-push with the same config but a different config_path. The entity
     // should be reset to Added with the new config_path; artifact_path is gone.
@@ -244,7 +237,7 @@ async fn push_config_resets_existing_entity_to_added() {
         .expect("second push_config should succeed");
 
     let handle_after = stack.find("sensor", "1.0.0").expect("entity should exist");
-    let guard = handle_after.read().expect("entity poisoned");
+    let guard = handle_after.read();
     match guard.stage() {
         NodeStage::Added { config_path: cp } => {
             assert_eq!(cp, &config_path_v2);
@@ -333,15 +326,7 @@ fn push_config_rewires_when_dependency_keys_change_with_unchanged_interfaces() {
     let deps_a: Vec<String> = stack
         .dependencies_of("consumer", "1.0.0")
         .iter()
-        .map(|h| {
-            h.read()
-                .expect("entity poisoned")
-                .config()
-                .manifest
-                .name
-                .as_str()
-                .to_owned()
-        })
+        .map(|h| h.read().config().manifest.name.as_str().to_owned())
         .collect();
     assert_eq!(deps_a, vec!["producer_a".to_string()]);
 
@@ -358,15 +343,7 @@ fn push_config_rewires_when_dependency_keys_change_with_unchanged_interfaces() {
     let deps_b: Vec<String> = stack
         .dependencies_of("consumer", "1.0.0")
         .iter()
-        .map(|h| {
-            h.read()
-                .expect("entity poisoned")
-                .config()
-                .manifest
-                .name
-                .as_str()
-                .to_owned()
-        })
+        .map(|h| h.read().config().manifest.name.as_str().to_owned())
         .collect();
     assert_eq!(
         deps_b,
@@ -522,7 +499,7 @@ async fn concurrent_builds_are_rejected_immediately() {
     );
 
     // Entity ended up in Built.
-    let guard = handle.read().expect("entity poisoned");
+    let guard = handle.read();
     assert!(matches!(guard.stage(), NodeStage::Ready { .. }));
 
     // The on-disk archive exists exactly once.
@@ -628,7 +605,7 @@ async fn build_runs_add_cmd_for_process_node() {
     .expect("build should succeed when add_cmd exits 0");
 
     // Entity is in Built.
-    let guard = handle.read().expect("entity poisoned");
+    let guard = handle.read();
     assert!(matches!(guard.stage(), NodeStage::Ready { .. }));
     drop(guard);
 
@@ -738,7 +715,7 @@ async fn prepare_and_spawn_rejects_when_not_built() {
     }
 
     // Entity remained in Added.
-    let guard = handle.read().expect("entity poisoned");
+    let guard = handle.read();
     assert!(matches!(guard.stage(), NodeStage::Added { .. }));
 }
 
@@ -764,7 +741,7 @@ async fn prepare_and_spawn_marks_instance_starting_then_commit_marks_running() {
 
     // Entity is in Ready with the new instance in Starting state.
     {
-        let guard = handle.read().expect("entity poisoned");
+        let guard = handle.read();
         assert!(
             matches!(guard.stage(), NodeStage::Ready { .. }),
             "entity should remain in Ready during prepare_and_spawn, got {:?}",
@@ -792,7 +769,7 @@ async fn prepare_and_spawn_marks_instance_starting_then_commit_marks_running() {
 
     // Entity is still in Ready, but the instance is now Running.
     {
-        let guard = handle.read().expect("entity poisoned");
+        let guard = handle.read();
         match guard.stage() {
             NodeStage::Ready { instances, .. } => {
                 assert_eq!(instances.len(), 1);
@@ -805,10 +782,7 @@ async fn prepare_and_spawn_marks_instance_starting_then_commit_marks_running() {
     }
 
     // Tear down: stop the instance and kill the child process.
-    handle
-        .write()
-        .expect("entity poisoned")
-        .stop_instance(&instance_id);
+    handle.write().stop_instance(&instance_id);
     let _ = std::process::Command::new("kill")
         .arg("-TERM")
         .arg(pid.to_string())
@@ -853,7 +827,7 @@ async fn abort_started_removes_starting_instance_and_kills_child() {
 
     // Entity is still in Ready, but the Starting instance was removed.
     {
-        let guard = handle.read().expect("entity poisoned");
+        let guard = handle.read();
         assert!(
             matches!(guard.stage(), NodeStage::Ready { .. }),
             "entity should remain in Ready after abort, got {:?}",
@@ -916,7 +890,7 @@ async fn prepare_and_spawn_starts_additional_instance_alongside_existing() {
     // Entity is still in Ready. Both instances visible: existing Running
     // and new Starting.
     {
-        let guard = handle.read().expect("entity poisoned");
+        let guard = handle.read();
         assert!(
             matches!(guard.stage(), NodeStage::Ready { .. }),
             "expected Ready, got {:?}",
@@ -944,7 +918,7 @@ async fn prepare_and_spawn_starts_additional_instance_alongside_existing() {
 
     // After commit, both instances are Running.
     {
-        let guard = handle.read().expect("entity poisoned");
+        let guard = handle.read();
         match guard.stage() {
             NodeStage::Ready { instances, .. } => {
                 assert_eq!(instances.len(), 2, "should have both instances");
@@ -962,10 +936,7 @@ async fn prepare_and_spawn_starts_additional_instance_alongside_existing() {
     }
 
     // Tear down: stop the new instance and SIGTERM the real child.
-    handle
-        .write()
-        .expect("entity poisoned")
-        .stop_instance(&instance_id);
+    handle.write().stop_instance(&instance_id);
     let _ = std::process::Command::new("kill")
         .arg("-TERM")
         .arg(new_pid.to_string())
@@ -1011,7 +982,7 @@ async fn prepare_and_spawn_rejects_duplicate_instance_id_when_running_already_pr
 
     // The entity remained in Ready with exactly the original instance —
     // no Starting instance was registered.
-    let guard = handle.read().expect("entity poisoned");
+    let guard = handle.read();
     match guard.stage() {
         NodeStage::Ready { instances, .. } => {
             assert_eq!(instances.len(), 1);
@@ -1139,10 +1110,9 @@ async fn restore_snapshot_if_matches_rolls_back_failed_rebuild() {
     // Build v1 Ready for real — this is what must survive a failed rebuild.
     let handle_v1 =
         real_lifecycle::build_ready(&stack, &harness, sensor_config(), &config_path_v1).await;
-    let v1_config = handle_v1.read().unwrap().config().clone();
+    let v1_config = handle_v1.read().config().clone();
     let artifact_v1 = handle_v1
         .read()
-        .unwrap()
         .artifact_path()
         .expect("v1 artifact should exist")
         .to_path_buf();
@@ -1162,7 +1132,7 @@ async fn restore_snapshot_if_matches_rolls_back_failed_rebuild() {
         .push_config(blocking_config, false, &config_path_v2)
         .expect("rebuild push_config should succeed");
     let handle_after_push = stack.find("sensor", "1.0.0").expect("entity should exist");
-    let captured_generation = handle_after_push.read().unwrap().generation();
+    let captured_generation = handle_after_push.read().generation();
 
     // Kick off the rebuild in a task. It will sit in `Building` until we
     // touch the proceed file — and by the time we do, the restore below will
@@ -1193,7 +1163,7 @@ async fn restore_snapshot_if_matches_rolls_back_failed_rebuild() {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     loop {
         {
-            let guard = handle_after_push.read().expect("entity poisoned");
+            let guard = handle_after_push.read();
             if matches!(guard.stage(), NodeStage::Building { .. }) {
                 break;
             }
@@ -1235,7 +1205,7 @@ async fn restore_snapshot_if_matches_rolls_back_failed_rebuild() {
     );
 
     let handle_final = stack.find("sensor", "1.0.0").expect("entity should exist");
-    let guard = handle_final.read().expect("entity poisoned");
+    let guard = handle_final.read();
     match guard.stage() {
         NodeStage::Ready {
             config_path,
@@ -1279,8 +1249,8 @@ async fn restore_snapshot_if_matches_no_op_on_generation_drift() {
         .push_config(blocking_config, false, &config_path_v1)
         .expect("initial push_config should succeed");
     let handle = stack.find("sensor", "1.0.0").expect("entity should exist");
-    let stale_generation = handle.read().unwrap().generation();
-    let stale_config = handle.read().unwrap().config().clone();
+    let stale_generation = handle.read().generation();
+    let stale_config = handle.read().config().clone();
 
     // Drive a real build in the background so the entity transitions through
     // `Building`. We keep the task alive for the rest of the test.
@@ -1308,7 +1278,7 @@ async fn restore_snapshot_if_matches_no_op_on_generation_drift() {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     loop {
         {
-            let guard = handle.read().expect("entity poisoned");
+            let guard = handle.read();
             if matches!(guard.stage(), NodeStage::Building { .. }) {
                 break;
             }
@@ -1346,7 +1316,7 @@ async fn restore_snapshot_if_matches_no_op_on_generation_drift() {
     );
 
     {
-        let guard = handle.read().expect("entity poisoned");
+        let guard = handle.read();
         match guard.stage() {
             NodeStage::Added { config_path } => {
                 assert_eq!(

@@ -95,15 +95,7 @@ fn topic_dependency_resolved_when_dependency_added_first() {
     let dependencies = stack.dependencies_of("brain", "1.0.0");
     let dependency_names: Vec<_> = dependencies
         .iter()
-        .map(|node| {
-            node.read()
-                .expect("entity poisoned")
-                .config()
-                .manifest
-                .name
-                .as_str()
-                .to_owned()
-        })
+        .map(|node| node.read().config().manifest.name.as_str().to_owned())
         .collect();
     assert_eq!(
         dependency_names,
@@ -114,15 +106,7 @@ fn topic_dependency_resolved_when_dependency_added_first() {
     let dependants = stack
         .dependents_of("lidar", "1.0.0")
         .into_iter()
-        .map(|node| {
-            node.read()
-                .expect("entity poisoned")
-                .config()
-                .manifest
-                .name
-                .as_str()
-                .to_owned()
-        })
+        .map(|node| node.read().config().manifest.name.as_str().to_owned())
         .collect::<Vec<_>>();
     assert_eq!(
         dependants,

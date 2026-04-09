@@ -22,7 +22,6 @@ async fn listen_for_node_reset_clears_node_stack() {
     let root_instance_id_before = node_stack
         .root()
         .read()
-        .expect("entity poisoned")
         .instances()
         .first()
         .expect("root should have exactly one instance")
@@ -113,7 +112,7 @@ async fn listen_for_node_reset_clears_node_stack() {
         .find(TARGET_NODE_A_NAME, TARGET_NODE_A_TAG)
         .expect("node A should exist in stack");
     assert_eq!(
-        entity_a.read().expect("entity poisoned").instances().len(),
+        entity_a.read().instances().len(),
         1,
         "node A should have one instance"
     );
@@ -151,7 +150,7 @@ async fn listen_for_node_reset_clears_node_stack() {
     );
 
     let root_after = node_stack.root();
-    let root_guard = root_after.read().expect("entity poisoned");
+    let root_guard = root_after.read();
     assert_eq!(
         root_guard.config().manifest.name.as_str(),
         started_core_node.core_node_name,
@@ -185,7 +184,6 @@ async fn listen_for_node_reset_is_idempotent() {
     let root_instance_id_before = node_stack
         .root()
         .read()
-        .expect("entity poisoned")
         .instances()
         .first()
         .expect("root should have exactly one instance")
@@ -210,7 +208,6 @@ async fn listen_for_node_reset_is_idempotent() {
     let root_instance_id_after = node_stack
         .root()
         .read()
-        .expect("entity poisoned")
         .instances()
         .first()
         .expect("root should have exactly one instance")

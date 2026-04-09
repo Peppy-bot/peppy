@@ -59,7 +59,7 @@ async fn listen_for_node_remove_success() {
         .find(TARGET_NODE_NAME, TARGET_NODE_TAG)
         .expect("node should exist in stack");
     assert_eq!(
-        entity.read().expect("entity poisoned").instances().len(),
+        entity.read().instances().len(),
         0,
         "node should have no instances"
     );
@@ -344,7 +344,7 @@ async fn listen_for_node_fails_when_stop_instances_parameter_not_set_and_instanc
         .find(TARGET_NODE_NAME, TARGET_NODE_TAG)
         .expect("node entity should still exist in stack");
     {
-        let entity_guard = entity.read().expect("entity poisoned");
+        let entity_guard = entity.read();
         assert_eq!(
             entity_guard.instances().len(),
             1,

@@ -788,23 +788,15 @@ async fn snapshot_and_clear_stack(
 ) -> std::result::Result<NodeStack, LaunchResult> {
     let backup_stack = {
         let root_handle = ctx.node_stack.root();
-        let extracted: Option<(_, _)> = match root_handle.read() {
-            Ok(guard) => Some((
+        let (root_cfg, root_path) = {
+            let guard = root_handle.read();
+            (
                 guard.config().clone(),
                 guard
                     .artifact_path()
                     .unwrap_or_else(|| guard.config_path())
                     .to_path_buf(),
-            )),
-            Err(_) => None,
-        };
-        let (root_cfg, root_path) = match extracted {
-            Some(v) => v,
-            None => {
-                let msg = "root entity lock poisoned".to_string();
-                publish_stderr(ctx, msg.clone(), LaunchFeedbackStep::LauncherStep).await;
-                return Err(LaunchResult::failure(&ctx.log_path, msg));
-            }
+            )
         };
         let backup = NodeStack::new(root_cfg, None, root_path);
         if let Err(err) = backup.apply_from(&ctx.node_stack) {
@@ -1181,12 +1173,7 @@ async fn process_launch(goal: LaunchGoal, ctx: ProcessLaunchContext) -> LaunchRe
     };
 
     // Step 3: Validate dependencies and compute topological order
-    let root_config = match ctx.node_stack.root().read() {
-        Ok(guard) => guard.config().clone(),
-        Err(_) => {
-            return LaunchResult::failure(&ctx.log_path, "root entity lock poisoned");
-        }
-    };
+    let root_config = ctx.node_stack.root().read().config().clone();
     let ordered = match validate_and_order_dependencies(&ctx, &planned, &root_config).await {
         Ok(result) => result,
         Err(launch_result) => return launch_result,

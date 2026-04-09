@@ -152,7 +152,6 @@ async fn listen_for_node_info_on_fs_node_success() {
             .expect("entity should exist");
         handle
             .write()
-            .expect("entity poisoned")
             .set_last_add_log_path(recorded_add_log.clone());
     }
     let request = NodeInfoRequest::new(NodeSource::Fs(node_dir.path().to_path_buf()));

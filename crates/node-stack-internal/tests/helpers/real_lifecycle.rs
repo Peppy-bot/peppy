@@ -157,9 +157,7 @@ pub struct RunningInstanceGuard {
 
 impl Drop for RunningInstanceGuard {
     fn drop(&mut self) {
-        if let Ok(mut guard) = self.handle.write() {
-            guard.stop_instance(&self.instance_id);
-        }
+        self.handle.write().stop_instance(&self.instance_id);
         // Best-effort termination. The `trap 'exit 0' TERM` loop in
         // `LONG_RUNNING_START_CMD` exits cleanly on SIGTERM.
         let _ = std::process::Command::new("kill")

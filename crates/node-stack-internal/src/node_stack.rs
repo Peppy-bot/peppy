@@ -15,6 +15,7 @@ use entity::{SerializedEdge, SerializedNode};
 use crate::error::{Error, Result};
 use config::node::{Name, NodeConfig};
 use names_generator2::get_random;
+use parking_lot::RwLock;
 use petgraph::{
     Direction,
     dot::{Config, Dot},
@@ -22,11 +23,7 @@ use petgraph::{
     visit::EdgeRef,
 };
 use rand::rng;
-use std::{
-    collections::HashMap,
-    path::PathBuf,
-    sync::{Arc, RwLock},
-};
+use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
 /// Shared handle to a `NodeEntity` stored inside a `NodeStack`. All readers
 /// and writers go through the inner `RwLock`; the same `Arc` is held by the
@@ -118,7 +115,7 @@ impl NodeStackInner {
             // first time, but for an existing entity replacement we want to keep
             // any external handles valid.)
             if let Some(handle) = self.graph.node_weight(existing_index) {
-                let mut guard = handle.write().expect("entity poisoned");
+                let mut guard = handle.write();
                 *guard = entity;
             }
             existing_index
@@ -145,7 +142,7 @@ impl NodeStackInner {
                 self.key_to_index
                     .get(&key)
                     .and_then(|&idx| self.graph.node_weight(idx))
-                    .map(|handle| handle.read().expect("entity poisoned").config().clone())
+                    .map(|handle| handle.read().config().clone())
             },
         );
 
@@ -170,7 +167,7 @@ impl NodeStackInner {
 
     fn attach_dependencies(&mut self, index: NodeIndex) {
         let keys = if let Some(handle) = self.graph.node_weight(index) {
-            dependency_keys(handle.read().expect("entity poisoned").config())
+            dependency_keys(handle.read().config())
         } else {
             return;
         };
@@ -255,7 +252,7 @@ impl NodeStackInner {
     /// instead.
     fn find_by_instance_id(&self, instance_id: &Name) -> Option<TrackedNodeInstance> {
         for handle in self.graph.node_weights() {
-            let guard = handle.read().expect("entity poisoned");
+            let guard = handle.read();
             if let Some(found) = guard
                 .instances()
                 .iter()
@@ -275,7 +272,7 @@ impl NodeStackInner {
     fn find_entity_by_instance_id(&self, instance_id: &Name) -> Option<EntityHandle> {
         for handle in self.graph.node_weights() {
             let has_instance = {
-                let guard = handle.read().expect("entity poisoned");
+                let guard = handle.read();
                 guard.instances().iter().any(|inst| {
                     inst.instance_id() == instance_id && inst.state() == InstanceState::Running
                 })
@@ -372,7 +369,7 @@ impl NodeStackInner {
             };
 
             let (previous_snapshot, interfaces_changed, dependencies_changed) = {
-                let mut guard = handle.write().expect("entity poisoned");
+                let mut guard = handle.write();
 
                 if !guard.instances().is_empty() {
                     return Err(Error::CannotOverwriteNodeWithLiveInstances {
@@ -475,7 +472,7 @@ impl NodeStackInner {
             &[Config::EdgeNoLabel, Config::NodeNoLabel],
             &|_, _| String::new(),
             &|_, (_, handle)| {
-                let guard = handle.read().expect("entity poisoned");
+                let guard = handle.read();
                 let name = guard.config().manifest.name.as_str();
                 let tag = &guard.config().manifest.tag;
                 let instance_count = guard.instances().len();
@@ -497,7 +494,7 @@ impl NodeStackInner {
             .graph
             .node_weights()
             .map(|handle| {
-                let guard = handle.read().expect("entity poisoned");
+                let guard = handle.read();
                 SerializedNode::from(&*guard)
             })
             .collect();
@@ -509,8 +506,8 @@ impl NodeStackInner {
                 let (src_idx, dst_idx) = self.graph.edge_endpoints(edge_idx)?;
                 let src_handle = self.graph.node_weight(src_idx)?;
                 let dst_handle = self.graph.node_weight(dst_idx)?;
-                let src_guard = src_handle.read().expect("entity poisoned");
-                let dst_guard = dst_handle.read().expect("entity poisoned");
+                let src_guard = src_handle.read();
+                let dst_guard = dst_handle.read();
                 Some(SerializedEdge {
                     from: SerializedNode::from(&*src_guard),
                     to: SerializedNode::from(&*dst_guard),
@@ -564,7 +561,7 @@ impl NodeStack {
     }
 
     pub fn len(&self) -> usize {
-        self.shared.read().expect("node stack poisoned").len()
+        self.shared.read().len()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -574,12 +571,12 @@ impl NodeStack {
     /// Returns the root node (core node) of this stack.
     /// The root node is guaranteed to always exist.
     pub fn root(&self) -> EntityHandle {
-        let guard = self.shared.read().expect("node stack poisoned");
+        let guard = self.shared.read();
         guard.root()
     }
 
     pub fn contains(&self, name: &str, tag: &str) -> bool {
-        let guard = self.shared.read().expect("node stack poisoned");
+        let guard = self.shared.read();
         guard.contains(&NodeKey::new(name, tag))
     }
 
@@ -588,19 +585,19 @@ impl NodeStack {
     /// to inspect the entity or to drive lifecycle transitions
     /// (`build` / `start_instance` / `stop_instance`).
     pub fn find(&self, name: &str, tag: &str) -> Option<EntityHandle> {
-        let guard = self.shared.read().expect("node stack poisoned");
+        let guard = self.shared.read();
         guard.find(&NodeKey::new(name, tag))
     }
 
     /// Finds a node instance by its instance_id across all entities in the stack.
     pub fn find_by_instance_id(&self, instance_id: &Name) -> Option<TrackedNodeInstance> {
-        let guard = self.shared.read().expect("node stack poisoned");
+        let guard = self.shared.read();
         guard.find_by_instance_id(instance_id)
     }
 
     /// Finds a node entity by an instance_id it contains.
     pub fn find_entity_by_instance_id(&self, instance_id: &Name) -> Option<EntityHandle> {
-        let guard = self.shared.read().expect("node stack poisoned");
+        let guard = self.shared.read();
         guard.find_entity_by_instance_id(instance_id)
     }
 
@@ -640,22 +637,22 @@ impl NodeStack {
         allow_missing_dependencies: bool,
         config_path: P,
     ) -> Result<Option<EntitySnapshot>> {
-        let mut guard = self.shared.write().expect("node stack poisoned");
+        let mut guard = self.shared.write();
         guard.push_config_impl(config, allow_missing_dependencies, config_path)
     }
 
     pub fn snapshot(&self) -> Vec<EntityHandle> {
-        let guard = self.shared.read().expect("node stack poisoned");
+        let guard = self.shared.read();
         guard.entities_snapshot()
     }
 
     pub fn dependencies_of(&self, name: &str, tag: &str) -> Vec<EntityHandle> {
-        let guard = self.shared.read().expect("node stack poisoned");
+        let guard = self.shared.read();
         guard.dependencies_of(&NodeKey::new(name, tag))
     }
 
     pub fn dependents_of(&self, name: &str, tag: &str) -> Vec<EntityHandle> {
-        let guard = self.shared.read().expect("node stack poisoned");
+        let guard = self.shared.read();
         guard.dependents_of(&NodeKey::new(name, tag))
     }
 
@@ -665,7 +662,7 @@ impl NodeStack {
     /// Returns Err(CannotModifyRootNode) if trying to remove the root node.
     /// Returns Err(CannotRemoveNodeWithInstances) if the node still has instances.
     pub fn remove_config(&self, name: &str, tag: &str) -> Result<bool> {
-        let mut guard = self.shared.write().expect("node stack poisoned");
+        let mut guard = self.shared.write();
         let key = NodeKey::new(name, tag);
 
         if guard.is_root(&key) {
@@ -685,7 +682,7 @@ impl NodeStack {
         let Some(entity_handle) = guard.graph.node_weight(index).cloned() else {
             return Ok(false);
         };
-        let entity_guard = entity_handle.write().expect("entity poisoned");
+        let entity_guard = entity_handle.write();
         if !entity_guard.instances().is_empty() {
             return Err(Error::CannotRemoveNodeWithInstances {
                 node_name: name.to_string(),
@@ -719,7 +716,7 @@ impl NodeStack {
         expected_handle: &Arc<RwLock<NodeEntity>>,
         expected_generation: u64,
     ) -> bool {
-        let mut guard = self.shared.write().expect("node stack poisoned");
+        let mut guard = self.shared.write();
         let key = NodeKey::new(name, tag);
 
         if guard.is_root(&key) {
@@ -732,7 +729,7 @@ impl NodeStack {
 
         let matches = guard.graph.node_weight(index).is_some_and(|current| {
             Arc::ptr_eq(current, expected_handle) && {
-                let entity = current.read().expect("entity poisoned");
+                let entity = current.read();
                 entity.generation() == expected_generation
                     && matches!(entity.stage(), NodeStage::Building { .. })
             }
@@ -768,7 +765,7 @@ impl NodeStack {
         target: RestoreTarget<'_>,
         snapshot: EntitySnapshot,
     ) -> bool {
-        let guard = self.shared.write().expect("node stack poisoned");
+        let guard = self.shared.write();
         let key = NodeKey::new(target.name, target.tag);
 
         if guard.is_root(&key) {
@@ -786,7 +783,7 @@ impl NodeStack {
             return false;
         }
         {
-            let entity = current.read().expect("entity poisoned");
+            let entity = current.read();
             if entity.generation() != target.expected_generation
                 || !matches!(entity.stage(), NodeStage::Building { .. })
             {
@@ -804,13 +801,13 @@ impl NodeStack {
             snapshot.artifact_path,
             Vec::new(),
         );
-        *current.write().expect("entity poisoned") = restored;
+        *current.write() = restored;
         true
     }
 
     /// Clears all nodes except the root node from the stack.
     pub fn reset(&self) {
-        let mut guard = self.shared.write().expect("node stack poisoned");
+        let mut guard = self.shared.write();
         guard.clear();
     }
 
@@ -824,7 +821,7 @@ impl NodeStack {
     /// step or the `prepare_and_spawn` lifecycle.
     pub fn apply_from(&self, source: &NodeStack) -> std::result::Result<(), String> {
         let target_root = self.root();
-        let target_root_guard = target_root.read().expect("entity poisoned");
+        let target_root_guard = target_root.read();
         let target_root_name = target_root_guard.config().manifest.name.as_str().to_owned();
         let target_root_tag = target_root_guard.config().manifest.tag.clone();
         drop(target_root_guard);
@@ -836,7 +833,7 @@ impl NodeStack {
         // clearing it first and leaving the caller with an empty stack.
         let mut prepared: Vec<(String, NodeEntity)> = Vec::new();
         for source_handle in source.snapshot() {
-            let source_guard = source_handle.read().expect("entity poisoned");
+            let source_guard = source_handle.read();
             let config = source_guard.config().clone();
 
             // Skip the root node from the source stack
@@ -901,7 +898,7 @@ impl NodeStack {
         // target and insert the prepared entities under a single held write
         // lock so readers never observe a partially-restored graph (e.g. a
         // cleared stack with only some entities re-inserted).
-        let mut guard = self.shared.write().expect("node stack poisoned");
+        let mut guard = self.shared.write();
         guard.clear();
         for (label, entity) in prepared {
             guard
@@ -914,13 +911,13 @@ impl NodeStack {
 
     /// Returns the graph in DOT format for visualization.
     pub fn to_dot(&self) -> String {
-        let guard = self.shared.read().expect("node stack poisoned");
+        let guard = self.shared.read();
         guard.to_dot()
     }
 
     /// Returns a serializable representation of the graph.
     pub fn to_serialized_graph(&self) -> SerializedNodeGraph {
-        let guard = self.shared.read().expect("node stack poisoned");
+        let guard = self.shared.read();
         guard.to_serialized_graph()
     }
 }

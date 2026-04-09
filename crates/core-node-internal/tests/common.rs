@@ -910,7 +910,7 @@ async fn start_core_node_with_messenger(
 pub struct TestRunningInstance {
     pub pid: u32,
     pub instance_id: config::node::Name,
-    handle: std::sync::Arc<std::sync::RwLock<node_stack::NodeEntity>>,
+    handle: std::sync::Arc<parking_lot::RwLock<node_stack::NodeEntity>>,
     _working_dir: Option<TempDir>,
     _feedback_drain: tokio::task::JoinHandle<()>,
     _shutdown_listener: Option<AbortOnDrop<peppylib::PeppyResult<()>>>,
@@ -918,9 +918,7 @@ pub struct TestRunningInstance {
 
 impl Drop for TestRunningInstance {
     fn drop(&mut self) {
-        if let Ok(mut guard) = self.handle.write() {
-            guard.stop_instance(&self.instance_id);
-        }
+        self.handle.write().stop_instance(&self.instance_id);
         let _ = std::process::Command::new("kill")
             .arg("-TERM")
             .arg(self.pid.to_string())

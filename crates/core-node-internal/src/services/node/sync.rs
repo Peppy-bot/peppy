@@ -200,37 +200,17 @@ async fn handle_node_sync_request_inner(
     } else {
         match NodeConfigParser::from_path(&node_config_path) {
             Ok(node_config) => {
-                // Validate dependencies exist in the node stack. The
-                // closure cannot return a Result through the
-                // `validate_dependency_specs` API, so a poisoned read is
-                // signalled out-of-band via `poison_seen` and converted into
-                // a sync failure below.
-                let poison_seen = std::cell::RefCell::new(None::<(String, String)>);
                 let dep_errors = node_stack::validate_dependency_specs(
                     node_config.manifest(),
                     node_config.interfaces(),
                     node_config.manifest_name(),
                     node_config.manifest_tag(),
                     |name, tag| {
-                        node_stack.find(name, tag).and_then(|e| match e.read() {
-                            Ok(guard) => Some(guard.config().clone()),
-                            Err(_) => {
-                                let mut slot = poison_seen.borrow_mut();
-                                if slot.is_none() {
-                                    *slot = Some((name.to_string(), tag.to_string()));
-                                }
-                                None
-                            }
-                        })
+                        node_stack
+                            .find(name, tag)
+                            .map(|e| e.read().config().clone())
                     },
                 );
-                if let Some((name, tag)) = poison_seen.into_inner() {
-                    return NodeSyncResponse::failure(format!(
-                        "entity {}:{} lock poisoned during dependency lookup",
-                        name, tag
-                    ))
-                    .encode();
-                }
 
                 let mut missing_dependencies: HashSet<String> = HashSet::new();
                 let mut missing_interfaces: Vec<String> = Vec::new();
@@ -596,12 +576,7 @@ pub fn collect_consumed_interfaces(
                         continue;
                     };
                     if let Some(dep_handle) = node_stack.find(dep_name, dep_tag) {
-                        let guard = dep_handle.read().map_err(|_| {
-                            format!(
-                                "entity {}:{} lock poisoned during consumed-topic resolution",
-                                dep_name, dep_tag
-                            )
-                        })?;
+                        let guard = dep_handle.read();
                         if let Some(dep_topics) = &guard.config().interfaces.topics
                             && let Some(emitted_topics) = &dep_topics.emits
                             && let Some(emitted_topic) = emitted_topics
@@ -640,12 +615,7 @@ pub fn collect_consumed_interfaces(
                 continue;
             };
             if let Some(dep_handle) = node_stack.find(dep_name, dep_tag) {
-                let guard = dep_handle.read().map_err(|_| {
-                    format!(
-                        "entity {}:{} lock poisoned during consumed-service resolution",
-                        dep_name, dep_tag
-                    )
-                })?;
+                let guard = dep_handle.read();
                 if let Some(dep_services) = &guard.config().interfaces.services
                     && let Some(exposed_services) = &dep_services.exposes
                     && let Some(exposed_service) = exposed_services
@@ -680,12 +650,7 @@ pub fn collect_consumed_interfaces(
                 continue;
             };
             if let Some(dep_handle) = node_stack.find(dep_name, dep_tag) {
-                let guard = dep_handle.read().map_err(|_| {
-                    format!(
-                        "entity {}:{} lock poisoned during consumed-action resolution",
-                        dep_name, dep_tag
-                    )
-                })?;
+                let guard = dep_handle.read();
                 if let Some(dep_actions) = &guard.config().interfaces.actions
                     && let Some(exposed_actions) = &dep_actions.exposes
                     && let Some(exposed_action) = exposed_actions

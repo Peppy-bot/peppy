@@ -72,8 +72,5 @@ pub fn stop_instance_in_stack(
     let Some(handle) = stack.find(name, tag) else {
         return false;
     };
-    handle
-        .write()
-        .expect("entity poisoned")
-        .stop_instance(instance_id)
+    handle.write().stop_instance(instance_id)
 }

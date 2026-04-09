@@ -547,14 +547,7 @@ async fn process_node_start(
     // Snapshot the entity generation so we can detect a concurrent
     // push_config that races with the parameter/env work below.
     let (node_config, snapshot_generation) = {
-        let guard = match entity_handle.read() {
-            Ok(g) => g,
-            Err(_) => {
-                let msg = format!("entity {}:{} lock poisoned", node_name, tag);
-                write_error_to_log(&ctx.log_file, &msg);
-                return NodeStartResult::failure(msg);
-            }
-        };
+        let guard = entity_handle.read();
         if guard.artifact_path().is_none() {
             let msg = format!(
                 "Node '{}:{}' has not been built yet (still in Added stage)",
@@ -678,14 +671,7 @@ async fn process_node_start(
     // because its own write-lock validation sees the new generation, but
     // catching it here gives a clearer error message.)
     {
-        let guard = match entity_handle.read() {
-            Ok(g) => g,
-            Err(_) => {
-                let msg = format!("entity {}:{} lock poisoned", node_name, tag);
-                write_error_to_log(&ctx.log_file, &msg);
-                return NodeStartResult::failure(msg);
-            }
-        };
+        let guard = entity_handle.read();
         if guard.generation() != snapshot_generation {
             let msg = format!(
                 "Node '{}:{}' was modified concurrently (generation mismatch); retry the start",

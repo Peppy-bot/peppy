@@ -1,8 +1,9 @@
+use parking_lot::RwLock;
 use std::collections::VecDeque;
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex as StdMutex, RwLock};
+use std::sync::{Arc, Mutex as StdMutex};
 
 use config::consts::PeppyDirs;
 use config::node::{Name, NodeConfig};
@@ -409,7 +410,7 @@ impl NodeEntity {
     pub async fn build(handle: &Arc<RwLock<NodeEntity>>, ctx: BuildContext<'_>) -> Result<PathBuf> {
         // ---- Phase 1: Added → Building, snapshot inputs (brief write lock) ----
         let (node_name, node_tag, config_path, container_opt, add_cmd, build_generation) = {
-            let mut guard = handle.write().expect("entity poisoned");
+            let mut guard = handle.write();
             if let Err(from) = guard.stage.ensure_buildable() {
                 return Err(Error::InvalidStageTransition {
                     node_name: guard.config.manifest.name.as_str().to_owned(),
@@ -492,7 +493,7 @@ impl NodeEntity {
         .await;
 
         // ---- Phase 3: apply transition or rollback (brief write lock) ----
-        let mut guard = handle.write().expect("entity poisoned");
+        let mut guard = handle.write();
         // A concurrent `push_config` could have replaced the entity wholesale
         // while we were running I/O. If we are no longer the in-flight build,
         // discard the result rather than clobbering the new state. The
@@ -557,7 +558,7 @@ impl NodeEntity {
     /// inserted as `Starting`), but defensively we don't touch committed
     /// instances.
     fn remove_starting_instance(handle: &Arc<RwLock<NodeEntity>>, instance_id: &Name) {
-        let mut guard = handle.write().expect("entity poisoned");
+        let mut guard = handle.write();
         let NodeStage::Ready { instances, .. } = &mut guard.stage else {
             return;
         };
@@ -597,7 +598,7 @@ impl NodeEntity {
     ) -> Result<(Child, StartedInstanceCtx)> {
         // ---- Phase 1: register the Starting instance under a brief write lock ----
         let (node_name, node_tag, node_config, artifact_path, start_generation) = {
-            let mut guard = handle.write().expect("entity poisoned");
+            let mut guard = handle.write();
             if let Err(from) = guard.stage.ensure_spawnable() {
                 return Err(Error::InvalidStageTransition {
                     node_name: guard.config.manifest.name.as_str().to_owned(),
@@ -795,7 +796,7 @@ impl NodeEntity {
         } = started_ctx;
 
         let validation_result: Result<()> = {
-            let mut guard = handle.write().expect("entity poisoned");
+            let mut guard = handle.write();
             let node_name = guard.config.manifest.name.as_str().to_owned();
             let node_tag = guard.config.manifest.tag.clone();
             // Generation guard: if a concurrent `push_config` replaced the
@@ -918,11 +919,7 @@ impl NodeEntity {
         // `push_config` would have bumped the generation, in which case the
         // replacement entity owns its own instances and we must not poke at
         // them.
-        let same_generation = handle
-            .read()
-            .map(|g| g.generation == start_generation)
-            .unwrap_or(false);
-        if same_generation {
+        if handle.read().generation == start_generation {
             Self::remove_starting_instance(handle, instance_id);
         }
 

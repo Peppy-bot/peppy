@@ -41,7 +41,6 @@ fn entity_artifact_path(node_stack: &node_stack::NodeStack, name: &str, tag: &st
         .find(name, tag)
         .expect("entity should exist")
         .read()
-        .expect("entity poisoned")
         .artifact_path()
         .expect("entity should be built")
         .to_path_buf()
@@ -53,7 +52,6 @@ fn entity_instance_count(node_stack: &node_stack::NodeStack, name: &str, tag: &s
         .find(name, tag)
         .expect("entity should exist")
         .read()
-        .expect("entity poisoned")
         .instances()
         .len()
 }
@@ -1196,7 +1194,7 @@ async fn listen_for_node_add_same_node_same_tags_overwrites_when_no_dependents()
     let entity = node_stack
         .find(NODE_NAME, NODE_TAG)
         .expect("node should exist after v2 overwrite");
-    let entity_guard = entity.read().expect("entity poisoned");
+    let entity_guard = entity.read();
     assert_eq!(
         entity_guard.instances().len(),
         0,
@@ -1402,7 +1400,7 @@ async fn listen_for_node_add_same_node_same_tags_fails_when_node_has_dependents(
         let handle = node_stack
             .find(DEPENDENCY_NODE_NAME, DEPENDENCY_NODE_TAG)
             .expect("dependency entity should exist");
-        let guard = handle.read().expect("entity poisoned");
+        let guard = handle.read();
         let services = guard
             .config()
             .interfaces
@@ -2115,7 +2113,7 @@ async fn listen_for_node_add_abandoned_action_does_not_block_next_goal() {
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             if let Some(handle) = node_stack.find(FIRST_NODE_NAME, FIRST_NODE_TAG) {
-                let guard = handle.read().expect("entity poisoned");
+                let guard = handle.read();
                 let is_ready = matches!(guard.stage(), node_stack::NodeStage::Ready { .. });
                 if is_ready && guard.artifact_path().is_some() {
                     break;
@@ -3498,7 +3496,7 @@ async fn node_add_same_node_changing_interface_with_running_instance_and_depende
         let handle = node_stack
             .find(DEPENDENCY_NODE_NAME, DEPENDENCY_NODE_TAG)
             .expect("dependency entity missing");
-        let guard = handle.read().expect("entity poisoned");
+        let guard = handle.read();
         let exposes = guard
             .config()
             .interfaces
@@ -3770,7 +3768,7 @@ async fn listen_for_node_add_variant_local_source() {
     let entity = node_stack
         .find(ROOT_NODE_NAME, ROOT_NODE_TAG)
         .expect("node should exist in stack");
-    let entity_guard = entity.read().expect("entity poisoned");
+    let entity_guard = entity.read();
     // The config in the stack should have root's interfaces but variant's runtime
     let config = entity_guard.config();
     assert!(
@@ -3890,7 +3888,7 @@ async fn listen_for_node_add_variant_local_source_after_sync() {
     let entity = node_stack
         .find(ROOT_NODE_NAME, ROOT_NODE_TAG)
         .expect("node should exist in stack");
-    let entity_guard = entity.read().expect("entity poisoned");
+    let entity_guard = entity.read();
     let config = entity_guard.config();
     assert!(
         config.interfaces.topics.is_some(),
@@ -4055,7 +4053,7 @@ async fn listen_for_node_add_variant_only_node_after_sync() {
     let entity = node_stack
         .find(ROOT_NODE_NAME, ROOT_NODE_TAG)
         .expect("node should exist in stack");
-    let entity_guard = entity.read().expect("entity poisoned");
+    let entity_guard = entity.read();
     let config = entity_guard.config();
     assert!(
         config.interfaces.topics.is_some(),
@@ -4272,7 +4270,7 @@ async fn listen_for_node_add_with_fs_archive_variant_uses_archived_root() {
     let entity = node_stack
         .find(ROOT_NODE_NAME, ROOT_NODE_TAG)
         .expect("node should exist in stack");
-    let entity_guard = entity.read().expect("entity poisoned");
+    let entity_guard = entity.read();
     let config = entity_guard.config();
     assert!(
         config.interfaces.topics.is_some(),
@@ -4564,13 +4562,7 @@ async fn listen_for_node_add_variant_no_interfaces() {
         .find("test_node", "0.1.0")
         .expect("node should exist");
     assert!(
-        entity
-            .read()
-            .expect("entity poisoned")
-            .config()
-            .interfaces
-            .topics
-            .is_some(),
+        entity.read().config().interfaces.topics.is_some(),
         "root interfaces should be used even when variant has none"
     );
 }
@@ -4729,7 +4721,7 @@ async fn listen_for_node_add_variant_manifest_ignored_warning() {
         .node_stack
         .find("test_node", "0.1.0")
         .expect("node should be in stack under root's name:tag");
-    let entity_guard = entity.read().expect("entity poisoned");
+    let entity_guard = entity.read();
     assert_eq!(entity_guard.config().manifest.name.as_str(), "test_node");
     assert_eq!(entity_guard.config().manifest.tag, "0.1.0");
 }
@@ -4816,7 +4808,7 @@ async fn listen_for_node_add_default_variant_auto_resolved() {
     let entity = node_stack
         .find(ROOT_NODE_NAME, ROOT_NODE_TAG)
         .expect("node should exist in stack");
-    let entity_guard = entity.read().expect("entity poisoned");
+    let entity_guard = entity.read();
     let config = entity_guard.config();
     assert!(
         config.interfaces.topics.is_some(),
@@ -4915,7 +4907,7 @@ async fn listen_for_node_add_default_variant_explicit_other() {
     let entity = node_stack
         .find(ROOT_NODE_NAME, ROOT_NODE_TAG)
         .expect("node should exist in stack");
-    let entity_guard = entity.read().expect("entity poisoned");
+    let entity_guard = entity.read();
     let config = entity_guard.config();
     assert_eq!(
         config.execution.start_cmd.as_ref().unwrap(),
@@ -5104,7 +5096,7 @@ async fn listen_for_node_add_git_variant_verifies_git_hash_at_root() {
     let entity = node_stack
         .find(ROOT_NODE_NAME, ROOT_NODE_TAG)
         .expect("node should exist in stack");
-    let entity_guard = entity.read().expect("entity poisoned");
+    let entity_guard = entity.read();
     let config = entity_guard.config();
     assert!(
         config.interfaces.topics.is_some(),
@@ -5492,7 +5484,7 @@ async fn listen_for_node_git_add_with_default_local_variant_success() {
     let entity = node_stack
         .find(ROOT_NODE_NAME, ROOT_NODE_TAG)
         .expect("node should exist in stack");
-    let entity_guard = entity.read().expect("entity poisoned");
+    let entity_guard = entity.read();
     let config = entity_guard.config();
     assert!(
         config.interfaces.topics.is_some(),

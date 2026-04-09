@@ -164,8 +164,9 @@ async fn handle_node_info_request_inner(
 
     let (is_in_node_stack, instances_names, stage, instances, add_log_path, start_log_paths) =
         match node_stack.find(node_name, node_tag) {
-            Some(entity) => match entity.read() {
-                Ok(guard) => {
+            Some(entity) => {
+                let guard = entity.read();
+                {
                     let stage = Some(guard.stage().name().to_string());
                     let tracked = guard.instances();
                     let instances: Vec<NodeInstanceInfo> = tracked
@@ -201,13 +202,7 @@ async fn handle_node_info_request_inner(
                         start_log_paths,
                     )
                 }
-                Err(_) => {
-                    return Err(InfoError::Internal(format!(
-                        "entity {}:{} lock poisoned",
-                        node_name, node_tag
-                    )));
-                }
-            },
+            }
             None => (false, Vec::new(), None, Vec::new(), None, Vec::new()),
         };
 

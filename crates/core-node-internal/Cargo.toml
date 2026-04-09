@@ -53,6 +53,7 @@ config = { path = "../config-internal", features = ["test_helpers"] }
 tempfile = "3.10"
 tokio = { version = "1.47", features = ["full"] }
 httptest = "0.16.3"
+parking_lot = { workspace = true }
 
 [features]
 container_e2e = []
