@@ -3,11 +3,12 @@ use super::{
     checkout_repo_ref, is_supported_fs_archive, resolve_local_archive_source, sanitize_repo_path,
 };
 use crate::Result;
-use crate::encoding::{NodeInfoRequest, NodeInfoResponse, NodeSource};
+use crate::encoding::{NodeInfoRequest, NodeInfoResponse, NodeInstanceInfo, NodeSource};
 use crate::names;
 use config::consts::{NODE_CONFIG_FILE, PeppyDirs};
 use config::fingerprint::fingerprint_for_bytes;
 use config::node::{DEFAULT_VARIANT_NAME, NodeConfig, NodeConfigParser, ParsedNodeConfig};
+use node_stack::InstanceState;
 use node_stack::NodeStack;
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::types::Payload;
@@ -53,6 +54,27 @@ pub async fn listen_for_node_info(
     Ok(handle)
 }
 
+/// Failure mode of `handle_node_info_request_inner`. Routed to a different
+/// `PeppyError` variant by the outer wrapper so that internal faults
+/// (serializer/encoder errors) are not classified as caller-fault
+/// `InvalidServiceRequest`.
+enum InfoError {
+    Invalid(String),
+    Internal(String),
+}
+
+// Only `String` is convertible into `InfoError` via `?`, and only as the
+// `Invalid` (caller-fault) variant. The previous blanket
+// `From<E: Display>` swept *every* error type into `Invalid`, which
+// silently routed things like serializer faults to `InvalidServiceRequest`
+// instead of `ServiceError`. With this restricted impl, internal-fault
+// sites must call `InfoError::Internal(...)` explicitly.
+impl From<String> for InfoError {
+    fn from(reason: String) -> Self {
+        InfoError::Invalid(reason)
+    }
+}
+
 async fn handle_node_info_request(
     context: ServiceRequestContext,
     node_stack: Arc<NodeStack>,
@@ -72,8 +94,13 @@ async fn handle_node_info_request(
     .await
     {
         Ok(Ok(bytes)) => Ok(bytes),
-        Ok(Err(reason)) => Err(PeppyError::InvalidServiceRequest {
+        Ok(Err(InfoError::Invalid(reason))) => Err(PeppyError::InvalidServiceRequest {
             identifier: sender_instance_id,
+            reason,
+        }),
+        Ok(Err(InfoError::Internal(reason))) => Err(PeppyError::ServiceError {
+            instance_id: Some(sender_instance_id),
+            service_name: names::NODE_INFO.to_string(),
             reason,
         }),
         Err(_) => Err(PeppyError::ServiceTimeout {
@@ -88,7 +115,7 @@ async fn handle_node_info_request_inner(
     node_stack: Arc<NodeStack>,
     peppy_dirs: PeppyDirs,
     deadline: Option<Instant>,
-) -> std::result::Result<Payload, String> {
+) -> std::result::Result<Payload, InfoError> {
     let sender_instance_id = context.message().instance_id();
     let payload = context.message().payload();
 
@@ -136,31 +163,68 @@ async fn handle_node_info_request_inner(
     let node_name = node_config.manifest.name.as_str();
     let node_tag = node_config.manifest.tag.as_str();
 
-    let (is_in_node_stack, instances_names) = match node_stack.find(node_name, node_tag) {
-        Some(entity) => (
-            true,
-            entity
-                .instances()
-                .iter()
-                .map(|instance| instance.instance_id().as_str().to_owned())
-                .collect(),
-        ),
-        None => (false, Vec::new()),
-    };
+    let (is_in_node_stack, instances_names, stage, instances, add_log_path, start_log_paths) =
+        match node_stack.find(node_name, node_tag) {
+            Some(entity) => {
+                let guard = entity.read();
+                {
+                    let stage = Some(guard.stage().name().to_string());
+                    let tracked = guard.instances();
+                    let instances: Vec<NodeInstanceInfo> = tracked
+                        .iter()
+                        .map(|instance| NodeInstanceInfo {
+                            instance_id: instance.instance_id().as_str().to_owned(),
+                            state: match instance.state() {
+                                InstanceState::Starting => "starting".to_string(),
+                                InstanceState::Running => "running".to_string(),
+                            },
+                        })
+                        .collect();
+                    let instances_names: Vec<String> = tracked
+                        .iter()
+                        .filter(|instance| instance.state() == InstanceState::Running)
+                        .map(|instance| instance.instance_id().as_str().to_owned())
+                        .collect();
+                    let start_log_paths: Vec<PathBuf> = tracked
+                        .iter()
+                        .map(|instance| {
+                            peppy_dirs
+                                .logs_dir_start()
+                                .join(format!("{}.log", instance.instance_id().as_str()))
+                        })
+                        .collect();
+                    let add_log_path = guard.last_add_log_path().map(Path::to_path_buf);
+                    (
+                        true,
+                        instances_names,
+                        stage,
+                        instances,
+                        add_log_path,
+                        start_log_paths,
+                    )
+                }
+            }
+            None => (false, Vec::new(), None, Vec::new(), None, Vec::new()),
+        };
 
-    let config_json = serde_json5::to_string(&node_config).map_err(|e| format!("{}", e))?;
+    let config_json = serde_json5::to_string(&node_config)
+        .map_err(|e| InfoError::Internal(format!("failed to serialize node config: {}", e)))?;
     let config_integrity = fingerprint_for_bytes(config_json.as_bytes());
 
-    NodeInfoResponse::new(
-        node_config,
+    NodeInfoResponse {
+        config: node_config,
         is_in_node_stack,
         instances_names,
         config_integrity,
         variant_name,
         issues,
-    )
+        stage,
+        instances,
+        add_log_path,
+        start_log_paths,
+    }
     .encode()
-    .map_err(|e| format!("{}", e))
+    .map_err(|e| InfoError::Internal(format!("failed to encode NodeInfoResponse: {}", e)))
 }
 
 fn merged_config_with_variant_cleanup(resolved: super::variant::ResolvedVariant) -> NodeConfig {

@@ -4,7 +4,7 @@ use crate::helpers::{
     wait_for_child, wait_for_health_service_reachable_or_exit, wait_for_service_reachable_or_exit,
 };
 use config::consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME};
-use config::runtime::NodeInstance;
+use config::runtime::NodeInstanceConfig;
 use config::{
     launcher::Name,
     node::{ConsumedTopic, EmittedTopic, ExposedService, MessageFormat},
@@ -112,7 +112,7 @@ async fn topics_communication() {
     let receiver_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
-        NodeInstance {
+        NodeInstanceConfig {
             instance_id: Name::new(receiver_instance_id).unwrap(),
             arguments: Default::default(),
         },
@@ -194,7 +194,7 @@ if __name__ == "__main__":
     let emitter_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
-        NodeInstance {
+        NodeInstanceConfig {
             instance_id: Name::new(emitter_instance_id).unwrap(),
             arguments: serde_json5::from_str(r#"{ frequency: 10.0 }"#).unwrap(),
         },

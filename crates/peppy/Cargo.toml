@@ -34,13 +34,17 @@ names-generator2 = "0.2.1"
 rand = "0.10"
 crossterm = "0.29"
 tempfile = { version = "3.8", optional = true }
+parking_lot = { workspace = true, optional = true }
 
 [build-dependencies]
 build-helpers = { path = "../build-helpers-internal" }
 
 [features]
 default = ["test-support"]
-test-support = ["dep:tempfile"]
+# Gate test-only helpers (including config's fingerprint helpers and
+# their git2 transitive dep) behind this feature so a release build with
+# `--no-default-features` doesn't carry them.
+test-support = ["dep:tempfile", "dep:parking_lot", "config/test_helpers"]
 
 [dev-dependencies]
 tempfile = "3.8"

@@ -15,6 +15,7 @@ use config::consts::{DEFAULT_MESSAGING_HOST, DEFAULT_MESSAGING_PORT, PeppyDirs};
 use config::launcher::{Deployment, DeploymentSource, PeppyLauncherParser, VariantSource};
 use config::runtime::RuntimeConfig;
 use node_stack::NodeStack;
+use parking_lot::Mutex as StdMutex;
 use peppylib::messaging::{ServiceRequestContext, TopicPublisher};
 use peppylib::types::Payload;
 use peppylib::{ActionMessenger, MessengerHandle, PeppyResult};
@@ -22,7 +23,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex as StdMutex};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinHandle;
@@ -240,7 +241,8 @@ fn variant_source_to_node_source(
 pub const STACK_LAUNCH_GIT_HASH: &str = "stack-launch";
 
 async fn publish_feedback(ctx: &ProcessLaunchContext, feedback: LaunchFeedback) {
-    if let Ok(mut file) = ctx.log_file.lock() {
+    {
+        let mut file = ctx.log_file.lock();
         let timestamp = Local::now().format("%Y-%m-%dT%H:%M:%S%.3f");
         let _ = writeln!(
             file,
@@ -286,19 +288,17 @@ fn spawn_feedback_forwarder(
     let log_file = Arc::clone(log_file);
     let handle = tokio::spawn(async move {
         while let Some(line) = feedback_rx.recv().await {
-            // Write to the launch log file
-            if let Ok(mut file) = log_file.lock() {
-                let timestamp = Local::now().format("%Y-%m-%dT%H:%M:%S%.3f");
-                let stream_label = match line.stream {
-                    FeedbackStream::Stdout => "stdout",
-                    FeedbackStream::Stderr => "stderr",
-                };
-                let _ = writeln!(file, "[{}] [{}] {}", timestamp, stream_label, line.line);
-            }
+            node_stack::build_io::write_feedback_log_line(&log_file, line.stream, &line.line);
 
             let launch_feedback = match line.stream {
                 FeedbackStream::Stdout => LaunchFeedback::stdout(&line.line, step.clone()),
                 FeedbackStream::Stderr => LaunchFeedback::stderr(&line.line, step.clone()),
+                // Warnings bypass the per-node scrolling step and surface as
+                // persistent LauncherStep stderr lines so the operator sees
+                // them even after the step buffer scrolls past.
+                FeedbackStream::Warning => {
+                    LaunchFeedback::stderr(&line.line, LaunchFeedbackStep::LauncherStep)
+                }
             };
             if let Ok(payload) = launch_feedback.encode() {
                 let _ = publisher.publish(payload).await;
@@ -789,8 +789,18 @@ async fn snapshot_and_clear_stack(
     ctx: &ProcessLaunchContext,
 ) -> std::result::Result<NodeStack, LaunchResult> {
     let backup_stack = {
-        let root = ctx.node_stack.root();
-        let backup = NodeStack::new(root.config().clone(), None, root.root_path());
+        let root_handle = ctx.node_stack.root();
+        let (root_cfg, root_path) = {
+            let guard = root_handle.read();
+            (
+                guard.config().clone(),
+                guard
+                    .artifact_path()
+                    .unwrap_or_else(|| guard.config_path())
+                    .to_path_buf(),
+            )
+        };
+        let backup = NodeStack::new(root_cfg, None, root_path);
         if let Err(err) = backup.apply_from(&ctx.node_stack) {
             let msg = format!("failed to snapshot current stack: {err}");
             publish_stderr(ctx, msg.clone(), LaunchFeedbackStep::LauncherStep).await;
@@ -930,7 +940,7 @@ async fn start_node_instances(
             )
             .await;
 
-            let node_instance = config::runtime::NodeInstance {
+            let node_instance = config::runtime::NodeInstanceConfig {
                 instance_id: instance.instance_id.clone(),
                 arguments: instance.arguments.clone(),
             };
@@ -1165,7 +1175,7 @@ async fn process_launch(goal: LaunchGoal, ctx: ProcessLaunchContext) -> LaunchRe
     };
 
     // Step 3: Validate dependencies and compute topological order
-    let root_config = ctx.node_stack.root().config().clone();
+    let root_config = ctx.node_stack.root().read().config().clone();
     let ordered = match validate_and_order_dependencies(&ctx, &planned, &root_config).await {
         Ok(result) => result,
         Err(launch_result) => return launch_result,

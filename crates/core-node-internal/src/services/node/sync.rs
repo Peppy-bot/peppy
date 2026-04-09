@@ -200,13 +200,16 @@ async fn handle_node_sync_request_inner(
     } else {
         match NodeConfigParser::from_path(&node_config_path) {
             Ok(node_config) => {
-                // Validate dependencies exist in the node stack
                 let dep_errors = node_stack::validate_dependency_specs(
                     node_config.manifest(),
                     node_config.interfaces(),
                     node_config.manifest_name(),
                     node_config.manifest_tag(),
-                    |name, tag| node_stack.find(name, tag).map(|e| e.config().clone()),
+                    |name, tag| {
+                        node_stack
+                            .find(name, tag)
+                            .map(|e| e.read().config().clone())
+                    },
                 );
 
                 let mut missing_dependencies: HashSet<String> = HashSet::new();
@@ -284,11 +287,20 @@ async fn handle_node_sync_request_inner(
                 }
 
                 // Collect consumed interfaces with resolved message formats
-                let interfaces = collect_consumed_interfaces(
+                let interfaces = match collect_consumed_interfaces(
                     node_config.manifest(),
                     node_config.interfaces(),
                     node_stack,
-                );
+                ) {
+                    Ok(v) => v,
+                    Err(reason) => {
+                        return NodeSyncResponse::failure(format!(
+                            "Failed to resolve consumed interfaces: {}",
+                            reason
+                        ))
+                        .encode();
+                    }
+                };
                 let language = node_config.execution_language();
                 let variants = node_config.manifest().variants.clone();
                 let root_manifest = node_config.manifest().clone();
@@ -548,7 +560,7 @@ pub fn collect_consumed_interfaces(
     manifest: &config::node::Manifest,
     interfaces_cfg: &config::node::Interfaces,
     node_stack: &NodeStack,
-) -> Vec<DeploymentInterface> {
+) -> std::result::Result<Vec<DeploymentInterface>, String> {
     let mut interfaces = Vec::new();
     let dep_lookup = build_dependency_lookup(manifest);
 
@@ -563,21 +575,23 @@ pub fn collect_consumed_interfaces(
                     else {
                         continue;
                     };
-                    if let Some(dependency_entity) = node_stack.find(dep_name, dep_tag)
-                        && let Some(dep_topics) = &dependency_entity.config().interfaces.topics
-                        && let Some(emitted_topics) = &dep_topics.emits
-                        && let Some(emitted_topic) = emitted_topics
-                            .iter()
-                            .find(|t| t.name.trim() == linked.name.trim())
-                        && let Some(message_format) = &emitted_topic.message_format
-                    {
-                        interfaces.push(DeploymentInterface::new(
-                            InterfaceVariant::ConsumedTopic {
-                                topic: consumed_topic.clone(),
-                                message_format: message_format.clone(),
-                                dependency_node_name: dep_name.clone(),
-                            },
-                        ));
+                    if let Some(dep_handle) = node_stack.find(dep_name, dep_tag) {
+                        let guard = dep_handle.read();
+                        if let Some(dep_topics) = &guard.config().interfaces.topics
+                            && let Some(emitted_topics) = &dep_topics.emits
+                            && let Some(emitted_topic) = emitted_topics
+                                .iter()
+                                .find(|t| t.name.trim() == linked.name.trim())
+                            && let Some(message_format) = &emitted_topic.message_format
+                        {
+                            interfaces.push(DeploymentInterface::new(
+                                InterfaceVariant::ConsumedTopic {
+                                    topic: consumed_topic.clone(),
+                                    message_format: message_format.clone(),
+                                    dependency_node_name: dep_name.clone(),
+                                },
+                            ));
+                        }
                     }
                 }
                 config::node::ConsumedTopic::External(external) => {
@@ -600,27 +614,29 @@ pub fn collect_consumed_interfaces(
             let Some((dep_name, dep_tag)) = dep_lookup.get(&consumed_service.local_node_id) else {
                 continue;
             };
-            if let Some(dependency_entity) = node_stack.find(dep_name, dep_tag)
-                && let Some(dep_services) = &dependency_entity.config().interfaces.services
-                && let Some(exposed_services) = &dep_services.exposes
-                && let Some(exposed_service) = exposed_services
-                    .iter()
-                    .find(|s| s.name.trim() == consumed_service.name.trim())
-            {
-                interfaces.push(DeploymentInterface::new(
-                    InterfaceVariant::ConsumedService {
-                        service: consumed_service.clone(),
-                        request_format: exposed_service
-                            .request_message_format
-                            .clone()
-                            .unwrap_or_default(),
-                        response_format: exposed_service
-                            .response_message_format
-                            .clone()
-                            .unwrap_or_default(),
-                        dependency_node_name: dep_name.clone(),
-                    },
-                ));
+            if let Some(dep_handle) = node_stack.find(dep_name, dep_tag) {
+                let guard = dep_handle.read();
+                if let Some(dep_services) = &guard.config().interfaces.services
+                    && let Some(exposed_services) = &dep_services.exposes
+                    && let Some(exposed_service) = exposed_services
+                        .iter()
+                        .find(|s| s.name.trim() == consumed_service.name.trim())
+                {
+                    interfaces.push(DeploymentInterface::new(
+                        InterfaceVariant::ConsumedService {
+                            service: consumed_service.clone(),
+                            request_format: exposed_service
+                                .request_message_format
+                                .clone()
+                                .unwrap_or_default(),
+                            response_format: exposed_service
+                                .response_message_format
+                                .clone()
+                                .unwrap_or_default(),
+                            dependency_node_name: dep_name.clone(),
+                        },
+                    ));
+                }
             }
         }
     }
@@ -633,46 +649,48 @@ pub fn collect_consumed_interfaces(
             let Some((dep_name, dep_tag)) = dep_lookup.get(&consumed_action.local_node_id) else {
                 continue;
             };
-            if let Some(dependency_entity) = node_stack.find(dep_name, dep_tag)
-                && let Some(dep_actions) = &dependency_entity.config().interfaces.actions
-                && let Some(exposed_actions) = &dep_actions.exposes
-                && let Some(exposed_action) = exposed_actions
-                    .iter()
-                    .find(|a| a.name.trim() == consumed_action.name.trim())
-            {
-                let action_message = ConsumedActionMessage {
-                    goal_request: exposed_action
-                        .goal_service
-                        .as_ref()
-                        .and_then(|s| s.request_message_format.clone()),
-                    goal_response: exposed_action
-                        .goal_service
-                        .as_ref()
-                        .and_then(|s| s.response_message_format.clone()),
-                    feedback: exposed_action
-                        .feedback_topic
-                        .as_ref()
-                        .and_then(|t| t.message_format.clone()),
-                    result_request: exposed_action
-                        .result_service
-                        .as_ref()
-                        .and_then(|s| s.request_message_format.clone()),
-                    result_response: exposed_action
-                        .result_service
-                        .as_ref()
-                        .and_then(|s| s.response_message_format.clone()),
-                };
+            if let Some(dep_handle) = node_stack.find(dep_name, dep_tag) {
+                let guard = dep_handle.read();
+                if let Some(dep_actions) = &guard.config().interfaces.actions
+                    && let Some(exposed_actions) = &dep_actions.exposes
+                    && let Some(exposed_action) = exposed_actions
+                        .iter()
+                        .find(|a| a.name.trim() == consumed_action.name.trim())
+                {
+                    let action_message = ConsumedActionMessage {
+                        goal_request: exposed_action
+                            .goal_service
+                            .as_ref()
+                            .and_then(|s| s.request_message_format.clone()),
+                        goal_response: exposed_action
+                            .goal_service
+                            .as_ref()
+                            .and_then(|s| s.response_message_format.clone()),
+                        feedback: exposed_action
+                            .feedback_topic
+                            .as_ref()
+                            .and_then(|t| t.message_format.clone()),
+                        result_request: exposed_action
+                            .result_service
+                            .as_ref()
+                            .and_then(|s| s.request_message_format.clone()),
+                        result_response: exposed_action
+                            .result_service
+                            .as_ref()
+                            .and_then(|s| s.response_message_format.clone()),
+                    };
 
-                interfaces.push(DeploymentInterface::new(InterfaceVariant::ConsumedAction {
-                    action: consumed_action.clone(),
-                    messages: action_message,
-                    dependency_node_name: dep_name.clone(),
-                }));
+                    interfaces.push(DeploymentInterface::new(InterfaceVariant::ConsumedAction {
+                        action: consumed_action.clone(),
+                        messages: action_message,
+                        dependency_node_name: dep_name.clone(),
+                    }));
+                }
             }
         }
     }
 
-    interfaces
+    Ok(interfaces)
 }
 
 /// Parameters for [`auto_sync_if_missing`].
@@ -732,7 +750,13 @@ pub fn auto_sync_if_missing(
         let gen_result: crate::Result<()> = (|| {
             if let Some(language) = params.execution_language {
                 let consumed =
-                    collect_consumed_interfaces(params.manifest, params.interfaces, node_stack);
+                    collect_consumed_interfaces(params.manifest, params.interfaces, node_stack)
+                        .map_err(|reason| {
+                            crate::Error::Io(std::io::Error::other(format!(
+                                "failed to resolve consumed interfaces: {}",
+                                reason
+                            )))
+                        })?;
                 generate_peppygen_for_node(
                     language,
                     params.node_dir,
@@ -755,11 +779,24 @@ pub fn auto_sync_if_missing(
 
         match gen_result {
             Ok(()) => {
-                // Generation succeeded — clean up backup in background.
+                // Clean up the backup synchronously. We *must not* defer this
+                // to a background thread: the next stage (`process_node_add`)
+                // copies the source directory recursively, walks
+                // `.peppy-backup-PID-NANOS` (which is not in the excluded
+                // list), and would race with a concurrent deletion — surfacing
+                // as intermittent "No such file or directory" errors.
+                //
+                // A failure here must be surfaced rather than silently
+                // ignored: leaving the backup behind would still trip the
+                // recursive copy described above.
                 if had_backup {
-                    std::thread::spawn(move || {
-                        std::fs::remove_dir_all(&backup_dir).ok();
-                    });
+                    std::fs::remove_dir_all(&backup_dir).map_err(|e| {
+                        crate::Error::Io(std::io::Error::other(format!(
+                            "failed to clean up .peppy backup at {}: {}",
+                            backup_dir.display(),
+                            e
+                        )))
+                    })?;
                 }
             }
             Err(e) => {
@@ -801,6 +838,18 @@ pub fn auto_sync_if_missing(
         std::io::Write::write_all(&mut tmp, merged_json5.as_bytes()).map_err(crate::Error::from)?;
         let merged_config_path = tmp.path().to_path_buf();
 
+        // Resolve consumed interfaces *before* touching the filesystem: an
+        // error here must not leave the variant's `.peppy` dir missing.
+        // Doing this after the rename would short-circuit past the
+        // `gen_result` restore path below.
+        let consumed = collect_consumed_interfaces(params.manifest, params.interfaces, node_stack)
+            .map_err(|reason| {
+                crate::Error::Io(std::io::Error::other(format!(
+                    "failed to resolve consumed interfaces: {}",
+                    reason
+                )))
+            })?;
+
         // Back up existing .peppy so we can restore it on failure.
         let peppy_dir = v.dir.join(config::consts::PEPPY_OUTPUT_DIR);
         let backup_dir = v.dir.join(format!(
@@ -816,8 +865,6 @@ pub fn auto_sync_if_missing(
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
             Err(e) => return Err(crate::Error::Io(e)),
         };
-
-        let consumed = collect_consumed_interfaces(params.manifest, params.interfaces, node_stack);
         let gen_result: crate::Result<()> = (|| {
             generate_peppygen_for_node(
                 v.language,
@@ -842,11 +889,18 @@ pub fn auto_sync_if_missing(
 
         match gen_result {
             Ok(()) => {
-                // Generation succeeded — clean up backup in background.
+                // Clean up the backup synchronously — see the matching comment
+                // in the root-sync branch above for why a background thread
+                // would race with the subsequent recursive copy. A failure
+                // here must be surfaced for the same reason.
                 if had_backup {
-                    std::thread::spawn(move || {
-                        std::fs::remove_dir_all(&backup_dir).ok();
-                    });
+                    std::fs::remove_dir_all(&backup_dir).map_err(|e| {
+                        crate::Error::Io(std::io::Error::other(format!(
+                            "failed to clean up .peppy backup at {}: {}",
+                            backup_dir.display(),
+                            e
+                        )))
+                    })?;
                 }
             }
             Err(e) => {

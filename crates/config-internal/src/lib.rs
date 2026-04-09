@@ -75,7 +75,7 @@ pub mod node {
 
 // -- runtime --
 pub mod runtime {
-    pub use crate::internal::runtime::{LauncherRuntimeConfig, NodeInstance, RuntimeConfig};
+    pub use crate::internal::runtime::{LauncherRuntimeConfig, NodeInstanceConfig, RuntimeConfig};
 }
 
 // -- launcher --

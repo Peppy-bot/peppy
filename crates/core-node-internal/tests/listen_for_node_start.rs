@@ -7,9 +7,7 @@ use common::{
     start_core_node_with_real_messenger, write_peppy_json5,
 };
 use config::consts::DEFAULT_ALPINE_BASE_IMAGE;
-use config::launcher::Name;
 use config::node::Name as NodeName;
-use config::runtime::{NodeInstance, RuntimeConfig};
 use core_node::encoding::NodeStartFeedback;
 use peppylib::messaging::MessengerHandle;
 use peppylib::services::health::listen_for_node_health;
@@ -73,20 +71,14 @@ async fn listen_for_node_start_success() {
         .expect("zenoh endpoint should be available");
 
     // Create a runtime config for the node_start request
-    let runtime_config = RuntimeConfig::new(
+    let runtime_config_json5 = common::build_runtime_config_json5(
         messaging_host.as_str(),
         messaging_port,
-        NodeInstance {
-            instance_id: Name::new(TARGET_INSTANCE_ID).unwrap(),
-            arguments: Default::default(),
-        },
-        TARGET_NODE_NAME,
         &started_core_node.core_node_name,
-    )
-    .expect("runtime config should be valid");
-
-    let runtime_config_json5 =
-        serde_json5::to_string(&runtime_config).expect("runtime config should serialize");
+        TARGET_NODE_NAME,
+        TARGET_INSTANCE_ID,
+        Default::default(),
+    );
 
     let start_response = send_node_start_and_wait(
         &started_core_node.caller_handle,
@@ -193,20 +185,11 @@ async fn listen_for_node_start_timeout() {
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     // Create a runtime config for the node_start request
-    let runtime_config = RuntimeConfig::new(
-        "127.0.0.1",
-        config::consts::DEFAULT_MESSAGING_PORT,
-        NodeInstance {
-            instance_id: Name::new(TARGET_INSTANCE_ID).unwrap(),
-            arguments: Default::default(),
-        },
-        TARGET_NODE_NAME,
+    let runtime_config_json5 = common::default_runtime_config_json5(
         &started.core_node_name,
-    )
-    .expect("runtime config should be valid");
-
-    let runtime_config_json5 =
-        serde_json5::to_string(&runtime_config).expect("runtime config should serialize");
+        TARGET_NODE_NAME,
+        TARGET_INSTANCE_ID,
+    );
 
     // Call node_start - this should timeout because the node won't respond to health checks
     let start_response = send_node_start_and_wait(
@@ -266,20 +249,11 @@ async fn listen_for_node_start_not_found() {
     // This simulates trying to start a node that doesn't exist
 
     // Create a runtime config for a node that was never added
-    let runtime_config = RuntimeConfig::new(
-        "127.0.0.1",
-        config::consts::DEFAULT_MESSAGING_PORT,
-        NodeInstance {
-            instance_id: Name::new(TARGET_INSTANCE_ID).unwrap(),
-            arguments: Default::default(),
-        },
-        TARGET_NODE_NAME,
+    let runtime_config_json5 = common::default_runtime_config_json5(
         &started.core_node_name,
-    )
-    .expect("runtime config should be valid");
-
-    let runtime_config_json5 =
-        serde_json5::to_string(&runtime_config).expect("runtime config should serialize");
+        TARGET_NODE_NAME,
+        TARGET_INSTANCE_ID,
+    );
 
     // Call node_start - this should fail because the node doesn't exist in the node stack
     let start_response = send_node_start_and_wait(
@@ -390,20 +364,11 @@ async fn listen_for_node_start_streams_stdout_and_stderr() {
     // Allow ready/health services to establish listeners.
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    let runtime_config = RuntimeConfig::new(
-        "127.0.0.1",
-        config::consts::DEFAULT_MESSAGING_PORT,
-        NodeInstance {
-            instance_id: Name::new(TARGET_INSTANCE_ID).unwrap(),
-            arguments: Default::default(),
-        },
-        TARGET_NODE_NAME,
+    let runtime_config_json5 = common::default_runtime_config_json5(
         &started.core_node_name,
-    )
-    .expect("runtime config should be valid");
-
-    let runtime_config_json5 =
-        serde_json5::to_string(&runtime_config).expect("runtime config should serialize");
+        TARGET_NODE_NAME,
+        TARGET_INSTANCE_ID,
+    );
 
     let (feedback_tx, mut feedback_rx) =
         tokio::sync::mpsc::unbounded_channel::<NodeStartFeedback>();
@@ -519,20 +484,11 @@ async fn listen_for_node_start_writes_log_file() {
     // Allow ready/health services to establish listeners.
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    let runtime_config = RuntimeConfig::new(
-        "127.0.0.1",
-        config::consts::DEFAULT_MESSAGING_PORT,
-        NodeInstance {
-            instance_id: Name::new(TARGET_INSTANCE_ID).unwrap(),
-            arguments: Default::default(),
-        },
-        TARGET_NODE_NAME,
+    let runtime_config_json5 = common::default_runtime_config_json5(
         &started.core_node_name,
-    )
-    .expect("runtime config should be valid");
-
-    let runtime_config_json5 =
-        serde_json5::to_string(&runtime_config).expect("runtime config should serialize");
+        TARGET_NODE_NAME,
+        TARGET_INSTANCE_ID,
+    );
 
     let start_response = send_node_start_and_wait(
         &started.caller_handle,
@@ -649,20 +605,11 @@ async fn listen_for_node_start_reports_all_missing_parameters() {
     );
 
     // Create a runtime config WITHOUT providing any parameters
-    let runtime_config = RuntimeConfig::new(
-        "127.0.0.1",
-        config::consts::DEFAULT_MESSAGING_PORT,
-        NodeInstance {
-            instance_id: Name::new(TARGET_INSTANCE_ID).unwrap(),
-            arguments: Default::default(), // No parameters provided
-        },
-        TARGET_NODE_NAME,
+    let runtime_config_json5 = common::default_runtime_config_json5(
         &started.core_node_name,
-    )
-    .expect("runtime config should be valid");
-
-    let runtime_config_json5 =
-        serde_json5::to_string(&runtime_config).expect("runtime config should serialize");
+        TARGET_NODE_NAME,
+        TARGET_INSTANCE_ID,
+    );
 
     // Call node_start - this should fail with all missing parameters listed
     let start_response = send_node_start_and_wait(
@@ -798,20 +745,14 @@ async fn listen_for_node_start_reports_only_missing_parameters_when_some_provide
     arguments.insert("device".to_string(), AnyType::Object(device_args));
     // video is NOT provided
 
-    let runtime_config = RuntimeConfig::new(
+    let runtime_config_json5 = common::build_runtime_config_json5(
         "127.0.0.1",
         config::consts::DEFAULT_MESSAGING_PORT,
-        NodeInstance {
-            instance_id: Name::new(TARGET_INSTANCE_ID).unwrap(),
-            arguments,
-        },
-        TARGET_NODE_NAME,
         &started.core_node_name,
-    )
-    .expect("runtime config should be valid");
-
-    let runtime_config_json5 =
-        serde_json5::to_string(&runtime_config).expect("runtime config should serialize");
+        TARGET_NODE_NAME,
+        TARGET_INSTANCE_ID,
+        arguments,
+    );
 
     // Call node_start - this should fail with only the missing video parameters listed
     let start_response = send_node_start_and_wait(
@@ -1011,20 +952,11 @@ async fn listen_for_node_start_abandoned_action_does_not_block_next_goal() {
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     // Create runtime config for first node
-    let first_runtime_config = RuntimeConfig::new(
-        "127.0.0.1",
-        config::consts::DEFAULT_MESSAGING_PORT,
-        NodeInstance {
-            instance_id: Name::new(FIRST_INSTANCE_ID).unwrap(),
-            arguments: Default::default(),
-        },
-        FIRST_NODE_NAME,
+    let first_runtime_config_json5 = common::default_runtime_config_json5(
         &started.core_node_name,
-    )
-    .expect("first runtime config should be valid");
-
-    let first_runtime_config_json5 = serde_json5::to_string(&first_runtime_config)
-        .expect("first runtime config should serialize");
+        FIRST_NODE_NAME,
+        FIRST_INSTANCE_ID,
+    );
 
     // Send first goal but DON'T wait for result (simulating abandoned action)
     let first_goal = NodeStartGoal::new(
@@ -1066,20 +998,11 @@ async fn listen_for_node_start_abandoned_action_does_not_block_next_goal() {
 
     // Now send second goal - this should succeed even though we never polled
     // for the first action's result
-    let second_runtime_config = RuntimeConfig::new(
-        "127.0.0.1",
-        config::consts::DEFAULT_MESSAGING_PORT,
-        NodeInstance {
-            instance_id: Name::new(SECOND_INSTANCE_ID).unwrap(),
-            arguments: Default::default(),
-        },
-        SECOND_NODE_NAME,
+    let second_runtime_config_json5 = common::default_runtime_config_json5(
         &started.core_node_name,
-    )
-    .expect("second runtime config should be valid");
-
-    let second_runtime_config_json5 = serde_json5::to_string(&second_runtime_config)
-        .expect("second runtime config should serialize");
+        SECOND_NODE_NAME,
+        SECOND_INSTANCE_ID,
+    );
 
     let second_start_response = send_node_start_and_wait(
         &started.caller_handle,
@@ -1182,19 +1105,11 @@ async fn listen_for_node_start_uses_env_overrides_for_path() {
 
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    let runtime_config = RuntimeConfig::new(
-        "127.0.0.1",
-        config::consts::DEFAULT_MESSAGING_PORT,
-        NodeInstance {
-            instance_id: Name::new(TARGET_INSTANCE_ID).unwrap(),
-            arguments: Default::default(),
-        },
-        TARGET_NODE_NAME,
+    let runtime_config_json5 = common::default_runtime_config_json5(
         &started.core_node_name,
-    )
-    .expect("runtime config should be valid");
-    let runtime_config_json5 =
-        serde_json5::to_string(&runtime_config).expect("runtime config should serialize");
+        TARGET_NODE_NAME,
+        TARGET_INSTANCE_ID,
+    );
 
     // First attempt without env overrides: printout should not be found.
     let start_response_missing = send_node_start_and_wait(
@@ -1338,19 +1253,11 @@ async fn listen_for_node_start_injects_runtime_env_vars() {
 
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    let runtime_config = RuntimeConfig::new(
-        "127.0.0.1",
-        config::consts::DEFAULT_MESSAGING_PORT,
-        NodeInstance {
-            instance_id: Name::new(TARGET_INSTANCE_ID).unwrap(),
-            arguments: Default::default(),
-        },
-        TARGET_NODE_NAME,
+    let runtime_config_json5 = common::default_runtime_config_json5(
         &started.core_node_name,
-    )
-    .expect("runtime config should be valid");
-    let runtime_config_json5 =
-        serde_json5::to_string(&runtime_config).expect("runtime config should serialize");
+        TARGET_NODE_NAME,
+        TARGET_INSTANCE_ID,
+    );
 
     let start_response = send_node_start_and_wait(
         &started.caller_handle,
@@ -1478,20 +1385,11 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     // Create a runtime config for the node_start request
-    let runtime_config = RuntimeConfig::new(
-        "127.0.0.1",
-        config::consts::DEFAULT_MESSAGING_PORT,
-        NodeInstance {
-            instance_id: Name::new(TARGET_INSTANCE_ID).unwrap(),
-            arguments: Default::default(),
-        },
-        TARGET_NODE_NAME,
+    let runtime_config_json5 = common::default_runtime_config_json5(
         &started.core_node_name,
-    )
-    .expect("runtime config should be valid");
-
-    let runtime_config_json5 =
-        serde_json5::to_string(&runtime_config).expect("runtime config should serialize");
+        TARGET_NODE_NAME,
+        TARGET_INSTANCE_ID,
+    );
 
     let env_vars = vec![("MY_ENV_VAR".to_string(), "hello_from_peppy".to_string())];
 
@@ -1586,10 +1484,15 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
     );
 }
 
-/// Verifies that `start_container_node` auto-creates host-side mount source
-/// directories that do not yet exist, so Apptainer bind mounts succeed.
+/// Verifies that `start_container_node` auto-creates a missing bind-mount
+/// source directory AND emits a loud warning about it to the per-instance
+/// start log. The auto-create restores the dev-branch ergonomics for nodes
+/// that declare scratch / output directories (e.g. `/tmp/<node>`); the
+/// warning is the contract that prevents a typo'd file bind from silently
+/// becoming an empty directory. Both halves of the contract are asserted —
+/// if a future refactor drops the warning, this test must fail.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_start_with_container_creates_missing_mount_dir() {
+async fn listen_for_node_start_with_container_creates_missing_mount_dir_and_warns() {
     let _guard = CONTAINER_TEST_MUTEX.lock().await;
 
     const TARGET_NODE_NAME: &str = "container_mount_create_node";
@@ -1599,7 +1502,7 @@ async fn listen_for_node_start_with_container_creates_missing_mount_dir() {
     let started = start_core_node_with_mock_messenger().await;
 
     // Use a non-existent subdirectory inside a temp dir as the mount source.
-    // The framework should auto-create it before invoking Apptainer.
+    // The framework must auto-create it and emit a warning about doing so.
     let parent_dir = tempfile::tempdir().expect("failed to create temp parent dir");
     let mount_dir = parent_dir.path().join("nonexistent_subdir");
     assert!(!mount_dir.exists(), "mount dir should not exist yet");
@@ -1638,9 +1541,6 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
     Version {TARGET_NODE_TAG}
 
 %runscript
-    if [ -d {mount_dir_str} ]; then
-        echo "Mount dir exists inside container"
-    fi
     exec sleep 300
 "#
     );
@@ -1665,7 +1565,8 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
         add_response.error_message
     );
 
-    // Set up ready/health services for the container instance
+    // Set up ready/health services for the container instance. The container
+    // will actually launch (auto-create succeeds), so these need to be live.
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
     let _ready_task = AbortOnDrop(
         listen_for_node_ready(
@@ -1690,20 +1591,11 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
 
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    let runtime_config = RuntimeConfig::new(
-        "127.0.0.1",
-        config::consts::DEFAULT_MESSAGING_PORT,
-        NodeInstance {
-            instance_id: Name::new(TARGET_INSTANCE_ID).unwrap(),
-            arguments: Default::default(),
-        },
-        TARGET_NODE_NAME,
+    let runtime_config_json5 = common::default_runtime_config_json5(
         &started.core_node_name,
-    )
-    .expect("runtime config should be valid");
-
-    let runtime_config_json5 =
-        serde_json5::to_string(&runtime_config).expect("runtime config should serialize");
+        TARGET_NODE_NAME,
+        TARGET_INSTANCE_ID,
+    );
 
     let start_response = send_node_start_and_wait(
         &started.caller_handle,
@@ -1720,26 +1612,44 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
     .await
     .expect("node_start action should complete");
 
-    // The start should succeed — the framework should have auto-created the mount dir.
+    // The start must succeed: the framework auto-creates the missing dir.
     assert!(
         start_response.result.success,
-        "node_start should succeed (mount dir auto-created), got error: {:?}",
+        "node_start should succeed after auto-creating the bind source, got error: {:?}",
         start_response.result.error_message
     );
 
-    // Verify the host-side directory was created by the framework.
+    // The host-side directory must now exist as a directory.
     assert!(
-        mount_dir.exists(),
-        "mount dir should have been auto-created on the host"
+        mount_dir.is_dir(),
+        "mount dir should have been auto-created by the framework"
     );
 
-    // Verify the mount was accessible inside the container.
+    // The per-instance start log must contain the warning line so that an
+    // unintended mkdir (e.g. a typo'd file bind) is visible to the operator.
     let log_path = &start_response.goal_response.log_path;
-    let log_content = std::fs::read_to_string(log_path).expect("should be able to read log file");
+    let log_content =
+        std::fs::read_to_string(log_path).expect("should be able to read instance start log");
     assert!(
-        log_content.contains("Mount dir exists inside container"),
-        "container should see the auto-created mount dir, got:\n{}",
+        log_content.contains("auto-created missing bind mount source:"),
+        "feedback log should contain the auto-create warning, got:\n{}",
         log_content
+    );
+    assert!(
+        log_content.contains(&mount_dir_str),
+        "feedback log warning should reference the offending path {:?}, got:\n{}",
+        mount_dir_str,
+        log_content
+    );
+
+    // The instance should now be registered in the node stack.
+    let instance_id = NodeName::new(TARGET_INSTANCE_ID).expect("valid instance id");
+    assert!(
+        started
+            .node_stack
+            .find_by_instance_id(&instance_id)
+            .is_some(),
+        "instance should be registered in the node stack after successful start"
     );
 }
 
@@ -1813,20 +1723,11 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
     // Do NOT set up ready/health services — the process will exit immediately
     // which means the ready signal will fail (process died).
 
-    let runtime_config = config::runtime::RuntimeConfig::new(
-        "127.0.0.1",
-        config::consts::DEFAULT_MESSAGING_PORT,
-        config::runtime::NodeInstance {
-            instance_id: config::launcher::Name::new(TARGET_INSTANCE_ID).unwrap(),
-            arguments: Default::default(),
-        },
-        TARGET_NODE_NAME,
+    let runtime_config_json5 = common::default_runtime_config_json5(
         &started.core_node_name,
-    )
-    .expect("runtime config should be valid");
-
-    let runtime_config_json5 =
-        serde_json5::to_string(&runtime_config).expect("runtime config should serialize");
+        TARGET_NODE_NAME,
+        TARGET_INSTANCE_ID,
+    );
 
     let start_response = send_node_start_and_wait(
         &started.caller_handle,
@@ -1921,20 +1822,11 @@ async fn listen_for_node_start_logs_error_on_spawn_failure() {
         add_response.error_message
     );
 
-    let runtime_config = RuntimeConfig::new(
-        "127.0.0.1",
-        config::consts::DEFAULT_MESSAGING_PORT,
-        NodeInstance {
-            instance_id: Name::new(TARGET_INSTANCE_ID).unwrap(),
-            arguments: Default::default(),
-        },
-        TARGET_NODE_NAME,
+    let runtime_config_json5 = common::default_runtime_config_json5(
         &started.core_node_name,
-    )
-    .expect("runtime config should be valid");
-
-    let runtime_config_json5 =
-        serde_json5::to_string(&runtime_config).expect("runtime config should serialize");
+        TARGET_NODE_NAME,
+        TARGET_INSTANCE_ID,
+    );
 
     let start_response = send_node_start_and_wait(
         &started.caller_handle,

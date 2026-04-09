@@ -3,7 +3,8 @@ mod common;
 use common::{
     AbortOnDrop, CALLER_INSTANCE_ID, NodeAddSource, TEST_GIT_HASH, create_tar_zst_from_dir,
     send_node_add_and_wait, send_node_add_and_wait_with_env, send_node_add_and_wait_with_force,
-    send_node_add_and_wait_with_variant, start_core_node_with_mock_messenger, write_peppy_json5,
+    send_node_add_and_wait_with_variant, spawn_real_running_instance, spawn_real_stuck_instance,
+    start_core_node_with_mock_messenger, write_peppy_json5,
 };
 use config::consts::{
     DEFAULT_ALPINE_BASE_IMAGE, NODE_CONFIG_FILE, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH,
@@ -28,6 +29,32 @@ const ADD_CMD_MARKER_FILE: &str = "add_cmd_executed.marker";
 const GOAL_TIMEOUT: Duration = Duration::from_secs(30);
 const RESULT_TIMEOUT: Duration = Duration::from_secs(120);
 const CONTAINER_RESULT_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// Returns the current `artifact_path` of the entity at `(name, tag)` as an owned
+/// `PathBuf`. Panics if the entity is missing or is not yet `Built`.
+///
+/// The entity lookup uses the new `Arc<RwLock<NodeEntity>>` API: most call
+/// sites used to call `entity.root_path()` directly; this helper encapsulates
+/// the `read()` + `artifact_path().expect(...)` boilerplate.
+fn entity_artifact_path(node_stack: &node_stack::NodeStack, name: &str, tag: &str) -> PathBuf {
+    node_stack
+        .find(name, tag)
+        .expect("entity should exist")
+        .read()
+        .artifact_path()
+        .expect("entity should be built")
+        .to_path_buf()
+}
+
+/// Returns the number of tracked instances for the entity at `(name, tag)`.
+fn entity_instance_count(node_stack: &node_stack::NodeStack, name: &str, tag: &str) -> usize {
+    node_stack
+        .find(name, tag)
+        .expect("entity should exist")
+        .read()
+        .instances()
+        .len()
+}
 
 /// Creates a minimal node bundle (peppy.json5 + tar.zst) suitable for HTTP source tests.
 /// Returns the temp directory (must be kept alive) and the compressed bundle bytes.
@@ -283,15 +310,15 @@ async fn listen_for_node_fs_add_success() {
     assert!(node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG));
     assert_eq!(node_stack.len(), 2, "root + added node");
 
-    let entity = node_stack
-        .find(TARGET_NODE_NAME, TARGET_NODE_TAG)
-        .expect("node should exist in stack");
     // `add` only adds the node to the NodeStack but doesn't spawn any instance
-    assert_eq!(entity.instances().len(), 0);
+    assert_eq!(
+        entity_instance_count(&node_stack, TARGET_NODE_NAME, TARGET_NODE_TAG),
+        0
+    );
 
     // Verify the node was archived to the peppy storage directory
     let snapshot_path = add_result.snapshot_path.as_path();
-    let root_path = entity.root_path();
+    let root_path = entity_artifact_path(&node_stack, TARGET_NODE_NAME, TARGET_NODE_TAG);
     assert_eq!(
         snapshot_path, root_path,
         "snapshot_path should match archive path"
@@ -307,7 +334,7 @@ async fn listen_for_node_fs_add_success() {
         root_path.display()
     );
     assert!(
-        archive_contains_entry(root_path, NODE_CONFIG_FILE),
+        archive_contains_entry(&root_path, NODE_CONFIG_FILE),
         "config file should be present in the archive"
     );
 
@@ -387,15 +414,15 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
     assert!(node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG));
     assert_eq!(node_stack.len(), 2, "root + added node");
 
-    let entity = node_stack
-        .find(TARGET_NODE_NAME, TARGET_NODE_TAG)
-        .expect("node should exist in stack");
     // `add` only adds the node to the NodeStack but doesn't spawn any instance
-    assert_eq!(entity.instances().len(), 0);
+    assert_eq!(
+        entity_instance_count(&node_stack, TARGET_NODE_NAME, TARGET_NODE_TAG),
+        0
+    );
 
     // Verify the .sif image was stored in the peppy storage directory
     let snapshot_path = add_result.snapshot_path.as_path();
-    let root_path = entity.root_path();
+    let root_path = entity_artifact_path(&node_stack, TARGET_NODE_NAME, TARGET_NODE_TAG);
     assert_eq!(
         snapshot_path, root_path,
         "snapshot_path should match root_path"
@@ -509,17 +536,17 @@ async fn listen_for_node_git_add_success() {
     assert!(node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG));
     assert_eq!(node_stack.len(), 2, "root + added node");
 
-    let entity = node_stack
-        .find(TARGET_NODE_NAME, TARGET_NODE_TAG)
-        .expect("node should exist in stack");
-    assert_eq!(entity.instances().len(), 0);
+    assert_eq!(
+        entity_instance_count(&node_stack, TARGET_NODE_NAME, TARGET_NODE_TAG),
+        0
+    );
 
     let snapshot_path = add_result.snapshot_path.as_path();
-    let root_path = entity.root_path();
+    let root_path = entity_artifact_path(&node_stack, TARGET_NODE_NAME, TARGET_NODE_TAG);
     assert_eq!(snapshot_path, root_path);
     assert!(root_path.exists(), "archive should exist");
     assert!(
-        archive_contains_entry(root_path, NODE_CONFIG_FILE),
+        archive_contains_entry(&root_path, NODE_CONFIG_FILE),
         "config file should exist in archive"
     );
 
@@ -704,25 +731,25 @@ async fn listen_for_node_http_add_success() {
     assert!(node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG));
     assert_eq!(node_stack.len(), 2, "root + added node");
 
-    let entity = node_stack
-        .find(TARGET_NODE_NAME, TARGET_NODE_TAG)
-        .expect("node should exist in stack");
-    assert_eq!(entity.instances().len(), 0);
+    assert_eq!(
+        entity_instance_count(&node_stack, TARGET_NODE_NAME, TARGET_NODE_TAG),
+        0
+    );
 
     let snapshot_path = add_result.snapshot_path.as_path();
-    let root_path = entity.root_path();
+    let root_path = entity_artifact_path(&node_stack, TARGET_NODE_NAME, TARGET_NODE_TAG);
     assert_eq!(snapshot_path, root_path);
     assert!(root_path.exists(), "archive should exist");
     assert!(
-        archive_contains_entry(root_path, NODE_CONFIG_FILE),
+        archive_contains_entry(&root_path, NODE_CONFIG_FILE),
         "config file should exist in archive"
     );
 
     assert!(
-        archive_contains_entry(root_path, "test_file.txt"),
+        archive_contains_entry(&root_path, "test_file.txt"),
         "test_file.txt should be in the archive"
     );
-    let copied_content = read_file_from_archive(root_path, "test_file.txt");
+    let copied_content = read_file_from_archive(&root_path, "test_file.txt");
     assert_eq!(
         copied_content, test_file_content,
         "file content should match"
@@ -1122,11 +1149,8 @@ async fn listen_for_node_add_same_node_same_tags_overwrites_when_no_dependents()
     );
 
     assert_eq!(node_stack.len(), 2, "root + v1");
-    let entity = node_stack
-        .find(NODE_NAME, NODE_TAG)
-        .expect("node should exist after v1");
-    assert_eq!(entity.instances().len(), 0);
-    let copied_path_v1 = entity.root_path().to_path_buf();
+    assert_eq!(entity_instance_count(&node_stack, NODE_NAME, NODE_TAG), 0);
+    let copied_path_v1 = entity_artifact_path(&node_stack, NODE_NAME, NODE_TAG);
 
     // Second add: same name+tag but different interfaces -> should overwrite.
     let peppy_json5_v2 = r#"{
@@ -1170,24 +1194,30 @@ async fn listen_for_node_add_same_node_same_tags_overwrites_when_no_dependents()
     let entity = node_stack
         .find(NODE_NAME, NODE_TAG)
         .expect("node should exist after v2 overwrite");
-    assert_eq!(entity.instances().len(), 0, "should not have any instances");
+    let entity_guard = entity.read();
     assert_eq!(
-        entity.root_path(),
+        entity_guard.instances().len(),
+        0,
+        "should not have any instances"
+    );
+    let entity_root = entity_guard
+        .artifact_path()
+        .expect("entity should be built")
+        .to_path_buf();
+    assert_eq!(
+        entity_root.as_path(),
         add_v2.snapshot_path.as_path(),
         "node stack should point to the new snapshot path"
     );
     // With deterministic archive naming, v1 and v2 produce the same path.
     assert_eq!(
-        entity.root_path(),
+        entity_root.as_path(),
         copied_path_v1.as_path(),
         "deterministic archive path should be the same for both adds"
     );
+    assert!(entity_root.exists(), "archive should exist after overwrite");
     assert!(
-        entity.root_path().exists(),
-        "archive should exist after overwrite"
-    );
-    assert!(
-        entity
+        entity_guard
             .config()
             .interfaces
             .topics
@@ -1196,6 +1226,7 @@ async fn listen_for_node_add_same_node_same_tags_overwrites_when_no_dependents()
             .is_some_and(|topics| topics.iter().any(|topic| topic.name == "/example")),
         "node should have updated interfaces from the overwritten config"
     );
+    drop(entity_guard);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1299,10 +1330,8 @@ async fn listen_for_node_add_same_node_same_tags_fails_when_node_has_dependents(
     );
 
     assert_eq!(node_stack.len(), 3, "root + dependency + dependent");
-    let dependency_entity = node_stack
-        .find(DEPENDENCY_NODE_NAME, DEPENDENCY_NODE_TAG)
-        .expect("dependency should exist");
-    let dependency_snapshot_path = dependency_entity.root_path().to_path_buf();
+    let dependency_snapshot_path =
+        entity_artifact_path(&node_stack, DEPENDENCY_NODE_NAME, DEPENDENCY_NODE_TAG);
 
     // Overwrite attempt: same name+tag but different interfaces should fail due to dependent nodes.
     let dependency_peppy_json5_v2 = r#"{
@@ -1353,11 +1382,8 @@ async fn listen_for_node_add_same_node_same_tags_fails_when_node_has_dependents(
     );
 
     assert_eq!(node_stack.len(), 3, "stack should be unchanged");
-    let dependency_entity = node_stack
-        .find(DEPENDENCY_NODE_NAME, DEPENDENCY_NODE_TAG)
-        .expect("dependency should still exist");
     assert_eq!(
-        dependency_entity.root_path(),
+        entity_artifact_path(&node_stack, DEPENDENCY_NODE_NAME, DEPENDENCY_NODE_TAG).as_path(),
         dependency_snapshot_path.as_path(),
         "dependency should still point to the original snapshot path"
     );
@@ -1365,6 +1391,38 @@ async fn listen_for_node_add_same_node_same_tags_fails_when_node_has_dependents(
         node_stack.contains(DEPENDENT_NODE_NAME, DEPENDENT_NODE_TAG),
         "dependent node should still exist after failed overwrite"
     );
+
+    // Path equality alone isn't enough — assert the live entity config still
+    // exposes the v1-only interface (`reset_sensor`) and does NOT expose the
+    // v2-only interface (`new_service`). This proves the failed overwrite
+    // truly preserved the original revision rather than just the path.
+    {
+        let handle = node_stack
+            .find(DEPENDENCY_NODE_NAME, DEPENDENCY_NODE_TAG)
+            .expect("dependency entity should exist");
+        let guard = handle.read();
+        let services = guard
+            .config()
+            .interfaces
+            .services
+            .as_ref()
+            .expect("services section should be present");
+        let exposed: Vec<&str> = services
+            .exposes
+            .as_ref()
+            .map(|v| v.iter().map(|s| s.name.as_str()).collect())
+            .unwrap_or_default();
+        assert!(
+            exposed.contains(&"reset_sensor"),
+            "v1-only service `reset_sensor` should still be exposed; got {:?}",
+            exposed
+        );
+        assert!(
+            !exposed.contains(&"new_service"),
+            "v2-only service `new_service` should NOT be exposed; got {:?}",
+            exposed
+        );
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1510,31 +1568,27 @@ async fn listen_for_node_add_copies_files_to_storage() {
         add_result.error_message
     );
 
-    let entity = node_stack
-        .find(TARGET_NODE_NAME, TARGET_NODE_TAG)
-        .expect("node should exist in stack");
-
-    let archive_path = entity.root_path();
+    let archive_path = entity_artifact_path(&node_stack, TARGET_NODE_NAME, TARGET_NODE_TAG);
     assert_eq!(
         add_result.snapshot_path.as_path(),
-        archive_path,
+        archive_path.as_path(),
         "snapshot_path should match archive path"
     );
 
     // Verify the file was archived
     assert!(
-        archive_contains_entry(archive_path, "test_file.txt"),
+        archive_contains_entry(&archive_path, "test_file.txt"),
         "test_file.txt should be in the archive"
     );
-    let content = read_file_from_archive(archive_path, "test_file.txt");
+    let content = read_file_from_archive(&archive_path, "test_file.txt");
     assert_eq!(content, test_file_content, "file content should match");
 
     // Verify the subdirectory and nested file were archived
     assert!(
-        archive_contains_entry(archive_path, "subdir/nested_file.txt"),
+        archive_contains_entry(&archive_path, "subdir/nested_file.txt"),
         "nested file should be in the archive"
     );
-    let nested_content = read_file_from_archive(archive_path, "subdir/nested_file.txt");
+    let nested_content = read_file_from_archive(&archive_path, "subdir/nested_file.txt");
     assert_eq!(
         nested_content, "nested content",
         "nested content should match"
@@ -1586,16 +1640,12 @@ async fn listen_for_node_add_runs_add_cmd() {
         add_result.error_message
     );
 
-    let entity = node_stack
-        .find(TARGET_NODE_NAME, TARGET_NODE_TAG)
-        .expect("node should exist in stack");
-
-    let archive_path = entity.root_path();
+    let archive_path = entity_artifact_path(&node_stack, TARGET_NODE_NAME, TARGET_NODE_TAG);
 
     // Verify that add_cmd was executed in the working directory (not the source)
     // by checking the marker file exists in the archive
     assert!(
-        archive_contains_entry(archive_path, ADD_CMD_MARKER_FILE),
+        archive_contains_entry(&archive_path, ADD_CMD_MARKER_FILE),
         "add_cmd should have created marker file in the archive"
     );
 
@@ -2052,15 +2102,28 @@ async fn listen_for_node_add_abandoned_action_does_not_block_next_goal() {
         "first goal should be accepted"
     );
 
-    // Wait for the first action to complete by checking if the node was added to the stack.
-    // This detects completion without polling for the result (which would defeat the purpose
-    // of testing abandoned actions).
-    loop {
-        if node_stack.contains(FIRST_NODE_NAME, FIRST_NODE_TAG) {
-            break;
+    // Wait for the first action to *fully* settle without polling its
+    // action result (the whole point of this test is that the result is
+    // never requested). We can't rely on the previous `no_starting` clause
+    // — `node add` never registers `Starting` instances, so it was always
+    // true and added nothing — so settling is detected purely via
+    // `stage == Ready` (which the entity transitions to inside `build`)
+    // and `artifact_path().is_some()` (which is recorded under the same
+    // write lock as the stage transition).
+    tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            if let Some(handle) = node_stack.find(FIRST_NODE_NAME, FIRST_NODE_TAG) {
+                let guard = handle.read();
+                let is_ready = matches!(guard.stage(), node_stack::NodeStage::Ready { .. });
+                if is_ready && guard.artifact_path().is_some() {
+                    break;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
         }
-        tokio::task::yield_now().await;
-    }
+    })
+    .await
+    .expect("first node never reached Ready within 30s");
 
     // Now send second goal - this should succeed even though we never polled
     // for the first action's result
@@ -2155,19 +2218,20 @@ async fn node_add_same_node_shutdown_existing_instances() {
         add_v1.error_message
     );
 
-    let entity_v1 = node_stack
-        .find(NODE_NAME, NODE_TAG)
-        .expect("node should exist after v1");
-    let snapshot_v1 = entity_v1.root_path().to_path_buf();
+    let snapshot_v1 = entity_artifact_path(&node_stack, NODE_NAME, NODE_TAG);
+    // Capture the v1 archive bytes so we can later detect whether the v2
+    // overwrite actually mutated the on-disk artifact mid-overwrite. With
+    // deterministic archive naming v1 and v2 share the same path; only the
+    // *bytes* can prove the overwrite ordering invariant.
+    let snapshot_v1_bytes =
+        std::fs::read(&snapshot_v1).expect("v1 archive should be readable on disk");
 
     let instance_id_1 = config::node::Name::new(INSTANCE_1).expect("valid instance id 1");
     let instance_id_2 = config::node::Name::new(INSTANCE_2).expect("valid instance id 2");
-    node_stack
-        .add_instance(NODE_NAME, NODE_TAG, Some(&instance_id_1), None)
-        .expect("add_instance for instance 1 should succeed");
-    node_stack
-        .add_instance(NODE_NAME, NODE_TAG, Some(&instance_id_2), None)
-        .expect("add_instance for instance 2 should succeed");
+    let _running_1 =
+        spawn_real_running_instance(&started_core_node, NODE_NAME, NODE_TAG, &instance_id_1).await;
+    let _running_2 =
+        spawn_real_running_instance(&started_core_node, NODE_NAME, NODE_TAG, &instance_id_2).await;
 
     let instance_messenger =
         MessengerHandle::from_shared(Arc::clone(&started_core_node.shared_messenger));
@@ -2257,6 +2321,17 @@ async fn node_add_same_node_shutdown_existing_instances() {
     .replace("{NODE_TAG}", NODE_TAG);
     write_peppy_json5(source_dir_v2.path(), &peppy_json5_v2);
 
+    // Drop a v2-only marker into the source directory so the rebuilt
+    // archive bytes diverge from v1. Without this the deterministic
+    // archive naming would produce identical artifact bytes and the
+    // mid-overwrite assertions below couldn't distinguish "still v1" from
+    // "already v2".
+    std::fs::write(
+        source_dir_v2.path().join("v2_marker.txt"),
+        b"v2-only payload",
+    )
+    .expect("write v2 marker");
+
     // Use wildcard caller IDs so mock pub/sub can match feedback topics with "*" segments.
     let (feedback_tx, mut feedback_rx) = tokio::sync::mpsc::unbounded_channel::<NodeAddFeedback>();
 
@@ -2280,13 +2355,17 @@ async fn node_add_same_node_shutdown_existing_instances() {
         .await
         .expect("shutdown request for instance 1 should arrive within timeout")
         .expect("shutdown channel for instance 1 should not be dropped");
-    let entity_mid = node_stack
-        .find(NODE_NAME, NODE_TAG)
-        .expect("node should still exist while waiting for shutdown 1 to complete");
     assert_eq!(
-        entity_mid.root_path(),
+        entity_artifact_path(&node_stack, NODE_NAME, NODE_TAG).as_path(),
         snapshot_v1.as_path(),
         "node should not be overwritten before instance 1 is shutdown"
+    );
+    // Path equality is not enough — verify the on-disk archive bytes still
+    // match v1 (so we can be sure the v2 build hasn't yet rewritten them).
+    assert_eq!(
+        std::fs::read(&snapshot_v1).expect("v1 archive should still exist"),
+        snapshot_v1_bytes,
+        "archive bytes should still match v1 before instance 1 shutdown completes"
     );
 
     // Allow instance 1 shutdown response, then wait for instance 2 shutdown request.
@@ -2296,13 +2375,15 @@ async fn node_add_same_node_shutdown_existing_instances() {
         .await
         .expect("shutdown request for instance 2 should arrive within timeout")
         .expect("shutdown channel for instance 2 should not be dropped");
-    let entity_mid = node_stack
-        .find(NODE_NAME, NODE_TAG)
-        .expect("node should still exist while waiting for shutdown 2 to complete");
     assert_eq!(
-        entity_mid.root_path(),
+        entity_artifact_path(&node_stack, NODE_NAME, NODE_TAG).as_path(),
         snapshot_v1.as_path(),
         "node should not be overwritten before instance 2 is shutdown"
+    );
+    assert_eq!(
+        std::fs::read(&snapshot_v1).expect("v1 archive should still exist"),
+        snapshot_v1_bytes,
+        "archive bytes should still match v1 between the two instance shutdowns"
     );
 
     // Allow instance 2 shutdown response so the overwrite can proceed.
@@ -2319,16 +2400,13 @@ async fn node_add_same_node_shutdown_existing_instances() {
         add_v2.error_message
     );
 
-    let entity_v2 = node_stack
-        .find(NODE_NAME, NODE_TAG)
-        .expect("node should exist after overwrite");
     assert_eq!(
-        entity_v2.root_path(),
+        entity_artifact_path(&node_stack, NODE_NAME, NODE_TAG).as_path(),
         add_v2.snapshot_path.as_path(),
         "node stack should point to the new snapshot path"
     );
     assert_eq!(
-        entity_v2.instances().len(),
+        entity_instance_count(&node_stack, NODE_NAME, NODE_TAG),
         0,
         "instances should be stopped before overwrite completes"
     );
@@ -2337,6 +2415,15 @@ async fn node_add_same_node_shutdown_existing_instances() {
     assert!(
         add_v2.snapshot_path.exists(),
         "archive should exist after overwrite"
+    );
+    // After overwrite the archive bytes must have changed (v1 had no
+    // `v2_marker.txt`, v2 does), proving the artifact was actually
+    // replaced rather than just left in place.
+    let snapshot_v2_bytes =
+        std::fs::read(&add_v2.snapshot_path).expect("v2 archive should be readable");
+    assert_ne!(
+        snapshot_v2_bytes, snapshot_v1_bytes,
+        "v2 archive should differ from v1 (the v2 source includes v2_marker.txt)"
     );
 
     let mut feedback = Vec::new();
@@ -2854,14 +2941,16 @@ From: nowhere
         "node_add should fail with a broken def file"
     );
 
-    // The error message should mention the container build failure
+    // The error message should mention the container build failure. The
+    // exact wording comes from NodeEntity::build, which wraps the apptainer
+    // failure as a `BuildFailed` error containing "apptainer build failed".
     let error_msg = add_result
         .error_message
         .as_ref()
         .expect("error_message should be present");
     assert!(
-        error_msg.contains("Failed to build container image"),
-        "error should mention container build failure, got: {}",
+        error_msg.contains("apptainer build failed"),
+        "error should mention apptainer build failure, got: {}",
         error_msg
     );
 
@@ -3104,14 +3193,13 @@ async fn node_add_same_node_with_running_instance_and_dependents_succeeds() {
 
     // Add a fake running instance to the dependency node
     let instance_id = config::node::Name::new(INSTANCE_ID).expect("valid instance id");
-    node_stack
-        .add_instance(
-            DEPENDENCY_NODE_NAME,
-            DEPENDENCY_NODE_TAG,
-            Some(&instance_id),
-            None,
-        )
-        .expect("add_instance should succeed");
+    let _running = spawn_real_running_instance(
+        &started_core_node,
+        DEPENDENCY_NODE_NAME,
+        DEPENDENCY_NODE_TAG,
+        &instance_id,
+    )
+    .await;
 
     // Mock the shutdown service for the running instance
     let instance_messenger =
@@ -3187,11 +3275,8 @@ async fn node_add_same_node_with_running_instance_and_dependents_succeeds() {
         add_v2.error_message
     );
 
-    let entity_v2 = node_stack
-        .find(DEPENDENCY_NODE_NAME, DEPENDENCY_NODE_TAG)
-        .expect("dependency should still exist after re-add");
     assert_eq!(
-        entity_v2.instances().len(),
+        entity_instance_count(&node_stack, DEPENDENCY_NODE_NAME, DEPENDENCY_NODE_TAG),
         0,
         "running instance should have been stopped"
     );
@@ -3307,22 +3392,17 @@ async fn node_add_same_node_changing_interface_with_running_instance_and_depende
         dependent_add.error_message
     );
 
-    let snapshot_v1 = node_stack
-        .find(DEPENDENCY_NODE_NAME, DEPENDENCY_NODE_TAG)
-        .expect("dependency should exist")
-        .root_path()
-        .to_path_buf();
+    let snapshot_v1 = entity_artifact_path(&node_stack, DEPENDENCY_NODE_NAME, DEPENDENCY_NODE_TAG);
 
     // Add a fake running instance to the dependency node
     let instance_id = config::node::Name::new(INSTANCE_ID).expect("valid instance id");
-    node_stack
-        .add_instance(
-            DEPENDENCY_NODE_NAME,
-            DEPENDENCY_NODE_TAG,
-            Some(&instance_id),
-            None,
-        )
-        .expect("add_instance should succeed");
+    let _running = spawn_real_running_instance(
+        &started_core_node,
+        DEPENDENCY_NODE_NAME,
+        DEPENDENCY_NODE_TAG,
+        &instance_id,
+    )
+    .await;
 
     // Register a SHUTDOWN_SERVICE handler that responds immediately.
     // Shutdown succeeds; push_config then rejects the overwrite due to the interface change.
@@ -3394,17 +3474,14 @@ async fn node_add_same_node_changing_interface_with_running_instance_and_depende
     );
 
     // Old config must be preserved, snapshot path unchanged
-    let entity_after = node_stack
-        .find(DEPENDENCY_NODE_NAME, DEPENDENCY_NODE_TAG)
-        .expect("dependency should still exist after failed overwrite");
     assert_eq!(
-        entity_after.root_path(),
+        entity_artifact_path(&node_stack, DEPENDENCY_NODE_NAME, DEPENDENCY_NODE_TAG).as_path(),
         snapshot_v1.as_path(),
         "snapshot path should be unchanged after failed overwrite"
     );
     // Shutdown succeeded, so the instance was stopped before push_config rejected the overwrite
     assert_eq!(
-        entity_after.instances().len(),
+        entity_instance_count(&node_stack, DEPENDENCY_NODE_NAME, DEPENDENCY_NODE_TAG),
         0,
         "running instance should have been stopped before push_config rejected the overwrite"
     );
@@ -3412,6 +3489,33 @@ async fn node_add_same_node_changing_interface_with_running_instance_and_depende
         node_stack.contains(DEPENDENT_NODE_NAME, DEPENDENT_NODE_TAG),
         "dependent node should still be in the stack after failed overwrite"
     );
+
+    // The dependency's interface must remain the v1 shape: `reset_sensor`
+    // is still exposed and the v2 `new_service` was never spliced in.
+    {
+        let handle = node_stack
+            .find(DEPENDENCY_NODE_NAME, DEPENDENCY_NODE_TAG)
+            .expect("dependency entity missing");
+        let guard = handle.read();
+        let exposes = guard
+            .config()
+            .interfaces
+            .services
+            .as_ref()
+            .and_then(|s| s.exposes.as_ref())
+            .expect("v1 services.exposes should be present");
+        let names: Vec<&str> = exposes.iter().map(|svc| svc.name.as_str()).collect();
+        assert!(
+            names.contains(&"reset_sensor"),
+            "v1 `reset_sensor` should still be exposed after failed overwrite, got: {:?}",
+            names
+        );
+        assert!(
+            !names.contains(&"new_service"),
+            "v2 `new_service` must not have leaked through the failed overwrite, got: {:?}",
+            names
+        );
+    }
 }
 
 /// When a running node instance does not respond to SHUTDOWN_SERVICE (e.g. the process is frozen),
@@ -3505,16 +3609,17 @@ async fn node_add_same_node_with_running_instance_and_dependents_fails_on_stoppe
         dependent_add.error_message
     );
 
-    // Add a fake running instance to the dependency node
+    // Spawn a real running instance WITHOUT the auto-shutdown listener so
+    // the production shutdown path observes a stuck process that never
+    // responds or terminates.
     let instance_id = config::node::Name::new(INSTANCE_ID).expect("valid instance id");
-    node_stack
-        .add_instance(
-            DEPENDENCY_NODE_NAME,
-            DEPENDENCY_NODE_TAG,
-            Some(&instance_id),
-            None,
-        )
-        .expect("add_instance should succeed");
+    let _running = spawn_real_stuck_instance(
+        &started_core_node,
+        DEPENDENCY_NODE_NAME,
+        DEPENDENCY_NODE_TAG,
+        &instance_id,
+    )
+    .await;
 
     // Register a SHUTDOWN_SERVICE handler that blocks forever — simulates a frozen/unresponsive node.
     // `notify_one` is never called, so the handler never returns, causing the poll to time out.
@@ -3575,11 +3680,8 @@ async fn node_add_same_node_with_running_instance_and_dependents_fails_on_stoppe
     );
 
     // The instance was never removed — shutdown did not complete
-    let entity_after = node_stack
-        .find(DEPENDENCY_NODE_NAME, DEPENDENCY_NODE_TAG)
-        .expect("dependency should still be in the stack");
     assert_eq!(
-        entity_after.instances().len(),
+        entity_instance_count(&node_stack, DEPENDENCY_NODE_NAME, DEPENDENCY_NODE_TAG),
         1,
         "running instance should still be present when shutdown timed out"
     );
@@ -3666,8 +3768,9 @@ async fn listen_for_node_add_variant_local_source() {
     let entity = node_stack
         .find(ROOT_NODE_NAME, ROOT_NODE_TAG)
         .expect("node should exist in stack");
+    let entity_guard = entity.read();
     // The config in the stack should have root's interfaces but variant's runtime
-    let config = entity.config();
+    let config = entity_guard.config();
     assert!(
         config.interfaces.topics.is_some(),
         "interfaces should be inherited from root"
@@ -3677,6 +3780,7 @@ async fn listen_for_node_add_variant_local_source() {
         &vec!["sleep".to_string(), "5".to_string()],
         "execution should come from the variant"
     );
+    drop(entity_guard);
 }
 
 /// `node sync` must fingerprint the variant's own peppy.json5,
@@ -3784,7 +3888,8 @@ async fn listen_for_node_add_variant_local_source_after_sync() {
     let entity = node_stack
         .find(ROOT_NODE_NAME, ROOT_NODE_TAG)
         .expect("node should exist in stack");
-    let config = entity.config();
+    let entity_guard = entity.read();
+    let config = entity_guard.config();
     assert!(
         config.interfaces.topics.is_some(),
         "interfaces should be inherited from root"
@@ -3794,6 +3899,7 @@ async fn listen_for_node_add_variant_local_source_after_sync() {
         &vec!["sleep".to_string(), "5".to_string()],
         "execution should come from the variant"
     );
+    drop(entity_guard);
 
     // Verify that the fingerprint stored by sync matches the variant's peppy.json5 content
     let stored_fingerprint =
@@ -3947,7 +4053,8 @@ async fn listen_for_node_add_variant_only_node_after_sync() {
     let entity = node_stack
         .find(ROOT_NODE_NAME, ROOT_NODE_TAG)
         .expect("node should exist in stack");
-    let config = entity.config();
+    let entity_guard = entity.read();
+    let config = entity_guard.config();
     assert!(
         config.interfaces.topics.is_some(),
         "interfaces should be inherited from root"
@@ -4163,7 +4270,8 @@ async fn listen_for_node_add_with_fs_archive_variant_uses_archived_root() {
     let entity = node_stack
         .find(ROOT_NODE_NAME, ROOT_NODE_TAG)
         .expect("node should exist in stack");
-    let config = entity.config();
+    let entity_guard = entity.read();
+    let config = entity_guard.config();
     assert!(
         config.interfaces.topics.is_some(),
         "interfaces should be inherited from root"
@@ -4454,7 +4562,7 @@ async fn listen_for_node_add_variant_no_interfaces() {
         .find("test_node", "0.1.0")
         .expect("node should exist");
     assert!(
-        entity.config().interfaces.topics.is_some(),
+        entity.read().config().interfaces.topics.is_some(),
         "root interfaces should be used even when variant has none"
     );
 }
@@ -4613,8 +4721,9 @@ async fn listen_for_node_add_variant_manifest_ignored_warning() {
         .node_stack
         .find("test_node", "0.1.0")
         .expect("node should be in stack under root's name:tag");
-    assert_eq!(entity.config().manifest.name.as_str(), "test_node");
-    assert_eq!(entity.config().manifest.tag, "0.1.0");
+    let entity_guard = entity.read();
+    assert_eq!(entity_guard.config().manifest.name.as_str(), "test_node");
+    assert_eq!(entity_guard.config().manifest.tag, "0.1.0");
 }
 
 /// When a root node defines a "default" variant and omits `runtime`, adding
@@ -4699,7 +4808,8 @@ async fn listen_for_node_add_default_variant_auto_resolved() {
     let entity = node_stack
         .find(ROOT_NODE_NAME, ROOT_NODE_TAG)
         .expect("node should exist in stack");
-    let config = entity.config();
+    let entity_guard = entity.read();
+    let config = entity_guard.config();
     assert!(
         config.interfaces.topics.is_some(),
         "interfaces should be inherited from root"
@@ -4797,7 +4907,8 @@ async fn listen_for_node_add_default_variant_explicit_other() {
     let entity = node_stack
         .find(ROOT_NODE_NAME, ROOT_NODE_TAG)
         .expect("node should exist in stack");
-    let config = entity.config();
+    let entity_guard = entity.read();
+    let config = entity_guard.config();
     assert_eq!(
         config.execution.start_cmd.as_ref().unwrap(),
         &vec!["sleep".to_string(), "3".to_string()],
@@ -4985,7 +5096,8 @@ async fn listen_for_node_add_git_variant_verifies_git_hash_at_root() {
     let entity = node_stack
         .find(ROOT_NODE_NAME, ROOT_NODE_TAG)
         .expect("node should exist in stack");
-    let config = entity.config();
+    let entity_guard = entity.read();
+    let config = entity_guard.config();
     assert!(
         config.interfaces.topics.is_some(),
         "interfaces should be inherited from root"
@@ -5372,7 +5484,8 @@ async fn listen_for_node_git_add_with_default_local_variant_success() {
     let entity = node_stack
         .find(ROOT_NODE_NAME, ROOT_NODE_TAG)
         .expect("node should exist in stack");
-    let config = entity.config();
+    let entity_guard = entity.read();
+    let config = entity_guard.config();
     assert!(
         config.interfaces.topics.is_some(),
         "interfaces should be inherited from root"

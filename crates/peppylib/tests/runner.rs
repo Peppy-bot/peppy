@@ -1,6 +1,6 @@
 use config::consts::PEPPYGEN_OUTPUT_PATH;
 use config::launcher::Name;
-use config::runtime::{NodeInstance, RuntimeConfig};
+use config::runtime::{NodeInstanceConfig, RuntimeConfig};
 use peppylib::encoding::health::{NodeHealthRequest, NodeHealthResponse};
 use peppylib::messaging::{NODE_HEALTH_SERVICE, NODE_READY_SERVICE, SHUTDOWN_SERVICE};
 use peppylib::runtime::CancellationToken;
@@ -35,7 +35,7 @@ impl EnvAndDirGuard {
         let lock = ENV_LOCK
             .get_or_init(|| Mutex::new(()))
             .lock()
-            .expect("lock poisoned");
+            .expect("env lock poisoned by a previous test panic");
 
         let previous_runtime_config = std::env::var(peppylib::config::RUNTIME_CONFIG_VAR_NAME).ok();
         let previous_dir = std::env::current_dir().expect("current dir should be readable");
@@ -62,7 +62,7 @@ impl EnvAndDirGuard {
         let lock = ENV_LOCK
             .get_or_init(|| Mutex::new(()))
             .lock()
-            .expect("lock poisoned");
+            .expect("env lock poisoned by a previous test panic");
 
         let previous_runtime_config = std::env::var(peppylib::config::RUNTIME_CONFIG_VAR_NAME).ok();
         let previous_dir = std::env::current_dir().expect("current dir should be readable");
@@ -126,7 +126,7 @@ async fn daemon_runner_succeed() {
     let runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
-        NodeInstance {
+        NodeInstanceConfig {
             instance_id: Name::new(TEST_INSTANCE_ID).expect("instance id should be valid"),
             arguments: serde_json5::from_str(&format!("{{ frequency_hz: {TEST_FREQUENCY_HZ} }}"))
                 .expect("runtime args should parse"),
@@ -329,7 +329,7 @@ async fn node_ready_but_not_healthy() {
     let runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
-        NodeInstance {
+        NodeInstanceConfig {
             instance_id: Name::new(TEST_INSTANCE_ID).expect("instance id should be valid"),
             arguments: serde_json5::from_str(&format!("{{ frequency_hz: {TEST_FREQUENCY_HZ} }}"))
                 .expect("runtime args should parse"),
@@ -581,7 +581,7 @@ async fn daemon_cancellation_token_cancelled_on_shutdown() {
     let runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
-        NodeInstance {
+        NodeInstanceConfig {
             instance_id: Name::new(TEST_INSTANCE_ID).expect("instance id should be valid"),
             arguments: serde_json5::from_str(&format!("{{ frequency_hz: {TEST_FREQUENCY_HZ} }}"))
                 .expect("runtime args should parse"),

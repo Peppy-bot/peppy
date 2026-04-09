@@ -461,7 +461,7 @@ impl NodeAddGoalResponse {
 /// Represents a single line of output from the add_cmd process.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeAddFeedback {
-    /// The stream type: "stdout" or "stderr"
+    /// The stream type: "stdout", "stderr" or "warning"
     pub stream: String,
     /// The line of output
     pub line: String,
@@ -482,12 +482,23 @@ impl NodeAddFeedback {
         }
     }
 
+    pub fn warning(line: impl Into<String>) -> Self {
+        Self {
+            stream: "warning".to_string(),
+            line: line.into(),
+        }
+    }
+
     pub fn is_stdout(&self) -> bool {
         self.stream == "stdout"
     }
 
     pub fn is_stderr(&self) -> bool {
         self.stream == "stderr"
+    }
+
+    pub fn is_warning(&self) -> bool {
+        self.stream == "warning"
     }
 
     pub fn encode(&self) -> Result<Payload> {

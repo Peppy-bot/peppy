@@ -1,6 +1,6 @@
 use config::AnyType;
 use config::launcher::Name;
-use config::runtime::{NodeInstance, RuntimeConfig};
+use config::runtime::{NodeInstanceConfig, RuntimeConfig};
 use core_node::encoding::{
     NodeStartFeedback, NodeStartGoal, NodeStartGoalResponse, NodeStartResult,
 };
@@ -154,7 +154,7 @@ pub async fn start_instance_async(
     let runtime_config = RuntimeConfig::new(
         messaging_host.as_str(),
         messaging_port,
-        NodeInstance {
+        NodeInstanceConfig {
             instance_id: Name::new(instance_id.clone())
                 .map_err(|e| Error::PeppyConfig(e.into()))?,
             arguments,

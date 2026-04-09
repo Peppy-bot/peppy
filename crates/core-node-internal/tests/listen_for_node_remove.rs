@@ -1,8 +1,8 @@
 mod common;
 
 use common::{
-    AbortOnDrop, CALLER_INSTANCE_ID, send_node_add_and_wait, start_core_node_with_mock_messenger,
-    write_peppy_json5,
+    AbortOnDrop, CALLER_INSTANCE_ID, send_node_add_and_wait, spawn_real_running_instance,
+    start_core_node_with_mock_messenger, write_peppy_json5,
 };
 use config::node::Name;
 use core_node::encoding::NodeRemoveRequest;
@@ -58,7 +58,11 @@ async fn listen_for_node_remove_success() {
     let entity = node_stack
         .find(TARGET_NODE_NAME, TARGET_NODE_TAG)
         .expect("node should exist in stack");
-    assert_eq!(entity.instances().len(), 0, "node should have no instances");
+    assert_eq!(
+        entity.read().instances().len(),
+        0,
+        "node should have no instances"
+    );
 
     let response = NodeRemoveRequest::new(TARGET_NODE_NAME, TARGET_NODE_TAG)
         .poll(
@@ -172,9 +176,13 @@ async fn listen_for_node_remove_stop_running_instances_first() {
     );
 
     let instance_id = Name::new(TARGET_INSTANCE_ID).expect("valid instance id");
-    node_stack
-        .add_instance(TARGET_NODE_NAME, TARGET_NODE_TAG, Some(&instance_id), None)
-        .expect("add_instance should succeed");
+    let _running = spawn_real_running_instance(
+        &started_core_node,
+        TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
+        &instance_id,
+    )
+    .await;
 
     // Simulate the node exposing the shutdown service, so node_remove detects it as running.
     let shutdown_handle =
@@ -266,9 +274,13 @@ async fn listen_for_node_fails_when_stop_instances_parameter_not_set_and_instanc
     );
 
     let instance_id = Name::new(TARGET_INSTANCE_ID).expect("valid instance id");
-    node_stack
-        .add_instance(TARGET_NODE_NAME, TARGET_NODE_TAG, Some(&instance_id), None)
-        .expect("add_instance should succeed");
+    let _running = spawn_real_running_instance(
+        &started_core_node,
+        TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
+        &instance_id,
+    )
+    .await;
 
     // Simulate the node exposing the shutdown service, so node_remove detects it as running.
     let shutdown_handle =
@@ -331,15 +343,18 @@ async fn listen_for_node_fails_when_stop_instances_parameter_not_set_and_instanc
     let entity = node_stack
         .find(TARGET_NODE_NAME, TARGET_NODE_TAG)
         .expect("node entity should still exist in stack");
-    assert_eq!(
-        entity.instances().len(),
-        1,
-        "instance should not be removed"
-    );
-    assert_eq!(
-        entity.instances()[0].instance_id().as_str(),
-        TARGET_INSTANCE_ID
-    );
+    {
+        let entity_guard = entity.read();
+        assert_eq!(
+            entity_guard.instances().len(),
+            1,
+            "instance should not be removed"
+        );
+        assert_eq!(
+            entity_guard.instances()[0].instance_id().as_str(),
+            TARGET_INSTANCE_ID
+        );
+    }
 
     assert!(
         tokio::time::timeout(Duration::from_millis(100), shutdown_rx)

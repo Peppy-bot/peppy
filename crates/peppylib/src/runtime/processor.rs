@@ -6,7 +6,7 @@ use config::{
     consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME},
     launcher::Name,
     node::NodeConfig,
-    runtime::{NodeInstance, RuntimeConfig},
+    runtime::{NodeInstanceConfig, RuntimeConfig},
     validate_node_arguments,
 };
 use std::collections::BTreeMap;
@@ -106,7 +106,7 @@ impl Processor {
         let runtime_config = RuntimeConfig::new(
             &messaging_host,
             messaging_port,
-            NodeInstance {
+            NodeInstanceConfig {
                 instance_id: instance_id_name,
                 arguments: BTreeMap::new(),
             },

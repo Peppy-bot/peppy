@@ -854,7 +854,7 @@ fn node_add_with_variant_uses_variant_in_preflight() {
         "schema_version": 1,
         "execution": {
             "language": "rust",
-            "start_cmd": ["sleep", "42"]
+            "start_cmd": ["sleep", "4"]
         }
     }"#;
     let variant_peppy_json5 = variant_dir.join("peppy.json5");

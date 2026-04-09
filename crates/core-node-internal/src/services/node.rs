@@ -18,46 +18,25 @@ use config::node::{NodeConfig, NodeConfigParser, ParsedNodeConfig, PeppygenLangu
 use git2::{Repository, build::CheckoutBuilder, build::RepoBuilder};
 pub use info::listen_for_node_info;
 pub use init::listen_for_node_init;
+use parking_lot::Mutex as StdMutex;
 use rand::RngExt;
 pub use remove::listen_for_node_remove;
 pub(crate) use start::{NodeStartActionContext, run_node_start};
 pub use start::{NodeStartServiceConfig, listen_for_node_start};
-use std::collections::VecDeque;
 use std::fs::File;
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex as StdMutex, OnceLock};
+use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 pub use stop::listen_for_node_stop;
 pub use sync::listen_for_node_sync;
-use tar::Archive;
-use zstd::stream::read::Decoder;
 
-/// Maximum number of stderr lines to retain for error diagnostics.
-/// Used by both the `add` (container build) and `start` (node run) services.
-const STDERR_TAIL_LINES: usize = 20;
-
-#[derive(Clone, Copy)]
-pub(crate) enum FeedbackStream {
-    Stdout,
-    Stderr,
-}
-
-pub(crate) struct FeedbackLine {
-    pub(crate) stream: FeedbackStream,
-    pub(crate) line: String,
-}
-
-/// Pushes a line into a bounded ring buffer of stderr output.
-/// When the buffer is full, the oldest line is dropped.
-fn push_stderr_line(buffer: &Arc<StdMutex<VecDeque<String>>>, line: &str) {
-    let mut guard = buffer.lock().expect("stderr buffer lock poisoned");
-    if guard.len() == STDERR_TAIL_LINES {
-        guard.pop_front();
-    }
-    guard.push_back(line.to_string());
-}
+// Feedback streaming primitives have moved to `node-stack-internal::build_io`
+// so that `NodeEntity::build` can stream apptainer output without depending on
+// core-node-internal. The re-exports below keep the existing call sites in
+// `start.rs`, `info.rs`, etc. compiling unchanged.
+pub(crate) use node_stack::{FeedbackLine, FeedbackStream};
 
 /// Extract a human-readable message from a panic payload.
 /// Used by spawned task handlers to convert panics into failure results.
@@ -118,11 +97,10 @@ fn validate_goal_env_vars(env_vars: &[(String, String)]) -> Result<Vec<(String, 
 /// Best-effort: silently ignores lock/write failures since the error is also
 /// returned in the result encoding.
 pub(crate) fn write_error_to_log(log_file: &Arc<StdMutex<File>>, error_msg: &str) {
-    if let Ok(mut file) = log_file.lock() {
-        let timestamp = Local::now().format("%Y-%m-%dT%H:%M:%S%.3f");
-        let _ = writeln!(file, "[{}] [error] {}", timestamp, error_msg);
-        let _ = file.flush();
-    }
+    let mut file = log_file.lock();
+    let timestamp = Local::now().format("%Y-%m-%dT%H:%M:%S%.3f");
+    let _ = writeln!(file, "[{}] [error] {}", timestamp, error_msg);
+    let _ = file.flush();
 }
 
 /// Creates a log file inside `log_dir` with the given filename.
@@ -232,121 +210,11 @@ pub(crate) struct ResolvedLocalArchiveSource {
     pub(crate) temp_dir: tempfile::TempDir,
 }
 
-/// Extracts a `.tar.zst` archive into `destination` with path safety checks.
-/// Rejects entries containing `..`, root, or prefix path components.
-/// Directories are applied last to avoid permission interference during extraction.
-pub(crate) fn extract_tar_zst(
-    archive_path: &Path,
-    destination: &Path,
-) -> std::result::Result<(), String> {
-    let file = std::fs::File::open(archive_path)
-        .map_err(|e| format!("Failed to open archive {}: {}", archive_path.display(), e))?;
-
-    let decoder = Decoder::new(file).map_err(|e| {
-        format!(
-            "Failed to decode zstd archive {}: {}",
-            archive_path.display(),
-            e
-        )
-    })?;
-    let mut archive = Archive::new(decoder);
-
-    let entries = archive.entries().map_err(|e| {
-        format!(
-            "Failed to read archive entries from {}: {}",
-            archive_path.display(),
-            e
-        )
-    })?;
-
-    let mut directories = Vec::new();
-    for entry in entries {
-        let mut entry = entry.map_err(|e| {
-            format!(
-                "Failed to read archive entry from {}: {}",
-                archive_path.display(),
-                e
-            )
-        })?;
-
-        let entry_path = entry
-            .path()
-            .map_err(|e| {
-                format!(
-                    "Failed to read entry path from {}: {}",
-                    archive_path.display(),
-                    e
-                )
-            })?
-            .into_owned();
-
-        if entry_path.components().any(|component| {
-            matches!(
-                component,
-                Component::ParentDir | Component::RootDir | Component::Prefix(..)
-            )
-        }) {
-            return Err(format!(
-                "Archive {} contains unsafe path: {}",
-                archive_path.display(),
-                entry_path.display()
-            ));
-        }
-
-        if entry.header().entry_type().is_dir() {
-            directories.push(entry);
-        } else {
-            let unpacked = entry.unpack_in(destination).map_err(|e| {
-                format!(
-                    "Failed to unpack entry {} from {}: {}",
-                    entry_path.display(),
-                    archive_path.display(),
-                    e
-                )
-            })?;
-            if !unpacked {
-                return Err(format!(
-                    "Archive {} contains unsafe path: {}",
-                    archive_path.display(),
-                    entry_path.display()
-                ));
-            }
-        }
-    }
-
-    // Apply directory entries at the end, matching tar::Archive::unpack behavior (avoids
-    // directory permissions interfering with descendant extraction).
-    directories.sort_by(|a, b| b.path_bytes().cmp(&a.path_bytes()));
-    for mut dir in directories {
-        let entry_path = dir
-            .path()
-            .map_err(|e| {
-                format!(
-                    "Failed to read entry path from {}: {}",
-                    archive_path.display(),
-                    e
-                )
-            })?
-            .into_owned();
-        let unpacked = dir.unpack_in(destination).map_err(|e| {
-            format!(
-                "Failed to unpack entry {} from {}: {}",
-                entry_path.display(),
-                archive_path.display(),
-                e
-            )
-        })?;
-        if !unpacked {
-            return Err(format!(
-                "Archive {} contains unsafe path: {}",
-                archive_path.display(),
-                entry_path.display()
-            ));
-        }
-    }
-
-    Ok(())
-}
+// `extract_tar_zst` was moved into `node-stack-internal::node_stack::start_steps`
+// alongside the rest of the start I/O. The re-export below preserves the
+// existing call sites in `start.rs` (the start lifecycle path) and in
+// `add::resolve_local_archive_source` (the add source-resolution path).
+pub(crate) use node_stack::extract_tar_zst;
 
 pub(crate) fn sanitize_repo_path(repo_path: &str) -> std::result::Result<PathBuf, String> {
     let trimmed = repo_path.trim_start_matches(['/', '\\']);

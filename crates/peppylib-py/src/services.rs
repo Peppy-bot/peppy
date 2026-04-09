@@ -1,9 +1,9 @@
 mod shutdown;
 
+use parking_lot::Mutex;
 use peppylib::PeppyResult;
 use peppylib::runtime::TaskHandle;
 use pyo3::prelude::*;
-use std::sync::Mutex;
 
 use crate::messaging::{PyMessengerHandle, to_py_err};
 
@@ -25,18 +25,12 @@ impl PyServiceTask {
 impl PyServiceTask {
     /// Returns true if the service task has finished.
     fn is_finished(&self) -> PyResult<bool> {
-        let guard = self.inner.lock().map_err(|_| {
-            PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("service task mutex poisoned")
-        })?;
-        Ok(guard.as_ref().is_none_or(|h| h.is_finished()))
+        Ok(self.inner.lock().as_ref().is_none_or(|h| h.is_finished()))
     }
 
     /// Abort the service task.
     fn abort(&self) -> PyResult<()> {
-        let mut guard = self.inner.lock().map_err(|_| {
-            PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("service task mutex poisoned")
-        })?;
-        if let Some(h) = guard.take() {
+        if let Some(h) = self.inner.lock().take() {
             h.abort();
         }
         Ok(())

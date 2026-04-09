@@ -1,14 +1,21 @@
+mod build_steps;
 mod entity;
+mod start_steps;
 mod validation;
 
-pub use entity::{DependencySpec, NodeEntity, SerializedNodeGraph};
+pub use entity::{
+    BuildContext, DependencySpec, InstanceState, NodeEntity, NodeStage, OutputSinks,
+    SerializedNodeGraph, StartContext, StartedInstanceCtx, TrackedNodeInstance,
+};
+pub use start_steps::extract_tar_zst;
 pub use validation::{collect_dependency_specs, validate_dependency_specs};
 
-use entity::{SerializedEdge, SerializedNode, TrackedNodeInstance};
+use entity::{SerializedEdge, SerializedNode};
 
 use crate::error::{Error, Result};
 use config::node::{Name, NodeConfig};
 use names_generator2::get_random;
+use parking_lot::RwLock;
 use petgraph::{
     Direction,
     dot::{Config, Dot},
@@ -16,11 +23,13 @@ use petgraph::{
     visit::EdgeRef,
 };
 use rand::rng;
-use std::{
-    collections::HashMap,
-    path::PathBuf,
-    sync::{Arc, RwLock},
-};
+use std::{collections::HashMap, path::PathBuf, sync::Arc};
+
+/// Shared handle to a `NodeEntity` stored inside a `NodeStack`. All readers
+/// and writers go through the inner `RwLock`; the same `Arc` is held by the
+/// graph and by every external caller, so mutations through `find()` are
+/// reflected in subsequent stack queries without any take-and-replace dance.
+pub type EntityHandle = Arc<RwLock<NodeEntity>>;
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 struct NodeKey {
@@ -37,13 +46,31 @@ impl NodeKey {
     }
 }
 
-impl From<&NodeEntity> for NodeKey {
-    fn from(entity: &NodeEntity) -> Self {
-        NodeKey::new(
-            entity.config.manifest.name.as_str(),
-            &entity.config.manifest.tag,
-        )
-    }
+fn key_from_entity(entity: &NodeEntity) -> NodeKey {
+    NodeKey::new(
+        entity.config().manifest.name.as_str(),
+        &entity.config().manifest.tag,
+    )
+}
+
+/// Identifies the slot that [`NodeStack::restore_snapshot_if_matches`]
+/// should roll back, together with the handle+generation the caller captured
+/// before the failed rebuild.
+pub struct RestoreTarget<'a> {
+    pub name: &'a str,
+    pub tag: &'a str,
+    pub expected_handle: &'a Arc<RwLock<NodeEntity>>,
+    pub expected_generation: u64,
+}
+
+/// Previously-captured entity state used by
+/// [`NodeStack::restore_snapshot_if_matches`] to rematerialize a `Ready` /
+/// `Added` entity in place of a failed rebuild. Instances are intentionally
+/// omitted — any prior instances are shut down before the rebuild begins.
+pub struct EntitySnapshot {
+    pub config: NodeConfig,
+    pub config_path: PathBuf,
+    pub artifact_path: Option<PathBuf>,
 }
 
 fn dependency_keys(node: &NodeConfig) -> Vec<NodeKey> {
@@ -54,7 +81,7 @@ fn dependency_keys(node: &NodeConfig) -> Vec<NodeKey> {
 }
 
 struct NodeStackInner {
-    graph: StableDiGraph<NodeEntity, ()>,
+    graph: StableDiGraph<EntityHandle, ()>,
     key_to_index: HashMap<NodeKey, NodeIndex>,
     pending_requirements: HashMap<NodeKey, Vec<NodeIndex>>,
     root_key: NodeKey,
@@ -62,31 +89,39 @@ struct NodeStackInner {
 
 impl NodeStackInner {
     fn new(root: NodeEntity) -> Self {
-        let root_key = NodeKey::from(&root);
+        let root_key = key_from_entity(&root);
         let mut inner = Self {
             graph: StableDiGraph::default(),
             key_to_index: HashMap::new(),
             pending_requirements: HashMap::new(),
             root_key,
         };
-        // Root node has no dependencies, so this should never fail
+        // Root node has no dependencies, so this should never fail.
         inner
             .insert_entity(root, true)
             .expect("root node should have no dependencies");
         inner
     }
 
-    fn insert_entity(&mut self, node: NodeEntity, validate: bool) -> Result<()> {
+    fn insert_entity(&mut self, entity: NodeEntity, validate: bool) -> Result<()> {
         if validate {
-            self.validate_dependencies(&node)?;
+            self.validate_dependencies(&entity)?;
         }
 
-        let key = NodeKey::from(&node);
+        let key = key_from_entity(&entity);
         let index = if let Some(&existing_index) = self.key_to_index.get(&key) {
-            self.graph[existing_index] = node;
+            // Existing entity: replace the inner value while keeping the same Arc.
+            // (No external Arc handles can exist before insert is called for the
+            // first time, but for an existing entity replacement we want to keep
+            // any external handles valid.)
+            if let Some(handle) = self.graph.node_weight(existing_index) {
+                let mut guard = handle.write();
+                *guard = entity;
+            }
             existing_index
         } else {
-            let idx = self.graph.add_node(node);
+            let handle: EntityHandle = Arc::new(RwLock::new(entity));
+            let idx = self.graph.add_node(handle);
             self.key_to_index.insert(key.clone(), idx);
             idx
         };
@@ -96,18 +131,18 @@ impl NodeStackInner {
         Ok(())
     }
 
-    fn validate_dependencies(&self, node: &NodeEntity) -> Result<()> {
+    fn validate_dependencies(&self, entity: &NodeEntity) -> Result<()> {
         let errors = validate_dependency_specs(
-            &node.config().manifest,
-            &node.config().interfaces,
-            node.config().manifest.name.as_str(),
-            &node.config().manifest.tag,
+            &entity.config().manifest,
+            &entity.config().interfaces,
+            entity.config().manifest.name.as_str(),
+            &entity.config().manifest.tag,
             |name, tag| {
                 let key = NodeKey::new(name, tag);
                 self.key_to_index
                     .get(&key)
                     .and_then(|&idx| self.graph.node_weight(idx))
-                    .map(|entity| entity.config().clone())
+                    .map(|handle| handle.read().config().clone())
             },
         );
 
@@ -131,8 +166,8 @@ impl NodeStackInner {
     }
 
     fn attach_dependencies(&mut self, index: NodeIndex) {
-        let keys = if let Some(node) = self.graph.node_weight(index) {
-            dependency_keys(node.config())
+        let keys = if let Some(handle) = self.graph.node_weight(index) {
+            dependency_keys(handle.read().config())
         } else {
             return;
         };
@@ -202,34 +237,54 @@ impl NodeStackInner {
         self.key_to_index.contains_key(key)
     }
 
-    fn find(&self, key: &NodeKey) -> Option<NodeEntity> {
+    fn find(&self, key: &NodeKey) -> Option<EntityHandle> {
         self.key_to_index
             .get(key)
             .and_then(|index| self.graph.node_weight(*index))
             .cloned()
     }
 
+    /// Looks up a tracked instance by id across all entities. **Only matches
+    /// `Running` instances** — `Starting` instances are skipped because they
+    /// haven't subscribed to messenger services yet, so a handle to one would
+    /// let callers reach into something that can't respond. Callers wanting
+    /// to clean up an in-flight start should use `NodeEntity::abort_started`
+    /// instead.
     fn find_by_instance_id(&self, instance_id: &Name) -> Option<TrackedNodeInstance> {
-        self.graph
-            .node_weights()
-            .flat_map(|entity| entity.instances())
-            .find(|inst| inst.instance_id() == instance_id)
-            .cloned()
+        for handle in self.graph.node_weights() {
+            let guard = handle.read();
+            if let Some(found) = guard
+                .instances()
+                .iter()
+                .find(|inst| {
+                    inst.instance_id() == instance_id && inst.state() == InstanceState::Running
+                })
+                .cloned()
+            {
+                return Some(found);
+            }
+        }
+        None
     }
 
-    fn find_entity_by_instance_id(&self, instance_id: &Name) -> Option<NodeEntity> {
-        self.graph
-            .node_weights()
-            .find(|entity| {
-                entity
-                    .instances()
-                    .iter()
-                    .any(|inst| inst.instance_id() == instance_id)
-            })
-            .cloned()
+    /// Same filtering rule as [`find_by_instance_id`]: only entities
+    /// containing a `Running` instance with the given id are returned.
+    fn find_entity_by_instance_id(&self, instance_id: &Name) -> Option<EntityHandle> {
+        for handle in self.graph.node_weights() {
+            let has_instance = {
+                let guard = handle.read();
+                guard.instances().iter().any(|inst| {
+                    inst.instance_id() == instance_id && inst.state() == InstanceState::Running
+                })
+            };
+            if has_instance {
+                return Some(handle.clone());
+            }
+        }
+        None
     }
 
-    fn root(&self) -> NodeEntity {
+    fn root(&self) -> EntityHandle {
         self.find(&self.root_key)
             .expect("root node must always exist in NodeStack")
     }
@@ -238,11 +293,11 @@ impl NodeStackInner {
         &self.root_key == key
     }
 
-    fn entities_snapshot(&self) -> Vec<NodeEntity> {
+    fn entities_snapshot(&self) -> Vec<EntityHandle> {
         self.graph.node_weights().cloned().collect()
     }
 
-    fn dependencies_of(&self, key: &NodeKey) -> Vec<NodeEntity> {
+    fn dependencies_of(&self, key: &NodeKey) -> Vec<EntityHandle> {
         self.key_to_index
             .get(key)
             .map(|index| {
@@ -255,7 +310,7 @@ impl NodeStackInner {
             .unwrap_or_default()
     }
 
-    fn dependents_of(&self, key: &NodeKey) -> Vec<NodeEntity> {
+    fn dependents_of(&self, key: &NodeKey) -> Vec<EntityHandle> {
         self.key_to_index
             .get(key)
             .map(|index| {
@@ -268,20 +323,33 @@ impl NodeStackInner {
             .unwrap_or_default()
     }
 
-    /// Adds a config to the stack or updates an existing one.
-    /// Does not create any instances.
-    /// When the entity already exists, config and root_path are always updated.
+    /// Adds a config to the stack or updates an existing one. The resulting
+    /// entity is always left in [`NodeStage::Added`] with `config_path` as the
+    /// recorded path; the caller must drive [`NodeEntity::build`] to advance
+    /// the entity to `Built` before any instances can be started.
+    ///
+    /// When the entity already exists, this resets its lifecycle:
+    /// - the stored config is replaced,
+    /// - the stage is rolled back to `Added` with the supplied `config_path`,
+    /// - any previous `artifact_path` and instance tracking are dropped.
+    ///
+    /// Callers must therefore stop / remove any pre-existing instances of the
+    /// entity *before* calling `push_config` for a re-add. (See
+    /// `shutdown_existing_instances` in `services/node/add.rs`.) The on-disk
+    /// `.sif`/archive of the previous build is the caller's responsibility to
+    /// clean up — `push_config` only manages the in-memory entity.
+    ///
     /// Dependency checks and rewiring only occur when interfaces change.
-    /// Returns Err(CannotModifyRootNode) if trying to modify the root node config.
-    /// Returns Err(CannotOverwriteNodeWithDependents) if interfaces change and the node has dependents.
+    /// Returns `Err(CannotModifyRootNode)` if trying to modify the root node config.
+    /// Returns `Err(CannotOverwriteNodeWithDependents)` if interfaces change and the node has dependents.
     fn push_config_impl<P: Into<PathBuf>>(
         &mut self,
         config: NodeConfig,
         allow_missing_dependencies: bool,
-        root_path: P,
-    ) -> Result<()> {
+        config_path: P,
+    ) -> Result<Option<EntitySnapshot>> {
         let key = NodeKey::new(config.manifest.name.as_str(), &config.manifest.tag);
-        let root_path = root_path.into();
+        let config_path = config_path.into();
 
         // The root node cannot be modified
         if self.is_root(&key) {
@@ -289,128 +357,92 @@ impl NodeStackInner {
         }
 
         if let Some(&index) = self.key_to_index.get(&key) {
-            let interfaces_changed = self
-                .graph
-                .node_weight(index)
-                .is_some_and(|entity| entity.config().interfaces != config.interfaces);
+            // We must perform the "no live instances" check, the
+            // interfaces/dependency drift checks, AND the wholesale entity
+            // replacement under a *single* held write lock on the entity.
+            // Dropping the lock between the check and the replacement would
+            // let an in-flight `prepare_and_spawn` (which only holds an
+            // `Arc<RwLock<NodeEntity>>` and not the stack lock) append a
+            // `Starting` instance that the replacement would silently orphan.
+            let Some(handle) = self.graph.node_weight(index).cloned() else {
+                return Ok(None);
+            };
 
-            // Dependency checks and rewiring are only needed when interfaces change,
-            // because interface changes can break or create dependency relationships.
-            if interfaces_changed {
-                let has_dependents = self
-                    .graph
-                    .neighbors_directed(index, Direction::Incoming)
-                    .next()
-                    .is_some()
-                    || self
-                        .pending_requirements
-                        .get(&key)
-                        .is_some_and(|requirements| !requirements.is_empty());
+            let (previous_snapshot, interfaces_changed, dependencies_changed) = {
+                let mut guard = handle.write();
 
-                if has_dependents {
-                    return Err(Error::CannotOverwriteNodeWithDependents {
-                        node_name: key.name,
-                        node_tag: key.tag,
+                if !guard.instances().is_empty() {
+                    return Err(Error::CannotOverwriteNodeWithLiveInstances {
+                        node_name: key.name.clone(),
+                        node_tag: key.tag.clone(),
                     });
                 }
 
-                if !allow_missing_dependencies {
-                    let candidate = NodeEntity::new(config.clone(), root_path.clone());
+                let interfaces_changed = guard.config().interfaces != config.interfaces;
+                let old_dependency_keys = dependency_keys(guard.config());
+                let new_dependency_keys = dependency_keys(&config);
+                let dependencies_changed = old_dependency_keys != new_dependency_keys;
+
+                // Interface changes can break dependents that consume this
+                // node, so they need an explicit gate. Dependency-spec
+                // changes (e.g. swapping `local_node_id` of a consumed
+                // topic) only affect *this* node's outbound edges, so they
+                // don't need the dependents check.
+                if interfaces_changed {
+                    let has_dependents = self
+                        .graph
+                        .neighbors_directed(index, Direction::Incoming)
+                        .next()
+                        .is_some()
+                        || self
+                            .pending_requirements
+                            .get(&key)
+                            .is_some_and(|requirements| !requirements.is_empty());
+
+                    if has_dependents {
+                        return Err(Error::CannotOverwriteNodeWithDependents {
+                            node_name: key.name,
+                            node_tag: key.tag,
+                        });
+                    }
+                }
+
+                if (interfaces_changed || dependencies_changed) && !allow_missing_dependencies {
+                    let candidate = NodeEntity::new(config.clone(), config_path.clone());
                     self.validate_dependencies(&candidate)?;
                 }
-            }
 
-            // Always update config and root_path. Non-breaking changes (start_cmd,
-            // add_cmd, labels, parameters) must not be silently dropped.
-            if let Some(entity) = self.graph.node_weight_mut(index) {
-                entity.config = config;
-                entity.fs_root_path = root_path;
-            }
+                // Capture the entity state we are about to replace, while
+                // still holding the write lock. The caller uses this snapshot
+                // for rollback if a subsequent build fails. Capturing here
+                // (instead of via a separate read lock before push_config)
+                // closes a race window where a concurrent push_config could
+                // make the pre-captured snapshot stale.
+                let previous_snapshot = EntitySnapshot {
+                    config: guard.config().clone(),
+                    config_path: guard.config_path().to_path_buf(),
+                    artifact_path: guard.artifact_path().map(|p| p.to_path_buf()),
+                };
 
-            if interfaces_changed {
+                // Replace the entity in-place under the still-held write
+                // lock. The same `Arc` handle is preserved so any external
+                // readers see the new state.
+                *guard = NodeEntity::new(config, config_path);
+
+                (previous_snapshot, interfaces_changed, dependencies_changed)
+            };
+
+            if interfaces_changed || dependencies_changed {
                 self.rewire_dependencies(index);
             }
+
+            Ok(Some(previous_snapshot))
         } else {
-            // Entity doesn't exist, create new one without instances
-            let entity = NodeEntity::new(config, root_path);
+            // Entity doesn't exist, create new one in the Added stage.
+            let entity = NodeEntity::new(config, config_path);
             self.insert_entity(entity, !allow_missing_dependencies)?;
+            Ok(None)
         }
-
-        Ok(())
-    }
-
-    /// Add a new instance for an existing config.
-    /// If instance_id is None, generates a random one.
-    /// Returns the instance_id that was used.
-    /// Returns Err(NoMatchingNode) if the config is not found in the stack.
-    /// Returns Err(CannotModifyRootNode) if trying to add an instance to the root node.
-    /// Returns Err(DuplicateInstanceId) if the instance_id already exists for this entity.
-    fn add_instance_impl(
-        &mut self,
-        name: &str,
-        tag: &str,
-        instance_id: Option<&Name>,
-        pid: Option<u32>,
-    ) -> Result<Name> {
-        let key = NodeKey::new(name, tag);
-
-        // The root node always has exactly one instance and cannot be modified
-        if self.is_root(&key) {
-            return Err(Error::CannotModifyRootNode);
-        }
-
-        let instance_id = match instance_id {
-            Some(id) => id.clone(),
-            None => Name::new(get_random(rng())).map_err(|e| Error::Config(e.into()))?,
-        };
-
-        let Some(&index) = self.key_to_index.get(&key) else {
-            return Err(Error::NoMatchingNode(name.to_owned(), tag.to_owned()));
-        };
-
-        if let Some(entity) = self.graph.node_weight_mut(index) {
-            // Check if instance_id already exists
-            if entity
-                .instances()
-                .iter()
-                .any(|inst| inst.instance_id() == &instance_id)
-            {
-                return Err(Error::DuplicateInstanceId {
-                    instance_id: instance_id.as_str().to_owned(),
-                    node_name: name.to_owned(),
-                    node_tag: tag.to_owned(),
-                });
-            }
-            let instance = TrackedNodeInstance::new(instance_id.clone(), pid);
-            entity.add_instance(instance);
-        }
-
-        Ok(instance_id)
-    }
-
-    /// Removes an instance from an entity.
-    /// Returns Ok(true) if the instance was found and removed, Ok(false) if not found.
-    /// Returns Err(CannotModifyRootNode) if trying to modify the root node.
-    fn remove_instance(&mut self, name: &str, tag: &str, instance_id: &Name) -> Result<bool> {
-        let key = NodeKey::new(name, tag);
-
-        if self.is_root(&key) {
-            return Err(Error::CannotModifyRootNode);
-        }
-
-        let Some(&index) = self.key_to_index.get(&key) else {
-            return Ok(false);
-        };
-
-        let Some(entity) = self.graph.node_weight_mut(index) else {
-            return Ok(false);
-        };
-
-        if !entity.remove_instance(instance_id) {
-            return Ok(false);
-        }
-
-        Ok(true)
     }
 
     /// Removes an entity entirely from the graph.
@@ -423,13 +455,13 @@ impl NodeStackInner {
 
     /// Clears all nodes except the root node from the stack.
     fn clear(&mut self) {
-        let root_entity = self.root();
+        let root_handle = self.root();
 
         self.graph.clear();
         self.key_to_index.clear();
         self.pending_requirements.clear();
 
-        let idx = self.graph.add_node(root_entity);
+        let idx = self.graph.add_node(root_handle);
         self.key_to_index.insert(self.root_key.clone(), idx);
     }
 
@@ -439,10 +471,11 @@ impl NodeStackInner {
             &self.graph,
             &[Config::EdgeNoLabel, Config::NodeNoLabel],
             &|_, _| String::new(),
-            &|_, (_, node)| {
-                let name = node.config().manifest.name.as_str();
-                let tag = &node.config().manifest.tag;
-                let instance_count = node.instances().len();
+            &|_, (_, handle)| {
+                let guard = handle.read();
+                let name = guard.config().manifest.name.as_str();
+                let tag = &guard.config().manifest.tag;
+                let instance_count = guard.instances().len();
                 format!(
                     "label=\"{}:{}\\n({} instance{})\"",
                     name,
@@ -460,7 +493,10 @@ impl NodeStackInner {
         let nodes = self
             .graph
             .node_weights()
-            .map(SerializedNode::from)
+            .map(|handle| {
+                let guard = handle.read();
+                SerializedNode::from(&*guard)
+            })
             .collect();
 
         let edges = self
@@ -468,11 +504,13 @@ impl NodeStackInner {
             .edge_indices()
             .filter_map(|edge_idx| {
                 let (src_idx, dst_idx) = self.graph.edge_endpoints(edge_idx)?;
-                let src_entity = self.graph.node_weight(src_idx)?;
-                let dst_entity = self.graph.node_weight(dst_idx)?;
+                let src_handle = self.graph.node_weight(src_idx)?;
+                let dst_handle = self.graph.node_weight(dst_idx)?;
+                let src_guard = src_handle.read();
+                let dst_guard = dst_handle.read();
                 Some(SerializedEdge {
-                    from: SerializedNode::from(src_entity),
-                    to: SerializedNode::from(dst_entity),
+                    from: SerializedNode::from(&*src_guard),
+                    to: SerializedNode::from(&*dst_guard),
                 })
             })
             .collect();
@@ -495,25 +533,35 @@ impl NodeStack {
     /// The root node (core node) is the parent of all other nodes in the graph
     /// and cannot be removed from the stack.
     ///
-    /// If `instance_id` is `None`, a random instance ID will be generated for the root node.
+    /// If `instance_id` is `None`, a random instance ID will be generated for
+    /// the root node. The root entity's lifecycle is degenerate: it represents
+    /// the running daemon itself and has no buildable artifact, so it is
+    /// constructed directly in `Ready { instances: [Running] }` via
+    /// [`NodeEntity::root`]. The root instance is in `Running` state because
+    /// the daemon process is already alive — there's no spawn-then-commit to
+    /// model.
     pub fn new<P: Into<PathBuf>>(
         root_config: NodeConfig,
         instance_id: Option<Name>,
         root_path: P,
     ) -> Self {
+        let root_path = root_path.into();
         let instance_id = instance_id.unwrap_or_else(|| {
             Name::new(get_random(rng())).expect("random name generation failed")
         });
-        let instance = TrackedNodeInstance::new(instance_id, Some(std::process::id()));
-        let mut root_entity = NodeEntity::new(root_config, root_path);
-        root_entity.add_instance(instance);
+        let instance = TrackedNodeInstance::new(
+            instance_id,
+            Some(std::process::id()),
+            InstanceState::Running,
+        );
+        let root_entity = NodeEntity::root(root_config, root_path, instance);
         Self {
             shared: Arc::new(RwLock::new(NodeStackInner::new(root_entity))),
         }
     }
 
     pub fn len(&self) -> usize {
-        self.shared.read().expect("node stack poisoned").len()
+        self.shared.read().len()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -522,81 +570,90 @@ impl NodeStack {
 
     /// Returns the root node (core node) of this stack.
     /// The root node is guaranteed to always exist.
-    pub fn root(&self) -> NodeEntity {
-        let guard = self.shared.read().expect("node stack poisoned");
+    pub fn root(&self) -> EntityHandle {
+        let guard = self.shared.read();
         guard.root()
     }
 
     pub fn contains(&self, name: &str, tag: &str) -> bool {
-        let guard = self.shared.read().expect("node stack poisoned");
+        let guard = self.shared.read();
         guard.contains(&NodeKey::new(name, tag))
     }
 
-    pub fn find(&self, name: &str, tag: &str) -> Option<NodeEntity> {
-        let guard = self.shared.read().expect("node stack poisoned");
+    /// Returns a shared handle to the entity with the given name and tag, if
+    /// any. Callers can read or write through the returned `Arc<RwLock<...>>`
+    /// to inspect the entity or to drive lifecycle transitions
+    /// (`build` / `start_instance` / `stop_instance`).
+    pub fn find(&self, name: &str, tag: &str) -> Option<EntityHandle> {
+        let guard = self.shared.read();
         guard.find(&NodeKey::new(name, tag))
     }
 
     /// Finds a node instance by its instance_id across all entities in the stack.
     pub fn find_by_instance_id(&self, instance_id: &Name) -> Option<TrackedNodeInstance> {
-        let guard = self.shared.read().expect("node stack poisoned");
+        let guard = self.shared.read();
         guard.find_by_instance_id(instance_id)
     }
 
     /// Finds a node entity by an instance_id it contains.
-    pub fn find_entity_by_instance_id(&self, instance_id: &Name) -> Option<NodeEntity> {
-        let guard = self.shared.read().expect("node stack poisoned");
+    pub fn find_entity_by_instance_id(&self, instance_id: &Name) -> Option<EntityHandle> {
+        let guard = self.shared.read();
         guard.find_entity_by_instance_id(instance_id)
     }
 
     /// Adds a config to the stack or updates an existing one.
-    /// Does not create any instances.
-    /// If allow_missing_dependencies is true, missing dependencies are tracked as pending
-    /// requirements and will be wired once the dependency nodes are added to the stack.
+    ///
+    /// New entities are inserted in [`NodeStage::Added`]; the caller is
+    /// responsible for transitioning them to `Built` via
+    /// [`NodeEntity::build`] before starting any instances.
+    ///
+    /// If `allow_missing_dependencies` is true, missing dependencies are
+    /// tracked as pending requirements and will be wired once the dependency
+    /// nodes are added to the stack.
+    ///
+    /// Callers that need to roll back to the previous entity state on a
+    /// later build failure should use [`Self::push_config_capturing_previous`]
+    /// instead so the snapshot is captured atomically with the replacement.
     pub fn push_config<P: Into<PathBuf>>(
         &self,
         config: NodeConfig,
         allow_missing_dependencies: bool,
-        root_path: P,
+        config_path: P,
     ) -> Result<()> {
-        let mut guard = self.shared.write().expect("node stack poisoned");
-        guard.push_config_impl(config, allow_missing_dependencies, root_path)
+        self.push_config_capturing_previous(config, allow_missing_dependencies, config_path)
+            .map(|_| ())
     }
 
-    /// Add a new instance for an existing config.
-    /// If instance_id is None, generates a random one.
-    /// Returns the instance_id that was used.
-    pub fn add_instance(
+    /// Like [`Self::push_config`] but additionally returns the snapshot of
+    /// the entity that was just replaced (if any), captured under the same
+    /// write lock that performed the in-place replacement. The snapshot is
+    /// suitable for [`Self::restore_snapshot_if_matches`] rollback after a
+    /// failed rebuild — capturing it here closes the race window where a
+    /// concurrent `push_config` could otherwise make a pre-captured snapshot
+    /// stale.
+    pub fn push_config_capturing_previous<P: Into<PathBuf>>(
         &self,
-        node_name: &str,
-        tag: &str,
-        instance_id: Option<&Name>,
-        pid: Option<u32>,
-    ) -> Result<Name> {
-        let mut guard = self.shared.write().expect("node stack poisoned");
-        guard.add_instance_impl(node_name, tag, instance_id, pid)
+        config: NodeConfig,
+        allow_missing_dependencies: bool,
+        config_path: P,
+    ) -> Result<Option<EntitySnapshot>> {
+        let mut guard = self.shared.write();
+        guard.push_config_impl(config, allow_missing_dependencies, config_path)
     }
 
-    pub fn snapshot(&self) -> Vec<NodeEntity> {
-        let guard = self.shared.read().expect("node stack poisoned");
+    pub fn snapshot(&self) -> Vec<EntityHandle> {
+        let guard = self.shared.read();
         guard.entities_snapshot()
     }
 
-    pub fn dependencies_of(&self, name: &str, tag: &str) -> Vec<NodeEntity> {
-        let guard = self.shared.read().expect("node stack poisoned");
+    pub fn dependencies_of(&self, name: &str, tag: &str) -> Vec<EntityHandle> {
+        let guard = self.shared.read();
         guard.dependencies_of(&NodeKey::new(name, tag))
     }
 
-    pub fn dependents_of(&self, name: &str, tag: &str) -> Vec<NodeEntity> {
-        let guard = self.shared.read().expect("node stack poisoned");
+    pub fn dependents_of(&self, name: &str, tag: &str) -> Vec<EntityHandle> {
+        let guard = self.shared.read();
         guard.dependents_of(&NodeKey::new(name, tag))
-    }
-
-    /// Removes an instance from an entity.
-    /// Returns Ok(true) if the instance was found and removed, Ok(false) if not found.
-    pub fn remove_instance(&self, name: &str, tag: &str, instance_id: &Name) -> Result<bool> {
-        let mut guard = self.shared.write().expect("node stack poisoned");
-        guard.remove_instance(name, tag, instance_id)
     }
 
     /// Removes a node configuration if it has no instances.
@@ -605,7 +662,7 @@ impl NodeStack {
     /// Returns Err(CannotModifyRootNode) if trying to remove the root node.
     /// Returns Err(CannotRemoveNodeWithInstances) if the node still has instances.
     pub fn remove_config(&self, name: &str, tag: &str) -> Result<bool> {
-        let mut guard = self.shared.write().expect("node stack poisoned");
+        let mut guard = self.shared.write();
         let key = NodeKey::new(name, tag);
 
         if guard.is_root(&key) {
@@ -616,42 +673,168 @@ impl NodeStack {
             return Ok(false);
         };
 
-        let has_instances = guard
-            .graph
-            .node_weight(index)
-            .map(|entity| !entity.instances().is_empty())
-            .unwrap_or(false);
-
-        if has_instances {
+        // Hold the entity write lock across both the emptiness check and the
+        // graph removal so a concurrent `prepare_and_spawn` (which acquires
+        // the entity write lock to insert a `Starting` instance) cannot slip
+        // an instance in between the check and the unlink. Cloning the
+        // handle out of the graph drops the borrow on `guard` immediately so
+        // we can still call `guard.remove_entity` further down.
+        let Some(entity_handle) = guard.graph.node_weight(index).cloned() else {
+            return Ok(false);
+        };
+        let entity_guard = entity_handle.write();
+        if !entity_guard.instances().is_empty() {
             return Err(Error::CannotRemoveNodeWithInstances {
                 node_name: name.to_string(),
                 node_tag: tag.to_string(),
             });
         }
+        guard.remove_entity(&key);
+        // Keep `entity_guard` alive until *after* the unlink so an outside
+        // thread holding a clone of the handle still cannot mutate the
+        // entity between the check and the removal.
+        drop(entity_guard);
+        Ok(true)
+    }
+
+    /// Removes the config at `(name, tag)` only if its current entity is in
+    /// `Building` AND the underlying `Arc<RwLock<NodeEntity>>` is the same
+    /// handle the caller already holds and the entity's `generation` matches.
+    ///
+    /// Used by the `process_node_add` failure path: after a build error, the
+    /// caller wants to remove the entity it created — but a concurrent
+    /// `push_config` may have replaced the entity in-place between the
+    /// failure and the cleanup. The pointer + generation check rules out the
+    /// race: if either differs, the entity is no longer the one we built and
+    /// we leave the new state untouched.
+    ///
+    /// Returns `true` if the entity was removed, `false` otherwise.
+    pub fn remove_config_if_matches(
+        &self,
+        name: &str,
+        tag: &str,
+        expected_handle: &Arc<RwLock<NodeEntity>>,
+        expected_generation: u64,
+    ) -> bool {
+        let mut guard = self.shared.write();
+        let key = NodeKey::new(name, tag);
+
+        if guard.is_root(&key) {
+            return false;
+        }
+
+        let Some(&index) = guard.key_to_index.get(&key) else {
+            return false;
+        };
+
+        let matches = guard.graph.node_weight(index).is_some_and(|current| {
+            Arc::ptr_eq(current, expected_handle) && {
+                let entity = current.read();
+                entity.generation() == expected_generation
+                    && matches!(entity.stage(), NodeStage::Building { .. })
+            }
+        });
+
+        if !matches {
+            return false;
+        }
 
         guard.remove_entity(&key);
-        Ok(true)
+        true
+    }
+
+    /// Slot identity for [`NodeStack::restore_snapshot_if_matches`]: the
+    /// name/tag key plus the handle+generation the caller captured before
+    /// starting the rebuild. Bundled so callers can express the rollback
+    /// target as a single value.
+    ///
+    /// See the free-standing [`RestoreTarget`] and [`EntitySnapshot`] structs
+    /// defined below — they are intentionally kept as plain data so the
+    /// call-site reads as `stack.restore_snapshot_if_matches(target, snap)`.
+    ///
+    /// Atomically restore an entity to a previously captured snapshot, iff the
+    /// slot still holds the expected handle+generation. Used by the node-add
+    /// rebuild path to roll back to the prior `Ready` state when a rebuild
+    /// fails after `push_config` has already replaced the entity in-place.
+    ///
+    /// Returns `true` if the slot matched and was restored. Returns `false`
+    /// (without mutating) if the handle was replaced concurrently, the
+    /// generation drifted, or the entity is no longer in `Building`.
+    pub fn restore_snapshot_if_matches(
+        &self,
+        target: RestoreTarget<'_>,
+        snapshot: EntitySnapshot,
+    ) -> bool {
+        let guard = self.shared.write();
+        let key = NodeKey::new(target.name, target.tag);
+
+        if guard.is_root(&key) {
+            return false;
+        }
+
+        let Some(&index) = guard.key_to_index.get(&key) else {
+            return false;
+        };
+
+        let Some(current) = guard.graph.node_weight(index) else {
+            return false;
+        };
+        if !Arc::ptr_eq(current, target.expected_handle) {
+            return false;
+        }
+        {
+            let entity = current.read();
+            if entity.generation() != target.expected_generation
+                || !matches!(entity.stage(), NodeStage::Building { .. })
+            {
+                return false;
+            }
+        }
+
+        // Rebuild a fresh `Ready`/`Added` entity from the captured snapshot
+        // and swap it into place under the same handle. Instances are
+        // intentionally empty — any prior instances were shut down before the
+        // rebuild began (see `shutdown_existing_instances` in the add path).
+        let restored = NodeEntity::from_snapshot(
+            snapshot.config,
+            snapshot.config_path,
+            snapshot.artifact_path,
+            Vec::new(),
+        );
+        *current.write() = restored;
+        true
     }
 
     /// Clears all nodes except the root node from the stack.
     pub fn reset(&self) {
-        let mut guard = self.shared.write().expect("node stack poisoned");
+        let mut guard = self.shared.write();
         guard.clear();
     }
 
     /// Applies the state from another NodeStack to this one.
     ///
-    /// This resets the current stack (preserving only the root node), then copies
-    /// all non-root entities and their instances from the source stack.
+    /// This resets the current stack (preserving only the root node), then
+    /// copies all non-root entities and their built/started state from the
+    /// source stack. Because the source artifacts already exist on disk, this
+    /// uses [`NodeEntity::from_snapshot`] to materialize each entity directly
+    /// in the appropriate stage instead of re-running the I/O-heavy `build()`
+    /// step or the `prepare_and_spawn` lifecycle.
     pub fn apply_from(&self, source: &NodeStack) -> std::result::Result<(), String> {
         let target_root = self.root();
-        let target_root_name = target_root.config().manifest.name.as_str().to_owned();
-        let target_root_tag = target_root.config().manifest.tag.clone();
+        let target_root_guard = target_root.read();
+        let target_root_name = target_root_guard.config().manifest.name.as_str().to_owned();
+        let target_root_tag = target_root_guard.config().manifest.tag.clone();
+        drop(target_root_guard);
 
-        self.reset();
-
-        for entity in source.snapshot() {
-            let config = entity.config();
+        // Phase 1: validate every source entity and pre-build its replacement
+        // `NodeEntity` without touching `self`. This keeps the apply
+        // all-or-nothing: if any source entity is in a transient state we
+        // return `Err` with the target stack still intact, instead of
+        // clearing it first and leaving the caller with an empty stack.
+        let mut prepared: Vec<(String, NodeEntity)> = Vec::new();
+        for source_handle in source.snapshot() {
+            let source_guard = source_handle.read();
+            let config = source_guard.config().clone();
 
             // Skip the root node from the source stack
             if config.manifest.name.as_str() == target_root_name.as_str()
@@ -660,33 +843,67 @@ impl NodeStack {
                 continue;
             }
 
-            // First, push the config
-            self.push_config(config.clone(), true, entity.root_path())
-                .map_err(|e| {
-                    format!(
-                        "failed to add config {}:{} to node stack: {e}",
-                        config.manifest.name.as_str(),
-                        config.manifest.tag,
-                    )
-                })?;
+            let name = config.manifest.name.as_str().to_owned();
+            let tag = config.manifest.tag.clone();
+            let config_path = source_guard.config_path().to_path_buf();
+            let artifact_path = source_guard.artifact_path().map(|p| p.to_path_buf());
+            let instances: Vec<TrackedNodeInstance> = source_guard.instances().to_vec();
 
-            // Then add each instance
-            for instance in entity.instances() {
-                self.add_instance(
-                    config.manifest.name.as_str(),
-                    &config.manifest.tag,
-                    Some(instance.instance_id()),
-                    instance.pid(),
-                )
-                .map_err(|e| {
-                    format!(
-                        "failed to add instance {} for {}:{} to node stack: {e}",
-                        instance.instance_id().as_str(),
-                        config.manifest.name.as_str(),
-                        config.manifest.tag,
-                    )
-                })?;
+            // Reject transient lifecycle state from the source: snapshot
+            // replay only makes sense for entities that are quiescent (no
+            // in-flight build, no in-flight start). A `Building` source has
+            // no artifact yet, and `Starting` instances reference live
+            // child/reader handles that we cannot recreate from a snapshot.
+            match source_guard.stage() {
+                NodeStage::Added { .. } => {}
+                NodeStage::Ready {
+                    instances: src_instances,
+                    ..
+                } => {
+                    if let Some(bad) = src_instances
+                        .iter()
+                        .find(|i| i.state() != InstanceState::Running)
+                    {
+                        return Err(format!(
+                            "cannot replay live entity {}:{}: instance {} is in transient state {:?}",
+                            name,
+                            tag,
+                            bad.instance_id().as_str(),
+                            bad.state(),
+                        ));
+                    }
+                }
+                NodeStage::Building { .. } => {
+                    return Err(format!(
+                        "cannot replay live entity {}:{}: source is currently Building",
+                        name, tag
+                    ));
+                }
+                NodeStage::Root { .. } => {
+                    // Should already be skipped by the root-name guard above,
+                    // but be defensive — never replay a Root variant.
+                    continue;
+                }
             }
+            drop(source_guard);
+
+            // Materialize the entity directly in the appropriate stage. The
+            // `from_snapshot` constructor bypasses the lifecycle because the
+            // source artifact already exists on disk.
+            let entity = NodeEntity::from_snapshot(config, config_path, artifact_path, instances);
+            prepared.push((format!("{}:{}", name, tag), entity));
+        }
+
+        // Phase 2: only after *every* source entity has validated, clear the
+        // target and insert the prepared entities under a single held write
+        // lock so readers never observe a partially-restored graph (e.g. a
+        // cleared stack with only some entities re-inserted).
+        let mut guard = self.shared.write();
+        guard.clear();
+        for (label, entity) in prepared {
+            guard
+                .insert_entity(entity, false)
+                .map_err(|e| format!("failed to insert snapshot for {}: {e}", label))?;
         }
 
         Ok(())
@@ -694,13 +911,13 @@ impl NodeStack {
 
     /// Returns the graph in DOT format for visualization.
     pub fn to_dot(&self) -> String {
-        let guard = self.shared.read().expect("node stack poisoned");
+        let guard = self.shared.read();
         guard.to_dot()
     }
 
     /// Returns a serializable representation of the graph.
     pub fn to_serialized_graph(&self) -> SerializedNodeGraph {
-        let guard = self.shared.read().expect("node stack poisoned");
+        let guard = self.shared.read();
         guard.to_serialized_graph()
     }
 }

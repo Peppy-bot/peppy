@@ -9,7 +9,7 @@ use peppylib::{MessengerHandle, PeppyError, PeppyResult};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::task::JoinHandle;
-use tracing::debug;
+use tracing::{debug, warn};
 
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -90,19 +90,24 @@ async fn handle_node_remove_request_inner(
         request.node_name, request.tag, request.stop_instances
     );
 
-    let root_node = node_stack.root();
-    let root_node_name = root_node.config().manifest.name.as_str();
-    let root_node_tag = &root_node.config().manifest.tag;
-    if request.node_name == root_node_name && request.tag == *root_node_tag {
+    let root_handle = node_stack.root();
+    let (root_node_name, root_node_tag) = {
+        let guard = root_handle.read();
+        (
+            guard.config().manifest.name.as_str().to_owned(),
+            guard.config().manifest.tag.clone(),
+        )
+    };
+    if request.node_name == root_node_name && request.tag == root_node_tag {
         return NodeRemoveResponse::failure("Cannot remove the core node from the node stack")
             .encode();
     }
 
-    let matching_entity = node_stack.snapshot().into_iter().find(|entity| {
-        entity.config().manifest.name.as_str() == request.node_name
-            && entity.config().manifest.tag == request.tag
+    let matching_entity = node_stack.snapshot().into_iter().find(|handle| {
+        let guard = handle.read();
+        guard.config().manifest.name.as_str() == request.node_name
+            && guard.config().manifest.tag == request.tag
     });
-
     let Some(matching_entity) = matching_entity else {
         return NodeRemoveResponse::failure(format!(
             "Node '{}:{}' not found in node stack",
@@ -128,14 +133,21 @@ async fn handle_node_remove_request_inner(
 
     let mut targets: Vec<RemovalTarget> = Vec::new();
     let mut config_targets: Vec<ConfigRemovalTarget> = Vec::new();
-    for entity in matching_entities {
-        let node_tag = entity.config().manifest.tag.clone();
-        let node_name = entity.config().manifest.name.as_str().to_owned();
+    for handle in matching_entities {
+        let guard = handle.read();
+        let node_tag = guard.config().manifest.tag.clone();
+        let node_name = guard.config().manifest.name.as_str().to_owned();
         config_targets.push(ConfigRemovalTarget {
             node_name: node_name.clone(),
             node_tag: node_tag.clone(),
         });
-        for instance in entity.instances() {
+        for instance in guard.instances() {
+            // Skip Starting instances: they will resolve via the
+            // prepare_and_spawn → abort_started path; calling stop_instance on
+            // them is a no-op at best and racy at worst.
+            if instance.state() != node_stack::InstanceState::Running {
+                continue;
+            }
             targets.push(RemovalTarget {
                 node_name: node_name.clone(),
                 node_tag: node_tag.clone(),
@@ -144,7 +156,13 @@ async fn handle_node_remove_request_inner(
         }
     }
 
+    // Classify each tracked instance as reachable, unreachable, or probe-failed.
+    // `running_targets` drives the actual shutdown loop below (only reachable
+    // instances can accept the shutdown RPC). `unreachable_targets` is tracked
+    // separately so the safety gate can decide what to do about them without
+    // silently dropping their existence.
     let mut running_targets: Vec<RemovalTarget> = Vec::new();
+    let mut unreachable_targets: Vec<RemovalTarget> = Vec::new();
     for target in &targets {
         let reachable = match ServiceMessenger::is_reachable(
             messenger,
@@ -170,16 +188,41 @@ async fn handle_node_remove_request_inner(
 
         if reachable {
             running_targets.push(target.clone());
+        } else {
+            unreachable_targets.push(target.clone());
         }
     }
 
-    if !request.stop_instances && !running_targets.is_empty() {
+    // Safety gate: without `stop_instances`, any tracked instance — reachable
+    // or not — blocks the remove. Previously only reachable instances were
+    // counted, which let a tracked-but-unreachable instance sneak the node
+    // out from under a still-running child.
+    if !request.stop_instances && (!running_targets.is_empty() || !unreachable_targets.is_empty()) {
+        let example = running_targets
+            .first()
+            .or_else(|| unreachable_targets.first())
+            .expect("one of the lists is non-empty");
         return NodeRemoveResponse::failure(format!(
             "Node '{}' has running instances (e.g. '{}'); set stop_instances=true to stop them before removing",
             request.node_name,
-            running_targets[0].instance_id.as_str(),
+            example.instance_id.as_str(),
         ))
         .encode();
+    }
+
+    // With `stop_instances=true`, we proceed despite unreachable instances —
+    // typically they correspond to a peer that already exited — but log a
+    // warning per skipped instance so the divergence is never silent.
+    if request.stop_instances {
+        for target in &unreachable_targets {
+            warn!(
+                "Instance '{}' of node '{}:{}' is tracked but its shutdown service is unreachable; \
+                 removing without sending shutdown",
+                target.instance_id.as_str(),
+                target.node_name,
+                target.node_tag,
+            );
+        }
     }
 
     if request.stop_instances {
@@ -214,23 +257,22 @@ async fn handle_node_remove_request_inner(
     }
 
     for target in &targets {
-        match node_stack.remove_instance(&target.node_name, &target.node_tag, &target.instance_id) {
-            Ok(true) => {}
-            Ok(false) => {
-                return NodeRemoveResponse::failure(format!(
-                    "Node instance '{}' not found in node stack",
-                    target.instance_id.as_str()
-                ))
-                .encode();
-            }
-            Err(e) => {
-                return NodeRemoveResponse::failure(format!(
-                    "Failed to remove node instance '{}': {}",
-                    target.instance_id.as_str(),
-                    e
-                ))
-                .encode();
-            }
+        let Some(handle) = node_stack.find(&target.node_name, &target.node_tag) else {
+            // Entity was concurrently removed; nothing to stop. Treat as
+            // success rather than failing the whole removal request.
+            debug!(
+                "Node '{}:{}' already absent from node stack; skipping instance stop",
+                target.node_name, target.node_tag
+            );
+            continue;
+        };
+        let removed = handle.write().stop_instance(&target.instance_id);
+        if !removed {
+            // Instance was concurrently removed; treat as success.
+            debug!(
+                "Node instance '{}' already absent; skipping",
+                target.instance_id.as_str()
+            );
         }
     }
 
@@ -238,11 +280,11 @@ async fn handle_node_remove_request_inner(
         match node_stack.remove_config(&target.node_name, &target.node_tag) {
             Ok(true) => {}
             Ok(false) => {
-                return NodeRemoveResponse::failure(format!(
-                    "Node '{}:{}' not found in node stack",
+                // Concurrently removed — treat as success.
+                debug!(
+                    "Node '{}:{}' already absent from node stack during remove_config",
                     target.node_name, target.node_tag
-                ))
-                .encode();
+                );
             }
             Err(e) => {
                 return NodeRemoveResponse::failure(format!(

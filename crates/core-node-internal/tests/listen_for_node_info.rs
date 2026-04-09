@@ -1,14 +1,12 @@
 mod common;
 
 use common::{
-    AbortOnDrop, CALLER_INSTANCE_ID, create_tar_zst_from_dir, start_core_node_with_mock_messenger,
-    write_peppy_json5,
+    AbortOnDrop, CALLER_INSTANCE_ID, create_tar_zst_from_dir, real_build_and_spawn_instance,
+    start_core_node_with_mock_messenger, write_peppy_json5,
 };
 use common::{NodeStartTestTimeouts, send_node_add_and_wait, send_node_start_and_wait};
 use config::consts::NODE_CONFIG_FILE;
-use config::launcher::Name as InstanceName;
 use config::node::{Name, PeppygenLanguage};
-use config::runtime::{NodeInstance, RuntimeConfig};
 use config::test_helpers;
 use core_node::encoding::{NodeInfoRequest, NodeInfoResponse, NodeSource};
 use core_node::names;
@@ -99,9 +97,13 @@ async fn listen_for_node_info_on_fs_node_success() {
         .push_config(info_response.config.clone(), false, node_dir.path())
         .expect("push_config should succeed");
     let instance_id = Name::new(TARGET_INSTANCE_ID).expect("valid instance id");
-    node_stack
-        .add_instance(TARGET_NODE_NAME, TARGET_NODE_TAG, Some(&instance_id), None)
-        .expect("add_instance should succeed");
+    let _running = real_build_and_spawn_instance(
+        &started_core_node,
+        TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
+        &instance_id,
+    )
+    .await;
 
     let request = NodeInfoRequest::new(NodeSource::Fs(node_dir.path().to_path_buf()));
 
@@ -113,6 +115,52 @@ async fn listen_for_node_info_on_fs_node_success() {
     assert_eq!(
         info_response.instances_names,
         vec![TARGET_INSTANCE_ID.to_string()]
+    );
+
+    // New fields surfaced for `peppy node info`: stage name, per-instance
+    // state, start log paths (derived from peppy_dirs + instance id), and
+    // add log path. The latter is exercised via the entity setter because
+    // `force_built_and_start_instance` bypasses `process_node_add`.
+    assert_eq!(
+        info_response.stage.as_deref(),
+        Some("Ready"),
+        "stage should be exposed when in stack"
+    );
+    assert_eq!(info_response.instances.len(), 1);
+    assert_eq!(info_response.instances[0].instance_id, TARGET_INSTANCE_ID);
+    assert_eq!(info_response.instances[0].state, "running");
+    assert_eq!(info_response.start_log_paths.len(), 1);
+    let expected_start_log = started_core_node
+        .peppy_dirs
+        .logs_dir_start()
+        .join(format!("{}.log", TARGET_INSTANCE_ID));
+    assert_eq!(info_response.start_log_paths[0], expected_start_log);
+    assert!(
+        info_response.add_log_path.is_none(),
+        "force_built bypass does not record an add log"
+    );
+
+    // Now record an add log path via the public setter and re-poll —
+    // the response should pick it up.
+    let recorded_add_log = started_core_node
+        .peppy_dirs
+        .logs_dir_add()
+        .join("recorded.log");
+    {
+        let handle = node_stack
+            .find(TARGET_NODE_NAME, TARGET_NODE_TAG)
+            .expect("entity should exist");
+        handle
+            .write()
+            .set_last_add_log_path(recorded_add_log.clone());
+    }
+    let request = NodeInfoRequest::new(NodeSource::Fs(node_dir.path().to_path_buf()));
+    let info_response = poll_node_info(&started_core_node, &request, Duration::from_secs(5))
+        .await
+        .expect("node_info request should succeed");
+    assert_eq!(
+        info_response.add_log_path.as_deref(),
+        Some(recorded_add_log.as_path())
     );
 }
 
@@ -154,17 +202,18 @@ async fn listen_for_node_info_on_git_node_success() {
         "no instances should be reported when node is not in stack"
     );
 
+    let git_node_path = git_repo_path.join(TARGET_REPO_PATH);
     node_stack
-        .push_config(
-            info_response.config.clone(),
-            false,
-            git_repo_path.join(TARGET_REPO_PATH),
-        )
+        .push_config(info_response.config.clone(), false, &git_node_path)
         .expect("push_config should succeed");
     let instance_id = Name::new(TARGET_INSTANCE_ID).expect("valid instance id");
-    node_stack
-        .add_instance(TARGET_NODE_NAME, TARGET_NODE_TAG, Some(&instance_id), None)
-        .expect("add_instance should succeed");
+    let _running = real_build_and_spawn_instance(
+        &started_core_node,
+        TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
+        &instance_id,
+    )
+    .await;
 
     let request = NodeInfoRequest::new(NodeSource::Git {
         repo_url: GitUrl::try_from(git_repo_path.as_path()).expect("git repo path should parse"),
@@ -268,9 +317,13 @@ async fn listen_for_node_info_on_http_node_success() {
         .push_config(info_response.config.clone(), false, bundle_dir.path())
         .expect("push_config should succeed");
     let instance_id = Name::new(TARGET_INSTANCE_ID).expect("valid instance id");
-    node_stack
-        .add_instance(TARGET_NODE_NAME, TARGET_NODE_TAG, Some(&instance_id), None)
-        .expect("add_instance should succeed");
+    let _running = real_build_and_spawn_instance(
+        &started_core_node,
+        TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
+        &instance_id,
+    )
+    .await;
 
     let request = NodeInfoRequest::new(NodeSource::Http {
         url,
@@ -377,19 +430,11 @@ async fn listen_for_node_info_has_instance_ids() {
 
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    let runtime_config_1 = RuntimeConfig::new(
-        "127.0.0.1",
-        config::consts::DEFAULT_MESSAGING_PORT,
-        NodeInstance {
-            instance_id: InstanceName::new(TARGET_INSTANCE_ID_1).expect("valid instance id"),
-            arguments: Default::default(),
-        },
-        TARGET_NODE_NAME,
+    let runtime_config_json5_1 = common::default_runtime_config_json5(
         &started_core_node.core_node_name,
-    )
-    .expect("runtime config should be valid");
-    let runtime_config_json5_1 =
-        serde_json5::to_string(&runtime_config_1).expect("runtime config should serialize");
+        TARGET_NODE_NAME,
+        TARGET_INSTANCE_ID_1,
+    );
 
     let start_response_1 = send_node_start_and_wait(
         &started_core_node.caller_handle,
@@ -412,19 +457,11 @@ async fn listen_for_node_info_has_instance_ids() {
         start_response_1.result.error_message
     );
 
-    let runtime_config_2 = RuntimeConfig::new(
-        "127.0.0.1",
-        config::consts::DEFAULT_MESSAGING_PORT,
-        NodeInstance {
-            instance_id: InstanceName::new(TARGET_INSTANCE_ID_2).expect("valid instance id"),
-            arguments: Default::default(),
-        },
-        TARGET_NODE_NAME,
+    let runtime_config_json5_2 = common::default_runtime_config_json5(
         &started_core_node.core_node_name,
-    )
-    .expect("runtime config should be valid");
-    let runtime_config_json5_2 =
-        serde_json5::to_string(&runtime_config_2).expect("runtime config should serialize");
+        TARGET_NODE_NAME,
+        TARGET_INSTANCE_ID_2,
+    );
 
     let start_response_2 = send_node_start_and_wait(
         &started_core_node.caller_handle,

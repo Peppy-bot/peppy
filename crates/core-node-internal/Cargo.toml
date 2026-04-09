@@ -41,6 +41,7 @@ tar = "0.4"
 zstd = "0.13.3"
 tempfile = "3.10"
 sha2 = "0.11"
+parking_lot = { workspace = true }
 
 [build-dependencies]
 build-helpers = { path = "../build-helpers-internal" }
@@ -48,6 +49,8 @@ capnpc = "0.25"
 
 [dev-dependencies]
 libc = "0.2"
+node-stack = { path = "../node-stack-internal" }
+config = { path = "../config-internal", features = ["test_helpers"] }
 tempfile = "3.10"
 tokio = { version = "1.47", features = ["full"] }
 httptest = "0.16.3"

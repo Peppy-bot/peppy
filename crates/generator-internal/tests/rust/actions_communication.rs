@@ -5,7 +5,7 @@ use crate::helpers::{
     wait_for_health_service_reachable_or_exit,
 };
 use config::consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME};
-use config::runtime::NodeInstance;
+use config::runtime::NodeInstanceConfig;
 use config::{
     launcher::Name,
     node::{ConsumedAction, ExposedAction, MessageFormat},
@@ -160,7 +160,7 @@ async fn actions_communication() {
     let consumer_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
-        NodeInstance {
+        NodeInstanceConfig {
             instance_id: Name::new(consumer_instance_id).unwrap(),
             arguments: Default::default(),
         },
@@ -239,7 +239,7 @@ fn main() -> Result<()> {
     let exposer_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
-        NodeInstance {
+        NodeInstanceConfig {
             instance_id: Name::new(exposer_instance_id).unwrap(),
             arguments: Default::default(),
         },
@@ -477,7 +477,7 @@ async fn actions_communication_cancel_goal() {
     let consumer_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
-        NodeInstance {
+        NodeInstanceConfig {
             instance_id: Name::new(consumer_instance_id).unwrap(),
             arguments: Default::default(),
         },
@@ -552,7 +552,7 @@ fn main() -> Result<()> {
     let exposer_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
-        NodeInstance {
+        NodeInstanceConfig {
             instance_id: Name::new(exposer_instance_id).unwrap(),
             arguments: Default::default(),
         },

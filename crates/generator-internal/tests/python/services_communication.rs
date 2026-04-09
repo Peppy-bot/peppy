@@ -5,7 +5,7 @@ use crate::helpers::{
     wait_for_service_reachable_or_exit,
 };
 use config::consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME};
-use config::runtime::NodeInstance;
+use config::runtime::NodeInstanceConfig;
 use config::{
     launcher::Name,
     node::{ConsumedService, ExposedService, MessageFormat},
@@ -127,7 +127,7 @@ async fn services_communication_no_target_instance_id() {
     let consumer_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
-        NodeInstance {
+        NodeInstanceConfig {
             instance_id: Name::new(consumer_instance_id).unwrap(),
             arguments: Default::default(),
         },
@@ -187,7 +187,7 @@ if __name__ == "__main__":
     let exposer_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
-        NodeInstance {
+        NodeInstanceConfig {
             instance_id: Name::new(exposer_instance_id).unwrap(),
             arguments: Default::default(),
         },
@@ -415,7 +415,7 @@ async fn services_communication_exposed_service_without_request_body() {
     let consumer_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
-        NodeInstance {
+        NodeInstanceConfig {
             instance_id: Name::new(consumer_instance_id).unwrap(),
             arguments: Default::default(),
         },
@@ -474,7 +474,7 @@ if __name__ == "__main__":
     let exposer_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
-        NodeInstance {
+        NodeInstanceConfig {
             instance_id: Name::new(exposer_instance_id).unwrap(),
             arguments: Default::default(),
         },
@@ -684,7 +684,7 @@ async fn services_communication_multiple_exposed_instances_same_service_not_targ
     let consumer_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
-        NodeInstance {
+        NodeInstanceConfig {
             instance_id: Name::new(consumer_instance_id).unwrap(),
             arguments: Default::default(),
         },
@@ -744,7 +744,7 @@ if __name__ == "__main__":
     let exposer1_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
-        NodeInstance {
+        NodeInstanceConfig {
             instance_id: Name::new(exposer1_instance_id).unwrap(),
             arguments: Default::default(),
         },
@@ -808,7 +808,7 @@ if __name__ == "__main__":
     let exposer2_runtime_config = RuntimeConfig::new(
         &router_host,
         router_port,
-        NodeInstance {
+        NodeInstanceConfig {
             instance_id: Name::new(exposer2_instance_id).unwrap(),
             arguments: Default::default(),
         },

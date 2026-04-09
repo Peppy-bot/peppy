@@ -1,14 +1,13 @@
 mod common;
 
 use common::{
-    AbortOnDrop, CALLER_INSTANCE_ID, send_node_add_and_wait, start_core_node_with_mock_messenger,
-    write_peppy_json5,
+    AbortOnDrop, CALLER_INSTANCE_ID, send_node_add_and_wait, spawn_real_running_instance,
+    start_core_node_with_mock_messenger, write_peppy_json5,
 };
 use config::node::Name;
 use core_node::encoding::NodeStopRequest;
 use peppylib::messaging::MessengerHandle;
 use peppylib::services::shutdown::listen_for_shutdown;
-use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -70,24 +69,20 @@ async fn listen_for_node_stop_success() {
     );
     assert!(node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG));
 
-    // Spawn a real process to simulate the running node
-    let mut child_process = Command::new("sleep")
-        .arg("60")
-        .stdin(Stdio::null())
-        .spawn()
-        .expect("failed to spawn sleep process");
-    let pid = child_process.id();
-
-    // Register the instance with the actual PID
+    // Drive the real start lifecycle so the entity tracks a live child
+    // process (spawned from the node's `start_cmd = ["sleep", "10"]`).
     let instance_id = Name::new(TARGET_INSTANCE_ID).expect("valid instance id");
-    node_stack
-        .add_instance(
-            TARGET_NODE_NAME,
-            TARGET_NODE_TAG,
-            Some(&instance_id),
-            Some(pid),
-        )
-        .expect("add_instance should succeed");
+    let running = spawn_real_running_instance(
+        &started_core_node,
+        TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
+        &instance_id,
+    )
+    .await;
+    let pid = running.pid;
+    // Drop the guard's stop-on-drop behavior by forgetting it — node_stop
+    // itself is responsible for reaping the child in this test.
+    std::mem::forget(running);
 
     // Verify the process is running before we try to stop it
     assert!(
@@ -113,16 +108,16 @@ async fn listen_for_node_stop_success() {
     // Allow the shutdown service to fully establish its listener
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    // Spawn a task to kill the process when shutdown is received
+    // Spawn a task to SIGKILL the entity-tracked pid when shutdown is
+    // received (simulating the target node's own exit path).
     let kill_task = tokio::spawn(async move {
         shutdown_rx
             .await
             .expect("shutdown channel should not be dropped");
-        // Kill the actual process when shutdown signal is received
-        child_process.kill().expect("failed to kill child process");
-        child_process
-            .wait()
-            .expect("failed to wait for child process");
+        let _ = std::process::Command::new("kill")
+            .arg("-KILL")
+            .arg(pid.to_string())
+            .status();
     });
 
     let response = NodeStopRequest::new(TARGET_INSTANCE_ID)
