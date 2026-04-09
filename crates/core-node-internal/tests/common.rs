@@ -641,11 +641,8 @@ async fn send_node_build_and_wait_internal(
                 let payload = msg.payload();
                 match NodeBuildResult::decode(&payload) {
                     Ok(result) => {
-                        let mut test_result = NodeAddTestResult::from_build(result);
-                        // Tests assert the log_path lives in `logs_dir_add()`,
-                        // so preserve the *add* log even when build succeeded.
-                        test_result.log_path = add_log_path;
-                        return Ok(test_result);
+                        let _ = add_log_path;
+                        return Ok(NodeAddTestResult::from_build(result));
                     }
                     Err(err) => {
                         check_pending_or_decode_error(payload.as_ref(), err)?;

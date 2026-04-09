@@ -461,10 +461,10 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
         add_result.log_path
     );
 
-    let log_dir = started_core_node.peppy_dirs.logs_dir_add();
+    let log_dir = started_core_node.peppy_dirs.logs_dir_build();
     assert!(
         add_result.log_path.starts_with(&log_dir),
-        "log file should be in logs_dir_add(), expected to start with {:?}, got {:?}",
+        "log file should be in logs_dir_build(), expected to start with {:?}, got {:?}",
         log_dir,
         add_result.log_path
     );
@@ -563,10 +563,10 @@ async fn listen_for_node_git_add_success() {
     );
 
     // Verify the log file was renamed to the canonical <node_name>_<tag>_<timestamp>.log format
-    let log_dir = started_core_node.peppy_dirs.logs_dir_add();
+    let log_dir = started_core_node.peppy_dirs.logs_dir_build();
     assert!(
         add_result.log_path.starts_with(&log_dir),
-        "log file should be in logs_dir_add(), expected to start with {:?}, got {:?}",
+        "log file should be in logs_dir_build(), expected to start with {:?}, got {:?}",
         log_dir,
         add_result.log_path
     );
@@ -1991,10 +1991,10 @@ async fn listen_for_node_add_writes_log_file() {
     );
 
     // Verify the log file is in the expected directory
-    let log_dir = started_core_node.peppy_dirs.logs_dir_add();
+    let log_dir = started_core_node.peppy_dirs.logs_dir_build();
     assert!(
         add_result.log_path.starts_with(&log_dir),
-        "log file should be in logs_dir_add(), expected to start with {:?}, got {:?}",
+        "log file should be in logs_dir_build(), expected to start with {:?}, got {:?}",
         log_dir,
         add_result.log_path
     );
