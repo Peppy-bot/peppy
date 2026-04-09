@@ -1103,7 +1103,7 @@ async fn start_core_node_with_messenger(
 pub struct TestRunningInstance {
     pub pid: u32,
     pub instance_id: config::node::Name,
-    handle: std::sync::Arc<parking_lot::RwLock<node_stack::NodeEntity>>,
+    handle: node_stack::EntityHandle,
     _working_dir: Option<TempDir>,
     _feedback_drain: tokio::task::JoinHandle<()>,
     _shutdown_listener: Option<AbortOnDrop<peppylib::PeppyResult<()>>>,

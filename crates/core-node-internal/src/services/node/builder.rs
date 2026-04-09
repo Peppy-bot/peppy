@@ -325,7 +325,7 @@ async fn handle_goal_request(
 
 async fn run_node_build(
     goal: NodeBuildGoal,
-    entity_handle: Arc<parking_lot::RwLock<node_stack::NodeEntity>>,
+    entity_handle: node_stack::EntityHandle,
     working_dir_guard: Arc<node_stack::WorkingDirGuard>,
     action_context: NodeBuildActionContext,
     feedback_tx: mpsc::UnboundedSender<FeedbackLine>,
