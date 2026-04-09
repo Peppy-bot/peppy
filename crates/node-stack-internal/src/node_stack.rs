@@ -350,7 +350,7 @@ impl NodeStackInner {
         config: NodeConfig,
         allow_missing_dependencies: bool,
         config_path: P,
-    ) -> Result<()> {
+    ) -> Result<Option<EntitySnapshot>> {
         let key = NodeKey::new(config.manifest.name.as_str(), &config.manifest.tag);
         let config_path = config_path.into();
 
@@ -368,10 +368,10 @@ impl NodeStackInner {
             // `Arc<RwLock<NodeEntity>>` and not the stack lock) append a
             // `Starting` instance that the replacement would silently orphan.
             let Some(handle) = self.graph.node_weight(index).cloned() else {
-                return Ok(());
+                return Ok(None);
             };
 
-            let (interfaces_changed, dependencies_changed) = {
+            let (previous_snapshot, interfaces_changed, dependencies_changed) = {
                 let mut guard = handle.write().expect("entity poisoned");
 
                 if !guard.instances().is_empty() {
@@ -415,24 +415,37 @@ impl NodeStackInner {
                     self.validate_dependencies(&candidate)?;
                 }
 
+                // Capture the entity state we are about to replace, while
+                // still holding the write lock. The caller uses this snapshot
+                // for rollback if a subsequent build fails. Capturing here
+                // (instead of via a separate read lock before push_config)
+                // closes a race window where a concurrent push_config could
+                // make the pre-captured snapshot stale.
+                let previous_snapshot = EntitySnapshot {
+                    config: guard.config().clone(),
+                    config_path: guard.config_path().to_path_buf(),
+                    artifact_path: guard.artifact_path().map(|p| p.to_path_buf()),
+                };
+
                 // Replace the entity in-place under the still-held write
                 // lock. The same `Arc` handle is preserved so any external
                 // readers see the new state.
                 *guard = NodeEntity::new(config, config_path);
 
-                (interfaces_changed, dependencies_changed)
+                (previous_snapshot, interfaces_changed, dependencies_changed)
             };
 
             if interfaces_changed || dependencies_changed {
                 self.rewire_dependencies(index);
             }
+
+            Ok(Some(previous_snapshot))
         } else {
             // Entity doesn't exist, create new one in the Added stage.
             let entity = NodeEntity::new(config, config_path);
             self.insert_entity(entity, !allow_missing_dependencies)?;
+            Ok(None)
         }
-
-        Ok(())
     }
 
     /// Removes an entity entirely from the graph.
@@ -600,12 +613,33 @@ impl NodeStack {
     /// If `allow_missing_dependencies` is true, missing dependencies are
     /// tracked as pending requirements and will be wired once the dependency
     /// nodes are added to the stack.
+    ///
+    /// Callers that need to roll back to the previous entity state on a
+    /// later build failure should use [`Self::push_config_capturing_previous`]
+    /// instead so the snapshot is captured atomically with the replacement.
     pub fn push_config<P: Into<PathBuf>>(
         &self,
         config: NodeConfig,
         allow_missing_dependencies: bool,
         config_path: P,
     ) -> Result<()> {
+        self.push_config_capturing_previous(config, allow_missing_dependencies, config_path)
+            .map(|_| ())
+    }
+
+    /// Like [`Self::push_config`] but additionally returns the snapshot of
+    /// the entity that was just replaced (if any), captured under the same
+    /// write lock that performed the in-place replacement. The snapshot is
+    /// suitable for [`Self::restore_snapshot_if_matches`] rollback after a
+    /// failed rebuild — capturing it here closes the race window where a
+    /// concurrent `push_config` could otherwise make a pre-captured snapshot
+    /// stale.
+    pub fn push_config_capturing_previous<P: Into<PathBuf>>(
+        &self,
+        config: NodeConfig,
+        allow_missing_dependencies: bool,
+        config_path: P,
+    ) -> Result<Option<EntitySnapshot>> {
         let mut guard = self.shared.write().expect("node stack poisoned");
         guard.push_config_impl(config, allow_missing_dependencies, config_path)
     }
@@ -642,26 +676,27 @@ impl NodeStack {
             return Ok(false);
         };
 
-        let has_instances = guard
-            .graph
-            .node_weight(index)
-            .map(|handle| {
-                !handle
-                    .read()
-                    .expect("entity poisoned")
-                    .instances()
-                    .is_empty()
-            })
-            .unwrap_or(false);
-
-        if has_instances {
+        // Hold the entity write lock across both the emptiness check and the
+        // graph removal so a concurrent `prepare_and_spawn` (which acquires
+        // the entity write lock to insert a `Starting` instance) cannot slip
+        // an instance in between the check and the unlink. Cloning the
+        // handle out of the graph drops the borrow on `guard` immediately so
+        // we can still call `guard.remove_entity` further down.
+        let Some(entity_handle) = guard.graph.node_weight(index).cloned() else {
+            return Ok(false);
+        };
+        let entity_guard = entity_handle.write().expect("entity poisoned");
+        if !entity_guard.instances().is_empty() {
             return Err(Error::CannotRemoveNodeWithInstances {
                 node_name: name.to_string(),
                 node_tag: tag.to_string(),
             });
         }
-
         guard.remove_entity(&key);
+        // Keep `entity_guard` alive until *after* the unlink so an outside
+        // thread holding a clone of the handle still cannot mutate the
+        // entity between the check and the removal.
+        drop(entity_guard);
         Ok(true)
     }
 
@@ -863,11 +898,12 @@ impl NodeStack {
         }
 
         // Phase 2: only after *every* source entity has validated, clear the
-        // target and insert the prepared entities under a single sequence of
-        // write locks.
-        self.reset();
+        // target and insert the prepared entities under a single held write
+        // lock so readers never observe a partially-restored graph (e.g. a
+        // cleared stack with only some entities re-inserted).
+        let mut guard = self.shared.write().expect("node stack poisoned");
+        guard.clear();
         for (label, entity) in prepared {
-            let mut guard = self.shared.write().expect("node stack poisoned");
             guard
                 .insert_entity(entity, false)
                 .map_err(|e| format!("failed to insert snapshot for {}: {e}", label))?;

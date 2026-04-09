@@ -1483,27 +1483,6 @@ async fn process_node_add(
     super::inject_node_runtime_env(&mut env_vars, &node_name, &node_tag);
     let _cleanup_guard = CleanupDir::new(cleanup_dir);
 
-    // Capture the previous entity's full state so we can both (a) clean up
-    // its artifact after the new entity is in place on success, and (b) roll
-    // back to the prior `Ready` state if the rebuild fails after
-    // `push_config` has already replaced the entity in-place. Only nodes
-    // that have already reached `Built` have an artifact_path.
-    let previous_entity_snapshot =
-        ctx.action
-            .node_stack
-            .find(&node_name, &node_tag)
-            .map(|entity| {
-                let guard = entity.read().expect("entity poisoned");
-                (
-                    guard.config().clone(),
-                    guard.config_path().to_path_buf(),
-                    guard.artifact_path().map(|p| p.to_path_buf()),
-                )
-            });
-    let previous_snapshot_path = previous_entity_snapshot
-        .as_ref()
-        .and_then(|(_, _, artifact)| artifact.clone());
-
     if verify_codegen_fingerprint {
         // Verify that the node config fingerprint matches the one in the generated folder.
         // Even if the `.peppy` content will be regenerated in the copy, we want to make sure the code that
@@ -1649,16 +1628,27 @@ async fn process_node_add(
     // Push the node config into the stack as an `Added` entity. The
     // config_path is the source `peppy.json5` (the user-owned location);
     // the entity will move to `Built` once NodeEntity::build runs.
+    //
+    // `push_config` returns the previous entity snapshot (if any) captured
+    // under the same write lock that performed the in-place replacement,
+    // which we use below for both rollback on build failure and cleanup of
+    // the prior artifact on success.
     let config_path_for_stack = source_path.join(NODE_CONFIG_FILE);
-    if let Err(e) =
-        ctx.action
-            .node_stack
-            .push_config(node_config.clone(), false, &config_path_for_stack)
-    {
-        let msg = format!("Failed to add node config: {}", e);
-        write_error_to_log(&ctx.log_file, &msg);
-        return NodeAddResult::failure(&ctx.log_path, msg);
-    }
+    let previous_entity_snapshot = match ctx.action.node_stack.push_config_capturing_previous(
+        node_config.clone(),
+        false,
+        &config_path_for_stack,
+    ) {
+        Ok(snapshot) => snapshot,
+        Err(e) => {
+            let msg = format!("Failed to add node config: {}", e);
+            write_error_to_log(&ctx.log_file, &msg);
+            return NodeAddResult::failure(&ctx.log_path, msg);
+        }
+    };
+    let previous_snapshot_path = previous_entity_snapshot
+        .as_ref()
+        .and_then(|snap| snap.artifact_path.clone());
 
     // Drive the build via the entity itself. This either runs apptainer
     // (container nodes) or archives `working_dir` (process nodes), and
@@ -1718,7 +1708,7 @@ async fn process_node_add(
             // paths use the pre-build handle+generation so a concurrent
             // `push_config` that replaced the entity in-place between our
             // failure and this cleanup is not silently clobbered.
-            if let Some((prev_config, prev_config_path, prev_artifact)) = previous_entity_snapshot {
+            if let Some(snapshot) = previous_entity_snapshot {
                 let _ = ctx.action.node_stack.restore_snapshot_if_matches(
                     node_stack::RestoreTarget {
                         name: &node_name,
@@ -1726,11 +1716,7 @@ async fn process_node_add(
                         expected_handle: &entity_handle,
                         expected_generation: expected_generation_before_build,
                     },
-                    node_stack::EntitySnapshot {
-                        config: prev_config,
-                        config_path: prev_config_path,
-                        artifact_path: prev_artifact,
-                    },
+                    snapshot,
                 );
             } else {
                 let _ = ctx.action.node_stack.remove_config_if_matches(

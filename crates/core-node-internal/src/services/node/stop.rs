@@ -109,12 +109,16 @@ async fn handle_node_stop_request_inner(
     let instance = match node_stack.find_by_instance_id(&instance_id) {
         Some(instance) => instance,
         None => {
-            if instance_is_in_starting(&node_stack, &instance_id) {
-                return NodeStopResponse::failure(format!(
-                    "Node instance '{}' is in Starting state; retry after the start completes",
-                    request.instance_id
-                ))
-                .encode();
+            match instance_is_in_starting(&node_stack, &instance_id) {
+                Ok(true) => {
+                    return NodeStopResponse::failure(format!(
+                        "Node instance '{}' is in Starting state; retry after the start completes",
+                        request.instance_id
+                    ))
+                    .encode();
+                }
+                Ok(false) => {}
+                Err(e) => return NodeStopResponse::failure(e).encode(),
             }
             return NodeStopResponse::failure(format!(
                 "Node instance '{}' not found in node stack",
@@ -127,12 +131,16 @@ async fn handle_node_stop_request_inner(
     let entity_handle = match node_stack.find_entity_by_instance_id(&instance_id) {
         Some(entity) => entity,
         None => {
-            if instance_is_in_starting(&node_stack, &instance_id) {
-                return NodeStopResponse::failure(format!(
-                    "Node instance '{}' is in Starting state; retry after the start completes",
-                    request.instance_id
-                ))
-                .encode();
+            match instance_is_in_starting(&node_stack, &instance_id) {
+                Ok(true) => {
+                    return NodeStopResponse::failure(format!(
+                        "Node instance '{}' is in Starting state; retry after the start completes",
+                        request.instance_id
+                    ))
+                    .encode();
+                }
+                Ok(false) => {}
+                Err(e) => return NodeStopResponse::failure(e).encode(),
             }
             return NodeStopResponse::failure(format!(
                 "Node instance '{}' not found in node stack",
@@ -217,19 +225,28 @@ async fn handle_node_stop_request_inner(
     NodeStopResponse::success().encode()
 }
 
-/// Returns true if any tracked entity contains an instance with the given
-/// id in `InstanceState::Starting`. Used to disambiguate "instance does not
-/// exist" from "instance exists but is mid-start" in the stop handler.
-fn instance_is_in_starting(node_stack: &Arc<NodeStack>, instance_id: &Name) -> bool {
+/// Returns `Ok(true)` if any tracked entity contains an instance with the
+/// given id in `InstanceState::Starting`. Used to disambiguate "instance does
+/// not exist" from "instance exists but is mid-start" in the stop handler.
+///
+/// Returns `Err` if any entity lock is poisoned — callers must surface this
+/// rather than treat a poisoned lock as "instance not in starting", which
+/// would mislead the user into believing the instance is missing entirely.
+fn instance_is_in_starting(
+    node_stack: &Arc<NodeStack>,
+    instance_id: &Name,
+) -> std::result::Result<bool, String> {
     for handle in node_stack.snapshot() {
-        let Ok(guard) = handle.read() else { continue };
+        let guard = handle.read().map_err(|_| {
+            "entity lock poisoned while checking for in-flight starting instances".to_owned()
+        })?;
         if guard.instances().iter().any(|inst| {
             inst.instance_id() == instance_id && inst.state() == node_stack::InstanceState::Starting
         }) {
-            return true;
+            return Ok(true);
         }
     }
-    false
+    Ok(false)
 }
 
 /// Sends a `SHUTDOWN_SERVICE` request and returns once the receiver

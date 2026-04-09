@@ -2,7 +2,7 @@ use crate::Result;
 use crate::encoding::{NodeRemoveRequest, NodeRemoveResponse};
 use crate::names;
 use config::node::Name;
-use node_stack::NodeStack;
+use node_stack::{EntityHandle, NodeStack};
 use peppylib::messaging::{SHUTDOWN_SERVICE, ServiceMessenger, ServiceRequestContext};
 use peppylib::types::Payload;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult};
@@ -105,11 +105,12 @@ async fn handle_node_remove_request_inner(
             .encode();
     }
 
+    // Visit every handle so a poisoned lock is always reported regardless of
+    // whether the matching entity comes before or after it in iteration order.
     let mut snapshot_poisoned = false;
-    let matching_entity = node_stack
-        .snapshot()
-        .into_iter()
-        .find(|handle| match handle.read() {
+    let mut matching_entity: Option<EntityHandle> = None;
+    for handle in node_stack.snapshot() {
+        let is_match = match handle.read() {
             Ok(guard) => {
                 guard.config().manifest.name.as_str() == request.node_name
                     && guard.config().manifest.tag == request.tag
@@ -118,7 +119,11 @@ async fn handle_node_remove_request_inner(
                 snapshot_poisoned = true;
                 false
             }
-        });
+        };
+        if is_match && matching_entity.is_none() {
+            matching_entity = Some(handle);
+        }
+    }
     if snapshot_poisoned {
         return NodeRemoveResponse::failure("entity lock poisoned during snapshot scan").encode();
     }

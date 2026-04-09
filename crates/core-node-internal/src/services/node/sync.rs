@@ -820,8 +820,18 @@ pub fn auto_sync_if_missing(
                 // `.peppy-backup-PID-NANOS` (which is not in the excluded
                 // list), and would race with a concurrent deletion — surfacing
                 // as intermittent "No such file or directory" errors.
+                //
+                // A failure here must be surfaced rather than silently
+                // ignored: leaving the backup behind would still trip the
+                // recursive copy described above.
                 if had_backup {
-                    let _ = std::fs::remove_dir_all(&backup_dir);
+                    std::fs::remove_dir_all(&backup_dir).map_err(|e| {
+                        crate::Error::Io(std::io::Error::other(format!(
+                            "failed to clean up .peppy backup at {}: {}",
+                            backup_dir.display(),
+                            e
+                        )))
+                    })?;
                 }
             }
             Err(e) => {
@@ -916,9 +926,16 @@ pub fn auto_sync_if_missing(
             Ok(()) => {
                 // Clean up the backup synchronously — see the matching comment
                 // in the root-sync branch above for why a background thread
-                // would race with the subsequent recursive copy.
+                // would race with the subsequent recursive copy. A failure
+                // here must be surfaced for the same reason.
                 if had_backup {
-                    let _ = std::fs::remove_dir_all(&backup_dir);
+                    std::fs::remove_dir_all(&backup_dir).map_err(|e| {
+                        crate::Error::Io(std::io::Error::other(format!(
+                            "failed to clean up .peppy backup at {}: {}",
+                            backup_dir.display(),
+                            e
+                        )))
+                    })?;
                 }
             }
             Err(e) => {
