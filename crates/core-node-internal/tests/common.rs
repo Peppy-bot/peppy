@@ -114,7 +114,7 @@ pub fn build_runtime_config_json5(
     let runtime_config = config::runtime::RuntimeConfig::new(
         host,
         port,
-        config::runtime::NodeInstance {
+        config::runtime::NodeInstanceConfig {
             instance_id: config::launcher::Name::new(instance_id).expect("valid instance id"),
             arguments,
         },

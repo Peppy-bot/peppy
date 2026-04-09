@@ -946,7 +946,7 @@ async fn start_node_instances(
             )
             .await;
 
-            let node_instance = config::runtime::NodeInstance {
+            let node_instance = config::runtime::NodeInstanceConfig {
                 instance_id: instance.instance_id.clone(),
                 arguments: instance.arguments.clone(),
             };
