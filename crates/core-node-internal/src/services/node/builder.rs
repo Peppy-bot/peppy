@@ -61,6 +61,17 @@ impl ActionResult for NodeBuildResult {
     }
 }
 
+/// Inputs required to drive a single `node_build` run to completion.
+struct NodeBuildRun {
+    goal: NodeBuildGoal,
+    entity_handle: node_stack::EntityHandle,
+    working_dir_guard: Arc<node_stack::WorkingDirGuard>,
+    action_context: NodeBuildActionContext,
+    feedback_tx: mpsc::UnboundedSender<FeedbackLine>,
+    log_file: Arc<StdMutex<File>>,
+    log_path: PathBuf,
+}
+
 /// Drives a build for the entity named `(node_name, node_tag)` that is
 /// currently in `Added`. The caller supplies the log file/path and the
 /// feedback channel; everything else is recovered from the entity itself.
@@ -105,22 +116,21 @@ pub(crate) async fn run_node_build_for_entity(
         }
     };
 
-    let goal = NodeBuildGoal {
-        node_name,
-        node_tag,
-        env_vars,
-        timeout_secs: 0,
-        force: false,
-    };
-    run_node_build(
-        goal,
+    run_node_build(NodeBuildRun {
+        goal: NodeBuildGoal {
+            node_name,
+            node_tag,
+            env_vars,
+            timeout_secs: 0,
+            force: false,
+        },
         entity_handle,
         working_dir_guard,
         action_context,
         feedback_tx,
         log_file,
         log_path,
-    )
+    })
     .await
 }
 
@@ -146,15 +156,8 @@ impl GoalHandler for NodeBuildGoalHandler {
         feedback_publisher: TopicPublisher,
         state: Arc<Mutex<ActionState<NodeBuildResult>>>,
     ) -> PeppyResult<Payload> {
-        handle_goal_request(
-            context,
-            feedback_publisher,
-            state,
-            self.context.clone(),
-            Arc::clone(&self.running_since),
-            Arc::clone(&self.running_task),
-        )
-        .await
+        self.handle_goal_request(context, feedback_publisher, state)
+            .await
     }
 }
 
@@ -167,167 +170,171 @@ fn encode_rejected_goal(reason: impl Into<String>) -> PeppyResult<Payload> {
         })
 }
 
-async fn handle_goal_request(
-    context: ServiceRequestContext,
-    feedback_publisher: TopicPublisher,
-    state: Arc<Mutex<ActionState<NodeBuildResult>>>,
-    action_context: NodeBuildActionContext,
-    running_since: Arc<Mutex<Option<(Instant, u64)>>>,
-    running_task: Arc<Mutex<Option<JoinHandle<()>>>>,
-) -> PeppyResult<Payload> {
-    let sender_instance_id = context.message().instance_id();
-    let payload = context.message().payload();
+impl NodeBuildGoalHandler {
+    async fn handle_goal_request(
+        &self,
+        context: ServiceRequestContext,
+        feedback_publisher: TopicPublisher,
+        state: Arc<Mutex<ActionState<NodeBuildResult>>>,
+    ) -> PeppyResult<Payload> {
+        let sender_instance_id = context.message().instance_id();
+        let payload = context.message().payload();
 
-    let goal = match NodeBuildGoal::decode(payload.as_ref()) {
-        Ok(g) => g,
-        Err(e) => return encode_rejected_goal(format!("invalid payload: {}", e)),
-    };
+        let goal = match NodeBuildGoal::decode(payload.as_ref()) {
+            Ok(g) => g,
+            Err(e) => return encode_rejected_goal(format!("invalid payload: {}", e)),
+        };
 
-    {
-        let mut state_guard = state.lock().await;
-        if matches!(*state_guard, ActionState::Running) {
-            if !goal.force {
-                let running_guard = running_since.lock().await;
-                let remaining = running_guard
-                    .map(|(started_at, timeout_secs)| {
-                        Duration::from_secs(timeout_secs)
-                            .saturating_sub(started_at.elapsed())
-                            .as_secs()
-                    })
-                    .unwrap_or(0);
-                return encode_rejected_goal(format!(
-                    "action already in progress (times out in {remaining}s), \
-                     use `--force` to force building the node"
-                ));
-            }
-            debug!("Force flag set: aborting previous node_build task");
-            let mut task_guard = running_task.lock().await;
-            if let Some(handle) = task_guard.take() {
-                handle.abort();
-            }
-        }
-        *state_guard = ActionState::Running;
-        *running_since.lock().await = Some((Instant::now(), goal.timeout_secs));
-    }
-
-    debug!(
-        "Received `node_build` goal from {sender_instance_id}, target={}:{}",
-        goal.node_name, goal.node_tag
-    );
-
-    // Look up the entity *before* creating the log file so we can fail fast
-    // when the user typo'd the node name.
-    let entity_handle = match action_context
-        .node_stack
-        .find(&goal.node_name, &goal.node_tag)
-    {
-        Some(handle) => handle,
-        None => {
+        {
             let mut state_guard = state.lock().await;
-            *state_guard = ActionState::Rejected;
-            return encode_rejected_goal(format!(
-                "node `{}:{}` is not in the node stack — run `peppy node add` first",
-                goal.node_name, goal.node_tag
-            ));
-        }
-    };
-
-    // Pull the staged working directory from the entity. Reject when the
-    // entity is not in `Added` (a build is already in flight or the entity
-    // is `Ready`). Bind the read-lock-derived values to local owned values
-    // before any `.await`, so the parking_lot guard never crosses an await.
-    let pending = {
-        let guard = entity_handle.read();
-        match guard.stage().ensure_buildable() {
-            Ok(()) => Ok(guard.pending_working_dir()),
-            Err(stage) => Err(stage.to_string()),
-        }
-    };
-    let working_dir_guard = match pending {
-        Err(stage) => {
-            let mut state_guard = state.lock().await;
-            *state_guard = ActionState::Rejected;
-            return encode_rejected_goal(format!(
-                "node `{}:{}` is in stage `{}`; cannot build",
-                goal.node_name, goal.node_tag, stage
-            ));
-        }
-        Ok(None) => {
-            let mut state_guard = state.lock().await;
-            *state_guard = ActionState::Rejected;
-            return encode_rejected_goal(format!(
-                "node `{}:{}` has no staged working directory; \
-                 re-run `peppy node add` to stage one",
-                goal.node_name, goal.node_tag
-            ));
-        }
-        Ok(Some(g)) => g,
-    };
-
-    let log_dir = action_context.peppy_dirs.logs_dir_build();
-    let timestamp = Local::now().format("%Y%m%d_%H%M%S_%3f").to_string();
-    let log_filename = format!("{}_{}_{}.log", goal.node_name, goal.node_tag, timestamp);
-    let (log_file, log_path) = match create_action_log_file(&log_dir, &log_filename) {
-        Ok(result) => result,
-        Err(error_msg) => {
-            debug!("{}", error_msg);
-            let mut state_guard = state.lock().await;
-            *state_guard = ActionState::Rejected;
-            return encode_rejected_goal(error_msg);
-        }
-    };
-    debug!("Build log file: {}", log_path.display());
-
-    let state_clone = Arc::clone(&state);
-    let log_path_clone = log_path.clone();
-    let task_handle = tokio::spawn(async move {
-        let (feedback_tx, mut feedback_rx) = mpsc::unbounded_channel::<FeedbackLine>();
-        let feedback_publisher_for_consumer = feedback_publisher.clone();
-        let consumer_handle = tokio::spawn(async move {
-            while let Some(line) = feedback_rx.recv().await {
-                let feedback = NodeBuildFeedback::from_stream(line.stream, &line.line);
-                if let Ok(payload) = feedback.encode() {
-                    let _ = feedback_publisher_for_consumer.publish(payload).await;
+            if matches!(*state_guard, ActionState::Running) {
+                if !goal.force {
+                    let running_guard = self.running_since.lock().await;
+                    let remaining = running_guard
+                        .map(|(started_at, timeout_secs)| {
+                            Duration::from_secs(timeout_secs)
+                                .saturating_sub(started_at.elapsed())
+                                .as_secs()
+                        })
+                        .unwrap_or(0);
+                    return encode_rejected_goal(format!(
+                        "action already in progress (times out in {remaining}s), \
+                         use `--force` to force building the node"
+                    ));
+                }
+                debug!("Force flag set: aborting previous node_build task");
+                let mut task_guard = self.running_task.lock().await;
+                if let Some(handle) = task_guard.take() {
+                    handle.abort();
                 }
             }
+            *state_guard = ActionState::Running;
+            *self.running_since.lock().await = Some((Instant::now(), goal.timeout_secs));
+        }
+
+        debug!(
+            "Received `node_build` goal from {sender_instance_id}, target={}:{}",
+            goal.node_name, goal.node_tag
+        );
+
+        // Look up the entity *before* creating the log file so we can fail fast
+        // when the user typo'd the node name.
+        let entity_handle = match self
+            .context
+            .node_stack
+            .find(&goal.node_name, &goal.node_tag)
+        {
+            Some(handle) => handle,
+            None => {
+                let mut state_guard = state.lock().await;
+                *state_guard = ActionState::Rejected;
+                return encode_rejected_goal(format!(
+                    "node `{}:{}` is not in the node stack — run `peppy node add` first",
+                    goal.node_name, goal.node_tag
+                ));
+            }
+        };
+
+        // Pull the staged working directory from the entity. Reject when the
+        // entity is not in `Added` (a build is already in flight or the entity
+        // is `Ready`). Bind the read-lock-derived values to local owned values
+        // before any `.await`, so the parking_lot guard never crosses an await.
+        let pending = {
+            let guard = entity_handle.read();
+            match guard.stage().ensure_buildable() {
+                Ok(()) => Ok(guard.pending_working_dir()),
+                Err(stage) => Err(stage.to_string()),
+            }
+        };
+        let working_dir_guard = match pending {
+            Err(stage) => {
+                let mut state_guard = state.lock().await;
+                *state_guard = ActionState::Rejected;
+                return encode_rejected_goal(format!(
+                    "node `{}:{}` is in stage `{}`; cannot build",
+                    goal.node_name, goal.node_tag, stage
+                ));
+            }
+            Ok(None) => {
+                let mut state_guard = state.lock().await;
+                *state_guard = ActionState::Rejected;
+                return encode_rejected_goal(format!(
+                    "node `{}:{}` has no staged working directory; \
+                     re-run `peppy node add` to stage one",
+                    goal.node_name, goal.node_tag
+                ));
+            }
+            Ok(Some(g)) => g,
+        };
+
+        let log_dir = self.context.peppy_dirs.logs_dir_build();
+        let timestamp = Local::now().format("%Y%m%d_%H%M%S_%3f").to_string();
+        let log_filename = format!("{}_{}_{}.log", goal.node_name, goal.node_tag, timestamp);
+        let (log_file, log_path) = match create_action_log_file(&log_dir, &log_filename) {
+            Ok(result) => result,
+            Err(error_msg) => {
+                debug!("{}", error_msg);
+                let mut state_guard = state.lock().await;
+                *state_guard = ActionState::Rejected;
+                return encode_rejected_goal(error_msg);
+            }
+        };
+        debug!("Build log file: {}", log_path.display());
+
+        let state_clone = Arc::clone(&state);
+        let action_context = self.context.clone();
+        let log_path_clone = log_path.clone();
+        let task_handle = tokio::spawn(async move {
+            let (feedback_tx, mut feedback_rx) = mpsc::unbounded_channel::<FeedbackLine>();
+            let feedback_publisher_for_consumer = feedback_publisher.clone();
+            let consumer_handle = tokio::spawn(async move {
+                while let Some(line) = feedback_rx.recv().await {
+                    let feedback = NodeBuildFeedback::from_stream(line.stream, &line.line);
+                    if let Ok(payload) = feedback.encode() {
+                        let _ = feedback_publisher_for_consumer.publish(payload).await;
+                    }
+                }
+            });
+
+            let result = run_node_build(NodeBuildRun {
+                goal,
+                entity_handle,
+                working_dir_guard,
+                action_context,
+                feedback_tx,
+                log_file,
+                log_path: log_path_clone,
+            })
+            .await;
+
+            let _ = consumer_handle.await;
+            let mut state_guard = state_clone.lock().await;
+            *state_guard = ActionState::Completed { result };
         });
 
-        let result = run_node_build(
-            goal,
-            entity_handle,
-            working_dir_guard,
-            action_context,
-            feedback_tx,
-            log_file,
-            log_path_clone,
-        )
-        .await;
+        *self.running_task.lock().await = Some(task_handle);
 
-        let _ = consumer_handle.await;
-        let mut state_guard = state_clone.lock().await;
-        *state_guard = ActionState::Completed { result };
-    });
-
-    *running_task.lock().await = Some(task_handle);
-
-    let response = NodeBuildGoalResponse::accepted(&log_path);
-    response
-        .encode()
-        .map_err(|e| peppylib::PeppyError::InvalidServiceRequest {
-            identifier: "node_build_goal".to_string(),
-            reason: format!("Failed to encode response: {}", e),
-        })
+        let response = NodeBuildGoalResponse::accepted(&log_path);
+        response
+            .encode()
+            .map_err(|e| peppylib::PeppyError::InvalidServiceRequest {
+                identifier: "node_build_goal".to_string(),
+                reason: format!("Failed to encode response: {}", e),
+            })
+    }
 }
 
-async fn run_node_build(
-    goal: NodeBuildGoal,
-    entity_handle: node_stack::EntityHandle,
-    working_dir_guard: Arc<node_stack::WorkingDirGuard>,
-    action_context: NodeBuildActionContext,
-    feedback_tx: mpsc::UnboundedSender<FeedbackLine>,
-    log_file: Arc<StdMutex<File>>,
-    log_path: PathBuf,
-) -> NodeBuildResult {
+async fn run_node_build(run: NodeBuildRun) -> NodeBuildResult {
+    let NodeBuildRun {
+        goal,
+        entity_handle,
+        working_dir_guard,
+        action_context,
+        feedback_tx,
+        log_file,
+        log_path,
+    } = run;
+
     let log_file_for_panic = log_file.clone();
     let log_path_for_panic = log_path.clone();
 
