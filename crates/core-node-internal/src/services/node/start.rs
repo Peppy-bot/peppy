@@ -533,10 +533,7 @@ async fn process_node_start(
         }
     };
 
-    // Snapshot config + generation so the parameter/env work below operates
-    // on a stable view; a concurrent push_config is detected via the
-    // generation re-check before hand-off.
-    let (node_config, snapshot_generation) = {
+    let node_config = {
         let guard = entity_handle.read();
         if guard.artifact_path().is_none() {
             let msg = format!(
@@ -547,7 +544,7 @@ async fn process_node_start(
             write_error_to_log(&ctx.log_file, &msg);
             return NodeStartResult::failure(msg);
         }
-        (guard.config().clone(), guard.generation())
+        guard.config().clone()
     };
 
     let sccache_injected =
@@ -648,21 +645,6 @@ async fn process_node_start(
             feedback_sync_publisher.increment_published();
         }
     });
-
-    // Surface a clearer error than `prepare_and_spawn`'s inner write-lock
-    // rejection when a concurrent push_config has invalidated the snapshot.
-    {
-        let guard = entity_handle.read();
-        if guard.generation() != snapshot_generation {
-            let msg = format!(
-                "Node '{}:{}' was modified concurrently (generation mismatch); retry the start",
-                node_name, tag
-            );
-            drop(guard);
-            write_error_to_log(&ctx.log_file, &msg);
-            return NodeStartResult::failure(msg);
-        }
-    }
 
     let start_ctx = node_stack::StartContext {
         instance_id: &instance_id,
