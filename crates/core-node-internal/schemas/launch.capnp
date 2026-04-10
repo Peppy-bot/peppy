@@ -65,6 +65,15 @@ struct NodeStartLog {
     failed @3 :Bool;
 }
 
+struct NodeBuildLog {
+    # Node label in "name:tag" format
+    nodeLabel @0 :Text;
+    # Path to the node build log file
+    logPath @1 :Text;
+    # Whether the build operation failed
+    failed @2 :Bool;
+}
+
 struct LaunchResult {
     # Whether the launch was successful
     success @0 :Bool;
@@ -76,4 +85,6 @@ struct LaunchResult {
     nodeAddLogs @3 :List(NodeAddLog);
     # Per-node start log entries
     nodeStartLogs @4 :List(NodeStartLog);
+    # Per-node build log entries
+    nodeBuildLogs @5 :List(NodeBuildLog);
 }

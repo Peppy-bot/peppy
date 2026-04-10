@@ -737,6 +737,45 @@ async fn listen_for_launch_configuration_succeed() {
             .collect::<Vec<_>>()
     );
 
+    // Each deployed node should have a build log entry with a valid path and not marked as failed.
+    assert_eq!(
+        result.node_build_logs.len(),
+        2,
+        "should have 2 build log entries (uvc_camera and robot_brain)"
+    );
+    assert!(
+        result
+            .node_build_logs
+            .iter()
+            .all(|e| !e.log_path.as_os_str().is_empty()),
+        "all build log paths should be non-empty, got: {:?}",
+        result
+            .node_build_logs
+            .iter()
+            .map(|e| &e.log_path)
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        result.node_build_logs.iter().all(|e| !e.failed),
+        "no build log entry should be marked failed, got: {:?}",
+        result
+            .node_build_logs
+            .iter()
+            .filter(|e| e.failed)
+            .map(|e| &e.node_label)
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        result.node_build_logs.iter().all(|e| e.log_path.exists()),
+        "all build log files should exist on disk, missing: {:?}",
+        result
+            .node_build_logs
+            .iter()
+            .filter(|e| !e.log_path.exists())
+            .map(|e| &e.log_path)
+            .collect::<Vec<_>>()
+    );
+
     // Each started instance should have a start log entry with a valid path and not marked as failed.
     assert_eq!(
         result.node_start_logs.len(),
@@ -1376,6 +1415,21 @@ async fn listen_for_launch_configuration_fails_when_start_cmd_exits_with_error()
     );
     assert_eq!(
         result.node_add_logs[0].node_label,
+        format!("{}:{}", NODE_NAME, NODE_TAG)
+    );
+
+    // The node was successfully built before the start failed, so we expect one build log entry.
+    assert_eq!(
+        result.node_build_logs.len(),
+        1,
+        "should have 1 build log entry for the node that was built before start failed"
+    );
+    assert!(
+        !result.node_build_logs[0].failed,
+        "build log entry should not be marked failed (build succeeded)"
+    );
+    assert_eq!(
+        result.node_build_logs[0].node_label,
         format!("{}:{}", NODE_NAME, NODE_TAG)
     );
 

@@ -1,7 +1,8 @@
 use crate::Result;
 use crate::encoding::{
     LaunchFeedback, LaunchFeedbackStep, LaunchGoal, LaunchGoalResponse, LaunchResult, NodeAddGoal,
-    NodeAddLogEntry, NodeAddResult, NodeSource, NodeStartGoal, NodeStartLogEntry, NodeStartResult,
+    NodeAddLogEntry, NodeAddResult, NodeBuildLogEntry, NodeSource, NodeStartGoal,
+    NodeStartLogEntry, NodeStartResult,
 };
 use crate::names;
 use crate::services::action_loop::{ActionResult, ActionState, GoalHandler, run_action_loop};
@@ -380,12 +381,16 @@ async fn build_node_directly(
     node_name: String,
     node_tag: String,
     env_vars: Vec<(String, String)>,
-) -> std::result::Result<(), String> {
+) -> (std::result::Result<(), String>, Option<PathBuf>) {
     let log_dir = ctx.peppy_dirs.logs_dir_build();
     let timestamp = Local::now().format("%Y%m%d_%H%M%S_%3f").to_string();
     let log_filename = format!("{}_{}_{}.log", node_name, node_tag, timestamp);
-    let (log_file, log_path) =
-        create_action_log_file(&log_dir, &log_filename).map_err(|e| e.to_string())?;
+    let (log_file, log_path) = match create_action_log_file(&log_dir, &log_filename) {
+        Ok(pair) => pair,
+        Err(e) => return (Err(e.to_string()), None),
+    };
+
+    let final_log_path = log_path.clone();
 
     let (feedback_tx, forwarder_handle) = spawn_feedback_forwarder(
         &ctx.feedback_publisher,
@@ -429,11 +434,14 @@ async fn build_node_directly(
     let _ = forwarder_handle.await;
 
     if result.success {
-        Ok(())
+        (Ok(()), Some(final_log_path))
     } else {
-        Err(result
-            .error_message
-            .unwrap_or_else(|| "node_build failed".to_string()))
+        (
+            Err(result
+                .error_message
+                .unwrap_or_else(|| "node_build failed".to_string())),
+            Some(final_log_path),
+        )
     }
 }
 
@@ -889,6 +897,7 @@ async fn add_nodes_to_stack(
     planned_by_key: &HashMap<NodeKey, PlannedDeployment>,
     backup_stack: &NodeStack,
     add_log_paths: &mut Vec<NodeAddLogEntry>,
+    build_log_paths: &mut Vec<NodeBuildLogEntry>,
 ) -> std::result::Result<(), LaunchResult> {
     publish_stdout(
         ctx,
@@ -967,9 +976,19 @@ async fn add_nodes_to_stack(
                 // launcher's contract is "the stack is up and running" — an
                 // `Added` entity isn't actually buildable from the user's
                 // perspective until `node build` has run.
-                if let Err(err) =
-                    build_node_directly(ctx, node_name, node_tag, ctx.env_vars.clone()).await
-                {
+                let (build_result, build_log_path) =
+                    build_node_directly(ctx, node_name, node_tag, ctx.env_vars.clone()).await;
+
+                let build_failed = build_result.is_err();
+                if let Some(path) = build_log_path {
+                    build_log_paths.push(NodeBuildLogEntry {
+                        node_label: key.label(),
+                        log_path: path,
+                        failed: build_failed,
+                    });
+                }
+
+                if let Err(err) = build_result {
                     let reason = format!("failed to build node {}: {}", key.label(), err);
                     return Err(restore_stack(ctx, backup_stack, reason).await);
                 }
@@ -1272,6 +1291,7 @@ async fn process_launch(goal: LaunchGoal, ctx: ProcessLaunchContext) -> LaunchRe
         .collect();
 
     let mut add_log_paths: Vec<NodeAddLogEntry> = Vec::new();
+    let mut build_log_paths: Vec<NodeBuildLogEntry> = Vec::new();
     let mut start_log_paths: Vec<NodeStartLogEntry> = Vec::new();
 
     // Step 5: Add nodes in dependency order
@@ -1281,6 +1301,7 @@ async fn process_launch(goal: LaunchGoal, ctx: ProcessLaunchContext) -> LaunchRe
         &planned_by_key,
         &backup_stack,
         &mut add_log_paths,
+        &mut build_log_paths,
     )
     .await;
 
@@ -1302,14 +1323,20 @@ async fn process_launch(goal: LaunchGoal, ctx: ProcessLaunchContext) -> LaunchRe
 
     if let Err(mut launch_result) = add_result {
         launch_result.node_add_logs = add_log_paths;
+        launch_result.node_build_logs = build_log_paths;
         return launch_result;
     }
     if let Some(Err(mut launch_result)) = start_result {
         launch_result.node_add_logs = add_log_paths;
+        launch_result.node_build_logs = build_log_paths;
         launch_result.node_start_logs = start_log_paths;
         return launch_result;
     }
 
     publish_stdout(&ctx, "Launch complete", LaunchFeedbackStep::LauncherStep).await;
-    LaunchResult::success(&ctx.log_path).with_node_logs(add_log_paths, start_log_paths)
+    LaunchResult::success(&ctx.log_path).with_node_logs(
+        add_log_paths,
+        build_log_paths,
+        start_log_paths,
+    )
 }

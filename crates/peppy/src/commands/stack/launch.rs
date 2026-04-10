@@ -5,7 +5,7 @@ use std::time::Duration;
 use config::launcher::PeppyLauncherParser;
 use core_node::encoding::{
     LaunchFeedback, LaunchFeedbackStep, LaunchGoal, LaunchGoalResponse, LaunchResult,
-    NodeAddLogEntry, NodeStartLogEntry,
+    NodeAddLogEntry, NodeBuildLogEntry, NodeStartLogEntry,
 };
 use peppylib::{ActionMessenger, PeppyError};
 use tracing::info;
@@ -23,8 +23,12 @@ const MAX_TIMEOUT: Duration = Duration::from_secs(7200);
 const FEEDBACK_DRAIN_TIMEOUT: Duration = Duration::from_millis(50);
 const RESULT_POLL_TIMEOUT: Duration = Duration::from_millis(200);
 
-fn display_node_log_files(add_logs: &[NodeAddLogEntry], start_logs: &[NodeStartLogEntry]) {
-    if add_logs.is_empty() && start_logs.is_empty() {
+fn display_node_log_files(
+    add_logs: &[NodeAddLogEntry],
+    build_logs: &[NodeBuildLogEntry],
+    start_logs: &[NodeStartLogEntry],
+) {
+    if add_logs.is_empty() && build_logs.is_empty() && start_logs.is_empty() {
         return;
     }
     println!("Node log files:");
@@ -32,6 +36,18 @@ fn display_node_log_files(add_logs: &[NodeAddLogEntry], start_logs: &[NodeStartL
         println!("  Add:");
         for e in add_logs {
             println!("    `{}`: {}", e.node_label, e.log_path.display());
+        }
+    }
+    if !build_logs.is_empty() {
+        println!("  Build:");
+        for e in build_logs {
+            let marker = if e.failed { " [FAILED]" } else { "" };
+            let line = format!("    `{}`{}: {}", e.node_label, marker, e.log_path.display());
+            if e.failed {
+                eprintln!("{line}");
+            } else {
+                println!("{line}");
+            }
         }
     }
     if !start_logs.is_empty() {
@@ -262,7 +278,11 @@ async fn launch_async(
                             output.clear();
                         }
 
-                        display_node_log_files(&result.node_add_logs, &result.node_start_logs);
+                        display_node_log_files(
+                            &result.node_add_logs,
+                            &result.node_build_logs,
+                            &result.node_start_logs,
+                        );
 
                         if !result.success {
                             let error_msg = result
