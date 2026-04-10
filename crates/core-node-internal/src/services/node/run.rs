@@ -323,7 +323,7 @@ impl node_stack::OutputReaderHooks for FeedbackSync {
     }
 }
 
-/// Runs the node-start pipeline: calls [`process_node_run`] and catches panics.
+/// Runs the node run pipeline: calls [`process_node_run`] and catches panics.
 ///
 /// The caller is responsible for creating the log file and feedback channel.
 ///
@@ -424,7 +424,7 @@ async fn handle_goal_request(
         }
     };
 
-    debug!("Created log file for node start: {}", log_path.display());
+    debug!("Created log file for node run: {}", log_path.display());
 
     // Panics are caught via catch_unwind so the state always transitions to
     // Completed — without this, a panic silently aborts the task and leaves

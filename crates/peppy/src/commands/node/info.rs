@@ -433,8 +433,8 @@ mod tests {
             ],
             add_log_path: Some(PathBuf::from("/tmp/peppy/logs/add/sensor_node.log")),
             run_log_paths: vec![
-                PathBuf::from("/tmp/peppy/logs/start/inst-abc.log"),
-                PathBuf::from("/tmp/peppy/logs/start/inst-def.log"),
+                PathBuf::from("/tmp/peppy/logs/run/inst-abc.log"),
+                PathBuf::from("/tmp/peppy/logs/run/inst-def.log"),
             ],
         }
     }
@@ -477,11 +477,11 @@ mod tests {
             "run logs sub-heading missing:\n{out}"
         );
         assert!(
-            out.contains("    - inst-abc: /tmp/peppy/logs/start/inst-abc.log"),
+            out.contains("    - inst-abc: /tmp/peppy/logs/run/inst-abc.log"),
             "inst-abc run log line missing:\n{out}"
         );
         assert!(
-            out.contains("    - inst-def: /tmp/peppy/logs/start/inst-def.log"),
+            out.contains("    - inst-def: /tmp/peppy/logs/run/inst-def.log"),
             "inst-def run log line missing:\n{out}"
         );
     }

@@ -132,7 +132,7 @@ pub struct NodeInfoResponse {
     pub instances: Vec<NodeInstanceInfo>,
     /// Most-recent add/build log file produced for this entity, if any.
     pub add_log_path: Option<PathBuf>,
-    /// Per-instance start log paths, aligned with `instances` (same order).
+    /// Per-instance run log paths, aligned with `instances` (same order).
     pub run_log_paths: Vec<PathBuf>,
 }
 

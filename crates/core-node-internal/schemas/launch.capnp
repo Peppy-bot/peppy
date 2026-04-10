@@ -61,7 +61,7 @@ struct NodeRunLog {
     nodeLabel @1 :Text;
     # Path to the node run log file
     logPath @2 :Text;
-    # Whether the start operation failed
+    # Whether the run operation failed
     failed @3 :Bool;
 }
 
