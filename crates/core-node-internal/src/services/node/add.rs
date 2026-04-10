@@ -31,9 +31,9 @@ use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio_util::sync::CancellationToken;
 use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 use tracing::debug;
 use ureq::Error as HttpError;
 
@@ -1116,6 +1116,9 @@ async fn handle_goal_request(
 
     let state_clone = Arc::clone(&state);
     let log_path_clone = log_path.clone();
+    let cancel_token = CancellationToken::new();
+    let cancel_token_clone = cancel_token.clone();
+    let log_path_for_cancel = log_path.clone();
     let task_handle = tokio::spawn(async move {
         let (feedback_tx, feedback_rx) = mpsc::unbounded_channel::<FeedbackLine>();
         let consumer_handle =
@@ -1123,15 +1126,23 @@ async fn handle_goal_request(
                 NodeAddFeedback::from_stream(line.stream, &line.line).encode()
             });
 
-        let result = run_node_add(
-            goal,
-            action_context,
-            feedback_tx,
-            log_file,
-            log_path_clone,
-            timestamp,
-        )
-        .await;
+        let result = tokio::select! {
+            biased;
+            result = run_node_add(
+                goal,
+                action_context,
+                feedback_tx,
+                log_file,
+                log_path_clone,
+                timestamp,
+            ) => result,
+            _ = cancel_token_clone.cancelled() => {
+                NodeAddResult::failure(
+                    &log_path_for_cancel,
+                    "add cancelled by --force".to_string(),
+                )
+            }
+        };
 
         // Wait for the feedback consumer to drain before completing.
         let _ = consumer_handle.await;
@@ -1139,7 +1150,7 @@ async fn handle_goal_request(
         *state_guard = ActionState::Completed { result };
     });
 
-    gate.set_task(task_handle, CancellationToken::new());
+    gate.set_task(task_handle, cancel_token);
 
     super::encode_response_or_err(
         "node_add_goal",

@@ -10,6 +10,7 @@ use std::sync::{Arc, Mutex};
 
 type SharedPyError = Arc<Mutex<Option<PyErr>>>;
 type SharedEventLoop = Arc<Mutex<Option<Py<PyAny>>>>;
+type AsyncSetupResult = (std::sync::mpsc::Receiver<()>, Py<PyAny>, SharedEventLoop);
 
 fn peppy_io_err(message: impl Into<String>) -> peppylib::PeppyError {
     peppylib::PeppyError::Io(std::io::Error::other(message.into()))
@@ -118,7 +119,7 @@ fn start_async_setup(
     py: Python<'_>,
     setup_awaitable: &Bound<'_, PyAny>,
     node_runner: &Arc<NodeRunner>,
-) -> PyResult<(std::sync::mpsc::Receiver<()>, Py<PyAny>, SharedEventLoop)> {
+) -> PyResult<AsyncSetupResult> {
     let asyncio = py.import("asyncio")?;
     let threading = py.import("threading")?;
 
@@ -413,8 +414,7 @@ impl PyNodeBuilder {
             // reference to the Python object for the entire node lifetime.
             let setup_return_value: Arc<Mutex<Option<Py<PyAny>>>> = Arc::new(Mutex::new(None));
             let setup_return_for_run = Arc::clone(&setup_return_value);
-            let event_loop_handle: Arc<Mutex<Option<SharedEventLoop>>> =
-                Arc::new(Mutex::new(None));
+            let event_loop_handle: Arc<Mutex<Option<SharedEventLoop>>> = Arc::new(Mutex::new(None));
             let event_loop_for_run = Arc::clone(&event_loop_handle);
 
             let run_result = builder.run(
@@ -424,8 +424,8 @@ impl PyNodeBuilder {
                     let event_loop_slot = event_loop_for_run;
                     async move {
                         // Phase 1: call setup and start async event loop (holds GIL)
-                        let async_handle = Python::try_attach(
-                            |py| -> PyResult<Option<(std::sync::mpsc::Receiver<()>, Py<PyAny>, SharedEventLoop)>> {
+                        let async_handle =
+                            Python::try_attach(|py| -> PyResult<Option<AsyncSetupResult>> {
                                 let setup_result =
                                     call_setup_function(py, &setup_fn, &params, &node_runner)?;
                                 let setup_bound = setup_result.bind(py);
@@ -435,8 +435,7 @@ impl PyNodeBuilder {
                                 } else {
                                     Ok(None)
                                 }
-                            },
-                        );
+                            });
 
                         match async_handle {
                             Some(Ok(Some((rx, future_ref, shared_loop)))) => {
