@@ -41,7 +41,7 @@ peppy node add .
   </TabItem>
 </Tabs>
 
-This command registers the node with the core node by staging a snapshot of the source directory. By default, `peppy node add` does **not** run `build_cmd` — it only adds the node to the stack in the `Added` stage. To also run the build, use `peppy node add . --build` or run `peppy node build` separately afterward.
+This command registers the node with the core node by staging a snapshot of the source directory. By default, `peppy node add` does **not** run `build_cmd` — it only adds the node to the stack in the `Added` stage. To also run the build, use `peppy node add . --build` (or the shorthand `-b`) or run `peppy node build` separately afterward. If you've just edited `peppy.json5` and need to regenerate the peppygen interface code before adding, pass `--sync` (shorthand `-s`) — for example `peppy node add . -sb` to sync, add, and build in one shot, or `peppy node add . -sr` to also spawn an instance after building.
 The output of this command provides some useful information:
 
 ```

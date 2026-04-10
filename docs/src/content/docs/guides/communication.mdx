@@ -161,6 +161,10 @@ Finally, add this new node to the stack:
    ```
 </Steps>
 
+:::tip
+You can combine both steps into a single command with `peppy node add . --sync` (or `-s`). Add `-b`/`-r` to also build or run in the same invocation — e.g. `peppy node add . -sb`.
+:::
+
 :::note
 Make sure `hello_world_param` is already in the node stack, otherwise you might get the following error:
 ```sh

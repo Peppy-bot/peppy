@@ -137,7 +137,7 @@ Let's go through the different options:
  - `manifest`: Contains information about the node. Each node is identified by its `name` and `tag`
  - `execution`: Contains the language and execution commands for the node
    - `language`: The programming language used by the node (e.g. `"python"`, `"rust"`)
-   - `build_cmd`: Command run during the build phase of the node (e.g. via `peppy node build` or `peppy node add --build`). This is typically the place where you want to run heavy operations like code compilation.
+   - `build_cmd`: Command run during the build phase of the node (e.g. via `peppy node build`, `peppy node add --build`, or the combined shorthands `peppy node add -sb` / `-sr`). This is typically the place where you want to run heavy operations like code compilation.
    - `run_cmd`: Command run when a node instance is started
  - `interfaces`: This is where the interfaces that communicate with the other nodes is defined
 
@@ -159,7 +159,7 @@ To apply these changes, the node needs to synchronize with the cache in the `.pe
 peppy node sync
 ```
 
-This command will generate the interfaces to use in our source code. We can now modify the code and access those interfaces:
+This command will generate the interfaces to use in our source code. If you'd rather sync, add, and build in a single step (useful once you're iterating quickly), use `peppy node add -sb` — or `-sr` to also start an instance after the build. We can now modify the code and access those interfaces:
 
 <Tabs>
   <TabItem label="Python">

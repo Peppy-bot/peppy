@@ -115,8 +115,20 @@ pub enum NodeCommands {
         /// - HTTP archive: `https://example.com/variant.tar.zst`
         #[arg(long)]
         variant: Option<String>,
+        /// If set, runs `peppy node sync` on the source *before* adding. Forces
+        /// peppygen interface code to be regenerated from the current
+        /// `peppy.json5`, so the snapshot taken by `node add` is up-to-date.
+        ///
+        /// Only valid for local filesystem sources — remote (git/http)
+        /// sources are synced server-side when the daemon fetches them.
+        ///
+        /// This flag is NOT implied by `--build` or `--run`; it's a
+        /// prerequisite step, not a post-step. Combines with them via short
+        /// flag bundling: `-sb` = sync + build, `-sr` = sync + build + run.
+        #[arg(short = 's', long)]
+        sync: bool,
         /// If set, will trigger a `node build` immediately after adding the node
-        #[arg(long)]
+        #[arg(short = 'b', long)]
         build: bool,
         /// If set, will attempt to spawn an instance directly after adding the
         /// node to the node stack. Implies `--build`.
@@ -124,7 +136,9 @@ pub enum NodeCommands {
         /// When the node requires runtime arguments, pass them as trailing
         /// key=value pairs after the source:
         /// `peppy node add ./my-camera --run resolution=1280x720 frequency=30`
-        #[arg(long)]
+        ///
+        /// Combines with `--sync` via `-sr` (sync + build + run).
+        #[arg(short = 'r', long)]
         run: bool,
         /// Runtime arguments as key=value pairs (e.g., resolution=1280x720 frequency=30)
         /// These are passed to the node via PEPPY_RUNTIME_CONFIG when run is true
@@ -263,6 +277,7 @@ impl Command for NodeCommand {
                 source,
                 git_ref,
                 variant,
+                sync,
                 build,
                 run,
                 args,
@@ -282,7 +297,8 @@ impl Command for NodeCommand {
                 };
                 let source = source.unwrap_or_else(|| ".".to_string());
                 // `--run` implies `--build`: you can't run an instance of
-                // an unbuilt node.
+                // an unbuilt node. `--sync` is independent (prerequisite, not
+                // a post-step) and is not implied by either.
                 let chain_build = build || run;
                 add::add_node(
                     ctx,
@@ -294,6 +310,7 @@ impl Command for NodeCommand {
                         timeouts,
                         force,
                         confirm_reader: None,
+                        sync,
                         chain_build,
                     },
                 )
@@ -369,5 +386,77 @@ impl Command for NodeCommand {
                 info::node_info(ctx, source, git_ref)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    /// Tiny clap harness that wraps `NodeCommands` so we can exercise argument
+    /// parsing for `peppy node add` in isolation.
+    #[derive(Parser)]
+    #[command(name = "peppy")]
+    struct TestCli {
+        #[command(subcommand)]
+        command: NodeCommands,
+    }
+
+    fn parse_add(args: &[&str]) -> (bool, bool, bool) {
+        let full: Vec<&str> = std::iter::once("peppy")
+            .chain(std::iter::once("add"))
+            .chain(args.iter().copied())
+            .collect();
+        let cli = TestCli::try_parse_from(full).expect("should parse");
+        match cli.command {
+            NodeCommands::Add {
+                sync, build, run, ..
+            } => (sync, build, run),
+            _ => panic!("expected Add variant"),
+        }
+    }
+
+    #[test]
+    fn add_sr_short_bundle_sets_sync_and_run() {
+        let (sync, build, run) = parse_add(&[".", "-sr"]);
+        assert!(sync, "-sr should set sync");
+        assert!(
+            !build,
+            "-sr should NOT set build directly (run implies it at runtime)"
+        );
+        assert!(run, "-sr should set run");
+    }
+
+    #[test]
+    fn add_sb_short_bundle_sets_sync_and_build() {
+        let (sync, build, run) = parse_add(&[".", "-sb"]);
+        assert!(sync, "-sb should set sync");
+        assert!(build, "-sb should set build");
+        assert!(!run, "-sb should NOT set run");
+    }
+
+    #[test]
+    fn add_s_short_sets_sync_only() {
+        let (sync, build, run) = parse_add(&[".", "-s"]);
+        assert!(sync, "-s should set sync");
+        assert!(!build);
+        assert!(!run);
+    }
+
+    #[test]
+    fn add_long_sync_flag_parses() {
+        let (sync, build, run) = parse_add(&[".", "--sync", "--build"]);
+        assert!(sync);
+        assert!(build);
+        assert!(!run);
+    }
+
+    #[test]
+    fn add_without_sync_flag_defaults_to_false() {
+        let (sync, build, run) = parse_add(&[".", "--build"]);
+        assert!(!sync, "sync should default to false");
+        assert!(build);
+        assert!(!run);
     }
 }

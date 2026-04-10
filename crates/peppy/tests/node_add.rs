@@ -79,6 +79,7 @@ fn node_add_command_succeeds() {
             source: Some(node_path.display().to_string()),
             git_ref: None,
             variant: None,
+            sync: false,
             build: true,
             run: false,
             args: Vec::new(),
@@ -223,6 +224,7 @@ fn node_add_command_with_run_arg_succeeds() {
             source: Some(node_path.display().to_string()),
             git_ref: None,
             variant: None,
+            sync: false,
             build: true,
             run: true,
             args: Vec::new(),
@@ -358,6 +360,7 @@ fn node_add_after_failed_sync_succeeds() {
             source: Some(node_path.display().to_string()),
             git_ref: None,
             variant: None,
+            sync: false,
             build: true,
             run: false,
             args: Vec::new(),
@@ -399,6 +402,7 @@ fn node_add_after_failed_sync_succeeds() {
             source: Some(node_path.display().to_string()),
             git_ref: None,
             variant: None,
+            sync: false,
             build: true,
             run: false,
             args: Vec::new(),
@@ -551,6 +555,7 @@ fn node_add_same_node_shutdown_existing_instances() {
             source: Some(node_path.display().to_string()),
             git_ref: None,
             variant: None,
+            sync: false,
             build: true,
             run: true,
             args: Vec::new(),
@@ -608,6 +613,7 @@ fn node_add_same_node_shutdown_existing_instances() {
             source: Some(node_path.display().to_string()),
             git_ref: None,
             variant: None,
+            sync: false,
             build: true,
             run: false, // Don't run a new instance this time
             args: Vec::new(),
@@ -750,6 +756,7 @@ fn node_add_command_with_variant_succeeds() {
             source: Some(root_path.display().to_string()),
             git_ref: None,
             variant: Some("mock".to_string()),
+            sync: false,
             build: true,
             run: false,
             args: Vec::new(),
@@ -910,6 +917,7 @@ fn node_add_with_variant_uses_variant_in_preflight() {
             source: Some(root_path.display().to_string()),
             git_ref: None,
             variant: Some("mock".to_string()),
+            sync: false,
             build: true,
             run: true,
             args: Vec::new(),
@@ -973,6 +981,7 @@ fn node_add_with_variant_uses_variant_in_preflight() {
             },
             force: false,
             confirm_reader: Some(Box::new(std::io::Cursor::new(b"y\n" as &[u8]))),
+            sync: false,
             chain_build: true,
         },
     )
@@ -1093,6 +1102,7 @@ fn node_add_same_node_different_sources_show_overwrite_prompt() {
             source: Some(node_path.display().to_string()),
             git_ref: None,
             variant: None,
+            sync: false,
             build: true,
             run: true,
             args: Vec::new(),
@@ -1193,6 +1203,7 @@ fn node_add_same_node_different_sources_show_overwrite_prompt() {
             },
             force: false,
             confirm_reader: Some(Box::new(std::io::Cursor::new(b"y\n" as &[u8]))),
+            sync: false,
             chain_build: true,
         },
     )
@@ -1314,6 +1325,7 @@ fn node_add_auto_syncs_when_peppy_dir_missing() {
             source: Some(root_path.display().to_string()),
             git_ref: None,
             variant: Some("mock".to_string()),
+            sync: false,
             build: true,
             run: false,
             args: Vec::new(),
@@ -1400,5 +1412,208 @@ fn node_add_auto_syncs_when_peppy_dir_missing() {
     assert_eq!(
         variant_fingerprint, expected_variant_fingerprint,
         "variant fingerprint should match variant's peppy.json5 content"
+    );
+}
+
+/// When `.peppy/git.hash` is stale, `node add` without `--sync` fails; re-running
+/// `node add` with `--sync` refreshes the fingerprint in one step (no separate
+/// `peppy node sync` needed) and the add succeeds.
+#[test]
+fn node_add_with_sync_flag_refreshes_stale_git_hash() {
+    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
+    let serve = rt
+        .block_on(ServeCommandEmulation::with_mock())
+        .expect("failed to create serve emulation");
+    let shared_messenger = serve.messenger();
+    let core_node_name = serve.core_node_name().to_string();
+
+    let node_dir = tempfile::tempdir().expect("failed to create temp dir for node");
+    let node_name = "test_add_sync_flag_node";
+
+    let node_ctx = Arc::new(
+        AppContext::with_messenger(node_dir.path(), Arc::clone(&shared_messenger))
+            .with_daemon_state_file(serve.daemon_state_path()),
+    );
+
+    let log_capture = LogCapture::new();
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .without_time()
+        .with_writer(log_capture.clone())
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+
+    // 1. Init the node
+    NodeCommand {
+        command: NodeCommands::Init {
+            node_name: NodeName::new(node_name).expect("valid node name"),
+            to_dir: None,
+            toolchain: Toolchain::Cargo,
+            with_container: false,
+        },
+    }
+    .execute(&node_ctx)
+    .expect("node init command should succeed");
+
+    let node_path = node_dir.path().join(node_name);
+    let peppy_dir = node_path.join(PEPPY_OUTPUT_DIR);
+    let git_hash_path = peppy_dir.join("git.hash");
+    let peppy_json5_path = node_path.join("peppy.json5");
+
+    peppy::test_support::disable_build_cmd(&peppy_json5_path);
+
+    // 2. Invalidate git.hash to simulate a stale peppy cache
+    assert!(git_hash_path.exists(), "git.hash should exist after init");
+    std::fs::write(&git_hash_path, "wrong-hash\n").expect("failed to write wrong git hash");
+
+    // 3. `node add` without `--sync` should fail with a git hash mismatch
+    let add_result = NodeCommand {
+        command: NodeCommands::Add {
+            source: Some(node_path.display().to_string()),
+            git_ref: None,
+            variant: None,
+            sync: false,
+            build: true,
+            run: false,
+            args: Vec::new(),
+            instance_id: None,
+            idle_timeout: 60,
+            max_timeout: 3600,
+            force: false,
+        },
+    }
+    .execute(&node_ctx);
+    assert!(
+        add_result.is_err(),
+        "node add without --sync should fail on stale git.hash"
+    );
+    assert!(
+        add_result
+            .unwrap_err()
+            .to_string()
+            .contains("git hash mismatch"),
+        "error should mention git hash mismatch"
+    );
+
+    // 4. `node add` *with* `--sync` should refresh git.hash and succeed in one step
+    NodeCommand {
+        command: NodeCommands::Add {
+            source: Some(node_path.display().to_string()),
+            git_ref: None,
+            variant: None,
+            sync: true,
+            build: true,
+            run: false,
+            args: Vec::new(),
+            instance_id: None,
+            idle_timeout: 60,
+            max_timeout: 3600,
+            force: false,
+        },
+    }
+    .execute(&node_ctx)
+    .expect("node add with --sync should succeed");
+
+    // 5. Verify add succeeded and the peppygen fingerprint now matches the
+    //    current peppy.json5 (i.e. --sync really ran a sync)
+    let logs = log_capture.logs();
+    assert!(
+        logs.contains(&format!("Added node {}:", node_name)),
+        "logs should contain success message. Logs:\n{}",
+        logs
+    );
+    // The sync log line should also appear, proving --sync fired
+    assert!(
+        logs.contains("Synced node interfaces successfully"),
+        "logs should show sync ran. Logs:\n{}",
+        logs
+    );
+
+    let fingerprint_path = node_path
+        .join(PEPPYGEN_OUTPUT_PATH)
+        .join("peppy.json5.sha256");
+    assert!(
+        fingerprint_path.exists(),
+        "peppygen fingerprint should exist after --sync"
+    );
+    let fingerprint = std::fs::read_to_string(&fingerprint_path)
+        .expect("should read fingerprint")
+        .trim()
+        .to_string();
+    let expected = config::fingerprint::fingerprint_for_bytes(
+        &std::fs::read(&peppy_json5_path).expect("should read peppy.json5"),
+    );
+    assert_eq!(
+        fingerprint, expected,
+        "fingerprint should match current peppy.json5 content after --sync"
+    );
+
+    // 6. Verify the node landed in the stack
+    let messenger_handle = node_ctx
+        .messenger_handle()
+        .expect("messenger handle should be available");
+    let response = rt
+        .block_on(NodeListRequest::new(false).poll(
+            messenger_handle,
+            &core_node_name,
+            CALLER_INSTANCE_ID,
+            &core_node_name,
+            Duration::from_secs(5),
+        ))
+        .expect("node_list request should complete");
+    let graph: SerializedNodeGraph =
+        serde_json::from_str(&response.graph_json).expect("graph_json should parse");
+    graph
+        .nodes
+        .iter()
+        .find(|n| n.name == node_name && n.tag == "0.1.0")
+        .expect("graph should contain the added node");
+}
+
+/// `--sync` is only valid for local filesystem sources. Passing it with a
+/// remote (git/http) source should fail with a clear error before any
+/// daemon round-trip is attempted.
+#[test]
+fn node_add_with_sync_flag_rejects_remote_source() {
+    // No daemon / runtime setup needed — the error fires during local arg
+    // validation before any async work. We still need a minimal AppContext.
+    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
+    let serve = rt
+        .block_on(ServeCommandEmulation::with_mock())
+        .expect("failed to create serve emulation");
+    let shared_messenger = serve.messenger();
+
+    let node_dir = tempfile::tempdir().expect("failed to create temp dir");
+    let node_ctx = Arc::new(
+        AppContext::with_messenger(node_dir.path(), Arc::clone(&shared_messenger))
+            .with_daemon_state_file(serve.daemon_state_path()),
+    );
+
+    let result = NodeCommand {
+        command: NodeCommands::Add {
+            source: Some("https://github.com/fake-org/fake-repo.git/node".to_string()),
+            git_ref: None,
+            variant: None,
+            sync: true,
+            build: false,
+            run: false,
+            args: Vec::new(),
+            instance_id: None,
+            idle_timeout: 60,
+            max_timeout: 3600,
+            force: false,
+        },
+    }
+    .execute(&node_ctx);
+
+    assert!(
+        result.is_err(),
+        "node add --sync with remote source should fail"
+    );
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("--sync is only valid for local node sources"),
+        "error should mention local-source restriction, got: {}",
+        err
     );
 }
