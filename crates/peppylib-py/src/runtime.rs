@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 type SharedPyError = Arc<Mutex<Option<PyErr>>>;
+type SharedEventLoop = Arc<Mutex<Option<Py<PyAny>>>>;
 
 fn peppy_io_err(message: impl Into<String>) -> peppylib::PeppyError {
     peppylib::PeppyError::Io(std::io::Error::other(message.into()))
@@ -117,7 +118,7 @@ fn start_async_setup(
     py: Python<'_>,
     setup_awaitable: &Bound<'_, PyAny>,
     node_runner: &Arc<NodeRunner>,
-) -> PyResult<(std::sync::mpsc::Receiver<()>, Py<PyAny>)> {
+) -> PyResult<(std::sync::mpsc::Receiver<()>, Py<PyAny>, SharedEventLoop)> {
     let asyncio = py.import("asyncio")?;
     let threading = py.import("threading")?;
 
@@ -171,24 +172,31 @@ fn start_async_setup(
     future.call_method1("add_done_callback", (done_cb,))?;
     let future_ref = future.unbind();
 
-    // 6. Schedule shutdown monitor: stop the event loop when the node shuts down
-    let loop_for_shutdown = event_loop.unbind();
+    // 6. Schedule shutdown monitor: stop the event loop when the node shuts down.
+    //    The event loop reference is shared so the main thread can also stop it
+    //    after builder.run() returns, preventing a race where the process exits
+    //    before the shutdown monitor thread has finished.
+    let shared_loop: SharedEventLoop = Arc::new(Mutex::new(Some(event_loop.unbind())));
+    let loop_for_shutdown = Arc::clone(&shared_loop);
     let cancel_for_shutdown = node_runner.cancellation_token().clone();
     let rt_handle = tokio::runtime::Handle::current();
     std::thread::Builder::new()
         .name("peppy-asyncio-shutdown".to_string())
         .spawn(move || {
             rt_handle.block_on(cancel_for_shutdown.cancelled());
-            let _ = Python::try_attach(|py| -> PyResult<()> {
-                let loop_ = loop_for_shutdown.bind(py);
-                let stop = loop_.getattr("stop")?;
-                loop_.call_method1("call_soon_threadsafe", (stop,))?;
-                Ok(())
-            });
+            let loop_ref = loop_for_shutdown.lock().ok().and_then(|mut g| g.take());
+            if let Some(event_loop) = loop_ref {
+                let _ = Python::try_attach(|py| -> PyResult<()> {
+                    let loop_ = event_loop.bind(py);
+                    let stop = loop_.getattr("stop")?;
+                    loop_.call_method1("call_soon_threadsafe", (stop,))?;
+                    Ok(())
+                });
+            }
         })
         .map_err(|e| PyRuntimeError::new_err(format!("failed to start shutdown monitor: {e}")))?;
 
-    Ok((rx, future_ref))
+    Ok((rx, future_ref, shared_loop))
 }
 
 fn store_python_error(error_slot: &SharedPyError, err: PyErr) {
@@ -405,15 +413,19 @@ impl PyNodeBuilder {
             // reference to the Python object for the entire node lifetime.
             let setup_return_value: Arc<Mutex<Option<Py<PyAny>>>> = Arc::new(Mutex::new(None));
             let setup_return_for_run = Arc::clone(&setup_return_value);
+            let event_loop_handle: Arc<Mutex<Option<SharedEventLoop>>> =
+                Arc::new(Mutex::new(None));
+            let event_loop_for_run = Arc::clone(&event_loop_handle);
 
             let run_result = builder.run(
                 move |params: serde_json::Value, node_runner: Arc<NodeRunner>| {
                     let setup_error = Arc::clone(&setup_error_for_run);
                     let setup_return = setup_return_for_run;
+                    let event_loop_slot = event_loop_for_run;
                     async move {
                         // Phase 1: call setup and start async event loop (holds GIL)
                         let async_handle = Python::try_attach(
-                            |py| -> PyResult<Option<(std::sync::mpsc::Receiver<()>, Py<PyAny>)>> {
+                            |py| -> PyResult<Option<(std::sync::mpsc::Receiver<()>, Py<PyAny>, SharedEventLoop)>> {
                                 let setup_result =
                                     call_setup_function(py, &setup_fn, &params, &node_runner)?;
                                 let setup_bound = setup_result.bind(py);
@@ -427,7 +439,13 @@ impl PyNodeBuilder {
                         );
 
                         match async_handle {
-                            Some(Ok(Some((rx, future_ref)))) => {
+                            Some(Ok(Some((rx, future_ref, shared_loop)))) => {
+                                // Store event loop handle so the main thread
+                                // can stop it after builder.run() returns.
+                                if let Ok(mut guard) = event_loop_slot.lock() {
+                                    *guard = Some(shared_loop);
+                                }
+
                                 // Phase 2: wait without GIL so event loop
                                 // thread can run the setup coroutine
                                 rx.recv()
@@ -464,6 +482,23 @@ impl PyNodeBuilder {
                     }
                 },
             );
+
+            // Stop the event loop if the shutdown monitor thread hasn't
+            // already. This prevents a race where the process exits before
+            // the background thread finishes stopping the loop, which can
+            // cause a SIGSEGV when the daemon event-loop thread is killed
+            // mid-execution during interpreter finalization.
+            if let Some(shared) = event_loop_handle.lock().ok().and_then(|mut g| g.take()) {
+                let loop_ref = shared.lock().ok().and_then(|mut g| g.take());
+                if let Some(event_loop) = loop_ref {
+                    let _ = Python::try_attach(|py| -> PyResult<()> {
+                        let loop_ = event_loop.bind(py);
+                        let stop = loop_.getattr("stop")?;
+                        loop_.call_method1("call_soon_threadsafe", (stop,))?;
+                        Ok(())
+                    });
+                }
+            }
 
             // `setup_return_value` is dropped here after `builder.run()`
             // returns (node shutdown), releasing the Python reference.
