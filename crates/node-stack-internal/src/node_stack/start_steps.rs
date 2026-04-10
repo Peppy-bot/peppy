@@ -571,10 +571,10 @@ pub(super) fn extract_stderr_from_log(log_file: &Arc<StdMutex<File>>) -> String 
         // If we seeked into the middle of the file, the first "line" may be a
         // partial (sliced mid-codepoint or mid-line). Drop it so we only
         // process complete lines.
-        if start > 0 {
-            if let Some(pos) = buf.find('\n') {
-                buf.drain(..=pos);
-            }
+        if start > 0
+            && let Some(pos) = buf.find('\n')
+        {
+            buf.drain(..=pos);
         }
         buf
     };
