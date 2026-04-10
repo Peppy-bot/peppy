@@ -561,6 +561,19 @@ pub async fn send_node_build_and_wait(
                 let payload = msg.payload();
                 match NodeBuildResult::decode(&payload) {
                     Ok(result) => {
+                        // Drain any remaining feedback that may have arrived while polling for the
+                        // result so callers can reliably assert on stdout/stderr markers.
+                        loop {
+                            let Ok(Some(msg)) = action_handle.try_next_feedback() else {
+                                break;
+                            };
+                            let payload = msg.payload();
+                            if let Ok(feedback) = NodeBuildFeedback::decode(payload.as_ref())
+                                && let Some(tx) = feedback_tx
+                            {
+                                let _ = tx.send(feedback);
+                            }
+                        }
                         return Ok(result);
                     }
                     Err(err) => {

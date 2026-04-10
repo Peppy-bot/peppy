@@ -570,14 +570,14 @@ impl NodeStack {
     pub fn set_add_log_path(&self, name: &str, tag: &str, path: PathBuf) {
         self.add_log_paths
             .lock()
-            .insert((name.to_owned(), tag.to_owned()), path);
+            .insert((name.trim().to_owned(), tag.trim().to_owned()), path);
     }
 
     /// Returns the most-recent add-log path for `(name, tag)`, if any.
     pub fn add_log_path(&self, name: &str, tag: &str) -> Option<PathBuf> {
         self.add_log_paths
             .lock()
-            .get(&(name.to_owned(), tag.to_owned()))
+            .get(&(name.trim().to_owned(), tag.trim().to_owned()))
             .cloned()
     }
 

@@ -9,7 +9,7 @@ mod ping;
 mod reset;
 
 // Note: there used to be a top-level `builder` module here. Build encoding
-// now lives at `node::build` alongside `node::add`.
+// now lives at `node::builder` alongside `node::add`.
 
 pub use info::{ContainerInfo, InfoRequest, InfoResponse};
 pub use launch::{

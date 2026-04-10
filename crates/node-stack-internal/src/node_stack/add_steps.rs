@@ -115,18 +115,22 @@ pub fn copy_node_to_temp_dir(
     tmp_root: &Path,
 ) -> std::io::Result<(PathBuf, Vec<String>)> {
     std::fs::create_dir_all(tmp_root)?;
-    let temp_dir = tempfile::TempDir::new_in(tmp_root)?.keep();
+    let temp_dir = tempfile::TempDir::new_in(tmp_root)?;
 
     debug!(
         "Copying node folder from {} to temp dir {}",
         from_dir.display(),
-        temp_dir.display()
+        temp_dir.path().display()
     );
 
-    let mut excluded = copy_dir_recursive(from_dir, &temp_dir)?;
+    let mut excluded = copy_dir_recursive(from_dir, temp_dir.path())?;
     excluded.sort();
 
-    Ok((temp_dir, excluded))
+    // Only persist the temp directory after a successful copy so that
+    // failures clean up automatically via TempDir's Drop.
+    let kept_path = temp_dir.keep();
+
+    Ok((kept_path, excluded))
 }
 
 /// Verifies that the node directory is in sync with the currently running daemon

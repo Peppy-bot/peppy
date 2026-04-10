@@ -64,7 +64,7 @@ fn node_remove_command_succeeds() {
         peppy_json5_path.display()
     );
 
-    peppy::test_support::disable_add_cmd(&peppy_json5_path);
+    peppy::test_support::disable_build_cmd(&peppy_json5_path);
 
     NodeCommand {
         command: NodeCommands::Add {

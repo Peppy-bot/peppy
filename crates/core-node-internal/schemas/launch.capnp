@@ -33,6 +33,7 @@ enum LaunchFeedbackStep {
     launcherStep @0;
     addingNode @1;
     startingNode @2;
+    buildingNode @3;
 }
 
 struct LaunchFeedback {

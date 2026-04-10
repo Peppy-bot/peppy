@@ -82,7 +82,9 @@ fn handle_feedback(
                 eprintln!("{}", feedback.line);
             }
         }
-        LaunchFeedbackStep::AddingNode | LaunchFeedbackStep::StartingNode => {
+        LaunchFeedbackStep::AddingNode
+        | LaunchFeedbackStep::BuildingNode
+        | LaunchFeedbackStep::StartingNode => {
             let output = scrolling_output
                 .get_or_insert_with(|| ScrollingOutput::new(SCROLLING_OUTPUT_LINES));
             output.add_line(&feedback.line, feedback.is_stderr());

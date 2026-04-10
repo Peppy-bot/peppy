@@ -71,7 +71,7 @@ fn node_add_command_succeeds() {
         peppy_json5_path.display()
     );
 
-    peppy::test_support::disable_add_cmd(&peppy_json5_path);
+    peppy::test_support::disable_build_cmd(&peppy_json5_path);
 
     // Now add the node to the node stack
     NodeCommand {
@@ -350,7 +350,7 @@ fn node_add_after_failed_sync_succeeds() {
 
     // Disable build_cmd to avoid build step
     let peppy_json5_path = node_path.join("peppy.json5");
-    peppy::test_support::disable_add_cmd(&peppy_json5_path);
+    peppy::test_support::disable_build_cmd(&peppy_json5_path);
 
     // 3. Run `node add .` on that node, it'll fail due to git hash mismatch
     let add_result = NodeCommand {

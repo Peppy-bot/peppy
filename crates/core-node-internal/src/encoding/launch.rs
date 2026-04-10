@@ -192,6 +192,7 @@ pub enum LaunchFeedbackStep {
     LauncherStep,
     AddingNode,
     StartingNode,
+    BuildingNode,
 }
 /// Feedback message for the Launch action.
 /// Represents a single line of output from the launch process.
@@ -240,6 +241,7 @@ impl LaunchFeedback {
                 LaunchFeedbackStep::LauncherStep => launch_capnp::LaunchFeedbackStep::LauncherStep,
                 LaunchFeedbackStep::AddingNode => launch_capnp::LaunchFeedbackStep::AddingNode,
                 LaunchFeedbackStep::StartingNode => launch_capnp::LaunchFeedbackStep::StartingNode,
+                LaunchFeedbackStep::BuildingNode => launch_capnp::LaunchFeedbackStep::BuildingNode,
             });
         }
         encode_message(&builder)
@@ -252,6 +254,7 @@ impl LaunchFeedback {
             launch_capnp::LaunchFeedbackStep::LauncherStep => LaunchFeedbackStep::LauncherStep,
             launch_capnp::LaunchFeedbackStep::AddingNode => LaunchFeedbackStep::AddingNode,
             launch_capnp::LaunchFeedbackStep::StartingNode => LaunchFeedbackStep::StartingNode,
+            launch_capnp::LaunchFeedbackStep::BuildingNode => LaunchFeedbackStep::BuildingNode,
         };
         Ok(Self {
             stream: feedback.get_stream()?.to_str()?.to_owned(),
