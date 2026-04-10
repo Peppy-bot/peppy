@@ -1142,9 +1142,9 @@ async fn handle_goal_request(
     let sender_instance_id = context.message().instance_id();
     let payload = context.message().payload();
 
-    // Check if already running and mark as running if not
+    // Check if already running (but don't set Running yet — we need the goal's timeout first)
     {
-        let mut state_guard = state.lock().await;
+        let state_guard = state.lock().await;
         if matches!(*state_guard, ActionState::Running { .. }) {
             let response = LaunchGoalResponse::rejected("action already in progress");
             return response
@@ -1154,12 +1154,9 @@ async fn handle_goal_request(
                     reason: format!("Failed to encode response: {}", e),
                 });
         }
-        *state_guard = ActionState::Running {
-            started_at: std::time::Instant::now(),
-            timeout_secs: 0,
-        };
     }
 
+    // Decode the goal before marking as Running so we can use max_timeout_secs
     let goal = match LaunchGoal::decode(payload.as_ref()) {
         Ok(g) => g,
         Err(e) => {
@@ -1174,6 +1171,15 @@ async fn handle_goal_request(
                 });
         }
     };
+
+    // Now mark as Running with the actual timeout from the goal
+    {
+        let mut state_guard = state.lock().await;
+        *state_guard = ActionState::Running {
+            started_at: std::time::Instant::now(),
+            timeout_secs: goal.max_timeout_secs,
+        };
+    }
 
     debug!("Received `stack_launch` goal from {sender_instance_id}");
 

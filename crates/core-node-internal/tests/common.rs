@@ -715,7 +715,7 @@ pub async fn send_node_add_then_build<'a>(
     }
     let node_name = add.node_name.expect("node_name on successful add");
     let node_tag = add.node_tag.expect("node_tag on successful add");
-    send_node_build_and_wait(
+    let result = send_node_build_and_wait(
         messenger,
         core_node_name,
         &node_name,
@@ -725,7 +725,14 @@ pub async fn send_node_add_then_build<'a>(
         Vec::new(),
         None,
     )
-    .await
+    .await?;
+    if !result.success {
+        return Err(format!(
+            "node_build failed: {}",
+            result.error_message.unwrap_or_default()
+        ));
+    }
+    Ok(result)
 }
 
 pub async fn send_node_add_and_wait_with_force<'a>(
