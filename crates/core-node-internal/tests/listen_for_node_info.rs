@@ -129,12 +129,12 @@ async fn listen_for_node_info_on_fs_node_success() {
     assert_eq!(info_response.instances.len(), 1);
     assert_eq!(info_response.instances[0].instance_id, TARGET_INSTANCE_ID);
     assert_eq!(info_response.instances[0].state, "running");
-    assert_eq!(info_response.start_log_paths.len(), 1);
-    let expected_start_log = started_core_node
+    assert_eq!(info_response.run_log_paths.len(), 1);
+    let expected_run_log = started_core_node
         .peppy_dirs
-        .logs_dir_start()
+        .logs_dir_run()
         .join(format!("{}.log", TARGET_INSTANCE_ID));
-    assert_eq!(info_response.start_log_paths[0], expected_start_log);
+    assert_eq!(info_response.run_log_paths[0], expected_run_log);
     assert!(
         info_response.add_log_path.is_none(),
         "force_built bypass does not record an add log"

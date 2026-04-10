@@ -133,7 +133,7 @@ pub struct NodeInfoResponse {
     /// Most-recent add/build log file produced for this entity, if any.
     pub add_log_path: Option<PathBuf>,
     /// Per-instance start log paths, aligned with `instances` (same order).
-    pub start_log_paths: Vec<PathBuf>,
+    pub run_log_paths: Vec<PathBuf>,
 }
 
 impl NodeInfoResponse {
@@ -181,8 +181,8 @@ impl NodeInfoResponse {
             {
                 let mut paths_builder = response
                     .reborrow()
-                    .init_start_log_paths(self.start_log_paths.len() as u32);
-                for (i, path) in self.start_log_paths.iter().enumerate() {
+                    .init_run_log_paths(self.run_log_paths.len() as u32);
+                for (i, path) in self.run_log_paths.iter().enumerate() {
                     paths_builder.set(i as u32, path.to_string_lossy().as_ref());
                 }
             }
@@ -220,10 +220,10 @@ impl NodeInfoResponse {
             });
         }
         let add_log_path = optional_text(response.get_add_log_path()?.to_str()?).map(PathBuf::from);
-        let start_log_paths_reader = response.get_start_log_paths()?;
-        let mut start_log_paths = Vec::with_capacity(start_log_paths_reader.len() as usize);
-        for i in 0..start_log_paths_reader.len() {
-            start_log_paths.push(PathBuf::from(start_log_paths_reader.get(i)?.to_str()?));
+        let run_log_paths_reader = response.get_run_log_paths()?;
+        let mut run_log_paths = Vec::with_capacity(run_log_paths_reader.len() as usize);
+        for i in 0..run_log_paths_reader.len() {
+            run_log_paths.push(PathBuf::from(run_log_paths_reader.get(i)?.to_str()?));
         }
         Ok(Self {
             config,
@@ -235,7 +235,7 @@ impl NodeInfoResponse {
             stage,
             instances,
             add_log_path,
-            start_log_paths,
+            run_log_paths,
         })
     }
 }

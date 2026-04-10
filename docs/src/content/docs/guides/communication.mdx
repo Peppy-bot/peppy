@@ -199,11 +199,11 @@ Now let's start the `hello_receiver` node:
 Running node hello_receiver:0.1.0...
 Starting node hello_receiver:0.1.0 with instance_id 'vigorous-buck-8117' and 0 argument(s)...
 Calling node_start for hello_receiver:0.1.0 (instance_id=vigorous-buck-8117)...
-Log file: /Users/tuatini/.peppy/logs/start/vigorous-buck-8117.log
+Log file: /Users/tuatini/.peppy/logs/run/vigorous-buck-8117.log
 Started node instance 'vigorous-buck-8117' (pid: 77190)
 ```
 
-When you start the node, you can see a path to the logs. In my case: `/Users/tuatini/.peppy/logs/start/vigorous-buck-8117.log`.
+When you start the node, you can see a path to the logs. In my case: `/Users/tuatini/.peppy/logs/run/vigorous-buck-8117.log`.
 If we open it up:
 ```
 [2026-01-24T10:02:47.630] [stderr]     Finished `release` profile [optimized] target(s) in 0.21s
@@ -223,12 +223,12 @@ Now let's push things a little further. Imagine we need a second instance with d
 Running node hello_world_param:0.1.0...
 Starting node hello_world_param:0.1.0 with instance_id 'admiring-black-0614' and 1 argument(s)...
 Calling node_start for hello_world_param:0.1.0 (instance_id=admiring-black-0614)...
-Log file: /Users/tuatini/.peppy/logs/start/admiring-black-0614.log
+Log file: /Users/tuatini/.peppy/logs/run/admiring-black-0614.log
 Started node instance 'admiring-black-0614' (pid: 78063)
 ```
 And we check the logs again:
 ```sh
-❯ tail /Users/tuatini/.peppy/logs/start/vigorous-buck-8117.log
+❯ tail /Users/tuatini/.peppy/logs/run/vigorous-buck-8117.log
 [2026-01-24T10:04:36.242] [stdout] Received from gifted-moser-9365: hello planet count 42
 [2026-01-24T10:04:39.244] [stdout] Received from gifted-moser-9365: hello planet count 43
 [2026-01-24T10:04:42.244] [stdout] Received from gifted-moser-9365: hello planet count 44

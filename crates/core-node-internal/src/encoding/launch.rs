@@ -191,7 +191,7 @@ impl LaunchGoalResponse {
 pub enum LaunchFeedbackStep {
     LauncherStep,
     AddingNode,
-    StartingNode,
+    RunningNode,
     BuildingNode,
 }
 /// Feedback message for the Launch action.
@@ -240,7 +240,7 @@ impl LaunchFeedback {
             feedback.set_step(match self.step {
                 LaunchFeedbackStep::LauncherStep => launch_capnp::LaunchFeedbackStep::LauncherStep,
                 LaunchFeedbackStep::AddingNode => launch_capnp::LaunchFeedbackStep::AddingNode,
-                LaunchFeedbackStep::StartingNode => launch_capnp::LaunchFeedbackStep::StartingNode,
+                LaunchFeedbackStep::RunningNode => launch_capnp::LaunchFeedbackStep::RunningNode,
                 LaunchFeedbackStep::BuildingNode => launch_capnp::LaunchFeedbackStep::BuildingNode,
             });
         }
@@ -253,7 +253,7 @@ impl LaunchFeedback {
         let step = match feedback.get_step()? {
             launch_capnp::LaunchFeedbackStep::LauncherStep => LaunchFeedbackStep::LauncherStep,
             launch_capnp::LaunchFeedbackStep::AddingNode => LaunchFeedbackStep::AddingNode,
-            launch_capnp::LaunchFeedbackStep::StartingNode => LaunchFeedbackStep::StartingNode,
+            launch_capnp::LaunchFeedbackStep::RunningNode => LaunchFeedbackStep::RunningNode,
             launch_capnp::LaunchFeedbackStep::BuildingNode => LaunchFeedbackStep::BuildingNode,
         };
         Ok(Self {
@@ -327,11 +327,11 @@ impl LaunchResult {
         mut self,
         add_logs: Vec<NodeAddLogEntry>,
         build_logs: Vec<NodeBuildLogEntry>,
-        start_logs: Vec<NodeRunLogEntry>,
+        run_logs: Vec<NodeRunLogEntry>,
     ) -> Self {
         self.node_add_logs = add_logs;
         self.node_build_logs = build_logs;
-        self.node_run_logs = start_logs;
+        self.node_run_logs = run_logs;
         self
     }
 
@@ -365,11 +365,11 @@ impl LaunchResult {
                 e.set_failed(entry.failed);
             }
 
-            let mut start_logs = result
+            let mut run_logs = result
                 .reborrow()
                 .init_node_run_logs(self.node_run_logs.len() as u32);
             for (i, entry) in self.node_run_logs.iter().enumerate() {
-                let mut e = start_logs.reborrow().get(i as u32);
+                let mut e = run_logs.reborrow().get(i as u32);
                 e.set_instance_id(&entry.instance_id);
                 e.set_node_label(&entry.node_label);
                 e.set_log_path(entry.log_path.to_string_lossy().as_ref());
@@ -407,10 +407,10 @@ impl LaunchResult {
             });
         }
 
-        let start_logs_reader = result.get_node_run_logs()?;
-        let mut node_run_logs = Vec::with_capacity(start_logs_reader.len() as usize);
-        for i in 0..start_logs_reader.len() {
-            let e = start_logs_reader.get(i);
+        let run_logs_reader = result.get_node_run_logs()?;
+        let mut node_run_logs = Vec::with_capacity(run_logs_reader.len() as usize);
+        for i in 0..run_logs_reader.len() {
+            let e = run_logs_reader.get(i);
             node_run_logs.push(NodeRunLogEntry {
                 instance_id: e.get_instance_id()?.to_str()?.to_owned(),
                 node_label: e.get_node_label()?.to_str()?.to_owned(),

@@ -412,7 +412,7 @@ async fn handle_goal_request(
     );
 
     // Create log file for stdout/stderr
-    let log_dir = action_context.peppy_dirs.logs_dir_start();
+    let log_dir = action_context.peppy_dirs.logs_dir_run();
     let log_filename = format!("{}.log", instance_id_str);
     let (log_file, log_path) = match create_action_log_file(&log_dir, &log_filename) {
         Ok(result) => result,

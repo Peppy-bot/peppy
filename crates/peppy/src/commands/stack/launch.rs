@@ -26,9 +26,9 @@ const RESULT_POLL_TIMEOUT: Duration = Duration::from_millis(200);
 fn display_node_log_files(
     add_logs: &[NodeAddLogEntry],
     build_logs: &[NodeBuildLogEntry],
-    start_logs: &[NodeRunLogEntry],
+    run_logs: &[NodeRunLogEntry],
 ) {
-    if add_logs.is_empty() && build_logs.is_empty() && start_logs.is_empty() {
+    if add_logs.is_empty() && build_logs.is_empty() && run_logs.is_empty() {
         return;
     }
     info!("Node log files:");
@@ -49,9 +49,9 @@ fn display_node_log_files(
             }
         }
     }
-    if !start_logs.is_empty() {
-        info!("  Start:");
-        for e in start_logs {
+    if !run_logs.is_empty() {
+        info!("  Run:");
+        for e in run_logs {
             let marker = if e.failed { " [FAILED]" } else { "" };
             if e.failed {
                 tracing::error!(
@@ -103,7 +103,7 @@ fn handle_feedback(
         }
         LaunchFeedbackStep::AddingNode
         | LaunchFeedbackStep::BuildingNode
-        | LaunchFeedbackStep::StartingNode => {
+        | LaunchFeedbackStep::RunningNode => {
             let output = scrolling_output
                 .get_or_insert_with(|| ScrollingOutput::new(SCROLLING_OUTPUT_LINES));
             output.add_line(&feedback.line, feedback.is_stderr());

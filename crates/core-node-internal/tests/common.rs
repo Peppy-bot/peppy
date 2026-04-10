@@ -1142,7 +1142,7 @@ fn make_real_output_sinks(
     use parking_lot::Mutex as StdMutex;
     use std::sync::atomic::AtomicBool;
 
-    let log_dir = peppy_dirs.logs_dir_start();
+    let log_dir = peppy_dirs.logs_dir_run();
     std::fs::create_dir_all(&log_dir).ok();
     let log_file = Arc::new(StdMutex::new(
         std::fs::File::create(log_dir.join(format!("{}.log", instance_id.as_str())))

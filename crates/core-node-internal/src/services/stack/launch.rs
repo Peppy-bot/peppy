@@ -457,7 +457,7 @@ async fn start_node_directly(
 ) -> (std::result::Result<NodeRunResult, String>, Option<PathBuf>) {
     let (feedback_tx, _forwarder_handle) = spawn_feedback_forwarder(
         &ctx.feedback_publisher,
-        LaunchFeedbackStep::StartingNode,
+        LaunchFeedbackStep::RunningNode,
         &ctx.log_file,
     );
 
@@ -1013,9 +1013,9 @@ async fn start_node_instances(
     ordered: &[NodeKey],
     planned_by_key: &HashMap<NodeKey, PlannedDeployment>,
     backup_stack: &NodeStack,
-    start_log_paths: &mut Vec<NodeRunLogEntry>,
+    run_log_paths: &mut Vec<NodeRunLogEntry>,
 ) -> std::result::Result<(), LaunchResult> {
-    publish_stdout(ctx, "Starting nodes...", LaunchFeedbackStep::LauncherStep).await;
+    publish_stdout(ctx, "Running nodes...", LaunchFeedbackStep::LauncherStep).await;
 
     // Compute runtime config host/port.
     let (messaging_host, messaging_port) = ctx
@@ -1034,7 +1034,7 @@ async fn start_node_instances(
             publish_stdout(
                 ctx,
                 format!("Starting {} instance {}", key.label(), instance_id),
-                LaunchFeedbackStep::StartingNode,
+                LaunchFeedbackStep::RunningNode,
             )
             .await;
 
@@ -1077,7 +1077,7 @@ async fn start_node_instances(
             .with_env_vars(ctx.env_vars.clone());
 
             // Create log file for this node start
-            let log_dir = ctx.peppy_dirs.logs_dir_start();
+            let log_dir = ctx.peppy_dirs.logs_dir_run();
             let log_filename = format!("{}.log", instance_id);
             let (log_file, log_path) = match create_action_log_file(&log_dir, &log_filename) {
                 Ok(r) => r,
@@ -1091,7 +1091,7 @@ async fn start_node_instances(
 
             let failed = result.as_ref().map(|r| !r.success).unwrap_or(true);
             if let Some(path) = log_path {
-                start_log_paths.push(NodeRunLogEntry {
+                run_log_paths.push(NodeRunLogEntry {
                     instance_id: instance_id.to_string(),
                     node_label: key.label(),
                     log_path: path,
@@ -1302,7 +1302,7 @@ async fn process_launch(goal: LaunchGoal, ctx: ProcessLaunchContext) -> LaunchRe
 
     let mut add_log_paths: Vec<NodeAddLogEntry> = Vec::new();
     let mut build_log_paths: Vec<NodeBuildLogEntry> = Vec::new();
-    let mut start_log_paths: Vec<NodeRunLogEntry> = Vec::new();
+    let mut run_log_paths: Vec<NodeRunLogEntry> = Vec::new();
 
     // Step 5: Add nodes in dependency order
     let add_result = add_nodes_to_stack(
@@ -1323,7 +1323,7 @@ async fn process_launch(goal: LaunchGoal, ctx: ProcessLaunchContext) -> LaunchRe
                 &ordered,
                 &planned_by_key,
                 &backup_stack,
-                &mut start_log_paths,
+                &mut run_log_paths,
             )
             .await,
         )
@@ -1339,7 +1339,7 @@ async fn process_launch(goal: LaunchGoal, ctx: ProcessLaunchContext) -> LaunchRe
     if let Some(Err(mut launch_result)) = start_result {
         launch_result.node_add_logs = add_log_paths;
         launch_result.node_build_logs = build_log_paths;
-        launch_result.node_run_logs = start_log_paths;
+        launch_result.node_run_logs = run_log_paths;
         return launch_result;
     }
 
@@ -1347,6 +1347,6 @@ async fn process_launch(goal: LaunchGoal, ctx: ProcessLaunchContext) -> LaunchRe
     LaunchResult::success(&ctx.log_path).with_node_logs(
         add_log_paths,
         build_log_paths,
-        start_log_paths,
+        run_log_paths,
     )
 }

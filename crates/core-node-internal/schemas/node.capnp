@@ -290,6 +290,6 @@ struct NodeInfoResponse {
     # Path to the most-recent add/build log file for this entity.
     # Empty string when not in stack or no add log has been produced yet.
     addLogPath @8 :Text;
-    # Per-instance start log paths, aligned with `instances` (same order).
-    startLogPaths @9 :List(Text);
+    # Per-instance run log paths, aligned with `instances` (same order).
+    runLogPaths @9 :List(Text);
 }

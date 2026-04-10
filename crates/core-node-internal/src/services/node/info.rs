@@ -163,17 +163,17 @@ async fn handle_node_info_request_inner(
     let node_name = node_config.manifest.name.as_str();
     let node_tag = node_config.manifest.tag.as_str();
 
-    let (is_in_node_stack, instances_names, stage, instances, add_log_path, start_log_paths) =
+    let (is_in_node_stack, instances_names, stage, instances, add_log_path, run_log_paths) =
         match node_stack.find(node_name, node_tag) {
             Some(entity) => {
                 let guard = entity.read();
                 {
                     let stage = Some(guard.stage().name().to_string());
                     let tracked = guard.instances();
-                    let start_log_dir = peppy_dirs.logs_dir_start();
+                    let run_log_dir = peppy_dirs.logs_dir_run();
                     let mut instances: Vec<NodeInstanceInfo> = Vec::with_capacity(tracked.len());
                     let mut instances_names: Vec<String> = Vec::new();
-                    let mut start_log_paths: Vec<PathBuf> = Vec::with_capacity(tracked.len());
+                    let mut run_log_paths: Vec<PathBuf> = Vec::with_capacity(tracked.len());
                     for instance in tracked.iter() {
                         let id = instance.instance_id().as_str();
                         let state = instance.state();
@@ -187,7 +187,7 @@ async fn handle_node_info_request_inner(
                         if state == InstanceState::Running {
                             instances_names.push(id.to_owned());
                         }
-                        start_log_paths.push(start_log_dir.join(format!("{}.log", id)));
+                        run_log_paths.push(run_log_dir.join(format!("{}.log", id)));
                     }
                     let add_log_path = node_stack.add_log_path(node_name, node_tag);
                     (
@@ -196,7 +196,7 @@ async fn handle_node_info_request_inner(
                         stage,
                         instances,
                         add_log_path,
-                        start_log_paths,
+                        run_log_paths,
                     )
                 }
             }
@@ -217,7 +217,7 @@ async fn handle_node_info_request_inner(
         stage,
         instances,
         add_log_path,
-        start_log_paths,
+        run_log_paths,
     }
     .encode()
     .map_err(|e| InfoError::Internal(format!("failed to encode NodeInfoResponse: {}", e)))

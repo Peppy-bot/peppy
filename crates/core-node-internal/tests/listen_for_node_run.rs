@@ -519,7 +519,7 @@ async fn listen_for_node_run_writes_log_file() {
     );
     let expected_log_path = started
         .peppy_dirs
-        .logs_dir_start()
+        .logs_dir_run()
         .join(format!("{}.log", TARGET_INSTANCE_ID));
     assert_eq!(
         start_response.goal_response.log_path, expected_log_path,
@@ -1429,7 +1429,7 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
     );
     let expected_log_path = started
         .peppy_dirs
-        .logs_dir_start()
+        .logs_dir_run()
         .join(format!("{}.log", TARGET_INSTANCE_ID));
     assert_eq!(
         start_response.goal_response.log_path, expected_log_path,

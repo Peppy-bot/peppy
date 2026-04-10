@@ -32,7 +32,7 @@ struct LaunchGoalResponse {
 enum LaunchFeedbackStep {
     launcherStep @0;
     addingNode @1;
-    startingNode @2;
+    runningNode @2;
     buildingNode @3;
 }
 
