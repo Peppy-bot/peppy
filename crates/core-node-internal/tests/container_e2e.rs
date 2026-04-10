@@ -5,7 +5,8 @@ mod container_e2e_tests {
 
     use common::{
         CALLER_INSTANCE_ID, NodeStartTestTimeouts, send_node_add_and_wait,
-        send_node_start_and_wait, start_core_node_with_real_messenger_and_timeouts,
+        send_node_build_and_wait, send_node_start_and_wait,
+        start_core_node_with_real_messenger_and_timeouts,
     };
     use config::node::Name as NodeName;
     use config::node::Toolchain;
@@ -99,11 +100,31 @@ mod container_e2e_tests {
 
         assert!(
             add_response.success,
-            "node_add (container build) should succeed, got error: {:?}",
+            "node_add should succeed, got error: {:?}",
             add_response.error_message
         );
 
-        // Step 3: Start the container against a real messaging endpoint.
+        // Step 3: Build the node (builds the container image).
+        let build_response = send_node_build_and_wait(
+            &started.caller_handle,
+            &started.core_node_name,
+            NODE_NAME,
+            NODE_TAG,
+            Duration::from_secs(30),
+            Duration::from_secs(600),
+            Vec::new(),
+            None,
+        )
+        .await
+        .expect("node_build request should complete");
+
+        assert!(
+            build_response.success,
+            "node_build (container build) should succeed, got error: {:?}",
+            build_response.error_message
+        );
+
+        // Step 4: Start the container against a real messaging endpoint.
         // This mirrors real world usage and avoids mocked ready/health responders.
         let (messaging_host, messaging_port) = started
             .caller_handle
@@ -248,11 +269,31 @@ mod container_e2e_tests {
 
         assert!(
             add_response.success,
-            "node_add (container build) should succeed, got error: {:?}",
+            "node_add should succeed, got error: {:?}",
             add_response.error_message
         );
 
-        // Step 3: Start the container against a real messaging endpoint.
+        // Step 3: Build the node (builds the container image).
+        let build_response = send_node_build_and_wait(
+            &started.caller_handle,
+            &started.core_node_name,
+            NODE_NAME,
+            NODE_TAG,
+            Duration::from_secs(30),
+            Duration::from_secs(300),
+            Vec::new(),
+            None,
+        )
+        .await
+        .expect("node_build request should complete");
+
+        assert!(
+            build_response.success,
+            "node_build (container build) should succeed, got error: {:?}",
+            build_response.error_message
+        );
+
+        // Step 4: Start the container against a real messaging endpoint.
         // This mirrors real world usage and avoids mocked ready/health responders.
         let (messaging_host, messaging_port) = started
             .caller_handle
