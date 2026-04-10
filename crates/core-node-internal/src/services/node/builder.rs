@@ -18,6 +18,7 @@ use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::{Mutex, mpsc};
+use tokio_util::sync::CancellationToken;
 use tokio::task::JoinHandle;
 use tracing::debug;
 
@@ -263,6 +264,20 @@ impl NodeBuildGoalHandler {
         let state_clone = Arc::clone(&state);
         let action_context = self.context.clone();
         let log_path_clone = log_path.clone();
+        let cancel_token = CancellationToken::new();
+        let cancel_token_clone = cancel_token.clone();
+
+        // Clones for the cancellation-cleanup branch of `select!`. When a
+        // `--force` build aborts the in-flight task, the entity may already
+        // be in `Building` state. `remove_config_if_matches` rolls it back
+        // so that future builds are not permanently rejected.
+        let node_stack_for_cancel = Arc::clone(&self.context.node_stack);
+        let node_name_for_cancel = goal.node_name.clone();
+        let node_tag_for_cancel = goal.node_tag.clone();
+        let entity_handle_for_cancel = entity_handle.clone();
+        let generation_for_cancel = captured_generation;
+        let log_path_for_cancel = log_path.clone();
+
         let task_handle = tokio::spawn(async move {
             let (feedback_tx, feedback_rx) = mpsc::unbounded_channel::<FeedbackLine>();
             let consumer_handle =
@@ -270,26 +285,40 @@ impl NodeBuildGoalHandler {
                     NodeBuildFeedback::from_stream(line.stream, &line.line).encode()
                 });
 
-            let result = run_node_build(NodeBuildRun {
-                node_name: goal.node_name,
-                node_tag: goal.node_tag,
-                env_vars: goal.env_vars,
-                entity_handle,
-                working_dir_guard,
-                captured_generation,
-                action_context,
-                feedback_tx,
-                log_file,
-                log_path: log_path_clone,
-            })
-            .await;
+            let result = tokio::select! {
+                biased;
+                result = run_node_build(NodeBuildRun {
+                    node_name: goal.node_name,
+                    node_tag: goal.node_tag,
+                    env_vars: goal.env_vars,
+                    entity_handle,
+                    working_dir_guard,
+                    captured_generation,
+                    action_context,
+                    feedback_tx,
+                    log_file,
+                    log_path: log_path_clone,
+                }) => result,
+                _ = cancel_token_clone.cancelled() => {
+                    let _ = node_stack_for_cancel.remove_config_if_matches(
+                        &node_name_for_cancel,
+                        &node_tag_for_cancel,
+                        &entity_handle_for_cancel,
+                        generation_for_cancel,
+                    );
+                    NodeBuildResult::failure(
+                        &log_path_for_cancel,
+                        "build cancelled by --force".to_string(),
+                    )
+                }
+            };
 
             let _ = consumer_handle.await;
             let mut state_guard = state_clone.lock().await;
             *state_guard = ActionState::Completed { result };
         });
 
-        self.gate.set_task(task_handle);
+        self.gate.set_task(task_handle, cancel_token);
 
         super::encode_response_or_err(
             "node_build_goal",

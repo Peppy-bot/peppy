@@ -839,6 +839,7 @@ impl NodeStack {
     pub fn reset(&self) {
         let mut guard = self.shared.write();
         guard.clear();
+        self.add_log_paths.lock().clear();
     }
 
     /// Applies the state from another NodeStack to this one.
@@ -930,6 +931,7 @@ impl NodeStack {
         // cleared stack with only some entities re-inserted).
         let mut guard = self.shared.write();
         guard.clear();
+        self.add_log_paths.lock().clear();
         for (label, entity) in prepared {
             guard
                 .insert_entity(entity, false)

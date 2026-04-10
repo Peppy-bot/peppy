@@ -31,6 +31,7 @@ use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tokio_util::sync::CancellationToken;
 use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinHandle;
 use tracing::debug;
@@ -1138,7 +1139,7 @@ async fn handle_goal_request(
         *state_guard = ActionState::Completed { result };
     });
 
-    gate.set_task(task_handle);
+    gate.set_task(task_handle, CancellationToken::new());
 
     super::encode_response_or_err(
         "node_add_goal",

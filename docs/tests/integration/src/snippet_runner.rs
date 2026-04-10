@@ -122,8 +122,9 @@ pub fn run_snippet_with_deps(
     // Add and build dependencies first (must happen before syncing the main node)
     for dep in deps {
         let dep_dir = snippet_dir(snippets_root, dep);
-        let dep_config = NodeConfigParser::from_path(dep_dir.join("peppy.json5"))
-            .expect("failed to parse dep peppy.json5");
+        let dep_config_path = dep_dir.join("peppy.json5");
+        let dep_config = NodeConfigParser::from_path(&dep_config_path)
+            .unwrap_or_else(|e| panic!("failed to parse {}: {e}", dep_config_path.display()));
         let dep_ref = format!(
             "{}:{}",
             dep_config.manifest().name.as_str(),
