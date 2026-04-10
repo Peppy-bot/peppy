@@ -95,14 +95,14 @@ const EXPOSED_ACTION_WITH_NESTED_FEEDBACK_EXAMPLE: &str = r#"
 "#;
 
 // --- Subscribes examples
-const SUBSCRIBED_ACTION_EXAMPLE1: &str = r#"
+pub(super) const SUBSCRIBED_ACTION_EXAMPLE1: &str = r#"
 {
   local_node_id: "brain",
   name: "move_arm",
 }
 "#;
 
-const SUBSCRIBED_ACTION_GOAL_FORMAT1: &str = r#"
+pub(super) const SUBSCRIBED_ACTION_GOAL_FORMAT1: &str = r#"
 {
   arm_id: "u16",
   desired_position: {
@@ -113,13 +113,13 @@ const SUBSCRIBED_ACTION_GOAL_FORMAT1: &str = r#"
 }
 "#;
 
-const SUBSCRIBED_ACTION_GOAL_RESPONSE_FORMAT1: &str = r#"
+pub(super) const SUBSCRIBED_ACTION_GOAL_RESPONSE_FORMAT1: &str = r#"
 {
   accepted: "bool"
 }
 "#;
 
-const SUBSCRIBED_ACTION_FEEDBACK_FORMAT1: &str = r#"
+pub(super) const SUBSCRIBED_ACTION_FEEDBACK_FORMAT1: &str = r#"
 {
   new_position: {
     $type: "array",
@@ -129,7 +129,7 @@ const SUBSCRIBED_ACTION_FEEDBACK_FORMAT1: &str = r#"
 }
 "#;
 
-const SUBSCRIBED_ACTION_RESULT_RESPONSE_FORMAT1: &str = r#"
+pub(super) const SUBSCRIBED_ACTION_RESULT_RESPONSE_FORMAT1: &str = r#"
 {
   success: "bool",
   error_msg: {

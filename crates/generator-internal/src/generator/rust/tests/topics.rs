@@ -1,6 +1,6 @@
 use super::*;
 use crate::error::Error;
-use config::node::{ConsumedTopic, EmittedTopic, MessageFormat};
+use config::node::{ConsumedAction, ConsumedService, ConsumedTopic, EmittedTopic, MessageFormat};
 
 const EMITTED_TOPIC_EXAMPLE: &str = r#"
 {
@@ -386,8 +386,8 @@ fn consumed_topic() {
         &rendered,
         &[
             "pub async fn on_next_message_received(",
-            "core_node_target: Option<&str>",
-            "instance_id_target: Option<&str>",
+            "target_core_node: Option<&str>",
+            "target_instance_id: Option<&str>",
             "-> crate::Result<(String, Message)>",
         ],
     );
@@ -527,8 +527,8 @@ fn external_consumed_topic() {
         &rendered,
         &[
             "pub async fn on_next_message_received(",
-            "core_node_target: Option<&str>",
-            "instance_id_target: Option<&str>",
+            "target_core_node: Option<&str>",
+            "target_instance_id: Option<&str>",
             "-> crate::Result<(String, Message)>",
         ],
     );
@@ -713,5 +713,72 @@ fn compile_lib_with_emitted_and_consumed_topics() {
             .join("src/consumed_topics/uvc_camera_sound.rs")
             .exists(),
         "Expected uvc_camera_sound subscriber module"
+    );
+}
+
+/// Regression guard: all three consumer-side interfaces (topic / service / action)
+/// must emit filter parameters named `target_core_node` / `target_instance_id`.
+/// This test fails loudly if any generator drifts away from the shared naming.
+#[test]
+fn consumer_filter_params_use_target_prefix() {
+    let topic = parse_consumed_topic(SUBSCRIBED_TOPIC_EXAMPLE1);
+    let topic_format = parse_message_format(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE1);
+
+    let service: ConsumedService =
+        serde_json5::from_str(super::services::SUBSCRIBED_SERVICE_EXAMPLE1).unwrap();
+    let request_format: MessageFormat =
+        serde_json5::from_str(super::services::SUBSCRIBED_SERVICE_REQUEST_EXAMPLE1).unwrap();
+    let response_format: MessageFormat =
+        serde_json5::from_str(super::services::SUBSCRIBED_SERVICE_RESPONSE_EXAMPLE1).unwrap();
+
+    let action: ConsumedAction =
+        serde_json5::from_str(super::actions::SUBSCRIBED_ACTION_EXAMPLE1).unwrap();
+    let goal_request_format: MessageFormat =
+        serde_json5::from_str(super::actions::SUBSCRIBED_ACTION_GOAL_FORMAT1).unwrap();
+    let goal_response_format: MessageFormat =
+        serde_json5::from_str(super::actions::SUBSCRIBED_ACTION_GOAL_RESPONSE_FORMAT1).unwrap();
+    let feedback_format: MessageFormat =
+        serde_json5::from_str(super::actions::SUBSCRIBED_ACTION_FEEDBACK_FORMAT1).unwrap();
+    let result_response_format: MessageFormat =
+        serde_json5::from_str(super::actions::SUBSCRIBED_ACTION_RESULT_RESPONSE_FORMAT1).unwrap();
+    let action_messages = ConsumedActionMessage {
+        goal_request: Some(goal_request_format),
+        goal_response: Some(goal_response_format),
+        feedback: Some(feedback_format),
+        result_request: None,
+        result_response: Some(result_response_format),
+    };
+
+    let mut generator = RustGenerator::new();
+    generator
+        .add_consumed_topic(&topic, topic_format, "uvc_camera")
+        .unwrap();
+    generator
+        .add_consumed_service(&service, &request_format, &response_format, "uvc_camera")
+        .unwrap();
+    generator
+        .add_consumed_action(&action, &action_messages, "brain")
+        .unwrap();
+    let rendered = render_artifacts(generator.into_artifacts()).join("\n");
+
+    // Positive invariant: the target_* pair is present.
+    assert_contains_all(
+        &rendered,
+        &[
+            "target_core_node: Option<&str>",
+            "target_instance_id: Option<&str>",
+        ],
+    );
+
+    // Count-based check: each consumer interface must surface the pair exactly once.
+    assert_eq!(
+        rendered.matches("target_core_node: Option<&str>").count(),
+        3,
+        "expected `target_core_node` on all 3 consumer interfaces (topic/service/action); rendered:\n{rendered}"
+    );
+    assert_eq!(
+        rendered.matches("target_instance_id: Option<&str>").count(),
+        3,
+        "expected `target_instance_id` on all 3 consumer interfaces (topic/service/action); rendered:\n{rendered}"
     );
 }
