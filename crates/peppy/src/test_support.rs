@@ -147,6 +147,9 @@ impl ServeCommandEmulation {
             CoreNodeArguments {
                 node_startup_timeout: Duration::from_secs(120),
                 node_start_health_timeout: Duration::from_secs(30),
+                health_monitor_interval: Duration::from_secs(5),
+                health_monitor_timeout: Duration::from_secs(3),
+                health_monitor_max_failures: 3,
             },
             temp_dir.path().to_path_buf(),
             peppy_dirs,

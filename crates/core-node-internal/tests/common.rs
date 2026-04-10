@@ -982,15 +982,22 @@ pub struct StartedCoreNode {
     _data_dir: TempDir,
 }
 
+fn default_node_arguments() -> CoreNodeArguments {
+    CoreNodeArguments {
+        node_startup_timeout: Duration::from_secs(10),
+        node_start_health_timeout: Duration::from_secs(30),
+        health_monitor_interval: Duration::from_secs(5),
+        health_monitor_timeout: Duration::from_secs(3),
+        health_monitor_max_failures: 3,
+    }
+}
+
 pub async fn start_core_node_with_mock_messenger() -> StartedCoreNode {
     let (data_dir, peppy_dirs) = init_test_data_dir();
     let shared_messenger = create_mock_messenger().await;
-    let node_startup_timeout = Duration::from_secs(10);
-    let node_start_health_timeout = Duration::from_secs(30);
     start_core_node_with_messenger(
         shared_messenger,
-        node_startup_timeout,
-        node_start_health_timeout,
+        default_node_arguments(),
         data_dir,
         peppy_dirs,
     )
@@ -1019,14 +1026,10 @@ pub async fn start_core_node_with_real_messenger_and_timeouts(
         .await
         .expect("failed to start zenoh session");
     let shared_messenger = Arc::new(Mutex::new(instance.take_messenger()));
-    start_core_node_with_messenger(
-        shared_messenger,
-        node_startup_timeout,
-        node_start_health_timeout,
-        data_dir,
-        peppy_dirs,
-    )
-    .await
+    let mut args = default_node_arguments();
+    args.node_startup_timeout = node_startup_timeout;
+    args.node_start_health_timeout = node_start_health_timeout;
+    start_core_node_with_messenger(shared_messenger, args, data_dir, peppy_dirs).await
 }
 
 pub async fn start_core_node_with_health_timeout(
@@ -1034,29 +1037,32 @@ pub async fn start_core_node_with_health_timeout(
 ) -> StartedCoreNode {
     let (data_dir, peppy_dirs) = init_test_data_dir();
     let shared_messenger = create_mock_messenger().await;
-    let node_startup_timeout = Duration::from_secs(10);
-    start_core_node_with_messenger(
-        shared_messenger,
-        node_startup_timeout,
-        node_start_health_timeout,
-        data_dir,
-        peppy_dirs,
-    )
-    .await
+    let mut args = default_node_arguments();
+    args.node_start_health_timeout = node_start_health_timeout;
+    start_core_node_with_messenger(shared_messenger, args, data_dir, peppy_dirs).await
+}
+
+pub async fn start_core_node_with_health_monitor(
+    health_monitor_interval: Duration,
+    health_monitor_timeout: Duration,
+    health_monitor_max_failures: u32,
+) -> StartedCoreNode {
+    let (data_dir, peppy_dirs) = init_test_data_dir();
+    let shared_messenger = create_mock_messenger().await;
+    let mut args = default_node_arguments();
+    args.health_monitor_interval = health_monitor_interval;
+    args.health_monitor_timeout = health_monitor_timeout;
+    args.health_monitor_max_failures = health_monitor_max_failures;
+    start_core_node_with_messenger(shared_messenger, args, data_dir, peppy_dirs).await
 }
 
 async fn start_core_node_with_messenger(
     shared_messenger: Arc<Mutex<Messenger>>,
-    node_startup_timeout: Duration,
-    node_start_health_timeout: Duration,
+    node_arguments: CoreNodeArguments,
     data_dir: TempDir,
     peppy_dirs: PeppyDirs,
 ) -> StartedCoreNode {
     let caller_handle = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
-    let node_arguments = CoreNodeArguments {
-        node_startup_timeout,
-        node_start_health_timeout,
-    };
     let root_dir = std::env::current_dir().expect("failed to get current directory");
     let core_node = CoreNode::new(
         Arc::clone(&shared_messenger),

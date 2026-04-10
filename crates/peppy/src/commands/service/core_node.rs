@@ -26,6 +26,9 @@ impl CoreNodeRunner {
         let node_arguments = CoreNodeArguments {
             node_startup_timeout,
             node_start_health_timeout,
+            health_monitor_interval: Duration::from_secs(5),
+            health_monitor_timeout: Duration::from_secs(3),
+            health_monitor_max_failures: 3,
         };
         let peppy_dirs = PeppyDirs::default();
         let core_node = CoreNode::new(

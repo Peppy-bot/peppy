@@ -49,6 +49,9 @@ fn clear_instances_dir(peppy_dirs: &PeppyDirs) {
 pub struct CoreNodeArguments {
     pub node_startup_timeout: Duration,
     pub node_start_health_timeout: Duration,
+    pub health_monitor_interval: Duration,
+    pub health_monitor_timeout: Duration,
+    pub health_monitor_max_failures: u32,
 }
 
 impl CoreNodeArguments {
@@ -75,6 +78,9 @@ pub struct CoreNode {
     start_time: Instant,
     node_startup_timeout: Duration,
     node_start_health_timeout: Duration,
+    health_monitor_interval: Duration,
+    health_monitor_timeout: Duration,
+    health_monitor_max_failures: u32,
 }
 
 /// Pre-flight checks that run once at daemon startup. Exits with a
@@ -135,6 +141,9 @@ impl CoreNode {
 
         let node_startup_timeout = node_arguments.node_startup_timeout;
         let node_start_health_timeout = node_arguments.node_start_health_timeout;
+        let health_monitor_interval = node_arguments.health_monitor_interval;
+        let health_monitor_timeout = node_arguments.health_monitor_timeout;
+        let health_monitor_max_failures = node_arguments.health_monitor_max_failures;
 
         let node_config = NodeConfig {
             schema_version: CURRENT_SCHEMA_VERSION,
@@ -171,6 +180,9 @@ impl CoreNode {
             start_time: Instant::now(),
             node_startup_timeout,
             node_start_health_timeout,
+            health_monitor_interval,
+            health_monitor_timeout,
+            health_monitor_max_failures,
         }
     }
 
@@ -234,6 +246,9 @@ impl CoreNode {
                 stack::StackLaunchTimeouts {
                     node_startup: self.node_startup_timeout,
                     node_start_health: self.node_start_health_timeout,
+                    health_monitor_interval: self.health_monitor_interval,
+                    health_monitor_timeout: self.health_monitor_timeout,
+                    health_monitor_max_failures: self.health_monitor_max_failures,
                 },
             )
             .await?,
@@ -299,6 +314,9 @@ impl CoreNode {
                     node_startup_timeout: self.node_startup_timeout,
                     node_start_health_timeout: self.node_start_health_timeout,
                     peppy_dirs: self.peppy_dirs.clone(),
+                    health_monitor_interval: self.health_monitor_interval,
+                    health_monitor_timeout: self.health_monitor_timeout,
+                    health_monitor_max_failures: self.health_monitor_max_failures,
                 },
             )
             .await?,

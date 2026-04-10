@@ -124,6 +124,15 @@ impl PeppyDirs {
         self.root.join("tmp")
     }
 
+    /// Path to the stack operations log file.
+    ///
+    /// Records daemon-initiated lifecycle events (e.g. automatic instance
+    /// removal after health-check failures) so users can audit what happened
+    /// without digging through debug logs.
+    pub fn stack_log_path(&self) -> PathBuf {
+        self.root.join("stack_log.log")
+    }
+
     /// Shared Rust crate cache directory for a given cache key.
     pub fn rust_libs_cache_dir(&self, cache_key: &str) -> PathBuf {
         self.root.join("libs").join("rust").join(cache_key)

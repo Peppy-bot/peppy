@@ -17,7 +17,7 @@ pub(crate) use add::{NodeAddActionContext, log_label_from_source, run_node_add};
 pub use builder::listen_for_node_build;
 pub(crate) use builder::{NodeBuildActionContext, run_node_build_for_entity};
 use chrono::Local;
-use config::consts::NODE_CONFIG_FILE;
+use config::consts::{NODE_CONFIG_FILE, PeppyDirs};
 use config::node::{NodeConfig, NodeConfigParser, ParsedNodeConfig, PeppygenLanguage};
 use git2::{Repository, build::CheckoutBuilder, build::RepoBuilder};
 pub use info::listen_for_node_info;
@@ -140,6 +140,26 @@ pub(crate) fn write_error_to_log(log_file: &Arc<StdMutex<File>>, error_msg: &str
     let timestamp = Local::now().format("%Y-%m-%dT%H:%M:%S%.3f");
     let _ = writeln!(file, "[{}] [error] {}", timestamp, error_msg);
     let _ = file.flush();
+}
+
+/// Appends a timestamped entry to the stack operations log.
+///
+/// Best-effort: silently ignores I/O failures since the operation it
+/// describes has already completed.
+pub(crate) fn append_stack_log(peppy_dirs: &PeppyDirs, message: &str) {
+    let path = peppy_dirs.stack_log_path();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    else {
+        return;
+    };
+    let timestamp = Local::now().format("%Y-%m-%dT%H:%M:%S%.3f");
+    let _ = writeln!(file, "[{}] {}", timestamp, message);
 }
 
 /// Creates a log file inside `log_dir` with the given filename.

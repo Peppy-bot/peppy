@@ -40,6 +40,9 @@ pub struct NodeStartServiceConfig {
     pub node_startup_timeout: Duration,
     pub node_start_health_timeout: Duration,
     pub peppy_dirs: PeppyDirs,
+    pub health_monitor_interval: Duration,
+    pub health_monitor_timeout: Duration,
+    pub health_monitor_max_failures: u32,
 }
 
 #[derive(Clone)]
@@ -51,6 +54,9 @@ pub(crate) struct NodeStartActionContext {
     pub(crate) node_startup_timeout: Duration,
     pub(crate) node_start_health_timeout: Duration,
     pub(crate) peppy_dirs: PeppyDirs,
+    pub(crate) health_monitor_interval: Duration,
+    pub(crate) health_monitor_timeout: Duration,
+    pub(crate) health_monitor_max_failures: u32,
 }
 
 struct ProcessNodeStartContext {
@@ -86,6 +92,9 @@ pub async fn listen_for_node_start(
             node_startup_timeout: config.node_startup_timeout,
             node_start_health_timeout: config.node_start_health_timeout,
             peppy_dirs: config.peppy_dirs,
+            health_monitor_interval: config.health_monitor_interval,
+            health_monitor_timeout: config.health_monitor_timeout,
+            health_monitor_max_failures: config.health_monitor_max_failures,
         },
         gate: ConcurrencyGate::new(),
     };
@@ -703,6 +712,21 @@ async fn process_node_start(
             .await;
             match commit_result {
                 Ok(_) => {
+                    spawn_health_monitor(HealthMonitorParams {
+                        messenger: ctx.action.messenger.clone(),
+                        core_node_name: ctx.action.core_node_name.clone(),
+                        caller_instance_id: ctx.action.caller_instance_id.clone(),
+                        target_node_name: runtime_config.node_name.as_str().to_owned(),
+                        target_core_node: runtime_config.bound_core_node.as_str().to_owned(),
+                        target_instance_id: instance_id.clone(),
+                        node_tag: tag.clone(),
+                        node_stack: Arc::clone(&ctx.action.node_stack),
+                        peppy_dirs: ctx.action.peppy_dirs.clone(),
+                        interval: ctx.action.health_monitor_interval,
+                        timeout: ctx.action.health_monitor_timeout,
+                        max_failures: ctx.action.health_monitor_max_failures,
+                    });
+
                     let (max_wait, quiet_window) = if is_container {
                         (
                             CONTAINER_STARTUP_OUTPUT_MAX_WAIT,
@@ -940,6 +964,115 @@ async fn wait_for_ready_signal(
             }
         }
     }
+}
+
+struct HealthMonitorParams {
+    messenger: MessengerHandle,
+    core_node_name: String,
+    caller_instance_id: String,
+    target_node_name: String,
+    target_core_node: String,
+    target_instance_id: Name,
+    node_tag: String,
+    node_stack: Arc<NodeStack>,
+    peppy_dirs: PeppyDirs,
+    interval: Duration,
+    timeout: Duration,
+    max_failures: u32,
+}
+
+/// Spawns a background task that periodically polls the node's health service.
+/// If `max_failures` consecutive health checks fail, the instance is removed
+/// from the node stack and the event is logged to the stack log.
+///
+/// The task exits when:
+/// - The instance is no longer found in the stack (removed externally).
+/// - The health checks fail consecutively `max_failures` times.
+fn spawn_health_monitor(p: HealthMonitorParams) {
+    tokio::spawn(async move {
+        let instance_id_str = p.target_instance_id.as_str().to_owned();
+        let request_payload = match NodeHealthRequest::new().encode() {
+            Ok(payload) => payload,
+            Err(e) => {
+                tracing::warn!(
+                    "Health monitor for '{}' failed to encode request: {}",
+                    instance_id_str,
+                    e
+                );
+                return;
+            }
+        };
+
+        let mut consecutive_failures: u32 = 0;
+
+        loop {
+            tokio::time::sleep(p.interval).await;
+
+            // If the instance was removed externally (e.g. user ran `node stop`),
+            // our job is done.
+            if p.node_stack
+                .find_by_instance_id(&p.target_instance_id)
+                .is_none()
+            {
+                debug!(
+                    "Health monitor: instance '{}' no longer in stack, exiting",
+                    instance_id_str
+                );
+                return;
+            }
+
+            match ServiceMessenger::poll(
+                &p.messenger,
+                &p.core_node_name,
+                &p.caller_instance_id,
+                &p.target_node_name,
+                NODE_HEALTH_SERVICE,
+                Some(&p.target_core_node),
+                Some(&instance_id_str),
+                request_payload.clone(),
+                p.timeout,
+            )
+            .await
+            {
+                Ok(_) => {
+                    consecutive_failures = 0;
+                }
+                Err(err) => {
+                    consecutive_failures += 1;
+                    debug!(
+                        "Health monitor: instance '{}' health check failed ({}/{}): {}",
+                        instance_id_str, consecutive_failures, p.max_failures, err
+                    );
+
+                    if consecutive_failures >= p.max_failures {
+                        tracing::warn!(
+                            "Health monitor: instance '{}' failed {} consecutive health checks, removing from stack",
+                            instance_id_str,
+                            p.max_failures
+                        );
+
+                        if let Some(entity_handle) = p
+                            .node_stack
+                            .find_entity_by_instance_id(&p.target_instance_id)
+                        {
+                            entity_handle.write().stop_instance(&p.target_instance_id);
+                        }
+
+                        super::append_stack_log(
+                            &p.peppy_dirs,
+                            &format!(
+                                "Removed instance '{}' of node '{}:{}': \
+                                 failed {} consecutive health checks",
+                                instance_id_str, p.target_node_name, p.node_tag, p.max_failures,
+                            ),
+                        );
+
+                        return;
+                    }
+                }
+            }
+        }
+    });
 }
 
 #[cfg(test)]
