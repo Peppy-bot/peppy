@@ -82,7 +82,7 @@ Now if you try to run the node:
   </TabItem>
 </Tabs>
 
-These parameters are usually provided during `peppy node start`, but since we want this node to run as a standalone program, we need to pass them outside of the peppy daemon environment.
+These parameters are usually provided during `peppy node run`, but since we want this node to run as a standalone program, we need to pass them outside of the peppy daemon environment.
 We can define our parameters in a `params.json` file at the root of the project:
 
 <Code code={standaloneRustParams} lang="json" title="params.json" />
@@ -108,4 +108,4 @@ Then modify the source file to read from this file:
 
 The node should run without a crash.
 The standalone object allows us to load parameters from an external JSON file and pass them to the node, which in turn allows us to run our node as a regular Rust/Python program.
-Note that the standalone config is completely ignored when a node is run with `peppy node start`, all parameters provided during the `node start` operation take precedence.
+Note that the standalone config is completely ignored when a node is run with `peppy node run`, all parameters provided during the `node run` operation take precedence.

@@ -19,7 +19,7 @@ use crate::helpers::real_lifecycle::{
 /// entity lands in `Ready { instances: [] }`. The `execution` fields of the
 /// config are overridden by the fixture (see
 /// [`real_lifecycle::override_execution_for_fixture`]) so tests must not
-/// assert on `start_cmd`/`container`/`build_cmd` after this call.
+/// assert on `run_cmd`/`container`/`build_cmd` after this call.
 pub async fn push_built(
     stack: &NodeStack,
     harness: &LifecycleHarness,

@@ -72,7 +72,7 @@ fn node_remove_command_succeeds() {
             git_ref: None,
             variant: None,
             build: true,
-            start: false,
+            run: false,
             args: Vec::new(),
             instance_id: None,
             idle_timeout: 60,
@@ -203,7 +203,7 @@ fn node_remove_command_force_bypasses_prompt_and_stops_instances() {
 
     // Override the launch command to avoid spawning a real node process.
     // Health/shutdown services are provided in-process via the mock messenger.
-    peppy::test_support::override_start_cmd(&peppy_json5_path);
+    peppy::test_support::override_run_cmd(&peppy_json5_path);
 
     // Start in-process node services for health/shutdown so node_run can succeed.
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
@@ -240,7 +240,7 @@ fn node_remove_command_force_bypasses_prompt_and_stops_instances() {
             git_ref: None,
             variant: None,
             build: true,
-            start: true,
+            run: true,
             args: Vec::new(),
             instance_id: Some(instance_id.to_string()),
             idle_timeout: 60,
@@ -344,7 +344,7 @@ fn node_remove_command_with_stop_instances_succeeds_and_stops_instances() {
         peppy_json5_path.display()
     );
 
-    peppy::test_support::override_start_cmd(&peppy_json5_path);
+    peppy::test_support::override_run_cmd(&peppy_json5_path);
 
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
 
@@ -383,7 +383,7 @@ fn node_remove_command_with_stop_instances_succeeds_and_stops_instances() {
             git_ref: None,
             variant: None,
             build: true,
-            start: true,
+            run: true,
             args: Vec::new(),
             instance_id: Some(instance_id.to_string()),
             idle_timeout: 60,

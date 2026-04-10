@@ -28,7 +28,7 @@ async fn add_instance_creates_new_entity() {
             },
             execution: {
               language: "rust",
-              start_cmd: ["sensor"]
+              run_cmd: ["sensor"]
             }
         }"#,
     )
@@ -129,7 +129,7 @@ async fn add_instance_to_existing_entity() {
             },
             execution: {
               language: "rust",
-              start_cmd: ["sensor"]
+              run_cmd: ["sensor"]
             }
         }"#,
     )
@@ -217,7 +217,7 @@ async fn add_instance_with_specific_id() {
             },
             execution: {
               language: "rust",
-              start_cmd: ["sensor"]
+              run_cmd: ["sensor"]
             }
         }"#,
     )
@@ -277,7 +277,7 @@ async fn remove_instance_from_entity_with_multiple_instances() {
             },
             execution: {
               language: "rust",
-              start_cmd: ["sensor"]
+              run_cmd: ["sensor"]
             }
         }"#,
     )
@@ -345,7 +345,7 @@ async fn remove_last_instance_keeps_entity_in_graph() {
             },
             execution: {
               language: "rust",
-              start_cmd: ["sensor"]
+              run_cmd: ["sensor"]
             }
         }"#,
     )
@@ -404,7 +404,7 @@ async fn remove_nonexistent_instance_returns_false() {
             },
             execution: {
               language: "rust",
-              start_cmd: ["sensor"]
+              run_cmd: ["sensor"]
             }
         }"#,
     )
@@ -458,7 +458,7 @@ fn reset_clears_all_except_core_node() {
             },
             execution: {
               language: "rust",
-              start_cmd: ["sensor1"]
+              run_cmd: ["sensor1"]
             }
         }"#,
     )
@@ -492,7 +492,7 @@ fn reset_clears_all_except_core_node() {
             },
             execution: {
               language: "rust",
-              start_cmd: ["sensor2"]
+              run_cmd: ["sensor2"]
             }
         }"#,
     )
@@ -544,7 +544,7 @@ async fn spawning_multiple_instances_on_same_entity() {
             },
             execution: {
               language: "rust",
-              start_cmd: ["sensor"]
+              run_cmd: ["sensor"]
             }
         }"#,
     )
@@ -628,7 +628,7 @@ fn adding_same_entity_with_different_interfaces_overwrites_when_no_dependents() 
             },
             execution: {
               language: "rust",
-              start_cmd: ["sensor"]
+              run_cmd: ["sensor"]
             },
         }"#,
     )
@@ -661,7 +661,7 @@ fn adding_same_entity_with_different_interfaces_overwrites_when_no_dependents() 
             },
             execution: {
               language: "rust",
-              start_cmd: ["sensor"]
+              run_cmd: ["sensor"]
             },
         }"#,
     )
@@ -733,7 +733,7 @@ fn adding_same_name_with_different_tag_and_different_interfaces_succeeds() {
             },
             execution: {
               language: "rust",
-              start_cmd: ["sensor"]
+              run_cmd: ["sensor"]
             },
         }"#,
     )
@@ -756,7 +756,7 @@ fn adding_same_name_with_different_tag_and_different_interfaces_succeeds() {
             },
             execution: {
               language: "rust",
-              start_cmd: ["sensor"]
+              run_cmd: ["sensor"]
             },
         }"#,
     )
@@ -869,7 +869,7 @@ fn node_stack_wires_dependencies_for_dependants() {
             },
             execution: {
               language: "rust",
-              start_cmd: ["lidar"]
+              run_cmd: ["lidar"]
             },
         }"#,
     )
@@ -899,7 +899,7 @@ fn node_stack_wires_dependencies_for_dependants() {
             },
             execution: {
               language: "rust",
-              start_cmd: ["brain"]
+              run_cmd: ["brain"]
             },
         }"#,
     )
@@ -945,7 +945,7 @@ fn dependency_fails_when_node_name_mismatches() {
             },
             execution: {
               language: "rust",
-              start_cmd: ["brain"]
+              run_cmd: ["brain"]
             },
         }"#,
     )
@@ -960,7 +960,7 @@ fn dependency_fails_when_node_name_mismatches() {
             },
             execution: {
               language: "rust",
-              start_cmd: ["lidar"]
+              run_cmd: ["lidar"]
             },
         }"#,
     )
@@ -1010,7 +1010,7 @@ fn dependency_fails_when_node_tag_mismatches() {
             },
             execution: {
               language: "rust",
-              start_cmd: ["brain"]
+              run_cmd: ["brain"]
             },
         }"#,
     )
@@ -1025,7 +1025,7 @@ fn dependency_fails_when_node_tag_mismatches() {
             },
             execution: {
               language: "rust",
-              start_cmd: ["lidar"]
+              run_cmd: ["lidar"]
             },
         }"#,
     )
@@ -1076,7 +1076,7 @@ fn overwriting_existing_node_fails_if_node_has_dependencies() {
             },
             execution: {
               language: "rust",
-              start_cmd: ["lidar"]
+              run_cmd: ["lidar"]
             },
         }"#,
     )
@@ -1106,7 +1106,7 @@ fn overwriting_existing_node_fails_if_node_has_dependencies() {
             },
             execution: {
               language: "rust",
-              start_cmd: ["brain"]
+              run_cmd: ["brain"]
             },
         }"#,
     )
@@ -1128,7 +1128,7 @@ fn overwriting_existing_node_fails_if_node_has_dependencies() {
             },
             execution: {
               language: "rust",
-              start_cmd: ["lidar"]
+              run_cmd: ["lidar"]
             },
         }"#,
     )
@@ -1180,7 +1180,7 @@ fn overwriting_existing_node_fails_if_node_has_dependencies() {
 }
 
 #[test]
-fn updating_start_cmd_without_changing_interfaces_applies_new_config() {
+fn updating_run_cmd_without_changing_interfaces_applies_new_config() {
     let original_config: config::node::NodeConfig = serde_json5::from_str(
         r#"{
             schema_version: 1,
@@ -1190,7 +1190,7 @@ fn updating_start_cmd_without_changing_interfaces_applies_new_config() {
             },
             execution: {
               language: "rust",
-              start_cmd: ["./old_binary"]
+              run_cmd: ["./old_binary"]
             }
         }"#,
     )
@@ -1205,7 +1205,7 @@ fn updating_start_cmd_without_changing_interfaces_applies_new_config() {
             },
             execution: {
               language: "rust",
-              start_cmd: ["./new_binary"]
+              run_cmd: ["./new_binary"]
             }
         }"#,
     )
@@ -1220,12 +1220,12 @@ fn updating_start_cmd_without_changing_interfaces_applies_new_config() {
 
     let entity = stack.find("sensor", "1.0.0").expect("entity should exist");
     assert_eq!(
-        entity.read().config().execution.start_cmd.as_ref().unwrap(),
+        entity.read().config().execution.run_cmd.as_ref().unwrap(),
         &vec!["./old_binary"],
-        "entity should have the original start_cmd"
+        "entity should have the original run_cmd"
     );
 
-    // Re-push same name:tag:interfaces:root_path with different start_cmd
+    // Re-push same name:tag:interfaces:root_path with different run_cmd
     stack
         .push_config(updated_config, false, PathBuf::from("/tmp/sensor"))
         .expect("should update config without error");
@@ -1234,9 +1234,9 @@ fn updating_start_cmd_without_changing_interfaces_applies_new_config() {
     let entity = stack.find("sensor", "1.0.0").expect("entity should exist");
     let entity_guard = entity.read();
     assert_eq!(
-        entity_guard.config().execution.start_cmd.as_ref().unwrap(),
+        entity_guard.config().execution.run_cmd.as_ref().unwrap(),
         &vec!["./new_binary"],
-        "entity should have the updated start_cmd after re-push"
+        "entity should have the updated run_cmd after re-push"
     );
     assert_eq!(
         entity_guard.config_path(),
@@ -1246,7 +1246,7 @@ fn updating_start_cmd_without_changing_interfaces_applies_new_config() {
 }
 
 #[test]
-fn updating_start_cmd_succeeds_even_when_node_has_dependents() {
+fn updating_run_cmd_succeeds_even_when_node_has_dependents() {
     let dependency_v1: config::node::NodeConfig = serde_json5::from_str(
         r#"{
             schema_version: 1,
@@ -1256,7 +1256,7 @@ fn updating_start_cmd_succeeds_even_when_node_has_dependents() {
             },
             execution: {
               language: "rust",
-              start_cmd: ["./old_lidar"]
+              run_cmd: ["./old_lidar"]
             },
         }"#,
     )
@@ -1276,13 +1276,13 @@ fn updating_start_cmd_succeeds_even_when_node_has_dependents() {
             },
             execution: {
               language: "rust",
-              start_cmd: ["brain"]
+              run_cmd: ["brain"]
             },
         }"#,
     )
     .expect("valid dependent node config");
 
-    // Same interfaces as v1, but different start_cmd
+    // Same interfaces as v1, but different run_cmd
     let dependency_v1_updated: config::node::NodeConfig = serde_json5::from_str(
         r#"{
             schema_version: 1,
@@ -1292,7 +1292,7 @@ fn updating_start_cmd_succeeds_even_when_node_has_dependents() {
             },
             execution: {
               language: "rust",
-              start_cmd: ["./new_lidar"]
+              run_cmd: ["./new_lidar"]
             },
         }"#,
     )
@@ -1307,16 +1307,16 @@ fn updating_start_cmd_succeeds_even_when_node_has_dependents() {
         .push_config(dependent, false, PathBuf::from("/tmp/brain"))
         .expect("dependent dependency is present");
 
-    // Updating start_cmd without changing interfaces should succeed even with dependents
+    // Updating run_cmd without changing interfaces should succeed even with dependents
     stack
         .push_config(dependency_v1_updated, false, PathBuf::from("/tmp/lidar"))
         .expect("non-breaking config update should succeed even with dependents");
 
     let entity = stack.find("lidar", "1.0.0").expect("entity should exist");
     assert_eq!(
-        entity.read().config().execution.start_cmd.as_ref().unwrap(),
+        entity.read().config().execution.run_cmd.as_ref().unwrap(),
         &vec!["./new_lidar"],
-        "lidar should have the updated start_cmd"
+        "lidar should have the updated run_cmd"
     );
 
     // Dependency wiring should still be intact

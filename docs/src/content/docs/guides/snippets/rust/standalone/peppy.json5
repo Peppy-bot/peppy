@@ -28,7 +28,7 @@
       "build",
       "--release"
     ],
-    start_cmd: [
+    run_cmd: [
       "./target/release/standalone"
     ]
   }

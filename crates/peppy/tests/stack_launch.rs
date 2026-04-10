@@ -24,14 +24,14 @@ fn write_node_config(
     node_name: &str,
     node_tag: &str,
     git_hash: &str,
-    start_cmd: &[&str],
+    run_cmd: &[&str],
 ) -> PathBuf {
     let node_dir = nodes_directory.join(node_name);
     fs::create_dir_all(&node_dir).expect("failed to create node directory");
     let node_config_path = node_dir.join(NODE_CONFIG_FILE);
-    let start_cmd_json5 = start_cmd
+    let run_cmd_json5 = run_cmd
         .iter()
-        .map(|arg| serde_json::to_string(arg).expect("start_cmd arg should serialize"))
+        .map(|arg| serde_json::to_string(arg).expect("run_cmd arg should serialize"))
         .collect::<Vec<_>>()
         .join(", ");
     fs::write(
@@ -44,12 +44,12 @@ fn write_node_config(
                 },
                 execution: {
                     language: "rust",
-                    start_cmd: [{start_cmd_json5}]
+                    run_cmd: [{run_cmd_json5}]
                 }
             }"#
         .replace("{node_name}", node_name)
         .replace("{node_tag}", node_tag)
-        .replace("{start_cmd_json5}", &start_cmd_json5),
+        .replace("{run_cmd_json5}", &run_cmd_json5),
     )
     .expect("failed to write node config");
     config::fingerprint::create_codegen_fingerprint(
@@ -120,7 +120,7 @@ async fn node_launch_command_succeed() {
             git_ref: None,
             variant: None,
             build: true,
-            start: false,
+            run: false,
             args: Vec::new(),
             instance_id: None,
             idle_timeout: 60,
@@ -144,7 +144,7 @@ async fn node_launch_command_succeed() {
 
     let node_b_path = nodes_dir.path().join(node_b_name);
     let node_b_peppy_json5_path = node_b_path.join(NODE_CONFIG_FILE);
-    peppy::test_support::override_start_cmd(&node_b_peppy_json5_path);
+    peppy::test_support::override_run_cmd(&node_b_peppy_json5_path);
 
     let messenger_handle = ctx
         .messenger_handle()
@@ -207,7 +207,7 @@ async fn node_launch_command_succeed() {
         command: StackCommands::Launch {
             launcher_config_path: launcher_path,
             node_add_idle_timeout_secs: 60,
-            node_start_idle_timeout_secs: 60,
+            node_run_idle_timeout_secs: 60,
             max_timeout_secs: 3600,
         },
     }
@@ -354,7 +354,7 @@ async fn node_launch_command_fails_when_node_never_becomes_healthy() {
             git_ref: None,
             variant: None,
             build: true,
-            start: false,
+            run: false,
             args: Vec::new(),
             instance_id: None,
             idle_timeout: 60,
@@ -410,7 +410,7 @@ async fn node_launch_command_fails_when_node_never_becomes_healthy() {
         command: StackCommands::Launch {
             launcher_config_path: launcher_path,
             node_add_idle_timeout_secs: 60,
-            node_start_idle_timeout_secs: 60,
+            node_run_idle_timeout_secs: 60,
             max_timeout_secs: 3600,
         },
     }

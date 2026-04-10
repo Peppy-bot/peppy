@@ -10,14 +10,14 @@ use tracing::info;
 
 use super::TimeoutConfig;
 use super::env::caller_env_overrides;
+use super::run::run_instance_async;
 use super::source::{parse_node_source, parse_variant_source};
-use super::start::start_instance_async;
 use crate::commands::{CALLER_INSTANCE_ID, GOAL_TIMEOUT};
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 
-/// Options for starting a node instance immediately after adding it.
-pub struct StartAfterAddOptions {
+/// Options for running a node instance immediately after adding it.
+pub struct RunAfterAddOptions {
     pub args: Vec<(String, String)>,
     pub instance_id: Option<String>,
 }
@@ -27,12 +27,12 @@ pub struct AddNodeParams {
     pub source: String,
     pub git_ref: Option<String>,
     pub variant: Option<String>,
-    pub start_options: Option<StartAfterAddOptions>,
+    pub run_options: Option<RunAfterAddOptions>,
     pub timeouts: TimeoutConfig,
     pub force: bool,
     pub confirm_reader: Option<Box<dyn BufRead>>,
     /// Whether to chain a `node build` after the add succeeds. Set by the
-    /// CLI when the user passes `--build` (or `--start`, which implies it).
+    /// CLI when the user passes `--build` (or `--run`, which implies it).
     pub chain_build: bool,
 }
 
@@ -57,7 +57,7 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
         source,
         git_ref,
         variant,
-        start_options,
+        run_options,
         timeouts,
         force,
         mut confirm_reader,
@@ -159,7 +159,7 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
         info!("Added node to the node stack");
     }
 
-    if !chain_build && start_options.is_none() {
+    if !chain_build && run_options.is_none() {
         return Ok(());
     }
 
@@ -184,17 +184,17 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
     )
     .await?;
 
-    let Some(start_options) = start_options else {
+    let Some(run_options) = run_options else {
         return Ok(());
     };
 
-    start_instance_async(
+    run_instance_async(
         conn.messenger,
         &conn.core_node_name,
         node_name,
         node_tag,
-        &start_options.args,
-        start_options.instance_id,
+        &run_options.args,
+        run_options.instance_id,
         &timeouts,
     )
     .await?;

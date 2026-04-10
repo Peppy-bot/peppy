@@ -4,9 +4,9 @@ mod env;
 mod info;
 mod init;
 mod remove;
+mod run;
 mod runtime_config;
 mod source;
-mod start;
 mod stop;
 mod sync;
 mod types;
@@ -32,7 +32,7 @@ pub(crate) const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 600;
 /// Default absolute max timeout in seconds (safety net).
 pub(crate) const DEFAULT_MAX_TIMEOUT_SECS: u64 = 3600;
 
-/// Idle + absolute-max timeout pair used by `node add` and `node start` polling loops.
+/// Idle + absolute-max timeout pair used by `node add` and `node run` polling loops.
 pub struct TimeoutConfig {
     pub idle_secs: u64,
     pub max_secs: u64,
@@ -120,8 +120,12 @@ pub enum NodeCommands {
         build: bool,
         /// If set, will attempt to spawn an instance directly after adding the
         /// node to the node stack. Implies `--build`.
+        ///
+        /// When the node requires runtime arguments, pass them as trailing
+        /// key=value pairs after the source:
+        /// `peppy node add ./my-camera --run resolution=1280x720 frequency=30`
         #[arg(long)]
-        start: bool,
+        run: bool,
         /// Runtime arguments as key=value pairs (e.g., resolution=1280x720 frequency=30)
         /// These are passed to the node via PEPPY_RUNTIME_CONFIG when run is true
         #[arg(value_parser = parse_key_value_arg)]
@@ -161,9 +165,9 @@ pub enum NodeCommands {
     },
     /// Runs an instance from a node added to the node stack
     ///
-    /// Usage: `peppy node start <node_name>:<tag>` or `peppy node start --node-name <name> --tag <tag>`
+    /// Usage: `peppy node run <node_name>:<tag>` or `peppy node run --node-name <name> --tag <tag>`
     #[command(group(ArgGroup::new("node_source").required(true).args(["node_ref", "node_name"])))]
-    Start {
+    Run {
         /// Node reference in the format node_name:tag (e.g., my_node:v1)
         #[arg(value_parser = parse_node_ref)]
         node_ref: Option<(String, String)>,
@@ -260,15 +264,15 @@ impl Command for NodeCommand {
                 git_ref,
                 variant,
                 build,
-                start,
+                run,
                 args,
                 instance_id,
                 idle_timeout,
                 max_timeout,
                 force,
             } => {
-                let start_options = if start {
-                    Some(add::StartAfterAddOptions { args, instance_id })
+                let run_options = if run {
+                    Some(add::RunAfterAddOptions { args, instance_id })
                 } else {
                     None
                 };
@@ -277,16 +281,16 @@ impl Command for NodeCommand {
                     max_secs: max_timeout,
                 };
                 let source = source.unwrap_or_else(|| ".".to_string());
-                // `--start` implies `--build`: you can't start an instance of
+                // `--run` implies `--build`: you can't run an instance of
                 // an unbuilt node.
-                let chain_build = build || start;
+                let chain_build = build || run;
                 add::add_node(
                     ctx,
                     add::AddNodeParams {
                         source,
                         git_ref,
                         variant,
-                        start_options,
+                        run_options,
                         timeouts,
                         force,
                         confirm_reader: None,
@@ -318,7 +322,7 @@ impl Command for NodeCommand {
                 info!("Syncing node interfaces...");
                 sync::sync_node(ctx, path)
             }
-            NodeCommands::Start {
+            NodeCommands::Run {
                 node_ref,
                 node_name,
                 tag,
@@ -335,7 +339,7 @@ impl Command for NodeCommand {
                     idle_secs: idle_timeout,
                     max_secs: max_timeout,
                 };
-                start::run_node(ctx, node_name, tag, args, instance_id, timeouts)
+                run::run_node(ctx, node_name, tag, args, instance_id, timeouts)
             }
             NodeCommands::RuntimeConfig {
                 node_name,

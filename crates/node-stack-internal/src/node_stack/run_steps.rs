@@ -116,7 +116,7 @@ pub(super) fn extract_node_archive(
     Ok(instance_dir)
 }
 
-/// Runs a process node using its `start_cmd` and passes the
+/// Runs a process node using its `run_cmd` and passes the
 /// `PEPPY_RUNTIME_CONFIG` as an env var. Returns the spawned child on success.
 ///
 /// Used by [`super::entity::NodeEntity::prepare_and_spawn`] for process nodes.
@@ -131,14 +131,14 @@ pub(super) fn spawn_process_node(
     peppy_dirs: &PeppyDirs,
 ) -> std::io::Result<(Child, PathBuf)> {
     let manifest = &config.manifest;
-    let start_cmd = config
+    let run_cmd = config
         .execution
-        .start_cmd
+        .run_cmd
         .as_ref()
-        .ok_or_else(|| std::io::Error::other("node has no execution.start_cmd"))?;
+        .ok_or_else(|| std::io::Error::other("node has no execution.run_cmd"))?;
 
-    let Some((program, args)) = start_cmd.split_first() else {
-        return Err(std::io::Error::other("start_cmd is empty"));
+    let Some((program, args)) = run_cmd.split_first() else {
+        return Err(std::io::Error::other("run_cmd is empty"));
     };
 
     debug!(
@@ -150,13 +150,7 @@ pub(super) fn spawn_process_node(
         working_dir
     );
 
-    crate::build_io::log_cmd_header(
-        log_file,
-        "start_cmd",
-        &start_cmd.join(" "),
-        working_dir,
-        &[],
-    );
+    crate::build_io::log_cmd_header(log_file, "run_cmd", &run_cmd.join(" "), working_dir, &[]);
 
     let runtime_config_path = write_runtime_config_temp(peppy_dirs, runtime_config_json5)?;
 
@@ -188,8 +182,8 @@ pub(super) fn spawn_process_node(
         // never be owned by `StartedInstanceCtx`, so clean it up here to
         // avoid orphaning `runtime_config_*.json5` under the peppy tmp dir.
         let _ = std::fs::remove_file(&runtime_config_path);
-        let full_cmd = start_cmd.join(" ");
-        std::io::Error::other(format!("failed to execute start_cmd `{}`: {}", full_cmd, e))
+        let full_cmd = run_cmd.join(" ");
+        std::io::Error::other(format!("failed to execute run_cmd `{}`: {}", full_cmd, e))
     })?;
     Ok((child, runtime_config_path))
 }

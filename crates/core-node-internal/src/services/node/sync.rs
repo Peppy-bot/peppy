@@ -1051,7 +1051,7 @@ mod tests {
             r#"{
                 schema_version: 1,
                 manifest: { name: "test_node", tag: "0.1.0" },
-                execution: { language: "rust", start_cmd: ["sleep", "10"] },
+                execution: { language: "rust", run_cmd: ["sleep", "10"] },
                 interfaces: {
                     topics: {
                         emits: [{

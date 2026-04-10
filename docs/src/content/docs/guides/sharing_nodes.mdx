@@ -32,7 +32,7 @@ peppy node add --variant mock-rust --ref main https://github.com/Peppy-bot/nodes
 </Tabs>
 
 :::note
-When `--ref` is used during `peppy node add`, it corresponds to the git tag/release or hash of the repo. On the other hand, the tag in `peppy node start uvc_camera:0.1.0` corresponds to the tag found in `peppy.json5`.
+When `--ref` is used during `peppy node add`, it corresponds to the git tag/release or hash of the repo. On the other hand, the tag in `peppy node run uvc_camera:0.1.0` corresponds to the tag found in `peppy.json5`.
 :::
 
 :::note
@@ -42,15 +42,15 @@ When `--ref` is used during `peppy node add`, it corresponds to the git tag/rele
 
 Now that this node is added, we can start it:
 ```sh
-peppy node start uvc_camera:0.1.0 device_path=/dev/video0 video.camera_encoding="mjpeg" video.topic_encoding="rgb8" video.frame_rate=25 video.resolution.width=1280 video.resolution.height=720
+peppy node run uvc_camera:0.1.0 device_path=/dev/video0 video.camera_encoding="mjpeg" video.topic_encoding="rgb8" video.frame_rate=25 video.resolution.width=1280 video.resolution.height=720
 ```
 
 and inspect its logs:
 ```sh
-❯ tail /Users/tuatini/.peppy/logs/start/angry-ride-4256.log
+❯ tail /Users/tuatini/.peppy/logs/run/angry-ride-4256.log
 [2026-01-25T16:38:51.860] [stdout] [uvc_camera] Video params: 1280x720 @ 25 fps, encoding: rgb8
 [2026-01-25T16:38:51.860] [stdout] [uvc_camera] Starting video loop...
-[2026-01-25T16:38:51.860] [stdout] [uvc_camera] Video file found: /Users/tuatini/.peppy/added_nodes/fake_uvc_camera_0.1.0_093fa9/assets/robot.mp4
+[2026-01-25T16:38:51.860] [stdout] [uvc_camera] Video file found: /Users/tuatini/.peppy/built_nodes/fake_uvc_camera_0.1.0_093fa9/assets/robot.mp4
 [2026-01-25T16:38:51.860] [stdout] [uvc_camera] Opening video file for playback...
 [2026-01-25T16:38:54.892] [stdout] [uvc_camera] Emitted frame 65
 [2026-01-25T16:38:57.913] [stdout] [uvc_camera] Emitted frame 129
@@ -74,7 +74,7 @@ peppy node add https://github.com/Peppy-bot/example_nodes.git/rust/fake_video_re
 
 Start the node:
 ```sh
-peppy node start fake_video_reconstruction:0.1.0 video_duration_seconds=5
+peppy node run fake_video_reconstruction:0.1.0 video_duration_seconds=5
 ```
 
 If we look at the logs of the started `fake_video_reconstruction` node:

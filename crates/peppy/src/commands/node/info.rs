@@ -81,8 +81,8 @@ fn format_node_info(out: &mut String, response: &NodeInfoResponse) {
     if let Some(build_cmd) = &config.execution.build_cmd {
         let _ = writeln!(out, "Build cmd:   {}", build_cmd.join(" "));
     }
-    if let Some(start_cmd) = &config.execution.start_cmd {
-        let _ = writeln!(out, "Start cmd: {}", start_cmd.join(" "));
+    if let Some(run_cmd) = &config.execution.run_cmd {
+        let _ = writeln!(out, "Run cmd: {}", run_cmd.join(" "));
     }
     if let Some(container) = &config.execution.container {
         let _ = writeln!(out, "Container: {}", container.def_file);
@@ -111,11 +111,11 @@ fn format_node_info(out: &mut String, response: &NodeInfoResponse) {
         }
 
         // Logs grouped under <name>:<tag>. Only printed when at least one
-        // log path is available — if neither the add log nor any start log
+        // log path is available — if neither the add log nor any run log
         // is set, the section is suppressed entirely.
         let has_add_log = response.add_log_path.is_some();
-        let has_start_logs = !response.start_log_paths.is_empty();
-        if has_add_log || has_start_logs {
+        let has_run_logs = !response.run_log_paths.is_empty();
+        if has_add_log || has_run_logs {
             let _ = writeln!(out);
             let _ = writeln!(out, "Logs");
             let _ = writeln!(out, "{}", "-".repeat(50));
@@ -123,14 +123,12 @@ fn format_node_info(out: &mut String, response: &NodeInfoResponse) {
             if let Some(add_log_path) = response.add_log_path.as_ref() {
                 let _ = writeln!(out, "  Add log: {}", add_log_path.display());
             }
-            if has_start_logs {
-                let _ = writeln!(out, "  Start logs:");
-                // `start_log_paths` is aligned 1:1 with `instances` (same
+            if has_run_logs {
+                let _ = writeln!(out, "  Run logs:");
+                // `run_log_paths` is aligned 1:1 with `instances` (same
                 // order, same length) — see the info handler.
-                for (instance, log_path) in response
-                    .instances
-                    .iter()
-                    .zip(response.start_log_paths.iter())
+                for (instance, log_path) in
+                    response.instances.iter().zip(response.run_log_paths.iter())
                 {
                     let _ = writeln!(
                         out,
@@ -405,7 +403,7 @@ mod tests {
             },
             execution: {
                 language: "rust",
-                start_cmd: ["sleep", "10"]
+                run_cmd: ["sleep", "10"]
             }
         }"#;
         let dir = tempfile::tempdir().expect("tempdir");
@@ -434,9 +432,9 @@ mod tests {
                 },
             ],
             add_log_path: Some(PathBuf::from("/tmp/peppy/logs/add/sensor_node.log")),
-            start_log_paths: vec![
-                PathBuf::from("/tmp/peppy/logs/start/inst-abc.log"),
-                PathBuf::from("/tmp/peppy/logs/start/inst-def.log"),
+            run_log_paths: vec![
+                PathBuf::from("/tmp/peppy/logs/run/inst-abc.log"),
+                PathBuf::from("/tmp/peppy/logs/run/inst-def.log"),
             ],
         }
     }
@@ -475,16 +473,16 @@ mod tests {
             "add log line missing:\n{out}"
         );
         assert!(
-            out.contains("  Start logs:"),
-            "start logs sub-heading missing:\n{out}"
+            out.contains("  Run logs:"),
+            "run logs sub-heading missing:\n{out}"
         );
         assert!(
-            out.contains("    - inst-abc: /tmp/peppy/logs/start/inst-abc.log"),
-            "inst-abc start log line missing:\n{out}"
+            out.contains("    - inst-abc: /tmp/peppy/logs/run/inst-abc.log"),
+            "inst-abc run log line missing:\n{out}"
         );
         assert!(
-            out.contains("    - inst-def: /tmp/peppy/logs/start/inst-def.log"),
-            "inst-def start log line missing:\n{out}"
+            out.contains("    - inst-def: /tmp/peppy/logs/run/inst-def.log"),
+            "inst-def run log line missing:\n{out}"
         );
     }
 
@@ -492,7 +490,7 @@ mod tests {
     fn print_node_info_omits_logs_when_none_present() {
         let mut response = sample_response();
         response.add_log_path = None;
-        response.start_log_paths.clear();
+        response.run_log_paths.clear();
 
         let mut out = String::new();
         format_node_info(&mut out, &response);
@@ -511,7 +509,7 @@ mod tests {
         response.instances.clear();
         response.instances_names.clear();
         response.add_log_path = None;
-        response.start_log_paths.clear();
+        response.run_log_paths.clear();
 
         let mut out = String::new();
         format_node_info(&mut out, &response);

@@ -33,7 +33,7 @@ const NODE_EXAMPLE: &str = r#"
         encoding: "string",
       },
     },
-    start_cmd: [
+    run_cmd: [
       "python",
       "-m",
       "uvc_camera"
@@ -75,7 +75,7 @@ const INVALID_PARAMETERS_NODE_EXAMPLE: &str = r#"
         encoding: "string",
       },
     },
-    start_cmd: [
+    run_cmd: [
       "python",
       "-m",
       "uvc_camera"
@@ -111,7 +111,7 @@ const NESTED_CLASS_COLLISION_NODE_EXAMPLE: &str = r#"
         }
       }
     },
-    start_cmd: [
+    run_cmd: [
       "python",
       "-m",
       "uvc_camera"
@@ -140,7 +140,7 @@ const UNSUPPORTED_PARAMETERS_VARIANT_NODE_EXAMPLE: &str = r#"
         enabled: true
       }
     },
-    start_cmd: [
+    run_cmd: [
       "python",
       "-m",
       "uvc_camera"
@@ -167,7 +167,7 @@ const UNKNOWN_PARAMETER_TYPE_NODE_EXAMPLE: &str = r#"
     parameters: {
       device: "uuid"
     },
-    start_cmd: [
+    run_cmd: [
       "python",
       "-m",
       "uvc_camera"
@@ -194,7 +194,7 @@ const UNSUPPORTED_TOP_LEVEL_PARAMETER_VARIANT_NODE_EXAMPLE: &str = r#"
     parameters: {
       enabled: true
     },
-    start_cmd: [
+    run_cmd: [
       "python",
       "-m",
       "uvc_camera"

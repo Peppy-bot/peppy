@@ -45,7 +45,7 @@ const PEPPY_JSON5_CONFIG: &str = r#"{
 
   execution: { language: "python",
     build_cmd: ["uv", "sync"],
-    start_cmd: ["uv", "run", "test_node"]
+    run_cmd: ["uv", "run", "test_node"]
   },
 }"#;
 
@@ -100,7 +100,7 @@ fn generate_peppygen_lib_minimal_config() {
 
       execution: { language: "python",
         build_cmd: ["uv", "sync"],
-        start_cmd: ["uv", "run", "minimal_node"]
+        run_cmd: ["uv", "run", "minimal_node"]
       }
     }"#;
 
@@ -172,7 +172,7 @@ fn generate_peppygen_python_lib_emitted_and_consumed_topics() {
           execution: {
             language: "python",
             build_cmd: ["uv", "sync"],
-            start_cmd: ["uv", "run", "{EXPOSED_NODE_NAME}"]
+            run_cmd: ["uv", "run", "{EXPOSED_NODE_NAME}"]
           },
         }"#
     .replace("{EXPOSED_NODE_NAME}", EXPOSED_NODE_NAME);
@@ -212,7 +212,7 @@ fn generate_peppygen_python_lib_emitted_and_consumed_topics() {
           execution: {
             language: "python",
             build_cmd: ["uv", "sync"],
-            start_cmd: ["uv", "run", "{CONSUMER_NODE_NAME}"]
+            run_cmd: ["uv", "run", "{CONSUMER_NODE_NAME}"]
           }
         }"#
     .replace("{CONSUMER_NODE_NAME}", CONSUMER_NODE_NAME);
@@ -290,7 +290,7 @@ fn generate_peppygen_python_lib_exposed_and_consumed_services() {
           execution: {
             language: "python",
             build_cmd: ["uv", "sync"],
-            start_cmd: ["uv", "run", "{EXPOSED_NODE_NAME}"]
+            run_cmd: ["uv", "run", "{EXPOSED_NODE_NAME}"]
           },
         }"#
     .replace("{EXPOSED_NODE_NAME}", EXPOSED_NODE_NAME);
@@ -330,7 +330,7 @@ fn generate_peppygen_python_lib_exposed_and_consumed_services() {
           execution: {
             language: "python",
             build_cmd: ["uv", "sync"],
-            start_cmd: ["uv", "run", "{CONSUMER_NODE_NAME}"]
+            run_cmd: ["uv", "run", "{CONSUMER_NODE_NAME}"]
           }
         }"#
     .replace("{CONSUMER_NODE_NAME}", CONSUMER_NODE_NAME);
@@ -433,7 +433,7 @@ fn generate_peppygen_python_lib_exposed_and_consumed_actions() {
           execution: {
             language: "python",
             build_cmd: ["uv", "sync"],
-            start_cmd: ["uv", "run", "{EXPOSED_NODE_NAME}"]
+            run_cmd: ["uv", "run", "{EXPOSED_NODE_NAME}"]
           },
         }"#
     .replace("{EXPOSED_NODE_NAME}", EXPOSED_NODE_NAME);
@@ -473,7 +473,7 @@ fn generate_peppygen_python_lib_exposed_and_consumed_actions() {
           execution: {
             language: "python",
             build_cmd: ["uv", "sync"],
-            start_cmd: ["uv", "run", "{CONSUMER_NODE_NAME}"]
+            run_cmd: ["uv", "run", "{CONSUMER_NODE_NAME}"]
           }
         }"#
     .replace("{CONSUMER_NODE_NAME}", CONSUMER_NODE_NAME);

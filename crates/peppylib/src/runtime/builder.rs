@@ -507,7 +507,7 @@ mod tests {
             r#"{{
                 schema_version: 1,
                 manifest: {{ name: "test_node", tag: "0.1.0" }},
-                execution: {{ language: "rust", parameters: {{ {parameters} }}, start_cmd: ["./test"] }},
+                execution: {{ language: "rust", parameters: {{ {parameters} }}, run_cmd: ["./test"] }},
             }}"#,
         );
         std::fs::write(&path, content).expect("peppy config should be written");

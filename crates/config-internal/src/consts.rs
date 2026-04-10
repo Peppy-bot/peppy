@@ -76,9 +76,9 @@ impl PeppyDirs {
         &self.root
     }
 
-    /// Archived node snapshots from `node add`.
-    pub fn added_nodes_dir(&self) -> PathBuf {
-        self.root.join("added_nodes")
+    /// Build outputs from `node build` (`.sif` container images and `.tar.zst` archives).
+    pub fn built_nodes_dir(&self) -> PathBuf {
+        self.root.join("built_nodes")
     }
 
     /// Extracted archives for running node instances.
@@ -96,9 +96,9 @@ impl PeppyDirs {
         self.root.join("logs").join("build")
     }
 
-    /// Log directory for `node start` operations.
-    pub fn logs_dir_start(&self) -> PathBuf {
-        self.root.join("logs").join("start")
+    /// Log directory for `node run` operations.
+    pub fn logs_dir_run(&self) -> PathBuf {
+        self.root.join("logs").join("run")
     }
 
     /// Log directory for `stack launch` operations.

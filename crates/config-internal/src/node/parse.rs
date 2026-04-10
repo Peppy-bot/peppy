@@ -7,14 +7,14 @@ use std::path::Path;
 
 /// Validates execution constraints shared by both full node configs and variant configs.
 fn validate_execution(execution: &Execution) -> Result<()> {
-    if let Some(cmds) = &execution.start_cmd
+    if let Some(cmds) = &execution.run_cmd
         && cmds.is_empty()
     {
-        return Err(ParsingError::EmptyStartCmd.into());
+        return Err(ParsingError::EmptyRunCmd.into());
     }
 
-    // `start_cmd` and `container` are mutually exclusive; exactly one must be present.
-    match (&execution.start_cmd, &execution.container) {
+    // `run_cmd` and `container` are mutually exclusive; exactly one must be present.
+    match (&execution.run_cmd, &execution.container) {
         (Some(_), Some(_)) => return Err(ParsingError::ProcessAndContainerConflict.into()),
         (None, None) => return Err(ParsingError::NoProcessOrContainer.into()),
         _ => {}
@@ -112,7 +112,7 @@ mod tests {
             },
             execution: {
                 language: "rust",
-                start_cmd: ["./target/release/test_node"],
+                run_cmd: ["./target/release/test_node"],
             },
         }"#;
         let config = NodeConfigParser::from_content(json5).unwrap();
@@ -124,7 +124,7 @@ mod tests {
                 .execution
                 .as_ref()
                 .unwrap()
-                .start_cmd
+                .run_cmd
                 .as_ref()
                 .unwrap(),
             &vec!["./target/release/test_node"]
@@ -149,7 +149,7 @@ mod tests {
             },
             execution: {
                 language: "rust",
-                start_cmd: ["./target/release/camera_driver"],
+                run_cmd: ["./target/release/camera_driver"],
             },
         }"#;
         let config = NodeConfigParser::from_content(json5).unwrap();
@@ -165,7 +165,7 @@ mod tests {
                 .execution
                 .as_ref()
                 .unwrap()
-                .start_cmd
+                .run_cmd
                 .as_ref()
                 .unwrap(),
             &vec!["./target/release/camera_driver"]
@@ -223,7 +223,7 @@ mod tests {
             },
         }"#;
         let config = NodeConfigParser::from_content(json5).unwrap();
-        assert!(config.0.execution.as_ref().unwrap().start_cmd.is_none());
+        assert!(config.0.execution.as_ref().unwrap().run_cmd.is_none());
         assert_eq!(container(&config).def_file, "apptainer.def");
     }
 
@@ -237,7 +237,7 @@ mod tests {
             },
             execution: {
                 language: "rust",
-                start_cmd: ["./bin"],
+                run_cmd: ["./bin"],
                 container: {
                     def_file: "apptainer.def",
                 },
@@ -270,7 +270,7 @@ mod tests {
     }
 
     #[test]
-    fn test_empty_start_cmd() {
+    fn test_empty_run_cmd() {
         let json5 = r#"{
             schema_version: 1,
             manifest: {
@@ -279,13 +279,13 @@ mod tests {
             },
             execution: {
                 language: "rust",
-                start_cmd: [],
+                run_cmd: [],
             },
         }"#;
         let result = NodeConfigParser::from_content(json5);
         assert!(matches!(
             result.unwrap_err(),
-            Error::Parsing(ParsingError::EmptyStartCmd)
+            Error::Parsing(ParsingError::EmptyRunCmd)
         ));
     }
 
@@ -689,7 +689,7 @@ mod tests {
             },
             execution: {
                 language: "rust",
-                start_cmd: ["./target/release/uvc_camera"],
+                run_cmd: ["./target/release/uvc_camera"],
             },
         }"#;
         let result = NodeConfigParser::from_content(json5);
@@ -735,7 +735,7 @@ mod tests {
                 tag: "0.1.0",
             },
             execution: {
-                start_cmd: ["./bin"],
+                run_cmd: ["./bin"],
             },
         }"#;
         let result = NodeConfigParser::from_content(json5);
@@ -786,7 +786,7 @@ mod tests {
 
     #[test]
     fn test_node_error_message_includes_field_path() {
-        // start_cmd should be an array, not a map
+        // run_cmd should be an array, not a map
         let json5 = r#"{
             schema_version: 1,
             manifest: {
@@ -795,7 +795,7 @@ mod tests {
             },
             execution: {
                 language: "rust",
-                start_cmd: { wrong: "type" },
+                run_cmd: { wrong: "type" },
             },
         }"#;
         let result = NodeConfigParser::from_content(json5);
@@ -803,19 +803,19 @@ mod tests {
             panic!("expected CannotParseConfig error");
         };
         assert!(
-            msg.contains("execution.start_cmd"),
+            msg.contains("execution.run_cmd"),
             "error should include field path, got: {msg}"
         );
     }
 
     #[test]
     fn test_variant_error_message_includes_field_path() {
-        // start_cmd should be an array, not a string
+        // run_cmd should be an array, not a string
         let json5 = r#"{
             schema_version: 1,
             execution: {
                 language: "rust",
-                start_cmd: "not_an_array",
+                run_cmd: "not_an_array",
             },
         }"#;
         let result = VariantConfigParser::from_content(json5);
@@ -823,7 +823,7 @@ mod tests {
             panic!("expected CannotParseConfig error");
         };
         assert!(
-            msg.contains("execution.start_cmd"),
+            msg.contains("execution.run_cmd"),
             "error should include field path, got: {msg}"
         );
     }

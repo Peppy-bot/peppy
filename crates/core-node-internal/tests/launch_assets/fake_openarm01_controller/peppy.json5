@@ -100,7 +100,7 @@
     build_cmd: [
       "true"
     ],
-    start_cmd: [
+    run_cmd: [
       "sleep",
       "60"
     ]

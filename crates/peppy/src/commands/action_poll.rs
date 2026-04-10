@@ -12,7 +12,7 @@ use std::time::Duration;
 
 /// Minimal shape of an action goal response accepted by
 /// [`run_action_with_feedback`]. Implemented for `NodeAddGoalResponse`,
-/// `NodeBuildGoalResponse`, and `NodeStartGoalResponse` in the caller files.
+/// `NodeBuildGoalResponse`, and `NodeRunGoalResponse` in the caller files.
 pub(crate) trait ActionGoalResponseLike: Sized {
     fn decode_payload(data: &[u8]) -> std::result::Result<Self, String>;
     fn accepted(&self) -> bool;
@@ -38,7 +38,7 @@ pub(crate) trait ActionResultLike: Sized {
 /// response, prints the log-file path, polls feedback into a scrolling output,
 /// decodes the final result, and maps `success == false` into an execution
 /// error. Replaces ~40 lines of duplicated boilerplate in the `node add`,
-/// `node build`, and `node start`/`run` commands.
+/// `node build`, and `node run`/`run` commands.
 pub(crate) async fn run_action_with_feedback<Resp, Fb, Res>(
     messenger: &MessengerHandle,
     action_handle: &mut ActionGoalHandle,
@@ -187,8 +187,8 @@ mod impls {
     use super::{ActionFeedbackLike, ActionGoalResponseLike, ActionResultLike};
     use core_node::encoding::{
         NodeAddFeedback, NodeAddGoalResponse, NodeAddResult, NodeBuildFeedback,
-        NodeBuildGoalResponse, NodeBuildResult, NodeStartFeedback, NodeStartGoalResponse,
-        NodeStartResult,
+        NodeBuildGoalResponse, NodeBuildResult, NodeRunFeedback, NodeRunGoalResponse,
+        NodeRunResult,
     };
     use std::path::Path;
 
@@ -212,7 +212,7 @@ mod impls {
     }
     impl_goal_response!(NodeAddGoalResponse);
     impl_goal_response!(NodeBuildGoalResponse);
-    impl_goal_response!(NodeStartGoalResponse);
+    impl_goal_response!(NodeRunGoalResponse);
 
     macro_rules! impl_feedback {
         ($ty:ty) => {
@@ -231,7 +231,7 @@ mod impls {
     }
     impl_feedback!(NodeAddFeedback);
     impl_feedback!(NodeBuildFeedback);
-    impl_feedback!(NodeStartFeedback);
+    impl_feedback!(NodeRunFeedback);
 
     macro_rules! impl_result {
         ($ty:ty) => {
@@ -250,7 +250,7 @@ mod impls {
     }
     impl_result!(NodeAddResult);
     impl_result!(NodeBuildResult);
-    impl_result!(NodeStartResult);
+    impl_result!(NodeRunResult);
 }
 
 fn check_timeouts(

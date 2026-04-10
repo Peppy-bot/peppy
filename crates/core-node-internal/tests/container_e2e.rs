@@ -4,9 +4,8 @@ mod container_e2e_tests {
     mod common;
 
     use common::{
-        CALLER_INSTANCE_ID, NodeStartTestTimeouts, send_node_add_and_wait,
-        send_node_build_and_wait, send_node_start_and_wait,
-        start_core_node_with_real_messenger_and_timeouts,
+        CALLER_INSTANCE_ID, NodeRunTestTimeouts, send_node_add_and_wait, send_node_build_and_wait,
+        send_node_run_and_wait, start_core_node_with_real_messenger_and_timeouts,
     };
     use config::node::Name as NodeName;
     use config::node::Toolchain;
@@ -37,7 +36,7 @@ mod container_e2e_tests {
     /// and start it using the real Apptainer runtime.
     ///
     /// Exercises the full chain: NodeInitRequest (with_container=true) ->
-    /// node_add (apptainer build) -> node_start (apptainer run).
+    /// node_add (apptainer build) -> node_run (apptainer run).
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn container_e2e_rust_init_add_start() {
         if !apptainer_available() {
@@ -141,34 +140,34 @@ mod container_e2e_tests {
             Default::default(),
         );
 
-        let start_response = send_node_start_and_wait(
+        let start_response = send_node_run_and_wait(
             &started.caller_handle,
             &started.core_node_name,
             &runtime_config_json5,
             NODE_NAME,
             NODE_TAG,
-            &NodeStartTestTimeouts {
+            &NodeRunTestTimeouts {
                 goal: Duration::from_secs(30),
                 result: Duration::from_secs(60),
             },
             None,
         )
         .await
-        .expect("node_start action should complete");
+        .expect("node_run action should complete");
 
         assert!(
             start_response.result.success,
-            "node_start should succeed, got error: {:?}",
+            "node_run should succeed, got error: {:?}",
             start_response.result.error_message
         );
 
         assert!(
             start_response.result.pid.is_some(),
-            "node_start should return a PID on success"
+            "node_run should return a PID on success"
         );
         assert!(
             start_response.result.pid.unwrap() > 0,
-            "node_start PID should be a positive number"
+            "node_run PID should be a positive number"
         );
 
         let instance_id = NodeName::new(INSTANCE_ID).expect("valid instance id");
@@ -206,7 +205,7 @@ mod container_e2e_tests {
     /// and start it using the real Apptainer runtime.
     ///
     /// Exercises the full chain: NodeInitRequest (with_container=true) ->
-    /// node_add (apptainer build) -> node_start (apptainer run).
+    /// node_add (apptainer build) -> node_run (apptainer run).
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn container_e2e_python_init_add_start() {
         if !apptainer_available() {
@@ -310,34 +309,34 @@ mod container_e2e_tests {
             Default::default(),
         );
 
-        let start_response = send_node_start_and_wait(
+        let start_response = send_node_run_and_wait(
             &started.caller_handle,
             &started.core_node_name,
             &runtime_config_json5,
             NODE_NAME,
             NODE_TAG,
-            &NodeStartTestTimeouts {
+            &NodeRunTestTimeouts {
                 goal: Duration::from_secs(30),
                 result: Duration::from_secs(60),
             },
             None,
         )
         .await
-        .expect("node_start action should complete");
+        .expect("node_run action should complete");
 
         assert!(
             start_response.result.success,
-            "node_start should succeed, got error: {:?}",
+            "node_run should succeed, got error: {:?}",
             start_response.result.error_message
         );
 
         assert!(
             start_response.result.pid.is_some(),
-            "node_start should return a PID on success"
+            "node_run should return a PID on success"
         );
         assert!(
             start_response.result.pid.unwrap() > 0,
-            "node_start PID should be a positive number"
+            "node_run PID should be a positive number"
         );
 
         let instance_id = NodeName::new(INSTANCE_ID).expect("valid instance id");

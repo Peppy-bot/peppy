@@ -31,7 +31,7 @@ fn sensor_config() -> config::node::NodeConfig {
             },
             execution: {
                 language: "rust",
-                start_cmd: ["sensor"]
+                run_cmd: ["sensor"]
             }
         }"#,
     )
@@ -261,7 +261,7 @@ fn push_config_rewires_when_dependency_keys_change_with_unchanged_interfaces() {
             schema_version: 1,
             manifest: { name: "producer_a", tag: "1.0.0" },
             interfaces: { services: { exposes: [ { name: "reset_sensor" } ] } },
-            execution: { language: "rust", start_cmd: ["producer_a"] }
+            execution: { language: "rust", run_cmd: ["producer_a"] }
         }"#,
     )
     .expect("valid producer_a config");
@@ -271,7 +271,7 @@ fn push_config_rewires_when_dependency_keys_change_with_unchanged_interfaces() {
             schema_version: 1,
             manifest: { name: "producer_b", tag: "1.0.0" },
             interfaces: { services: { exposes: [ { name: "reset_sensor" } ] } },
-            execution: { language: "rust", start_cmd: ["producer_b"] }
+            execution: { language: "rust", run_cmd: ["producer_b"] }
         }"#,
     )
     .expect("valid producer_b config");
@@ -297,7 +297,7 @@ fn push_config_rewires_when_dependency_keys_change_with_unchanged_interfaces() {
                         ]
                     }
                 },
-                execution: { language: "rust", start_cmd: ["consumer"] }
+                execution: { language: "rust", run_cmd: ["consumer"] }
             }"#
             .replace("PRODUCER", producer_name)
             .replace("LOCAL_ID", &local_id),
@@ -507,7 +507,7 @@ async fn concurrent_builds_are_rejected_immediately() {
     assert!(matches!(guard.stage(), NodeStage::Ready { .. }));
 
     // The on-disk archive exists exactly once.
-    let archive = peppy_dirs.added_nodes_dir().join("sensor_1.0.0.tar.zst");
+    let archive = peppy_dirs.built_nodes_dir().join("sensor_1.0.0.tar.zst");
     assert!(archive.is_file(), "expected archive at {:?}", archive);
 }
 
@@ -542,7 +542,7 @@ fn sensor_config_with_build_cmd(build_cmd_shell: &str) -> config::node::NodeConf
             execution: {{
                 language: "rust",
                 build_cmd: ["sh", "-c", {snippet}],
-                start_cmd: ["sensor"]
+                run_cmd: ["sensor"]
             }}
         }}"#,
         snippet = escaped_snippet
@@ -614,7 +614,7 @@ async fn build_runs_add_cmd_for_process_node() {
     drop(guard);
 
     // The archive exists and contains the marker file produced by build_cmd.
-    let archive = h.peppy_dirs.added_nodes_dir().join("sensor_1.0.0.tar.zst");
+    let archive = h.peppy_dirs.built_nodes_dir().join("sensor_1.0.0.tar.zst");
     assert!(archive.is_file(), "expected archive at {:?}", archive);
 
     // Decode the archive and look for the marker.
@@ -644,7 +644,7 @@ async fn build_runs_add_cmd_for_process_node() {
 // Start: prepare_and_spawn / commit_started / abort_started
 // ===========================================================================
 
-/// Returns a sensor config that uses a long-running shell loop as start_cmd.
+/// Returns a sensor config that uses a long-running shell loop as run_cmd.
 /// The loop traps SIGTERM so `child.kill()` cleanly terminates it.
 fn long_running_sensor_config() -> config::node::NodeConfig {
     serde_json5::from_str::<config::node::NodeConfig>(
@@ -663,7 +663,7 @@ fn long_running_sensor_config() -> config::node::NodeConfig {
             },
             execution: {
                 language: "rust",
-                start_cmd: ["sh", "-c", "trap 'exit 0' TERM; while true; do sleep 0.1; done"]
+                run_cmd: ["sh", "-c", "trap 'exit 0' TERM; while true; do sleep 0.1; done"]
             }
         }"#,
     )

@@ -20,9 +20,9 @@ pub enum StackCommands {
         /// Idle timeout in seconds for each node add operation (resets on output)
         #[arg(long, default_value_t = DEFAULT_IDLE_TIMEOUT_SECS)]
         node_add_idle_timeout_secs: u64,
-        /// Idle timeout in seconds for each node start operation (resets on output)
+        /// Idle timeout in seconds for each node run operation (resets on output)
         #[arg(long, default_value_t = DEFAULT_IDLE_TIMEOUT_SECS)]
-        node_start_idle_timeout_secs: u64,
+        node_run_idle_timeout_secs: u64,
         /// Absolute max timeout in seconds per operation (safety net)
         #[arg(long, default_value_t = DEFAULT_MAX_TIMEOUT_SECS)]
         max_timeout_secs: u64,
@@ -48,7 +48,7 @@ impl Command for StackCommand {
             StackCommands::Launch {
                 launcher_config_path,
                 node_add_idle_timeout_secs,
-                node_start_idle_timeout_secs,
+                node_run_idle_timeout_secs,
                 max_timeout_secs,
             } => {
                 info!("Launching stack...");
@@ -56,7 +56,7 @@ impl Command for StackCommand {
                     ctx,
                     launcher_config_path,
                     node_add_idle_timeout_secs,
-                    node_start_idle_timeout_secs,
+                    node_run_idle_timeout_secs,
                     max_timeout_secs,
                 )
             }

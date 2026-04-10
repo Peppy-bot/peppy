@@ -94,7 +94,7 @@ pub(super) fn validate_node_tag(node_tag: &str) -> std::io::Result<()> {
 }
 
 /// Archives the contents of `source_dir` into a `.tar.zst` file in the
-/// peppy added nodes directory.
+/// peppy built nodes directory.
 ///
 /// The archive path follows the format: `<storage_dir>/<node_name>_<tag>.tar.zst`
 ///
@@ -106,7 +106,7 @@ pub(super) fn archive_dir_to_storage(
     peppy_dirs: &PeppyDirs,
 ) -> std::io::Result<PathBuf> {
     validate_node_tag(node_tag)?;
-    let storage_dir = peppy_dirs.added_nodes_dir();
+    let storage_dir = peppy_dirs.built_nodes_dir();
     let archive_name = format!("{}_{}.tar.zst", node_name, node_tag);
     publish_to_storage_atomic(&storage_dir, &archive_name, |tmp_path| {
         let file = File::create(tmp_path)?;
@@ -127,7 +127,7 @@ pub(super) fn archive_dir_to_storage(
 /// The image is expected at `working_dir/{node_name}_{node_tag}.sif`, which is the
 /// conventional output path produced by `apptainer build`.
 ///
-/// Returns the final storage path: `<added_nodes_dir>/<node_name>_<tag>.sif`.
+/// Returns the final storage path: `<built_nodes_dir>/<node_name>_<tag>.sif`.
 pub(super) fn move_sif_to_storage(
     working_dir: &Path,
     node_name: &str,
@@ -137,7 +137,7 @@ pub(super) fn move_sif_to_storage(
     validate_node_tag(node_tag)?;
     let sif_name = format!("{}_{}.sif", node_name, node_tag);
     let sif_source = working_dir.join(&sif_name);
-    let storage_dir = peppy_dirs.added_nodes_dir();
+    let storage_dir = peppy_dirs.built_nodes_dir();
 
     // Copy + rename (not rename alone) because the working dir may be on a
     // different filesystem than storage.

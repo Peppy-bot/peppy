@@ -33,7 +33,7 @@ const NODE_EXAMPLE: &str = r#"
         encoding: "string",
       },
     },
-    start_cmd: [
+    run_cmd: [
       "cargo",
       "run",
       "--release"
@@ -75,7 +75,7 @@ const INVALID_PARAMETERS_NODE_EXAMPLE: &str = r#"
         encoding: "string",
       },
     },
-    start_cmd: [
+    run_cmd: [
       "cargo",
       "run",
       "--release"
@@ -113,7 +113,7 @@ const NESTED_STRUCT_COLLISION_NODE_EXAMPLE: &str = r#"
         }
       }
     },
-    start_cmd: [
+    run_cmd: [
       "cargo",
       "run",
       "--release"
@@ -142,7 +142,7 @@ const UNSUPPORTED_PARAMETERS_VARIANT_NODE_EXAMPLE: &str = r#"
         enabled: true
       }
     },
-    start_cmd: [
+    run_cmd: [
       "cargo",
       "run",
       "--release"
@@ -169,7 +169,7 @@ const UNKNOWN_PARAMETER_TYPE_NODE_EXAMPLE: &str = r#"
     parameters: {
       device: "uuid"
     },
-    start_cmd: [
+    run_cmd: [
       "cargo",
       "run",
       "--release"
@@ -196,7 +196,7 @@ const UNSUPPORTED_TOP_LEVEL_PARAMETER_VARIANT_NODE_EXAMPLE: &str = r#"
     parameters: {
       enabled: true
     },
-    start_cmd: [
+    run_cmd: [
       "cargo",
       "run",
       "--release"

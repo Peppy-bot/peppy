@@ -40,7 +40,7 @@ async fn listen_for_node_sync_success() {
             },
             execution: {
                 language: "rust",
-                start_cmd: ["sleep", "10"]
+                run_cmd: ["sleep", "10"]
             }
         }"#,
     );
@@ -314,7 +314,7 @@ async fn listen_for_node_sync_missing_dependency_fails() {
             execution: {
                 language: "rust",
                 build_cmd: ["cargo", "build", "--release"],
-                start_cmd: ["./target/release/my_robot_brain"],
+                run_cmd: ["./target/release/my_robot_brain"],
             },
         }
         "#,
@@ -378,7 +378,7 @@ async fn listen_for_node_sync_multiple_missing_dependencies_fails() {
             execution: {
                 language: "rust",
                 build_cmd: ["cargo", "build", "--release"],
-                start_cmd: ["./target/release/my_robot_brain"],
+                run_cmd: ["./target/release/my_robot_brain"],
             },
         }
         "#,
@@ -483,7 +483,7 @@ async fn listen_for_node_sync_generates_rust_interfaces() {
             execution: {
                 language: "rust",
                 build_cmd: ["true"],
-                start_cmd: ["sleep", "10"],
+                run_cmd: ["sleep", "10"],
             },
         }
         "#,
@@ -568,7 +568,7 @@ async fn listen_for_node_sync_generates_rust_interfaces() {
             execution: {
                 language: "rust",
                 build_cmd: ["true"],
-                start_cmd: ["sleep", "10"],
+                run_cmd: ["sleep", "10"],
             },
         }
         "#,
@@ -684,7 +684,7 @@ async fn listen_for_node_sync_generates_rust_consumed_service_interfaces() {
             execution: {
                 language: "rust",
                 build_cmd: ["true"],
-                start_cmd: ["sleep", "10"],
+                run_cmd: ["sleep", "10"],
             },
         }
         "#,
@@ -766,7 +766,7 @@ async fn listen_for_node_sync_generates_rust_consumed_service_interfaces() {
             execution: {
                 language: "rust",
                 build_cmd: ["true"],
-                start_cmd: ["sleep", "10"],
+                run_cmd: ["sleep", "10"],
             },
         }
         "#,
@@ -845,7 +845,7 @@ async fn listen_for_node_sync_generates_rust_consumed_topic_interfaces() {
             execution: {
                 language: "rust",
                 build_cmd: ["true"],
-                start_cmd: ["sleep", "10"],
+                run_cmd: ["sleep", "10"],
             },
         }
         "#,
@@ -927,7 +927,7 @@ async fn listen_for_node_sync_generates_rust_consumed_topic_interfaces() {
             execution: {
                 language: "rust",
                 build_cmd: ["true"],
-                start_cmd: ["sleep", "10"],
+                run_cmd: ["sleep", "10"],
             },
         }
         "#,
@@ -1012,7 +1012,7 @@ async fn listen_for_node_sync_generates_rust_consumed_action_interfaces() {
             execution: {
                 language: "rust",
                 build_cmd: ["true"],
-                start_cmd: ["sleep", "10"],
+                run_cmd: ["sleep", "10"],
             },
         }
         "#,
@@ -1094,7 +1094,7 @@ async fn listen_for_node_sync_generates_rust_consumed_action_interfaces() {
             execution: {
                 language: "rust",
                 build_cmd: ["true"],
-                start_cmd: ["sleep", "10"],
+                run_cmd: ["sleep", "10"],
             },
         }
         "#,
@@ -1169,7 +1169,7 @@ async fn listen_for_node_sync_generates_rust_parameters() {
                   },
                 },
                 build_cmd: ["true"],
-                start_cmd: ["sleep", "10"],
+                run_cmd: ["sleep", "10"],
             },
         }
         "#,
@@ -1266,7 +1266,7 @@ async fn listen_for_node_sync_deletes_previous_peppy_folder() {
             },
             execution: {
                 language: "rust",
-                start_cmd: ["sleep", "10"]
+                run_cmd: ["sleep", "10"]
             }
         }"#,
     );
@@ -1366,7 +1366,7 @@ async fn listen_for_node_sync_with_variant_succeeds() {
             schema_version: 1,
             execution: {
                 language: "rust",
-                start_cmd: ["sleep", "10"],
+                run_cmd: ["sleep", "10"],
             },
         }"#,
     );
@@ -1398,7 +1398,7 @@ async fn listen_for_node_sync_with_variant_succeeds() {
             },
             execution: {
                 language: "rust",
-                start_cmd: ["sleep", "10"],
+                run_cmd: ["sleep", "10"],
             },
         }"#,
     );
@@ -1492,7 +1492,7 @@ async fn listen_for_node_sync_with_variant_succeeds() {
          it should remain the original VariantConfig"
     );
     assert!(
-        variant_config_content.contains("start_cmd"),
+        variant_config_content.contains("run_cmd"),
         "variant peppy.json5 should still contain the original execution config"
     );
 
@@ -1552,7 +1552,7 @@ async fn listen_for_node_sync_variant_missing_directory_fails() {
             interfaces: {},
             execution: {
                 language: "rust",
-                start_cmd: ["sleep", "10"],
+                run_cmd: ["sleep", "10"],
             },
         }"#,
     );
@@ -1607,7 +1607,7 @@ async fn listen_for_node_sync_variant_invalid_config_fails() {
             interfaces: {},
             execution: {
                 language: "rust",
-                start_cmd: ["sleep", "10"],
+                run_cmd: ["sleep", "10"],
             },
         }"#,
     );
@@ -1652,7 +1652,7 @@ async fn listen_for_node_sync_default_variant_skips_root_codegen() {
             schema_version: 1,
             execution: {
                 language: "rust",
-                start_cmd: ["sleep", "10"],
+                run_cmd: ["sleep", "10"],
             },
         }"#,
     );
@@ -1757,7 +1757,7 @@ async fn listen_for_node_sync_default_variant_skips_root_codegen() {
          it should remain the original VariantConfig"
     );
     assert!(
-        variant_config_content.contains("start_cmd"),
+        variant_config_content.contains("run_cmd"),
         "variant peppy.json5 should still contain the original execution config"
     );
 }
@@ -1784,7 +1784,7 @@ async fn listen_for_node_sync_default_variant_cleans_stale_root_peppy_dir() {
             },
             execution: {
                 language: "rust",
-                start_cmd: ["sleep", "10"],
+                run_cmd: ["sleep", "10"],
             },
         }"#,
     );
@@ -1820,7 +1820,7 @@ async fn listen_for_node_sync_default_variant_cleans_stale_root_peppy_dir() {
             schema_version: 1,
             execution: {
                 language: "rust",
-                start_cmd: ["sleep", "10"],
+                run_cmd: ["sleep", "10"],
             },
         }"#,
     );
@@ -1919,7 +1919,7 @@ async fn listen_for_node_sync_undeclared_local_node_id_fails() {
             },
             execution: {
                 language: "rust",
-                start_cmd: ["sleep", "10"],
+                run_cmd: ["sleep", "10"],
             },
         }
         "#,

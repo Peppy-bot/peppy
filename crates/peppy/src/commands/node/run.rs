@@ -1,9 +1,7 @@
 use config::AnyType;
 use config::launcher::Name;
 use config::runtime::{NodeInstanceConfig, RuntimeConfig};
-use core_node::encoding::{
-    NodeStartFeedback, NodeStartGoal, NodeStartGoalResponse, NodeStartResult,
-};
+use core_node::encoding::{NodeRunFeedback, NodeRunGoal, NodeRunGoalResponse, NodeRunResult};
 use names_generator2::get_random;
 use peppylib::MessengerHandle;
 use rand::rng;
@@ -116,9 +114,9 @@ fn parse_value(value: &str) -> AnyType {
     AnyType::String(value.to_string())
 }
 
-/// Shared logic for starting a node instance.
+/// Shared logic for running a node instance.
 /// Used by both `run_node` and `add_node` (when --run is set).
-pub async fn start_instance_async(
+pub async fn run_instance_async(
     messenger_handle: &MessengerHandle,
     core_node_name: &str,
     node_name: &str,
@@ -167,11 +165,11 @@ pub async fn start_instance_async(
         serde_json::to_string(&runtime_config).map_err(|e| Error::Sync(e.to_string()))?;
 
     info!(
-        "Calling node_start for {}:{} (instance_id={})...",
+        "Calling node_run for {}:{} (instance_id={})...",
         node_name, tag, instance_id
     );
 
-    let start_goal = NodeStartGoal::new(
+    let start_goal = NodeRunGoal::new(
         &runtime_config_json,
         node_name.to_string(),
         tag.to_string(),
@@ -188,13 +186,13 @@ pub async fn start_instance_async(
             GOAL_TIMEOUT,
         )
         .await
-        .map_err(|e| Error::ExecutionFailed(format!("Failed to send node_start goal: {}", e)))?;
+        .map_err(|e| Error::ExecutionFailed(format!("Failed to send node_run goal: {}", e)))?;
 
     let start_result = crate::commands::action_poll::run_action_with_feedback::<
-        NodeStartGoalResponse,
-        NodeStartFeedback,
-        NodeStartResult,
-    >(messenger_handle, &mut action_handle, timeouts, "node_start")
+        NodeRunGoalResponse,
+        NodeRunFeedback,
+        NodeRunResult,
+    >(messenger_handle, &mut action_handle, timeouts, "node_run")
     .await?;
 
     if let Some(pid) = start_result.pid {
@@ -233,7 +231,7 @@ async fn run_node_async(
 ) -> Result<()> {
     let conn = ctx.connect_to_daemon().await?;
 
-    start_instance_async(
+    run_instance_async(
         conn.messenger,
         &conn.core_node_name,
         &node_name,

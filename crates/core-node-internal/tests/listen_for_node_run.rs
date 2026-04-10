@@ -1,14 +1,14 @@
 mod common;
 
 use common::{
-    AbortOnDrop, NodeStartTestTimeouts, create_test_node_with_name, send_node_add_then_build,
-    send_node_start_and_wait, send_node_start_and_wait_with_env,
-    start_core_node_with_health_monitor, start_core_node_with_health_timeout,
-    start_core_node_with_mock_messenger, start_core_node_with_real_messenger, write_peppy_json5,
+    AbortOnDrop, NodeRunTestTimeouts, create_test_node_with_name, send_node_add_then_build,
+    send_node_run_and_wait, send_node_run_and_wait_with_env, start_core_node_with_health_monitor,
+    start_core_node_with_health_timeout, start_core_node_with_mock_messenger,
+    start_core_node_with_real_messenger, write_peppy_json5,
 };
 use config::consts::DEFAULT_ALPINE_BASE_IMAGE;
 use config::node::Name as NodeName;
-use core_node::encoding::NodeStartFeedback;
+use core_node::encoding::NodeRunFeedback;
 use peppylib::messaging::MessengerHandle;
 use peppylib::services::health::listen_for_node_health;
 use peppylib::services::ready::listen_for_node_ready;
@@ -29,7 +29,7 @@ fn create_node_config_dir(peppy_json5: &str) -> TempDir {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_start_success() {
+async fn listen_for_node_run_success() {
     // These must match the values used in create_test_node()
     const TARGET_NODE_NAME: &str = "runnable_node";
     const TARGET_NODE_TAG: &str = "0.1.0";
@@ -69,7 +69,7 @@ async fn listen_for_node_start_success() {
         .await
         .expect("zenoh endpoint should be available");
 
-    // Create a runtime config for the node_start request
+    // Create a runtime config for the node_run request
     let runtime_config_json5 = common::build_runtime_config_json5(
         messaging_host.as_str(),
         messaging_port,
@@ -79,36 +79,36 @@ async fn listen_for_node_start_success() {
         Default::default(),
     );
 
-    let start_response = send_node_start_and_wait(
+    let start_response = send_node_run_and_wait(
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
         &runtime_config_json5,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
-        &NodeStartTestTimeouts {
+        &NodeRunTestTimeouts {
             goal: Duration::from_secs(30),
             result: Duration::from_secs(60),
         },
         None,
     )
     .await
-    .expect("node_start action should complete");
+    .expect("node_run action should complete");
 
     // The start should succeed because the health check was responded to
     assert!(
         start_response.result.success,
-        "node_start should succeed, got error: {:?}",
+        "node_run should succeed, got error: {:?}",
         start_response.result.error_message
     );
 
     // Verify that the PID is returned on success
     assert!(
         start_response.result.pid.is_some(),
-        "node_start should return a PID on success"
+        "node_run should return a PID on success"
     );
     assert!(
         start_response.result.pid.unwrap() > 0,
-        "node_start PID should be a positive number"
+        "node_run PID should be a positive number"
     );
 
     // Verify that the instance was added to the node stack
@@ -123,14 +123,14 @@ async fn listen_for_node_start_success() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_start_timeout() {
+async fn listen_for_node_run_timeout() {
     const TARGET_NODE_NAME: &str = "runnable_node";
     const TARGET_INSTANCE_ID: &str = "runnable_instance";
 
     // Use a short health timeout so the test doesn't take too long
     let started = start_core_node_with_health_timeout(Duration::from_secs(2)).await;
 
-    // Create a node config with a start_cmd that won't respond to health checks
+    // Create a node config with a run_cmd that won't respond to health checks
     // Using "sleep 10" as a simple command that runs but doesn't respond
     let peppy_json5 = r#"{
             schema_version: 1,
@@ -140,7 +140,7 @@ async fn listen_for_node_start_timeout() {
             },
             execution: {
                 language: "rust",
-                start_cmd: ["sleep", "10"]
+                run_cmd: ["sleep", "10"]
             }
         }"#
     .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME);
@@ -165,7 +165,7 @@ async fn listen_for_node_start_timeout() {
         add_response.error_message
     );
 
-    // Set up a ready listener so node_start can proceed to the health-check phase.
+    // Set up a ready listener so node_run can proceed to the health-check phase.
     // We intentionally do NOT set up a health listener to force the health check to time out.
     let ready_handle = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
     let _ready_task = AbortOnDrop(
@@ -182,33 +182,33 @@ async fn listen_for_node_start_timeout() {
     // Allow the ready service to fully establish its listener
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    // Create a runtime config for the node_start request
+    // Create a runtime config for the node_run request
     let runtime_config_json5 = common::default_runtime_config_json5(
         &started.core_node_name,
         TARGET_NODE_NAME,
         TARGET_INSTANCE_ID,
     );
 
-    // Call node_start - this should timeout because the node won't respond to health checks
-    let start_response = send_node_start_and_wait(
+    // Call node_run - this should timeout because the node won't respond to health checks
+    let start_response = send_node_run_and_wait(
         &started.caller_handle,
         &started.core_node_name,
         &runtime_config_json5,
         TARGET_NODE_NAME,
         "0.1.0",
-        &NodeStartTestTimeouts {
+        &NodeRunTestTimeouts {
             goal: Duration::from_secs(5),
             result: Duration::from_secs(5),
         },
         None,
     )
     .await
-    .expect("node_start action should complete");
+    .expect("node_run action should complete");
 
     // The start should fail because the health check timed out
     assert!(
         !start_response.result.success,
-        "node_start should fail due to health check timeout"
+        "node_run should fail due to health check timeout"
     );
     assert!(
         start_response
@@ -224,7 +224,7 @@ async fn listen_for_node_start_timeout() {
     // Verify that PID is None on failure
     assert!(
         start_response.result.pid.is_none(),
-        "node_start should not return a PID on failure"
+        "node_run should not return a PID on failure"
     );
 
     // Verify that the instance was NOT added to the node stack since start failed
@@ -237,7 +237,7 @@ async fn listen_for_node_start_timeout() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_start_not_found() {
+async fn listen_for_node_run_not_found() {
     const TARGET_NODE_NAME: &str = "nonexistent_node";
     const TARGET_INSTANCE_ID: &str = "nonexistent_instance";
 
@@ -253,26 +253,26 @@ async fn listen_for_node_start_not_found() {
         TARGET_INSTANCE_ID,
     );
 
-    // Call node_start - this should fail because the node doesn't exist in the node stack
-    let start_response = send_node_start_and_wait(
+    // Call node_run - this should fail because the node doesn't exist in the node stack
+    let start_response = send_node_run_and_wait(
         &started.caller_handle,
         &started.core_node_name,
         &runtime_config_json5,
         TARGET_NODE_NAME,
         "0.1.0",
-        &NodeStartTestTimeouts {
+        &NodeRunTestTimeouts {
             goal: Duration::from_secs(5),
             result: Duration::from_secs(5),
         },
         None,
     )
     .await
-    .expect("node_start action should complete");
+    .expect("node_run action should complete");
 
     // The start should fail because the node was not found
     assert!(
         !start_response.result.success,
-        "node_start should fail because node not found"
+        "node_run should fail because node not found"
     );
     assert!(
         start_response
@@ -288,12 +288,12 @@ async fn listen_for_node_start_not_found() {
     // Verify that PID is None on failure
     assert!(
         start_response.result.pid.is_none(),
-        "node_start should not return a PID on failure"
+        "node_run should not return a PID on failure"
     );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_start_streams_stdout_and_stderr() {
+async fn listen_for_node_run_streams_stdout_and_stderr() {
     const TARGET_NODE_NAME: &str = "stream_output_node";
     const TARGET_NODE_TAG: &str = "0.1.0";
     const TARGET_INSTANCE_ID: &str = "stream_output_instance";
@@ -311,7 +311,7 @@ async fn listen_for_node_start_streams_stdout_and_stderr() {
             },
             execution: {
                 language: "rust",
-                start_cmd: ["sh", "-c", "echo {STDOUT_MARKER}; echo {STDERR_MARKER} 1>&2; sleep 5"]
+                run_cmd: ["sh", "-c", "echo {STDOUT_MARKER}; echo {STDERR_MARKER} 1>&2; sleep 5"]
             }
         }"#
     .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
@@ -367,33 +367,32 @@ async fn listen_for_node_start_streams_stdout_and_stderr() {
         TARGET_INSTANCE_ID,
     );
 
-    let (feedback_tx, mut feedback_rx) =
-        tokio::sync::mpsc::unbounded_channel::<NodeStartFeedback>();
-    let start_response = send_node_start_and_wait(
+    let (feedback_tx, mut feedback_rx) = tokio::sync::mpsc::unbounded_channel::<NodeRunFeedback>();
+    let start_response = send_node_run_and_wait(
         &started.caller_handle,
         &started.core_node_name,
         &runtime_config_json5,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
-        &NodeStartTestTimeouts {
+        &NodeRunTestTimeouts {
             goal: Duration::from_secs(5),
             result: Duration::from_secs(10),
         },
         Some(feedback_tx),
     )
     .await
-    .expect("node_start action should complete");
+    .expect("node_run action should complete");
 
     assert!(
         start_response.result.success,
-        "node_start should succeed, got error: {:?}",
+        "node_run should succeed, got error: {:?}",
         start_response.result.error_message
     );
 
     // Verify that the PID is returned on success
     assert!(
         start_response.result.pid.is_some(),
-        "node_start should return a PID on success"
+        "node_run should return a PID on success"
     );
 
     let mut feedback = Vec::new();
@@ -412,7 +411,7 @@ async fn listen_for_node_start_streams_stdout_and_stderr() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_start_writes_log_file() {
+async fn listen_for_node_run_writes_log_file() {
     const TARGET_NODE_NAME: &str = "log_file_node";
     const TARGET_NODE_TAG: &str = "0.1.0";
     const TARGET_INSTANCE_ID: &str = "log_file_instance";
@@ -430,7 +429,7 @@ async fn listen_for_node_start_writes_log_file() {
             },
             execution: {
                 language: "rust",
-                start_cmd: ["sh", "-c", "echo {STDOUT_MARKER}; echo {STDERR_MARKER} 1>&2; sleep 5"]
+                run_cmd: ["sh", "-c", "echo {STDOUT_MARKER}; echo {STDERR_MARKER} 1>&2; sleep 5"]
             }
         }"#
     .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
@@ -486,31 +485,31 @@ async fn listen_for_node_start_writes_log_file() {
         TARGET_INSTANCE_ID,
     );
 
-    let start_response = send_node_start_and_wait(
+    let start_response = send_node_run_and_wait(
         &started.caller_handle,
         &started.core_node_name,
         &runtime_config_json5,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
-        &NodeStartTestTimeouts {
+        &NodeRunTestTimeouts {
             goal: Duration::from_secs(5),
             result: Duration::from_secs(10),
         },
         None,
     )
     .await
-    .expect("node_start action should complete");
+    .expect("node_run action should complete");
 
     assert!(
         start_response.result.success,
-        "node_start should succeed, got error: {:?}",
+        "node_run should succeed, got error: {:?}",
         start_response.result.error_message
     );
 
     // Verify that the PID is returned on success
     assert!(
         start_response.result.pid.is_some(),
-        "node_start should return a PID on success"
+        "node_run should return a PID on success"
     );
 
     // Verify the goal response contains the correct log_path
@@ -520,7 +519,7 @@ async fn listen_for_node_start_writes_log_file() {
     );
     let expected_log_path = started
         .peppy_dirs
-        .logs_dir_start()
+        .logs_dir_run()
         .join(format!("{}.log", TARGET_INSTANCE_ID));
     assert_eq!(
         start_response.goal_response.log_path, expected_log_path,
@@ -549,7 +548,7 @@ async fn listen_for_node_start_writes_log_file() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_start_reports_all_missing_parameters() {
+async fn listen_for_node_run_reports_all_missing_parameters() {
     const TARGET_NODE_NAME: &str = "params_node";
     const TARGET_NODE_TAG: &str = "0.1.0";
     const TARGET_INSTANCE_ID: &str = "params_instance";
@@ -576,7 +575,7 @@ async fn listen_for_node_start_reports_all_missing_parameters() {
                         encoding: "string"
                     }
                 },
-                start_cmd: ["echo", "test"]
+                run_cmd: ["echo", "test"]
             }
         }"#
     .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
@@ -606,26 +605,26 @@ async fn listen_for_node_start_reports_all_missing_parameters() {
         TARGET_INSTANCE_ID,
     );
 
-    // Call node_start - this should fail with all missing parameters listed
-    let start_response = send_node_start_and_wait(
+    // Call node_run - this should fail with all missing parameters listed
+    let start_response = send_node_run_and_wait(
         &started.caller_handle,
         &started.core_node_name,
         &runtime_config_json5,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
-        &NodeStartTestTimeouts {
+        &NodeRunTestTimeouts {
             goal: Duration::from_secs(5),
             result: Duration::from_secs(5),
         },
         None,
     )
     .await
-    .expect("node_start action should complete");
+    .expect("node_run action should complete");
 
     // The start should fail due to missing parameters
     assert!(
         !start_response.result.success,
-        "node_start should fail due to missing parameters"
+        "node_run should fail due to missing parameters"
     );
 
     let error_msg = start_response
@@ -666,12 +665,12 @@ async fn listen_for_node_start_reports_all_missing_parameters() {
     // Verify that PID is None on failure
     assert!(
         start_response.result.pid.is_none(),
-        "node_start should not return a PID on failure"
+        "node_run should not return a PID on failure"
     );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_start_reports_only_missing_parameters_when_some_provided() {
+async fn listen_for_node_run_reports_only_missing_parameters_when_some_provided() {
     const TARGET_NODE_NAME: &str = "partial_params_node";
     const TARGET_NODE_TAG: &str = "0.1.0";
     const TARGET_INSTANCE_ID: &str = "partial_params_instance";
@@ -698,7 +697,7 @@ async fn listen_for_node_start_reports_only_missing_parameters_when_some_provide
                         encoding: "string"
                     }
                 },
-                start_cmd: ["echo", "test"]
+                run_cmd: ["echo", "test"]
             }
         }"#
     .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
@@ -748,26 +747,26 @@ async fn listen_for_node_start_reports_only_missing_parameters_when_some_provide
         arguments,
     );
 
-    // Call node_start - this should fail with only the missing video parameters listed
-    let start_response = send_node_start_and_wait(
+    // Call node_run - this should fail with only the missing video parameters listed
+    let start_response = send_node_run_and_wait(
         &started.caller_handle,
         &started.core_node_name,
         &runtime_config_json5,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
-        &NodeStartTestTimeouts {
+        &NodeRunTestTimeouts {
             goal: Duration::from_secs(5),
             result: Duration::from_secs(5),
         },
         None,
     )
     .await
-    .expect("node_start action should complete");
+    .expect("node_run action should complete");
 
     // The start should fail due to missing video parameters
     assert!(
         !start_response.result.success,
-        "node_start should fail due to missing parameters"
+        "node_run should fail due to missing parameters"
     );
 
     let error_msg = start_response
@@ -808,16 +807,16 @@ async fn listen_for_node_start_reports_only_missing_parameters_when_some_provide
     // Verify that PID is None on failure
     assert!(
         start_response.result.pid.is_none(),
-        "node_start should not return a PID on failure"
+        "node_run should not return a PID on failure"
     );
 }
 
 /// Tests that a new goal can be processed after a previous action was abandoned
 /// (goal accepted but result never polled).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_start_abandoned_action_does_not_block_next_goal() {
+async fn listen_for_node_run_abandoned_action_does_not_block_next_goal() {
     use config::node::QoSProfile;
-    use core_node::encoding::NodeStartGoal;
+    use core_node::encoding::NodeRunGoal;
     use peppylib::ActionMessenger;
 
     const FIRST_NODE_NAME: &str = "abandoned_start_node";
@@ -839,7 +838,7 @@ async fn listen_for_node_start_abandoned_action_does_not_block_next_goal() {
             },
             execution: {
                 language: "rust",
-                start_cmd: ["sleep", "30"]
+                run_cmd: ["sleep", "30"]
             }
         }"#
     .replace("{FIRST_NODE_NAME}", FIRST_NODE_NAME)
@@ -872,7 +871,7 @@ async fn listen_for_node_start_abandoned_action_does_not_block_next_goal() {
             },
             execution: {
                 language: "rust",
-                start_cmd: ["sleep", "30"]
+                run_cmd: ["sleep", "30"]
             }
         }"#
     .replace("{SECOND_NODE_NAME}", SECOND_NODE_NAME)
@@ -951,7 +950,7 @@ async fn listen_for_node_start_abandoned_action_does_not_block_next_goal() {
     );
 
     // Send first goal but DON'T wait for result (simulating abandoned action)
-    let first_goal = NodeStartGoal::new(
+    let first_goal = NodeRunGoal::new(
         &first_runtime_config_json5,
         FIRST_NODE_NAME,
         FIRST_NODE_TAG,
@@ -964,7 +963,7 @@ async fn listen_for_node_start_abandoned_action_does_not_block_next_goal() {
         &started.core_node_name,
         common::CALLER_INSTANCE_ID,
         &started.core_node_name,
-        core_node::names::NODE_START_ACTION,
+        core_node::names::NODE_RUN_ACTION,
         Some(&started.core_node_name),
         None,
         first_goal_payload,
@@ -977,7 +976,7 @@ async fn listen_for_node_start_abandoned_action_does_not_block_next_goal() {
     // Verify first goal was accepted
     let first_goal_response_payload = first_action_handle.goal_response().payload();
     let first_goal_response =
-        core_node::encoding::NodeStartGoalResponse::decode(&first_goal_response_payload)
+        core_node::encoding::NodeRunGoalResponse::decode(&first_goal_response_payload)
             .expect("failed to decode first goal response");
     assert!(
         first_goal_response.accepted,
@@ -996,24 +995,24 @@ async fn listen_for_node_start_abandoned_action_does_not_block_next_goal() {
         SECOND_INSTANCE_ID,
     );
 
-    let second_start_response = send_node_start_and_wait(
+    let second_start_response = send_node_run_and_wait(
         &started.caller_handle,
         &started.core_node_name,
         &second_runtime_config_json5,
         SECOND_NODE_NAME,
         SECOND_NODE_TAG,
-        &NodeStartTestTimeouts {
+        &NodeRunTestTimeouts {
             goal: Duration::from_secs(5),
             result: Duration::from_secs(10),
         },
         None,
     )
     .await
-    .expect("second node_start request should complete");
+    .expect("second node_run request should complete");
 
     assert!(
         second_start_response.result.success,
-        "second node_start should succeed even after first action was abandoned, got error: {:?}",
+        "second node_run should succeed even after first action was abandoned, got error: {:?}",
         second_start_response.result.error_message
     );
 
@@ -1034,7 +1033,7 @@ async fn listen_for_node_start_abandoned_action_does_not_block_next_goal() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_start_uses_env_overrides_for_path() {
+async fn listen_for_node_run_uses_env_overrides_for_path() {
     const TARGET_NODE_NAME: &str = "env_path_node";
     const TARGET_NODE_TAG: &str = "0.1.0";
     const TARGET_INSTANCE_ID: &str = "env_path_instance";
@@ -1050,7 +1049,7 @@ async fn listen_for_node_start_uses_env_overrides_for_path() {
             },
             execution: {
                 language: "rust",
-                start_cmd: ["printout", "3"]
+                run_cmd: ["printout", "3"]
             }
         }"#
     .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
@@ -1103,24 +1102,24 @@ async fn listen_for_node_start_uses_env_overrides_for_path() {
     );
 
     // First attempt without env overrides: printout should not be found.
-    let start_response_missing = send_node_start_and_wait(
+    let start_response_missing = send_node_run_and_wait(
         &started.caller_handle,
         &started.core_node_name,
         &runtime_config_json5,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
-        &NodeStartTestTimeouts {
+        &NodeRunTestTimeouts {
             goal: Duration::from_secs(10),
             result: Duration::from_secs(10),
         },
         None,
     )
     .await
-    .expect("node_start request should complete");
+    .expect("node_run request should complete");
 
     assert!(
         !start_response_missing.result.success,
-        "node_start should fail when printout is missing from daemon PATH"
+        "node_run should fail when printout is missing from daemon PATH"
     );
     assert!(
         start_response_missing
@@ -1153,13 +1152,13 @@ async fn listen_for_node_start_uses_env_overrides_for_path() {
     let env_vars = vec![("PATH".to_string(), new_path)];
 
     // Second attempt with env overrides: printout should be found.
-    let start_response = send_node_start_and_wait_with_env(
+    let start_response = send_node_run_and_wait_with_env(
         &started.caller_handle,
         &started.core_node_name,
         &runtime_config_json5,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
-        &NodeStartTestTimeouts {
+        &NodeRunTestTimeouts {
             goal: Duration::from_secs(10),
             result: Duration::from_secs(10),
         },
@@ -1167,17 +1166,17 @@ async fn listen_for_node_start_uses_env_overrides_for_path() {
         env_vars,
     )
     .await
-    .expect("node_start request should complete");
+    .expect("node_run request should complete");
 
     assert!(
         start_response.result.success,
-        "node_start should succeed when caller PATH is passed, got error: {:?}",
+        "node_run should succeed when caller PATH is passed, got error: {:?}",
         start_response.result.error_message
     );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_start_injects_runtime_env_vars() {
+async fn listen_for_node_run_injects_runtime_env_vars() {
     const TARGET_NODE_NAME: &str = "runtime_env_start_node";
     const TARGET_NODE_TAG: &str = "0.1.0";
     const TARGET_INSTANCE_ID: &str = "runtime_env_start_instance";
@@ -1193,7 +1192,7 @@ async fn listen_for_node_start_injects_runtime_env_vars() {
             },
             execution: {
                 language: "rust",
-                start_cmd: [
+                run_cmd: [
                     "sh",
                     "-c",
                     "test -n \"$PEPPY_APPTAINER_BIN\" && test \"$PEPPY_NODE_NAME\" = \"{TARGET_NODE_NAME}\" && test \"$PEPPY_NODE_TAG\" = \"{TARGET_NODE_TAG}\" && sleep 10"
@@ -1249,30 +1248,30 @@ async fn listen_for_node_start_injects_runtime_env_vars() {
         TARGET_INSTANCE_ID,
     );
 
-    let start_response = send_node_start_and_wait(
+    let start_response = send_node_run_and_wait(
         &started.caller_handle,
         &started.core_node_name,
         &runtime_config_json5,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
-        &NodeStartTestTimeouts {
+        &NodeRunTestTimeouts {
             goal: Duration::from_secs(10),
             result: Duration::from_secs(10),
         },
         None,
     )
     .await
-    .expect("node_start request should complete");
+    .expect("node_run request should complete");
 
     assert!(
         start_response.result.success,
-        "node_start should succeed when runtime env vars are injected, got error: {:?}",
+        "node_run should succeed when runtime env vars are injected, got error: {:?}",
         start_response.result.error_message
     );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_start_with_container_success() {
+async fn listen_for_node_run_with_container_success() {
     let _guard = CONTAINER_TEST_MUTEX.lock().await;
 
     const TARGET_NODE_NAME: &str = "container_start_node";
@@ -1373,7 +1372,7 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
     // Allow ready/health services to establish listeners.
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    // Create a runtime config for the node_start request
+    // Create a runtime config for the node_run request
     let runtime_config_json5 = common::default_runtime_config_json5(
         &started.core_node_name,
         TARGET_NODE_NAME,
@@ -1382,13 +1381,13 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
 
     let env_vars = vec![("MY_ENV_VAR".to_string(), "hello_from_peppy".to_string())];
 
-    let start_response = send_node_start_and_wait_with_env(
+    let start_response = send_node_run_and_wait_with_env(
         &started.caller_handle,
         &started.core_node_name,
         &runtime_config_json5,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
-        &NodeStartTestTimeouts {
+        &NodeRunTestTimeouts {
             goal: Duration::from_secs(30),
             result: Duration::from_secs(60),
         },
@@ -1396,23 +1395,23 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
         env_vars,
     )
     .await
-    .expect("node_start action should complete");
+    .expect("node_run action should complete");
 
     // The start should succeed
     assert!(
         start_response.result.success,
-        "node_start should succeed, got error: {:?}",
+        "node_run should succeed, got error: {:?}",
         start_response.result.error_message
     );
 
     // Verify that the PID is returned on success
     assert!(
         start_response.result.pid.is_some(),
-        "node_start should return a PID on success"
+        "node_run should return a PID on success"
     );
     assert!(
         start_response.result.pid.unwrap() > 0,
-        "node_start PID should be a positive number"
+        "node_run PID should be a positive number"
     );
 
     // Verify that the instance was added to the node stack
@@ -1430,7 +1429,7 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
     );
     let expected_log_path = started
         .peppy_dirs
-        .logs_dir_start()
+        .logs_dir_run()
         .join(format!("{}.log", TARGET_INSTANCE_ID));
     assert_eq!(
         start_response.goal_response.log_path, expected_log_path,
@@ -1481,7 +1480,7 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
 /// becoming an empty directory. Both halves of the contract are asserted —
 /// if a future refactor drops the warning, this test must fail.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_start_with_container_creates_missing_mount_dir_and_warns() {
+async fn listen_for_node_run_with_container_creates_missing_mount_dir_and_warns() {
     let _guard = CONTAINER_TEST_MUTEX.lock().await;
 
     const TARGET_NODE_NAME: &str = "container_mount_create_node";
@@ -1585,25 +1584,25 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
         TARGET_INSTANCE_ID,
     );
 
-    let start_response = send_node_start_and_wait(
+    let start_response = send_node_run_and_wait(
         &started.caller_handle,
         &started.core_node_name,
         &runtime_config_json5,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
-        &NodeStartTestTimeouts {
+        &NodeRunTestTimeouts {
             goal: Duration::from_secs(30),
             result: Duration::from_secs(60),
         },
         None,
     )
     .await
-    .expect("node_start action should complete");
+    .expect("node_run action should complete");
 
     // The start must succeed: the framework auto-creates the missing dir.
     assert!(
         start_response.result.success,
-        "node_start should succeed after auto-creating the bind source, got error: {:?}",
+        "node_run should succeed after auto-creating the bind source, got error: {:?}",
         start_response.result.error_message
     );
 
@@ -1642,7 +1641,7 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_start_container_failure_includes_stderr_in_error() {
+async fn listen_for_node_run_container_failure_includes_stderr_in_error() {
     let _guard = CONTAINER_TEST_MUTEX.lock().await;
 
     const TARGET_NODE_NAME: &str = "failing_container_node";
@@ -1716,25 +1715,25 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
         TARGET_INSTANCE_ID,
     );
 
-    let start_response = send_node_start_and_wait(
+    let start_response = send_node_run_and_wait(
         &started.caller_handle,
         &started.core_node_name,
         &runtime_config_json5,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
-        &NodeStartTestTimeouts {
+        &NodeRunTestTimeouts {
             goal: Duration::from_secs(30),
             result: Duration::from_secs(60),
         },
         None,
     )
     .await
-    .expect("node_start action should complete");
+    .expect("node_run action should complete");
 
     // The start should fail because the process exits immediately
     assert!(
         !start_response.result.success,
-        "node_start should fail because the container process exits immediately"
+        "node_run should fail because the container process exits immediately"
     );
 
     // The error message should include stderr output from the container process
@@ -1767,14 +1766,14 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_start_logs_error_on_spawn_failure() {
+async fn listen_for_node_run_logs_error_on_spawn_failure() {
     const TARGET_NODE_NAME: &str = "spawn_failure_node";
     const TARGET_NODE_TAG: &str = "0.1.0";
     const TARGET_INSTANCE_ID: &str = "spawn_failure_instance";
 
     let started = start_core_node_with_mock_messenger().await;
 
-    // Create a process node with a start_cmd that cannot be found.
+    // Create a process node with a run_cmd that cannot be found.
     // This will cause command.spawn() to fail in start_node().
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
     let peppy_json5 = r#"{
@@ -1785,7 +1784,7 @@ async fn listen_for_node_start_logs_error_on_spawn_failure() {
             },
             execution: {
                 language: "rust",
-                start_cmd: ["nonexistent_binary_peppy_test_xyz"]
+                run_cmd: ["nonexistent_binary_peppy_test_xyz"]
             }
         }"#
     .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
@@ -1814,24 +1813,24 @@ async fn listen_for_node_start_logs_error_on_spawn_failure() {
         TARGET_INSTANCE_ID,
     );
 
-    let start_response = send_node_start_and_wait(
+    let start_response = send_node_run_and_wait(
         &started.caller_handle,
         &started.core_node_name,
         &runtime_config_json5,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
-        &NodeStartTestTimeouts {
+        &NodeRunTestTimeouts {
             goal: Duration::from_secs(5),
             result: Duration::from_secs(10),
         },
         None,
     )
     .await
-    .expect("node_start action should complete");
+    .expect("node_run action should complete");
 
     assert!(
         !start_response.result.success,
-        "node_start should fail because the binary does not exist"
+        "node_run should fail because the binary does not exist"
     );
 
     let error_msg = start_response
@@ -1877,7 +1876,7 @@ async fn listen_for_node_start_logs_error_on_spawn_failure() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_start_remove_node_on_unhealthy_node() {
+async fn listen_for_node_run_remove_node_on_unhealthy_node() {
     const TARGET_NODE_NAME: &str = "health_monitor_node";
     const TARGET_NODE_TAG: &str = "0.1.0";
     const TARGET_INSTANCE_ID: &str = "health_monitor_instance";
@@ -1891,7 +1890,7 @@ async fn listen_for_node_start_remove_node_on_unhealthy_node() {
     )
     .await;
 
-    // Create a node with a simple long-running start_cmd
+    // Create a node with a simple long-running run_cmd
     let peppy_json5 = r#"{
             schema_version: 1,
             manifest: {
@@ -1900,7 +1899,7 @@ async fn listen_for_node_start_remove_node_on_unhealthy_node() {
             },
             execution: {
                 language: "rust",
-                start_cmd: ["sleep", "300"]
+                run_cmd: ["sleep", "300"]
             }
         }"#
     .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
@@ -1956,24 +1955,24 @@ async fn listen_for_node_start_remove_node_on_unhealthy_node() {
         TARGET_INSTANCE_ID,
     );
 
-    let start_response = send_node_start_and_wait(
+    let start_response = send_node_run_and_wait(
         &started.caller_handle,
         &started.core_node_name,
         &runtime_config_json5,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
-        &NodeStartTestTimeouts {
+        &NodeRunTestTimeouts {
             goal: Duration::from_secs(10),
             result: Duration::from_secs(30),
         },
         None,
     )
     .await
-    .expect("node_start action should complete");
+    .expect("node_run action should complete");
 
     assert!(
         start_response.result.success,
-        "node_start should succeed, got error: {:?}",
+        "node_run should succeed, got error: {:?}",
         start_response.result.error_message
     );
 

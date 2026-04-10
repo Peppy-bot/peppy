@@ -23,7 +23,7 @@
       "uv",
       "sync"
     ],
-    start_cmd: [
+    run_cmd: [
       "uv",
       "run",
       "hello_world"

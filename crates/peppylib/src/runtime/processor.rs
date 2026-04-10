@@ -209,7 +209,7 @@ mod tests {
                     },
                     mode: "string"
                 },
-                start_cmd: ["./target/debug/uvc_camera"]
+                run_cmd: ["./target/debug/uvc_camera"]
             },
         }"#;
         std::fs::write(&peppy_config_path, peppy_config_content)
@@ -294,7 +294,7 @@ mod tests {
             schema_version: 1,
             manifest: { name: "test_node", tag: "0.1.0" },
 
-            execution: { language: "rust", parameters: { value: "i64" }, start_cmd: ["./target/debug/test_node"] },
+            execution: { language: "rust", parameters: { value: "i64" }, run_cmd: ["./target/debug/test_node"] },
         }"#;
         std::fs::write(&peppy_config_path, peppy_config_content)
             .expect("peppy config should be written");
@@ -347,7 +347,7 @@ mod tests {
             schema_version: 1,
             manifest: { name: "test_node", tag: "0.1.0" },
 
-            execution: { language: "rust", parameters: { value: "i64" }, start_cmd: ["./target/debug/test_node"] },
+            execution: { language: "rust", parameters: { value: "i64" }, run_cmd: ["./target/debug/test_node"] },
         }"#;
         std::fs::write(&peppy_config_path, peppy_config_content)
             .expect("peppy config should be written");
@@ -402,7 +402,7 @@ mod tests {
             schema_version: 1,
             manifest: { name: "test_node", tag: "0.1.0" },
 
-            execution: { language: "rust", parameters: { value: "i64" }, start_cmd: ["./target/debug/test_node"] },
+            execution: { language: "rust", parameters: { value: "i64" }, run_cmd: ["./target/debug/test_node"] },
         }"#;
         std::fs::write(&peppy_config_path, peppy_config_content)
             .expect("peppy config should be written");
@@ -466,7 +466,7 @@ mod tests {
                         threshold: "f64"
                     }
                 },
-                start_cmd: ["./target/debug/test_node"]
+                run_cmd: ["./target/debug/test_node"]
             },
         }"#;
         std::fs::write(&peppy_config_path, peppy_config_content)
@@ -530,7 +530,7 @@ mod tests {
                         $items: "string"
                     }
                 },
-                start_cmd: ["./target/debug/test_node"]
+                run_cmd: ["./target/debug/test_node"]
             },
         }"#;
         std::fs::write(&peppy_config_path, peppy_config_content)
@@ -587,7 +587,7 @@ mod tests {
             schema_version: 1,
             manifest: { name: "test_node", tag: "0.1.0" },
 
-            execution: { language: "rust", parameters: { value: "i64" }, start_cmd: ["./target/debug/test_node"] },
+            execution: { language: "rust", parameters: { value: "i64" }, run_cmd: ["./target/debug/test_node"] },
         }"#;
         std::fs::write(&peppy_config_path, peppy_config_content)
             .expect("peppy config should be written");
@@ -635,7 +635,7 @@ mod tests {
             schema_version: 1,
             manifest: { name: "my_node", tag: "0.1.0" },
 
-            execution: { language: "rust", start_cmd: ["./target/debug/my_node"] },
+            execution: { language: "rust", run_cmd: ["./target/debug/my_node"] },
         }"#;
         std::fs::write(&peppy_config_path, peppy_config_content)
             .expect("peppy config should be written");
@@ -660,7 +660,7 @@ mod tests {
             schema_version: 1,
             manifest: { name: "my_node", tag: "0.1.0" },
 
-            execution: { language: "rust", start_cmd: ["./target/debug/my_node"] },
+            execution: { language: "rust", run_cmd: ["./target/debug/my_node"] },
         }"#;
         std::fs::write(&peppy_config_path, peppy_config_content)
             .expect("peppy config should be written");
@@ -688,7 +688,7 @@ mod tests {
             schema_version: 1,
             manifest: { name: "my_node", tag: "0.1.0" },
 
-            execution: { language: "rust", parameters: { value: "i64" }, start_cmd: ["./target/debug/my_node"] },
+            execution: { language: "rust", parameters: { value: "i64" }, run_cmd: ["./target/debug/my_node"] },
         }"#;
         std::fs::write(&peppy_config_path, peppy_config_content)
             .expect("peppy config should be written");
@@ -720,7 +720,7 @@ mod tests {
             schema_version: 1,
             manifest: { name: "my_node", tag: "0.1.0" },
 
-            execution: { language: "rust", parameters: { threshold: "f64", enabled: "bool" }, start_cmd: ["./target/debug/my_node"] },
+            execution: { language: "rust", parameters: { threshold: "f64", enabled: "bool" }, run_cmd: ["./target/debug/my_node"] },
         }"#;
         std::fs::write(&peppy_config_path, peppy_config_content)
             .expect("peppy config should be written");
@@ -748,7 +748,7 @@ mod tests {
             schema_version: 1,
             manifest: { name: "my_node", tag: "0.1.0" },
 
-            execution: { language: "rust", parameters: { value: "i64" }, start_cmd: ["./target/debug/my_node"] },
+            execution: { language: "rust", parameters: { value: "i64" }, run_cmd: ["./target/debug/my_node"] },
         }"#;
         std::fs::write(&peppy_config_path, peppy_config_content)
             .expect("peppy config should be written");
@@ -780,7 +780,7 @@ mod tests {
             schema_version: 1,
             manifest: { name: "my_node", tag: "0.1.0" },
 
-            execution: { language: "rust", parameters: { threshold: "f64", enabled: "bool", name: "string" }, start_cmd: ["./target/debug/my_node"] },
+            execution: { language: "rust", parameters: { threshold: "f64", enabled: "bool", name: "string" }, run_cmd: ["./target/debug/my_node"] },
         }"#;
         std::fs::write(&peppy_config_path, peppy_config_content)
             .expect("peppy config should be written");

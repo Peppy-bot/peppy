@@ -68,7 +68,7 @@ fn create_minimal_http_bundle(node_name: &str, node_tag: &str) -> (TempDir, Vec<
             interfaces: {{}},
             execution: {{
                 language: "rust",
-                start_cmd: ["sleep", "10"]
+                run_cmd: ["sleep", "10"]
             }}
         }}"#
     );
@@ -184,7 +184,7 @@ fn create_versioned_nodes_git_repo(to_path: impl AsRef<Path>) -> PathBuf {
             },
             execution: {
                 language: "rust",
-                start_cmd: ["sleep", "10"]
+                run_cmd: ["sleep", "10"]
             }
         }"#,
     )
@@ -231,7 +231,7 @@ fn create_versioned_nodes_git_repo(to_path: impl AsRef<Path>) -> PathBuf {
             },
             execution: {
                 language: "rust",
-                start_cmd: ["sleep", "10"]
+                run_cmd: ["sleep", "10"]
             }
         }"#,
     )
@@ -281,7 +281,7 @@ async fn listen_for_node_fs_add_success() {
             },
             execution: {
                 language: "rust",
-                start_cmd: ["sleep", "10"]
+                run_cmd: ["sleep", "10"]
             }
         }"#
     .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
@@ -448,7 +448,7 @@ async fn listen_for_node_http_add_success() {
             },
             execution: {
                 language: "rust",
-                start_cmd: ["sleep", "10"]
+                run_cmd: ["sleep", "10"]
             }
         }"#
     .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
@@ -623,7 +623,7 @@ async fn listen_for_node_add_no_config_found() {
             },
             execution: {
                 language: "rust",
-                start_cmd: ["sleep", "10"]
+                run_cmd: ["sleep", "10"]
             }
         }"#
     .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
@@ -667,7 +667,7 @@ async fn listen_for_node_add_git_hash_mismatch_fails() {
         },
         execution: {
             language: "rust",
-            start_cmd: ["sleep", "10"]
+            run_cmd: ["sleep", "10"]
         }
     }"#;
     write_peppy_json5(source_dir.path(), peppy_json5);
@@ -742,7 +742,7 @@ async fn listen_for_node_add_invalid_config_fails() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_add_no_start_cmd_fails() {
+async fn listen_for_node_add_no_run_cmd_fails() {
     let started_core_node = start_core_node_with_mock_messenger().await;
     let node_stack = started_core_node.node_stack.clone();
 
@@ -750,7 +750,7 @@ async fn listen_for_node_add_no_start_cmd_fails() {
     let peppy_json5 = r#"{
         schema_version: 1,
         manifest: {
-            name: "no_start_cmd_node",
+            name: "no_run_cmd_node",
             tag: "0.1.0",
         },
         execution: {
@@ -772,7 +772,7 @@ async fn listen_for_node_add_no_start_cmd_fails() {
 
     assert!(
         !add_result.success,
-        "node_add should fail when start_cmd is missing"
+        "node_add should fail when run_cmd is missing"
     );
     assert!(
         add_result
@@ -808,7 +808,7 @@ async fn listen_for_node_add_dependency_not_resolved() {
         },
         execution: {
             language: "rust",
-            start_cmd: ["sleep", "10"],
+            run_cmd: ["sleep", "10"],
         },
     }"#;
     write_peppy_json5(source_dir.path(), peppy_json5);
@@ -875,7 +875,7 @@ async fn listen_for_node_add_same_node_same_tags_overwrites_when_no_dependents()
             },
             execution: {
                 language: "rust",
-                start_cmd: ["sleep", "10"]
+                run_cmd: ["sleep", "10"]
             }
         }"#
     .replace("{NODE_NAME}", NODE_NAME)
@@ -916,7 +916,7 @@ async fn listen_for_node_add_same_node_same_tags_overwrites_when_no_dependents()
             },
             execution: {
                 language: "rust",
-                start_cmd: ["sleep", "10"]
+                run_cmd: ["sleep", "10"]
             },
         }"#
     .replace("{NODE_NAME}", NODE_NAME)
@@ -997,7 +997,7 @@ async fn listen_for_node_add_same_node_same_tags_fails_when_node_has_dependents(
             },
             execution: {
                 language: "rust",
-                start_cmd: ["sleep", "10"]
+                run_cmd: ["sleep", "10"]
             },
         }"#
     .replace("{DEPENDENCY_NODE_NAME}", DEPENDENCY_NODE_NAME)
@@ -1043,7 +1043,7 @@ async fn listen_for_node_add_same_node_same_tags_fails_when_node_has_dependents(
             },
             execution: {
                 language: "rust",
-                start_cmd: ["sleep", "10"]
+                run_cmd: ["sleep", "10"]
             },
         }"#
     .replace("{DEPENDENT_NODE_NAME}", DEPENDENT_NODE_NAME)
@@ -1086,7 +1086,7 @@ async fn listen_for_node_add_same_node_same_tags_fails_when_node_has_dependents(
             },
             execution: {
                 language: "rust",
-                start_cmd: ["sleep", "10"]
+                run_cmd: ["sleep", "10"]
             },
         }"#
     .replace("{DEPENDENCY_NODE_NAME}", DEPENDENCY_NODE_NAME)
@@ -1182,7 +1182,7 @@ async fn listen_for_node_add_same_node_different_tags_create_two_entities() {
             },
             execution: {
                 language: "rust",
-                start_cmd: ["sleep", "10"]
+                run_cmd: ["sleep", "10"]
             }
         }"#
     .replace("{NODE_NAME}", NODE_NAME);
@@ -1220,7 +1220,7 @@ async fn listen_for_node_add_same_node_different_tags_create_two_entities() {
             },
             execution: {
                 language: "rust",
-                start_cmd: ["sleep", "10"]
+                run_cmd: ["sleep", "10"]
             }
         }"#
     .replace("{NODE_NAME}", NODE_NAME);
@@ -1266,7 +1266,7 @@ async fn listen_for_node_add_fingerprint_mismatch() {
             },
             execution: {
                 language: "rust",
-                start_cmd: ["sleep", "10"]
+                run_cmd: ["sleep", "10"]
             }
         }"#
     .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
@@ -1345,7 +1345,7 @@ async fn listen_for_node_add_abandoned_action_does_not_block_next_goal() {
             },
             execution: {
                 language: "rust",
-                start_cmd: ["sleep", "10"]
+                run_cmd: ["sleep", "10"]
             }
         }"#
     .replace("{FIRST_NODE_NAME}", FIRST_NODE_NAME)
@@ -1421,7 +1421,7 @@ async fn listen_for_node_add_abandoned_action_does_not_block_next_goal() {
             },
             execution: {
                 language: "rust",
-                start_cmd: ["sleep", "10"]
+                run_cmd: ["sleep", "10"]
             }
         }"#
     .replace("{SECOND_NODE_NAME}", SECOND_NODE_NAME)
@@ -1480,7 +1480,7 @@ async fn node_add_same_node_shutdown_existing_instances() {
             },
             execution: {
                 language: "rust",
-                start_cmd: ["sleep", "10"]
+                run_cmd: ["sleep", "10"]
             }
         }"#
     .replace("{NODE_NAME}", NODE_NAME)
@@ -1592,7 +1592,7 @@ async fn node_add_same_node_shutdown_existing_instances() {
             },
             execution: {
                 language: "rust",
-                start_cmd: ["sleep", "10"]
+                run_cmd: ["sleep", "10"]
             },
         }"#
     .replace("{NODE_NAME}", NODE_NAME)
@@ -1717,7 +1717,7 @@ async fn listen_for_node_add_fails_runs_add_cmd_on_missing_node_dependency() {
         execution: {
           language: "rust",
           build_cmd: ["true"],
-          start_cmd: ["sleep", "10"]
+          run_cmd: ["sleep", "10"]
         },
     }"#
     .replace("TARGET_NODE_NAME", TARGET_NODE_NAME)
@@ -1783,7 +1783,7 @@ async fn listen_for_node_add_fails_on_missing_interface_even_when_dependency_exi
             },
             execution: {
                 language: "rust",
-                start_cmd: ["sleep", "10"]
+                run_cmd: ["sleep", "10"]
             },
         }"#
     .replace("{DEPENDENCY_NODE_NAME}", DEPENDENCY_NODE_NAME)
@@ -1840,7 +1840,7 @@ async fn listen_for_node_add_fails_on_missing_interface_even_when_dependency_exi
         execution: {
           language: "rust",
           build_cmd: ["true"],
-          start_cmd: ["sleep", "10"]
+          run_cmd: ["sleep", "10"]
         },
     }"#
     .replace("TARGET_NODE_NAME", TARGET_NODE_NAME)
@@ -1905,7 +1905,7 @@ async fn listen_for_node_add_reports_excluded_dirs_in_feedback() {
             },
             execution: {
                 language: "rust",
-                start_cmd: ["sleep", "10"]
+                run_cmd: ["sleep", "10"]
             }
         }"#
     .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
@@ -1991,7 +1991,7 @@ async fn node_add_same_node_with_running_instance_and_dependents_succeeds() {
             },
             execution: {
                 language: "rust",
-                start_cmd: ["sleep", "10"]
+                run_cmd: ["sleep", "10"]
             },
         }"#
     .replace("{DEPENDENCY_NODE_NAME}", DEPENDENCY_NODE_NAME)
@@ -2037,7 +2037,7 @@ async fn node_add_same_node_with_running_instance_and_dependents_succeeds() {
             },
             execution: {
                 language: "rust",
-                start_cmd: ["sleep", "10"]
+                run_cmd: ["sleep", "10"]
             },
         }"#
     .replace("{DEPENDENT_NODE_NAME}", DEPENDENT_NODE_NAME)
@@ -2199,7 +2199,7 @@ async fn node_add_same_node_changing_interface_with_running_instance_and_depende
             },
             execution: {
                 language: "rust",
-                start_cmd: ["sleep", "10"]
+                run_cmd: ["sleep", "10"]
             },
         }"#
     .replace("{DEPENDENCY_NODE_NAME}", DEPENDENCY_NODE_NAME)
@@ -2245,7 +2245,7 @@ async fn node_add_same_node_changing_interface_with_running_instance_and_depende
             },
             execution: {
                 language: "rust",
-                start_cmd: ["sleep", "10"]
+                run_cmd: ["sleep", "10"]
             },
         }"#
     .replace("{DEPENDENT_NODE_NAME}", DEPENDENT_NODE_NAME)
@@ -2324,7 +2324,7 @@ async fn node_add_same_node_changing_interface_with_running_instance_and_depende
             },
             execution: {
                 language: "rust",
-                start_cmd: ["sleep", "10"]
+                run_cmd: ["sleep", "10"]
             },
         }"#
     .replace("{DEPENDENCY_NODE_NAME}", DEPENDENCY_NODE_NAME)
@@ -2425,7 +2425,7 @@ async fn node_add_same_node_with_running_instance_and_dependents_fails_on_stoppe
             },
             execution: {
                 language: "rust",
-                start_cmd: ["sleep", "10"]
+                run_cmd: ["sleep", "10"]
             },
         }"#
     .replace("{DEPENDENCY_NODE_NAME}", DEPENDENCY_NODE_NAME)
@@ -2461,7 +2461,7 @@ async fn node_add_same_node_with_running_instance_and_dependents_fails_on_stoppe
             },
             execution: {
                 language: "rust",
-                start_cmd: ["sleep", "10"]
+                run_cmd: ["sleep", "10"]
             },
         }"#
     .replace("{DEPENDENT_NODE_NAME}", DEPENDENT_NODE_NAME)
@@ -2613,7 +2613,7 @@ async fn listen_for_node_add_variant_local_source() {
         },
         execution: {
             language: "rust",
-            start_cmd: ["sleep", "10"]
+            run_cmd: ["sleep", "10"]
         }
     }"#;
     write_peppy_json5(&root_dir, root_config);
@@ -2623,7 +2623,7 @@ async fn listen_for_node_add_variant_local_source() {
         schema_version: 1,
         execution: {
             language: "rust",
-            start_cmd: ["sleep", "5"]
+            run_cmd: ["sleep", "5"]
         }
     }"#;
     write_peppy_json5(&variant_dir, variant_config);
@@ -2660,7 +2660,7 @@ async fn listen_for_node_add_variant_local_source() {
         "interfaces should be inherited from root"
     );
     assert_eq!(
-        config.execution.start_cmd.as_ref().unwrap(),
+        config.execution.run_cmd.as_ref().unwrap(),
         &vec!["sleep".to_string(), "5".to_string()],
         "execution should come from the variant"
     );
@@ -2705,7 +2705,7 @@ async fn listen_for_node_add_variant_local_source_after_sync() {
         },
         execution: {
             language: "rust",
-            start_cmd: ["sleep", "10"]
+            run_cmd: ["sleep", "10"]
         }
     }"#;
     // Write configs WITHOUT pre-baked fingerprints — sync will generate them.
@@ -2717,7 +2717,7 @@ async fn listen_for_node_add_variant_local_source_after_sync() {
         schema_version: 1,
         execution: {
             language: "rust",
-            start_cmd: ["sleep", "5"]
+            run_cmd: ["sleep", "5"]
         }
     }"#;
     let variant_config_path = variant_dir.join(NODE_CONFIG_FILE);
@@ -2779,7 +2779,7 @@ async fn listen_for_node_add_variant_local_source_after_sync() {
         "interfaces should be inherited from root"
     );
     assert_eq!(
-        config.execution.start_cmd.as_ref().unwrap(),
+        config.execution.run_cmd.as_ref().unwrap(),
         &vec!["sleep".to_string(), "5".to_string()],
         "execution should come from the variant"
     );
@@ -2849,7 +2849,7 @@ async fn listen_for_node_add_variant_only_node_after_sync() {
         schema_version: 1,
         execution: {
             language: "rust",
-            start_cmd: ["sleep", "5"]
+            run_cmd: ["sleep", "5"]
         }
     }"#;
     let variant_config_path = variant_dir.join(NODE_CONFIG_FILE);
@@ -2944,7 +2944,7 @@ async fn listen_for_node_add_variant_only_node_after_sync() {
         "interfaces should be inherited from root"
     );
     assert_eq!(
-        config.execution.start_cmd.as_ref().unwrap(),
+        config.execution.run_cmd.as_ref().unwrap(),
         &vec!["sleep".to_string(), "5".to_string()],
         "execution should come from the variant"
     );
@@ -2986,7 +2986,7 @@ async fn listen_for_node_add_variant_fingerprint_mismatch_after_sync() {
         },
         execution: {
             language: "rust",
-            start_cmd: ["sleep", "10"]
+            run_cmd: ["sleep", "10"]
         }
     }"#;
     std::fs::write(root_dir.join(NODE_CONFIG_FILE), root_config)
@@ -2996,7 +2996,7 @@ async fn listen_for_node_add_variant_fingerprint_mismatch_after_sync() {
         schema_version: 1,
         execution: {
             language: "rust",
-            start_cmd: ["sleep", "5"]
+            run_cmd: ["sleep", "5"]
         }
     }"#;
     std::fs::write(variant_dir.join(NODE_CONFIG_FILE), variant_config)
@@ -3025,7 +3025,7 @@ async fn listen_for_node_add_variant_fingerprint_mismatch_after_sync() {
         schema_version: 1,
         execution: {
             language: "rust",
-            start_cmd: ["sleep", "99"]
+            run_cmd: ["sleep", "99"]
         }
     }"#;
     std::fs::write(variant_dir.join(NODE_CONFIG_FILE), modified_variant_config)
@@ -3096,7 +3096,7 @@ async fn listen_for_node_add_with_fs_archive_variant_uses_archived_root() {
         },
         execution: {
             language: "rust",
-            start_cmd: ["sleep", "10"]
+            run_cmd: ["sleep", "10"]
         }
     }"#;
     write_peppy_json5(&archived_root_dir, root_config);
@@ -3110,7 +3110,7 @@ async fn listen_for_node_add_with_fs_archive_variant_uses_archived_root() {
             schema_version: 1,
             execution: {
                 language: "rust",
-                start_cmd: ["sleep", "5"]
+                run_cmd: ["sleep", "5"]
             }
         }"#,
     );
@@ -3124,7 +3124,7 @@ async fn listen_for_node_add_with_fs_archive_variant_uses_archived_root() {
             schema_version: 1,
             execution: {
                 language: "rust",
-                start_cmd: ["sleep", "99"]
+                run_cmd: ["sleep", "99"]
             }
         }"#,
     );
@@ -3161,7 +3161,7 @@ async fn listen_for_node_add_with_fs_archive_variant_uses_archived_root() {
         "interfaces should be inherited from root"
     );
     assert_eq!(
-        config.execution.start_cmd.as_ref().unwrap(),
+        config.execution.run_cmd.as_ref().unwrap(),
         &vec!["sleep".to_string(), "5".to_string()],
         "execution should come from the archived variant, not the host decoy"
     );
@@ -3188,7 +3188,7 @@ async fn listen_for_node_add_variant_not_found() {
         },
         execution: {
             language: "rust",
-            start_cmd: ["sleep", "10"]
+            run_cmd: ["sleep", "10"]
         }
     }"#;
     write_peppy_json5(&root_dir, root_config);
@@ -3197,7 +3197,7 @@ async fn listen_for_node_add_variant_not_found() {
         schema_version: 1,
         execution: {
             language: "rust",
-            start_cmd: ["sleep", "5"]
+            run_cmd: ["sleep", "5"]
         }
     }"#;
     write_peppy_json5(&variant_dir, variant_config);
@@ -3257,7 +3257,7 @@ async fn listen_for_node_add_variant_interface_mismatch() {
         },
         execution: {
             language: "rust",
-            start_cmd: ["sleep", "10"]
+            run_cmd: ["sleep", "10"]
         }
     }"#;
     write_peppy_json5(&root_dir, root_config);
@@ -3274,7 +3274,7 @@ async fn listen_for_node_add_variant_interface_mismatch() {
         },
         execution: {
             language: "rust",
-            start_cmd: ["sleep", "5"]
+            run_cmd: ["sleep", "5"]
         }
     }"#;
     write_peppy_json5(&variant_dir, variant_config);
@@ -3336,7 +3336,7 @@ async fn listen_for_node_add_variant_matching_interfaces_different_order() {
         },
         execution: {
             language: "rust",
-            start_cmd: ["sleep", "10"]
+            run_cmd: ["sleep", "10"]
         }
     }"#;
     write_peppy_json5(&root_dir, root_config);
@@ -3354,7 +3354,7 @@ async fn listen_for_node_add_variant_matching_interfaces_different_order() {
         },
         execution: {
             language: "rust",
-            start_cmd: ["sleep", "5"]
+            run_cmd: ["sleep", "5"]
         }
     }"#;
     write_peppy_json5(&variant_dir, variant_config);
@@ -3408,7 +3408,7 @@ async fn listen_for_node_add_variant_no_interfaces() {
         },
         execution: {
             language: "rust",
-            start_cmd: ["sleep", "10"]
+            run_cmd: ["sleep", "10"]
         }
     }"#;
     write_peppy_json5(&root_dir, root_config);
@@ -3418,7 +3418,7 @@ async fn listen_for_node_add_variant_no_interfaces() {
         schema_version: 1,
         execution: {
             language: "rust",
-            start_cmd: ["sleep", "5"]
+            run_cmd: ["sleep", "5"]
         }
     }"#;
     write_peppy_json5(&variant_dir, variant_config);
@@ -3543,7 +3543,7 @@ async fn listen_for_node_add_variant_manifest_ignored_warning() {
         },
         execution: {
             language: "rust",
-            start_cmd: ["sleep", "10"]
+            run_cmd: ["sleep", "10"]
         }
     }"#;
     write_peppy_json5(&root_dir, root_config);
@@ -3557,7 +3557,7 @@ async fn listen_for_node_add_variant_manifest_ignored_warning() {
         },
         execution: {
             language: "rust",
-            start_cmd: ["sleep", "5"]
+            run_cmd: ["sleep", "5"]
         }
     }"#;
     write_peppy_json5(&variant_dir, variant_config);
@@ -3654,7 +3654,7 @@ async fn listen_for_node_add_default_variant_auto_resolved() {
         schema_version: 1,
         execution: {
             language: "rust",
-            start_cmd: ["sleep", "7"]
+            run_cmd: ["sleep", "7"]
         }
     }"#;
     write_peppy_json5(&default_variant_dir, default_variant_config);
@@ -3664,7 +3664,7 @@ async fn listen_for_node_add_default_variant_auto_resolved() {
         schema_version: 1,
         execution: {
             language: "python",
-            start_cmd: ["sleep", "3"]
+            run_cmd: ["sleep", "3"]
         }
     }"#;
     write_peppy_json5(&mujoco_variant_dir, mujoco_variant_config);
@@ -3699,7 +3699,7 @@ async fn listen_for_node_add_default_variant_auto_resolved() {
         "interfaces should be inherited from root"
     );
     assert_eq!(
-        config.execution.start_cmd.as_ref().unwrap(),
+        config.execution.run_cmd.as_ref().unwrap(),
         &vec!["sleep".to_string(), "7".to_string()],
         "execution should come from the default variant"
     );
@@ -3755,7 +3755,7 @@ async fn listen_for_node_add_default_variant_explicit_other() {
         schema_version: 1,
         execution: {
             language: "rust",
-            start_cmd: ["sleep", "7"]
+            run_cmd: ["sleep", "7"]
         }
     }"#;
     write_peppy_json5(&default_variant_dir, default_variant_config);
@@ -3764,7 +3764,7 @@ async fn listen_for_node_add_default_variant_explicit_other() {
         schema_version: 1,
         execution: {
             language: "python",
-            start_cmd: ["sleep", "3"]
+            run_cmd: ["sleep", "3"]
         }
     }"#;
     write_peppy_json5(&mujoco_variant_dir, mujoco_variant_config);
@@ -3794,7 +3794,7 @@ async fn listen_for_node_add_default_variant_explicit_other() {
     let entity_guard = entity.read();
     let config = entity_guard.config();
     assert_eq!(
-        config.execution.start_cmd.as_ref().unwrap(),
+        config.execution.run_cmd.as_ref().unwrap(),
         &vec!["sleep".to_string(), "3".to_string()],
         "execution should come from the mujoco variant, not the default"
     );
@@ -3835,7 +3835,7 @@ async fn listen_for_node_add_execution_with_default_variant_fails() {
         },
         execution: {
             language: "rust",
-            start_cmd: ["sleep", "7"]
+            run_cmd: ["sleep", "7"]
         }
     }"#;
     write_peppy_json5(&root_dir, root_config);
@@ -3894,7 +3894,7 @@ async fn listen_for_node_add_git_variant_verifies_git_hash_at_root() {
             schema_version: 1,
             execution: {
                 language: "rust",
-                start_cmd: ["sleep", "5"]
+                run_cmd: ["sleep", "5"]
             }
         }"#,
     )
@@ -3946,7 +3946,7 @@ async fn listen_for_node_add_git_variant_verifies_git_hash_at_root() {
         },
         execution: {
             language: "rust",
-            start_cmd: ["sleep", "10"]
+            run_cmd: ["sleep", "10"]
         }
     }"#
     .replace("ROOT_NODE_NAME", ROOT_NODE_NAME)
@@ -3987,7 +3987,7 @@ async fn listen_for_node_add_git_variant_verifies_git_hash_at_root() {
         "interfaces should be inherited from root"
     );
     assert_eq!(
-        config.execution.start_cmd.as_ref().unwrap(),
+        config.execution.run_cmd.as_ref().unwrap(),
         &vec!["sleep".to_string(), "5".to_string()],
         "execution should come from the git variant"
     );
@@ -4031,7 +4031,7 @@ async fn listen_for_node_add_default_fs_variant_verifies_git_hash_at_root() {
         schema_version: 1,
         execution: {
             language: "rust",
-            start_cmd: ["sleep", "5"]
+            run_cmd: ["sleep", "5"]
         }
     }"#;
     write_peppy_json5(&variant_dir, variant_config);
@@ -4095,7 +4095,7 @@ async fn listen_for_node_add_rejects_second_goal_when_action_in_progress() {
             execution: {
                 language: "rust",
                 build_cmd: ["true"],
-                start_cmd: ["true"]
+                run_cmd: ["true"]
             }
         }"#;
     write_peppy_json5(source_dir.path(), peppy_json5);
@@ -4184,7 +4184,7 @@ async fn listen_for_node_add_force_overrides_in_progress_action() {
             execution: {
                 language: "rust",
                 build_cmd: ["true"],
-                start_cmd: ["true"]
+                run_cmd: ["true"]
             }
         }"#;
     write_peppy_json5(slow_source_dir.path(), slow_peppy_json5);
@@ -4235,7 +4235,7 @@ async fn listen_for_node_add_force_overrides_in_progress_action() {
             execution: {{
                 language: "rust",
                 build_cmd: ["true"],
-                start_cmd: ["true"]
+                run_cmd: ["true"]
             }}
         }}"#
     );
@@ -4318,7 +4318,7 @@ async fn listen_for_node_git_add_with_default_local_variant_success() {
         schema_version: 1,
         execution: {
             language: "rust",
-            start_cmd: ["sleep", "5"]
+            run_cmd: ["sleep", "5"]
         }
     }"#;
     std::fs::write(git_repo_path.join(variant_config_rel), variant_config)
@@ -4379,7 +4379,7 @@ async fn listen_for_node_git_add_with_default_local_variant_success() {
         "interfaces should be inherited from root"
     );
     assert_eq!(
-        config.execution.start_cmd.as_ref().unwrap(),
+        config.execution.run_cmd.as_ref().unwrap(),
         &vec!["sleep".to_string(), "5".to_string()],
         "execution should come from the default variant"
     );

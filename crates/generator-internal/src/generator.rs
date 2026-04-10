@@ -470,7 +470,7 @@ mod tests {
         let canonical_config = r#"{
           schema_version: 1,
           manifest: { name: "canonical_node", tag: "0.1.0" },
-          execution: { language: "rust", start_cmd: ["./target/release/canonical_node"] }
+          execution: { language: "rust", run_cmd: ["./target/release/canonical_node"] }
         }"#;
         fs::write(node_dir.join(NODE_CONFIG_FILE), canonical_config).unwrap();
 
@@ -478,7 +478,7 @@ mod tests {
         let custom_config = r#"{
           schema_version: 1,
           manifest: { name: "custom_node", tag: "0.2.0" },
-          execution: { language: "rust", start_cmd: ["./target/release/custom_node"] }
+          execution: { language: "rust", run_cmd: ["./target/release/custom_node"] }
         }"#;
         let custom_path = temp_dir.path().join("custom_peppy.json5");
         fs::write(&custom_path, custom_config).unwrap();

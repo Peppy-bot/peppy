@@ -14,7 +14,7 @@ mod reset;
 pub use info::{ContainerInfo, InfoRequest, InfoResponse};
 pub use launch::{
     LaunchFeedback, LaunchFeedbackStep, LaunchGoal, LaunchGoalResponse, LaunchResult,
-    NodeAddLogEntry, NodeBuildLogEntry, NodeStartLogEntry,
+    NodeAddLogEntry, NodeBuildLogEntry, NodeRunLogEntry,
 };
 pub use node::{
     add::NodeAddFeedback, add::NodeAddGoal, add::NodeAddGoalResponse, add::NodeAddResult,
@@ -22,9 +22,9 @@ pub use node::{
     builder::NodeBuildGoalResponse, builder::NodeBuildResult, info::NodeInfoRequest,
     info::NodeInfoResponse, info::NodeInstanceInfo, init::NodeInitRequest, init::NodeInitResponse,
     list::NodeListRequest, list::NodeListResponse, remove::NodeRemoveRequest,
-    remove::NodeRemoveResponse, start::NodeStartFeedback, start::NodeStartGoal,
-    start::NodeStartGoalResponse, start::NodeStartResult, stop::NodeStopRequest,
-    stop::NodeStopResponse, sync::NodeSyncRequest, sync::NodeSyncResponse,
+    remove::NodeRemoveResponse, run::NodeRunFeedback, run::NodeRunGoal, run::NodeRunGoalResponse,
+    run::NodeRunResult, stop::NodeStopRequest, stop::NodeStopResponse, sync::NodeSyncRequest,
+    sync::NodeSyncResponse,
 };
 pub use ping::{PingRequest, PingResponse};
 pub use reset::{NodeResetRequest, NodeResetResponse};
