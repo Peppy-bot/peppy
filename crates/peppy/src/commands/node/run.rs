@@ -114,9 +114,9 @@ fn parse_value(value: &str) -> AnyType {
     AnyType::String(value.to_string())
 }
 
-/// Shared logic for starting a node instance.
+/// Shared logic for running a node instance.
 /// Used by both `run_node` and `add_node` (when --run is set).
-pub async fn start_instance_async(
+pub async fn run_instance_async(
     messenger_handle: &MessengerHandle,
     core_node_name: &str,
     node_name: &str,
@@ -231,7 +231,7 @@ async fn run_node_async(
 ) -> Result<()> {
     let conn = ctx.connect_to_daemon().await?;
 
-    start_instance_async(
+    run_instance_async(
         conn.messenger,
         &conn.core_node_name,
         &node_name,

@@ -106,7 +106,7 @@ async fn service_reset_command_resets_node_stack() {
             git_ref: None,
             variant: None,
             build: true,
-            start: false,
+            run: false,
             args: Vec::new(),
             instance_id: None,
             idle_timeout: 60,

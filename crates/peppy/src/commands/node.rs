@@ -120,8 +120,12 @@ pub enum NodeCommands {
         build: bool,
         /// If set, will attempt to spawn an instance directly after adding the
         /// node to the node stack. Implies `--build`.
+        ///
+        /// When the node requires runtime arguments, pass them as trailing
+        /// key=value pairs after the source:
+        /// `peppy node add ./my-camera --run resolution=1280x720 frequency=30`
         #[arg(long)]
-        start: bool,
+        run: bool,
         /// Runtime arguments as key=value pairs (e.g., resolution=1280x720 frequency=30)
         /// These are passed to the node via PEPPY_RUNTIME_CONFIG when run is true
         #[arg(value_parser = parse_key_value_arg)]
@@ -260,15 +264,15 @@ impl Command for NodeCommand {
                 git_ref,
                 variant,
                 build,
-                start,
+                run,
                 args,
                 instance_id,
                 idle_timeout,
                 max_timeout,
                 force,
             } => {
-                let start_options = if start {
-                    Some(add::StartAfterAddOptions { args, instance_id })
+                let run_options = if run {
+                    Some(add::RunAfterAddOptions { args, instance_id })
                 } else {
                     None
                 };
@@ -277,16 +281,16 @@ impl Command for NodeCommand {
                     max_secs: max_timeout,
                 };
                 let source = source.unwrap_or_else(|| ".".to_string());
-                // `--start` implies `--build`: you can't start an instance of
+                // `--run` implies `--build`: you can't run an instance of
                 // an unbuilt node.
-                let chain_build = build || start;
+                let chain_build = build || run;
                 add::add_node(
                     ctx,
                     add::AddNodeParams {
                         source,
                         git_ref,
                         variant,
-                        start_options,
+                        run_options,
                         timeouts,
                         force,
                         confirm_reader: None,
