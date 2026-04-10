@@ -127,10 +127,8 @@ fn format_node_info(out: &mut String, response: &NodeInfoResponse) {
                 let _ = writeln!(out, "  Run logs:");
                 // `run_log_paths` is aligned 1:1 with `instances` (same
                 // order, same length) — see the info handler.
-                for (instance, log_path) in response
-                    .instances
-                    .iter()
-                    .zip(response.run_log_paths.iter())
+                for (instance, log_path) in
+                    response.instances.iter().zip(response.run_log_paths.iter())
                 {
                     let _ = writeln!(
                         out,

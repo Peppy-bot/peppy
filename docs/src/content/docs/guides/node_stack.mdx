@@ -48,7 +48,7 @@ The output of this command provides some useful information:
 Adding node from /private/tmp/hello_world...
 Log file: ~/.peppy/logs/add/hello_world_0.1.0_20260121_224824_699.log
 Added node hello_world:0.1.0 to the node stack
-Snapshot path: ~/.peppy/added_nodes/hello_world_0.1.0_b19507
+Snapshot path: ~/.peppy/built_nodes/hello_world_0.1.0_b19507
 ```
 This gives you access to the log file for debugging in case the `add` command fails and also shows a "snapshot path".
 When a node is added to the node stack, a copy is made in the peppy cache to "snapshot" the node based on its name and tag.
@@ -69,7 +69,7 @@ The `node run` command outputs the path to a log file where you can inspect the 
 For example:
 ```sh
 cat /home/user/.peppy/logs/run/elegant-solomon-5423.log
-[2026-02-17T10:15:23.599] Executing run_cmd: uv run hello_world (working_dir: /home/user/.peppy/added_nodes/hello_world_0.1.0_f2765c)
+[2026-02-17T10:15:23.599] Executing run_cmd: uv run hello_world (working_dir: /home/user/.peppy/built_nodes/hello_world_0.1.0_f2765c)
 [2026-02-17T10:15:23.837] [stdout] hello world count 1
 [2026-02-17T10:15:26.848] [stdout] hello world count 2
 [2026-02-17T10:15:29.852] [stdout] hello world count 3

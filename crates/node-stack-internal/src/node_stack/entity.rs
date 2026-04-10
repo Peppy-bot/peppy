@@ -232,7 +232,7 @@ pub struct BuildContext<'a> {
     /// then moved to peppy storage.
     pub working_dir: &'a Path,
     /// Resolved peppy directory layout. The built `.sif`/archive is placed
-    /// inside `peppy_dirs.added_nodes_dir()`.
+    /// inside `peppy_dirs.built_nodes_dir()`.
     pub peppy_dirs: &'a PeppyDirs,
     /// Channel that streams stdout/stderr lines from the build child process
     /// (and from `build_cmd`, for process nodes) back to the caller.
@@ -446,7 +446,7 @@ impl NodeEntity {
     }
 
     /// Returns the path to the built `.sif`/archive in
-    /// `~/.peppy/added_nodes`. `None` until the entity has reached `Ready`,
+    /// `~/.peppy/built_nodes`. `None` until the entity has reached `Ready`,
     /// and `None` for the synthetic root entity (which has no artifact).
     pub fn artifact_path(&self) -> Option<&Path> {
         match &self.stage {

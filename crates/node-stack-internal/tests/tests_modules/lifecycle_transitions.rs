@@ -507,7 +507,7 @@ async fn concurrent_builds_are_rejected_immediately() {
     assert!(matches!(guard.stage(), NodeStage::Ready { .. }));
 
     // The on-disk archive exists exactly once.
-    let archive = peppy_dirs.added_nodes_dir().join("sensor_1.0.0.tar.zst");
+    let archive = peppy_dirs.built_nodes_dir().join("sensor_1.0.0.tar.zst");
     assert!(archive.is_file(), "expected archive at {:?}", archive);
 }
 
@@ -614,7 +614,7 @@ async fn build_runs_add_cmd_for_process_node() {
     drop(guard);
 
     // The archive exists and contains the marker file produced by build_cmd.
-    let archive = h.peppy_dirs.added_nodes_dir().join("sensor_1.0.0.tar.zst");
+    let archive = h.peppy_dirs.built_nodes_dir().join("sensor_1.0.0.tar.zst");
     assert!(archive.is_file(), "expected archive at {:?}", archive);
 
     // Decode the archive and look for the marker.

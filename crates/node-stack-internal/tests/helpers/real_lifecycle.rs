@@ -108,7 +108,7 @@ pub fn override_execution_for_fixture(mut config: NodeConfig) -> NodeConfig {
 
 /// Pushes `config` into `stack`, rewrites its execution fields for fixture
 /// use, then drives the real `NodeEntity::build` to produce a `Ready` entity
-/// with an on-disk archive in `harness.peppy_dirs.added_nodes_dir()`.
+/// with an on-disk archive in `harness.peppy_dirs.built_nodes_dir()`.
 ///
 /// Returns the `Ready` entity handle.
 pub async fn build_ready(
