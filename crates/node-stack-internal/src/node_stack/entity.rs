@@ -24,6 +24,13 @@ use super::start_steps::{
     spawn_container_node, spawn_process_node,
 };
 
+/// Serializable representation of a single tracked instance with its state.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SerializedInstance {
+    pub instance_id: String,
+    pub state: String,
+}
+
 /// Serializable representation of a node in the graph.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SerializedNode {
@@ -32,6 +39,13 @@ pub struct SerializedNode {
     pub config_path: String,
     pub artifact_path: Option<String>,
     pub instance_ids: Vec<String>,
+    /// Lifecycle stage name (e.g. "Added", "Building", "Ready", "Root").
+    #[serde(default)]
+    pub stage: Option<String>,
+    /// All tracked instances with their per-instance state, including
+    /// in-flight `Starting` instances not yet in `instance_ids`.
+    #[serde(default)]
+    pub instances: Vec<SerializedInstance>,
 }
 
 impl SerializedNode {
@@ -45,16 +59,40 @@ impl SerializedNode {
         self.instance_ids.len()
     }
 
-    /// Returns instance info in the format "N instance(s): ["id1", "id2"]".
+    /// Returns the lifecycle stage label, or "Unknown" for legacy payloads.
+    pub fn stage_label(&self) -> &str {
+        self.stage.as_deref().unwrap_or("Unknown")
+    }
+
+    /// Returns instance info in the format "N instance(s): [id1[running], id2[starting]]".
     pub fn instance_info(&self) -> String {
-        let count = self.instance_count();
-        let suffix = if count == 1 { "instance" } else { "instances" };
-        let ids: Vec<String> = self
-            .instance_ids
-            .iter()
-            .map(|id| format!("\"{}\"", id))
-            .collect();
-        format!("{} {}: [{}]", count, suffix, ids.join(", "))
+        let suffix = if self.instances.len() == 1 {
+            "instance"
+        } else {
+            "instances"
+        };
+        if self.instances.is_empty() {
+            let count = self.instance_count();
+            let legacy_suffix = if count == 1 { "instance" } else { "instances" };
+            let ids: Vec<String> = self
+                .instance_ids
+                .iter()
+                .map(|id| format!("\"{}\"", id))
+                .collect();
+            format!("{} {}: [{}]", count, legacy_suffix, ids.join(", "))
+        } else {
+            let details: Vec<String> = self
+                .instances
+                .iter()
+                .map(|i| format!("{}[{}]", i.instance_id, i.state))
+                .collect();
+            format!(
+                "{} {}: [{}]",
+                self.instances.len(),
+                suffix,
+                details.join(", ")
+            )
+        }
     }
 }
 
@@ -74,6 +112,7 @@ pub struct SerializedNodeGraph {
 
 impl From<&NodeEntity> for SerializedNode {
     fn from(entity: &NodeEntity) -> Self {
+        let all_instances = entity.instances();
         Self {
             name: entity.config().manifest.name.as_str().to_string(),
             tag: entity.config().manifest.tag.clone(),
@@ -86,11 +125,21 @@ impl From<&NodeEntity> for SerializedNode {
             // Exposing Starting instances here would let external observers
             // try to interact with something that hasn't subscribed to
             // messenger services yet.
-            instance_ids: entity
-                .instances()
+            instance_ids: all_instances
                 .iter()
                 .filter(|i| i.state() == InstanceState::Running)
                 .map(|i| i.instance_id().as_str().to_string())
+                .collect(),
+            stage: Some(entity.stage().name().to_string()),
+            instances: all_instances
+                .iter()
+                .map(|i| SerializedInstance {
+                    instance_id: i.instance_id().as_str().to_string(),
+                    state: match i.state() {
+                        InstanceState::Starting => "starting".to_string(),
+                        InstanceState::Running => "running".to_string(),
+                    },
+                })
                 .collect(),
         }
     }

@@ -79,20 +79,22 @@ async fn listen_for_node_list_returns_succeeds() {
         node.get("name").and_then(|v| v.as_str()) == Some(&started_core_node.core_node_name)
             && node.get("tag").and_then(|v| v.as_str())
                 == Some(started_core_node.core_node_tag.as_str())
+            && node.get("stage").and_then(|v| v.as_str()) == Some("Root")
     });
     assert!(
         has_root,
-        "graph_json should include root node entry, got:\n{}",
+        "graph_json should include root node entry with stage 'Root', got:\n{}",
         response.graph_json
     );
 
     let has_added_node = nodes.iter().any(|node| {
         node.get("name").and_then(|v| v.as_str()) == Some(TARGET_NODE_NAME)
             && node.get("tag").and_then(|v| v.as_str()) == Some(TARGET_NODE_TAG)
+            && node.get("stage").and_then(|v| v.as_str()) == Some("Added")
     });
     assert!(
         has_added_node,
-        "graph_json should include added node entry, got:\n{}",
+        "graph_json should include added node entry with stage 'Added', got:\n{}",
         response.graph_json
     );
 }

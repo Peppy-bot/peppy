@@ -6,7 +6,8 @@ mod validation;
 
 pub use entity::{
     BuildContext, DependencySpec, InstanceState, NodeEntity, NodeStage, OutputSinks,
-    SerializedNodeGraph, StartContext, StartedInstanceCtx, TrackedNodeInstance, WorkingDirGuard,
+    SerializedInstance, SerializedNodeGraph, StartContext, StartedInstanceCtx, TrackedNodeInstance,
+    WorkingDirGuard,
 };
 pub use validation::{collect_dependency_specs, validate_dependency_specs};
 
@@ -475,11 +476,13 @@ impl NodeStackInner {
                 let guard = handle.read();
                 let name = guard.config().manifest.name.as_str();
                 let tag = &guard.config().manifest.tag;
+                let stage = guard.stage().name();
                 let instance_count = guard.instances().len();
                 format!(
-                    "label=\"{}:{}\\n({} instance{})\"",
+                    "label=\"{}:{}\\n[{}] ({} instance{})\"",
                     name,
                     tag,
+                    stage,
                     instance_count,
                     if instance_count == 1 { "" } else { "s" }
                 )
