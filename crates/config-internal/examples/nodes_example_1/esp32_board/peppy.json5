@@ -42,7 +42,7 @@
   },
   execution: {
     language: "rust",
-    start_cmd: [
+    run_cmd: [
       // This programs compiles and flashes the program to the board
       "espflash",
       "flash",

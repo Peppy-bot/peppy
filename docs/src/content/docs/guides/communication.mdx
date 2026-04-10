@@ -42,7 +42,7 @@ Each node is only aware of the interfaces it exposes and the ones it consumes, a
       execution: {
         language: "python",
         build_cmd: ["uv", "sync", "--no-editable"],
-        start_cmd: ["uv", "run", "controller"]
+        run_cmd: ["uv", "run", "controller"]
       },
     }
     ```
@@ -72,7 +72,7 @@ Each node is only aware of the interfaces it exposes and the ones it consumes, a
       execution: {
         language: "rust",
         build_cmd: ["cargo", "build", "--release"],
-        start_cmd: ["./target/release/controller"]
+        run_cmd: ["./target/release/controller"]
       },
     }
     ```
@@ -189,13 +189,13 @@ We need to make sure that at least one instance is started for `hello_receiver:0
 The order in which the nodes are started does not affect the node communication.
 Let's start a `hello_world_param:0.1.0` instance:
 ```sh
-peppy node start hello_world_param:0.1.0 name=planet
+peppy node run hello_world_param:0.1.0 name=planet
 ```
 
 Since our node requires a `name`, we provide it with that argument on startup.
 Now let's start the `hello_receiver` node:
 ```sh
-❯ peppy node start hello_receiver:0.1.0
+❯ peppy node run hello_receiver:0.1.0
 Running node hello_receiver:0.1.0...
 Starting node hello_receiver:0.1.0 with instance_id 'vigorous-buck-8117' and 0 argument(s)...
 Calling node_start for hello_receiver:0.1.0 (instance_id=vigorous-buck-8117)...
@@ -219,7 +219,7 @@ We can see the messages received from the `hello_world_param:0.1.0` instance!
 
 Now let's push things a little further. Imagine we need a second instance with different parameters—we can start one like this:
 ```sh
-❯ peppy node start hello_world_param:0.1.0 name=you
+❯ peppy node run hello_world_param:0.1.0 name=you
 Running node hello_world_param:0.1.0...
 Starting node hello_world_param:0.1.0 with instance_id 'admiring-black-0614' and 1 argument(s)...
 Calling node_start for hello_world_param:0.1.0 (instance_id=admiring-black-0614)...

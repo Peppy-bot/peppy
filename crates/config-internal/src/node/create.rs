@@ -26,7 +26,7 @@ struct LauncherConfigTemplate;
   },
   execution: {
     language: "rust",
-    start_cmd: {{ start_cmd | safe }}
+    run_cmd: {{ run_cmd | safe }}
   }
 }
 "#,
@@ -34,7 +34,7 @@ struct LauncherConfigTemplate;
 )]
 struct NodeTemplate<'a> {
     name: &'a str,
-    start_cmd: &'a str,
+    run_cmd: &'a str,
 }
 
 #[derive(Debug, Clone)]
@@ -44,10 +44,10 @@ pub struct NodeConfigCreator {
 
 impl NodeConfigCreator {
     pub fn node(node_name: &str) -> Result<Self> {
-        let start_cmd = format!(r#"["./target/release/{}"]"#, node_name);
+        let run_cmd = format!(r#"["./target/release/{}"]"#, node_name);
         let tpl = NodeTemplate {
             name: node_name,
-            start_cmd: &start_cmd,
+            run_cmd: &run_cmd,
         };
         let rendered_template = tpl.render().map_err(|e| Error::Serialize(e.to_string()))?;
 
@@ -105,7 +105,7 @@ mod tests {
             },
             execution: {
                 language: "rust",
-                start_cmd: ["./target/release/a_node"],
+                run_cmd: ["./target/release/a_node"],
             }
         }"#;
 

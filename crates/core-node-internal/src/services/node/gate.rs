@@ -1,10 +1,10 @@
 //! Goal-admission concurrency gate shared by `node_add`, `node_build`, and
-//! `node_start`.
+//! `node_run`.
 //!
 //! Each of those actions allows only one in-flight task at a time and rejects
 //! concurrent goals with `"action already in progress (times out in Xs)"`.
 //! `node_add` and `node_build` additionally support `--force`, which aborts
-//! the in-flight task before admitting the new one. `node_start` does not
+//! the in-flight task before admitting the new one. `node_run` does not
 //! support force, so its handler simply never calls [`ConcurrencyGate::force_abort`].
 //!
 //! All gate state lives behind a single `parking_lot::Mutex`, so admission
@@ -28,7 +28,7 @@ pub(crate) enum Admission {
 }
 
 /// Handle to the in-flight task and its cancellation token. Only populated by
-/// handlers that support `--force` (add, build); `node_start` leaves it `None`.
+/// handlers that support `--force` (add, build); `node_run` leaves it `None`.
 #[derive(Default)]
 struct GateState {
     running_task: Option<JoinHandle<()>>,

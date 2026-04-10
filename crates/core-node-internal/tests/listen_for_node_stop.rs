@@ -44,7 +44,7 @@ async fn listen_for_node_stop_success() {
             },
             execution: {
                 language: "rust",
-                start_cmd: ["sleep", "10"]
+                run_cmd: ["sleep", "10"]
             }
         }"#
     .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
@@ -71,7 +71,7 @@ async fn listen_for_node_stop_success() {
     build_staged_node(&started_core_node, TARGET_NODE_NAME, TARGET_NODE_TAG).await;
 
     // Drive the real start lifecycle so the entity tracks a live child
-    // process (spawned from the node's `start_cmd = ["sleep", "10"]`).
+    // process (spawned from the node's `run_cmd = ["sleep", "10"]`).
     let instance_id = Name::new(TARGET_INSTANCE_ID).expect("valid instance id");
     let running = spawn_real_running_instance(
         &started_core_node,

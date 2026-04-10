@@ -19,7 +19,7 @@ use super::build_steps::{
     ContainerBuildInputs, archive_dir_to_storage, build_container_image, move_sif_to_storage,
     run_build_cmd,
 };
-use super::start_steps::{
+use super::run_steps::{
     SpawnContainerInputs, create_instance_dir, extract_node_archive, kill_and_collect_error,
     spawn_container_node, spawn_process_node,
 };

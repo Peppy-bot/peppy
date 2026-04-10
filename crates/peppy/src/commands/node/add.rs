@@ -10,8 +10,8 @@ use tracing::info;
 
 use super::TimeoutConfig;
 use super::env::caller_env_overrides;
+use super::run::start_instance_async;
 use super::source::{parse_node_source, parse_variant_source};
-use super::start::start_instance_async;
 use crate::commands::{CALLER_INSTANCE_ID, GOAL_TIMEOUT};
 use crate::context::AppContext;
 use crate::error::{Error, Result};

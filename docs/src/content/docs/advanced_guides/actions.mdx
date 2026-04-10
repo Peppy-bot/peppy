@@ -95,7 +95,7 @@ Each action defines a `goal_service`, a `feedback_topic`, and a `result_service`
   execution: {
     language: "rust",
     build_cmd: ["cargo", "build", "--release"],
-    start_cmd: ["./target/release/brain"]
+    run_cmd: ["./target/release/brain"]
   },
 }
 ```
@@ -229,7 +229,7 @@ Dependencies are declared in `manifest.depends_on` and referenced by `local_node
   execution: {
     language: "rust",
     build_cmd: ["cargo", "build", "--release"],
-    start_cmd: ["./target/release/controller"]
+    run_cmd: ["./target/release/controller"]
   },
 }
 ```

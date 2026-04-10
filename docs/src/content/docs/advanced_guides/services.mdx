@@ -53,7 +53,7 @@ Each service defines a `name`, an optional `request_message_format`, and an opti
   execution: {
     language: "rust",
     build_cmd: ["cargo", "build", "--release"],
-    start_cmd: ["./target/release/uvc_camera"]
+    run_cmd: ["./target/release/uvc_camera"]
   },
 }
 ```
@@ -164,7 +164,7 @@ Dependencies are declared in `manifest.depends_on` and referenced by `local_node
   execution: {
     language: "rust",
     build_cmd: ["cargo", "build", "--release"],
-    start_cmd: ["./target/release/robot_brain"]
+    run_cmd: ["./target/release/robot_brain"]
   },
 }
 ```

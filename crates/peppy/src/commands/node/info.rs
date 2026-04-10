@@ -81,8 +81,8 @@ fn format_node_info(out: &mut String, response: &NodeInfoResponse) {
     if let Some(build_cmd) = &config.execution.build_cmd {
         let _ = writeln!(out, "Build cmd:   {}", build_cmd.join(" "));
     }
-    if let Some(start_cmd) = &config.execution.start_cmd {
-        let _ = writeln!(out, "Start cmd: {}", start_cmd.join(" "));
+    if let Some(run_cmd) = &config.execution.run_cmd {
+        let _ = writeln!(out, "Run cmd: {}", run_cmd.join(" "));
     }
     if let Some(container) = &config.execution.container {
         let _ = writeln!(out, "Container: {}", container.def_file);
@@ -405,7 +405,7 @@ mod tests {
             },
             execution: {
                 language: "rust",
-                start_cmd: ["sleep", "10"]
+                run_cmd: ["sleep", "10"]
             }
         }"#;
         let dir = tempfile::tempdir().expect("tempdir");

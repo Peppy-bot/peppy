@@ -97,7 +97,7 @@ pub fn lifecycle_harness() -> LifecycleHarness {
 pub fn override_execution_for_fixture(mut config: NodeConfig) -> NodeConfig {
     config.execution.container = None;
     config.execution.build_cmd = None;
-    config.execution.start_cmd = Some(
+    config.execution.run_cmd = Some(
         LONG_RUNNING_START_CMD
             .iter()
             .map(|s| s.to_string())
@@ -173,7 +173,7 @@ impl Drop for RunningInstanceGuard {
 /// to flip it to `Running`. Returns a guard that cleans up the child on drop.
 ///
 /// The entity must be in `Ready` (typically produced by [`build_ready`]) and
-/// its `start_cmd` must be spawnable — [`build_ready`] sets this up for you.
+/// its `run_cmd` must be spawnable — [`build_ready`] sets this up for you.
 pub async fn spawn_running_instance(
     handle: EntityHandle,
     harness: &LifecycleHarness,

@@ -4,7 +4,7 @@ use common::{
     AbortOnDrop, CALLER_INSTANCE_ID, create_tar_zst_from_dir, real_build_and_spawn_instance,
     start_core_node_with_mock_messenger, write_peppy_json5,
 };
-use common::{NodeStartTestTimeouts, send_node_add_then_build, send_node_start_and_wait};
+use common::{NodeRunTestTimeouts, send_node_add_then_build, send_node_run_and_wait};
 use config::consts::NODE_CONFIG_FILE;
 use config::node::{Name, PeppygenLanguage};
 use config::test_helpers;
@@ -60,7 +60,7 @@ async fn listen_for_node_info_on_fs_node_success() {
             },
             execution: {
                 language: "rust",
-                start_cmd: ["sleep", "10"]
+                run_cmd: ["sleep", "10"]
             }
         }"#
     .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
@@ -243,7 +243,7 @@ async fn listen_for_node_info_on_http_node_success() {
             },
             execution: {
                 language: "rust",
-                start_cmd: ["sleep", "10"]
+                run_cmd: ["sleep", "10"]
             }
         }"#
     .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
@@ -352,7 +352,7 @@ async fn listen_for_node_info_has_instance_ids() {
             },
             execution: {
                 language: "rust",
-                start_cmd: ["sleep", "10"]
+                run_cmd: ["sleep", "10"]
             }
         }"#
     .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
@@ -375,7 +375,7 @@ async fn listen_for_node_info_has_instance_ids() {
         add_result.error_message
     );
 
-    // Simulate the node exposing ready/health services for each instance so the node_start action
+    // Simulate the node exposing ready/health services for each instance so the node_run action
     // can proceed when using the mock messenger (we start `sleep` rather than an actual node).
     let node_handle = MessengerHandle::from_shared(Arc::clone(&started_core_node.shared_messenger));
     let _ready_task_1 = AbortOnDrop(
@@ -428,24 +428,24 @@ async fn listen_for_node_info_has_instance_ids() {
         TARGET_INSTANCE_ID_1,
     );
 
-    let start_response_1 = send_node_start_and_wait(
+    let start_response_1 = send_node_run_and_wait(
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
         &runtime_config_json5_1,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
-        &NodeStartTestTimeouts {
+        &NodeRunTestTimeouts {
             goal: Duration::from_secs(5),
             result: Duration::from_secs(10),
         },
         None,
     )
     .await
-    .expect("node_start (instance 1) should complete");
+    .expect("node_run (instance 1) should complete");
 
     assert!(
         start_response_1.result.success,
-        "node_start (instance 1) should succeed, got error: {:?}",
+        "node_run (instance 1) should succeed, got error: {:?}",
         start_response_1.result.error_message
     );
 
@@ -455,24 +455,24 @@ async fn listen_for_node_info_has_instance_ids() {
         TARGET_INSTANCE_ID_2,
     );
 
-    let start_response_2 = send_node_start_and_wait(
+    let start_response_2 = send_node_run_and_wait(
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
         &runtime_config_json5_2,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
-        &NodeStartTestTimeouts {
+        &NodeRunTestTimeouts {
             goal: Duration::from_secs(5),
             result: Duration::from_secs(10),
         },
         None,
     )
     .await
-    .expect("node_start (instance 2) should complete");
+    .expect("node_run (instance 2) should complete");
 
     assert!(
         start_response_2.result.success,
-        "node_start (instance 2) should succeed, got error: {:?}",
+        "node_run (instance 2) should succeed, got error: {:?}",
         start_response_2.result.error_message
     );
 
@@ -539,7 +539,7 @@ async fn listen_for_node_info_recovers_after_invalid_request() {
             },
             execution: {
                 language: "rust",
-                start_cmd: ["sleep", "10"]
+                run_cmd: ["sleep", "10"]
             }
         }"#
     .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
@@ -576,7 +576,7 @@ async fn listen_for_node_info_without_variant_shows_available_variants() {
         },
         execution: {
             language: "rust",
-            start_cmd: ["sleep", "10"]
+            run_cmd: ["sleep", "10"]
         }
     }"#;
     write_peppy_json5(root_dir.path(), root_peppy_json5);
@@ -640,7 +640,7 @@ async fn listen_for_node_info_auto_resolves_default_variant() {
             schema_version: 1,
             execution: {
                 language: "python",
-                start_cmd: ["python", "main.py"]
+                run_cmd: ["python", "main.py"]
             }
         }"#,
     )
@@ -669,7 +669,7 @@ async fn listen_for_node_info_auto_resolves_default_variant() {
         PeppygenLanguage::Python
     );
     assert_eq!(
-        info_response.config.execution.start_cmd.as_deref(),
+        info_response.config.execution.run_cmd.as_deref(),
         Some(&["python".to_string(), "main.py".to_string()][..])
     );
 
@@ -711,7 +711,7 @@ async fn listen_for_node_info_archive_default_variant_uses_archived_root() {
             schema_version: 1,
             execution: {
                 language: "python",
-                start_cmd: ["python", "from_archive.py"]
+                run_cmd: ["python", "from_archive.py"]
             }
         }"#,
     );
@@ -726,7 +726,7 @@ async fn listen_for_node_info_archive_default_variant_uses_archived_root() {
             schema_version: 1,
             execution: {
                 language: "python",
-                start_cmd: ["python", "from_host_dir.py"]
+                run_cmd: ["python", "from_host_dir.py"]
             }
         }"#,
     );
@@ -750,7 +750,7 @@ async fn listen_for_node_info_archive_default_variant_uses_archived_root() {
         PeppygenLanguage::Python
     );
     assert_eq!(
-        info_response.config.execution.start_cmd.as_deref(),
+        info_response.config.execution.run_cmd.as_deref(),
         Some(&["python".to_string(), "from_archive.py".to_string()][..]),
         "execution should come from the archived variant, not the host decoy"
     );

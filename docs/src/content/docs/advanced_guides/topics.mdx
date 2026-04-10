@@ -50,7 +50,7 @@ Each topic defines a `name`, a `qos_profile`, and a `message_format`:
   execution: {
     language: "rust",
     build_cmd: ["cargo", "build", "--release"],
-    start_cmd: ["./target/release/uvc_camera"]
+    run_cmd: ["./target/release/uvc_camera"]
   },
 }
 ```
@@ -153,7 +153,7 @@ Dependencies are declared in `manifest.depends_on` and referenced by `local_node
   execution: {
     language: "rust",
     build_cmd: ["cargo", "build", "--release"],
-    start_cmd: ["./target/release/web_video_stream"]
+    run_cmd: ["./target/release/web_video_stream"]
   },
 }
 ```

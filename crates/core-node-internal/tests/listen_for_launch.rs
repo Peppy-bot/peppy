@@ -20,7 +20,7 @@ use crate::common::start_core_node_with_mock_messenger;
 
 struct NodeConfigOptions<'a> {
     build_cmd: &'a [&'a str],
-    start_cmd: &'a [&'a str],
+    run_cmd: &'a [&'a str],
     expects_uvc_camera: bool,
     emits_camera_stream: bool,
 }
@@ -29,7 +29,7 @@ impl Default for NodeConfigOptions<'_> {
     fn default() -> Self {
         Self {
             build_cmd: &["true"],
-            start_cmd: &[],
+            run_cmd: &[],
             expects_uvc_camera: false,
             emits_camera_stream: false,
         }
@@ -105,7 +105,7 @@ fn write_node_config(
     node_name: &str,
     node_tag: &str,
     git_hash: &str,
-    start_cmd: &[&str],
+    run_cmd: &[&str],
     expects_uvc_camera: bool,
     emits_camera_stream: bool,
 ) -> PathBuf {
@@ -115,7 +115,7 @@ fn write_node_config(
         node_tag,
         git_hash,
         NodeConfigOptions {
-            start_cmd,
+            run_cmd,
             expects_uvc_camera,
             emits_camera_stream,
             ..Default::default()
@@ -132,7 +132,7 @@ fn write_node_config_with_options(
 ) -> PathBuf {
     let NodeConfigOptions {
         build_cmd,
-        start_cmd,
+        run_cmd,
         expects_uvc_camera,
         emits_camera_stream,
     } = options;
@@ -145,9 +145,9 @@ fn write_node_config_with_options(
         .collect::<Vec<_>>()
         .join(", ");
 
-    let start_cmd_json5 = start_cmd
+    let run_cmd_json5 = run_cmd
         .iter()
-        .map(|arg| serde_json::to_string(arg).expect("start_cmd arg should serialize"))
+        .map(|arg| serde_json::to_string(arg).expect("run_cmd arg should serialize"))
         .collect::<Vec<_>>()
         .join(", ");
 
@@ -204,14 +204,14 @@ fn write_node_config_with_options(
               execution: {
                 language: "rust",
                 build_cmd: [{build_cmd_json5}],
-                start_cmd: [{start_cmd_json5}]
+                run_cmd: [{run_cmd_json5}]
               }
             }"#
         .replace("{node_name}", node_name)
         .replace("{node_tag}", node_tag)
         .replace("{depends_on}", depends_on)
         .replace("{build_cmd_json5}", &build_cmd_json5)
-        .replace("{start_cmd_json5}", &start_cmd_json5)
+        .replace("{run_cmd_json5}", &run_cmd_json5)
         .replace("{interfaces}", &interfaces),
     )
     .expect("failed to write node config");
@@ -258,7 +258,7 @@ fn create_uvc_camera_repo(to_path: &Path, node_tag: &str) -> PathBuf {
               execution: {
                 language: "rust",
                 build_cmd: ["true"],
-                start_cmd: ["sleep", "60"]
+                run_cmd: ["sleep", "60"]
               }
             }"#
         .replace("{node_tag}", node_tag),
@@ -778,27 +778,27 @@ async fn listen_for_launch_configuration_succeed() {
 
     // Each started instance should have a start log entry with a valid path and not marked as failed.
     assert_eq!(
-        result.node_start_logs.len(),
+        result.node_run_logs.len(),
         3,
         "should have 3 start log entries (camera_front, camera_rear, main_robot_brain)"
     );
     assert!(
         result
-            .node_start_logs
+            .node_run_logs
             .iter()
             .all(|e| !e.log_path.as_os_str().is_empty()),
         "all start log paths should be non-empty, got: {:?}",
         result
-            .node_start_logs
+            .node_run_logs
             .iter()
             .map(|e| &e.log_path)
             .collect::<Vec<_>>()
     );
     assert!(
-        result.node_start_logs.iter().all(|e| !e.failed),
+        result.node_run_logs.iter().all(|e| !e.failed),
         "no start log entry should be marked failed, got: {:?}",
         result
-            .node_start_logs
+            .node_run_logs
             .iter()
             .filter(|e| e.failed)
             .map(|e| &e.instance_id)
@@ -1275,7 +1275,7 @@ async fn listen_for_launch_configuration_fails_when_build_cmd_fails_and_restores
         "test-hash",
         NodeConfigOptions {
             build_cmd: &["false"], // This command always fails with exit code 1
-            start_cmd: &["sleep", "60"],
+            run_cmd: &["sleep", "60"],
             ..Default::default()
         },
     );
@@ -1320,7 +1320,7 @@ async fn listen_for_launch_configuration_fails_when_build_cmd_fails_and_restores
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_launch_configuration_fails_when_start_cmd_exits_with_error() {
+async fn listen_for_launch_configuration_fails_when_run_cmd_exits_with_error() {
     const NODE_NAME: &str = "failing_start_node";
     const NODE_TAG: &str = "0.1.0";
     const INSTANCE_ID: &str = "fs1";
@@ -1348,7 +1348,7 @@ async fn listen_for_launch_configuration_fails_when_start_cmd_exits_with_error()
         .push_config(existing_config, false, &existing_path)
         .expect("should seed stack");
 
-    // Node whose start_cmd exits immediately with a non-zero status.
+    // Node whose run_cmd exits immediately with a non-zero status.
     let _failing_node_path = write_node_config_with_options(
         nodes_dir.path(),
         NODE_NAME,
@@ -1356,7 +1356,7 @@ async fn listen_for_launch_configuration_fails_when_start_cmd_exits_with_error()
         "test-hash",
         NodeConfigOptions {
             build_cmd: &["true"],
-            start_cmd: &["false"], // exits immediately with status 1
+            run_cmd: &["false"], // exits immediately with status 1
             ..Default::default()
         },
     );
@@ -1379,12 +1379,12 @@ async fn listen_for_launch_configuration_fails_when_start_cmd_exits_with_error()
 
     assert!(
         !result.success,
-        "launch should fail because start_cmd exits with error"
+        "launch should fail because run_cmd exits with error"
     );
 
     let error_message = result
         .error_message
-        .expect("error_message should be set on start_cmd failure");
+        .expect("error_message should be set on run_cmd failure");
     assert!(
         error_message.contains(&format!("{}:{}", NODE_NAME, NODE_TAG)),
         "error message should contain the node name:tag, got: {error_message}"
@@ -1396,7 +1396,7 @@ async fn listen_for_launch_configuration_fails_when_start_cmd_exits_with_error()
 
     assert!(
         node_stack.contains("existing_node", NODE_TAG),
-        "stack should be restored on start_cmd failure"
+        "stack should be restored on run_cmd failure"
     );
     assert!(
         !node_stack.contains(NODE_NAME, NODE_TAG),
@@ -1435,21 +1435,21 @@ async fn listen_for_launch_configuration_fails_when_start_cmd_exits_with_error()
 
     // The failed start should produce one start log entry marked as failed.
     assert_eq!(
-        result.node_start_logs.len(),
+        result.node_run_logs.len(),
         1,
         "should have 1 start log entry for the failed instance"
     );
     assert!(
-        result.node_start_logs[0].failed,
+        result.node_run_logs[0].failed,
         "start log entry should be marked failed"
     );
-    assert_eq!(result.node_start_logs[0].instance_id, INSTANCE_ID);
+    assert_eq!(result.node_run_logs[0].instance_id, INSTANCE_ID);
     assert_eq!(
-        result.node_start_logs[0].node_label,
+        result.node_run_logs[0].node_label,
         format!("{}:{}", NODE_NAME, NODE_TAG)
     );
     assert!(
-        !result.node_start_logs[0].log_path.as_os_str().is_empty(),
+        !result.node_run_logs[0].log_path.as_os_str().is_empty(),
         "start log path should be non-empty"
     );
 }
@@ -1472,7 +1472,7 @@ async fn listen_for_node_launch_uses_env_overrides_for_path() {
         NODE_NAME,
         NODE_TAG,
         "test-hash",
-        &["printout", "60"], // start_cmd that sleeps via printout
+        &["printout", "60"], // run_cmd that sleeps via printout
         false,
         false,
     );

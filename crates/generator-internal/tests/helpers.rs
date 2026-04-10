@@ -32,7 +32,7 @@ pub const STUB_NODE_CONFIG: &str = r#"{
 
   execution: {
     language: "rust",
-    start_cmd: ["./target/release/generated_node"]
+    run_cmd: ["./target/release/generated_node"]
   }
 }
 "#;
@@ -540,7 +540,7 @@ pub const STUB_PYTHON_NODE_CONFIG: &str = r#"{
     tag: "0.1.0" },
 
   execution: { language: "python",
-    start_cmd: ["uv", "run", "python", "main.py"]
+    run_cmd: ["uv", "run", "python", "main.py"]
   }
 }
 "#;

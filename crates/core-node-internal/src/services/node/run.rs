@@ -2,7 +2,7 @@ use super::super::action_loop::{ActionResult, ActionState, GoalHandler, run_acti
 use super::gate::ConcurrencyGate;
 use super::{FeedbackLine, FeedbackStream, create_action_log_file, write_error_to_log};
 use crate::Result;
-use crate::encoding::{NodeStartFeedback, NodeStartGoal, NodeStartGoalResponse, NodeStartResult};
+use crate::encoding::{NodeRunFeedback, NodeRunGoal, NodeRunGoalResponse, NodeRunResult};
 use crate::names;
 use config::consts::PeppyDirs;
 use config::node::Name;
@@ -36,7 +36,7 @@ const CONTAINER_STARTUP_OUTPUT_QUIET_WINDOW: Duration = Duration::from_millis(10
 const FEEDBACK_FLUSH_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Clone)]
-pub struct NodeStartServiceConfig {
+pub struct NodeRunServiceConfig {
     pub node_startup_timeout: Duration,
     pub node_start_health_timeout: Duration,
     pub peppy_dirs: PeppyDirs,
@@ -46,7 +46,7 @@ pub struct NodeStartServiceConfig {
 }
 
 #[derive(Clone)]
-pub(crate) struct NodeStartActionContext {
+pub(crate) struct NodeRunActionContext {
     pub(crate) node_stack: Arc<NodeStack>,
     pub(crate) messenger: MessengerHandle,
     pub(crate) core_node_name: String,
@@ -59,32 +59,32 @@ pub(crate) struct NodeStartActionContext {
     pub(crate) health_monitor_max_failures: u32,
 }
 
-struct ProcessNodeStartContext {
-    action: NodeStartActionContext,
+struct ProcessNodeRunContext {
+    action: NodeRunActionContext,
     feedback_tx: mpsc::UnboundedSender<FeedbackLine>,
     log_file: Arc<StdMutex<File>>,
     sender_instance_id: String,
 }
 
-pub async fn listen_for_node_start(
+pub async fn listen_for_node_run(
     messenger: &MessengerHandle,
     core_node_name: &str,
     instance_id: &str,
     node_name: &str,
     node_stack: Arc<NodeStack>,
-    config: NodeStartServiceConfig,
+    config: NodeRunServiceConfig,
 ) -> Result<JoinHandle<Result<()>>> {
     let action = ActionMessenger::expose(
         messenger,
         core_node_name,
         instance_id,
         node_name,
-        names::NODE_START_ACTION,
+        names::NODE_RUN_ACTION,
     )
     .await?;
 
-    let handler = NodeStartGoalHandler {
-        context: NodeStartActionContext {
+    let handler = NodeRunGoalHandler {
+        context: NodeRunActionContext {
             node_stack,
             messenger: messenger.clone(),
             core_node_name: core_node_name.to_string(),
@@ -104,9 +104,9 @@ pub async fn listen_for_node_start(
     Ok(handle)
 }
 
-impl ActionResult for NodeStartResult {
+impl ActionResult for NodeRunResult {
     fn identifier() -> &'static str {
-        "node_start_result"
+        "node_run_result"
     }
 
     fn encode_result(&self) -> crate::Result<Payload> {
@@ -115,19 +115,19 @@ impl ActionResult for NodeStartResult {
 }
 
 #[derive(Clone)]
-struct NodeStartGoalHandler {
-    context: NodeStartActionContext,
+struct NodeRunGoalHandler {
+    context: NodeRunActionContext,
     gate: ConcurrencyGate,
 }
 
-impl GoalHandler for NodeStartGoalHandler {
-    type Result = NodeStartResult;
+impl GoalHandler for NodeRunGoalHandler {
+    type Result = NodeRunResult;
 
     async fn handle_goal(
         &self,
         context: ServiceRequestContext,
         feedback_publisher: TopicPublisher,
-        state: Arc<Mutex<ActionState<NodeStartResult>>>,
+        state: Arc<Mutex<ActionState<NodeRunResult>>>,
     ) -> PeppyResult<Payload> {
         handle_goal_request(
             context,
@@ -323,41 +323,41 @@ impl node_stack::OutputReaderHooks for FeedbackSync {
     }
 }
 
-/// Runs the node-start pipeline: calls [`process_node_start`] and catches panics.
+/// Runs the node-start pipeline: calls [`process_node_run`] and catches panics.
 ///
 /// The caller is responsible for creating the log file and feedback channel.
 ///
 /// This is the shared implementation used by both the action-server path
 /// ([`handle_goal_request`]) and the direct-call path from `stack_launch`.
-pub(crate) async fn run_node_start(
-    goal: NodeStartGoal,
+pub(crate) async fn run_node_run(
+    goal: NodeRunGoal,
     runtime_config: RuntimeConfig,
-    action_context: NodeStartActionContext,
+    action_context: NodeRunActionContext,
     feedback_tx: mpsc::UnboundedSender<FeedbackLine>,
     log_file: Arc<StdMutex<File>>,
     sender_instance_id: String,
-) -> NodeStartResult {
+) -> NodeRunResult {
     let log_file_for_panic = log_file.clone();
 
-    let process_context = ProcessNodeStartContext {
+    let process_context = ProcessNodeRunContext {
         action: action_context,
         feedback_tx,
         log_file,
         sender_instance_id,
     };
-    match AssertUnwindSafe(process_node_start(goal, runtime_config, process_context))
+    match AssertUnwindSafe(process_node_run(goal, runtime_config, process_context))
         .catch_unwind()
         .await
     {
         Ok(result) => result,
         Err(panic_payload) => {
             let msg = format!(
-                "node_start task panicked: {}",
+                "node_run task panicked: {}",
                 super::panic_message(&*panic_payload)
             );
             tracing::error!("{}", msg);
             write_error_to_log(&log_file_for_panic, &msg);
-            NodeStartResult::failure(msg)
+            NodeRunResult::failure(msg)
         }
     }
 }
@@ -365,14 +365,14 @@ pub(crate) async fn run_node_start(
 async fn handle_goal_request(
     context: ServiceRequestContext,
     feedback_publisher: TopicPublisher,
-    state: Arc<Mutex<ActionState<NodeStartResult>>>,
-    action_context: NodeStartActionContext,
+    state: Arc<Mutex<ActionState<NodeRunResult>>>,
+    action_context: NodeRunActionContext,
     gate: ConcurrencyGate,
 ) -> PeppyResult<Payload> {
     let sender_instance_id = context.message().instance_id().to_string();
     let payload = context.message().payload();
 
-    let goal = match NodeStartGoal::decode(payload.as_ref()) {
+    let goal = match NodeRunGoal::decode(payload.as_ref()) {
         Ok(goal) => goal,
         Err(e) => {
             return encode_rejected_start_goal(format!("invalid payload: {}", e));
@@ -404,7 +404,7 @@ async fn handle_goal_request(
     let instance_id_str = runtime_config.node_instance.instance_id.as_str();
 
     debug!(
-        "Received `node_start` goal from {sender_instance_id}, node={}:{}, instance_id={}, runtime_config_len={}",
+        "Received `node_run` goal from {sender_instance_id}, node={}:{}, instance_id={}, runtime_config_len={}",
         goal.node_name,
         goal.tag,
         instance_id_str,
@@ -434,10 +434,10 @@ async fn handle_goal_request(
         let (feedback_tx, feedback_rx) = mpsc::unbounded_channel::<FeedbackLine>();
         let _consumer_handle =
             super::spawn_feedback_forwarder(feedback_rx, feedback_publisher.clone(), |line| {
-                NodeStartFeedback::from_stream(line.stream, &line.line).encode()
+                NodeRunFeedback::from_stream(line.stream, &line.line).encode()
             });
 
-        let result = run_node_start(
+        let result = run_node_run(
             goal,
             runtime_config,
             action_context,
@@ -452,25 +452,25 @@ async fn handle_goal_request(
     });
 
     super::encode_response_or_err(
-        "node_start_goal",
-        NodeStartGoalResponse::accepted(&log_path).encode(),
+        "node_run_goal",
+        NodeRunGoalResponse::accepted(&log_path).encode(),
     )
 }
 
 fn encode_rejected_start_goal(reason: impl Into<String>) -> PeppyResult<Payload> {
     super::encode_response_or_err(
-        "node_start_goal",
-        NodeStartGoalResponse::rejected(reason).encode(),
+        "node_run_goal",
+        NodeRunGoalResponse::rejected(reason).encode(),
     )
 }
 
-async fn process_node_start(
-    goal: NodeStartGoal,
+async fn process_node_run(
+    goal: NodeRunGoal,
     runtime_config: RuntimeConfig,
-    ctx: ProcessNodeStartContext,
-) -> NodeStartResult {
+    ctx: ProcessNodeRunContext,
+) -> NodeRunResult {
     let sender_instance_id = ctx.sender_instance_id.as_str();
-    let NodeStartGoal {
+    let NodeRunGoal {
         runtime_config_json5,
         node_name,
         tag,
@@ -482,7 +482,7 @@ async fn process_node_start(
         Err(e) => {
             let msg = e.to_string();
             write_error_to_log(&ctx.log_file, &msg);
-            return NodeStartResult::failure(msg);
+            return NodeRunResult::failure(msg);
         }
     };
 
@@ -492,12 +492,12 @@ async fn process_node_start(
         Err(e) => {
             let msg = format!("Invalid instance_id: {}", e);
             write_error_to_log(&ctx.log_file, &msg);
-            return NodeStartResult::failure(msg);
+            return NodeRunResult::failure(msg);
         }
     };
 
     debug!(
-        "Processing `node_start` from {sender_instance_id}, node={}:{}, instance_id={}",
+        "Processing `node_run` from {sender_instance_id}, node={}:{}, instance_id={}",
         node_name, tag, instance_id_str
     );
 
@@ -506,7 +506,7 @@ async fn process_node_start(
         None => {
             let msg = format!("Node '{}:{}' not found in node stack", node_name, tag);
             write_error_to_log(&ctx.log_file, &msg);
-            return NodeStartResult::failure(msg);
+            return NodeRunResult::failure(msg);
         }
     };
 
@@ -519,7 +519,7 @@ async fn process_node_start(
             );
             drop(guard);
             write_error_to_log(&ctx.log_file, &msg);
-            return NodeStartResult::failure(msg);
+            return NodeRunResult::failure(msg);
         }
         guard.config().clone()
     };
@@ -547,7 +547,7 @@ async fn process_node_start(
     if !missing_params.is_empty() {
         let msg = format!("Missing required parameters: {}", missing_params.join(", "));
         write_error_to_log(&ctx.log_file, &msg);
-        return NodeStartResult::failure(msg);
+        return NodeRunResult::failure(msg);
     }
 
     let is_container = node_config.execution.container.is_some();
@@ -563,7 +563,7 @@ async fn process_node_start(
         Ok(paths) => paths,
         Err(msg) => {
             write_error_to_log(&ctx.log_file, &msg);
-            return NodeStartResult::failure(msg);
+            return NodeRunResult::failure(msg);
         }
     };
 
@@ -575,12 +575,12 @@ async fn process_node_start(
             Ok(Err(e)) => {
                 let msg = format!("Failed to initialize Apptainer: {}", e);
                 write_error_to_log(&ctx.log_file, &msg);
-                return NodeStartResult::failure(msg);
+                return NodeRunResult::failure(msg);
             }
             Err(e) => {
                 let msg = format!("Apptainer initialization task failed: {}", e);
                 write_error_to_log(&ctx.log_file, &msg);
-                return NodeStartResult::failure(msg);
+                return NodeRunResult::failure(msg);
             }
         };
         match apptainer.host_gateway() {
@@ -592,7 +592,7 @@ async fn process_node_start(
                     Err(e) => {
                         let msg = format!("Failed to serialize runtime config: {}", e);
                         write_error_to_log(&ctx.log_file, &msg);
-                        return NodeStartResult::failure(msg);
+                        return NodeRunResult::failure(msg);
                     }
                 }
             }
@@ -644,7 +644,7 @@ async fn process_node_start(
                 write_error_to_log(&ctx.log_file, &msg);
                 feedback_sync.flush_or_warn(instance_id_str).await;
                 publish_enabled.store(false, Ordering::Release);
-                return NodeStartResult::failure(msg);
+                return NodeRunResult::failure(msg);
             }
         };
 
@@ -681,7 +681,7 @@ async fn process_node_start(
         .await;
         feedback_sync.flush_or_warn(instance_id_str).await;
         publish_enabled.store(false, Ordering::Release);
-        return NodeStartResult::failure(msg);
+        return NodeRunResult::failure(msg);
     }
 
     debug!(
@@ -738,7 +738,7 @@ async fn process_node_start(
                     feedback_sync
                         .wait_for_read_quiescence(max_wait, quiet_window, is_container)
                         .await;
-                    let result = NodeStartResult::success(pid);
+                    let result = NodeRunResult::success(pid);
                     feedback_sync.flush_or_warn(instance_id_str).await;
                     publish_enabled.store(false, Ordering::Release);
                     result
@@ -748,7 +748,7 @@ async fn process_node_start(
                     write_error_to_log(&ctx.log_file, &msg);
                     feedback_sync.flush_or_warn(instance_id_str).await;
                     publish_enabled.store(false, Ordering::Release);
-                    NodeStartResult::failure(msg)
+                    NodeRunResult::failure(msg)
                 }
             }
         }
@@ -767,7 +767,7 @@ async fn process_node_start(
             .await;
             feedback_sync.flush_or_warn(instance_id_str).await;
             publish_enabled.store(false, Ordering::Release);
-            NodeStartResult::failure(msg)
+            NodeRunResult::failure(msg)
         }
     }
 }

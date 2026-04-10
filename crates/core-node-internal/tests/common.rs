@@ -6,8 +6,8 @@ use config::consts::{
 use config::node::{PeppygenLanguage, QoSProfile};
 use core_node::encoding::{
     NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAddResult, NodeBuildFeedback,
-    NodeBuildGoal, NodeBuildGoalResponse, NodeBuildResult, NodeSource, NodeStartFeedback,
-    NodeStartGoal, NodeStartGoalResponse, NodeStartResult,
+    NodeBuildGoal, NodeBuildGoalResponse, NodeBuildResult, NodeRunFeedback, NodeRunGoal,
+    NodeRunGoalResponse, NodeRunResult, NodeSource,
 };
 use core_node::names;
 use core_node::{CoreNode, CoreNodeArguments};
@@ -91,19 +91,19 @@ impl<'a> From<&'a PathBuf> for NodeAddSource<'a> {
     }
 }
 
-pub struct NodeStartTestTimeouts {
+pub struct NodeRunTestTimeouts {
     pub goal: Duration,
     pub result: Duration,
 }
 
-/// Combined response from send_node_start_and_wait containing both goal and result responses.
-pub struct NodeStartTestResponse {
-    pub goal_response: NodeStartGoalResponse,
-    pub result: NodeStartResult,
+/// Combined response from send_node_run_and_wait containing both goal and result responses.
+pub struct NodeRunTestResponse {
+    pub goal_response: NodeRunGoalResponse,
+    pub result: NodeRunResult,
 }
 
 /// Builds a `RuntimeConfig` from the given parts and returns its JSON5 serialization,
-/// ready to be passed to a `node_start` request.
+/// ready to be passed to a `node_run` request.
 pub fn build_runtime_config_json5(
     host: &str,
     port: u16,
@@ -166,17 +166,17 @@ pub fn create_tar_zst_from_dir(source_dir: &Path, archive_path: &Path, archive_r
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn send_node_start_and_wait_internal(
+async fn send_node_run_and_wait_internal(
     messenger: &MessengerHandle,
     core_node_name: &str,
     runtime_config_json5: &str,
     node_name: &str,
     tag: &str,
-    timeouts: &NodeStartTestTimeouts,
-    feedback_tx: Option<UnboundedSender<NodeStartFeedback>>,
+    timeouts: &NodeRunTestTimeouts,
+    feedback_tx: Option<UnboundedSender<NodeRunFeedback>>,
     env_vars: Vec<(String, String)>,
-) -> Result<NodeStartTestResponse, String> {
-    let goal = NodeStartGoal::new(
+) -> Result<NodeRunTestResponse, String> {
+    let goal = NodeRunGoal::new(
         runtime_config_json5,
         node_name,
         tag,
@@ -197,7 +197,7 @@ async fn send_node_start_and_wait_internal(
         caller_core_node,
         caller_instance_id,
         core_node_name,
-        names::NODE_START_ACTION,
+        names::NODE_RUN_ACTION,
         Some(core_node_name),
         None,
         goal_payload,
@@ -209,7 +209,7 @@ async fn send_node_start_and_wait_internal(
 
     // Decode the goal response to get log_path
     let goal_response_payload = action_handle.goal_response().payload();
-    let goal_response = NodeStartGoalResponse::decode(&goal_response_payload)
+    let goal_response = NodeRunGoalResponse::decode(&goal_response_payload)
         .map_err(|e| format!("Failed to decode goal response: {}", e))?;
 
     let absolute_deadline = tokio::time::Instant::now() + timeouts.result;
@@ -221,17 +221,17 @@ async fn send_node_start_and_wait_internal(
         loop {
             let now = tokio::time::Instant::now();
             if now >= absolute_deadline {
-                return Err("Timeout waiting for node_start result".to_string());
+                return Err("Timeout waiting for node_run result".to_string());
             }
             if now.duration_since(last_activity) >= timeouts.result {
-                return Err("Timeout waiting for node_start result (idle)".to_string());
+                return Err("Timeout waiting for node_run result (idle)".to_string());
             }
             let drain_timeout = Duration::from_millis(50);
             match tokio::time::timeout(drain_timeout, action_handle.on_next_feedback()).await {
                 Ok(Ok(msg)) => {
                     last_activity = tokio::time::Instant::now();
                     let payload = msg.payload();
-                    if let Ok(feedback) = NodeStartFeedback::decode(payload.as_ref())
+                    if let Ok(feedback) = NodeRunFeedback::decode(payload.as_ref())
                         && let Some(tx) = feedback_tx
                     {
                         let _ = tx.send(feedback);
@@ -244,17 +244,17 @@ async fn send_node_start_and_wait_internal(
 
         let now = tokio::time::Instant::now();
         if now >= absolute_deadline {
-            return Err("Timeout waiting for node_start result".to_string());
+            return Err("Timeout waiting for node_run result".to_string());
         }
         if now.duration_since(last_activity) >= timeouts.result {
-            return Err("Timeout waiting for node_start result (idle)".to_string());
+            return Err("Timeout waiting for node_run result (idle)".to_string());
         }
         let poll_timeout = Duration::from_millis(200);
 
         match ActionMessenger::request_result(messenger, &action_handle, poll_timeout).await {
             Ok(msg) => {
                 let payload = msg.payload();
-                match NodeStartResult::decode(&payload) {
+                match NodeRunResult::decode(&payload) {
                     Ok(result) => {
                         // Drain any remaining feedback that may have arrived while polling for the
                         // result so callers can reliably assert on stdout/stderr markers.
@@ -263,13 +263,13 @@ async fn send_node_start_and_wait_internal(
                                 break;
                             };
                             let payload = msg.payload();
-                            if let Ok(feedback) = NodeStartFeedback::decode(payload.as_ref())
+                            if let Ok(feedback) = NodeRunFeedback::decode(payload.as_ref())
                                 && let Some(tx) = feedback_tx
                             {
                                 let _ = tx.send(feedback);
                             }
                         }
-                        return Ok(NodeStartTestResponse {
+                        return Ok(NodeRunTestResponse {
                             goal_response,
                             result,
                         });
@@ -757,21 +757,21 @@ pub async fn send_node_add_and_wait_with_force<'a>(
     .await
 }
 
-/// Helper function to send a node_start goal and wait for the result.
+/// Helper function to send a node_run goal and wait for the result.
 /// This wraps the action pattern for simpler test usage.
 ///
 /// When `feedback_tx` is provided, wildcard caller IDs are used so mock pub/sub
 /// can match feedback topics with "*" segments.
-pub async fn send_node_start_and_wait(
+pub async fn send_node_run_and_wait(
     messenger: &MessengerHandle,
     core_node_name: &str,
     runtime_config_json5: &str,
     node_name: &str,
     tag: &str,
-    timeouts: &NodeStartTestTimeouts,
-    feedback_tx: Option<UnboundedSender<NodeStartFeedback>>,
-) -> Result<NodeStartTestResponse, String> {
-    send_node_start_and_wait_internal(
+    timeouts: &NodeRunTestTimeouts,
+    feedback_tx: Option<UnboundedSender<NodeRunFeedback>>,
+) -> Result<NodeRunTestResponse, String> {
+    send_node_run_and_wait_internal(
         messenger,
         core_node_name,
         runtime_config_json5,
@@ -785,17 +785,17 @@ pub async fn send_node_start_and_wait(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub async fn send_node_start_and_wait_with_env(
+pub async fn send_node_run_and_wait_with_env(
     messenger: &MessengerHandle,
     core_node_name: &str,
     runtime_config_json5: &str,
     node_name: &str,
     tag: &str,
-    timeouts: &NodeStartTestTimeouts,
-    feedback_tx: Option<UnboundedSender<NodeStartFeedback>>,
+    timeouts: &NodeRunTestTimeouts,
+    feedback_tx: Option<UnboundedSender<NodeRunFeedback>>,
     env_vars: Vec<(String, String)>,
-) -> Result<NodeStartTestResponse, String> {
-    send_node_start_and_wait_internal(
+) -> Result<NodeRunTestResponse, String> {
+    send_node_run_and_wait_internal(
         messenger,
         core_node_name,
         runtime_config_json5,
@@ -905,7 +905,7 @@ fn main() -> Result<()> {
     )
     .expect("failed to write test node src/main.rs");
 
-    // Use the pre-built binary path in start_cmd instead of "cargo run".
+    // Use the pre-built binary path in run_cmd instead of "cargo run".
     // This avoids recompilation after the folder is copied to storage,
     // since cargo's fingerprinting invalidates the cache when absolute paths change.
     let binary_path = node_dir.join("target/debug").join(crate_name);
@@ -937,7 +937,7 @@ fn main() -> Result<()> {
     build_cmd: [
         "true"
     ],
-    start_cmd: [
+    run_cmd: [
       "{binary_path}"
     ]
   },
@@ -1162,8 +1162,8 @@ fn make_real_output_sinks(
 
 /// Drives a real `prepare_and_spawn` + `commit_started` on the entity at
 /// `(name, tag)`, which must already be in `Ready`. Spawns a real child via
-/// the entity's existing `start_cmd` — callers are responsible for ensuring
-/// the node config's start_cmd is spawnable in the test environment (the
+/// the entity's existing `run_cmd` — callers are responsible for ensuring
+/// the node config's run_cmd is spawnable in the test environment (the
 /// listener tests use `["sleep", "10"]`). Also installs a `listen_for_shutdown`
 /// task on the messenger that SIGKILLs the entity-tracked pid when the
 /// production stop/remove flow sends a shutdown signal. This lets production

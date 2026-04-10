@@ -112,7 +112,7 @@ async fn listen_for_node_build_runs_build_cmd() {
             execution: {
                 language: "rust",
                 build_cmd: ["touch", "{BUILD_CMD_MARKER_FILE}"],
-                start_cmd: ["sleep", "10"]
+                run_cmd: ["sleep", "10"]
             }
         }"#
     .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
@@ -175,7 +175,7 @@ async fn listen_for_node_build_cmd_failure_fails_build() {
             execution: {
                 language: "rust",
                 build_cmd: ["this_command_does_not_exist_12345"],
-                start_cmd: ["sleep", "10"]
+                run_cmd: ["sleep", "10"]
             }
         }"#
     .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
@@ -239,7 +239,7 @@ async fn listen_for_node_build_cmd_nonzero_exit_fails_build() {
             execution: {
                 language: "rust",
                 build_cmd: ["sh", "-c", "exit 1"],
-                start_cmd: ["sleep", "10"]
+                run_cmd: ["sleep", "10"]
             }
         }"#
     .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
@@ -305,7 +305,7 @@ async fn listen_for_node_build_cmd_streams_stdout_and_stderr() {
             execution: {
                 language: "rust",
                 build_cmd: ["sh", "-c", "echo {STDOUT_MARKER}; echo {STDERR_MARKER} 1>&2"],
-                start_cmd: ["sleep", "10"]
+                run_cmd: ["sleep", "10"]
             }
         }"#
     .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
@@ -372,7 +372,7 @@ async fn listen_for_node_build_writes_log_file() {
             execution: {
                 language: "rust",
                 build_cmd: ["sh", "-c", "echo {STDOUT_MARKER}; echo {STDERR_MARKER} 1>&2"],
-                start_cmd: ["sleep", "10"]
+                run_cmd: ["sleep", "10"]
             }
         }"#
     .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
@@ -478,7 +478,7 @@ async fn listen_for_node_build_copies_files_to_storage() {
             },
             execution: {
                 language: "rust",
-                start_cmd: ["sleep", "10"]
+                run_cmd: ["sleep", "10"]
             }
         }"#
     .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
@@ -551,7 +551,7 @@ async fn listen_for_node_build_uses_env_overrides_for_path() {
             execution: {
                 language: "rust",
                 build_cmd: ["printout {STDOUT_MARKER}; printout {STDERR_MARKER} 1>&2"],
-                start_cmd: ["sleep", "10"]
+                run_cmd: ["sleep", "10"]
             }
         }"#
     .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
@@ -656,7 +656,7 @@ async fn listen_for_node_build_injects_runtime_env_vars() {
                     "-c",
                     "test -n \"$PEPPY_APPTAINER_BIN\" && test \"$PEPPY_NODE_NAME\" = \"{TARGET_NODE_NAME}\" && test \"$PEPPY_NODE_TAG\" = \"{TARGET_NODE_TAG}\""
                 ],
-                start_cmd: ["sleep", "10"]
+                run_cmd: ["sleep", "10"]
             }
         }"#
     .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
@@ -940,7 +940,7 @@ async fn listen_for_node_build_logs_error_on_spawn_failure() {
             execution: {
                 language: "rust",
                 build_cmd: ["nonexistent_binary_peppy_test_xyz", "--flag"],
-                start_cmd: ["sleep", "10"]
+                run_cmd: ["sleep", "10"]
             }
         }"#
     .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)

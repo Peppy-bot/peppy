@@ -62,7 +62,7 @@ async fn node_info_shows_dependencies_from_consumed_interfaces() {
             },
             execution: {
                 language: "rust",
-                start_cmd: ["sleep", "10"]
+                run_cmd: ["sleep", "10"]
             },
         }"#
     .replace("{NODE_NAME}", NODE_NAME)
@@ -200,7 +200,7 @@ async fn node_info_no_dependencies_when_no_consumes() {
             },
             execution: {
                 language: "rust",
-                start_cmd: ["sleep", "10"]
+                run_cmd: ["sleep", "10"]
             },
         }"#
     .replace("{NODE_NAME}", NODE_NAME)

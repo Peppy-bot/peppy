@@ -67,7 +67,7 @@
         encoding: "string",
       },
     },
-    start_cmd: [
+    run_cmd: [
       "sleep",
       "60"
     ]

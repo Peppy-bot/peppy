@@ -15,7 +15,7 @@ use crate::commands::CALLER_INSTANCE_ID;
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 
-use super::start::args_to_node_arguments;
+use super::run::args_to_node_arguments;
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 

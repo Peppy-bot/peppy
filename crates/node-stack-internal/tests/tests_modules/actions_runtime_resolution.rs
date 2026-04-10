@@ -30,7 +30,7 @@ fn action_dependency_resolved_when_dependency_added_first() {
             },
             execution: {
               language: "rust",
-              start_cmd: ["brain"]
+              run_cmd: ["brain"]
             },
         }"#,
     )
@@ -86,7 +86,7 @@ fn action_dependency_resolved_when_dependency_added_first() {
             },
             execution: {
               language: "rust",
-              start_cmd: ["controller"]
+              run_cmd: ["controller"]
             },
         }"#,
     )
@@ -165,7 +165,7 @@ fn action_dependency_fails_when_dependency_is_missing() {
             },
             execution: {
               language: "rust",
-              start_cmd: ["brain"]
+              run_cmd: ["brain"]
             },
         }"#,
     )
@@ -216,7 +216,7 @@ fn action_dependency_fails_when_action_not_exposed_by_dependency() {
             },
             execution: {
               language: "rust",
-              start_cmd: ["brain"]
+              run_cmd: ["brain"]
             },
         }"#,
     )
@@ -273,7 +273,7 @@ fn action_dependency_fails_when_action_not_exposed_by_dependency() {
             },
             execution: {
               language: "rust",
-              start_cmd: ["controller"]
+              run_cmd: ["controller"]
             },
         }"#,
     )
@@ -334,7 +334,7 @@ fn action_dependency_fails_when_local_node_id_is_undeclared() {
             },
             execution: {
               language: "rust",
-              start_cmd: ["brain"]
+              run_cmd: ["brain"]
             },
         }"#,
     )

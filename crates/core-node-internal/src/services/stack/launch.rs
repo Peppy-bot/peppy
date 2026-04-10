@@ -1,15 +1,15 @@
 use crate::Result;
 use crate::encoding::{
     LaunchFeedback, LaunchFeedbackStep, LaunchGoal, LaunchGoalResponse, LaunchResult, NodeAddGoal,
-    NodeAddLogEntry, NodeAddResult, NodeBuildLogEntry, NodeSource, NodeStartGoal,
-    NodeStartLogEntry, NodeStartResult,
+    NodeAddLogEntry, NodeAddResult, NodeBuildLogEntry, NodeRunGoal, NodeRunLogEntry, NodeRunResult,
+    NodeSource,
 };
 use crate::names;
 use crate::services::action_loop::{ActionResult, ActionState, GoalHandler, run_action_loop};
 use crate::services::node::{
     FeedbackLine, FeedbackStream, NodeAddActionContext, NodeBuildActionContext,
-    NodeStartActionContext, create_action_log_file, log_label_from_source, resolve_node_config,
-    run_node_add, run_node_build_for_entity, run_node_start, write_error_to_log,
+    NodeRunActionContext, create_action_log_file, log_label_from_source, resolve_node_config,
+    run_node_add, run_node_build_for_entity, run_node_run, write_error_to_log,
 };
 use chrono::Local;
 use config::consts::{DEFAULT_MESSAGING_HOST, DEFAULT_MESSAGING_PORT, PeppyDirs};
@@ -450,21 +450,18 @@ async fn build_node_directly(
 
 async fn start_node_directly(
     ctx: &ProcessLaunchContext,
-    node_start_goal: NodeStartGoal,
+    node_run_goal: NodeRunGoal,
     runtime_config: RuntimeConfig,
     log_path: PathBuf,
     log_file: Arc<StdMutex<File>>,
-) -> (
-    std::result::Result<NodeStartResult, String>,
-    Option<PathBuf>,
-) {
+) -> (std::result::Result<NodeRunResult, String>, Option<PathBuf>) {
     let (feedback_tx, _forwarder_handle) = spawn_feedback_forwarder(
         &ctx.feedback_publisher,
         LaunchFeedbackStep::StartingNode,
         &ctx.log_file,
     );
 
-    let action_context = NodeStartActionContext {
+    let action_context = NodeRunActionContext {
         node_stack: Arc::clone(&ctx.node_stack),
         messenger: ctx.messenger.clone(),
         core_node_name: ctx.bound_core_node.clone(),
@@ -482,8 +479,8 @@ async fn start_node_directly(
 
     let result = match tokio::time::timeout(
         max_timeout,
-        run_node_start(
-            node_start_goal,
+        run_node_run(
+            node_run_goal,
             runtime_config,
             action_context,
             feedback_tx,
@@ -496,7 +493,7 @@ async fn start_node_directly(
         Ok(result) => result,
         Err(_) => {
             write_error_to_log(&log_file_for_timeout, "max timeout exceeded");
-            NodeStartResult::failure("timeout: max timeout exceeded")
+            NodeRunResult::failure("timeout: max timeout exceeded")
         }
     };
 
@@ -510,7 +507,7 @@ async fn start_node_directly(
         let err = result
             .error_message
             .clone()
-            .unwrap_or_else(|| "node_start failed".to_string());
+            .unwrap_or_else(|| "node_run failed".to_string());
         (Err(err), node_log_path)
     }
 }
@@ -1016,7 +1013,7 @@ async fn start_node_instances(
     ordered: &[NodeKey],
     planned_by_key: &HashMap<NodeKey, PlannedDeployment>,
     backup_stack: &NodeStack,
-    start_log_paths: &mut Vec<NodeStartLogEntry>,
+    start_log_paths: &mut Vec<NodeRunLogEntry>,
 ) -> std::result::Result<(), LaunchResult> {
     publish_stdout(ctx, "Starting nodes...", LaunchFeedbackStep::LauncherStep).await;
 
@@ -1071,7 +1068,7 @@ async fn start_node_instances(
             };
 
             // Pass max_timeout_secs to the goal for daemon-side busy reporting
-            let node_start_goal = NodeStartGoal::new(
+            let node_run_goal = NodeRunGoal::new(
                 &runtime_config_json5,
                 item.node_name.as_str(),
                 item.node_tag.as_str(),
@@ -1090,11 +1087,11 @@ async fn start_node_instances(
             };
 
             let (result, log_path) =
-                start_node_directly(ctx, node_start_goal, runtime_config, log_path, log_file).await;
+                start_node_directly(ctx, node_run_goal, runtime_config, log_path, log_file).await;
 
             let failed = result.as_ref().map(|r| !r.success).unwrap_or(true);
             if let Some(path) = log_path {
-                start_log_paths.push(NodeStartLogEntry {
+                start_log_paths.push(NodeRunLogEntry {
                     instance_id: instance_id.to_string(),
                     node_label: key.label(),
                     log_path: path,
@@ -1107,7 +1104,7 @@ async fn start_node_instances(
                     if !result.success {
                         let inner = result
                             .error_message
-                            .unwrap_or_else(|| "node_start failed".to_string());
+                            .unwrap_or_else(|| "node_run failed".to_string());
                         let reason = format!(
                             "failed to start node {} instance {}: {}",
                             key.label(),
@@ -1291,7 +1288,7 @@ async fn process_launch(goal: LaunchGoal, ctx: ProcessLaunchContext) -> LaunchRe
         Err(launch_result) => return launch_result,
     };
 
-    // Step 4: Snapshot and clear stack (the snapshot helps in case an `build_cmd` or `start_cmd` fails on one of the nodes)
+    // Step 4: Snapshot and clear stack (the snapshot helps in case an `build_cmd` or `run_cmd` fails on one of the nodes)
     let backup_stack = match snapshot_and_clear_stack(&ctx).await {
         Ok(result) => result,
         Err(launch_result) => return launch_result,
@@ -1305,7 +1302,7 @@ async fn process_launch(goal: LaunchGoal, ctx: ProcessLaunchContext) -> LaunchRe
 
     let mut add_log_paths: Vec<NodeAddLogEntry> = Vec::new();
     let mut build_log_paths: Vec<NodeBuildLogEntry> = Vec::new();
-    let mut start_log_paths: Vec<NodeStartLogEntry> = Vec::new();
+    let mut start_log_paths: Vec<NodeRunLogEntry> = Vec::new();
 
     // Step 5: Add nodes in dependency order
     let add_result = add_nodes_to_stack(
@@ -1342,7 +1339,7 @@ async fn process_launch(goal: LaunchGoal, ctx: ProcessLaunchContext) -> LaunchRe
     if let Some(Err(mut launch_result)) = start_result {
         launch_result.node_add_logs = add_log_paths;
         launch_result.node_build_logs = build_log_paths;
-        launch_result.node_start_logs = start_log_paths;
+        launch_result.node_run_logs = start_log_paths;
         return launch_result;
     }
 

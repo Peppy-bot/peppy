@@ -197,7 +197,7 @@ fn node_add_command_with_run_arg_succeeds() {
     );
 
     // Avoid spawning a real node binary; provide `node_ready` + `node_health` in-process.
-    peppy::test_support::override_start_cmd(&peppy_json5_path);
+    peppy::test_support::override_run_cmd(&peppy_json5_path);
 
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
     let _node_ready_handle = rt
@@ -517,7 +517,7 @@ fn node_add_same_node_shutdown_existing_instances() {
     );
 
     // Avoid spawning a real node binary; provide `node_ready` + `node_health` in-process.
-    peppy::test_support::override_start_cmd(&peppy_json5_path);
+    peppy::test_support::override_run_cmd(&peppy_json5_path);
 
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
     let _node_ready_handle = rt
@@ -728,7 +728,7 @@ fn node_add_command_with_variant_succeeds() {
         "schema_version": 1,
         "execution": {
             "language": "rust",
-            "start_cmd": ["sleep", "42"]
+            "run_cmd": ["sleep", "42"]
         }
     }"#;
     let variant_peppy_json5 = variant_dir.join("peppy.json5");
@@ -861,7 +861,7 @@ fn node_add_with_variant_uses_variant_in_preflight() {
         "schema_version": 1,
         "execution": {
             "language": "rust",
-            "start_cmd": ["sleep", "4"]
+            "run_cmd": ["sleep", "4"]
         }
     }"#;
     let variant_peppy_json5 = variant_dir.join("peppy.json5");
@@ -875,8 +875,8 @@ fn node_add_with_variant_uses_variant_in_preflight() {
     std::fs::write(variant_peppy_dir.join("git.hash"), "test-git-hash")
         .expect("should write variant git hash");
 
-    // Override start_cmd to `sleep 4` and disable build_cmd to avoid spawning a real binary.
-    peppy::test_support::override_start_cmd(&root_peppy_json5);
+    // Override run_cmd to `sleep 4` and disable build_cmd to avoid spawning a real binary.
+    peppy::test_support::override_run_cmd(&root_peppy_json5);
 
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
     let _node_ready_handle = rt
@@ -1059,7 +1059,7 @@ fn node_add_same_node_different_sources_show_overwrite_prompt() {
         peppy_json5_path.display()
     );
 
-    peppy::test_support::override_start_cmd(&peppy_json5_path);
+    peppy::test_support::override_run_cmd(&peppy_json5_path);
 
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
     let _node_ready_handle = rt
@@ -1295,7 +1295,7 @@ fn node_add_auto_syncs_when_peppy_dir_missing() {
         "schema_version": 1,
         "execution": {
             "language": "rust",
-            "start_cmd": ["sleep", "42"]
+            "run_cmd": ["sleep", "42"]
         }
     }"#;
     let variant_peppy_json5 = variant_dir.join("peppy.json5");

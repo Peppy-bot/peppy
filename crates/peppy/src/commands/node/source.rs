@@ -364,7 +364,7 @@ mod tests {
             variant.join(NODE_CONFIG_FILE),
             r#"{
                 schema_version: 1,
-                execution: { language: "rust", start_cmd: ["sleep", "1"] }
+                execution: { language: "rust", run_cmd: ["sleep", "1"] }
             }"#,
         )
         .unwrap();
@@ -383,7 +383,7 @@ mod tests {
             variant.join(NODE_CONFIG_FILE),
             r#"{
                 schema_version: 1,
-                execution: { language: "rust", start_cmd: ["sleep", "1"] }
+                execution: { language: "rust", run_cmd: ["sleep", "1"] }
             }"#,
         )
         .unwrap();
@@ -419,7 +419,7 @@ mod tests {
             variant.join(NODE_CONFIG_FILE),
             r#"{
                 schema_version: 1,
-                execution: { language: "rust", start_cmd: ["sleep", "1"] }
+                execution: { language: "rust", run_cmd: ["sleep", "1"] }
             }"#,
         )
         .unwrap();
@@ -497,7 +497,7 @@ mod tests {
             variant.join(NODE_CONFIG_FILE),
             r#"{
                 schema_version: 1,
-                execution: { language: "rust", start_cmd: ["sleep", "1"] }
+                execution: { language: "rust", run_cmd: ["sleep", "1"] }
             }"#,
         )
         .unwrap();
@@ -533,7 +533,7 @@ mod tests {
             variant.join(NODE_CONFIG_FILE),
             r#"{
                 schema_version: 1,
-                execution: { language: "rust", start_cmd: ["sleep", "1"] }
+                execution: { language: "rust", run_cmd: ["sleep", "1"] }
             }"#,
         )
         .unwrap();
@@ -558,7 +558,7 @@ mod tests {
             orphan.join(NODE_CONFIG_FILE),
             r#"{
                 schema_version: 1,
-                execution: { language: "rust", start_cmd: ["sleep", "1"] }
+                execution: { language: "rust", run_cmd: ["sleep", "1"] }
             }"#,
         )
         .unwrap();
@@ -581,7 +581,7 @@ mod tests {
             orphan.join(NODE_CONFIG_FILE),
             r#"{
                 schema_version: 1,
-                execution: { language: "rust", start_cmd: ["sleep", "1"] }
+                execution: { language: "rust", run_cmd: ["sleep", "1"] }
             }"#,
         )
         .unwrap();
@@ -630,7 +630,7 @@ mod tests {
             variant.join(NODE_CONFIG_FILE),
             r#"{
                 schema_version: 1,
-                execution: { language: "rust", start_cmd: ["sleep", "1"] }
+                execution: { language: "rust", run_cmd: ["sleep", "1"] }
             }"#,
         )
         .unwrap();
@@ -676,7 +676,7 @@ mod tests {
                     name: "linux-variant",
                     tag: "9.9.9",
                 },
-                execution: { language: "rust", start_cmd: ["sleep", "1"] }
+                execution: { language: "rust", run_cmd: ["sleep", "1"] }
             }"#,
         )
         .unwrap();
@@ -724,7 +724,7 @@ mod tests {
                     name: "platform-variant",
                     tag: "9.9.9",
                 },
-                execution: { language: "rust", start_cmd: ["sleep", "1"] }
+                execution: { language: "rust", run_cmd: ["sleep", "1"] }
             }"#,
         )
         .unwrap();
@@ -754,7 +754,7 @@ mod tests {
                     name: "simple_node",
                     tag: "0.1.0",
                 },
-                execution: { language: "rust", start_cmd: ["./bin"] }
+                execution: { language: "rust", run_cmd: ["./bin"] }
             }"#,
         )
         .unwrap();

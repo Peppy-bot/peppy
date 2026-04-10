@@ -158,7 +158,7 @@ impl CoreNode {
                 language: PeppygenLanguage::Rust,
                 parameters: node_arguments.into_parameters(),
                 build_cmd: None,
-                start_cmd: None,
+                run_cmd: None,
                 container: None,
             },
             interfaces: Default::default(),
@@ -304,13 +304,13 @@ impl CoreNode {
                 Arc::clone(&self.node_stack),
             )
             .await?,
-            node::listen_for_node_start(
+            node::listen_for_node_run(
                 &self.messenger,
                 core_node_name,
                 self.instance_id(),
                 self.node_name(),
                 Arc::clone(&self.node_stack),
-                node::NodeStartServiceConfig {
+                node::NodeRunServiceConfig {
                     node_startup_timeout: self.node_startup_timeout,
                     node_start_health_timeout: self.node_start_health_timeout,
                     peppy_dirs: self.peppy_dirs.clone(),

@@ -30,7 +30,7 @@ fn service_dependency_resolved_when_dependency_added_first() {
             },
             execution: {
               language: "rust",
-              start_cmd: ["brain"]
+              run_cmd: ["brain"]
             },
         }"#,
     )
@@ -64,7 +64,7 @@ fn service_dependency_resolved_when_dependency_added_first() {
             },
             execution: {
               language: "rust",
-              start_cmd: ["lidar"]
+              run_cmd: ["lidar"]
             },
         }"#,
     )
@@ -143,7 +143,7 @@ fn service_dependency_fails_when_dependency_is_missing() {
             },
             execution: {
               language: "rust",
-              start_cmd: ["brain"]
+              run_cmd: ["brain"]
             },
         }"#,
     )
@@ -194,7 +194,7 @@ fn service_dependency_fails_when_service_not_exposed_by_dependency() {
             },
             execution: {
               language: "rust",
-              start_cmd: ["brain"]
+              run_cmd: ["brain"]
             },
         }"#,
     )
@@ -225,7 +225,7 @@ fn service_dependency_fails_when_service_not_exposed_by_dependency() {
             },
             execution: {
               language: "rust",
-              start_cmd: ["lidar"]
+              run_cmd: ["lidar"]
             },
         }"#,
     )
@@ -286,7 +286,7 @@ fn service_dependency_fails_when_local_node_id_is_undeclared() {
             },
             execution: {
               language: "rust",
-              start_cmd: ["brain"]
+              run_cmd: ["brain"]
             },
         }"#,
     )

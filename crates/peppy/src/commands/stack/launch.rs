@@ -5,7 +5,7 @@ use std::time::Duration;
 use config::launcher::PeppyLauncherParser;
 use core_node::encoding::{
     LaunchFeedback, LaunchFeedbackStep, LaunchGoal, LaunchGoalResponse, LaunchResult,
-    NodeAddLogEntry, NodeBuildLogEntry, NodeStartLogEntry,
+    NodeAddLogEntry, NodeBuildLogEntry, NodeRunLogEntry,
 };
 use peppylib::{ActionMessenger, PeppyError};
 use tracing::info;
@@ -26,7 +26,7 @@ const RESULT_POLL_TIMEOUT: Duration = Duration::from_millis(200);
 fn display_node_log_files(
     add_logs: &[NodeAddLogEntry],
     build_logs: &[NodeBuildLogEntry],
-    start_logs: &[NodeStartLogEntry],
+    start_logs: &[NodeRunLogEntry],
 ) {
     if add_logs.is_empty() && build_logs.is_empty() && start_logs.is_empty() {
         return;
@@ -115,14 +115,14 @@ pub fn launch(
     ctx: &Arc<AppContext>,
     launcher_config_path: PathBuf,
     node_add_idle_timeout_secs: u64,
-    node_start_idle_timeout_secs: u64,
+    node_run_idle_timeout_secs: u64,
     max_timeout_secs: u64,
 ) -> Result<()> {
     crate::commands::block_on(launch_async(
         ctx,
         launcher_config_path,
         node_add_idle_timeout_secs,
-        node_start_idle_timeout_secs,
+        node_run_idle_timeout_secs,
         max_timeout_secs,
     ))
 }
@@ -131,7 +131,7 @@ async fn launch_async(
     ctx: &Arc<AppContext>,
     launcher_config_path: PathBuf,
     node_add_idle_timeout_secs: u64,
-    node_start_idle_timeout_secs: u64,
+    node_run_idle_timeout_secs: u64,
     max_timeout_secs: u64,
 ) -> Result<()> {
     // Canonicalize the path so the core node can find the file regardless of its working directory
@@ -156,7 +156,7 @@ async fn launch_async(
     let goal = LaunchGoal::new(
         &launcher_config_path,
         node_add_idle_timeout_secs,
-        node_start_idle_timeout_secs,
+        node_run_idle_timeout_secs,
         max_timeout_secs,
     )
     .with_env_vars(caller_env_overrides());
@@ -284,7 +284,7 @@ async fn launch_async(
                         display_node_log_files(
                             &result.node_add_logs,
                             &result.node_build_logs,
-                            &result.node_start_logs,
+                            &result.node_run_logs,
                         );
 
                         if !result.success {

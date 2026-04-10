@@ -138,12 +138,9 @@ pub fn run_snippet_with_deps(
     sync_and_add_node(peppy, &setup.daemon_state_path, &node_dir, snippet_name);
     build_node(peppy, &setup.daemon_state_path, &node_dir, &setup.node_ref);
 
-    let mut start_cmd = vec!["node", "start", setup.node_ref.as_str()];
-    start_cmd.extend_from_slice(start_args);
+    let mut run_cmd = vec!["node", "run", setup.node_ref.as_str()];
+    run_cmd.extend_from_slice(start_args);
 
-    let start_output = peppy_output(peppy, &setup.daemon_state_path, &node_dir, &start_cmd);
-    assert_success(
-        &start_output,
-        &format!("peppy node start {}", setup.node_ref),
-    );
+    let start_output = peppy_output(peppy, &setup.daemon_state_path, &node_dir, &run_cmd);
+    assert_success(&start_output, &format!("peppy node run {}", setup.node_ref));
 }

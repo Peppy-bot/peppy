@@ -28,7 +28,7 @@ PEPPY_CONFIG = """{
     parameters: {
       frequency_hz: "f64"
     },
-    start_cmd: ["uv", "run"]
+    run_cmd: ["uv", "run"]
   },
 }"""
 

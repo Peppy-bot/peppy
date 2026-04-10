@@ -11,7 +11,7 @@ pub const STACK_LIST: &str = "stack_list";
 
 pub const NODE_ADD_ACTION: &str = "node_add";
 pub const NODE_BUILD_ACTION: &str = "node_build";
-pub const NODE_START_ACTION: &str = "node_start";
+pub const NODE_RUN_ACTION: &str = "node_run";
 pub const NODE_REMOVE: &str = "node_remove";
 pub const NODE_INIT: &str = "node_init";
 pub const NODE_INFO: &str = "node_info";

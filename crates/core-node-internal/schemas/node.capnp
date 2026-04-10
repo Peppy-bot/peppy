@@ -162,20 +162,20 @@ struct NodeSyncResponse {
     errorMessage @1 :Text;
 }
 
-struct NodeStartGoal {
+struct NodeRunGoal {
     # Runtime configuration in JSON5 format (PEPPY_RUNTIME_CONFIG)
     runtimeConfigJson5 @0 :Text;
-    # Name of the node to start
+    # Name of the node to run
     nodeName @1 :Text;
-    # Tag of the node to start
+    # Tag of the node to run
     tag @2 :Text;
-    # Environment variables to apply when executing start_cmd (e.g. PATH)
+    # Environment variables to apply when executing run_cmd (e.g. PATH)
     envVars @3 :List(EnvVar);
-    # Timeout in seconds for the start operation (used to report remaining time when busy)
+    # Timeout in seconds for the run operation (used to report remaining time when busy)
     timeoutSecs @4 :UInt64;
 }
 
-struct NodeStartGoalResponse {
+struct NodeRunGoalResponse {
     # Whether the goal was accepted
     accepted @0 :Bool;
     # Path to the log file (empty if rejected)
@@ -184,19 +184,19 @@ struct NodeStartGoalResponse {
     rejectionReason @2 :Text;
 }
 
-struct NodeStartFeedback {
+struct NodeRunFeedback {
     # Type of output: "stdout" or "stderr"
     stream @0 :Text;
     # The line of output
     line @1 :Text;
 }
 
-struct NodeStartResult {
+struct NodeRunResult {
     # Whether the run was successful
     success @0 :Bool;
     # Error message if failed (optional)
     errorMessage @1 :Text;
-    # Process ID of the started node (0 if not available or failed)
+    # Process ID of the running node (0 if not available or failed)
     pid @2 :UInt32;
 }
 

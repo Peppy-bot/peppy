@@ -454,7 +454,7 @@ mod tests {
                 schema_version: 1,
                 execution: {{
                     language: "python",
-                    start_cmd: ["python", "{marker}"]
+                    run_cmd: ["python", "{marker}"]
                 }}
             }}"#
         );
@@ -497,7 +497,7 @@ mod tests {
                 }},
                 execution: {{
                     language: "rust",
-                    start_cmd: ["sleep", "10"]
+                    run_cmd: ["sleep", "10"]
                 }}
             }}"#
         );
@@ -621,7 +621,7 @@ mod tests {
         assert!(
             resolved
                 .execution
-                .start_cmd
+                .run_cmd
                 .as_ref()
                 .is_some_and(|cmd| cmd.iter().any(|arg| arg == marker)),
             "resolved execution should come from the git-backed default variant"

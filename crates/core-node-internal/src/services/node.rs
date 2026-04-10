@@ -4,7 +4,7 @@ mod gate;
 mod info;
 mod init;
 mod remove;
-mod start;
+mod run;
 mod stop;
 mod sync;
 mod templates;
@@ -25,8 +25,8 @@ pub use init::listen_for_node_init;
 use parking_lot::Mutex as StdMutex;
 use rand::RngExt;
 pub use remove::listen_for_node_remove;
-pub(crate) use start::{NodeStartActionContext, run_node_start};
-pub use start::{NodeStartServiceConfig, listen_for_node_start};
+pub(crate) use run::{NodeRunActionContext, run_node_run};
+pub use run::{NodeRunServiceConfig, listen_for_node_run};
 use std::fs::File;
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
@@ -460,7 +460,7 @@ mod tests {
       "build",
       "--release",
     ],
-    start_cmd: [
+    run_cmd: [
       "./target/release/standalone",
     ],
   },

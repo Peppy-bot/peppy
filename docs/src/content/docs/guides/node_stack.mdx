@@ -60,16 +60,16 @@ Re-adding a node with the same name and tag overrides the one that was previousl
 Start your node:
 
 ```sh
-peppy node start hello_world:0.1.0
+peppy node run hello_world:0.1.0
 ```
-This will run the `start_cmd` command from the `peppy.json5` process configuration.
+This will run the `run_cmd` command from the `peppy.json5` process configuration.
 The format is `<node_name>:<tag>` for a node that is already part of the node stack.
 
-The `node start` command outputs the path to a log file where you can inspect the node's output.
+The `node run` command outputs the path to a log file where you can inspect the node's output.
 For example:
 ```sh
 cat /home/user/.peppy/logs/start/elegant-solomon-5423.log
-[2026-02-17T10:15:23.599] Executing start_cmd: uv run hello_world (working_dir: /home/user/.peppy/added_nodes/hello_world_0.1.0_f2765c)
+[2026-02-17T10:15:23.599] Executing run_cmd: uv run hello_world (working_dir: /home/user/.peppy/added_nodes/hello_world_0.1.0_f2765c)
 [2026-02-17T10:15:23.837] [stdout] hello world count 1
 [2026-02-17T10:15:26.848] [stdout] hello world count 2
 [2026-02-17T10:15:29.852] [stdout] hello world count 3

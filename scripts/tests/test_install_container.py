@@ -144,10 +144,10 @@ def test_container_node_build(lima_vm: VMConfig) -> None:
     # Start the node
     result = run_step(
         "Node start",
-        f"{env_preamble} && peppy node start test-node:0.1.0",
+        f"{env_preamble} && peppy node run test-node:0.1.0",
         timeout=120,
     )
-    assert result.returncode == 0, "node start failed"
+    assert result.returncode == 0, "node run failed"
 
     # Stop daemon
     run_step(

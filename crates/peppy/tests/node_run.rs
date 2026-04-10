@@ -68,7 +68,7 @@ async fn node_run_command_succeeds() {
         peppy_json5_path.display()
     );
 
-    peppy::test_support::override_start_cmd(&peppy_json5_path);
+    peppy::test_support::override_run_cmd(&peppy_json5_path);
 
     // Add the node to the node stack (without running)
     NodeCommand {
@@ -127,7 +127,7 @@ async fn node_run_command_succeeds() {
             .collect::<Vec<_>>()
     );
 
-    // Start in-process node services for health/ready so node_start can succeed.
+    // Start in-process node services for health/ready so node_run can succeed.
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
     let _node_ready_handle =
         listen_for_node_ready(&node_messenger, &core_node_name, instance_id, node_name)
@@ -140,7 +140,7 @@ async fn node_run_command_succeeds() {
 
     // Now run the node using the run command
     NodeCommand {
-        command: NodeCommands::Start {
+        command: NodeCommands::Run {
             node_ref: None,
             node_name: Some(node_name.to_string()),
             tag: Some("0.1.0".to_string()),
@@ -278,7 +278,7 @@ async fn node_run_command_with_args_succeeds() {
       frequency: "i64",
       enabled: "bool"
     },
-    start_cmd: [
+    run_cmd: [
       "cargo",
       "run",
       "--release"
@@ -287,7 +287,7 @@ async fn node_run_command_with_args_succeeds() {
 }
 "#;
     std::fs::write(&peppy_json5_path, peppy_config).expect("peppy.json5 should be writable");
-    peppy::test_support::override_start_cmd(&peppy_json5_path);
+    peppy::test_support::override_run_cmd(&peppy_json5_path);
 
     // Add the node to the node stack (without running)
     NodeCommand {
@@ -346,7 +346,7 @@ async fn node_run_command_with_args_succeeds() {
             .collect::<Vec<_>>()
     );
 
-    // Start in-process node services for health/ready so node_start can succeed.
+    // Start in-process node services for health/ready so node_run can succeed.
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
     let _node_ready_handle =
         listen_for_node_ready(&node_messenger, &core_node_name, instance_id, node_name)
@@ -365,7 +365,7 @@ async fn node_run_command_with_args_succeeds() {
     ];
 
     NodeCommand {
-        command: NodeCommands::Start {
+        command: NodeCommands::Run {
             node_ref: None,
             node_name: Some(node_name.to_string()),
             tag: Some("0.1.0".to_string()),
@@ -481,7 +481,7 @@ async fn node_run_command_with_custom_instance_id_succeeds() {
         peppy_json5_path.display()
     );
 
-    peppy::test_support::override_start_cmd(&peppy_json5_path);
+    peppy::test_support::override_run_cmd(&peppy_json5_path);
 
     // Add the node to the node stack (without running)
     NodeCommand {
@@ -540,7 +540,7 @@ async fn node_run_command_with_custom_instance_id_succeeds() {
             .collect::<Vec<_>>()
     );
 
-    // Start in-process node services for health/ready so node_start can succeed.
+    // Start in-process node services for health/ready so node_run can succeed.
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
     let _node_ready_handle = listen_for_node_ready(
         &node_messenger,
@@ -561,7 +561,7 @@ async fn node_run_command_with_custom_instance_id_succeeds() {
 
     // Now run the node with a custom instance_id
     NodeCommand {
-        command: NodeCommands::Start {
+        command: NodeCommands::Run {
             node_ref: None,
             node_name: Some(node_name.to_string()),
             tag: Some("0.1.0".to_string()),
