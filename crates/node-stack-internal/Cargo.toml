@@ -18,9 +18,9 @@ zstd = "0.13.3"
 chrono = "0.4"
 tracing = "0.1"
 parking_lot = { workspace = true }
+tempfile = "3.10"
 
 
 [dev-dependencies]
 serde_json5 = "0.2.1"
-tempfile = "3.10"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
