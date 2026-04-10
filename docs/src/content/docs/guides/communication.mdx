@@ -41,7 +41,7 @@ Each node is only aware of the interfaces it exposes and the ones it consumes, a
       },
       execution: {
         language: "python",
-        build_cmd: ["uv", "sync"],
+        build_cmd: ["uv", "sync", "--no-editable"],
         start_cmd: ["uv", "run", "controller"]
       },
     }

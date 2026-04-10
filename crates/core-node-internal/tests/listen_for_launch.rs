@@ -139,7 +139,7 @@ fn write_node_config_with_options(
     let node_dir = nodes_directory.join(node_name);
     fs::create_dir_all(&node_dir).expect("failed to create node directory");
 
-    let add_cmd_json5 = build_cmd
+    let build_cmd_json5 = build_cmd
         .iter()
         .map(|arg| serde_json::to_string(arg).expect("build_cmd arg should serialize"))
         .collect::<Vec<_>>()
@@ -203,14 +203,14 @@ fn write_node_config_with_options(
               {interfaces}
               execution: {
                 language: "rust",
-                build_cmd: [{add_cmd_json5}],
+                build_cmd: [{build_cmd_json5}],
                 start_cmd: [{start_cmd_json5}]
               }
             }"#
         .replace("{node_name}", node_name)
         .replace("{node_tag}", node_tag)
         .replace("{depends_on}", depends_on)
-        .replace("{add_cmd_json5}", &add_cmd_json5)
+        .replace("{build_cmd_json5}", &build_cmd_json5)
         .replace("{start_cmd_json5}", &start_cmd_json5)
         .replace("{interfaces}", &interfaces),
     )

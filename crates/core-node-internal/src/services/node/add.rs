@@ -1371,11 +1371,12 @@ async fn process_node_add(
         return NodeAddResult::failure(&ctx.log_path, msg);
     }
 
-    // Push the node config into the stack as an `Added` entity. The
-    // config_path is the source `peppy.json5` (the user-owned location).
-    // The entity stays in `Added` until a follow-up `node_build` action
-    // runs `NodeEntity::build` against it.
-    let config_path_for_stack = source_path.join(NODE_CONFIG_FILE);
+    // Push the node config into the stack as an `Added` entity. Use the
+    // working_dir copy of peppy.json5 rather than source_path because
+    // source_path may point at a transient variant directory (Git/Http
+    // clone) that is cleaned up after this function returns. The
+    // working_dir persists as long as the entity exists via WorkingDirGuard.
+    let config_path_for_stack = working_dir.join(NODE_CONFIG_FILE);
     if let Err(e) =
         ctx.action
             .node_stack

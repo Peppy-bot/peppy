@@ -222,13 +222,16 @@ The `%files` section copies the entire node directory into the container. PeppyO
 
 ## Adding a container node
 
-Adding a container node works the same as a regular node:
+Adding a container node works the same as a regular node — first stage it, then build:
 
 ```sh
 peppy node add ./my_node
+peppy node build my_node:0.1.0
 ```
 
-Under the hood, PeppyOS runs `apptainer build` to produce a `.sif` (Singularity Image Format) file.
+You can also combine both steps with `peppy node add ./my_node --build`.
+
+Under the hood, PeppyOS runs `apptainer build` during the build phase to produce a `.sif` (Singularity Image Format) file.
 This replaces the `build_cmd` step used by process nodes — the entire build happens inside the container according to the `%post` section of the definition file.
 
 The resulting `.sif` file is stored in PeppyOS's internal storage and is ready to be started.

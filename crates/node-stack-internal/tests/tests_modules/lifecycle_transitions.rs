@@ -402,7 +402,11 @@ async fn concurrent_builds_are_rejected_immediately() {
     // before the loser even gets scheduled — that race produced the
     // ambiguous "from: Ready" rejection the assertion below now refuses.
     stack
-        .push_config(sensor_config_with_add_cmd("sleep 0.5"), false, &config_path)
+        .push_config(
+            sensor_config_with_build_cmd("sleep 0.5"),
+            false,
+            &config_path,
+        )
         .expect("push_config should succeed");
 
     let handle = stack.find("sensor", "1.0.0").expect("entity should exist");
@@ -516,10 +520,10 @@ async fn concurrent_builds_are_rejected_immediately() {
 /// Builds the config programmatically (rather than format!-ing JSON) so the
 /// shell snippet can contain quotes, backslashes, and braces without breaking
 /// the JSON5 parser.
-fn sensor_config_with_add_cmd(add_cmd_shell: &str) -> config::node::NodeConfig {
+fn sensor_config_with_build_cmd(build_cmd_shell: &str) -> config::node::NodeConfig {
     // Embed the snippet via serde_json so any special characters are escaped
     // correctly into a JSON string literal.
-    let escaped_snippet = serde_json5::to_string(&add_cmd_shell.to_string())
+    let escaped_snippet = serde_json5::to_string(&build_cmd_shell.to_string())
         .expect("snippet should be JSON-encodable");
     let json = format!(
         r#"{{
@@ -582,7 +586,7 @@ async fn build_runs_add_cmd_for_process_node() {
     let config_path = PathBuf::from("/tmp/sensor/peppy.json5");
     stack
         .push_config(
-            sensor_config_with_add_cmd("echo built > marker.txt"),
+            sensor_config_with_build_cmd("echo built > marker.txt"),
             false,
             &config_path,
         )
@@ -1127,7 +1131,7 @@ async fn restore_snapshot_if_matches_rolls_back_failed_rebuild() {
     let control_dir = tempfile::tempdir().expect("control tempdir");
     let proceed_file = control_dir.path().join("proceed");
     let proceed_file_disp = proceed_file.display().to_string();
-    let blocking_config = sensor_config_with_add_cmd(&format!(
+    let blocking_config = sensor_config_with_build_cmd(&format!(
         "while [ ! -f '{}' ]; do sleep 0.02; done; exit 0",
         proceed_file_disp
     ));
@@ -1244,7 +1248,7 @@ async fn restore_snapshot_if_matches_no_op_on_generation_drift() {
     let control_dir = tempfile::tempdir().expect("control tempdir");
     let proceed_file = control_dir.path().join("proceed");
     let proceed_file_disp = proceed_file.display().to_string();
-    let blocking_config = sensor_config_with_add_cmd(&format!(
+    let blocking_config = sensor_config_with_build_cmd(&format!(
         "while [ ! -f '{}' ]; do sleep 0.02; done; exit 0",
         proceed_file_disp
     ));

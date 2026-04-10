@@ -563,9 +563,18 @@ pub(super) fn extract_stderr_from_log(log_file: &Arc<StdMutex<File>>) -> String 
         if f.seek(SeekFrom::Start(start)).is_err() {
             return String::new();
         }
-        let mut buf = String::new();
-        if f.read_to_string(&mut buf).is_err() {
+        let mut bytes = Vec::new();
+        if f.read_to_end(&mut bytes).is_err() {
             return String::new();
+        }
+        let mut buf = String::from_utf8_lossy(&bytes).into_owned();
+        // If we seeked into the middle of the file, the first "line" may be a
+        // partial (sliced mid-codepoint or mid-line). Drop it so we only
+        // process complete lines.
+        if start > 0 {
+            if let Some(pos) = buf.find('\n') {
+                buf.drain(..=pos);
+            }
         }
         buf
     };

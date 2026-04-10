@@ -41,12 +41,11 @@ peppy node add .
   </TabItem>
 </Tabs>
 
-This command runs the `build_cmd` from the node's `peppy.json5` process configuration and registers it with the core node to make it available for execution.
+This command registers the node with the core node by staging a snapshot of the source directory. By default, `peppy node add` does **not** run `build_cmd` — it only adds the node to the stack in the `Added` stage. To also run the build, use `peppy node add . --build` or run `peppy node build` separately afterwards.
 The output of this command provides some useful information:
 
 ```
 Adding node from /private/tmp/hello_world...
-Running `build_cmd` for hello_world:0.1.0 on daemon 'kind-moore-5294'...
 Log file: ~/.peppy/logs/add/hello_world_0.1.0_20260121_224824_699.log
 Added node hello_world:0.1.0 to the node stack
 Snapshot path: ~/.peppy/added_nodes/hello_world_0.1.0_b19507
