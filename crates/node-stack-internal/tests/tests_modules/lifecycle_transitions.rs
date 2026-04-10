@@ -396,13 +396,17 @@ async fn concurrent_builds_are_rejected_immediately() {
         PathBuf::from("/tmp"),
     );
     let config_path = PathBuf::from("/tmp/sensor/peppy.json5");
-    // Use an `add_cmd` that sleeps long enough to keep the winning task in
+    // Use an `build_cmd` that sleeps long enough to keep the winning task in
     // `Building` while the loser observes the stage. Without this, archiving
     // a tiny working dir is fast enough that the winner can reach `Ready`
     // before the loser even gets scheduled — that race produced the
     // ambiguous "from: Ready" rejection the assertion below now refuses.
     stack
-        .push_config(sensor_config_with_add_cmd("sleep 0.5"), false, &config_path)
+        .push_config(
+            sensor_config_with_build_cmd("sleep 0.5"),
+            false,
+            &config_path,
+        )
         .expect("push_config should succeed");
 
     let handle = stack.find("sensor", "1.0.0").expect("entity should exist");
@@ -508,18 +512,18 @@ async fn concurrent_builds_are_rejected_immediately() {
 }
 
 // ===========================================================================
-// Build with add_cmd: Added → Building → Built (or Building → Added on failure)
+// Build with build_cmd: Added → Building → Built (or Building → Added on failure)
 // ===========================================================================
 
-/// Returns a sensor config whose `execution.add_cmd` runs the given shell snippet.
+/// Returns a sensor config whose `execution.build_cmd` runs the given shell snippet.
 ///
 /// Builds the config programmatically (rather than format!-ing JSON) so the
 /// shell snippet can contain quotes, backslashes, and braces without breaking
 /// the JSON5 parser.
-fn sensor_config_with_add_cmd(add_cmd_shell: &str) -> config::node::NodeConfig {
+fn sensor_config_with_build_cmd(build_cmd_shell: &str) -> config::node::NodeConfig {
     // Embed the snippet via serde_json so any special characters are escaped
     // correctly into a JSON string literal.
-    let escaped_snippet = serde_json5::to_string(&add_cmd_shell.to_string())
+    let escaped_snippet = serde_json5::to_string(&build_cmd_shell.to_string())
         .expect("snippet should be JSON-encodable");
     let json = format!(
         r#"{{
@@ -537,13 +541,13 @@ fn sensor_config_with_add_cmd(add_cmd_shell: &str) -> config::node::NodeConfig {
             }},
             execution: {{
                 language: "rust",
-                add_cmd: ["sh", "-c", {snippet}],
+                build_cmd: ["sh", "-c", {snippet}],
                 start_cmd: ["sensor"]
             }}
         }}"#,
         snippet = escaped_snippet
     );
-    serde_json5::from_str::<config::node::NodeConfig>(&json).expect("valid sensor+add_cmd config")
+    serde_json5::from_str::<config::node::NodeConfig>(&json).expect("valid sensor+build_cmd config")
 }
 
 /// Helper that constructs the BuildContext fields shared across tests.
@@ -582,7 +586,7 @@ async fn build_runs_add_cmd_for_process_node() {
     let config_path = PathBuf::from("/tmp/sensor/peppy.json5");
     stack
         .push_config(
-            sensor_config_with_add_cmd("echo built > marker.txt"),
+            sensor_config_with_build_cmd("echo built > marker.txt"),
             false,
             &config_path,
         )
@@ -602,14 +606,14 @@ async fn build_runs_add_cmd_for_process_node() {
         },
     )
     .await
-    .expect("build should succeed when add_cmd exits 0");
+    .expect("build should succeed when build_cmd exits 0");
 
     // Entity is in Built.
     let guard = handle.read();
     assert!(matches!(guard.stage(), NodeStage::Ready { .. }));
     drop(guard);
 
-    // The archive exists and contains the marker file produced by add_cmd.
+    // The archive exists and contains the marker file produced by build_cmd.
     let archive = h.peppy_dirs.added_nodes_dir().join("sensor_1.0.0.tar.zst");
     assert!(archive.is_file(), "expected archive at {:?}", archive);
 
@@ -626,7 +630,10 @@ async fn build_runs_add_cmd_for_process_node() {
             break;
         }
     }
-    assert!(found, "marker.txt produced by add_cmd should be in archive");
+    assert!(
+        found,
+        "marker.txt produced by build_cmd should be in archive"
+    );
 
     // Keep harness alive (so tempdirs survive until the assertions above).
     drop(h.peppy_root);
@@ -1117,14 +1124,14 @@ async fn restore_snapshot_if_matches_rolls_back_failed_rebuild() {
         .expect("v1 artifact should exist")
         .to_path_buf();
 
-    // Simulate the rebuild: re-push with a blocking add_cmd so the next
+    // Simulate the rebuild: re-push with a blocking build_cmd so the next
     // `NodeEntity::build` call sits in `Building` while we run the restore
     // assertions. The marker/proceed files give us a real-lifecycle way to
     // observe + control the `Building` stage without any backdoor.
     let control_dir = tempfile::tempdir().expect("control tempdir");
     let proceed_file = control_dir.path().join("proceed");
     let proceed_file_disp = proceed_file.display().to_string();
-    let blocking_config = sensor_config_with_add_cmd(&format!(
+    let blocking_config = sensor_config_with_build_cmd(&format!(
         "while [ ! -f '{}' ]; do sleep 0.02; done; exit 0",
         proceed_file_disp
     ));
@@ -1241,7 +1248,7 @@ async fn restore_snapshot_if_matches_no_op_on_generation_drift() {
     let control_dir = tempfile::tempdir().expect("control tempdir");
     let proceed_file = control_dir.path().join("proceed");
     let proceed_file_disp = proceed_file.display().to_string();
-    let blocking_config = sensor_config_with_add_cmd(&format!(
+    let blocking_config = sensor_config_with_build_cmd(&format!(
         "while [ ! -f '{}' ]; do sleep 0.02; done; exit 0",
         proceed_file_disp
     ));

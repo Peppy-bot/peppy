@@ -78,8 +78,8 @@ fn format_node_info(out: &mut String, response: &NodeInfoResponse) {
     }
 
     // Commands
-    if let Some(add_cmd) = &config.execution.add_cmd {
-        let _ = writeln!(out, "Add cmd:   {}", add_cmd.join(" "));
+    if let Some(build_cmd) = &config.execution.build_cmd {
+        let _ = writeln!(out, "Build cmd:   {}", build_cmd.join(" "));
     }
     if let Some(start_cmd) = &config.execution.start_cmd {
         let _ = writeln!(out, "Start cmd: {}", start_cmd.join(" "));

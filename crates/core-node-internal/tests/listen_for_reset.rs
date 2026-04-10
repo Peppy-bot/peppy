@@ -1,7 +1,7 @@
 mod common;
 
 use common::{
-    CALLER_INSTANCE_ID, send_node_add_and_wait, spawn_real_running_instance,
+    CALLER_INSTANCE_ID, build_staged_node, send_node_add_and_wait, spawn_real_running_instance,
     start_core_node_with_mock_messenger, write_peppy_json5,
 };
 use config::node::Name;
@@ -99,6 +99,8 @@ async fn listen_for_node_reset_clears_node_stack() {
     assert!(node_stack.contains(TARGET_NODE_A_NAME, TARGET_NODE_A_TAG));
     assert!(node_stack.contains(TARGET_NODE_B_NAME, TARGET_NODE_B_TAG));
     assert_eq!(node_stack.len(), 3, "root + two added nodes");
+    build_staged_node(&started_core_node, TARGET_NODE_A_NAME, TARGET_NODE_A_TAG).await;
+    build_staged_node(&started_core_node, TARGET_NODE_B_NAME, TARGET_NODE_B_TAG).await;
 
     let instance_id_a = Name::new(TARGET_NODE_A_INSTANCE_ID).expect("valid instance id");
     let _running_a = spawn_real_running_instance(

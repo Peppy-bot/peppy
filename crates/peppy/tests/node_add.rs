@@ -71,7 +71,7 @@ fn node_add_command_succeeds() {
         peppy_json5_path.display()
     );
 
-    peppy::test_support::disable_add_cmd(&peppy_json5_path);
+    peppy::test_support::disable_build_cmd(&peppy_json5_path);
 
     // Now add the node to the node stack
     NodeCommand {
@@ -79,6 +79,7 @@ fn node_add_command_succeeds() {
             source: Some(node_path.display().to_string()),
             git_ref: None,
             variant: None,
+            build: true,
             start: false,
             args: Vec::new(),
             instance_id: None,
@@ -222,6 +223,7 @@ fn node_add_command_with_run_arg_succeeds() {
             source: Some(node_path.display().to_string()),
             git_ref: None,
             variant: None,
+            build: true,
             start: true,
             args: Vec::new(),
             instance_id: Some(instance_id.to_string()),
@@ -346,9 +348,9 @@ fn node_add_after_failed_sync_succeeds() {
     );
     std::fs::write(&git_hash_path, "wrong-hash\n").expect("failed to write wrong git hash");
 
-    // Disable add_cmd to avoid build step
+    // Disable build_cmd to avoid build step
     let peppy_json5_path = node_path.join("peppy.json5");
-    peppy::test_support::disable_add_cmd(&peppy_json5_path);
+    peppy::test_support::disable_build_cmd(&peppy_json5_path);
 
     // 3. Run `node add .` on that node, it'll fail due to git hash mismatch
     let add_result = NodeCommand {
@@ -356,6 +358,7 @@ fn node_add_after_failed_sync_succeeds() {
             source: Some(node_path.display().to_string()),
             git_ref: None,
             variant: None,
+            build: true,
             start: false,
             args: Vec::new(),
             instance_id: None,
@@ -396,6 +399,7 @@ fn node_add_after_failed_sync_succeeds() {
             source: Some(node_path.display().to_string()),
             git_ref: None,
             variant: None,
+            build: true,
             start: false,
             args: Vec::new(),
             instance_id: None,
@@ -547,6 +551,7 @@ fn node_add_same_node_shutdown_existing_instances() {
             source: Some(node_path.display().to_string()),
             git_ref: None,
             variant: None,
+            build: true,
             start: true,
             args: Vec::new(),
             instance_id: Some(instance_id.to_string()),
@@ -603,6 +608,7 @@ fn node_add_same_node_shutdown_existing_instances() {
             source: Some(node_path.display().to_string()),
             git_ref: None,
             variant: None,
+            build: true,
             start: false, // Don't start a new instance this time
             args: Vec::new(),
             instance_id: None,
@@ -695,12 +701,12 @@ fn node_add_command_with_variant_succeeds() {
     let root_path = node_dir.path().join(root_node_name);
     let root_peppy_json5 = root_path.join("peppy.json5");
 
-    // Read the generated config, add a variant declaration, and disable add_cmd
+    // Read the generated config, add a variant declaration, and disable build_cmd
     let mut root_cfg = config::node::NodeConfigParser::from_path(&root_peppy_json5)
         .expect("should parse config")
         .into_resolved()
         .expect("should resolve");
-    root_cfg.execution.add_cmd = None;
+    root_cfg.execution.build_cmd = None;
     root_cfg.manifest.variants = Some(vec![config::node::Variant {
         name: config::node::Name::new("mock").expect("valid name"),
         source: config::source::DeploymentSource::Local(config::source::DeploymentLocalSource {
@@ -744,6 +750,7 @@ fn node_add_command_with_variant_succeeds() {
             source: Some(root_path.display().to_string()),
             git_ref: None,
             variant: Some("mock".to_string()),
+            build: true,
             start: false,
             args: Vec::new(),
             instance_id: None,
@@ -868,7 +875,7 @@ fn node_add_with_variant_uses_variant_in_preflight() {
     std::fs::write(variant_peppy_dir.join("git.hash"), "test-git-hash")
         .expect("should write variant git hash");
 
-    // Disable add_cmd to avoid spawning a real binary; provide node services in-process
+    // Override start_cmd to `sleep 4` and disable build_cmd to avoid spawning a real binary.
     peppy::test_support::override_start_cmd(&root_peppy_json5);
 
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
@@ -903,6 +910,7 @@ fn node_add_with_variant_uses_variant_in_preflight() {
             source: Some(root_path.display().to_string()),
             git_ref: None,
             variant: Some("mock".to_string()),
+            build: true,
             start: true,
             args: Vec::new(),
             instance_id: Some(instance_id.to_string()),
@@ -965,6 +973,7 @@ fn node_add_with_variant_uses_variant_in_preflight() {
             },
             force: false,
             confirm_reader: Some(Box::new(std::io::Cursor::new(b"y\n" as &[u8]))),
+            chain_build: true,
         },
     )
     .expect("second node add with variant should succeed through confirmation path");
@@ -1084,6 +1093,7 @@ fn node_add_same_node_different_sources_show_overwrite_prompt() {
             source: Some(node_path.display().to_string()),
             git_ref: None,
             variant: None,
+            build: true,
             start: true,
             args: Vec::new(),
             instance_id: Some(instance_id.to_string()),
@@ -1183,6 +1193,7 @@ fn node_add_same_node_different_sources_show_overwrite_prompt() {
             },
             force: false,
             confirm_reader: Some(Box::new(std::io::Cursor::new(b"y\n" as &[u8]))),
+            chain_build: true,
         },
     )
     .expect("second node add from git should succeed through confirmation path");
@@ -1266,7 +1277,7 @@ fn node_add_auto_syncs_when_peppy_dir_missing() {
         .expect("should parse config")
         .into_resolved()
         .expect("should resolve");
-    root_cfg.execution.add_cmd = None;
+    root_cfg.execution.build_cmd = None;
     root_cfg.manifest.variants = Some(vec![config::node::Variant {
         name: config::node::Name::new("mock").expect("valid name"),
         source: config::source::DeploymentSource::Local(config::source::DeploymentLocalSource {
@@ -1303,6 +1314,7 @@ fn node_add_auto_syncs_when_peppy_dir_missing() {
             source: Some(root_path.display().to_string()),
             git_ref: None,
             variant: Some("mock".to_string()),
+            build: true,
             start: false,
             args: Vec::new(),
             instance_id: None,

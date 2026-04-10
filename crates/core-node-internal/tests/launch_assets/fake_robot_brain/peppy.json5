@@ -51,7 +51,7 @@
   },
   execution: {
     language: "rust",
-    add_cmd: [
+    build_cmd: [
       "true"
     ],
     start_cmd: [

@@ -170,30 +170,26 @@ async fn handle_node_info_request_inner(
                 {
                     let stage = Some(guard.stage().name().to_string());
                     let tracked = guard.instances();
-                    let instances: Vec<NodeInstanceInfo> = tracked
-                        .iter()
-                        .map(|instance| NodeInstanceInfo {
-                            instance_id: instance.instance_id().as_str().to_owned(),
-                            state: match instance.state() {
+                    let start_log_dir = peppy_dirs.logs_dir_start();
+                    let mut instances: Vec<NodeInstanceInfo> = Vec::with_capacity(tracked.len());
+                    let mut instances_names: Vec<String> = Vec::new();
+                    let mut start_log_paths: Vec<PathBuf> = Vec::with_capacity(tracked.len());
+                    for instance in tracked.iter() {
+                        let id = instance.instance_id().as_str();
+                        let state = instance.state();
+                        instances.push(NodeInstanceInfo {
+                            instance_id: id.to_owned(),
+                            state: match state {
                                 InstanceState::Starting => "starting".to_string(),
                                 InstanceState::Running => "running".to_string(),
                             },
-                        })
-                        .collect();
-                    let instances_names: Vec<String> = tracked
-                        .iter()
-                        .filter(|instance| instance.state() == InstanceState::Running)
-                        .map(|instance| instance.instance_id().as_str().to_owned())
-                        .collect();
-                    let start_log_paths: Vec<PathBuf> = tracked
-                        .iter()
-                        .map(|instance| {
-                            peppy_dirs
-                                .logs_dir_start()
-                                .join(format!("{}.log", instance.instance_id().as_str()))
-                        })
-                        .collect();
-                    let add_log_path = guard.last_add_log_path().map(Path::to_path_buf);
+                        });
+                        if state == InstanceState::Running {
+                            instances_names.push(id.to_owned());
+                        }
+                        start_log_paths.push(start_log_dir.join(format!("{}.log", id)));
+                    }
+                    let add_log_path = node_stack.add_log_path(node_name, node_tag);
                     (
                         true,
                         instances_names,

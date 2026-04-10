@@ -64,7 +64,7 @@ This generates the same project scaffolding as a regular node, plus an `apptaine
 
 ## The `peppy.json5` configuration
 
-A container node includes a `container` block inside its `execution` section instead of the usual `add_cmd` and `start_cmd` fields. The two are mutually exclusive — a node is either a container node or a process node, never both.
+A container node includes a `container` block inside its `execution` section instead of the usual `build_cmd` and `start_cmd` fields. The two are mutually exclusive — a node is either a container node or a process node, never both.
 
 <Tabs>
   <TabItem label="Python">
@@ -107,7 +107,7 @@ A container node includes a `container` block inside its `execution` section ins
 
 The `def_file` field points to the Apptainer definition file relative to the node root. You can rename or relocate it as long as `def_file` matches.
 
-Compare this with a standard process node, which defines `add_cmd` and `start_cmd` instead:
+Compare this with a standard process node, which defines `build_cmd` and `start_cmd` instead:
 
 <Tabs>
   <TabItem label="Python">
@@ -121,7 +121,7 @@ Compare this with a standard process node, which defines `add_cmd` and `start_cm
       interfaces: {},
       execution: {
         language: "python",
-        add_cmd: ["uv", "sync", "--no-editable"],
+        build_cmd: ["uv", "sync", "--no-editable"],
         start_cmd: ["./.venv/bin/python", "-m", "my_node"]
       }
     }
@@ -138,7 +138,7 @@ Compare this with a standard process node, which defines `add_cmd` and `start_cm
       interfaces: {},
       execution: {
         language: "rust",
-        add_cmd: ["cargo", "build", "--release"],
+        build_cmd: ["cargo", "build", "--release"],
         start_cmd: ["./target/release/my_node"]
       }
     }
@@ -146,7 +146,7 @@ Compare this with a standard process node, which defines `add_cmd` and `start_cm
   </TabItem>
 </Tabs>
 
-Container nodes don't need `add_cmd` or `start_cmd` — the definition file takes care of both building and running the node.
+Container nodes don't need `build_cmd` or `start_cmd` — the definition file takes care of both building and running the node.
 
 ## The `apptainer.def` file
 
@@ -222,14 +222,17 @@ The `%files` section copies the entire node directory into the container. PeppyO
 
 ## Adding a container node
 
-Adding a container node works the same as a regular node:
+Adding a container node works the same as a regular node — first stage it, then build:
 
 ```sh
 peppy node add ./my_node
+peppy node build my_node:0.1.0
 ```
 
-Under the hood, PeppyOS runs `apptainer build` to produce a `.sif` (Singularity Image Format) file.
-This replaces the `add_cmd` step used by process nodes — the entire build happens inside the container according to the `%post` section of the definition file.
+You can also combine both steps with `peppy node add ./my_node --build`.
+
+Under the hood, PeppyOS runs `apptainer build` during the build phase to produce a `.sif` (Singularity Image Format) file.
+This replaces the `build_cmd` step used by process nodes — the entire build happens inside the container according to the `%post` section of the definition file.
 
 The resulting `.sif` file is stored in PeppyOS's internal storage and is ready to be started.
 

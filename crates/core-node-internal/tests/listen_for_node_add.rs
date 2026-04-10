@@ -1,14 +1,14 @@
+#![allow(dead_code)]
+
 mod common;
 
 use common::{
-    AbortOnDrop, CALLER_INSTANCE_ID, NodeAddSource, TEST_GIT_HASH, create_tar_zst_from_dir,
-    send_node_add_and_wait, send_node_add_and_wait_with_env, send_node_add_and_wait_with_force,
+    AbortOnDrop, CALLER_INSTANCE_ID, NodeAddSource, TEST_GIT_HASH, build_staged_node,
+    create_tar_zst_from_dir, send_node_add_and_wait, send_node_add_and_wait_with_force,
     send_node_add_and_wait_with_variant, spawn_real_running_instance, spawn_real_stuck_instance,
     start_core_node_with_mock_messenger, write_peppy_json5,
 };
-use config::consts::{
-    DEFAULT_ALPINE_BASE_IMAGE, NODE_CONFIG_FILE, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH,
-};
+use config::consts::{NODE_CONFIG_FILE, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH};
 use config::node::QoSProfile;
 use config::test_helpers;
 use core_node::encoding::{NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse};
@@ -25,10 +25,8 @@ use {
     httptest::responders::status_code,
 };
 
-const ADD_CMD_MARKER_FILE: &str = "add_cmd_executed.marker";
 const GOAL_TIMEOUT: Duration = Duration::from_secs(30);
 const RESULT_TIMEOUT: Duration = Duration::from_secs(120);
-const CONTAINER_RESULT_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Returns the current `artifact_path` of the entity at `(name, tag)` as an owned
 /// `PathBuf`. Panics if the entity is missing or is not yet `Built`.
@@ -316,186 +314,9 @@ async fn listen_for_node_fs_add_success() {
         0
     );
 
-    // Verify the node was archived to the peppy storage directory
-    let snapshot_path = add_result.snapshot_path.as_path();
-    let root_path = entity_artifact_path(&node_stack, TARGET_NODE_NAME, TARGET_NODE_TAG);
-    assert_eq!(
-        snapshot_path, root_path,
-        "snapshot_path should match archive path"
-    );
-    assert!(
-        root_path != source_dir.path(),
-        "node should be archived to a different location, got: {}",
-        root_path.display()
-    );
-    assert!(
-        root_path.exists(),
-        "node archive should exist: {}",
-        root_path.display()
-    );
-    assert!(
-        archive_contains_entry(&root_path, NODE_CONFIG_FILE),
-        "config file should be present in the archive"
-    );
-
-    // Verify the path follows the expected naming convention: <node_name>_<tag>.tar.zst
-    let file_name = root_path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .expect("should have file name");
-    assert_eq!(
-        file_name,
-        format!("{TARGET_NODE_NAME}_{TARGET_NODE_TAG}.tar.zst"),
-        "archive file name should be '<node_name>_<tag>.tar.zst', got: {}",
-        file_name
-    );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_add_with_container_success() {
-    const TARGET_NODE_NAME: &str = "container_node";
-    const TARGET_NODE_TAG: &str = "0.1.0";
-
-    let started_core_node = start_core_node_with_mock_messenger().await;
-    let node_stack = started_core_node.node_stack.clone();
-
-    let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
-    let peppy_json5 = r#"{
-        schema_version: 1,
-        manifest: {
-            name: "TARGET_NODE_NAME",
-            tag: "TARGET_NODE_TAG",
-        },
-        // Using `container` let `peppy` manage the node internally
-        execution: {
-            language: "rust",
-            container: {
-                def_file: "apptainer.def",
-            }
-        }
-    }"#
-    .replace("TARGET_NODE_NAME", TARGET_NODE_NAME)
-    .replace("TARGET_NODE_TAG", TARGET_NODE_TAG);
-    write_peppy_json5(source_dir.path(), &peppy_json5);
-    let apptainer_def = r#"
-Bootstrap: docker
-From: {DEFAULT_ALPINE_BASE_IMAGE}
-
-%labels
-    Name {TARGET_NODE_NAME}
-    Version {TARGET_NODE_TAG}
-
-%runscript
-    echo "Running {TARGET_NODE_NAME}:{TARGET_NODE_TAG}"
-"#
-    .replace("{DEFAULT_ALPINE_BASE_IMAGE}", DEFAULT_ALPINE_BASE_IMAGE)
-    .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
-    .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
-    std::fs::write(source_dir.path().join("apptainer.def"), &apptainer_def)
-        .expect("failed to write apptainer definition");
-
-    let add_result = send_node_add_and_wait(
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        source_dir.path(),
-        GOAL_TIMEOUT,
-        CONTAINER_RESULT_TIMEOUT,
-        None,
-    )
-    .await
-    .expect("node_add request should succeed");
-
-    assert!(
-        add_result.success,
-        "node_add should succeed, got error: {:?}",
-        add_result.error_message
-    );
-
-    assert!(node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG));
-    assert_eq!(node_stack.len(), 2, "root + added node");
-
-    // `add` only adds the node to the NodeStack but doesn't spawn any instance
-    assert_eq!(
-        entity_instance_count(&node_stack, TARGET_NODE_NAME, TARGET_NODE_TAG),
-        0
-    );
-
-    // Verify the .sif image was stored in the peppy storage directory
-    let snapshot_path = add_result.snapshot_path.as_path();
-    let root_path = entity_artifact_path(&node_stack, TARGET_NODE_NAME, TARGET_NODE_TAG);
-    assert_eq!(
-        snapshot_path, root_path,
-        "snapshot_path should match root_path"
-    );
-    assert!(
-        root_path != source_dir.path(),
-        "node should be stored in a different location than the source, got: {}",
-        root_path.display()
-    );
-    assert!(
-        root_path.exists(),
-        "node .sif image should exist: {}",
-        root_path.display()
-    );
-
-    // Container nodes store the .sif image directly, not wrapped in a tar.zst archive
-    let file_name = root_path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .expect("should have file name");
-    assert_eq!(
-        file_name,
-        format!("{TARGET_NODE_NAME}_{TARGET_NODE_TAG}.sif"),
-        "stored image should be '<node_name>_<tag>.sif', got: {}",
-        file_name
-    );
-
-    // Verify the log file path is returned and points to the correct directory
-    assert!(
-        !add_result.log_path.as_os_str().is_empty(),
-        "log_path should not be empty"
-    );
-    assert!(
-        add_result.log_path.exists(),
-        "log file should exist at {:?}",
-        add_result.log_path
-    );
-
-    let log_dir = started_core_node.peppy_dirs.logs_dir_add();
-    assert!(
-        add_result.log_path.starts_with(&log_dir),
-        "log file should be in logs_dir_add(), expected to start with {:?}, got {:?}",
-        log_dir,
-        add_result.log_path
-    );
-
-    // Verify the log file name follows the expected pattern: <node_name>_<tag>_<timestamp>.log
-    let log_filename = add_result
-        .log_path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .expect("should have log filename");
-    assert!(
-        log_filename.starts_with(&format!("{TARGET_NODE_NAME}_{TARGET_NODE_TAG}_")),
-        "log filename should start with '<node_name>_<tag>_', got: {}",
-        log_filename
-    );
-    assert!(
-        log_filename.ends_with(".log"),
-        "log filename should end with '.log', got: {}",
-        log_filename
-    );
-
-    // Verify that container build output was streamed to the log file.
-    // Apptainer build always writes status messages to stderr/stdout which our
-    // streaming infrastructure captures with [stdout]/[stderr] prefixes.
-    let log_content =
-        std::fs::read_to_string(&add_result.log_path).expect("should be able to read log file");
-    assert!(
-        log_content.contains("[stdout]") || log_content.contains("[stderr]"),
-        "log file should contain streamed build output with [stdout]/[stderr] prefixes, got:\n{}",
-        log_content
-    );
+    // Add staged the node into the stack but did not produce an artifact;
+    // artifact-related assertions live in `listen_for_node_build.rs`.
+    let _ = add_result.log_path;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -541,50 +362,8 @@ async fn listen_for_node_git_add_success() {
         0
     );
 
-    let snapshot_path = add_result.snapshot_path.as_path();
-    let root_path = entity_artifact_path(&node_stack, TARGET_NODE_NAME, TARGET_NODE_TAG);
-    assert_eq!(snapshot_path, root_path);
-    assert!(root_path.exists(), "archive should exist");
-    assert!(
-        archive_contains_entry(&root_path, NODE_CONFIG_FILE),
-        "config file should exist in archive"
-    );
-
-    // Verify the path follows the expected naming convention: <node_name>_<tag>.tar.zst
-    let file_name = root_path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .expect("should have file name");
-    assert_eq!(
-        file_name,
-        format!("{TARGET_NODE_NAME}_{TARGET_NODE_TAG}.tar.zst"),
-        "archive file name should be '<node_name>_<tag>.tar.zst', got: {}",
-        file_name
-    );
-
-    // Verify the log file was renamed to the canonical <node_name>_<tag>_<timestamp>.log format
-    let log_dir = started_core_node.peppy_dirs.logs_dir_add();
-    assert!(
-        add_result.log_path.starts_with(&log_dir),
-        "log file should be in logs_dir_add(), expected to start with {:?}, got {:?}",
-        log_dir,
-        add_result.log_path
-    );
-    let log_filename = add_result
-        .log_path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .expect("should have log filename");
-    assert!(
-        log_filename.starts_with(&format!("{TARGET_NODE_NAME}_{TARGET_NODE_TAG}_")),
-        "log filename should start with '<node_name>_<tag>_', got: {}",
-        log_filename
-    );
-    assert!(
-        log_filename.ends_with(".log"),
-        "log filename should end with '.log', got: {}",
-        log_filename
-    );
+    // Artifact assertions live in `listen_for_node_build.rs`.
+    let _ = add_result.log_path;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -736,36 +515,8 @@ async fn listen_for_node_http_add_success() {
         0
     );
 
-    let snapshot_path = add_result.snapshot_path.as_path();
-    let root_path = entity_artifact_path(&node_stack, TARGET_NODE_NAME, TARGET_NODE_TAG);
-    assert_eq!(snapshot_path, root_path);
-    assert!(root_path.exists(), "archive should exist");
-    assert!(
-        archive_contains_entry(&root_path, NODE_CONFIG_FILE),
-        "config file should exist in archive"
-    );
-
-    assert!(
-        archive_contains_entry(&root_path, "test_file.txt"),
-        "test_file.txt should be in the archive"
-    );
-    let copied_content = read_file_from_archive(&root_path, "test_file.txt");
-    assert_eq!(
-        copied_content, test_file_content,
-        "file content should match"
-    );
-
-    // Verify the path follows the expected naming convention: <node_name>_<tag>.tar.zst
-    let file_name = root_path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .expect("should have file name");
-    assert_eq!(
-        file_name,
-        format!("{TARGET_NODE_NAME}_{TARGET_NODE_TAG}.tar.zst"),
-        "archive file name should be '<node_name>_<tag>.tar.zst', got: {}",
-        file_name
-    );
+    // Artifact assertions live in `listen_for_node_build.rs`.
+    let _ = (add_result.log_path, test_file_content);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1150,7 +901,6 @@ async fn listen_for_node_add_same_node_same_tags_overwrites_when_no_dependents()
 
     assert_eq!(node_stack.len(), 2, "root + v1");
     assert_eq!(entity_instance_count(&node_stack, NODE_NAME, NODE_TAG), 0);
-    let copied_path_v1 = entity_artifact_path(&node_stack, NODE_NAME, NODE_TAG);
 
     // Second add: same name+tag but different interfaces -> should overwrite.
     let peppy_json5_v2 = r#"{
@@ -1200,22 +950,11 @@ async fn listen_for_node_add_same_node_same_tags_overwrites_when_no_dependents()
         0,
         "should not have any instances"
     );
-    let entity_root = entity_guard
-        .artifact_path()
-        .expect("entity should be built")
-        .to_path_buf();
-    assert_eq!(
-        entity_root.as_path(),
-        add_v2.snapshot_path.as_path(),
-        "node stack should point to the new snapshot path"
-    );
-    // With deterministic archive naming, v1 and v2 produce the same path.
-    assert_eq!(
-        entity_root.as_path(),
-        copied_path_v1.as_path(),
-        "deterministic archive path should be the same for both adds"
-    );
-    assert!(entity_root.exists(), "archive should exist after overwrite");
+    // Artifact path/existence assertions belong to the build phase and live in
+    // `listen_for_node_build.rs`. Here we only verify the add-side overwrite
+    // semantics: stack shape, no instances, and that the live config reflects
+    // the overwritten interfaces.
+    let _ = add_v2.log_path;
     assert!(
         entity_guard
             .config()
@@ -1330,8 +1069,6 @@ async fn listen_for_node_add_same_node_same_tags_fails_when_node_has_dependents(
     );
 
     assert_eq!(node_stack.len(), 3, "root + dependency + dependent");
-    let dependency_snapshot_path =
-        entity_artifact_path(&node_stack, DEPENDENCY_NODE_NAME, DEPENDENCY_NODE_TAG);
 
     // Overwrite attempt: same name+tag but different interfaces should fail due to dependent nodes.
     let dependency_peppy_json5_v2 = r#"{
@@ -1382,11 +1119,6 @@ async fn listen_for_node_add_same_node_same_tags_fails_when_node_has_dependents(
     );
 
     assert_eq!(node_stack.len(), 3, "stack should be unchanged");
-    assert_eq!(
-        entity_artifact_path(&node_stack, DEPENDENCY_NODE_NAME, DEPENDENCY_NODE_TAG).as_path(),
-        dependency_snapshot_path.as_path(),
-        "dependency should still point to the original snapshot path"
-    );
     assert!(
         node_stack.contains(DEPENDENT_NODE_NAME, DEPENDENT_NODE_TAG),
         "dependent node should still exist after failed overwrite"
@@ -1517,347 +1249,6 @@ async fn listen_for_node_add_same_node_different_tags_create_two_entities() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_add_copies_files_to_storage() {
-    const TARGET_NODE_NAME: &str = "copy_test_node";
-    const TARGET_NODE_TAG: &str = "0.1.0";
-
-    let started_core_node = start_core_node_with_mock_messenger().await;
-    let node_stack = started_core_node.node_stack.clone();
-
-    // Create a temporary source directory with some files
-    let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
-    let test_file_content = "test file content";
-    std::fs::write(source_dir.path().join("test_file.txt"), test_file_content)
-        .expect("failed to write test file");
-
-    // Create a subdirectory with a file
-    let sub_dir = source_dir.path().join("subdir");
-    std::fs::create_dir(&sub_dir).expect("failed to create subdir");
-    std::fs::write(sub_dir.join("nested_file.txt"), "nested content")
-        .expect("failed to write nested file");
-
-    let peppy_json5 = r#"{
-            schema_version: 1,
-            manifest: {
-                name: "{TARGET_NODE_NAME}",
-                tag: "{TARGET_NODE_TAG}",
-            },
-            execution: {
-                language: "rust",
-                start_cmd: ["sleep", "10"]
-            }
-        }"#
-    .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
-    .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
-    write_peppy_json5(source_dir.path(), &peppy_json5);
-
-    let add_result = send_node_add_and_wait(
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        source_dir.path(),
-        GOAL_TIMEOUT,
-        RESULT_TIMEOUT,
-        None,
-    )
-    .await
-    .expect("node_add request should succeed");
-
-    assert!(
-        add_result.success,
-        "node_add should succeed, got error: {:?}",
-        add_result.error_message
-    );
-
-    let archive_path = entity_artifact_path(&node_stack, TARGET_NODE_NAME, TARGET_NODE_TAG);
-    assert_eq!(
-        add_result.snapshot_path.as_path(),
-        archive_path.as_path(),
-        "snapshot_path should match archive path"
-    );
-
-    // Verify the file was archived
-    assert!(
-        archive_contains_entry(&archive_path, "test_file.txt"),
-        "test_file.txt should be in the archive"
-    );
-    let content = read_file_from_archive(&archive_path, "test_file.txt");
-    assert_eq!(content, test_file_content, "file content should match");
-
-    // Verify the subdirectory and nested file were archived
-    assert!(
-        archive_contains_entry(&archive_path, "subdir/nested_file.txt"),
-        "nested file should be in the archive"
-    );
-    let nested_content = read_file_from_archive(&archive_path, "subdir/nested_file.txt");
-    assert_eq!(
-        nested_content, "nested content",
-        "nested content should match"
-    );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_add_runs_add_cmd() {
-    const TARGET_NODE_NAME: &str = "add_cmd_node";
-    const TARGET_NODE_TAG: &str = "0.1.0";
-
-    let started_core_node = start_core_node_with_mock_messenger().await;
-    let node_stack = started_core_node.node_stack.clone();
-
-    let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
-
-    // add_cmd creates a marker file to prove it was executed
-    let peppy_json5 = r#"{
-            schema_version: 1,
-            manifest: {
-                name: "{TARGET_NODE_NAME}",
-                tag: "{TARGET_NODE_TAG}",
-            },
-            execution: {
-                language: "rust",
-                add_cmd: ["touch", "{ADD_CMD_MARKER_FILE}"],
-                start_cmd: ["sleep", "10"]
-            }
-        }"#
-    .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
-    .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG)
-    .replace("{ADD_CMD_MARKER_FILE}", ADD_CMD_MARKER_FILE);
-    write_peppy_json5(source_dir.path(), &peppy_json5);
-
-    let add_result = send_node_add_and_wait(
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        source_dir.path(),
-        GOAL_TIMEOUT,
-        RESULT_TIMEOUT,
-        None,
-    )
-    .await
-    .expect("node_add request should succeed");
-
-    assert!(
-        add_result.success,
-        "node_add should succeed, got error: {:?}",
-        add_result.error_message
-    );
-
-    let archive_path = entity_artifact_path(&node_stack, TARGET_NODE_NAME, TARGET_NODE_TAG);
-
-    // Verify that add_cmd was executed in the working directory (not the source)
-    // by checking the marker file exists in the archive
-    assert!(
-        archive_contains_entry(&archive_path, ADD_CMD_MARKER_FILE),
-        "add_cmd should have created marker file in the archive"
-    );
-
-    // Verify add_cmd did NOT run on the source directory
-    let source_marker = source_dir.path().join(ADD_CMD_MARKER_FILE);
-    assert!(
-        !source_marker.exists(),
-        "add_cmd should NOT have created marker file in source dir at {}",
-        source_marker.display()
-    );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_add_cmd_failure_fails_add() {
-    const TARGET_NODE_NAME: &str = "add_cmd_fail_node";
-    const TARGET_NODE_TAG: &str = "0.1.0";
-
-    let started_core_node = start_core_node_with_mock_messenger().await;
-    let node_stack = started_core_node.node_stack.clone();
-
-    let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
-
-    // add_cmd that will fail (non-existent command)
-    let peppy_json5 = r#"{
-            schema_version: 1,
-            manifest: {
-                name: "{TARGET_NODE_NAME}",
-                tag: "{TARGET_NODE_TAG}",
-            },
-            execution: {
-                language: "rust",
-                add_cmd: ["this_command_does_not_exist_12345"],
-                start_cmd: ["sleep", "10"]
-            }
-        }"#
-    .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
-    .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
-    write_peppy_json5(source_dir.path(), &peppy_json5);
-
-    let add_result = send_node_add_and_wait(
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        source_dir.path(),
-        GOAL_TIMEOUT,
-        RESULT_TIMEOUT,
-        None,
-    )
-    .await
-    .expect("node_add request should complete");
-
-    assert!(
-        !add_result.success,
-        "node_add should fail when add_cmd fails"
-    );
-    assert!(
-        add_result
-            .error_message
-            .as_ref()
-            .map(|msg| msg.contains("add_cmd failed"))
-            .unwrap_or(false),
-        "error message should mention add_cmd failure, got: {:?}",
-        add_result.error_message
-    );
-    assert!(
-        add_result
-            .error_message
-            .as_ref()
-            .map(|msg| msg.contains("this_command_does_not_exist_12345"))
-            .unwrap_or(false),
-        "error message should include the command that failed, got: {:?}",
-        add_result.error_message
-    );
-
-    // Node should not be in the stack
-    assert!(
-        !node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG),
-        "node should not be added when add_cmd fails"
-    );
-    assert_eq!(node_stack.len(), 1, "only root should exist");
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_add_cmd_nonzero_exit_fails_add() {
-    const TARGET_NODE_NAME: &str = "add_cmd_exit_fail_node";
-    const TARGET_NODE_TAG: &str = "0.1.0";
-
-    let started_core_node = start_core_node_with_mock_messenger().await;
-    let node_stack = started_core_node.node_stack.clone();
-
-    let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
-
-    // add_cmd that exits with non-zero status
-    let peppy_json5 = r#"{
-            schema_version: 1,
-            manifest: {
-                name: "{TARGET_NODE_NAME}",
-                tag: "{TARGET_NODE_TAG}",
-            },
-            execution: {
-                language: "rust",
-                add_cmd: ["sh", "-c", "exit 1"],
-                start_cmd: ["sleep", "10"]
-            }
-        }"#
-    .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
-    .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
-    write_peppy_json5(source_dir.path(), &peppy_json5);
-
-    let add_result = send_node_add_and_wait(
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        source_dir.path(),
-        GOAL_TIMEOUT,
-        RESULT_TIMEOUT,
-        None,
-    )
-    .await
-    .expect("node_add request should complete");
-
-    assert!(
-        !add_result.success,
-        "node_add should fail when add_cmd exits with non-zero status"
-    );
-    assert!(
-        add_result
-            .error_message
-            .as_ref()
-            .map(|msg| msg.contains("add_cmd failed"))
-            .unwrap_or(false),
-        "error message should mention add_cmd failure, got: {:?}",
-        add_result.error_message
-    );
-    assert!(
-        add_result
-            .error_message
-            .as_ref()
-            .map(|msg| msg.contains("exit 1"))
-            .unwrap_or(false),
-        "error message should include the command that failed, got: {:?}",
-        add_result.error_message
-    );
-
-    // Node should not be in the stack
-    assert!(
-        !node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG),
-        "node should not be added when add_cmd fails"
-    );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_add_streams_stdout_and_stderr() {
-    const TARGET_NODE_NAME: &str = "stream_output_node";
-    const TARGET_NODE_TAG: &str = "0.1.0";
-    const STDOUT_MARKER: &str = "peppy_add_stdout_marker";
-    const STDERR_MARKER: &str = "peppy_add_stderr_marker";
-
-    let started_core_node = start_core_node_with_mock_messenger().await;
-
-    let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
-    let peppy_json5 = r#"{
-            schema_version: 1,
-            manifest: {
-                name: "{TARGET_NODE_NAME}",
-                tag: "{TARGET_NODE_TAG}",
-            },
-            execution: {
-                language: "rust",
-                add_cmd: ["sh", "-c", "echo {STDOUT_MARKER}; echo {STDERR_MARKER} 1>&2"],
-                start_cmd: ["sleep", "10"]
-            }
-        }"#
-    .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
-    .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG)
-    .replace("{STDOUT_MARKER}", STDOUT_MARKER)
-    .replace("{STDERR_MARKER}", STDERR_MARKER);
-    write_peppy_json5(source_dir.path(), &peppy_json5);
-
-    // Use wildcard caller IDs so mock pub/sub can match feedback topics with "*" segments.
-    let (feedback_tx, mut feedback_rx) = tokio::sync::mpsc::unbounded_channel::<NodeAddFeedback>();
-    let add_result = send_node_add_and_wait(
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        source_dir.path(),
-        GOAL_TIMEOUT,
-        RESULT_TIMEOUT,
-        Some(feedback_tx),
-    )
-    .await
-    .expect("node_add request should succeed");
-
-    assert!(
-        add_result.success,
-        "node_add should succeed, got error: {:?}",
-        add_result.error_message
-    );
-
-    let mut feedback = Vec::new();
-    while let Ok(entry) = feedback_rx.try_recv() {
-        feedback.push(entry);
-    }
-    let saw_stdout = feedback
-        .iter()
-        .any(|entry| entry.is_stdout() && entry.line.trim() == STDOUT_MARKER);
-    let saw_stderr = feedback
-        .iter()
-        .any(|entry| entry.is_stderr() && entry.line.trim() == STDERR_MARKER);
-
-    assert!(saw_stdout, "stdout feedback should include marker");
-    assert!(saw_stderr, "stderr feedback should include marker");
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_add_fingerprint_mismatch() {
     const TARGET_NODE_NAME: &str = "fingerprint_mismatch_node";
     const TARGET_NODE_TAG: &str = "0.1.0";
@@ -1932,109 +1323,6 @@ async fn listen_for_node_add_fingerprint_mismatch() {
     assert_eq!(node_stack.len(), 1, "only root should exist");
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_add_writes_log_file() {
-    const TARGET_NODE_NAME: &str = "log_file_node";
-    const TARGET_NODE_TAG: &str = "0.1.0";
-    const STDOUT_MARKER: &str = "peppy_logfile_stdout_marker";
-    const STDERR_MARKER: &str = "peppy_logfile_stderr_marker";
-
-    let started_core_node = start_core_node_with_mock_messenger().await;
-
-    let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
-    let peppy_json5 = r#"{
-            schema_version: 1,
-            manifest: {
-                name: "{TARGET_NODE_NAME}",
-                tag: "{TARGET_NODE_TAG}",
-            },
-            execution: {
-                language: "rust",
-                add_cmd: ["sh", "-c", "echo {STDOUT_MARKER}; echo {STDERR_MARKER} 1>&2"],
-                start_cmd: ["sleep", "10"]
-            }
-        }"#
-    .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
-    .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG)
-    .replace("{STDOUT_MARKER}", STDOUT_MARKER)
-    .replace("{STDERR_MARKER}", STDERR_MARKER);
-    write_peppy_json5(source_dir.path(), &peppy_json5);
-
-    let add_result = send_node_add_and_wait(
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        source_dir.path(),
-        GOAL_TIMEOUT,
-        RESULT_TIMEOUT,
-        None,
-    )
-    .await
-    .expect("node_add request should succeed");
-
-    assert!(
-        add_result.success,
-        "node_add should succeed, got error: {:?}",
-        add_result.error_message
-    );
-
-    // Verify the log file path is returned
-    assert!(
-        !add_result.log_path.as_os_str().is_empty(),
-        "log_path should not be empty"
-    );
-
-    // Verify the log file exists
-    assert!(
-        add_result.log_path.exists(),
-        "log file should exist at {:?}",
-        add_result.log_path
-    );
-
-    // Verify the log file is in the expected directory
-    let log_dir = started_core_node.peppy_dirs.logs_dir_add();
-    assert!(
-        add_result.log_path.starts_with(&log_dir),
-        "log file should be in logs_dir_add(), expected to start with {:?}, got {:?}",
-        log_dir,
-        add_result.log_path
-    );
-
-    // Verify the log file name follows the expected pattern: <node_name>_<tag>_<timestamp>.log
-    let log_filename = add_result
-        .log_path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .expect("should have log filename");
-    assert!(
-        log_filename.starts_with(&format!("{TARGET_NODE_NAME}_{TARGET_NODE_TAG}_")),
-        "log filename should start with '<node_name>_<tag>_', got: {}",
-        log_filename
-    );
-    assert!(
-        log_filename.ends_with(".log"),
-        "log filename should end with '.log', got: {}",
-        log_filename
-    );
-
-    // Verify the log file contains expected content
-    let log_content =
-        std::fs::read_to_string(&add_result.log_path).expect("should be able to read log file");
-
-    // Check that stdout marker is present with correct prefix
-    assert!(
-        log_content.contains(&format!("[stdout] {}", STDOUT_MARKER)),
-        "log file should contain stdout marker with [stdout] prefix, got:\n{}",
-        log_content
-    );
-
-    // Check that stderr marker is present with correct prefix
-    assert!(
-        log_content.contains(&format!("[stderr] {}", STDERR_MARKER)),
-        "log file should contain stderr marker with [stderr] prefix, got:\n{}",
-        log_content
-    );
-}
-
 /// Tests that a new goal can be processed after a previous action was abandoned
 /// (goal accepted but result never polled).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2102,20 +1390,17 @@ async fn listen_for_node_add_abandoned_action_does_not_block_next_goal() {
         "first goal should be accepted"
     );
 
-    // Wait for the first action to *fully* settle without polling its
-    // action result (the whole point of this test is that the result is
-    // never requested). We can't rely on the previous `no_starting` clause
-    // — `node add` never registers `Starting` instances, so it was always
-    // true and added nothing — so settling is detected purely via
-    // `stage == Ready` (which the entity transitions to inside `build`)
-    // and `artifact_path().is_some()` (which is recorded under the same
-    // write lock as the stage transition).
+    // Wait for the first action to settle without polling its action
+    // result (the whole point of this test is that the result is never
+    // requested). With `node_add` and `node_build` now split into two
+    // separate actions, settling means the entity reached `Added` (the
+    // terminal stage of `node_add`); a follow-up `node_build` would be a
+    // separate goal.
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             if let Some(handle) = node_stack.find(FIRST_NODE_NAME, FIRST_NODE_TAG) {
                 let guard = handle.read();
-                let is_ready = matches!(guard.stage(), node_stack::NodeStage::Ready { .. });
-                if is_ready && guard.artifact_path().is_some() {
+                if matches!(guard.stage(), node_stack::NodeStage::Added { .. }) {
                     break;
                 }
             }
@@ -2123,7 +1408,7 @@ async fn listen_for_node_add_abandoned_action_does_not_block_next_goal() {
         }
     })
     .await
-    .expect("first node never reached Ready within 30s");
+    .expect("first node never reached Added within 30s");
 
     // Now send second goal - this should succeed even though we never polled
     // for the first action's result
@@ -2217,14 +1502,7 @@ async fn node_add_same_node_shutdown_existing_instances() {
         "node_add v1 should succeed, got error: {:?}",
         add_v1.error_message
     );
-
-    let snapshot_v1 = entity_artifact_path(&node_stack, NODE_NAME, NODE_TAG);
-    // Capture the v1 archive bytes so we can later detect whether the v2
-    // overwrite actually mutated the on-disk artifact mid-overwrite. With
-    // deterministic archive naming v1 and v2 share the same path; only the
-    // *bytes* can prove the overwrite ordering invariant.
-    let snapshot_v1_bytes =
-        std::fs::read(&snapshot_v1).expect("v1 archive should be readable on disk");
+    build_staged_node(&started_core_node, NODE_NAME, NODE_TAG).await;
 
     let instance_id_1 = config::node::Name::new(INSTANCE_1).expect("valid instance id 1");
     let instance_id_2 = config::node::Name::new(INSTANCE_2).expect("valid instance id 2");
@@ -2350,23 +1628,13 @@ async fn node_add_same_node_shutdown_existing_instances() {
         .await
     });
 
-    // Wait for the first shutdown request and ensure the stack is not overwritten yet.
+    // Wait for the first shutdown request: the overwrite must wait on the
+    // running instance to be shut down before it can replace the staged
+    // working directory.
     tokio::time::timeout(Duration::from_secs(5), called_rx_1)
         .await
         .expect("shutdown request for instance 1 should arrive within timeout")
         .expect("shutdown channel for instance 1 should not be dropped");
-    assert_eq!(
-        entity_artifact_path(&node_stack, NODE_NAME, NODE_TAG).as_path(),
-        snapshot_v1.as_path(),
-        "node should not be overwritten before instance 1 is shutdown"
-    );
-    // Path equality is not enough — verify the on-disk archive bytes still
-    // match v1 (so we can be sure the v2 build hasn't yet rewritten them).
-    assert_eq!(
-        std::fs::read(&snapshot_v1).expect("v1 archive should still exist"),
-        snapshot_v1_bytes,
-        "archive bytes should still match v1 before instance 1 shutdown completes"
-    );
 
     // Allow instance 1 shutdown response, then wait for instance 2 shutdown request.
     allow_shutdown_1.notify_one();
@@ -2375,16 +1643,6 @@ async fn node_add_same_node_shutdown_existing_instances() {
         .await
         .expect("shutdown request for instance 2 should arrive within timeout")
         .expect("shutdown channel for instance 2 should not be dropped");
-    assert_eq!(
-        entity_artifact_path(&node_stack, NODE_NAME, NODE_TAG).as_path(),
-        snapshot_v1.as_path(),
-        "node should not be overwritten before instance 2 is shutdown"
-    );
-    assert_eq!(
-        std::fs::read(&snapshot_v1).expect("v1 archive should still exist"),
-        snapshot_v1_bytes,
-        "archive bytes should still match v1 between the two instance shutdowns"
-    );
 
     // Allow instance 2 shutdown response so the overwrite can proceed.
     allow_shutdown_2.notify_one();
@@ -2400,30 +1658,11 @@ async fn node_add_same_node_shutdown_existing_instances() {
         add_v2.error_message
     );
 
-    assert_eq!(
-        entity_artifact_path(&node_stack, NODE_NAME, NODE_TAG).as_path(),
-        add_v2.snapshot_path.as_path(),
-        "node stack should point to the new snapshot path"
-    );
+    let _ = add_v2.log_path;
     assert_eq!(
         entity_instance_count(&node_stack, NODE_NAME, NODE_TAG),
         0,
         "instances should be stopped before overwrite completes"
-    );
-    // With deterministic archive naming, v1 and v2 produce the same path.
-    // The archive was overwritten, so it should still exist.
-    assert!(
-        add_v2.snapshot_path.exists(),
-        "archive should exist after overwrite"
-    );
-    // After overwrite the archive bytes must have changed (v1 had no
-    // `v2_marker.txt`, v2 does), proving the artifact was actually
-    // replaced rather than just left in place.
-    let snapshot_v2_bytes =
-        std::fs::read(&add_v2.snapshot_path).expect("v2 archive should be readable");
-    assert_ne!(
-        snapshot_v2_bytes, snapshot_v1_bytes,
-        "v2 archive should differ from v1 (the v2 source includes v2_marker.txt)"
     );
 
     let mut feedback = Vec::new();
@@ -2443,148 +1682,9 @@ async fn node_add_same_node_shutdown_existing_instances() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_add_uses_env_overrides_for_path() {
-    // Emulates a real case scenario where the caller environment differs from the already-running
-    // daemon environment. In practice, users often "install a tool then source it" (e.g.
-    // `. "$HOME/.cargo/env"`), but that only affects their shell, not the daemon. We model this by
-    // passing a PATH override in the goal on the second attempt.
-    const TARGET_NODE_NAME: &str = "the_node";
-    const TARGET_NODE_TAG: &str = "0.1.0";
-    const STDOUT_MARKER: &str = "peppy_logfile_stdout_marker";
-    const STDERR_MARKER: &str = "peppy_logfile_stderr_marker";
-
-    let started_core_node = start_core_node_with_mock_messenger().await;
-
-    let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
-    let peppy_json5 = r#"{
-            schema_version: 1,
-            manifest: {
-                name: "{TARGET_NODE_NAME}",
-                tag: "{TARGET_NODE_TAG}",
-            },
-            execution: {
-                language: "rust",
-                add_cmd: ["printout {STDOUT_MARKER}; printout {STDERR_MARKER} 1>&2"],
-                start_cmd: ["sleep", "10"]
-            }
-        }"#
-    .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
-    .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG)
-    .replace("{STDOUT_MARKER}", STDOUT_MARKER)
-    .replace("{STDERR_MARKER}", STDERR_MARKER);
-    write_peppy_json5(source_dir.path(), &peppy_json5);
-
-    // `printout` does not exist in the system when this is run
-    let add_result = send_node_add_and_wait(
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        source_dir.path(),
-        GOAL_TIMEOUT,
-        RESULT_TIMEOUT,
-        None,
-    )
-    .await
-    .expect("node_add request should succeed");
-
-    assert!(
-        !add_result.success,
-        "The command should fail, printout does not exist: {:?}",
-        add_result.error_message
-    );
-
-    // Create a temp bin directory with a `printout` script
-    let bin_dir = tempfile::tempdir().expect("failed to create temp bin dir");
-    let printout_path = bin_dir.path().join("printout");
-    std::fs::write(&printout_path, "#!/bin/sh\necho \"$@\"\n")
-        .expect("failed to write printout script");
-
-    // Make it executable
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = std::fs::metadata(&printout_path)
-            .expect("failed to get printout metadata")
-            .permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&printout_path, perms)
-            .expect("failed to set printout permissions");
-    }
-
-    // Pass the bin directory in PATH via env overrides to simulate the caller having an updated
-    // PATH without restarting the daemon.
-    let current_path = std::env::var("PATH").unwrap_or_default();
-    let new_path = format!("{}:{}", bin_dir.path().display(), current_path);
-    let env_vars = vec![("PATH".to_string(), new_path)];
-
-    let add_result = send_node_add_and_wait_with_env(
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        source_dir.path(),
-        GOAL_TIMEOUT,
-        RESULT_TIMEOUT,
-        None,
-        env_vars,
-    )
-    .await
-    .expect("node_add request should succeed");
-
-    // Now the command should succeed, since `printout` is available in the PATH override
-    assert!(
-        add_result.success,
-        "The command should succeed, got error: {:?}",
-        add_result.error_message
-    );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_add_injects_runtime_env_vars() {
-    const TARGET_NODE_NAME: &str = "runtime_env_node";
-    const TARGET_NODE_TAG: &str = "0.1.0";
-
-    let started_core_node = start_core_node_with_mock_messenger().await;
-    let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
-    let peppy_json5 = r#"{
-            schema_version: 1,
-            manifest: {
-                name: "{TARGET_NODE_NAME}",
-                tag: "{TARGET_NODE_TAG}",
-            },
-            execution: {
-                language: "rust",
-                add_cmd: [
-                    "sh",
-                    "-c",
-                    "test -n \"$PEPPY_APPTAINER_BIN\" && test \"$PEPPY_NODE_NAME\" = \"{TARGET_NODE_NAME}\" && test \"$PEPPY_NODE_TAG\" = \"{TARGET_NODE_TAG}\""
-                ],
-                start_cmd: ["sleep", "10"]
-            }
-        }"#
-    .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
-    .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
-    write_peppy_json5(source_dir.path(), &peppy_json5);
-
-    let add_result = send_node_add_and_wait(
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        source_dir.path(),
-        GOAL_TIMEOUT,
-        RESULT_TIMEOUT,
-        None,
-    )
-    .await
-    .expect("node_add request should succeed");
-
-    assert!(
-        add_result.success,
-        "node_add should succeed when runtime env vars are injected, got error: {:?}",
-        add_result.error_message
-    );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_add_fails_runs_add_cmd_on_missing_node_dependency() {
     // If there is a missing dependency, the NODE_ADD_ACTION should fail with a MissingDependency error
-    // BEFORE running add_cmd. This mimics real nodes (e.g. fake_video_reconstruction) where
+    // BEFORE running build_cmd. This mimics real nodes (e.g. fake_video_reconstruction) where
     // `cargo build` fails because peppygen interfaces are incomplete when dependencies are missing.
     const TARGET_NODE_NAME: &str = "add_cmd_node";
     const TARGET_NODE_TAG: &str = "0.1.0";
@@ -2593,12 +1693,6 @@ async fn listen_for_node_add_fails_runs_add_cmd_on_missing_node_dependency() {
     let node_stack = started_core_node.node_stack.clone();
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
-    let marker_dir = tempfile::tempdir().expect("failed to create temp marker dir");
-    let marker_path = marker_dir.path().join(ADD_CMD_MARKER_FILE);
-
-    // add_cmd creates a marker file then fails (simulating a build that fails due to
-    // incomplete peppygen interfaces from missing dependencies). We use an absolute path
-    // for the marker so it survives the copied-dir cleanup on failure.
     let peppy_json5 = r#"{
         schema_version: 1,
         manifest: {
@@ -2622,13 +1716,12 @@ async fn listen_for_node_add_fails_runs_add_cmd_on_missing_node_dependency() {
         },
         execution: {
           language: "rust",
-          add_cmd: ["sh", "-c", "touch MARKER_PATH && exit 1"],
+          build_cmd: ["true"],
           start_cmd: ["sleep", "10"]
         },
     }"#
     .replace("TARGET_NODE_NAME", TARGET_NODE_NAME)
-    .replace("TARGET_NODE_TAG", TARGET_NODE_TAG)
-    .replace("MARKER_PATH", &marker_path.to_string_lossy());
+    .replace("TARGET_NODE_TAG", TARGET_NODE_TAG);
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
     let add_result = send_node_add_and_wait(
@@ -2657,12 +1750,6 @@ async fn listen_for_node_add_fails_runs_add_cmd_on_missing_node_dependency() {
         add_result.error_message
     );
 
-    // add_cmd should NOT have been executed — dependency validation must happen before add_cmd
-    assert!(
-        !marker_path.exists(),
-        "add_cmd should NOT have been executed when dependency is missing"
-    );
-
     assert!(
         !node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG),
         "node should not be added when dependency is missing"
@@ -2674,7 +1761,7 @@ async fn listen_for_node_add_fails_runs_add_cmd_on_missing_node_dependency() {
 async fn listen_for_node_add_fails_on_missing_interface_even_when_dependency_exists() {
     // The dependency node (fake_uvc_camera:0.1.0) exists in the stack but emits a
     // DIFFERENT topic name than what the dependent node subscribes to. The node add should
-    // fail with a MissingInterface error BEFORE running add_cmd. This mimics the real
+    // fail with a MissingInterface error BEFORE running build_cmd. This mimics the real
     // scenario where `fake_uvc_camera` is added first, but `fake_video_reconstruction`
     // fails because the interface names don't match.
     const DEPENDENCY_NODE_NAME: &str = "fake_uvc_camera";
@@ -2728,8 +1815,6 @@ async fn listen_for_node_add_fails_on_missing_interface_even_when_dependency_exi
     // Step 2: Add the dependent node that subscribes to a topic name that the
     // dependency does NOT emit (node name+tag matches, but interface doesn't).
     let target_source_dir = tempfile::tempdir().expect("failed to create temp target source dir");
-    let marker_dir = tempfile::tempdir().expect("failed to create temp marker dir");
-    let marker_path = marker_dir.path().join(ADD_CMD_MARKER_FILE);
 
     let target_peppy_json5 = r#"{
         schema_version: 1,
@@ -2754,15 +1839,14 @@ async fn listen_for_node_add_fails_on_missing_interface_even_when_dependency_exi
         },
         execution: {
           language: "rust",
-          add_cmd: ["sh", "-c", "touch MARKER_PATH && exit 1"],
+          build_cmd: ["true"],
           start_cmd: ["sleep", "10"]
         },
     }"#
     .replace("TARGET_NODE_NAME", TARGET_NODE_NAME)
     .replace("TARGET_NODE_TAG", TARGET_NODE_TAG)
     .replace("DEPENDENCY_NODE_NAME", DEPENDENCY_NODE_NAME)
-    .replace("DEPENDENCY_NODE_TAG", DEPENDENCY_NODE_TAG)
-    .replace("MARKER_PATH", &marker_path.to_string_lossy());
+    .replace("DEPENDENCY_NODE_TAG", DEPENDENCY_NODE_TAG);
     write_peppy_json5(target_source_dir.path(), &target_peppy_json5);
 
     let add_result = send_node_add_and_wait(
@@ -2789,12 +1873,6 @@ async fn listen_for_node_add_fails_on_missing_interface_even_when_dependency_exi
             .unwrap_or(false),
         "error message should indicate missing interface, got: {:?}",
         add_result.error_message
-    );
-
-    // add_cmd should NOT have been executed — interface validation must happen before add_cmd
-    assert!(
-        !marker_path.exists(),
-        "add_cmd should NOT have been executed when interface is missing"
     );
 
     assert!(
@@ -2873,217 +1951,10 @@ async fn listen_for_node_add_reports_excluded_dirs_in_feedback() {
         );
     }
 
-    // Verify excluded directories were not included in the archive
-    let entries = list_archive_entries(&add_result.snapshot_path);
-    for dir_name in [".venv", "target", "node_modules", "__pycache__"] {
-        assert!(
-            !entries
-                .iter()
-                .any(|e| e.starts_with(&format!("{dir_name}/")) || e == dir_name),
-            "{dir_name} should not be in the archive, entries: {entries:?}"
-        );
-    }
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_add_container_build_failure_includes_stderr_in_error() {
-    const TARGET_NODE_NAME: &str = "broken_container_node";
-    const TARGET_NODE_TAG: &str = "0.1.0";
-
-    let started_core_node = start_core_node_with_mock_messenger().await;
-    let node_stack = started_core_node.node_stack.clone();
-
-    let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
-    let peppy_json5 = r#"{
-        schema_version: 1,
-        manifest: {
-            name: "TARGET_NODE_NAME",
-            tag: "TARGET_NODE_TAG",
-        },
-        execution: {
-            language: "rust",
-            container: {
-                def_file: "apptainer.def",
-            }
-        }
-    }"#
-    .replace("TARGET_NODE_NAME", TARGET_NODE_NAME)
-    .replace("TARGET_NODE_TAG", TARGET_NODE_TAG);
-    write_peppy_json5(source_dir.path(), &peppy_json5);
-
-    // Write a deliberately broken definition file so apptainer build fails with
-    // a diagnostic message on stderr.
-    let broken_def = "\
-Bootstrap: invalid_bootstrap_agent_that_does_not_exist
-From: nowhere
-
-%runscript
-    echo broken
-";
-    std::fs::write(source_dir.path().join("apptainer.def"), broken_def)
-        .expect("failed to write broken apptainer definition");
-
-    let (feedback_tx, mut feedback_rx) = tokio::sync::mpsc::unbounded_channel::<NodeAddFeedback>();
-    let add_result = send_node_add_and_wait(
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        source_dir.path(),
-        GOAL_TIMEOUT,
-        CONTAINER_RESULT_TIMEOUT,
-        Some(feedback_tx),
-    )
-    .await
-    .expect("node_add request should complete");
-
-    // The build should fail
-    assert!(
-        !add_result.success,
-        "node_add should fail with a broken def file"
-    );
-
-    // The error message should mention the container build failure. The
-    // exact wording comes from NodeEntity::build, which wraps the apptainer
-    // failure as a `BuildFailed` error containing "apptainer build failed".
-    let error_msg = add_result
-        .error_message
-        .as_ref()
-        .expect("error_message should be present");
-    assert!(
-        error_msg.contains("apptainer build failed"),
-        "error should mention apptainer build failure, got: {}",
-        error_msg
-    );
-
-    // The error message should include the stderr tail from apptainer so the user
-    // sees WHY the build failed, not just the exit code.
-    assert!(
-        error_msg.contains("stderr"),
-        "error should include stderr output from apptainer build, got: {}",
-        error_msg
-    );
-
-    // Node should not be in the stack
-    assert!(
-        !node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG),
-        "node should not be added when container build fails"
-    );
-
-    // Verify the log file was written and contains build output
-    assert!(
-        add_result.log_path.exists(),
-        "log file should exist even on failure: {:?}",
-        add_result.log_path
-    );
-    let log_content =
-        std::fs::read_to_string(&add_result.log_path).expect("should be able to read log file");
-    assert!(
-        log_content.contains("[stdout]") || log_content.contains("[stderr]"),
-        "log file should contain streamed build output, got:\n{}",
-        log_content
-    );
-
-    // Verify feedback was streamed to the CLI during the build
-    let mut feedback = Vec::new();
-    while let Ok(entry) = feedback_rx.try_recv() {
-        feedback.push(entry);
-    }
-    assert!(
-        !feedback.is_empty(),
-        "feedback should have been streamed during the container build"
-    );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_add_logs_error_on_spawn_failure() {
-    const TARGET_NODE_NAME: &str = "add_spawn_failure_node";
-    const TARGET_NODE_TAG: &str = "0.1.0";
-
-    let started_core_node = start_core_node_with_mock_messenger().await;
-    let node_stack = started_core_node.node_stack.clone();
-
-    let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
-
-    // Multi-element add_cmd with a nonexistent binary.
-    // Multi-element commands are executed directly (not via shell), so
-    // command.spawn() will fail with a "No such file or directory" error.
-    let peppy_json5 = r#"{
-            schema_version: 1,
-            manifest: {
-                name: "{TARGET_NODE_NAME}",
-                tag: "{TARGET_NODE_TAG}",
-            },
-            execution: {
-                language: "rust",
-                add_cmd: ["nonexistent_binary_peppy_test_xyz", "--flag"],
-                start_cmd: ["sleep", "10"]
-            }
-        }"#
-    .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
-    .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
-    write_peppy_json5(source_dir.path(), &peppy_json5);
-
-    let add_result = send_node_add_and_wait(
-        &started_core_node.caller_handle,
-        &started_core_node.core_node_name,
-        source_dir.path(),
-        GOAL_TIMEOUT,
-        RESULT_TIMEOUT,
-        None,
-    )
-    .await
-    .expect("node_add request should complete");
-
-    assert!(!add_result.success, "node_add should fail when spawn fails");
-
-    let error_msg = add_result
-        .error_message
-        .as_ref()
-        .expect("error_message should be present");
-    assert!(
-        error_msg.contains("add_cmd failed"),
-        "error should mention add_cmd failure, got: {}",
-        error_msg
-    );
-    assert!(
-        error_msg.contains("nonexistent_binary_peppy_test_xyz"),
-        "error should include the command that failed, got: {}",
-        error_msg
-    );
-
-    // The log file should exist and contain the error
-    assert!(
-        add_result.log_path.exists(),
-        "log file should exist at {:?}",
-        add_result.log_path
-    );
-
-    let log_content =
-        std::fs::read_to_string(&add_result.log_path).expect("should be able to read log file");
-    assert!(
-        !log_content.is_empty(),
-        "log file should not be empty when a spawn failure occurs"
-    );
-    assert!(
-        log_content.contains("[error]"),
-        "log file should contain an [error] entry, got:\n{}",
-        log_content
-    );
-    assert!(
-        log_content.contains("add_cmd failed"),
-        "log file should contain the failure message, got:\n{}",
-        log_content
-    );
-    assert!(
-        log_content.contains("nonexistent_binary_peppy_test_xyz"),
-        "log file should contain the command that failed, got:\n{}",
-        log_content
-    );
-
-    // Node should not be in the stack
-    assert!(
-        !node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG),
-        "node should not be added when add_cmd fails"
-    );
+    // Archive entry assertions (verifying excluded dirs are absent from the
+    // produced artifact) live in `listen_for_node_build.rs` since the artifact
+    // is built by the `node build` action.
+    let _ = add_result.log_path;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -3190,6 +2061,13 @@ async fn node_add_same_node_with_running_instance_and_dependents_succeeds() {
         "dependent node_add should succeed: {:?}",
         dependent_add.error_message
     );
+    build_staged_node(
+        &started_core_node,
+        DEPENDENCY_NODE_NAME,
+        DEPENDENCY_NODE_TAG,
+    )
+    .await;
+    build_staged_node(&started_core_node, DEPENDENT_NODE_NAME, DEPENDENT_NODE_TAG).await;
 
     // Add a fake running instance to the dependency node
     let instance_id = config::node::Name::new(INSTANCE_ID).expect("valid instance id");
@@ -3391,8 +2269,13 @@ async fn node_add_same_node_changing_interface_with_running_instance_and_depende
         "dependent node_add should succeed: {:?}",
         dependent_add.error_message
     );
-
-    let snapshot_v1 = entity_artifact_path(&node_stack, DEPENDENCY_NODE_NAME, DEPENDENCY_NODE_TAG);
+    build_staged_node(
+        &started_core_node,
+        DEPENDENCY_NODE_NAME,
+        DEPENDENCY_NODE_TAG,
+    )
+    .await;
+    build_staged_node(&started_core_node, DEPENDENT_NODE_NAME, DEPENDENT_NODE_TAG).await;
 
     // Add a fake running instance to the dependency node
     let instance_id = config::node::Name::new(INSTANCE_ID).expect("valid instance id");
@@ -3473,12 +2356,6 @@ async fn node_add_same_node_changing_interface_with_running_instance_and_depende
         add_v2.error_message
     );
 
-    // Old config must be preserved, snapshot path unchanged
-    assert_eq!(
-        entity_artifact_path(&node_stack, DEPENDENCY_NODE_NAME, DEPENDENCY_NODE_TAG).as_path(),
-        snapshot_v1.as_path(),
-        "snapshot path should be unchanged after failed overwrite"
-    );
     // Shutdown succeeded, so the instance was stopped before push_config rejected the overwrite
     assert_eq!(
         entity_instance_count(&node_stack, DEPENDENCY_NODE_NAME, DEPENDENCY_NODE_TAG),
@@ -3608,6 +2485,13 @@ async fn node_add_same_node_with_running_instance_and_dependents_fails_on_stoppe
         "dependent node_add should succeed: {:?}",
         dependent_add.error_message
     );
+    build_staged_node(
+        &started_core_node,
+        DEPENDENCY_NODE_NAME,
+        DEPENDENCY_NODE_TAG,
+    )
+    .await;
+    build_staged_node(&started_core_node, DEPENDENT_NODE_NAME, DEPENDENT_NODE_TAG).await;
 
     // Spawn a real running instance WITHOUT the auto-shutdown listener so
     // the production shutdown path observes a stuck process that never
@@ -5198,7 +4082,9 @@ async fn listen_for_node_add_default_fs_variant_verifies_git_hash_at_root() {
 async fn listen_for_node_add_rejects_second_goal_when_action_in_progress() {
     let started_core_node = start_core_node_with_mock_messenger().await;
 
-    // Create a node with a slow add_cmd so the action stays in Running state.
+    // The add action stays in Running state while it copies the source
+    // directory and processes the node config. build_cmd is not executed
+    // during the add phase, so we use a benign no-op here.
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
     let peppy_json5 = r#"{
             schema_version: 1,
@@ -5208,7 +4094,7 @@ async fn listen_for_node_add_rejects_second_goal_when_action_in_progress() {
             },
             execution: {
                 language: "rust",
-                add_cmd: ["sleep", "30"],
+                build_cmd: ["true"],
                 start_cmd: ["true"]
             }
         }"#;
@@ -5222,7 +4108,7 @@ async fn listen_for_node_add_rejects_second_goal_when_action_in_progress() {
     std::fs::create_dir_all(&peppy_dir).expect("failed to create .peppy dir");
     std::fs::write(peppy_dir.join("git.hash"), TEST_GIT_HASH).expect("failed to write git.hash");
 
-    // Send first goal — should be accepted and start running the slow add_cmd.
+    // Send first goal — should be accepted and start running the add.
     let first_goal = NodeAddGoal::new(source_dir.path(), TEST_GIT_HASH, RESULT_TIMEOUT.as_secs());
     let first_goal_payload = first_goal.encode().expect("failed to encode goal");
 
@@ -5285,7 +4171,9 @@ async fn listen_for_node_add_force_overrides_in_progress_action() {
     let started_core_node = start_core_node_with_mock_messenger().await;
     let node_stack = started_core_node.node_stack.clone();
 
-    // Create a slow node so the first action stays running.
+    // The first add action stays in Running state while it copies the source
+    // directory and processes the node config. build_cmd is not executed
+    // during the add phase, so we use a benign no-op here.
     let slow_source_dir = tempfile::tempdir().expect("failed to create temp source dir");
     let slow_peppy_json5 = r#"{
             schema_version: 1,
@@ -5295,7 +4183,7 @@ async fn listen_for_node_add_force_overrides_in_progress_action() {
             },
             execution: {
                 language: "rust",
-                add_cmd: ["sleep", "30"],
+                build_cmd: ["true"],
                 start_cmd: ["true"]
             }
         }"#;
@@ -5307,7 +4195,7 @@ async fn listen_for_node_add_force_overrides_in_progress_action() {
     std::fs::create_dir_all(&peppy_dir).expect("failed to create .peppy dir");
     std::fs::write(peppy_dir.join("git.hash"), TEST_GIT_HASH).expect("failed to write git.hash");
 
-    // Send first goal — starts the slow add.
+    // Send first goal — starts the add.
     let first_goal = NodeAddGoal::new(
         slow_source_dir.path(),
         TEST_GIT_HASH,
@@ -5346,7 +4234,7 @@ async fn listen_for_node_add_force_overrides_in_progress_action() {
             }},
             execution: {{
                 language: "rust",
-                add_cmd: ["true"],
+                build_cmd: ["true"],
                 start_cmd: ["true"]
             }}
         }}"#

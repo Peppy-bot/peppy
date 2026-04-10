@@ -21,7 +21,7 @@
   },
   execution: {
     language: "python",
-    add_cmd: [
+    build_cmd: [
       "uv",
       "sync"
     ],

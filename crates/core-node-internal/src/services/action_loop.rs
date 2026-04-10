@@ -3,6 +3,7 @@ use peppylib::messaging::{ActionCreation, ServiceRequestContext, TopicPublisher}
 use peppylib::types::Payload;
 use std::future::Future;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 use tracing::debug;
 
@@ -16,21 +17,39 @@ pub(crate) trait ActionResult: Clone + Send + 'static {
 }
 
 /// Generic state machine for action-based services.
-///
-/// Replaces the per-service `NodeAddActionState`, `NodeStartActionState`,
-/// and `LaunchActionState` enums with a single generic version.
 #[derive(Default)]
 pub(crate) enum ActionState<R: ActionResult> {
     #[default]
     Idle,
     /// The goal was rejected (no result polling expected).
     Rejected,
-    /// An action is currently running.
-    Running,
+    /// An action is currently running. Carries the admission timestamp and
+    /// the caller-specified timeout so [`Self::remaining_secs`] can be
+    /// computed without a separate lock.
+    Running {
+        started_at: Instant,
+        timeout_secs: u64,
+    },
     /// The action completed and the result is ready to be sent.
     Completed { result: R },
     /// The result has been sent to the requester.
     ResultSent { result: R },
+}
+
+impl<R: ActionResult> ActionState<R> {
+    /// Returns the remaining seconds until the in-flight task's timeout,
+    /// or 0 if the state is not `Running`.
+    pub(crate) fn remaining_secs(&self) -> u64 {
+        match self {
+            ActionState::Running {
+                started_at,
+                timeout_secs,
+            } => Duration::from_secs(*timeout_secs)
+                .saturating_sub(started_at.elapsed())
+                .as_secs(),
+            _ => 0,
+        }
+    }
 }
 
 /// Trait for handling incoming goal requests in an action-based service.
@@ -53,7 +72,7 @@ pub(crate) async fn handle_cancel_request<R: ActionResult>(
     state: Arc<Mutex<ActionState<R>>>,
 ) -> PeppyResult<Payload> {
     let state_guard = state.lock().await;
-    if matches!(*state_guard, ActionState::Running) {
+    if matches!(*state_guard, ActionState::Running { .. }) {
         Ok(Payload::from_static(
             b"cancel acknowledged (operation cannot be interrupted)",
         ))
@@ -72,8 +91,8 @@ pub(crate) async fn handle_result_request<R: ActionResult>(
     let mut state_guard = state.lock().await;
 
     match std::mem::replace(&mut *state_guard, ActionState::Idle) {
-        ActionState::Running => {
-            *state_guard = ActionState::Running;
+        running @ ActionState::Running { .. } => {
+            *state_guard = running;
             // Prefix must match peppylib::encoding::RESULT_PENDING_PREFIX
             Ok(Payload::from_static(
                 b"result pending: operation still in progress",

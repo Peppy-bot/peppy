@@ -11,21 +11,18 @@ pub enum LogStyle {
     Compact,
 }
 
-struct RedErrorFormatter<E> {
+struct LevelPrefixFormatter<E> {
     inner: E,
-    color_errors: bool,
+    colorize: bool,
 }
 
-impl<E> RedErrorFormatter<E> {
-    fn new(inner: E, color_errors: bool) -> Self {
-        Self {
-            inner,
-            color_errors,
-        }
+impl<E> LevelPrefixFormatter<E> {
+    fn new(inner: E, colorize: bool) -> Self {
+        Self { inner, colorize }
     }
 }
 
-impl<S, N, E> FormatEvent<S, N> for RedErrorFormatter<E>
+impl<S, N, E> FormatEvent<S, N> for LevelPrefixFormatter<E>
 where
     S: tracing::Subscriber + for<'a> LookupSpan<'a>,
     N: for<'a> FormatFields<'a> + 'static,
@@ -37,17 +34,38 @@ where
         mut writer: tracing_subscriber::fmt::format::Writer<'_>,
         event: &tracing::Event<'_>,
     ) -> std::fmt::Result {
+        let level = *event.metadata().level();
+
+        // Write colored level prefix for INFO, WARN, ERROR
+        match level {
+            Level::INFO => {
+                if self.colorize {
+                    writer.write_str("\x1b[32m[INFO]\x1b[0m ")?;
+                } else {
+                    writer.write_str("[INFO] ")?;
+                }
+            }
+            Level::WARN => {
+                if self.colorize {
+                    writer.write_str("\x1b[33m[WARNING]\x1b[0m ")?;
+                } else {
+                    writer.write_str("[WARNING] ")?;
+                }
+            }
+            Level::ERROR => {
+                if self.colorize {
+                    writer.write_str("\x1b[31m[ERROR]\x1b[0m ")?;
+                } else {
+                    writer.write_str("[ERROR] ")?;
+                }
+            }
+            _ => {}
+        }
+
         let mut buffer = String::new();
         let buffer_writer = tracing_subscriber::fmt::format::Writer::new(&mut buffer);
         self.inner.format_event(ctx, buffer_writer, event)?;
-
-        if self.color_errors && *event.metadata().level() == Level::ERROR {
-            writer.write_str("\x1b[31m")?;
-            writer.write_str(&buffer)?;
-            writer.write_str("\x1b[0m")?;
-        } else {
-            writer.write_str(&buffer)?;
-        }
+        writer.write_str(&buffer)?;
 
         Ok(())
     }
@@ -70,7 +88,7 @@ pub fn init_tracing(style: LogStyle) {
     match style {
         LogStyle::Verbose => tracing_subscriber::fmt().with_env_filter(env_filter).init(),
         LogStyle::Compact => {
-            let color_errors = should_colorize_stdout();
+            let colorize = should_colorize_stdout();
             let format = tracing_subscriber::fmt::format::format()
                 .without_time()
                 .with_level(false)
@@ -78,7 +96,7 @@ pub fn init_tracing(style: LogStyle) {
             tracing_subscriber::fmt()
                 .with_env_filter(env_filter)
                 .with_ansi(false)
-                .event_format(RedErrorFormatter::new(format, color_errors))
+                .event_format(LevelPrefixFormatter::new(format, colorize))
                 .init();
         }
     }

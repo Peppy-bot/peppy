@@ -161,21 +161,27 @@ async fn handle_node_remove_request_inner(
     // instances can accept the shutdown RPC). `unreachable_targets` is tracked
     // separately so the safety gate can decide what to do about them without
     // silently dropping their existence.
+    // Probe all instances in parallel so overall latency is bounded by the
+    // slowest probe rather than the sum.
+    let reachability: Vec<std::result::Result<bool, PeppyError>> =
+        futures::future::join_all(targets.iter().map(|target| {
+            ServiceMessenger::is_reachable(
+                messenger,
+                core_node_node,
+                core_instance_id,
+                &target.node_name,
+                SHUTDOWN_SERVICE,
+                Some(core_node_node),
+                Some(target.instance_id.as_str()),
+            )
+        }))
+        .await;
+
     let mut running_targets: Vec<RemovalTarget> = Vec::new();
     let mut unreachable_targets: Vec<RemovalTarget> = Vec::new();
-    for target in &targets {
-        let reachable = match ServiceMessenger::is_reachable(
-            messenger,
-            core_node_node,
-            core_instance_id,
-            &target.node_name,
-            SHUTDOWN_SERVICE,
-            Some(core_node_node),
-            Some(target.instance_id.as_str()),
-        )
-        .await
-        {
-            Ok(reachable) => reachable,
+    for (target, reachable) in targets.iter().zip(reachability) {
+        let reachable = match reachable {
+            Ok(r) => r,
             Err(e) => {
                 return NodeRemoveResponse::failure(format!(
                     "Failed to check shutdown service for instance '{}': {}",
@@ -185,7 +191,6 @@ async fn handle_node_remove_request_inner(
                 .encode();
             }
         };
-
         if reachable {
             running_targets.push(target.clone());
         } else {
@@ -231,8 +236,13 @@ async fn handle_node_remove_request_inner(
                 "Stopping node instance '{}' before removal",
                 target.instance_id.as_str()
             );
+        }
 
-            let shutdown_result = ServiceMessenger::poll(
+        // Shut down instances concurrently. Overall wall-clock latency is
+        // bounded by the slowest shutdown (up to SHUTDOWN_TIMEOUT) rather
+        // than the sum.
+        let shutdown_results = futures::future::join_all(running_targets.iter().map(|target| {
+            ServiceMessenger::poll(
                 messenger,
                 core_node_node,
                 core_instance_id,
@@ -243,9 +253,10 @@ async fn handle_node_remove_request_inner(
                 Payload::from_static(b"shutdown"),
                 SHUTDOWN_TIMEOUT,
             )
-            .await;
-
-            if let Err(e) = shutdown_result {
+        }))
+        .await;
+        for (target, res) in running_targets.iter().zip(shutdown_results) {
+            if let Err(e) = res {
                 return NodeRemoveResponse::failure(format!(
                     "Failed to stop node instance '{}': {}",
                     target.instance_id.as_str(),

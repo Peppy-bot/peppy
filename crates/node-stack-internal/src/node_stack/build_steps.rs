@@ -1,17 +1,11 @@
 //! Concrete build I/O steps invoked from [`super::entity::NodeEntity::build`].
-//!
-//! These helpers were originally part of `core-node-internal::services::node::add`
-//! and were moved here so that the lifecycle transition `Added → Built` can run
-//! without crossing the crate boundary back into core-node-internal.
 
 use parking_lot::Mutex as StdMutex;
 use std::fs::File;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 
-use chrono::Local;
 use config::consts::PeppyDirs;
 use tokio::sync::mpsc;
 use tracing::debug;
@@ -22,6 +16,43 @@ use crate::build_io::{FeedbackLine, FeedbackStream, stream_child_output};
 /// Per-process counter used to make build-staging tmp filenames unique so
 /// concurrent builds for the same node:tag cannot clobber each other.
 static STAGING_TMP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Unique staging path so concurrent builds for the same `node:tag` cannot
+/// clobber each other's in-flight file.
+fn staging_tmp_path(storage_dir: &Path, final_name: &str) -> PathBuf {
+    storage_dir.join(format!(
+        "{}.{}.{}.tmp",
+        final_name,
+        std::process::id(),
+        STAGING_TMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+    ))
+}
+
+/// Publishes an artifact into `storage_dir/final_name` atomically: allocates a
+/// unique tmp path, lets `write` populate it, then renames. If `write` (or
+/// any later step) fails, the tmp path is cleaned up before the error is
+/// returned. Used by both [`archive_dir_to_storage`] and [`move_sif_to_storage`].
+fn publish_to_storage_atomic<F>(
+    storage_dir: &Path,
+    final_name: &str,
+    write: F,
+) -> std::io::Result<PathBuf>
+where
+    F: FnOnce(&Path) -> std::io::Result<()>,
+{
+    std::fs::create_dir_all(storage_dir)?;
+    let tmp_path = staging_tmp_path(storage_dir, final_name);
+    let final_path = storage_dir.join(final_name);
+    if let Err(e) = write(&tmp_path) {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(e);
+    }
+    if let Err(e) = std::fs::rename(&tmp_path, &final_path) {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(e);
+    }
+    Ok(final_path)
+}
 
 /// Validates that `node_tag` is safe to splice into a filename joined under
 /// the storage directory. Manifest names are constrained by `Name`'s parser,
@@ -76,44 +107,19 @@ pub(super) fn archive_dir_to_storage(
 ) -> std::io::Result<PathBuf> {
     validate_node_tag(node_tag)?;
     let storage_dir = peppy_dirs.added_nodes_dir();
-    std::fs::create_dir_all(&storage_dir)?;
-
     let archive_name = format!("{}_{}.tar.zst", node_name, node_tag);
-    let archive_path = storage_dir.join(&archive_name);
-    // Per-build unique staging path so concurrent builds for the same
-    // node:tag cannot clobber each other's in-flight tmp file. The final
-    // rename to `archive_path` is atomic and is what publishes the artifact.
-    let tmp_path = storage_dir.join(format!(
-        "{}.{}.{}.tmp",
-        archive_name,
-        std::process::id(),
-        STAGING_TMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
-    ));
-
-    let file = File::create(&tmp_path)?;
-    let encoder = ZstdEncoder::new(file, 1)?;
-    let mut tar_builder = tar::Builder::new(encoder);
-    // DO NOT follow symlinks, otherwise it could create unintended behavior for the user who modify files in the path pointed by the symlink
-    tar_builder.follow_symlinks(false);
-    if let Err(e) = tar_builder.append_dir_all(".", source_dir) {
-        let _ = std::fs::remove_file(&tmp_path);
-        return Err(e);
-    }
-    let encoder = match tar_builder.into_inner() {
-        Ok(e) => e,
-        Err(e) => {
-            let _ = std::fs::remove_file(&tmp_path);
-            return Err(e);
-        }
-    };
-    if let Err(e) = encoder.finish() {
-        let _ = std::fs::remove_file(&tmp_path);
-        return Err(e);
-    }
-
-    std::fs::rename(&tmp_path, &archive_path)?;
-
-    Ok(archive_path)
+    publish_to_storage_atomic(&storage_dir, &archive_name, |tmp_path| {
+        let file = File::create(tmp_path)?;
+        let encoder = ZstdEncoder::new(file, 1)?;
+        let mut tar_builder = tar::Builder::new(encoder);
+        // DO NOT follow symlinks, otherwise it could create unintended behavior
+        // for the user who modify files in the path pointed by the symlink
+        tar_builder.follow_symlinks(false);
+        tar_builder.append_dir_all(".", source_dir)?;
+        let encoder = tar_builder.into_inner()?;
+        encoder.finish()?;
+        Ok(())
+    })
 }
 
 /// Moves the built `.sif` container image from the working directory to peppy storage.
@@ -131,41 +137,24 @@ pub(super) fn move_sif_to_storage(
     validate_node_tag(node_tag)?;
     let sif_name = format!("{}_{}.sif", node_name, node_tag);
     let sif_source = working_dir.join(&sif_name);
-
-    if !sif_source.is_file() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            format!(
-                "Expected container image not found at {}",
-                sif_source.display()
-            ),
-        ));
-    }
-
     let storage_dir = peppy_dirs.added_nodes_dir();
-    std::fs::create_dir_all(&storage_dir)?;
-
-    let dest_path = storage_dir.join(&sif_name);
-    // Per-build unique staging path; see archive_dir_to_storage for rationale.
-    let tmp_path = storage_dir.join(format!(
-        "{}.{}.{}.tmp",
-        sif_name,
-        std::process::id(),
-        STAGING_TMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
-    ));
 
     // Copy + rename (not rename alone) because the working dir may be on a
-    // different filesystem than storage. Matches archive_dir_to_storage pattern.
-    if let Err(e) = std::fs::copy(&sif_source, &tmp_path) {
-        let _ = std::fs::remove_file(&tmp_path);
-        return Err(e);
-    }
-    if let Err(e) = std::fs::rename(&tmp_path, &dest_path) {
-        let _ = std::fs::remove_file(&tmp_path);
-        return Err(e);
-    }
-
-    Ok(dest_path)
+    // different filesystem than storage.
+    publish_to_storage_atomic(&storage_dir, &sif_name, |tmp_path| {
+        std::fs::copy(&sif_source, tmp_path)
+            .map(|_| ())
+            .map_err(|e| {
+                std::io::Error::new(
+                    e.kind(),
+                    format!(
+                        "Expected container image at {}: {}",
+                        sif_source.display(),
+                        e
+                    ),
+                )
+            })
+    })
 }
 
 /// Inputs needed to drive an apptainer container build to completion.
@@ -256,55 +245,65 @@ pub(super) async fn build_container_image(
 }
 
 /// Expands `${VAR}` references in a string using the provided environment
-/// variables. Used by [`run_add_cmd`] before spawning the user-defined
-/// `add_cmd` so that variable references in multi-element commands work even
+/// variables. Used by [`run_build_cmd`] before spawning the user-defined
+/// `build_cmd` so that variable references in multi-element commands work even
 /// though the command is executed directly (not through a shell).
 pub(super) fn expand_env_vars(s: &str, env_vars: &[(String, String)]) -> String {
-    let mut result = s.to_string();
-    for (key, value) in env_vars {
-        let pattern = format!("${{{}}}", key);
-        if result.contains(&pattern) {
-            result = result.replace(&pattern, value);
+    // Single-pass scanner: walk the string looking for `${...}`, resolve each
+    // match against `env_vars`, and leave unknown references untouched. The
+    // previous implementation did a linear `contains` + `replace` per env var,
+    // which reallocated the whole string for every match and scaled with
+    // O(len(s) * len(env_vars)) even when nothing needed expanding.
+    let bytes = s.as_bytes();
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'$'
+            && i + 1 < bytes.len()
+            && bytes[i + 1] == b'{'
+            && let Some(end_rel) = s[i + 2..].find('}')
+        {
+            let end = i + 2 + end_rel;
+            let key = &s[i + 2..end];
+            if let Some((_, value)) = env_vars.iter().find(|(k, _)| k == key) {
+                out.push_str(value);
+            } else {
+                out.push_str(&s[i..end + 1]);
+            }
+            i = end + 1;
+            continue;
         }
+        out.push(s[i..].chars().next().unwrap());
+        i += s[i..].chars().next().unwrap().len_utf8();
     }
-    result
+    out
 }
 
-/// Runs the user-defined `add_cmd` for a process node and streams output via
-/// the feedback channel. Returns Ok(()) if `add_cmd` is `None` or executes
+/// Runs the user-defined `build_cmd` for a process node and streams output via
+/// the feedback channel. Returns Ok(()) if `build_cmd` is `None` or executes
 /// successfully. Used by [`super::entity::NodeEntity::build`] for process
 /// nodes after the entity has transitioned to `Building`.
-pub(super) async fn run_add_cmd(
-    add_cmd: Option<&Vec<String>>,
+pub(super) async fn run_build_cmd(
+    build_cmd: Option<&Vec<String>>,
     working_dir: &Path,
     env_vars: &[(String, String)],
     feedback_tx: &mpsc::UnboundedSender<FeedbackLine>,
     log_file: Arc<StdMutex<File>>,
 ) -> std::result::Result<(), String> {
-    let Some(cmd) = add_cmd else {
+    let Some(cmd) = build_cmd else {
         return Ok(());
     };
 
     if cmd.is_empty() {
-        return Err("add_cmd is empty".to_string());
+        return Err("build_cmd is empty".to_string());
     };
 
     // Build a *display* form (with `${VAR}` references intact) for logs and
     // error messages, and a separate *expanded* form used only to actually
     // spawn the child. Without this split, anything referenced as
-    // `${SECRET}` in `add_cmd` would end up in the on-disk log file and in
+    // `${SECRET}` in `build_cmd` would end up in the on-disk log file and in
     // every error string surfaced to clients.
-    let display_cmd: Vec<String> = cmd.clone();
-
-    let (display_program, display_args) = if display_cmd.len() == 1 {
-        (
-            "sh".to_string(),
-            vec!["-c".to_string(), display_cmd[0].clone()],
-        )
-    } else {
-        (display_cmd[0].clone(), display_cmd[1..].to_vec())
-    };
-
+    //
     // For the shell form (single string), do NOT pre-expand `${VAR}`
     // references — let `sh -c` expand them at runtime against the env vars
     // already set on the spawned command via `.env()`. Pre-expansion would
@@ -314,18 +313,26 @@ pub(super) async fn run_add_cmd(
     // For the exec form (multi-element), we still expand because the child
     // is launched directly (not via a shell), so no shell will perform the
     // expansion for us.
-    let (program, args) = if display_cmd.len() == 1 {
+    let (display_program, display_args, program, args) = if cmd.len() == 1 {
+        let shell_args = vec!["-c".to_string(), cmd[0].clone()];
         (
             "sh".to_string(),
-            vec!["-c".to_string(), display_cmd[0].clone()],
+            shell_args.clone(),
+            "sh".to_string(),
+            shell_args,
         )
     } else {
         let expanded_cmd: Vec<String> = cmd.iter().map(|s| expand_env_vars(s, env_vars)).collect();
-        (expanded_cmd[0].clone(), expanded_cmd[1..].to_vec())
+        (
+            cmd[0].clone(),
+            cmd[1..].to_vec(),
+            expanded_cmd[0].clone(),
+            expanded_cmd[1..].to_vec(),
+        )
     };
 
     debug!(
-        "Running add_cmd: {} {:?} in dir {:?}",
+        "Running build_cmd: {} {:?} in dir {:?}",
         display_program, display_args, working_dir
     );
 
@@ -334,26 +341,14 @@ pub(super) async fn run_add_cmd(
         .collect::<Vec<_>>()
         .join(" ");
 
-    // Log the command being executed to the log file before attempting to spawn
-    {
-        let mut file = log_file.lock();
-        let timestamp = Local::now().format("%Y-%m-%dT%H:%M:%S%.3f");
-        let _ = writeln!(
-            file,
-            "[{}] Executing add_cmd: {} (working_dir: {})",
-            timestamp,
-            full_cmd_display,
-            working_dir.display()
-        );
-        let _ = file.flush();
-    }
+    crate::build_io::log_cmd_header(&log_file, "build_cmd", &full_cmd_display, working_dir, &[]);
 
     let mut command = tokio::process::Command::new(&program);
     command.args(&args);
     command.current_dir(working_dir);
     command.stdout(Stdio::piped());
     command.stderr(Stdio::piped());
-    // Detach stdin so a misbehaving `add_cmd` cannot read from (or block
+    // Detach stdin so a misbehaving `build_cmd` cannot read from (or block
     // on) the daemon's stdin. Mirrors `build_container_image`.
     command.stdin(Stdio::null());
     for (key, value) in env_vars {
@@ -361,18 +356,18 @@ pub(super) async fn run_add_cmd(
     }
     let child = command
         .spawn()
-        .map_err(|e| format!("failed to execute add_cmd `{}`: {}", full_cmd_display, e))?;
+        .map_err(|e| format!("failed to execute build_cmd `{}`: {}", full_cmd_display, e))?;
 
     let (status, _) = stream_child_output(child, feedback_tx, log_file, false).await?;
 
     if !status.success() {
         return Err(format!(
-            "add_cmd `{}` failed with status {}",
+            "build_cmd `{}` failed with status {}",
             full_cmd_display, status
         ));
     }
 
-    debug!("add_cmd completed successfully");
+    debug!("build_cmd completed successfully");
     Ok(())
 }
 

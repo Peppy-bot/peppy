@@ -1,14 +1,15 @@
 use crate::Result;
 use crate::encoding::{
     LaunchFeedback, LaunchFeedbackStep, LaunchGoal, LaunchGoalResponse, LaunchResult, NodeAddGoal,
-    NodeAddLogEntry, NodeAddResult, NodeSource, NodeStartGoal, NodeStartLogEntry, NodeStartResult,
+    NodeAddLogEntry, NodeAddResult, NodeBuildLogEntry, NodeSource, NodeStartGoal,
+    NodeStartLogEntry, NodeStartResult,
 };
 use crate::names;
 use crate::services::action_loop::{ActionResult, ActionState, GoalHandler, run_action_loop};
 use crate::services::node::{
-    FeedbackLine, FeedbackStream, NodeAddActionContext, NodeStartActionContext,
-    create_action_log_file, log_label_from_source, resolve_node_config, run_node_add,
-    run_node_start, write_error_to_log,
+    FeedbackLine, FeedbackStream, NodeAddActionContext, NodeBuildActionContext,
+    NodeStartActionContext, create_action_log_file, log_label_from_source, resolve_node_config,
+    run_node_add, run_node_build_for_entity, run_node_start, write_error_to_log,
 };
 use chrono::Local;
 use config::consts::{DEFAULT_MESSAGING_HOST, DEFAULT_MESSAGING_PORT, PeppyDirs};
@@ -33,6 +34,9 @@ use tracing::debug;
 pub struct StackLaunchTimeouts {
     pub node_startup: Duration,
     pub node_start_health: Duration,
+    pub health_monitor_interval: Duration,
+    pub health_monitor_timeout: Duration,
+    pub health_monitor_max_failures: u32,
 }
 
 pub async fn listen_for_stack_launch(
@@ -375,6 +379,75 @@ async fn add_node_directly(
     }
 }
 
+async fn build_node_directly(
+    ctx: &ProcessLaunchContext,
+    node_name: String,
+    node_tag: String,
+    env_vars: Vec<(String, String)>,
+) -> (std::result::Result<(), String>, Option<PathBuf>) {
+    let log_dir = ctx.peppy_dirs.logs_dir_build();
+    let timestamp = Local::now().format("%Y%m%d_%H%M%S_%3f").to_string();
+    let log_filename = format!("{}_{}_{}.log", node_name, node_tag, timestamp);
+    let (log_file, log_path) = match create_action_log_file(&log_dir, &log_filename) {
+        Ok(pair) => pair,
+        Err(e) => return (Err(e.to_string()), None),
+    };
+
+    let final_log_path = log_path.clone();
+
+    let (feedback_tx, forwarder_handle) = spawn_feedback_forwarder(
+        &ctx.feedback_publisher,
+        LaunchFeedbackStep::BuildingNode,
+        &ctx.log_file,
+    );
+
+    let action_context = NodeBuildActionContext {
+        node_stack: Arc::clone(&ctx.node_stack),
+        peppy_dirs: ctx.peppy_dirs.clone(),
+    };
+
+    let max_timeout = Duration::from_secs(ctx.max_timeout_secs);
+    let log_file_for_timeout = log_file.clone();
+    let log_path_for_timeout = log_path.clone();
+
+    let result = match tokio::time::timeout(
+        max_timeout,
+        run_node_build_for_entity(
+            node_name.clone(),
+            node_tag.clone(),
+            env_vars,
+            action_context,
+            feedback_tx,
+            log_file,
+            log_path,
+        ),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => {
+            write_error_to_log(&log_file_for_timeout, "max timeout exceeded");
+            crate::encoding::NodeBuildResult::failure(
+                &log_path_for_timeout,
+                "timeout: max timeout exceeded",
+            )
+        }
+    };
+
+    let _ = forwarder_handle.await;
+
+    if result.success {
+        (Ok(()), Some(final_log_path))
+    } else {
+        (
+            Err(result
+                .error_message
+                .unwrap_or_else(|| "node_build failed".to_string())),
+            Some(final_log_path),
+        )
+    }
+}
+
 async fn start_node_directly(
     ctx: &ProcessLaunchContext,
     node_start_goal: NodeStartGoal,
@@ -399,6 +472,9 @@ async fn start_node_directly(
         node_startup_timeout: ctx.timeouts.node_startup,
         node_start_health_timeout: ctx.timeouts.node_start_health,
         peppy_dirs: ctx.peppy_dirs.clone(),
+        health_monitor_interval: ctx.timeouts.health_monitor_interval,
+        health_monitor_timeout: ctx.timeouts.health_monitor_timeout,
+        health_monitor_max_failures: ctx.timeouts.health_monitor_max_failures,
     };
 
     let log_file_for_timeout = log_file.clone();
@@ -687,7 +763,7 @@ async fn validate_and_order_dependencies(
     }
 
     // Stable topological sort using original plan order as tie-breaker.
-    let ordered = topological_sort(planned, &deps_for)?;
+    let ordered = topological_sort(planned, &deps_for, &ctx.log_path).map_err(|e| *e)?;
 
     publish_stdout(
         ctx,
@@ -710,7 +786,8 @@ async fn validate_and_order_dependencies(
 fn topological_sort(
     planned: &[PlannedDeployment],
     deps_for: &HashMap<NodeKey, HashSet<NodeKey>>,
-) -> std::result::Result<Vec<NodeKey>, LaunchResult> {
+    log_path: &PathBuf,
+) -> std::result::Result<Vec<NodeKey>, Box<LaunchResult>> {
     let mut in_degree: HashMap<NodeKey, usize> = HashMap::new();
     let mut dependents: HashMap<NodeKey, Vec<NodeKey>> = HashMap::new();
 
@@ -778,7 +855,7 @@ fn topological_sort(
             "unable to resolve dependency order (cycle suspected). Remaining nodes: {}",
             remaining.join(", ")
         );
-        return Err(LaunchResult::failure(PathBuf::new(), msg));
+        return Err(Box::new(LaunchResult::failure(log_path, msg)));
     }
 
     Ok(ordered)
@@ -827,6 +904,7 @@ async fn add_nodes_to_stack(
     planned_by_key: &HashMap<NodeKey, PlannedDeployment>,
     backup_stack: &NodeStack,
     add_log_paths: &mut Vec<NodeAddLogEntry>,
+    build_log_paths: &mut Vec<NodeBuildLogEntry>,
 ) -> std::result::Result<(), LaunchResult> {
     publish_stdout(
         ctx,
@@ -896,6 +974,29 @@ async fn add_nodes_to_stack(
                         .error_message
                         .unwrap_or_else(|| "node_add failed".to_string());
                     let reason = format!("failed to add node {}: {}", key.label(), inner);
+                    return Err(restore_stack(ctx, backup_stack, reason).await);
+                }
+                let node_name = result.node_name.clone().unwrap_or_else(|| key.name.clone());
+                let node_tag = result.node_tag.clone().unwrap_or_else(|| key.tag.clone());
+
+                // Stack launch chains directly from add into build, since the
+                // launcher's contract is "the stack is up and running" — an
+                // `Added` entity isn't actually buildable from the user's
+                // perspective until `node build` has run.
+                let (build_result, build_log_path) =
+                    build_node_directly(ctx, node_name, node_tag, ctx.env_vars.clone()).await;
+
+                let build_failed = build_result.is_err();
+                if let Some(path) = build_log_path {
+                    build_log_paths.push(NodeBuildLogEntry {
+                        node_label: key.label(),
+                        log_path: path,
+                        failed: build_failed,
+                    });
+                }
+
+                if let Err(err) = build_result {
+                    let reason = format!("failed to build node {}: {}", key.label(), err);
                     return Err(restore_stack(ctx, backup_stack, reason).await);
                 }
             }
@@ -1041,10 +1142,10 @@ async fn handle_goal_request(
     let sender_instance_id = context.message().instance_id();
     let payload = context.message().payload();
 
-    // Check if already running and mark as running if not
+    // Check if already running (but don't set Running yet — we need the goal's timeout first)
     {
-        let mut state_guard = state.lock().await;
-        if matches!(*state_guard, ActionState::Running) {
+        let state_guard = state.lock().await;
+        if matches!(*state_guard, ActionState::Running { .. }) {
             let response = LaunchGoalResponse::rejected("action already in progress");
             return response
                 .encode()
@@ -1053,9 +1154,9 @@ async fn handle_goal_request(
                     reason: format!("Failed to encode response: {}", e),
                 });
         }
-        *state_guard = ActionState::Running;
     }
 
+    // Decode the goal before marking as Running so we can use max_timeout_secs
     let goal = match LaunchGoal::decode(payload.as_ref()) {
         Ok(g) => g,
         Err(e) => {
@@ -1070,6 +1171,15 @@ async fn handle_goal_request(
                 });
         }
     };
+
+    // Now mark as Running with the actual timeout from the goal
+    {
+        let mut state_guard = state.lock().await;
+        *state_guard = ActionState::Running {
+            started_at: std::time::Instant::now(),
+            timeout_secs: goal.max_timeout_secs,
+        };
+    }
 
     debug!("Received `stack_launch` goal from {sender_instance_id}");
 
@@ -1181,7 +1291,7 @@ async fn process_launch(goal: LaunchGoal, ctx: ProcessLaunchContext) -> LaunchRe
         Err(launch_result) => return launch_result,
     };
 
-    // Step 4: Snapshot and clear stack (the snapshot helps in case an `add_cmd` or `start_cmd` fails on one of the nodes)
+    // Step 4: Snapshot and clear stack (the snapshot helps in case an `build_cmd` or `start_cmd` fails on one of the nodes)
     let backup_stack = match snapshot_and_clear_stack(&ctx).await {
         Ok(result) => result,
         Err(launch_result) => return launch_result,
@@ -1194,6 +1304,7 @@ async fn process_launch(goal: LaunchGoal, ctx: ProcessLaunchContext) -> LaunchRe
         .collect();
 
     let mut add_log_paths: Vec<NodeAddLogEntry> = Vec::new();
+    let mut build_log_paths: Vec<NodeBuildLogEntry> = Vec::new();
     let mut start_log_paths: Vec<NodeStartLogEntry> = Vec::new();
 
     // Step 5: Add nodes in dependency order
@@ -1203,6 +1314,7 @@ async fn process_launch(goal: LaunchGoal, ctx: ProcessLaunchContext) -> LaunchRe
         &planned_by_key,
         &backup_stack,
         &mut add_log_paths,
+        &mut build_log_paths,
     )
     .await;
 
@@ -1224,14 +1336,20 @@ async fn process_launch(goal: LaunchGoal, ctx: ProcessLaunchContext) -> LaunchRe
 
     if let Err(mut launch_result) = add_result {
         launch_result.node_add_logs = add_log_paths;
+        launch_result.node_build_logs = build_log_paths;
         return launch_result;
     }
     if let Some(Err(mut launch_result)) = start_result {
         launch_result.node_add_logs = add_log_paths;
+        launch_result.node_build_logs = build_log_paths;
         launch_result.node_start_logs = start_log_paths;
         return launch_result;
     }
 
     publish_stdout(&ctx, "Launch complete", LaunchFeedbackStep::LauncherStep).await;
-    LaunchResult::success(&ctx.log_path).with_node_logs(add_log_paths, start_log_paths)
+    LaunchResult::success(&ctx.log_path).with_node_logs(
+        add_log_paths,
+        build_log_paths,
+        start_log_paths,
+    )
 }

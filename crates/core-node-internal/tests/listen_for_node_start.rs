@@ -1,10 +1,10 @@
 mod common;
 
 use common::{
-    AbortOnDrop, NodeStartTestTimeouts, create_test_node_with_name, send_node_add_and_wait,
+    AbortOnDrop, NodeStartTestTimeouts, create_test_node_with_name, send_node_add_then_build,
     send_node_start_and_wait, send_node_start_and_wait_with_env,
-    start_core_node_with_health_timeout, start_core_node_with_mock_messenger,
-    start_core_node_with_real_messenger, write_peppy_json5,
+    start_core_node_with_health_monitor, start_core_node_with_health_timeout,
+    start_core_node_with_mock_messenger, start_core_node_with_real_messenger, write_peppy_json5,
 };
 use config::consts::DEFAULT_ALPINE_BASE_IMAGE;
 use config::node::Name as NodeName;
@@ -41,15 +41,14 @@ async fn listen_for_node_start_success() {
     let node_dir = create_test_node_with_name(TARGET_NODE_NAME, TARGET_NODE_TAG);
 
     // Add the node to the core node's node stack
-    let add_response = send_node_add_and_wait(
+    let add_response = send_node_add_then_build(
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
         &node_dir,
         Duration::from_secs(30),
-        // Longer timeout to account for add_cmd execution and copying the test node folder,
+        // Longer timeout to account for build_cmd execution and copying the test node folder,
         // which may include build artifacts.
         Duration::from_secs(120),
-        None,
     )
     .await
     .expect("node_add should succeed");
@@ -61,7 +60,7 @@ async fn listen_for_node_start_success() {
     );
     // Intentionally keep the started node process running: nodes are expected to linger
     // and the test should still tear down cleanly.
-    let _snapshot_node_path = add_response.snapshot_path;
+    let _artifact_path = add_response.artifact_path;
 
     // Get the actual messaging endpoint from the Zenoh session
     let (messaging_host, messaging_port) = started_core_node
@@ -150,13 +149,12 @@ async fn listen_for_node_start_timeout() {
     let temp_dir = create_node_config_dir(&peppy_json5);
 
     // Add the node to the core node's node stack
-    let add_response = send_node_add_and_wait(
+    let add_response = send_node_add_then_build(
         &started.caller_handle,
         &started.core_node_name,
         temp_dir.path(),
         Duration::from_secs(5),
         Duration::from_secs(5),
-        None,
     )
     .await
     .expect("node_add should succeed");
@@ -322,13 +320,12 @@ async fn listen_for_node_start_streams_stdout_and_stderr() {
     .replace("{STDERR_MARKER}", STDERR_MARKER);
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
-    let add_response = send_node_add_and_wait(
+    let add_response = send_node_add_then_build(
         &started.caller_handle,
         &started.core_node_name,
         source_dir.path(),
         Duration::from_secs(5),
         Duration::from_secs(5),
-        None,
     )
     .await
     .expect("node_add should succeed");
@@ -442,13 +439,12 @@ async fn listen_for_node_start_writes_log_file() {
     .replace("{STDERR_MARKER}", STDERR_MARKER);
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
-    let add_response = send_node_add_and_wait(
+    let add_response = send_node_add_then_build(
         &started.caller_handle,
         &started.core_node_name,
         source_dir.path(),
         Duration::from_secs(5),
         Duration::from_secs(5),
-        None,
     )
     .await
     .expect("node_add should succeed");
@@ -587,13 +583,12 @@ async fn listen_for_node_start_reports_all_missing_parameters() {
     .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
-    let add_response = send_node_add_and_wait(
+    let add_response = send_node_add_then_build(
         &started.caller_handle,
         &started.core_node_name,
         source_dir.path(),
         Duration::from_secs(5),
         Duration::from_secs(5),
-        None,
     )
     .await
     .expect("node_add should succeed");
@@ -710,13 +705,12 @@ async fn listen_for_node_start_reports_only_missing_parameters_when_some_provide
     .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
-    let add_response = send_node_add_and_wait(
+    let add_response = send_node_add_then_build(
         &started.caller_handle,
         &started.core_node_name,
         source_dir.path(),
         Duration::from_secs(5),
         Duration::from_secs(5),
-        None,
     )
     .await
     .expect("node_add should succeed");
@@ -852,13 +846,12 @@ async fn listen_for_node_start_abandoned_action_does_not_block_next_goal() {
     .replace("{FIRST_NODE_TAG}", FIRST_NODE_TAG);
     write_peppy_json5(first_source_dir.path(), &first_peppy_json5);
 
-    let first_add_response = send_node_add_and_wait(
+    let first_add_response = send_node_add_then_build(
         &started.caller_handle,
         &started.core_node_name,
         first_source_dir.path(),
         Duration::from_secs(5),
         Duration::from_secs(5),
-        None,
     )
     .await
     .expect("first node_add should succeed");
@@ -886,13 +879,12 @@ async fn listen_for_node_start_abandoned_action_does_not_block_next_goal() {
     .replace("{SECOND_NODE_TAG}", SECOND_NODE_TAG);
     write_peppy_json5(second_source_dir.path(), &second_peppy_json5);
 
-    let second_add_response = send_node_add_and_wait(
+    let second_add_response = send_node_add_then_build(
         &started.caller_handle,
         &started.core_node_name,
         second_source_dir.path(),
         Duration::from_secs(5),
         Duration::from_secs(5),
-        None,
     )
     .await
     .expect("second node_add should succeed");
@@ -1065,13 +1057,12 @@ async fn listen_for_node_start_uses_env_overrides_for_path() {
     .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
-    let add_response = send_node_add_and_wait(
+    let add_response = send_node_add_then_build(
         &started.caller_handle,
         &started.core_node_name,
         source_dir.path(),
         Duration::from_secs(30),
         Duration::from_secs(120),
-        None,
     )
     .await
     .expect("node_add should succeed");
@@ -1213,13 +1204,12 @@ async fn listen_for_node_start_injects_runtime_env_vars() {
     .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
-    let add_response = send_node_add_and_wait(
+    let add_response = send_node_add_then_build(
         &started.caller_handle,
         &started.core_node_name,
         source_dir.path(),
         Duration::from_secs(30),
         Duration::from_secs(120),
-        None,
     )
     .await
     .expect("node_add should succeed");
@@ -1341,13 +1331,12 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
         .expect("failed to write apptainer definition");
 
     // Add the node first (container add flow).
-    let add_response = send_node_add_and_wait(
+    let add_response = send_node_add_then_build(
         &started.caller_handle,
         &started.core_node_name,
         source_dir.path(),
         Duration::from_secs(30),
         Duration::from_secs(120),
-        None,
     )
     .await
     .expect("node_add should succeed");
@@ -1548,13 +1537,12 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
         .expect("failed to write apptainer definition");
 
     // Add the node first (container add flow).
-    let add_response = send_node_add_and_wait(
+    let add_response = send_node_add_then_build(
         &started.caller_handle,
         &started.core_node_name,
         source_dir.path(),
         Duration::from_secs(30),
         Duration::from_secs(120),
-        None,
     )
     .await
     .expect("node_add should succeed");
@@ -1703,13 +1691,12 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
         .expect("failed to write apptainer definition");
 
     // Add the node first (builds the .sif image).
-    let add_response = send_node_add_and_wait(
+    let add_response = send_node_add_then_build(
         &started.caller_handle,
         &started.core_node_name,
         source_dir.path(),
         Duration::from_secs(30),
         Duration::from_secs(120),
-        None,
     )
     .await
     .expect("node_add should succeed");
@@ -1805,13 +1792,12 @@ async fn listen_for_node_start_logs_error_on_spawn_failure() {
     .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
-    let add_response = send_node_add_and_wait(
+    let add_response = send_node_add_then_build(
         &started.caller_handle,
         &started.core_node_name,
         source_dir.path(),
         Duration::from_secs(5),
         Duration::from_secs(5),
-        None,
     )
     .await
     .expect("node_add should succeed");
@@ -1891,11 +1877,171 @@ async fn listen_for_node_start_logs_error_on_spawn_failure() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "Implement later"]
 async fn listen_for_node_start_remove_node_on_unhealthy_node() {
-    todo!(
-        "After starting a node and the it is ready + healthy, send a `shutdown` signal if it doesn't responds to subsequent health checks (maybe because the process was killed or something).
-        In order to implement this test, we should also have a `stack log` in `~/.peppy/stack_log.log` so that the user can check all the operations that were performed by the node stack, 
-        including this one that can silently remove instances from the stack."
+    const TARGET_NODE_NAME: &str = "health_monitor_node";
+    const TARGET_NODE_TAG: &str = "0.1.0";
+    const TARGET_INSTANCE_ID: &str = "health_monitor_instance";
+
+    // Use fast health monitor settings so the test completes quickly:
+    // check every 200ms, timeout 100ms per attempt, remove after 2 consecutive failures.
+    let started = start_core_node_with_health_monitor(
+        Duration::from_millis(200),
+        Duration::from_millis(100),
+        2,
     )
+    .await;
+
+    // Create a node with a simple long-running start_cmd
+    let peppy_json5 = r#"{
+            schema_version: 1,
+            manifest: {
+                name: "{TARGET_NODE_NAME}",
+                tag: "{TARGET_NODE_TAG}",
+            },
+            execution: {
+                language: "rust",
+                start_cmd: ["sleep", "300"]
+            }
+        }"#
+    .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
+    .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
+
+    let temp_dir = create_node_config_dir(&peppy_json5);
+
+    let add_response = send_node_add_then_build(
+        &started.caller_handle,
+        &started.core_node_name,
+        temp_dir.path(),
+        Duration::from_secs(5),
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("node_add should succeed");
+
+    assert!(
+        add_response.success,
+        "node_add should succeed, got error: {:?}",
+        add_response.error_message
+    );
+
+    // Set up ready+health listeners so the initial start succeeds
+    let node_messenger = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
+    let _ready_task = AbortOnDrop(
+        listen_for_node_ready(
+            &node_messenger,
+            &started.core_node_name,
+            TARGET_INSTANCE_ID,
+            TARGET_NODE_NAME,
+        )
+        .await
+        .expect("node ready service should start"),
+    );
+    let health_task = AbortOnDrop(
+        listen_for_node_health(
+            &node_messenger,
+            &started.core_node_name,
+            TARGET_INSTANCE_ID,
+            TARGET_NODE_NAME,
+        )
+        .await
+        .expect("node health service should start"),
+    );
+
+    // Allow ready/health services to establish listeners
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let runtime_config_json5 = common::default_runtime_config_json5(
+        &started.core_node_name,
+        TARGET_NODE_NAME,
+        TARGET_INSTANCE_ID,
+    );
+
+    let start_response = send_node_start_and_wait(
+        &started.caller_handle,
+        &started.core_node_name,
+        &runtime_config_json5,
+        TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
+        &NodeStartTestTimeouts {
+            goal: Duration::from_secs(10),
+            result: Duration::from_secs(30),
+        },
+        None,
+    )
+    .await
+    .expect("node_start action should complete");
+
+    assert!(
+        start_response.result.success,
+        "node_start should succeed, got error: {:?}",
+        start_response.result.error_message
+    );
+
+    let pid = start_response
+        .result
+        .pid
+        .expect("should have a PID on success");
+
+    // Verify the instance is in the stack
+    let instance_id = NodeName::new(TARGET_INSTANCE_ID).expect("valid instance id");
+    assert!(
+        started
+            .node_stack
+            .find_by_instance_id(&instance_id)
+            .is_some(),
+        "instance should be in the stack after successful start"
+    );
+
+    // Kill the process to simulate an unexpected death
+    let _ = std::process::Command::new("kill")
+        .arg("-9")
+        .arg(pid.to_string())
+        .status();
+
+    // Drop the health listener so subsequent health polls from the monitor
+    // will fail (the node process is dead and the mock health service is gone)
+    drop(health_task);
+
+    // Wait for the health monitor to detect the failure and remove the instance.
+    // With interval=200ms, timeout=100ms, max_failures=2, removal should happen
+    // within ~600-800ms. Give it 5 seconds for CI safety.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if started
+            .node_stack
+            .find_by_instance_id(&instance_id)
+            .is_none()
+        {
+            break;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            panic!("instance was not removed from the stack within timeout");
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    // Verify the stack log contains the removal event
+    let stack_log_path = started.peppy_dirs.stack_log_path();
+    assert!(
+        stack_log_path.exists(),
+        "stack log file should exist at {:?}",
+        stack_log_path
+    );
+    let log_content =
+        std::fs::read_to_string(&stack_log_path).expect("should be able to read stack log");
+    assert!(
+        log_content.contains(TARGET_INSTANCE_ID),
+        "stack log should mention the instance id, got:\n{}",
+        log_content
+    );
+    assert!(
+        log_content.contains("health checks"),
+        "stack log should mention health checks, got:\n{}",
+        log_content
+    );
+    assert!(
+        log_content.contains(TARGET_NODE_NAME),
+        "stack log should mention the node name, got:\n{}",
+        log_content
+    );
 }

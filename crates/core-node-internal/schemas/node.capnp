@@ -30,7 +30,7 @@ struct NodeAddGoal {
     }
     # Optional SHA256 checksum for HTTP sources
     httpSha256 @7 :Text;
-    # Environment variables to apply when executing add_cmd (e.g. PATH)
+    # Environment variables to apply when executing build_cmd (e.g. PATH)
     envVars @4 :List(EnvVar);
     # Timeout in seconds for the add operation (used to report remaining time when busy)
     timeoutSecs @5 :UInt64;
@@ -90,14 +90,40 @@ struct NodeAddResult {
     success @0 :Bool;
     # Error message if failed
     errorMessage @1 :Text;
-    # Path where the node was copied (empty on failure)
-    snapshotPath @2 :Text;
     # Path to the log file containing stdout/stderr output
-    logPath @3 :Text;
+    logPath @2 :Text;
     # Name of the added node (empty on failure)
-    nodeName @4 :Text;
+    nodeName @3 :Text;
     # Tag of the added node (empty on failure)
-    nodeTag @5 :Text;
+    nodeTag @4 :Text;
+}
+
+# Node Build Action — drives the build of a previously-added node
+struct NodeBuildGoal {
+    nodeName @0 :Text;
+    nodeTag @1 :Text;
+    envVars @2 :List(EnvVar);
+    timeoutSecs @3 :UInt64;
+    force @4 :Bool;
+}
+
+struct NodeBuildGoalResponse {
+    accepted @0 :Bool;
+    logPath @1 :Text;
+    rejectionReason @2 :Text;
+}
+
+struct NodeBuildFeedback {
+    stream @0 :Text;
+    line @1 :Text;
+}
+
+struct NodeBuildResult {
+    success @0 :Bool;
+    errorMessage @1 :Text;
+    # Path to the resulting .sif/archive in storage (empty on failure)
+    artifactPath @2 :Text;
+    logPath @3 :Text;
 }
 
 # Node Init service

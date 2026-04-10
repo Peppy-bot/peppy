@@ -11,10 +11,9 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use tracing::info;
 
-use crate::commands::{CALLER_INSTANCE_ID, GOAL_TIMEOUT, SCROLLING_OUTPUT_LINES};
+use crate::commands::{CALLER_INSTANCE_ID, GOAL_TIMEOUT};
 use crate::context::AppContext;
 use crate::error::{Error, Result};
-use crate::terminal::ScrollingOutput;
 
 use super::TimeoutConfig;
 use super::env::caller_env_overrides;
@@ -191,56 +190,12 @@ pub async fn start_instance_async(
         .await
         .map_err(|e| Error::ExecutionFailed(format!("Failed to send node_start goal: {}", e)))?;
 
-    // Decode the goal response to get log_path
-    let goal_response_payload = action_handle.goal_response().payload();
-    let goal_response = NodeStartGoalResponse::decode(&goal_response_payload)
-        .map_err(|e| Error::ExecutionFailed(format!("Failed to decode goal response: {}", e)))?;
-
-    if !goal_response.accepted {
-        return Err(Error::ExecutionFailed(format!(
-            "Goal rejected: {}",
-            goal_response
-                .rejection_reason
-                .unwrap_or_else(|| "unknown reason".to_string())
-        )));
-    }
-
-    info!("Log file: {}", goal_response.log_path.display());
-
-    let mut scrolling_output = ScrollingOutput::new(SCROLLING_OUTPUT_LINES);
-
-    let start_result = crate::commands::action_poll::poll_action_to_completion(
-        messenger_handle,
-        &mut action_handle,
-        timeouts,
-        &mut scrolling_output,
-        |payload, output| {
-            if let Ok(feedback) = NodeStartFeedback::decode(payload) {
-                output.add_line(&feedback.line, feedback.is_stderr());
-            }
-        },
-        |payload| match NodeStartResult::decode(payload) {
-            Ok(result) => Ok(Some(result)),
-            Err(err) => {
-                if peppylib::encoding::is_result_pending(payload) {
-                    Ok(None)
-                } else {
-                    Err(format!("Failed to decode node_start result: {err}"))
-                }
-            }
-        },
-    )
+    let start_result = crate::commands::action_poll::run_action_with_feedback::<
+        NodeStartGoalResponse,
+        NodeStartFeedback,
+        NodeStartResult,
+    >(messenger_handle, &mut action_handle, timeouts, "node_start")
     .await?;
-
-    scrolling_output.clear();
-
-    if !start_result.success {
-        return Err(Error::ExecutionFailed(
-            start_result
-                .error_message
-                .unwrap_or_else(|| "node_start failed with no error message".to_string()),
-        ));
-    }
 
     if let Some(pid) = start_result.pid {
         info!("Started node instance '{}' (pid: {})", instance_id, pid);

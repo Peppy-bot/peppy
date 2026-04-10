@@ -92,6 +92,9 @@ pub enum Error {
     #[error("invalid service request '{identifier}': {reason}")]
     InvalidServiceRequest { identifier: String, reason: String },
 
+    #[error("internal encoding error for '{identifier}': {reason}")]
+    InternalEncodingError { identifier: String, reason: String },
+
     #[error("service request stream closed unexpectedly")]
     ServiceRequestStreamClosed,
 

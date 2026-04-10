@@ -5,7 +5,7 @@ use std::time::Duration;
 use config::launcher::PeppyLauncherParser;
 use core_node::encoding::{
     LaunchFeedback, LaunchFeedbackStep, LaunchGoal, LaunchGoalResponse, LaunchResult,
-    NodeAddLogEntry, NodeStartLogEntry,
+    NodeAddLogEntry, NodeBuildLogEntry, NodeStartLogEntry,
 };
 use peppylib::{ActionMessenger, PeppyError};
 use tracing::info;
@@ -23,32 +23,51 @@ const MAX_TIMEOUT: Duration = Duration::from_secs(7200);
 const FEEDBACK_DRAIN_TIMEOUT: Duration = Duration::from_millis(50);
 const RESULT_POLL_TIMEOUT: Duration = Duration::from_millis(200);
 
-fn display_node_log_files(add_logs: &[NodeAddLogEntry], start_logs: &[NodeStartLogEntry]) {
-    if add_logs.is_empty() && start_logs.is_empty() {
+fn display_node_log_files(
+    add_logs: &[NodeAddLogEntry],
+    build_logs: &[NodeBuildLogEntry],
+    start_logs: &[NodeStartLogEntry],
+) {
+    if add_logs.is_empty() && build_logs.is_empty() && start_logs.is_empty() {
         return;
     }
-    println!("Node log files:");
+    info!("Node log files:");
     if !add_logs.is_empty() {
-        println!("  Add:");
+        info!("  Add:");
         for e in add_logs {
-            println!("    `{}`: {}", e.node_label, e.log_path.display());
+            info!("    `{}`: {}", e.node_label, e.log_path.display());
+        }
+    }
+    if !build_logs.is_empty() {
+        info!("  Build:");
+        for e in build_logs {
+            let marker = if e.failed { " [FAILED]" } else { "" };
+            if e.failed {
+                tracing::error!("    `{}`{}: {}", e.node_label, marker, e.log_path.display());
+            } else {
+                info!("    `{}`: {}", e.node_label, e.log_path.display());
+            }
         }
     }
     if !start_logs.is_empty() {
-        println!("  Start:");
+        info!("  Start:");
         for e in start_logs {
             let marker = if e.failed { " [FAILED]" } else { "" };
-            let line = format!(
-                "    {} (`{}`){}: {}",
-                e.instance_id,
-                e.node_label,
-                marker,
-                e.log_path.display()
-            );
             if e.failed {
-                eprintln!("{line}");
+                tracing::error!(
+                    "    {} (`{}`){}: {}",
+                    e.instance_id,
+                    e.node_label,
+                    marker,
+                    e.log_path.display()
+                );
             } else {
-                println!("{line}");
+                info!(
+                    "    {} (`{}`): {}",
+                    e.instance_id,
+                    e.node_label,
+                    e.log_path.display()
+                );
             }
         }
     }
@@ -77,12 +96,14 @@ fn handle_feedback(
     match &feedback.step {
         LaunchFeedbackStep::LauncherStep => {
             if feedback.is_stdout() {
-                println!("{}", feedback.line);
+                info!("{}", feedback.line);
             } else {
-                eprintln!("{}", feedback.line);
+                tracing::warn!("{}", feedback.line);
             }
         }
-        LaunchFeedbackStep::AddingNode | LaunchFeedbackStep::StartingNode => {
+        LaunchFeedbackStep::AddingNode
+        | LaunchFeedbackStep::BuildingNode
+        | LaunchFeedbackStep::StartingNode => {
             let output = scrolling_output
                 .get_or_insert_with(|| ScrollingOutput::new(SCROLLING_OUTPUT_LINES));
             output.add_line(&feedback.line, feedback.is_stderr());
@@ -260,7 +281,11 @@ async fn launch_async(
                             output.clear();
                         }
 
-                        display_node_log_files(&result.node_add_logs, &result.node_start_logs);
+                        display_node_log_files(
+                            &result.node_add_logs,
+                            &result.node_build_logs,
+                            &result.node_start_logs,
+                        );
 
                         if !result.success {
                             let error_msg = result

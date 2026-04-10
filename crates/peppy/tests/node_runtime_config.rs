@@ -53,13 +53,14 @@ async fn node_runtime_config_command_outputs_valid_config() {
         peppy_json5_path.display()
     );
 
-    peppy::test_support::disable_add_cmd(&peppy_json5_path);
+    peppy::test_support::disable_build_cmd(&peppy_json5_path);
 
     NodeCommand {
         command: NodeCommands::Add {
             source: Some(node_path.display().to_string()),
             git_ref: None,
             variant: None,
+            build: true,
             start: false,
             args: Vec::new(),
             instance_id: None,
@@ -163,13 +164,14 @@ async fn node_runtime_config_command_with_peppy_json5_outputs_valid_config() {
         peppy_json5_path.display()
     );
 
-    peppy::test_support::disable_add_cmd(&peppy_json5_path);
+    peppy::test_support::disable_build_cmd(&peppy_json5_path);
 
     NodeCommand {
         command: NodeCommands::Add {
             source: Some(node_path.display().to_string()),
             git_ref: None,
             variant: None,
+            build: true,
             start: false,
             args: Vec::new(),
             instance_id: None,

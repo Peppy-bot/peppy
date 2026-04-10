@@ -10,7 +10,7 @@ struct EnvVar {
 struct LaunchGoal {
     # Path to the peppy launch file
     peppyLaunchFilePath @0 :Text;
-    # Environment variables to apply when executing add_cmd and start_cmd (e.g. PATH)
+    # Environment variables to apply when executing build_cmd and start_cmd (e.g. PATH)
     envVars @1 :List(EnvVar);
     # Idle timeout in seconds for each node add operation (resets on feedback)
     nodeAddIdleTimeoutSecs @2 :UInt64;
@@ -33,6 +33,7 @@ enum LaunchFeedbackStep {
     launcherStep @0;
     addingNode @1;
     startingNode @2;
+    buildingNode @3;
 }
 
 struct LaunchFeedback {
@@ -64,6 +65,15 @@ struct NodeStartLog {
     failed @3 :Bool;
 }
 
+struct NodeBuildLog {
+    # Node label in "name:tag" format
+    nodeLabel @0 :Text;
+    # Path to the node build log file
+    logPath @1 :Text;
+    # Whether the build operation failed
+    failed @2 :Bool;
+}
+
 struct LaunchResult {
     # Whether the launch was successful
     success @0 :Bool;
@@ -75,4 +85,6 @@ struct LaunchResult {
     nodeAddLogs @3 :List(NodeAddLog);
     # Per-node start log entries
     nodeStartLogs @4 :List(NodeStartLog);
+    # Per-node build log entries
+    nodeBuildLogs @5 :List(NodeBuildLog);
 }

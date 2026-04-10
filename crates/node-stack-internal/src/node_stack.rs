@@ -1,3 +1,4 @@
+pub mod add_steps;
 mod build_steps;
 mod entity;
 mod start_steps;
@@ -5,9 +6,9 @@ mod validation;
 
 pub use entity::{
     BuildContext, DependencySpec, InstanceState, NodeEntity, NodeStage, OutputSinks,
-    SerializedNodeGraph, StartContext, StartedInstanceCtx, TrackedNodeInstance,
+    SerializedInstance, SerializedNodeGraph, StartContext, StartedInstanceCtx, TrackedNodeInstance,
+    WorkingDirGuard,
 };
-pub use start_steps::extract_tar_zst;
 pub use validation::{collect_dependency_specs, validate_dependency_specs};
 
 use entity::{SerializedEdge, SerializedNode};
@@ -475,11 +476,13 @@ impl NodeStackInner {
                 let guard = handle.read();
                 let name = guard.config().manifest.name.as_str();
                 let tag = &guard.config().manifest.tag;
+                let stage = guard.stage().name();
                 let instance_count = guard.instances().len();
                 format!(
-                    "label=\"{}:{}\\n({} instance{})\"",
+                    "label=\"{}:{}\\n[{}] ({} instance{})\"",
                     name,
                     tag,
+                    stage,
                     instance_count,
                     if instance_count == 1 { "" } else { "s" }
                 )
@@ -526,6 +529,10 @@ impl NodeStackInner {
 #[derive(Clone)]
 pub struct NodeStack {
     shared: Arc<RwLock<NodeStackInner>>,
+    /// Most-recent add log path per `(node_name, node_tag)`. This is a
+    /// daemon-only cache (not persisted) so it lives here rather than on
+    /// `NodeEntity`, which is a pure lifecycle/config model.
+    add_log_paths: Arc<parking_lot::Mutex<HashMap<(String, String), PathBuf>>>,
 }
 
 impl NodeStack {
@@ -557,7 +564,24 @@ impl NodeStack {
         let root_entity = NodeEntity::root(root_config, root_path, instance);
         Self {
             shared: Arc::new(RwLock::new(NodeStackInner::new(root_entity))),
+            add_log_paths: Arc::new(parking_lot::Mutex::new(HashMap::new())),
         }
+    }
+
+    /// Records the add-log path for a `(name, tag)` key. Called by the
+    /// add/launch handlers after creating the log file.
+    pub fn set_add_log_path(&self, name: &str, tag: &str, path: PathBuf) {
+        self.add_log_paths
+            .lock()
+            .insert((name.trim().to_owned(), tag.trim().to_owned()), path);
+    }
+
+    /// Returns the most-recent add-log path for `(name, tag)`, if any.
+    pub fn add_log_path(&self, name: &str, tag: &str) -> Option<PathBuf> {
+        self.add_log_paths
+            .lock()
+            .get(&(name.trim().to_owned(), tag.trim().to_owned()))
+            .cloned()
     }
 
     pub fn len(&self) -> usize {
@@ -690,6 +714,9 @@ impl NodeStack {
             });
         }
         guard.remove_entity(&key);
+        self.add_log_paths
+            .lock()
+            .remove(&(name.trim().to_owned(), tag.trim().to_owned()));
         // Keep `entity_guard` alive until *after* the unlink so an outside
         // thread holding a clone of the handle still cannot mutate the
         // entity between the check and the removal.
@@ -740,6 +767,9 @@ impl NodeStack {
         }
 
         guard.remove_entity(&key);
+        self.add_log_paths
+            .lock()
+            .remove(&(name.trim().to_owned(), tag.trim().to_owned()));
         true
     }
 
@@ -809,6 +839,7 @@ impl NodeStack {
     pub fn reset(&self) {
         let mut guard = self.shared.write();
         guard.clear();
+        self.add_log_paths.lock().clear();
     }
 
     /// Applies the state from another NodeStack to this one.
@@ -900,6 +931,7 @@ impl NodeStack {
         // cleared stack with only some entities re-inserted).
         let mut guard = self.shared.write();
         guard.clear();
+        self.add_log_paths.lock().clear();
         for (label, entity) in prepared {
             guard
                 .insert_entity(entity, false)

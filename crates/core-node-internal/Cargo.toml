@@ -25,11 +25,13 @@ sysinfo = "0.38"
 thiserror = "2.0"
 tokio = { version = "1.47", features = [
     "io-util",
+    "macros",
     "process",
     "sync",
     "rt",
     "time",
 ] }
+tokio-util = "0.7"
 tracing = "0.1"
 askama = "0.15"
 rust-embed = { version = "8", features = ["include-exclude"] }

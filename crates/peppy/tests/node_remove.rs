@@ -64,13 +64,14 @@ fn node_remove_command_succeeds() {
         peppy_json5_path.display()
     );
 
-    peppy::test_support::disable_add_cmd(&peppy_json5_path);
+    peppy::test_support::disable_build_cmd(&peppy_json5_path);
 
     NodeCommand {
         command: NodeCommands::Add {
             source: Some(node_path.display().to_string()),
             git_ref: None,
             variant: None,
+            build: true,
             start: false,
             args: Vec::new(),
             instance_id: None,
@@ -238,6 +239,7 @@ fn node_remove_command_force_bypasses_prompt_and_stops_instances() {
             source: Some(node_path.display().to_string()),
             git_ref: None,
             variant: None,
+            build: true,
             start: true,
             args: Vec::new(),
             instance_id: Some(instance_id.to_string()),
@@ -380,6 +382,7 @@ fn node_remove_command_with_stop_instances_succeeds_and_stops_instances() {
             source: Some(node_path.display().to_string()),
             git_ref: None,
             variant: None,
+            build: true,
             start: true,
             args: Vec::new(),
             instance_id: Some(instance_id.to_string()),

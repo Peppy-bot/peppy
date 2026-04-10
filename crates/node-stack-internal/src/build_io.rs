@@ -25,6 +25,7 @@ use std::fs::File;
 use std::io::Write;
 #[cfg(test)]
 use std::io::{BufRead, BufReader, Read};
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::io::AsyncBufReadExt;
@@ -62,6 +63,35 @@ pub fn write_feedback_log_line(log_file: &Arc<StdMutex<File>>, stream: FeedbackS
     let mut file = log_file.lock();
     let timestamp = Local::now().format("%Y-%m-%dT%H:%M:%S%.3f");
     let _ = writeln!(file, "[{}] [{}] {}", timestamp, stream.as_str(), line);
+}
+
+/// Writes the canonical "executing a command" header to a log file in the
+/// `[timestamp] Executing {label}: {cmd} (working_dir: {dir}[, k: v...])`
+/// format used by every spawn-and-stream step. `extras` is appended as
+/// comma-separated `key: value` pairs inside the trailing parenthesis. Errors
+/// are swallowed — log writes are best-effort.
+pub fn log_cmd_header(
+    log_file: &Arc<StdMutex<File>>,
+    label: &str,
+    cmd: &str,
+    working_dir: &Path,
+    extras: &[(&str, &str)],
+) {
+    let mut file = log_file.lock();
+    let timestamp = Local::now().format("%Y-%m-%dT%H:%M:%S%.3f");
+    let mut line = format!(
+        "[{}] Executing {}: {} (working_dir: {}",
+        timestamp,
+        label,
+        cmd,
+        working_dir.display()
+    );
+    for (k, v) in extras {
+        line.push_str(&format!(", {}: {}", k, v));
+    }
+    line.push(')');
+    let _ = writeln!(file, "{}", line);
+    let _ = file.flush();
 }
 
 pub struct FeedbackLine {
@@ -127,23 +157,31 @@ pub async fn stream_child_output(
 
     // Drain stdout/stderr using tokio's async line reader so the wait
     // below can run concurrently and the future stays cancellation-safe.
+    // `publish_enabled` is held permanently true and hooks are a no-op: the
+    // build path has no quiescence tracking and no publish gate.
+    let publish_enabled = Arc::new(AtomicBool::new(true));
+    let hooks: Arc<dyn OutputReaderHooks> = Arc::new(NoOpHooks);
     if let Some(stdout) = child.stdout.take() {
-        reader_handles.push(spawn_async_output_reader(
+        reader_handles.push(spawn_output_reader_async(
             stdout,
             feedback_tx.clone(),
+            Arc::clone(&publish_enabled),
+            Arc::clone(&hooks),
             FeedbackStream::Stdout,
-            Arc::clone(&log_file),
             None,
+            Arc::clone(&log_file),
         ));
     }
 
     if let Some(stderr) = child.stderr.take() {
-        reader_handles.push(spawn_async_output_reader(
+        reader_handles.push(spawn_output_reader_async(
             stderr,
             feedback_tx.clone(),
+            Arc::clone(&publish_enabled),
+            Arc::clone(&hooks),
             FeedbackStream::Stderr,
-            Arc::clone(&log_file),
             stderr_tail.clone(),
+            Arc::clone(&log_file),
         ));
     }
 
@@ -173,23 +211,21 @@ pub async fn stream_child_output(
         .map_err(|e| format!("failed to wait for process: {}", e))?;
     guard.completed = true;
 
-    // Join reader tasks and surface the first error so build diagnostics receive
-    // failures instead of masked truncated output. Process wait already returned
-    // above, so we are guaranteed not to leak the child here.
+    // Join reader tasks and surface the first error so build diagnostics
+    // receive failures instead of masked truncated output. The tasks were
+    // already spawned, so awaiting them sequentially here does not stall
+    // concurrency — each completes as soon as its reader drains. Process
+    // wait already returned above, so we are guaranteed not to leak the
+    // child here.
     let mut reader_error: Option<String> = None;
     for handle in reader_handles {
-        match handle.await {
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => {
-                if reader_error.is_none() {
-                    reader_error = Some(format!("output reader I/O error: {}", e));
-                }
-            }
-            Err(e) => {
-                if reader_error.is_none() {
-                    reader_error = Some(format!("output reader task join error: {}", e));
-                }
-            }
+        let outcome = match handle.await {
+            Ok(Ok(())) => None,
+            Ok(Err(e)) => Some(format!("output reader I/O error: {}", e)),
+            Err(e) => Some(format!("output reader task join error: {}", e)),
+        };
+        if reader_error.is_none() {
+            reader_error = outcome;
         }
     }
     if let Some(err) = reader_error {
@@ -229,35 +265,8 @@ fn spawn_output_reader<R: Read + Send + 'static>(
     })
 }
 
-/// Drains an async reader (typically a `tokio::process::ChildStdout`/`Stderr`)
-/// line-by-line on a tokio task, mirroring the behaviour of
-/// [`spawn_output_reader`] but without going through `spawn_blocking`. Used
-/// by [`stream_child_output`] so the surrounding `child.wait().await` stays
-/// cancellation-safe.
-fn spawn_async_output_reader<R>(
-    reader: R,
-    feedback_tx: mpsc::UnboundedSender<FeedbackLine>,
-    stream: FeedbackStream,
-    log_file: Arc<StdMutex<File>>,
-    stderr_tail: Option<Arc<StdMutex<VecDeque<String>>>>,
-) -> JoinHandle<std::io::Result<()>>
-where
-    R: tokio::io::AsyncRead + Unpin + Send + 'static,
-{
-    tokio::spawn(async move {
-        let mut lines = tokio::io::BufReader::new(reader).lines();
-        while let Some(line) = lines.next_line().await? {
-            write_feedback_log_line(&log_file, stream, &line);
-            if let Some(ref buffer) = stderr_tail {
-                push_stderr_line(buffer, &line);
-            }
-            let _ = feedback_tx.send(FeedbackLine { stream, line });
-        }
-        Ok(())
-    })
-}
-
-/// Async sibling of [`spawn_output_reader`], used by the start path.
+/// Async sibling of [`spawn_output_reader`], used by both the start path
+/// (via `start_steps`) and the build path (via [`stream_child_output`]).
 ///
 /// Reads lines from a `tokio::io::AsyncRead` (typically a
 /// `tokio::process::ChildStdout`/`ChildStderr`), writes each line to the log

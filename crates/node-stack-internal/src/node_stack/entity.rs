@@ -17,26 +17,35 @@ use crate::error::{Error, Result};
 
 use super::build_steps::{
     ContainerBuildInputs, archive_dir_to_storage, build_container_image, move_sif_to_storage,
-    run_add_cmd,
+    run_build_cmd,
 };
 use super::start_steps::{
-    create_instance_dir, extract_node_archive, kill_and_collect_error, spawn_container_node,
-    spawn_process_node,
+    SpawnContainerInputs, create_instance_dir, extract_node_archive, kill_and_collect_error,
+    spawn_container_node, spawn_process_node,
 };
+
+/// Serializable representation of a single tracked instance with its state.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SerializedInstance {
+    pub instance_id: String,
+    pub state: String,
+}
 
 /// Serializable representation of a node in the graph.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SerializedNode {
     pub name: String,
     pub tag: String,
-    /// Path to the `peppy.json5` config that registered this node.
-    /// Always present (set when the entity reaches `Added`).
     pub config_path: String,
-    /// Path to the built `.sif`/archive in `~/.peppy/added_nodes`.
-    /// `None` until the entity reaches `Built`.
     pub artifact_path: Option<String>,
-    /// IDs of running instances. Empty unless the entity is `Started`.
     pub instance_ids: Vec<String>,
+    /// Lifecycle stage name (e.g. "Added", "Building", "Ready", "Root").
+    #[serde(default)]
+    pub stage: Option<String>,
+    /// All tracked instances with their per-instance state, including
+    /// in-flight `Starting` instances not yet in `instance_ids`.
+    #[serde(default)]
+    pub instances: Vec<SerializedInstance>,
 }
 
 impl SerializedNode {
@@ -50,16 +59,40 @@ impl SerializedNode {
         self.instance_ids.len()
     }
 
-    /// Returns instance info in the format "N instance(s): ["id1", "id2"]".
+    /// Returns the lifecycle stage label, or "Unknown" for legacy payloads.
+    pub fn stage_label(&self) -> &str {
+        self.stage.as_deref().unwrap_or("Unknown")
+    }
+
+    /// Returns instance info in the format "N instance(s): [id1[running], id2[starting]]".
     pub fn instance_info(&self) -> String {
-        let count = self.instance_count();
-        let suffix = if count == 1 { "instance" } else { "instances" };
-        let ids: Vec<String> = self
-            .instance_ids
-            .iter()
-            .map(|id| format!("\"{}\"", id))
-            .collect();
-        format!("{} {}: [{}]", count, suffix, ids.join(", "))
+        let suffix = if self.instances.len() == 1 {
+            "instance"
+        } else {
+            "instances"
+        };
+        if self.instances.is_empty() {
+            let count = self.instance_count();
+            let legacy_suffix = if count == 1 { "instance" } else { "instances" };
+            let ids: Vec<String> = self
+                .instance_ids
+                .iter()
+                .map(|id| format!("\"{}\"", id))
+                .collect();
+            format!("{} {}: [{}]", count, legacy_suffix, ids.join(", "))
+        } else {
+            let details: Vec<String> = self
+                .instances
+                .iter()
+                .map(|i| format!("{}[{}]", i.instance_id, i.state))
+                .collect();
+            format!(
+                "{} {}: [{}]",
+                self.instances.len(),
+                suffix,
+                details.join(", ")
+            )
+        }
     }
 }
 
@@ -79,6 +112,7 @@ pub struct SerializedNodeGraph {
 
 impl From<&NodeEntity> for SerializedNode {
     fn from(entity: &NodeEntity) -> Self {
+        let all_instances = entity.instances();
         Self {
             name: entity.config().manifest.name.as_str().to_string(),
             tag: entity.config().manifest.tag.clone(),
@@ -91,11 +125,21 @@ impl From<&NodeEntity> for SerializedNode {
             // Exposing Starting instances here would let external observers
             // try to interact with something that hasn't subscribed to
             // messenger services yet.
-            instance_ids: entity
-                .instances()
+            instance_ids: all_instances
                 .iter()
                 .filter(|i| i.state() == InstanceState::Running)
                 .map(|i| i.instance_id().as_str().to_string())
+                .collect(),
+            stage: Some(entity.stage().name().to_string()),
+            instances: all_instances
+                .iter()
+                .map(|i| SerializedInstance {
+                    instance_id: i.instance_id().as_str().to_string(),
+                    state: match i.state() {
+                        InstanceState::Starting => "starting".to_string(),
+                        InstanceState::Running => "running".to_string(),
+                    },
+                })
                 .collect(),
         }
     }
@@ -183,7 +227,7 @@ impl NodeStage {
 pub struct BuildContext<'a> {
     /// Temporary working directory containing the node sources and (for
     /// container nodes) the apptainer `.def` file. For process nodes, the
-    /// user-defined `add_cmd` is executed inside this directory before
+    /// user-defined `build_cmd` is executed inside this directory before
     /// archiving. The build artifact is produced inside this directory and
     /// then moved to peppy storage.
     pub working_dir: &'a Path,
@@ -191,11 +235,11 @@ pub struct BuildContext<'a> {
     /// inside `peppy_dirs.added_nodes_dir()`.
     pub peppy_dirs: &'a PeppyDirs,
     /// Channel that streams stdout/stderr lines from the build child process
-    /// (and from `add_cmd`, for process nodes) back to the caller.
+    /// (and from `build_cmd`, for process nodes) back to the caller.
     pub feedback_tx: &'a mpsc::UnboundedSender<FeedbackLine>,
     /// Log file the build output is also written to.
     pub log_file: Arc<StdMutex<File>>,
-    /// Environment variables passed to `add_cmd` (process nodes only). The
+    /// Environment variables passed to `build_cmd` (process nodes only). The
     /// daemon prepares this list via `validate_goal_env_vars`,
     /// `inject_rust_build_env`, and `inject_node_runtime_env`. Container
     /// nodes ignore this field — apptainer build does not consume it.
@@ -257,17 +301,17 @@ pub struct OutputSinks {
 /// either [`NodeEntity::commit_started`] or [`NodeEntity::abort_started`].
 #[derive(Debug)]
 pub struct StartedInstanceCtx {
-    pub instance_dir: PathBuf,
-    pub runtime_config_path: PathBuf,
-    pub stderr_buffer: Arc<StdMutex<VecDeque<String>>>,
-    pub output_reader_handles: Vec<JoinHandle<std::io::Result<()>>>,
-    pub log_file: Arc<StdMutex<File>>,
+    pub(crate) instance_dir: PathBuf,
+    pub(crate) runtime_config_path: PathBuf,
+    pub(crate) stderr_buffer: Arc<StdMutex<VecDeque<String>>>,
+    pub(crate) output_reader_handles: Vec<JoinHandle<std::io::Result<()>>>,
+    pub(crate) log_file: Arc<StdMutex<File>>,
     /// Snapshot of the entity's `generation` taken at `prepare_and_spawn`
     /// time. `commit_started`/`abort_started` compare this against the
     /// current entity generation and refuse to mutate the replacement entity
     /// if a concurrent `push_config` has bumped the generation in the
     /// meantime — they only clean up the stale child/context.
-    pub generation: u64,
+    pub(crate) generation: u64,
 }
 
 /// Process-wide monotonic counter that assigns each `NodeEntity` instance a
@@ -281,7 +325,32 @@ fn next_entity_generation() -> u64 {
     NEXT_ENTITY_GENERATION.fetch_add(1, Ordering::Relaxed)
 }
 
-#[derive(Clone, Debug)]
+/// RAII guard for a temporary working directory staged by `node add` and
+/// consumed by `node build`. Removes the directory when the last clone is
+/// dropped — so removing an `Added` entity from the stack also cleans up
+/// its pending working dir on disk.
+#[derive(Debug)]
+pub struct WorkingDirGuard {
+    path: PathBuf,
+}
+
+impl WorkingDirGuard {
+    pub fn new(path: PathBuf) -> Self {
+        Self { path }
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for WorkingDirGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
+
+#[derive(Debug)]
 pub struct NodeEntity {
     config: NodeConfig,
     stage: NodeStage,
@@ -291,13 +360,13 @@ pub struct NodeEntity {
     /// `root` construction. The build path captures this value at Phase 1 and
     /// re-checks it at Phase 3 before publishing artifacts.
     generation: u64,
-    /// Path to the most-recent add/build log file produced for this entity.
-    /// Set by the add/launch services after `create_action_log_file`
-    /// succeeds. Reset to `None` whenever the entity is replaced wholesale
-    /// (a fresh `NodeEntity::new` is constructed for the same key by
-    /// `push_config_impl`). `None` for the synthetic root entity, which
-    /// has no add log.
-    last_add_log_path: Option<PathBuf>,
+    /// In-memory only: the temporary working directory staged by `node add`
+    /// and consumed by `node build`. Set to `Some` while the entity is
+    /// `Added`, taken (set to `None`) by the build path. The `Arc` lets the
+    /// build task hold its own reference for the duration of the build after
+    /// `take_pending_working_dir` clears the entity-side slot. Never
+    /// persisted.
+    pending_working_dir: Option<Arc<WorkingDirGuard>>,
 }
 
 impl NodeEntity {
@@ -311,22 +380,42 @@ impl NodeEntity {
                 config_path: config_path.into(),
             },
             generation: next_entity_generation(),
-            last_add_log_path: None,
+            pending_working_dir: None,
         }
     }
 
-    /// Returns the path to the most-recent add/build log produced for this
-    /// entity, if any. See [`NodeEntity::set_last_add_log_path`].
-    pub fn last_add_log_path(&self) -> Option<&Path> {
-        self.last_add_log_path.as_deref()
+    /// Returns the in-memory working directory guard staged by `node add`
+    /// for a future `node build`, if any. The build path consumes this via
+    /// [`take_pending_working_dir`].
+    pub fn pending_working_dir(&self) -> Option<Arc<WorkingDirGuard>> {
+        self.pending_working_dir.clone()
     }
 
-    /// Records the path of the add/build log file the daemon just opened
-    /// for this entity. Called by the add/launch services right after
-    /// `create_action_log_file` succeeds, under the same write lock as the
-    /// rest of the entity transition.
-    pub fn set_last_add_log_path(&mut self, path: PathBuf) {
-        self.last_add_log_path = Some(path);
+    /// Stores the working-directory guard the add path just created so a
+    /// later `node build` can reuse it without re-cloning the source.
+    pub fn set_pending_working_dir(&mut self, guard: Arc<WorkingDirGuard>) {
+        self.pending_working_dir = Some(guard);
+    }
+
+    /// Takes the staged working-directory guard, leaving `None` in place.
+    pub fn take_pending_working_dir(&mut self) -> Option<Arc<WorkingDirGuard>> {
+        self.pending_working_dir.take()
+    }
+
+    /// Takes the staged working-directory guard, but only if the entity's
+    /// current generation matches `expected`. Returns `Ok(taken_value)` on
+    /// match (the taken value may be `None` if already consumed).
+    /// Returns `Err(current_generation)` on mismatch, leaving the slot
+    /// untouched.
+    pub fn take_pending_working_dir_if_generation(
+        &mut self,
+        expected: u64,
+    ) -> std::result::Result<Option<Arc<WorkingDirGuard>>, u64> {
+        if self.generation == expected {
+            Ok(self.pending_working_dir.take())
+        } else {
+            Err(self.generation)
+        }
     }
 
     /// Returns the entity's monotonic generation token. Bumped on every
@@ -379,37 +468,19 @@ impl NodeEntity {
         }
     }
 
-    /// Performs the actual `.sif`/archive build for the entity behind `handle`
-    /// and transitions its stage `Added → Building → Ready` on success.
+    /// Drives the entity from `Added → Building → Ready`.
     ///
-    /// For container nodes, this runs `apptainer build` and moves the resulting
-    /// `.sif` into `peppy_dirs.added_nodes_dir()`. For process nodes, this
-    /// runs the user-defined `add_cmd` (if any) inside `working_dir` and then
-    /// archives the working directory into a `.tar.zst` in the same location.
-    ///
-    /// Concurrency: a second `build` call on the same entity that arrives
-    /// while the first is still running observes the `Building` stage and is
-    /// rejected immediately with [`Error::InvalidStageTransition`]. There is
-    /// no queueing — once an entity is in `Building`, no other lifecycle
-    /// transition is allowed until the build resolves.
-    ///
-    /// Failure contract: on any failure (I/O, storage, archive), the entity
-    /// is left in `Building` and is **not** rolled back to `Added`. The caller
-    /// owns cleanup — typically by removing the entity from the stack via
-    /// `NodeStack::remove_config`. Failed builds are not retryable in place.
-    ///
-    /// Returns [`Error::InvalidStageTransition`] if the entity is not in
-    /// [`NodeStage::Added`], or [`Error::BuildFailed`] if the underlying
-    /// `add_cmd` / apptainer / archive step fails.
-    /// Drives the entity from `Added` to `Ready`. On success, returns the
-    /// `PathBuf` of the artifact freshly installed in storage; the caller
-    /// MUST use this returned path rather than re-reading
+    /// On success, returns the `PathBuf` of the artifact installed in storage.
+    /// The caller MUST use this returned path rather than re-reading
     /// `entity.artifact_path()` afterwards, because a concurrent
-    /// `push_config` could replace the entity in-place between the build
-    /// completing and the re-read.
+    /// `push_config` could replace the entity in-place.
+    ///
+    /// **Failure contract:** on any failure the entity is left in `Building`
+    /// (not rolled back to `Added`). The caller owns cleanup — typically by
+    /// calling `NodeStack::remove_config`.
     pub async fn build(handle: &Arc<RwLock<NodeEntity>>, ctx: BuildContext<'_>) -> Result<PathBuf> {
         // ---- Phase 1: Added → Building, snapshot inputs (brief write lock) ----
-        let (node_name, node_tag, config_path, container_opt, add_cmd, build_generation) = {
+        let (node_name, node_tag, config_path, container_opt, build_cmd, build_generation) = {
             let mut guard = handle.write();
             if let Err(from) = guard.stage.ensure_buildable() {
                 return Err(Error::InvalidStageTransition {
@@ -428,7 +499,7 @@ impl NodeEntity {
                 guard.config.manifest.tag.clone(),
                 config_path.clone(),
                 guard.config.execution.container.clone(),
-                guard.config.execution.add_cmd.clone(),
+                guard.config.execution.build_cmd.clone(),
                 guard.generation,
             );
             // Atomic transition Added → Building under the same write lock as
@@ -439,7 +510,7 @@ impl NodeEntity {
 
         // ---- Phase 2: I/O without any entity lock ----
         // For container nodes, build the .sif via apptainer.
-        // For process nodes, run the user-defined add_cmd (if any).
+        // For process nodes, run the user-defined build_cmd (if any).
         // Defer publishing the artifact into shared storage until *after*
         // we re-confirm the entity is still `Building` under the write
         // lock — otherwise a stale build could orphan/overwrite an artifact
@@ -473,9 +544,9 @@ impl NodeEntity {
                     reason,
                 })?;
             } else {
-                // Process node: run add_cmd inside the working dir.
-                run_add_cmd(
-                    add_cmd.as_ref(),
+                // Process node: run build_cmd inside the working dir.
+                run_build_cmd(
+                    build_cmd.as_ref(),
                     ctx.working_dir,
                     ctx.env_vars,
                     ctx.feedback_tx,
@@ -485,12 +556,62 @@ impl NodeEntity {
                 .map_err(|reason| Error::BuildFailed {
                     node_name: node_name.clone(),
                     node_tag: node_tag.clone(),
-                    reason: format!("add_cmd failed: {}", reason),
+                    reason: format!("build_cmd failed: {}", reason),
                 })?;
             }
             Ok(())
         }
         .await;
+
+        // ---- Phase 2.5: publish the artifact into shared storage ----
+        // This is blocking I/O (tar+zstd or fs::copy on potentially multi-GB
+        // images) so we run it via `spawn_blocking` off the tokio runtime
+        // worker. Done *before* acquiring the phase 3 write lock so the
+        // parking_lot guard is never held across blocking I/O.
+        let publish_result: std::result::Result<Option<PathBuf>, Error> = match &io_result {
+            Ok(()) => {
+                let working_dir = ctx.working_dir.to_path_buf();
+                let peppy_dirs = ctx.peppy_dirs.clone();
+                let node_name_pub = node_name.clone();
+                let node_tag_pub = node_tag.clone();
+                let join_res = tokio::task::spawn_blocking(move || -> std::io::Result<PathBuf> {
+                    if is_container {
+                        move_sif_to_storage(
+                            &working_dir,
+                            &node_name_pub,
+                            &node_tag_pub,
+                            &peppy_dirs,
+                        )
+                    } else {
+                        archive_dir_to_storage(
+                            &working_dir,
+                            &node_name_pub,
+                            &node_tag_pub,
+                            &peppy_dirs,
+                        )
+                    }
+                })
+                .await;
+                match join_res {
+                    Ok(Ok(path)) => Ok(Some(path)),
+                    Ok(Err(e)) => Err(Error::BuildFailed {
+                        node_name: node_name.clone(),
+                        node_tag: node_tag.clone(),
+                        reason: if is_container {
+                            format!("failed to move container image to storage: {}", e)
+                        } else {
+                            format!("failed to archive node directory: {}", e)
+                        },
+                    }),
+                    Err(e) => Err(Error::BuildFailed {
+                        node_name: node_name.clone(),
+                        node_tag: node_tag.clone(),
+                        reason: format!("storage publish task failed: {}", e),
+                    }),
+                }
+            }
+            Err(_) => Ok(None),
+        };
 
         // ---- Phase 3: apply transition or rollback (brief write lock) ----
         let mut guard = handle.write();
@@ -514,21 +635,8 @@ impl NodeEntity {
 
         match io_result {
             Ok(()) => {
-                let artifact_path = if is_container {
-                    move_sif_to_storage(ctx.working_dir, &node_name, &node_tag, ctx.peppy_dirs)
-                        .map_err(|e| Error::BuildFailed {
-                            node_name: node_name.clone(),
-                            node_tag: node_tag.clone(),
-                            reason: format!("failed to move container image to storage: {}", e),
-                        })?
-                } else {
-                    archive_dir_to_storage(ctx.working_dir, &node_name, &node_tag, ctx.peppy_dirs)
-                        .map_err(|e| Error::BuildFailed {
-                        node_name: node_name.clone(),
-                        node_tag: node_tag.clone(),
-                        reason: format!("failed to archive node directory: {}", e),
-                    })?
-                };
+                let artifact_path =
+                    publish_result?.expect("publish_result is Some when io_result is Ok");
 
                 guard.stage = NodeStage::Ready {
                     config_path,
@@ -676,18 +784,18 @@ impl NodeEntity {
                     .lima_shell_extra_args
                     .as_deref()
                     .unwrap_or_default();
-                spawn_container_node(
-                    &artifact_path,
-                    &instance_dir,
-                    ctx.runtime_config_json5,
-                    ctx.env_vars,
-                    ctx.mount_paths_resolved,
+                spawn_container_node(SpawnContainerInputs {
+                    sif_path: &artifact_path,
+                    working_dir: &instance_dir,
+                    runtime_config_json5: ctx.runtime_config_json5,
+                    env_vars: ctx.env_vars,
+                    mount_paths: ctx.mount_paths_resolved,
                     apptainer_run_extra_args,
                     lima_shell_extra_args,
-                    &ctx.output_sinks.log_file,
-                    &ctx.output_sinks.feedback_tx,
-                    ctx.peppy_dirs,
-                )
+                    log_file: &ctx.output_sinks.log_file,
+                    feedback_tx: &ctx.output_sinks.feedback_tx,
+                    peppy_dirs: ctx.peppy_dirs,
+                })
                 .await
             } else {
                 spawn_process_node(
@@ -945,7 +1053,7 @@ impl NodeEntity {
                 instance,
             },
             generation: next_entity_generation(),
-            last_add_log_path: None,
+            pending_working_dir: None,
         }
     }
 
@@ -986,7 +1094,7 @@ impl NodeEntity {
             config,
             stage,
             generation: next_entity_generation(),
-            last_add_log_path: None,
+            pending_working_dir: None,
         }
     }
 

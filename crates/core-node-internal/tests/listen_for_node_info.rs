@@ -4,7 +4,7 @@ use common::{
     AbortOnDrop, CALLER_INSTANCE_ID, create_tar_zst_from_dir, real_build_and_spawn_instance,
     start_core_node_with_mock_messenger, write_peppy_json5,
 };
-use common::{NodeStartTestTimeouts, send_node_add_and_wait, send_node_start_and_wait};
+use common::{NodeStartTestTimeouts, send_node_add_then_build, send_node_start_and_wait};
 use config::consts::NODE_CONFIG_FILE;
 use config::node::{Name, PeppygenLanguage};
 use config::test_helpers;
@@ -146,14 +146,7 @@ async fn listen_for_node_info_on_fs_node_success() {
         .peppy_dirs
         .logs_dir_add()
         .join("recorded.log");
-    {
-        let handle = node_stack
-            .find(TARGET_NODE_NAME, TARGET_NODE_TAG)
-            .expect("entity should exist");
-        handle
-            .write()
-            .set_last_add_log_path(recorded_add_log.clone());
-    }
+    node_stack.set_add_log_path(TARGET_NODE_NAME, TARGET_NODE_TAG, recorded_add_log.clone());
     let request = NodeInfoRequest::new(NodeSource::Fs(node_dir.path().to_path_buf()));
     let info_response = poll_node_info(&started_core_node, &request, Duration::from_secs(5))
         .await
@@ -366,13 +359,12 @@ async fn listen_for_node_info_has_instance_ids() {
     .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
-    let add_result = send_node_add_and_wait(
+    let add_result = send_node_add_then_build(
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
         source_dir.path(),
         Duration::from_secs(5),
         Duration::from_secs(10),
-        None,
     )
     .await
     .expect("node_add should complete");
@@ -484,7 +476,7 @@ async fn listen_for_node_info_has_instance_ids() {
         start_response_2.result.error_message
     );
 
-    let request = NodeInfoRequest::new(NodeSource::Fs(add_result.snapshot_path.clone()));
+    let request = NodeInfoRequest::new(NodeSource::Fs(add_result.artifact_path.clone()));
 
     let info_response = poll_node_info(&started_core_node, &request, Duration::from_secs(5))
         .await

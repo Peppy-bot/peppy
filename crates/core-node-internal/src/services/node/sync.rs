@@ -564,6 +564,20 @@ pub fn collect_consumed_interfaces(
     let mut interfaces = Vec::new();
     let dep_lookup = build_dependency_lookup(manifest);
 
+    // Pre-resolve each unique (name, tag) to its entity handle so the per-
+    // item loops below can skip the repeated `node_stack.find()` calls that
+    // would otherwise run once per consumed topic/service/action.
+    let mut dep_handles: std::collections::HashMap<(String, String), node_stack::EntityHandle> =
+        std::collections::HashMap::new();
+    for (dep_name, dep_tag) in dep_lookup.values() {
+        let key = (dep_name.clone(), dep_tag.clone());
+        if !dep_handles.contains_key(&key)
+            && let Some(handle) = node_stack.find(dep_name, dep_tag)
+        {
+            dep_handles.insert(key, handle);
+        }
+    }
+
     // Collect consumed topics
     if let Some(topic_interfaces) = &interfaces_cfg.topics
         && let Some(consumed_topics) = &topic_interfaces.consumes
@@ -575,7 +589,8 @@ pub fn collect_consumed_interfaces(
                     else {
                         continue;
                     };
-                    if let Some(dep_handle) = node_stack.find(dep_name, dep_tag) {
+                    if let Some(dep_handle) = dep_handles.get(&(dep_name.clone(), dep_tag.clone()))
+                    {
                         let guard = dep_handle.read();
                         if let Some(dep_topics) = &guard.config().interfaces.topics
                             && let Some(emitted_topics) = &dep_topics.emits
@@ -614,7 +629,7 @@ pub fn collect_consumed_interfaces(
             let Some((dep_name, dep_tag)) = dep_lookup.get(&consumed_service.local_node_id) else {
                 continue;
             };
-            if let Some(dep_handle) = node_stack.find(dep_name, dep_tag) {
+            if let Some(dep_handle) = dep_handles.get(&(dep_name.clone(), dep_tag.clone())) {
                 let guard = dep_handle.read();
                 if let Some(dep_services) = &guard.config().interfaces.services
                     && let Some(exposed_services) = &dep_services.exposes
@@ -649,7 +664,7 @@ pub fn collect_consumed_interfaces(
             let Some((dep_name, dep_tag)) = dep_lookup.get(&consumed_action.local_node_id) else {
                 continue;
             };
-            if let Some(dep_handle) = node_stack.find(dep_name, dep_tag) {
+            if let Some(dep_handle) = dep_handles.get(&(dep_name.clone(), dep_tag.clone())) {
                 let guard = dep_handle.read();
                 if let Some(dep_actions) = &guard.config().interfaces.actions
                     && let Some(exposed_actions) = &dep_actions.exposes
