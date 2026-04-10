@@ -67,6 +67,7 @@ struct NodeBuildRun {
     env_vars: Vec<(String, String)>,
     entity_handle: node_stack::EntityHandle,
     working_dir_guard: Arc<node_stack::WorkingDirGuard>,
+    captured_generation: u64,
     action_context: NodeBuildActionContext,
     feedback_tx: mpsc::UnboundedSender<FeedbackLine>,
     log_file: Arc<StdMutex<File>>,
@@ -94,7 +95,7 @@ pub(crate) async fn run_node_build_for_entity(
         }
     };
 
-    let working_dir_guard = {
+    let (working_dir_guard, captured_generation) = {
         let guard = entity_handle.read();
         if let Err(stage) = guard.stage().ensure_buildable() {
             let msg = format!(
@@ -105,7 +106,7 @@ pub(crate) async fn run_node_build_for_entity(
             return NodeBuildResult::failure(&log_path, msg);
         }
         match guard.pending_working_dir() {
-            Some(g) => g,
+            Some(g) => (g, guard.generation()),
             None => {
                 let msg = format!(
                     "node `{}:{}` has no staged working directory",
@@ -123,6 +124,7 @@ pub(crate) async fn run_node_build_for_entity(
         env_vars,
         entity_handle,
         working_dir_guard,
+        captured_generation,
         action_context,
         feedback_tx,
         log_file,
@@ -219,11 +221,11 @@ impl NodeBuildGoalHandler {
         let pending = {
             let guard = entity_handle.read();
             match guard.stage().ensure_buildable() {
-                Ok(()) => Ok(guard.pending_working_dir()),
+                Ok(()) => Ok((guard.pending_working_dir(), guard.generation())),
                 Err(stage) => Err(stage.to_string()),
             }
         };
-        let working_dir_guard = match pending {
+        let (working_dir_guard, captured_generation) = match pending {
             Err(stage) => {
                 let mut state_guard = state.lock().await;
                 *state_guard = ActionState::Rejected;
@@ -232,7 +234,7 @@ impl NodeBuildGoalHandler {
                     goal.node_name, goal.node_tag, stage
                 ));
             }
-            Ok(None) => {
+            Ok((None, _)) => {
                 let mut state_guard = state.lock().await;
                 *state_guard = ActionState::Rejected;
                 return encode_rejected_goal(format!(
@@ -241,7 +243,7 @@ impl NodeBuildGoalHandler {
                     goal.node_name, goal.node_tag
                 ));
             }
-            Ok(Some(g)) => g,
+            Ok((Some(g), generation)) => (g, generation),
         };
 
         let log_dir = self.context.peppy_dirs.logs_dir_build();
@@ -274,6 +276,7 @@ impl NodeBuildGoalHandler {
                 env_vars: goal.env_vars,
                 entity_handle,
                 working_dir_guard,
+                captured_generation,
                 action_context,
                 feedback_tx,
                 log_file,
@@ -302,6 +305,7 @@ async fn run_node_build(run: NodeBuildRun) -> NodeBuildResult {
         env_vars: goal_env_vars,
         entity_handle,
         working_dir_guard,
+        captured_generation,
         action_context,
         feedback_tx,
         log_file,
@@ -331,16 +335,29 @@ async fn run_node_build(run: NodeBuildRun) -> NodeBuildResult {
         }
         super::inject_node_runtime_env(&mut env_vars, &node_name, &node_tag);
 
-        // Detach the entity-side working dir so a concurrent (rejected) build
-        // cannot reuse it; the local `working_dir_guard` Arc keeps it alive
-        // until this build finishes.
+        // Atomically detach the entity-side working dir AND verify the
+        // generation hasn't changed since Phase 1. If a concurrent
+        // push_config_impl replaced the entity in-place, the generation
+        // will differ and we must abort to avoid building from a stale
+        // working dir while holding the new entity's generation.
         {
             let mut guard = entity_handle.write();
-            let _ = guard.take_pending_working_dir();
+            match guard.take_pending_working_dir_if_generation(captured_generation) {
+                Ok(_) => { /* generation matches; slot cleared */ }
+                Err(current_gen) => {
+                    let msg = format!(
+                        "node `{}:{}` was replaced by a concurrent push \
+                         (generation {} -> {}); aborting build",
+                        node_name, node_tag, captured_generation, current_gen
+                    );
+                    write_error_to_log(&log_file, &msg);
+                    return NodeBuildResult::failure(&log_path, msg);
+                }
+            }
         }
 
         let working_dir_path = working_dir_guard.path().to_path_buf();
-        let expected_generation = entity_handle.read().generation();
+        let expected_generation = captured_generation;
 
         let build_result = node_stack::NodeEntity::build(
             &entity_handle,

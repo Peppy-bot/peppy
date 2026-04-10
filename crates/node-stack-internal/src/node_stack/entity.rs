@@ -402,6 +402,22 @@ impl NodeEntity {
         self.pending_working_dir.take()
     }
 
+    /// Takes the staged working-directory guard, but only if the entity's
+    /// current generation matches `expected`. Returns `Ok(taken_value)` on
+    /// match (the taken value may be `None` if already consumed).
+    /// Returns `Err(current_generation)` on mismatch, leaving the slot
+    /// untouched.
+    pub fn take_pending_working_dir_if_generation(
+        &mut self,
+        expected: u64,
+    ) -> std::result::Result<Option<Arc<WorkingDirGuard>>, u64> {
+        if self.generation == expected {
+            Ok(self.pending_working_dir.take())
+        } else {
+            Err(self.generation)
+        }
+    }
+
     /// Returns the entity's monotonic generation token. Bumped on every
     /// `new`/`from_snapshot`/`root` construction so the build path can
     /// distinguish "still the entity I started building" from "wholesale
