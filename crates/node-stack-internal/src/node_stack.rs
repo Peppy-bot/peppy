@@ -714,6 +714,9 @@ impl NodeStack {
             });
         }
         guard.remove_entity(&key);
+        self.add_log_paths
+            .lock()
+            .remove(&(name.trim().to_owned(), tag.trim().to_owned()));
         // Keep `entity_guard` alive until *after* the unlink so an outside
         // thread holding a clone of the handle still cannot mutate the
         // entity between the check and the removal.
@@ -764,6 +767,9 @@ impl NodeStack {
         }
 
         guard.remove_entity(&key);
+        self.add_log_paths
+            .lock()
+            .remove(&(name.trim().to_owned(), tag.trim().to_owned()));
         true
     }
 

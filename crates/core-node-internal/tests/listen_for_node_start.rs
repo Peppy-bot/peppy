@@ -60,7 +60,7 @@ async fn listen_for_node_start_success() {
     );
     // Intentionally keep the started node process running: nodes are expected to linger
     // and the test should still tear down cleanly.
-    let _snapshot_node_path = add_response.artifact_path;
+    let _artifact_path = add_response.artifact_path;
 
     // Get the actual messaging endpoint from the Zenoh session
     let (messaging_host, messaging_port) = started_core_node

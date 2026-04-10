@@ -875,7 +875,7 @@ fn node_add_with_variant_uses_variant_in_preflight() {
     std::fs::write(variant_peppy_dir.join("git.hash"), "test-git-hash")
         .expect("should write variant git hash");
 
-    // Disable build_cmd to avoid spawning a real binary; provide node services in-process
+    // Override start_cmd to `sleep 4` and disable build_cmd to avoid spawning a real binary.
     peppy::test_support::override_start_cmd(&root_peppy_json5);
 
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));

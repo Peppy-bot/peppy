@@ -25,7 +25,6 @@ use {
     httptest::responders::status_code,
 };
 
-const BUILD_CMD_MARKER_FILE: &str = "build_cmd_executed.marker";
 const GOAL_TIMEOUT: Duration = Duration::from_secs(30);
 const RESULT_TIMEOUT: Duration = Duration::from_secs(120);
 
@@ -1694,12 +1693,6 @@ async fn listen_for_node_add_fails_runs_add_cmd_on_missing_node_dependency() {
     let node_stack = started_core_node.node_stack.clone();
 
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
-    let marker_dir = tempfile::tempdir().expect("failed to create temp marker dir");
-    let marker_path = marker_dir.path().join(BUILD_CMD_MARKER_FILE);
-
-    // build_cmd creates a marker file then fails (simulating a build that fails due to
-    // incomplete peppygen interfaces from missing dependencies). We use an absolute path
-    // for the marker so it survives the copied-dir cleanup on failure.
     let peppy_json5 = r#"{
         schema_version: 1,
         manifest: {
@@ -1723,13 +1716,12 @@ async fn listen_for_node_add_fails_runs_add_cmd_on_missing_node_dependency() {
         },
         execution: {
           language: "rust",
-          build_cmd: ["sh", "-c", "touch MARKER_PATH && exit 1"],
+          build_cmd: ["true"],
           start_cmd: ["sleep", "10"]
         },
     }"#
     .replace("TARGET_NODE_NAME", TARGET_NODE_NAME)
-    .replace("TARGET_NODE_TAG", TARGET_NODE_TAG)
-    .replace("MARKER_PATH", &marker_path.to_string_lossy());
+    .replace("TARGET_NODE_TAG", TARGET_NODE_TAG);
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
     let add_result = send_node_add_and_wait(
@@ -1756,12 +1748,6 @@ async fn listen_for_node_add_fails_runs_add_cmd_on_missing_node_dependency() {
             .unwrap_or(false),
         "error message should indicate missing dependency, got: {:?}",
         add_result.error_message
-    );
-
-    // build_cmd should NOT have been executed — dependency validation must happen before build_cmd
-    assert!(
-        !marker_path.exists(),
-        "build_cmd should NOT have been executed when dependency is missing"
     );
 
     assert!(
@@ -1829,8 +1815,6 @@ async fn listen_for_node_add_fails_on_missing_interface_even_when_dependency_exi
     // Step 2: Add the dependent node that subscribes to a topic name that the
     // dependency does NOT emit (node name+tag matches, but interface doesn't).
     let target_source_dir = tempfile::tempdir().expect("failed to create temp target source dir");
-    let marker_dir = tempfile::tempdir().expect("failed to create temp marker dir");
-    let marker_path = marker_dir.path().join(BUILD_CMD_MARKER_FILE);
 
     let target_peppy_json5 = r#"{
         schema_version: 1,
@@ -1855,15 +1839,14 @@ async fn listen_for_node_add_fails_on_missing_interface_even_when_dependency_exi
         },
         execution: {
           language: "rust",
-          build_cmd: ["sh", "-c", "touch MARKER_PATH && exit 1"],
+          build_cmd: ["true"],
           start_cmd: ["sleep", "10"]
         },
     }"#
     .replace("TARGET_NODE_NAME", TARGET_NODE_NAME)
     .replace("TARGET_NODE_TAG", TARGET_NODE_TAG)
     .replace("DEPENDENCY_NODE_NAME", DEPENDENCY_NODE_NAME)
-    .replace("DEPENDENCY_NODE_TAG", DEPENDENCY_NODE_TAG)
-    .replace("MARKER_PATH", &marker_path.to_string_lossy());
+    .replace("DEPENDENCY_NODE_TAG", DEPENDENCY_NODE_TAG);
     write_peppy_json5(target_source_dir.path(), &target_peppy_json5);
 
     let add_result = send_node_add_and_wait(
@@ -1890,12 +1873,6 @@ async fn listen_for_node_add_fails_on_missing_interface_even_when_dependency_exi
             .unwrap_or(false),
         "error message should indicate missing interface, got: {:?}",
         add_result.error_message
-    );
-
-    // build_cmd should NOT have been executed — interface validation must happen before build_cmd
-    assert!(
-        !marker_path.exists(),
-        "build_cmd should NOT have been executed when interface is missing"
     );
 
     assert!(
@@ -4105,7 +4082,9 @@ async fn listen_for_node_add_default_fs_variant_verifies_git_hash_at_root() {
 async fn listen_for_node_add_rejects_second_goal_when_action_in_progress() {
     let started_core_node = start_core_node_with_mock_messenger().await;
 
-    // Create a node with a slow build_cmd so the action stays in Running state.
+    // The add action stays in Running state while it copies the source
+    // directory and processes the node config. build_cmd is not executed
+    // during the add phase, so we use a benign no-op here.
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
     let peppy_json5 = r#"{
             schema_version: 1,
@@ -4115,7 +4094,7 @@ async fn listen_for_node_add_rejects_second_goal_when_action_in_progress() {
             },
             execution: {
                 language: "rust",
-                build_cmd: ["sleep", "30"],
+                build_cmd: ["true"],
                 start_cmd: ["true"]
             }
         }"#;
@@ -4129,7 +4108,7 @@ async fn listen_for_node_add_rejects_second_goal_when_action_in_progress() {
     std::fs::create_dir_all(&peppy_dir).expect("failed to create .peppy dir");
     std::fs::write(peppy_dir.join("git.hash"), TEST_GIT_HASH).expect("failed to write git.hash");
 
-    // Send first goal — should be accepted and start running the slow build_cmd.
+    // Send first goal — should be accepted and start running the add.
     let first_goal = NodeAddGoal::new(source_dir.path(), TEST_GIT_HASH, RESULT_TIMEOUT.as_secs());
     let first_goal_payload = first_goal.encode().expect("failed to encode goal");
 
@@ -4192,7 +4171,9 @@ async fn listen_for_node_add_force_overrides_in_progress_action() {
     let started_core_node = start_core_node_with_mock_messenger().await;
     let node_stack = started_core_node.node_stack.clone();
 
-    // Create a slow node so the first action stays running.
+    // The first add action stays in Running state while it copies the source
+    // directory and processes the node config. build_cmd is not executed
+    // during the add phase, so we use a benign no-op here.
     let slow_source_dir = tempfile::tempdir().expect("failed to create temp source dir");
     let slow_peppy_json5 = r#"{
             schema_version: 1,
@@ -4202,7 +4183,7 @@ async fn listen_for_node_add_force_overrides_in_progress_action() {
             },
             execution: {
                 language: "rust",
-                build_cmd: ["sleep", "30"],
+                build_cmd: ["true"],
                 start_cmd: ["true"]
             }
         }"#;
@@ -4214,7 +4195,7 @@ async fn listen_for_node_add_force_overrides_in_progress_action() {
     std::fs::create_dir_all(&peppy_dir).expect("failed to create .peppy dir");
     std::fs::write(peppy_dir.join("git.hash"), TEST_GIT_HASH).expect("failed to write git.hash");
 
-    // Send first goal — starts the slow add.
+    // Send first goal — starts the add.
     let first_goal = NodeAddGoal::new(
         slow_source_dir.path(),
         TEST_GIT_HASH,

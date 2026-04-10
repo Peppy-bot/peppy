@@ -1241,7 +1241,7 @@ async fn listen_for_launch_configuration_fails_when_one_node_never_becomes_healt
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_launch_configuration_fails_when_add_cmd_fails_and_restores_stack() {
+async fn listen_for_launch_configuration_fails_when_build_cmd_fails_and_restores_stack() {
     const NODE_TAG: &str = "0.1.0";
 
     let started_core_node = start_core_node_with_mock_messenger().await;

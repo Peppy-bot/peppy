@@ -763,7 +763,7 @@ async fn validate_and_order_dependencies(
     }
 
     // Stable topological sort using original plan order as tie-breaker.
-    let ordered = topological_sort(planned, &deps_for).map_err(|e| *e)?;
+    let ordered = topological_sort(planned, &deps_for, &ctx.log_path).map_err(|e| *e)?;
 
     publish_stdout(
         ctx,
@@ -786,6 +786,7 @@ async fn validate_and_order_dependencies(
 fn topological_sort(
     planned: &[PlannedDeployment],
     deps_for: &HashMap<NodeKey, HashSet<NodeKey>>,
+    log_path: &PathBuf,
 ) -> std::result::Result<Vec<NodeKey>, Box<LaunchResult>> {
     let mut in_degree: HashMap<NodeKey, usize> = HashMap::new();
     let mut dependents: HashMap<NodeKey, Vec<NodeKey>> = HashMap::new();
@@ -854,7 +855,7 @@ fn topological_sort(
             "unable to resolve dependency order (cycle suspected). Remaining nodes: {}",
             remaining.join(", ")
         );
-        return Err(Box::new(LaunchResult::failure(PathBuf::new(), msg)));
+        return Err(Box::new(LaunchResult::failure(log_path, msg)));
     }
 
     Ok(ordered)

@@ -315,6 +315,18 @@ async fn run_node_build(run: NodeBuildRun) -> NodeBuildResult {
     let log_file_for_panic = log_file.clone();
     let log_path_for_panic = log_path.clone();
 
+    // Clones for panic-handler entity cleanup. After
+    // `take_pending_working_dir_if_generation` succeeds the entity is in
+    // `Building` state; if the async block panics we must roll it out of the
+    // stack the same way the normal `Err(e)` path does.
+    let node_stack_for_panic = Arc::clone(&action_context.node_stack);
+    let node_name_for_panic = node_name.clone();
+    let node_tag_for_panic = node_tag.clone();
+    let entity_handle_for_panic = entity_handle.clone();
+    let generation_for_panic = captured_generation;
+    let working_dir_detached = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let working_dir_detached_for_panic = Arc::clone(&working_dir_detached);
+
     match AssertUnwindSafe(async {
         let mut env_vars = match super::validate_goal_env_vars(&goal_env_vars) {
             Ok(v) => v,
@@ -343,7 +355,9 @@ async fn run_node_build(run: NodeBuildRun) -> NodeBuildResult {
         {
             let mut guard = entity_handle.write();
             match guard.take_pending_working_dir_if_generation(captured_generation) {
-                Ok(_) => { /* generation matches; slot cleared */ }
+                Ok(_) => {
+                    working_dir_detached.store(true, std::sync::atomic::Ordering::Release);
+                }
                 Err(current_gen) => {
                     let msg = format!(
                         "node `{}:{}` was replaced by a concurrent push \
@@ -407,6 +421,16 @@ async fn run_node_build(run: NodeBuildRun) -> NodeBuildResult {
             );
             tracing::error!("{}", msg);
             write_error_to_log(&log_file_for_panic, &msg);
+            // If the working dir was already detached the entity is in
+            // `Building` state — roll it out so it doesn't stay stuck.
+            if working_dir_detached_for_panic.load(std::sync::atomic::Ordering::Acquire) {
+                let _ = node_stack_for_panic.remove_config_if_matches(
+                    &node_name_for_panic,
+                    &node_tag_for_panic,
+                    &entity_handle_for_panic,
+                    generation_for_panic,
+                );
+            }
             NodeBuildResult::failure(log_path_for_panic, msg)
         }
     }
