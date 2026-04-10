@@ -61,10 +61,6 @@ impl ActionResult for NodeBuildResult {
 }
 
 /// Inputs required to drive a single `node_build` run to completion.
-///
-/// Holds only the fields `run_node_build` actually consumes — the
-/// `timeout_secs` / `force` fields of `NodeBuildGoal` are admission-gate
-/// concerns owned by the goal handler and have no meaning past that point.
 struct NodeBuildRun {
     node_name: String,
     node_tag: String,
@@ -185,7 +181,7 @@ impl NodeBuildGoalHandler {
 
         {
             let mut state_guard = state.lock().await;
-            if goal.force && matches!(*state_guard, ActionState::Running) {
+            if goal.force && matches!(*state_guard, ActionState::Running { .. }) {
                 debug!("Force flag set: aborting previous node_build task");
             }
             if let super::gate::Admission::AlreadyRunning { remaining_secs } =
@@ -204,8 +200,6 @@ impl NodeBuildGoalHandler {
             goal.node_name, goal.node_tag
         );
 
-        // Look up the entity *before* creating the log file so we can fail fast
-        // when the user typo'd the node name.
         let entity_handle = match self
             .context
             .node_stack
@@ -222,10 +216,6 @@ impl NodeBuildGoalHandler {
             }
         };
 
-        // Pull the staged working directory from the entity. Reject when the
-        // entity is not in `Added` (a build is already in flight or the entity
-        // is `Ready`). Bind the read-lock-derived values to local owned values
-        // before any `.await`, so the parking_lot guard never crosses an await.
         let pending = {
             let guard = entity_handle.read();
             match guard.stage().ensure_buildable() {
@@ -372,7 +362,7 @@ async fn run_node_build(run: NodeBuildRun) -> NodeBuildResult {
                     node_tag,
                     artifact_path.display()
                 );
-                NodeBuildResult::success(artifact_path, &log_path, node_name, node_tag)
+                NodeBuildResult::success(artifact_path, &log_path)
             }
             Err(e) => {
                 // `NodeEntity::build` leaves the entity in `Building` on

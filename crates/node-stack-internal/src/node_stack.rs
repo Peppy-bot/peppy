@@ -526,6 +526,10 @@ impl NodeStackInner {
 #[derive(Clone)]
 pub struct NodeStack {
     shared: Arc<RwLock<NodeStackInner>>,
+    /// Most-recent add log path per `(node_name, node_tag)`. This is a
+    /// daemon-only cache (not persisted) so it lives here rather than on
+    /// `NodeEntity`, which is a pure lifecycle/config model.
+    add_log_paths: Arc<parking_lot::Mutex<HashMap<(String, String), PathBuf>>>,
 }
 
 impl NodeStack {
@@ -557,7 +561,24 @@ impl NodeStack {
         let root_entity = NodeEntity::root(root_config, root_path, instance);
         Self {
             shared: Arc::new(RwLock::new(NodeStackInner::new(root_entity))),
+            add_log_paths: Arc::new(parking_lot::Mutex::new(HashMap::new())),
         }
+    }
+
+    /// Records the add-log path for a `(name, tag)` key. Called by the
+    /// add/launch handlers after creating the log file.
+    pub fn set_add_log_path(&self, name: &str, tag: &str, path: PathBuf) {
+        self.add_log_paths
+            .lock()
+            .insert((name.to_owned(), tag.to_owned()), path);
+    }
+
+    /// Returns the most-recent add-log path for `(name, tag)`, if any.
+    pub fn add_log_path(&self, name: &str, tag: &str) -> Option<PathBuf> {
+        self.add_log_paths
+            .lock()
+            .get(&(name.to_owned(), tag.to_owned()))
+            .cloned()
     }
 
     pub fn len(&self) -> usize {

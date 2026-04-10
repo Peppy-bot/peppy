@@ -20,8 +20,8 @@ use super::build_steps::{
     run_build_cmd,
 };
 use super::start_steps::{
-    create_instance_dir, extract_node_archive, kill_and_collect_error, spawn_container_node,
-    spawn_process_node,
+    SpawnContainerInputs, create_instance_dir, extract_node_archive, kill_and_collect_error,
+    spawn_container_node, spawn_process_node,
 };
 
 /// Serializable representation of a node in the graph.
@@ -311,20 +311,6 @@ pub struct NodeEntity {
     /// `root` construction. The build path captures this value at Phase 1 and
     /// re-checks it at Phase 3 before publishing artifacts.
     generation: u64,
-    /// Path to the most-recent add log file produced for this entity. Set by
-    /// the add/launch services after `create_action_log_file` succeeds. Reset
-    /// to `None` whenever the entity is replaced wholesale (a fresh
-    /// `NodeEntity::new` is constructed for the same key by
-    /// `push_config_impl`). `None` for the synthetic root entity, which has
-    /// no add log. Not persisted across daemon restarts — `from_snapshot`
-    /// always restores it as `None`.
-    ///
-    /// Cached on the entity rather than derived from `logs_dir_add()` so the
-    /// `info` RPC can answer in O(1) without listing the log directory and
-    /// pattern-matching filenames; the cached value is also guaranteed to
-    /// point at *this* add's log even if a same-named file gets recreated
-    /// later.
-    last_add_log_path: Option<PathBuf>,
     /// In-memory only: the temporary working directory staged by `node add`
     /// and consumed by `node build`. Set to `Some` while the entity is
     /// `Added`, taken (set to `None`) by the build path. The `Arc` lets the
@@ -345,7 +331,6 @@ impl NodeEntity {
                 config_path: config_path.into(),
             },
             generation: next_entity_generation(),
-            last_add_log_path: None,
             pending_working_dir: None,
         }
     }
@@ -366,20 +351,6 @@ impl NodeEntity {
     /// Takes the staged working-directory guard, leaving `None` in place.
     pub fn take_pending_working_dir(&mut self) -> Option<Arc<WorkingDirGuard>> {
         self.pending_working_dir.take()
-    }
-
-    /// Returns the path to the most-recent add/build log produced for this
-    /// entity, if any. See [`NodeEntity::set_last_add_log_path`].
-    pub fn last_add_log_path(&self) -> Option<&Path> {
-        self.last_add_log_path.as_deref()
-    }
-
-    /// Records the path of the add/build log file the daemon just opened
-    /// for this entity. Called by the add/launch services right after
-    /// `create_action_log_file` succeeds, under the same write lock as the
-    /// rest of the entity transition.
-    pub fn set_last_add_log_path(&mut self, path: PathBuf) {
-        self.last_add_log_path = Some(path);
     }
 
     /// Returns the entity's monotonic generation token. Bumped on every
@@ -432,34 +403,16 @@ impl NodeEntity {
         }
     }
 
-    /// Performs the actual `.sif`/archive build for the entity behind `handle`
-    /// and transitions its stage `Added → Building → Ready` on success.
+    /// Drives the entity from `Added → Building → Ready`.
     ///
-    /// For container nodes, this runs `apptainer build` and moves the resulting
-    /// `.sif` into `peppy_dirs.added_nodes_dir()`. For process nodes, this
-    /// runs the user-defined `build_cmd` (if any) inside `working_dir` and then
-    /// archives the working directory into a `.tar.zst` in the same location.
-    ///
-    /// Concurrency: a second `build` call on the same entity that arrives
-    /// while the first is still running observes the `Building` stage and is
-    /// rejected immediately with [`Error::InvalidStageTransition`]. There is
-    /// no queueing — once an entity is in `Building`, no other lifecycle
-    /// transition is allowed until the build resolves.
-    ///
-    /// Failure contract: on any failure (I/O, storage, archive), the entity
-    /// is left in `Building` and is **not** rolled back to `Added`. The caller
-    /// owns cleanup — typically by removing the entity from the stack via
-    /// `NodeStack::remove_config`. Failed builds are not retryable in place.
-    ///
-    /// Returns [`Error::InvalidStageTransition`] if the entity is not in
-    /// [`NodeStage::Added`], or [`Error::BuildFailed`] if the underlying
-    /// `build_cmd` / apptainer / archive step fails.
-    /// Drives the entity from `Added` to `Ready`. On success, returns the
-    /// `PathBuf` of the artifact freshly installed in storage; the caller
-    /// MUST use this returned path rather than re-reading
+    /// On success, returns the `PathBuf` of the artifact installed in storage.
+    /// The caller MUST use this returned path rather than re-reading
     /// `entity.artifact_path()` afterwards, because a concurrent
-    /// `push_config` could replace the entity in-place between the build
-    /// completing and the re-read.
+    /// `push_config` could replace the entity in-place.
+    ///
+    /// **Failure contract:** on any failure the entity is left in `Building`
+    /// (not rolled back to `Added`). The caller owns cleanup — typically by
+    /// calling `NodeStack::remove_config`.
     pub async fn build(handle: &Arc<RwLock<NodeEntity>>, ctx: BuildContext<'_>) -> Result<PathBuf> {
         // ---- Phase 1: Added → Building, snapshot inputs (brief write lock) ----
         let (node_name, node_tag, config_path, container_opt, build_cmd, build_generation) = {
@@ -766,18 +719,18 @@ impl NodeEntity {
                     .lima_shell_extra_args
                     .as_deref()
                     .unwrap_or_default();
-                spawn_container_node(
-                    &artifact_path,
-                    &instance_dir,
-                    ctx.runtime_config_json5,
-                    ctx.env_vars,
-                    ctx.mount_paths_resolved,
+                spawn_container_node(SpawnContainerInputs {
+                    sif_path: &artifact_path,
+                    working_dir: &instance_dir,
+                    runtime_config_json5: ctx.runtime_config_json5,
+                    env_vars: ctx.env_vars,
+                    mount_paths: ctx.mount_paths_resolved,
                     apptainer_run_extra_args,
                     lima_shell_extra_args,
-                    &ctx.output_sinks.log_file,
-                    &ctx.output_sinks.feedback_tx,
-                    ctx.peppy_dirs,
-                )
+                    log_file: &ctx.output_sinks.log_file,
+                    feedback_tx: &ctx.output_sinks.feedback_tx,
+                    peppy_dirs: ctx.peppy_dirs,
+                })
                 .await
             } else {
                 spawn_process_node(
@@ -1035,7 +988,6 @@ impl NodeEntity {
                 instance,
             },
             generation: next_entity_generation(),
-            last_add_log_path: None,
             pending_working_dir: None,
         }
     }
@@ -1077,7 +1029,6 @@ impl NodeEntity {
             config,
             stage,
             generation: next_entity_generation(),
-            last_add_log_path: None,
             pending_working_dir: None,
         }
     }

@@ -244,26 +244,39 @@ pub(super) fn collect_container_binds(
     binds
 }
 
+/// Inputs for [`spawn_container_node`].
+pub(super) struct SpawnContainerInputs<'a> {
+    pub sif_path: &'a Path,
+    pub working_dir: &'a Path,
+    pub runtime_config_json5: &'a str,
+    pub env_vars: &'a [(String, String)],
+    pub mount_paths: &'a [String],
+    pub apptainer_run_extra_args: &'a [String],
+    pub lima_shell_extra_args: &'a [String],
+    pub log_file: &'a Arc<StdMutex<File>>,
+    pub feedback_tx: &'a mpsc::UnboundedSender<FeedbackLine>,
+    pub peppy_dirs: &'a PeppyDirs,
+}
+
 /// Starts a container node using the Apptainer runtime.
 ///
-/// Builds an `apptainer run <sif_path>` command with environment variables
-/// passed into the container via `--env` flags and optional bind mounts from
-/// `mount_paths`. Returns a tokio [`Child`] with piped stdout/stderr for
-/// async output capture. The Apptainer instance is constructed via
-/// `tokio::task::spawn_blocking` inside this function.
-#[allow(clippy::too_many_arguments)]
+/// Returns a tokio [`Child`] with piped stdout/stderr for async output
+/// capture plus the path of the written runtime config temp file.
 pub(super) async fn spawn_container_node(
-    sif_path: &Path,
-    working_dir: &Path,
-    runtime_config_json5: &str,
-    env_vars: &[(String, String)],
-    mount_paths: &[String],
-    apptainer_run_extra_args: &[String],
-    lima_shell_extra_args: &[String],
-    log_file: &Arc<StdMutex<File>>,
-    feedback_tx: &mpsc::UnboundedSender<FeedbackLine>,
-    peppy_dirs: &PeppyDirs,
+    inputs: SpawnContainerInputs<'_>,
 ) -> std::io::Result<(Child, PathBuf)> {
+    let SpawnContainerInputs {
+        sif_path,
+        working_dir,
+        runtime_config_json5,
+        env_vars,
+        mount_paths,
+        apptainer_run_extra_args,
+        lima_shell_extra_args,
+        log_file,
+        feedback_tx,
+        peppy_dirs,
+    } = inputs;
     // Apptainer initialization is expensive (it may bootstrap a Lima VM on
     // macOS). Run it on a blocking pool so the tokio runtime isn't stalled.
     let mut apptainer = tokio::task::spawn_blocking(containers::Apptainer::new)

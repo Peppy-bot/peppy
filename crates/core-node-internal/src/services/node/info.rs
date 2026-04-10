@@ -189,7 +189,7 @@ async fn handle_node_info_request_inner(
                         }
                         start_log_paths.push(start_log_dir.join(format!("{}.log", id)));
                     }
-                    let add_log_path = guard.last_add_log_path().map(Path::to_path_buf);
+                    let add_log_path = node_stack.add_log_path(node_name, node_tag);
                     (
                         true,
                         instances_names,

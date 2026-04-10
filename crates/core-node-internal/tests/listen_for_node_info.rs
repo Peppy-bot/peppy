@@ -146,14 +146,7 @@ async fn listen_for_node_info_on_fs_node_success() {
         .peppy_dirs
         .logs_dir_add()
         .join("recorded.log");
-    {
-        let handle = node_stack
-            .find(TARGET_NODE_NAME, TARGET_NODE_TAG)
-            .expect("entity should exist");
-        handle
-            .write()
-            .set_last_add_log_path(recorded_add_log.clone());
-    }
+    node_stack.set_add_log_path(TARGET_NODE_NAME, TARGET_NODE_TAG, recorded_add_log.clone());
     let request = NodeInfoRequest::new(NodeSource::Fs(node_dir.path().to_path_buf()));
     let info_response = poll_node_info(&started_core_node, &request, Duration::from_secs(5))
         .await

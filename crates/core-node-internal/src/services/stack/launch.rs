@@ -1119,7 +1119,7 @@ async fn handle_goal_request(
     // Check if already running and mark as running if not
     {
         let mut state_guard = state.lock().await;
-        if matches!(*state_guard, ActionState::Running) {
+        if matches!(*state_guard, ActionState::Running { .. }) {
             let response = LaunchGoalResponse::rejected("action already in progress");
             return response
                 .encode()
@@ -1128,7 +1128,10 @@ async fn handle_goal_request(
                     reason: format!("Failed to encode response: {}", e),
                 });
         }
-        *state_guard = ActionState::Running;
+        *state_guard = ActionState::Running {
+            started_at: std::time::Instant::now(),
+            timeout_secs: 0,
+        };
     }
 
     let goal = match LaunchGoal::decode(payload.as_ref()) {

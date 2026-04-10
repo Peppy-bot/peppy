@@ -1063,7 +1063,7 @@ async fn handle_goal_request(
 
     {
         let mut state_guard = state.lock().await;
-        if goal.force && matches!(*state_guard, ActionState::Running) {
+        if goal.force && matches!(*state_guard, ActionState::Running { .. }) {
             debug!("Force flag set: aborting previous node_add task");
         }
         if let super::gate::Admission::AlreadyRunning { remaining_secs } =
@@ -1113,7 +1113,6 @@ async fn handle_goal_request(
 
     debug!("Created log file for node add: {}", log_path.display());
 
-    // Process the add operation in a separate task to not block goal response.
     let state_clone = Arc::clone(&state);
     let log_path_clone = log_path.clone();
     let task_handle = tokio::spawn(async move {
@@ -1409,7 +1408,9 @@ async fn process_node_add(
     ));
     {
         let mut guard = entity_handle.write();
-        guard.set_last_add_log_path(ctx.log_path.clone());
+        ctx.action
+            .node_stack
+            .set_add_log_path(&node_name, &node_tag, ctx.log_path.clone());
         guard.set_pending_working_dir(Arc::clone(&working_dir_guard));
     }
 

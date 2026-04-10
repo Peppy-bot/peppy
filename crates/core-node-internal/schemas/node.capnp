@@ -124,8 +124,6 @@ struct NodeBuildResult {
     # Path to the resulting .sif/archive in storage (empty on failure)
     artifactPath @2 :Text;
     logPath @3 :Text;
-    nodeName @4 :Text;
-    nodeTag @5 :Text;
 }
 
 # Node Init service

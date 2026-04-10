@@ -17,10 +17,8 @@ use crate::build_io::{FeedbackLine, FeedbackStream, stream_child_output};
 /// concurrent builds for the same node:tag cannot clobber each other.
 static STAGING_TMP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// Builds a per-build unique staging path next to `final_name` inside
-/// `storage_dir`. The final rename to the publish location is what makes the
-/// artifact visible — the tmp suffix prevents concurrent builds for the same
-/// `node:tag` from clobbering each other's in-flight file.
+/// Unique staging path so concurrent builds for the same `node:tag` cannot
+/// clobber each other's in-flight file.
 fn staging_tmp_path(storage_dir: &Path, final_name: &str) -> PathBuf {
     storage_dir.join(format!(
         "{}.{}.{}.tmp",
