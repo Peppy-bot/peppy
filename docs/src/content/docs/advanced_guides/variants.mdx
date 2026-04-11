@@ -458,7 +458,7 @@ For git sources, append `@ref` to specify a branch, tag, or commit (e.g., `@main
 In all cases, the positional argument (`./robot_brain`) is the root node — its manifest and interfaces are used. The variant provides only the execution. The variant appears in the node stack under the root's name and tag (`robot_brain:0.1.0`).
 
 :::note
-Just like a regular `peppy node add`, adding a variant only stages it in the `Added` stage — it does **not** run the variant's `build_cmd` automatically. Chain the build with `peppy node add --variant mock ./robot_brain -b` (or run `peppy node build robot_brain:0.1.0` afterwards).
+Just like a regular `peppy node add`, adding a variant only stages it in the `Added` stage — it does **not** run the variant's `build_cmd` automatically. Chain the build with `peppy node add --variant mock ./robot_brain -b` (or run `peppy node build robot_brain:0.1.0` afterward).
 :::
 
 :::tip
