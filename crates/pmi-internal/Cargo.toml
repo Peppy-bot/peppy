@@ -15,7 +15,7 @@ derive_more = { version = "2", features = ["from"] }
 tempfile = "3"
 
 # Optional deps
-zenoh = { version = "=1.7.2", optional = true }
+zenoh = { version = "1.9", optional = true }
 
 [build-dependencies]
 build-helpers = { path = "../build-helpers-internal" }
