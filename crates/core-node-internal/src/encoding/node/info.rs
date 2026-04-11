@@ -115,7 +115,7 @@ pub enum NodeInfoResponse {
     /// The `(name, tag)` pair is not currently in the node stack.
     NotInStack,
     /// The node is in the stack — carries its full metadata.
-    Found(NodeInfo),
+    Found(Box<NodeInfo>),
 }
 
 impl NodeInfoResponse {
@@ -197,14 +197,14 @@ impl NodeInfoResponse {
                 for i in 0..run_log_paths_reader.len() {
                     run_log_paths.push(PathBuf::from(run_log_paths_reader.get(i)?.to_str()?));
                 }
-                Ok(NodeInfoResponse::Found(NodeInfo {
+                Ok(NodeInfoResponse::Found(Box::new(NodeInfo {
                     config,
                     config_integrity,
                     stage,
                     instances,
                     add_log_path,
                     run_log_paths,
-                }))
+                })))
             }
         }
     }

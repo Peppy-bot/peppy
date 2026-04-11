@@ -162,14 +162,14 @@ async fn handle_node_info_request_inner(
         .map_err(|e| InfoError::Internal(format!("failed to serialize node config: {}", e)))?;
     let config_integrity = fingerprint_for_bytes(config_json.as_bytes());
 
-    NodeInfoResponse::Found(NodeInfo {
+    NodeInfoResponse::Found(Box::new(NodeInfo {
         config: node_config,
         config_integrity,
         stage,
         instances,
         add_log_path,
         run_log_paths,
-    })
+    }))
     .encode()
     .map_err(|e| InfoError::Internal(format!("failed to encode NodeInfoResponse: {}", e)))
 }

@@ -146,7 +146,7 @@ fn fetch_info(added: &AddedNode, node_name: &str, node_tag: &str) -> core_node::
         ))
         .expect("node_info request should succeed");
     match response {
-        core_node::encoding::NodeInfoResponse::Found(info) => info,
+        core_node::encoding::NodeInfoResponse::Found(info) => *info,
         core_node::encoding::NodeInfoResponse::NotInStack => panic!(
             "node_info unexpectedly reported `{}:{}` as not in the stack",
             node_name, node_tag

@@ -42,7 +42,7 @@ async fn poll_node_info(
     timeout: Duration,
 ) -> core_node::Result<NodeInfo> {
     match poll_node_info_raw(started_core_node, request, timeout).await? {
-        NodeInfoResponse::Found(info) => Ok(info),
+        NodeInfoResponse::Found(info) => Ok(*info),
         NodeInfoResponse::NotInStack => panic!(
             "node_info unexpectedly reported `{}:{}` as not in the stack",
             request.node_name, request.node_tag
