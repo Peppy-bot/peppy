@@ -121,19 +121,21 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
         source, conn.core_node_name
     );
 
-    // Preflight conflict check: if we can extract (name, tag) from the source
-    // locally without hitting the network, ask the daemon whether that node is
-    // already in the stack with running instances and prompt for overwrite.
+    // Preflight conflict check: if the *root* source is local, we can read
+    // `(name, tag)` from its `peppy.json5` without touching the network and
+    // ask the daemon whether that node is already in the stack with active
+    // instances.
     //
-    // Variants and remote sources cannot be preflighted from the client: their
-    // effective (name, tag) requires fetching + merging, which only the daemon
-    // does (during the add action itself). In those cases we skip the prompt
-    // and let the daemon's add action stop any existing instances transparently.
-    if !force
-        && variant_source.is_none()
-        && let NodeSource::Fs(ref path) = node_source
-    {
-        let running_instances = fetch_running_instances_for_local_source(
+    // The variant source (if any) doesn't affect the effective `(name, tag)`:
+    // `resolve_variant` always merges the root manifest over the variant
+    // (see crates/core-node-internal/src/services/node/variant.rs), so any
+    // variant we'd eventually pick shares the root's identity.
+    //
+    // Remote root sources still skip the preflight since we'd need to fetch
+    // them to read the manifest; the daemon's add action stops existing
+    // instances transparently in that path.
+    if !force && let NodeSource::Fs(ref path) = node_source {
+        let active_instances = fetch_active_instances_for_local_source(
             conn.messenger,
             &conn.core_node_name,
             path,
@@ -141,7 +143,7 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
         )
         .await?;
 
-        if let Some((node_name, node_tag, instance_ids)) = running_instances {
+        if let Some((node_name, node_tag, instance_ids)) = active_instances {
             let confirm =
                 confirm_overwrite(&node_name, &node_tag, &instance_ids, confirm_reader.take())?;
             if !confirm {
@@ -232,17 +234,19 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
 ///
 /// Parses the node's `peppy.json5` locally to extract `(name, tag)`, then asks
 /// the daemon whether that entity is currently in the stack. Returns
-/// `Some((name, tag, running_instance_ids))` only when the node exists in the
-/// stack AND has at least one `Running` instance — exactly the case that
-/// needs a user confirmation before overwrite.
+/// `Some((name, tag, active_instance_ids))` only when the node exists in the
+/// stack AND has at least one active instance (`Starting` or `Running`) —
+/// exactly the case that needs a user confirmation before overwrite. Both
+/// states count as active because the daemon tears down every tracked
+/// instance when it overwrites a node, regardless of lifecycle state.
 ///
 /// Returns `None` when:
 /// - The local config can't be parsed (the add action itself will surface a
 ///   clearer error once it tries to use the source).
 /// - The node isn't in the stack yet (nothing to confirm).
-/// - The node is in the stack but has no running instances (the add action
+/// - The node is in the stack but has no active instances (the add action
 ///   can safely overwrite it without prompting).
-async fn fetch_running_instances_for_local_source(
+async fn fetch_active_instances_for_local_source(
     messenger: &MessengerHandle,
     core_node_name: &str,
     source_path: &Path,
@@ -284,17 +288,17 @@ async fn fetch_running_instances_for_local_source(
         }
     };
 
-    let running: Vec<String> = info
+    let active: Vec<String> = info
         .instances
         .iter()
-        .filter(|inst| inst.state == "running")
+        .filter(|inst| matches!(inst.state.as_str(), "running" | "starting"))
         .map(|inst| inst.instance_id.clone())
         .collect();
 
-    if running.is_empty() {
+    if active.is_empty() {
         Ok(None)
     } else {
-        Ok(Some((node_name, node_tag, running)))
+        Ok(Some((node_name, node_tag, active)))
     }
 }
 
@@ -312,7 +316,7 @@ fn confirm_overwrite(
     let pronoun = if count == 1 { "it" } else { "them" };
 
     let message = format!(
-        "Node `{node_name}:{tag}` already exists with {count} running {suffix} ({ids}). \
+        "Node `{node_name}:{tag}` already exists with {count} active {suffix} ({ids}). \
          Adding this node will stop {pronoun} and overwrite the existing node. Continue? [y/n] ",
     );
 

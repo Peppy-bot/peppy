@@ -28,6 +28,19 @@ async fn node_info_async(ctx: &Arc<AppContext>, node_name: String, node_tag: Str
         .await
         .map_err(|e| Error::ExecutionFailed(format!("Failed to get node info: {}", e)))?;
 
+    // `response.run_log_paths` is aligned 1:1 with `response.instances` (same
+    // order, same length) — see `NodeInfoResponse` in
+    // crates/core-node-internal/src/encoding/node/info.rs. `format_node_info`
+    // consumes them via `.zip()`, which would silently truncate on drift.
+    // Fail loud here instead so encoding/version mismatches surface clearly.
+    if response.instances.len() != response.run_log_paths.len() {
+        return Err(Error::ExecutionFailed(format!(
+            "daemon returned mismatched node_info lengths: {} instances vs {} run log paths — this is an internal encoding bug",
+            response.instances.len(),
+            response.run_log_paths.len(),
+        )));
+    }
+
     let mut out = String::new();
     format_node_info(&mut out, &response);
     print!("{}", out);
