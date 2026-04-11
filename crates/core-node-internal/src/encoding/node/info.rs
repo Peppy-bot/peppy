@@ -84,13 +84,10 @@ pub struct NodeInstanceInfo {
     pub state: String,
 }
 
-/// Response payload for the `node_info` service.
-///
-/// Always describes a node that is currently in the node stack — the daemon
-/// errors out for unknown `(name, tag)` pairs, so there is no "not found"
-/// representation to carry here.
+/// Body of a successful `node_info` lookup — carries all metadata about a
+/// node that was found in the stack.
 #[derive(Debug, Clone)]
-pub struct NodeInfoResponse {
+pub struct NodeInfo {
     /// Resolved NodeConfig as stored in the node stack.
     pub config: NodeConfig,
     /// SHA256 of the serialized NodeConfig at the time of the response.
@@ -106,40 +103,64 @@ pub struct NodeInfoResponse {
     pub run_log_paths: Vec<PathBuf>,
 }
 
+/// Response payload for the `node_info` service.
+///
+/// `NotInStack` is a first-class *successful* negative answer to the lookup,
+/// not a protocol-level error. Prior to this shape, the daemon rejected
+/// missing-node lookups with `InvalidServiceRequest`, which conflated "no
+/// such node" with "malformed request" and produced spurious ERROR logs
+/// during normal flows like the preflight inside `peppy node add`.
+#[derive(Debug, Clone)]
+pub enum NodeInfoResponse {
+    /// The `(name, tag)` pair is not currently in the node stack.
+    NotInStack,
+    /// The node is in the stack — carries its full metadata.
+    Found(NodeInfo),
+}
+
 impl NodeInfoResponse {
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
-            let mut response = builder.init_root::<node_capnp::node_info_response::Builder>();
-            let config_json5 = serde_json5::to_string(&self.config).map_err(|e| {
-                crate::Error::Encoding(format!("failed to serialize config: {}", e))
-            })?;
-            response.set_config_json5(&config_json5);
-            response.set_config_sha256(&self.config_integrity);
-            response.set_stage(&self.stage);
-            {
-                let mut instances_builder = response
-                    .reborrow()
-                    .init_instances(self.instances.len() as u32);
-                for (i, info) in self.instances.iter().enumerate() {
-                    let mut entry = instances_builder.reborrow().get(i as u32);
-                    entry.set_instance_id(&info.instance_id);
-                    entry.set_state(&info.state);
+            let response = builder.init_root::<node_capnp::node_info_response::Builder>();
+            match self {
+                NodeInfoResponse::NotInStack => {
+                    // Select the `notInStack :Void` arm of the union.
+                    let mut response = response;
+                    response.set_not_in_stack(());
                 }
-            }
-            response.set_add_log_path(
-                self.add_log_path
-                    .as_ref()
-                    .map(|p| p.to_string_lossy().into_owned())
-                    .unwrap_or_default()
-                    .as_str(),
-            );
-            {
-                let mut paths_builder = response
-                    .reborrow()
-                    .init_run_log_paths(self.run_log_paths.len() as u32);
-                for (i, path) in self.run_log_paths.iter().enumerate() {
-                    paths_builder.set(i as u32, path.to_string_lossy().as_ref());
+                NodeInfoResponse::Found(info) => {
+                    let mut found = response.init_found();
+                    let config_json5 = serde_json5::to_string(&info.config).map_err(|e| {
+                        crate::Error::Encoding(format!("failed to serialize config: {}", e))
+                    })?;
+                    found.set_config_json5(&config_json5);
+                    found.set_config_sha256(&info.config_integrity);
+                    found.set_stage(&info.stage);
+                    {
+                        let mut instances_builder =
+                            found.reborrow().init_instances(info.instances.len() as u32);
+                        for (i, inst) in info.instances.iter().enumerate() {
+                            let mut entry = instances_builder.reborrow().get(i as u32);
+                            entry.set_instance_id(&inst.instance_id);
+                            entry.set_state(&inst.state);
+                        }
+                    }
+                    found.set_add_log_path(
+                        info.add_log_path
+                            .as_ref()
+                            .map(|p| p.to_string_lossy().into_owned())
+                            .unwrap_or_default()
+                            .as_str(),
+                    );
+                    {
+                        let mut paths_builder = found
+                            .reborrow()
+                            .init_run_log_paths(info.run_log_paths.len() as u32);
+                        for (i, path) in info.run_log_paths.iter().enumerate() {
+                            paths_builder.set(i as u32, path.to_string_lossy().as_ref());
+                        }
+                    }
                 }
             }
         }
@@ -149,34 +170,43 @@ impl NodeInfoResponse {
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
         let response = reader.get_root::<node_capnp::node_info_response::Reader>()?;
-        let config_json5 = response.get_config_json5()?.to_str()?;
-        let config: NodeConfig = serde_json5::from_str(config_json5)
-            .map_err(|e| crate::Error::Decoding(format!("failed to deserialize config: {}", e)))?;
-        let config_integrity = response.get_config_sha256()?.to_str()?.to_owned();
-        let stage = response.get_stage()?.to_str()?.to_owned();
-        let instances_reader = response.get_instances()?;
-        let mut instances = Vec::with_capacity(instances_reader.len() as usize);
-        for i in 0..instances_reader.len() {
-            let entry = instances_reader.get(i);
-            instances.push(NodeInstanceInfo {
-                instance_id: entry.get_instance_id()?.to_str()?.to_owned(),
-                state: entry.get_state()?.to_str()?.to_owned(),
-            });
+        match response.which()? {
+            node_capnp::node_info_response::Which::NotInStack(()) => {
+                Ok(NodeInfoResponse::NotInStack)
+            }
+            node_capnp::node_info_response::Which::Found(found) => {
+                let config_json5 = found.get_config_json5()?.to_str()?;
+                let config: NodeConfig = serde_json5::from_str(config_json5).map_err(|e| {
+                    crate::Error::Decoding(format!("failed to deserialize config: {}", e))
+                })?;
+                let config_integrity = found.get_config_sha256()?.to_str()?.to_owned();
+                let stage = found.get_stage()?.to_str()?.to_owned();
+                let instances_reader = found.get_instances()?;
+                let mut instances = Vec::with_capacity(instances_reader.len() as usize);
+                for i in 0..instances_reader.len() {
+                    let entry = instances_reader.get(i);
+                    instances.push(NodeInstanceInfo {
+                        instance_id: entry.get_instance_id()?.to_str()?.to_owned(),
+                        state: entry.get_state()?.to_str()?.to_owned(),
+                    });
+                }
+                let add_log_path =
+                    optional_text(found.get_add_log_path()?.to_str()?).map(PathBuf::from);
+                let run_log_paths_reader = found.get_run_log_paths()?;
+                let mut run_log_paths = Vec::with_capacity(run_log_paths_reader.len() as usize);
+                for i in 0..run_log_paths_reader.len() {
+                    run_log_paths.push(PathBuf::from(run_log_paths_reader.get(i)?.to_str()?));
+                }
+                Ok(NodeInfoResponse::Found(NodeInfo {
+                    config,
+                    config_integrity,
+                    stage,
+                    instances,
+                    add_log_path,
+                    run_log_paths,
+                }))
+            }
         }
-        let add_log_path = optional_text(response.get_add_log_path()?.to_str()?).map(PathBuf::from);
-        let run_log_paths_reader = response.get_run_log_paths()?;
-        let mut run_log_paths = Vec::with_capacity(run_log_paths_reader.len() as usize);
-        for i in 0..run_log_paths_reader.len() {
-            run_log_paths.push(PathBuf::from(run_log_paths_reader.get(i)?.to_str()?));
-        }
-        Ok(Self {
-            config,
-            config_integrity,
-            stage,
-            instances,
-            add_log_path,
-            run_log_paths,
-        })
     }
 }
 

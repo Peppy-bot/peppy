@@ -1,5 +1,5 @@
 use config::AnyType;
-use core_node::encoding::{NodeInfoRequest, NodeInfoResponse};
+use core_node::encoding::{NodeInfo, NodeInfoRequest, NodeInfoResponse};
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Duration;
@@ -17,7 +17,7 @@ pub fn node_info(ctx: &Arc<AppContext>, node_name: String, node_tag: String) -> 
 async fn node_info_async(ctx: &Arc<AppContext>, node_name: String, node_tag: String) -> Result<()> {
     let conn = ctx.connect_to_daemon().await?;
 
-    let response = NodeInfoRequest::new(node_name, node_tag)
+    let response = NodeInfoRequest::new(node_name.clone(), node_tag.clone())
         .poll(
             conn.messenger,
             &conn.core_node_name,
@@ -28,26 +28,39 @@ async fn node_info_async(ctx: &Arc<AppContext>, node_name: String, node_tag: Str
         .await
         .map_err(|e| Error::ExecutionFailed(format!("Failed to get node info: {}", e)))?;
 
-    // `response.run_log_paths` is aligned 1:1 with `response.instances` (same
-    // order, same length) — see `NodeInfoResponse` in
+    // "Not in stack" is now a first-class successful outcome of the lookup
+    // rather than a daemon-side error. Surface it to the user as a clean
+    // failure message without the generic "Failed to get node info:" prefix.
+    let info = match response {
+        NodeInfoResponse::NotInStack => {
+            return Err(Error::ExecutionFailed(format!(
+                "Node '{}:{}' is not in the node stack",
+                node_name, node_tag
+            )));
+        }
+        NodeInfoResponse::Found(info) => info,
+    };
+
+    // `info.run_log_paths` is aligned 1:1 with `info.instances` (same
+    // order, same length) — see `NodeInfo` in
     // crates/core-node-internal/src/encoding/node/info.rs. `format_node_info`
     // consumes them via `.zip()`, which would silently truncate on drift.
     // Fail loud here instead so encoding/version mismatches surface clearly.
-    if response.instances.len() != response.run_log_paths.len() {
+    if info.instances.len() != info.run_log_paths.len() {
         return Err(Error::ExecutionFailed(format!(
             "daemon returned mismatched node_info lengths: {} instances vs {} run log paths — this is an internal encoding bug",
-            response.instances.len(),
-            response.run_log_paths.len(),
+            info.instances.len(),
+            info.run_log_paths.len(),
         )));
     }
 
     let mut out = String::new();
-    format_node_info(&mut out, &response);
+    format_node_info(&mut out, &info);
     print!("{}", out);
     Ok(())
 }
 
-fn format_node_info(out: &mut String, response: &NodeInfoResponse) {
+fn format_node_info(out: &mut String, response: &NodeInfo) {
     use std::fmt::Write as _;
     let config = &response.config;
     let manifest = &config.manifest;
@@ -341,14 +354,17 @@ fn format_node_info(out: &mut String, response: &NodeInfoResponse) {
         let _ = writeln!(out, "Parameters");
         let _ = writeln!(out, "{}", "-".repeat(50));
         for (key, value) in &config.execution.parameters {
-            let _ = writeln!(out, "  {}: {}", key, format_any_type(value));
+            write_any_type(out, key, value, 1);
         }
     }
 
     let _ = writeln!(out);
 }
 
-fn format_any_type(value: &AnyType) -> String {
+/// Render a primitive/leaf `AnyType` (or an empty container) as a single
+/// inline string. Used for same-line key/value output and for arrays whose
+/// elements are all primitives.
+fn format_any_type_inline(value: &AnyType) -> String {
     match value {
         AnyType::Null => "null".to_string(),
         AnyType::Bool(b) => b.to_string(),
@@ -357,15 +373,102 @@ fn format_any_type(value: &AnyType) -> String {
         AnyType::UInt(u) => u.to_string(),
         AnyType::Float(f) => f.to_string(),
         AnyType::Array(arr) => {
-            let items: Vec<String> = arr.iter().map(format_any_type).collect();
+            let items: Vec<String> = arr.iter().map(format_any_type_inline).collect();
             format!("[{}]", items.join(", "))
         }
         AnyType::Object(obj) => {
             let items: Vec<String> = obj
                 .iter()
-                .map(|(k, v)| format!("{}: {}", k, format_any_type(v)))
+                .map(|(k, v)| format!("{}: {}", k, format_any_type_inline(v)))
                 .collect();
             format!("{{{}}}", items.join(", "))
+        }
+    }
+}
+
+/// True when every element of `arr` is a primitive (and not a nested
+/// container). Primitive-only arrays stay inline for readability.
+fn is_primitive_array(arr: &[AnyType]) -> bool {
+    arr.iter()
+        .all(|v| !matches!(v, AnyType::Array(_) | AnyType::Object(_),))
+}
+
+/// Recursively render `value` under `key` into `out` using a YAML-ish
+/// indented tree layout. `indent` is measured in 2-space units.
+fn write_any_type(out: &mut String, key: &str, value: &AnyType, indent: usize) {
+    use std::fmt::Write as _;
+    let pad = "  ".repeat(indent);
+    match value {
+        // Objects expand onto multiple lines unless empty.
+        AnyType::Object(obj) if !obj.is_empty() => {
+            let _ = writeln!(out, "{}{}:", pad, key);
+            for (child_key, child_value) in obj {
+                write_any_type(out, child_key, child_value, indent + 1);
+            }
+        }
+        // Arrays of objects/arrays expand onto multiple lines with `- ` bullets.
+        AnyType::Array(arr) if !arr.is_empty() && !is_primitive_array(arr) => {
+            let _ = writeln!(out, "{}{}:", pad, key);
+            let bullet_pad = "  ".repeat(indent + 1);
+            for item in arr {
+                match item {
+                    AnyType::Object(obj) if !obj.is_empty() => {
+                        // First field sits on the `- ` line; the rest align
+                        // underneath at the same column.
+                        let mut first = true;
+                        for (child_key, child_value) in obj {
+                            if first {
+                                first = false;
+                                match child_value {
+                                    AnyType::Object(_) | AnyType::Array(_) => {
+                                        let _ = writeln!(out, "{}- {}:", bullet_pad, child_key);
+                                        // Nested contents indent two more levels
+                                        // past the bullet (one for `- `, one for
+                                        // the child's own body).
+                                        match child_value {
+                                            AnyType::Object(inner) => {
+                                                for (k, v) in inner {
+                                                    write_any_type(out, k, v, indent + 3);
+                                                }
+                                            }
+                                            AnyType::Array(_) => {
+                                                // Recurse via a synthetic key — rare
+                                                // enough that we keep it simple.
+                                                write_any_type(
+                                                    out,
+                                                    child_key,
+                                                    child_value,
+                                                    indent + 2,
+                                                );
+                                            }
+                                            _ => unreachable!(),
+                                        }
+                                    }
+                                    _ => {
+                                        let _ = writeln!(
+                                            out,
+                                            "{}- {}: {}",
+                                            bullet_pad,
+                                            child_key,
+                                            format_any_type_inline(child_value)
+                                        );
+                                    }
+                                }
+                            } else {
+                                write_any_type(out, child_key, child_value, indent + 2);
+                            }
+                        }
+                    }
+                    _ => {
+                        let _ = writeln!(out, "{}- {}", bullet_pad, format_any_type_inline(item));
+                    }
+                }
+            }
+        }
+        // Everything else (primitives, empty containers, primitive-only arrays)
+        // stays on a single line.
+        _ => {
+            let _ = writeln!(out, "{}{}: {}", pad, key, format_any_type_inline(value));
         }
     }
 }
@@ -377,18 +480,26 @@ mod tests {
     use core_node::encoding::NodeInstanceInfo;
     use std::path::PathBuf;
 
-    fn sample_response() -> NodeInfoResponse {
-        let config_json5 = r#"{
-            schema_version: 1,
-            manifest: {
-                name: "sensor_node",
-                tag: "0.1.0",
-            },
-            execution: {
+    fn sample_response() -> NodeInfo {
+        sample_response_with_execution(
+            r#"{
                 language: "rust",
                 run_cmd: ["sleep", "10"]
-            }
-        }"#;
+            }"#,
+        )
+    }
+
+    fn sample_response_with_execution(execution_json5: &str) -> NodeInfo {
+        let config_json5 = format!(
+            r#"{{
+                schema_version: 1,
+                manifest: {{
+                    name: "sensor_node",
+                    tag: "0.1.0",
+                }},
+                execution: {execution_json5}
+            }}"#
+        );
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("peppy.json5");
         std::fs::write(&path, config_json5).expect("write config");
@@ -396,7 +507,7 @@ mod tests {
             .expect("parse config")
             .into_resolved()
             .expect("resolve config");
-        NodeInfoResponse {
+        NodeInfo {
             config,
             config_integrity: "0".repeat(64),
             stage: "Ready".to_string(),
@@ -477,6 +588,83 @@ mod tests {
         assert!(
             !out.contains("\nLogs\n"),
             "Logs section should be suppressed when no paths are present:\n{out}"
+        );
+    }
+
+    #[test]
+    fn print_node_info_renders_nested_parameters_as_indented_tree() {
+        let response = sample_response_with_execution(
+            r#"{
+                language: "rust",
+                run_cmd: ["sleep", "10"],
+                parameters: {
+                    device_path: "string",
+                    video: {
+                        camera_encoding: "string",
+                        frame_rate: "u16",
+                        resolution: {
+                            height: "u32",
+                            width: "u32",
+                        },
+                        topic_encoding: "string",
+                    },
+                }
+            }"#,
+        );
+
+        let mut out = String::new();
+        format_node_info(&mut out, &response);
+
+        // Primitive parameters still render inline.
+        assert!(
+            out.contains("  device_path: \"string\""),
+            "primitive parameter missing:\n{out}"
+        );
+
+        // Nested object parameters must NOT render as an inline `{...}` blob.
+        assert!(
+            !out.contains("video: {"),
+            "nested parameter should not be rendered inline:\n{out}"
+        );
+
+        // Parent object renders as a bare key with its children on subsequent lines.
+        assert!(
+            out.contains("  video:\n    camera_encoding: \"string\""),
+            "nested parameter not rendered as indented tree:\n{out}"
+        );
+        assert!(
+            out.contains("    frame_rate: \"u16\""),
+            "second-level child missing:\n{out}"
+        );
+        // Deeply nested (resolution) indented one more level.
+        assert!(
+            out.contains("    resolution:\n      height: \"u32\""),
+            "third-level child missing:\n{out}"
+        );
+        assert!(
+            out.contains("      width: \"u32\""),
+            "third-level child missing:\n{out}"
+        );
+    }
+
+    #[test]
+    fn print_node_info_renders_primitive_array_parameter_inline() {
+        let response = sample_response_with_execution(
+            r#"{
+                language: "rust",
+                run_cmd: ["sleep", "10"],
+                parameters: {
+                    tags: ["a", "b", "c"],
+                }
+            }"#,
+        );
+
+        let mut out = String::new();
+        format_node_info(&mut out, &response);
+
+        assert!(
+            out.contains("  tags: [\"a\", \"b\", \"c\"]"),
+            "primitive array should stay inline:\n{out}"
         );
     }
 }

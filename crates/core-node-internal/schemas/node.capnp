@@ -242,10 +242,6 @@ struct NodeResetResponse {
 }
 
 # Node Info service
-#
-# `node info` looks up a node already present in the node stack by
-# `(node_name, node_tag)`. If the requested node is not in the stack the
-# daemon returns an `InvalidServiceRequest` error.
 struct NodeInfoRequest {
     # Name of the node to look up in the stack
     nodeName @0 :Text;
@@ -260,18 +256,34 @@ struct NodeInstanceInfo {
     state @1 :Text;
 }
 
+# Node info lookup result.
+#
+# The response is a union so that "no such node in the stack" is a
+# first-class successful outcome rather than a protocol-level error. This
+# lets the `peppy node add` preflight check, `peppy node info`, and any
+# other caller disambiguate "not found" from a real fault without having
+# to sniff the error-string payload of an `InvalidServiceRequest`.
 struct NodeInfoResponse {
-    # JSON5-serialized NodeConfig as stored in the node stack
-    configJson5 @0 :Text;
-    # SHA256 of the entire NodeConfig file
-    configSha256 @1 :Text;
-    # Lifecycle stage of the in-stack entity ("Added"/"Building"/"Ready"/"Root").
-    stage @2 :Text;
-    # All tracked instances of this entity, including in-flight `Starting` ones.
-    instances @3 :List(NodeInstanceInfo);
-    # Path to the most-recent add/build log file for this entity.
-    # Empty string when no add log has been produced yet.
-    addLogPath @4 :Text;
-    # Per-instance run log paths, aligned with `instances` (same order).
-    runLogPaths @5 :List(Text);
+    union {
+        # The node is not in the stack. Carries no payload — the caller
+        # already knows which `(name, tag)` it asked about.
+        notInStack @0 :Void;
+        # The node is in the stack. All of the node metadata is grouped
+        # under this arm; callers must match on the union before reading.
+        found :group {
+            # JSON5-serialized NodeConfig as stored in the node stack
+            configJson5 @1 :Text;
+            # SHA256 of the entire NodeConfig file
+            configSha256 @2 :Text;
+            # Lifecycle stage of the in-stack entity ("Added"/"Building"/"Ready"/"Root").
+            stage @3 :Text;
+            # All tracked instances of this entity, including in-flight `Starting` ones.
+            instances @4 :List(NodeInstanceInfo);
+            # Path to the most-recent add/build log file for this entity.
+            # Empty string when no add log has been produced yet.
+            addLogPath @5 :Text;
+            # Per-instance run log paths, aligned with `instances` (same order).
+            runLogPaths @6 :List(Text);
+        }
+    }
 }

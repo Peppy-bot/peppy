@@ -6,17 +6,18 @@ use common::{
     write_peppy_json5,
 };
 use config::node::Name;
-use core_node::encoding::{NodeInfoRequest, NodeInfoResponse};
-use core_node::names;
-use peppylib::PeppyError;
+use core_node::encoding::{NodeInfo, NodeInfoRequest, NodeInfoResponse};
 use peppylib::messaging::MessengerHandle;
 use peppylib::services::health::listen_for_node_health;
 use peppylib::services::ready::listen_for_node_ready;
 use std::sync::Arc;
 use std::time::Duration;
 
-/// Sends a `NODE_INFO` poll request to the given core node and returns the raw result.
-async fn poll_node_info(
+/// Sends a `NODE_INFO` poll request and returns the raw response enum.
+///
+/// Most tests assert on the `Found` body and use `poll_node_info_found`
+/// below; the negative-lookup test uses this variant directly.
+async fn poll_node_info_raw(
     started_core_node: &common::StartedCoreNode,
     request: &NodeInfoRequest,
     timeout: Duration,
@@ -30,6 +31,23 @@ async fn poll_node_info(
             timeout,
         )
         .await
+}
+
+/// Sends a `NODE_INFO` poll request and unwraps the `Found` body. Panics
+/// if the daemon answers `NotInStack` — happy-path tests expect the node
+/// they set up to be present.
+async fn poll_node_info(
+    started_core_node: &common::StartedCoreNode,
+    request: &NodeInfoRequest,
+    timeout: Duration,
+) -> core_node::Result<NodeInfo> {
+    match poll_node_info_raw(started_core_node, request, timeout).await? {
+        NodeInfoResponse::Found(info) => Ok(info),
+        NodeInfoResponse::NotInStack => panic!(
+            "node_info unexpectedly reported `{}:{}` as not in the stack",
+            request.node_name, request.node_tag
+        ),
+    }
 }
 
 /// Happy path: add a node + start an instance, then `node info` reports the
@@ -301,47 +319,35 @@ async fn node_info_has_instance_ids() {
     }
 }
 
-/// An unknown `(name, tag)` should produce an `InvalidServiceRequest` error
-/// from the daemon. Direct port of the old "recovers after invalid request"
-/// test: after the daemon rejects the bad request, it must still answer a
-/// follow-up valid request.
+/// An unknown `(name, tag)` should be reported as a *successful*
+/// `NodeInfoResponse::NotInStack` rather than a protocol-level error — this
+/// is the whole point of the breaking response-shape change. The listener
+/// must also remain healthy after a negative lookup and serve a follow-up
+/// valid request.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn node_info_errors_for_missing_node_and_recovers() {
+async fn node_info_reports_not_in_stack_and_recovers() {
     const TARGET_NODE_NAME: &str = "fs_node";
     const TARGET_NODE_TAG: &str = "0.1.0";
 
     let started_core_node = start_core_node_with_mock_messenger().await;
 
-    // First: an unknown node — the daemon returns `InvalidServiceRequest`
-    // which the caller-side transport wraps back as a `ServiceError` whose
-    // reason embeds the original "invalid service request '<id>': <msg>"
-    // formatted string (see peppylib::Error::InvalidServiceRequest Display impl).
-    let err = poll_node_info(
+    // First: an unknown node — the daemon answers `NotInStack` on the
+    // successful response channel. No error log, no transport fault.
+    let response = poll_node_info_raw(
         &started_core_node,
         &NodeInfoRequest::new("ghost_node", "9.9.9"),
         Duration::from_secs(2),
     )
     .await
-    .expect_err("node_info should fail when the node is not in the stack");
-
-    let core_node::Error::Peppylib(PeppyError::ServiceError {
-        service_name,
-        reason,
-        ..
-    }) = err
-    else {
-        panic!("expected ServiceError, got: {err:?}");
-    };
-    assert_eq!(service_name, names::NODE_INFO);
+    .expect("node_info should return a successful response for an unknown node");
     assert!(
-        reason.contains("invalid service request")
-            && reason.contains("ghost_node:9.9.9")
-            && reason.contains("not in the node stack"),
-        "error reason should identify the missing node; got: {reason}"
+        matches!(response, NodeInfoResponse::NotInStack),
+        "expected NotInStack for an unknown `(name, tag)`, got: {response:?}"
     );
 
-    // Then: after rejection, a valid request against a stack-resident node
-    // must still succeed — i.e., the info listener is still alive.
+    // Then: after the negative lookup, a valid request against a
+    // stack-resident node must still succeed — i.e., the info listener
+    // is still alive.
     let node_dir = tempfile::tempdir().expect("failed to create temp node dir");
     let peppy_json5 = r#"{
             schema_version: 1,

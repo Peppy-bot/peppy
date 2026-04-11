@@ -3,7 +3,7 @@ use super::{
     checkout_repo_ref, is_supported_fs_archive, resolve_local_archive_source, sanitize_repo_path,
 };
 use crate::Result;
-use crate::encoding::{NodeInfoRequest, NodeInfoResponse, NodeInstanceInfo, NodeSource};
+use crate::encoding::{NodeInfo, NodeInfoRequest, NodeInfoResponse, NodeInstanceInfo, NodeSource};
 use crate::names;
 use config::consts::{NODE_CONFIG_FILE, PeppyDirs};
 use config::fingerprint::fingerprint_for_bytes;
@@ -121,14 +121,17 @@ async fn handle_node_info_request_inner(
         request.node_name, request.node_tag
     );
 
-    let entity = node_stack
-        .find(&request.node_name, &request.node_tag)
-        .ok_or_else(|| {
-            InfoError::Invalid(format!(
-                "Node '{}:{}' is not in the node stack",
-                request.node_name, request.node_tag
-            ))
-        })?;
+    // A missing `(name, tag)` is a *successful* negative lookup, not a
+    // malformed request. Encode it as `NodeInfoResponse::NotInStack` so
+    // callers (e.g. the `peppy node add` preflight) can handle it without
+    // provoking the generic service-handler error log. Malformed requests
+    // (decode failures above) still route to `InfoError::Invalid` and are
+    // the only legitimate caller-fault path through this handler.
+    let Some(entity) = node_stack.find(&request.node_name, &request.node_tag) else {
+        return NodeInfoResponse::NotInStack
+            .encode()
+            .map_err(|e| InfoError::Internal(format!("failed to encode NodeInfoResponse: {}", e)));
+    };
 
     let (node_config, stage, instances, run_log_paths) = {
         let guard = entity.read();
@@ -159,14 +162,14 @@ async fn handle_node_info_request_inner(
         .map_err(|e| InfoError::Internal(format!("failed to serialize node config: {}", e)))?;
     let config_integrity = fingerprint_for_bytes(config_json.as_bytes());
 
-    NodeInfoResponse {
+    NodeInfoResponse::Found(NodeInfo {
         config: node_config,
         config_integrity,
         stage,
         instances,
         add_log_path,
         run_log_paths,
-    }
+    })
     .encode()
     .map_err(|e| InfoError::Internal(format!("failed to encode NodeInfoResponse: {}", e)))
 }

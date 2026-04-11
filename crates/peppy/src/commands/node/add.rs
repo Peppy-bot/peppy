@@ -1,8 +1,9 @@
 use config::node::NodeConfigParser;
 use core_node::encoding::{
-    NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAddResult, NodeInfoRequest, NodeSource,
+    NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAddResult, NodeInfoRequest,
+    NodeInfoResponse, NodeSource,
 };
-use peppylib::{MessengerHandle, PeppyError};
+use peppylib::MessengerHandle;
 use std::io::BufRead;
 use std::path::Path;
 use std::sync::Arc;
@@ -243,7 +244,8 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
 /// Returns `None` when:
 /// - The local config can't be parsed (the add action itself will surface a
 ///   clearer error once it tries to use the source).
-/// - The node isn't in the stack yet (nothing to confirm).
+/// - The node isn't in the stack yet (the daemon answers with
+///   `NodeInfoResponse::NotInStack` — a successful negative lookup).
 /// - The node is in the stack but has no active instances (the add action
 ///   can safely overwrite it without prompting).
 async fn fetch_active_instances_for_local_source(
@@ -259,7 +261,7 @@ async fn fetch_active_instances_for_local_source(
     let node_name = parsed.manifest_name().to_owned();
     let node_tag = parsed.manifest_tag().to_owned();
 
-    let info = match NodeInfoRequest::new(node_name.clone(), node_tag.clone())
+    let response = NodeInfoRequest::new(node_name.clone(), node_tag.clone())
         .poll(
             messenger,
             core_node_name,
@@ -268,24 +270,16 @@ async fn fetch_active_instances_for_local_source(
             timeout,
         )
         .await
-    {
-        Ok(info) => info,
-        // The daemon returns `InvalidServiceRequest` when the node isn't in
-        // the stack. The caller-side transport reflects that as a
-        // `ServiceError` whose reason begins with "invalid service request"
-        // (from `PeppyError::InvalidServiceRequest`'s Display impl). Any
-        // such rejection means "not in the stack yet" — nothing to confirm.
-        Err(core_node::Error::Peppylib(PeppyError::ServiceError { ref reason, .. }))
-            if reason.contains("invalid service request") =>
-        {
-            return Ok(None);
-        }
-        Err(e) => {
-            return Err(Error::ExecutionFailed(format!(
-                "Failed to check node info before adding: {}",
-                e
-            )));
-        }
+        .map_err(|e| {
+            Error::ExecutionFailed(format!("Failed to check node info before adding: {}", e))
+        })?;
+
+    // `NotInStack` is a normal first-time-add case; there is nothing to
+    // confirm. The daemon no longer reports this as an error, so we match
+    // on the response variant directly instead of sniffing error strings.
+    let info = match response {
+        NodeInfoResponse::NotInStack => return Ok(None),
+        NodeInfoResponse::Found(info) => info,
     };
 
     let active: Vec<String> = info

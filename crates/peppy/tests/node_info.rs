@@ -1,9 +1,8 @@
-use core_node::encoding::NodeInfoRequest;
+use core_node::encoding::{NodeInfoRequest, NodeInfoResponse};
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands, TimeoutConfig};
 use peppy::context::AppContext;
 use peppy::test_support::{LogCapture, ServeCommandEmulation};
-use peppylib::PeppyError;
 use std::collections::BTreeSet;
 use std::io::Write;
 use std::sync::Arc;
@@ -131,16 +130,12 @@ fn add_nodes_to_stack(dependencies: &[&str], peppy_json5: &str) -> AddedNode {
     }
 }
 
-fn fetch_info(
-    added: &AddedNode,
-    node_name: &str,
-    node_tag: &str,
-) -> core_node::encoding::NodeInfoResponse {
+fn fetch_info(added: &AddedNode, node_name: &str, node_tag: &str) -> core_node::encoding::NodeInfo {
     let messenger_handle = added
         .node_ctx
         .messenger_handle()
         .expect("messenger handle should be available");
-    added
+    let response = added
         .rt
         .block_on(NodeInfoRequest::new(node_name, node_tag).poll(
             messenger_handle,
@@ -149,7 +144,14 @@ fn fetch_info(
             &added.core_node_name,
             Duration::from_secs(10),
         ))
-        .expect("node_info request should succeed")
+        .expect("node_info request should succeed");
+    match response {
+        core_node::encoding::NodeInfoResponse::Found(info) => info,
+        core_node::encoding::NodeInfoResponse::NotInStack => panic!(
+            "node_info unexpectedly reported `{}:{}` as not in the stack",
+            node_name, node_tag
+        ),
+    }
 }
 
 #[test]
@@ -382,11 +384,13 @@ fn node_info_no_dependencies_when_no_consumes() {
     let _ = added;
 }
 
-/// Asking for a node that was never added should fail fast with a
-/// clear "not in the node stack" error — the whole point of the breaking
-/// change is that `node info` only inspects the stack.
+/// Asking for a node that was never added returns a *successful*
+/// `NodeInfoResponse::NotInStack`. Prior to the response-shape change,
+/// the daemon answered with `InvalidServiceRequest` — a protocol error
+/// that produced a spurious ERROR log on every first-time `peppy node
+/// add` because the preflight check passes through this same path.
 #[test]
-fn node_info_errors_when_node_not_in_stack() {
+fn node_info_returns_not_in_stack_when_node_not_in_stack() {
     let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
     let serve = rt
         .block_on(ServeCommandEmulation::with_mock())
@@ -396,7 +400,18 @@ fn node_info_errors_when_node_not_in_stack() {
 
     let caller_handle = peppylib::MessengerHandle::from_shared(shared_messenger);
 
-    let err = rt
+    // Also capture daemon-side logs so we can assert that no
+    // service-handler ERROR is emitted for the negative lookup — the
+    // original regression pollution came from this path.
+    let log_capture = LogCapture::new();
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .without_time()
+        .with_writer(log_capture.clone())
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+
+    let response = rt
         .block_on(NodeInfoRequest::new("ghost_node", "9.9.9").poll(
             &caller_handle,
             &core_node_name,
@@ -404,18 +419,17 @@ fn node_info_errors_when_node_not_in_stack() {
             &core_node_name,
             Duration::from_secs(5),
         ))
-        .expect_err("node_info should fail when the node is not in the stack");
+        .expect("node_info should return a successful response for an unknown node");
 
-    // The daemon returns `InvalidServiceRequest`, which the caller-side
-    // transport reflects back as a `ServiceError` wrapping the original
-    // reason string.
-    let core_node::Error::Peppylib(PeppyError::ServiceError { reason, .. }) = err else {
-        panic!("expected ServiceError, got: {err:?}");
-    };
     assert!(
-        reason.contains("invalid service request")
-            && reason.contains("ghost_node:9.9.9")
-            && reason.contains("not in the node stack"),
-        "error reason should identify the missing node, got: {reason}"
+        matches!(response, NodeInfoResponse::NotInStack),
+        "expected NotInStack for ghost_node:9.9.9, got: {response:?}"
+    );
+
+    let logs = log_capture.logs();
+    assert!(
+        !logs.contains("service handler returned error"),
+        "negative node_info lookup must not emit a service-handler error log. Logs:\n{}",
+        logs
     );
 }
