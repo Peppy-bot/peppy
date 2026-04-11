@@ -129,10 +129,10 @@ Per-instance state (`starting`, `running`) lives inside the bracketed instance l
 
 ## Inspecting a node with `peppy node info`
 
-When you need more than the one-line view from `stack list`, `peppy node info` dumps the node's stage, its currently-tracked instances with their individual states, and the paths to its add log and per-instance run logs. It takes a source directory (or git / http URL) just like `peppy node add`:
+When you need more than the one-line view from `stack list`, `peppy node info` dumps the node's stage, its currently-tracked instances with their individual states, and the paths to its add log and per-instance run logs. It takes a `<node_name>:<node_tag>` reference to a node **that has already been added to the stack** — it doesn't touch the filesystem or any git/http source, so run `peppy node add` first if the node isn't in the stack yet:
 
 ```sh
-peppy node info ./hello_world
+peppy node info hello_world:0.1.0
 ```
 
 ```

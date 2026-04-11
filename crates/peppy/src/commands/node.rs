@@ -235,19 +235,16 @@ pub enum NodeCommands {
         #[arg(long)]
         force: bool,
     },
-    /// Return the information about a node configuration and its presence in the node stack
+    /// Return the information about a node currently in the node stack
+    ///
+    /// Takes a reference to a node that has already been added via
+    /// `peppy node add`. If the node is not in the stack, the command exits
+    /// with an error — inspecting sources on disk is the job of `node add`,
+    /// not `node info`.
     Info {
-        /// Source location of a node (directory containing peppy.json5).
-        ///
-        /// Supported formats:
-        /// - Local path: `/path/to/node` or `./relative/path`
-        /// - Git URL: `https://github.com/org/repo.git/subpath`
-        /// - Git URL with ref: `https://github.com/org/repo.git/subpath --ref tag-or-branch`
-        /// - HTTP archive: `https://example.com/node.tar.zst`
-        source: String,
-        /// Git ref (tag/branch/commit) to checkout before reading `subpath` (git sources only).
-        #[arg(long = "ref")]
-        git_ref: Option<String>,
+        /// Node reference in the format node_name:tag (e.g., my_node:v1)
+        #[arg(value_parser = parse_node_ref)]
+        node_ref: (String, String),
     },
 }
 
@@ -375,15 +372,11 @@ impl Command for NodeCommand {
                 info!("Remove node {}:{}...", node_name, tag);
                 remove::remove_node(ctx, node_name, tag, stop_instances, force)
             }
-            NodeCommands::Info { source, git_ref } => {
-                let display_source = if source::is_probably_remote_source(&source) {
-                    source.clone()
-                } else {
-                    let path = PathBuf::from(&source);
-                    path.canonicalize().unwrap_or(path).display().to_string()
-                };
-                info!("Getting node info for {}...", display_source);
-                info::node_info(ctx, source, git_ref)
+            NodeCommands::Info {
+                node_ref: (node_name, node_tag),
+            } => {
+                info!("Getting node info for {}:{}...", node_name, node_tag);
+                info::node_info(ctx, node_name, node_tag)
             }
         }
     }

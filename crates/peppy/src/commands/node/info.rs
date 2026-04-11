@@ -4,28 +4,20 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Duration;
 
-use super::source::parse_node_source;
 use crate::commands::CALLER_INSTANCE_ID;
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
-pub fn node_info(ctx: &Arc<AppContext>, source: String, git_ref: Option<String>) -> Result<()> {
-    crate::commands::block_on(node_info_async(ctx, source, git_ref))
+pub fn node_info(ctx: &Arc<AppContext>, node_name: String, node_tag: String) -> Result<()> {
+    crate::commands::block_on(node_info_async(ctx, node_name, node_tag))
 }
 
-async fn node_info_async(
-    ctx: &Arc<AppContext>,
-    source: String,
-    git_ref: Option<String>,
-) -> Result<()> {
-    let node_source = parse_node_source(&source, git_ref)?;
+async fn node_info_async(ctx: &Arc<AppContext>, node_name: String, node_tag: String) -> Result<()> {
     let conn = ctx.connect_to_daemon().await?;
 
-    let request = NodeInfoRequest::new(node_source);
-
-    let response = request
+    let response = NodeInfoRequest::new(node_name, node_tag)
         .poll(
             conn.messenger,
             &conn.core_node_name,
@@ -64,11 +56,6 @@ fn format_node_info(out: &mut String, response: &NodeInfoResponse) {
         let _ = writeln!(out, "Labels:    {}", labels.join(", "));
     }
 
-    // Variant info
-    if let Some(ref variant_name) = response.variant_name {
-        let _ = writeln!(out, "Variant:   {}", variant_name);
-    }
-
     // Available variants (from manifest)
     if let Some(variants) = &manifest.variants
         && !variants.is_empty()
@@ -88,59 +75,52 @@ fn format_node_info(out: &mut String, response: &NodeInfoResponse) {
         let _ = writeln!(out, "Container: {}", container.def_file);
     }
 
-    // Node stack status
+    // Node stack status — the daemon only answers node_info requests for
+    // nodes that are in the stack, so we always have a stage + instance list.
     let _ = writeln!(out);
     let _ = writeln!(out, "Node Stack Status");
     let _ = writeln!(out, "{}", "-".repeat(50));
-    if response.is_in_node_stack {
-        let _ = writeln!(out, "Status:    In node stack");
-        if let Some(stage) = response.stage.as_deref() {
-            let _ = writeln!(out, "Stage:     {}", stage);
+    let _ = writeln!(out, "Stage:     {}", response.stage);
+    if response.instances.is_empty() {
+        let _ = writeln!(out, "Instances: None tracked");
+    } else {
+        let _ = writeln!(out, "Instances: {} tracked", response.instances.len());
+        for instance in &response.instances {
+            let _ = writeln!(
+                out,
+                "           - {}  [{}]",
+                instance.instance_id, instance.state
+            );
         }
-        if response.instances.is_empty() {
-            let _ = writeln!(out, "Instances: None tracked");
-        } else {
-            let _ = writeln!(out, "Instances: {} tracked", response.instances.len());
-            for instance in &response.instances {
+    }
+
+    // Logs grouped under <name>:<tag>. Only printed when at least one
+    // log path is available — if neither the add log nor any run log
+    // is set, the section is suppressed entirely.
+    let has_add_log = response.add_log_path.is_some();
+    let has_run_logs = !response.run_log_paths.is_empty();
+    if has_add_log || has_run_logs {
+        let _ = writeln!(out);
+        let _ = writeln!(out, "Logs");
+        let _ = writeln!(out, "{}", "-".repeat(50));
+        let _ = writeln!(out, "{}:{}", manifest.name.as_str(), manifest.tag);
+        if let Some(add_log_path) = response.add_log_path.as_ref() {
+            let _ = writeln!(out, "  Add log: {}", add_log_path.display());
+        }
+        if has_run_logs {
+            let _ = writeln!(out, "  Run logs:");
+            // `run_log_paths` is aligned 1:1 with `instances` (same
+            // order, same length) — see the info handler.
+            for (instance, log_path) in response.instances.iter().zip(response.run_log_paths.iter())
+            {
                 let _ = writeln!(
                     out,
-                    "           - {}  [{}]",
-                    instance.instance_id, instance.state
+                    "    - {}: {}",
+                    instance.instance_id,
+                    log_path.display()
                 );
             }
         }
-
-        // Logs grouped under <name>:<tag>. Only printed when at least one
-        // log path is available — if neither the add log nor any run log
-        // is set, the section is suppressed entirely.
-        let has_add_log = response.add_log_path.is_some();
-        let has_run_logs = !response.run_log_paths.is_empty();
-        if has_add_log || has_run_logs {
-            let _ = writeln!(out);
-            let _ = writeln!(out, "Logs");
-            let _ = writeln!(out, "{}", "-".repeat(50));
-            let _ = writeln!(out, "{}:{}", manifest.name.as_str(), manifest.tag);
-            if let Some(add_log_path) = response.add_log_path.as_ref() {
-                let _ = writeln!(out, "  Add log: {}", add_log_path.display());
-            }
-            if has_run_logs {
-                let _ = writeln!(out, "  Run logs:");
-                // `run_log_paths` is aligned 1:1 with `instances` (same
-                // order, same length) — see the info handler.
-                for (instance, log_path) in
-                    response.instances.iter().zip(response.run_log_paths.iter())
-                {
-                    let _ = writeln!(
-                        out,
-                        "    - {}: {}",
-                        instance.instance_id,
-                        log_path.display()
-                    );
-                }
-            }
-        }
-    } else {
-        let _ = writeln!(out, "Status:    Not in node stack");
     }
 
     // Dependencies (extracted from consumes interfaces)
@@ -336,16 +316,6 @@ fn format_node_info(out: &mut String, response: &NodeInfoResponse) {
         }
     }
 
-    // Issues
-    if !response.issues.is_empty() {
-        let _ = writeln!(out);
-        let _ = writeln!(out, "Issues");
-        let _ = writeln!(out, "{}", "-".repeat(50));
-        for issue in &response.issues {
-            let _ = writeln!(out, "  - {}", issue);
-        }
-    }
-
     // Integrity
     let _ = writeln!(out);
     let _ = writeln!(out, "Integrity");
@@ -415,12 +385,8 @@ mod tests {
             .expect("resolve config");
         NodeInfoResponse {
             config,
-            is_in_node_stack: true,
-            instances_names: vec!["inst-abc".to_string()],
             config_integrity: "0".repeat(64),
-            variant_name: None,
-            issues: Vec::new(),
-            stage: Some("Ready".to_string()),
+            stage: "Ready".to_string(),
             instances: vec![
                 NodeInstanceInfo {
                     instance_id: "inst-abc".to_string(),
@@ -499,23 +465,5 @@ mod tests {
             !out.contains("\nLogs\n"),
             "Logs section should be suppressed when no paths are present:\n{out}"
         );
-    }
-
-    #[test]
-    fn print_node_info_skips_stage_when_not_in_stack() {
-        let mut response = sample_response();
-        response.is_in_node_stack = false;
-        response.stage = None;
-        response.instances.clear();
-        response.instances_names.clear();
-        response.add_log_path = None;
-        response.run_log_paths.clear();
-
-        let mut out = String::new();
-        format_node_info(&mut out, &response);
-
-        assert!(out.contains("Status:    Not in node stack"));
-        assert!(!out.contains("Stage:"));
-        assert!(!out.contains("\nLogs\n"));
     }
 }

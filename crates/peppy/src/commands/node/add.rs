@@ -1,9 +1,10 @@
+use config::node::NodeConfigParser;
 use core_node::encoding::{
-    NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAddResult, NodeInfoRequest,
-    NodeInfoResponse, NodeSource,
+    NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAddResult, NodeInfoRequest, NodeSource,
 };
-use peppylib::MessengerHandle;
+use peppylib::{MessengerHandle, PeppyError};
 use std::io::BufRead;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::info;
@@ -120,36 +121,34 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
         source, conn.core_node_name
     );
 
-    let pre_add_node_info = if !force {
-        Some(
-            fetch_node_info(
-                conn.messenger,
-                &conn.core_node_name,
-                node_source.clone(),
-                Duration::from_secs(timeouts.max_secs),
-            )
-            .await?,
-        )
-    } else {
-        None
-    };
-
-    // Check for existing instances and prompt for confirmation if needed
-    if let Some(ref info) = pre_add_node_info
-        && !info.instances_names.is_empty()
+    // Preflight conflict check: if we can extract (name, tag) from the source
+    // locally without hitting the network, ask the daemon whether that node is
+    // already in the stack with running instances and prompt for overwrite.
+    //
+    // Variants and remote sources cannot be preflighted from the client: their
+    // effective (name, tag) requires fetching + merging, which only the daemon
+    // does (during the add action itself). In those cases we skip the prompt
+    // and let the daemon's add action stop any existing instances transparently.
+    if !force
+        && variant_source.is_none()
+        && let NodeSource::Fs(ref path) = node_source
     {
-        let node_name = info.config.manifest.name.as_str();
-        let node_tag = &info.config.manifest.tag;
-        let confirm = confirm_overwrite(
-            node_name,
-            node_tag,
-            &info.instances_names,
-            confirm_reader.take(),
-        )?;
-        if !confirm {
-            return Err(Error::ExecutionFailed(
-                "Node add aborted by user".to_string(),
-            ));
+        let running_instances = fetch_running_instances_for_local_source(
+            conn.messenger,
+            &conn.core_node_name,
+            path,
+            Duration::from_secs(timeouts.max_secs),
+        )
+        .await?;
+
+        if let Some((node_name, node_tag, instance_ids)) = running_instances {
+            let confirm =
+                confirm_overwrite(&node_name, &node_tag, &instance_ids, confirm_reader.take())?;
+            if !confirm {
+                return Err(Error::ExecutionFailed(
+                    "Node add aborted by user".to_string(),
+                ));
+            }
         }
     }
 
@@ -229,15 +228,34 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
     Ok(())
 }
 
-/// Fetches node info for a given source using NodeInfoRequest.
-/// This includes the node config, whether it's in the node stack, and running instance names.
-async fn fetch_node_info(
+/// Preflight check for the overwrite confirmation prompt.
+///
+/// Parses the node's `peppy.json5` locally to extract `(name, tag)`, then asks
+/// the daemon whether that entity is currently in the stack. Returns
+/// `Some((name, tag, running_instance_ids))` only when the node exists in the
+/// stack AND has at least one `Running` instance — exactly the case that
+/// needs a user confirmation before overwrite.
+///
+/// Returns `None` when:
+/// - The local config can't be parsed (the add action itself will surface a
+///   clearer error once it tries to use the source).
+/// - The node isn't in the stack yet (nothing to confirm).
+/// - The node is in the stack but has no running instances (the add action
+///   can safely overwrite it without prompting).
+async fn fetch_running_instances_for_local_source(
     messenger: &MessengerHandle,
     core_node_name: &str,
-    node_source: NodeSource,
+    source_path: &Path,
     timeout: Duration,
-) -> Result<NodeInfoResponse> {
-    NodeInfoRequest::new(node_source)
+) -> Result<Option<(String, String, Vec<String>)>> {
+    let config_path = source_path.join(config::consts::NODE_CONFIG_FILE);
+    let Ok(parsed) = NodeConfigParser::from_path(&config_path) else {
+        return Ok(None);
+    };
+    let node_name = parsed.manifest_name().to_owned();
+    let node_tag = parsed.manifest_tag().to_owned();
+
+    let info = match NodeInfoRequest::new(node_name.clone(), node_tag.clone())
         .poll(
             messenger,
             core_node_name,
@@ -246,9 +264,38 @@ async fn fetch_node_info(
             timeout,
         )
         .await
-        .map_err(|e| {
-            Error::ExecutionFailed(format!("Failed to check node info before adding: {}", e))
-        })
+    {
+        Ok(info) => info,
+        // The daemon returns `InvalidServiceRequest` when the node isn't in
+        // the stack. The caller-side transport reflects that as a
+        // `ServiceError` whose reason begins with "invalid service request"
+        // (from `PeppyError::InvalidServiceRequest`'s Display impl). Any
+        // such rejection means "not in the stack yet" — nothing to confirm.
+        Err(core_node::Error::Peppylib(PeppyError::ServiceError { ref reason, .. }))
+            if reason.contains("invalid service request") =>
+        {
+            return Ok(None);
+        }
+        Err(e) => {
+            return Err(Error::ExecutionFailed(format!(
+                "Failed to check node info before adding: {}",
+                e
+            )));
+        }
+    };
+
+    let running: Vec<String> = info
+        .instances
+        .iter()
+        .filter(|inst| inst.state == "running")
+        .map(|inst| inst.instance_id.clone())
+        .collect();
+
+    if running.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some((node_name, node_tag, running)))
+    }
 }
 
 fn confirm_overwrite(

@@ -12,71 +12,44 @@ use crate::Result;
 use crate::names;
 use crate::node_capnp;
 
-use super::add::NodeSource;
 use crate::encoding::{decode_message, encode_message, optional_text};
 
+/// Request payload for the `node_info` service.
+///
+/// Identifies a node already present in the node stack by `(name, tag)`.
+/// Unlike `node_add`, `node_info` does not resolve configs from filesystem,
+/// git, or HTTP sources — it only inspects what is already in the stack.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeInfoRequest {
-    pub source: NodeSource,
+    pub node_name: String,
+    pub node_tag: String,
 }
 
 impl NodeInfoRequest {
-    pub fn new(source: NodeSource) -> Self {
-        Self { source }
+    pub fn new(node_name: impl Into<String>, node_tag: impl Into<String>) -> Self {
+        Self {
+            node_name: node_name.into(),
+            node_tag: node_tag.into(),
+        }
     }
 
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
             let mut request = builder.init_root::<node_capnp::node_info_request::Builder>();
-            let mut source = request.reborrow().init_source();
-            match &self.source {
-                NodeSource::Fs(path) => {
-                    source.set_fs(path.to_string_lossy().as_ref());
-                }
-                NodeSource::Git {
-                    repo_url,
-                    repo_path,
-                    repo_ref,
-                } => {
-                    let mut git = source.init_git();
-                    git.set_repo_url(repo_url.to_bstring().to_string());
-                    git.set_repo_path(repo_path);
-                    git.set_repo_ref(repo_ref.as_deref().unwrap_or(""));
-                }
-                NodeSource::Http { url, sha256 } => {
-                    source.set_http(url.as_str());
-                    if let Some(digest) = NodeSource::normalize_http_sha256(sha256.as_deref()) {
-                        request.reborrow().set_http_sha256(&digest);
-                    }
-                }
-            }
+            request.set_node_name(&self.node_name);
+            request.set_node_tag(&self.node_tag);
         }
         encode_message(&builder)
     }
 
     pub fn decode(data: &[u8]) -> Result<Self> {
-        use crate::node_capnp::node_info_request::source::Which;
-
         let reader = decode_message(data)?;
         let request = reader.get_root::<node_capnp::node_info_request::Reader>()?;
-        let source = match request.get_source().which()? {
-            Which::Fs(fs) => NodeSource::decode_fs(fs?.to_str()?)?,
-            Which::Git(git) => {
-                let git = git?;
-                NodeSource::decode_git(
-                    git.get_repo_url()?.to_str()?,
-                    git.get_repo_path()?.to_str()?,
-                    git.get_repo_ref()?.to_str()?,
-                )?
-            }
-            Which::Http(http) => NodeSource::decode_http(
-                http?.to_str()?,
-                Some(request.get_http_sha256()?.to_str()?),
-            )?,
-        };
-
-        Ok(Self { source })
+        Ok(Self {
+            node_name: request.get_node_name()?.to_str()?.to_owned(),
+            node_tag: request.get_node_tag()?.to_str()?.to_owned(),
+        })
     }
 
     pub async fn poll(
@@ -111,24 +84,21 @@ pub struct NodeInstanceInfo {
     pub state: String,
 }
 
+/// Response payload for the `node_info` service.
+///
+/// Always describes a node that is currently in the node stack — the daemon
+/// errors out for unknown `(name, tag)` pairs, so there is no "not found"
+/// representation to carry here.
 #[derive(Debug, Clone)]
 pub struct NodeInfoResponse {
+    /// Resolved NodeConfig as stored in the node stack.
     pub config: NodeConfig,
-    pub is_in_node_stack: bool,
-    /// IDs of `Running` instances only — kept for back-compat with existing
-    /// consumers. New code should prefer `instances`, which includes
-    /// in-flight `Starting` instances and exposes their state.
-    pub instances_names: Vec<String>,
-    /// SHA256 of the entire NodeConfig file taken from NodeSource
+    /// SHA256 of the serialized NodeConfig at the time of the response.
     pub config_integrity: String,
-    /// Name of the variant applied, if any.
-    pub variant_name: Option<String>,
-    /// Non-fatal issues encountered during resolution (e.g. unknown variant).
-    pub issues: Vec<String>,
-    /// Lifecycle stage of the in-stack entity. `None` when not in stack.
-    pub stage: Option<String>,
+    /// Lifecycle stage of the entity ("Added"/"Building"/"Ready"/"Root").
+    pub stage: String,
     /// All tracked instances of this entity, including in-flight `Starting`
-    /// ones, with their per-instance state. Empty when not in stack.
+    /// ones, with their per-instance state.
     pub instances: Vec<NodeInstanceInfo>,
     /// Most-recent add/build log file produced for this entity, if any.
     pub add_log_path: Option<PathBuf>,
@@ -145,22 +115,8 @@ impl NodeInfoResponse {
                 crate::Error::Encoding(format!("failed to serialize config: {}", e))
             })?;
             response.set_config_json5(&config_json5);
-            response.set_is_in_node_stack(self.is_in_node_stack);
-            let mut instances = response
-                .reborrow()
-                .init_instances_names(self.instances_names.len() as u32);
-            for (i, name) in self.instances_names.iter().enumerate() {
-                instances.set(i as u32, name);
-            }
             response.set_config_sha256(&self.config_integrity);
-            response.set_variant_name(self.variant_name.as_deref().unwrap_or(""));
-            {
-                let mut issues_builder = response.reborrow().init_issues(self.issues.len() as u32);
-                for (i, issue) in self.issues.iter().enumerate() {
-                    issues_builder.set(i as u32, issue);
-                }
-            }
-            response.set_stage(self.stage.as_deref().unwrap_or(""));
+            response.set_stage(&self.stage);
             {
                 let mut instances_builder = response
                     .reborrow()
@@ -196,20 +152,8 @@ impl NodeInfoResponse {
         let config_json5 = response.get_config_json5()?.to_str()?;
         let config: NodeConfig = serde_json5::from_str(config_json5)
             .map_err(|e| crate::Error::Decoding(format!("failed to deserialize config: {}", e)))?;
-        let is_in_node_stack = response.get_is_in_node_stack();
-        let instances_names_reader = response.get_instances_names()?;
-        let mut instances_names = Vec::with_capacity(instances_names_reader.len() as usize);
-        for i in 0..instances_names_reader.len() {
-            instances_names.push(instances_names_reader.get(i)?.to_str()?.to_owned());
-        }
         let config_integrity = response.get_config_sha256()?.to_str()?.to_owned();
-        let variant_name = optional_text(response.get_variant_name()?.to_str()?);
-        let issues_reader = response.get_issues()?;
-        let mut issues = Vec::with_capacity(issues_reader.len() as usize);
-        for i in 0..issues_reader.len() {
-            issues.push(issues_reader.get(i)?.to_str()?.to_owned());
-        }
-        let stage = optional_text(response.get_stage()?.to_str()?);
+        let stage = response.get_stage()?.to_str()?.to_owned();
         let instances_reader = response.get_instances()?;
         let mut instances = Vec::with_capacity(instances_reader.len() as usize);
         for i in 0..instances_reader.len() {
@@ -227,11 +171,7 @@ impl NodeInfoResponse {
         }
         Ok(Self {
             config,
-            is_in_node_stack,
-            instances_names,
             config_integrity,
-            variant_name,
-            issues,
             stage,
             instances,
             add_log_path,
@@ -245,24 +185,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn node_info_request_http_source_roundtrips_sha256() {
-        let url = url::Url::parse("https://example.com/node.tar.zst").unwrap();
-        let sha256 = "c".repeat(64);
-
-        let encoded = NodeInfoRequest::new(NodeSource::Http {
-            url: url.clone(),
-            sha256: Some(sha256.clone()),
-        })
-        .encode()
-        .expect("encoding should succeed");
+    fn node_info_request_roundtrips_name_tag() {
+        let encoded = NodeInfoRequest::new("sensor_node", "0.1.0")
+            .encode()
+            .expect("encoding should succeed");
         let decoded = NodeInfoRequest::decode(&encoded).expect("decoding should succeed");
 
-        assert_eq!(
-            decoded.source,
-            NodeSource::Http {
-                url,
-                sha256: Some(sha256)
-            }
-        );
+        assert_eq!(decoded.node_name, "sensor_node");
+        assert_eq!(decoded.node_tag, "0.1.0");
     }
 }

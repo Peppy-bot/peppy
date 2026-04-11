@@ -1,4 +1,4 @@
-use super::variant::{resolve_variant, variant_label};
+use super::variant::resolve_variant;
 use super::{
     checkout_repo_ref, is_supported_fs_archive, resolve_local_archive_source, sanitize_repo_path,
 };
@@ -83,13 +83,9 @@ async fn handle_node_info_request(
 ) -> PeppyResult<Payload> {
     let sender_instance_id = context.message().instance_id().to_string();
 
-    // Cooperative deadline fires slightly before the outer safety-net timeout,
-    // giving the blocking task a chance to abort and clean up resources.
-    let deadline = Some(Instant::now() + timeout.saturating_sub(Duration::from_millis(500)));
-
     match tokio::time::timeout(
         timeout,
-        handle_node_info_request_inner(&context, node_stack, peppy_dirs, deadline),
+        handle_node_info_request_inner(&context, node_stack, peppy_dirs),
     )
     .await
     {
@@ -114,94 +110,50 @@ async fn handle_node_info_request_inner(
     context: &ServiceRequestContext,
     node_stack: Arc<NodeStack>,
     peppy_dirs: PeppyDirs,
-    deadline: Option<Instant>,
 ) -> std::result::Result<Payload, InfoError> {
     let sender_instance_id = context.message().instance_id();
     let payload = context.message().payload();
 
     let request = NodeInfoRequest::decode(payload.as_ref()).map_err(|e| format!("{}", e))?;
 
-    debug!("Received `node_info` request from {sender_instance_id}");
+    debug!(
+        "Received `node_info` request from {sender_instance_id} for {}:{}",
+        request.node_name, request.node_tag
+    );
 
-    // Variant resolution errors are collected as issues rather than failing the request,
-    // since info calls are display-only and should always return useful information.
-    let (root_config, root_source_path, cleanup_dir) =
-        resolve_node_config_with_source_path(request.source, &peppy_dirs, deadline).await?;
-    let _cleanup_guard = super::add::CleanupDir::new(cleanup_dir);
+    let entity = node_stack
+        .find(&request.node_name, &request.node_tag)
+        .ok_or_else(|| {
+            InfoError::Invalid(format!(
+                "Node '{}:{}' is not in the node stack",
+                request.node_name, request.node_tag
+            ))
+        })?;
 
-    let (node_config, variant_name, issues) = if root_config.has_default_variant() {
-        let variant_source = NodeSource::Fs(DEFAULT_VARIANT_NAME.into());
-        let label = variant_label(&variant_source);
-        match resolve_variant(
-            &variant_source,
-            &root_config,
-            &root_source_path,
-            &peppy_dirs,
-            deadline,
-        )
-        .await
-        {
-            Ok(resolved) => (
-                merged_config_with_variant_cleanup(resolved),
-                Some(label),
-                Vec::new(),
-            ),
-            Err(variant_err) => (
-                root_config.into_resolved_or_default(),
-                None,
-                vec![variant_err],
-            ),
+    let (node_config, stage, instances, run_log_paths) = {
+        let guard = entity.read();
+        let stage = guard.stage().name().to_string();
+        let node_config = guard.config().clone();
+        let tracked = guard.instances();
+        let run_log_dir = peppy_dirs.logs_dir_run();
+        let mut instances: Vec<NodeInstanceInfo> = Vec::with_capacity(tracked.len());
+        let mut run_log_paths: Vec<PathBuf> = Vec::with_capacity(tracked.len());
+        for instance in tracked.iter() {
+            let id = instance.instance_id().as_str();
+            let state = instance.state();
+            instances.push(NodeInstanceInfo {
+                instance_id: id.to_owned(),
+                state: match state {
+                    InstanceState::Starting => "starting".to_string(),
+                    InstanceState::Running => "running".to_string(),
+                },
+            });
+            run_log_paths.push(run_log_dir.join(format!("{}.log", id)));
         }
-    } else {
-        (
-            root_config.into_resolved().map_err(|e| e.to_string())?,
-            None,
-            Vec::new(),
-        )
+        (node_config, stage, instances, run_log_paths)
     };
 
-    let node_name = node_config.manifest.name.as_str();
-    let node_tag = node_config.manifest.tag.as_str();
-
-    let (is_in_node_stack, instances_names, stage, instances, add_log_path, run_log_paths) =
-        match node_stack.find(node_name, node_tag) {
-            Some(entity) => {
-                let guard = entity.read();
-                {
-                    let stage = Some(guard.stage().name().to_string());
-                    let tracked = guard.instances();
-                    let run_log_dir = peppy_dirs.logs_dir_run();
-                    let mut instances: Vec<NodeInstanceInfo> = Vec::with_capacity(tracked.len());
-                    let mut instances_names: Vec<String> = Vec::new();
-                    let mut run_log_paths: Vec<PathBuf> = Vec::with_capacity(tracked.len());
-                    for instance in tracked.iter() {
-                        let id = instance.instance_id().as_str();
-                        let state = instance.state();
-                        instances.push(NodeInstanceInfo {
-                            instance_id: id.to_owned(),
-                            state: match state {
-                                InstanceState::Starting => "starting".to_string(),
-                                InstanceState::Running => "running".to_string(),
-                            },
-                        });
-                        if state == InstanceState::Running {
-                            instances_names.push(id.to_owned());
-                        }
-                        run_log_paths.push(run_log_dir.join(format!("{}.log", id)));
-                    }
-                    let add_log_path = node_stack.add_log_path(node_name, node_tag);
-                    (
-                        true,
-                        instances_names,
-                        stage,
-                        instances,
-                        add_log_path,
-                        run_log_paths,
-                    )
-                }
-            }
-            None => (false, Vec::new(), None, Vec::new(), None, Vec::new()),
-        };
+    let add_log_path = node_stack.add_log_path(&request.node_name, &request.node_tag);
 
     let config_json = serde_json5::to_string(&node_config)
         .map_err(|e| InfoError::Internal(format!("failed to serialize node config: {}", e)))?;
@@ -209,11 +161,7 @@ async fn handle_node_info_request_inner(
 
     NodeInfoResponse {
         config: node_config,
-        is_in_node_stack,
-        instances_names,
         config_integrity,
-        variant_name,
-        issues,
         stage,
         instances,
         add_log_path,
