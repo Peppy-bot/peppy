@@ -1,12 +1,16 @@
 use config::AnyType;
 use config::launcher::Name;
 use config::runtime::{NodeInstanceConfig, RuntimeConfig};
-use core_node::encoding::{NodeRunFeedback, NodeRunGoal, NodeRunGoalResponse, NodeRunResult};
+use core_node::encoding::{
+    NodeInfoRequest, NodeInfoResponse, NodeRunFeedback, NodeRunGoal, NodeRunGoalResponse,
+    NodeRunResult,
+};
 use names_generator2::get_random;
 use peppylib::MessengerHandle;
 use rand::rng;
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::time::Duration;
 use tracing::info;
 
 use crate::commands::{CALLER_INSTANCE_ID, GOAL_TIMEOUT};
@@ -210,6 +214,7 @@ pub fn run_node(
     args: Vec<(String, String)>,
     instance_id: Option<String>,
     timeouts: TimeoutConfig,
+    build: bool,
 ) -> Result<()> {
     crate::commands::block_on(run_node_async(
         ctx,
@@ -218,6 +223,7 @@ pub fn run_node(
         args,
         instance_id,
         timeouts,
+        build,
     ))
 }
 
@@ -228,8 +234,54 @@ async fn run_node_async(
     args: Vec<(String, String)>,
     instance_id: Option<String>,
     timeouts: TimeoutConfig,
+    build: bool,
 ) -> Result<()> {
     let conn = ctx.connect_to_daemon().await?;
+
+    if build {
+        // Look up the node's current lifecycle stage so we only trigger a
+        // build when the node is not yet built. The same `NodeInfoRequest`
+        // is used by the `node add` preflight (see add.rs).
+        let response = NodeInfoRequest::new(node_name.clone(), tag.clone())
+            .poll(
+                conn.messenger,
+                &conn.core_node_name,
+                CALLER_INSTANCE_ID,
+                &conn.core_node_name,
+                Duration::from_secs(timeouts.max_secs),
+            )
+            .await
+            .map_err(|e| {
+                Error::ExecutionFailed(format!("Failed to check node info before run: {}", e))
+            })?;
+
+        let info = match response {
+            NodeInfoResponse::NotInStack => {
+                return Err(Error::ExecutionFailed(format!(
+                    "Node '{}:{}' is not in the node stack",
+                    node_name, tag
+                )));
+            }
+            NodeInfoResponse::Found(info) => info,
+        };
+
+        if info.stage == "Ready" {
+            info!(
+                "Node {}:{} has already been built, skipping build",
+                node_name, tag
+            );
+        } else {
+            super::builder::build_node_async(
+                conn.messenger,
+                &conn.core_node_name,
+                &node_name,
+                &tag,
+                &timeouts,
+                false,
+            )
+            .await?;
+        }
+    }
 
     run_instance_async(
         conn.messenger,
