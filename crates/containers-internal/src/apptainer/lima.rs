@@ -40,13 +40,25 @@ fn check_output(
 /// Check that the bundled Lima version meets the minimum requirement.
 pub(crate) fn check_lima_version(limactl: &Path) -> Result<()> {
     let output = Command::new(limactl).arg("--version").output()?;
+    validate_lima_version_output(limactl, output.status, &output.stdout, &output.stderr)
+}
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+/// Pure validator for `limactl --version` output. Split out of
+/// [`check_lima_version`] so tests can drive it without spawning a subprocess
+/// (which would otherwise race with parallel tests' fork/exec — see the ETXTBSY
+/// discussion in the test module).
+fn validate_lima_version_output(
+    limactl: &Path,
+    status: std::process::ExitStatus,
+    stdout: &[u8],
+    stderr: &[u8],
+) -> Result<()> {
+    if !status.success() {
+        let stderr = String::from_utf8_lossy(stderr).trim().to_string();
         return Err(Error::LimaVersionCheckFailed(format!(
             "`{} --version` exited with {}{}",
             limactl.display(),
-            output.status,
+            status,
             if stderr.is_empty() {
                 String::new()
             } else {
@@ -55,7 +67,7 @@ pub(crate) fn check_lima_version(limactl: &Path) -> Result<()> {
         )));
     }
 
-    let version_str = String::from_utf8_lossy(&output.stdout);
+    let version_str = String::from_utf8_lossy(stdout);
     let found = parse_lima_version(&version_str).unwrap_or_default();
 
     if found < MIN_LIMA_VERSION {
@@ -520,15 +532,35 @@ pub(crate) fn parse_lima_version(version_output: &str) -> Option<(u32, u32, u32)
 /// Idempotent: returns `Ok(())` if the instance is already stopped or does not
 /// exist, so callers do not need to guard against these cases.
 pub(crate) fn stop_instance(limactl: &Path, lima_home: &Path, instance: &str) -> Result<()> {
-    let status = query_instance_status(limactl, lima_home, instance)?;
+    stop_instance_inner(
+        instance,
+        || query_instance_status(limactl, lima_home, instance),
+        || {
+            Command::new(limactl)
+                .env("LIMA_HOME", lima_home)
+                .args(["stop", instance])
+                .output()
+                .map_err(Error::from)
+        },
+    )
+}
+
+/// Branch logic for [`stop_instance`], parameterized by the status query and
+/// the stop-command spawner. Split out so tests can drive the full decision
+/// matrix with canned closures — avoiding subprocess execution (and the
+/// Linux ETXTBSY race that bites when parallel test threads fork while
+/// another thread holds a writable FD to a fake `limactl` script).
+fn stop_instance_inner<Q, S>(instance: &str, query_status: Q, run_stop: S) -> Result<()>
+where
+    Q: FnOnce() -> Result<Option<String>>,
+    S: FnOnce() -> Result<std::process::Output>,
+{
+    let status = query_status()?;
 
     match status.as_deref() {
         Some("Running") => {
             tracing::info!("Stopping Lima {} instance...", instance);
-            let output = Command::new(limactl)
-                .env("LIMA_HOME", lima_home)
-                .args(["stop", instance])
-                .output()?;
+            let output = run_stop()?;
 
             check_output(&output, |stderr| {
                 Error::LimaInstanceError(format!(
@@ -781,33 +813,28 @@ mod tests {
         );
     }
 
-    /// Write a shell script and make it executable atomically to avoid ETXTBSY
-    /// races that occur when `fs::write` + `fs::set_permissions` are separate steps.
-    #[cfg(unix)]
-    fn write_executable_script(path: &std::path::Path, content: &str) {
-        use std::io::Write;
-        use std::os::unix::fs::OpenOptionsExt;
-
-        let mut f = fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o755)
-            .open(path)
-            .expect("create executable script");
-        f.write_all(content.as_bytes())
-            .expect("write script content");
-    }
+    // These tests previously spawned fake `limactl` shell scripts via tempdirs
+    // and hit Linux ETXTBSY races: when Thread A held a writable FD to a newly
+    // written script, a parallel test on Thread B calling `Command::spawn`
+    // would fork, inheriting Thread A's writable FD, and the kernel refused
+    // Thread A's subsequent `execve` until Thread B's child finished its own
+    // `execve`. The fix is to exercise the pure branch logic directly via the
+    // `validate_lima_version_output` and `stop_instance_inner` helpers — no
+    // subprocess, no race.
 
     #[cfg(unix)]
     #[test]
     fn test_check_lima_version_returns_version_check_error_on_nonzero_exit() {
-        let dir = tempdir().expect("create temp dir");
-        let limactl = dir.path().join("limactl");
+        use std::os::unix::process::ExitStatusExt;
 
-        write_executable_script(&limactl, "#!/bin/sh\n>&2 echo 'bad lima'\nexit 42\n");
-
-        let err = check_lima_version(&limactl).expect_err("expected version check failure");
+        let status = std::process::ExitStatus::from_raw(42 << 8);
+        let err = validate_lima_version_output(
+            std::path::Path::new("/fake/limactl"),
+            status,
+            b"",
+            b"bad lima",
+        )
+        .expect_err("expected version check failure");
         match err {
             Error::LimaVersionCheckFailed(msg) => {
                 assert!(msg.contains("--version"), "unexpected message: {msg}");
@@ -820,20 +847,39 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn test_check_lima_version_rejects_unparseable_stdout() {
+        // `parse_lima_version` returns `None` for garbage, which `unwrap_or_default()`
+        // turns into (0, 0, 0) — that should fail the MIN_LIMA_VERSION check.
+        let status = std::process::ExitStatus::default();
+        let err = validate_lima_version_output(
+            std::path::Path::new("/fake/limactl"),
+            status,
+            b"not a version",
+            b"",
+        )
+        .expect_err("expected version-too-old failure");
+        match err {
+            Error::LimaVersionTooOld { found, minimum } => {
+                assert_eq!(found, "0.0.0");
+                assert_eq!(
+                    minimum,
+                    format!(
+                        "{}.{}.{}",
+                        MIN_LIMA_VERSION.0, MIN_LIMA_VERSION.1, MIN_LIMA_VERSION.2
+                    )
+                );
+            }
+            other => panic!("expected LimaVersionTooOld, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn test_stop_instance_is_idempotent_for_nonexistent() {
-        let dir = tempdir().expect("create temp dir");
-        let limactl = dir.path().join("limactl");
-        let lima_home = dir.path().join("lima_home");
-        fs::create_dir_all(&lima_home).expect("create lima home");
-
-        // Fake limactl: `list` returns empty status (instance doesn't exist),
-        // `stop` would fail — but should never be called.
-        write_executable_script(
-            &limactl,
-            "#!/bin/sh\nif [ \"$1\" = \"list\" ]; then echo ''; exit 0; else echo 'should not be called' >&2; exit 1; fi\n",
+        let result = stop_instance_inner(
+            "nonexistent_instance",
+            || Ok(None),
+            || panic!("stop should not be called for a non-existent instance"),
         );
-
-        let result = stop_instance(&limactl, &lima_home, "nonexistent_instance");
         assert!(
             result.is_ok(),
             "stop_instance should succeed for non-existent instance, got: {:?}",
@@ -841,27 +887,75 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[test]
     fn test_stop_instance_is_idempotent_for_stopped() {
-        let dir = tempdir().expect("create temp dir");
-        let limactl = dir.path().join("limactl");
-        let lima_home = dir.path().join("lima_home");
-        fs::create_dir_all(&lima_home).expect("create lima home");
-
-        // Fake limactl: `list` returns "Stopped" status.
-        // `stop` would fail — but should never be called.
-        write_executable_script(
-            &limactl,
-            "#!/bin/sh\nif [ \"$1\" = \"list\" ]; then echo 'Stopped'; exit 0; else echo 'should not be called' >&2; exit 1; fi\n",
+        let result = stop_instance_inner(
+            "stopped_instance",
+            || Ok(Some("Stopped".to_string())),
+            || panic!("stop should not be called for an already-stopped instance"),
         );
-
-        let result = stop_instance(&limactl, &lima_home, "stopped_instance");
         assert!(
             result.is_ok(),
             "stop_instance should succeed for already-stopped instance, got: {:?}",
             result.unwrap_err()
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_stop_instance_runs_stop_when_running() {
+        use std::cell::Cell;
+
+        let stop_called = Cell::new(false);
+        let result = stop_instance_inner(
+            "running_instance",
+            || Ok(Some("Running".to_string())),
+            || {
+                stop_called.set(true);
+                Ok(std::process::Output {
+                    status: std::process::ExitStatus::default(),
+                    stdout: Vec::new(),
+                    stderr: Vec::new(),
+                })
+            },
+        );
+        assert!(
+            result.is_ok(),
+            "stop_instance should succeed when stop command succeeds, got: {:?}",
+            result.unwrap_err()
+        );
+        assert!(stop_called.get(), "stop closure should have been invoked");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_stop_instance_reports_error_when_stop_fails() {
+        use std::os::unix::process::ExitStatusExt;
+
+        let result = stop_instance_inner(
+            "running_instance",
+            || Ok(Some("Running".to_string())),
+            || {
+                Ok(std::process::Output {
+                    status: std::process::ExitStatus::from_raw(1 << 8),
+                    stdout: Vec::new(),
+                    stderr: b"limactl exploded".to_vec(),
+                })
+            },
+        );
+        match result {
+            Err(Error::LimaInstanceError(msg)) => {
+                assert!(
+                    msg.contains("running_instance"),
+                    "unexpected message: {msg}"
+                );
+                assert!(
+                    msg.contains("limactl exploded"),
+                    "unexpected message: {msg}"
+                );
+            }
+            other => panic!("expected LimaInstanceError, got {other:?}"),
+        }
     }
 
     #[test]
