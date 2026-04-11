@@ -92,7 +92,13 @@ impl RuntimeConfig {
         let config_path = peppy_config.as_ref();
         let content = std::fs::read(config_path)?;
         let hash = Sha256::digest(&content);
-        Ok(format!("{:x}", hash))
+        Ok(hash
+            .iter()
+            .fold(String::with_capacity(hash.len() * 2), |mut acc, b| {
+                use std::fmt::Write;
+                let _ = write!(acc, "{:02x}", b);
+                acc
+            }))
     }
 }
 

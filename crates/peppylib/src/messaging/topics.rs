@@ -40,8 +40,8 @@ impl TopicMessenger {
         as_instance_id: &str,
         to_node_name: &str,
         to_topic: &str,
-        to_core_node: Option<&str>,
-        to_instance_id: Option<&str>,
+        target_core_node: Option<&str>,
+        target_instance_id: Option<&str>,
         qos: QoSProfile,
     ) -> Result<Subscription> {
         let subscription = messenger
@@ -50,8 +50,8 @@ impl TopicMessenger {
                 as_instance_id,
                 to_node_name,
                 to_topic,
-                to_core_node,
-                to_instance_id,
+                target_core_node,
+                target_instance_id,
                 qos,
             )
             .await?;
@@ -68,8 +68,8 @@ impl TopicMessenger {
         as_core_node: &str,
         as_instance_id: &str,
         to_topic: &str,
-        to_core_node: Option<&str>,
-        to_instance_id: Option<&str>,
+        target_core_node: Option<&str>,
+        target_instance_id: Option<&str>,
         qos: QoSProfile,
     ) -> Result<Subscription> {
         let subscription = messenger
@@ -78,8 +78,8 @@ impl TopicMessenger {
                 as_instance_id,
                 "*",
                 to_topic,
-                to_core_node,
-                to_instance_id,
+                target_core_node,
+                target_instance_id,
                 qos,
             )
             .await?;

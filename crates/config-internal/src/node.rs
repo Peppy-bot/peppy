@@ -4,7 +4,9 @@ mod types;
 
 // Re-export functions
 pub use create::NodeConfigCreator;
-pub use parse::{NodeConfigParser, VariantConfigParser};
+pub use parse::{
+    NodeConfigParser, VariantConfigParser, find_root_node_dir, load_standalone_node_config,
+};
 pub use types::{
     ActionInterfaces, ArrayKind, ArraySchema, CallbackNameError, ConsumedAction, ConsumedService,
     ConsumedTopic, ContainerConfig, DEFAULT_VARIANT_NAME, DependsOn, EmittedTopic, Execution,

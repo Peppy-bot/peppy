@@ -41,7 +41,12 @@ peppy node add .
   </TabItem>
 </Tabs>
 
-This command registers the node with the core node by staging a snapshot of the source directory. By default, `peppy node add` does **not** run `build_cmd` — it only adds the node to the stack in the `Added` stage. To also run the build, use `peppy node add . --build` or run `peppy node build` separately afterward.
+This command registers the node with the core node by staging a snapshot of the source directory. After a successful add, the node enters the `Added` stage: its config is known to the daemon, but no runnable artifact exists yet.
+
+:::caution
+`peppy node add` does **not** run the node's `build_cmd`. To produce a runnable artifact you either run `peppy node build <name>:<tag>` afterward, or chain the two in one shot with `peppy node add . --build` (shorthand `-b`). Adding `--run` (`-r`) also spawns an instance once the build finishes, and implies `--build`.
+:::
+
 The output of this command provides some useful information:
 
 ```
@@ -54,6 +59,23 @@ This gives you access to the log file for debugging in case the `add` command fa
 When a node is added to the node stack, a copy is made in the peppy cache to "snapshot" the node based on its name and tag.
 No two copies of the same node with the same name + tag can exist at the same time in the node stack.
 Re-adding a node with the same name and tag overrides the one that was previously in the node stack, except if that node has dependencies—in which case the operation fails.
+
+### Syncing before adding
+
+If you've just edited `peppy.json5` — for example, added a new topic or changed a parameter — the generated peppygen interface code under `.peppy/` is stale. `peppy node sync` regenerates it, and the `--sync` (shorthand `-s`) flag on `peppy node add` runs that sync step **before** staging the snapshot so the added node ships up-to-date bindings:
+
+```sh
+peppy node add -sb .    # sync, then add, then build
+peppy node add -sr .    # sync, then add, then build, then run an instance
+```
+
+:::tip
+`-sb` and `-sr` are the shorthands you'll reach for constantly during development. The typical edit-loop is: change `peppy.json5` or source, hit `peppy node add -sr .`, watch the logs, iterate. Without `-s`, a stale `.peppy/` bindings directory can make the daemon see an out-of-date interface; without `-r`, you have to follow every add with a separate `peppy node run`. Bundling them collapses the whole "I edited something, now run it" cycle to a single command.
+
+If you pass runtime `key=value` arguments alongside `-r`, keep them **after** the source path — `peppy node add -sr . frequency=30` — so the source positional isn't confused with the trailing args.
+:::
+
+`--sync` is only valid for local filesystem sources — remote git and HTTP sources are synced server-side when the daemon fetches them. It is **not** implied by `--build` or `--run`; it's a prerequisite step, not a post-step. Running `peppy node sync` as a separate command before `peppy node add` is equivalent.
 
 ## Starting your node
 
@@ -83,8 +105,64 @@ View all added & running nodes:
 peppy stack list
 ```
 
-You should see our hello_world node with 1 instance running.
-The instance name is randomly generated as a memorable identifier.
+You should see something like:
+
+```
+❯ peppy stack list
+Listing nodes...
+Requesting node stack graph from core 'hungry-buck-4136'...
+Node stack:
+  - hungry-buck-4136:core-node [Root] (/root/.peppy/bin) (1 instance: ["sleepy-wiles-5676"])
+  - hello_world:0.1.0 [Ready] (/root/.peppy/built_nodes/hello_world_0.1.0_b19507) (1 instance: ["elegant-solomon-5423"])
+Dependencies:
+  (none)
+```
+
+The bracketed label after each node is its **stage** — the artifact-level lifecycle of the node:
+
+- **`Added`** — the node is registered and a snapshot of the source has been taken, but `build_cmd` has not been run yet, so there is no runnable artifact.
+- **`Building`** — a build is in progress. A second concurrent `node build` on the same entity is rejected until this one finishes.
+- **`Ready`** — the build artifact is on disk. The node can be run; it may currently have zero, one, or several instances.
+- **`Root`** — the synthetic core-node entity. Always present, and always reports exactly one running instance (the daemon itself).
+
+Per-instance state (`starting`, `running`) lives inside the bracketed instance list, independently of the node's stage.
+
+## Inspecting a node with `peppy node info`
+
+When you need more than the one-line view from `stack list`, `peppy node info` dumps the node's stage, its currently-tracked instances with their individual states, and the paths to its add log and per-instance run logs. It takes a source directory (or git / http URL) just like `peppy node add`:
+
+```sh
+peppy node info ./hello_world
+```
+
+```
+Node Information
+==================================================
+
+Name:      hello_world
+Tag:       0.1.0
+Language:  Python
+Build cmd: uv sync
+Run cmd:   uv run hello_world
+
+Node Stack Status
+--------------------------------------------------
+Status:    In node stack
+Stage:     Ready
+Instances: 2 tracked
+           - inst-abc  [running]
+           - inst-def  [starting]
+
+Logs
+--------------------------------------------------
+hello_world:0.1.0
+  Add log: /Users/you/.peppy/logs/add/hello_world_0.1.0_20260121_224824_699.log
+  Run logs:
+    - inst-abc: /Users/you/.peppy/logs/run/inst-abc.log
+    - inst-def: /Users/you/.peppy/logs/run/inst-def.log
+```
+
+This is usually the fastest way to answer "is my node built yet?" and "where is the log for this specific instance?". The `Add log` path is what `peppy node add` writes to; per-instance run logs are what `peppy node run` writes to. Build logs live under `~/.peppy/logs/build/` and are surfaced by `peppy node build` directly when it runs.
 
 ## Stopping your node
 
@@ -103,13 +181,13 @@ To remove the node from the node stack, run:
 peppy node remove hello_world:0.1.0
 ```
 
-If you run `node stack list` again, you'll see that only the core node remains:
+If you run `peppy stack list` again, you'll see that only the core node remains:
 ```sh
 ❯ peppy stack list
 Listing nodes...
 Requesting node stack graph from core 'hungry-buck-4136'...
 Node stack:
-  - hungry-buck-4136:core-node (/root/.peppy/bin) (1 instance: ["sleepy-wiles-5676"])
+  - hungry-buck-4136:core-node [Root] (/root/.peppy/bin) (1 instance: ["sleepy-wiles-5676"])
 Dependencies:
   (none)
 ```

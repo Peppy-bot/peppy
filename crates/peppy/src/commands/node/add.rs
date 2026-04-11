@@ -31,6 +31,10 @@ pub struct AddNodeParams {
     pub timeouts: TimeoutConfig,
     pub force: bool,
     pub confirm_reader: Option<Box<dyn BufRead>>,
+    /// Whether to run `peppy node sync` on the source *before* adding. Only
+    /// meaningful for local filesystem sources. Independent of `chain_build`
+    /// — not implied by `--build`/`--run`.
+    pub sync: bool,
     /// Whether to chain a `node build` after the add succeeds. Set by the
     /// CLI when the user passes `--build` (or `--run`, which implies it).
     pub chain_build: bool,
@@ -61,11 +65,34 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
         timeouts,
         force,
         mut confirm_reader,
+        sync,
         chain_build,
     } = params;
     // Validate git_ref and parse the source into a NodeSource
     let git_ref = validate_git_ref(git_ref.as_deref())?;
     let node_source = parse_node_source(&source, git_ref)?;
+
+    // `--sync` forces a `peppy node sync` *before* the add so the snapshot
+    // taken by the daemon includes freshly regenerated peppygen output.
+    // Only local filesystem sources can be synced; remote sources are fetched
+    // and synced server-side by the daemon.
+    //
+    // Note: `sync_node_async` calls `ctx.connect_to_daemon()` internally, and
+    // so does the add path below. `AppContext` caches the messenger handle in
+    // a `OnceCell`, so the second call is cheap and reuses the same
+    // connection.
+    if sync {
+        match &node_source {
+            NodeSource::Fs(p) => {
+                super::sync::sync_node_async(ctx, Some(p.clone())).await?;
+            }
+            _ => {
+                return Err(Error::ExecutionFailed(
+                    "--sync is only valid for local node sources; remote sources are synced server-side on fetch".into(),
+                ));
+            }
+        }
+    }
 
     // Log the resolved source path (may differ from the original when the CLI
     // walked up from a variant subdirectory to the root node directory).

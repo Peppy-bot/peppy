@@ -16,7 +16,7 @@ pub fn sync_node(ctx: &Arc<AppContext>, path: Option<PathBuf>) -> Result<()> {
     crate::commands::block_on(sync_node_async(ctx, path))
 }
 
-async fn sync_node_async(ctx: &Arc<AppContext>, path: Option<PathBuf>) -> Result<()> {
+pub(super) async fn sync_node_async(ctx: &Arc<AppContext>, path: Option<PathBuf>) -> Result<()> {
     // If the current directory doesn't contain a valid root config (e.g. we're
     // inside a variant subdirectory), walk up to find the root node directory.
     let base_dir = match path {

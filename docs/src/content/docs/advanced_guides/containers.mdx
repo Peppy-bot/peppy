@@ -229,7 +229,7 @@ peppy node add ./my_node
 peppy node build my_node:0.1.0
 ```
 
-You can also combine both steps with `peppy node add ./my_node --build`.
+You can also combine both steps with `peppy node add ./my_node --build` (shorthand `-b`). If you've just edited `peppy.json5`, add `--sync`/`-s` as well — e.g. `peppy node add ./my_node -sb` to sync, add, and build in one shot.
 
 Under the hood, PeppyOS runs `apptainer build` during the build phase to produce a `.sif` (Singularity Image Format) file.
 This replaces the `build_cmd` step used by process nodes — the entire build happens inside the container according to the `%post` section of the definition file.
