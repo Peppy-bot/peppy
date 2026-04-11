@@ -100,6 +100,18 @@ fn node_add_command_succeeds() {
         logs
     );
 
+    // Regression: a first-time `node add` runs a `NodeInfoRequest` preflight
+    // to check for existing instances before overwriting. When the node
+    // isn't in the stack (the happy-path case here), that lookup used to
+    // surface as a daemon-side ERROR log from `run_handler` even though the
+    // CLI intentionally swallows the rejection. Assert that no such spurious
+    // service-handler error is emitted during a clean add.
+    assert!(
+        !logs.contains("service handler returned error"),
+        "first-time node add should not emit a service-handler error log. Logs:\n{}",
+        logs
+    );
+
     // Query the node stack to verify the node was added
     let messenger_handle = node_ctx
         .messenger_handle()

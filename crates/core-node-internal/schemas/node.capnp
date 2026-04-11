@@ -243,21 +243,10 @@ struct NodeResetResponse {
 
 # Node Info service
 struct NodeInfoRequest {
-    # Source of the node to get info for
-    source :union {
-        # Filesystem path to the node directory
-        fs @0 :Text;
-        # Git repository source
-        git @1 :NodeAddGitSource;
-        # HTTP URL source
-        http @2 :Text;
-    }
-    # Optional SHA256 checksum for HTTP sources
-    httpSha256 @4 :Text;
-    # Optional variant source — when set, the main source points to the root node
-    # and this identifies which variant to resolve and merge.
-    # Fs = variant name (lookup in manifest), Git/Http = direct source.
-    variant @3 :NodeAddVariantSource;
+    # Name of the node to look up in the stack
+    nodeName @0 :Text;
+    # Tag of the node to look up in the stack
+    nodeTag @1 :Text;
 }
 
 struct NodeInstanceInfo {
@@ -267,29 +256,34 @@ struct NodeInstanceInfo {
     state @1 :Text;
 }
 
+# Node info lookup result.
+#
+# The response is a union so that "no such node in the stack" is a
+# first-class successful outcome rather than a protocol-level error. This
+# lets the `peppy node add` preflight check, `peppy node info`, and any
+# other caller disambiguate "not found" from a real fault without having
+# to sniff the error-string payload of an `InvalidServiceRequest`.
 struct NodeInfoResponse {
-    # JSON5-serialized NodeConfig (merged with variant runtime when variant is requested)
-    configJson5 @0 :Text;
-    # Whether the node is already in the node stack
-    isInNodeStack @1 :Bool;
-    # Names of running instances of this node (Running only — kept for back-compat)
-    instancesNames @2 :List(Text);
-    # SHA256 of the entire NodeConfig file
-    configSha256 @3 :Text;
-    # Name of the variant applied (empty string when no variant)
-    variantName @4 :Text;
-    # Non-fatal issues encountered during resolution (e.g. unknown variant).
-    # Empty when resolution was fully successful.
-    issues @5 :List(Text);
-    # Lifecycle stage of the in-stack entity ("Added"/"Building"/"Ready"/"Root").
-    # Empty string when the node is not in the stack.
-    stage @6 :Text;
-    # All tracked instances of this entity, including in-flight `Starting` ones.
-    # Empty when the node is not in the stack.
-    instances @7 :List(NodeInstanceInfo);
-    # Path to the most-recent add/build log file for this entity.
-    # Empty string when not in stack or no add log has been produced yet.
-    addLogPath @8 :Text;
-    # Per-instance run log paths, aligned with `instances` (same order).
-    runLogPaths @9 :List(Text);
+    union {
+        # The node is not in the stack. Carries no payload — the caller
+        # already knows which `(name, tag)` it asked about.
+        notInStack @0 :Void;
+        # The node is in the stack. All of the node metadata is grouped
+        # under this arm; callers must match on the union before reading.
+        found :group {
+            # JSON5-serialized NodeConfig as stored in the node stack
+            configJson5 @1 :Text;
+            # SHA256 of the entire NodeConfig file
+            configSha256 @2 :Text;
+            # Lifecycle stage of the in-stack entity ("Added"/"Building"/"Ready"/"Root").
+            stage @3 :Text;
+            # All tracked instances of this entity, including in-flight `Starting` ones.
+            instances @4 :List(NodeInstanceInfo);
+            # Path to the most-recent add/build log file for this entity.
+            # Empty string when no add log has been produced yet.
+            addLogPath @5 :Text;
+            # Per-instance run log paths, aligned with `instances` (same order).
+            runLogPaths @6 :List(Text);
+        }
+    }
 }

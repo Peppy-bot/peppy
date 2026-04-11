@@ -1,28 +1,23 @@
 mod common;
 
 use common::{
-    AbortOnDrop, CALLER_INSTANCE_ID, create_tar_zst_from_dir, real_build_and_spawn_instance,
-    start_core_node_with_mock_messenger, write_peppy_json5,
+    AbortOnDrop, CALLER_INSTANCE_ID, NodeRunTestTimeouts, real_build_and_spawn_instance,
+    send_node_add_then_build, send_node_run_and_wait, start_core_node_with_mock_messenger,
+    write_peppy_json5,
 };
-use common::{NodeRunTestTimeouts, send_node_add_then_build, send_node_run_and_wait};
-use config::consts::NODE_CONFIG_FILE;
-use config::node::{Name, PeppygenLanguage};
-use config::test_helpers;
-use core_node::encoding::{NodeInfoRequest, NodeInfoResponse, NodeSource};
-use core_node::names;
-use gix_url::Url as GitUrl;
-use peppylib::PeppyError;
+use config::node::Name;
+use core_node::encoding::{NodeInfo, NodeInfoRequest, NodeInfoResponse};
 use peppylib::messaging::MessengerHandle;
 use peppylib::services::health::listen_for_node_health;
 use peppylib::services::ready::listen_for_node_ready;
-use sha2::{Digest, Sha256};
-use std::io::Write;
 use std::sync::Arc;
 use std::time::Duration;
-use tempfile::TempDir;
 
-/// Sends a `NODE_INFO` poll request to the given core node and returns the raw result.
-async fn poll_node_info(
+/// Sends a `NODE_INFO` poll request and returns the raw response enum.
+///
+/// Most tests assert on the `Found` body and use `poll_node_info_found`
+/// below; the negative-lookup test uses this variant directly.
+async fn poll_node_info_raw(
     started_core_node: &common::StartedCoreNode,
     request: &NodeInfoRequest,
     timeout: Duration,
@@ -37,13 +32,29 @@ async fn poll_node_info(
         )
         .await
 }
-use {
-    httptest::Expectation, httptest::Server, httptest::matchers::request,
-    httptest::responders::status_code,
-};
 
+/// Sends a `NODE_INFO` poll request and unwraps the `Found` body. Panics
+/// if the daemon answers `NotInStack` — happy-path tests expect the node
+/// they set up to be present.
+async fn poll_node_info(
+    started_core_node: &common::StartedCoreNode,
+    request: &NodeInfoRequest,
+    timeout: Duration,
+) -> core_node::Result<NodeInfo> {
+    match poll_node_info_raw(started_core_node, request, timeout).await? {
+        NodeInfoResponse::Found(info) => Ok(*info),
+        NodeInfoResponse::NotInStack => panic!(
+            "node_info unexpectedly reported `{}:{}` as not in the stack",
+            request.node_name, request.node_tag
+        ),
+    }
+}
+
+/// Happy path: add a node + start an instance, then `node info` reports the
+/// stage, instance list, run logs, and (after it's set) the add log path.
+/// This is the rewrite of `listen_for_node_info_on_fs_node_success`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_info_on_fs_node_success() {
+async fn node_info_reports_stage_instances_and_logs_for_stack_resident_node() {
     const TARGET_NODE_NAME: &str = "fs_node";
     const TARGET_NODE_TAG: &str = "0.1.0";
     const TARGET_INSTANCE_ID: &str = "fs_instance";
@@ -55,47 +66,27 @@ async fn listen_for_node_info_on_fs_node_success() {
     let peppy_json5 = r#"{
             schema_version: 1,
             manifest: {
-                name: "{TARGET_NODE_NAME}",
-                tag: "{TARGET_NODE_TAG}",
+                name: "fs_node",
+                tag: "0.1.0",
             },
             execution: {
                 language: "rust",
                 run_cmd: ["sleep", "10"]
             }
-        }"#
-    .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
-    .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
-    write_peppy_json5(node_dir.path(), &peppy_json5);
+        }"#;
+    write_peppy_json5(node_dir.path(), peppy_json5);
 
-    let request = NodeInfoRequest::new(NodeSource::Fs(node_dir.path().to_path_buf()));
-
-    let info_response = poll_node_info(&started_core_node, &request, Duration::from_secs(5))
-        .await
-        .expect("node_info request should succeed");
-
-    assert_eq!(
-        info_response.config.manifest.name.as_str(),
-        TARGET_NODE_NAME
-    );
-    assert_eq!(info_response.config.manifest.tag, TARGET_NODE_TAG);
-    assert!(
-        !info_response.is_in_node_stack,
-        "node should not yet be in the node stack"
-    );
-    assert!(
-        info_response.instances_names.is_empty(),
-        "no instances should be reported when node is not in stack"
-    );
-
-    assert_eq!(
-        info_response.config_integrity.len(),
-        64,
-        "config_integrity should be a 64-character hex SHA256 hash"
-    );
-
+    // Parse the config and push it directly — we don't need the full add
+    // pipeline for an info-only test, and `real_build_and_spawn_instance`
+    // takes it from there.
+    let config = config::node::NodeConfigParser::from_path(node_dir.path().join("peppy.json5"))
+        .expect("parse config")
+        .into_resolved()
+        .expect("resolve config");
     node_stack
-        .push_config(info_response.config.clone(), false, node_dir.path())
+        .push_config(config, false, node_dir.path())
         .expect("push_config should succeed");
+
     let instance_id = Name::new(TARGET_INSTANCE_ID).expect("valid instance id");
     let _running = real_build_and_spawn_instance(
         &started_core_node,
@@ -105,26 +96,24 @@ async fn listen_for_node_info_on_fs_node_success() {
     )
     .await;
 
-    let request = NodeInfoRequest::new(NodeSource::Fs(node_dir.path().to_path_buf()));
-
+    let request = NodeInfoRequest::new(TARGET_NODE_NAME, TARGET_NODE_TAG);
     let info_response = poll_node_info(&started_core_node, &request, Duration::from_secs(5))
         .await
         .expect("node_info request should succeed");
 
-    assert!(info_response.is_in_node_stack, "node should be in stack");
     assert_eq!(
-        info_response.instances_names,
-        vec![TARGET_INSTANCE_ID.to_string()]
+        info_response.config.manifest.name.as_str(),
+        TARGET_NODE_NAME
     );
-
-    // New fields surfaced for `peppy node info`: stage name, per-instance
-    // state, start log paths (derived from peppy_dirs + instance id), and
-    // add log path. The latter is exercised via the entity setter because
-    // `force_built_and_start_instance` bypasses `process_node_add`.
+    assert_eq!(info_response.config.manifest.tag, TARGET_NODE_TAG);
     assert_eq!(
-        info_response.stage.as_deref(),
-        Some("Ready"),
-        "stage should be exposed when in stack"
+        info_response.config_integrity.len(),
+        64,
+        "config_integrity should be a 64-character hex SHA256 hash"
+    );
+    assert_eq!(
+        info_response.stage, "Ready",
+        "stage should be Ready after build + spawn"
     );
     assert_eq!(info_response.instances.len(), 1);
     assert_eq!(info_response.instances[0].instance_id, TARGET_INSTANCE_ID);
@@ -140,202 +129,32 @@ async fn listen_for_node_info_on_fs_node_success() {
         "force_built bypass does not record an add log"
     );
 
-    // Now record an add log path via the public setter and re-poll —
-    // the response should pick it up.
+    // Record an add log path via the public setter and re-poll — the response
+    // should surface it.
     let recorded_add_log = started_core_node
         .peppy_dirs
         .logs_dir_add()
         .join("recorded.log");
     node_stack.set_add_log_path(TARGET_NODE_NAME, TARGET_NODE_TAG, recorded_add_log.clone());
-    let request = NodeInfoRequest::new(NodeSource::Fs(node_dir.path().to_path_buf()));
-    let info_response = poll_node_info(&started_core_node, &request, Duration::from_secs(5))
-        .await
-        .expect("node_info request should succeed");
+    let info_response = poll_node_info(
+        &started_core_node,
+        &NodeInfoRequest::new(TARGET_NODE_NAME, TARGET_NODE_TAG),
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("node_info request should succeed");
     assert_eq!(
         info_response.add_log_path.as_deref(),
         Some(recorded_add_log.as_path())
     );
 }
 
+/// Full add-then-build-then-run-then-info: verifies that after two instances
+/// are spawned through the real goal pipeline, `node info` reports both of
+/// them with their per-instance state. Direct port of
+/// `listen_for_node_info_has_instance_ids` with the request input swapped.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_info_on_git_node_success() {
-    const TARGET_NODE_NAME: &str = "uvc_camera";
-    const TARGET_NODE_TAG: &str = "0.1.0";
-    const TARGET_REPO_PATH: &str = "nodes/uvc_camera";
-    const TARGET_INSTANCE_ID: &str = "git_instance";
-
-    let git_repo_temp_dir = TempDir::new().expect("failed to create temp dir for git repo");
-    let git_repo_path = test_helpers::create_nodes_git_repo(&git_repo_temp_dir);
-    let repo_url = GitUrl::try_from(git_repo_path.as_path()).expect("git repo path should parse");
-
-    let started_core_node = start_core_node_with_mock_messenger().await;
-    let node_stack = started_core_node.node_stack.clone();
-
-    let request = NodeInfoRequest::new(NodeSource::Git {
-        repo_url,
-        repo_path: TARGET_REPO_PATH.to_owned(),
-        repo_ref: Some(TARGET_NODE_TAG.to_owned()),
-    });
-
-    let info_response = poll_node_info(&started_core_node, &request, Duration::from_secs(10))
-        .await
-        .expect("node_info request should succeed");
-
-    assert_eq!(
-        info_response.config.manifest.name.as_str(),
-        TARGET_NODE_NAME
-    );
-    assert_eq!(info_response.config.manifest.tag, TARGET_NODE_TAG);
-    assert!(
-        !info_response.is_in_node_stack,
-        "node should not yet be in the node stack"
-    );
-    assert!(
-        info_response.instances_names.is_empty(),
-        "no instances should be reported when node is not in stack"
-    );
-
-    let git_node_path = git_repo_path.join(TARGET_REPO_PATH);
-    node_stack
-        .push_config(info_response.config.clone(), false, &git_node_path)
-        .expect("push_config should succeed");
-    let instance_id = Name::new(TARGET_INSTANCE_ID).expect("valid instance id");
-    let _running = real_build_and_spawn_instance(
-        &started_core_node,
-        TARGET_NODE_NAME,
-        TARGET_NODE_TAG,
-        &instance_id,
-    )
-    .await;
-
-    let request = NodeInfoRequest::new(NodeSource::Git {
-        repo_url: GitUrl::try_from(git_repo_path.as_path()).expect("git repo path should parse"),
-        repo_path: TARGET_REPO_PATH.to_owned(),
-        repo_ref: Some(TARGET_NODE_TAG.to_owned()),
-    });
-
-    let info_response = poll_node_info(&started_core_node, &request, Duration::from_secs(10))
-        .await
-        .expect("node_info request should succeed");
-
-    assert!(info_response.is_in_node_stack, "node should be in stack");
-    assert_eq!(
-        info_response.instances_names,
-        vec![TARGET_INSTANCE_ID.to_string()]
-    );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_info_on_http_node_success() {
-    const TARGET_NODE_NAME: &str = "http_node";
-    const TARGET_NODE_TAG: &str = "0.1.0";
-    const TARGET_INSTANCE_ID: &str = "http_instance";
-
-    let started_core_node = start_core_node_with_mock_messenger().await;
-    let node_stack = started_core_node.node_stack.clone();
-
-    let bundle_dir = tempfile::tempdir().expect("failed to create temp bundle dir");
-    let peppy_json5 = r#"{
-            schema_version: 1,
-            manifest: {
-                name: "{TARGET_NODE_NAME}",
-                tag: "{TARGET_NODE_TAG}",
-            },
-            execution: {
-                language: "rust",
-                run_cmd: ["sleep", "10"]
-            }
-        }"#
-    .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
-    .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
-
-    let manifest_path = bundle_dir.path().join(NODE_CONFIG_FILE);
-    std::fs::write(&manifest_path, &peppy_json5).expect("failed to write manifest");
-
-    let mut tar_data = Vec::new();
-    {
-        let mut tar_builder = tar::Builder::new(&mut tar_data);
-        tar_builder
-            .append_path_with_name(&manifest_path, NODE_CONFIG_FILE)
-            .expect("failed to append manifest to tar");
-        tar_builder.finish().expect("failed to finish tar");
-    }
-
-    let bundle_path = bundle_dir.path().join("http_node.tar.zst");
-    let bundle_file = std::fs::File::create(&bundle_path).expect("failed to create bundle file");
-    let mut encoder = zstd::Encoder::new(bundle_file, 0).expect("failed to create zstd encoder");
-    encoder
-        .write_all(&tar_data)
-        .expect("failed to write compressed bundle");
-    encoder.finish().expect("failed to finish encoder");
-    let bundle_bytes = std::fs::read(&bundle_path).expect("failed to read bundle");
-    let bundle_sha256: String = Sha256::digest(&bundle_bytes)
-        .iter()
-        .map(|b| format!("{:02x}", b))
-        .collect();
-
-    let server = Server::run();
-    server.expect(
-        Expectation::matching(request::method_path("GET", "/bundles/http_node.tar.zst"))
-            .times(2)
-            .respond_with(status_code(200).body(bundle_bytes)),
-    );
-    let url = url::Url::parse(&server.url("/bundles/http_node.tar.zst").to_string())
-        .expect("http bundle url should parse");
-
-    let request = NodeInfoRequest::new(NodeSource::Http {
-        url: url.clone(),
-        sha256: Some(bundle_sha256.clone()),
-    });
-
-    let info_response = poll_node_info(&started_core_node, &request, Duration::from_secs(10))
-        .await
-        .expect("node_info request should succeed");
-
-    assert_eq!(
-        info_response.config.manifest.name.as_str(),
-        TARGET_NODE_NAME
-    );
-    assert_eq!(info_response.config.manifest.tag, TARGET_NODE_TAG);
-    assert!(
-        !info_response.is_in_node_stack,
-        "node should not yet be in the node stack"
-    );
-    assert!(
-        info_response.instances_names.is_empty(),
-        "no instances should be reported when node is not in stack"
-    );
-
-    node_stack
-        .push_config(info_response.config.clone(), false, bundle_dir.path())
-        .expect("push_config should succeed");
-    let instance_id = Name::new(TARGET_INSTANCE_ID).expect("valid instance id");
-    let _running = real_build_and_spawn_instance(
-        &started_core_node,
-        TARGET_NODE_NAME,
-        TARGET_NODE_TAG,
-        &instance_id,
-    )
-    .await;
-
-    let request = NodeInfoRequest::new(NodeSource::Http {
-        url,
-        sha256: Some(bundle_sha256),
-    });
-
-    let info_response = poll_node_info(&started_core_node, &request, Duration::from_secs(10))
-        .await
-        .expect("node_info request should succeed");
-
-    assert!(info_response.is_in_node_stack, "node should be in stack");
-    assert_eq!(
-        info_response.instances_names,
-        vec![TARGET_INSTANCE_ID.to_string()]
-    );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_info_has_instance_ids() {
+async fn node_info_has_instance_ids() {
     const TARGET_NODE_NAME: &str = "instance_ids_node";
     const TARGET_NODE_TAG: &str = "0.1.0";
     const TARGET_INSTANCE_ID_1: &str = "instance_one";
@@ -347,17 +166,15 @@ async fn listen_for_node_info_has_instance_ids() {
     let peppy_json5 = r#"{
             schema_version: 1,
             manifest: {
-                name: "{TARGET_NODE_NAME}",
-                tag: "{TARGET_NODE_TAG}",
+                name: "instance_ids_node",
+                tag: "0.1.0",
             },
             execution: {
                 language: "rust",
                 run_cmd: ["sleep", "10"]
             }
-        }"#
-    .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
-    .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
-    write_peppy_json5(source_dir.path(), &peppy_json5);
+        }"#;
+    write_peppy_json5(source_dir.path(), peppy_json5);
 
     let add_result = send_node_add_then_build(
         &started_core_node.caller_handle,
@@ -371,12 +188,13 @@ async fn listen_for_node_info_has_instance_ids() {
 
     assert!(
         add_result.success,
-        "node_add should succeed, got error: {:?}",
+        "node_build should succeed, got error: {:?}",
         add_result.error_message
     );
 
-    // Simulate the node exposing ready/health services for each instance so the node_run action
-    // can proceed when using the mock messenger (we start `sleep` rather than an actual node).
+    // Simulate each instance exposing ready/health services so the node_run
+    // action can proceed against the mock messenger (we start `sleep` rather
+    // than a real node).
     let node_handle = MessengerHandle::from_shared(Arc::clone(&started_core_node.shared_messenger));
     let _ready_task_1 = AbortOnDrop(
         listen_for_node_ready(
@@ -398,7 +216,6 @@ async fn listen_for_node_info_has_instance_ids() {
         .await
         .expect("failed to start node_health service (instance 1)"),
     );
-
     let _ready_task_2 = AbortOnDrop(
         listen_for_node_ready(
             &node_handle,
@@ -427,7 +244,6 @@ async fn listen_for_node_info_has_instance_ids() {
         TARGET_NODE_NAME,
         TARGET_INSTANCE_ID_1,
     );
-
     let start_response_1 = send_node_run_and_wait(
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
@@ -442,7 +258,6 @@ async fn listen_for_node_info_has_instance_ids() {
     )
     .await
     .expect("node_run (instance 1) should complete");
-
     assert!(
         start_response_1.result.success,
         "node_run (instance 1) should succeed, got error: {:?}",
@@ -454,7 +269,6 @@ async fn listen_for_node_info_has_instance_ids() {
         TARGET_NODE_NAME,
         TARGET_INSTANCE_ID_2,
     );
-
     let start_response_2 = send_node_run_and_wait(
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
@@ -469,331 +283,103 @@ async fn listen_for_node_info_has_instance_ids() {
     )
     .await
     .expect("node_run (instance 2) should complete");
-
     assert!(
         start_response_2.result.success,
         "node_run (instance 2) should succeed, got error: {:?}",
         start_response_2.result.error_message
     );
 
-    let request = NodeInfoRequest::new(NodeSource::Fs(add_result.artifact_path.clone()));
+    let info_response = poll_node_info(
+        &started_core_node,
+        &NodeInfoRequest::new(TARGET_NODE_NAME, TARGET_NODE_TAG),
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("node_info request should succeed");
 
-    let info_response = poll_node_info(&started_core_node, &request, Duration::from_secs(5))
-        .await
-        .expect("node_info request should succeed");
-
-    assert!(info_response.is_in_node_stack, "node should be in stack");
-
-    let mut instances = info_response.instances_names;
-    instances.sort();
+    let mut instance_ids: Vec<String> = info_response
+        .instances
+        .iter()
+        .map(|i| i.instance_id.clone())
+        .collect();
+    instance_ids.sort();
     assert_eq!(
-        instances,
+        instance_ids,
         vec![
             TARGET_INSTANCE_ID_1.to_string(),
             TARGET_INSTANCE_ID_2.to_string()
         ]
     );
+    for inst in &info_response.instances {
+        assert_eq!(
+            inst.state, "running",
+            "instance {} should be running",
+            inst.instance_id
+        );
+    }
 }
 
+/// An unknown `(name, tag)` should be reported as a *successful*
+/// `NodeInfoResponse::NotInStack` rather than a protocol-level error — this
+/// is the whole point of the breaking response-shape change. The listener
+/// must also remain healthy after a negative lookup and serve a follow-up
+/// valid request.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_info_recovers_after_invalid_request() {
+async fn node_info_reports_not_in_stack_and_recovers() {
     const TARGET_NODE_NAME: &str = "fs_node";
     const TARGET_NODE_TAG: &str = "0.1.0";
 
     let started_core_node = start_core_node_with_mock_messenger().await;
 
-    // First, send a request that is guaranteed to fail quickly without performing I/O.
-    let bad_url = url::Url::parse("https://example.com/bad_url")
-        .expect("bad test URL should parse as a valid URL");
-    let bad_request = NodeInfoRequest::new(NodeSource::Http {
-        url: bad_url,
-        sha256: None,
-    });
-
-    let err = poll_node_info(&started_core_node, &bad_request, Duration::from_secs(2))
-        .await
-        .expect_err("node_info should return an error for invalid HTTP source");
-
-    let core_node::Error::Peppylib(PeppyError::ServiceError {
-        service_name,
-        reason,
-        ..
-    }) = err
-    else {
-        panic!("expected ServiceError, got: {err:?}");
-    };
-
-    assert_eq!(service_name, names::NODE_INFO);
+    // First: an unknown node — the daemon answers `NotInStack` on the
+    // successful response channel. No error log, no transport fault.
+    let response = poll_node_info_raw(
+        &started_core_node,
+        &NodeInfoRequest::new("ghost_node", "9.9.9"),
+        Duration::from_secs(2),
+    )
+    .await
+    .expect("node_info should return a successful response for an unknown node");
     assert!(
-        reason.contains("tar.zst") || reason.contains("tar.zstd") || reason.contains(".tzst"),
-        "error reason should mention supported archive types; got: {reason}"
+        matches!(response, NodeInfoResponse::NotInStack),
+        "expected NotInStack for an unknown `(name, tag)`, got: {response:?}"
     );
 
-    // Then send a valid request to ensure the node_info listener is still alive.
+    // Then: after the negative lookup, a valid request against a
+    // stack-resident node must still succeed — i.e., the info listener
+    // is still alive.
     let node_dir = tempfile::tempdir().expect("failed to create temp node dir");
     let peppy_json5 = r#"{
             schema_version: 1,
             manifest: {
-                name: "{TARGET_NODE_NAME}",
-                tag: "{TARGET_NODE_TAG}",
+                name: "fs_node",
+                tag: "0.1.0",
             },
             execution: {
                 language: "rust",
                 run_cmd: ["sleep", "10"]
             }
-        }"#
-    .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
-    .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
-    write_peppy_json5(node_dir.path(), &peppy_json5);
+        }"#;
+    write_peppy_json5(node_dir.path(), peppy_json5);
+    let config = config::node::NodeConfigParser::from_path(node_dir.path().join("peppy.json5"))
+        .expect("parse config")
+        .into_resolved()
+        .expect("resolve config");
+    started_core_node
+        .node_stack
+        .push_config(config, false, node_dir.path())
+        .expect("push_config should succeed");
 
-    let request = NodeInfoRequest::new(NodeSource::Fs(node_dir.path().to_path_buf()));
-
-    let info_response = poll_node_info(&started_core_node, &request, Duration::from_secs(5))
-        .await
-        .expect("node_info should still work after a failed request");
+    let info_response = poll_node_info(
+        &started_core_node,
+        &NodeInfoRequest::new(TARGET_NODE_NAME, TARGET_NODE_TAG),
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("node_info should still work after a failed request");
     assert_eq!(
         info_response.config.manifest.name.as_str(),
         TARGET_NODE_NAME
     );
     assert_eq!(info_response.config.manifest.tag, TARGET_NODE_TAG);
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_info_without_variant_shows_available_variants() {
-    let started_core_node = start_core_node_with_mock_messenger().await;
-
-    // Create root node with variants declared in manifest.
-    let root_dir = tempfile::tempdir().expect("failed to create temp root dir");
-    let root_peppy_json5 = r#"{
-        schema_version: 1,
-        manifest: {
-            name: "multi_variant_node",
-            tag: "1.0.0",
-            variants: [
-                { name: "mock", source: { local: "./mock" } },
-                { name: "sim", source: { local: "./sim" } }
-            ]
-        },
-        execution: {
-            language: "rust",
-            run_cmd: ["sleep", "10"]
-        }
-    }"#;
-    write_peppy_json5(root_dir.path(), root_peppy_json5);
-
-    // Request WITHOUT variant on FS
-    let request = NodeInfoRequest::new(NodeSource::Fs(root_dir.path().to_path_buf()));
-
-    let info_response = poll_node_info(&started_core_node, &request, Duration::from_secs(5))
-        .await
-        .expect("node_info should succeed");
-
-    // No variant applied
-    assert!(
-        info_response.variant_name.is_none(),
-        "variant_name should be None when no variant requested"
-    );
-
-    // Manifest should contain variant declarations
-    let variants = info_response
-        .config
-        .manifest
-        .variants
-        .as_ref()
-        .expect("manifest should contain variants");
-    let variant_names: Vec<&str> = variants.iter().map(|v| v.name.as_str()).collect();
-    assert_eq!(variant_names, vec!["mock", "sim"]);
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_info_auto_resolves_default_variant() {
-    const ROOT_NODE_NAME: &str = "default_variant_node";
-    const ROOT_NODE_TAG: &str = "0.1.0";
-
-    let started_core_node = start_core_node_with_mock_messenger().await;
-
-    // Create root node with a "default" variant and NO execution in root config.
-    let root_dir = tempfile::tempdir().expect("failed to create temp root dir");
-    let root_peppy_json5 = r#"{
-        schema_version: 1,
-        manifest: {
-            name: "default_variant_node",
-            tag: "0.1.0",
-            variants: [
-                { name: "default", source: { local: "./default_variant" } }
-            ]
-        },
-        interfaces: {
-            topics: {
-                emits: [{ name: "sensor_data" }]
-            }
-        }
-    }"#;
-    write_peppy_json5(root_dir.path(), root_peppy_json5);
-
-    // Create the default variant subdirectory with execution.
-    let variant_dir = root_dir.path().join("default_variant");
-    std::fs::create_dir_all(&variant_dir).expect("failed to create default variant dir");
-    std::fs::write(
-        variant_dir.join(NODE_CONFIG_FILE),
-        r#"{
-            schema_version: 1,
-            execution: {
-                language: "python",
-                run_cmd: ["python", "main.py"]
-            }
-        }"#,
-    )
-    .expect("failed to write default variant config");
-
-    // Request WITHOUT specifying a variant — should auto-resolve "default".
-    let request = NodeInfoRequest::new(NodeSource::Fs(root_dir.path().to_path_buf()));
-
-    let info_response = poll_node_info(&started_core_node, &request, Duration::from_secs(5))
-        .await
-        .expect("node_info should auto-resolve default variant without panic");
-
-    // Manifest comes from root
-    assert_eq!(info_response.config.manifest.name.as_str(), ROOT_NODE_NAME);
-    assert_eq!(info_response.config.manifest.tag, ROOT_NODE_TAG);
-
-    // Interfaces inherited from root
-    assert!(
-        info_response.config.interfaces.topics.is_some(),
-        "interfaces should be inherited from root"
-    );
-
-    // Execution comes from the default variant
-    assert_eq!(
-        info_response.config.execution.language,
-        PeppygenLanguage::Python
-    );
-    assert_eq!(
-        info_response.config.execution.run_cmd.as_deref(),
-        Some(&["python".to_string(), "main.py".to_string()][..])
-    );
-
-    // Variant name should be reported as "default"
-    assert_eq!(
-        info_response.variant_name.as_deref(),
-        Some("default"),
-        "auto-resolved default variant name should be reported"
-    );
-}
-
-/// Verifies that default variant resolution from a filesystem archive (`.tar.zst`) uses the
-/// archived root directory, not the host filesystem. A decoy variant directory is placed
-/// on the host to catch incorrect path resolution.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_info_archive_default_variant_uses_archived_root() {
-    let started_core_node = start_core_node_with_mock_messenger().await;
-
-    let bundle_dir = tempfile::tempdir().expect("failed to create temp bundle dir");
-    let archived_root_dir = bundle_dir.path().join("archived_root");
-    let archived_variant_dir = archived_root_dir.join("default_variant");
-    std::fs::create_dir_all(&archived_variant_dir).expect("failed to create archived variant dir");
-
-    let root_peppy_json5 = r#"{
-        schema_version: 1,
-        manifest: {
-            name: "archive_variant_root",
-            tag: "0.3.0",
-            variants: [
-                { name: "default", source: { local: "./default_variant" } }
-            ]
-        }
-    }"#;
-    write_peppy_json5(&archived_root_dir, root_peppy_json5);
-
-    write_peppy_json5(
-        &archived_variant_dir,
-        r#"{
-            schema_version: 1,
-            execution: {
-                language: "python",
-                run_cmd: ["python", "from_archive.py"]
-            }
-        }"#,
-    );
-
-    // Place a decoy on the host to detect incorrect path resolution.
-    let host_decoy_variant_dir = bundle_dir.path().join("default_variant");
-    std::fs::create_dir_all(&host_decoy_variant_dir)
-        .expect("failed to create host decoy variant dir");
-    write_peppy_json5(
-        &host_decoy_variant_dir,
-        r#"{
-            schema_version: 1,
-            execution: {
-                language: "python",
-                run_cmd: ["python", "from_host_dir.py"]
-            }
-        }"#,
-    );
-
-    let bundle_path = bundle_dir.path().join("archive_variant_root.tar.zst");
-    create_tar_zst_from_dir(&archived_root_dir, &bundle_path, "root_node");
-
-    let request = NodeInfoRequest::new(NodeSource::Fs(bundle_path));
-
-    let info_response = poll_node_info(&started_core_node, &request, Duration::from_secs(5))
-        .await
-        .expect("node_info with archive default variant should succeed");
-
-    assert_eq!(
-        info_response.config.manifest.name.as_str(),
-        "archive_variant_root"
-    );
-    assert_eq!(info_response.config.manifest.tag, "0.3.0");
-    assert_eq!(
-        info_response.config.execution.language,
-        PeppygenLanguage::Python
-    );
-    assert_eq!(
-        info_response.config.execution.run_cmd.as_deref(),
-        Some(&["python".to_string(), "from_archive.py".to_string()][..]),
-        "execution should come from the archived variant, not the host decoy"
-    );
-    assert_eq!(info_response.variant_name.as_deref(), Some("default"));
-}
-
-/// When the default variant directory does not exist, the response should contain
-/// issues describing the failure and fall back to the root config.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_info_with_missing_default_variant_returns_issues() {
-    let started_core_node = start_core_node_with_mock_messenger().await;
-
-    // Root declares a default variant, but the directory doesn't exist.
-    let root_dir = tempfile::tempdir().expect("failed to create temp root dir");
-    let root_peppy_json5 = r#"{
-        schema_version: 1,
-        manifest: {
-            name: "broken_default_node",
-            tag: "0.1.0",
-            variants: [
-                { name: "default", source: { local: "./nonexistent" } }
-            ]
-        }
-    }"#;
-    write_peppy_json5(root_dir.path(), root_peppy_json5);
-
-    let request = NodeInfoRequest::new(NodeSource::Fs(root_dir.path().to_path_buf()));
-
-    let info_response = poll_node_info(&started_core_node, &request, Duration::from_secs(5))
-        .await
-        .expect("node_info with missing default variant should succeed with issues");
-
-    assert!(
-        !info_response.issues.is_empty(),
-        "response should contain issues for missing default variant"
-    );
-    assert!(
-        info_response.variant_name.is_none(),
-        "variant_name should be None when default variant resolution failed"
-    );
-    assert_eq!(
-        info_response.config.manifest.name.as_str(),
-        "broken_default_node",
-        "should return root config when default variant resolution fails"
-    );
 }

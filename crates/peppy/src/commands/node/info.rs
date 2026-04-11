@@ -1,31 +1,23 @@
 use config::AnyType;
-use core_node::encoding::{NodeInfoRequest, NodeInfoResponse};
+use core_node::encoding::{NodeInfo, NodeInfoRequest, NodeInfoResponse};
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Duration;
 
-use super::source::parse_node_source;
 use crate::commands::CALLER_INSTANCE_ID;
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
-pub fn node_info(ctx: &Arc<AppContext>, source: String, git_ref: Option<String>) -> Result<()> {
-    crate::commands::block_on(node_info_async(ctx, source, git_ref))
+pub fn node_info(ctx: &Arc<AppContext>, node_name: String, node_tag: String) -> Result<()> {
+    crate::commands::block_on(node_info_async(ctx, node_name, node_tag))
 }
 
-async fn node_info_async(
-    ctx: &Arc<AppContext>,
-    source: String,
-    git_ref: Option<String>,
-) -> Result<()> {
-    let node_source = parse_node_source(&source, git_ref)?;
+async fn node_info_async(ctx: &Arc<AppContext>, node_name: String, node_tag: String) -> Result<()> {
     let conn = ctx.connect_to_daemon().await?;
 
-    let request = NodeInfoRequest::new(node_source);
-
-    let response = request
+    let response = NodeInfoRequest::new(node_name.clone(), node_tag.clone())
         .poll(
             conn.messenger,
             &conn.core_node_name,
@@ -36,13 +28,39 @@ async fn node_info_async(
         .await
         .map_err(|e| Error::ExecutionFailed(format!("Failed to get node info: {}", e)))?;
 
+    // "Not in stack" is now a first-class successful outcome of the lookup
+    // rather than a daemon-side error. Surface it to the user as a clean
+    // failure message without the generic "Failed to get node info:" prefix.
+    let info = match response {
+        NodeInfoResponse::NotInStack => {
+            return Err(Error::ExecutionFailed(format!(
+                "Node '{}:{}' is not in the node stack",
+                node_name, node_tag
+            )));
+        }
+        NodeInfoResponse::Found(info) => info,
+    };
+
+    // `info.run_log_paths` is aligned 1:1 with `info.instances` (same
+    // order, same length) — see `NodeInfo` in
+    // crates/core-node-internal/src/encoding/node/info.rs. `format_node_info`
+    // consumes them via `.zip()`, which would silently truncate on drift.
+    // Fail loud here instead so encoding/version mismatches surface clearly.
+    if info.instances.len() != info.run_log_paths.len() {
+        return Err(Error::ExecutionFailed(format!(
+            "daemon returned mismatched node_info lengths: {} instances vs {} run log paths — this is an internal encoding bug",
+            info.instances.len(),
+            info.run_log_paths.len(),
+        )));
+    }
+
     let mut out = String::new();
-    format_node_info(&mut out, &response);
+    format_node_info(&mut out, &info);
     print!("{}", out);
     Ok(())
 }
 
-fn format_node_info(out: &mut String, response: &NodeInfoResponse) {
+fn format_node_info(out: &mut String, response: &NodeInfo) {
     use std::fmt::Write as _;
     let config = &response.config;
     let manifest = &config.manifest;
@@ -64,11 +82,6 @@ fn format_node_info(out: &mut String, response: &NodeInfoResponse) {
         let _ = writeln!(out, "Labels:    {}", labels.join(", "));
     }
 
-    // Variant info
-    if let Some(ref variant_name) = response.variant_name {
-        let _ = writeln!(out, "Variant:   {}", variant_name);
-    }
-
     // Available variants (from manifest)
     if let Some(variants) = &manifest.variants
         && !variants.is_empty()
@@ -88,59 +101,52 @@ fn format_node_info(out: &mut String, response: &NodeInfoResponse) {
         let _ = writeln!(out, "Container: {}", container.def_file);
     }
 
-    // Node stack status
+    // Node stack status — the daemon only answers node_info requests for
+    // nodes that are in the stack, so we always have a stage + instance list.
     let _ = writeln!(out);
     let _ = writeln!(out, "Node Stack Status");
     let _ = writeln!(out, "{}", "-".repeat(50));
-    if response.is_in_node_stack {
-        let _ = writeln!(out, "Status:    In node stack");
-        if let Some(stage) = response.stage.as_deref() {
-            let _ = writeln!(out, "Stage:     {}", stage);
+    let _ = writeln!(out, "Stage:     {}", response.stage);
+    if response.instances.is_empty() {
+        let _ = writeln!(out, "Instances: None tracked");
+    } else {
+        let _ = writeln!(out, "Instances: {} tracked", response.instances.len());
+        for instance in &response.instances {
+            let _ = writeln!(
+                out,
+                "           - {}  [{}]",
+                instance.instance_id, instance.state
+            );
         }
-        if response.instances.is_empty() {
-            let _ = writeln!(out, "Instances: None tracked");
-        } else {
-            let _ = writeln!(out, "Instances: {} tracked", response.instances.len());
-            for instance in &response.instances {
+    }
+
+    // Logs grouped under <name>:<tag>. Only printed when at least one
+    // log path is available — if neither the add log nor any run log
+    // is set, the section is suppressed entirely.
+    let has_add_log = response.add_log_path.is_some();
+    let has_run_logs = !response.run_log_paths.is_empty();
+    if has_add_log || has_run_logs {
+        let _ = writeln!(out);
+        let _ = writeln!(out, "Logs");
+        let _ = writeln!(out, "{}", "-".repeat(50));
+        let _ = writeln!(out, "{}:{}", manifest.name.as_str(), manifest.tag);
+        if let Some(add_log_path) = response.add_log_path.as_ref() {
+            let _ = writeln!(out, "  Add log: {}", add_log_path.display());
+        }
+        if has_run_logs {
+            let _ = writeln!(out, "  Run logs:");
+            // `run_log_paths` is aligned 1:1 with `instances` (same
+            // order, same length) — see the info handler.
+            for (instance, log_path) in response.instances.iter().zip(response.run_log_paths.iter())
+            {
                 let _ = writeln!(
                     out,
-                    "           - {}  [{}]",
-                    instance.instance_id, instance.state
+                    "    - {}: {}",
+                    instance.instance_id,
+                    log_path.display()
                 );
             }
         }
-
-        // Logs grouped under <name>:<tag>. Only printed when at least one
-        // log path is available — if neither the add log nor any run log
-        // is set, the section is suppressed entirely.
-        let has_add_log = response.add_log_path.is_some();
-        let has_run_logs = !response.run_log_paths.is_empty();
-        if has_add_log || has_run_logs {
-            let _ = writeln!(out);
-            let _ = writeln!(out, "Logs");
-            let _ = writeln!(out, "{}", "-".repeat(50));
-            let _ = writeln!(out, "{}:{}", manifest.name.as_str(), manifest.tag);
-            if let Some(add_log_path) = response.add_log_path.as_ref() {
-                let _ = writeln!(out, "  Add log: {}", add_log_path.display());
-            }
-            if has_run_logs {
-                let _ = writeln!(out, "  Run logs:");
-                // `run_log_paths` is aligned 1:1 with `instances` (same
-                // order, same length) — see the info handler.
-                for (instance, log_path) in
-                    response.instances.iter().zip(response.run_log_paths.iter())
-                {
-                    let _ = writeln!(
-                        out,
-                        "    - {}: {}",
-                        instance.instance_id,
-                        log_path.display()
-                    );
-                }
-            }
-        }
-    } else {
-        let _ = writeln!(out, "Status:    Not in node stack");
     }
 
     // Dependencies (extracted from consumes interfaces)
@@ -336,16 +342,6 @@ fn format_node_info(out: &mut String, response: &NodeInfoResponse) {
         }
     }
 
-    // Issues
-    if !response.issues.is_empty() {
-        let _ = writeln!(out);
-        let _ = writeln!(out, "Issues");
-        let _ = writeln!(out, "{}", "-".repeat(50));
-        for issue in &response.issues {
-            let _ = writeln!(out, "  - {}", issue);
-        }
-    }
-
     // Integrity
     let _ = writeln!(out);
     let _ = writeln!(out, "Integrity");
@@ -358,14 +354,17 @@ fn format_node_info(out: &mut String, response: &NodeInfoResponse) {
         let _ = writeln!(out, "Parameters");
         let _ = writeln!(out, "{}", "-".repeat(50));
         for (key, value) in &config.execution.parameters {
-            let _ = writeln!(out, "  {}: {}", key, format_any_type(value));
+            write_any_type(out, key, value, 1);
         }
     }
 
     let _ = writeln!(out);
 }
 
-fn format_any_type(value: &AnyType) -> String {
+/// Render a primitive/leaf `AnyType` (or an empty container) as a single
+/// inline string. Used for same-line key/value output and for arrays whose
+/// elements are all primitives.
+fn format_any_type_inline(value: &AnyType) -> String {
     match value {
         AnyType::Null => "null".to_string(),
         AnyType::Bool(b) => b.to_string(),
@@ -374,15 +373,102 @@ fn format_any_type(value: &AnyType) -> String {
         AnyType::UInt(u) => u.to_string(),
         AnyType::Float(f) => f.to_string(),
         AnyType::Array(arr) => {
-            let items: Vec<String> = arr.iter().map(format_any_type).collect();
+            let items: Vec<String> = arr.iter().map(format_any_type_inline).collect();
             format!("[{}]", items.join(", "))
         }
         AnyType::Object(obj) => {
             let items: Vec<String> = obj
                 .iter()
-                .map(|(k, v)| format!("{}: {}", k, format_any_type(v)))
+                .map(|(k, v)| format!("{}: {}", k, format_any_type_inline(v)))
                 .collect();
             format!("{{{}}}", items.join(", "))
+        }
+    }
+}
+
+/// True when every element of `arr` is a primitive (and not a nested
+/// container). Primitive-only arrays stay inline for readability.
+fn is_primitive_array(arr: &[AnyType]) -> bool {
+    arr.iter()
+        .all(|v| !matches!(v, AnyType::Array(_) | AnyType::Object(_),))
+}
+
+/// Recursively render `value` under `key` into `out` using a YAML-ish
+/// indented tree layout. `indent` is measured in 2-space units.
+fn write_any_type(out: &mut String, key: &str, value: &AnyType, indent: usize) {
+    use std::fmt::Write as _;
+    let pad = "  ".repeat(indent);
+    match value {
+        // Objects expand onto multiple lines unless empty.
+        AnyType::Object(obj) if !obj.is_empty() => {
+            let _ = writeln!(out, "{}{}:", pad, key);
+            for (child_key, child_value) in obj {
+                write_any_type(out, child_key, child_value, indent + 1);
+            }
+        }
+        // Arrays of objects/arrays expand onto multiple lines with `- ` bullets.
+        AnyType::Array(arr) if !arr.is_empty() && !is_primitive_array(arr) => {
+            let _ = writeln!(out, "{}{}:", pad, key);
+            let bullet_pad = "  ".repeat(indent + 1);
+            for item in arr {
+                match item {
+                    AnyType::Object(obj) if !obj.is_empty() => {
+                        // First field sits on the `- ` line; the rest align
+                        // underneath at the same column.
+                        let mut first = true;
+                        for (child_key, child_value) in obj {
+                            if first {
+                                first = false;
+                                match child_value {
+                                    AnyType::Object(_) | AnyType::Array(_) => {
+                                        let _ = writeln!(out, "{}- {}:", bullet_pad, child_key);
+                                        // Nested contents indent two more levels
+                                        // past the bullet (one for `- `, one for
+                                        // the child's own body).
+                                        match child_value {
+                                            AnyType::Object(inner) => {
+                                                for (k, v) in inner {
+                                                    write_any_type(out, k, v, indent + 3);
+                                                }
+                                            }
+                                            AnyType::Array(_) => {
+                                                // Recurse via a synthetic key — rare
+                                                // enough that we keep it simple.
+                                                write_any_type(
+                                                    out,
+                                                    child_key,
+                                                    child_value,
+                                                    indent + 2,
+                                                );
+                                            }
+                                            _ => unreachable!(),
+                                        }
+                                    }
+                                    _ => {
+                                        let _ = writeln!(
+                                            out,
+                                            "{}- {}: {}",
+                                            bullet_pad,
+                                            child_key,
+                                            format_any_type_inline(child_value)
+                                        );
+                                    }
+                                }
+                            } else {
+                                write_any_type(out, child_key, child_value, indent + 2);
+                            }
+                        }
+                    }
+                    _ => {
+                        let _ = writeln!(out, "{}- {}", bullet_pad, format_any_type_inline(item));
+                    }
+                }
+            }
+        }
+        // Everything else (primitives, empty containers, primitive-only arrays)
+        // stays on a single line.
+        _ => {
+            let _ = writeln!(out, "{}{}: {}", pad, key, format_any_type_inline(value));
         }
     }
 }
@@ -394,18 +480,26 @@ mod tests {
     use core_node::encoding::NodeInstanceInfo;
     use std::path::PathBuf;
 
-    fn sample_response() -> NodeInfoResponse {
-        let config_json5 = r#"{
-            schema_version: 1,
-            manifest: {
-                name: "sensor_node",
-                tag: "0.1.0",
-            },
-            execution: {
+    fn sample_response() -> NodeInfo {
+        sample_response_with_execution(
+            r#"{
                 language: "rust",
                 run_cmd: ["sleep", "10"]
-            }
-        }"#;
+            }"#,
+        )
+    }
+
+    fn sample_response_with_execution(execution_json5: &str) -> NodeInfo {
+        let config_json5 = format!(
+            r#"{{
+                schema_version: 1,
+                manifest: {{
+                    name: "sensor_node",
+                    tag: "0.1.0",
+                }},
+                execution: {execution_json5}
+            }}"#
+        );
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("peppy.json5");
         std::fs::write(&path, config_json5).expect("write config");
@@ -413,14 +507,10 @@ mod tests {
             .expect("parse config")
             .into_resolved()
             .expect("resolve config");
-        NodeInfoResponse {
+        NodeInfo {
             config,
-            is_in_node_stack: true,
-            instances_names: vec!["inst-abc".to_string()],
             config_integrity: "0".repeat(64),
-            variant_name: None,
-            issues: Vec::new(),
-            stage: Some("Ready".to_string()),
+            stage: "Ready".to_string(),
             instances: vec![
                 NodeInstanceInfo {
                     instance_id: "inst-abc".to_string(),
@@ -502,20 +592,79 @@ mod tests {
     }
 
     #[test]
-    fn print_node_info_skips_stage_when_not_in_stack() {
-        let mut response = sample_response();
-        response.is_in_node_stack = false;
-        response.stage = None;
-        response.instances.clear();
-        response.instances_names.clear();
-        response.add_log_path = None;
-        response.run_log_paths.clear();
+    fn print_node_info_renders_nested_parameters_as_indented_tree() {
+        let response = sample_response_with_execution(
+            r#"{
+                language: "rust",
+                run_cmd: ["sleep", "10"],
+                parameters: {
+                    device_path: "string",
+                    video: {
+                        camera_encoding: "string",
+                        frame_rate: "u16",
+                        resolution: {
+                            height: "u32",
+                            width: "u32",
+                        },
+                        topic_encoding: "string",
+                    },
+                }
+            }"#,
+        );
 
         let mut out = String::new();
         format_node_info(&mut out, &response);
 
-        assert!(out.contains("Status:    Not in node stack"));
-        assert!(!out.contains("Stage:"));
-        assert!(!out.contains("\nLogs\n"));
+        // Primitive parameters still render inline.
+        assert!(
+            out.contains("  device_path: \"string\""),
+            "primitive parameter missing:\n{out}"
+        );
+
+        // Nested object parameters must NOT render as an inline `{...}` blob.
+        assert!(
+            !out.contains("video: {"),
+            "nested parameter should not be rendered inline:\n{out}"
+        );
+
+        // Parent object renders as a bare key with its children on subsequent lines.
+        assert!(
+            out.contains("  video:\n    camera_encoding: \"string\""),
+            "nested parameter not rendered as indented tree:\n{out}"
+        );
+        assert!(
+            out.contains("    frame_rate: \"u16\""),
+            "second-level child missing:\n{out}"
+        );
+        // Deeply nested (resolution) indented one more level.
+        assert!(
+            out.contains("    resolution:\n      height: \"u32\""),
+            "third-level child missing:\n{out}"
+        );
+        assert!(
+            out.contains("      width: \"u32\""),
+            "third-level child missing:\n{out}"
+        );
+    }
+
+    #[test]
+    fn print_node_info_renders_primitive_array_parameter_inline() {
+        let response = sample_response_with_execution(
+            r#"{
+                language: "rust",
+                run_cmd: ["sleep", "10"],
+                parameters: {
+                    tags: ["a", "b", "c"],
+                }
+            }"#,
+        );
+
+        let mut out = String::new();
+        format_node_info(&mut out, &response);
+
+        assert!(
+            out.contains("  tags: [\"a\", \"b\", \"c\"]"),
+            "primitive array should stay inline:\n{out}"
+        );
     }
 }

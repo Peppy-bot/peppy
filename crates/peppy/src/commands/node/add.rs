@@ -1,9 +1,11 @@
+use config::node::NodeConfigParser;
 use core_node::encoding::{
     NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAddResult, NodeInfoRequest,
     NodeInfoResponse, NodeSource,
 };
 use peppylib::MessengerHandle;
 use std::io::BufRead;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::info;
@@ -120,36 +122,36 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
         source, conn.core_node_name
     );
 
-    let pre_add_node_info = if !force {
-        Some(
-            fetch_node_info(
-                conn.messenger,
-                &conn.core_node_name,
-                node_source.clone(),
-                Duration::from_secs(timeouts.max_secs),
-            )
-            .await?,
+    // Preflight conflict check: if the *root* source is local, we can read
+    // `(name, tag)` from its `peppy.json5` without touching the network and
+    // ask the daemon whether that node is already in the stack with active
+    // instances.
+    //
+    // The variant source (if any) doesn't affect the effective `(name, tag)`:
+    // `resolve_variant` always merges the root manifest over the variant
+    // (see crates/core-node-internal/src/services/node/variant.rs), so any
+    // variant we'd eventually pick shares the root's identity.
+    //
+    // Remote root sources still skip the preflight since we'd need to fetch
+    // them to read the manifest; the daemon's add action stops existing
+    // instances transparently in that path.
+    if !force && let NodeSource::Fs(ref path) = node_source {
+        let active_instances = fetch_active_instances_for_local_source(
+            conn.messenger,
+            &conn.core_node_name,
+            path,
+            Duration::from_secs(timeouts.max_secs),
         )
-    } else {
-        None
-    };
+        .await?;
 
-    // Check for existing instances and prompt for confirmation if needed
-    if let Some(ref info) = pre_add_node_info
-        && !info.instances_names.is_empty()
-    {
-        let node_name = info.config.manifest.name.as_str();
-        let node_tag = &info.config.manifest.tag;
-        let confirm = confirm_overwrite(
-            node_name,
-            node_tag,
-            &info.instances_names,
-            confirm_reader.take(),
-        )?;
-        if !confirm {
-            return Err(Error::ExecutionFailed(
-                "Node add aborted by user".to_string(),
-            ));
+        if let Some((node_name, node_tag, instance_ids)) = active_instances {
+            let confirm =
+                confirm_overwrite(&node_name, &node_tag, &instance_ids, confirm_reader.take())?;
+            if !confirm {
+                return Err(Error::ExecutionFailed(
+                    "Node add aborted by user".to_string(),
+                ));
+            }
         }
     }
 
@@ -229,15 +231,37 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
     Ok(())
 }
 
-/// Fetches node info for a given source using NodeInfoRequest.
-/// This includes the node config, whether it's in the node stack, and running instance names.
-async fn fetch_node_info(
+/// Preflight check for the overwrite confirmation prompt.
+///
+/// Parses the node's `peppy.json5` locally to extract `(name, tag)`, then asks
+/// the daemon whether that entity is currently in the stack. Returns
+/// `Some((name, tag, active_instance_ids))` only when the node exists in the
+/// stack AND has at least one active instance (`Starting` or `Running`) —
+/// exactly the case that needs a user confirmation before overwrite. Both
+/// states count as active because the daemon tears down every tracked
+/// instance when it overwrites a node, regardless of lifecycle state.
+///
+/// Returns `None` when:
+/// - The local config can't be parsed (the add action itself will surface a
+///   clearer error once it tries to use the source).
+/// - The node isn't in the stack yet (the daemon answers with
+///   `NodeInfoResponse::NotInStack` — a successful negative lookup).
+/// - The node is in the stack but has no active instances (the add action
+///   can safely overwrite it without prompting).
+async fn fetch_active_instances_for_local_source(
     messenger: &MessengerHandle,
     core_node_name: &str,
-    node_source: NodeSource,
+    source_path: &Path,
     timeout: Duration,
-) -> Result<NodeInfoResponse> {
-    NodeInfoRequest::new(node_source)
+) -> Result<Option<(String, String, Vec<String>)>> {
+    let config_path = source_path.join(config::consts::NODE_CONFIG_FILE);
+    let Ok(parsed) = NodeConfigParser::from_path(&config_path) else {
+        return Ok(None);
+    };
+    let node_name = parsed.manifest_name().to_owned();
+    let node_tag = parsed.manifest_tag().to_owned();
+
+    let response = NodeInfoRequest::new(node_name.clone(), node_tag.clone())
         .poll(
             messenger,
             core_node_name,
@@ -248,7 +272,28 @@ async fn fetch_node_info(
         .await
         .map_err(|e| {
             Error::ExecutionFailed(format!("Failed to check node info before adding: {}", e))
-        })
+        })?;
+
+    // `NotInStack` is a normal first-time-add case; there is nothing to
+    // confirm. The daemon no longer reports this as an error, so we match
+    // on the response variant directly instead of sniffing error strings.
+    let info = match response {
+        NodeInfoResponse::NotInStack => return Ok(None),
+        NodeInfoResponse::Found(info) => info,
+    };
+
+    let active: Vec<String> = info
+        .instances
+        .iter()
+        .filter(|inst| matches!(inst.state.as_str(), "running" | "starting"))
+        .map(|inst| inst.instance_id.clone())
+        .collect();
+
+    if active.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some((node_name, node_tag, active)))
+    }
 }
 
 fn confirm_overwrite(
@@ -265,7 +310,7 @@ fn confirm_overwrite(
     let pronoun = if count == 1 { "it" } else { "them" };
 
     let message = format!(
-        "Node `{node_name}:{tag}` already exists with {count} running {suffix} ({ids}). \
+        "Node `{node_name}:{tag}` already exists with {count} active {suffix} ({ids}). \
          Adding this node will stop {pronoun} and overwrite the existing node. Continue? [y/n] ",
     );
 
