@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use config::consts::NODE_CONFIG_FILE;
-use config::node::NodeConfigParser;
+use config::node::{NodeConfigParser, find_root_node_dir};
 use core_node::encoding::NodeSource;
 use gix_url::Url as GitUrl;
 
@@ -192,13 +192,13 @@ pub fn resolve_node_root_dir(dir: &Path) -> Result<PathBuf> {
             // standalone root or a variant config that carries a manifest.
             // Walk up looking for a parent root with variants; if none is
             // found, treat this directory as the root itself.
-            match find_root_node_dir(dir)? {
+            match find_root_node_dir(dir).map_err(config_parse_error(dir))? {
                 Some(root) => Ok(root),
                 None => Ok(dir.to_path_buf()),
             }
         }
         Err(config::ConfigError::Parsing(ref e)) if e.is_missing_manifest() => {
-            match find_root_node_dir(dir)? {
+            match find_root_node_dir(dir).map_err(config_parse_error(dir))? {
                 Some(root) => Ok(root),
                 None => Err(Error::ExecutionFailed(format!(
                     "No root {} with a `manifest` section found at '{}' or any parent directory",
@@ -216,38 +216,16 @@ pub fn resolve_node_root_dir(dir: &Path) -> Result<PathBuf> {
     }
 }
 
-/// Walks up from `start_dir` looking for a parent directory containing a valid
-/// root `peppy.json5` whose manifest declares at least one variant. Returns
-/// `Ok(Some(path))` when found, `Ok(None)` when the filesystem root is reached
-/// without finding a match, or `Err` when a config file contains invalid syntax.
-///
-/// This allows `peppy node add .` to work when invoked from inside a variant
-/// subdirectory: the CLI resolves upward to the root node that owns the variant.
-fn find_root_node_dir(start_dir: &Path) -> Result<Option<PathBuf>> {
-    let mut dir = match start_dir.parent() {
-        Some(d) => d,
-        None => return Ok(None),
-    };
-    loop {
-        let candidate = dir.join(NODE_CONFIG_FILE);
-        if candidate.is_file() {
-            match NodeConfigParser::from_path(&candidate) {
-                Ok(cfg) if cfg.has_variants() => return Ok(Some(dir.to_path_buf())),
-                Ok(_) => {} // Not definitively a root (no variants), continue walking
-                Err(config::ConfigError::Parsing(ref e)) if e.is_missing_manifest() => {}
-                Err(other) => {
-                    return Err(Error::ExecutionFailed(format!(
-                        "Failed to parse '{}': {}",
-                        candidate.display(),
-                        other,
-                    )));
-                }
-            }
-        }
-        dir = match dir.parent() {
-            Some(d) => d,
-            None => return Ok(None),
-        };
+/// Adapts a [`config::ConfigError`] raised while walking up ancestor directories
+/// into the CLI's [`Error`] type.
+fn config_parse_error(dir: &Path) -> impl Fn(config::ConfigError) -> Error + '_ {
+    move |err| {
+        Error::ExecutionFailed(format!(
+            "Failed to parse ancestor `{}` while resolving node root from {}: {}",
+            NODE_CONFIG_FILE,
+            dir.display(),
+            err,
+        ))
     }
 }
 
@@ -638,7 +616,7 @@ mod tests {
         let err = find_root_node_dir(&variant).unwrap_err();
         let msg = err.to_string();
         assert!(
-            msg.contains("Failed to parse"),
+            msg.contains("Cannot parse configuration") || msg.contains("Failed to parse"),
             "expected parse error from parent to be surfaced, got: {msg}"
         );
     }
