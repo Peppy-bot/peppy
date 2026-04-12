@@ -669,6 +669,7 @@ dependencies = [
  "peppylib",
  "pmi",
  "rand 0.10.1",
+ "repo",
  "rust-embed",
  "serde_json",
  "serde_json5",

@@ -11,6 +11,7 @@ node-stack = { path = "../node-stack-internal" }
 peppylib = { path = "../peppylib" }
 generator = { path = "../generator-internal" }
 containers = { path = "../containers-internal" }
+repo = { path = "../repo-internal" }
 bytes = "1.10"
 chrono = "0.4"
 hostname = "0.4"
