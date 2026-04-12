@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 import tarfile
 import tempfile
 import shutil
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -28,10 +30,15 @@ def cargo_build(tag: str, target_triple: str, repo_root: Path) -> None:
     Sets PEPPY_GIT_TAG env var for the build.
     Each target triple gets its own directory under target/{triple}/release/,
     so no cargo clean is needed.
+
+    Streams cargo's output live while retaining a bounded tail, so that
+    when the build fails (e.g. a transient sccache crash) the error
+    message includes the actual cargo output — even when the caller
+    captures stdio, as pytest does by default.
     """
     console.print(f"Building peppy for [bold]{target_triple}[/bold]...")
     env = {**os.environ, "PEPPY_GIT_TAG": tag, "PEPPY_CROSS_ARCH": "1"}
-    result = subprocess.run(
+    proc = subprocess.Popen(
         [
             "cargo",
             "build",
@@ -44,9 +51,24 @@ def cargo_build(tag: str, target_triple: str, repo_root: Path) -> None:
         ],
         cwd=repo_root,
         env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
     )
-    if result.returncode != 0:
-        raise ReleaseError(f"cargo build failed (exit {result.returncode})")
+    assert proc.stdout is not None
+    tail: deque[str] = deque(maxlen=200)
+    for line in proc.stdout:
+        sys.stdout.write(line)
+        sys.stdout.flush()
+        tail.append(line)
+    returncode = proc.wait()
+    if returncode != 0:
+        raise ReleaseError(
+            f"cargo build failed (exit {returncode})\n"
+            f"--- last {len(tail)} lines of cargo output ---\n"
+            + "".join(tail)
+        )
 
 
 def _get_target_dir(repo_root: Path) -> Path:
