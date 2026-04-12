@@ -147,6 +147,11 @@ impl PeppyDirs {
     pub fn conf_dir(&self) -> PathBuf {
         self.root.join("conf")
     }
+
+    /// Cache directory for repo refresh results and other cached data.
+    pub fn cache_dir(&self) -> PathBuf {
+        self.root.join("cache")
+    }
 }
 
 /// Uses the standard application data directory.

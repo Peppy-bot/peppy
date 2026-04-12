@@ -46,6 +46,7 @@ tempfile = "3.10"
 sha2 = "0.11"
 parking_lot = { workspace = true }
 dirs = "6"
+ignore = "0.4"
 
 [build-dependencies]
 build-helpers = { path = "../build-helpers-internal" }

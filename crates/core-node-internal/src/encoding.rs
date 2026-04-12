@@ -22,7 +22,10 @@ pub use node::{
     stop::NodeStopRequest, stop::NodeStopResponse, sync::NodeSyncRequest, sync::NodeSyncResponse,
 };
 pub use ping::{PingRequest, PingResponse};
-pub use repo::{RepoAddRequest, RepoAddResponse, RepoSource};
+pub use repo::{
+    RepoAddRequest, RepoAddResponse, RepoRefreshFeedback, RepoRefreshGoal,
+    RepoRefreshGoalResponse, RepoRefreshResult, RepoSource,
+};
 pub use stack::launch::{
     LaunchFeedback, LaunchFeedbackStep, LaunchGoal, LaunchGoalResponse, LaunchResult,
     NodeAddLogEntry, NodeBuildLogEntry, NodeRunLogEntry,

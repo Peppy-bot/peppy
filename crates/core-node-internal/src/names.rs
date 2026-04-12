@@ -19,3 +19,4 @@ pub const NODE_STOP: &str = "node_stop";
 pub const NODE_SYNC: &str = "node_sync";
 
 pub const REPO_ADD: &str = "repo_add";
+pub const REPO_REFRESH_ACTION: &str = "repo_refresh";

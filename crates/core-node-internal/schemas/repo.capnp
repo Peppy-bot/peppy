@@ -27,3 +27,29 @@ struct RepoAddResponse {
     # Error message if failed (optional)
     errorMessage @1 :Text;
 }
+
+# ── Repo Refresh (action with feedback) ──────────────────────────
+
+struct RepoRefreshGoal {
+    # Empty for now — refresh all repos.
+}
+
+struct RepoRefreshGoalResponse {
+    accepted @0 :Bool;
+    rejectionReason @1 :Text;
+}
+
+struct RepoRefreshFeedback {
+    nodeName @0 :Text;
+    nodeTag @1 :Text;
+    # "fs", "git", or "url"
+    sourceType @2 :Text;
+    # Absolute path (fs) or relative path within repo (git)
+    path @3 :Text;
+}
+
+struct RepoRefreshResult {
+    success @0 :Bool;
+    errorMessage @1 :Text;
+    totalNodesFound @2 :UInt32;
+}
