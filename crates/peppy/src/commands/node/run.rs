@@ -46,6 +46,40 @@ enum BuildDecision {
     Wait,
 }
 
+/// Pure helper: compute the remaining `max_secs` budget given how many
+/// seconds have already elapsed. Split out from `remaining_timeouts` so the
+/// budget-arithmetic + error path can be unit-tested without needing a
+/// tokio runtime or time-mocking feature.
+fn remaining_max_secs(original_max: u64, elapsed: u64, stage: &str) -> Result<u64> {
+    if elapsed >= original_max {
+        return Err(Error::ExecutionFailed(format!(
+            "Timeout: max timeout of {original_max}s exceeded before {stage}. \
+             Use --max-timeout <seconds> to increase."
+        )));
+    }
+    Ok(original_max - elapsed)
+}
+
+/// Derive a new `TimeoutConfig` whose `max_secs` is what remains of the
+/// original `max_secs` budget after the time elapsed since `start`. Returns
+/// an `ExecutionFailed` error if no budget remains, so callers never kick
+/// off a stage with a zero deadline.
+///
+/// `idle_secs` is preserved as-is: it's a per-call "no output" guard, not a
+/// wall-clock budget, so it should not shrink across stages.
+fn remaining_timeouts(
+    timeouts: &TimeoutConfig,
+    start: Instant,
+    stage: &str,
+) -> Result<TimeoutConfig> {
+    let elapsed = start.elapsed().as_secs();
+    let max_secs = remaining_max_secs(timeouts.max_secs, elapsed, stage)?;
+    Ok(TimeoutConfig {
+        idle_secs: timeouts.idle_secs,
+        max_secs,
+    })
+}
+
 /// Classify a node's lifecycle stage into a `run -b` action.
 ///
 /// This is split out as a pure function so the stage-matching logic can be
@@ -350,6 +384,14 @@ async fn run_node_async(
 ) -> Result<()> {
     let conn = ctx.connect_to_daemon().await?;
 
+    // Single end-to-end budget: every subsequent blocking stage (build, wait,
+    // run) derives its `max_secs` from what's left of this budget, so the sum
+    // of their wall-clock deadlines cannot exceed the original
+    // `timeouts.max_secs`. The preflight `NodeInfoRequest` below intentionally
+    // uses its own fixed-30s timeout and is exempt (see
+    // `NODE_INFO_PREFLIGHT_TIMEOUT` docs above).
+    let start = Instant::now();
+
     if build {
         // Look up the node's current lifecycle stage so we only trigger a
         // build when the node is not yet built. The same `NodeInfoRequest`
@@ -390,7 +432,7 @@ async fn run_node_async(
                     &conn.core_node_name,
                     &node_name,
                     &tag,
-                    &timeouts,
+                    &remaining_timeouts(&timeouts, start, "build")?,
                     false,
                 )
                 .await?;
@@ -401,7 +443,7 @@ async fn run_node_async(
                     &conn.core_node_name,
                     &node_name,
                     &tag,
-                    &timeouts,
+                    &remaining_timeouts(&timeouts, start, "wait-for-build")?,
                 )
                 .await?;
             }
@@ -415,7 +457,7 @@ async fn run_node_async(
         &tag,
         &args,
         instance_id,
-        &timeouts,
+        &remaining_timeouts(&timeouts, start, "run")?,
     )
     .await?;
 
@@ -579,6 +621,30 @@ mod tests {
             msg.contains("root"),
             "error should mention root stage: {msg}"
         );
+    }
+
+    #[test]
+    fn remaining_max_secs_subtracts_elapsed() {
+        let remaining = remaining_max_secs(100, 25, "build")
+            .expect("remaining budget should still be positive");
+        assert_eq!(remaining, 75);
+    }
+
+    #[test]
+    fn remaining_max_secs_errors_when_budget_exhausted() {
+        // Equal to budget — already exhausted (we refuse zero-deadline calls).
+        let err_exact =
+            remaining_max_secs(30, 30, "run").expect_err("exhausted budget should error");
+        let msg = format!("{err_exact}");
+        assert!(msg.contains("30s"), "error should cite original max: {msg}");
+        assert!(msg.contains("run"), "error should cite stage label: {msg}");
+        assert!(
+            msg.contains("--max-timeout"),
+            "error should hint at the CLI flag: {msg}"
+        );
+
+        // Past budget — same error path.
+        assert!(remaining_max_secs(30, 45, "run").is_err());
     }
 
     #[test]
