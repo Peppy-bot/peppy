@@ -20,6 +20,12 @@ use crate::error::{Error, Result};
 use super::TimeoutConfig;
 use super::env::caller_env_overrides;
 
+/// Timeout for the quick `NodeInfoRequest` preflight in the `run -b` flow.
+/// Matches `node info`'s request timeout — this is a metadata lookup,
+/// not a long-running action, so it must fail fast if the daemon is down
+/// rather than waiting out `timeouts.max_secs` (which can be 1 hour).
+const NODE_INFO_PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// Converts a list of key=value string pairs into node arguments.
 /// Dot-separated keys are converted into nested objects.
 /// For example: "device.physical=/dev/video0" becomes {"device": {"physical": "/dev/video0"}}
@@ -248,7 +254,7 @@ async fn run_node_async(
                 &conn.core_node_name,
                 CALLER_INSTANCE_ID,
                 &conn.core_node_name,
-                Duration::from_secs(timeouts.max_secs),
+                NODE_INFO_PREFLIGHT_TIMEOUT,
             )
             .await
             .map_err(|e| {
