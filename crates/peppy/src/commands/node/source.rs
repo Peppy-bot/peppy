@@ -131,6 +131,12 @@ pub fn is_supported_http_archive(url: &url::Url) -> bool {
     path.ends_with(".tar.zst") || path.ends_with(".tar.zstd") || path.ends_with(".tzst")
 }
 
+/// Returns `true` when the source string looks like a git repository URL
+/// (contains `.git` or uses `git@` / `ssh://` scheme).
+pub fn looks_like_git_url(source: &str) -> bool {
+    source.contains(".git") || source.starts_with("git@") || source.starts_with("ssh://")
+}
+
 pub fn parse_git_repo_url_and_path(source: &str) -> Result<(GitUrl, String)> {
     if let Ok(mut parsed) = url::Url::parse(source) {
         parsed.set_query(None);

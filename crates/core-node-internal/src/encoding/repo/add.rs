@@ -1,9 +1,12 @@
 use std::path::PathBuf;
+use std::time::Duration;
 
 use capnp::message::Builder;
 use peppylib::types::Payload;
+use peppylib::{MessengerHandle, ServiceMessenger};
 
 use crate::Result;
+use crate::names;
 use crate::repo_capnp;
 
 use crate::encoding::{decode_message, encode_message};
@@ -88,6 +91,30 @@ impl RepoAddRequest {
             Which::Url(url) => RepoSource::Url(url?.to_str()?.to_owned()),
         };
         Ok(Self { source })
+    }
+
+    pub async fn poll(
+        &self,
+        messenger: &MessengerHandle,
+        bound_core_node: &str,
+        as_instance_id: &str,
+        target_core_node: &str,
+        response_timeout: Duration,
+    ) -> Result<RepoAddResponse> {
+        let request_payload = self.encode()?;
+        let response = ServiceMessenger::poll(
+            messenger,
+            bound_core_node,
+            as_instance_id,
+            target_core_node,
+            names::REPO_ADD,
+            Some(target_core_node),
+            None,
+            request_payload,
+            response_timeout,
+        )
+        .await?;
+        RepoAddResponse::decode(response.payload().as_ref())
     }
 }
 

@@ -100,8 +100,7 @@ impl RepoRefreshFeedback {
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
-            let mut feedback =
-                builder.init_root::<repo_capnp::repo_refresh_feedback::Builder>();
+            let mut feedback = builder.init_root::<repo_capnp::repo_refresh_feedback::Builder>();
             feedback.set_node_name(&self.node_name);
             feedback.set_node_tag(&self.node_tag);
             feedback.set_source_type(&self.source_type);

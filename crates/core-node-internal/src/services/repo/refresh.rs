@@ -87,10 +87,12 @@ impl GoalHandler for RepoRefreshGoalHandler {
                     "a repo refresh operation is already in progress",
                 );
                 *state.lock().await = ActionState::Rejected;
-                return response.encode().map_err(|e| PeppyError::InvalidServiceRequest {
-                    identifier: "repo_refresh".to_string(),
-                    reason: e.to_string(),
-                });
+                return response
+                    .encode()
+                    .map_err(|e| PeppyError::InvalidServiceRequest {
+                        identifier: "repo_refresh".to_string(),
+                        reason: e.to_string(),
+                    });
             }
         }
 
@@ -99,10 +101,12 @@ impl GoalHandler for RepoRefreshGoalHandler {
             let response =
                 RepoRefreshGoalResponse::rejected(format!("invalid goal payload: {}", e));
             *state.lock().await = ActionState::Rejected;
-            return response.encode().map_err(|e| PeppyError::InvalidServiceRequest {
-                identifier: "repo_refresh".to_string(),
-                reason: e.to_string(),
-            });
+            return response
+                .encode()
+                .map_err(|e| PeppyError::InvalidServiceRequest {
+                    identifier: "repo_refresh".to_string(),
+                    reason: e.to_string(),
+                });
         }
 
         {
@@ -118,11 +122,7 @@ impl GoalHandler for RepoRefreshGoalHandler {
 
         tokio::spawn(async move {
             let dirs = peppy_dirs.clone();
-            let result = match tokio::task::spawn_blocking(move || {
-                process_refresh(&dirs)
-            })
-            .await
-            {
+            let result = match tokio::task::spawn_blocking(move || process_refresh(&dirs)).await {
                 Ok(Ok(discovered)) => {
                     // Publish feedback for each discovered node
                     for node in &discovered {
@@ -153,10 +153,12 @@ impl GoalHandler for RepoRefreshGoalHandler {
         });
 
         let response = RepoRefreshGoalResponse::accepted();
-        response.encode().map_err(|e| PeppyError::InvalidServiceRequest {
-            identifier: "repo_refresh".to_string(),
-            reason: e.to_string(),
-        })
+        response
+            .encode()
+            .map_err(|e| PeppyError::InvalidServiceRequest {
+                identifier: "repo_refresh".to_string(),
+                reason: e.to_string(),
+            })
     }
 }
 
@@ -345,10 +347,9 @@ fn clone_and_walk_git_repo(
     peppy_dirs: &PeppyDirs,
 ) -> std::result::Result<Vec<DiscoveredNode>, String> {
     let tmp_dir = peppy_dirs.tmp_dir();
-    std::fs::create_dir_all(&tmp_dir)
-        .map_err(|e| format!("failed to create tmp dir: {}", e))?;
-    let tmp = tempfile::tempdir_in(&tmp_dir)
-        .map_err(|e| format!("failed to create temp dir: {}", e))?;
+    std::fs::create_dir_all(&tmp_dir).map_err(|e| format!("failed to create tmp dir: {}", e))?;
+    let tmp =
+        tempfile::tempdir_in(&tmp_dir).map_err(|e| format!("failed to create temp dir: {}", e))?;
 
     let mut fetch_opts = git2::FetchOptions::new();
     fetch_opts.depth(1);
@@ -380,10 +381,7 @@ fn write_cache(peppy_dirs: &PeppyDirs, nodes: &[DiscoveredNode]) -> Result<()> {
         .filter(|n| n.source_type != "fs")
         .map(|n| {
             let mut map = serde_json::Map::new();
-            map.insert(
-                "node_name".to_string(),
-                Value::String(n.node_name.clone()),
-            );
+            map.insert("node_name".to_string(), Value::String(n.node_name.clone()));
             map.insert("node_tag".to_string(), Value::String(n.node_tag.clone()));
             map.insert(
                 "source_type".to_string(),

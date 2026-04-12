@@ -171,10 +171,7 @@ async fn refresh_fs_discovers_nodes() {
 
     write_repositories_json5(
         &started,
-        &format!(
-            r#"[{{ "type": "fs", "path": "{}" }}]"#,
-            repo_dir.display()
-        ),
+        &format!(r#"[{{ "type": "fs", "path": "{}" }}]"#, repo_dir.display()),
     );
 
     let result = send_refresh_and_wait_with_feedback(&started).await;
@@ -202,10 +199,7 @@ async fn refresh_multiple_nodes() {
 
     write_repositories_json5(
         &started,
-        &format!(
-            r#"[{{ "type": "fs", "path": "{}" }}]"#,
-            repo_dir.display()
-        ),
+        &format!(r#"[{{ "type": "fs", "path": "{}" }}]"#, repo_dir.display()),
     );
 
     let result = send_refresh_and_wait_with_feedback(&started).await;
@@ -217,7 +211,11 @@ async fn refresh_multiple_nodes() {
     );
 
     assert_eq!(result.feedbacks.len(), 2, "should receive 2 feedbacks");
-    let names: Vec<&str> = result.feedbacks.iter().map(|f| f.node_name.as_str()).collect();
+    let names: Vec<&str> = result
+        .feedbacks
+        .iter()
+        .map(|f| f.node_name.as_str())
+        .collect();
     assert!(names.contains(&"node_a"), "should contain node_a");
     assert!(names.contains(&"node_b"), "should contain node_b");
 }
@@ -305,10 +303,7 @@ async fn refresh_cache_written() {
 
     write_repositories_json5(
         &started,
-        &format!(
-            r#"[{{ "type": "fs", "path": "{}" }}]"#,
-            repo_dir.display()
-        ),
+        &format!(r#"[{{ "type": "fs", "path": "{}" }}]"#, repo_dir.display()),
     );
 
     let result = send_refresh_and_wait(&started).await;
@@ -318,8 +313,7 @@ async fn refresh_cache_written() {
     assert!(cache_path.exists(), "cache file should exist");
 
     let content = std::fs::read_to_string(&cache_path).expect("read cache");
-    let entries: Vec<serde_json::Value> =
-        serde_json::from_str(&content).expect("parse cache JSON");
+    let entries: Vec<serde_json::Value> = serde_json::from_str(&content).expect("parse cache JSON");
     assert!(
         entries.is_empty(),
         "cache should be empty for FS-only repos"
@@ -333,5 +327,8 @@ async fn refresh_empty_repos() {
     let result = send_refresh_and_wait(&started).await;
 
     assert!(result.goal_response.accepted, "goal should be accepted");
-    assert!(result.result.success, "refresh should succeed with defaults");
+    assert!(
+        result.result.success,
+        "refresh should succeed with defaults"
+    );
 }
