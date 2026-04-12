@@ -1,3 +1,8 @@
+mod add;
+mod list;
+mod refresh;
+mod remove;
+
 use std::sync::Arc;
 
 use clap::Subcommand;
@@ -12,7 +17,8 @@ pub enum RepoCommands {
     /// List configured repositories
     List,
     /// Update repository indexes
-    Update,
+    #[clap(alias = "update")]
+    Refresh,
     /// Add a new repository
     Add {
         /// Repository source (git URL).
@@ -37,7 +43,7 @@ impl Command for RepoCommand {
     fn execute(self, _ctx: &Arc<AppContext>) -> Result<()> {
         match self.command {
             RepoCommands::List => todo!("repo list"),
-            RepoCommands::Update => todo!("repo update"),
+            RepoCommands::Refresh => todo!("repo update"),
             RepoCommands::Add { source, git_ref } => add_repo(&source, git_ref),
             RepoCommands::Remove => todo!("repo remove"),
         }

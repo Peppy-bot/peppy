@@ -17,3 +17,5 @@ pub const NODE_INIT: &str = "node_init";
 pub const NODE_INFO: &str = "node_info";
 pub const NODE_STOP: &str = "node_stop";
 pub const NODE_SYNC: &str = "node_sync";
+
+pub const REPO_ADD: &str = "repo_add";

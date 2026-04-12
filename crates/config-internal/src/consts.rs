@@ -142,6 +142,11 @@ impl PeppyDirs {
     pub fn python_libs_cache_dir(&self, cache_key: &str) -> PathBuf {
         self.root.join("libs").join("python").join(cache_key)
     }
+
+    /// Configuration directory for user-editable config files (e.g. repositories.json5).
+    pub fn conf_dir(&self) -> PathBuf {
+        self.root.join("conf")
+    }
 }
 
 /// Uses the standard application data directory.
