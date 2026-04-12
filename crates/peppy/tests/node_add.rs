@@ -1539,7 +1539,7 @@ fn node_add_with_sync_flag_refreshes_stale_git_hash() {
     );
     // The sync log line should also appear, proving --sync fired
     assert!(
-        logs.contains("Synced node interfaces successfully"),
+        logs.contains("Synced node interfaces at"),
         "logs should show sync ran. Logs:\n{}",
         logs
     );
