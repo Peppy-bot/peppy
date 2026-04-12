@@ -30,7 +30,7 @@ struct NodeAddGoal {
     }
     # Optional SHA256 checksum for HTTP sources
     httpSha256 @7 :Text;
-    # Environment variables to apply when executing add_cmd (e.g. PATH)
+    # Environment variables to apply when executing build_cmd (e.g. PATH)
     envVars @4 :List(EnvVar);
     # Timeout in seconds for the add operation (used to report remaining time when busy)
     timeoutSecs @5 :UInt64;
@@ -90,14 +90,40 @@ struct NodeAddResult {
     success @0 :Bool;
     # Error message if failed
     errorMessage @1 :Text;
-    # Path where the node was copied (empty on failure)
-    snapshotPath @2 :Text;
     # Path to the log file containing stdout/stderr output
-    logPath @3 :Text;
+    logPath @2 :Text;
     # Name of the added node (empty on failure)
-    nodeName @4 :Text;
+    nodeName @3 :Text;
     # Tag of the added node (empty on failure)
-    nodeTag @5 :Text;
+    nodeTag @4 :Text;
+}
+
+# Node Build Action — drives the build of a previously-added node
+struct NodeBuildGoal {
+    nodeName @0 :Text;
+    nodeTag @1 :Text;
+    envVars @2 :List(EnvVar);
+    timeoutSecs @3 :UInt64;
+    force @4 :Bool;
+}
+
+struct NodeBuildGoalResponse {
+    accepted @0 :Bool;
+    logPath @1 :Text;
+    rejectionReason @2 :Text;
+}
+
+struct NodeBuildFeedback {
+    stream @0 :Text;
+    line @1 :Text;
+}
+
+struct NodeBuildResult {
+    success @0 :Bool;
+    errorMessage @1 :Text;
+    # Path to the resulting .sif/archive in storage (empty on failure)
+    artifactPath @2 :Text;
+    logPath @3 :Text;
 }
 
 # Node Init service
@@ -127,6 +153,12 @@ struct NodeGenerateRequest {
     nodeRootDir @0 :Text;
     # Git commit hash of the node being synced
     gitHash @1 :Text;
+    # Optional peer node root directories that should also be considered
+    # when resolving this node's dependencies. Used by `node sync -a` so the
+    # daemon can find sibling nodes that have not been added to the persistent
+    # node stack yet. The list is consumed only for this single request and
+    # never persisted.
+    localPeers @2 :List(Text);
 }
 
 struct NodeSyncResponse {
@@ -136,20 +168,20 @@ struct NodeSyncResponse {
     errorMessage @1 :Text;
 }
 
-struct NodeStartGoal {
+struct NodeRunGoal {
     # Runtime configuration in JSON5 format (PEPPY_RUNTIME_CONFIG)
     runtimeConfigJson5 @0 :Text;
-    # Name of the node to start
+    # Name of the node to run
     nodeName @1 :Text;
-    # Tag of the node to start
+    # Tag of the node to run
     tag @2 :Text;
-    # Environment variables to apply when executing start_cmd (e.g. PATH)
+    # Environment variables to apply when executing run_cmd (e.g. PATH)
     envVars @3 :List(EnvVar);
-    # Timeout in seconds for the start operation (used to report remaining time when busy)
+    # Timeout in seconds for the run operation (used to report remaining time when busy)
     timeoutSecs @4 :UInt64;
 }
 
-struct NodeStartGoalResponse {
+struct NodeRunGoalResponse {
     # Whether the goal was accepted
     accepted @0 :Bool;
     # Path to the log file (empty if rejected)
@@ -158,19 +190,19 @@ struct NodeStartGoalResponse {
     rejectionReason @2 :Text;
 }
 
-struct NodeStartFeedback {
+struct NodeRunFeedback {
     # Type of output: "stdout" or "stderr"
     stream @0 :Text;
     # The line of output
     line @1 :Text;
 }
 
-struct NodeStartResult {
+struct NodeRunResult {
     # Whether the run was successful
     success @0 :Bool;
     # Error message if failed (optional)
     errorMessage @1 :Text;
-    # Process ID of the started node (0 if not available or failed)
+    # Process ID of the running node (0 if not available or failed)
     pid @2 :UInt32;
 }
 
@@ -217,35 +249,47 @@ struct NodeResetResponse {
 
 # Node Info service
 struct NodeInfoRequest {
-    # Source of the node to get info for
-    source :union {
-        # Filesystem path to the node directory
-        fs @0 :Text;
-        # Git repository source
-        git @1 :NodeAddGitSource;
-        # HTTP URL source
-        http @2 :Text;
-    }
-    # Optional SHA256 checksum for HTTP sources
-    httpSha256 @4 :Text;
-    # Optional variant source — when set, the main source points to the root node
-    # and this identifies which variant to resolve and merge.
-    # Fs = variant name (lookup in manifest), Git/Http = direct source.
-    variant @3 :NodeAddVariantSource;
+    # Name of the node to look up in the stack
+    nodeName @0 :Text;
+    # Tag of the node to look up in the stack
+    nodeTag @1 :Text;
 }
 
+struct NodeInstanceInfo {
+    # Instance identifier
+    instanceId @0 :Text;
+    # Per-instance state: "starting" or "running"
+    state @1 :Text;
+}
+
+# Node info lookup result.
+#
+# The response is a union so that "no such node in the stack" is a
+# first-class successful outcome rather than a protocol-level error. This
+# lets the `peppy node add` preflight check, `peppy node info`, and any
+# other caller disambiguate "not found" from a real fault without having
+# to sniff the error-string payload of an `InvalidServiceRequest`.
 struct NodeInfoResponse {
-    # JSON5-serialized NodeConfig (merged with variant runtime when variant is requested)
-    configJson5 @0 :Text;
-    # Whether the node is already in the node stack
-    isInNodeStack @1 :Bool;
-    # Names of running instances of this node
-    instancesNames @2 :List(Text);
-    # SHA256 of the entire NodeConfig file
-    configSha256 @3 :Text;
-    # Name of the variant applied (empty string when no variant)
-    variantName @4 :Text;
-    # Non-fatal issues encountered during resolution (e.g. unknown variant).
-    # Empty when resolution was fully successful.
-    issues @5 :List(Text);
+    union {
+        # The node is not in the stack. Carries no payload — the caller
+        # already knows which `(name, tag)` it asked about.
+        notInStack @0 :Void;
+        # The node is in the stack. All of the node metadata is grouped
+        # under this arm; callers must match on the union before reading.
+        found :group {
+            # JSON5-serialized NodeConfig as stored in the node stack
+            configJson5 @1 :Text;
+            # SHA256 of the entire NodeConfig file
+            configSha256 @2 :Text;
+            # Lifecycle stage of the in-stack entity ("Added"/"Building"/"Ready"/"Root").
+            stage @3 :Text;
+            # All tracked instances of this entity, including in-flight `Starting` ones.
+            instances @4 :List(NodeInstanceInfo);
+            # Path to the most-recent add/build log file for this entity.
+            # Empty string when no add log has been produced yet.
+            addLogPath @5 :Text;
+            # Per-instance run log paths, aligned with `instances` (same order).
+            runLogPaths @6 :List(Text);
+        }
+    }
 }

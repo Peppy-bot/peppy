@@ -25,27 +25,27 @@ fn modify_node_config(peppy_json5: &Path, modify: impl FnOnce(&mut config::node:
     config::fingerprint::create_codegen_fingerprint(peppy_json5, Path::new(PEPPYGEN_OUTPUT_PATH));
 }
 
-/// Overrides the node start command to `sleep 4` and disables the add command,
+/// Overrides the node run command to `sleep 4` and disables the build command,
 /// preventing the test from spawning a real binary.
-pub fn override_start_cmd(peppy_json5: &Path) {
+pub fn override_run_cmd(peppy_json5: &Path) {
     modify_node_config(peppy_json5, |cfg| {
-        cfg.execution.start_cmd = Some(vec!["sleep".to_string(), "4".to_string()]);
-        cfg.execution.add_cmd = None;
+        cfg.execution.run_cmd = Some(vec!["sleep".to_string(), "4".to_string()]);
+        cfg.execution.build_cmd = None;
     });
 }
 
-/// Removes the `add_cmd` from a node's config so that integration tests can
+/// Removes the `build_cmd` from a node's config so that integration tests can
 /// exercise node operations (add, remove, runtime config) without triggering
 /// the actual build step. Regenerates the codegen fingerprint after writing.
-pub fn disable_add_cmd(peppy_json5: &Path) {
+pub fn disable_build_cmd(peppy_json5: &Path) {
     modify_node_config(peppy_json5, |cfg| {
-        cfg.execution.add_cmd = None;
+        cfg.execution.build_cmd = None;
     });
 }
 
 #[derive(Clone, Default)]
 pub struct LogCapture {
-    buffer: Arc<std::sync::Mutex<Vec<u8>>>,
+    buffer: Arc<parking_lot::Mutex<Vec<u8>>>,
 }
 
 impl LogCapture {
@@ -54,13 +54,12 @@ impl LogCapture {
     }
 
     pub fn logs(&self) -> String {
-        let buffer = self.buffer.lock().expect("log buffer poisoned");
-        String::from_utf8(buffer.clone()).expect("captured logs are valid UTF-8")
+        String::from_utf8(self.buffer.lock().clone()).expect("captured logs are valid UTF-8")
     }
 }
 
 pub struct LogCaptureWriter {
-    buffer: Arc<std::sync::Mutex<Vec<u8>>>,
+    buffer: Arc<parking_lot::Mutex<Vec<u8>>>,
 }
 
 impl<'a> MakeWriter<'a> for LogCapture {
@@ -75,8 +74,7 @@ impl<'a> MakeWriter<'a> for LogCapture {
 
 impl Write for LogCaptureWriter {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let mut buffer = self.buffer.lock().expect("log buffer poisoned");
-        buffer.extend_from_slice(buf);
+        self.buffer.lock().extend_from_slice(buf);
         Ok(buf.len())
     }
 
@@ -149,6 +147,9 @@ impl ServeCommandEmulation {
             CoreNodeArguments {
                 node_startup_timeout: Duration::from_secs(120),
                 node_start_health_timeout: Duration::from_secs(30),
+                health_monitor_interval: Duration::from_secs(5),
+                health_monitor_timeout: Duration::from_secs(3),
+                health_monitor_max_failures: 3,
             },
             temp_dir.path().to_path_buf(),
             peppy_dirs,

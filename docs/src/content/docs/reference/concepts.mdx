@@ -36,9 +36,9 @@ The execution section defines how to prepare and launch the node:
 |-------|-------------|
 | `language` | The programming language of the node (`rust`, `python`) |
 | `parameters` | Optional parameter schema for runtime configuration |
-| `add_cmd` | Command to run before adding to the stack |
-| `start_cmd` | Command to launch the node |
-| `container` | Optional container configuration (mutually exclusive with `add_cmd`/`start_cmd`) |
+| `build_cmd` | Command to run during the node build phase |
+| `run_cmd` | Command to launch the node |
+| `container` | Optional container configuration (mutually exclusive with `build_cmd`/`run_cmd`) |
 
 ### Interfaces
 

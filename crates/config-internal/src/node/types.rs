@@ -802,9 +802,9 @@ pub struct Execution {
     #[serde(default)]
     pub parameters: ParameterSchema,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub add_cmd: Option<Vec<String>>,
+    pub build_cmd: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub start_cmd: Option<Vec<String>>,
+    pub run_cmd: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub container: Option<ContainerConfig>,
 }
@@ -821,9 +821,9 @@ pub(crate) struct RawExecution {
     #[serde(default)]
     pub parameters: ParameterSchema,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub add_cmd: Option<Vec<String>>,
+    pub build_cmd: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub start_cmd: Option<Vec<String>>,
+    pub run_cmd: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub container: Option<ContainerConfig>,
 }
@@ -836,8 +836,8 @@ impl RawExecution {
         Ok(Execution {
             language,
             parameters: self.parameters,
-            add_cmd: self.add_cmd,
-            start_cmd: self.start_cmd,
+            build_cmd: self.build_cmd,
+            run_cmd: self.run_cmd,
             container: self.container,
         })
     }
@@ -1893,7 +1893,7 @@ mod tests {
         let json5 = r#"{
             schema_version: 1,
             manifest: { name: "node", tag: "0.1.0" },
-            execution: { language: "rust", start_cmd: ["./run"] },
+            execution: { language: "rust", run_cmd: ["./run"] },
             extra: "bad"
         }"#;
         assert!(serde_json5::from_str::<NodeConfig>(json5).is_err());

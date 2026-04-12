@@ -182,6 +182,54 @@ async fn handle_node_sync_request_inner(
         .encode();
     }
 
+    // Parse any local peer node configs supplied by the caller (`node sync -a`).
+    // These are checked first when resolving dependencies, before falling back
+    // to the persistent node stack. The peer map lives only for this request.
+    let mut local_peers: std::collections::HashMap<(String, String), config::node::NodeConfig> =
+        std::collections::HashMap::new();
+    for peer_dir in &request.local_peers {
+        let peer_config_path = peer_dir.join(config::consts::NODE_CONFIG_FILE);
+        if !peer_config_path.is_file() {
+            return NodeSyncResponse::failure(format!(
+                "Local peer config does not exist: {}",
+                peer_config_path.display()
+            ))
+            .encode();
+        }
+        match NodeConfigParser::from_path(&peer_config_path) {
+            Ok(parsed) => {
+                let peer_name = parsed.manifest_name().to_owned();
+                let peer_tag = parsed.manifest_tag().to_owned();
+                // `into_resolved_or_default` keeps the manifest+interfaces
+                // intact while substituting a default execution for
+                // variant-only roots — execution is irrelevant for dependency
+                // resolution since only `interfaces` is read downstream.
+                let cfg = parsed.into_resolved_or_default();
+                local_peers.insert((peer_name, peer_tag), cfg);
+            }
+            Err(e) => {
+                return NodeSyncResponse::failure(format!(
+                    "Failed to parse local peer config at {}: {}",
+                    peer_config_path.display(),
+                    e
+                ))
+                .encode();
+            }
+        }
+    }
+
+    // Resolver closure: peers first, then the persistent node stack.
+    let resolve_dep = |name: &str, tag: &str| -> Option<config::node::NodeConfig> {
+        local_peers
+            .get(&(name.to_owned(), tag.to_owned()))
+            .cloned()
+            .or_else(|| {
+                node_stack
+                    .find(name, tag)
+                    .map(|e| e.read().config().clone())
+            })
+    };
+
     // Validate dependencies before generation and collect consumed interfaces
     let node_config_path = request.node_root_dir.join(config::consts::NODE_CONFIG_FILE);
     let (
@@ -200,13 +248,12 @@ async fn handle_node_sync_request_inner(
     } else {
         match NodeConfigParser::from_path(&node_config_path) {
             Ok(node_config) => {
-                // Validate dependencies exist in the node stack
                 let dep_errors = node_stack::validate_dependency_specs(
                     node_config.manifest(),
                     node_config.interfaces(),
                     node_config.manifest_name(),
                     node_config.manifest_tag(),
-                    |name, tag| node_stack.find(name, tag).map(|e| e.config().clone()),
+                    resolve_dep,
                 );
 
                 let mut missing_dependencies: HashSet<String> = HashSet::new();
@@ -284,11 +331,20 @@ async fn handle_node_sync_request_inner(
                 }
 
                 // Collect consumed interfaces with resolved message formats
-                let interfaces = collect_consumed_interfaces(
+                let interfaces = match collect_consumed_interfaces(
                     node_config.manifest(),
                     node_config.interfaces(),
-                    node_stack,
-                );
+                    resolve_dep,
+                ) {
+                    Ok(v) => v,
+                    Err(reason) => {
+                        return NodeSyncResponse::failure(format!(
+                            "Failed to resolve consumed interfaces: {}",
+                            reason
+                        ))
+                        .encode();
+                    }
+                };
                 let language = node_config.execution_language();
                 let variants = node_config.manifest().variants.clone();
                 let root_manifest = node_config.manifest().clone();
@@ -313,6 +369,7 @@ async fn handle_node_sync_request_inner(
     let NodeSyncRequest {
         node_root_dir,
         git_hash,
+        local_peers: _,
     } = request;
 
     let node_root_dir_for_variants = node_root_dir.clone();
@@ -542,15 +599,36 @@ fn build_dependency_lookup(
         .unwrap_or_default()
 }
 
-/// Collects consumed interfaces from a node config and resolves their message formats
-/// by looking up the exposed interfaces from dependency nodes in the node stack.
+/// Collects consumed interfaces from a node config and resolves their message
+/// formats by looking up the exposed interfaces from dependency nodes via the
+/// caller-supplied resolver.
+///
+/// The `resolve` closure returns a [`config::node::NodeConfig`] for a given
+/// `(name, tag)` pair, or `None` if the dependency cannot be found. Callers
+/// usually wrap a [`NodeStack`] (see [`stack_resolver`]) but can also chain a
+/// peer map first to resolve sibling nodes that haven't been added to the
+/// stack yet — used by `node sync -a` for batch operations.
 pub fn collect_consumed_interfaces(
     manifest: &config::node::Manifest,
     interfaces_cfg: &config::node::Interfaces,
-    node_stack: &NodeStack,
-) -> Vec<DeploymentInterface> {
+    resolve: impl Fn(&str, &str) -> Option<config::node::NodeConfig>,
+) -> std::result::Result<Vec<DeploymentInterface>, String> {
     let mut interfaces = Vec::new();
     let dep_lookup = build_dependency_lookup(manifest);
+
+    // Pre-resolve each unique (name, tag) into a cloned NodeConfig so the
+    // per-item loops below don't repeatedly hit the resolver (which may take
+    // a NodeStack read lock or do filesystem I/O).
+    let mut dep_configs: std::collections::HashMap<(String, String), config::node::NodeConfig> =
+        std::collections::HashMap::new();
+    for (dep_name, dep_tag) in dep_lookup.values() {
+        let key = (dep_name.clone(), dep_tag.clone());
+        if !dep_configs.contains_key(&key)
+            && let Some(cfg) = resolve(dep_name, dep_tag)
+        {
+            dep_configs.insert(key, cfg);
+        }
+    }
 
     // Collect consumed topics
     if let Some(topic_interfaces) = &interfaces_cfg.topics
@@ -563,8 +641,8 @@ pub fn collect_consumed_interfaces(
                     else {
                         continue;
                     };
-                    if let Some(dependency_entity) = node_stack.find(dep_name, dep_tag)
-                        && let Some(dep_topics) = &dependency_entity.config().interfaces.topics
+                    if let Some(dep_config) = dep_configs.get(&(dep_name.clone(), dep_tag.clone()))
+                        && let Some(dep_topics) = &dep_config.interfaces.topics
                         && let Some(emitted_topics) = &dep_topics.emits
                         && let Some(emitted_topic) = emitted_topics
                             .iter()
@@ -600,8 +678,8 @@ pub fn collect_consumed_interfaces(
             let Some((dep_name, dep_tag)) = dep_lookup.get(&consumed_service.local_node_id) else {
                 continue;
             };
-            if let Some(dependency_entity) = node_stack.find(dep_name, dep_tag)
-                && let Some(dep_services) = &dependency_entity.config().interfaces.services
+            if let Some(dep_config) = dep_configs.get(&(dep_name.clone(), dep_tag.clone()))
+                && let Some(dep_services) = &dep_config.interfaces.services
                 && let Some(exposed_services) = &dep_services.exposes
                 && let Some(exposed_service) = exposed_services
                     .iter()
@@ -633,8 +711,8 @@ pub fn collect_consumed_interfaces(
             let Some((dep_name, dep_tag)) = dep_lookup.get(&consumed_action.local_node_id) else {
                 continue;
             };
-            if let Some(dependency_entity) = node_stack.find(dep_name, dep_tag)
-                && let Some(dep_actions) = &dependency_entity.config().interfaces.actions
+            if let Some(dep_config) = dep_configs.get(&(dep_name.clone(), dep_tag.clone()))
+                && let Some(dep_actions) = &dep_config.interfaces.actions
                 && let Some(exposed_actions) = &dep_actions.exposes
                 && let Some(exposed_action) = exposed_actions
                     .iter()
@@ -672,7 +750,21 @@ pub fn collect_consumed_interfaces(
         }
     }
 
-    interfaces
+    Ok(interfaces)
+}
+
+/// Convenience helper that builds a resolver closure backed by a [`NodeStack`].
+///
+/// Use this for callers that don't have any local peers to layer on top of
+/// the daemon's persistent stack — i.e. `node add` and `auto_sync_if_missing`.
+pub fn stack_resolver(
+    node_stack: &NodeStack,
+) -> impl Fn(&str, &str) -> Option<config::node::NodeConfig> + '_ {
+    move |name, tag| {
+        node_stack
+            .find(name, tag)
+            .map(|e| e.read().config().clone())
+    }
 }
 
 /// Parameters for [`auto_sync_if_missing`].
@@ -731,8 +823,17 @@ pub fn auto_sync_if_missing(
 
         let gen_result: crate::Result<()> = (|| {
             if let Some(language) = params.execution_language {
-                let consumed =
-                    collect_consumed_interfaces(params.manifest, params.interfaces, node_stack);
+                let consumed = collect_consumed_interfaces(
+                    params.manifest,
+                    params.interfaces,
+                    stack_resolver(node_stack),
+                )
+                .map_err(|reason| {
+                    crate::Error::Io(std::io::Error::other(format!(
+                        "failed to resolve consumed interfaces: {}",
+                        reason
+                    )))
+                })?;
                 generate_peppygen_for_node(
                     language,
                     params.node_dir,
@@ -755,11 +856,24 @@ pub fn auto_sync_if_missing(
 
         match gen_result {
             Ok(()) => {
-                // Generation succeeded — clean up backup in background.
+                // Clean up the backup synchronously. We *must not* defer this
+                // to a background thread: the next stage (`process_node_add`)
+                // copies the source directory recursively, walks
+                // `.peppy-backup-PID-NANOS` (which is not in the excluded
+                // list), and would race with a concurrent deletion — surfacing
+                // as intermittent "No such file or directory" errors.
+                //
+                // A failure here must be surfaced rather than silently
+                // ignored: leaving the backup behind would still trip the
+                // recursive copy described above.
                 if had_backup {
-                    std::thread::spawn(move || {
-                        std::fs::remove_dir_all(&backup_dir).ok();
-                    });
+                    std::fs::remove_dir_all(&backup_dir).map_err(|e| {
+                        crate::Error::Io(std::io::Error::other(format!(
+                            "failed to clean up .peppy backup at {}: {}",
+                            backup_dir.display(),
+                            e
+                        )))
+                    })?;
                 }
             }
             Err(e) => {
@@ -801,6 +915,22 @@ pub fn auto_sync_if_missing(
         std::io::Write::write_all(&mut tmp, merged_json5.as_bytes()).map_err(crate::Error::from)?;
         let merged_config_path = tmp.path().to_path_buf();
 
+        // Resolve consumed interfaces *before* touching the filesystem: an
+        // error here must not leave the variant's `.peppy` dir missing.
+        // Doing this after the rename would short-circuit past the
+        // `gen_result` restore path below.
+        let consumed = collect_consumed_interfaces(
+            params.manifest,
+            params.interfaces,
+            stack_resolver(node_stack),
+        )
+        .map_err(|reason| {
+            crate::Error::Io(std::io::Error::other(format!(
+                "failed to resolve consumed interfaces: {}",
+                reason
+            )))
+        })?;
+
         // Back up existing .peppy so we can restore it on failure.
         let peppy_dir = v.dir.join(config::consts::PEPPY_OUTPUT_DIR);
         let backup_dir = v.dir.join(format!(
@@ -816,8 +946,6 @@ pub fn auto_sync_if_missing(
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
             Err(e) => return Err(crate::Error::Io(e)),
         };
-
-        let consumed = collect_consumed_interfaces(params.manifest, params.interfaces, node_stack);
         let gen_result: crate::Result<()> = (|| {
             generate_peppygen_for_node(
                 v.language,
@@ -842,11 +970,18 @@ pub fn auto_sync_if_missing(
 
         match gen_result {
             Ok(()) => {
-                // Generation succeeded — clean up backup in background.
+                // Clean up the backup synchronously — see the matching comment
+                // in the root-sync branch above for why a background thread
+                // would race with the subsequent recursive copy. A failure
+                // here must be surfaced for the same reason.
                 if had_backup {
-                    std::thread::spawn(move || {
-                        std::fs::remove_dir_all(&backup_dir).ok();
-                    });
+                    std::fs::remove_dir_all(&backup_dir).map_err(|e| {
+                        crate::Error::Io(std::io::Error::other(format!(
+                            "failed to clean up .peppy backup at {}: {}",
+                            backup_dir.display(),
+                            e
+                        )))
+                    })?;
                 }
             }
             Err(e) => {
@@ -982,7 +1117,7 @@ mod tests {
             r#"{
                 schema_version: 1,
                 manifest: { name: "test_node", tag: "0.1.0" },
-                execution: { language: "rust", start_cmd: ["sleep", "10"] },
+                execution: { language: "rust", run_cmd: ["sleep", "10"] },
                 interfaces: {
                     topics: {
                         emits: [{

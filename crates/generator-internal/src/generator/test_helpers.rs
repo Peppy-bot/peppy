@@ -23,7 +23,7 @@ pub const STUB_NODE_CONFIG: &str = r#"{
   },
   execution: {
     language: "rust",
-    start_cmd: ["./target/release/generated_node"]
+    run_cmd: ["./target/release/generated_node"]
   }
 }
 "#;

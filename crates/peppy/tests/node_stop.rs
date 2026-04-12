@@ -71,7 +71,7 @@ async fn node_stop_command_succeeds() {
 
     // Override the launch command to avoid spawning a real node process.
     // Health/shutdown services are provided in-process via the mock messenger.
-    peppy::test_support::override_start_cmd(&peppy_json5_path);
+    peppy::test_support::override_run_cmd(&peppy_json5_path);
 
     // Add the node to the node stack (without running)
     NodeCommand {
@@ -79,7 +79,9 @@ async fn node_stop_command_succeeds() {
             source: Some(node_path.display().to_string()),
             git_ref: None,
             variant: None,
-            start: false,
+            sync: false,
+            build: true,
+            run: false,
             args: Vec::new(),
             instance_id: None,
             idle_timeout: 60,
@@ -94,7 +96,7 @@ async fn node_stop_command_succeeds() {
         .messenger_handle()
         .expect("messenger handle should be available");
 
-    // Start in-process node services for health/shutdown so node_start can succeed.
+    // Start in-process node services for health/shutdown so node_run can succeed.
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
     let _node_ready_handle =
         listen_for_node_ready(&node_messenger, &core_node_name, instance_id, node_name)
@@ -147,7 +149,7 @@ async fn node_stop_command_succeeds() {
 
     // Now run the node using the run command with a deterministic instance id
     NodeCommand {
-        command: NodeCommands::Start {
+        command: NodeCommands::Run {
             node_ref: None,
             node_name: Some(node_name.to_string()),
             tag: Some("0.1.0".to_string()),
@@ -155,6 +157,7 @@ async fn node_stop_command_succeeds() {
             instance_id: Some(instance_id.to_string()),
             idle_timeout: 60,
             max_timeout: 3600,
+            build: false,
         },
     }
     .execute(&node_ctx)

@@ -1,43 +1,40 @@
-//! Encoding types for the NodeStart action (streaming version with feedback).
+//! Encoding types for the NodeBuild action (streaming version with feedback).
 
-use std::path::PathBuf;
-use std::time::Duration;
-
+use crate::Result;
+use crate::encoding::{decode_message, encode_message, optional_text};
+use crate::names;
+use crate::node_capnp;
 use capnp::message::Builder;
 use config::node::QoSProfile;
+use node_stack::FeedbackStream;
 use peppylib::messaging::ActionGoalHandle;
 use peppylib::types::Payload;
 use peppylib::{ActionMessenger, MessengerHandle};
+use std::path::PathBuf;
+use std::time::Duration;
 
-use crate::Result;
-use crate::names;
-use crate::node_capnp;
-
-use crate::encoding::{decode_message, encode_message, optional_text};
-
-/// Goal message for the NodeStart action.
+/// Goal message for the NodeBuild action.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NodeStartGoal {
-    pub runtime_config_json5: String,
+pub struct NodeBuildGoal {
     pub node_name: String,
-    pub tag: String,
+    pub node_tag: String,
     pub env_vars: Vec<(String, String)>,
     pub timeout_secs: u64,
+    pub force: bool,
 }
 
-impl NodeStartGoal {
+impl NodeBuildGoal {
     pub fn new(
-        runtime_config_json5: impl Into<String>,
         node_name: impl Into<String>,
-        tag: impl Into<String>,
+        node_tag: impl Into<String>,
         timeout_secs: u64,
     ) -> Self {
         Self {
-            runtime_config_json5: runtime_config_json5.into(),
             node_name: node_name.into(),
-            tag: tag.into(),
+            node_tag: node_tag.into(),
             env_vars: Vec::new(),
             timeout_secs,
+            force: false,
         }
     }
 
@@ -46,13 +43,17 @@ impl NodeStartGoal {
         self
     }
 
+    pub fn with_force(mut self, force: bool) -> Self {
+        self.force = force;
+        self
+    }
+
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
-            let mut goal = builder.init_root::<node_capnp::node_start_goal::Builder>();
-            goal.set_runtime_config_json5(&self.runtime_config_json5);
+            let mut goal = builder.init_root::<node_capnp::node_build_goal::Builder>();
             goal.set_node_name(&self.node_name);
-            goal.set_tag(&self.tag);
+            goal.set_node_tag(&self.node_tag);
 
             let mut env_vars = goal.reborrow().init_env_vars(self.env_vars.len() as u32);
             for (idx, (key, value)) in self.env_vars.iter().enumerate() {
@@ -62,13 +63,14 @@ impl NodeStartGoal {
             }
 
             goal.reborrow().set_timeout_secs(self.timeout_secs);
+            goal.reborrow().set_force(self.force);
         }
         encode_message(&builder)
     }
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let goal = reader.get_root::<node_capnp::node_start_goal::Reader>()?;
+        let goal = reader.get_root::<node_capnp::node_build_goal::Reader>()?;
 
         let env_vars_reader = goal.get_env_vars()?;
         let mut env_vars = Vec::with_capacity(env_vars_reader.len() as usize);
@@ -81,15 +83,14 @@ impl NodeStartGoal {
         }
 
         Ok(Self {
-            runtime_config_json5: goal.get_runtime_config_json5()?.to_str()?.to_owned(),
             node_name: goal.get_node_name()?.to_str()?.to_owned(),
-            tag: goal.get_tag()?.to_str()?.to_owned(),
+            node_tag: goal.get_node_tag()?.to_str()?.to_owned(),
             env_vars,
             timeout_secs: goal.get_timeout_secs(),
+            force: goal.get_force(),
         })
     }
 
-    /// Sends the goal to start the NodeStart action and returns a handle for receiving feedback.
     pub async fn send_goal(
         &self,
         messenger: &MessengerHandle,
@@ -104,8 +105,8 @@ impl NodeStartGoal {
             messenger,
             as_core_node,
             as_instance_id,
-            as_core_node, // node_name is the core node for this action
-            names::NODE_START_ACTION,
+            as_core_node,
+            names::NODE_BUILD_ACTION,
             target_core_node,
             target_instance_id,
             goal_payload,
@@ -117,15 +118,15 @@ impl NodeStartGoal {
     }
 }
 
-/// Response to the NodeStart goal request.
+/// Response to the NodeBuild goal request.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NodeStartGoalResponse {
+pub struct NodeBuildGoalResponse {
     pub accepted: bool,
     pub log_path: PathBuf,
     pub rejection_reason: Option<String>,
 }
 
-impl NodeStartGoalResponse {
+impl NodeBuildGoalResponse {
     pub fn accepted(log_path: impl Into<PathBuf>) -> Self {
         Self {
             accepted: true,
@@ -145,7 +146,7 @@ impl NodeStartGoalResponse {
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
-            let mut response = builder.init_root::<node_capnp::node_start_goal_response::Builder>();
+            let mut response = builder.init_root::<node_capnp::node_build_goal_response::Builder>();
             response.set_accepted(self.accepted);
             response.set_log_path(self.log_path.to_string_lossy().as_ref());
             if let Some(ref reason) = self.rejection_reason {
@@ -157,7 +158,7 @@ impl NodeStartGoalResponse {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let response = reader.get_root::<node_capnp::node_start_goal_response::Reader>()?;
+        let response = reader.get_root::<node_capnp::node_build_goal_response::Reader>()?;
         Ok(Self {
             accepted: response.get_accepted(),
             log_path: PathBuf::from(response.get_log_path()?.to_str()?),
@@ -166,44 +167,50 @@ impl NodeStartGoalResponse {
     }
 }
 
-/// Feedback message for the NodeStart action.
-/// Represents a single line of output from the start_cmd process.
+/// Feedback message for the NodeBuild action.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NodeStartFeedback {
-    /// The stream type: "stdout" or "stderr"
-    pub stream: String,
-    /// The line of output
+pub struct NodeBuildFeedback {
+    pub stream: FeedbackStream,
     pub line: String,
 }
 
-impl NodeStartFeedback {
-    pub fn stdout(line: impl Into<String>) -> Self {
+impl NodeBuildFeedback {
+    pub fn from_stream(stream: FeedbackStream, line: impl Into<String>) -> Self {
         Self {
-            stream: "stdout".to_string(),
+            stream,
             line: line.into(),
         }
+    }
+
+    pub fn stdout(line: impl Into<String>) -> Self {
+        Self::from_stream(FeedbackStream::Stdout, line)
     }
 
     pub fn stderr(line: impl Into<String>) -> Self {
-        Self {
-            stream: "stderr".to_string(),
-            line: line.into(),
-        }
+        Self::from_stream(FeedbackStream::Stderr, line)
+    }
+
+    pub fn warning(line: impl Into<String>) -> Self {
+        Self::from_stream(FeedbackStream::Warning, line)
     }
 
     pub fn is_stdout(&self) -> bool {
-        self.stream == "stdout"
+        self.stream == FeedbackStream::Stdout
     }
 
     pub fn is_stderr(&self) -> bool {
-        self.stream == "stderr"
+        self.stream == FeedbackStream::Stderr
+    }
+
+    pub fn is_warning(&self) -> bool {
+        self.stream == FeedbackStream::Warning
     }
 
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
-            let mut feedback = builder.init_root::<node_capnp::node_start_feedback::Builder>();
-            feedback.set_stream(&self.stream);
+            let mut feedback = builder.init_root::<node_capnp::node_build_feedback::Builder>();
+            feedback.set_stream(self.stream.as_str());
             feedback.set_line(&self.line);
         }
         encode_message(&builder)
@@ -211,71 +218,79 @@ impl NodeStartFeedback {
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let feedback = reader.get_root::<node_capnp::node_start_feedback::Reader>()?;
+        let feedback = reader.get_root::<node_capnp::node_build_feedback::Reader>()?;
+        let stream_str = feedback.get_stream()?.to_str()?;
+        let stream = match stream_str {
+            "stdout" => FeedbackStream::Stdout,
+            "stderr" => FeedbackStream::Stderr,
+            "warning" => FeedbackStream::Warning,
+            other => {
+                return Err(crate::Error::Decoding(format!(
+                    "unknown NodeBuildFeedback stream: {}",
+                    other
+                )));
+            }
+        };
         Ok(Self {
-            stream: feedback.get_stream()?.to_str()?.to_owned(),
+            stream,
             line: feedback.get_line()?.to_str()?.to_owned(),
         })
     }
 }
 
-/// Result message for the NodeStart action.
+/// Result message for the NodeBuild action.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NodeStartResult {
+pub struct NodeBuildResult {
+    pub artifact_path: PathBuf,
+    pub log_path: PathBuf,
     pub success: bool,
     pub error_message: Option<String>,
-    /// Process ID of the started node (None if not available or failed).
-    pub pid: Option<u32>,
 }
 
-impl NodeStartResult {
-    pub fn new(success: bool, error_message: Option<String>, pid: Option<u32>) -> Self {
+impl NodeBuildResult {
+    pub fn success(artifact_path: impl Into<PathBuf>, log_path: impl Into<PathBuf>) -> Self {
         Self {
-            success,
-            error_message,
-            pid,
+            artifact_path: artifact_path.into(),
+            log_path: log_path.into(),
+            success: true,
+            error_message: None,
         }
     }
 
-    pub fn success(pid: u32) -> Self {
-        Self::new(true, None, Some(pid))
-    }
-
-    pub fn failure(error_message: impl Into<String>) -> Self {
-        Self::new(false, Some(error_message.into()), None)
+    pub fn failure(log_path: impl Into<PathBuf>, error_message: impl Into<String>) -> Self {
+        Self {
+            artifact_path: PathBuf::new(),
+            log_path: log_path.into(),
+            success: false,
+            error_message: Some(error_message.into()),
+        }
     }
 
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
-            let mut result = builder.init_root::<node_capnp::node_start_result::Builder>();
+            let mut result = builder.init_root::<node_capnp::node_build_result::Builder>();
             result.set_success(self.success);
             if let Some(ref error_message) = self.error_message {
                 result.set_error_message(error_message);
             }
-            result.set_pid(self.pid.unwrap_or(0));
+            result.set_artifact_path(self.artifact_path.to_string_lossy().as_ref());
+            result.set_log_path(self.log_path.to_string_lossy().as_ref());
         }
         encode_message(&builder)
     }
 
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
-        let result = reader.get_root::<node_capnp::node_start_result::Reader>()?;
-        let error_message = optional_text(result.get_error_message()?.to_str()?);
-        let pid_value = result.get_pid();
-        let pid = if pid_value == 0 {
-            None
-        } else {
-            Some(pid_value)
-        };
+        let result = reader.get_root::<node_capnp::node_build_result::Reader>()?;
         Ok(Self {
+            artifact_path: PathBuf::from(result.get_artifact_path()?.to_str()?),
+            log_path: PathBuf::from(result.get_log_path()?.to_str()?),
             success: result.get_success(),
-            error_message,
-            pid,
+            error_message: optional_text(result.get_error_message()?.to_str()?),
         })
     }
 
-    /// Request the result from a completed action.
     pub async fn request_result(
         messenger: &MessengerHandle,
         action_handle: &ActionGoalHandle,

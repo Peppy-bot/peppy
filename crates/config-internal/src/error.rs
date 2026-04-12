@@ -4,7 +4,7 @@ pub type Result<T> = core::result::Result<T, Error>;
 
 /// Deserializes JSON5 content with field-path tracking.
 ///
-/// On error, prepends the JSON path (e.g. `execution.start_cmd`) to standard
+/// On error, prepends the JSON path (e.g. `execution.run_cmd`) to standard
 /// serde error messages. `StructuredError`s (custom validation) are propagated
 /// unchanged since they already contain descriptive messages.
 pub fn deserialize_json5_with_path<'de, T>(content: &'de str) -> Result<T>
@@ -73,8 +73,8 @@ pub enum ParsingError {
     ProcessAndContainerConflict,
     #[error("Node config must have either `process` or `container`")]
     NoProcessOrContainer,
-    #[error("Node config `execution.start_cmd` must not be empty")]
-    EmptyStartCmd,
+    #[error("Node config `execution.run_cmd` must not be empty")]
+    EmptyRunCmd,
 
     // -- node config: default variant
     #[error(

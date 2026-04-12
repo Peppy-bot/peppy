@@ -41,8 +41,8 @@ Each node is only aware of the interfaces it exposes and the ones it consumes, a
       },
       execution: {
         language: "python",
-        add_cmd: ["uv", "sync"],
-        start_cmd: ["uv", "run", "controller"]
+        build_cmd: ["uv", "sync", "--no-editable"],
+        run_cmd: ["uv", "run", "controller"]
       },
     }
     ```
@@ -71,8 +71,8 @@ Each node is only aware of the interfaces it exposes and the ones it consumes, a
       },
       execution: {
         language: "rust",
-        add_cmd: ["cargo", "build", "--release"],
-        start_cmd: ["./target/release/controller"]
+        build_cmd: ["cargo", "build", "--release"],
+        run_cmd: ["./target/release/controller"]
       },
     }
     ```
@@ -161,6 +161,10 @@ Finally, add this new node to the stack:
    ```
 </Steps>
 
+:::tip
+You can combine both steps into a single command with `peppy node add . --sync` (or `-s`). Add `-b`/`-r` to also build or run in the same invocation — e.g. `peppy node add . -sb`.
+:::
+
 :::note
 Make sure `hello_world_param` is already in the node stack, otherwise you might get the following error:
 ```sh
@@ -178,9 +182,9 @@ Now we need to make sure our nodes are started. If we take a look at our node st
 Listing nodes...
 Requesting node stack graph from core 'sweet-germain-4388'...
 Node stack:
-  - sweet-germain-4388:core-node (/Users/tuatini/workspace/peppy) (1 instance: ["brave-zhukovsky-6918"])
-  - hello_receiver:0.1.0 (/Users/tuatini/.peppy/added_nodes/hello_receiver_0.1.0_d41475) (0 instances: [])
-  - hello_world_param:0.1.0 (/Users/tuatini/.peppy/added_nodes/hello_world_param_0.1.0_9d5fa0) (0 instances: [])
+  - sweet-germain-4388:core-node [Root] (/Users/tuatini/workspace/peppy) (1 instance: ["brave-zhukovsky-6918"])
+  - hello_receiver:0.1.0 [Ready] (/Users/tuatini/.peppy/built_nodes/hello_receiver_0.1.0_d41475) (0 instances: [])
+  - hello_world_param:0.1.0 [Ready] (/Users/tuatini/.peppy/built_nodes/hello_world_param_0.1.0_9d5fa0) (0 instances: [])
 Dependencies:
   - hello_receiver:0.1.0 -> hello_world_param:0.1.0
 ```
@@ -189,21 +193,21 @@ We need to make sure that at least one instance is started for `hello_receiver:0
 The order in which the nodes are started does not affect the node communication.
 Let's start a `hello_world_param:0.1.0` instance:
 ```sh
-peppy node start hello_world_param:0.1.0 name=planet
+peppy node run hello_world_param:0.1.0 name=planet
 ```
 
 Since our node requires a `name`, we provide it with that argument on startup.
 Now let's start the `hello_receiver` node:
 ```sh
-❯ peppy node start hello_receiver:0.1.0
+❯ peppy node run hello_receiver:0.1.0
 Running node hello_receiver:0.1.0...
 Starting node hello_receiver:0.1.0 with instance_id 'vigorous-buck-8117' and 0 argument(s)...
 Calling node_start for hello_receiver:0.1.0 (instance_id=vigorous-buck-8117)...
-Log file: /Users/tuatini/.peppy/logs/start/vigorous-buck-8117.log
+Log file: /Users/tuatini/.peppy/logs/run/vigorous-buck-8117.log
 Started node instance 'vigorous-buck-8117' (pid: 77190)
 ```
 
-When you start the node, you can see a path to the logs. In my case: `/Users/tuatini/.peppy/logs/start/vigorous-buck-8117.log`.
+When you start the node, you can see a path to the logs. In my case: `/Users/tuatini/.peppy/logs/run/vigorous-buck-8117.log`.
 If we open it up:
 ```
 [2026-01-24T10:02:47.630] [stderr]     Finished `release` profile [optimized] target(s) in 0.21s
@@ -219,16 +223,16 @@ We can see the messages received from the `hello_world_param:0.1.0` instance!
 
 Now let's push things a little further. Imagine we need a second instance with different parameters—we can start one like this:
 ```sh
-❯ peppy node start hello_world_param:0.1.0 name=you
+❯ peppy node run hello_world_param:0.1.0 name=you
 Running node hello_world_param:0.1.0...
 Starting node hello_world_param:0.1.0 with instance_id 'admiring-black-0614' and 1 argument(s)...
 Calling node_start for hello_world_param:0.1.0 (instance_id=admiring-black-0614)...
-Log file: /Users/tuatini/.peppy/logs/start/admiring-black-0614.log
+Log file: /Users/tuatini/.peppy/logs/run/admiring-black-0614.log
 Started node instance 'admiring-black-0614' (pid: 78063)
 ```
 And we check the logs again:
 ```sh
-❯ tail /Users/tuatini/.peppy/logs/start/vigorous-buck-8117.log
+❯ tail /Users/tuatini/.peppy/logs/run/vigorous-buck-8117.log
 [2026-01-24T10:04:36.242] [stdout] Received from gifted-moser-9365: hello planet count 42
 [2026-01-24T10:04:39.244] [stdout] Received from gifted-moser-9365: hello planet count 43
 [2026-01-24T10:04:42.244] [stdout] Received from gifted-moser-9365: hello planet count 44
@@ -245,9 +249,9 @@ We can see the messages from both instances!
 Listing nodes...
 Requesting node stack graph from core 'sweet-germain-4388'...
 Node stack:
-  - sweet-germain-4388:core-node (/Users/tuatini/workspace/peppy) (1 instance: ["brave-zhukovsky-6918"])
-  - hello_receiver:0.1.0 (/Users/tuatini/.peppy/added_nodes/hello_receiver_0.1.0_d41475) (1 instance: ["vigorous-buck-8117"])
-  - hello_world_param:0.1.0 (/Users/tuatini/.peppy/added_nodes/hello_world_param_0.1.0_9d5fa0) (2 instances: ["gifted-moser-9365", "admiring-black-0614"])
+  - sweet-germain-4388:core-node [Root] (/Users/tuatini/workspace/peppy) (1 instance: ["brave-zhukovsky-6918"])
+  - hello_receiver:0.1.0 [Ready] (/Users/tuatini/.peppy/built_nodes/hello_receiver_0.1.0_d41475) (1 instance: ["vigorous-buck-8117"])
+  - hello_world_param:0.1.0 [Ready] (/Users/tuatini/.peppy/built_nodes/hello_world_param_0.1.0_9d5fa0) (2 instances: ["gifted-moser-9365", "admiring-black-0614"])
 Dependencies:
   - hello_receiver:0.1.0 -> hello_world_param:0.1.0
 ```

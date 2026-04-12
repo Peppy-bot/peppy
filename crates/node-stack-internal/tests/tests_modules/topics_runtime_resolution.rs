@@ -30,7 +30,7 @@ fn topic_dependency_resolved_when_dependency_added_first() {
             },
             execution: {
               language: "rust",
-              start_cmd: ["brain"]
+              run_cmd: ["brain"]
             },
         }"#,
     )
@@ -68,7 +68,7 @@ fn topic_dependency_resolved_when_dependency_added_first() {
             },
             execution: {
               language: "rust",
-              start_cmd: ["lidar"]
+              run_cmd: ["lidar"]
             },
         }"#,
     )
@@ -95,18 +95,18 @@ fn topic_dependency_resolved_when_dependency_added_first() {
     let dependencies = stack.dependencies_of("brain", "1.0.0");
     let dependency_names: Vec<_> = dependencies
         .iter()
-        .map(|node| node.config().manifest.name.as_str())
+        .map(|node| node.read().config().manifest.name.as_str().to_owned())
         .collect();
     assert_eq!(
         dependency_names,
-        vec!["lidar"],
+        vec!["lidar".to_string()],
         "dependency edge should be wired"
     );
 
     let dependants = stack
         .dependents_of("lidar", "1.0.0")
         .into_iter()
-        .map(|node| node.config().manifest.name.as_str().to_owned())
+        .map(|node| node.read().config().manifest.name.as_str().to_owned())
         .collect::<Vec<_>>();
     assert_eq!(
         dependants,
@@ -141,7 +141,7 @@ fn topic_dependency_fails_when_dependency_is_missing() {
             },
             execution: {
               language: "rust",
-              start_cmd: ["brain"]
+              run_cmd: ["brain"]
             },
         }"#,
     )
@@ -192,7 +192,7 @@ fn topic_dependency_fails_when_topic_not_exposed_by_dependency() {
             },
             execution: {
               language: "rust",
-              start_cmd: ["brain"]
+              run_cmd: ["brain"]
             },
         }"#,
     )
@@ -222,7 +222,7 @@ fn topic_dependency_fails_when_topic_not_exposed_by_dependency() {
             },
             execution: {
               language: "rust",
-              start_cmd: ["lidar"]
+              run_cmd: ["lidar"]
             },
         }"#,
     )
@@ -283,7 +283,7 @@ fn topic_dependency_fails_when_local_node_id_is_undeclared() {
             },
             execution: {
               language: "rust",
-              start_cmd: ["brain"]
+              run_cmd: ["brain"]
             },
         }"#,
     )

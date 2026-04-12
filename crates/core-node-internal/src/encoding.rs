@@ -8,18 +8,23 @@ mod node;
 mod ping;
 mod reset;
 
+// Note: there used to be a top-level `builder` module here. Build encoding
+// now lives at `node::builder` alongside `node::add`.
+
 pub use info::{ContainerInfo, InfoRequest, InfoResponse};
 pub use launch::{
     LaunchFeedback, LaunchFeedbackStep, LaunchGoal, LaunchGoalResponse, LaunchResult,
-    NodeAddLogEntry, NodeStartLogEntry,
+    NodeAddLogEntry, NodeBuildLogEntry, NodeRunLogEntry,
 };
 pub use node::{
     add::NodeAddFeedback, add::NodeAddGoal, add::NodeAddGoalResponse, add::NodeAddResult,
-    add::NodeSource, info::NodeInfoRequest, info::NodeInfoResponse, init::NodeInitRequest,
+    add::NodeSource, builder::NodeBuildFeedback, builder::NodeBuildGoal,
+    builder::NodeBuildGoalResponse, builder::NodeBuildResult, info::NodeInfo,
+    info::NodeInfoRequest, info::NodeInfoResponse, info::NodeInstanceInfo, init::NodeInitRequest,
     init::NodeInitResponse, list::NodeListRequest, list::NodeListResponse,
-    remove::NodeRemoveRequest, remove::NodeRemoveResponse, start::NodeStartFeedback,
-    start::NodeStartGoal, start::NodeStartGoalResponse, start::NodeStartResult,
-    stop::NodeStopRequest, stop::NodeStopResponse, sync::NodeSyncRequest, sync::NodeSyncResponse,
+    remove::NodeRemoveRequest, remove::NodeRemoveResponse, run::NodeRunFeedback, run::NodeRunGoal,
+    run::NodeRunGoalResponse, run::NodeRunResult, stop::NodeStopRequest, stop::NodeStopResponse,
+    sync::NodeSyncRequest, sync::NodeSyncResponse,
 };
 pub use ping::{PingRequest, PingResponse};
 pub use reset::{NodeResetRequest, NodeResetResponse};

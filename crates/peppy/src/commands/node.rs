@@ -1,11 +1,12 @@
 mod add;
+mod builder;
 mod env;
 mod info;
 mod init;
 mod remove;
+mod run;
 mod runtime_config;
 mod source;
-mod start;
 mod stop;
 mod sync;
 mod types;
@@ -21,6 +22,7 @@ use super::Command;
 use crate::{context::AppContext, error::Error as CommandError};
 
 pub use add::{AddNodeParams, add_node};
+pub use builder::{BuildNodeParams, build_node, build_node_async};
 pub use env::caller_env_overrides;
 pub use init::NodeInitBuilder;
 pub use types::NodeName;
@@ -30,7 +32,7 @@ pub(crate) const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 600;
 /// Default absolute max timeout in seconds (safety net).
 pub(crate) const DEFAULT_MAX_TIMEOUT_SECS: u64 = 3600;
 
-/// Idle + absolute-max timeout pair used by `node add` and `node start` polling loops.
+/// Idle + absolute-max timeout pair used by `node add` and `node run` polling loops.
 pub struct TimeoutConfig {
     pub idle_secs: u64,
     pub max_secs: u64,
@@ -113,9 +115,31 @@ pub enum NodeCommands {
         /// - HTTP archive: `https://example.com/variant.tar.zst`
         #[arg(long)]
         variant: Option<String>,
-        /// If set, will attempt to spawn an instance directly after adding the node to the node stack
-        #[arg(long)]
-        start: bool,
+        /// If set, runs `peppy node sync` on the source *before* adding. Forces
+        /// peppygen interface code to be regenerated from the current
+        /// `peppy.json5`, so the snapshot taken by `node add` is up-to-date.
+        ///
+        /// Only valid for local filesystem sources — remote (git/http)
+        /// sources are synced server-side when the daemon fetches them.
+        ///
+        /// This flag is NOT implied by `--build` or `--run`; it's a
+        /// prerequisite step, not a post-step. Combines with them via short
+        /// flag bundling: `-sb` = sync + build, `-sr` = sync + build + run.
+        #[arg(short = 's', long)]
+        sync: bool,
+        /// If set, will trigger a `node build` immediately after adding the node
+        #[arg(short = 'b', long)]
+        build: bool,
+        /// If set, will attempt to spawn an instance directly after adding the
+        /// node to the node stack. Implies `--build`.
+        ///
+        /// When the node requires runtime arguments, pass them as trailing
+        /// key=value pairs after the source:
+        /// `peppy node add ./my-camera --run resolution=1280x720 frequency=30`
+        ///
+        /// Combines with `--sync` via `-sr` (sync + build + run).
+        #[arg(short = 'r', long)]
+        run: bool,
         /// Runtime arguments as key=value pairs (e.g., resolution=1280x720 frequency=30)
         /// These are passed to the node via PEPPY_RUNTIME_CONFIG when run is true
         #[arg(value_parser = parse_key_value_arg)]
@@ -130,19 +154,38 @@ pub enum NodeCommands {
         #[arg(long, default_value_t = DEFAULT_MAX_TIMEOUT_SECS)]
         max_timeout: u64,
         /// When set, bypass the confirmation prompt and stop running instances before overwriting
-        #[arg(long)]
+        #[arg(short = 'f', long)]
+        force: bool,
+    },
+    /// Build a node previously added to the node stack
+    Build {
+        /// Node reference in the format node_name:tag (e.g., my_node:v1)
+        #[arg(value_parser = parse_node_ref)]
+        node_ref: (String, String),
+        /// Idle timeout in seconds — resets whenever output is received
+        #[arg(long, default_value_t = DEFAULT_IDLE_TIMEOUT_SECS)]
+        idle_timeout: u64,
+        /// Absolute max timeout in seconds (safety net)
+        #[arg(long, default_value_t = DEFAULT_MAX_TIMEOUT_SECS)]
+        max_timeout: u64,
+        /// Cancel any in-progress build for this node and start a new one
+        #[arg(short = 'f', long)]
         force: bool,
     },
     /// Regenerate the node's interface code (peppygen) based on peppy.json5
     Sync {
         /// Optional path to the node directory. Defaults to the current directory.
+        /// When combined with `--all`, this is the root of the recursive search.
         path: Option<PathBuf>,
+        /// Recursively find every `peppy.json5` under `path` and sync each one.
+        #[arg(short = 'a', long)]
+        all: bool,
     },
     /// Runs an instance from a node added to the node stack
     ///
-    /// Usage: `peppy node start <node_name>:<tag>` or `peppy node start --node-name <name> --tag <tag>`
+    /// Usage: `peppy node run <node_name>:<tag>` or `peppy node run --node-name <name> --tag <tag>`
     #[command(group(ArgGroup::new("node_source").required(true).args(["node_ref", "node_name"])))]
-    Start {
+    Run {
         /// Node reference in the format node_name:tag (e.g., my_node:v1)
         #[arg(value_parser = parse_node_ref)]
         node_ref: Option<(String, String)>,
@@ -157,7 +200,7 @@ pub enum NodeCommands {
         #[arg(value_parser = parse_key_value_arg)]
         args: Vec<(String, String)>,
         /// Optional: specify a deterministic instance ID
-        #[arg(long)]
+        #[arg(short = 'i', long)]
         instance_id: Option<String>,
         /// Idle timeout in seconds — resets whenever output is received
         #[arg(long, default_value_t = DEFAULT_IDLE_TIMEOUT_SECS)]
@@ -165,6 +208,10 @@ pub enum NodeCommands {
         /// Absolute max timeout in seconds (safety net)
         #[arg(long, default_value_t = DEFAULT_MAX_TIMEOUT_SECS)]
         max_timeout: u64,
+        /// If set, build the node first if it has not already been built.
+        /// No-op (with a message) when the node is already built.
+        #[arg(short = 'b', long)]
+        build: bool,
     },
     /// Prints out the runtime config of a node instance
     #[command(group(ArgGroup::new("node_source").required(true).args(["node_name", "node_dir"])))]
@@ -193,22 +240,19 @@ pub enum NodeCommands {
         #[arg(long)]
         stop_instances: bool,
         /// When set, bypass the confirmation prompt and stop running instances before removal
-        #[arg(long)]
+        #[arg(short = 'f', long)]
         force: bool,
     },
-    /// Return the information about a node configuration and its presence in the node stack
+    /// Return the information about a node currently in the node stack
+    ///
+    /// Takes a reference to a node that has already been added via
+    /// `peppy node add`. If the node is not in the stack, the command exits
+    /// with an error — inspecting sources on disk is the job of `node add`,
+    /// not `node info`.
     Info {
-        /// Source location of a node (directory containing peppy.json5).
-        ///
-        /// Supported formats:
-        /// - Local path: `/path/to/node` or `./relative/path`
-        /// - Git URL: `https://github.com/org/repo.git/subpath`
-        /// - Git URL with ref: `https://github.com/org/repo.git/subpath --ref tag-or-branch`
-        /// - HTTP archive: `https://example.com/node.tar.zst`
-        source: String,
-        /// Git ref (tag/branch/commit) to checkout before reading `subpath` (git sources only).
-        #[arg(long = "ref")]
-        git_ref: Option<String>,
+        /// Node reference in the format node_name:tag (e.g., my_node:v1)
+        #[arg(value_parser = parse_node_ref)]
+        node_ref: (String, String),
     },
 }
 
@@ -225,28 +269,30 @@ impl Command for NodeCommand {
                 toolchain,
                 with_container,
             } => {
-                let mut node_builder =
+                let mut node_init_builder =
                     NodeInitBuilder::new(ctx, node_name, toolchain, with_container);
 
                 if let Some(dir) = to_dir {
-                    node_builder = node_builder.to_dir(dir);
+                    node_init_builder = node_init_builder.to_dir(dir);
                 }
 
-                node_builder.build()
+                node_init_builder.build()
             }
             NodeCommands::Add {
                 source,
                 git_ref,
                 variant,
-                start,
+                sync,
+                build,
+                run,
                 args,
                 instance_id,
                 idle_timeout,
                 max_timeout,
                 force,
             } => {
-                let start_options = if start {
-                    Some(add::StartAfterAddOptions { args, instance_id })
+                let run_options = if run {
+                    Some(add::RunAfterAddOptions { args, instance_id })
                 } else {
                     None
                 };
@@ -255,24 +301,54 @@ impl Command for NodeCommand {
                     max_secs: max_timeout,
                 };
                 let source = source.unwrap_or_else(|| ".".to_string());
+                // `--run` implies `--build`: you can't run an instance of
+                // an unbuilt node. `--sync` is independent (prerequisite, not
+                // a post-step) and is not implied by either.
+                let chain_build = build || run;
                 add::add_node(
                     ctx,
                     add::AddNodeParams {
                         source,
                         git_ref,
                         variant,
-                        start_options,
+                        run_options,
                         timeouts,
                         force,
                         confirm_reader: None,
+                        sync,
+                        chain_build,
                     },
                 )
             }
-            NodeCommands::Sync { path } => {
-                info!("Syncing node interfaces...");
-                sync::sync_node(ctx, path)
+            NodeCommands::Build {
+                node_ref: (node_name, node_tag),
+                idle_timeout,
+                max_timeout,
+                force,
+            } => {
+                let timeouts = TimeoutConfig {
+                    idle_secs: idle_timeout,
+                    max_secs: max_timeout,
+                };
+                builder::build_node(
+                    ctx,
+                    builder::BuildNodeParams {
+                        node_name,
+                        node_tag,
+                        timeouts,
+                        force,
+                    },
+                )
             }
-            NodeCommands::Start {
+            NodeCommands::Sync { path, all } => {
+                if all {
+                    sync::sync_all_nodes(ctx, path)
+                } else {
+                    info!("Syncing node interfaces...");
+                    sync::sync_node(ctx, path)
+                }
+            }
+            NodeCommands::Run {
                 node_ref,
                 node_name,
                 tag,
@@ -280,6 +356,7 @@ impl Command for NodeCommand {
                 instance_id,
                 idle_timeout,
                 max_timeout,
+                build,
             } => {
                 let (node_name, tag) = node_ref
                     .or_else(|| node_name.zip(tag))
@@ -289,7 +366,7 @@ impl Command for NodeCommand {
                     idle_secs: idle_timeout,
                     max_secs: max_timeout,
                 };
-                start::run_node(ctx, node_name, tag, args, instance_id, timeouts)
+                run::run_node(ctx, node_name, tag, args, instance_id, timeouts, build)
             }
             NodeCommands::RuntimeConfig {
                 node_name,
@@ -308,16 +385,215 @@ impl Command for NodeCommand {
                 info!("Remove node {}:{}...", node_name, tag);
                 remove::remove_node(ctx, node_name, tag, stop_instances, force)
             }
-            NodeCommands::Info { source, git_ref } => {
-                let display_source = if source::is_probably_remote_source(&source) {
-                    source.clone()
-                } else {
-                    let path = PathBuf::from(&source);
-                    path.canonicalize().unwrap_or(path).display().to_string()
-                };
-                info!("Getting node info for {}...", display_source);
-                info::node_info(ctx, source, git_ref)
+            NodeCommands::Info {
+                node_ref: (node_name, node_tag),
+            } => {
+                info!("Getting node info for {}:{}...", node_name, node_tag);
+                info::node_info(ctx, node_name, node_tag)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    /// Tiny clap harness that wraps `NodeCommands` so we can exercise argument
+    /// parsing for `peppy node add` in isolation.
+    #[derive(Parser)]
+    #[command(name = "peppy")]
+    struct TestCli {
+        #[command(subcommand)]
+        command: NodeCommands,
+    }
+
+    fn parse_add(args: &[&str]) -> (bool, bool, bool) {
+        let full: Vec<&str> = std::iter::once("peppy")
+            .chain(std::iter::once("add"))
+            .chain(args.iter().copied())
+            .collect();
+        let cli = TestCli::try_parse_from(full).expect("should parse");
+        match cli.command {
+            NodeCommands::Add {
+                sync, build, run, ..
+            } => (sync, build, run),
+            _ => panic!("expected Add variant"),
+        }
+    }
+
+    fn parse_run(args: &[&str]) -> bool {
+        let full: Vec<&str> = std::iter::once("peppy")
+            .chain(std::iter::once("run"))
+            .chain(args.iter().copied())
+            .collect();
+        let cli = TestCli::try_parse_from(full).expect("should parse");
+        match cli.command {
+            NodeCommands::Run { build, .. } => build,
+            _ => panic!("expected Run variant"),
+        }
+    }
+
+    fn parse_run_instance_id(args: &[&str]) -> Option<String> {
+        let full: Vec<&str> = std::iter::once("peppy")
+            .chain(std::iter::once("run"))
+            .chain(args.iter().copied())
+            .collect();
+        let cli = TestCli::try_parse_from(full).expect("should parse");
+        match cli.command {
+            NodeCommands::Run { instance_id, .. } => instance_id,
+            _ => panic!("expected Run variant"),
+        }
+    }
+
+    fn parse_subcommand_force(subcommand: &str, args: &[&str]) -> bool {
+        let full: Vec<&str> = std::iter::once("peppy")
+            .chain(std::iter::once(subcommand))
+            .chain(args.iter().copied())
+            .collect();
+        let cli = TestCli::try_parse_from(full).expect("should parse");
+        match cli.command {
+            NodeCommands::Add { force, .. }
+            | NodeCommands::Build { force, .. }
+            | NodeCommands::Remove { force, .. } => force,
+            _ => panic!("expected Add/Build/Remove variant"),
+        }
+    }
+
+    #[test]
+    fn add_sr_short_bundle_sets_sync_and_run() {
+        let (sync, build, run) = parse_add(&[".", "-sr"]);
+        assert!(sync, "-sr should set sync");
+        assert!(
+            !build,
+            "-sr should NOT set build directly (run implies it at runtime)"
+        );
+        assert!(run, "-sr should set run");
+    }
+
+    #[test]
+    fn add_sb_short_bundle_sets_sync_and_build() {
+        let (sync, build, run) = parse_add(&[".", "-sb"]);
+        assert!(sync, "-sb should set sync");
+        assert!(build, "-sb should set build");
+        assert!(!run, "-sb should NOT set run");
+    }
+
+    #[test]
+    fn add_s_short_sets_sync_only() {
+        let (sync, build, run) = parse_add(&[".", "-s"]);
+        assert!(sync, "-s should set sync");
+        assert!(!build);
+        assert!(!run);
+    }
+
+    #[test]
+    fn add_long_sync_flag_parses() {
+        let (sync, build, run) = parse_add(&[".", "--sync", "--build"]);
+        assert!(sync);
+        assert!(build);
+        assert!(!run);
+    }
+
+    #[test]
+    fn add_without_sync_flag_defaults_to_false() {
+        let (sync, build, run) = parse_add(&[".", "--build"]);
+        assert!(!sync, "sync should default to false");
+        assert!(build);
+        assert!(!run);
+    }
+
+    #[test]
+    fn run_b_short_flag_sets_build() {
+        assert!(
+            parse_run(&["foo:0.1.0", "-b"]),
+            "-b should set build on run"
+        );
+    }
+
+    #[test]
+    fn run_long_build_flag_sets_build() {
+        assert!(
+            parse_run(&["foo:0.1.0", "--build"]),
+            "--build should set build on run"
+        );
+    }
+
+    #[test]
+    fn run_without_build_flag_defaults_to_false() {
+        assert!(
+            !parse_run(&["foo:0.1.0"]),
+            "build should default to false on run"
+        );
+    }
+
+    #[test]
+    fn run_i_short_flag_sets_instance_id() {
+        assert_eq!(
+            parse_run_instance_id(&["foo:0.1.0", "-i", "my-inst"]),
+            Some("my-inst".to_string()),
+            "-i should set instance_id on run"
+        );
+    }
+
+    #[test]
+    fn run_long_instance_id_flag_sets_instance_id() {
+        assert_eq!(
+            parse_run_instance_id(&["foo:0.1.0", "--instance-id", "my-inst"]),
+            Some("my-inst".to_string()),
+            "--instance-id should set instance_id on run"
+        );
+    }
+
+    #[test]
+    fn run_bi_short_bundle_sets_build_and_instance_id() {
+        // `-bi <id>` ≡ `-b -i <id>`: clap treats `-bi` as a bundled short-flag
+        // run with `i` consuming the next positional as its value.
+        let full: Vec<&str> = vec!["peppy", "run", "foo:0.1.0", "-bi", "my-inst"];
+        let cli = TestCli::try_parse_from(full).expect("should parse");
+        match cli.command {
+            NodeCommands::Run {
+                build, instance_id, ..
+            } => {
+                assert!(build, "-bi should set build");
+                assert_eq!(
+                    instance_id,
+                    Some("my-inst".to_string()),
+                    "-bi should set instance_id"
+                );
+            }
+            _ => panic!("expected Run variant"),
+        }
+    }
+
+    #[test]
+    fn add_f_short_flag_sets_force() {
+        assert!(parse_subcommand_force("add", &[".", "-f"]));
+    }
+
+    #[test]
+    fn build_f_short_flag_sets_force() {
+        assert!(parse_subcommand_force("build", &["foo:0.1.0", "-f"]));
+    }
+
+    #[test]
+    fn remove_f_short_flag_sets_force() {
+        assert!(parse_subcommand_force("remove", &["foo:0.1.0", "-f"]));
+    }
+
+    #[test]
+    fn add_without_force_flag_defaults_to_false() {
+        assert!(!parse_subcommand_force("add", &["."]));
+    }
+
+    #[test]
+    fn build_without_force_flag_defaults_to_false() {
+        assert!(!parse_subcommand_force("build", &["foo:0.1.0"]));
+    }
+
+    #[test]
+    fn remove_without_force_flag_defaults_to_false() {
+        assert!(!parse_subcommand_force("remove", &["foo:0.1.0"]));
     }
 }

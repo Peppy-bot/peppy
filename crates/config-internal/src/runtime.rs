@@ -12,7 +12,7 @@ use crate::launcher::Name;
 /// Represents a node instance at runtime. Used by RuntimeConfig to identify the running node and its configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct NodeInstance {
+pub struct NodeInstanceConfig {
     pub instance_id: Name,
     #[serde(default)]
     pub arguments: BTreeMap<String, AnyType>,
@@ -53,14 +53,14 @@ pub struct RuntimeConfig {
     pub messaging_port: u16,
     pub node_name: Name,
     pub bound_core_node: Name,
-    pub node_instance: NodeInstance,
+    pub node_instance: NodeInstanceConfig,
 }
 
 impl RuntimeConfig {
     pub fn new(
         messaging_host: &str,
         messaging_port: u16,
-        node_instance: NodeInstance,
+        node_instance: NodeInstanceConfig,
         node_name: impl Into<String>,
         bound_core_node: impl Into<String>,
     ) -> Result<Self> {
@@ -92,7 +92,13 @@ impl RuntimeConfig {
         let config_path = peppy_config.as_ref();
         let content = std::fs::read(config_path)?;
         let hash = Sha256::digest(&content);
-        Ok(format!("{:x}", hash))
+        Ok(hash
+            .iter()
+            .fold(String::with_capacity(hash.len() * 2), |mut acc, b| {
+                use std::fmt::Write;
+                let _ = write!(acc, "{:02x}", b);
+                acc
+            }))
     }
 }
 

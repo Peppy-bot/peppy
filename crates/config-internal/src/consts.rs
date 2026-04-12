@@ -76,9 +76,9 @@ impl PeppyDirs {
         &self.root
     }
 
-    /// Archived node snapshots from `node add`.
-    pub fn added_nodes_dir(&self) -> PathBuf {
-        self.root.join("added_nodes")
+    /// Build outputs from `node build` (`.sif` container images and `.tar.zst` archives).
+    pub fn built_nodes_dir(&self) -> PathBuf {
+        self.root.join("built_nodes")
     }
 
     /// Extracted archives for running node instances.
@@ -91,9 +91,14 @@ impl PeppyDirs {
         self.root.join("logs").join("add")
     }
 
-    /// Log directory for `node start` operations.
-    pub fn logs_dir_start(&self) -> PathBuf {
-        self.root.join("logs").join("start")
+    /// Log directory for `node build` operations.
+    pub fn logs_dir_build(&self) -> PathBuf {
+        self.root.join("logs").join("build")
+    }
+
+    /// Log directory for `node run` operations.
+    pub fn logs_dir_run(&self) -> PathBuf {
+        self.root.join("logs").join("run")
     }
 
     /// Log directory for `stack launch` operations.
@@ -117,6 +122,15 @@ impl PeppyDirs {
     /// visible inside the guest VM. Use this instead of `std::env::temp_dir()`.
     pub fn tmp_dir(&self) -> PathBuf {
         self.root.join("tmp")
+    }
+
+    /// Path to the stack operations log file.
+    ///
+    /// Records daemon-initiated lifecycle events (e.g. automatic instance
+    /// removal after health-check failures) so users can audit what happened
+    /// without digging through debug logs.
+    pub fn stack_log_path(&self) -> PathBuf {
+        self.root.join("stack_log.log")
     }
 
     /// Shared Rust crate cache directory for a given cache key.

@@ -19,8 +19,8 @@ use tempfile::tempdir;
 use crate::common::start_core_node_with_mock_messenger;
 
 struct NodeConfigOptions<'a> {
-    add_cmd: &'a [&'a str],
-    start_cmd: &'a [&'a str],
+    build_cmd: &'a [&'a str],
+    run_cmd: &'a [&'a str],
     expects_uvc_camera: bool,
     emits_camera_stream: bool,
 }
@@ -28,8 +28,8 @@ struct NodeConfigOptions<'a> {
 impl Default for NodeConfigOptions<'_> {
     fn default() -> Self {
         Self {
-            add_cmd: &["true"],
-            start_cmd: &[],
+            build_cmd: &["true"],
+            run_cmd: &[],
             expects_uvc_camera: false,
             emits_camera_stream: false,
         }
@@ -105,7 +105,7 @@ fn write_node_config(
     node_name: &str,
     node_tag: &str,
     git_hash: &str,
-    start_cmd: &[&str],
+    run_cmd: &[&str],
     expects_uvc_camera: bool,
     emits_camera_stream: bool,
 ) -> PathBuf {
@@ -115,7 +115,7 @@ fn write_node_config(
         node_tag,
         git_hash,
         NodeConfigOptions {
-            start_cmd,
+            run_cmd,
             expects_uvc_camera,
             emits_camera_stream,
             ..Default::default()
@@ -131,23 +131,23 @@ fn write_node_config_with_options(
     options: NodeConfigOptions<'_>,
 ) -> PathBuf {
     let NodeConfigOptions {
-        add_cmd,
-        start_cmd,
+        build_cmd,
+        run_cmd,
         expects_uvc_camera,
         emits_camera_stream,
     } = options;
     let node_dir = nodes_directory.join(node_name);
     fs::create_dir_all(&node_dir).expect("failed to create node directory");
 
-    let add_cmd_json5 = add_cmd
+    let build_cmd_json5 = build_cmd
         .iter()
-        .map(|arg| serde_json::to_string(arg).expect("add_cmd arg should serialize"))
+        .map(|arg| serde_json::to_string(arg).expect("build_cmd arg should serialize"))
         .collect::<Vec<_>>()
         .join(", ");
 
-    let start_cmd_json5 = start_cmd
+    let run_cmd_json5 = run_cmd
         .iter()
-        .map(|arg| serde_json::to_string(arg).expect("start_cmd arg should serialize"))
+        .map(|arg| serde_json::to_string(arg).expect("run_cmd arg should serialize"))
         .collect::<Vec<_>>()
         .join(", ");
 
@@ -203,15 +203,15 @@ fn write_node_config_with_options(
               {interfaces}
               execution: {
                 language: "rust",
-                add_cmd: [{add_cmd_json5}],
-                start_cmd: [{start_cmd_json5}]
+                build_cmd: [{build_cmd_json5}],
+                run_cmd: [{run_cmd_json5}]
               }
             }"#
         .replace("{node_name}", node_name)
         .replace("{node_tag}", node_tag)
         .replace("{depends_on}", depends_on)
-        .replace("{add_cmd_json5}", &add_cmd_json5)
-        .replace("{start_cmd_json5}", &start_cmd_json5)
+        .replace("{build_cmd_json5}", &build_cmd_json5)
+        .replace("{run_cmd_json5}", &run_cmd_json5)
         .replace("{interfaces}", &interfaces),
     )
     .expect("failed to write node config");
@@ -257,8 +257,8 @@ fn create_uvc_camera_repo(to_path: &Path, node_tag: &str) -> PathBuf {
               },
               execution: {
                 language: "rust",
-                add_cmd: ["true"],
-                start_cmd: ["sleep", "60"]
+                build_cmd: ["true"],
+                run_cmd: ["sleep", "60"]
               }
             }"#
         .replace("{node_tag}", node_tag),
@@ -543,7 +543,7 @@ async fn listen_for_launch_configuration_succeed_with_complex_dependencies() {
         .find(FAKE_UVC_CAMERA, NODE_TAG)
         .expect("fake_uvc_camera should be in stack");
     assert_eq!(
-        uvc_camera.instances().len(),
+        uvc_camera.read().instances().len(),
         2,
         "fake_uvc_camera should have 2 instances"
     );
@@ -552,7 +552,7 @@ async fn listen_for_launch_configuration_succeed_with_complex_dependencies() {
         .find(FAKE_ROBOT_BRAIN, NODE_TAG)
         .expect("fake_robot_brain should be in stack");
     assert_eq!(
-        robot_brain.instances().len(),
+        robot_brain.read().instances().len(),
         1,
         "fake_robot_brain should have 1 instance"
     );
@@ -561,7 +561,7 @@ async fn listen_for_launch_configuration_succeed_with_complex_dependencies() {
         .find(FAKE_OPENARM01_CONTROLLER, NODE_TAG)
         .expect("fake_openarm01_controller should be in stack");
     assert_eq!(
-        controller.instances().len(),
+        controller.read().instances().len(),
         1,
         "fake_openarm01_controller should have 1 instance"
     );
@@ -684,7 +684,7 @@ async fn listen_for_launch_configuration_succeed() {
         .find(UVC_NODE_NAME, NODE_TAG)
         .expect("uvc_camera should be in stack");
     assert_eq!(
-        uvc.instances().len(),
+        uvc.read().instances().len(),
         2,
         "uvc_camera should have 2 instances"
     );
@@ -693,7 +693,7 @@ async fn listen_for_launch_configuration_succeed() {
         .find(ROBOT_NODE_NAME, NODE_TAG)
         .expect("robot_brain should be in stack");
     assert_eq!(
-        brain.instances().len(),
+        brain.read().instances().len(),
         1,
         "robot_brain should have 1 instance"
     );
@@ -737,29 +737,68 @@ async fn listen_for_launch_configuration_succeed() {
             .collect::<Vec<_>>()
     );
 
-    // Each started instance should have a start log entry with a valid path and not marked as failed.
+    // Each deployed node should have a build log entry with a valid path and not marked as failed.
     assert_eq!(
-        result.node_start_logs.len(),
-        3,
-        "should have 3 start log entries (camera_front, camera_rear, main_robot_brain)"
+        result.node_build_logs.len(),
+        2,
+        "should have 2 build log entries (uvc_camera and robot_brain)"
     );
     assert!(
         result
-            .node_start_logs
+            .node_build_logs
             .iter()
             .all(|e| !e.log_path.as_os_str().is_empty()),
-        "all start log paths should be non-empty, got: {:?}",
+        "all build log paths should be non-empty, got: {:?}",
         result
-            .node_start_logs
+            .node_build_logs
             .iter()
             .map(|e| &e.log_path)
             .collect::<Vec<_>>()
     );
     assert!(
-        result.node_start_logs.iter().all(|e| !e.failed),
+        result.node_build_logs.iter().all(|e| !e.failed),
+        "no build log entry should be marked failed, got: {:?}",
+        result
+            .node_build_logs
+            .iter()
+            .filter(|e| e.failed)
+            .map(|e| &e.node_label)
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        result.node_build_logs.iter().all(|e| e.log_path.exists()),
+        "all build log files should exist on disk, missing: {:?}",
+        result
+            .node_build_logs
+            .iter()
+            .filter(|e| !e.log_path.exists())
+            .map(|e| &e.log_path)
+            .collect::<Vec<_>>()
+    );
+
+    // Each started instance should have a start log entry with a valid path and not marked as failed.
+    assert_eq!(
+        result.node_run_logs.len(),
+        3,
+        "should have 3 start log entries (camera_front, camera_rear, main_robot_brain)"
+    );
+    assert!(
+        result
+            .node_run_logs
+            .iter()
+            .all(|e| !e.log_path.as_os_str().is_empty()),
+        "all start log paths should be non-empty, got: {:?}",
+        result
+            .node_run_logs
+            .iter()
+            .map(|e| &e.log_path)
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        result.node_run_logs.iter().all(|e| !e.failed),
         "no start log entry should be marked failed, got: {:?}",
         result
-            .node_start_logs
+            .node_run_logs
             .iter()
             .filter(|e| e.failed)
             .map(|e| &e.instance_id)
@@ -1202,7 +1241,7 @@ async fn listen_for_launch_configuration_fails_when_one_node_never_becomes_healt
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_launch_configuration_fails_when_add_cmd_fails_and_restores_stack() {
+async fn listen_for_launch_configuration_fails_when_build_cmd_fails_and_restores_stack() {
     const NODE_TAG: &str = "0.1.0";
 
     let started_core_node = start_core_node_with_mock_messenger().await;
@@ -1228,15 +1267,15 @@ async fn listen_for_launch_configuration_fails_when_add_cmd_fails_and_restores_s
         .push_config(existing_config, false, &existing_path)
         .expect("should seed stack");
 
-    // Node with a failing add_cmd.
+    // Node with a failing build_cmd.
     let _failing_node_path = write_node_config_with_options(
         nodes_dir.path(),
         "failing_node",
         NODE_TAG,
         "test-hash",
         NodeConfigOptions {
-            add_cmd: &["false"], // This command always fails with exit code 1
-            start_cmd: &["sleep", "60"],
+            build_cmd: &["false"], // This command always fails with exit code 1
+            run_cmd: &["sleep", "60"],
             ..Default::default()
         },
     );
@@ -1257,11 +1296,14 @@ async fn listen_for_launch_configuration_fails_when_add_cmd_fails_and_restores_s
     .await
     .expect("launch should complete");
 
-    assert!(!result.success, "launch should fail because add_cmd fails");
+    assert!(
+        !result.success,
+        "launch should fail because build_cmd fails"
+    );
 
     let error_message = result
         .error_message
-        .expect("error_message should be set on add_cmd failure");
+        .expect("error_message should be set on build_cmd failure");
     assert!(
         error_message.contains("failing_node:0.1.0"),
         "error message should contain the node name:tag, got: {error_message}"
@@ -1269,7 +1311,7 @@ async fn listen_for_launch_configuration_fails_when_add_cmd_fails_and_restores_s
 
     assert!(
         node_stack.contains("existing_node", NODE_TAG),
-        "stack should be restored on add_cmd failure"
+        "stack should be restored on build_cmd failure"
     );
     assert!(
         !node_stack.contains("failing_node", NODE_TAG),
@@ -1278,7 +1320,7 @@ async fn listen_for_launch_configuration_fails_when_add_cmd_fails_and_restores_s
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_launch_configuration_fails_when_start_cmd_exits_with_error() {
+async fn listen_for_launch_configuration_fails_when_run_cmd_exits_with_error() {
     const NODE_NAME: &str = "failing_start_node";
     const NODE_TAG: &str = "0.1.0";
     const INSTANCE_ID: &str = "fs1";
@@ -1306,15 +1348,15 @@ async fn listen_for_launch_configuration_fails_when_start_cmd_exits_with_error()
         .push_config(existing_config, false, &existing_path)
         .expect("should seed stack");
 
-    // Node whose start_cmd exits immediately with a non-zero status.
+    // Node whose run_cmd exits immediately with a non-zero status.
     let _failing_node_path = write_node_config_with_options(
         nodes_dir.path(),
         NODE_NAME,
         NODE_TAG,
         "test-hash",
         NodeConfigOptions {
-            add_cmd: &["true"],
-            start_cmd: &["false"], // exits immediately with status 1
+            build_cmd: &["true"],
+            run_cmd: &["false"], // exits immediately with status 1
             ..Default::default()
         },
     );
@@ -1337,12 +1379,12 @@ async fn listen_for_launch_configuration_fails_when_start_cmd_exits_with_error()
 
     assert!(
         !result.success,
-        "launch should fail because start_cmd exits with error"
+        "launch should fail because run_cmd exits with error"
     );
 
     let error_message = result
         .error_message
-        .expect("error_message should be set on start_cmd failure");
+        .expect("error_message should be set on run_cmd failure");
     assert!(
         error_message.contains(&format!("{}:{}", NODE_NAME, NODE_TAG)),
         "error message should contain the node name:tag, got: {error_message}"
@@ -1354,7 +1396,7 @@ async fn listen_for_launch_configuration_fails_when_start_cmd_exits_with_error()
 
     assert!(
         node_stack.contains("existing_node", NODE_TAG),
-        "stack should be restored on start_cmd failure"
+        "stack should be restored on run_cmd failure"
     );
     assert!(
         !node_stack.contains(NODE_NAME, NODE_TAG),
@@ -1376,23 +1418,38 @@ async fn listen_for_launch_configuration_fails_when_start_cmd_exits_with_error()
         format!("{}:{}", NODE_NAME, NODE_TAG)
     );
 
+    // The node was successfully built before the start failed, so we expect one build log entry.
+    assert_eq!(
+        result.node_build_logs.len(),
+        1,
+        "should have 1 build log entry for the node that was built before start failed"
+    );
+    assert!(
+        !result.node_build_logs[0].failed,
+        "build log entry should not be marked failed (build succeeded)"
+    );
+    assert_eq!(
+        result.node_build_logs[0].node_label,
+        format!("{}:{}", NODE_NAME, NODE_TAG)
+    );
+
     // The failed start should produce one start log entry marked as failed.
     assert_eq!(
-        result.node_start_logs.len(),
+        result.node_run_logs.len(),
         1,
         "should have 1 start log entry for the failed instance"
     );
     assert!(
-        result.node_start_logs[0].failed,
+        result.node_run_logs[0].failed,
         "start log entry should be marked failed"
     );
-    assert_eq!(result.node_start_logs[0].instance_id, INSTANCE_ID);
+    assert_eq!(result.node_run_logs[0].instance_id, INSTANCE_ID);
     assert_eq!(
-        result.node_start_logs[0].node_label,
+        result.node_run_logs[0].node_label,
         format!("{}:{}", NODE_NAME, NODE_TAG)
     );
     assert!(
-        !result.node_start_logs[0].log_path.as_os_str().is_empty(),
+        !result.node_run_logs[0].log_path.as_os_str().is_empty(),
         "start log path should be non-empty"
     );
 }
@@ -1415,7 +1472,7 @@ async fn listen_for_node_launch_uses_env_overrides_for_path() {
         NODE_NAME,
         NODE_TAG,
         "test-hash",
-        &["printout", "60"], // start_cmd that sleeps via printout
+        &["printout", "60"], // run_cmd that sleeps via printout
         false,
         false,
     );

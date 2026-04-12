@@ -31,7 +31,7 @@ pub struct LaunchGoal {
     pub peppy_launch_file_path: PathBuf,
     pub env_vars: Vec<(String, String)>,
     pub node_add_idle_timeout_secs: u64,
-    pub node_start_idle_timeout_secs: u64,
+    pub node_run_idle_timeout_secs: u64,
     pub max_timeout_secs: u64,
 }
 
@@ -39,14 +39,14 @@ impl LaunchGoal {
     pub fn new(
         peppy_launch_file_path: impl Into<PathBuf>,
         node_add_idle_timeout_secs: u64,
-        node_start_idle_timeout_secs: u64,
+        node_run_idle_timeout_secs: u64,
         max_timeout_secs: u64,
     ) -> Self {
         Self {
             peppy_launch_file_path: peppy_launch_file_path.into(),
             env_vars: Vec::new(),
             node_add_idle_timeout_secs,
-            node_start_idle_timeout_secs,
+            node_run_idle_timeout_secs,
             max_timeout_secs,
         }
     }
@@ -72,7 +72,7 @@ impl LaunchGoal {
             goal.reborrow()
                 .set_node_add_idle_timeout_secs(self.node_add_idle_timeout_secs);
             goal.reborrow()
-                .set_node_start_idle_timeout_secs(self.node_start_idle_timeout_secs);
+                .set_node_run_idle_timeout_secs(self.node_run_idle_timeout_secs);
             goal.reborrow().set_max_timeout_secs(self.max_timeout_secs);
         }
         encode_message(&builder)
@@ -99,8 +99,8 @@ impl LaunchGoal {
                 goal.get_node_add_idle_timeout_secs(),
                 DEFAULT_IDLE_TIMEOUT_SECS,
             ),
-            node_start_idle_timeout_secs: with_timeout_default(
-                goal.get_node_start_idle_timeout_secs(),
+            node_run_idle_timeout_secs: with_timeout_default(
+                goal.get_node_run_idle_timeout_secs(),
                 DEFAULT_IDLE_TIMEOUT_SECS,
             ),
             max_timeout_secs: with_timeout_default(
@@ -191,7 +191,8 @@ impl LaunchGoalResponse {
 pub enum LaunchFeedbackStep {
     LauncherStep,
     AddingNode,
-    StartingNode,
+    RunningNode,
+    BuildingNode,
 }
 /// Feedback message for the Launch action.
 /// Represents a single line of output from the launch process.
@@ -239,7 +240,8 @@ impl LaunchFeedback {
             feedback.set_step(match self.step {
                 LaunchFeedbackStep::LauncherStep => launch_capnp::LaunchFeedbackStep::LauncherStep,
                 LaunchFeedbackStep::AddingNode => launch_capnp::LaunchFeedbackStep::AddingNode,
-                LaunchFeedbackStep::StartingNode => launch_capnp::LaunchFeedbackStep::StartingNode,
+                LaunchFeedbackStep::RunningNode => launch_capnp::LaunchFeedbackStep::RunningNode,
+                LaunchFeedbackStep::BuildingNode => launch_capnp::LaunchFeedbackStep::BuildingNode,
             });
         }
         encode_message(&builder)
@@ -251,7 +253,8 @@ impl LaunchFeedback {
         let step = match feedback.get_step()? {
             launch_capnp::LaunchFeedbackStep::LauncherStep => LaunchFeedbackStep::LauncherStep,
             launch_capnp::LaunchFeedbackStep::AddingNode => LaunchFeedbackStep::AddingNode,
-            launch_capnp::LaunchFeedbackStep::StartingNode => LaunchFeedbackStep::StartingNode,
+            launch_capnp::LaunchFeedbackStep::RunningNode => LaunchFeedbackStep::RunningNode,
+            launch_capnp::LaunchFeedbackStep::BuildingNode => LaunchFeedbackStep::BuildingNode,
         };
         Ok(Self {
             stream: feedback.get_stream()?.to_str()?.to_owned(),
@@ -270,9 +273,18 @@ pub struct NodeAddLogEntry {
     pub failed: bool,
 }
 
+/// Per-node build log entry carried in `LaunchResult`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NodeBuildLogEntry {
+    /// Node label in "name:tag" format.
+    pub node_label: String,
+    pub log_path: PathBuf,
+    pub failed: bool,
+}
+
 /// Per-node start log entry carried in `LaunchResult`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NodeStartLogEntry {
+pub struct NodeRunLogEntry {
     pub instance_id: String,
     /// Node label in "name:tag" format.
     pub node_label: String,
@@ -287,7 +299,8 @@ pub struct LaunchResult {
     pub log_path: PathBuf,
     pub error_message: Option<String>,
     pub node_add_logs: Vec<NodeAddLogEntry>,
-    pub node_start_logs: Vec<NodeStartLogEntry>,
+    pub node_build_logs: Vec<NodeBuildLogEntry>,
+    pub node_run_logs: Vec<NodeRunLogEntry>,
 }
 
 impl LaunchResult {
@@ -297,7 +310,8 @@ impl LaunchResult {
             log_path: log_path.into(),
             error_message,
             node_add_logs: Vec::new(),
-            node_start_logs: Vec::new(),
+            node_build_logs: Vec::new(),
+            node_run_logs: Vec::new(),
         }
     }
 
@@ -312,10 +326,12 @@ impl LaunchResult {
     pub fn with_node_logs(
         mut self,
         add_logs: Vec<NodeAddLogEntry>,
-        start_logs: Vec<NodeStartLogEntry>,
+        build_logs: Vec<NodeBuildLogEntry>,
+        run_logs: Vec<NodeRunLogEntry>,
     ) -> Self {
         self.node_add_logs = add_logs;
-        self.node_start_logs = start_logs;
+        self.node_build_logs = build_logs;
+        self.node_run_logs = run_logs;
         self
     }
 
@@ -339,11 +355,21 @@ impl LaunchResult {
                 e.set_failed(entry.failed);
             }
 
-            let mut start_logs = result
+            let mut build_logs = result
                 .reborrow()
-                .init_node_start_logs(self.node_start_logs.len() as u32);
-            for (i, entry) in self.node_start_logs.iter().enumerate() {
-                let mut e = start_logs.reborrow().get(i as u32);
+                .init_node_build_logs(self.node_build_logs.len() as u32);
+            for (i, entry) in self.node_build_logs.iter().enumerate() {
+                let mut e = build_logs.reborrow().get(i as u32);
+                e.set_node_label(&entry.node_label);
+                e.set_log_path(entry.log_path.to_string_lossy().as_ref());
+                e.set_failed(entry.failed);
+            }
+
+            let mut run_logs = result
+                .reborrow()
+                .init_node_run_logs(self.node_run_logs.len() as u32);
+            for (i, entry) in self.node_run_logs.iter().enumerate() {
+                let mut e = run_logs.reborrow().get(i as u32);
                 e.set_instance_id(&entry.instance_id);
                 e.set_node_label(&entry.node_label);
                 e.set_log_path(entry.log_path.to_string_lossy().as_ref());
@@ -370,11 +396,22 @@ impl LaunchResult {
             });
         }
 
-        let start_logs_reader = result.get_node_start_logs()?;
-        let mut node_start_logs = Vec::with_capacity(start_logs_reader.len() as usize);
-        for i in 0..start_logs_reader.len() {
-            let e = start_logs_reader.get(i);
-            node_start_logs.push(NodeStartLogEntry {
+        let build_logs_reader = result.get_node_build_logs()?;
+        let mut node_build_logs = Vec::with_capacity(build_logs_reader.len() as usize);
+        for i in 0..build_logs_reader.len() {
+            let e = build_logs_reader.get(i);
+            node_build_logs.push(NodeBuildLogEntry {
+                node_label: e.get_node_label()?.to_str()?.to_owned(),
+                log_path: PathBuf::from(e.get_log_path()?.to_str()?),
+                failed: e.get_failed(),
+            });
+        }
+
+        let run_logs_reader = result.get_node_run_logs()?;
+        let mut node_run_logs = Vec::with_capacity(run_logs_reader.len() as usize);
+        for i in 0..run_logs_reader.len() {
+            let e = run_logs_reader.get(i);
+            node_run_logs.push(NodeRunLogEntry {
                 instance_id: e.get_instance_id()?.to_str()?.to_owned(),
                 node_label: e.get_node_label()?.to_str()?.to_owned(),
                 log_path: PathBuf::from(e.get_log_path()?.to_str()?),
@@ -387,7 +424,8 @@ impl LaunchResult {
             log_path,
             error_message,
             node_add_logs,
-            node_start_logs,
+            node_build_logs,
+            node_run_logs,
         })
     }
 

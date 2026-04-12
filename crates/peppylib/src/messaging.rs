@@ -105,7 +105,12 @@ fn generate_request_id() -> String {
     hasher.update(format!("{:?}", thread_id).as_bytes());
 
     let result = hasher.finalize();
-    format!("{:x}", result)[..16].to_string() // Use first 16 hex chars for compactness
+    use std::fmt::Write;
+    let mut hex = String::with_capacity(16);
+    for b in result.iter().take(8) {
+        let _ = write!(hex, "{:02x}", b);
+    }
+    hex // Use first 16 hex chars for compactness
 }
 
 /// Formats an instance ID as a key-expression segment, returning `None` for wildcards.

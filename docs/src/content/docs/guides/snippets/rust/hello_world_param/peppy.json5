@@ -22,12 +22,12 @@
     parameters: {
       name: "string",
     },
-    add_cmd: [
+    build_cmd: [
       "cargo",
       "build",
       "--release"
     ],
-    start_cmd: [
+    run_cmd: [
       "./target/release/hello_world_param"
     ]
   },

@@ -12,7 +12,7 @@ pub fn core_node_config() -> NodeConfig {
             },
             execution: {
                 language: "rust",
-                start_cmd: ["core"]
+                run_cmd: ["core"]
             }
         }"#,
     )

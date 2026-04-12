@@ -8,7 +8,7 @@ from . import encoding
 
 # Force line-buffered stdout/stderr when not connected to a TTY (e.g., when
 # spawned by the daemon with piped I/O). Without this, Python defaults to full
-# buffering, delaying log capture in .peppy/logs/start/.
+# buffering, delaying log capture in .peppy/logs/run/.
 if hasattr(sys.stdout, "reconfigure") and not sys.stdout.isatty():
     sys.stdout.reconfigure(line_buffering=True)
 if hasattr(sys.stderr, "reconfigure") and not sys.stderr.isatty():

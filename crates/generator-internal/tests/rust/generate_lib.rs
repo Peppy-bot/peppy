@@ -46,7 +46,7 @@ const PEPPY_JSON5_CONFIG: &str = r#"{
 
   execution: {
     language: "rust",
-    start_cmd: ["./target/release/test_node"]
+    run_cmd: ["./target/release/test_node"]
   },
 }"#;
 
@@ -65,7 +65,7 @@ fn generate_peppygen_lib_minimal_config() {
 
       execution: {
         language: "rust",
-        start_cmd: ["./target/debug/minimal_node"]
+        run_cmd: ["./target/debug/minimal_node"]
       }
     }"#;
 
@@ -254,7 +254,7 @@ fn generate_peppygen_rust_lib_emitted_and_consumed_topics() {
           },
           execution: {
             language: "rust",
-            start_cmd: ["./target/debug/{EXPOSED_NODE_NAME}"]
+            run_cmd: ["./target/debug/{EXPOSED_NODE_NAME}"]
           },
         }"#
     .replace("{EXPOSED_NODE_NAME}", EXPOSED_NODE_NAME);
@@ -293,7 +293,7 @@ fn generate_peppygen_rust_lib_emitted_and_consumed_topics() {
           },
           execution: {
             language: "rust",
-            start_cmd: ["./target/debug/{CONSUMER_NODE_NAME}"]
+            run_cmd: ["./target/debug/{CONSUMER_NODE_NAME}"]
           }
         }"#
     .replace("{CONSUMER_NODE_NAME}", CONSUMER_NODE_NAME);
@@ -370,7 +370,7 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_services() {
           },
           execution: {
             language: "rust",
-            start_cmd: ["./target/debug/{EXPOSED_NODE_NAME}"]
+            run_cmd: ["./target/debug/{EXPOSED_NODE_NAME}"]
           },
         }"#
     .replace("{EXPOSED_NODE_NAME}", EXPOSED_NODE_NAME);
@@ -409,7 +409,7 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_services() {
           },
           execution: {
             language: "rust",
-            start_cmd: ["./target/debug/{CONSUMER_NODE_NAME}"]
+            run_cmd: ["./target/debug/{CONSUMER_NODE_NAME}"]
           }
         }"#
     .replace("{CONSUMER_NODE_NAME}", CONSUMER_NODE_NAME);
@@ -511,7 +511,7 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_actions() {
           },
           execution: {
             language: "rust",
-            start_cmd: ["./target/debug/{EXPOSED_NODE_NAME}"]
+            run_cmd: ["./target/debug/{EXPOSED_NODE_NAME}"]
           },
         }"#
     .replace("{EXPOSED_NODE_NAME}", EXPOSED_NODE_NAME);
@@ -550,7 +550,7 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_actions() {
           },
           execution: {
             language: "rust",
-            start_cmd: ["./target/debug/{CONSUMER_NODE_NAME}"]
+            run_cmd: ["./target/debug/{CONSUMER_NODE_NAME}"]
           }
         }"#
     .replace("{CONSUMER_NODE_NAME}", CONSUMER_NODE_NAME);

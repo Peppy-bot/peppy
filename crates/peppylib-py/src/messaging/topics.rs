@@ -80,7 +80,7 @@ pub struct PyTopicMessenger;
 impl PyTopicMessenger {
     /// Subscribe to a topic.
     #[staticmethod]
-    #[pyo3(signature = (messenger, as_core_node, as_instance_id, to_node_name, to_topic, to_core_node, to_instance_id, qos))]
+    #[pyo3(signature = (messenger, as_core_node, as_instance_id, to_node_name, to_topic, target_core_node, target_instance_id, qos))]
     #[allow(clippy::too_many_arguments)]
     fn subscribe<'py>(
         py: Python<'py>,
@@ -89,8 +89,8 @@ impl PyTopicMessenger {
         as_instance_id: String,
         to_node_name: String,
         to_topic: String,
-        to_core_node: Option<String>,
-        to_instance_id: Option<String>,
+        target_core_node: Option<String>,
+        target_instance_id: Option<String>,
         qos: PyQoSProfile,
     ) -> PyResult<Bound<'py, PyAny>> {
         let handle = messenger.inner.clone();
@@ -101,8 +101,8 @@ impl PyTopicMessenger {
                 &as_instance_id,
                 &to_node_name,
                 &to_topic,
-                to_core_node.as_deref(),
-                to_instance_id.as_deref(),
+                target_core_node.as_deref(),
+                target_instance_id.as_deref(),
                 qos.into(),
             )
             .await
@@ -116,7 +116,7 @@ impl PyTopicMessenger {
 
     /// Consume a topic from any node (external/unlinked topics).
     #[staticmethod]
-    #[pyo3(signature = (messenger, as_core_node, as_instance_id, to_topic, to_core_node, to_instance_id, qos))]
+    #[pyo3(signature = (messenger, as_core_node, as_instance_id, to_topic, target_core_node, target_instance_id, qos))]
     #[allow(clippy::too_many_arguments)]
     fn consume_external<'py>(
         py: Python<'py>,
@@ -124,8 +124,8 @@ impl PyTopicMessenger {
         as_core_node: String,
         as_instance_id: String,
         to_topic: String,
-        to_core_node: Option<String>,
-        to_instance_id: Option<String>,
+        target_core_node: Option<String>,
+        target_instance_id: Option<String>,
         qos: PyQoSProfile,
     ) -> PyResult<Bound<'py, PyAny>> {
         let handle = messenger.inner.clone();
@@ -135,8 +135,8 @@ impl PyTopicMessenger {
                 &as_core_node,
                 &as_instance_id,
                 &to_topic,
-                to_core_node.as_deref(),
-                to_instance_id.as_deref(),
+                target_core_node.as_deref(),
+                target_instance_id.as_deref(),
                 qos.into(),
             )
             .await

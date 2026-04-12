@@ -24,7 +24,7 @@ fn make_consumer_depend_on_provider(
         .into_resolved()
         .expect("should resolve");
 
-    provider_cfg.execution.add_cmd = None;
+    provider_cfg.execution.build_cmd = None;
 
     let topic_ifaces = provider_cfg
         .interfaces
@@ -52,7 +52,7 @@ fn make_consumer_depend_on_provider(
         .into_resolved()
         .expect("should resolve");
 
-    consumer_cfg.execution.add_cmd = None;
+    consumer_cfg.execution.build_cmd = None;
 
     consumer_cfg.manifest.depends_on = Some(DependsOn {
         nodes: vec![NodeDependency {
@@ -162,7 +162,9 @@ async fn node_list_command_succeeds() {
             source: Some(provider_path.display().to_string()),
             git_ref: None,
             variant: None,
-            start: false,
+            sync: false,
+            build: true,
+            run: false,
             args: Vec::new(),
             instance_id: None,
             idle_timeout: 60,
@@ -179,7 +181,9 @@ async fn node_list_command_succeeds() {
             source: Some(consumer_path.display().to_string()),
             git_ref: None,
             variant: None,
-            start: false,
+            sync: false,
+            build: true,
+            run: false,
             args: Vec::new(),
             instance_id: None,
             idle_timeout: 60,
@@ -211,6 +215,11 @@ async fn node_list_command_succeeds() {
         "logs should contain the provider node and instance count. Logs:\n{}",
         logs
     );
+    assert!(
+        provider_line.contains("[Ready]"),
+        "logs should contain the stage for the provider node. Logs:\n{}",
+        logs
+    );
     let consumer_line = logs
         .lines()
         .find(|line| line.contains(&consumer_label) && line.contains("instances:"))
@@ -218,6 +227,11 @@ async fn node_list_command_succeeds() {
     assert!(
         consumer_line.contains("0 instances:"),
         "logs should contain the consumer node and instance count. Logs:\n{}",
+        logs
+    );
+    assert!(
+        consumer_line.contains("[Ready]"),
+        "logs should contain the stage for the consumer node. Logs:\n{}",
         logs
     );
     assert!(
@@ -305,7 +319,9 @@ async fn node_list_command_with_dot_representation_succeeds() {
             source: Some(provider_path.display().to_string()),
             git_ref: None,
             variant: None,
-            start: false,
+            sync: false,
+            build: true,
+            run: false,
             args: Vec::new(),
             instance_id: None,
             idle_timeout: 60,
@@ -321,7 +337,9 @@ async fn node_list_command_with_dot_representation_succeeds() {
             source: Some(consumer_path.display().to_string()),
             git_ref: None,
             variant: None,
-            start: false,
+            sync: false,
+            build: true,
+            run: false,
             args: Vec::new(),
             instance_id: None,
             idle_timeout: 60,
@@ -356,8 +374,8 @@ async fn node_list_command_with_dot_representation_succeeds() {
     );
 
     // Verify the DOT graph contains both nodes.
-    let provider_label_fragment = format!("{provider_name}:0.1.0\\n(0 instances)");
-    let consumer_label_fragment = format!("{consumer_name}:0.1.0\\n(0 instances)");
+    let provider_label_fragment = format!("{provider_name}:0.1.0\\n[Ready] (0 instances)");
+    let consumer_label_fragment = format!("{consumer_name}:0.1.0\\n[Ready] (0 instances)");
     assert!(
         dot_graph.contains(&provider_label_fragment),
         "DOT graph should contain provider label fragment '{}'. DOT:\n{}",

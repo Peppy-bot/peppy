@@ -19,11 +19,8 @@ edition = "2024"
 # Optionally share common dependency versions across members (requires newer Cargo).
 # This helps keep versions in sync without repeating them in each member's Cargo.toml.
 # Uncomment and adapt as needed.
-# [workspace.dependencies]
-# anyhow = "1.0"
-# thiserror = "1.0"
-# serde = { version = "1.0", features = ["derive"] }
-# pyo3 = { version = "0.28", features = ["extension-module"] }
+[workspace.dependencies]
+parking_lot = "0.12"
 
 # Optionally define workspace-wide lints or profiles.
 # [workspace.lints.rust]

@@ -1,14 +1,14 @@
 # SHA256 checksums for zenoh standalone release zips
 # Update these when bumping the zenoh dependency version
-version = "1.7.2"
+version = "1.9.0"
 
 [checksums]
-aarch64-apple-darwin = "a97d3e86509bfc026b9386a732994dfe7ada31613dc5c7d8e0f4159dc34e979b"
-x86_64-apple-darwin = "f36e254c537298b25c5e8cf77b256ff1b37673f030c2f4367ac8065fd4f27c75"
-aarch64-unknown-linux-gnu = "2fcf8415b59a3cb6b529676b789aac7cd442aa850b94e2dcc548be5a4fc3b0b6"
-aarch64-unknown-linux-musl = "b62c9eef194125f636613799f1bef4efc7a42ef1161ebe22a6ef7d2575de4421"
-x86_64-unknown-linux-gnu = "d59cb50835078bfe3e49e7a3b3041c3dbb48e243a1e853f6012565ac91f1305a"
-x86_64-unknown-linux-musl = "77d4c9c5a316f5aa6930e1e611835c6090575b9234806f1bac9a1382e052a139"
-armv7-unknown-linux-gnueabihf = "52f0908443ce0463eaef899af3bb68618705971c152c93caa52ddf671ff84751"
-arm-unknown-linux-gnueabi = "ed8372b811dbc4cc0a1f450ccaae7a78377e2e28408dde74b87cfa66aca53798"
-arm-unknown-linux-gnueabihf = "ea735cff7ffb77504f3d4be9f15a7cead14244bc3060769220676cf6c4a55224"
+aarch64-apple-darwin = "13845799d1ab24f6aed209612e01346874b0857eda37b8d45b5b8b4897b52064"
+x86_64-apple-darwin = "54226409c16392364f6cf12ba62fbe2b9e22d630e17f39df98f2a8e8e06d783b"
+aarch64-unknown-linux-gnu = "34e24153dcf69e18f407eb1d2921226a273960cfaa03cefceb452d16434341e7"
+aarch64-unknown-linux-musl = "64f98d19c3910f8a2b3b50cafa97257d82eb1f80fb4d1fb7cdc72f57a7c37bcb"
+x86_64-unknown-linux-gnu = "f18081184b089e79e605f2c0cb3f7790fbf101ae94942988f716e19e1810a46e"
+x86_64-unknown-linux-musl = "79cff53980528d377818491a2f9d08a2bba0c0be3ba0dfed9d1d4a4bc7d630d2"
+armv7-unknown-linux-gnueabihf = "3059f80f3b5b42f30cc1c661982472615e9c087a8e239b475e4fc0c3136659d9"
+arm-unknown-linux-gnueabi = "618ae7b9b0450dd8f9100829581cbbe161b0551bfe882b11078d38a406f2dd78"
+arm-unknown-linux-gnueabihf = "776b626664a82ebfce17ff666e5be2dcf15b8eb3fabe837ddbddb6a5afc72695"

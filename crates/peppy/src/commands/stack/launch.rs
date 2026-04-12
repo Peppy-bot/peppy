@@ -5,7 +5,7 @@ use std::time::Duration;
 use config::launcher::PeppyLauncherParser;
 use core_node::encoding::{
     LaunchFeedback, LaunchFeedbackStep, LaunchGoal, LaunchGoalResponse, LaunchResult,
-    NodeAddLogEntry, NodeStartLogEntry,
+    NodeAddLogEntry, NodeBuildLogEntry, NodeRunLogEntry,
 };
 use peppylib::{ActionMessenger, PeppyError};
 use tracing::info;
@@ -23,32 +23,51 @@ const MAX_TIMEOUT: Duration = Duration::from_secs(7200);
 const FEEDBACK_DRAIN_TIMEOUT: Duration = Duration::from_millis(50);
 const RESULT_POLL_TIMEOUT: Duration = Duration::from_millis(200);
 
-fn display_node_log_files(add_logs: &[NodeAddLogEntry], start_logs: &[NodeStartLogEntry]) {
-    if add_logs.is_empty() && start_logs.is_empty() {
+fn display_node_log_files(
+    add_logs: &[NodeAddLogEntry],
+    build_logs: &[NodeBuildLogEntry],
+    run_logs: &[NodeRunLogEntry],
+) {
+    if add_logs.is_empty() && build_logs.is_empty() && run_logs.is_empty() {
         return;
     }
-    println!("Node log files:");
+    info!("Node log files:");
     if !add_logs.is_empty() {
-        println!("  Add:");
+        info!("  Add:");
         for e in add_logs {
-            println!("    `{}`: {}", e.node_label, e.log_path.display());
+            info!("    `{}`: {}", e.node_label, e.log_path.display());
         }
     }
-    if !start_logs.is_empty() {
-        println!("  Start:");
-        for e in start_logs {
+    if !build_logs.is_empty() {
+        info!("  Build:");
+        for e in build_logs {
             let marker = if e.failed { " [FAILED]" } else { "" };
-            let line = format!(
-                "    {} (`{}`){}: {}",
-                e.instance_id,
-                e.node_label,
-                marker,
-                e.log_path.display()
-            );
             if e.failed {
-                eprintln!("{line}");
+                tracing::error!("    `{}`{}: {}", e.node_label, marker, e.log_path.display());
             } else {
-                println!("{line}");
+                info!("    `{}`: {}", e.node_label, e.log_path.display());
+            }
+        }
+    }
+    if !run_logs.is_empty() {
+        info!("  Run:");
+        for e in run_logs {
+            let marker = if e.failed { " [FAILED]" } else { "" };
+            if e.failed {
+                tracing::error!(
+                    "    {} (`{}`){}: {}",
+                    e.instance_id,
+                    e.node_label,
+                    marker,
+                    e.log_path.display()
+                );
+            } else {
+                info!(
+                    "    {} (`{}`): {}",
+                    e.instance_id,
+                    e.node_label,
+                    e.log_path.display()
+                );
             }
         }
     }
@@ -77,12 +96,14 @@ fn handle_feedback(
     match &feedback.step {
         LaunchFeedbackStep::LauncherStep => {
             if feedback.is_stdout() {
-                println!("{}", feedback.line);
+                info!("{}", feedback.line);
             } else {
-                eprintln!("{}", feedback.line);
+                tracing::warn!("{}", feedback.line);
             }
         }
-        LaunchFeedbackStep::AddingNode | LaunchFeedbackStep::StartingNode => {
+        LaunchFeedbackStep::AddingNode
+        | LaunchFeedbackStep::BuildingNode
+        | LaunchFeedbackStep::RunningNode => {
             let output = scrolling_output
                 .get_or_insert_with(|| ScrollingOutput::new(SCROLLING_OUTPUT_LINES));
             output.add_line(&feedback.line, feedback.is_stderr());
@@ -94,14 +115,14 @@ pub fn launch(
     ctx: &Arc<AppContext>,
     launcher_config_path: PathBuf,
     node_add_idle_timeout_secs: u64,
-    node_start_idle_timeout_secs: u64,
+    node_run_idle_timeout_secs: u64,
     max_timeout_secs: u64,
 ) -> Result<()> {
     crate::commands::block_on(launch_async(
         ctx,
         launcher_config_path,
         node_add_idle_timeout_secs,
-        node_start_idle_timeout_secs,
+        node_run_idle_timeout_secs,
         max_timeout_secs,
     ))
 }
@@ -110,7 +131,7 @@ async fn launch_async(
     ctx: &Arc<AppContext>,
     launcher_config_path: PathBuf,
     node_add_idle_timeout_secs: u64,
-    node_start_idle_timeout_secs: u64,
+    node_run_idle_timeout_secs: u64,
     max_timeout_secs: u64,
 ) -> Result<()> {
     // Canonicalize the path so the core node can find the file regardless of its working directory
@@ -135,7 +156,7 @@ async fn launch_async(
     let goal = LaunchGoal::new(
         &launcher_config_path,
         node_add_idle_timeout_secs,
-        node_start_idle_timeout_secs,
+        node_run_idle_timeout_secs,
         max_timeout_secs,
     )
     .with_env_vars(caller_env_overrides());
@@ -260,7 +281,11 @@ async fn launch_async(
                             output.clear();
                         }
 
-                        display_node_log_files(&result.node_add_logs, &result.node_start_logs);
+                        display_node_log_files(
+                            &result.node_add_logs,
+                            &result.node_build_logs,
+                            &result.node_run_logs,
+                        );
 
                         if !result.success {
                             let error_msg = result

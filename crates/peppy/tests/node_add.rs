@@ -71,7 +71,7 @@ fn node_add_command_succeeds() {
         peppy_json5_path.display()
     );
 
-    peppy::test_support::disable_add_cmd(&peppy_json5_path);
+    peppy::test_support::disable_build_cmd(&peppy_json5_path);
 
     // Now add the node to the node stack
     NodeCommand {
@@ -79,7 +79,9 @@ fn node_add_command_succeeds() {
             source: Some(node_path.display().to_string()),
             git_ref: None,
             variant: None,
-            start: false,
+            sync: false,
+            build: true,
+            run: false,
             args: Vec::new(),
             instance_id: None,
             idle_timeout: 60,
@@ -95,6 +97,18 @@ fn node_add_command_succeeds() {
     assert!(
         logs.contains(&format!("Added node {}:", node_name)),
         "logs should contain success message for adding node. Logs:\n{}",
+        logs
+    );
+
+    // Regression: a first-time `node add` runs a `NodeInfoRequest` preflight
+    // to check for existing instances before overwriting. When the node
+    // isn't in the stack (the happy-path case here), that lookup used to
+    // surface as a daemon-side ERROR log from `run_handler` even though the
+    // CLI intentionally swallows the rejection. Assert that no such spurious
+    // service-handler error is emitted during a clean add.
+    assert!(
+        !logs.contains("service handler returned error"),
+        "first-time node add should not emit a service-handler error log. Logs:\n{}",
         logs
     );
 
@@ -196,7 +210,7 @@ fn node_add_command_with_run_arg_succeeds() {
     );
 
     // Avoid spawning a real node binary; provide `node_ready` + `node_health` in-process.
-    peppy::test_support::override_start_cmd(&peppy_json5_path);
+    peppy::test_support::override_run_cmd(&peppy_json5_path);
 
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
     let _node_ready_handle = rt
@@ -222,7 +236,9 @@ fn node_add_command_with_run_arg_succeeds() {
             source: Some(node_path.display().to_string()),
             git_ref: None,
             variant: None,
-            start: true,
+            sync: false,
+            build: true,
+            run: true,
             args: Vec::new(),
             instance_id: Some(instance_id.to_string()),
             idle_timeout: 60,
@@ -346,9 +362,9 @@ fn node_add_after_failed_sync_succeeds() {
     );
     std::fs::write(&git_hash_path, "wrong-hash\n").expect("failed to write wrong git hash");
 
-    // Disable add_cmd to avoid build step
+    // Disable build_cmd to avoid build step
     let peppy_json5_path = node_path.join("peppy.json5");
-    peppy::test_support::disable_add_cmd(&peppy_json5_path);
+    peppy::test_support::disable_build_cmd(&peppy_json5_path);
 
     // 3. Run `node add .` on that node, it'll fail due to git hash mismatch
     let add_result = NodeCommand {
@@ -356,7 +372,9 @@ fn node_add_after_failed_sync_succeeds() {
             source: Some(node_path.display().to_string()),
             git_ref: None,
             variant: None,
-            start: false,
+            sync: false,
+            build: true,
+            run: false,
             args: Vec::new(),
             instance_id: None,
             idle_timeout: 60,
@@ -385,7 +403,10 @@ fn node_add_after_failed_sync_succeeds() {
     );
 
     NodeCommand {
-        command: NodeCommands::Sync { path: None },
+        command: NodeCommands::Sync {
+            path: None,
+            all: false,
+        },
     }
     .execute(&sync_ctx)
     .expect("node sync command should succeed");
@@ -396,7 +417,9 @@ fn node_add_after_failed_sync_succeeds() {
             source: Some(node_path.display().to_string()),
             git_ref: None,
             variant: None,
-            start: false,
+            sync: false,
+            build: true,
+            run: false,
             args: Vec::new(),
             instance_id: None,
             idle_timeout: 60,
@@ -513,7 +536,7 @@ fn node_add_same_node_shutdown_existing_instances() {
     );
 
     // Avoid spawning a real node binary; provide `node_ready` + `node_health` in-process.
-    peppy::test_support::override_start_cmd(&peppy_json5_path);
+    peppy::test_support::override_run_cmd(&peppy_json5_path);
 
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
     let _node_ready_handle = rt
@@ -547,7 +570,9 @@ fn node_add_same_node_shutdown_existing_instances() {
             source: Some(node_path.display().to_string()),
             git_ref: None,
             variant: None,
-            start: true,
+            sync: false,
+            build: true,
+            run: true,
             args: Vec::new(),
             instance_id: Some(instance_id.to_string()),
             idle_timeout: 60,
@@ -603,7 +628,9 @@ fn node_add_same_node_shutdown_existing_instances() {
             source: Some(node_path.display().to_string()),
             git_ref: None,
             variant: None,
-            start: false, // Don't start a new instance this time
+            sync: false,
+            build: true,
+            run: false, // Don't run a new instance this time
             args: Vec::new(),
             instance_id: None,
             idle_timeout: 60,
@@ -695,12 +722,12 @@ fn node_add_command_with_variant_succeeds() {
     let root_path = node_dir.path().join(root_node_name);
     let root_peppy_json5 = root_path.join("peppy.json5");
 
-    // Read the generated config, add a variant declaration, and disable add_cmd
+    // Read the generated config, add a variant declaration, and disable build_cmd
     let mut root_cfg = config::node::NodeConfigParser::from_path(&root_peppy_json5)
         .expect("should parse config")
         .into_resolved()
         .expect("should resolve");
-    root_cfg.execution.add_cmd = None;
+    root_cfg.execution.build_cmd = None;
     root_cfg.manifest.variants = Some(vec![config::node::Variant {
         name: config::node::Name::new("mock").expect("valid name"),
         source: config::source::DeploymentSource::Local(config::source::DeploymentLocalSource {
@@ -722,7 +749,7 @@ fn node_add_command_with_variant_succeeds() {
         "schema_version": 1,
         "execution": {
             "language": "rust",
-            "start_cmd": ["sleep", "42"]
+            "run_cmd": ["sleep", "42"]
         }
     }"#;
     let variant_peppy_json5 = variant_dir.join("peppy.json5");
@@ -744,7 +771,9 @@ fn node_add_command_with_variant_succeeds() {
             source: Some(root_path.display().to_string()),
             git_ref: None,
             variant: Some("mock".to_string()),
-            start: false,
+            sync: false,
+            build: true,
+            run: false,
             args: Vec::new(),
             instance_id: None,
             idle_timeout: 60,
@@ -854,7 +883,7 @@ fn node_add_with_variant_uses_variant_in_preflight() {
         "schema_version": 1,
         "execution": {
             "language": "rust",
-            "start_cmd": ["sleep", "42"]
+            "run_cmd": ["sleep", "4"]
         }
     }"#;
     let variant_peppy_json5 = variant_dir.join("peppy.json5");
@@ -868,8 +897,8 @@ fn node_add_with_variant_uses_variant_in_preflight() {
     std::fs::write(variant_peppy_dir.join("git.hash"), "test-git-hash")
         .expect("should write variant git hash");
 
-    // Disable add_cmd to avoid spawning a real binary; provide node services in-process
-    peppy::test_support::override_start_cmd(&root_peppy_json5);
+    // Override run_cmd to `sleep 4` and disable build_cmd to avoid spawning a real binary.
+    peppy::test_support::override_run_cmd(&root_peppy_json5);
 
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
     let _node_ready_handle = rt
@@ -903,7 +932,9 @@ fn node_add_with_variant_uses_variant_in_preflight() {
             source: Some(root_path.display().to_string()),
             git_ref: None,
             variant: Some("mock".to_string()),
-            start: true,
+            sync: false,
+            build: true,
+            run: true,
             args: Vec::new(),
             instance_id: Some(instance_id.to_string()),
             idle_timeout: 60,
@@ -958,13 +989,15 @@ fn node_add_with_variant_uses_variant_in_preflight() {
             source: root_path.display().to_string(),
             git_ref: None,
             variant: Some("mock".to_string()),
-            start_options: None,
+            run_options: None,
             timeouts: TimeoutConfig {
                 idle_secs: 60,
                 max_secs: 3600,
             },
             force: false,
             confirm_reader: Some(Box::new(std::io::Cursor::new(b"y\n" as &[u8]))),
+            sync: false,
+            chain_build: true,
         },
     )
     .expect("second node add with variant should succeed through confirmation path");
@@ -1050,7 +1083,7 @@ fn node_add_same_node_different_sources_show_overwrite_prompt() {
         peppy_json5_path.display()
     );
 
-    peppy::test_support::override_start_cmd(&peppy_json5_path);
+    peppy::test_support::override_run_cmd(&peppy_json5_path);
 
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
     let _node_ready_handle = rt
@@ -1084,7 +1117,9 @@ fn node_add_same_node_different_sources_show_overwrite_prompt() {
             source: Some(node_path.display().to_string()),
             git_ref: None,
             variant: None,
-            start: true,
+            sync: false,
+            build: true,
+            run: true,
             args: Vec::new(),
             instance_id: Some(instance_id.to_string()),
             idle_timeout: 60,
@@ -1176,13 +1211,15 @@ fn node_add_same_node_different_sources_show_overwrite_prompt() {
             source: git_source,
             git_ref: None,
             variant: None,
-            start_options: None,
+            run_options: None,
             timeouts: TimeoutConfig {
                 idle_secs: 60,
                 max_secs: 3600,
             },
             force: false,
             confirm_reader: Some(Box::new(std::io::Cursor::new(b"y\n" as &[u8]))),
+            sync: false,
+            chain_build: true,
         },
     )
     .expect("second node add from git should succeed through confirmation path");
@@ -1266,7 +1303,7 @@ fn node_add_auto_syncs_when_peppy_dir_missing() {
         .expect("should parse config")
         .into_resolved()
         .expect("should resolve");
-    root_cfg.execution.add_cmd = None;
+    root_cfg.execution.build_cmd = None;
     root_cfg.manifest.variants = Some(vec![config::node::Variant {
         name: config::node::Name::new("mock").expect("valid name"),
         source: config::source::DeploymentSource::Local(config::source::DeploymentLocalSource {
@@ -1284,7 +1321,7 @@ fn node_add_auto_syncs_when_peppy_dir_missing() {
         "schema_version": 1,
         "execution": {
             "language": "rust",
-            "start_cmd": ["sleep", "42"]
+            "run_cmd": ["sleep", "42"]
         }
     }"#;
     let variant_peppy_json5 = variant_dir.join("peppy.json5");
@@ -1303,7 +1340,9 @@ fn node_add_auto_syncs_when_peppy_dir_missing() {
             source: Some(root_path.display().to_string()),
             git_ref: None,
             variant: Some("mock".to_string()),
-            start: false,
+            sync: false,
+            build: true,
+            run: false,
             args: Vec::new(),
             instance_id: None,
             idle_timeout: 60,
@@ -1388,5 +1427,208 @@ fn node_add_auto_syncs_when_peppy_dir_missing() {
     assert_eq!(
         variant_fingerprint, expected_variant_fingerprint,
         "variant fingerprint should match variant's peppy.json5 content"
+    );
+}
+
+/// When `.peppy/git.hash` is stale, `node add` without `--sync` fails; re-running
+/// `node add` with `--sync` refreshes the fingerprint in one step (no separate
+/// `peppy node sync` needed) and the add succeeds.
+#[test]
+fn node_add_with_sync_flag_refreshes_stale_git_hash() {
+    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
+    let serve = rt
+        .block_on(ServeCommandEmulation::with_mock())
+        .expect("failed to create serve emulation");
+    let shared_messenger = serve.messenger();
+    let core_node_name = serve.core_node_name().to_string();
+
+    let node_dir = tempfile::tempdir().expect("failed to create temp dir for node");
+    let node_name = "test_add_sync_flag_node";
+
+    let node_ctx = Arc::new(
+        AppContext::with_messenger(node_dir.path(), Arc::clone(&shared_messenger))
+            .with_daemon_state_file(serve.daemon_state_path()),
+    );
+
+    let log_capture = LogCapture::new();
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .without_time()
+        .with_writer(log_capture.clone())
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+
+    // 1. Init the node
+    NodeCommand {
+        command: NodeCommands::Init {
+            node_name: NodeName::new(node_name).expect("valid node name"),
+            to_dir: None,
+            toolchain: Toolchain::Cargo,
+            with_container: false,
+        },
+    }
+    .execute(&node_ctx)
+    .expect("node init command should succeed");
+
+    let node_path = node_dir.path().join(node_name);
+    let peppy_dir = node_path.join(PEPPY_OUTPUT_DIR);
+    let git_hash_path = peppy_dir.join("git.hash");
+    let peppy_json5_path = node_path.join("peppy.json5");
+
+    peppy::test_support::disable_build_cmd(&peppy_json5_path);
+
+    // 2. Invalidate git.hash to simulate a stale peppy cache
+    assert!(git_hash_path.exists(), "git.hash should exist after init");
+    std::fs::write(&git_hash_path, "wrong-hash\n").expect("failed to write wrong git hash");
+
+    // 3. `node add` without `--sync` should fail with a git hash mismatch
+    let add_result = NodeCommand {
+        command: NodeCommands::Add {
+            source: Some(node_path.display().to_string()),
+            git_ref: None,
+            variant: None,
+            sync: false,
+            build: true,
+            run: false,
+            args: Vec::new(),
+            instance_id: None,
+            idle_timeout: 60,
+            max_timeout: 3600,
+            force: false,
+        },
+    }
+    .execute(&node_ctx);
+    assert!(
+        add_result.is_err(),
+        "node add without --sync should fail on stale git.hash"
+    );
+    assert!(
+        add_result
+            .unwrap_err()
+            .to_string()
+            .contains("git hash mismatch"),
+        "error should mention git hash mismatch"
+    );
+
+    // 4. `node add` *with* `--sync` should refresh git.hash and succeed in one step
+    NodeCommand {
+        command: NodeCommands::Add {
+            source: Some(node_path.display().to_string()),
+            git_ref: None,
+            variant: None,
+            sync: true,
+            build: true,
+            run: false,
+            args: Vec::new(),
+            instance_id: None,
+            idle_timeout: 60,
+            max_timeout: 3600,
+            force: false,
+        },
+    }
+    .execute(&node_ctx)
+    .expect("node add with --sync should succeed");
+
+    // 5. Verify add succeeded and the peppygen fingerprint now matches the
+    //    current peppy.json5 (i.e. --sync really ran a sync)
+    let logs = log_capture.logs();
+    assert!(
+        logs.contains(&format!("Added node {}:", node_name)),
+        "logs should contain success message. Logs:\n{}",
+        logs
+    );
+    // The sync log line should also appear, proving --sync fired
+    assert!(
+        logs.contains("Synced node interfaces at"),
+        "logs should show sync ran. Logs:\n{}",
+        logs
+    );
+
+    let fingerprint_path = node_path
+        .join(PEPPYGEN_OUTPUT_PATH)
+        .join("peppy.json5.sha256");
+    assert!(
+        fingerprint_path.exists(),
+        "peppygen fingerprint should exist after --sync"
+    );
+    let fingerprint = std::fs::read_to_string(&fingerprint_path)
+        .expect("should read fingerprint")
+        .trim()
+        .to_string();
+    let expected = config::fingerprint::fingerprint_for_bytes(
+        &std::fs::read(&peppy_json5_path).expect("should read peppy.json5"),
+    );
+    assert_eq!(
+        fingerprint, expected,
+        "fingerprint should match current peppy.json5 content after --sync"
+    );
+
+    // 6. Verify the node landed in the stack
+    let messenger_handle = node_ctx
+        .messenger_handle()
+        .expect("messenger handle should be available");
+    let response = rt
+        .block_on(NodeListRequest::new(false).poll(
+            messenger_handle,
+            &core_node_name,
+            CALLER_INSTANCE_ID,
+            &core_node_name,
+            Duration::from_secs(5),
+        ))
+        .expect("node_list request should complete");
+    let graph: SerializedNodeGraph =
+        serde_json::from_str(&response.graph_json).expect("graph_json should parse");
+    graph
+        .nodes
+        .iter()
+        .find(|n| n.name == node_name && n.tag == "0.1.0")
+        .expect("graph should contain the added node");
+}
+
+/// `--sync` is only valid for local filesystem sources. Passing it with a
+/// remote (git/http) source should fail with a clear error before any
+/// daemon round-trip is attempted.
+#[test]
+fn node_add_with_sync_flag_rejects_remote_source() {
+    // No daemon / runtime setup needed — the error fires during local arg
+    // validation before any async work. We still need a minimal AppContext.
+    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
+    let serve = rt
+        .block_on(ServeCommandEmulation::with_mock())
+        .expect("failed to create serve emulation");
+    let shared_messenger = serve.messenger();
+
+    let node_dir = tempfile::tempdir().expect("failed to create temp dir");
+    let node_ctx = Arc::new(
+        AppContext::with_messenger(node_dir.path(), Arc::clone(&shared_messenger))
+            .with_daemon_state_file(serve.daemon_state_path()),
+    );
+
+    let result = NodeCommand {
+        command: NodeCommands::Add {
+            source: Some("https://github.com/fake-org/fake-repo.git/node".to_string()),
+            git_ref: None,
+            variant: None,
+            sync: true,
+            build: false,
+            run: false,
+            args: Vec::new(),
+            instance_id: None,
+            idle_timeout: 60,
+            max_timeout: 3600,
+            force: false,
+        },
+    }
+    .execute(&node_ctx);
+
+    assert!(
+        result.is_err(),
+        "node add --sync with remote source should fail"
+    );
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("--sync is only valid for local node sources"),
+        "error should mention local-source restriction, got: {}",
+        err
     );
 }

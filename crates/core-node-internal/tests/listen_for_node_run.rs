@@ -1,16 +1,14 @@
 mod common;
 
 use common::{
-    AbortOnDrop, NodeStartTestTimeouts, create_test_node_with_name, send_node_add_and_wait,
-    send_node_start_and_wait, send_node_start_and_wait_with_env,
+    AbortOnDrop, NodeRunTestTimeouts, create_test_node_with_name, send_node_add_then_build,
+    send_node_run_and_wait, send_node_run_and_wait_with_env, start_core_node_with_health_monitor,
     start_core_node_with_health_timeout, start_core_node_with_mock_messenger,
     start_core_node_with_real_messenger, write_peppy_json5,
 };
 use config::consts::DEFAULT_ALPINE_BASE_IMAGE;
-use config::launcher::Name;
 use config::node::Name as NodeName;
-use config::runtime::{NodeInstance, RuntimeConfig};
-use core_node::encoding::NodeStartFeedback;
+use core_node::encoding::NodeRunFeedback;
 use peppylib::messaging::MessengerHandle;
 use peppylib::services::health::listen_for_node_health;
 use peppylib::services::ready::listen_for_node_ready;
@@ -31,7 +29,7 @@ fn create_node_config_dir(peppy_json5: &str) -> TempDir {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_start_success() {
+async fn listen_for_node_run_success() {
     // These must match the values used in create_test_node()
     const TARGET_NODE_NAME: &str = "runnable_node";
     const TARGET_NODE_TAG: &str = "0.1.0";
@@ -43,15 +41,14 @@ async fn listen_for_node_start_success() {
     let node_dir = create_test_node_with_name(TARGET_NODE_NAME, TARGET_NODE_TAG);
 
     // Add the node to the core node's node stack
-    let add_response = send_node_add_and_wait(
+    let add_response = send_node_add_then_build(
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
         &node_dir,
         Duration::from_secs(30),
-        // Longer timeout to account for add_cmd execution and copying the test node folder,
+        // Longer timeout to account for build_cmd execution and copying the test node folder,
         // which may include build artifacts.
         Duration::from_secs(120),
-        None,
     )
     .await
     .expect("node_add should succeed");
@@ -63,7 +60,7 @@ async fn listen_for_node_start_success() {
     );
     // Intentionally keep the started node process running: nodes are expected to linger
     // and the test should still tear down cleanly.
-    let _snapshot_node_path = add_response.snapshot_path;
+    let _artifact_path = add_response.artifact_path;
 
     // Get the actual messaging endpoint from the Zenoh session
     let (messaging_host, messaging_port) = started_core_node
@@ -72,52 +69,46 @@ async fn listen_for_node_start_success() {
         .await
         .expect("zenoh endpoint should be available");
 
-    // Create a runtime config for the node_start request
-    let runtime_config = RuntimeConfig::new(
+    // Create a runtime config for the node_run request
+    let runtime_config_json5 = common::build_runtime_config_json5(
         messaging_host.as_str(),
         messaging_port,
-        NodeInstance {
-            instance_id: Name::new(TARGET_INSTANCE_ID).unwrap(),
-            arguments: Default::default(),
-        },
-        TARGET_NODE_NAME,
         &started_core_node.core_node_name,
-    )
-    .expect("runtime config should be valid");
+        TARGET_NODE_NAME,
+        TARGET_INSTANCE_ID,
+        Default::default(),
+    );
 
-    let runtime_config_json5 =
-        serde_json5::to_string(&runtime_config).expect("runtime config should serialize");
-
-    let start_response = send_node_start_and_wait(
+    let start_response = send_node_run_and_wait(
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
         &runtime_config_json5,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
-        &NodeStartTestTimeouts {
+        &NodeRunTestTimeouts {
             goal: Duration::from_secs(30),
             result: Duration::from_secs(60),
         },
         None,
     )
     .await
-    .expect("node_start action should complete");
+    .expect("node_run action should complete");
 
     // The start should succeed because the health check was responded to
     assert!(
         start_response.result.success,
-        "node_start should succeed, got error: {:?}",
+        "node_run should succeed, got error: {:?}",
         start_response.result.error_message
     );
 
     // Verify that the PID is returned on success
     assert!(
         start_response.result.pid.is_some(),
-        "node_start should return a PID on success"
+        "node_run should return a PID on success"
     );
     assert!(
         start_response.result.pid.unwrap() > 0,
-        "node_start PID should be a positive number"
+        "node_run PID should be a positive number"
     );
 
     // Verify that the instance was added to the node stack
@@ -132,14 +123,14 @@ async fn listen_for_node_start_success() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_start_timeout() {
+async fn listen_for_node_run_timeout() {
     const TARGET_NODE_NAME: &str = "runnable_node";
     const TARGET_INSTANCE_ID: &str = "runnable_instance";
 
     // Use a short health timeout so the test doesn't take too long
     let started = start_core_node_with_health_timeout(Duration::from_secs(2)).await;
 
-    // Create a node config with a start_cmd that won't respond to health checks
+    // Create a node config with a run_cmd that won't respond to health checks
     // Using "sleep 10" as a simple command that runs but doesn't respond
     let peppy_json5 = r#"{
             schema_version: 1,
@@ -149,7 +140,7 @@ async fn listen_for_node_start_timeout() {
             },
             execution: {
                 language: "rust",
-                start_cmd: ["sleep", "10"]
+                run_cmd: ["sleep", "10"]
             }
         }"#
     .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME);
@@ -158,13 +149,12 @@ async fn listen_for_node_start_timeout() {
     let temp_dir = create_node_config_dir(&peppy_json5);
 
     // Add the node to the core node's node stack
-    let add_response = send_node_add_and_wait(
+    let add_response = send_node_add_then_build(
         &started.caller_handle,
         &started.core_node_name,
         temp_dir.path(),
         Duration::from_secs(5),
         Duration::from_secs(5),
-        None,
     )
     .await
     .expect("node_add should succeed");
@@ -175,7 +165,7 @@ async fn listen_for_node_start_timeout() {
         add_response.error_message
     );
 
-    // Set up a ready listener so node_start can proceed to the health-check phase.
+    // Set up a ready listener so node_run can proceed to the health-check phase.
     // We intentionally do NOT set up a health listener to force the health check to time out.
     let ready_handle = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
     let _ready_task = AbortOnDrop(
@@ -192,42 +182,33 @@ async fn listen_for_node_start_timeout() {
     // Allow the ready service to fully establish its listener
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    // Create a runtime config for the node_start request
-    let runtime_config = RuntimeConfig::new(
-        "127.0.0.1",
-        config::consts::DEFAULT_MESSAGING_PORT,
-        NodeInstance {
-            instance_id: Name::new(TARGET_INSTANCE_ID).unwrap(),
-            arguments: Default::default(),
-        },
-        TARGET_NODE_NAME,
+    // Create a runtime config for the node_run request
+    let runtime_config_json5 = common::default_runtime_config_json5(
         &started.core_node_name,
-    )
-    .expect("runtime config should be valid");
+        TARGET_NODE_NAME,
+        TARGET_INSTANCE_ID,
+    );
 
-    let runtime_config_json5 =
-        serde_json5::to_string(&runtime_config).expect("runtime config should serialize");
-
-    // Call node_start - this should timeout because the node won't respond to health checks
-    let start_response = send_node_start_and_wait(
+    // Call node_run - this should timeout because the node won't respond to health checks
+    let start_response = send_node_run_and_wait(
         &started.caller_handle,
         &started.core_node_name,
         &runtime_config_json5,
         TARGET_NODE_NAME,
         "0.1.0",
-        &NodeStartTestTimeouts {
+        &NodeRunTestTimeouts {
             goal: Duration::from_secs(5),
             result: Duration::from_secs(5),
         },
         None,
     )
     .await
-    .expect("node_start action should complete");
+    .expect("node_run action should complete");
 
     // The start should fail because the health check timed out
     assert!(
         !start_response.result.success,
-        "node_start should fail due to health check timeout"
+        "node_run should fail due to health check timeout"
     );
     assert!(
         start_response
@@ -243,7 +224,7 @@ async fn listen_for_node_start_timeout() {
     // Verify that PID is None on failure
     assert!(
         start_response.result.pid.is_none(),
-        "node_start should not return a PID on failure"
+        "node_run should not return a PID on failure"
     );
 
     // Verify that the instance was NOT added to the node stack since start failed
@@ -256,7 +237,7 @@ async fn listen_for_node_start_timeout() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_start_not_found() {
+async fn listen_for_node_run_not_found() {
     const TARGET_NODE_NAME: &str = "nonexistent_node";
     const TARGET_INSTANCE_ID: &str = "nonexistent_instance";
 
@@ -266,41 +247,32 @@ async fn listen_for_node_start_not_found() {
     // This simulates trying to start a node that doesn't exist
 
     // Create a runtime config for a node that was never added
-    let runtime_config = RuntimeConfig::new(
-        "127.0.0.1",
-        config::consts::DEFAULT_MESSAGING_PORT,
-        NodeInstance {
-            instance_id: Name::new(TARGET_INSTANCE_ID).unwrap(),
-            arguments: Default::default(),
-        },
-        TARGET_NODE_NAME,
+    let runtime_config_json5 = common::default_runtime_config_json5(
         &started.core_node_name,
-    )
-    .expect("runtime config should be valid");
+        TARGET_NODE_NAME,
+        TARGET_INSTANCE_ID,
+    );
 
-    let runtime_config_json5 =
-        serde_json5::to_string(&runtime_config).expect("runtime config should serialize");
-
-    // Call node_start - this should fail because the node doesn't exist in the node stack
-    let start_response = send_node_start_and_wait(
+    // Call node_run - this should fail because the node doesn't exist in the node stack
+    let start_response = send_node_run_and_wait(
         &started.caller_handle,
         &started.core_node_name,
         &runtime_config_json5,
         TARGET_NODE_NAME,
         "0.1.0",
-        &NodeStartTestTimeouts {
+        &NodeRunTestTimeouts {
             goal: Duration::from_secs(5),
             result: Duration::from_secs(5),
         },
         None,
     )
     .await
-    .expect("node_start action should complete");
+    .expect("node_run action should complete");
 
     // The start should fail because the node was not found
     assert!(
         !start_response.result.success,
-        "node_start should fail because node not found"
+        "node_run should fail because node not found"
     );
     assert!(
         start_response
@@ -316,12 +288,12 @@ async fn listen_for_node_start_not_found() {
     // Verify that PID is None on failure
     assert!(
         start_response.result.pid.is_none(),
-        "node_start should not return a PID on failure"
+        "node_run should not return a PID on failure"
     );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_start_streams_stdout_and_stderr() {
+async fn listen_for_node_run_streams_stdout_and_stderr() {
     const TARGET_NODE_NAME: &str = "stream_output_node";
     const TARGET_NODE_TAG: &str = "0.1.0";
     const TARGET_INSTANCE_ID: &str = "stream_output_instance";
@@ -339,7 +311,7 @@ async fn listen_for_node_start_streams_stdout_and_stderr() {
             },
             execution: {
                 language: "rust",
-                start_cmd: ["sh", "-c", "echo {STDOUT_MARKER}; echo {STDERR_MARKER} 1>&2; sleep 5"]
+                run_cmd: ["sh", "-c", "echo {STDOUT_MARKER}; echo {STDERR_MARKER} 1>&2; sleep 5"]
             }
         }"#
     .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
@@ -348,13 +320,12 @@ async fn listen_for_node_start_streams_stdout_and_stderr() {
     .replace("{STDERR_MARKER}", STDERR_MARKER);
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
-    let add_response = send_node_add_and_wait(
+    let add_response = send_node_add_then_build(
         &started.caller_handle,
         &started.core_node_name,
         source_dir.path(),
         Duration::from_secs(5),
         Duration::from_secs(5),
-        None,
     )
     .await
     .expect("node_add should succeed");
@@ -390,48 +361,38 @@ async fn listen_for_node_start_streams_stdout_and_stderr() {
     // Allow ready/health services to establish listeners.
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    let runtime_config = RuntimeConfig::new(
-        "127.0.0.1",
-        config::consts::DEFAULT_MESSAGING_PORT,
-        NodeInstance {
-            instance_id: Name::new(TARGET_INSTANCE_ID).unwrap(),
-            arguments: Default::default(),
-        },
-        TARGET_NODE_NAME,
+    let runtime_config_json5 = common::default_runtime_config_json5(
         &started.core_node_name,
-    )
-    .expect("runtime config should be valid");
+        TARGET_NODE_NAME,
+        TARGET_INSTANCE_ID,
+    );
 
-    let runtime_config_json5 =
-        serde_json5::to_string(&runtime_config).expect("runtime config should serialize");
-
-    let (feedback_tx, mut feedback_rx) =
-        tokio::sync::mpsc::unbounded_channel::<NodeStartFeedback>();
-    let start_response = send_node_start_and_wait(
+    let (feedback_tx, mut feedback_rx) = tokio::sync::mpsc::unbounded_channel::<NodeRunFeedback>();
+    let start_response = send_node_run_and_wait(
         &started.caller_handle,
         &started.core_node_name,
         &runtime_config_json5,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
-        &NodeStartTestTimeouts {
+        &NodeRunTestTimeouts {
             goal: Duration::from_secs(5),
             result: Duration::from_secs(10),
         },
         Some(feedback_tx),
     )
     .await
-    .expect("node_start action should complete");
+    .expect("node_run action should complete");
 
     assert!(
         start_response.result.success,
-        "node_start should succeed, got error: {:?}",
+        "node_run should succeed, got error: {:?}",
         start_response.result.error_message
     );
 
     // Verify that the PID is returned on success
     assert!(
         start_response.result.pid.is_some(),
-        "node_start should return a PID on success"
+        "node_run should return a PID on success"
     );
 
     let mut feedback = Vec::new();
@@ -450,7 +411,7 @@ async fn listen_for_node_start_streams_stdout_and_stderr() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_start_writes_log_file() {
+async fn listen_for_node_run_writes_log_file() {
     const TARGET_NODE_NAME: &str = "log_file_node";
     const TARGET_NODE_TAG: &str = "0.1.0";
     const TARGET_INSTANCE_ID: &str = "log_file_instance";
@@ -468,7 +429,7 @@ async fn listen_for_node_start_writes_log_file() {
             },
             execution: {
                 language: "rust",
-                start_cmd: ["sh", "-c", "echo {STDOUT_MARKER}; echo {STDERR_MARKER} 1>&2; sleep 5"]
+                run_cmd: ["sh", "-c", "echo {STDOUT_MARKER}; echo {STDERR_MARKER} 1>&2; sleep 5"]
             }
         }"#
     .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
@@ -477,13 +438,12 @@ async fn listen_for_node_start_writes_log_file() {
     .replace("{STDERR_MARKER}", STDERR_MARKER);
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
-    let add_response = send_node_add_and_wait(
+    let add_response = send_node_add_then_build(
         &started.caller_handle,
         &started.core_node_name,
         source_dir.path(),
         Duration::from_secs(5),
         Duration::from_secs(5),
-        None,
     )
     .await
     .expect("node_add should succeed");
@@ -519,46 +479,37 @@ async fn listen_for_node_start_writes_log_file() {
     // Allow ready/health services to establish listeners.
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    let runtime_config = RuntimeConfig::new(
-        "127.0.0.1",
-        config::consts::DEFAULT_MESSAGING_PORT,
-        NodeInstance {
-            instance_id: Name::new(TARGET_INSTANCE_ID).unwrap(),
-            arguments: Default::default(),
-        },
-        TARGET_NODE_NAME,
+    let runtime_config_json5 = common::default_runtime_config_json5(
         &started.core_node_name,
-    )
-    .expect("runtime config should be valid");
+        TARGET_NODE_NAME,
+        TARGET_INSTANCE_ID,
+    );
 
-    let runtime_config_json5 =
-        serde_json5::to_string(&runtime_config).expect("runtime config should serialize");
-
-    let start_response = send_node_start_and_wait(
+    let start_response = send_node_run_and_wait(
         &started.caller_handle,
         &started.core_node_name,
         &runtime_config_json5,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
-        &NodeStartTestTimeouts {
+        &NodeRunTestTimeouts {
             goal: Duration::from_secs(5),
             result: Duration::from_secs(10),
         },
         None,
     )
     .await
-    .expect("node_start action should complete");
+    .expect("node_run action should complete");
 
     assert!(
         start_response.result.success,
-        "node_start should succeed, got error: {:?}",
+        "node_run should succeed, got error: {:?}",
         start_response.result.error_message
     );
 
     // Verify that the PID is returned on success
     assert!(
         start_response.result.pid.is_some(),
-        "node_start should return a PID on success"
+        "node_run should return a PID on success"
     );
 
     // Verify the goal response contains the correct log_path
@@ -568,7 +519,7 @@ async fn listen_for_node_start_writes_log_file() {
     );
     let expected_log_path = started
         .peppy_dirs
-        .logs_dir_start()
+        .logs_dir_run()
         .join(format!("{}.log", TARGET_INSTANCE_ID));
     assert_eq!(
         start_response.goal_response.log_path, expected_log_path,
@@ -597,7 +548,7 @@ async fn listen_for_node_start_writes_log_file() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_start_reports_all_missing_parameters() {
+async fn listen_for_node_run_reports_all_missing_parameters() {
     const TARGET_NODE_NAME: &str = "params_node";
     const TARGET_NODE_TAG: &str = "0.1.0";
     const TARGET_INSTANCE_ID: &str = "params_instance";
@@ -624,20 +575,19 @@ async fn listen_for_node_start_reports_all_missing_parameters() {
                         encoding: "string"
                     }
                 },
-                start_cmd: ["echo", "test"]
+                run_cmd: ["echo", "test"]
             }
         }"#
     .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
     .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
-    let add_response = send_node_add_and_wait(
+    let add_response = send_node_add_then_build(
         &started.caller_handle,
         &started.core_node_name,
         source_dir.path(),
         Duration::from_secs(5),
         Duration::from_secs(5),
-        None,
     )
     .await
     .expect("node_add should succeed");
@@ -649,41 +599,32 @@ async fn listen_for_node_start_reports_all_missing_parameters() {
     );
 
     // Create a runtime config WITHOUT providing any parameters
-    let runtime_config = RuntimeConfig::new(
-        "127.0.0.1",
-        config::consts::DEFAULT_MESSAGING_PORT,
-        NodeInstance {
-            instance_id: Name::new(TARGET_INSTANCE_ID).unwrap(),
-            arguments: Default::default(), // No parameters provided
-        },
-        TARGET_NODE_NAME,
+    let runtime_config_json5 = common::default_runtime_config_json5(
         &started.core_node_name,
-    )
-    .expect("runtime config should be valid");
+        TARGET_NODE_NAME,
+        TARGET_INSTANCE_ID,
+    );
 
-    let runtime_config_json5 =
-        serde_json5::to_string(&runtime_config).expect("runtime config should serialize");
-
-    // Call node_start - this should fail with all missing parameters listed
-    let start_response = send_node_start_and_wait(
+    // Call node_run - this should fail with all missing parameters listed
+    let start_response = send_node_run_and_wait(
         &started.caller_handle,
         &started.core_node_name,
         &runtime_config_json5,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
-        &NodeStartTestTimeouts {
+        &NodeRunTestTimeouts {
             goal: Duration::from_secs(5),
             result: Duration::from_secs(5),
         },
         None,
     )
     .await
-    .expect("node_start action should complete");
+    .expect("node_run action should complete");
 
     // The start should fail due to missing parameters
     assert!(
         !start_response.result.success,
-        "node_start should fail due to missing parameters"
+        "node_run should fail due to missing parameters"
     );
 
     let error_msg = start_response
@@ -724,12 +665,12 @@ async fn listen_for_node_start_reports_all_missing_parameters() {
     // Verify that PID is None on failure
     assert!(
         start_response.result.pid.is_none(),
-        "node_start should not return a PID on failure"
+        "node_run should not return a PID on failure"
     );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_start_reports_only_missing_parameters_when_some_provided() {
+async fn listen_for_node_run_reports_only_missing_parameters_when_some_provided() {
     const TARGET_NODE_NAME: &str = "partial_params_node";
     const TARGET_NODE_TAG: &str = "0.1.0";
     const TARGET_INSTANCE_ID: &str = "partial_params_instance";
@@ -756,20 +697,19 @@ async fn listen_for_node_start_reports_only_missing_parameters_when_some_provide
                         encoding: "string"
                     }
                 },
-                start_cmd: ["echo", "test"]
+                run_cmd: ["echo", "test"]
             }
         }"#
     .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
     .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
-    let add_response = send_node_add_and_wait(
+    let add_response = send_node_add_then_build(
         &started.caller_handle,
         &started.core_node_name,
         source_dir.path(),
         Duration::from_secs(5),
         Duration::from_secs(5),
-        None,
     )
     .await
     .expect("node_add should succeed");
@@ -798,41 +738,35 @@ async fn listen_for_node_start_reports_only_missing_parameters_when_some_provide
     arguments.insert("device".to_string(), AnyType::Object(device_args));
     // video is NOT provided
 
-    let runtime_config = RuntimeConfig::new(
+    let runtime_config_json5 = common::build_runtime_config_json5(
         "127.0.0.1",
         config::consts::DEFAULT_MESSAGING_PORT,
-        NodeInstance {
-            instance_id: Name::new(TARGET_INSTANCE_ID).unwrap(),
-            arguments,
-        },
-        TARGET_NODE_NAME,
         &started.core_node_name,
-    )
-    .expect("runtime config should be valid");
+        TARGET_NODE_NAME,
+        TARGET_INSTANCE_ID,
+        arguments,
+    );
 
-    let runtime_config_json5 =
-        serde_json5::to_string(&runtime_config).expect("runtime config should serialize");
-
-    // Call node_start - this should fail with only the missing video parameters listed
-    let start_response = send_node_start_and_wait(
+    // Call node_run - this should fail with only the missing video parameters listed
+    let start_response = send_node_run_and_wait(
         &started.caller_handle,
         &started.core_node_name,
         &runtime_config_json5,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
-        &NodeStartTestTimeouts {
+        &NodeRunTestTimeouts {
             goal: Duration::from_secs(5),
             result: Duration::from_secs(5),
         },
         None,
     )
     .await
-    .expect("node_start action should complete");
+    .expect("node_run action should complete");
 
     // The start should fail due to missing video parameters
     assert!(
         !start_response.result.success,
-        "node_start should fail due to missing parameters"
+        "node_run should fail due to missing parameters"
     );
 
     let error_msg = start_response
@@ -873,16 +807,16 @@ async fn listen_for_node_start_reports_only_missing_parameters_when_some_provide
     // Verify that PID is None on failure
     assert!(
         start_response.result.pid.is_none(),
-        "node_start should not return a PID on failure"
+        "node_run should not return a PID on failure"
     );
 }
 
 /// Tests that a new goal can be processed after a previous action was abandoned
 /// (goal accepted but result never polled).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_start_abandoned_action_does_not_block_next_goal() {
+async fn listen_for_node_run_abandoned_action_does_not_block_next_goal() {
     use config::node::QoSProfile;
-    use core_node::encoding::NodeStartGoal;
+    use core_node::encoding::NodeRunGoal;
     use peppylib::ActionMessenger;
 
     const FIRST_NODE_NAME: &str = "abandoned_start_node";
@@ -904,20 +838,19 @@ async fn listen_for_node_start_abandoned_action_does_not_block_next_goal() {
             },
             execution: {
                 language: "rust",
-                start_cmd: ["sleep", "30"]
+                run_cmd: ["sleep", "30"]
             }
         }"#
     .replace("{FIRST_NODE_NAME}", FIRST_NODE_NAME)
     .replace("{FIRST_NODE_TAG}", FIRST_NODE_TAG);
     write_peppy_json5(first_source_dir.path(), &first_peppy_json5);
 
-    let first_add_response = send_node_add_and_wait(
+    let first_add_response = send_node_add_then_build(
         &started.caller_handle,
         &started.core_node_name,
         first_source_dir.path(),
         Duration::from_secs(5),
         Duration::from_secs(5),
-        None,
     )
     .await
     .expect("first node_add should succeed");
@@ -938,20 +871,19 @@ async fn listen_for_node_start_abandoned_action_does_not_block_next_goal() {
             },
             execution: {
                 language: "rust",
-                start_cmd: ["sleep", "30"]
+                run_cmd: ["sleep", "30"]
             }
         }"#
     .replace("{SECOND_NODE_NAME}", SECOND_NODE_NAME)
     .replace("{SECOND_NODE_TAG}", SECOND_NODE_TAG);
     write_peppy_json5(second_source_dir.path(), &second_peppy_json5);
 
-    let second_add_response = send_node_add_and_wait(
+    let second_add_response = send_node_add_then_build(
         &started.caller_handle,
         &started.core_node_name,
         second_source_dir.path(),
         Duration::from_secs(5),
         Duration::from_secs(5),
-        None,
     )
     .await
     .expect("second node_add should succeed");
@@ -1011,23 +943,14 @@ async fn listen_for_node_start_abandoned_action_does_not_block_next_goal() {
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     // Create runtime config for first node
-    let first_runtime_config = RuntimeConfig::new(
-        "127.0.0.1",
-        config::consts::DEFAULT_MESSAGING_PORT,
-        NodeInstance {
-            instance_id: Name::new(FIRST_INSTANCE_ID).unwrap(),
-            arguments: Default::default(),
-        },
-        FIRST_NODE_NAME,
+    let first_runtime_config_json5 = common::default_runtime_config_json5(
         &started.core_node_name,
-    )
-    .expect("first runtime config should be valid");
-
-    let first_runtime_config_json5 = serde_json5::to_string(&first_runtime_config)
-        .expect("first runtime config should serialize");
+        FIRST_NODE_NAME,
+        FIRST_INSTANCE_ID,
+    );
 
     // Send first goal but DON'T wait for result (simulating abandoned action)
-    let first_goal = NodeStartGoal::new(
+    let first_goal = NodeRunGoal::new(
         &first_runtime_config_json5,
         FIRST_NODE_NAME,
         FIRST_NODE_TAG,
@@ -1040,7 +963,7 @@ async fn listen_for_node_start_abandoned_action_does_not_block_next_goal() {
         &started.core_node_name,
         common::CALLER_INSTANCE_ID,
         &started.core_node_name,
-        core_node::names::NODE_START_ACTION,
+        core_node::names::NODE_RUN_ACTION,
         Some(&started.core_node_name),
         None,
         first_goal_payload,
@@ -1053,7 +976,7 @@ async fn listen_for_node_start_abandoned_action_does_not_block_next_goal() {
     // Verify first goal was accepted
     let first_goal_response_payload = first_action_handle.goal_response().payload();
     let first_goal_response =
-        core_node::encoding::NodeStartGoalResponse::decode(&first_goal_response_payload)
+        core_node::encoding::NodeRunGoalResponse::decode(&first_goal_response_payload)
             .expect("failed to decode first goal response");
     assert!(
         first_goal_response.accepted,
@@ -1066,39 +989,30 @@ async fn listen_for_node_start_abandoned_action_does_not_block_next_goal() {
 
     // Now send second goal - this should succeed even though we never polled
     // for the first action's result
-    let second_runtime_config = RuntimeConfig::new(
-        "127.0.0.1",
-        config::consts::DEFAULT_MESSAGING_PORT,
-        NodeInstance {
-            instance_id: Name::new(SECOND_INSTANCE_ID).unwrap(),
-            arguments: Default::default(),
-        },
-        SECOND_NODE_NAME,
+    let second_runtime_config_json5 = common::default_runtime_config_json5(
         &started.core_node_name,
-    )
-    .expect("second runtime config should be valid");
+        SECOND_NODE_NAME,
+        SECOND_INSTANCE_ID,
+    );
 
-    let second_runtime_config_json5 = serde_json5::to_string(&second_runtime_config)
-        .expect("second runtime config should serialize");
-
-    let second_start_response = send_node_start_and_wait(
+    let second_start_response = send_node_run_and_wait(
         &started.caller_handle,
         &started.core_node_name,
         &second_runtime_config_json5,
         SECOND_NODE_NAME,
         SECOND_NODE_TAG,
-        &NodeStartTestTimeouts {
+        &NodeRunTestTimeouts {
             goal: Duration::from_secs(5),
             result: Duration::from_secs(10),
         },
         None,
     )
     .await
-    .expect("second node_start request should complete");
+    .expect("second node_run request should complete");
 
     assert!(
         second_start_response.result.success,
-        "second node_start should succeed even after first action was abandoned, got error: {:?}",
+        "second node_run should succeed even after first action was abandoned, got error: {:?}",
         second_start_response.result.error_message
     );
 
@@ -1119,7 +1033,7 @@ async fn listen_for_node_start_abandoned_action_does_not_block_next_goal() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_start_uses_env_overrides_for_path() {
+async fn listen_for_node_run_uses_env_overrides_for_path() {
     const TARGET_NODE_NAME: &str = "env_path_node";
     const TARGET_NODE_TAG: &str = "0.1.0";
     const TARGET_INSTANCE_ID: &str = "env_path_instance";
@@ -1135,20 +1049,19 @@ async fn listen_for_node_start_uses_env_overrides_for_path() {
             },
             execution: {
                 language: "rust",
-                start_cmd: ["printout", "3"]
+                run_cmd: ["printout", "3"]
             }
         }"#
     .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
     .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
-    let add_response = send_node_add_and_wait(
+    let add_response = send_node_add_then_build(
         &started.caller_handle,
         &started.core_node_name,
         source_dir.path(),
         Duration::from_secs(30),
         Duration::from_secs(120),
-        None,
     )
     .await
     .expect("node_add should succeed");
@@ -1182,39 +1095,31 @@ async fn listen_for_node_start_uses_env_overrides_for_path() {
 
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    let runtime_config = RuntimeConfig::new(
-        "127.0.0.1",
-        config::consts::DEFAULT_MESSAGING_PORT,
-        NodeInstance {
-            instance_id: Name::new(TARGET_INSTANCE_ID).unwrap(),
-            arguments: Default::default(),
-        },
-        TARGET_NODE_NAME,
+    let runtime_config_json5 = common::default_runtime_config_json5(
         &started.core_node_name,
-    )
-    .expect("runtime config should be valid");
-    let runtime_config_json5 =
-        serde_json5::to_string(&runtime_config).expect("runtime config should serialize");
+        TARGET_NODE_NAME,
+        TARGET_INSTANCE_ID,
+    );
 
     // First attempt without env overrides: printout should not be found.
-    let start_response_missing = send_node_start_and_wait(
+    let start_response_missing = send_node_run_and_wait(
         &started.caller_handle,
         &started.core_node_name,
         &runtime_config_json5,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
-        &NodeStartTestTimeouts {
+        &NodeRunTestTimeouts {
             goal: Duration::from_secs(10),
             result: Duration::from_secs(10),
         },
         None,
     )
     .await
-    .expect("node_start request should complete");
+    .expect("node_run request should complete");
 
     assert!(
         !start_response_missing.result.success,
-        "node_start should fail when printout is missing from daemon PATH"
+        "node_run should fail when printout is missing from daemon PATH"
     );
     assert!(
         start_response_missing
@@ -1247,13 +1152,13 @@ async fn listen_for_node_start_uses_env_overrides_for_path() {
     let env_vars = vec![("PATH".to_string(), new_path)];
 
     // Second attempt with env overrides: printout should be found.
-    let start_response = send_node_start_and_wait_with_env(
+    let start_response = send_node_run_and_wait_with_env(
         &started.caller_handle,
         &started.core_node_name,
         &runtime_config_json5,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
-        &NodeStartTestTimeouts {
+        &NodeRunTestTimeouts {
             goal: Duration::from_secs(10),
             result: Duration::from_secs(10),
         },
@@ -1261,17 +1166,17 @@ async fn listen_for_node_start_uses_env_overrides_for_path() {
         env_vars,
     )
     .await
-    .expect("node_start request should complete");
+    .expect("node_run request should complete");
 
     assert!(
         start_response.result.success,
-        "node_start should succeed when caller PATH is passed, got error: {:?}",
+        "node_run should succeed when caller PATH is passed, got error: {:?}",
         start_response.result.error_message
     );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_start_injects_runtime_env_vars() {
+async fn listen_for_node_run_injects_runtime_env_vars() {
     const TARGET_NODE_NAME: &str = "runtime_env_start_node";
     const TARGET_NODE_TAG: &str = "0.1.0";
     const TARGET_INSTANCE_ID: &str = "runtime_env_start_instance";
@@ -1287,7 +1192,7 @@ async fn listen_for_node_start_injects_runtime_env_vars() {
             },
             execution: {
                 language: "rust",
-                start_cmd: [
+                run_cmd: [
                     "sh",
                     "-c",
                     "test -n \"$PEPPY_APPTAINER_BIN\" && test \"$PEPPY_NODE_NAME\" = \"{TARGET_NODE_NAME}\" && test \"$PEPPY_NODE_TAG\" = \"{TARGET_NODE_TAG}\" && sleep 10"
@@ -1298,13 +1203,12 @@ async fn listen_for_node_start_injects_runtime_env_vars() {
     .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
-    let add_response = send_node_add_and_wait(
+    let add_response = send_node_add_then_build(
         &started.caller_handle,
         &started.core_node_name,
         source_dir.path(),
         Duration::from_secs(30),
         Duration::from_secs(120),
-        None,
     )
     .await
     .expect("node_add should succeed");
@@ -1338,44 +1242,36 @@ async fn listen_for_node_start_injects_runtime_env_vars() {
 
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    let runtime_config = RuntimeConfig::new(
-        "127.0.0.1",
-        config::consts::DEFAULT_MESSAGING_PORT,
-        NodeInstance {
-            instance_id: Name::new(TARGET_INSTANCE_ID).unwrap(),
-            arguments: Default::default(),
-        },
-        TARGET_NODE_NAME,
+    let runtime_config_json5 = common::default_runtime_config_json5(
         &started.core_node_name,
-    )
-    .expect("runtime config should be valid");
-    let runtime_config_json5 =
-        serde_json5::to_string(&runtime_config).expect("runtime config should serialize");
+        TARGET_NODE_NAME,
+        TARGET_INSTANCE_ID,
+    );
 
-    let start_response = send_node_start_and_wait(
+    let start_response = send_node_run_and_wait(
         &started.caller_handle,
         &started.core_node_name,
         &runtime_config_json5,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
-        &NodeStartTestTimeouts {
+        &NodeRunTestTimeouts {
             goal: Duration::from_secs(10),
             result: Duration::from_secs(10),
         },
         None,
     )
     .await
-    .expect("node_start request should complete");
+    .expect("node_run request should complete");
 
     assert!(
         start_response.result.success,
-        "node_start should succeed when runtime env vars are injected, got error: {:?}",
+        "node_run should succeed when runtime env vars are injected, got error: {:?}",
         start_response.result.error_message
     );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_start_with_container_success() {
+async fn listen_for_node_run_with_container_success() {
     let _guard = CONTAINER_TEST_MUTEX.lock().await;
 
     const TARGET_NODE_NAME: &str = "container_start_node";
@@ -1434,13 +1330,12 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
         .expect("failed to write apptainer definition");
 
     // Add the node first (container add flow).
-    let add_response = send_node_add_and_wait(
+    let add_response = send_node_add_then_build(
         &started.caller_handle,
         &started.core_node_name,
         source_dir.path(),
         Duration::from_secs(30),
         Duration::from_secs(120),
-        None,
     )
     .await
     .expect("node_add should succeed");
@@ -1477,31 +1372,22 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
     // Allow ready/health services to establish listeners.
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    // Create a runtime config for the node_start request
-    let runtime_config = RuntimeConfig::new(
-        "127.0.0.1",
-        config::consts::DEFAULT_MESSAGING_PORT,
-        NodeInstance {
-            instance_id: Name::new(TARGET_INSTANCE_ID).unwrap(),
-            arguments: Default::default(),
-        },
-        TARGET_NODE_NAME,
+    // Create a runtime config for the node_run request
+    let runtime_config_json5 = common::default_runtime_config_json5(
         &started.core_node_name,
-    )
-    .expect("runtime config should be valid");
-
-    let runtime_config_json5 =
-        serde_json5::to_string(&runtime_config).expect("runtime config should serialize");
+        TARGET_NODE_NAME,
+        TARGET_INSTANCE_ID,
+    );
 
     let env_vars = vec![("MY_ENV_VAR".to_string(), "hello_from_peppy".to_string())];
 
-    let start_response = send_node_start_and_wait_with_env(
+    let start_response = send_node_run_and_wait_with_env(
         &started.caller_handle,
         &started.core_node_name,
         &runtime_config_json5,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
-        &NodeStartTestTimeouts {
+        &NodeRunTestTimeouts {
             goal: Duration::from_secs(30),
             result: Duration::from_secs(60),
         },
@@ -1509,23 +1395,23 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
         env_vars,
     )
     .await
-    .expect("node_start action should complete");
+    .expect("node_run action should complete");
 
     // The start should succeed
     assert!(
         start_response.result.success,
-        "node_start should succeed, got error: {:?}",
+        "node_run should succeed, got error: {:?}",
         start_response.result.error_message
     );
 
     // Verify that the PID is returned on success
     assert!(
         start_response.result.pid.is_some(),
-        "node_start should return a PID on success"
+        "node_run should return a PID on success"
     );
     assert!(
         start_response.result.pid.unwrap() > 0,
-        "node_start PID should be a positive number"
+        "node_run PID should be a positive number"
     );
 
     // Verify that the instance was added to the node stack
@@ -1543,7 +1429,7 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
     );
     let expected_log_path = started
         .peppy_dirs
-        .logs_dir_start()
+        .logs_dir_run()
         .join(format!("{}.log", TARGET_INSTANCE_ID));
     assert_eq!(
         start_response.goal_response.log_path, expected_log_path,
@@ -1586,10 +1472,15 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
     );
 }
 
-/// Verifies that `start_container_node` auto-creates host-side mount source
-/// directories that do not yet exist, so Apptainer bind mounts succeed.
+/// Verifies that `start_container_node` auto-creates a missing bind-mount
+/// source directory AND emits a loud warning about it to the per-instance
+/// start log. The auto-create restores the dev-branch ergonomics for nodes
+/// that declare scratch / output directories (e.g. `/tmp/<node>`); the
+/// warning is the contract that prevents a typo'd file bind from silently
+/// becoming an empty directory. Both halves of the contract are asserted —
+/// if a future refactor drops the warning, this test must fail.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_start_with_container_creates_missing_mount_dir() {
+async fn listen_for_node_run_with_container_creates_missing_mount_dir_and_warns() {
     let _guard = CONTAINER_TEST_MUTEX.lock().await;
 
     const TARGET_NODE_NAME: &str = "container_mount_create_node";
@@ -1599,7 +1490,7 @@ async fn listen_for_node_start_with_container_creates_missing_mount_dir() {
     let started = start_core_node_with_mock_messenger().await;
 
     // Use a non-existent subdirectory inside a temp dir as the mount source.
-    // The framework should auto-create it before invoking Apptainer.
+    // The framework must auto-create it and emit a warning about doing so.
     let parent_dir = tempfile::tempdir().expect("failed to create temp parent dir");
     let mount_dir = parent_dir.path().join("nonexistent_subdir");
     assert!(!mount_dir.exists(), "mount dir should not exist yet");
@@ -1638,9 +1529,6 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
     Version {TARGET_NODE_TAG}
 
 %runscript
-    if [ -d {mount_dir_str} ]; then
-        echo "Mount dir exists inside container"
-    fi
     exec sleep 300
 "#
     );
@@ -1648,13 +1536,12 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
         .expect("failed to write apptainer definition");
 
     // Add the node first (container add flow).
-    let add_response = send_node_add_and_wait(
+    let add_response = send_node_add_then_build(
         &started.caller_handle,
         &started.core_node_name,
         source_dir.path(),
         Duration::from_secs(30),
         Duration::from_secs(120),
-        None,
     )
     .await
     .expect("node_add should succeed");
@@ -1665,7 +1552,8 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
         add_response.error_message
     );
 
-    // Set up ready/health services for the container instance
+    // Set up ready/health services for the container instance. The container
+    // will actually launch (auto-create succeeds), so these need to be live.
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
     let _ready_task = AbortOnDrop(
         listen_for_node_ready(
@@ -1690,61 +1578,70 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
 
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    let runtime_config = RuntimeConfig::new(
-        "127.0.0.1",
-        config::consts::DEFAULT_MESSAGING_PORT,
-        NodeInstance {
-            instance_id: Name::new(TARGET_INSTANCE_ID).unwrap(),
-            arguments: Default::default(),
-        },
-        TARGET_NODE_NAME,
+    let runtime_config_json5 = common::default_runtime_config_json5(
         &started.core_node_name,
-    )
-    .expect("runtime config should be valid");
+        TARGET_NODE_NAME,
+        TARGET_INSTANCE_ID,
+    );
 
-    let runtime_config_json5 =
-        serde_json5::to_string(&runtime_config).expect("runtime config should serialize");
-
-    let start_response = send_node_start_and_wait(
+    let start_response = send_node_run_and_wait(
         &started.caller_handle,
         &started.core_node_name,
         &runtime_config_json5,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
-        &NodeStartTestTimeouts {
+        &NodeRunTestTimeouts {
             goal: Duration::from_secs(30),
             result: Duration::from_secs(60),
         },
         None,
     )
     .await
-    .expect("node_start action should complete");
+    .expect("node_run action should complete");
 
-    // The start should succeed — the framework should have auto-created the mount dir.
+    // The start must succeed: the framework auto-creates the missing dir.
     assert!(
         start_response.result.success,
-        "node_start should succeed (mount dir auto-created), got error: {:?}",
+        "node_run should succeed after auto-creating the bind source, got error: {:?}",
         start_response.result.error_message
     );
 
-    // Verify the host-side directory was created by the framework.
+    // The host-side directory must now exist as a directory.
     assert!(
-        mount_dir.exists(),
-        "mount dir should have been auto-created on the host"
+        mount_dir.is_dir(),
+        "mount dir should have been auto-created by the framework"
     );
 
-    // Verify the mount was accessible inside the container.
+    // The per-instance start log must contain the warning line so that an
+    // unintended mkdir (e.g. a typo'd file bind) is visible to the operator.
     let log_path = &start_response.goal_response.log_path;
-    let log_content = std::fs::read_to_string(log_path).expect("should be able to read log file");
+    let log_content =
+        std::fs::read_to_string(log_path).expect("should be able to read instance start log");
     assert!(
-        log_content.contains("Mount dir exists inside container"),
-        "container should see the auto-created mount dir, got:\n{}",
+        log_content.contains("auto-created missing bind mount source:"),
+        "feedback log should contain the auto-create warning, got:\n{}",
         log_content
+    );
+    assert!(
+        log_content.contains(&mount_dir_str),
+        "feedback log warning should reference the offending path {:?}, got:\n{}",
+        mount_dir_str,
+        log_content
+    );
+
+    // The instance should now be registered in the node stack.
+    let instance_id = NodeName::new(TARGET_INSTANCE_ID).expect("valid instance id");
+    assert!(
+        started
+            .node_stack
+            .find_by_instance_id(&instance_id)
+            .is_some(),
+        "instance should be registered in the node stack after successful start"
     );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_start_container_failure_includes_stderr_in_error() {
+async fn listen_for_node_run_container_failure_includes_stderr_in_error() {
     let _guard = CONTAINER_TEST_MUTEX.lock().await;
 
     const TARGET_NODE_NAME: &str = "failing_container_node";
@@ -1793,13 +1690,12 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
         .expect("failed to write apptainer definition");
 
     // Add the node first (builds the .sif image).
-    let add_response = send_node_add_and_wait(
+    let add_response = send_node_add_then_build(
         &started.caller_handle,
         &started.core_node_name,
         source_dir.path(),
         Duration::from_secs(30),
         Duration::from_secs(120),
-        None,
     )
     .await
     .expect("node_add should succeed");
@@ -1813,40 +1709,31 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
     // Do NOT set up ready/health services — the process will exit immediately
     // which means the ready signal will fail (process died).
 
-    let runtime_config = config::runtime::RuntimeConfig::new(
-        "127.0.0.1",
-        config::consts::DEFAULT_MESSAGING_PORT,
-        config::runtime::NodeInstance {
-            instance_id: config::launcher::Name::new(TARGET_INSTANCE_ID).unwrap(),
-            arguments: Default::default(),
-        },
-        TARGET_NODE_NAME,
+    let runtime_config_json5 = common::default_runtime_config_json5(
         &started.core_node_name,
-    )
-    .expect("runtime config should be valid");
+        TARGET_NODE_NAME,
+        TARGET_INSTANCE_ID,
+    );
 
-    let runtime_config_json5 =
-        serde_json5::to_string(&runtime_config).expect("runtime config should serialize");
-
-    let start_response = send_node_start_and_wait(
+    let start_response = send_node_run_and_wait(
         &started.caller_handle,
         &started.core_node_name,
         &runtime_config_json5,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
-        &NodeStartTestTimeouts {
+        &NodeRunTestTimeouts {
             goal: Duration::from_secs(30),
             result: Duration::from_secs(60),
         },
         None,
     )
     .await
-    .expect("node_start action should complete");
+    .expect("node_run action should complete");
 
     // The start should fail because the process exits immediately
     assert!(
         !start_response.result.success,
-        "node_start should fail because the container process exits immediately"
+        "node_run should fail because the container process exits immediately"
     );
 
     // The error message should include stderr output from the container process
@@ -1879,14 +1766,14 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_node_start_logs_error_on_spawn_failure() {
+async fn listen_for_node_run_logs_error_on_spawn_failure() {
     const TARGET_NODE_NAME: &str = "spawn_failure_node";
     const TARGET_NODE_TAG: &str = "0.1.0";
     const TARGET_INSTANCE_ID: &str = "spawn_failure_instance";
 
     let started = start_core_node_with_mock_messenger().await;
 
-    // Create a process node with a start_cmd that cannot be found.
+    // Create a process node with a run_cmd that cannot be found.
     // This will cause command.spawn() to fail in start_node().
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
     let peppy_json5 = r#"{
@@ -1897,20 +1784,19 @@ async fn listen_for_node_start_logs_error_on_spawn_failure() {
             },
             execution: {
                 language: "rust",
-                start_cmd: ["nonexistent_binary_peppy_test_xyz"]
+                run_cmd: ["nonexistent_binary_peppy_test_xyz"]
             }
         }"#
     .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
     .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
     write_peppy_json5(source_dir.path(), &peppy_json5);
 
-    let add_response = send_node_add_and_wait(
+    let add_response = send_node_add_then_build(
         &started.caller_handle,
         &started.core_node_name,
         source_dir.path(),
         Duration::from_secs(5),
         Duration::from_secs(5),
-        None,
     )
     .await
     .expect("node_add should succeed");
@@ -1921,39 +1807,30 @@ async fn listen_for_node_start_logs_error_on_spawn_failure() {
         add_response.error_message
     );
 
-    let runtime_config = RuntimeConfig::new(
-        "127.0.0.1",
-        config::consts::DEFAULT_MESSAGING_PORT,
-        NodeInstance {
-            instance_id: Name::new(TARGET_INSTANCE_ID).unwrap(),
-            arguments: Default::default(),
-        },
-        TARGET_NODE_NAME,
+    let runtime_config_json5 = common::default_runtime_config_json5(
         &started.core_node_name,
-    )
-    .expect("runtime config should be valid");
+        TARGET_NODE_NAME,
+        TARGET_INSTANCE_ID,
+    );
 
-    let runtime_config_json5 =
-        serde_json5::to_string(&runtime_config).expect("runtime config should serialize");
-
-    let start_response = send_node_start_and_wait(
+    let start_response = send_node_run_and_wait(
         &started.caller_handle,
         &started.core_node_name,
         &runtime_config_json5,
         TARGET_NODE_NAME,
         TARGET_NODE_TAG,
-        &NodeStartTestTimeouts {
+        &NodeRunTestTimeouts {
             goal: Duration::from_secs(5),
             result: Duration::from_secs(10),
         },
         None,
     )
     .await
-    .expect("node_start action should complete");
+    .expect("node_run action should complete");
 
     assert!(
         !start_response.result.success,
-        "node_start should fail because the binary does not exist"
+        "node_run should fail because the binary does not exist"
     );
 
     let error_msg = start_response
@@ -1999,11 +1876,171 @@ async fn listen_for_node_start_logs_error_on_spawn_failure() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "Implement later"]
-async fn listen_for_node_start_remove_node_on_unhealthy_node() {
-    todo!(
-        "After starting a node and the it is ready + healthy, send a `shutdown` signal if it doesn't responds to subsequent health checks (maybe because the process was killed or something).
-        In order to implement this test, we should also have a `stack log` in `~/.peppy/stack_log.log` so that the user can check all the operations that were performed by the node stack, 
-        including this one that can silently remove instances from the stack."
+async fn listen_for_node_run_remove_node_on_unhealthy_node() {
+    const TARGET_NODE_NAME: &str = "health_monitor_node";
+    const TARGET_NODE_TAG: &str = "0.1.0";
+    const TARGET_INSTANCE_ID: &str = "health_monitor_instance";
+
+    // Use fast health monitor settings so the test completes quickly:
+    // check every 200ms, timeout 100ms per attempt, remove after 2 consecutive failures.
+    let started = start_core_node_with_health_monitor(
+        Duration::from_millis(200),
+        Duration::from_millis(100),
+        2,
     )
+    .await;
+
+    // Create a node with a simple long-running run_cmd
+    let peppy_json5 = r#"{
+            schema_version: 1,
+            manifest: {
+                name: "{TARGET_NODE_NAME}",
+                tag: "{TARGET_NODE_TAG}",
+            },
+            execution: {
+                language: "rust",
+                run_cmd: ["sleep", "300"]
+            }
+        }"#
+    .replace("{TARGET_NODE_NAME}", TARGET_NODE_NAME)
+    .replace("{TARGET_NODE_TAG}", TARGET_NODE_TAG);
+
+    let temp_dir = create_node_config_dir(&peppy_json5);
+
+    let add_response = send_node_add_then_build(
+        &started.caller_handle,
+        &started.core_node_name,
+        temp_dir.path(),
+        Duration::from_secs(5),
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("node_add should succeed");
+
+    assert!(
+        add_response.success,
+        "node_add should succeed, got error: {:?}",
+        add_response.error_message
+    );
+
+    // Set up ready+health listeners so the initial start succeeds
+    let node_messenger = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
+    let _ready_task = AbortOnDrop(
+        listen_for_node_ready(
+            &node_messenger,
+            &started.core_node_name,
+            TARGET_INSTANCE_ID,
+            TARGET_NODE_NAME,
+        )
+        .await
+        .expect("node ready service should start"),
+    );
+    let health_task = AbortOnDrop(
+        listen_for_node_health(
+            &node_messenger,
+            &started.core_node_name,
+            TARGET_INSTANCE_ID,
+            TARGET_NODE_NAME,
+        )
+        .await
+        .expect("node health service should start"),
+    );
+
+    // Allow ready/health services to establish listeners
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let runtime_config_json5 = common::default_runtime_config_json5(
+        &started.core_node_name,
+        TARGET_NODE_NAME,
+        TARGET_INSTANCE_ID,
+    );
+
+    let start_response = send_node_run_and_wait(
+        &started.caller_handle,
+        &started.core_node_name,
+        &runtime_config_json5,
+        TARGET_NODE_NAME,
+        TARGET_NODE_TAG,
+        &NodeRunTestTimeouts {
+            goal: Duration::from_secs(10),
+            result: Duration::from_secs(30),
+        },
+        None,
+    )
+    .await
+    .expect("node_run action should complete");
+
+    assert!(
+        start_response.result.success,
+        "node_run should succeed, got error: {:?}",
+        start_response.result.error_message
+    );
+
+    let pid = start_response
+        .result
+        .pid
+        .expect("should have a PID on success");
+
+    // Verify the instance is in the stack
+    let instance_id = NodeName::new(TARGET_INSTANCE_ID).expect("valid instance id");
+    assert!(
+        started
+            .node_stack
+            .find_by_instance_id(&instance_id)
+            .is_some(),
+        "instance should be in the stack after successful start"
+    );
+
+    // Kill the process to simulate an unexpected death
+    let _ = std::process::Command::new("kill")
+        .arg("-9")
+        .arg(pid.to_string())
+        .status();
+
+    // Drop the health listener so subsequent health polls from the monitor
+    // will fail (the node process is dead and the mock health service is gone)
+    drop(health_task);
+
+    // Wait for the health monitor to detect the failure and remove the instance.
+    // With interval=200ms, timeout=100ms, max_failures=2, removal should happen
+    // within ~600-800ms. Give it 5 seconds for CI safety.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if started
+            .node_stack
+            .find_by_instance_id(&instance_id)
+            .is_none()
+        {
+            break;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            panic!("instance was not removed from the stack within timeout");
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    // Verify the stack log contains the removal event
+    let stack_log_path = started.peppy_dirs.stack_log_path();
+    assert!(
+        stack_log_path.exists(),
+        "stack log file should exist at {:?}",
+        stack_log_path
+    );
+    let log_content =
+        std::fs::read_to_string(&stack_log_path).expect("should be able to read stack log");
+    assert!(
+        log_content.contains(TARGET_INSTANCE_ID),
+        "stack log should mention the instance id, got:\n{}",
+        log_content
+    );
+    assert!(
+        log_content.contains("health checks"),
+        "stack log should mention health checks, got:\n{}",
+        log_content
+    );
+    assert!(
+        log_content.contains(TARGET_NODE_NAME),
+        "stack log should mention the node name, got:\n{}",
+        log_content
+    );
 }

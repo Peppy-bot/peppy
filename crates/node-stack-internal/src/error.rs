@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use config::ConfigError;
 use thiserror::Error;
 
@@ -46,6 +48,8 @@ pub enum Error {
     CannotModifyRootNode,
     #[error("Cannot overwrite node `{node_name}`:{node_tag} because other nodes depend on it")]
     CannotOverwriteNodeWithDependents { node_name: String, node_tag: String },
+    #[error("Cannot overwrite node `{node_name}`:{node_tag} because it still has live instances")]
+    CannotOverwriteNodeWithLiveInstances { node_name: String, node_tag: String },
     #[error("Instance ID `{instance_id}` already exists for node `{node_name}`:{node_tag}")]
     DuplicateInstanceId {
         instance_id: String,
@@ -54,4 +58,36 @@ pub enum Error {
     },
     #[error("Cannot remove node `{node_name}`:{node_tag} because it still has instances")]
     CannotRemoveNodeWithInstances { node_name: String, node_tag: String },
+
+    // -- lifecycle errors
+    #[error("Invalid stage transition for `{node_name}`:{node_tag}: cannot go from {from} to {to}")]
+    InvalidStageTransition {
+        node_name: String,
+        node_tag: String,
+        from: &'static str,
+        to: &'static str,
+    },
+    #[error("Failed to build node `{node_name}`:{node_tag}: {reason}")]
+    BuildFailed {
+        node_name: String,
+        node_tag: String,
+        reason: String,
+    },
+    #[error("Failed to start node `{node_name}:{node_tag}`: {reason}")]
+    StartFailed {
+        node_name: String,
+        node_tag: String,
+        reason: String,
+    },
+
+    // -- virtual deptree errors
+    #[error("Virtual dependency tree contains a cycle involving: {nodes:?}")]
+    VirtualDeptreeCycle { nodes: Vec<String> },
+    #[error("Duplicate local node `{name}:{tag}` discovered at `{first}` and `{second}`")]
+    DuplicateLocalNode {
+        name: String,
+        tag: String,
+        first: PathBuf,
+        second: PathBuf,
+    },
 }

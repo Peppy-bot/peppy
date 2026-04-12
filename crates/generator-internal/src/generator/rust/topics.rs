@@ -170,8 +170,8 @@ pub fn build_consumed_topic_callback(spec: ConsumedTopicCallbackSpec) -> Result<
     Ok(quote! {
         pub async fn #fn_name(
             node_runner: &crate::NodeRunner,
-            core_node_target: Option<&str>,
-            instance_id_target: Option<&str>,
+            target_core_node: Option<&str>,
+            target_instance_id: Option<&str>,
         ) -> crate::Result<(String, #args_struct_ident)> {
             let topic_name = #topic_literal;
             let node_name = #node_name_literal;
@@ -184,8 +184,8 @@ pub fn build_consumed_topic_callback(spec: ConsumedTopicCallbackSpec) -> Result<
                     node_runner.processor().bound_instance_id(),
                     node_name,
                     topic_name,
-                    core_node_target,
-                    instance_id_target,
+                    target_core_node,
+                    target_instance_id,
                     qos,
                 );
                 let mut subscription = subscription_future.await.map_err(|source| {
@@ -250,8 +250,8 @@ pub fn build_external_consumed_topic_callback(
     Ok(quote! {
         pub async fn #fn_name(
             node_runner: &crate::NodeRunner,
-            core_node_target: Option<&str>,
-            instance_id_target: Option<&str>,
+            target_core_node: Option<&str>,
+            target_instance_id: Option<&str>,
         ) -> crate::Result<(String, #args_struct_ident)> {
             let topic_name = #topic_literal;
             let qos = peppylib::config::QoSProfile::Standard;
@@ -262,8 +262,8 @@ pub fn build_external_consumed_topic_callback(
                     node_runner.processor().bound_core_node(),
                     node_runner.processor().bound_instance_id(),
                     topic_name,
-                    core_node_target,
-                    instance_id_target,
+                    target_core_node,
+                    target_instance_id,
                     qos,
                 );
                 let mut subscription = subscription_future.await.map_err(|source| {

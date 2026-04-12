@@ -7,12 +7,12 @@
   interfaces: {},
   execution: {
     language: "rust",
-    add_cmd: [
+    build_cmd: [
       "cargo",
       "build",
       "--release"
     ],
-    start_cmd: [
+    run_cmd: [
       "./target/release/first_node"
     ]
   }

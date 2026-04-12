@@ -1,13 +1,14 @@
-use super::variant::{resolve_variant, variant_label};
+use super::variant::resolve_variant;
 use super::{
     checkout_repo_ref, is_supported_fs_archive, resolve_local_archive_source, sanitize_repo_path,
 };
 use crate::Result;
-use crate::encoding::{NodeInfoRequest, NodeInfoResponse, NodeSource};
+use crate::encoding::{NodeInfo, NodeInfoRequest, NodeInfoResponse, NodeInstanceInfo, NodeSource};
 use crate::names;
 use config::consts::{NODE_CONFIG_FILE, PeppyDirs};
 use config::fingerprint::fingerprint_for_bytes;
 use config::node::{DEFAULT_VARIANT_NAME, NodeConfig, NodeConfigParser, ParsedNodeConfig};
+use node_stack::InstanceState;
 use node_stack::NodeStack;
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::types::Payload;
@@ -53,6 +54,27 @@ pub async fn listen_for_node_info(
     Ok(handle)
 }
 
+/// Failure mode of `handle_node_info_request_inner`. Routed to a different
+/// `PeppyError` variant by the outer wrapper so that internal faults
+/// (serializer/encoder errors) are not classified as caller-fault
+/// `InvalidServiceRequest`.
+enum InfoError {
+    Invalid(String),
+    Internal(String),
+}
+
+// Only `String` is convertible into `InfoError` via `?`, and only as the
+// `Invalid` (caller-fault) variant. The previous blanket
+// `From<E: Display>` swept *every* error type into `Invalid`, which
+// silently routed things like serializer faults to `InvalidServiceRequest`
+// instead of `ServiceError`. With this restricted impl, internal-fault
+// sites must call `InfoError::Internal(...)` explicitly.
+impl From<String> for InfoError {
+    fn from(reason: String) -> Self {
+        InfoError::Invalid(reason)
+    }
+}
+
 async fn handle_node_info_request(
     context: ServiceRequestContext,
     node_stack: Arc<NodeStack>,
@@ -61,19 +83,20 @@ async fn handle_node_info_request(
 ) -> PeppyResult<Payload> {
     let sender_instance_id = context.message().instance_id().to_string();
 
-    // Cooperative deadline fires slightly before the outer safety-net timeout,
-    // giving the blocking task a chance to abort and clean up resources.
-    let deadline = Some(Instant::now() + timeout.saturating_sub(Duration::from_millis(500)));
-
     match tokio::time::timeout(
         timeout,
-        handle_node_info_request_inner(&context, node_stack, peppy_dirs, deadline),
+        handle_node_info_request_inner(&context, node_stack, peppy_dirs),
     )
     .await
     {
         Ok(Ok(bytes)) => Ok(bytes),
-        Ok(Err(reason)) => Err(PeppyError::InvalidServiceRequest {
+        Ok(Err(InfoError::Invalid(reason))) => Err(PeppyError::InvalidServiceRequest {
             identifier: sender_instance_id,
+            reason,
+        }),
+        Ok(Err(InfoError::Internal(reason))) => Err(PeppyError::ServiceError {
+            instance_id: Some(sender_instance_id),
+            service_name: names::NODE_INFO.to_string(),
             reason,
         }),
         Err(_) => Err(PeppyError::ServiceTimeout {
@@ -87,80 +110,68 @@ async fn handle_node_info_request_inner(
     context: &ServiceRequestContext,
     node_stack: Arc<NodeStack>,
     peppy_dirs: PeppyDirs,
-    deadline: Option<Instant>,
-) -> std::result::Result<Payload, String> {
+) -> std::result::Result<Payload, InfoError> {
     let sender_instance_id = context.message().instance_id();
     let payload = context.message().payload();
 
     let request = NodeInfoRequest::decode(payload.as_ref()).map_err(|e| format!("{}", e))?;
 
-    debug!("Received `node_info` request from {sender_instance_id}");
+    debug!(
+        "Received `node_info` request from {sender_instance_id} for {}:{}",
+        request.node_name, request.node_tag
+    );
 
-    // Variant resolution errors are collected as issues rather than failing the request,
-    // since info calls are display-only and should always return useful information.
-    let (root_config, root_source_path, cleanup_dir) =
-        resolve_node_config_with_source_path(request.source, &peppy_dirs, deadline).await?;
-    let _cleanup_guard = super::add::CleanupDir::new(cleanup_dir);
+    // A missing `(name, tag)` is a *successful* negative lookup, not a
+    // malformed request. Encode it as `NodeInfoResponse::NotInStack` so
+    // callers (e.g. the `peppy node add` preflight) can handle it without
+    // provoking the generic service-handler error log. Malformed requests
+    // (decode failures above) still route to `InfoError::Invalid` and are
+    // the only legitimate caller-fault path through this handler.
+    let Some(entity) = node_stack.find(&request.node_name, &request.node_tag) else {
+        return NodeInfoResponse::NotInStack
+            .encode()
+            .map_err(|e| InfoError::Internal(format!("failed to encode NodeInfoResponse: {}", e)));
+    };
 
-    let (node_config, variant_name, issues) = if root_config.has_default_variant() {
-        let variant_source = NodeSource::Fs(DEFAULT_VARIANT_NAME.into());
-        let label = variant_label(&variant_source);
-        match resolve_variant(
-            &variant_source,
-            &root_config,
-            &root_source_path,
-            &peppy_dirs,
-            deadline,
-        )
-        .await
-        {
-            Ok(resolved) => (
-                merged_config_with_variant_cleanup(resolved),
-                Some(label),
-                Vec::new(),
-            ),
-            Err(variant_err) => (
-                root_config.into_resolved_or_default(),
-                None,
-                vec![variant_err],
-            ),
+    let (node_config, stage, instances, run_log_paths) = {
+        let guard = entity.read();
+        let stage = guard.stage().name().to_string();
+        let node_config = guard.config().clone();
+        let tracked = guard.instances();
+        let run_log_dir = peppy_dirs.logs_dir_run();
+        let mut instances: Vec<NodeInstanceInfo> = Vec::with_capacity(tracked.len());
+        let mut run_log_paths: Vec<PathBuf> = Vec::with_capacity(tracked.len());
+        for instance in tracked.iter() {
+            let id = instance.instance_id().as_str();
+            let state = instance.state();
+            instances.push(NodeInstanceInfo {
+                instance_id: id.to_owned(),
+                state: match state {
+                    InstanceState::Starting => "starting".to_string(),
+                    InstanceState::Running => "running".to_string(),
+                },
+            });
+            run_log_paths.push(run_log_dir.join(format!("{}.log", id)));
         }
-    } else {
-        (
-            root_config.into_resolved().map_err(|e| e.to_string())?,
-            None,
-            Vec::new(),
-        )
+        (node_config, stage, instances, run_log_paths)
     };
 
-    let node_name = node_config.manifest.name.as_str();
-    let node_tag = node_config.manifest.tag.as_str();
+    let add_log_path = node_stack.add_log_path(&request.node_name, &request.node_tag);
 
-    let (is_in_node_stack, instances_names) = match node_stack.find(node_name, node_tag) {
-        Some(entity) => (
-            true,
-            entity
-                .instances()
-                .iter()
-                .map(|instance| instance.instance_id().as_str().to_owned())
-                .collect(),
-        ),
-        None => (false, Vec::new()),
-    };
-
-    let config_json = serde_json5::to_string(&node_config).map_err(|e| format!("{}", e))?;
+    let config_json = serde_json5::to_string(&node_config)
+        .map_err(|e| InfoError::Internal(format!("failed to serialize node config: {}", e)))?;
     let config_integrity = fingerprint_for_bytes(config_json.as_bytes());
 
-    NodeInfoResponse::new(
-        node_config,
-        is_in_node_stack,
-        instances_names,
+    NodeInfoResponse::Found(Box::new(NodeInfo {
+        config: node_config,
         config_integrity,
-        variant_name,
-        issues,
-    )
+        stage,
+        instances,
+        add_log_path,
+        run_log_paths,
+    }))
     .encode()
-    .map_err(|e| format!("{}", e))
+    .map_err(|e| InfoError::Internal(format!("failed to encode NodeInfoResponse: {}", e)))
 }
 
 fn merged_config_with_variant_cleanup(resolved: super::variant::ResolvedVariant) -> NodeConfig {
@@ -394,7 +405,7 @@ mod tests {
                 schema_version: 1,
                 execution: {{
                     language: "python",
-                    start_cmd: ["python", "{marker}"]
+                    run_cmd: ["python", "{marker}"]
                 }}
             }}"#
         );
@@ -437,7 +448,7 @@ mod tests {
                 }},
                 execution: {{
                     language: "rust",
-                    start_cmd: ["sleep", "10"]
+                    run_cmd: ["sleep", "10"]
                 }}
             }}"#
         );
@@ -561,7 +572,7 @@ mod tests {
         assert!(
             resolved
                 .execution
-                .start_cmd
+                .run_cmd
                 .as_ref()
                 .is_some_and(|cmd| cmd.iter().any(|arg| arg == marker)),
             "resolved execution should come from the git-backed default variant"

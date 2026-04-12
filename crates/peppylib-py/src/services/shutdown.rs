@@ -1,3 +1,4 @@
+use parking_lot::Mutex;
 use peppylib::services::shutdown::listen_for_shutdown;
 use pyo3::prelude::*;
 
@@ -9,7 +10,7 @@ use crate::messaging::{PyMessengerHandle, to_py_err};
 /// When a shutdown request is received by the service, this receiver completes.
 #[pyclass(name = "ShutdownReceiver")]
 pub struct PyShutdownReceiver {
-    inner: std::sync::Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
+    inner: Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
 }
 
 #[pymethods]
@@ -19,10 +20,7 @@ impl PyShutdownReceiver {
     /// Returns `True` when a shutdown request is received, or `False` if the
     /// sender was dropped without sending.
     fn wait<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let mut guard = self.inner.lock().map_err(|_| {
-            PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("shutdown receiver mutex poisoned")
-        })?;
-        let rx = guard.take().ok_or_else(|| {
+        let rx = self.inner.lock().take().ok_or_else(|| {
             PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("shutdown receiver already consumed")
         })?;
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
@@ -60,7 +58,7 @@ impl PyShutdownService {
 
             let task = PyServiceTask::new(join_handle);
             let receiver = PyShutdownReceiver {
-                inner: std::sync::Mutex::new(Some(shutdown_rx)),
+                inner: Mutex::new(Some(shutdown_rx)),
             };
             Ok((task, receiver))
         })

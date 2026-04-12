@@ -92,6 +92,16 @@ fn sync_and_add_node(peppy: &Path, daemon_state_path: &Path, node_dir: &Path, co
     assert_success(&add_output, &format!("peppy node add . for {context}"));
 }
 
+fn build_node(peppy: &Path, daemon_state_path: &Path, node_dir: &Path, node_ref: &str) {
+    let build_output = peppy_output(
+        peppy,
+        daemon_state_path,
+        node_dir,
+        &["node", "build", node_ref],
+    );
+    assert_success(&build_output, &format!("peppy node build {node_ref}"));
+}
+
 pub fn run_snippet(snippets_root: &str, snippet_name: &str, start_args: &[&str]) {
     run_snippet_with_deps(snippets_root, snippet_name, start_args, &[]);
 }
@@ -109,21 +119,28 @@ pub fn run_snippet_with_deps(
 
     let setup = setup_env(peppy, &node_dir);
 
-    // Add dependencies first (must happen before syncing the main node)
+    // Add and build dependencies first (must happen before syncing the main node)
     for dep in deps {
         let dep_dir = snippet_dir(snippets_root, dep);
+        let dep_config_path = dep_dir.join("peppy.json5");
+        let dep_config = NodeConfigParser::from_path(&dep_config_path)
+            .unwrap_or_else(|e| panic!("failed to parse {}: {e}", dep_config_path.display()));
+        let dep_ref = format!(
+            "{}:{}",
+            dep_config.manifest().name.as_str(),
+            dep_config.manifest().tag
+        );
         sync_and_add_node(peppy, &setup.daemon_state_path, &dep_dir, dep);
+        build_node(peppy, &setup.daemon_state_path, &dep_dir, &dep_ref);
     }
 
-    // Now sync and add the main node
+    // Now sync, add, and build the main node
     sync_and_add_node(peppy, &setup.daemon_state_path, &node_dir, snippet_name);
+    build_node(peppy, &setup.daemon_state_path, &node_dir, &setup.node_ref);
 
-    let mut start_cmd = vec!["node", "start", setup.node_ref.as_str()];
-    start_cmd.extend_from_slice(start_args);
+    let mut run_cmd = vec!["node", "run", setup.node_ref.as_str()];
+    run_cmd.extend_from_slice(start_args);
 
-    let start_output = peppy_output(peppy, &setup.daemon_state_path, &node_dir, &start_cmd);
-    assert_success(
-        &start_output,
-        &format!("peppy node start {}", setup.node_ref),
-    );
+    let start_output = peppy_output(peppy, &setup.daemon_state_path, &node_dir, &run_cmd);
+    assert_success(&start_output, &format!("peppy node run {}", setup.node_ref));
 }

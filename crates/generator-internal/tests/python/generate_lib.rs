@@ -44,8 +44,8 @@ const PEPPY_JSON5_CONFIG: &str = r#"{
   },
 
   execution: { language: "python",
-    add_cmd: ["uv", "sync"],
-    start_cmd: ["uv", "run", "test_node"]
+    build_cmd: ["uv", "sync"],
+    run_cmd: ["uv", "run", "test_node"]
   },
 }"#;
 
@@ -99,8 +99,8 @@ fn generate_peppygen_lib_minimal_config() {
         tag: "0.1.0" },
 
       execution: { language: "python",
-        add_cmd: ["uv", "sync"],
-        start_cmd: ["uv", "run", "minimal_node"]
+        build_cmd: ["uv", "sync"],
+        run_cmd: ["uv", "run", "minimal_node"]
       }
     }"#;
 
@@ -171,8 +171,8 @@ fn generate_peppygen_python_lib_emitted_and_consumed_topics() {
           },
           execution: {
             language: "python",
-            add_cmd: ["uv", "sync"],
-            start_cmd: ["uv", "run", "{EXPOSED_NODE_NAME}"]
+            build_cmd: ["uv", "sync"],
+            run_cmd: ["uv", "run", "{EXPOSED_NODE_NAME}"]
           },
         }"#
     .replace("{EXPOSED_NODE_NAME}", EXPOSED_NODE_NAME);
@@ -211,8 +211,8 @@ fn generate_peppygen_python_lib_emitted_and_consumed_topics() {
           },
           execution: {
             language: "python",
-            add_cmd: ["uv", "sync"],
-            start_cmd: ["uv", "run", "{CONSUMER_NODE_NAME}"]
+            build_cmd: ["uv", "sync"],
+            run_cmd: ["uv", "run", "{CONSUMER_NODE_NAME}"]
           }
         }"#
     .replace("{CONSUMER_NODE_NAME}", CONSUMER_NODE_NAME);
@@ -289,8 +289,8 @@ fn generate_peppygen_python_lib_exposed_and_consumed_services() {
           },
           execution: {
             language: "python",
-            add_cmd: ["uv", "sync"],
-            start_cmd: ["uv", "run", "{EXPOSED_NODE_NAME}"]
+            build_cmd: ["uv", "sync"],
+            run_cmd: ["uv", "run", "{EXPOSED_NODE_NAME}"]
           },
         }"#
     .replace("{EXPOSED_NODE_NAME}", EXPOSED_NODE_NAME);
@@ -329,8 +329,8 @@ fn generate_peppygen_python_lib_exposed_and_consumed_services() {
           },
           execution: {
             language: "python",
-            add_cmd: ["uv", "sync"],
-            start_cmd: ["uv", "run", "{CONSUMER_NODE_NAME}"]
+            build_cmd: ["uv", "sync"],
+            run_cmd: ["uv", "run", "{CONSUMER_NODE_NAME}"]
           }
         }"#
     .replace("{CONSUMER_NODE_NAME}", CONSUMER_NODE_NAME);
@@ -432,8 +432,8 @@ fn generate_peppygen_python_lib_exposed_and_consumed_actions() {
           },
           execution: {
             language: "python",
-            add_cmd: ["uv", "sync"],
-            start_cmd: ["uv", "run", "{EXPOSED_NODE_NAME}"]
+            build_cmd: ["uv", "sync"],
+            run_cmd: ["uv", "run", "{EXPOSED_NODE_NAME}"]
           },
         }"#
     .replace("{EXPOSED_NODE_NAME}", EXPOSED_NODE_NAME);
@@ -472,8 +472,8 @@ fn generate_peppygen_python_lib_exposed_and_consumed_actions() {
           },
           execution: {
             language: "python",
-            add_cmd: ["uv", "sync"],
-            start_cmd: ["uv", "run", "{CONSUMER_NODE_NAME}"]
+            build_cmd: ["uv", "sync"],
+            run_cmd: ["uv", "run", "{CONSUMER_NODE_NAME}"]
           }
         }"#
     .replace("{CONSUMER_NODE_NAME}", CONSUMER_NODE_NAME);

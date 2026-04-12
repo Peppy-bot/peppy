@@ -5,8 +5,9 @@ use config::consts::{
 };
 use config::node::{PeppygenLanguage, QoSProfile};
 use core_node::encoding::{
-    NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAddResult, NodeSource,
-    NodeStartFeedback, NodeStartGoal, NodeStartGoalResponse, NodeStartResult,
+    NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAddResult, NodeBuildFeedback,
+    NodeBuildGoal, NodeBuildGoalResponse, NodeBuildResult, NodeRunFeedback, NodeRunGoal,
+    NodeRunGoalResponse, NodeRunResult, NodeSource,
 };
 use core_node::names;
 use core_node::{CoreNode, CoreNodeArguments};
@@ -90,15 +91,56 @@ impl<'a> From<&'a PathBuf> for NodeAddSource<'a> {
     }
 }
 
-pub struct NodeStartTestTimeouts {
+pub struct NodeRunTestTimeouts {
     pub goal: Duration,
     pub result: Duration,
 }
 
-/// Combined response from send_node_start_and_wait containing both goal and result responses.
-pub struct NodeStartTestResponse {
-    pub goal_response: NodeStartGoalResponse,
-    pub result: NodeStartResult,
+/// Combined response from send_node_run_and_wait containing both goal and result responses.
+pub struct NodeRunTestResponse {
+    pub goal_response: NodeRunGoalResponse,
+    pub result: NodeRunResult,
+}
+
+/// Builds a `RuntimeConfig` from the given parts and returns its JSON5 serialization,
+/// ready to be passed to a `node_run` request.
+pub fn build_runtime_config_json5(
+    host: &str,
+    port: u16,
+    core_node_name: &str,
+    node_name: &str,
+    instance_id: &str,
+    arguments: std::collections::BTreeMap<String, config::AnyType>,
+) -> String {
+    let runtime_config = config::runtime::RuntimeConfig::new(
+        host,
+        port,
+        config::runtime::NodeInstanceConfig {
+            instance_id: config::launcher::Name::new(instance_id).expect("valid instance id"),
+            arguments,
+        },
+        node_name,
+        core_node_name,
+    )
+    .expect("runtime config should be valid");
+    serde_json5::to_string(&runtime_config).expect("runtime config should serialize")
+}
+
+/// Convenience wrapper around `build_runtime_config_json5` using `127.0.0.1`,
+/// the default messaging port, and no node arguments — the shape used by most tests.
+pub fn default_runtime_config_json5(
+    core_node_name: &str,
+    node_name: &str,
+    instance_id: &str,
+) -> String {
+    build_runtime_config_json5(
+        "127.0.0.1",
+        config::consts::DEFAULT_MESSAGING_PORT,
+        core_node_name,
+        node_name,
+        instance_id,
+        Default::default(),
+    )
 }
 
 /// Writes a node config file and the corresponding fingerprint file expected by `node_add`.
@@ -124,17 +166,17 @@ pub fn create_tar_zst_from_dir(source_dir: &Path, archive_path: &Path, archive_r
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn send_node_start_and_wait_internal(
+async fn send_node_run_and_wait_internal(
     messenger: &MessengerHandle,
     core_node_name: &str,
     runtime_config_json5: &str,
     node_name: &str,
     tag: &str,
-    timeouts: &NodeStartTestTimeouts,
-    feedback_tx: Option<UnboundedSender<NodeStartFeedback>>,
+    timeouts: &NodeRunTestTimeouts,
+    feedback_tx: Option<UnboundedSender<NodeRunFeedback>>,
     env_vars: Vec<(String, String)>,
-) -> Result<NodeStartTestResponse, String> {
-    let goal = NodeStartGoal::new(
+) -> Result<NodeRunTestResponse, String> {
+    let goal = NodeRunGoal::new(
         runtime_config_json5,
         node_name,
         tag,
@@ -155,7 +197,7 @@ async fn send_node_start_and_wait_internal(
         caller_core_node,
         caller_instance_id,
         core_node_name,
-        names::NODE_START_ACTION,
+        names::NODE_RUN_ACTION,
         Some(core_node_name),
         None,
         goal_payload,
@@ -167,7 +209,7 @@ async fn send_node_start_and_wait_internal(
 
     // Decode the goal response to get log_path
     let goal_response_payload = action_handle.goal_response().payload();
-    let goal_response = NodeStartGoalResponse::decode(&goal_response_payload)
+    let goal_response = NodeRunGoalResponse::decode(&goal_response_payload)
         .map_err(|e| format!("Failed to decode goal response: {}", e))?;
 
     let absolute_deadline = tokio::time::Instant::now() + timeouts.result;
@@ -179,17 +221,17 @@ async fn send_node_start_and_wait_internal(
         loop {
             let now = tokio::time::Instant::now();
             if now >= absolute_deadline {
-                return Err("Timeout waiting for node_start result".to_string());
+                return Err("Timeout waiting for node_run result".to_string());
             }
             if now.duration_since(last_activity) >= timeouts.result {
-                return Err("Timeout waiting for node_start result (idle)".to_string());
+                return Err("Timeout waiting for node_run result (idle)".to_string());
             }
             let drain_timeout = Duration::from_millis(50);
             match tokio::time::timeout(drain_timeout, action_handle.on_next_feedback()).await {
                 Ok(Ok(msg)) => {
                     last_activity = tokio::time::Instant::now();
                     let payload = msg.payload();
-                    if let Ok(feedback) = NodeStartFeedback::decode(payload.as_ref())
+                    if let Ok(feedback) = NodeRunFeedback::decode(payload.as_ref())
                         && let Some(tx) = feedback_tx
                     {
                         let _ = tx.send(feedback);
@@ -202,17 +244,17 @@ async fn send_node_start_and_wait_internal(
 
         let now = tokio::time::Instant::now();
         if now >= absolute_deadline {
-            return Err("Timeout waiting for node_start result".to_string());
+            return Err("Timeout waiting for node_run result".to_string());
         }
         if now.duration_since(last_activity) >= timeouts.result {
-            return Err("Timeout waiting for node_start result (idle)".to_string());
+            return Err("Timeout waiting for node_run result (idle)".to_string());
         }
         let poll_timeout = Duration::from_millis(200);
 
         match ActionMessenger::request_result(messenger, &action_handle, poll_timeout).await {
             Ok(msg) => {
                 let payload = msg.payload();
-                match NodeStartResult::decode(&payload) {
+                match NodeRunResult::decode(&payload) {
                     Ok(result) => {
                         // Drain any remaining feedback that may have arrived while polling for the
                         // result so callers can reliably assert on stdout/stderr markers.
@@ -221,13 +263,13 @@ async fn send_node_start_and_wait_internal(
                                 break;
                             };
                             let payload = msg.payload();
-                            if let Ok(feedback) = NodeStartFeedback::decode(payload.as_ref())
+                            if let Ok(feedback) = NodeRunFeedback::decode(payload.as_ref())
                                 && let Some(tx) = feedback_tx
                             {
                                 let _ = tx.send(feedback);
                             }
                         }
-                        return Ok(NodeStartTestResponse {
+                        return Ok(NodeRunTestResponse {
                             goal_response,
                             result,
                         });
@@ -426,6 +468,127 @@ async fn send_node_add_and_wait_internal<'a>(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+pub async fn send_node_build_and_wait(
+    messenger: &MessengerHandle,
+    core_node_name: &str,
+    node_name: &str,
+    node_tag: &str,
+    goal_timeout: Duration,
+    result_timeout: Duration,
+    env_vars: Vec<(String, String)>,
+    feedback_tx: Option<UnboundedSender<NodeBuildFeedback>>,
+) -> Result<NodeBuildResult, String> {
+    let goal =
+        NodeBuildGoal::new(node_name, node_tag, result_timeout.as_secs()).with_env_vars(env_vars);
+    let goal_payload = goal
+        .encode()
+        .map_err(|e| format!("Failed to encode build goal: {}", e))?;
+
+    let (caller_core_node, caller_instance_id) = if feedback_tx.is_some() {
+        ("*", "*")
+    } else {
+        (core_node_name, CALLER_INSTANCE_ID)
+    };
+    let mut action_handle = ActionMessenger::send_goal(
+        messenger,
+        caller_core_node,
+        caller_instance_id,
+        core_node_name,
+        names::NODE_BUILD_ACTION,
+        Some(core_node_name),
+        None,
+        goal_payload,
+        QoSProfile::default(),
+        goal_timeout,
+    )
+    .await
+    .map_err(|e| format!("Failed to send build goal: {}", e))?;
+
+    let goal_response_payload = action_handle.goal_response().payload();
+    let goal_response = NodeBuildGoalResponse::decode(&goal_response_payload)
+        .map_err(|e| format!("Failed to decode build goal response: {}", e))?;
+
+    if !goal_response.accepted {
+        return Ok(NodeBuildResult::failure(
+            PathBuf::new(),
+            goal_response
+                .rejection_reason
+                .unwrap_or_else(|| "Build goal rejected without reason".to_string()),
+        ));
+    }
+    let feedback_tx = feedback_tx;
+    let feedback_tx = feedback_tx.as_ref();
+
+    let absolute_deadline = tokio::time::Instant::now() + result_timeout;
+    let mut last_activity = tokio::time::Instant::now();
+
+    loop {
+        loop {
+            let now = tokio::time::Instant::now();
+            if now >= absolute_deadline {
+                return Err("Timeout waiting for node_build result".to_string());
+            }
+            if now.duration_since(last_activity) >= result_timeout {
+                return Err("Timeout waiting for node_build result (idle)".to_string());
+            }
+            let drain_timeout = Duration::from_millis(50);
+            match tokio::time::timeout(drain_timeout, action_handle.on_next_feedback()).await {
+                Ok(Ok(msg)) => {
+                    last_activity = tokio::time::Instant::now();
+                    if let Some(tx) = feedback_tx
+                        && let Ok(feedback) = NodeBuildFeedback::decode(msg.payload().as_ref())
+                    {
+                        let _ = tx.send(feedback);
+                    }
+                }
+                Ok(Err(_)) => break,
+                Err(_) => break,
+            }
+        }
+
+        let now = tokio::time::Instant::now();
+        if now >= absolute_deadline {
+            return Err("Timeout waiting for node_build result".to_string());
+        }
+        if now.duration_since(last_activity) >= result_timeout {
+            return Err("Timeout waiting for node_build result (idle)".to_string());
+        }
+        let poll_timeout = Duration::from_millis(200);
+
+        match ActionMessenger::request_result(messenger, &action_handle, poll_timeout).await {
+            Ok(msg) => {
+                let payload = msg.payload();
+                match NodeBuildResult::decode(&payload) {
+                    Ok(result) => {
+                        // Drain any remaining feedback that may have arrived while polling for the
+                        // result so callers can reliably assert on stdout/stderr markers.
+                        loop {
+                            let Ok(Some(msg)) = action_handle.try_next_feedback() else {
+                                break;
+                            };
+                            let payload = msg.payload();
+                            if let Ok(feedback) = NodeBuildFeedback::decode(payload.as_ref())
+                                && let Some(tx) = feedback_tx
+                            {
+                                let _ = tx.send(feedback);
+                            }
+                        }
+                        return Ok(result);
+                    }
+                    Err(err) => {
+                        check_pending_or_decode_error(payload.as_ref(), err)?;
+                    }
+                }
+            }
+            Err(PeppyError::ActionResultTimeout { .. }) => {}
+            Err(err) => return Err(format!("Failed to get build result: {}", err)),
+        }
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
 /// Helper function to send a node_add goal and wait for the result.
 /// This wraps the action pattern for simpler test usage.
 ///
@@ -499,6 +662,79 @@ pub async fn send_node_add_and_wait_with_variant<'a>(
     .await
 }
 
+/// Convenience helper for tests that staged a node via `send_node_add_and_wait`
+/// and now need it built so `spawn_real_running_instance` can find a `Ready`
+/// entity. Builds the node and asserts the build succeeded.
+pub async fn build_staged_node(started: &StartedCoreNode, node_name: &str, node_tag: &str) {
+    let result = send_node_build_and_wait(
+        &started.caller_handle,
+        &started.core_node_name,
+        node_name,
+        node_tag,
+        Duration::from_secs(30),
+        Duration::from_secs(120),
+        Vec::new(),
+        None,
+    )
+    .await
+    .expect("node_build request should complete");
+    assert!(
+        result.success,
+        "build_staged_node failed: {:?}",
+        result.error_message
+    );
+}
+
+/// Convenience helper for tests that need a node to be both added AND built
+/// (e.g. start/info/stop tests). Performs `send_node_add_and_wait` followed by
+/// `send_node_build_and_wait` and returns the build result.
+pub async fn send_node_add_then_build<'a>(
+    messenger: &MessengerHandle,
+    core_node_name: &str,
+    source: impl Into<NodeAddSource<'a>>,
+    goal_timeout: Duration,
+    result_timeout: Duration,
+) -> Result<NodeBuildResult, String> {
+    let add = send_node_add_and_wait_internal(
+        messenger,
+        core_node_name,
+        source,
+        None,
+        goal_timeout,
+        result_timeout,
+        None,
+        Vec::new(),
+        false,
+    )
+    .await?;
+    if !add.success {
+        return Err(format!(
+            "node_add failed: {}",
+            add.error_message.unwrap_or_default()
+        ));
+    }
+    let node_name = add.node_name.expect("node_name on successful add");
+    let node_tag = add.node_tag.expect("node_tag on successful add");
+    let result = send_node_build_and_wait(
+        messenger,
+        core_node_name,
+        &node_name,
+        &node_tag,
+        goal_timeout,
+        result_timeout,
+        Vec::new(),
+        None,
+    )
+    .await?;
+    if !result.success {
+        return Err(format!(
+            "node_build failed: {}",
+            result.error_message.unwrap_or_default()
+        ));
+    }
+    Ok(result)
+}
+
 pub async fn send_node_add_and_wait_with_force<'a>(
     messenger: &MessengerHandle,
     core_node_name: &str,
@@ -521,21 +757,21 @@ pub async fn send_node_add_and_wait_with_force<'a>(
     .await
 }
 
-/// Helper function to send a node_start goal and wait for the result.
+/// Helper function to send a node_run goal and wait for the result.
 /// This wraps the action pattern for simpler test usage.
 ///
 /// When `feedback_tx` is provided, wildcard caller IDs are used so mock pub/sub
 /// can match feedback topics with "*" segments.
-pub async fn send_node_start_and_wait(
+pub async fn send_node_run_and_wait(
     messenger: &MessengerHandle,
     core_node_name: &str,
     runtime_config_json5: &str,
     node_name: &str,
     tag: &str,
-    timeouts: &NodeStartTestTimeouts,
-    feedback_tx: Option<UnboundedSender<NodeStartFeedback>>,
-) -> Result<NodeStartTestResponse, String> {
-    send_node_start_and_wait_internal(
+    timeouts: &NodeRunTestTimeouts,
+    feedback_tx: Option<UnboundedSender<NodeRunFeedback>>,
+) -> Result<NodeRunTestResponse, String> {
+    send_node_run_and_wait_internal(
         messenger,
         core_node_name,
         runtime_config_json5,
@@ -549,17 +785,17 @@ pub async fn send_node_start_and_wait(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub async fn send_node_start_and_wait_with_env(
+pub async fn send_node_run_and_wait_with_env(
     messenger: &MessengerHandle,
     core_node_name: &str,
     runtime_config_json5: &str,
     node_name: &str,
     tag: &str,
-    timeouts: &NodeStartTestTimeouts,
-    feedback_tx: Option<UnboundedSender<NodeStartFeedback>>,
+    timeouts: &NodeRunTestTimeouts,
+    feedback_tx: Option<UnboundedSender<NodeRunFeedback>>,
     env_vars: Vec<(String, String)>,
-) -> Result<NodeStartTestResponse, String> {
-    send_node_start_and_wait_internal(
+) -> Result<NodeRunTestResponse, String> {
+    send_node_run_and_wait_internal(
         messenger,
         core_node_name,
         runtime_config_json5,
@@ -669,7 +905,7 @@ fn main() -> Result<()> {
     )
     .expect("failed to write test node src/main.rs");
 
-    // Use the pre-built binary path in start_cmd instead of "cargo run".
+    // Use the pre-built binary path in run_cmd instead of "cargo run".
     // This avoids recompilation after the folder is copied to storage,
     // since cargo's fingerprinting invalidates the cache when absolute paths change.
     let binary_path = node_dir.join("target/debug").join(crate_name);
@@ -695,13 +931,13 @@ fn main() -> Result<()> {
       ],
     }
   },
-  // Avoid `add_cmd` build step here to make the `add` tests faster
+  // Avoid `build_cmd` build step here to make the `add` tests faster
   execution: {
     language: "rust",
-    add_cmd: [
+    build_cmd: [
         "true"
     ],
-    start_cmd: [
+    run_cmd: [
       "{binary_path}"
     ]
   },
@@ -753,15 +989,22 @@ pub struct StartedCoreNode {
     _data_dir: TempDir,
 }
 
+fn default_node_arguments() -> CoreNodeArguments {
+    CoreNodeArguments {
+        node_startup_timeout: Duration::from_secs(10),
+        node_start_health_timeout: Duration::from_secs(30),
+        health_monitor_interval: Duration::from_secs(5),
+        health_monitor_timeout: Duration::from_secs(3),
+        health_monitor_max_failures: 3,
+    }
+}
+
 pub async fn start_core_node_with_mock_messenger() -> StartedCoreNode {
     let (data_dir, peppy_dirs) = init_test_data_dir();
     let shared_messenger = create_mock_messenger().await;
-    let node_startup_timeout = Duration::from_secs(10);
-    let node_start_health_timeout = Duration::from_secs(30);
     start_core_node_with_messenger(
         shared_messenger,
-        node_startup_timeout,
-        node_start_health_timeout,
+        default_node_arguments(),
         data_dir,
         peppy_dirs,
     )
@@ -790,14 +1033,10 @@ pub async fn start_core_node_with_real_messenger_and_timeouts(
         .await
         .expect("failed to start zenoh session");
     let shared_messenger = Arc::new(Mutex::new(instance.take_messenger()));
-    start_core_node_with_messenger(
-        shared_messenger,
-        node_startup_timeout,
-        node_start_health_timeout,
-        data_dir,
-        peppy_dirs,
-    )
-    .await
+    let mut args = default_node_arguments();
+    args.node_startup_timeout = node_startup_timeout;
+    args.node_start_health_timeout = node_start_health_timeout;
+    start_core_node_with_messenger(shared_messenger, args, data_dir, peppy_dirs).await
 }
 
 pub async fn start_core_node_with_health_timeout(
@@ -805,29 +1044,32 @@ pub async fn start_core_node_with_health_timeout(
 ) -> StartedCoreNode {
     let (data_dir, peppy_dirs) = init_test_data_dir();
     let shared_messenger = create_mock_messenger().await;
-    let node_startup_timeout = Duration::from_secs(10);
-    start_core_node_with_messenger(
-        shared_messenger,
-        node_startup_timeout,
-        node_start_health_timeout,
-        data_dir,
-        peppy_dirs,
-    )
-    .await
+    let mut args = default_node_arguments();
+    args.node_start_health_timeout = node_start_health_timeout;
+    start_core_node_with_messenger(shared_messenger, args, data_dir, peppy_dirs).await
+}
+
+pub async fn start_core_node_with_health_monitor(
+    health_monitor_interval: Duration,
+    health_monitor_timeout: Duration,
+    health_monitor_max_failures: u32,
+) -> StartedCoreNode {
+    let (data_dir, peppy_dirs) = init_test_data_dir();
+    let shared_messenger = create_mock_messenger().await;
+    let mut args = default_node_arguments();
+    args.health_monitor_interval = health_monitor_interval;
+    args.health_monitor_timeout = health_monitor_timeout;
+    args.health_monitor_max_failures = health_monitor_max_failures;
+    start_core_node_with_messenger(shared_messenger, args, data_dir, peppy_dirs).await
 }
 
 async fn start_core_node_with_messenger(
     shared_messenger: Arc<Mutex<Messenger>>,
-    node_startup_timeout: Duration,
-    node_start_health_timeout: Duration,
+    node_arguments: CoreNodeArguments,
     data_dir: TempDir,
     peppy_dirs: PeppyDirs,
 ) -> StartedCoreNode {
     let caller_handle = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
-    let node_arguments = CoreNodeArguments {
-        node_startup_timeout,
-        node_start_health_timeout,
-    };
     let root_dir = std::env::current_dir().expect("failed to get current directory");
     let core_node = CoreNode::new(
         Arc::clone(&shared_messenger),
@@ -857,4 +1099,216 @@ async fn start_core_node_with_messenger(
         task: AbortOnDrop(task),
         _data_dir: data_dir,
     }
+}
+
+// =============================================================================
+// Real-lifecycle test helpers with calls to NodeEntity::build + prepare_and_spawn + commit_started.
+// =============================================================================
+
+/// RAII guard for a test-spawned `Running` instance. On drop it calls
+/// `stop_instance` on the entity and SIGTERMs the real child process.
+#[must_use = "guard keeps the spawned child alive; drop it to tear down the instance"]
+pub struct TestRunningInstance {
+    pub pid: u32,
+    pub instance_id: config::node::Name,
+    handle: node_stack::EntityHandle,
+    _working_dir: Option<TempDir>,
+    _feedback_drain: tokio::task::JoinHandle<()>,
+    _shutdown_listener: Option<AbortOnDrop<peppylib::PeppyResult<()>>>,
+}
+
+impl Drop for TestRunningInstance {
+    fn drop(&mut self) {
+        self.handle.write().stop_instance(&self.instance_id);
+        let _ = std::process::Command::new("kill")
+            .arg("-TERM")
+            .arg(self.pid.to_string())
+            .status();
+        self._feedback_drain.abort();
+    }
+}
+
+struct NoOpOutputHooks;
+impl node_stack::build_io::OutputReaderHooks for NoOpOutputHooks {}
+
+fn make_real_output_sinks(
+    peppy_dirs: &PeppyDirs,
+    instance_id: &config::node::Name,
+) -> (
+    node_stack::OutputSinks,
+    tokio::sync::mpsc::UnboundedSender<node_stack::build_io::FeedbackLine>,
+    tokio::task::JoinHandle<()>,
+) {
+    use parking_lot::Mutex as StdMutex;
+    use std::sync::atomic::AtomicBool;
+
+    let log_dir = peppy_dirs.logs_dir_run();
+    std::fs::create_dir_all(&log_dir).ok();
+    let log_file = Arc::new(StdMutex::new(
+        std::fs::File::create(log_dir.join(format!("{}.log", instance_id.as_str())))
+            .expect("create start log"),
+    ));
+    let (feedback_tx, mut feedback_rx) =
+        tokio::sync::mpsc::unbounded_channel::<node_stack::build_io::FeedbackLine>();
+    let drain = tokio::spawn(async move { while feedback_rx.recv().await.is_some() {} });
+    let output_sinks = node_stack::OutputSinks {
+        feedback_tx: feedback_tx.clone(),
+        log_file,
+        publish_enabled: Arc::new(AtomicBool::new(true)),
+        hooks: Arc::new(NoOpOutputHooks),
+    };
+    (output_sinks, feedback_tx, drain)
+}
+
+/// Drives a real `prepare_and_spawn` + `commit_started` on the entity at
+/// `(name, tag)`, which must already be in `Ready`. Spawns a real child via
+/// the entity's existing `run_cmd` — callers are responsible for ensuring
+/// the node config's run_cmd is spawnable in the test environment (the
+/// listener tests use `["sleep", "10"]`). Also installs a `listen_for_shutdown`
+/// task on the messenger that SIGKILLs the entity-tracked pid when the
+/// production stop/remove flow sends a shutdown signal. This lets production
+/// code paths that wait on `wait_for_process_termination` observe the child
+/// as terminated rather than timing out against a stubborn `sleep 10`.
+/// Returns a guard that SIGTERMs the child on drop.
+pub async fn spawn_real_running_instance(
+    started: &StartedCoreNode,
+    name: &str,
+    tag: &str,
+    instance_id: &config::node::Name,
+) -> TestRunningInstance {
+    spawn_real_running_instance_inner(started, name, tag, instance_id, true).await
+}
+
+/// Variant of [`spawn_real_running_instance`] that skips installing a
+/// shutdown listener. Used by tests that specifically want the production
+/// shutdown path to observe a stuck process that never terminates (e.g. the
+/// `node_add_same_node_with_running_instance_and_dependents_fails_on_stopped_node_stuck`
+/// regression test).
+pub async fn spawn_real_stuck_instance(
+    started: &StartedCoreNode,
+    name: &str,
+    tag: &str,
+    instance_id: &config::node::Name,
+) -> TestRunningInstance {
+    spawn_real_running_instance_inner(started, name, tag, instance_id, false).await
+}
+
+async fn spawn_real_running_instance_inner(
+    started: &StartedCoreNode,
+    name: &str,
+    tag: &str,
+    instance_id: &config::node::Name,
+    install_shutdown_listener: bool,
+) -> TestRunningInstance {
+    let handle = started
+        .node_stack
+        .find(name, tag)
+        .expect("spawn_real_running_instance: entity should exist");
+    let (output_sinks, _feedback_tx, drain) =
+        make_real_output_sinks(&started.peppy_dirs, instance_id);
+
+    let (child, started_ctx) = node_stack::NodeEntity::prepare_and_spawn(
+        &handle,
+        node_stack::StartContext {
+            instance_id,
+            runtime_config_json5: "{}",
+            env_vars: &[],
+            mount_paths_resolved: &[],
+            peppy_dirs: &started.peppy_dirs,
+            output_sinks,
+        },
+    )
+    .await
+    .expect("prepare_and_spawn should succeed on Ready entity");
+    let pid = child.id().expect("child should have pid");
+    node_stack::NodeEntity::commit_started(&handle, child, started_ctx, instance_id.clone())
+        .await
+        .expect("commit_started should succeed");
+
+    // Optionally install a messenger-side shutdown listener that kills the
+    // child when the production stop/remove flow fires a SHUTDOWN_SERVICE
+    // signal. This replaces the old behavior where tests set fake pids so
+    // the production `wait_for_process_termination` quickly observed "no
+    // such pid". Tests that want the production shutdown path to observe
+    // a stuck process use `spawn_real_stuck_instance` which skips this.
+    let shutdown_listener = if install_shutdown_listener {
+        let shutdown_handle = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
+        let (shutdown_task, shutdown_rx) = peppylib::services::shutdown::listen_for_shutdown(
+            &shutdown_handle,
+            &started.core_node_name,
+            instance_id.as_str(),
+            name,
+        )
+        .await
+        .expect("failed to start shutdown listener for test instance");
+        let pid_for_kill = pid;
+        tokio::spawn(async move {
+            if shutdown_rx.await.is_ok() {
+                let _ = std::process::Command::new("kill")
+                    .arg("-KILL")
+                    .arg(pid_for_kill.to_string())
+                    .status();
+            }
+        });
+        Some(AbortOnDrop(shutdown_task))
+    } else {
+        None
+    };
+
+    TestRunningInstance {
+        pid,
+        instance_id: instance_id.clone(),
+        handle,
+        _working_dir: None,
+        _feedback_drain: drain,
+        _shutdown_listener: shutdown_listener,
+    }
+}
+
+/// For tests that push a config directly (bypassing `process_node_add`): drives
+/// the real `NodeEntity::build` (process-node archive path, no container) and
+/// then a real `prepare_and_spawn` + `commit_started`. Replaces the old
+/// `force_built_and_start_instance` backdoor helper.
+pub async fn real_build_and_spawn_instance(
+    started: &StartedCoreNode,
+    name: &str,
+    tag: &str,
+    instance_id: &config::node::Name,
+) -> TestRunningInstance {
+    use parking_lot::Mutex as StdMutex;
+
+    let handle = started
+        .node_stack
+        .find(name, tag)
+        .expect("real_build_and_spawn_instance: entity should exist");
+
+    let working_dir = TempDir::new().expect("working_dir tempdir");
+    let log_dir = started.peppy_dirs.logs_dir_add();
+    std::fs::create_dir_all(&log_dir).ok();
+    let build_log = Arc::new(StdMutex::new(
+        std::fs::File::create(log_dir.join(format!("{}-build.log", instance_id.as_str())))
+            .expect("create build log"),
+    ));
+    let (build_feedback_tx, mut build_feedback_rx) =
+        tokio::sync::mpsc::unbounded_channel::<node_stack::build_io::FeedbackLine>();
+    let build_drain =
+        tokio::spawn(async move { while build_feedback_rx.recv().await.is_some() {} });
+
+    node_stack::NodeEntity::build(
+        &handle,
+        node_stack::BuildContext {
+            working_dir: working_dir.path(),
+            peppy_dirs: &started.peppy_dirs,
+            feedback_tx: &build_feedback_tx,
+            log_file: build_log,
+            env_vars: &[],
+        },
+    )
+    .await
+    .expect("real build should succeed on process node");
+    build_drain.abort();
+
+    let mut running = spawn_real_running_instance(started, name, tag, instance_id).await;
+    running._working_dir = Some(working_dir);
+    running
 }

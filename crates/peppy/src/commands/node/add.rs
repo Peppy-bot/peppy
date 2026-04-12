@@ -1,24 +1,25 @@
+use config::node::NodeConfigParser;
 use core_node::encoding::{
     NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAddResult, NodeInfoRequest,
     NodeInfoResponse, NodeSource,
 };
 use peppylib::MessengerHandle;
 use std::io::BufRead;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::info;
 
 use super::TimeoutConfig;
 use super::env::caller_env_overrides;
+use super::run::run_instance_async;
 use super::source::{parse_node_source, parse_variant_source};
-use super::start::start_instance_async;
-use crate::commands::{CALLER_INSTANCE_ID, GOAL_TIMEOUT, SCROLLING_OUTPUT_LINES};
+use crate::commands::{CALLER_INSTANCE_ID, GOAL_TIMEOUT};
 use crate::context::AppContext;
 use crate::error::{Error, Result};
-use crate::terminal::ScrollingOutput;
 
-/// Options for starting a node instance immediately after adding it.
-pub struct StartAfterAddOptions {
+/// Options for running a node instance immediately after adding it.
+pub struct RunAfterAddOptions {
     pub args: Vec<(String, String)>,
     pub instance_id: Option<String>,
 }
@@ -28,10 +29,17 @@ pub struct AddNodeParams {
     pub source: String,
     pub git_ref: Option<String>,
     pub variant: Option<String>,
-    pub start_options: Option<StartAfterAddOptions>,
+    pub run_options: Option<RunAfterAddOptions>,
     pub timeouts: TimeoutConfig,
     pub force: bool,
     pub confirm_reader: Option<Box<dyn BufRead>>,
+    /// Whether to run `peppy node sync` on the source *before* adding. Only
+    /// meaningful for local filesystem sources. Independent of `chain_build`
+    /// — not implied by `--build`/`--run`.
+    pub sync: bool,
+    /// Whether to chain a `node build` after the add succeeds. Set by the
+    /// CLI when the user passes `--build` (or `--run`, which implies it).
+    pub chain_build: bool,
 }
 
 fn validate_git_ref(git_ref: Option<&str>) -> Result<Option<String>> {
@@ -55,14 +63,38 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
         source,
         git_ref,
         variant,
-        start_options,
+        run_options,
         timeouts,
         force,
         mut confirm_reader,
+        sync,
+        chain_build,
     } = params;
     // Validate git_ref and parse the source into a NodeSource
     let git_ref = validate_git_ref(git_ref.as_deref())?;
     let node_source = parse_node_source(&source, git_ref)?;
+
+    // `--sync` forces a `peppy node sync` *before* the add so the snapshot
+    // taken by the daemon includes freshly regenerated peppygen output.
+    // Only local filesystem sources can be synced; remote sources are fetched
+    // and synced server-side by the daemon.
+    //
+    // Note: `sync_node_async` calls `ctx.connect_to_daemon()` internally, and
+    // so does the add path below. `AppContext` caches the messenger handle in
+    // a `OnceCell`, so the second call is cheap and reuses the same
+    // connection.
+    if sync {
+        match &node_source {
+            NodeSource::Fs(p) => {
+                super::sync::sync_node_async(ctx, Some(p.clone())).await?;
+            }
+            _ => {
+                return Err(Error::ExecutionFailed(
+                    "--sync is only valid for local node sources; remote sources are synced server-side on fetch".into(),
+                ));
+            }
+        }
+    }
 
     // Log the resolved source path (may differ from the original when the CLI
     // walked up from a variant subdirectory to the root node directory).
@@ -86,40 +118,40 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
     let conn = ctx.connect_to_daemon().await?;
 
     info!(
-        "Running `add_cmd` for '{}' on daemon '{}'...",
+        "Adding node '{}' on daemon '{}'...",
         source, conn.core_node_name
     );
 
-    let pre_add_node_info = if !force {
-        Some(
-            fetch_node_info(
-                conn.messenger,
-                &conn.core_node_name,
-                node_source.clone(),
-                Duration::from_secs(timeouts.max_secs),
-            )
-            .await?,
+    // Preflight conflict check: if the *root* source is local, we can read
+    // `(name, tag)` from its `peppy.json5` without touching the network and
+    // ask the daemon whether that node is already in the stack with active
+    // instances.
+    //
+    // The variant source (if any) doesn't affect the effective `(name, tag)`:
+    // `resolve_variant` always merges the root manifest over the variant
+    // (see crates/core-node-internal/src/services/node/variant.rs), so any
+    // variant we'd eventually pick shares the root's identity.
+    //
+    // Remote root sources still skip the preflight since we'd need to fetch
+    // them to read the manifest; the daemon's add action stops existing
+    // instances transparently in that path.
+    if !force && let NodeSource::Fs(ref path) = node_source {
+        let active_instances = fetch_active_instances_for_local_source(
+            conn.messenger,
+            &conn.core_node_name,
+            path,
+            Duration::from_secs(timeouts.max_secs),
         )
-    } else {
-        None
-    };
+        .await?;
 
-    // Check for existing instances and prompt for confirmation if needed
-    if let Some(ref info) = pre_add_node_info
-        && !info.instances_names.is_empty()
-    {
-        let node_name = info.config.manifest.name.as_str();
-        let node_tag = &info.config.manifest.tag;
-        let confirm = confirm_overwrite(
-            node_name,
-            node_tag,
-            &info.instances_names,
-            confirm_reader.take(),
-        )?;
-        if !confirm {
-            return Err(Error::ExecutionFailed(
-                "Node add aborted by user".to_string(),
-            ));
+        if let Some((node_name, node_tag, instance_ids)) = active_instances {
+            let confirm =
+                confirm_overwrite(&node_name, &node_tag, &instance_ids, confirm_reader.take())?;
+            if !confirm {
+                return Err(Error::ExecutionFailed(
+                    "Node add aborted by user".to_string(),
+                ));
+            }
         }
     }
 
@@ -143,70 +175,22 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
         .await
         .map_err(|e| Error::ExecutionFailed(format!("Failed to send node_add goal: {}", e)))?;
 
-    // Read the goal response to get the log file path
-    let goal_response_payload = action_handle.goal_response().payload();
-    let goal_response = NodeAddGoalResponse::decode(&goal_response_payload)
-        .map_err(|e| Error::ExecutionFailed(format!("Failed to decode goal response: {}", e)))?;
-
-    if !goal_response.accepted {
-        return Err(Error::ExecutionFailed(format!(
-            "Goal rejected: {}",
-            goal_response
-                .rejection_reason
-                .unwrap_or_else(|| "unknown reason".to_string())
-        )));
-    }
-
-    info!("Log file: {}", goal_response.log_path.display());
-
-    let mut scrolling_output = ScrollingOutput::new(SCROLLING_OUTPUT_LINES);
-
-    let add_result = crate::commands::action_poll::poll_action_to_completion(
-        conn.messenger,
-        &mut action_handle,
-        &timeouts,
-        &mut scrolling_output,
-        |payload, output| {
-            if let Ok(feedback) = NodeAddFeedback::decode(payload) {
-                output.add_line(&feedback.line, feedback.is_stderr());
-            }
-        },
-        |payload| match NodeAddResult::decode(payload) {
-            Ok(result) => Ok(Some(result)),
-            Err(err) => {
-                if peppylib::encoding::is_result_pending(payload) {
-                    Ok(None)
-                } else {
-                    Err(format!("Failed to decode node_add result: {err}"))
-                }
-            }
-        },
-    )
+    let add_result = crate::commands::action_poll::run_action_with_feedback::<
+        NodeAddGoalResponse,
+        NodeAddFeedback,
+        NodeAddResult,
+    >(conn.messenger, &mut action_handle, &timeouts, "node_add")
     .await?;
-
-    scrolling_output.clear();
-
-    if !add_result.success {
-        return Err(Error::ExecutionFailed(
-            add_result
-                .error_message
-                .unwrap_or_else(|| "node_add failed with no error message".to_string()),
-        ));
-    }
 
     if let (Some(name), Some(tag)) = (&add_result.node_name, &add_result.node_tag) {
         info!("Added node {}:{} to the node stack", name, tag);
     } else {
         info!("Added node to the node stack");
     }
-    info!(
-        "Snapshot path: {}",
-        add_result.snapshot_path.to_string_lossy()
-    );
 
-    let Some(start_options) = start_options else {
+    if !chain_build && run_options.is_none() {
         return Ok(());
-    };
+    }
 
     let node_name = add_result.node_name.as_deref().ok_or_else(|| {
         Error::ExecutionFailed(
@@ -219,13 +203,27 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
         )
     })?;
 
-    start_instance_async(
+    crate::commands::node::builder::build_node_async(
         conn.messenger,
         &conn.core_node_name,
         node_name,
         node_tag,
-        &start_options.args,
-        start_options.instance_id,
+        &timeouts,
+        false,
+    )
+    .await?;
+
+    let Some(run_options) = run_options else {
+        return Ok(());
+    };
+
+    run_instance_async(
+        conn.messenger,
+        &conn.core_node_name,
+        node_name,
+        node_tag,
+        &run_options.args,
+        run_options.instance_id,
         &timeouts,
     )
     .await?;
@@ -233,15 +231,37 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
     Ok(())
 }
 
-/// Fetches node info for a given source using NodeInfoRequest.
-/// This includes the node config, whether it's in the node stack, and running instance names.
-async fn fetch_node_info(
+/// Preflight check for the overwrite confirmation prompt.
+///
+/// Parses the node's `peppy.json5` locally to extract `(name, tag)`, then asks
+/// the daemon whether that entity is currently in the stack. Returns
+/// `Some((name, tag, active_instance_ids))` only when the node exists in the
+/// stack AND has at least one active instance (`Starting` or `Running`) —
+/// exactly the case that needs a user confirmation before overwrite. Both
+/// states count as active because the daemon tears down every tracked
+/// instance when it overwrites a node, regardless of lifecycle state.
+///
+/// Returns `None` when:
+/// - The local config can't be parsed (the add action itself will surface a
+///   clearer error once it tries to use the source).
+/// - The node isn't in the stack yet (the daemon answers with
+///   `NodeInfoResponse::NotInStack` — a successful negative lookup).
+/// - The node is in the stack but has no active instances (the add action
+///   can safely overwrite it without prompting).
+async fn fetch_active_instances_for_local_source(
     messenger: &MessengerHandle,
     core_node_name: &str,
-    node_source: NodeSource,
+    source_path: &Path,
     timeout: Duration,
-) -> Result<NodeInfoResponse> {
-    NodeInfoRequest::new(node_source)
+) -> Result<Option<(String, String, Vec<String>)>> {
+    let config_path = source_path.join(config::consts::NODE_CONFIG_FILE);
+    let Ok(parsed) = NodeConfigParser::from_path(&config_path) else {
+        return Ok(None);
+    };
+    let node_name = parsed.manifest_name().to_owned();
+    let node_tag = parsed.manifest_tag().to_owned();
+
+    let response = NodeInfoRequest::new(node_name.clone(), node_tag.clone())
         .poll(
             messenger,
             core_node_name,
@@ -252,7 +272,28 @@ async fn fetch_node_info(
         .await
         .map_err(|e| {
             Error::ExecutionFailed(format!("Failed to check node info before adding: {}", e))
-        })
+        })?;
+
+    // `NotInStack` is a normal first-time-add case; there is nothing to
+    // confirm. The daemon no longer reports this as an error, so we match
+    // on the response variant directly instead of sniffing error strings.
+    let info = match response {
+        NodeInfoResponse::NotInStack => return Ok(None),
+        NodeInfoResponse::Found(info) => info,
+    };
+
+    let active: Vec<String> = info
+        .instances
+        .iter()
+        .filter(|inst| matches!(inst.state.as_str(), "running" | "starting"))
+        .map(|inst| inst.instance_id.clone())
+        .collect();
+
+    if active.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some((node_name, node_tag, active)))
+    }
 }
 
 fn confirm_overwrite(
@@ -269,7 +310,7 @@ fn confirm_overwrite(
     let pronoun = if count == 1 { "it" } else { "them" };
 
     let message = format!(
-        "Node `{node_name}:{tag}` already exists with {count} running {suffix} ({ids}). \
+        "Node `{node_name}:{tag}` already exists with {count} active {suffix} ({ids}). \
          Adding this node will stop {pronoun} and overwrite the existing node. Continue? [y/n] ",
     );
 

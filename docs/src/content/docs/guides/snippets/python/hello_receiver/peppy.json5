@@ -21,11 +21,11 @@
   },
   execution: {
     language: "python",
-    add_cmd: [
+    build_cmd: [
       "uv",
       "sync"
     ],
-    start_cmd: [
+    run_cmd: [
       "uv",
       "run",
       "hello_receiver"

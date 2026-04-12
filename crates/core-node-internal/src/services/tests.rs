@@ -17,12 +17,15 @@ async fn create_mock_messenger() -> Arc<Mutex<Messenger>> {
 /// Verifies that the core node is configured to run in-process, not as a spawned
 /// subprocess or inside a container.
 #[tokio::test]
-async fn core_node_execution_has_no_start_cmd_and_no_container() {
+async fn core_node_execution_has_no_run_cmd_and_no_container() {
     let messenger = create_mock_messenger().await;
     let peppy_dirs = PeppyDirs::new(std::env::temp_dir());
     let node_arguments = CoreNodeArguments {
         node_startup_timeout: Duration::from_secs(5),
         node_start_health_timeout: Duration::from_secs(5),
+        health_monitor_interval: Duration::from_secs(5),
+        health_monitor_timeout: Duration::from_secs(3),
+        health_monitor_max_failures: 3,
     };
     let core_node = CoreNode::new(
         messenger,
@@ -34,8 +37,8 @@ async fn core_node_execution_has_no_start_cmd_and_no_container() {
 
     let execution = &core_node.node_config().execution;
     assert!(
-        execution.start_cmd.is_none(),
-        "core node must not have a start_cmd (it runs in-process, not as a spawned process)"
+        execution.run_cmd.is_none(),
+        "core node must not have a run_cmd (it runs in-process, not as a spawned process)"
     );
     assert!(
         execution.container.is_none(),
@@ -52,6 +55,9 @@ async fn core_node_default_name_is_deterministic_and_machine_uid_based() {
     let mk = || CoreNodeArguments {
         node_startup_timeout: Duration::from_secs(5),
         node_start_health_timeout: Duration::from_secs(5),
+        health_monitor_interval: Duration::from_secs(5),
+        health_monitor_timeout: Duration::from_secs(3),
+        health_monitor_max_failures: 3,
     };
 
     let a = CoreNode::new(
@@ -93,6 +99,9 @@ async fn core_node_explicit_name_overrides_machine_uid() {
     let node_arguments = CoreNodeArguments {
         node_startup_timeout: Duration::from_secs(5),
         node_start_health_timeout: Duration::from_secs(5),
+        health_monitor_interval: Duration::from_secs(5),
+        health_monitor_timeout: Duration::from_secs(3),
+        health_monitor_max_failures: 3,
     };
     let core_node = CoreNode::new(
         messenger,

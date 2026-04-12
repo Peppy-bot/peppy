@@ -69,13 +69,14 @@ pub mod node {
         Name, NodeConfig, NodeConfigCreator, NodeConfigParser, NodeDependency, ObjectKind,
         ObjectSchema, ParsedNodeConfig, PeppyNodeConfig, PeppygenLanguage, PrimitiveSchema,
         QoSProfile, SchemaType, ServiceInterfaces, Toolchain, TopicInterfaces, TypeToken, Variant,
-        VariantConfig, VariantConfigParser, extract_parameter_refs, is_blocked_mount_source,
+        VariantConfig, VariantConfigParser, extract_parameter_refs, find_root_node_dir,
+        is_blocked_mount_source, load_standalone_node_config,
     };
 }
 
 // -- runtime --
 pub mod runtime {
-    pub use crate::internal::runtime::{LauncherRuntimeConfig, NodeInstance, RuntimeConfig};
+    pub use crate::internal::runtime::{LauncherRuntimeConfig, NodeInstanceConfig, RuntimeConfig};
 }
 
 // -- launcher --

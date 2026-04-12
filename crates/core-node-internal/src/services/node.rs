@@ -1,8 +1,10 @@
 mod add;
+mod builder;
+mod gate;
 mod info;
 mod init;
 mod remove;
-mod start;
+mod run;
 mod stop;
 mod sync;
 mod templates;
@@ -12,52 +14,33 @@ use crate::encoding::NodeSource;
 use crate::{Error, Result};
 pub use add::listen_for_node_add;
 pub(crate) use add::{NodeAddActionContext, log_label_from_source, run_node_add};
+pub use builder::listen_for_node_build;
+pub(crate) use builder::{NodeBuildActionContext, run_node_build_for_entity};
 use chrono::Local;
-use config::consts::NODE_CONFIG_FILE;
+use config::consts::{NODE_CONFIG_FILE, PeppyDirs};
 use config::node::{NodeConfig, NodeConfigParser, ParsedNodeConfig, PeppygenLanguage};
 use git2::{Repository, build::CheckoutBuilder, build::RepoBuilder};
 pub use info::listen_for_node_info;
 pub use init::listen_for_node_init;
+use parking_lot::Mutex as StdMutex;
 use rand::RngExt;
 pub use remove::listen_for_node_remove;
-pub(crate) use start::{NodeStartActionContext, run_node_start};
-pub use start::{NodeStartServiceConfig, listen_for_node_start};
-use std::collections::VecDeque;
+pub(crate) use run::{NodeRunActionContext, run_node_run};
+pub use run::{NodeRunServiceConfig, listen_for_node_run};
 use std::fs::File;
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex as StdMutex, OnceLock};
+use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 pub use stop::listen_for_node_stop;
 pub use sync::listen_for_node_sync;
-use tar::Archive;
-use zstd::stream::read::Decoder;
 
-/// Maximum number of stderr lines to retain for error diagnostics.
-/// Used by both the `add` (container build) and `start` (node run) services.
-const STDERR_TAIL_LINES: usize = 20;
-
-#[derive(Clone, Copy)]
-pub(crate) enum FeedbackStream {
-    Stdout,
-    Stderr,
-}
-
-pub(crate) struct FeedbackLine {
-    pub(crate) stream: FeedbackStream,
-    pub(crate) line: String,
-}
-
-/// Pushes a line into a bounded ring buffer of stderr output.
-/// When the buffer is full, the oldest line is dropped.
-fn push_stderr_line(buffer: &Arc<StdMutex<VecDeque<String>>>, line: &str) {
-    let mut guard = buffer.lock().expect("stderr buffer lock poisoned");
-    if guard.len() == STDERR_TAIL_LINES {
-        guard.pop_front();
-    }
-    guard.push_back(line.to_string());
-}
+// Feedback streaming primitives have moved to `node-stack-internal::build_io`
+// so that `NodeEntity::build` can stream apptainer output without depending on
+// core-node-internal. The re-exports below keep the existing call sites in
+// `start.rs`, `info.rs`, etc. compiling unchanged.
+pub(crate) use node_stack::{FeedbackLine, FeedbackStream};
 
 /// Extract a human-readable message from a panic payload.
 /// Used by spawned task handlers to convert panics into failure results.
@@ -113,16 +96,70 @@ fn validate_goal_env_vars(env_vars: &[(String, String)]) -> Result<Vec<(String, 
     Ok(result)
 }
 
+/// Maps an encoding `Result` to a `PeppyResult`, wrapping the error as an
+/// `InternalEncodingError` so it can be returned directly from a goal handler.
+/// Used in place of open-coding the same `map_err` at every rejection and
+/// accepted-response encoding site in the add/build/start handlers.
+pub(crate) fn encode_response_or_err(
+    identifier: &'static str,
+    result: crate::Result<peppylib::types::Payload>,
+) -> peppylib::PeppyResult<peppylib::types::Payload> {
+    result.map_err(|e| peppylib::PeppyError::InternalEncodingError {
+        identifier: identifier.to_string(),
+        reason: format!("Failed to encode response: {}", e),
+    })
+}
+
+/// Spawns a task that consumes `FeedbackLine` values from `feedback_rx`,
+/// converts each one via `encode` and publishes the resulting payload. Shared
+/// by the add/build/start goal handlers, which all run the same
+/// consumer-side forwarder over differently-typed feedback encoders.
+pub(crate) fn spawn_feedback_forwarder<F>(
+    mut feedback_rx: tokio::sync::mpsc::UnboundedReceiver<FeedbackLine>,
+    publisher: peppylib::messaging::TopicPublisher,
+    encode: F,
+) -> tokio::task::JoinHandle<()>
+where
+    F: Fn(FeedbackLine) -> crate::Result<peppylib::types::Payload> + Send + 'static,
+{
+    tokio::spawn(async move {
+        while let Some(line) = feedback_rx.recv().await {
+            if let Ok(payload) = encode(line) {
+                let _ = publisher.publish(payload).await;
+            }
+        }
+    })
+}
+
 /// Write an error message to the node's log file with a timestamp.
 ///
 /// Best-effort: silently ignores lock/write failures since the error is also
 /// returned in the result encoding.
 pub(crate) fn write_error_to_log(log_file: &Arc<StdMutex<File>>, error_msg: &str) {
-    if let Ok(mut file) = log_file.lock() {
-        let timestamp = Local::now().format("%Y-%m-%dT%H:%M:%S%.3f");
-        let _ = writeln!(file, "[{}] [error] {}", timestamp, error_msg);
-        let _ = file.flush();
+    let mut file = log_file.lock();
+    let timestamp = Local::now().format("%Y-%m-%dT%H:%M:%S%.3f");
+    let _ = writeln!(file, "[{}] [error] {}", timestamp, error_msg);
+    let _ = file.flush();
+}
+
+/// Appends a timestamped entry to the stack operations log.
+///
+/// Best-effort: silently ignores I/O failures since the operation it
+/// describes has already completed.
+pub(crate) fn append_stack_log(peppy_dirs: &PeppyDirs, message: &str) {
+    let path = peppy_dirs.stack_log_path();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
     }
+    let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    else {
+        return;
+    };
+    let timestamp = Local::now().format("%Y-%m-%dT%H:%M:%S%.3f");
+    let _ = writeln!(file, "[{}] {}", timestamp, message);
 }
 
 /// Creates a log file inside `log_dir` with the given filename.
@@ -232,121 +269,7 @@ pub(crate) struct ResolvedLocalArchiveSource {
     pub(crate) temp_dir: tempfile::TempDir,
 }
 
-/// Extracts a `.tar.zst` archive into `destination` with path safety checks.
-/// Rejects entries containing `..`, root, or prefix path components.
-/// Directories are applied last to avoid permission interference during extraction.
-pub(crate) fn extract_tar_zst(
-    archive_path: &Path,
-    destination: &Path,
-) -> std::result::Result<(), String> {
-    let file = std::fs::File::open(archive_path)
-        .map_err(|e| format!("Failed to open archive {}: {}", archive_path.display(), e))?;
-
-    let decoder = Decoder::new(file).map_err(|e| {
-        format!(
-            "Failed to decode zstd archive {}: {}",
-            archive_path.display(),
-            e
-        )
-    })?;
-    let mut archive = Archive::new(decoder);
-
-    let entries = archive.entries().map_err(|e| {
-        format!(
-            "Failed to read archive entries from {}: {}",
-            archive_path.display(),
-            e
-        )
-    })?;
-
-    let mut directories = Vec::new();
-    for entry in entries {
-        let mut entry = entry.map_err(|e| {
-            format!(
-                "Failed to read archive entry from {}: {}",
-                archive_path.display(),
-                e
-            )
-        })?;
-
-        let entry_path = entry
-            .path()
-            .map_err(|e| {
-                format!(
-                    "Failed to read entry path from {}: {}",
-                    archive_path.display(),
-                    e
-                )
-            })?
-            .into_owned();
-
-        if entry_path.components().any(|component| {
-            matches!(
-                component,
-                Component::ParentDir | Component::RootDir | Component::Prefix(..)
-            )
-        }) {
-            return Err(format!(
-                "Archive {} contains unsafe path: {}",
-                archive_path.display(),
-                entry_path.display()
-            ));
-        }
-
-        if entry.header().entry_type().is_dir() {
-            directories.push(entry);
-        } else {
-            let unpacked = entry.unpack_in(destination).map_err(|e| {
-                format!(
-                    "Failed to unpack entry {} from {}: {}",
-                    entry_path.display(),
-                    archive_path.display(),
-                    e
-                )
-            })?;
-            if !unpacked {
-                return Err(format!(
-                    "Archive {} contains unsafe path: {}",
-                    archive_path.display(),
-                    entry_path.display()
-                ));
-            }
-        }
-    }
-
-    // Apply directory entries at the end, matching tar::Archive::unpack behavior (avoids
-    // directory permissions interfering with descendant extraction).
-    directories.sort_by(|a, b| b.path_bytes().cmp(&a.path_bytes()));
-    for mut dir in directories {
-        let entry_path = dir
-            .path()
-            .map_err(|e| {
-                format!(
-                    "Failed to read entry path from {}: {}",
-                    archive_path.display(),
-                    e
-                )
-            })?
-            .into_owned();
-        let unpacked = dir.unpack_in(destination).map_err(|e| {
-            format!(
-                "Failed to unpack entry {} from {}: {}",
-                entry_path.display(),
-                archive_path.display(),
-                e
-            )
-        })?;
-        if !unpacked {
-            return Err(format!(
-                "Archive {} contains unsafe path: {}",
-                archive_path.display(),
-                entry_path.display()
-            ));
-        }
-    }
-
-    Ok(())
-}
+pub(crate) use node_stack::extract_tar_zst;
 
 pub(crate) fn sanitize_repo_path(repo_path: &str) -> std::result::Result<PathBuf, String> {
     let trimmed = repo_path.trim_start_matches(['/', '\\']);
@@ -532,12 +455,12 @@ mod tests {
         encoding: "string",
       },
     },
-    add_cmd: [
+    build_cmd: [
       "cargo",
       "build",
       "--release",
     ],
-    start_cmd: [
+    run_cmd: [
       "./target/release/standalone",
     ],
   },

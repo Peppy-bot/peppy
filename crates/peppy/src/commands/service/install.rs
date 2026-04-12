@@ -102,7 +102,7 @@ fn make_install_context(
 ) -> Result<ServiceInstallCtx> {
     let mut environment = vec![("PEPPY_ENV".to_string(), "PROD".to_string())];
 
-    // Include the user's PATH so that add_cmd/start_cmd can find tools like cargo, python, etc.
+    // Include the user's PATH so that build_cmd/run_cmd can find tools like cargo, python, etc.
     if let Ok(path) = std::env::var("PATH") {
         environment.push(("PATH".to_string(), path));
     }

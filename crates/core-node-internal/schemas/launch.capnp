@@ -10,12 +10,12 @@ struct EnvVar {
 struct LaunchGoal {
     # Path to the peppy launch file
     peppyLaunchFilePath @0 :Text;
-    # Environment variables to apply when executing add_cmd and start_cmd (e.g. PATH)
+    # Environment variables to apply when executing build_cmd and run_cmd (e.g. PATH)
     envVars @1 :List(EnvVar);
     # Idle timeout in seconds for each node add operation (resets on feedback)
     nodeAddIdleTimeoutSecs @2 :UInt64;
-    # Idle timeout in seconds for each node start operation (resets on feedback)
-    nodeStartIdleTimeoutSecs @3 :UInt64;
+    # Idle timeout in seconds for each node run operation (resets on feedback)
+    nodeRunIdleTimeoutSecs @3 :UInt64;
     # Absolute max timeout in seconds per operation (0 = default 3600s)
     maxTimeoutSecs @4 :UInt64;
 }
@@ -32,7 +32,8 @@ struct LaunchGoalResponse {
 enum LaunchFeedbackStep {
     launcherStep @0;
     addingNode @1;
-    startingNode @2;
+    runningNode @2;
+    buildingNode @3;
 }
 
 struct LaunchFeedback {
@@ -53,15 +54,24 @@ struct NodeAddLog {
     failed @2 :Bool;
 }
 
-struct NodeStartLog {
+struct NodeRunLog {
     # Instance ID
     instanceId @0 :Text;
     # Node label in "name:tag" format
     nodeLabel @1 :Text;
-    # Path to the node start log file
+    # Path to the node run log file
     logPath @2 :Text;
-    # Whether the start operation failed
+    # Whether the run operation failed
     failed @3 :Bool;
+}
+
+struct NodeBuildLog {
+    # Node label in "name:tag" format
+    nodeLabel @0 :Text;
+    # Path to the node build log file
+    logPath @1 :Text;
+    # Whether the build operation failed
+    failed @2 :Bool;
 }
 
 struct LaunchResult {
@@ -73,6 +83,8 @@ struct LaunchResult {
     errorMessage @2 :Text;
     # Per-node add log entries
     nodeAddLogs @3 :List(NodeAddLog);
-    # Per-node start log entries
-    nodeStartLogs @4 :List(NodeStartLog);
+    # Per-node run log entries
+    nodeRunLogs @4 :List(NodeRunLog);
+    # Per-node build log entries
+    nodeBuildLogs @5 :List(NodeBuildLog);
 }

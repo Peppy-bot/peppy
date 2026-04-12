@@ -86,8 +86,8 @@ An external consumed topic has a `name` and an inline `message_format`, but no `
       },
       execution: {
         language: "python",
-        add_cmd: ["uv", "sync"],
-        start_cmd: ["uv", "run", "robot_arm"]
+        build_cmd: ["uv", "sync"],
+        run_cmd: ["uv", "run", "robot_arm"]
       },
     }
     ```
@@ -140,8 +140,8 @@ An external consumed topic has a `name` and an inline `message_format`, but no `
       },
       execution: {
         language: "rust",
-        add_cmd: ["cargo", "build", "--release"],
-        start_cmd: ["./target/release/robot_arm"]
+        build_cmd: ["cargo", "build", "--release"],
+        run_cmd: ["./target/release/robot_arm"]
       },
     }
     ```
@@ -190,8 +190,8 @@ Compare this with the `arm_controller` node, which uses a standard linked consum
       },
       execution: {
         language: "python",
-        add_cmd: ["uv", "sync"],
-        start_cmd: ["uv", "run", "arm_controller"]
+        build_cmd: ["uv", "sync"],
+        run_cmd: ["uv", "run", "arm_controller"]
       },
     }
     ```
@@ -235,8 +235,8 @@ Compare this with the `arm_controller` node, which uses a standard linked consum
       },
       execution: {
         language: "rust",
-        add_cmd: ["cargo", "build", "--release"],
-        start_cmd: ["./target/release/arm_controller"]
+        build_cmd: ["cargo", "build", "--release"],
+        run_cmd: ["./target/release/arm_controller"]
       },
     }
     ```

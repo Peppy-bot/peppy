@@ -59,6 +59,8 @@ Now sync the node:
 peppy node sync
 ```
 
+(You can also pass `--sync`/`-s` to `peppy node add` if you want to sync and add in one step — e.g. `peppy node add . -sb` to sync, add, and build together.)
+
 Now if you try to run the node:
 
 <Tabs>
@@ -82,7 +84,7 @@ Now if you try to run the node:
   </TabItem>
 </Tabs>
 
-These parameters are usually provided during `peppy node start`, but since we want this node to run as a standalone program, we need to pass them outside of the peppy daemon environment.
+These parameters are usually provided during `peppy node run`, but since we want this node to run as a standalone program, we need to pass them outside of the peppy daemon environment.
 We can define our parameters in a `params.json` file at the root of the project:
 
 <Code code={standaloneRustParams} lang="json" title="params.json" />
@@ -108,4 +110,34 @@ Then modify the source file to read from this file:
 
 The node should run without a crash.
 The standalone object allows us to load parameters from an external JSON file and pass them to the node, which in turn allows us to run our node as a regular Rust/Python program.
-Note that the standalone config is completely ignored when a node is run with `peppy node start`, all parameters provided during the `node start` operation take precedence.
+Note that the standalone config is completely ignored when a node is run with `peppy node run`, all parameters provided during the `node run` operation take precedence.
+
+## Running a variant in standalone mode
+
+You can also run a [variant](/advanced_guides/variants) as a standalone program. Variants typically omit the `manifest` and `interfaces` sections of `peppy.json5` and inherit them from their parent root node. When you launch a variant directly with `cargo run` / `uv run`, peppy walks up the directory tree to find the nearest ancestor `peppy.json5` that declares a `manifest` and merges the two configs — the variant's `execution` wins, the parent's `manifest` and `interfaces` are adopted as-is.
+
+This means you can sit inside a variant subdirectory (typically `variants/<name>/`) and debug exactly what the daemon would run when that variant is selected:
+
+```
+uvc_camera/
+├── peppy.json5              ← root node (manifest + interfaces, no execution)
+└── variants/
+    ├── default/
+    │   └── peppy.json5      ← execution only
+    └── mock/
+        ├── peppy.json5      ← execution only
+        ├── params.json
+        └── src/
+            └── main.rs
+```
+
+```sh
+cd uvc_camera/variants/mock
+cargo run         # or `uv run mock` for Python
+```
+
+When standalone mode initializes, peppy loads the variant's `peppy.json5`, walks up to find the parent root, and produces a merged `NodeConfig` where the node is known as `uvc_camera:0.1.0` (inherited from the root manifest) with the variant's own `execution` (including `parameters`). The standalone messenger then uses those merged interfaces to talk to the rest of the stack, just like a non-variant standalone node. Cargo / uv remain in charge of actually running the binary — `run_cmd` is only consulted by the daemon when the node is launched through `peppy node run`, not in standalone mode.
+
+:::caution
+If there is no ancestor `peppy.json5` with a `manifest` section — for example if you've copied a variant directory out on its own — peppy will fail to start with an error explaining that a parent root was not found. In that case, either restore the parent `peppy.json5`, or convert the variant into a self-contained root by adding its own `manifest` and `interfaces`.
+:::

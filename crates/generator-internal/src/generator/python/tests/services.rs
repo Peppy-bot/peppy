@@ -39,20 +39,20 @@ const EXPOSED_SERVICE_EXAMPLE3: &str = r#"
 }
 "#;
 
-const SUBSCRIBED_SERVICE_EXAMPLE1: &str = r#"
+pub(super) const SUBSCRIBED_SERVICE_EXAMPLE1: &str = r#"
 {
   local_node_id: "uvc_camera",
   name: "enable_camera",
 }
 "#;
 
-const SUBSCRIBED_SERVICE_REQUEST_EXAMPLE1: &str = r#"
+pub(super) const SUBSCRIBED_SERVICE_REQUEST_EXAMPLE1: &str = r#"
 {
   enable: "bool"
 }
 "#;
 
-const SUBSCRIBED_SERVICE_RESPONSE_EXAMPLE1: &str = r#"
+pub(super) const SUBSCRIBED_SERVICE_RESPONSE_EXAMPLE1: &str = r#"
 {
   enabled: "bool",
   error_msg: {
