@@ -182,6 +182,54 @@ async fn handle_node_sync_request_inner(
         .encode();
     }
 
+    // Parse any local peer node configs supplied by the caller (`node sync -a`).
+    // These are checked first when resolving dependencies, before falling back
+    // to the persistent node stack. The peer map lives only for this request.
+    let mut local_peers: std::collections::HashMap<(String, String), config::node::NodeConfig> =
+        std::collections::HashMap::new();
+    for peer_dir in &request.local_peers {
+        let peer_config_path = peer_dir.join(config::consts::NODE_CONFIG_FILE);
+        if !peer_config_path.is_file() {
+            return NodeSyncResponse::failure(format!(
+                "Local peer config does not exist: {}",
+                peer_config_path.display()
+            ))
+            .encode();
+        }
+        match NodeConfigParser::from_path(&peer_config_path) {
+            Ok(parsed) => {
+                let peer_name = parsed.manifest_name().to_owned();
+                let peer_tag = parsed.manifest_tag().to_owned();
+                // `into_resolved_or_default` keeps the manifest+interfaces
+                // intact while substituting a default execution for
+                // variant-only roots — execution is irrelevant for dependency
+                // resolution since only `interfaces` is read downstream.
+                let cfg = parsed.into_resolved_or_default();
+                local_peers.insert((peer_name, peer_tag), cfg);
+            }
+            Err(e) => {
+                return NodeSyncResponse::failure(format!(
+                    "Failed to parse local peer config at {}: {}",
+                    peer_config_path.display(),
+                    e
+                ))
+                .encode();
+            }
+        }
+    }
+
+    // Resolver closure: peers first, then the persistent node stack.
+    let resolve_dep = |name: &str, tag: &str| -> Option<config::node::NodeConfig> {
+        local_peers
+            .get(&(name.to_owned(), tag.to_owned()))
+            .cloned()
+            .or_else(|| {
+                node_stack
+                    .find(name, tag)
+                    .map(|e| e.read().config().clone())
+            })
+    };
+
     // Validate dependencies before generation and collect consumed interfaces
     let node_config_path = request.node_root_dir.join(config::consts::NODE_CONFIG_FILE);
     let (
@@ -205,11 +253,7 @@ async fn handle_node_sync_request_inner(
                     node_config.interfaces(),
                     node_config.manifest_name(),
                     node_config.manifest_tag(),
-                    |name, tag| {
-                        node_stack
-                            .find(name, tag)
-                            .map(|e| e.read().config().clone())
-                    },
+                    resolve_dep,
                 );
 
                 let mut missing_dependencies: HashSet<String> = HashSet::new();
@@ -290,7 +334,7 @@ async fn handle_node_sync_request_inner(
                 let interfaces = match collect_consumed_interfaces(
                     node_config.manifest(),
                     node_config.interfaces(),
-                    node_stack,
+                    resolve_dep,
                 ) {
                     Ok(v) => v,
                     Err(reason) => {
@@ -325,6 +369,7 @@ async fn handle_node_sync_request_inner(
     let NodeSyncRequest {
         node_root_dir,
         git_hash,
+        local_peers: _,
     } = request;
 
     let node_root_dir_for_variants = node_root_dir.clone();
@@ -554,27 +599,34 @@ fn build_dependency_lookup(
         .unwrap_or_default()
 }
 
-/// Collects consumed interfaces from a node config and resolves their message formats
-/// by looking up the exposed interfaces from dependency nodes in the node stack.
+/// Collects consumed interfaces from a node config and resolves their message
+/// formats by looking up the exposed interfaces from dependency nodes via the
+/// caller-supplied resolver.
+///
+/// The `resolve` closure returns a [`config::node::NodeConfig`] for a given
+/// `(name, tag)` pair, or `None` if the dependency cannot be found. Callers
+/// usually wrap a [`NodeStack`] (see [`stack_resolver`]) but can also chain a
+/// peer map first to resolve sibling nodes that haven't been added to the
+/// stack yet — used by `node sync -a` for batch operations.
 pub fn collect_consumed_interfaces(
     manifest: &config::node::Manifest,
     interfaces_cfg: &config::node::Interfaces,
-    node_stack: &NodeStack,
+    resolve: impl Fn(&str, &str) -> Option<config::node::NodeConfig>,
 ) -> std::result::Result<Vec<DeploymentInterface>, String> {
     let mut interfaces = Vec::new();
     let dep_lookup = build_dependency_lookup(manifest);
 
-    // Pre-resolve each unique (name, tag) to its entity handle so the per-
-    // item loops below can skip the repeated `node_stack.find()` calls that
-    // would otherwise run once per consumed topic/service/action.
-    let mut dep_handles: std::collections::HashMap<(String, String), node_stack::EntityHandle> =
+    // Pre-resolve each unique (name, tag) into a cloned NodeConfig so the
+    // per-item loops below don't repeatedly hit the resolver (which may take
+    // a NodeStack read lock or do filesystem I/O).
+    let mut dep_configs: std::collections::HashMap<(String, String), config::node::NodeConfig> =
         std::collections::HashMap::new();
     for (dep_name, dep_tag) in dep_lookup.values() {
         let key = (dep_name.clone(), dep_tag.clone());
-        if !dep_handles.contains_key(&key)
-            && let Some(handle) = node_stack.find(dep_name, dep_tag)
+        if !dep_configs.contains_key(&key)
+            && let Some(cfg) = resolve(dep_name, dep_tag)
         {
-            dep_handles.insert(key, handle);
+            dep_configs.insert(key, cfg);
         }
     }
 
@@ -589,24 +641,21 @@ pub fn collect_consumed_interfaces(
                     else {
                         continue;
                     };
-                    if let Some(dep_handle) = dep_handles.get(&(dep_name.clone(), dep_tag.clone()))
+                    if let Some(dep_config) = dep_configs.get(&(dep_name.clone(), dep_tag.clone()))
+                        && let Some(dep_topics) = &dep_config.interfaces.topics
+                        && let Some(emitted_topics) = &dep_topics.emits
+                        && let Some(emitted_topic) = emitted_topics
+                            .iter()
+                            .find(|t| t.name.trim() == linked.name.trim())
+                        && let Some(message_format) = &emitted_topic.message_format
                     {
-                        let guard = dep_handle.read();
-                        if let Some(dep_topics) = &guard.config().interfaces.topics
-                            && let Some(emitted_topics) = &dep_topics.emits
-                            && let Some(emitted_topic) = emitted_topics
-                                .iter()
-                                .find(|t| t.name.trim() == linked.name.trim())
-                            && let Some(message_format) = &emitted_topic.message_format
-                        {
-                            interfaces.push(DeploymentInterface::new(
-                                InterfaceVariant::ConsumedTopic {
-                                    topic: consumed_topic.clone(),
-                                    message_format: message_format.clone(),
-                                    dependency_node_name: dep_name.clone(),
-                                },
-                            ));
-                        }
+                        interfaces.push(DeploymentInterface::new(
+                            InterfaceVariant::ConsumedTopic {
+                                topic: consumed_topic.clone(),
+                                message_format: message_format.clone(),
+                                dependency_node_name: dep_name.clone(),
+                            },
+                        ));
                     }
                 }
                 config::node::ConsumedTopic::External(external) => {
@@ -629,29 +678,27 @@ pub fn collect_consumed_interfaces(
             let Some((dep_name, dep_tag)) = dep_lookup.get(&consumed_service.local_node_id) else {
                 continue;
             };
-            if let Some(dep_handle) = dep_handles.get(&(dep_name.clone(), dep_tag.clone())) {
-                let guard = dep_handle.read();
-                if let Some(dep_services) = &guard.config().interfaces.services
-                    && let Some(exposed_services) = &dep_services.exposes
-                    && let Some(exposed_service) = exposed_services
-                        .iter()
-                        .find(|s| s.name.trim() == consumed_service.name.trim())
-                {
-                    interfaces.push(DeploymentInterface::new(
-                        InterfaceVariant::ConsumedService {
-                            service: consumed_service.clone(),
-                            request_format: exposed_service
-                                .request_message_format
-                                .clone()
-                                .unwrap_or_default(),
-                            response_format: exposed_service
-                                .response_message_format
-                                .clone()
-                                .unwrap_or_default(),
-                            dependency_node_name: dep_name.clone(),
-                        },
-                    ));
-                }
+            if let Some(dep_config) = dep_configs.get(&(dep_name.clone(), dep_tag.clone()))
+                && let Some(dep_services) = &dep_config.interfaces.services
+                && let Some(exposed_services) = &dep_services.exposes
+                && let Some(exposed_service) = exposed_services
+                    .iter()
+                    .find(|s| s.name.trim() == consumed_service.name.trim())
+            {
+                interfaces.push(DeploymentInterface::new(
+                    InterfaceVariant::ConsumedService {
+                        service: consumed_service.clone(),
+                        request_format: exposed_service
+                            .request_message_format
+                            .clone()
+                            .unwrap_or_default(),
+                        response_format: exposed_service
+                            .response_message_format
+                            .clone()
+                            .unwrap_or_default(),
+                        dependency_node_name: dep_name.clone(),
+                    },
+                ));
             }
         }
     }
@@ -664,48 +711,60 @@ pub fn collect_consumed_interfaces(
             let Some((dep_name, dep_tag)) = dep_lookup.get(&consumed_action.local_node_id) else {
                 continue;
             };
-            if let Some(dep_handle) = dep_handles.get(&(dep_name.clone(), dep_tag.clone())) {
-                let guard = dep_handle.read();
-                if let Some(dep_actions) = &guard.config().interfaces.actions
-                    && let Some(exposed_actions) = &dep_actions.exposes
-                    && let Some(exposed_action) = exposed_actions
-                        .iter()
-                        .find(|a| a.name.trim() == consumed_action.name.trim())
-                {
-                    let action_message = ConsumedActionMessage {
-                        goal_request: exposed_action
-                            .goal_service
-                            .as_ref()
-                            .and_then(|s| s.request_message_format.clone()),
-                        goal_response: exposed_action
-                            .goal_service
-                            .as_ref()
-                            .and_then(|s| s.response_message_format.clone()),
-                        feedback: exposed_action
-                            .feedback_topic
-                            .as_ref()
-                            .and_then(|t| t.message_format.clone()),
-                        result_request: exposed_action
-                            .result_service
-                            .as_ref()
-                            .and_then(|s| s.request_message_format.clone()),
-                        result_response: exposed_action
-                            .result_service
-                            .as_ref()
-                            .and_then(|s| s.response_message_format.clone()),
-                    };
+            if let Some(dep_config) = dep_configs.get(&(dep_name.clone(), dep_tag.clone()))
+                && let Some(dep_actions) = &dep_config.interfaces.actions
+                && let Some(exposed_actions) = &dep_actions.exposes
+                && let Some(exposed_action) = exposed_actions
+                    .iter()
+                    .find(|a| a.name.trim() == consumed_action.name.trim())
+            {
+                let action_message = ConsumedActionMessage {
+                    goal_request: exposed_action
+                        .goal_service
+                        .as_ref()
+                        .and_then(|s| s.request_message_format.clone()),
+                    goal_response: exposed_action
+                        .goal_service
+                        .as_ref()
+                        .and_then(|s| s.response_message_format.clone()),
+                    feedback: exposed_action
+                        .feedback_topic
+                        .as_ref()
+                        .and_then(|t| t.message_format.clone()),
+                    result_request: exposed_action
+                        .result_service
+                        .as_ref()
+                        .and_then(|s| s.request_message_format.clone()),
+                    result_response: exposed_action
+                        .result_service
+                        .as_ref()
+                        .and_then(|s| s.response_message_format.clone()),
+                };
 
-                    interfaces.push(DeploymentInterface::new(InterfaceVariant::ConsumedAction {
-                        action: consumed_action.clone(),
-                        messages: action_message,
-                        dependency_node_name: dep_name.clone(),
-                    }));
-                }
+                interfaces.push(DeploymentInterface::new(InterfaceVariant::ConsumedAction {
+                    action: consumed_action.clone(),
+                    messages: action_message,
+                    dependency_node_name: dep_name.clone(),
+                }));
             }
         }
     }
 
     Ok(interfaces)
+}
+
+/// Convenience helper that builds a resolver closure backed by a [`NodeStack`].
+///
+/// Use this for callers that don't have any local peers to layer on top of
+/// the daemon's persistent stack — i.e. `node add` and `auto_sync_if_missing`.
+pub fn stack_resolver(
+    node_stack: &NodeStack,
+) -> impl Fn(&str, &str) -> Option<config::node::NodeConfig> + '_ {
+    move |name, tag| {
+        node_stack
+            .find(name, tag)
+            .map(|e| e.read().config().clone())
+    }
 }
 
 /// Parameters for [`auto_sync_if_missing`].
@@ -764,14 +823,17 @@ pub fn auto_sync_if_missing(
 
         let gen_result: crate::Result<()> = (|| {
             if let Some(language) = params.execution_language {
-                let consumed =
-                    collect_consumed_interfaces(params.manifest, params.interfaces, node_stack)
-                        .map_err(|reason| {
-                            crate::Error::Io(std::io::Error::other(format!(
-                                "failed to resolve consumed interfaces: {}",
-                                reason
-                            )))
-                        })?;
+                let consumed = collect_consumed_interfaces(
+                    params.manifest,
+                    params.interfaces,
+                    stack_resolver(node_stack),
+                )
+                .map_err(|reason| {
+                    crate::Error::Io(std::io::Error::other(format!(
+                        "failed to resolve consumed interfaces: {}",
+                        reason
+                    )))
+                })?;
                 generate_peppygen_for_node(
                     language,
                     params.node_dir,
@@ -857,13 +919,17 @@ pub fn auto_sync_if_missing(
         // error here must not leave the variant's `.peppy` dir missing.
         // Doing this after the rename would short-circuit past the
         // `gen_result` restore path below.
-        let consumed = collect_consumed_interfaces(params.manifest, params.interfaces, node_stack)
-            .map_err(|reason| {
-                crate::Error::Io(std::io::Error::other(format!(
-                    "failed to resolve consumed interfaces: {}",
-                    reason
-                )))
-            })?;
+        let consumed = collect_consumed_interfaces(
+            params.manifest,
+            params.interfaces,
+            stack_resolver(node_stack),
+        )
+        .map_err(|reason| {
+            crate::Error::Io(std::io::Error::other(format!(
+                "failed to resolve consumed interfaces: {}",
+                reason
+            )))
+        })?;
 
         // Back up existing .peppy so we can restore it on failure.
         let peppy_dir = v.dir.join(config::consts::PEPPY_OUTPUT_DIR);

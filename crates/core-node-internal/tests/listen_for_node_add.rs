@@ -2724,7 +2724,7 @@ async fn listen_for_node_add_variant_local_source_after_sync() {
     std::fs::write(&variant_config_path, variant_config).expect("failed to write variant config");
 
     // Step 1: Run node sync — this generates peppygen + fingerprint for root and variant.
-    let sync_response = NodeSyncRequest::new(&root_dir, TEST_GIT_HASH)
+    let sync_response = NodeSyncRequest::new(&root_dir, TEST_GIT_HASH, vec![])
         .poll(
             &started_core_node.caller_handle,
             &started_core_node.core_node_name,
@@ -2857,7 +2857,7 @@ async fn listen_for_node_add_variant_only_node_after_sync() {
 
     // Step 1: Run node sync — generates peppygen only for the variant (not root,
     // since root has no execution block).
-    let sync_response = NodeSyncRequest::new(&root_dir, TEST_GIT_HASH)
+    let sync_response = NodeSyncRequest::new(&root_dir, TEST_GIT_HASH, vec![])
         .poll(
             &started_core_node.caller_handle,
             &started_core_node.core_node_name,
@@ -2987,7 +2987,7 @@ async fn listen_for_node_add_variant_fingerprint_mismatch_after_sync() {
         .expect("failed to write variant config");
 
     // Step 1: Sync — generates peppygen and fingerprint for both root and variant.
-    let sync_response = NodeSyncRequest::new(&root_dir, TEST_GIT_HASH)
+    let sync_response = NodeSyncRequest::new(&root_dir, TEST_GIT_HASH, vec![])
         .poll(
             &started_core_node.caller_handle,
             &started_core_node.core_node_name,

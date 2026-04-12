@@ -153,6 +153,12 @@ struct NodeGenerateRequest {
     nodeRootDir @0 :Text;
     # Git commit hash of the node being synced
     gitHash @1 :Text;
+    # Optional peer node root directories that should also be considered
+    # when resolving this node's dependencies. Used by `node sync -a` so the
+    # daemon can find sibling nodes that have not been added to the persistent
+    # node stack yet. The list is consumed only for this single request and
+    # never persisted.
+    localPeers @2 :List(Text);
 }
 
 struct NodeSyncResponse {

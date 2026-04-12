@@ -4,6 +4,7 @@ pub mod archive;
 pub mod build_io;
 mod error;
 mod node_stack;
+mod virtual_deptree;
 
 pub use error::Error as NodeStackError;
 
@@ -16,3 +17,4 @@ pub use node_stack::{
     StartContext, StartedInstanceCtx, TrackedNodeInstance, WorkingDirGuard,
     collect_dependency_specs, validate_dependency_specs,
 };
+pub use virtual_deptree::{NodeKey, VirtualDeptree, VirtualNodeInfo};

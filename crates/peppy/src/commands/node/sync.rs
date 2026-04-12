@@ -4,7 +4,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use config::consts::NODE_CONFIG_FILE;
+use config::node::NodeConfigParser;
 use core_node::encoding::NodeSyncRequest;
+use node_stack::VirtualDeptree;
 use tracing::{info, warn};
 use walkdir::WalkDir;
 
@@ -42,7 +44,7 @@ pub(super) async fn sync_node_async(ctx: &Arc<AppContext>, path: Option<PathBuf>
         None => ctx.root_dir.clone(),
     };
     let node_root_dir = resolve_node_root_dir(&base_dir)?;
-    sync_resolved_node(ctx, &node_root_dir).await
+    sync_resolved_node(ctx, &node_root_dir, &[]).await
 }
 
 async fn sync_all_nodes_async(ctx: &Arc<AppContext>, path: Option<PathBuf>) -> Result<()> {
@@ -61,18 +63,47 @@ async fn sync_all_nodes_async(ctx: &Arc<AppContext>, path: Option<PathBuf>) -> R
         )));
     }
 
-    info!("Found {} node(s) to sync", roots.len());
+    // Parse every discovered `peppy.json5` so we can build a virtual dependency
+    // tree below. We use `into_resolved_or_default` so that variant-only roots
+    // (where execution lives in a child variant config) still parse — only
+    // their manifest is needed for dependency analysis.
+    let mut parsed: Vec<(PathBuf, config::node::NodeConfig)> = Vec::with_capacity(roots.len());
+    for root in &roots {
+        let cfg_path = root.join(NODE_CONFIG_FILE);
+        let parsed_cfg = NodeConfigParser::from_path(&cfg_path).map_err(|e| {
+            Error::ExecutionFailed(format!("Failed to parse {}: {}", cfg_path.display(), e))
+        })?;
+        parsed.push((root.clone(), parsed_cfg.into_resolved_or_default()));
+    }
+
+    // Build the in-memory dependency tree. This is the only place ordering is
+    // decided; the daemon never sees the tree itself, only the flat peer list.
+    // The tree is dropped at the end of this function.
+    let tree = VirtualDeptree::build(parsed).map_err(|e| Error::ExecutionFailed(e.to_string()))?;
+
+    let peer_paths = tree.peer_root_dirs();
+    let ordered = tree.topological_order();
+    info!(
+        "Found {} node(s) to sync (resolved dep order)",
+        ordered.len()
+    );
 
     let mut failures: Vec<(PathBuf, Error)> = Vec::new();
-    for root in &roots {
-        info!("Syncing node at {}...", root.display());
-        if let Err(err) = sync_resolved_node(ctx, root).await {
-            warn!("Failed to sync node at {}: {}", root.display(), err);
-            failures.push((root.clone(), err));
+    for info in &ordered {
+        info!("Syncing node at {}...", info.root_dir.display());
+        if let Err(err) = sync_resolved_node(ctx, &info.root_dir, &peer_paths).await {
+            warn!(
+                "Failed to sync node at {}: {}",
+                info.root_dir.display(),
+                err
+            );
+            failures.push((info.root_dir.clone(), err));
         }
     }
 
-    let synced = roots.len() - failures.len();
+    // The `tree` is purely scoped to this function — `ordered` borrows from
+    // it, so it stays alive until the function returns and is then dropped.
+    let synced = ordered.len() - failures.len();
     info!("Synced {} node(s)", synced);
 
     if failures.is_empty() {
@@ -86,7 +117,7 @@ async fn sync_all_nodes_async(ctx: &Arc<AppContext>, path: Option<PathBuf>) -> R
         Err(Error::ExecutionFailed(format!(
             "Failed to sync {} of {} node(s):\n{}",
             failures.len(),
-            roots.len(),
+            ordered.len(),
             details
         )))
     }
@@ -94,7 +125,16 @@ async fn sync_all_nodes_async(ctx: &Arc<AppContext>, path: Option<PathBuf>) -> R
 
 /// Runs the daemon-side `node_generate` service for a node directory that has
 /// already been resolved to its canonical root.
-async fn sync_resolved_node(ctx: &Arc<AppContext>, node_root_dir: &Path) -> Result<()> {
+///
+/// `local_peers` carries sibling node root directories that the daemon should
+/// consider when resolving dependencies for this request — used by `node sync
+/// -a` to make freshly-discovered peers visible without touching the daemon's
+/// persistent node stack. For plain `node sync`, pass `&[]`.
+async fn sync_resolved_node(
+    ctx: &Arc<AppContext>,
+    node_root_dir: &Path,
+    local_peers: &[PathBuf],
+) -> Result<()> {
     let conn = ctx.connect_to_daemon().await?;
 
     info!(
@@ -103,7 +143,11 @@ async fn sync_resolved_node(ctx: &Arc<AppContext>, node_root_dir: &Path) -> Resu
         conn.core_node_name
     );
 
-    let request = NodeSyncRequest::new(node_root_dir.to_path_buf(), conn.git_hash);
+    let request = NodeSyncRequest::new(
+        node_root_dir.to_path_buf(),
+        conn.git_hash,
+        local_peers.to_vec(),
+    );
     let response = request
         .poll(
             conn.messenger,

@@ -3,6 +3,7 @@ use super::super::stack::STACK_LAUNCH_GIT_HASH;
 use super::gate::ConcurrencyGate;
 use super::sync::{
     self, AutoSyncParams, AutoSyncVariant, collect_consumed_interfaces, generate_peppygen_for_node,
+    stack_resolver,
 };
 use super::{
     checkout_repo_ref, extract_tar_zst, generate_random_id, is_supported_fs_archive,
@@ -1350,7 +1351,7 @@ async fn process_node_add(
     let consumed_interfaces = match collect_consumed_interfaces(
         &node_config.manifest,
         &node_config.interfaces,
-        &ctx.action.node_stack,
+        stack_resolver(&ctx.action.node_stack),
     ) {
         Ok(v) => v,
         Err(reason) => {
