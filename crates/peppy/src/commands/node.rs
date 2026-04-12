@@ -175,7 +175,11 @@ pub enum NodeCommands {
     /// Regenerate the node's interface code (peppygen) based on peppy.json5
     Sync {
         /// Optional path to the node directory. Defaults to the current directory.
+        /// When combined with `--all`, this is the root of the recursive search.
         path: Option<PathBuf>,
+        /// Recursively find every `peppy.json5` under `path` and sync each one.
+        #[arg(short = 'a', long)]
+        all: bool,
     },
     /// Runs an instance from a node added to the node stack
     ///
@@ -336,9 +340,13 @@ impl Command for NodeCommand {
                     },
                 )
             }
-            NodeCommands::Sync { path } => {
-                info!("Syncing node interfaces...");
-                sync::sync_node(ctx, path)
+            NodeCommands::Sync { path, all } => {
+                if all {
+                    sync::sync_all_nodes(ctx, path)
+                } else {
+                    info!("Syncing node interfaces...");
+                    sync::sync_node(ctx, path)
+                }
             }
             NodeCommands::Run {
                 node_ref,

@@ -110,7 +110,10 @@ async fn node_sync_rust_command_succeeds() {
             .with_daemon_state_file(serve.daemon_state_path()),
     );
     NodeCommand {
-        command: NodeCommands::Sync { path: None },
+        command: NodeCommands::Sync {
+            path: None,
+            all: false,
+        },
     }
     .execute(&sync_ctx)
     .expect("node sync command should succeed");
@@ -127,7 +130,7 @@ async fn node_sync_rust_command_succeeds() {
 
     let logs = log_capture.logs();
     assert!(
-        logs.contains("Synced node interfaces successfully"),
+        logs.contains("Synced node interfaces at"),
         "logs should contain sync success message. Logs:\n{}",
         logs
     );
@@ -227,7 +230,10 @@ async fn node_sync_python_command_succeeds() {
             .with_daemon_state_file(serve.daemon_state_path()),
     );
     NodeCommand {
-        command: NodeCommands::Sync { path: None },
+        command: NodeCommands::Sync {
+            path: None,
+            all: false,
+        },
     }
     .execute(&sync_ctx)
     .expect("node sync command should succeed");
@@ -244,7 +250,7 @@ async fn node_sync_python_command_succeeds() {
 
     let logs = log_capture.logs();
     assert!(
-        logs.contains("Synced node interfaces successfully"),
+        logs.contains("Synced node interfaces at"),
         "logs should contain sync success message. Logs:\n{}",
         logs
     );
@@ -340,6 +346,7 @@ async fn node_sync_with_path_succeeds() {
     NodeCommand {
         command: NodeCommands::Sync {
             path: Some(PathBuf::from(node_name)),
+            all: false,
         },
     }
     .execute(&sync_ctx)
@@ -357,7 +364,7 @@ async fn node_sync_with_path_succeeds() {
 
     let logs = log_capture.logs();
     assert!(
-        logs.contains("Synced node interfaces successfully"),
+        logs.contains("Synced node interfaces at"),
         "logs should contain sync success message. Logs:\n{}",
         logs
     );
@@ -370,5 +377,145 @@ async fn node_sync_with_path_succeeds() {
         goodbye_world_topic_path.exists(),
         "goodbye_world topic should be generated at {}",
         goodbye_world_topic_path.display()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn node_sync_all_succeeds_across_multiple_nodes() {
+    let serve = ServeCommandEmulation::with_mock()
+        .await
+        .expect("failed to create serve emulation");
+    let shared_messenger = serve.messenger();
+
+    let workspace = tempfile::tempdir().expect("failed to create temp dir for workspace");
+    let workspace_path = workspace.path();
+
+    // Set up logging
+    let log_capture = LogCapture::new();
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .without_time()
+        .with_writer(log_capture.clone())
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+
+    // Create three rust nodes at varying depths in the workspace:
+    //   <tmp>/node_a
+    //   <tmp>/subdir/node_b
+    //   <tmp>/deep/nested/node_c
+    let node_layouts: Vec<(PathBuf, &str)> = vec![
+        (workspace_path.to_path_buf(), "node_a"),
+        (workspace_path.join("subdir"), "node_b"),
+        (workspace_path.join("deep").join("nested"), "node_c"),
+    ];
+
+    for (parent_dir, node_name) in &node_layouts {
+        std::fs::create_dir_all(parent_dir).expect("create parent dir");
+        let init_ctx = Arc::new(
+            AppContext::with_messenger(parent_dir, Arc::clone(&shared_messenger))
+                .with_daemon_state_file(serve.daemon_state_path()),
+        );
+        NodeCommand {
+            command: NodeCommands::Init {
+                node_name: NodeName::new(*node_name).expect("valid node name"),
+                to_dir: None,
+                toolchain: Toolchain::Cargo,
+                with_container: false,
+            },
+        }
+        .execute(&init_ctx)
+        .expect("node init command should succeed");
+    }
+
+    // Drop a bogus peppy.json5 under `target/` to verify pruning — the walker
+    // must ignore it. If it did not, `resolve_node_root_dir` would surface a
+    // parse error and this test would fail.
+    let pruned_dir = workspace_path.join("target").join("ghost");
+    std::fs::create_dir_all(&pruned_dir).expect("create pruned dir");
+    std::fs::write(
+        pruned_dir.join("peppy.json5"),
+        r#"{ this is invalid json5 {{{"#,
+    )
+    .expect("write bogus config");
+
+    // Modify every node's peppy.json5 so the fingerprints will change.
+    let mut node_paths: Vec<PathBuf> = Vec::new();
+    let mut expected_fingerprints: Vec<String> = Vec::new();
+    for (parent_dir, node_name) in &node_layouts {
+        let node_path = parent_dir.join(node_name);
+        let peppy_json5_path = node_path.join("peppy.json5");
+        assert!(
+            peppy_json5_path.exists(),
+            "peppy.json5 should exist at {}",
+            peppy_json5_path.display()
+        );
+
+        let old_fingerprint = config::fingerprint::read_codegen_fingerprint(
+            &peppy_json5_path,
+            config::consts::PEPPYGEN_OUTPUT_PATH,
+        )
+        .expect("fingerprint should be readable");
+
+        add_emitted_topic(&peppy_json5_path);
+
+        let expected_fingerprint =
+            config::runtime::RuntimeConfig::generate_peppy_config_fingerprint(&peppy_json5_path)
+                .expect("peppy.json5 fingerprint should generate");
+        assert_ne!(
+            expected_fingerprint, old_fingerprint,
+            "fingerprint should change after modifying peppy.json5 for {}",
+            node_name
+        );
+
+        node_paths.push(node_path);
+        expected_fingerprints.push(expected_fingerprint);
+    }
+
+    // Run `sync --all` from the workspace root.
+    let sync_ctx = Arc::new(
+        AppContext::with_messenger(workspace_path, Arc::clone(&shared_messenger))
+            .with_daemon_state_file(serve.daemon_state_path()),
+    );
+    NodeCommand {
+        command: NodeCommands::Sync {
+            path: None,
+            all: true,
+        },
+    }
+    .execute(&sync_ctx)
+    .expect("node sync --all command should succeed");
+
+    // Verify each node's fingerprint was updated.
+    for (node_path, expected_fingerprint) in node_paths.iter().zip(expected_fingerprints.iter()) {
+        let peppy_json5_path = node_path.join("peppy.json5");
+        let new_fingerprint = config::fingerprint::read_codegen_fingerprint(
+            &peppy_json5_path,
+            config::consts::PEPPYGEN_OUTPUT_PATH,
+        )
+        .expect("updated fingerprint should be readable");
+        assert_eq!(
+            &new_fingerprint,
+            expected_fingerprint,
+            "fingerprint should be updated for node at {}",
+            node_path.display()
+        );
+    }
+
+    // Verify the logs advertise every synchronized folder — the whole point
+    // of the `--all` flag per the user request.
+    let logs = log_capture.logs();
+    for node_path in &node_paths {
+        let marker = format!("Synced node interfaces at {}", node_path.display());
+        assert!(
+            logs.contains(&marker),
+            "logs should announce sync for {}. Logs:\n{}",
+            node_path.display(),
+            logs
+        );
+    }
+    assert!(
+        logs.contains(&format!("Synced {} node(s)", node_paths.len())),
+        "logs should contain the final sync count. Logs:\n{}",
+        logs
     );
 }

@@ -403,7 +403,10 @@ fn node_add_after_failed_sync_succeeds() {
     );
 
     NodeCommand {
-        command: NodeCommands::Sync { path: None },
+        command: NodeCommands::Sync {
+            path: None,
+            all: false,
+        },
     }
     .execute(&sync_ctx)
     .expect("node sync command should succeed");

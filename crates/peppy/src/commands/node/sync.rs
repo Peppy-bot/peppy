@@ -1,9 +1,12 @@
-use std::path::PathBuf;
+use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use config::consts::NODE_CONFIG_FILE;
 use core_node::encoding::NodeSyncRequest;
-use tracing::info;
+use tracing::{info, warn};
+use walkdir::WalkDir;
 
 use super::source::resolve_node_root_dir;
 use crate::commands::CALLER_INSTANCE_ID;
@@ -12,8 +15,23 @@ use crate::error::{Error, Result};
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Directory names that should never be descended into while searching for
+/// root `peppy.json5` files.
+const PRUNED_DIR_NAMES: &[&str] = &[
+    ".git",
+    ".peppy",
+    "target",
+    "node_modules",
+    ".venv",
+    "__pycache__",
+];
+
 pub fn sync_node(ctx: &Arc<AppContext>, path: Option<PathBuf>) -> Result<()> {
     crate::commands::block_on(sync_node_async(ctx, path))
+}
+
+pub fn sync_all_nodes(ctx: &Arc<AppContext>, path: Option<PathBuf>) -> Result<()> {
+    crate::commands::block_on(sync_all_nodes_async(ctx, path))
 }
 
 pub(super) async fn sync_node_async(ctx: &Arc<AppContext>, path: Option<PathBuf>) -> Result<()> {
@@ -24,6 +42,59 @@ pub(super) async fn sync_node_async(ctx: &Arc<AppContext>, path: Option<PathBuf>
         None => ctx.root_dir.clone(),
     };
     let node_root_dir = resolve_node_root_dir(&base_dir)?;
+    sync_resolved_node(ctx, &node_root_dir).await
+}
+
+async fn sync_all_nodes_async(ctx: &Arc<AppContext>, path: Option<PathBuf>) -> Result<()> {
+    let base_dir = match path {
+        Some(p) => ctx.root_dir.join(p),
+        None => ctx.root_dir.clone(),
+    };
+
+    info!("Searching for nodes under {}...", base_dir.display());
+    let roots = find_root_node_dirs(&base_dir);
+    if roots.is_empty() {
+        return Err(Error::ExecutionFailed(format!(
+            "No {} root configs found under '{}'",
+            NODE_CONFIG_FILE,
+            base_dir.display()
+        )));
+    }
+
+    info!("Found {} node(s) to sync", roots.len());
+
+    let mut failures: Vec<(PathBuf, Error)> = Vec::new();
+    for root in &roots {
+        info!("Syncing node at {}...", root.display());
+        if let Err(err) = sync_resolved_node(ctx, root).await {
+            warn!("Failed to sync node at {}: {}", root.display(), err);
+            failures.push((root.clone(), err));
+        }
+    }
+
+    let synced = roots.len() - failures.len();
+    info!("Synced {} node(s)", synced);
+
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        let details = failures
+            .iter()
+            .map(|(dir, err)| format!("  - {}: {}", dir.display(), err))
+            .collect::<Vec<_>>()
+            .join("\n");
+        Err(Error::ExecutionFailed(format!(
+            "Failed to sync {} of {} node(s):\n{}",
+            failures.len(),
+            roots.len(),
+            details
+        )))
+    }
+}
+
+/// Runs the daemon-side `node_generate` service for a node directory that has
+/// already been resolved to its canonical root.
+async fn sync_resolved_node(ctx: &Arc<AppContext>, node_root_dir: &Path) -> Result<()> {
     let conn = ctx.connect_to_daemon().await?;
 
     info!(
@@ -32,7 +103,7 @@ pub(super) async fn sync_node_async(ctx: &Arc<AppContext>, path: Option<PathBuf>
         conn.core_node_name
     );
 
-    let request = NodeSyncRequest::new(node_root_dir, conn.git_hash);
+    let request = NodeSyncRequest::new(node_root_dir.to_path_buf(), conn.git_hash);
     let response = request
         .poll(
             conn.messenger,
@@ -55,6 +126,162 @@ pub(super) async fn sync_node_async(ctx: &Arc<AppContext>, path: Option<PathBuf>
         return Err(Error::ExecutionFailed(msg));
     }
 
-    info!("Synced node interfaces successfully");
+    info!("Synced node interfaces at {}", node_root_dir.display());
     Ok(())
+}
+
+/// Recursively finds every root node directory under `base`.
+///
+/// A "root node directory" is any directory whose `peppy.json5` is classified
+/// as a root by [`resolve_node_root_dir`]. Variant subdirectory configs are
+/// deduped back to their owning root. Malformed configs are skipped with a
+/// warning so that a single bad file does not abort the whole search.
+fn find_root_node_dirs(base: &Path) -> Vec<PathBuf> {
+    let mut roots: BTreeSet<PathBuf> = BTreeSet::new();
+
+    let walker = WalkDir::new(base)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|entry| {
+            if !entry.file_type().is_dir() {
+                return true;
+            }
+            // Always include the starting directory.
+            if entry.depth() == 0 {
+                return true;
+            }
+            let name = entry.file_name().to_string_lossy();
+            !PRUNED_DIR_NAMES.iter().any(|pruned| name == *pruned)
+        });
+
+    for entry in walker {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(err) => {
+                warn!(
+                    "Skipping directory entry while searching for nodes: {}",
+                    err
+                );
+                continue;
+            }
+        };
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        if entry.file_name() != NODE_CONFIG_FILE {
+            continue;
+        }
+        let Some(parent) = entry.path().parent() else {
+            continue;
+        };
+        match resolve_node_root_dir(parent) {
+            Ok(root) => {
+                roots.insert(root);
+            }
+            Err(err) => {
+                warn!(
+                    "Skipping {} at {}: {}",
+                    NODE_CONFIG_FILE,
+                    parent.display(),
+                    err
+                );
+            }
+        }
+    }
+
+    roots.into_iter().collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use config::consts::NODE_CONFIG_FILE;
+
+    fn write_root_config(dir: &Path, name: &str) {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(
+            dir.join(NODE_CONFIG_FILE),
+            format!(
+                r#"{{
+                    schema_version: 1,
+                    manifest: {{
+                        name: "{name}",
+                        tag: "0.1.0",
+                    }},
+                    execution: {{ language: "rust", run_cmd: ["./bin"] }}
+                }}"#
+            ),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn find_root_node_dirs_finds_nested_nodes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path();
+
+        write_root_config(&base.join("node_a"), "node_a");
+        write_root_config(&base.join("subdir").join("node_b"), "node_b");
+        write_root_config(&base.join("deep").join("nested").join("node_c"), "node_c");
+
+        let roots = find_root_node_dirs(base);
+        assert_eq!(roots.len(), 3, "expected 3 roots, got {:?}", roots);
+        assert!(roots.contains(&base.join("node_a")));
+        assert!(roots.contains(&base.join("subdir").join("node_b")));
+        assert!(roots.contains(&base.join("deep").join("nested").join("node_c")));
+    }
+
+    #[test]
+    fn find_root_node_dirs_skips_pruned_directories() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path();
+
+        write_root_config(&base.join("node_a"), "node_a");
+        // These should be ignored by the walker pruning.
+        write_root_config(&base.join("target").join("ghost"), "ghost");
+        write_root_config(&base.join(".git").join("ghost"), "ghost");
+        write_root_config(&base.join(".peppy").join("ghost"), "ghost");
+
+        let roots = find_root_node_dirs(base);
+        assert_eq!(roots, vec![base.join("node_a")]);
+    }
+
+    #[test]
+    fn find_root_node_dirs_dedupes_variant_to_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path();
+        let root = base.join("my_node");
+        let variant = root.join("variants").join("linux");
+        std::fs::create_dir_all(&variant).unwrap();
+
+        // Root with variants
+        std::fs::write(
+            root.join(NODE_CONFIG_FILE),
+            r#"{
+                schema_version: 1,
+                manifest: {
+                    name: "my_node",
+                    tag: "0.1.0",
+                    variants: [
+                        { name: "default", source: { local: "./variants/linux" } }
+                    ]
+                },
+                interfaces: {}
+            }"#,
+        )
+        .unwrap();
+
+        // Variant config (no manifest)
+        std::fs::write(
+            variant.join(NODE_CONFIG_FILE),
+            r#"{
+                schema_version: 1,
+                execution: { language: "rust", run_cmd: ["sleep", "1"] }
+            }"#,
+        )
+        .unwrap();
+
+        let roots = find_root_node_dirs(base);
+        assert_eq!(roots, vec![root]);
+    }
 }
