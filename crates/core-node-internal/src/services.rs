@@ -2,6 +2,7 @@ mod action_loop;
 mod info;
 mod node;
 mod ping;
+mod repo;
 mod stack;
 
 pub use node::FORBIDDEN_ENV_KEYS;

@@ -3,7 +3,7 @@ use peppy::test_support::{LogCapture, ServeCommandEmulation};
 use std::sync::Arc;
 use std::time::Duration;
 
-use core_node::encoding::{NodeInfoRequest, NodeInfoResponse, NodeListRequest};
+use core_node::encoding::{NodeInfoRequest, NodeInfoResponse, StackListRequest};
 use node_stack::SerializedNodeGraph;
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands, NodeName};
@@ -94,7 +94,7 @@ async fn node_run_command_succeeds() {
         .messenger_handle()
         .expect("messenger handle should be available");
 
-    let response = NodeListRequest::new(false)
+    let response = StackListRequest::new(false)
         .poll(
             messenger_handle,
             &core_node_name,
@@ -164,7 +164,7 @@ async fn node_run_command_succeeds() {
     );
 
     // Query the node stack to verify the node now has an instance
-    let response = NodeListRequest::new(false)
+    let response = StackListRequest::new(false)
         .poll(
             messenger_handle,
             &core_node_name,
@@ -315,7 +315,7 @@ async fn node_run_command_with_args_succeeds() {
         .messenger_handle()
         .expect("messenger handle should be available");
 
-    let response = NodeListRequest::new(false)
+    let response = StackListRequest::new(false)
         .poll(
             messenger_handle,
             &core_node_name,
@@ -396,7 +396,7 @@ async fn node_run_command_with_args_succeeds() {
     );
 
     // Query the node stack to verify the node now has an instance
-    let response = NodeListRequest::new(false)
+    let response = StackListRequest::new(false)
         .poll(
             messenger_handle,
             &core_node_name,
@@ -511,7 +511,7 @@ async fn node_run_command_with_custom_instance_id_succeeds() {
         .messenger_handle()
         .expect("messenger handle should be available");
 
-    let response = NodeListRequest::new(false)
+    let response = StackListRequest::new(false)
         .poll(
             messenger_handle,
             &core_node_name,
@@ -595,7 +595,7 @@ async fn node_run_command_with_custom_instance_id_succeeds() {
     );
 
     // Query the node stack to verify the node now has an instance
-    let response = NodeListRequest::new(false)
+    let response = StackListRequest::new(false)
         .poll(
             messenger_handle,
             &core_node_name,
@@ -769,7 +769,7 @@ async fn node_run_with_build_flag_on_unbuilt_node_builds_then_runs() {
         logs
     );
 
-    let response = NodeListRequest::new(false)
+    let response = StackListRequest::new(false)
         .poll(
             messenger_handle,
             &core_node_name,
@@ -925,7 +925,7 @@ async fn node_run_with_build_flag_on_already_built_node_skips_build() {
         logs
     );
 
-    let response = NodeListRequest::new(false)
+    let response = StackListRequest::new(false)
         .poll(
             messenger_handle,
             &core_node_name,

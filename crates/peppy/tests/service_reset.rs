@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use config::consts::{NODE_CONFIG_FILE, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH};
-use core_node::encoding::NodeListRequest;
+use core_node::encoding::StackListRequest;
 use node_stack::SerializedNodeGraph;
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands};
@@ -122,7 +122,7 @@ async fn service_reset_command_resets_node_stack() {
         .messenger_handle()
         .expect("messenger handle should be available");
 
-    let response = NodeListRequest::new(false)
+    let response = StackListRequest::new(false)
         .poll(
             messenger_handle,
             &core_node_name,
@@ -151,7 +151,7 @@ async fn service_reset_command_resets_node_stack() {
     .execute(&ctx)
     .expect("service reset command should succeed");
 
-    let response = NodeListRequest::new(false)
+    let response = StackListRequest::new(false)
         .poll(
             messenger_handle,
             &core_node_name,

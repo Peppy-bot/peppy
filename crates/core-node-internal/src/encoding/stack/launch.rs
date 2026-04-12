@@ -13,7 +13,7 @@ use crate::Result;
 use crate::launch_capnp;
 use crate::names;
 
-use super::{decode_message, encode_message, optional_text};
+use crate::encoding::{decode_message, encode_message, optional_text};
 
 /// Default idle timeout in seconds for operations (used as fallback when 0 is received on the wire).
 const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 600;

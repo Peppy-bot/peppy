@@ -5,7 +5,7 @@ use std::time::Duration;
 use config::launcher::Name;
 use config::node::NodeConfigParser;
 use config::runtime::{NodeInstanceConfig, RuntimeConfig};
-use core_node::encoding::NodeListRequest;
+use core_node::encoding::StackListRequest;
 use names_generator2::get_random;
 use node_stack::SerializedNodeGraph;
 use rand::rng;
@@ -54,7 +54,7 @@ async fn print_runtime_config_async(
     let conn = ctx.connect_to_daemon().await?;
 
     // Validate that the node is present in the node stack so the output corresponds to a runnable node.
-    let response = NodeListRequest::new(false)
+    let response = StackListRequest::new(false)
         .poll(
             conn.messenger,
             &conn.core_node_name,

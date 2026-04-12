@@ -6,7 +6,7 @@ mod init;
 mod remove;
 mod run;
 mod runtime_config;
-mod source;
+pub(crate) mod source;
 mod stop;
 mod sync;
 mod types;

@@ -11,11 +11,11 @@ use crate::node_capnp;
 use crate::encoding::{decode_message, encode_message};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NodeListRequest {
+pub struct StackListRequest {
     with_dot_graph: bool,
 }
 
-impl NodeListRequest {
+impl StackListRequest {
     pub fn new(with_dot_graph: bool) -> Self {
         Self { with_dot_graph }
     }
@@ -48,7 +48,7 @@ impl NodeListRequest {
         as_instance_id: &str,
         target_core_node: &str,
         response_timeout: Duration,
-    ) -> Result<NodeListResponse> {
+    ) -> Result<StackListResponse> {
         let request_payload = self.encode()?;
         let response = ServiceMessenger::poll(
             messenger,
@@ -62,23 +62,23 @@ impl NodeListRequest {
             response_timeout,
         )
         .await?;
-        NodeListResponse::decode(response.payload().as_ref())
+        StackListResponse::decode(response.payload().as_ref())
     }
 }
 
-impl Default for NodeListRequest {
+impl Default for StackListRequest {
     fn default() -> Self {
         Self::new(false)
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NodeListResponse {
+pub struct StackListResponse {
     pub dot_graph: Option<String>,
     pub graph_json: String,
 }
 
-impl NodeListResponse {
+impl StackListResponse {
     pub fn new(dot_graph: Option<String>, graph_json: impl Into<String>) -> Self {
         Self {
             dot_graph,

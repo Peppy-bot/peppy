@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use core_node::encoding::{NodeListRequest, NodeRemoveRequest};
+use core_node::encoding::{NodeRemoveRequest, StackListRequest};
 use node_stack::SerializedNodeGraph;
 use tracing::info;
 
@@ -93,7 +93,7 @@ async fn fetch_instance_ids(
     node_name: &str,
     tag: &str,
 ) -> Result<Vec<String>> {
-    let response = NodeListRequest::new(false)
+    let response = StackListRequest::new(false)
         .poll(
             messenger,
             core_node_name,
