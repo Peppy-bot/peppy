@@ -427,16 +427,25 @@ async fn node_sync_all_succeeds_across_multiple_nodes() {
         .expect("node init command should succeed");
     }
 
-    // Drop a bogus peppy.json5 under `target/` to verify pruning — the walker
-    // must ignore it. If it did not, `resolve_node_root_dir` would surface a
-    // parse error and this test would fail.
+    // Drop a *valid* peppy.json5 under `target/` to verify pruning — the
+    // walker must ignore it. A malformed config wouldn't actually exercise
+    // pruning, since `find_root_node_dirs` already swallows parse errors with
+    // a warning; only a valid root would be added to the sync set if pruning
+    // broke, causing the assertions below to fail.
     let pruned_dir = workspace_path.join("target").join("ghost");
     std::fs::create_dir_all(&pruned_dir).expect("create pruned dir");
     std::fs::write(
         pruned_dir.join("peppy.json5"),
-        r#"{ this is invalid json5 {{{"#,
+        r#"{
+            schema_version: 1,
+            manifest: {
+                name: "ghost",
+                tag: "0.1.0",
+            },
+            execution: { language: "rust", run_cmd: ["./bin"] }
+        }"#,
     )
-    .expect("write bogus config");
+    .expect("write ghost config");
 
     // Modify every node's peppy.json5 so the fingerprints will change.
     let mut node_paths: Vec<PathBuf> = Vec::new();
@@ -516,6 +525,28 @@ async fn node_sync_all_succeeds_across_multiple_nodes() {
     assert!(
         logs.contains(&format!("Synced {} node(s)", node_paths.len())),
         "logs should contain the final sync count. Logs:\n{}",
+        logs
+    );
+
+    // Pruning check: the valid `target/ghost` node must not appear anywhere
+    // in the sync results — not in the logs, and not in the synced count.
+    let ghost_marker = format!("Synced node interfaces at {}", pruned_dir.display());
+    assert!(
+        !logs.contains(&ghost_marker),
+        "ghost node under target/ should be pruned, but logs contain '{}'. Logs:\n{}",
+        ghost_marker,
+        logs
+    );
+    let ghost_syncing_marker = format!("Syncing node at {}", pruned_dir.display());
+    assert!(
+        !logs.contains(&ghost_syncing_marker),
+        "ghost node under target/ should be pruned, but logs contain '{}'. Logs:\n{}",
+        ghost_syncing_marker,
+        logs
+    );
+    assert!(
+        !logs.contains(&format!("Synced {} node(s)", node_paths.len() + 1)),
+        "ghost node under target/ should be pruned, but the sync count includes it. Logs:\n{}",
         logs
     );
 }
