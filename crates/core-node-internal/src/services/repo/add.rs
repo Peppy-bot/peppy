@@ -27,9 +27,7 @@ pub async fn listen_for_repo_add(
 
     let handle = tokio::spawn(async move {
         endpoint
-            .handle_requests(move |context| {
-                handle_repo_add_request(context, peppy_dirs.clone())
-            })
+            .handle_requests(move |context| handle_repo_add_request(context, peppy_dirs.clone()))
             .await
             .map_err(Into::into)
     });
@@ -52,10 +50,16 @@ async fn handle_repo_add_request(
 
 fn repo_source_to_json(source: &RepoSource) -> Value {
     match source {
-        RepoSource::Git {
-            repo_url,
-            repo_ref,
-        } => {
+        RepoSource::Fs(path) => {
+            let mut map = serde_json::Map::new();
+            map.insert("type".to_string(), Value::String("fs".to_string()));
+            map.insert(
+                "path".to_string(),
+                Value::String(path.to_string_lossy().into_owned()),
+            );
+            Value::Object(map)
+        }
+        RepoSource::Git { repo_url, repo_ref } => {
             let mut map = serde_json::Map::new();
             map.insert("type".to_string(), Value::String("git".to_string()));
             map.insert("url".to_string(), Value::String(repo_url.clone()));
@@ -73,11 +77,31 @@ fn repo_source_to_json(source: &RepoSource) -> Value {
     }
 }
 
-fn repo_source_url(source: &RepoSource) -> &str {
+/// Returns the identity string used for duplicate detection.
+fn repo_source_identity(source: &RepoSource) -> String {
     match source {
-        RepoSource::Git { repo_url, .. } => repo_url,
-        RepoSource::Url(url) => url,
+        RepoSource::Fs(path) => path.to_string_lossy().into_owned(),
+        RepoSource::Git { repo_url, .. } => repo_url.clone(),
+        RepoSource::Url(url) => url.clone(),
     }
+}
+
+/// Returns the identity value from a persisted JSON entry (path for fs, url for git/url).
+fn json_entry_identity(entry: &Value) -> Option<&str> {
+    let typ = entry.get("type")?.as_str()?;
+    match typ {
+        "fs" => entry.get("path")?.as_str(),
+        _ => entry.get("url")?.as_str(),
+    }
+}
+
+/// Builds the default repository list (user home directory) when no config file exists.
+fn default_repos() -> Vec<Value> {
+    let mut repos = Vec::new();
+    if let Some(home) = dirs::home_dir() {
+        repos.push(repo_source_to_json(&RepoSource::Fs(home)));
+    }
+    repos
 }
 
 fn handle_repo_add_request_inner(
@@ -94,9 +118,9 @@ fn handle_repo_add_request_inner(
         request.source
     );
 
-    let url = repo_source_url(&request.source);
-    if url.trim().is_empty() {
-        return RepoAddResponse::failure("repository URL must not be empty").encode();
+    let identity = repo_source_identity(&request.source);
+    if identity.trim().is_empty() {
+        return RepoAddResponse::failure("repository path/URL must not be empty").encode();
     }
 
     // Ensure conf directory exists
@@ -107,27 +131,24 @@ fn handle_repo_add_request_inner(
 
     let repos_path = conf_dir.join("repositories.json5");
 
-    // Read existing repos or start fresh
+    // Read existing repos, or seed with defaults (home dir first)
     let mut repos: Vec<Value> = if repos_path.exists() {
         let content = std::fs::read_to_string(&repos_path)?;
         serde_json5::from_str(&content).map_err(|e| {
             crate::Error::Decoding(format!("failed to parse repositories.json5: {e}"))
         })?
     } else {
-        Vec::new()
+        default_repos()
     };
 
-    // Duplicate check — match on the URL field
-    let new_url = url.trim();
-    let is_duplicate = repos.iter().any(|entry| {
-        entry
-            .get("url")
-            .and_then(|v| v.as_str())
-            .is_some_and(|existing| existing == new_url)
-    });
+    // Duplicate check
+    let new_identity = identity.trim();
+    let is_duplicate = repos
+        .iter()
+        .any(|entry| json_entry_identity(entry).is_some_and(|existing| existing == new_identity));
 
     if is_duplicate {
-        return RepoAddResponse::failure(format!("repository '{new_url}' already exists"))
+        return RepoAddResponse::failure(format!("repository '{}' already exists", new_identity))
             .encode();
     }
 

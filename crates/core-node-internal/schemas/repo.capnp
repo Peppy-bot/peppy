@@ -16,6 +16,8 @@ struct RepoAddRequest {
         git @0 :RepoAddGitSource;
         # Plain URL source
         url @1 :Text;
+        # Local filesystem path
+        fs @2 :Text;
     }
 }
 

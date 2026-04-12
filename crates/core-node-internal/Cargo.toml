@@ -45,6 +45,7 @@ zstd = "0.13.3"
 tempfile = "3.10"
 sha2 = "0.11"
 parking_lot = { workspace = true }
+dirs = "6"
 
 [build-dependencies]
 build-helpers = { path = "../build-helpers-internal" }

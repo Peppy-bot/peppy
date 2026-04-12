@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use capnp::message::Builder;
 use peppylib::types::Payload;
 
@@ -8,6 +10,7 @@ use crate::encoding::{decode_message, encode_message};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RepoSource {
+    Fs(PathBuf),
     Git {
         repo_url: String,
         repo_ref: Option<String>,
@@ -21,6 +24,12 @@ pub struct RepoAddRequest {
 }
 
 impl RepoAddRequest {
+    pub fn new_fs(path: impl Into<PathBuf>) -> Self {
+        Self {
+            source: RepoSource::Fs(path.into()),
+        }
+    }
+
     pub fn new_git(repo_url: impl Into<String>, repo_ref: Option<String>) -> Self {
         Self {
             source: RepoSource::Git {
@@ -42,10 +51,10 @@ impl RepoAddRequest {
             let mut request = builder.init_root::<repo_capnp::repo_add_request::Builder>();
             let mut source = request.reborrow().init_source();
             match &self.source {
-                RepoSource::Git {
-                    repo_url,
-                    repo_ref,
-                } => {
+                RepoSource::Fs(path) => {
+                    source.set_fs(path.to_string_lossy().as_ref());
+                }
+                RepoSource::Git { repo_url, repo_ref } => {
                     let mut git = source.init_git();
                     git.set_repo_url(repo_url);
                     git.set_repo_ref(repo_ref.as_deref().unwrap_or(""));
@@ -64,6 +73,7 @@ impl RepoAddRequest {
         let reader = decode_message(data)?;
         let request = reader.get_root::<repo_capnp::repo_add_request::Reader>()?;
         let source = match request.get_source().which()? {
+            Which::Fs(path) => RepoSource::Fs(PathBuf::from(path?.to_str()?)),
             Which::Git(git) => {
                 let git = git?;
                 let repo_url = git.get_repo_url()?.to_str()?.to_owned();
@@ -73,10 +83,7 @@ impl RepoAddRequest {
                 } else {
                     Some(repo_ref_str)
                 };
-                RepoSource::Git {
-                    repo_url,
-                    repo_ref,
-                }
+                RepoSource::Git { repo_url, repo_ref }
             }
             Which::Url(url) => RepoSource::Url(url?.to_str()?.to_owned()),
         };
