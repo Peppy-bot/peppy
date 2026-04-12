@@ -33,6 +33,7 @@ dirs = "6"
 names-generator2 = "0.2.1"
 rand = "0.10"
 crossterm = "0.29"
+walkdir = "2.5"
 tempfile = { version = "3.8", optional = true }
 parking_lot = { workspace = true, optional = true }
 

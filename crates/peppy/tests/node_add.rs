@@ -403,7 +403,10 @@ fn node_add_after_failed_sync_succeeds() {
     );
 
     NodeCommand {
-        command: NodeCommands::Sync { path: None },
+        command: NodeCommands::Sync {
+            path: None,
+            all: false,
+        },
     }
     .execute(&sync_ctx)
     .expect("node sync command should succeed");
@@ -1536,7 +1539,7 @@ fn node_add_with_sync_flag_refreshes_stale_git_hash() {
     );
     // The sync log line should also appear, proving --sync fired
     assert!(
-        logs.contains("Synced node interfaces successfully"),
+        logs.contains("Synced node interfaces at"),
         "logs should show sync ran. Logs:\n{}",
         logs
     );

@@ -133,10 +133,10 @@ def test_container_node_build(lima_vm: VMConfig) -> None:
     )
     assert result.returncode == 0, "node init failed"
 
-    # Add the node (triggers Apptainer container build)
+    # Add the node and build it (triggers Apptainer container build)
     result = run_step(
-        "Node add",
-        f"{env_preamble} && cd /tmp/test-node && peppy node add .",
+        "Node add + build",
+        f"{env_preamble} && cd /tmp/test-node && peppy node add . --build",
         timeout=600,
     )
     assert result.returncode == 0, "node add failed"

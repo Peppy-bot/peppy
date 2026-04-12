@@ -8,6 +8,7 @@ mod node_run;
 mod node_runtime_config;
 mod node_stop;
 mod node_sync;
+mod node_sync_all_dependency_order;
 mod service_install;
 mod service_reset;
 mod service_serve;

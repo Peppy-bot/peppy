@@ -154,7 +154,7 @@ pub enum NodeCommands {
         #[arg(long, default_value_t = DEFAULT_MAX_TIMEOUT_SECS)]
         max_timeout: u64,
         /// When set, bypass the confirmation prompt and stop running instances before overwriting
-        #[arg(long)]
+        #[arg(short = 'f', long)]
         force: bool,
     },
     /// Build a node previously added to the node stack
@@ -169,13 +169,17 @@ pub enum NodeCommands {
         #[arg(long, default_value_t = DEFAULT_MAX_TIMEOUT_SECS)]
         max_timeout: u64,
         /// Cancel any in-progress build for this node and start a new one
-        #[arg(long)]
+        #[arg(short = 'f', long)]
         force: bool,
     },
     /// Regenerate the node's interface code (peppygen) based on peppy.json5
     Sync {
         /// Optional path to the node directory. Defaults to the current directory.
+        /// When combined with `--all`, this is the root of the recursive search.
         path: Option<PathBuf>,
+        /// Recursively find every `peppy.json5` under `path` and sync each one.
+        #[arg(short = 'a', long)]
+        all: bool,
     },
     /// Runs an instance from a node added to the node stack
     ///
@@ -196,7 +200,7 @@ pub enum NodeCommands {
         #[arg(value_parser = parse_key_value_arg)]
         args: Vec<(String, String)>,
         /// Optional: specify a deterministic instance ID
-        #[arg(long)]
+        #[arg(short = 'i', long)]
         instance_id: Option<String>,
         /// Idle timeout in seconds — resets whenever output is received
         #[arg(long, default_value_t = DEFAULT_IDLE_TIMEOUT_SECS)]
@@ -204,6 +208,10 @@ pub enum NodeCommands {
         /// Absolute max timeout in seconds (safety net)
         #[arg(long, default_value_t = DEFAULT_MAX_TIMEOUT_SECS)]
         max_timeout: u64,
+        /// If set, build the node first if it has not already been built.
+        /// No-op (with a message) when the node is already built.
+        #[arg(short = 'b', long)]
+        build: bool,
     },
     /// Prints out the runtime config of a node instance
     #[command(group(ArgGroup::new("node_source").required(true).args(["node_name", "node_dir"])))]
@@ -232,7 +240,7 @@ pub enum NodeCommands {
         #[arg(long)]
         stop_instances: bool,
         /// When set, bypass the confirmation prompt and stop running instances before removal
-        #[arg(long)]
+        #[arg(short = 'f', long)]
         force: bool,
     },
     /// Return the information about a node currently in the node stack
@@ -332,9 +340,13 @@ impl Command for NodeCommand {
                     },
                 )
             }
-            NodeCommands::Sync { path } => {
-                info!("Syncing node interfaces...");
-                sync::sync_node(ctx, path)
+            NodeCommands::Sync { path, all } => {
+                if all {
+                    sync::sync_all_nodes(ctx, path)
+                } else {
+                    info!("Syncing node interfaces...");
+                    sync::sync_node(ctx, path)
+                }
             }
             NodeCommands::Run {
                 node_ref,
@@ -344,6 +356,7 @@ impl Command for NodeCommand {
                 instance_id,
                 idle_timeout,
                 max_timeout,
+                build,
             } => {
                 let (node_name, tag) = node_ref
                     .or_else(|| node_name.zip(tag))
@@ -353,7 +366,7 @@ impl Command for NodeCommand {
                     idle_secs: idle_timeout,
                     max_secs: max_timeout,
                 };
-                run::run_node(ctx, node_name, tag, args, instance_id, timeouts)
+                run::run_node(ctx, node_name, tag, args, instance_id, timeouts, build)
             }
             NodeCommands::RuntimeConfig {
                 node_name,
@@ -410,6 +423,44 @@ mod tests {
         }
     }
 
+    fn parse_run(args: &[&str]) -> bool {
+        let full: Vec<&str> = std::iter::once("peppy")
+            .chain(std::iter::once("run"))
+            .chain(args.iter().copied())
+            .collect();
+        let cli = TestCli::try_parse_from(full).expect("should parse");
+        match cli.command {
+            NodeCommands::Run { build, .. } => build,
+            _ => panic!("expected Run variant"),
+        }
+    }
+
+    fn parse_run_instance_id(args: &[&str]) -> Option<String> {
+        let full: Vec<&str> = std::iter::once("peppy")
+            .chain(std::iter::once("run"))
+            .chain(args.iter().copied())
+            .collect();
+        let cli = TestCli::try_parse_from(full).expect("should parse");
+        match cli.command {
+            NodeCommands::Run { instance_id, .. } => instance_id,
+            _ => panic!("expected Run variant"),
+        }
+    }
+
+    fn parse_subcommand_force(subcommand: &str, args: &[&str]) -> bool {
+        let full: Vec<&str> = std::iter::once("peppy")
+            .chain(std::iter::once(subcommand))
+            .chain(args.iter().copied())
+            .collect();
+        let cli = TestCli::try_parse_from(full).expect("should parse");
+        match cli.command {
+            NodeCommands::Add { force, .. }
+            | NodeCommands::Build { force, .. }
+            | NodeCommands::Remove { force, .. } => force,
+            _ => panic!("expected Add/Build/Remove variant"),
+        }
+    }
+
     #[test]
     fn add_sr_short_bundle_sets_sync_and_run() {
         let (sync, build, run) = parse_add(&[".", "-sr"]);
@@ -451,5 +502,98 @@ mod tests {
         assert!(!sync, "sync should default to false");
         assert!(build);
         assert!(!run);
+    }
+
+    #[test]
+    fn run_b_short_flag_sets_build() {
+        assert!(
+            parse_run(&["foo:0.1.0", "-b"]),
+            "-b should set build on run"
+        );
+    }
+
+    #[test]
+    fn run_long_build_flag_sets_build() {
+        assert!(
+            parse_run(&["foo:0.1.0", "--build"]),
+            "--build should set build on run"
+        );
+    }
+
+    #[test]
+    fn run_without_build_flag_defaults_to_false() {
+        assert!(
+            !parse_run(&["foo:0.1.0"]),
+            "build should default to false on run"
+        );
+    }
+
+    #[test]
+    fn run_i_short_flag_sets_instance_id() {
+        assert_eq!(
+            parse_run_instance_id(&["foo:0.1.0", "-i", "my-inst"]),
+            Some("my-inst".to_string()),
+            "-i should set instance_id on run"
+        );
+    }
+
+    #[test]
+    fn run_long_instance_id_flag_sets_instance_id() {
+        assert_eq!(
+            parse_run_instance_id(&["foo:0.1.0", "--instance-id", "my-inst"]),
+            Some("my-inst".to_string()),
+            "--instance-id should set instance_id on run"
+        );
+    }
+
+    #[test]
+    fn run_bi_short_bundle_sets_build_and_instance_id() {
+        // `-bi <id>` ≡ `-b -i <id>`: clap treats `-bi` as a bundled short-flag
+        // run with `i` consuming the next positional as its value.
+        let full: Vec<&str> = vec!["peppy", "run", "foo:0.1.0", "-bi", "my-inst"];
+        let cli = TestCli::try_parse_from(full).expect("should parse");
+        match cli.command {
+            NodeCommands::Run {
+                build, instance_id, ..
+            } => {
+                assert!(build, "-bi should set build");
+                assert_eq!(
+                    instance_id,
+                    Some("my-inst".to_string()),
+                    "-bi should set instance_id"
+                );
+            }
+            _ => panic!("expected Run variant"),
+        }
+    }
+
+    #[test]
+    fn add_f_short_flag_sets_force() {
+        assert!(parse_subcommand_force("add", &[".", "-f"]));
+    }
+
+    #[test]
+    fn build_f_short_flag_sets_force() {
+        assert!(parse_subcommand_force("build", &["foo:0.1.0", "-f"]));
+    }
+
+    #[test]
+    fn remove_f_short_flag_sets_force() {
+        assert!(parse_subcommand_force("remove", &["foo:0.1.0", "-f"]));
+    }
+
+    #[test]
+    fn add_without_force_flag_defaults_to_false() {
+        assert!(!parse_subcommand_force("add", &["."]));
+    }
+
+    #[test]
+    fn build_without_force_flag_defaults_to_false() {
+        assert!(!parse_subcommand_force("build", &["foo:0.1.0"]));
+    }
+
+    #[test]
+    fn remove_without_force_flag_defaults_to_false() {
+        assert!(!parse_subcommand_force("remove", &["foo:0.1.0"]));
     }
 }

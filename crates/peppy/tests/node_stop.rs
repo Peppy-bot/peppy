@@ -157,6 +157,7 @@ async fn node_stop_command_succeeds() {
             instance_id: Some(instance_id.to_string()),
             idle_timeout: 60,
             max_timeout: 3600,
+            build: false,
         },
     }
     .execute(&node_ctx)

@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use config::ConfigError;
 use thiserror::Error;
 
@@ -76,5 +78,16 @@ pub enum Error {
         node_name: String,
         node_tag: String,
         reason: String,
+    },
+
+    // -- virtual deptree errors
+    #[error("Virtual dependency tree contains a cycle involving: {nodes:?}")]
+    VirtualDeptreeCycle { nodes: Vec<String> },
+    #[error("Duplicate local node `{name}:{tag}` discovered at `{first}` and `{second}`")]
+    DuplicateLocalNode {
+        name: String,
+        tag: String,
+        first: PathBuf,
+        second: PathBuf,
     },
 }
