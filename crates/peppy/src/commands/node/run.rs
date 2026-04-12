@@ -11,6 +11,7 @@ use rand::rng;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::time::{Instant, sleep};
 use tracing::info;
 
 use crate::commands::{CALLER_INSTANCE_ID, GOAL_TIMEOUT};
@@ -25,6 +26,111 @@ use super::env::caller_env_overrides;
 /// not a long-running action, so it must fail fast if the daemon is down
 /// rather than waiting out `timeouts.max_secs` (which can be 1 hour).
 const NODE_INFO_PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Interval between `NodeInfoRequest` polls while waiting for an in-flight
+/// build to transition `Building -> Ready`. Builds typically take
+/// seconds-to-minutes, so 500 ms keeps CLI latency low without flooding the
+/// daemon.
+const BUILD_WAIT_POLL_INTERVAL: Duration = Duration::from_millis(500);
+
+/// What `run -b` should do with a node based on its current lifecycle stage.
+#[derive(Debug, PartialEq, Eq)]
+enum BuildDecision {
+    /// Stage is `Ready` — artifact exists, skip the build and run directly.
+    Skip,
+    /// Stage is `Added` — trigger `build_node_async`.
+    Build,
+    /// Stage is `Building` — another build is in flight, poll until it
+    /// finishes instead of trying to start a second build (the daemon
+    /// rejects concurrent builds).
+    Wait,
+}
+
+/// Classify a node's lifecycle stage into a `run -b` action.
+///
+/// This is split out as a pure function so the stage-matching logic can be
+/// unit-tested directly. Documented stage values come from
+/// `core_node::encoding::NodeInfo::stage`: `Added | Building | Ready | Root`.
+fn classify_stage(stage: &str, node_name: &str, tag: &str) -> Result<BuildDecision> {
+    match stage {
+        "Ready" => Ok(BuildDecision::Skip),
+        "Added" => Ok(BuildDecision::Build),
+        "Building" => Ok(BuildDecision::Wait),
+        "Root" => Err(Error::ExecutionFailed(format!(
+            "Node '{}:{}' is a root node and cannot be built or run via `node run`",
+            node_name, tag
+        ))),
+        other => Err(Error::ExecutionFailed(format!(
+            "Node '{}:{}' is in unexpected stage '{}'; cannot safely proceed with `run -b`",
+            node_name, tag, other
+        ))),
+    }
+}
+
+/// Polls `NodeInfoRequest` until the node's stage transitions out of
+/// `Building`. Returns `Ok(())` when the stage becomes `Ready`; returns an
+/// error on timeout, on unexpected stage transitions (e.g. a failed build
+/// falling back to `Added`), or if the node disappears from the stack.
+async fn wait_for_build_to_finish(
+    messenger: &MessengerHandle,
+    core_node_name: &str,
+    node_name: &str,
+    tag: &str,
+    timeouts: &TimeoutConfig,
+) -> Result<()> {
+    info!(
+        "Node {}:{} is already building, waiting for the in-flight build to finish...",
+        node_name, tag
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(timeouts.max_secs);
+
+    loop {
+        let response = NodeInfoRequest::new(node_name.to_string(), tag.to_string())
+            .poll(
+                messenger,
+                core_node_name,
+                CALLER_INSTANCE_ID,
+                core_node_name,
+                NODE_INFO_PREFLIGHT_TIMEOUT,
+            )
+            .await
+            .map_err(|e| {
+                Error::ExecutionFailed(format!(
+                    "Failed to poll node info while waiting for build: {}",
+                    e
+                ))
+            })?;
+
+        match response {
+            NodeInfoResponse::NotInStack => {
+                return Err(Error::ExecutionFailed(format!(
+                    "Node '{}:{}' disappeared from the stack while waiting for build to finish",
+                    node_name, tag
+                )));
+            }
+            NodeInfoResponse::Found(info) => match info.stage.as_str() {
+                "Ready" => return Ok(()),
+                "Building" => { /* still in flight — keep polling */ }
+                other => {
+                    return Err(Error::ExecutionFailed(format!(
+                        "Node '{}:{}' transitioned to unexpected stage '{}' while waiting for build to finish",
+                        node_name, tag, other
+                    )));
+                }
+            },
+        }
+
+        if Instant::now() >= deadline {
+            return Err(Error::ExecutionFailed(format!(
+                "Timed out waiting for node '{}:{}' build to finish",
+                node_name, tag
+            )));
+        }
+
+        sleep(BUILD_WAIT_POLL_INTERVAL).await;
+    }
+}
 
 /// Converts a list of key=value string pairs into node arguments.
 /// Dot-separated keys are converted into nested objects.
@@ -271,21 +377,34 @@ async fn run_node_async(
             NodeInfoResponse::Found(info) => info,
         };
 
-        if info.stage == "Ready" {
-            info!(
-                "Node {}:{} has already been built, skipping build",
-                node_name, tag
-            );
-        } else {
-            super::builder::build_node_async(
-                conn.messenger,
-                &conn.core_node_name,
-                &node_name,
-                &tag,
-                &timeouts,
-                false,
-            )
-            .await?;
+        match classify_stage(info.stage.as_str(), &node_name, &tag)? {
+            BuildDecision::Skip => {
+                info!(
+                    "Node {}:{} has already been built, skipping build",
+                    node_name, tag
+                );
+            }
+            BuildDecision::Build => {
+                super::builder::build_node_async(
+                    conn.messenger,
+                    &conn.core_node_name,
+                    &node_name,
+                    &tag,
+                    &timeouts,
+                    false,
+                )
+                .await?;
+            }
+            BuildDecision::Wait => {
+                wait_for_build_to_finish(
+                    conn.messenger,
+                    &conn.core_node_name,
+                    &node_name,
+                    &tag,
+                    &timeouts,
+                )
+                .await?;
+            }
         }
     }
 
@@ -418,5 +537,59 @@ mod tests {
             }
             _ => panic!("video should be an object"),
         }
+    }
+
+    #[test]
+    fn classify_stage_ready_skips() {
+        assert_eq!(
+            classify_stage("Ready", "n", "t").expect("Ready should classify"),
+            BuildDecision::Skip
+        );
+    }
+
+    #[test]
+    fn classify_stage_added_builds() {
+        assert_eq!(
+            classify_stage("Added", "n", "t").expect("Added should classify"),
+            BuildDecision::Build
+        );
+    }
+
+    #[test]
+    fn classify_stage_building_waits_does_not_rebuild() {
+        // Regression: previously stage "Building" fell through to the
+        // "build" branch, and the daemon rejected the second build goal
+        // with "action already in progress" / "cannot build". The CLI now
+        // waits for the in-flight build instead of trying to start a new
+        // one.
+        assert_eq!(
+            classify_stage("Building", "n", "t").expect("Building should classify"),
+            BuildDecision::Wait
+        );
+    }
+
+    #[test]
+    fn classify_stage_root_fails_fast() {
+        let err =
+            classify_stage("Root", "my_node", "v1").expect_err("Root should fail to classify");
+        let msg = format!("{err}");
+        assert!(msg.contains("my_node"), "error should name node: {msg}");
+        assert!(msg.contains("v1"), "error should name tag: {msg}");
+        assert!(
+            msg.contains("root"),
+            "error should mention root stage: {msg}"
+        );
+    }
+
+    #[test]
+    fn classify_stage_unknown_fails_fast() {
+        let err = classify_stage("Mystery", "my_node", "v1")
+            .expect_err("unknown stage should fail to classify");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("Mystery"),
+            "error should quote unknown stage: {msg}"
+        );
+        assert!(msg.contains("my_node"), "error should name node: {msg}");
     }
 }
