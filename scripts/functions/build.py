@@ -38,25 +38,33 @@ def cargo_build(tag: str, target_triple: str, repo_root: Path) -> None:
     """
     console.print(f"Building peppy for [bold]{target_triple}[/bold]...")
     env = {**os.environ, "PEPPY_GIT_TAG": tag, "PEPPY_CROSS_ARCH": "1"}
-    proc = subprocess.Popen(
-        [
-            "cargo",
-            "build",
-            "-p",
-            "peppy",
-            "--release",
-            "--locked",
-            "--target",
-            target_triple,
-        ],
-        cwd=repo_root,
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1,
-    )
-    assert proc.stdout is not None
+    try:
+        proc = subprocess.Popen(
+            [
+                "cargo",
+                "build",
+                "-p",
+                "peppy",
+                "--release",
+                "--locked",
+                "--target",
+                target_triple,
+            ],
+            cwd=repo_root,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+    except OSError as exc:
+        raise ReleaseError(
+            f"Failed to start cargo build for {target_triple}: {exc}"
+        ) from exc
+    if proc.stdout is None:
+        raise ReleaseError(
+            "cargo process started but stdout is not available"
+        )
     tail: deque[str] = deque(maxlen=200)
     for line in proc.stdout:
         sys.stdout.write(line)
