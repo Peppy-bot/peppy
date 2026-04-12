@@ -1,0 +1,9 @@
+[package]
+name = "repo"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+
+[dependencies]
+
+[dev-dependencies]
