@@ -13,6 +13,7 @@ mod repo_add;
 mod repo_exclude;
 mod repo_list;
 mod repo_refresh;
+mod repo_remove;
 mod service_install;
 mod service_reset;
 mod service_serve;

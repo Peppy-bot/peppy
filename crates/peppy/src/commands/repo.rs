@@ -33,7 +33,10 @@ pub enum RepoCommands {
         git_ref: Option<String>,
     },
     /// Remove a repository
-    Remove,
+    Remove {
+        /// Repository ID to remove (shown by `peppy repo list`)
+        id: u32,
+    },
     /// Exclude a repository
     Exclude {
         /// Repository source.
@@ -60,7 +63,7 @@ impl Command for RepoCommand {
             RepoCommands::List => list::list_repos(ctx),
             RepoCommands::Refresh => refresh::repo_refresh(ctx),
             RepoCommands::Add { source, git_ref } => add::add_repo(ctx, &source, git_ref),
-            RepoCommands::Remove => todo!("repo remove"),
+            RepoCommands::Remove { id } => remove::remove_repo(ctx, id),
             RepoCommands::Exclude { source, git_ref } => {
                 exclude::exclude_repo(ctx, &source, git_ref)
             }
