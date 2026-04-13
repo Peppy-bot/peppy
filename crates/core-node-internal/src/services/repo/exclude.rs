@@ -7,6 +7,7 @@ use peppylib::types::Payload;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
 use serde_json::Value;
 use std::collections::HashSet;
+use std::path::PathBuf;
 use tokio::task::JoinHandle;
 use tracing::debug;
 
@@ -150,6 +151,62 @@ pub(crate) fn read_excluded_repos(peppy_dirs: &PeppyDirs) -> Result<Vec<Value>> 
     }
 
     Ok(repos)
+}
+
+/// Parsed exclusion data used by both `repo refresh` and `repo list`.
+pub(crate) struct ExclusionSet {
+    /// Identities (path for fs, url for git/url) of excluded entries.
+    pub(crate) identities: HashSet<String>,
+    /// FS paths used for subdirectory pruning inside `walk_directory`.
+    pub(crate) fs_paths: Vec<PathBuf>,
+    /// Structured list of all excluded entries for feedback reporting.
+    pub(crate) entries: Vec<ExcludedEntry>,
+}
+
+pub(crate) struct ExcludedEntry {
+    pub(crate) source_type: String,
+    pub(crate) identity: String,
+}
+
+impl ExclusionSet {
+    /// Load exclusions from `excluded_repositories.json5`.
+    /// Returns an empty set if the file is missing or unreadable.
+    pub(crate) fn load(peppy_dirs: &PeppyDirs) -> Self {
+        let raw = read_excluded_repos(peppy_dirs).unwrap_or_default();
+
+        let identities = raw
+            .iter()
+            .filter_map(|e| json_entry_identity(e).map(|s| s.to_owned()))
+            .collect();
+
+        let fs_paths = raw
+            .iter()
+            .filter(|e| e.get("type").and_then(|v| v.as_str()) == Some("fs"))
+            .filter_map(|e| e.get("path").and_then(|v| v.as_str()).map(PathBuf::from))
+            .collect();
+
+        let entries = raw
+            .iter()
+            .filter_map(|e| {
+                let typ = e.get("type")?.as_str()?;
+                let identity = json_entry_identity(e)?;
+                Some(ExcludedEntry {
+                    source_type: typ.to_string(),
+                    identity: identity.to_owned(),
+                })
+            })
+            .collect();
+
+        Self {
+            identities,
+            fs_paths,
+            entries,
+        }
+    }
+
+    pub(crate) fn is_excluded(&self, identity: &str) -> bool {
+        self.identities.contains(identity)
+    }
 }
 
 fn handle_repo_exclude_request_inner(

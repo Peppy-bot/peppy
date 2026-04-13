@@ -307,6 +307,14 @@ async fn list_marks_git_duplicate_of_fs() {
     );
 }
 
+/// Write an excluded_repositories.json5 file in the conf_dir.
+fn write_excluded_repositories_json5(started: &StartedCoreNode, content: &str) {
+    let conf_dir = started.peppy_dirs.conf_dir();
+    std::fs::create_dir_all(&conf_dir).expect("create conf dir");
+    std::fs::write(conf_dir.join("excluded_repositories.json5"), content)
+        .expect("write excluded repos file");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn list_empty_repos_file() {
     let started = start_core_node_with_mock_messenger().await;
@@ -316,4 +324,101 @@ async fn list_empty_repos_file() {
     let resp = send_repo_list(&started).await;
     assert!(resp.success, "repo_list should succeed");
     assert!(resp.nodes.is_empty(), "should have no nodes");
+}
+
+/// An excluded FS repo should not appear in the list.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn list_excludes_fs_repo() {
+    let started = start_core_node_with_mock_messenger().await;
+
+    let repo_a = started.peppy_dirs.root().join("repo_a");
+    let repo_b = started.peppy_dirs.root().join("repo_b");
+    create_node_dir(&repo_a, "node_a", "1.0.0");
+    create_node_dir(&repo_b, "node_b", "1.0.0");
+
+    write_repositories_json5(
+        &started,
+        &format!(
+            r#"[{{ "id": 1, "type": "fs", "path": "{}" }}, {{ "id": 2, "type": "fs", "path": "{}" }}]"#,
+            repo_a.display(),
+            repo_b.display()
+        ),
+    );
+    write_excluded_repositories_json5(
+        &started,
+        &format!(
+            r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
+            repo_b.display()
+        ),
+    );
+
+    let resp = send_repo_list(&started).await;
+    assert!(resp.success);
+    assert_eq!(resp.nodes.len(), 1, "only node_a should be listed");
+    assert_eq!(resp.nodes[0].node_name, "node_a");
+}
+
+/// An excluded subdirectory within an FS repo should be pruned from the list.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn list_excludes_fs_subdirectory() {
+    let started = start_core_node_with_mock_messenger().await;
+
+    let repo = started.peppy_dirs.root().join("mixed_repo");
+    create_node_dir(&repo, "keep_node", "1.0.0");
+    create_node_dir(&repo, "secret_node", "1.0.0");
+
+    write_repositories_json5(
+        &started,
+        &format!(
+            r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
+            repo.display()
+        ),
+    );
+    write_excluded_repositories_json5(
+        &started,
+        &format!(
+            r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
+            repo.join("secret_node_1.0.0").display()
+        ),
+    );
+
+    let resp = send_repo_list(&started).await;
+    assert!(resp.success);
+    assert_eq!(resp.nodes.len(), 1, "only keep_node should be listed");
+    assert_eq!(resp.nodes[0].node_name, "keep_node");
+}
+
+/// An excluded git repo should not appear in the list.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn list_excludes_git_repo() {
+    let started = start_core_node_with_mock_messenger().await;
+
+    let repo_dir = started.peppy_dirs.root().join("fs_repo");
+    create_node_dir(&repo_dir, "fs_node", "1.0.0");
+
+    let git_url = "https://github.com/example/excluded.git";
+
+    write_repositories_json5(
+        &started,
+        &format!(
+            r#"[{{ "id": 1, "type": "fs", "path": "{}" }}, {{ "id": 2, "type": "git", "url": "{git_url}" }}]"#,
+            repo_dir.display()
+        ),
+    );
+    write_packages_cache(
+        &started,
+        &format!(
+            r#"[{{ "node_name": "git_node", "node_tag": "1.0.0", "source_type": "git", "source_uri": "{git_url}", "path": "nodes/git_node" }}]"#
+        ),
+    );
+    write_excluded_repositories_json5(
+        &started,
+        &format!(r#"[{{ "id": 1, "type": "git", "url": "{git_url}" }}]"#),
+    );
+
+    let resp = send_repo_list(&started).await;
+    assert!(resp.success);
+    assert_eq!(resp.nodes.len(), 1, "only fs_node should be listed");
+    assert_eq!(resp.nodes[0].node_name, "fs_node");
+    assert_eq!(resp.nodes[0].source_type, "fs");
 }

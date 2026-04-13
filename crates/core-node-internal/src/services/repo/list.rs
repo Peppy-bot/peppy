@@ -1,6 +1,7 @@
 use crate::Result;
 use crate::encoding::{RepoListNodeEntry, RepoListRequest, RepoListResponse, RepoSource};
 use crate::names;
+use crate::services::repo::exclude::ExclusionSet;
 use crate::services::repo::refresh::{parse_repo_entry, read_or_create_repos, walk_directory};
 use config::consts::PeppyDirs;
 use peppylib::messaging::ServiceRequestContext;
@@ -62,6 +63,8 @@ fn handle_repo_list_request_inner(
         Err(e) => return RepoListResponse::failure(e.to_string()).encode(),
     };
 
+    let exclusions = ExclusionSet::load(peppy_dirs);
+
     // Read cached nodes for git/url repos
     let cached_nodes = read_cached_nodes(peppy_dirs);
 
@@ -74,6 +77,18 @@ fn handle_repo_list_request_inner(
             continue;
         };
 
+        // Check if this repo is excluded by identity match.
+        let identity = match &source {
+            RepoSource::Fs(path) => path.to_string_lossy().into_owned(),
+            RepoSource::Git { repo_url, .. } => repo_url.clone(),
+            RepoSource::Url(url) => url.clone(),
+        };
+
+        if exclusions.is_excluded(&identity) {
+            debug!("Excluding repository from list: {}", identity);
+            continue;
+        }
+
         match source {
             RepoSource::Fs(path) => {
                 if !path.exists() {
@@ -82,7 +97,14 @@ fn handle_repo_list_request_inner(
                 }
                 let mut repo_seen = HashSet::new();
                 let mut discovered = Vec::new();
-                walk_directory(&path, "fs", None, &mut repo_seen, &mut discovered, &[]);
+                walk_directory(
+                    &path,
+                    "fs",
+                    None,
+                    &mut repo_seen,
+                    &mut discovered,
+                    &exclusions.fs_paths,
+                );
                 for node in discovered {
                     let key = (node.node_name.clone(), node.node_tag.clone());
                     let duplicate = !global_seen.insert(key);

@@ -5,7 +5,7 @@ use crate::encoding::{
 use crate::names;
 use crate::services::action_loop::{ActionResult, ActionState, GoalHandler, run_action_loop};
 use crate::services::node::checkout_repo_ref;
-use crate::services::repo::exclude::{json_entry_identity, read_excluded_repos};
+use crate::services::repo::exclude::ExclusionSet;
 use config::consts::{NODE_CONFIG_FILE, PeppyDirs};
 use config::node::NodeConfigParser;
 use git2::build::RepoBuilder;
@@ -304,31 +304,16 @@ pub(crate) fn process_refresh(
 ) -> Result<(Vec<DiscoveredNode>, Vec<ExcludedRepo>)> {
     let repos = read_or_create_repos(peppy_dirs)?;
 
-    // Read the exclusion list (missing file → empty list).
-    let excluded_entries = read_excluded_repos(peppy_dirs).unwrap_or_default();
-    let excluded_identities: HashSet<String> = excluded_entries
-        .iter()
-        .filter_map(|e| json_entry_identity(e).map(|s| s.to_owned()))
-        .collect();
-
-    // Collect excluded FS paths for subdirectory pruning inside walked repos.
-    let excluded_fs_paths: Vec<PathBuf> = excluded_entries
-        .iter()
-        .filter(|e| e.get("type").and_then(|v| v.as_str()) == Some("fs"))
-        .filter_map(|e| e.get("path").and_then(|v| v.as_str()).map(PathBuf::from))
-        .collect();
+    let exclusions = ExclusionSet::load(peppy_dirs);
 
     let mut global_seen: HashSet<(String, String)> = HashSet::new();
     let mut all_nodes: Vec<DiscoveredNode> = Vec::new();
-    let excluded_repos: Vec<ExcludedRepo> = excluded_entries
+    let excluded_repos: Vec<ExcludedRepo> = exclusions
+        .entries
         .iter()
-        .filter_map(|e| {
-            let typ = e.get("type")?.as_str()?;
-            let identity = json_entry_identity(e)?;
-            Some(ExcludedRepo {
-                source_type: typ.to_string(),
-                identity: identity.to_owned(),
-            })
+        .map(|e| ExcludedRepo {
+            source_type: e.source_type.clone(),
+            identity: e.identity.clone(),
         })
         .collect();
 
@@ -345,7 +330,7 @@ pub(crate) fn process_refresh(
             RepoSource::Url(url) => url.clone(),
         };
 
-        if excluded_identities.contains(&identity) {
+        if exclusions.is_excluded(&identity) {
             let source_type = match &source {
                 RepoSource::Fs(_) => "fs",
                 RepoSource::Git { .. } => "git",
@@ -372,7 +357,7 @@ pub(crate) fn process_refresh(
                     None,
                     &mut repo_seen,
                     &mut repo_nodes,
-                    &excluded_fs_paths,
+                    &exclusions.fs_paths,
                 );
                 for mut node in repo_nodes {
                     let key = (node.node_name.clone(), node.node_tag.clone());
