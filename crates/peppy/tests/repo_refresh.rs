@@ -59,7 +59,7 @@ fn repo_refresh_succeeds_after_adding_fs_repo() {
     let conf_dir = serve.temp_dir().join("conf");
     std::fs::create_dir_all(&conf_dir).expect("create conf dir");
     let repos_content = serde_json::to_string_pretty(&serde_json::json!([
-        { "type": "fs", "path": node_dir.path().to_string_lossy() }
+        { "id": 1, "type": "fs", "path": node_dir.path().to_string_lossy() }
     ]))
     .expect("serialize repos");
     std::fs::write(conf_dir.join("repositories.json5"), repos_content).expect("write repos");

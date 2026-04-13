@@ -173,7 +173,10 @@ async fn refresh_fs_discovers_nodes() {
 
     write_repositories_json5(
         &started,
-        &format!(r#"[{{ "type": "fs", "path": "{}" }}]"#, repo_dir.display()),
+        &format!(
+            r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
+            repo_dir.display()
+        ),
     );
 
     let result = send_refresh_and_wait_with_feedback(&started).await;
@@ -201,7 +204,10 @@ async fn refresh_multiple_nodes() {
 
     write_repositories_json5(
         &started,
-        &format!(r#"[{{ "type": "fs", "path": "{}" }}]"#, repo_dir.display()),
+        &format!(
+            r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
+            repo_dir.display()
+        ),
     );
 
     let result = send_refresh_and_wait_with_feedback(&started).await;
@@ -235,11 +241,11 @@ async fn refresh_deduplication() {
     create_node_dir(&repo_dir_a, "dup_node", "0.1.0");
     create_node_dir(&repo_dir_b, "dup_node", "0.1.0");
 
-    // repo_a listed first, should take precedence
+    // repo_a listed first (lower id), should take precedence
     write_repositories_json5(
         &started,
         &format!(
-            r#"[{{ "type": "fs", "path": "{}" }}, {{ "type": "fs", "path": "{}" }}]"#,
+            r#"[{{ "id": 1, "type": "fs", "path": "{}" }}, {{ "id": 2, "type": "fs", "path": "{}" }}]"#,
             repo_dir_a.display(),
             repo_dir_b.display()
         ),
@@ -279,7 +285,7 @@ async fn refresh_url_skipped() {
     write_repositories_json5(
         &started,
         &format!(
-            r#"[{{ "type": "url", "url": "https://example.com/packages" }}, {{ "type": "fs", "path": "{}" }}]"#,
+            r#"[{{ "id": 1, "type": "url", "url": "https://example.com/packages" }}, {{ "id": 2, "type": "fs", "path": "{}" }}]"#,
             repo_dir.display()
         ),
     );
@@ -342,7 +348,7 @@ async fn refresh_cache_written() {
     write_repositories_json5(
         &started,
         &format!(
-            r#"[{{ "type": "fs", "path": "{}" }}, {{ "type": "git", "url": "{}" }}]"#,
+            r#"[{{ "id": 1, "type": "fs", "path": "{}" }}, {{ "id": 2, "type": "git", "url": "{}" }}]"#,
             repo_dir.display(),
             git_repo_url,
         ),

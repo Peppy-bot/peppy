@@ -49,33 +49,30 @@ async fn handle_repo_add_request(
     })
 }
 
-fn repo_source_to_json(source: &RepoSource) -> Value {
+fn repo_source_to_json(id: u64, source: &RepoSource) -> Value {
+    let mut map = serde_json::Map::new();
+    map.insert("id".to_string(), Value::Number(id.into()));
     match source {
         RepoSource::Fs(path) => {
-            let mut map = serde_json::Map::new();
             map.insert("type".to_string(), Value::String("fs".to_string()));
             map.insert(
                 "path".to_string(),
                 Value::String(path.to_string_lossy().into_owned()),
             );
-            Value::Object(map)
         }
         RepoSource::Git { repo_url, repo_ref } => {
-            let mut map = serde_json::Map::new();
             map.insert("type".to_string(), Value::String("git".to_string()));
             map.insert("url".to_string(), Value::String(repo_url.clone()));
             if let Some(r) = repo_ref {
                 map.insert("ref".to_string(), Value::String(r.to_string()));
             }
-            Value::Object(map)
         }
         RepoSource::Url(url) => {
-            let mut map = serde_json::Map::new();
             map.insert("type".to_string(), Value::String("url".to_string()));
             map.insert("url".to_string(), Value::String(url.clone()));
-            Value::Object(map)
         }
     }
+    Value::Object(map)
 }
 
 /// Returns the identity string used for duplicate detection.
@@ -130,8 +127,16 @@ fn handle_repo_add_request_inner(
             .encode();
     }
 
+    // Compute the next available id
+    let next_id = repos
+        .iter()
+        .filter_map(|e| e.get("id").and_then(|v| v.as_u64()))
+        .max()
+        .map(|max| max + 1)
+        .unwrap_or(1);
+
     // Append and write back (JSON is valid JSON5, use pretty for user readability)
-    repos.push(repo_source_to_json(&request.source));
+    repos.push(repo_source_to_json(next_id, &request.source));
     let content = serde_json::to_string_pretty(&repos)
         .map_err(|e| crate::Error::Encoding(format!("failed to serialize repositories: {e}")))?;
     std::fs::write(&repos_path, content)?;

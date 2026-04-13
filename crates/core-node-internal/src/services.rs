@@ -370,6 +370,14 @@ impl CoreNode {
                 self.peppy_dirs.clone(),
             )
             .await?,
+            repo::listen_for_repo_remove(
+                &self.messenger,
+                core_node_name,
+                self.instance_id(),
+                self.node_name(),
+                self.peppy_dirs.clone(),
+            )
+            .await?,
         ];
 
         if let Some(ready) = ready {

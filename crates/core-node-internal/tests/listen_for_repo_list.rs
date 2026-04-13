@@ -109,7 +109,10 @@ async fn list_finds_nodes_in_fs_repo() {
 
     write_repositories_json5(
         &started,
-        &format!(r#"[{{ "type": "fs", "path": "{}" }}]"#, repo_dir.display()),
+        &format!(
+            r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
+            repo_dir.display()
+        ),
     );
 
     let resp = send_repo_list(&started).await;
@@ -134,7 +137,7 @@ async fn list_reads_git_nodes_from_cache() {
     // Write a repositories.json5 with a git repo
     write_repositories_json5(
         &started,
-        &format!(r#"[{{ "type": "git", "url": "{git_url}", "ref": "main" }}]"#),
+        &format!(r#"[{{ "id": 1, "type": "git", "url": "{git_url}", "ref": "main" }}]"#),
     );
 
     // Write a packages.json5 cache with nodes from that git repo

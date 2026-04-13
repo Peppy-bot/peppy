@@ -24,7 +24,8 @@ pub use node::{
 pub use ping::{PingRequest, PingResponse};
 pub use repo::{
     RepoAddRequest, RepoAddResponse, RepoListNodeEntry, RepoListRequest, RepoListResponse,
-    RepoRefreshFeedback, RepoRefreshGoal, RepoRefreshGoalResponse, RepoRefreshResult, RepoSource,
+    RepoRefreshFeedback, RepoRefreshGoal, RepoRefreshGoalResponse, RepoRefreshResult,
+    RepoRemoveRequest, RepoRemoveResponse, RepoSource,
 };
 pub use stack::launch::{
     LaunchFeedback, LaunchFeedbackStep, LaunchGoal, LaunchGoalResponse, LaunchResult,

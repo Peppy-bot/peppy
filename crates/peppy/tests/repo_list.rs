@@ -79,7 +79,10 @@ fn repo_list_finds_nodes_in_fs_repo() {
     std::fs::create_dir_all(&conf_dir).expect("create conf dir");
     std::fs::write(
         conf_dir.join("repositories.json5"),
-        format!(r#"[{{ "type": "fs", "path": "{}" }}]"#, repo_dir.display()),
+        format!(
+            r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
+            repo_dir.display()
+        ),
     )
     .expect("write repos file");
 

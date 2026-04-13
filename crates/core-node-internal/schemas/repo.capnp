@@ -74,3 +74,17 @@ struct RepoListResponse {
     errorMessage @1 :Text;
     nodes @2 :List(RepoListNodeEntry);
 }
+
+# ── Repo Remove (request-response) ─────────────────────────────
+
+struct RepoRemoveRequest {
+    # ID of the repository to remove
+    id @0 :UInt32;
+}
+
+struct RepoRemoveResponse {
+    # Whether the removal was successful
+    success @0 :Bool;
+    # Error message if failed (optional)
+    errorMessage @1 :Text;
+}

@@ -8,3 +8,4 @@ pub use list::{RepoListNodeEntry, RepoListRequest, RepoListResponse};
 pub use refresh::{
     RepoRefreshFeedback, RepoRefreshGoal, RepoRefreshGoalResponse, RepoRefreshResult,
 };
+pub use remove::{RepoRemoveRequest, RepoRemoveResponse};

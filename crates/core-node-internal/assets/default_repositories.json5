@@ -1,9 +1,11 @@
 [
   {
+    id: 1,
     type: "fs",
     path: "{home_dir}"
   },
   {
+    id: 2,
     type: "git",
     url: "https://github.com/Peppy-bot/nodes_hub",
     ref: "main"

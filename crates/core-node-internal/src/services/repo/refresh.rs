@@ -201,16 +201,18 @@ pub(crate) fn parse_repo_entry(entry: &Value) -> Option<RepoSource> {
 const DEFAULT_REPOS_TEMPLATE: &str = include_str!("../../../assets/default_repositories.json5");
 
 /// Reads the repositories.json5 config file, creating it with defaults if it
-/// does not exist yet.
+/// does not exist yet.  Ensures every entry has an integer `id` field
+/// (auto-assigns missing ids) and returns entries sorted by `id`.
 pub(crate) fn read_or_create_repos(peppy_dirs: &PeppyDirs) -> Result<Vec<Value>> {
     let conf_dir = peppy_dirs.conf_dir();
     std::fs::create_dir_all(&conf_dir)?;
     let repos_path = conf_dir.join("repositories.json5");
 
-    if repos_path.exists() {
+    let mut repos: Vec<Value> = if repos_path.exists() {
         let content = std::fs::read_to_string(&repos_path)?;
-        serde_json5::from_str(&content)
-            .map_err(|e| crate::Error::Decoding(format!("failed to parse repositories.json5: {e}")))
+        serde_json5::from_str(&content).map_err(|e| {
+            crate::Error::Decoding(format!("failed to parse repositories.json5: {e}"))
+        })?
     } else {
         let home = dirs::home_dir()
             .unwrap_or_default()
@@ -220,12 +222,42 @@ pub(crate) fn read_or_create_repos(peppy_dirs: &PeppyDirs) -> Result<Vec<Value>>
         std::fs::write(&repos_path, &content)?;
         serde_json5::from_str(&content).map_err(|e| {
             crate::Error::Decoding(format!("failed to parse default repositories: {e}"))
-        })
+        })?
+    };
+
+    // Ensure every entry has an integer `id`, auto-assigning when missing.
+    let mut max_id: u64 = repos
+        .iter()
+        .filter_map(|e| e.get("id").and_then(|v| v.as_u64()))
+        .max()
+        .unwrap_or(0);
+
+    let mut needs_write = false;
+    for entry in &mut repos {
+        if entry.get("id").and_then(|v| v.as_u64()).is_none() {
+            max_id += 1;
+            if let Some(obj) = entry.as_object_mut() {
+                obj.insert("id".to_string(), Value::Number(max_id.into()));
+                needs_write = true;
+            }
+        }
     }
+
+    // Sort by id so processing order is deterministic.
+    repos.sort_by_key(|e| e.get("id").and_then(|v| v.as_u64()).unwrap_or(0));
+
+    if needs_write {
+        let content = serde_json::to_string_pretty(&repos).map_err(|e| {
+            crate::Error::Encoding(format!("failed to serialize repositories: {e}"))
+        })?;
+        std::fs::write(&repos_path, content)?;
+    }
+
+    Ok(repos)
 }
 
 /// Main synchronous processing: reads repos, walks each source, returns discovered nodes.
-fn process_refresh(peppy_dirs: &PeppyDirs) -> Result<Vec<DiscoveredNode>> {
+pub(crate) fn process_refresh(peppy_dirs: &PeppyDirs) -> Result<Vec<DiscoveredNode>> {
     let repos = read_or_create_repos(peppy_dirs)?;
 
     let mut seen: HashSet<(String, String)> = HashSet::new();
@@ -379,7 +411,7 @@ fn clone_and_walk_git_repo(
 }
 
 /// Write cached node information for git/url repositories.
-fn write_cache(peppy_dirs: &PeppyDirs, nodes: &[DiscoveredNode]) -> Result<()> {
+pub(crate) fn write_cache(peppy_dirs: &PeppyDirs, nodes: &[DiscoveredNode]) -> Result<()> {
     let cache_dir = peppy_dirs.cache_dir();
     std::fs::create_dir_all(&cache_dir)?;
 
@@ -426,12 +458,14 @@ mod tests {
         assert_eq!(repos.len(), 2, "default repos should have 2 entries");
 
         let fs_entry = &repos[0];
+        assert_eq!(fs_entry.get("id").unwrap().as_u64().unwrap(), 1);
         assert_eq!(fs_entry.get("type").unwrap().as_str().unwrap(), "fs");
         let path_val = fs_entry.get("path").unwrap().as_str().unwrap();
         let home = dirs::home_dir().unwrap();
         assert_eq!(path_val, home.to_string_lossy().as_ref());
 
         let git_entry = &repos[1];
+        assert_eq!(git_entry.get("id").unwrap().as_u64().unwrap(), 2);
         assert_eq!(git_entry.get("type").unwrap().as_str().unwrap(), "git");
         assert_eq!(
             git_entry.get("url").unwrap().as_str().unwrap(),
@@ -449,7 +483,7 @@ mod tests {
         std::fs::create_dir_all(&conf_dir).unwrap();
         std::fs::write(
             conf_dir.join("repositories.json5"),
-            r#"[{ "type": "fs", "path": "/custom/path" }]"#,
+            r#"[{ "id": 1, "type": "fs", "path": "/custom/path" }]"#,
         )
         .unwrap();
 
@@ -471,7 +505,11 @@ mod tests {
 
         // Overwrite with custom content
         let repos_path = peppy_dirs.conf_dir().join("repositories.json5");
-        std::fs::write(&repos_path, r#"[{ "type": "fs", "path": "/other" }]"#).unwrap();
+        std::fs::write(
+            &repos_path,
+            r#"[{ "id": 1, "type": "fs", "path": "/other" }]"#,
+        )
+        .unwrap();
 
         // Second call should read the overwritten file, not re-create defaults
         let repos = read_or_create_repos(&peppy_dirs).unwrap();
