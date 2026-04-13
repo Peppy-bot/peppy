@@ -65,7 +65,9 @@ async fn repo_refresh_async(ctx: &Arc<AppContext>) -> Result<()> {
                 Ok(Ok(msg)) => {
                     last_activity = tokio::time::Instant::now();
                     if let Ok(feedback) = RepoRefreshFeedback::decode(&msg.payload()) {
-                        if feedback.variants.is_empty() {
+                        if feedback.excluded {
+                            info!("  Excluded {} ({})", feedback.path, feedback.source_type,);
+                        } else if feedback.variants.is_empty() {
                             info!(
                                 "  Found {}:{} ({}, {})",
                                 feedback.node_name,

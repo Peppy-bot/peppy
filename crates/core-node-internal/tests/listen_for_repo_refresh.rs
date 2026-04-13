@@ -110,6 +110,14 @@ fn write_repositories_json5(started: &StartedCoreNode, content: &str) {
     std::fs::write(conf_dir.join("repositories.json5"), content).expect("write repos file");
 }
 
+/// Write an excluded_repositories.json5 file in the conf_dir.
+fn write_excluded_repositories_json5(started: &StartedCoreNode, content: &str) {
+    let conf_dir = started.peppy_dirs.conf_dir();
+    std::fs::create_dir_all(&conf_dir).expect("create conf dir");
+    std::fs::write(conf_dir.join("excluded_repositories.json5"), content)
+        .expect("write excluded repos file");
+}
+
 /// Create a directory with a valid peppy.json5 inside it.
 fn create_node_dir(base: &std::path::Path, name: &str, tag: &str) -> std::path::PathBuf {
     let dir = base.join(format!("{name}_{tag}"));
@@ -701,4 +709,184 @@ async fn refresh_empty_repos() {
         result.result.total_nodes_found, 0,
         "no nodes should be found with empty repos"
     );
+}
+
+// ── Exclusion tests ──────────────────────────────────────────────
+
+/// When one of two FS repos is excluded, only nodes from the non-excluded
+/// repo should appear in feedback and the excluded repo should be reported
+/// as excluded feedback.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn refresh_excludes_fs_repo_with_feedback() {
+    let started = start_core_node_with_real_messenger().await;
+
+    let repo_a = started.peppy_dirs.root().join("repo_a");
+    let repo_b = started.peppy_dirs.root().join("repo_b");
+    create_node_dir(&repo_a, "node_a", "1.0.0");
+    create_node_dir(&repo_b, "node_b", "1.0.0");
+
+    write_repositories_json5(
+        &started,
+        &format!(
+            r#"[{{ "id": 1, "type": "fs", "path": "{}" }}, {{ "id": 2, "type": "fs", "path": "{}" }}]"#,
+            repo_a.display(),
+            repo_b.display()
+        ),
+    );
+    write_excluded_repositories_json5(
+        &started,
+        &format!(
+            r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
+            repo_b.display()
+        ),
+    );
+
+    let result = send_refresh_and_wait_with_feedback(&started).await;
+
+    assert!(result.result.success, "refresh should succeed");
+    assert_eq!(
+        result.result.total_nodes_found, 1,
+        "only node_a should be counted"
+    );
+
+    let excluded_feedbacks: Vec<&RepoRefreshFeedback> =
+        result.feedbacks.iter().filter(|f| f.excluded).collect();
+    let discovered_feedbacks: Vec<&RepoRefreshFeedback> =
+        result.feedbacks.iter().filter(|f| !f.excluded).collect();
+
+    assert_eq!(
+        excluded_feedbacks.len(),
+        1,
+        "should receive 1 excluded feedback"
+    );
+    assert_eq!(excluded_feedbacks[0].source_type, "fs");
+    assert!(
+        excluded_feedbacks[0].path.contains("repo_b"),
+        "excluded feedback path should reference repo_b, got: {}",
+        excluded_feedbacks[0].path
+    );
+
+    assert_eq!(
+        discovered_feedbacks.len(),
+        1,
+        "should receive 1 discovered feedback"
+    );
+    assert_eq!(discovered_feedbacks[0].node_name, "node_a");
+}
+
+/// Excluding a subdirectory within an FS repo should prune that subtree
+/// without excluding the entire repo.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn refresh_excludes_fs_subdirectory_with_feedback() {
+    let started = start_core_node_with_real_messenger().await;
+
+    let repo = started.peppy_dirs.root().join("mixed_repo");
+    create_node_dir(&repo, "keep_node", "1.0.0");
+    create_node_dir(&repo, "secret_node", "1.0.0");
+
+    write_repositories_json5(
+        &started,
+        &format!(
+            r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
+            repo.display()
+        ),
+    );
+    write_excluded_repositories_json5(
+        &started,
+        &format!(
+            r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
+            repo.join("secret_node_1.0.0").display()
+        ),
+    );
+
+    let result = send_refresh_and_wait_with_feedback(&started).await;
+
+    assert!(result.result.success, "refresh should succeed");
+    assert_eq!(
+        result.result.total_nodes_found, 1,
+        "only keep_node should be found"
+    );
+
+    let discovered_feedbacks: Vec<&RepoRefreshFeedback> =
+        result.feedbacks.iter().filter(|f| !f.excluded).collect();
+    assert_eq!(discovered_feedbacks.len(), 1);
+    assert_eq!(discovered_feedbacks[0].node_name, "keep_node");
+}
+
+/// Excluded repos should not appear in the packages.json5 cache.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn refresh_excluded_repos_not_in_cache() {
+    let started = start_core_node_with_mock_messenger().await;
+
+    let repo_a = started.peppy_dirs.root().join("cache_repo_a");
+    let repo_b = started.peppy_dirs.root().join("cache_repo_b");
+    create_node_dir(&repo_a, "cached_node", "1.0.0");
+    create_node_dir(&repo_b, "excluded_node", "1.0.0");
+
+    write_repositories_json5(
+        &started,
+        &format!(
+            r#"[{{ "id": 1, "type": "fs", "path": "{}" }}, {{ "id": 2, "type": "fs", "path": "{}" }}]"#,
+            repo_a.display(),
+            repo_b.display()
+        ),
+    );
+    write_excluded_repositories_json5(
+        &started,
+        &format!(
+            r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
+            repo_b.display()
+        ),
+    );
+
+    let result = send_refresh_and_wait(&started).await;
+    assert!(result.result.success, "refresh should succeed");
+    assert_eq!(result.result.total_nodes_found, 1);
+
+    let cache_path = started.peppy_dirs.cache_dir().join("packages.json5");
+    let content = std::fs::read_to_string(&cache_path).expect("read cache");
+    let entries: Vec<serde_json::Value> = serde_json::from_str(&content).expect("parse cache");
+    assert_eq!(
+        entries.len(),
+        1,
+        "cache should only contain non-excluded nodes"
+    );
+    assert_eq!(entries[0]["node_name"], "cached_node");
+}
+
+/// When an excluded git repo is listed, it should be skipped entirely
+/// (no clone attempt) and reported as excluded.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn refresh_excludes_git_repo() {
+    let started = start_core_node_with_real_messenger().await;
+
+    let repo = started.peppy_dirs.root().join("fs_repo");
+    create_node_dir(&repo, "fs_node", "1.0.0");
+
+    write_repositories_json5(
+        &started,
+        &format!(
+            r#"[{{ "id": 1, "type": "fs", "path": "{}" }}, {{ "id": 2, "type": "git", "url": "https://example.com/nonexistent.git" }}]"#,
+            repo.display()
+        ),
+    );
+    write_excluded_repositories_json5(
+        &started,
+        r#"[{ "id": 1, "type": "git", "url": "https://example.com/nonexistent.git" }]"#,
+    );
+
+    let result = send_refresh_and_wait_with_feedback(&started).await;
+
+    assert!(result.result.success, "refresh should succeed");
+    assert_eq!(result.result.total_nodes_found, 1);
+
+    let excluded_feedbacks: Vec<&RepoRefreshFeedback> =
+        result.feedbacks.iter().filter(|f| f.excluded).collect();
+    assert_eq!(excluded_feedbacks.len(), 1);
+    assert_eq!(excluded_feedbacks[0].source_type, "git");
+
+    let discovered_feedbacks: Vec<&RepoRefreshFeedback> =
+        result.feedbacks.iter().filter(|f| !f.excluded).collect();
+    assert_eq!(discovered_feedbacks.len(), 1);
+    assert_eq!(discovered_feedbacks[0].node_name, "fs_node");
 }

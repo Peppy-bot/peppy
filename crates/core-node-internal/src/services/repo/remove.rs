@@ -89,7 +89,7 @@ fn handle_repo_remove_request_inner(
 
     if !is_fs {
         match process_refresh(peppy_dirs) {
-            Ok(discovered) => {
+            Ok((discovered, _excluded)) => {
                 if let Err(e) = write_cache(peppy_dirs, &discovered) {
                     warn!("Failed to write cache after repo removal: {}", e);
                 }

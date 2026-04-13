@@ -103,7 +103,7 @@ impl RepoRefreshGoalResponse {
 }
 
 /// Feedback message for the RepoRefresh action.
-/// Represents a single discovered node.
+/// Represents a single discovered node or an excluded repository.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepoRefreshFeedback {
     pub node_name: String,
@@ -114,6 +114,8 @@ pub struct RepoRefreshFeedback {
     pub path: String,
     /// Variant names declared by this node (empty if none).
     pub variants: Vec<String>,
+    /// `true` when this feedback represents an excluded repository.
+    pub excluded: bool,
 }
 
 impl RepoRefreshFeedback {
@@ -130,6 +132,19 @@ impl RepoRefreshFeedback {
             source_type: source_type.into(),
             path: path.into(),
             variants,
+            excluded: false,
+        }
+    }
+
+    /// Create a feedback entry representing an excluded repository.
+    pub fn new_excluded(source_type: impl Into<String>, identity: impl Into<String>) -> Self {
+        Self {
+            node_name: String::new(),
+            node_tag: String::new(),
+            source_type: source_type.into(),
+            path: identity.into(),
+            variants: Vec::new(),
+            excluded: true,
         }
     }
 
@@ -141,6 +156,7 @@ impl RepoRefreshFeedback {
             feedback.set_node_tag(&self.node_tag);
             feedback.set_source_type(&self.source_type);
             feedback.set_path(&self.path);
+            feedback.set_excluded(self.excluded);
             let mut variants_builder = feedback.init_variants(self.variants.len() as u32);
             for (i, v) in self.variants.iter().enumerate() {
                 variants_builder.set(i as u32, v);
@@ -163,6 +179,7 @@ impl RepoRefreshFeedback {
             source_type: feedback.get_source_type()?.to_str()?.to_owned(),
             path: feedback.get_path()?.to_str()?.to_owned(),
             variants,
+            excluded: feedback.get_excluded(),
         })
     }
 }

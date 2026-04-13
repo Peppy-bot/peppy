@@ -48,6 +48,8 @@ struct RepoRefreshFeedback {
     path @3 :Text;
     # Variant names declared by this node (empty if none)
     variants @4 :List(Text);
+    # True when this feedback represents an excluded repository
+    excluded @5 :Bool;
 }
 
 struct RepoRefreshResult {

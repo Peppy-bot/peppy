@@ -87,7 +87,7 @@ fn repo_source_identity(source: &RepoSource) -> String {
 }
 
 /// Returns the identity value from a persisted JSON entry (path for fs, url for git/url).
-fn json_entry_identity(entry: &Value) -> Option<&str> {
+pub(crate) fn json_entry_identity(entry: &Value) -> Option<&str> {
     let typ = entry.get("type")?.as_str()?;
     match typ {
         "fs" => entry.get("path")?.as_str(),
@@ -97,7 +97,7 @@ fn json_entry_identity(entry: &Value) -> Option<&str> {
 
 /// Reads excluded repositories from `conf/excluded_repositories.json5`.
 /// Returns an empty list if the file does not exist (no default seeding).
-fn read_excluded_repos(peppy_dirs: &PeppyDirs) -> Result<Vec<Value>> {
+pub(crate) fn read_excluded_repos(peppy_dirs: &PeppyDirs) -> Result<Vec<Value>> {
     let conf_dir = peppy_dirs.conf_dir();
     std::fs::create_dir_all(&conf_dir)?;
     let repos_path = conf_dir.join("excluded_repositories.json5");

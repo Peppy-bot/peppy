@@ -82,7 +82,7 @@ fn handle_repo_list_request_inner(
                 }
                 let mut repo_seen = HashSet::new();
                 let mut discovered = Vec::new();
-                walk_directory(&path, "fs", None, &mut repo_seen, &mut discovered);
+                walk_directory(&path, "fs", None, &mut repo_seen, &mut discovered, &[]);
                 for node in discovered {
                     let key = (node.node_name.clone(), node.node_tag.clone());
                     let duplicate = !global_seen.insert(key);

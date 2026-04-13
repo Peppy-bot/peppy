@@ -5,6 +5,7 @@ use crate::encoding::{
 use crate::names;
 use crate::services::action_loop::{ActionResult, ActionState, GoalHandler, run_action_loop};
 use crate::services::node::checkout_repo_ref;
+use crate::services::repo::exclude::{json_entry_identity, read_excluded_repos};
 use config::consts::{NODE_CONFIG_FILE, PeppyDirs};
 use config::node::NodeConfigParser;
 use git2::build::RepoBuilder;
@@ -123,7 +124,16 @@ impl GoalHandler for RepoRefreshGoalHandler {
         tokio::spawn(async move {
             let dirs = peppy_dirs.clone();
             let result = match tokio::task::spawn_blocking(move || process_refresh(&dirs)).await {
-                Ok(Ok(discovered)) => {
+                Ok(Ok((discovered, excluded))) => {
+                    // Publish feedback for excluded repositories
+                    for repo in &excluded {
+                        let feedback =
+                            RepoRefreshFeedback::new_excluded(&repo.source_type, &repo.identity);
+                        if let Ok(payload) = feedback.encode() {
+                            let _ = feedback_publisher.publish(payload).await;
+                        }
+                    }
+
                     // Publish feedback only for non-duplicate nodes
                     for node in discovered.iter().filter(|n| !n.duplicate) {
                         let feedback = RepoRefreshFeedback::new(
@@ -177,6 +187,14 @@ pub(crate) struct DiscoveredNode {
     /// `(name, tag)` pair. The node is still recorded so that `repo list` can
     /// display all sources.
     pub(crate) duplicate: bool,
+}
+
+/// A repository that was skipped during refresh because it appears in the
+/// `excluded_repositories.json5` configuration.
+#[derive(Debug, Clone)]
+pub(crate) struct ExcludedRepo {
+    pub(crate) source_type: String,
+    pub(crate) identity: String,
 }
 
 /// Parse a JSON entry from repositories.json5 into a `RepoSource`.
@@ -274,23 +292,62 @@ pub(crate) fn read_or_create_repos(peppy_dirs: &PeppyDirs) -> Result<Vec<Value>>
     Ok(repos)
 }
 
-/// Main synchronous processing: reads repos, walks each source, returns discovered nodes.
+/// Main synchronous processing: reads repos, walks each source, returns discovered nodes
+/// and the list of repositories that were excluded.
 ///
 /// Nodes whose `(name, tag)` pair was already seen in a higher-priority
 /// repository (lower id) are kept in the result but marked as `duplicate`.
 /// This allows the cache (and therefore `repo list`) to display all sources
 /// while still counting unique nodes correctly.
-pub(crate) fn process_refresh(peppy_dirs: &PeppyDirs) -> Result<Vec<DiscoveredNode>> {
+pub(crate) fn process_refresh(
+    peppy_dirs: &PeppyDirs,
+) -> Result<(Vec<DiscoveredNode>, Vec<ExcludedRepo>)> {
     let repos = read_or_create_repos(peppy_dirs)?;
+
+    // Read the exclusion list (missing file → empty list).
+    let excluded_entries = read_excluded_repos(peppy_dirs).unwrap_or_default();
+    let excluded_identities: HashSet<String> = excluded_entries
+        .iter()
+        .filter_map(|e| json_entry_identity(e).map(|s| s.to_owned()))
+        .collect();
+
+    // Collect excluded FS paths for subdirectory pruning inside walked repos.
+    let excluded_fs_paths: Vec<PathBuf> = excluded_entries
+        .iter()
+        .filter(|e| e.get("type").and_then(|v| v.as_str()) == Some("fs"))
+        .filter_map(|e| e.get("path").and_then(|v| v.as_str()).map(PathBuf::from))
+        .collect();
 
     let mut global_seen: HashSet<(String, String)> = HashSet::new();
     let mut all_nodes: Vec<DiscoveredNode> = Vec::new();
+    let mut excluded_repos: Vec<ExcludedRepo> = Vec::new();
 
     for entry in &repos {
         let Some(source) = parse_repo_entry(entry) else {
             warn!("Skipping unrecognized repository entry: {:?}", entry);
             continue;
         };
+
+        // Check if this repo is excluded by identity match.
+        let identity = match &source {
+            RepoSource::Fs(path) => path.to_string_lossy().into_owned(),
+            RepoSource::Git { repo_url, .. } => repo_url.clone(),
+            RepoSource::Url(url) => url.clone(),
+        };
+
+        if excluded_identities.contains(&identity) {
+            let source_type = match &source {
+                RepoSource::Fs(_) => "fs",
+                RepoSource::Git { .. } => "git",
+                RepoSource::Url(_) => "url",
+            };
+            debug!("Excluding {} repository: {}", source_type, identity);
+            excluded_repos.push(ExcludedRepo {
+                source_type: source_type.to_string(),
+                identity,
+            });
+            continue;
+        }
 
         match source {
             RepoSource::Url(url) => {
@@ -303,7 +360,14 @@ pub(crate) fn process_refresh(peppy_dirs: &PeppyDirs) -> Result<Vec<DiscoveredNo
                 }
                 let mut repo_seen = HashSet::new();
                 let mut repo_nodes = Vec::new();
-                walk_directory(&path, "fs", None, &mut repo_seen, &mut repo_nodes);
+                walk_directory(
+                    &path,
+                    "fs",
+                    None,
+                    &mut repo_seen,
+                    &mut repo_nodes,
+                    &excluded_fs_paths,
+                );
                 for mut node in repo_nodes {
                     let key = (node.node_name.clone(), node.node_tag.clone());
                     if !global_seen.insert(key) {
@@ -331,20 +395,25 @@ pub(crate) fn process_refresh(peppy_dirs: &PeppyDirs) -> Result<Vec<DiscoveredNo
         }
     }
 
-    Ok(all_nodes)
+    Ok((all_nodes, excluded_repos))
 }
 
 /// Walk a directory looking for `peppy.json5` files, collecting discovered nodes.
+///
+/// Any directory whose path matches one of the `excluded_paths` entries is
+/// pruned from the walk (neither descended into nor scanned for config files).
 pub(crate) fn walk_directory(
     root: &Path,
     source_type: &str,
     source_uri: Option<&str>,
     seen: &mut HashSet<(String, String)>,
     nodes: &mut Vec<DiscoveredNode>,
+    excluded_paths: &[PathBuf],
 ) {
+    let excluded = excluded_paths.to_vec();
     let walker = ignore::WalkBuilder::new(root)
         .hidden(true)
-        .filter_entry(|entry| {
+        .filter_entry(move |entry| {
             if !entry.file_type().is_some_and(|ft| ft.is_dir()) {
                 return true;
             }
@@ -352,7 +421,11 @@ pub(crate) fn walk_directory(
                 return true;
             }
             let name = entry.file_name().to_string_lossy();
-            !PRUNED_DIR_NAMES.iter().any(|pruned| name == *pruned)
+            if PRUNED_DIR_NAMES.iter().any(|pruned| name == *pruned) {
+                return false;
+            }
+            let entry_path = entry.path();
+            !excluded.iter().any(|exc| entry_path.starts_with(exc))
         })
         .build();
 
@@ -441,7 +514,14 @@ fn clone_and_walk_git_repo(
 
     let mut seen = HashSet::new();
     let mut nodes = Vec::new();
-    walk_directory(tmp.path(), "git", Some(repo_url), &mut seen, &mut nodes);
+    walk_directory(
+        tmp.path(),
+        "git",
+        Some(repo_url),
+        &mut seen,
+        &mut nodes,
+        &[],
+    );
 
     Ok(nodes)
 }
@@ -616,6 +696,193 @@ mod tests {
         assert_eq!(ids[0], 5, "explicit id 5 should be present");
         assert_eq!(ids[1], 6, "first missing id should be auto-assigned 6");
         assert_eq!(ids[2], 7, "second missing id should be auto-assigned 7");
+    }
+
+    /// Helper: write a minimal valid peppy.json5 into `dir`.
+    fn write_peppy_json5(dir: &Path, name: &str, tag: &str) {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(
+            dir.join(NODE_CONFIG_FILE),
+            format!(
+                r#"{{
+  schema_version: 1,
+  manifest: {{ name: "{name}", tag: "{tag}" }},
+  interfaces: {{}},
+  execution: {{ language: "rust", build_cmd: ["true"], run_cmd: ["true"] }},
+}}"#
+            ),
+        )
+        .unwrap();
+    }
+
+    /// Helper: write a repositories.json5 file.
+    fn write_repos(peppy_dirs: &PeppyDirs, content: &str) {
+        let conf_dir = peppy_dirs.conf_dir();
+        std::fs::create_dir_all(&conf_dir).unwrap();
+        std::fs::write(conf_dir.join("repositories.json5"), content).unwrap();
+    }
+
+    /// Helper: write an excluded_repositories.json5 file.
+    fn write_excluded_repos(peppy_dirs: &PeppyDirs, content: &str) {
+        let conf_dir = peppy_dirs.conf_dir();
+        std::fs::create_dir_all(&conf_dir).unwrap();
+        std::fs::write(conf_dir.join("excluded_repositories.json5"), content).unwrap();
+    }
+
+    #[test]
+    fn process_refresh_skips_excluded_fs_repo() {
+        let tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(tmp.path());
+
+        let repo_a = tmp.path().join("repo_a");
+        let repo_b = tmp.path().join("repo_b");
+        write_peppy_json5(&repo_a.join("node_a"), "node_a", "1.0.0");
+        write_peppy_json5(&repo_b.join("node_b"), "node_b", "1.0.0");
+
+        write_repos(
+            &peppy_dirs,
+            &format!(
+                r#"[{{ "id": 1, "type": "fs", "path": "{}" }}, {{ "id": 2, "type": "fs", "path": "{}" }}]"#,
+                repo_a.display(),
+                repo_b.display()
+            ),
+        );
+        write_excluded_repos(
+            &peppy_dirs,
+            &format!(
+                r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
+                repo_b.display()
+            ),
+        );
+
+        let (discovered, excluded) = process_refresh(&peppy_dirs).unwrap();
+        assert_eq!(discovered.len(), 1, "only non-excluded repo nodes returned");
+        assert_eq!(discovered[0].node_name, "node_a");
+        assert_eq!(excluded.len(), 1, "one repo should be excluded");
+        assert_eq!(excluded[0].source_type, "fs");
+        assert_eq!(excluded[0].identity, repo_b.display().to_string());
+    }
+
+    #[test]
+    fn process_refresh_excludes_fs_subdirectory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(tmp.path());
+
+        let repo = tmp.path().join("repo");
+        write_peppy_json5(&repo.join("keep_node"), "keep_node", "1.0.0");
+        write_peppy_json5(&repo.join("secret_node"), "secret_node", "1.0.0");
+
+        write_repos(
+            &peppy_dirs,
+            &format!(
+                r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
+                repo.display()
+            ),
+        );
+        // Exclude the subdirectory, not the whole repo
+        write_excluded_repos(
+            &peppy_dirs,
+            &format!(
+                r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
+                repo.join("secret_node").display()
+            ),
+        );
+
+        let (discovered, excluded) = process_refresh(&peppy_dirs).unwrap();
+        assert_eq!(
+            discovered.len(),
+            1,
+            "only the non-excluded subdirectory node should be found"
+        );
+        assert_eq!(discovered[0].node_name, "keep_node");
+        // The repo itself is not excluded (identity doesn't match), so
+        // excluded list should be empty.
+        assert!(
+            excluded.is_empty(),
+            "repo-level exclusion should not fire for subdirectory match"
+        );
+    }
+
+    #[test]
+    fn process_refresh_skips_excluded_git_repo() {
+        let tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(tmp.path());
+
+        let repo = tmp.path().join("repo");
+        write_peppy_json5(&repo.join("node_a"), "node_a", "1.0.0");
+
+        write_repos(
+            &peppy_dirs,
+            &format!(
+                r#"[
+                    {{ "id": 1, "type": "fs", "path": "{}" }},
+                    {{ "id": 2, "type": "git", "url": "https://example.com/repo.git" }}
+                ]"#,
+                repo.display()
+            ),
+        );
+        write_excluded_repos(
+            &peppy_dirs,
+            r#"[{ "id": 1, "type": "git", "url": "https://example.com/repo.git" }]"#,
+        );
+
+        let (discovered, excluded) = process_refresh(&peppy_dirs).unwrap();
+        assert_eq!(discovered.len(), 1, "FS node should still be found");
+        assert_eq!(discovered[0].node_name, "node_a");
+        assert_eq!(excluded.len(), 1, "git repo should be excluded");
+        assert_eq!(excluded[0].source_type, "git");
+        assert_eq!(excluded[0].identity, "https://example.com/repo.git");
+    }
+
+    #[test]
+    fn process_refresh_no_exclusion_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(tmp.path());
+
+        let repo = tmp.path().join("repo");
+        write_peppy_json5(&repo.join("node_a"), "node_a", "1.0.0");
+
+        write_repos(
+            &peppy_dirs,
+            &format!(
+                r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
+                repo.display()
+            ),
+        );
+
+        // No excluded_repositories.json5 file
+        let (discovered, excluded) = process_refresh(&peppy_dirs).unwrap();
+        assert_eq!(discovered.len(), 1, "node should be found normally");
+        assert!(excluded.is_empty(), "no repos should be excluded");
+    }
+
+    #[test]
+    fn process_refresh_skips_excluded_url_repo() {
+        let tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(tmp.path());
+
+        let repo = tmp.path().join("repo");
+        write_peppy_json5(&repo.join("node_a"), "node_a", "1.0.0");
+
+        write_repos(
+            &peppy_dirs,
+            &format!(
+                r#"[
+                    {{ "id": 1, "type": "fs", "path": "{}" }},
+                    {{ "id": 2, "type": "url", "url": "https://example.com/packages" }}
+                ]"#,
+                repo.display()
+            ),
+        );
+        write_excluded_repos(
+            &peppy_dirs,
+            r#"[{ "id": 1, "type": "url", "url": "https://example.com/packages" }]"#,
+        );
+
+        let (discovered, excluded) = process_refresh(&peppy_dirs).unwrap();
+        assert_eq!(discovered.len(), 1, "FS node should still be found");
+        assert_eq!(excluded.len(), 1, "url repo should be excluded");
+        assert_eq!(excluded[0].source_type, "url");
     }
 
     #[test]
