@@ -7,9 +7,22 @@ mod remove;
 use std::sync::Arc;
 
 use clap::Subcommand;
+use core_node::encoding::RepoSource;
 
 use super::Command;
 use crate::{context::AppContext, error::Result};
+
+/// Human-readable label for a repository source (used in CLI output).
+pub(super) fn repo_source_label(source: &RepoSource) -> String {
+    match source {
+        RepoSource::Fs(path) => path.to_string_lossy().into_owned(),
+        RepoSource::Git { repo_url, repo_ref } => match repo_ref {
+            Some(r) => format!("{repo_url} (ref: {r})"),
+            None => repo_url.clone(),
+        },
+        RepoSource::Url(url) => url.clone(),
+    }
+}
 
 #[derive(Subcommand)]
 pub enum RepoCommands {

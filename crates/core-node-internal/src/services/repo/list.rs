@@ -77,12 +77,7 @@ fn handle_repo_list_request_inner(
             continue;
         };
 
-        // Check if this repo is excluded by identity match.
-        let identity = match &source {
-            RepoSource::Fs(path) => path.to_string_lossy().into_owned(),
-            RepoSource::Git { repo_url, .. } => repo_url.clone(),
-            RepoSource::Url(url) => url.clone(),
-        };
+        let identity = source.identity();
 
         if exclusions.is_excluded(&identity) {
             debug!("Excluding repository from list: {}", identity);

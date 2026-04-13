@@ -1,6 +1,7 @@
 use crate::Result;
-use crate::encoding::{RepoExcludeRequest, RepoExcludeResponse, RepoSource};
+use crate::encoding::{RepoExcludeRequest, RepoExcludeResponse};
 use crate::names;
+use crate::services::repo::{json_entry_identity, normalize_repo_entries, repo_source_to_json};
 use config::consts::PeppyDirs;
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::types::Payload;
@@ -52,50 +53,6 @@ async fn handle_repo_exclude_request(
     })
 }
 
-fn repo_source_to_json(id: u64, source: &RepoSource) -> Value {
-    let mut map = serde_json::Map::new();
-    map.insert("id".to_string(), Value::Number(id.into()));
-    match source {
-        RepoSource::Fs(path) => {
-            map.insert("type".to_string(), Value::String("fs".to_string()));
-            map.insert(
-                "path".to_string(),
-                Value::String(path.to_string_lossy().into_owned()),
-            );
-        }
-        RepoSource::Git { repo_url, repo_ref } => {
-            map.insert("type".to_string(), Value::String("git".to_string()));
-            map.insert("url".to_string(), Value::String(repo_url.clone()));
-            if let Some(r) = repo_ref {
-                map.insert("ref".to_string(), Value::String(r.to_string()));
-            }
-        }
-        RepoSource::Url(url) => {
-            map.insert("type".to_string(), Value::String("url".to_string()));
-            map.insert("url".to_string(), Value::String(url.clone()));
-        }
-    }
-    Value::Object(map)
-}
-
-/// Returns the identity string used for duplicate detection.
-fn repo_source_identity(source: &RepoSource) -> String {
-    match source {
-        RepoSource::Fs(path) => path.to_string_lossy().into_owned(),
-        RepoSource::Git { repo_url, .. } => repo_url.clone(),
-        RepoSource::Url(url) => url.clone(),
-    }
-}
-
-/// Returns the identity value from a persisted JSON entry (path for fs, url for git/url).
-pub(crate) fn json_entry_identity(entry: &Value) -> Option<&str> {
-    let typ = entry.get("type")?.as_str()?;
-    match typ {
-        "fs" => entry.get("path")?.as_str(),
-        _ => entry.get("url")?.as_str(),
-    }
-}
-
 /// Reads excluded repositories from `conf/excluded_repositories.json5`.
 /// Returns an empty list if the file does not exist (no default seeding).
 pub(crate) fn read_excluded_repos(peppy_dirs: &PeppyDirs) -> Result<Vec<Value>> {
@@ -112,43 +69,7 @@ pub(crate) fn read_excluded_repos(peppy_dirs: &PeppyDirs) -> Result<Vec<Value>> 
         Vec::new()
     };
 
-    // Ensure every entry has an integer `id`, auto-assigning when missing.
-    let mut max_id: u64 = repos
-        .iter()
-        .filter_map(|e| e.get("id").and_then(|v| v.as_u64()))
-        .max()
-        .unwrap_or(0);
-
-    let mut needs_write = false;
-    for entry in &mut repos {
-        if entry.get("id").and_then(|v| v.as_u64()).is_none() {
-            max_id += 1;
-            if let Some(obj) = entry.as_object_mut() {
-                obj.insert("id".to_string(), Value::Number(max_id.into()));
-                needs_write = true;
-            }
-        }
-    }
-
-    // Detect duplicate ids.
-    let mut seen_ids = HashSet::new();
-    for entry in &repos {
-        if let Some(id) = entry.get("id").and_then(|v| v.as_u64())
-            && !seen_ids.insert(id)
-        {
-            return Err(crate::Error::DuplicateRepoId { id });
-        }
-    }
-
-    // Sort by id so processing order is deterministic.
-    repos.sort_by_key(|e| e.get("id").and_then(|v| v.as_u64()).unwrap_or(0));
-
-    if needs_write {
-        let content = serde_json::to_string_pretty(&repos).map_err(|e| {
-            crate::Error::Encoding(format!("failed to serialize excluded repositories: {e}"))
-        })?;
-        std::fs::write(&repos_path, content)?;
-    }
+    normalize_repo_entries(&mut repos, &repos_path, "excluded repositories")?;
 
     Ok(repos)
 }
@@ -177,28 +98,27 @@ impl ExclusionSet {
             Vec::new()
         });
 
-        let identities = raw
-            .iter()
-            .filter_map(|e| json_entry_identity(e).map(|s| s.to_owned()))
-            .collect();
+        let mut identities = HashSet::new();
+        let mut fs_paths = Vec::new();
+        let mut entries = Vec::new();
 
-        let fs_paths = raw
-            .iter()
-            .filter(|e| e.get("type").and_then(|v| v.as_str()) == Some("fs"))
-            .filter_map(|e| e.get("path").and_then(|v| v.as_str()).map(PathBuf::from))
-            .collect();
+        for e in &raw {
+            let Some(typ) = e.get("type").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            let Some(identity) = json_entry_identity(e) else {
+                continue;
+            };
 
-        let entries = raw
-            .iter()
-            .filter_map(|e| {
-                let typ = e.get("type")?.as_str()?;
-                let identity = json_entry_identity(e)?;
-                Some(ExcludedEntry {
-                    source_type: typ.to_string(),
-                    identity: identity.to_owned(),
-                })
-            })
-            .collect();
+            identities.insert(identity.to_owned());
+            if typ == "fs" {
+                fs_paths.push(PathBuf::from(identity));
+            }
+            entries.push(ExcludedEntry {
+                source_type: typ.to_string(),
+                identity: identity.to_owned(),
+            });
+        }
 
         Self {
             identities,
@@ -226,7 +146,7 @@ fn handle_repo_exclude_request_inner(
         request.source
     );
 
-    let identity = repo_source_identity(&request.source);
+    let identity = request.source.identity();
     if identity.trim().is_empty() {
         return RepoExcludeResponse::failure("repository path/URL must not be empty").encode();
     }
@@ -240,7 +160,6 @@ fn handle_repo_exclude_request_inner(
         Err(e) => return RepoExcludeResponse::failure(e.to_string()).encode(),
     };
 
-    // Duplicate check
     let new_identity = identity.trim();
     let is_duplicate = repos
         .iter()
@@ -254,7 +173,6 @@ fn handle_repo_exclude_request_inner(
         .encode();
     }
 
-    // Compute the next available id
     let next_id = repos
         .iter()
         .filter_map(|e| e.get("id").and_then(|v| v.as_u64()))
@@ -262,7 +180,6 @@ fn handle_repo_exclude_request_inner(
         .map(|max| max + 1)
         .unwrap_or(1);
 
-    // Append, sort by id, and write back (JSON is valid JSON5, use pretty for user readability)
     repos.push(repo_source_to_json(next_id, &request.source));
     repos.sort_by_key(|e| e.get("id").and_then(|v| v.as_u64()).unwrap_or(0));
     let content = serde_json::to_string_pretty(&repos).map_err(|e| {

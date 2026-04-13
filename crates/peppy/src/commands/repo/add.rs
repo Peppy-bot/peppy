@@ -6,6 +6,7 @@ use tracing::info;
 
 use crate::commands::CALLER_INSTANCE_ID;
 use crate::commands::node::source;
+use crate::commands::repo::repo_source_label;
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 
@@ -88,15 +89,4 @@ pub(crate) fn parse_repo_source(source_str: &str, git_ref: Option<String>) -> Re
         ));
     }
     Ok(RepoSource::Url(source_str.to_string()))
-}
-
-fn repo_source_label(source: &RepoSource) -> String {
-    match source {
-        RepoSource::Fs(path) => path.to_string_lossy().into_owned(),
-        RepoSource::Git { repo_url, repo_ref } => match repo_ref {
-            Some(r) => format!("{repo_url} (ref: {r})"),
-            None => repo_url.clone(),
-        },
-        RepoSource::Url(url) => url.clone(),
-    }
 }

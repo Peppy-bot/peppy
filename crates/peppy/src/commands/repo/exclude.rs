@@ -6,6 +6,7 @@ use tracing::info;
 
 use crate::commands::CALLER_INSTANCE_ID;
 use crate::commands::repo::add::parse_repo_source;
+use crate::commands::repo::repo_source_label;
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 
@@ -52,16 +53,5 @@ async fn exclude_repo_async(
             "Failed to exclude repository: {}",
             response.error_message
         )))
-    }
-}
-
-fn repo_source_label(source: &RepoSource) -> String {
-    match source {
-        RepoSource::Fs(path) => path.to_string_lossy().into_owned(),
-        RepoSource::Git { repo_url, repo_ref } => match repo_ref {
-            Some(r) => format!("{repo_url} (ref: {r})"),
-            None => repo_url.clone(),
-        },
-        RepoSource::Url(url) => url.clone(),
     }
 }

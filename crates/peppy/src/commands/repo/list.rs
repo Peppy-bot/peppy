@@ -83,6 +83,7 @@ async fn list_repos_async(ctx: &Arc<AppContext>) -> Result<()> {
 fn print_nodes(nodes: &[&RepoListNodeEntry]) {
     let max_name_len = nodes.iter().map(|n| n.node_name.len()).max().unwrap_or(0);
     let max_tag_len = nodes.iter().map(|n| n.node_tag.len()).max().unwrap_or(0);
+    let is_tty = std::io::stdout().is_terminal();
 
     for node in nodes {
         let mut suffix = String::new();
@@ -90,7 +91,7 @@ fn print_nodes(nodes: &[&RepoListNodeEntry]) {
             suffix.push_str(&format!("  [variants: {}]", node.variants.join(", ")));
         }
         if node.duplicate {
-            if std::io::stdout().is_terminal() {
+            if is_tty {
                 suffix.push_str("  \x1b[38;5;208m(duplicate)\x1b[0m");
             } else {
                 suffix.push_str("  (duplicate)");

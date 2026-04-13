@@ -21,6 +21,26 @@ pub enum RepoSource {
     Url(String),
 }
 
+impl RepoSource {
+    /// The canonical identity string used for duplicate detection and exclusion matching.
+    pub fn identity(&self) -> String {
+        match self {
+            RepoSource::Fs(path) => path.to_string_lossy().into_owned(),
+            RepoSource::Git { repo_url, .. } => repo_url.clone(),
+            RepoSource::Url(url) => url.clone(),
+        }
+    }
+
+    /// The source type discriminant as a static string.
+    pub fn source_type(&self) -> &'static str {
+        match self {
+            RepoSource::Fs(_) => "fs",
+            RepoSource::Git { .. } => "git",
+            RepoSource::Url(_) => "url",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepoAddRequest {
     pub source: RepoSource,

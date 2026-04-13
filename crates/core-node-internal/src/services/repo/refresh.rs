@@ -6,6 +6,7 @@ use crate::names;
 use crate::services::action_loop::{ActionResult, ActionState, GoalHandler, run_action_loop};
 use crate::services::node::checkout_repo_ref;
 use crate::services::repo::exclude::ExclusionSet;
+use crate::services::repo::normalize_repo_entries;
 use config::consts::{NODE_CONFIG_FILE, PeppyDirs};
 use config::node::NodeConfigParser;
 use git2::build::RepoBuilder;
@@ -258,43 +259,7 @@ pub(crate) fn read_or_create_repos(peppy_dirs: &PeppyDirs) -> Result<Vec<Value>>
         })?
     };
 
-    // Ensure every entry has an integer `id`, auto-assigning when missing.
-    let mut max_id: u64 = repos
-        .iter()
-        .filter_map(|e| e.get("id").and_then(|v| v.as_u64()))
-        .max()
-        .unwrap_or(0);
-
-    let mut needs_write = false;
-    for entry in &mut repos {
-        if entry.get("id").and_then(|v| v.as_u64()).is_none() {
-            max_id += 1;
-            if let Some(obj) = entry.as_object_mut() {
-                obj.insert("id".to_string(), Value::Number(max_id.into()));
-                needs_write = true;
-            }
-        }
-    }
-
-    // Detect duplicate ids — a user may manually edit the file and introduce collisions.
-    let mut seen_ids = HashSet::new();
-    for entry in &repos {
-        if let Some(id) = entry.get("id").and_then(|v| v.as_u64())
-            && !seen_ids.insert(id)
-        {
-            return Err(crate::Error::DuplicateRepoId { id });
-        }
-    }
-
-    // Sort by id so processing order is deterministic.
-    repos.sort_by_key(|e| e.get("id").and_then(|v| v.as_u64()).unwrap_or(0));
-
-    if needs_write {
-        let content = serde_json::to_string_pretty(&repos).map_err(|e| {
-            crate::Error::Encoding(format!("failed to serialize repositories: {e}"))
-        })?;
-        std::fs::write(&repos_path, content)?;
-    }
+    normalize_repo_entries(&mut repos, &repos_path, "repositories")?;
 
     Ok(repos)
 }
@@ -330,20 +295,14 @@ pub(crate) fn process_refresh(
             continue;
         };
 
-        // Check if this repo is excluded by identity match.
-        let identity = match &source {
-            RepoSource::Fs(path) => path.to_string_lossy().into_owned(),
-            RepoSource::Git { repo_url, .. } => repo_url.clone(),
-            RepoSource::Url(url) => url.clone(),
-        };
+        let identity = source.identity();
 
         if exclusions.is_excluded(&identity) {
-            let source_type = match &source {
-                RepoSource::Fs(_) => "fs",
-                RepoSource::Git { .. } => "git",
-                RepoSource::Url(_) => "url",
-            };
-            debug!("Excluding {} repository: {}", source_type, identity);
+            debug!(
+                "Excluding {} repository: {}",
+                source.source_type(),
+                identity
+            );
             continue;
         }
 
