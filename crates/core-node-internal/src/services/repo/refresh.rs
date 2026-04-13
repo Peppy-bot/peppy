@@ -320,7 +320,17 @@ pub(crate) fn process_refresh(
 
     let mut global_seen: HashSet<(String, String)> = HashSet::new();
     let mut all_nodes: Vec<DiscoveredNode> = Vec::new();
-    let mut excluded_repos: Vec<ExcludedRepo> = Vec::new();
+    let excluded_repos: Vec<ExcludedRepo> = excluded_entries
+        .iter()
+        .filter_map(|e| {
+            let typ = e.get("type")?.as_str()?;
+            let identity = json_entry_identity(e)?;
+            Some(ExcludedRepo {
+                source_type: typ.to_string(),
+                identity: identity.to_owned(),
+            })
+        })
+        .collect();
 
     for entry in &repos {
         let Some(source) = parse_repo_entry(entry) else {
@@ -342,10 +352,6 @@ pub(crate) fn process_refresh(
                 RepoSource::Url(_) => "url",
             };
             debug!("Excluding {} repository: {}", source_type, identity);
-            excluded_repos.push(ExcludedRepo {
-                source_type: source_type.to_string(),
-                identity,
-            });
             continue;
         }
 
@@ -795,11 +801,17 @@ mod tests {
             "only the non-excluded subdirectory node should be found"
         );
         assert_eq!(discovered[0].node_name, "keep_node");
-        // The repo itself is not excluded (identity doesn't match), so
-        // excluded list should be empty.
+        // The subdirectory exclusion should still appear in the excluded list
+        // so that it is reported as feedback to the user.
+        assert_eq!(
+            excluded.len(),
+            1,
+            "subdirectory exclusion should be reported"
+        );
+        assert_eq!(excluded[0].source_type, "fs");
         assert!(
-            excluded.is_empty(),
-            "repo-level exclusion should not fire for subdirectory match"
+            excluded[0].identity.contains("secret_node"),
+            "excluded identity should reference the subdirectory"
         );
     }
 

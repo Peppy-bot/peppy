@@ -811,6 +811,71 @@ async fn refresh_excludes_fs_subdirectory_with_feedback() {
         result.feedbacks.iter().filter(|f| !f.excluded).collect();
     assert_eq!(discovered_feedbacks.len(), 1);
     assert_eq!(discovered_feedbacks[0].node_name, "keep_node");
+
+    let excluded_feedbacks: Vec<&RepoRefreshFeedback> =
+        result.feedbacks.iter().filter(|f| f.excluded).collect();
+    assert_eq!(
+        excluded_feedbacks.len(),
+        1,
+        "should receive 1 excluded feedback for subdirectory exclusion"
+    );
+    assert_eq!(excluded_feedbacks[0].source_type, "fs");
+    assert!(
+        excluded_feedbacks[0].path.contains("secret_node"),
+        "excluded feedback path should reference secret_node, got: {}",
+        excluded_feedbacks[0].path
+    );
+}
+
+/// When both a repo-level exclusion and a subdirectory exclusion are present,
+/// feedback should be reported for both.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn refresh_reports_both_repo_and_subdirectory_exclusions() {
+    let started = start_core_node_with_real_messenger().await;
+
+    let repo_a = started.peppy_dirs.root().join("repo_a");
+    let repo_b = started.peppy_dirs.root().join("repo_b");
+    create_node_dir(&repo_a, "keep_node", "1.0.0");
+    create_node_dir(&repo_a, "secret_node", "1.0.0");
+    create_node_dir(&repo_b, "other_node", "1.0.0");
+
+    write_repositories_json5(
+        &started,
+        &format!(
+            r#"[{{ "id": 1, "type": "fs", "path": "{}" }}, {{ "id": 2, "type": "fs", "path": "{}" }}]"#,
+            repo_a.display(),
+            repo_b.display()
+        ),
+    );
+    write_excluded_repositories_json5(
+        &started,
+        &format!(
+            r#"[{{ "id": 1, "type": "fs", "path": "{}" }}, {{ "id": 2, "type": "fs", "path": "{}" }}]"#,
+            repo_b.display(),
+            repo_a.join("secret_node_1.0.0").display()
+        ),
+    );
+
+    let result = send_refresh_and_wait_with_feedback(&started).await;
+
+    assert!(result.result.success, "refresh should succeed");
+    assert_eq!(
+        result.result.total_nodes_found, 1,
+        "only keep_node should be counted"
+    );
+
+    let excluded_feedbacks: Vec<&RepoRefreshFeedback> =
+        result.feedbacks.iter().filter(|f| f.excluded).collect();
+    assert_eq!(
+        excluded_feedbacks.len(),
+        2,
+        "should receive 2 excluded feedbacks (repo-level + subdirectory)"
+    );
+
+    let discovered_feedbacks: Vec<&RepoRefreshFeedback> =
+        result.feedbacks.iter().filter(|f| !f.excluded).collect();
+    assert_eq!(discovered_feedbacks.len(), 1);
+    assert_eq!(discovered_feedbacks[0].node_name, "keep_node");
 }
 
 /// Excluded repos should not appear in the packages.json5 cache.
