@@ -2,7 +2,7 @@ use std::io::IsTerminal;
 use std::sync::Arc;
 use std::time::Duration;
 
-use core_node::encoding::{RepoListNodeEntry, RepoListRequest};
+use core_node::encoding::{RepoListNodeEntry, RepoListRequest, RepoSourceKind};
 
 use crate::commands::CALLER_INSTANCE_ID;
 use crate::context::AppContext;
@@ -45,14 +45,10 @@ async fn list_repos_async(ctx: &Arc<AppContext>) -> Result<()> {
     let mut http_nodes: Vec<&RepoListNodeEntry> = Vec::new();
 
     for node in &response.nodes {
-        match node.source_type.as_str() {
-            "fs" => local_nodes.push(node),
-            "git" => git_nodes.push(node),
-            "url" => http_nodes.push(node),
-            other => {
-                tracing::warn!("Unknown source type '{}', listing as local", other);
-                local_nodes.push(node);
-            }
+        match node.source_type {
+            RepoSourceKind::Fs => local_nodes.push(node),
+            RepoSourceKind::Git => git_nodes.push(node),
+            RepoSourceKind::Url => http_nodes.push(node),
         }
     }
 

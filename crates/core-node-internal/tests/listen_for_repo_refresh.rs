@@ -8,6 +8,7 @@ use config::consts::NODE_CONFIG_FILE;
 use config::node::QoSProfile;
 use core_node::encoding::{
     RepoRefreshFeedback, RepoRefreshGoal, RepoRefreshGoalResponse, RepoRefreshResult,
+    RepoSourceKind,
 };
 use core_node::names;
 use git2::{Repository, Signature};
@@ -268,7 +269,7 @@ async fn refresh_fs_discovers_nodes() {
     assert_eq!(result.feedbacks.len(), 1, "should receive 1 feedback");
     assert_eq!(result.feedbacks[0].node_name, "my_sensor");
     assert_eq!(result.feedbacks[0].node_tag, "1.0.0");
-    assert_eq!(result.feedbacks[0].source_type, "fs");
+    assert_eq!(result.feedbacks[0].source_type, RepoSourceKind::Fs);
     assert!(
         result.feedbacks[0].variants.is_empty(),
         "node without variants should have empty variants list"
@@ -759,7 +760,7 @@ async fn refresh_excludes_fs_repo_with_feedback() {
         1,
         "should receive 1 excluded feedback"
     );
-    assert_eq!(excluded_feedbacks[0].source_type, "fs");
+    assert_eq!(excluded_feedbacks[0].source_type, RepoSourceKind::Fs);
     assert!(
         excluded_feedbacks[0].path.contains("repo_b"),
         "excluded feedback path should reference repo_b, got: {}",
@@ -819,7 +820,7 @@ async fn refresh_excludes_fs_subdirectory_with_feedback() {
         1,
         "should receive 1 excluded feedback for subdirectory exclusion"
     );
-    assert_eq!(excluded_feedbacks[0].source_type, "fs");
+    assert_eq!(excluded_feedbacks[0].source_type, RepoSourceKind::Fs);
     assert!(
         excluded_feedbacks[0].path.contains("secret_node"),
         "excluded feedback path should reference secret_node, got: {}",
@@ -948,7 +949,7 @@ async fn refresh_excludes_git_repo() {
     let excluded_feedbacks: Vec<&RepoRefreshFeedback> =
         result.feedbacks.iter().filter(|f| f.excluded).collect();
     assert_eq!(excluded_feedbacks.len(), 1);
-    assert_eq!(excluded_feedbacks[0].source_type, "git");
+    assert_eq!(excluded_feedbacks[0].source_type, RepoSourceKind::Git);
 
     let discovered_feedbacks: Vec<&RepoRefreshFeedback> =
         result.feedbacks.iter().filter(|f| !f.excluded).collect();

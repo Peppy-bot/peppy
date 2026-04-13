@@ -1,6 +1,7 @@
 use crate::Result;
 use crate::encoding::{
     RepoRefreshFeedback, RepoRefreshGoal, RepoRefreshGoalResponse, RepoRefreshResult, RepoSource,
+    RepoSourceKind,
 };
 use crate::names;
 use crate::services::action_loop::{ActionResult, ActionState, GoalHandler, run_action_loop};
@@ -129,7 +130,7 @@ impl GoalHandler for RepoRefreshGoalHandler {
                     // Publish feedback for excluded repositories
                     for repo in &excluded {
                         let feedback =
-                            RepoRefreshFeedback::new_excluded(&repo.source_type, &repo.identity);
+                            RepoRefreshFeedback::new_excluded(repo.source_type, &repo.identity);
                         if let Ok(payload) = feedback.encode() {
                             let _ = feedback_publisher.publish(payload).await;
                         }
@@ -140,7 +141,7 @@ impl GoalHandler for RepoRefreshGoalHandler {
                         let feedback = RepoRefreshFeedback::new(
                             &node.node_name,
                             &node.node_tag,
-                            &node.source_type,
+                            node.source_type,
                             &node.path,
                             node.variants.clone(),
                         );
@@ -180,7 +181,7 @@ impl GoalHandler for RepoRefreshGoalHandler {
 pub(crate) struct DiscoveredNode {
     pub(crate) node_name: String,
     pub(crate) node_tag: String,
-    pub(crate) source_type: String,
+    pub(crate) source_type: RepoSourceKind,
     pub(crate) path: String,
     pub(crate) source_uri: Option<String>,
     pub(crate) variants: Vec<String>,
@@ -194,7 +195,7 @@ pub(crate) struct DiscoveredNode {
 /// `excluded_repositories.json5` configuration.
 #[derive(Debug, Clone)]
 pub(crate) struct ExcludedRepo {
-    pub(crate) source_type: String,
+    pub(crate) source_type: RepoSourceKind,
     pub(crate) identity: String,
 }
 
@@ -284,7 +285,7 @@ pub(crate) fn process_refresh(
         .entries
         .iter()
         .map(|e| ExcludedRepo {
-            source_type: e.source_type.clone(),
+            source_type: e.source_type,
             identity: e.identity.clone(),
         })
         .collect();
@@ -298,11 +299,7 @@ pub(crate) fn process_refresh(
         let identity = source.identity();
 
         if exclusions.is_excluded(&identity) {
-            debug!(
-                "Excluding {} repository: {}",
-                source.source_type(),
-                identity
-            );
+            debug!("Excluding {} repository: {}", source.kind(), identity);
             continue;
         }
 
@@ -319,7 +316,7 @@ pub(crate) fn process_refresh(
                 let mut repo_nodes = Vec::new();
                 walk_directory(
                     &path,
-                    "fs",
+                    RepoSourceKind::Fs,
                     None,
                     &mut repo_seen,
                     &mut repo_nodes,
@@ -361,7 +358,7 @@ pub(crate) fn process_refresh(
 /// pruned from the walk (neither descended into nor scanned for config files).
 pub(crate) fn walk_directory(
     root: &Path,
-    source_type: &str,
+    source_type: RepoSourceKind,
     source_uri: Option<&str>,
     seen: &mut HashSet<(String, String)>,
     nodes: &mut Vec<DiscoveredNode>,
@@ -413,7 +410,7 @@ pub(crate) fn walk_directory(
             continue;
         }
 
-        let node_path = if source_type == "git" {
+        let node_path = if source_type == RepoSourceKind::Git {
             // For git repos, store relative path from repo root
             config_path
                 .parent()
@@ -431,7 +428,7 @@ pub(crate) fn walk_directory(
         nodes.push(DiscoveredNode {
             node_name: name,
             node_tag: tag,
-            source_type: source_type.to_string(),
+            source_type,
             path: node_path,
             source_uri: source_uri.map(|s| s.to_string()),
             variants,
@@ -473,7 +470,7 @@ fn clone_and_walk_git_repo(
     let mut nodes = Vec::new();
     walk_directory(
         tmp.path(),
-        "git",
+        RepoSourceKind::Git,
         Some(repo_url),
         &mut seen,
         &mut nodes,
@@ -496,7 +493,7 @@ pub(crate) fn write_cache(peppy_dirs: &PeppyDirs, nodes: &[DiscoveredNode]) -> R
             map.insert("node_tag".to_string(), Value::String(n.node_tag.clone()));
             map.insert(
                 "source_type".to_string(),
-                Value::String(n.source_type.clone()),
+                Value::String(n.source_type.as_str().to_string()),
             );
             if let Some(url) = &n.source_uri {
                 map.insert("source_uri".to_string(), Value::String(url.clone()));
@@ -716,7 +713,7 @@ mod tests {
         assert_eq!(discovered.len(), 1, "only non-excluded repo nodes returned");
         assert_eq!(discovered[0].node_name, "node_a");
         assert_eq!(excluded.len(), 1, "one repo should be excluded");
-        assert_eq!(excluded[0].source_type, "fs");
+        assert_eq!(excluded[0].source_type, RepoSourceKind::Fs);
         assert_eq!(excluded[0].identity, repo_b.display().to_string());
     }
 
@@ -759,7 +756,7 @@ mod tests {
             1,
             "subdirectory exclusion should be reported"
         );
-        assert_eq!(excluded[0].source_type, "fs");
+        assert_eq!(excluded[0].source_type, RepoSourceKind::Fs);
         assert!(
             excluded[0].identity.contains("secret_node"),
             "excluded identity should reference the subdirectory"
@@ -793,7 +790,7 @@ mod tests {
         assert_eq!(discovered.len(), 1, "FS node should still be found");
         assert_eq!(discovered[0].node_name, "node_a");
         assert_eq!(excluded.len(), 1, "git repo should be excluded");
-        assert_eq!(excluded[0].source_type, "git");
+        assert_eq!(excluded[0].source_type, RepoSourceKind::Git);
         assert_eq!(excluded[0].identity, "https://example.com/repo.git");
     }
 
@@ -845,7 +842,7 @@ mod tests {
         let (discovered, excluded) = process_refresh(&peppy_dirs).unwrap();
         assert_eq!(discovered.len(), 1, "FS node should still be found");
         assert_eq!(excluded.len(), 1, "url repo should be excluded");
-        assert_eq!(excluded[0].source_type, "url");
+        assert_eq!(excluded[0].source_type, RepoSourceKind::Url);
     }
 
     #[test]

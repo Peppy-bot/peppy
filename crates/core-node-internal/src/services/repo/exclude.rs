@@ -1,5 +1,5 @@
 use crate::Result;
-use crate::encoding::{RepoExcludeRequest, RepoExcludeResponse};
+use crate::encoding::{RepoExcludeRequest, RepoExcludeResponse, RepoSourceKind};
 use crate::names;
 use crate::services::repo::{json_entry_identity, normalize_repo_entries, repo_source_to_json};
 use config::consts::PeppyDirs;
@@ -85,7 +85,7 @@ pub(crate) struct ExclusionSet {
 }
 
 pub(crate) struct ExcludedEntry {
-    pub(crate) source_type: String,
+    pub(crate) source_type: RepoSourceKind,
     pub(crate) identity: String,
 }
 
@@ -103,7 +103,11 @@ impl ExclusionSet {
         let mut entries = Vec::new();
 
         for e in &raw {
-            let Some(typ) = e.get("type").and_then(|v| v.as_str()) else {
+            let Some(kind) = e
+                .get("type")
+                .and_then(|v| v.as_str())
+                .and_then(RepoSourceKind::parse)
+            else {
                 continue;
             };
             let Some(identity) = json_entry_identity(e) else {
@@ -111,11 +115,11 @@ impl ExclusionSet {
             };
 
             identities.insert(identity.to_owned());
-            if typ == "fs" {
+            if kind == RepoSourceKind::Fs {
                 fs_paths.push(PathBuf::from(identity));
             }
             entries.push(ExcludedEntry {
-                source_type: typ.to_string(),
+                source_type: kind,
                 identity: identity.to_owned(),
             });
         }

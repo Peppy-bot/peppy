@@ -2,7 +2,7 @@ mod common;
 
 use common::{CALLER_INSTANCE_ID, StartedCoreNode, start_core_node_with_mock_messenger};
 use config::consts::NODE_CONFIG_FILE;
-use core_node::encoding::{RepoListRequest, RepoListResponse};
+use core_node::encoding::{RepoListRequest, RepoListResponse, RepoSourceKind};
 use core_node::names;
 use peppylib::ServiceMessenger;
 use std::time::Duration;
@@ -124,7 +124,7 @@ async fn list_finds_nodes_in_fs_repo() {
     assert!(names.contains(&"my_actuator"), "should contain my_actuator");
 
     for node in &resp.nodes {
-        assert_eq!(node.source_type, "fs");
+        assert_eq!(node.source_type, RepoSourceKind::Fs);
     }
 }
 
@@ -173,7 +173,7 @@ async fn list_reads_git_nodes_from_cache() {
         .find(|n| n.node_name == "git_sensor")
         .expect("should find git_sensor");
     assert_eq!(sensor.node_tag, "1.0.0");
-    assert_eq!(sensor.source_type, "git");
+    assert_eq!(sensor.source_type, RepoSourceKind::Git);
     assert_eq!(sensor.path, "nodes/git_sensor");
 
     let actuator = resp
@@ -182,7 +182,7 @@ async fn list_reads_git_nodes_from_cache() {
         .find(|n| n.node_name == "git_actuator")
         .expect("should find git_actuator");
     assert_eq!(actuator.node_tag, "2.0.0");
-    assert_eq!(actuator.source_type, "git");
+    assert_eq!(actuator.source_type, RepoSourceKind::Git);
     assert_eq!(actuator.path, "nodes/git_actuator");
 }
 
@@ -292,14 +292,14 @@ async fn list_marks_git_duplicate_of_fs() {
     let fs_entry = resp
         .nodes
         .iter()
-        .find(|n| n.source_type == "fs")
+        .find(|n| n.source_type == RepoSourceKind::Fs)
         .expect("fs entry");
     assert!(!fs_entry.duplicate, "fs entry should be primary");
 
     let git_entry = resp
         .nodes
         .iter()
-        .find(|n| n.source_type == "git")
+        .find(|n| n.source_type == RepoSourceKind::Git)
         .expect("git entry");
     assert!(
         git_entry.duplicate,
@@ -420,5 +420,5 @@ async fn list_excludes_git_repo() {
     assert!(resp.success);
     assert_eq!(resp.nodes.len(), 1, "only fs_node should be listed");
     assert_eq!(resp.nodes[0].node_name, "fs_node");
-    assert_eq!(resp.nodes[0].source_type, "fs");
+    assert_eq!(resp.nodes[0].source_type, RepoSourceKind::Fs);
 }

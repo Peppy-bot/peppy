@@ -7,6 +7,7 @@ use peppylib::types::Payload;
 use peppylib::{ActionMessenger, MessengerHandle};
 
 use crate::Result;
+use crate::encoding::repo::add::RepoSourceKind;
 use crate::encoding::{decode_message, encode_message, optional_text};
 use crate::names;
 use crate::repo_capnp;
@@ -108,8 +109,7 @@ impl RepoRefreshGoalResponse {
 pub struct RepoRefreshFeedback {
     pub node_name: String,
     pub node_tag: String,
-    /// "fs", "git", or "url"
-    pub source_type: String,
+    pub source_type: RepoSourceKind,
     /// Absolute path (fs) or relative path within repo (git)
     pub path: String,
     /// Variant names declared by this node (empty if none).
@@ -122,14 +122,14 @@ impl RepoRefreshFeedback {
     pub fn new(
         node_name: impl Into<String>,
         node_tag: impl Into<String>,
-        source_type: impl Into<String>,
+        source_type: RepoSourceKind,
         path: impl Into<String>,
         variants: Vec<String>,
     ) -> Self {
         Self {
             node_name: node_name.into(),
             node_tag: node_tag.into(),
-            source_type: source_type.into(),
+            source_type,
             path: path.into(),
             variants,
             excluded: false,
@@ -137,11 +137,11 @@ impl RepoRefreshFeedback {
     }
 
     /// Create a feedback entry representing an excluded repository.
-    pub fn new_excluded(source_type: impl Into<String>, identity: impl Into<String>) -> Self {
+    pub fn new_excluded(source_type: RepoSourceKind, identity: impl Into<String>) -> Self {
         Self {
             node_name: String::new(),
             node_tag: String::new(),
-            source_type: source_type.into(),
+            source_type,
             path: identity.into(),
             variants: Vec::new(),
             excluded: true,
@@ -154,7 +154,7 @@ impl RepoRefreshFeedback {
             let mut feedback = builder.init_root::<repo_capnp::repo_refresh_feedback::Builder>();
             feedback.set_node_name(&self.node_name);
             feedback.set_node_tag(&self.node_tag);
-            feedback.set_source_type(&self.source_type);
+            feedback.set_source_type(self.source_type.as_str());
             feedback.set_path(&self.path);
             feedback.set_excluded(self.excluded);
             let mut variants_builder = feedback.init_variants(self.variants.len() as u32);
@@ -168,6 +168,10 @@ impl RepoRefreshFeedback {
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
         let feedback = reader.get_root::<repo_capnp::repo_refresh_feedback::Reader>()?;
+        let source_type_str = feedback.get_source_type()?.to_str()?;
+        let source_type = RepoSourceKind::parse(source_type_str).ok_or_else(|| {
+            crate::Error::Decoding(format!("unknown source type: {source_type_str}"))
+        })?;
         let variants_reader = feedback.get_variants()?;
         let mut variants = Vec::with_capacity(variants_reader.len() as usize);
         for i in 0..variants_reader.len() {
@@ -176,7 +180,7 @@ impl RepoRefreshFeedback {
         Ok(Self {
             node_name: feedback.get_node_name()?.to_str()?.to_owned(),
             node_tag: feedback.get_node_tag()?.to_str()?.to_owned(),
-            source_type: feedback.get_source_type()?.to_str()?.to_owned(),
+            source_type,
             path: feedback.get_path()?.to_str()?.to_owned(),
             variants,
             excluded: feedback.get_excluded(),

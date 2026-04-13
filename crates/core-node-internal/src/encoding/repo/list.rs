@@ -5,6 +5,7 @@ use peppylib::types::Payload;
 use peppylib::{MessengerHandle, ServiceMessenger};
 
 use crate::Result;
+use crate::encoding::repo::add::RepoSourceKind;
 use crate::encoding::{decode_message, encode_message, optional_text};
 use crate::names;
 use crate::repo_capnp;
@@ -58,8 +59,7 @@ impl RepoListRequest {
 pub struct RepoListNodeEntry {
     pub node_name: String,
     pub node_tag: String,
-    /// "fs", "git", or "url"
-    pub source_type: String,
+    pub source_type: RepoSourceKind,
     /// Absolute path (fs) or relative path within repo (git)
     pub path: String,
     /// Variant names declared by this node (empty if none).
@@ -107,7 +107,7 @@ impl RepoListResponse {
                 let mut entry = nodes_builder.reborrow().get(i as u32);
                 entry.set_node_name(&node.node_name);
                 entry.set_node_tag(&node.node_tag);
-                entry.set_source_type(&node.source_type);
+                entry.set_source_type(node.source_type.as_str());
                 entry.set_path(&node.path);
                 entry.reborrow().set_duplicate(node.duplicate);
                 let mut variants_builder = entry.init_variants(node.variants.len() as u32);
@@ -131,10 +131,14 @@ impl RepoListResponse {
             for j in 0..variants_reader.len() {
                 variants.push(variants_reader.get(j)?.to_str()?.to_owned());
             }
+            let source_type_str = entry.get_source_type()?.to_str()?;
+            let source_type = RepoSourceKind::parse(source_type_str).ok_or_else(|| {
+                crate::Error::Decoding(format!("unknown source type: {source_type_str}"))
+            })?;
             nodes.push(RepoListNodeEntry {
                 node_name: entry.get_node_name()?.to_str()?.to_owned(),
                 node_tag: entry.get_node_tag()?.to_str()?.to_owned(),
-                source_type: entry.get_source_type()?.to_str()?.to_owned(),
+                source_type,
                 path: entry.get_path()?.to_str()?.to_owned(),
                 variants,
                 duplicate: entry.get_duplicate(),

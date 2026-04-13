@@ -1,3 +1,4 @@
+use std::fmt;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -10,6 +11,39 @@ use crate::names;
 use crate::repo_capnp;
 
 use crate::encoding::{decode_message, encode_message};
+
+/// Discriminant for the type of repository source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RepoSourceKind {
+    Fs,
+    Git,
+    Url,
+}
+
+impl RepoSourceKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RepoSourceKind::Fs => "fs",
+            RepoSourceKind::Git => "git",
+            RepoSourceKind::Url => "url",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "fs" => Some(RepoSourceKind::Fs),
+            "git" => Some(RepoSourceKind::Git),
+            "url" => Some(RepoSourceKind::Url),
+            _ => None,
+        }
+    }
+}
+
+impl fmt::Display for RepoSourceKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RepoSource {
@@ -31,12 +65,11 @@ impl RepoSource {
         }
     }
 
-    /// The source type discriminant as a static string.
-    pub fn source_type(&self) -> &'static str {
+    pub fn kind(&self) -> RepoSourceKind {
         match self {
-            RepoSource::Fs(_) => "fs",
-            RepoSource::Git { .. } => "git",
-            RepoSource::Url(_) => "url",
+            RepoSource::Fs(_) => RepoSourceKind::Fs,
+            RepoSource::Git { .. } => RepoSourceKind::Git,
+            RepoSource::Url(_) => RepoSourceKind::Url,
         }
     }
 }

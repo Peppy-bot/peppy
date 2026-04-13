@@ -1,5 +1,7 @@
 use crate::Result;
-use crate::encoding::{RepoListNodeEntry, RepoListRequest, RepoListResponse, RepoSource};
+use crate::encoding::{
+    RepoListNodeEntry, RepoListRequest, RepoListResponse, RepoSource, RepoSourceKind,
+};
 use crate::names;
 use crate::services::repo::exclude::ExclusionSet;
 use crate::services::repo::refresh::{parse_repo_entry, read_or_create_repos, walk_directory};
@@ -94,7 +96,7 @@ fn handle_repo_list_request_inner(
                 let mut discovered = Vec::new();
                 walk_directory(
                     &path,
-                    "fs",
+                    RepoSourceKind::Fs,
                     None,
                     &mut repo_seen,
                     &mut discovered,
@@ -143,7 +145,7 @@ fn handle_repo_list_request_inner(
                     all_entries.push(RepoListNodeEntry {
                         node_name: name.to_string(),
                         node_tag: tag.to_string(),
-                        source_type: "git".to_string(),
+                        source_type: RepoSourceKind::Git,
                         path: cached
                             .get("path")
                             .and_then(|v| v.as_str())
