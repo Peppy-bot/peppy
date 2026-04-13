@@ -688,11 +688,17 @@ async fn refresh_cache_includes_duplicates() {
 async fn refresh_empty_repos() {
     let started = start_core_node_with_mock_messenger().await;
 
+    write_repositories_json5(&started, "[]");
+
     let result = send_refresh_and_wait(&started).await;
 
     assert!(result.goal_response.accepted, "goal should be accepted");
     assert!(
         result.result.success,
-        "refresh should succeed with defaults"
+        "refresh should succeed with empty repos"
+    );
+    assert_eq!(
+        result.result.total_nodes_found, 0,
+        "no nodes should be found with empty repos"
     );
 }
