@@ -599,6 +599,91 @@ async fn refresh_cache_includes_variants() {
     );
 }
 
+/// When two repositories provide the same node, the cache should contain both
+/// entries — the first as non-duplicate and the second marked as duplicate.
+/// The total_nodes_found count should only reflect unique (non-duplicate) nodes
+/// and feedback should only be emitted for non-duplicates.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn refresh_cache_includes_duplicates() {
+    let started = start_core_node_with_real_messenger().await;
+
+    let repo_dir_a = started.peppy_dirs.root().join("dup_cache_a");
+    let repo_dir_b = started.peppy_dirs.root().join("dup_cache_b");
+    create_node_dir(&repo_dir_a, "shared_node", "1.0.0");
+    create_node_dir(&repo_dir_b, "shared_node", "1.0.0");
+    // unique node only in repo_b
+    create_node_dir(&repo_dir_b, "unique_node", "1.0.0");
+
+    write_repositories_json5(
+        &started,
+        &format!(
+            r#"[{{ "id": 1, "type": "fs", "path": "{}" }}, {{ "id": 2, "type": "fs", "path": "{}" }}]"#,
+            repo_dir_a.display(),
+            repo_dir_b.display()
+        ),
+    );
+
+    let result = send_refresh_and_wait_with_feedback(&started).await;
+
+    assert!(result.result.success, "refresh should succeed");
+    assert_eq!(
+        result.result.total_nodes_found, 2,
+        "unique node count should be 2 (shared_node + unique_node)"
+    );
+
+    // Feedback should only contain non-duplicate entries
+    assert_eq!(
+        result.feedbacks.len(),
+        2,
+        "should receive 2 feedbacks (one per unique node)"
+    );
+    let feedback_names: Vec<&str> = result
+        .feedbacks
+        .iter()
+        .map(|f| f.node_name.as_str())
+        .collect();
+    assert!(feedback_names.contains(&"shared_node"));
+    assert!(feedback_names.contains(&"unique_node"));
+
+    // Cache should contain all 3 entries (including the duplicate)
+    let cache_path = started.peppy_dirs.cache_dir().join("packages.json5");
+    let content = std::fs::read_to_string(&cache_path).expect("read cache");
+    let entries: Vec<serde_json::Value> = serde_json::from_str(&content).expect("parse cache");
+    assert_eq!(
+        entries.len(),
+        3,
+        "cache should contain 3 entries (2 unique + 1 duplicate)"
+    );
+
+    let shared_entries: Vec<&serde_json::Value> = entries
+        .iter()
+        .filter(|e| e["node_name"] == "shared_node")
+        .collect();
+    assert_eq!(
+        shared_entries.len(),
+        2,
+        "shared_node should appear twice in cache"
+    );
+
+    let primary = shared_entries
+        .iter()
+        .find(|e| e.get("duplicate").is_none())
+        .expect("should have a non-duplicate shared_node");
+    assert!(
+        primary["path"].as_str().unwrap().contains("dup_cache_a"),
+        "primary should be from repo_a (higher priority)"
+    );
+
+    let dup = shared_entries
+        .iter()
+        .find(|e| e.get("duplicate").and_then(|v| v.as_bool()) == Some(true))
+        .expect("should have a duplicate shared_node");
+    assert!(
+        dup["path"].as_str().unwrap().contains("dup_cache_b"),
+        "duplicate should be from repo_b"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn refresh_empty_repos() {
     let started = start_core_node_with_mock_messenger().await;

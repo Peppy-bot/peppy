@@ -71,6 +71,8 @@ struct RepoListNodeEntry {
     path @3 :Text;
     # Variant names declared by this node (empty if none)
     variants @4 :List(Text);
+    # True when another repo with higher priority already provides this node
+    duplicate @5 :Bool;
 }
 
 struct RepoListResponse {

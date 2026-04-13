@@ -64,6 +64,9 @@ pub struct RepoListNodeEntry {
     pub path: String,
     /// Variant names declared by this node (empty if none).
     pub variants: Vec<String>,
+    /// `true` when another repository with higher priority already provides
+    /// this `(name, tag)` pair.
+    pub duplicate: bool,
 }
 
 /// Response message for the RepoList service.
@@ -106,6 +109,7 @@ impl RepoListResponse {
                 entry.set_node_tag(&node.node_tag);
                 entry.set_source_type(&node.source_type);
                 entry.set_path(&node.path);
+                entry.reborrow().set_duplicate(node.duplicate);
                 let mut variants_builder = entry.init_variants(node.variants.len() as u32);
                 for (j, v) in node.variants.iter().enumerate() {
                     variants_builder.set(j as u32, v);
@@ -133,6 +137,7 @@ impl RepoListResponse {
                 source_type: entry.get_source_type()?.to_str()?.to_owned(),
                 path: entry.get_path()?.to_str()?.to_owned(),
                 variants,
+                duplicate: entry.get_duplicate(),
             });
         }
         Ok(Self {

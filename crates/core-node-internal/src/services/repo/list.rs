@@ -65,7 +65,7 @@ fn handle_repo_list_request_inner(
     // Read cached nodes for git/url repos
     let cached_nodes = read_cached_nodes(peppy_dirs);
 
-    let mut seen: HashSet<(String, String)> = HashSet::new();
+    let mut global_seen: HashSet<(String, String)> = HashSet::new();
     let mut all_entries: Vec<RepoListNodeEntry> = Vec::new();
 
     for entry in &repos {
@@ -80,15 +80,19 @@ fn handle_repo_list_request_inner(
                     debug!("Skipping non-existent FS repository: {}", path.display());
                     continue;
                 }
+                let mut repo_seen = HashSet::new();
                 let mut discovered = Vec::new();
-                walk_directory(&path, "fs", None, &mut seen, &mut discovered);
+                walk_directory(&path, "fs", None, &mut repo_seen, &mut discovered);
                 for node in discovered {
+                    let key = (node.node_name.clone(), node.node_tag.clone());
+                    let duplicate = !global_seen.insert(key);
                     all_entries.push(RepoListNodeEntry {
                         node_name: node.node_name,
                         node_tag: node.node_tag,
                         source_type: node.source_type,
                         path: node.path,
                         variants: node.variants,
+                        duplicate,
                     });
                 }
             }
@@ -109,28 +113,28 @@ fn handle_repo_list_request_inner(
                         .and_then(|v| v.as_str())
                         .unwrap_or("");
                     let key = (name.to_string(), tag.to_string());
-                    if seen.insert(key) {
-                        let variants = cached
-                            .get("variants")
-                            .and_then(|v| v.as_array())
-                            .map(|arr| {
-                                arr.iter()
-                                    .filter_map(|v| v.as_str().map(|s| s.to_owned()))
-                                    .collect()
-                            })
-                            .unwrap_or_default();
-                        all_entries.push(RepoListNodeEntry {
-                            node_name: name.to_string(),
-                            node_tag: tag.to_string(),
-                            source_type: "git".to_string(),
-                            path: cached
-                                .get("path")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("")
-                                .to_string(),
-                            variants,
-                        });
-                    }
+                    let duplicate = !global_seen.insert(key);
+                    let variants = cached
+                        .get("variants")
+                        .and_then(|v| v.as_array())
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|v| v.as_str().map(|s| s.to_owned()))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    all_entries.push(RepoListNodeEntry {
+                        node_name: name.to_string(),
+                        node_tag: tag.to_string(),
+                        source_type: "git".to_string(),
+                        path: cached
+                            .get("path")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                        variants,
+                        duplicate,
+                    });
                 }
             }
             RepoSource::Url(url) => {

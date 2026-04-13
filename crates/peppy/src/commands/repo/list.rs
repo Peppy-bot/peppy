@@ -81,25 +81,21 @@ fn print_nodes(nodes: &[&RepoListNodeEntry]) {
     let max_tag_len = nodes.iter().map(|n| n.node_tag.len()).max().unwrap_or(0);
 
     for node in nodes {
-        if node.variants.is_empty() {
-            println!(
-                "  {:<name_w$}  {:<tag_w$}  {}",
-                node.node_name,
-                node.node_tag,
-                node.path,
-                name_w = max_name_len,
-                tag_w = max_tag_len,
-            );
-        } else {
-            println!(
-                "  {:<name_w$}  {:<tag_w$}  {}  [variants: {}]",
-                node.node_name,
-                node.node_tag,
-                node.path,
-                node.variants.join(", "),
-                name_w = max_name_len,
-                tag_w = max_tag_len,
-            );
+        let mut suffix = String::new();
+        if !node.variants.is_empty() {
+            suffix.push_str(&format!("  [variants: {}]", node.variants.join(", ")));
         }
+        if node.duplicate {
+            suffix.push_str("  \x1b[38;5;208m(duplicate)\x1b[0m");
+        }
+        println!(
+            "  {:<name_w$}  {:<tag_w$}  {}{}",
+            node.node_name,
+            node.node_tag,
+            node.path,
+            suffix,
+            name_w = max_name_len,
+            tag_w = max_tag_len,
+        );
     }
 }

@@ -186,6 +186,127 @@ async fn list_reads_git_nodes_from_cache() {
     assert_eq!(actuator.path, "nodes/git_actuator");
 }
 
+/// When two FS repositories provide the same node, the list should contain both
+/// entries — the first as non-duplicate and the second marked as duplicate.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn list_marks_cross_repo_duplicates_fs() {
+    let started = start_core_node_with_mock_messenger().await;
+
+    let repo_a = started.peppy_dirs.root().join("list_dup_a");
+    let repo_b = started.peppy_dirs.root().join("list_dup_b");
+    create_node_dir(&repo_a, "shared", "1.0.0");
+    create_node_dir(&repo_b, "shared", "1.0.0");
+    create_node_dir(&repo_b, "unique_b", "1.0.0");
+
+    write_repositories_json5(
+        &started,
+        &format!(
+            r#"[{{ "id": 1, "type": "fs", "path": "{}" }}, {{ "id": 2, "type": "fs", "path": "{}" }}]"#,
+            repo_a.display(),
+            repo_b.display()
+        ),
+    );
+
+    let resp = send_repo_list(&started).await;
+    assert!(resp.success);
+    assert_eq!(
+        resp.nodes.len(),
+        3,
+        "should contain 3 entries (shared from a, shared from b as dup, unique_b)"
+    );
+
+    let shared_entries: Vec<_> = resp
+        .nodes
+        .iter()
+        .filter(|n| n.node_name == "shared")
+        .collect();
+    assert_eq!(shared_entries.len(), 2, "shared should appear twice");
+
+    let primary = shared_entries
+        .iter()
+        .find(|n| !n.duplicate)
+        .expect("primary");
+    assert!(
+        primary.path.contains("list_dup_a"),
+        "primary should come from repo_a"
+    );
+
+    let dup = shared_entries
+        .iter()
+        .find(|n| n.duplicate)
+        .expect("duplicate");
+    assert!(
+        dup.path.contains("list_dup_b"),
+        "duplicate should come from repo_b"
+    );
+
+    let unique = resp
+        .nodes
+        .iter()
+        .find(|n| n.node_name == "unique_b")
+        .expect("unique_b");
+    assert!(!unique.duplicate, "unique_b should not be a duplicate");
+}
+
+/// When a git-cached node overlaps with a local FS node, the git entry should
+/// be marked as duplicate.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn list_marks_git_duplicate_of_fs() {
+    let started = start_core_node_with_mock_messenger().await;
+
+    let repo_dir = started.peppy_dirs.root().join("fs_repo");
+    create_node_dir(&repo_dir, "overlapping", "1.0.0");
+
+    let git_url = "https://github.com/example/nodes.git";
+
+    write_repositories_json5(
+        &started,
+        &format!(
+            r#"[{{ "id": 1, "type": "fs", "path": "{}" }}, {{ "id": 2, "type": "git", "url": "{git_url}" }}]"#,
+            repo_dir.display()
+        ),
+    );
+
+    // Cache has the same node from git
+    write_packages_cache(
+        &started,
+        &format!(
+            r#"[{{
+  "node_name": "overlapping",
+  "node_tag": "1.0.0",
+  "source_type": "git",
+  "source_uri": "{git_url}",
+  "path": "nodes/overlapping"
+}}]"#
+        ),
+    );
+
+    let resp = send_repo_list(&started).await;
+    assert!(resp.success);
+    assert_eq!(
+        resp.nodes.len(),
+        2,
+        "should contain both the fs and git entries"
+    );
+
+    let fs_entry = resp
+        .nodes
+        .iter()
+        .find(|n| n.source_type == "fs")
+        .expect("fs entry");
+    assert!(!fs_entry.duplicate, "fs entry should be primary");
+
+    let git_entry = resp
+        .nodes
+        .iter()
+        .find(|n| n.source_type == "git")
+        .expect("git entry");
+    assert!(
+        git_entry.duplicate,
+        "git entry should be marked as duplicate"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn list_empty_repos_file() {
     let started = start_core_node_with_mock_messenger().await;

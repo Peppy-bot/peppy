@@ -124,8 +124,8 @@ impl GoalHandler for RepoRefreshGoalHandler {
             let dirs = peppy_dirs.clone();
             let result = match tokio::task::spawn_blocking(move || process_refresh(&dirs)).await {
                 Ok(Ok(discovered)) => {
-                    // Publish feedback for each discovered node
-                    for node in &discovered {
+                    // Publish feedback only for non-duplicate nodes
+                    for node in discovered.iter().filter(|n| !n.duplicate) {
                         let feedback = RepoRefreshFeedback::new(
                             &node.node_name,
                             &node.node_tag,
@@ -138,12 +138,14 @@ impl GoalHandler for RepoRefreshGoalHandler {
                         }
                     }
 
-                    // Write cache for non-fs nodes
+                    // Write cache for all nodes (including duplicates, so
+                    // `repo list` can display every source).
                     if let Err(e) = write_cache(&peppy_dirs, &discovered) {
                         warn!("Failed to write repo refresh cache: {}", e);
                     }
 
-                    RepoRefreshResult::success(discovered.len() as u32)
+                    let unique_count = discovered.iter().filter(|n| !n.duplicate).count() as u32;
+                    RepoRefreshResult::success(unique_count)
                 }
                 Ok(Err(e)) => RepoRefreshResult::failure(e.to_string()),
                 Err(e) => RepoRefreshResult::failure(format!("task panicked: {}", e)),
@@ -171,6 +173,10 @@ pub(crate) struct DiscoveredNode {
     pub(crate) path: String,
     pub(crate) source_uri: Option<String>,
     pub(crate) variants: Vec<String>,
+    /// `true` when another repository (with lower id) already provides this
+    /// `(name, tag)` pair. The node is still recorded so that `repo list` can
+    /// display all sources.
+    pub(crate) duplicate: bool,
 }
 
 /// Parse a JSON entry from repositories.json5 into a `RepoSource`.
@@ -248,10 +254,10 @@ pub(crate) fn read_or_create_repos(peppy_dirs: &PeppyDirs) -> Result<Vec<Value>>
     // Detect duplicate ids — a user may manually edit the file and introduce collisions.
     let mut seen_ids = HashSet::new();
     for entry in &repos {
-        if let Some(id) = entry.get("id").and_then(|v| v.as_u64()) {
-            if !seen_ids.insert(id) {
-                return Err(crate::Error::DuplicateRepoId { id });
-            }
+        if let Some(id) = entry.get("id").and_then(|v| v.as_u64())
+            && !seen_ids.insert(id)
+        {
+            return Err(crate::Error::DuplicateRepoId { id });
         }
     }
 
@@ -269,10 +275,15 @@ pub(crate) fn read_or_create_repos(peppy_dirs: &PeppyDirs) -> Result<Vec<Value>>
 }
 
 /// Main synchronous processing: reads repos, walks each source, returns discovered nodes.
+///
+/// Nodes whose `(name, tag)` pair was already seen in a higher-priority
+/// repository (lower id) are kept in the result but marked as `duplicate`.
+/// This allows the cache (and therefore `repo list`) to display all sources
+/// while still counting unique nodes correctly.
 pub(crate) fn process_refresh(peppy_dirs: &PeppyDirs) -> Result<Vec<DiscoveredNode>> {
     let repos = read_or_create_repos(peppy_dirs)?;
 
-    let mut seen: HashSet<(String, String)> = HashSet::new();
+    let mut global_seen: HashSet<(String, String)> = HashSet::new();
     let mut all_nodes: Vec<DiscoveredNode> = Vec::new();
 
     for entry in &repos {
@@ -290,16 +301,26 @@ pub(crate) fn process_refresh(peppy_dirs: &PeppyDirs) -> Result<Vec<DiscoveredNo
                     debug!("Skipping non-existent FS repository: {}", path.display());
                     continue;
                 }
-                walk_directory(&path, "fs", None, &mut seen, &mut all_nodes);
+                let mut repo_seen = HashSet::new();
+                let mut repo_nodes = Vec::new();
+                walk_directory(&path, "fs", None, &mut repo_seen, &mut repo_nodes);
+                for mut node in repo_nodes {
+                    let key = (node.node_name.clone(), node.node_tag.clone());
+                    if !global_seen.insert(key) {
+                        node.duplicate = true;
+                    }
+                    all_nodes.push(node);
+                }
             }
             RepoSource::Git { repo_url, repo_ref } => {
                 match clone_and_walk_git_repo(&repo_url, repo_ref.as_deref(), peppy_dirs) {
                     Ok(nodes) => {
-                        for node in nodes {
+                        for mut node in nodes {
                             let key = (node.node_name.clone(), node.node_tag.clone());
-                            if seen.insert(key) {
-                                all_nodes.push(node);
+                            if !global_seen.insert(key) {
+                                node.duplicate = true;
                             }
+                            all_nodes.push(node);
                         }
                     }
                     Err(e) => {
@@ -384,6 +405,7 @@ pub(crate) fn walk_directory(
             path: node_path,
             source_uri: source_uri.map(|s| s.to_string()),
             variants,
+            duplicate: false,
         });
     }
 }
@@ -450,6 +472,9 @@ pub(crate) fn write_cache(peppy_dirs: &PeppyDirs, nodes: &[DiscoveredNode]) -> R
                     .map(|v| Value::String(v.clone()))
                     .collect();
                 map.insert("variants".to_string(), Value::Array(variant_values));
+            }
+            if n.duplicate {
+                map.insert("duplicate".to_string(), Value::Bool(true));
             }
             Value::Object(map)
         })
