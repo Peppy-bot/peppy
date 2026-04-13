@@ -10,7 +10,9 @@ use core_node::encoding::{
     RepoRefreshFeedback, RepoRefreshGoal, RepoRefreshGoalResponse, RepoRefreshResult,
 };
 use core_node::names;
+use git2::{Repository, Signature};
 use peppylib::ActionMessenger;
+use std::path::Path;
 use std::time::Duration;
 
 /// Minimal valid peppy.json5 content for a node with the given name and tag.
@@ -298,12 +300,52 @@ async fn refresh_url_skipped() {
 async fn refresh_cache_written() {
     let started = start_core_node_with_mock_messenger().await;
 
+    // FS repo with a single node
     let repo_dir = started.peppy_dirs.root().join("cached_repo");
     create_node_dir(&repo_dir, "cached_node", "2.0.0");
 
+    // Local git repo with a node in a subfolder
+    let git_repo_path = started.peppy_dirs.root().join("git_test_repo.git");
+    std::fs::create_dir_all(&git_repo_path).expect("create git repo dir");
+
+    let repo = Repository::init(&git_repo_path).expect("init git repo");
+    let signature = Signature::now("Peppy", "peppy@example.com").expect("create signature");
+
+    let node_subdir = git_repo_path.join("nodes/git_node");
+    std::fs::create_dir_all(&node_subdir).expect("create git node dir");
+    std::fs::write(
+        node_subdir.join(NODE_CONFIG_FILE),
+        minimal_peppy_json5("git_node", "1.0.0"),
+    )
+    .expect("write git node peppy.json5");
+
+    let rel_config_path = Path::new("nodes/git_node/peppy.json5");
+    let mut index = repo.index().expect("open index");
+    index
+        .add_path(rel_config_path)
+        .expect("add config to index");
+    index.write().expect("write index");
+    let tree_id = index.write_tree().expect("write tree");
+    let tree = repo.find_tree(tree_id).expect("find tree");
+    repo.commit(
+        Some("HEAD"),
+        &signature,
+        &signature,
+        "initial commit",
+        &tree,
+        &[],
+    )
+    .expect("commit");
+
+    // Use file:// protocol so git2 shallow clone works with local repos
+    let git_repo_url = format!("file://{}", git_repo_path.display());
     write_repositories_json5(
         &started,
-        &format!(r#"[{{ "type": "fs", "path": "{}" }}]"#, repo_dir.display()),
+        &format!(
+            r#"[{{ "type": "fs", "path": "{}" }}, {{ "type": "git", "url": "{}" }}]"#,
+            repo_dir.display(),
+            git_repo_url,
+        ),
     );
 
     let result = send_refresh_and_wait(&started).await;
@@ -314,11 +356,24 @@ async fn refresh_cache_written() {
 
     let content = std::fs::read_to_string(&cache_path).expect("read cache");
     let entries: Vec<serde_json::Value> = serde_json::from_str(&content).expect("parse cache JSON");
-    assert_eq!(
-        entries.len(),
-        1,
-        "cache should contain the FS node"
-    );
+    assert_eq!(entries.len(), 2, "cache should contain 2 nodes (FS + git)");
+
+    let fs_entry = entries
+        .iter()
+        .find(|e| e["source_type"] == "fs")
+        .expect("should have an fs entry");
+    let git_entry = entries
+        .iter()
+        .find(|e| e["source_type"] == "git")
+        .expect("should have a git entry");
+
+    assert_eq!(fs_entry["node_name"], "cached_node");
+    assert_eq!(fs_entry["node_tag"], "2.0.0");
+
+    assert_eq!(git_entry["node_name"], "git_node");
+    assert_eq!(git_entry["node_tag"], "1.0.0");
+    assert_eq!(git_entry["path"], "nodes/git_node");
+    assert_eq!(git_entry["source_uri"], git_repo_url);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

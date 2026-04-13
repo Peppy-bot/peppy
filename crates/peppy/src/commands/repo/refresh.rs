@@ -80,12 +80,8 @@ async fn repo_refresh_async(ctx: &Arc<AppContext>) -> Result<()> {
         }
 
         // Check for result
-        match ActionMessenger::request_result(
-            conn.messenger,
-            &action_handle,
-            RESULT_POLL_TIMEOUT,
-        )
-        .await
+        match ActionMessenger::request_result(conn.messenger, &action_handle, RESULT_POLL_TIMEOUT)
+            .await
         {
             Ok(msg) => {
                 let payload = msg.payload();

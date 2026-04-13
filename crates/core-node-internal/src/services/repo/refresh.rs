@@ -168,7 +168,7 @@ struct DiscoveredNode {
     node_tag: String,
     source_type: String,
     path: String,
-    source_url: Option<String>,
+    source_uri: Option<String>,
 }
 
 /// Parse a JSON entry from repositories.json5 into a `RepoSource`.
@@ -271,7 +271,7 @@ fn process_refresh(peppy_dirs: &PeppyDirs) -> Result<Vec<DiscoveredNode>> {
 fn walk_directory(
     root: &Path,
     source_type: &str,
-    source_url: Option<&str>,
+    source_uri: Option<&str>,
     seen: &mut HashSet<(String, String)>,
     nodes: &mut Vec<DiscoveredNode>,
 ) {
@@ -335,7 +335,7 @@ fn walk_directory(
             node_tag: tag,
             source_type: source_type.to_string(),
             path: node_path,
-            source_url: source_url.map(|s| s.to_string()),
+            source_uri: source_uri.map(|s| s.to_string()),
         });
     }
 }
@@ -351,13 +351,18 @@ fn clone_and_walk_git_repo(
     let tmp =
         tempfile::tempdir_in(&tmp_dir).map_err(|e| format!("failed to create temp dir: {}", e))?;
 
-    let mut fetch_opts = git2::FetchOptions::new();
-    fetch_opts.depth(1);
+    let is_local = repo_url.starts_with('/') || repo_url.starts_with("file://");
 
-    let repo = RepoBuilder::new()
-        .fetch_options(fetch_opts)
+    let mut builder = RepoBuilder::new();
+    if !is_local {
+        let mut fetch_opts = git2::FetchOptions::new();
+        fetch_opts.depth(1);
+        builder.fetch_options(fetch_opts);
+    }
+
+    let repo = builder
         .clone(repo_url, tmp.path())
-        .map_err(|e| format!("failed to shallow clone: {}", e))?;
+        .map_err(|e| format!("failed to clone: {}", e))?;
 
     if let Some(r) = repo_ref {
         checkout_repo_ref(&repo, r)
@@ -386,8 +391,8 @@ fn write_cache(peppy_dirs: &PeppyDirs, nodes: &[DiscoveredNode]) -> Result<()> {
                 "source_type".to_string(),
                 Value::String(n.source_type.clone()),
             );
-            if let Some(url) = &n.source_url {
-                map.insert("source_url".to_string(), Value::String(url.clone()));
+            if let Some(url) = &n.source_uri {
+                map.insert("source_uri".to_string(), Value::String(url.clone()));
             }
             map.insert("path".to_string(), Value::String(n.path.clone()));
             Value::Object(map)
