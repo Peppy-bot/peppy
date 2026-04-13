@@ -131,6 +131,7 @@ impl GoalHandler for RepoRefreshGoalHandler {
                             &node.node_tag,
                             &node.source_type,
                             &node.path,
+                            node.variants.clone(),
                         );
                         if let Ok(payload) = feedback.encode() {
                             let _ = feedback_publisher.publish(payload).await;
@@ -169,6 +170,7 @@ pub(crate) struct DiscoveredNode {
     pub(crate) source_type: String,
     pub(crate) path: String,
     pub(crate) source_uri: Option<String>,
+    pub(crate) variants: Vec<String>,
 }
 
 /// Parse a JSON entry from repositories.json5 into a `RepoSource`.
@@ -353,6 +355,7 @@ pub(crate) fn walk_directory(
 
         let name = parsed.manifest_name().to_string();
         let tag = parsed.manifest_tag().to_string();
+        let variants = parsed.variant_names();
         let key = (name.clone(), tag.clone());
 
         if !seen.insert(key) {
@@ -380,6 +383,7 @@ pub(crate) fn walk_directory(
             source_type: source_type.to_string(),
             path: node_path,
             source_uri: source_uri.map(|s| s.to_string()),
+            variants,
         });
     }
 }
@@ -439,6 +443,14 @@ pub(crate) fn write_cache(peppy_dirs: &PeppyDirs, nodes: &[DiscoveredNode]) -> R
                 map.insert("source_uri".to_string(), Value::String(url.clone()));
             }
             map.insert("path".to_string(), Value::String(n.path.clone()));
+            if !n.variants.is_empty() {
+                let variant_values: Vec<Value> = n
+                    .variants
+                    .iter()
+                    .map(|v| Value::String(v.clone()))
+                    .collect();
+                map.insert("variants".to_string(), Value::Array(variant_values));
+            }
             Value::Object(map)
         })
         .collect();

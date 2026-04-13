@@ -62,6 +62,8 @@ pub struct RepoListNodeEntry {
     pub source_type: String,
     /// Absolute path (fs) or relative path within repo (git)
     pub path: String,
+    /// Variant names declared by this node (empty if none).
+    pub variants: Vec<String>,
 }
 
 /// Response message for the RepoList service.
@@ -104,6 +106,10 @@ impl RepoListResponse {
                 entry.set_node_tag(&node.node_tag);
                 entry.set_source_type(&node.source_type);
                 entry.set_path(&node.path);
+                let mut variants_builder = entry.init_variants(node.variants.len() as u32);
+                for (j, v) in node.variants.iter().enumerate() {
+                    variants_builder.set(j as u32, v);
+                }
             }
         }
         encode_message(&builder)
@@ -116,11 +122,17 @@ impl RepoListResponse {
         let mut nodes = Vec::with_capacity(nodes_reader.len() as usize);
         for i in 0..nodes_reader.len() {
             let entry = nodes_reader.get(i);
+            let variants_reader = entry.get_variants()?;
+            let mut variants = Vec::with_capacity(variants_reader.len() as usize);
+            for j in 0..variants_reader.len() {
+                variants.push(variants_reader.get(j)?.to_str()?.to_owned());
+            }
             nodes.push(RepoListNodeEntry {
                 node_name: entry.get_node_name()?.to_str()?.to_owned(),
                 node_tag: entry.get_node_tag()?.to_str()?.to_owned(),
                 source_type: entry.get_source_type()?.to_str()?.to_owned(),
                 path: entry.get_path()?.to_str()?.to_owned(),
+                variants,
             });
         }
         Ok(Self {

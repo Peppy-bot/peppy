@@ -46,6 +46,8 @@ struct RepoRefreshFeedback {
     sourceType @2 :Text;
     # Absolute path (fs) or relative path within repo (git)
     path @3 :Text;
+    # Variant names declared by this node (empty if none)
+    variants @4 :List(Text);
 }
 
 struct RepoRefreshResult {
@@ -67,6 +69,8 @@ struct RepoListNodeEntry {
     sourceType @2 :Text;
     # Absolute path (fs) or relative path within repo (git)
     path @3 :Text;
+    # Variant names declared by this node (empty if none)
+    variants @4 :List(Text);
 }
 
 struct RepoListResponse {

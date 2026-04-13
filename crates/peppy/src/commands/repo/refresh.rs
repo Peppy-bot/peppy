@@ -65,13 +65,24 @@ async fn repo_refresh_async(ctx: &Arc<AppContext>) -> Result<()> {
                 Ok(Ok(msg)) => {
                     last_activity = tokio::time::Instant::now();
                     if let Ok(feedback) = RepoRefreshFeedback::decode(&msg.payload()) {
-                        info!(
-                            "  Found {}:{} ({}, {})",
-                            feedback.node_name,
-                            feedback.node_tag,
-                            feedback.source_type,
-                            feedback.path,
-                        );
+                        if feedback.variants.is_empty() {
+                            info!(
+                                "  Found {}:{} ({}, {})",
+                                feedback.node_name,
+                                feedback.node_tag,
+                                feedback.source_type,
+                                feedback.path,
+                            );
+                        } else {
+                            info!(
+                                "  Found {}:{} ({}, {}) [variants: {}]",
+                                feedback.node_name,
+                                feedback.node_tag,
+                                feedback.source_type,
+                                feedback.path,
+                                feedback.variants.join(", "),
+                            );
+                        }
                     }
                 }
                 Ok(Err(_)) => break, // channel closed

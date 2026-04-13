@@ -112,6 +112,8 @@ pub struct RepoRefreshFeedback {
     pub source_type: String,
     /// Absolute path (fs) or relative path within repo (git)
     pub path: String,
+    /// Variant names declared by this node (empty if none).
+    pub variants: Vec<String>,
 }
 
 impl RepoRefreshFeedback {
@@ -120,12 +122,14 @@ impl RepoRefreshFeedback {
         node_tag: impl Into<String>,
         source_type: impl Into<String>,
         path: impl Into<String>,
+        variants: Vec<String>,
     ) -> Self {
         Self {
             node_name: node_name.into(),
             node_tag: node_tag.into(),
             source_type: source_type.into(),
             path: path.into(),
+            variants,
         }
     }
 
@@ -137,6 +141,10 @@ impl RepoRefreshFeedback {
             feedback.set_node_tag(&self.node_tag);
             feedback.set_source_type(&self.source_type);
             feedback.set_path(&self.path);
+            let mut variants_builder = feedback.init_variants(self.variants.len() as u32);
+            for (i, v) in self.variants.iter().enumerate() {
+                variants_builder.set(i as u32, v);
+            }
         }
         encode_message(&builder)
     }
@@ -144,11 +152,17 @@ impl RepoRefreshFeedback {
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
         let feedback = reader.get_root::<repo_capnp::repo_refresh_feedback::Reader>()?;
+        let variants_reader = feedback.get_variants()?;
+        let mut variants = Vec::with_capacity(variants_reader.len() as usize);
+        for i in 0..variants_reader.len() {
+            variants.push(variants_reader.get(i)?.to_str()?.to_owned());
+        }
         Ok(Self {
             node_name: feedback.get_node_name()?.to_str()?.to_owned(),
             node_tag: feedback.get_node_tag()?.to_str()?.to_owned(),
             source_type: feedback.get_source_type()?.to_str()?.to_owned(),
             path: feedback.get_path()?.to_str()?.to_owned(),
+            variants,
         })
     }
 }

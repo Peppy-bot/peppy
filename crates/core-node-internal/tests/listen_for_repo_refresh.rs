@@ -34,6 +34,75 @@ fn minimal_peppy_json5(name: &str, tag: &str) -> String {
     )
 }
 
+/// Minimal valid peppy.json5 content for a root node that declares variants
+/// (no execution block — execution comes from the variant subdirectories).
+fn root_with_variants_peppy_json5(name: &str, tag: &str, variants: &[(&str, &str)]) -> String {
+    let variant_entries: Vec<String> = variants
+        .iter()
+        .map(|(vname, vpath)| {
+            format!(r#"        {{ name: "{vname}", source: {{ local: "{vpath}" }} }}"#)
+        })
+        .collect();
+    format!(
+        r#"{{
+  schema_version: 1,
+  manifest: {{
+    name: "{name}",
+    tag: "{tag}",
+    variants: [
+{variants_list}
+    ]
+  }},
+  interfaces: {{}},
+}}"#,
+        variants_list = variant_entries.join(",\n")
+    )
+}
+
+/// Minimal valid variant peppy.json5 (no manifest, execution only).
+fn variant_peppy_json5() -> &'static str {
+    r#"{
+  schema_version: 1,
+  execution: {
+    language: "rust",
+    build_cmd: ["true"],
+    run_cmd: ["true"],
+  },
+}"#
+}
+
+/// Create a node directory with variants. Returns the root node path.
+fn create_node_dir_with_variants(
+    base: &std::path::Path,
+    name: &str,
+    tag: &str,
+    variant_names: &[&str],
+) -> std::path::PathBuf {
+    let dir = base.join(format!("{name}_{tag}"));
+    std::fs::create_dir_all(&dir).expect("create node dir");
+
+    let variants: Vec<(&str, String)> = variant_names
+        .iter()
+        .map(|vname| (*vname, format!("./variants/{vname}")))
+        .collect();
+    let variant_refs: Vec<(&str, &str)> = variants.iter().map(|(n, p)| (*n, p.as_str())).collect();
+
+    std::fs::write(
+        dir.join(NODE_CONFIG_FILE),
+        root_with_variants_peppy_json5(name, tag, &variant_refs),
+    )
+    .expect("write root peppy.json5");
+
+    for vname in variant_names {
+        let variant_dir = dir.join("variants").join(vname);
+        std::fs::create_dir_all(&variant_dir).expect("create variant dir");
+        std::fs::write(variant_dir.join(NODE_CONFIG_FILE), variant_peppy_json5())
+            .expect("write variant peppy.json5");
+    }
+
+    dir
+}
+
 /// Write a repositories.json5 file in the conf_dir of the started core node.
 fn write_repositories_json5(started: &StartedCoreNode, content: &str) {
     let conf_dir = started.peppy_dirs.conf_dir();
@@ -192,6 +261,10 @@ async fn refresh_fs_discovers_nodes() {
     assert_eq!(result.feedbacks[0].node_name, "my_sensor");
     assert_eq!(result.feedbacks[0].node_tag, "1.0.0");
     assert_eq!(result.feedbacks[0].source_type, "fs");
+    assert!(
+        result.feedbacks[0].variants.is_empty(),
+        "node without variants should have empty variants list"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -273,7 +346,99 @@ async fn refresh_deduplication() {
     );
 }
 
-// ── Tests with mock messenger (no feedback needed) ───��──────────
+/// A root node that declares variants should be discovered as a single node
+/// with the variant names attached. The variant subdirectories (which have
+/// their own peppy.json5 without a manifest) must NOT be counted as separate
+/// nodes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn refresh_node_with_variants_counted_once() {
+    let started = start_core_node_with_real_messenger().await;
+
+    let repo_dir = started.peppy_dirs.root().join("variant_repo");
+    create_node_dir_with_variants(&repo_dir, "my_camera", "0.1.0", &["default", "mock", "gpu"]);
+
+    write_repositories_json5(
+        &started,
+        &format!(
+            r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
+            repo_dir.display()
+        ),
+    );
+
+    let result = send_refresh_and_wait_with_feedback(&started).await;
+
+    assert!(result.goal_response.accepted, "goal should be accepted");
+    assert!(result.result.success, "refresh should succeed");
+    assert_eq!(
+        result.result.total_nodes_found, 1,
+        "node with variants should be counted as 1 node, not 1 + variant count"
+    );
+
+    assert_eq!(
+        result.feedbacks.len(),
+        1,
+        "should receive exactly 1 feedback"
+    );
+    assert_eq!(result.feedbacks[0].node_name, "my_camera");
+    assert_eq!(result.feedbacks[0].node_tag, "0.1.0");
+    assert_eq!(
+        result.feedbacks[0].variants,
+        vec!["default", "mock", "gpu"],
+        "feedback should include declared variant names"
+    );
+}
+
+/// When a repo has both a plain node and a node with variants, the total count
+/// should reflect only root nodes (not variants).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn refresh_mixed_plain_and_variant_nodes() {
+    let started = start_core_node_with_real_messenger().await;
+
+    let repo_dir = started.peppy_dirs.root().join("mixed_repo");
+    create_node_dir(&repo_dir, "plain_node", "1.0.0");
+    create_node_dir_with_variants(&repo_dir, "variant_node", "1.0.0", &["default", "sim"]);
+
+    write_repositories_json5(
+        &started,
+        &format!(
+            r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
+            repo_dir.display()
+        ),
+    );
+
+    let result = send_refresh_and_wait_with_feedback(&started).await;
+
+    assert!(result.result.success, "refresh should succeed");
+    assert_eq!(
+        result.result.total_nodes_found, 2,
+        "should count 2 root nodes (plain + variant node)"
+    );
+
+    assert_eq!(result.feedbacks.len(), 2, "should receive 2 feedbacks");
+
+    let plain = result
+        .feedbacks
+        .iter()
+        .find(|f| f.node_name == "plain_node")
+        .expect("should have plain_node feedback");
+    assert!(
+        plain.variants.is_empty(),
+        "plain node should have no variants"
+    );
+
+    let variant = result
+        .feedbacks
+        .iter()
+        .find(|f| f.node_name == "variant_node")
+        .expect("should have variant_node feedback");
+    assert_eq!(
+        variant.variants,
+        vec!["default", "sim"],
+        "variant node should carry its variant names"
+    );
+}
+
+// ── Tests with mock messenger (no feedback needed) ─────────────
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn refresh_url_skipped() {
@@ -380,6 +545,58 @@ async fn refresh_cache_written() {
     assert_eq!(git_entry["node_tag"], "1.0.0");
     assert_eq!(git_entry["path"], "nodes/git_node");
     assert_eq!(git_entry["source_uri"], git_repo_url);
+}
+
+/// Verify that the packages.json5 cache includes variant names for nodes that
+/// declare them, and omits the field for plain nodes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn refresh_cache_includes_variants() {
+    let started = start_core_node_with_mock_messenger().await;
+
+    let repo_dir = started.peppy_dirs.root().join("cache_variant_repo");
+    create_node_dir(&repo_dir, "plain", "1.0.0");
+    create_node_dir_with_variants(&repo_dir, "with_variants", "1.0.0", &["default", "gpu"]);
+
+    write_repositories_json5(
+        &started,
+        &format!(
+            r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
+            repo_dir.display()
+        ),
+    );
+
+    let result = send_refresh_and_wait(&started).await;
+    assert!(result.result.success, "refresh should succeed");
+    assert_eq!(result.result.total_nodes_found, 2);
+
+    let cache_path = started.peppy_dirs.cache_dir().join("packages.json5");
+    let content = std::fs::read_to_string(&cache_path).expect("read cache");
+    let entries: Vec<serde_json::Value> = serde_json::from_str(&content).expect("parse cache");
+
+    let plain_entry = entries
+        .iter()
+        .find(|e| e["node_name"] == "plain")
+        .expect("should have plain entry");
+    assert!(
+        plain_entry.get("variants").is_none(),
+        "plain node should not have variants key in cache"
+    );
+
+    let variant_entry = entries
+        .iter()
+        .find(|e| e["node_name"] == "with_variants")
+        .expect("should have with_variants entry");
+    let cached_variants: Vec<&str> = variant_entry["variants"]
+        .as_array()
+        .expect("variants should be an array")
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert_eq!(
+        cached_variants,
+        vec!["default", "gpu"],
+        "cached variants should match declared variant names"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
