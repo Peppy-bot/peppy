@@ -114,7 +114,10 @@ fn handle_repo_add_request_inner(
 
     let repos_path = peppy_dirs.conf_dir().join("repositories.json5");
 
-    let mut repos = read_or_create_repos(peppy_dirs)?;
+    let mut repos = match read_or_create_repos(peppy_dirs) {
+        Ok(repos) => repos,
+        Err(e) => return RepoAddResponse::failure(e.to_string()).encode(),
+    };
 
     // Duplicate check
     let new_identity = identity.trim();

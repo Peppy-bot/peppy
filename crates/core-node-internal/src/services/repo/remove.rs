@@ -64,7 +64,10 @@ fn handle_repo_remove_request_inner(
 
     let repos_path = peppy_dirs.conf_dir().join("repositories.json5");
 
-    let mut repos = read_or_create_repos(peppy_dirs)?;
+    let mut repos = match read_or_create_repos(peppy_dirs) {
+        Ok(repos) => repos,
+        Err(e) => return RepoRemoveResponse::failure(e.to_string()).encode(),
+    };
 
     let target_id = request.id as u64;
     let position = repos

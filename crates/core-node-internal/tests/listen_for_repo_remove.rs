@@ -238,3 +238,62 @@ async fn remove_from_empty_repos_fails() {
         resp.error_message
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn remove_fails_when_duplicate_ids_in_file() {
+    let started = start_core_node_with_mock_messenger().await;
+
+    // Simulate a user manually editing repositories.json5 and introducing duplicate ids
+    write_repositories_json5(
+        &started,
+        r#"[
+            { "id": 1, "type": "fs", "path": "/repo-a" },
+            { "id": 1, "type": "fs", "path": "/repo-b" }
+        ]"#,
+    );
+
+    let resp = send_repo_remove(&started, &RepoRemoveRequest::new(1)).await;
+    assert!(
+        !resp.success,
+        "repo_remove should fail when duplicate ids exist"
+    );
+    assert!(
+        resp.error_message.contains("duplicate repository id"),
+        "error should mention duplicate id, got: {}",
+        resp.error_message
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn remove_verifies_id_on_manually_added_entry() {
+    let started = start_core_node_with_mock_messenger().await;
+
+    // Simulate a user manually adding an entry with a specific id
+    write_repositories_json5(
+        &started,
+        r#"[
+            { "id": 10, "type": "fs", "path": "/repo-a" },
+            { "id": 20, "type": "fs", "path": "/repo-b" },
+            { "id": 30, "type": "fs", "path": "/repo-c" }
+        ]"#,
+    );
+
+    // Remove the middle entry by its specific id
+    let resp = send_repo_remove(&started, &RepoRemoveRequest::new(20)).await;
+    assert!(
+        resp.success,
+        "repo_remove should succeed, got error: {}",
+        resp.error_message
+    );
+
+    // Verify the correct entry was removed and ids are preserved
+    let repos_path = started.peppy_dirs.conf_dir().join("repositories.json5");
+    let content = std::fs::read_to_string(&repos_path).expect("read repos file");
+    let repos: Vec<serde_json::Value> =
+        serde_json::from_str(&content).expect("parse repos as JSON");
+    assert_eq!(repos.len(), 2, "two entries should remain");
+    assert_eq!(repos[0]["id"], 10);
+    assert_eq!(repos[0]["path"], "/repo-a");
+    assert_eq!(repos[1]["id"], 30);
+    assert_eq!(repos[1]["path"], "/repo-c");
+}

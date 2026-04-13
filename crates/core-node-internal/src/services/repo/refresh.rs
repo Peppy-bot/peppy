@@ -243,6 +243,16 @@ pub(crate) fn read_or_create_repos(peppy_dirs: &PeppyDirs) -> Result<Vec<Value>>
         }
     }
 
+    // Detect duplicate ids — a user may manually edit the file and introduce collisions.
+    let mut seen_ids = HashSet::new();
+    for entry in &repos {
+        if let Some(id) = entry.get("id").and_then(|v| v.as_u64()) {
+            if !seen_ids.insert(id) {
+                return Err(crate::Error::DuplicateRepoId { id });
+            }
+        }
+    }
+
     // Sort by id so processing order is deterministic.
     repos.sort_by_key(|e| e.get("id").and_then(|v| v.as_u64()).unwrap_or(0));
 
@@ -515,5 +525,82 @@ mod tests {
         let repos = read_or_create_repos(&peppy_dirs).unwrap();
         assert_eq!(repos.len(), 1);
         assert_eq!(repos[0].get("path").unwrap().as_str().unwrap(), "/other");
+    }
+
+    #[test]
+    fn read_or_create_repos_rejects_duplicate_ids() {
+        let tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(tmp.path());
+
+        let conf_dir = peppy_dirs.conf_dir();
+        std::fs::create_dir_all(&conf_dir).unwrap();
+        std::fs::write(
+            conf_dir.join("repositories.json5"),
+            r#"[
+                { "id": 1, "type": "fs", "path": "/a" },
+                { "id": 1, "type": "fs", "path": "/b" }
+            ]"#,
+        )
+        .unwrap();
+
+        let err = read_or_create_repos(&peppy_dirs).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("duplicate repository id 1"),
+            "error should mention the duplicate id, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn read_or_create_repos_auto_assigns_missing_ids() {
+        let tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(tmp.path());
+
+        let conf_dir = peppy_dirs.conf_dir();
+        std::fs::create_dir_all(&conf_dir).unwrap();
+        std::fs::write(
+            conf_dir.join("repositories.json5"),
+            r#"[
+                { "type": "fs", "path": "/no-id-a" },
+                { "id": 5, "type": "fs", "path": "/has-id" },
+                { "type": "fs", "path": "/no-id-b" }
+            ]"#,
+        )
+        .unwrap();
+
+        let repos = read_or_create_repos(&peppy_dirs).unwrap();
+        assert_eq!(repos.len(), 3);
+
+        // All entries should have ids and be sorted by id
+        let ids: Vec<u64> = repos
+            .iter()
+            .map(|e| e.get("id").unwrap().as_u64().unwrap())
+            .collect();
+        assert_eq!(ids[0], 5, "explicit id 5 should be present");
+        assert_eq!(ids[1], 6, "first missing id should be auto-assigned 6");
+        assert_eq!(ids[2], 7, "second missing id should be auto-assigned 7");
+    }
+
+    #[test]
+    fn read_or_create_repos_sorts_by_id() {
+        let tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(tmp.path());
+
+        let conf_dir = peppy_dirs.conf_dir();
+        std::fs::create_dir_all(&conf_dir).unwrap();
+        std::fs::write(
+            conf_dir.join("repositories.json5"),
+            r#"[
+                { "id": 3, "type": "fs", "path": "/third" },
+                { "id": 1, "type": "fs", "path": "/first" },
+                { "id": 2, "type": "fs", "path": "/second" }
+            ]"#,
+        )
+        .unwrap();
+
+        let repos = read_or_create_repos(&peppy_dirs).unwrap();
+        assert_eq!(repos[0].get("path").unwrap().as_str().unwrap(), "/first");
+        assert_eq!(repos[1].get("path").unwrap().as_str().unwrap(), "/second");
+        assert_eq!(repos[2].get("path").unwrap().as_str().unwrap(), "/third");
     }
 }

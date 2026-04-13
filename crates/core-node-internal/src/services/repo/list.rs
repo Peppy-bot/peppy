@@ -57,7 +57,10 @@ fn handle_repo_list_request_inner(
     let payload = context.message().payload();
     let _request = RepoListRequest::decode(payload.as_ref())?;
 
-    let repos = read_or_create_repos(peppy_dirs)?;
+    let repos = match read_or_create_repos(peppy_dirs) {
+        Ok(repos) => repos,
+        Err(e) => return RepoListResponse::failure(e.to_string()).encode(),
+    };
 
     // Read cached nodes for git/url repos
     let cached_nodes = read_cached_nodes(peppy_dirs);
