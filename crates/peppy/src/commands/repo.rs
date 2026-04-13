@@ -41,7 +41,7 @@ impl Command for RepoCommand {
     fn execute(self, ctx: &Arc<AppContext>) -> Result<()> {
         match self.command {
             RepoCommands::List => todo!("repo list"),
-            RepoCommands::Refresh => todo!("repo update"),
+            RepoCommands::Refresh => refresh::repo_refresh(ctx),
             RepoCommands::Add { source, git_ref } => add::add_repo(ctx, &source, git_ref),
             RepoCommands::Remove => todo!("repo remove"),
         }
