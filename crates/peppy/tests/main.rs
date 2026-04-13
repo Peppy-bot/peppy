@@ -10,6 +10,7 @@ mod node_stop;
 mod node_sync;
 mod node_sync_all_dependency_order;
 mod repo_add;
+mod repo_list;
 mod repo_refresh;
 mod service_install;
 mod service_reset;
