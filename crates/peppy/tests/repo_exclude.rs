@@ -23,11 +23,11 @@ fn setup() -> (
 }
 
 #[test]
-fn repo_add_git_url_succeeds() {
+fn repo_exclude_git_url_succeeds() {
     let (_rt, _serve, ctx, _work_dir) = setup();
 
     let result = RepoCommand {
-        command: RepoCommands::Add {
+        command: RepoCommands::Exclude {
             source: "https://github.com/org/repo.git".to_string(),
             git_ref: None,
         },
@@ -36,17 +36,17 @@ fn repo_add_git_url_succeeds() {
 
     assert!(
         result.is_ok(),
-        "repo add should succeed: {:?}",
+        "repo exclude should succeed: {:?}",
         result.err()
     );
 }
 
 #[test]
-fn repo_add_with_git_ref_succeeds() {
+fn repo_exclude_with_git_ref_succeeds() {
     let (_rt, _serve, ctx, _work_dir) = setup();
 
     let result = RepoCommand {
-        command: RepoCommands::Add {
+        command: RepoCommands::Exclude {
             source: "https://github.com/org/repo.git".to_string(),
             git_ref: Some("v1.0.0".to_string()),
         },
@@ -55,17 +55,17 @@ fn repo_add_with_git_ref_succeeds() {
 
     assert!(
         result.is_ok(),
-        "repo add with ref should succeed: {:?}",
+        "repo exclude with ref should succeed: {:?}",
         result.err()
     );
 }
 
 #[test]
-fn repo_add_fs_path_succeeds() {
+fn repo_exclude_fs_path_succeeds() {
     let (_rt, _serve, ctx, _work_dir) = setup();
 
     let result = RepoCommand {
-        command: RepoCommands::Add {
+        command: RepoCommands::Exclude {
             source: "/tmp/my-local-repo".to_string(),
             git_ref: None,
         },
@@ -74,17 +74,17 @@ fn repo_add_fs_path_succeeds() {
 
     assert!(
         result.is_ok(),
-        "repo add fs path should succeed: {:?}",
+        "repo exclude fs path should succeed: {:?}",
         result.err()
     );
 }
 
 #[test]
-fn repo_add_url_succeeds() {
+fn repo_exclude_url_succeeds() {
     let (_rt, _serve, ctx, _work_dir) = setup();
 
     let result = RepoCommand {
-        command: RepoCommands::Add {
+        command: RepoCommands::Exclude {
             source: "https://example.com/packages".to_string(),
             git_ref: None,
         },
@@ -93,37 +93,37 @@ fn repo_add_url_succeeds() {
 
     assert!(
         result.is_ok(),
-        "repo add URL should succeed: {:?}",
+        "repo exclude URL should succeed: {:?}",
         result.err()
     );
 }
 
 #[test]
-fn repo_add_duplicate_fails() {
+fn repo_exclude_duplicate_fails() {
     let (_rt, _serve, ctx, _work_dir) = setup();
 
     let source = "https://github.com/org/repo.git".to_string();
 
-    // First add should succeed
+    // First exclude should succeed
     RepoCommand {
-        command: RepoCommands::Add {
+        command: RepoCommands::Exclude {
             source: source.clone(),
             git_ref: None,
         },
     }
     .execute(&ctx)
-    .expect("first repo add should succeed");
+    .expect("first repo exclude should succeed");
 
-    // Second add of same URL should fail
+    // Second exclude of same URL should fail
     let result = RepoCommand {
-        command: RepoCommands::Add {
+        command: RepoCommands::Exclude {
             source,
             git_ref: None,
         },
     }
     .execute(&ctx);
 
-    let err = result.expect_err("duplicate repo add should fail");
+    let err = result.expect_err("duplicate repo exclude should fail");
     let msg = err.to_string();
     assert!(
         msg.contains("already exists"),
@@ -132,11 +132,11 @@ fn repo_add_duplicate_fails() {
 }
 
 #[test]
-fn repo_add_fs_path_with_ref_fails() {
+fn repo_exclude_fs_path_with_ref_fails() {
     let (_rt, _serve, ctx, _work_dir) = setup();
 
     let result = RepoCommand {
-        command: RepoCommands::Add {
+        command: RepoCommands::Exclude {
             source: "/tmp/my-local-repo".to_string(),
             git_ref: Some("main".to_string()),
         },
@@ -152,11 +152,11 @@ fn repo_add_fs_path_with_ref_fails() {
 }
 
 #[test]
-fn repo_add_url_with_ref_fails() {
+fn repo_exclude_url_with_ref_fails() {
     let (_rt, _serve, ctx, _work_dir) = setup();
 
     let result = RepoCommand {
-        command: RepoCommands::Add {
+        command: RepoCommands::Exclude {
             source: "https://example.com/packages".to_string(),
             git_ref: Some("main".to_string()),
         },

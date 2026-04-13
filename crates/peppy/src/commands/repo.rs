@@ -1,4 +1,5 @@
 mod add;
+mod exclude;
 mod list;
 mod refresh;
 mod remove;
@@ -19,11 +20,13 @@ pub enum RepoCommands {
     Refresh,
     /// Add a new repository
     Add {
-        /// Repository source (git URL).
+        /// Repository source.
         ///
         /// Supported formats:
+        /// - Local path: `/path/to/directory`
         /// - Git URL: `https://github.com/org/repo.git`
         /// - Git URL with ref: `https://github.com/org/repo.git --ref tag-or-branch`
+        /// - Plain URL: `https://example.com/packages`
         source: String,
         /// Git ref (tag/branch/commit) to track (git sources only).
         #[arg(long = "ref")]
@@ -31,6 +34,20 @@ pub enum RepoCommands {
     },
     /// Remove a repository
     Remove,
+    /// Exclude a repository
+    Exclude {
+        /// Repository source.
+        ///
+        /// Supported formats:
+        /// - Local path: `/path/to/directory`
+        /// - Git URL: `https://github.com/org/repo.git`
+        /// - Git URL with ref: `https://github.com/org/repo.git --ref tag-or-branch`
+        /// - Plain URL: `https://example.com/packages`
+        source: String,
+        /// Git ref (tag/branch/commit) to track (git sources only).
+        #[arg(long = "ref")]
+        git_ref: Option<String>,
+    },
 }
 
 pub struct RepoCommand {
@@ -44,6 +61,9 @@ impl Command for RepoCommand {
             RepoCommands::Refresh => refresh::repo_refresh(ctx),
             RepoCommands::Add { source, git_ref } => add::add_repo(ctx, &source, git_ref),
             RepoCommands::Remove => todo!("repo remove"),
+            RepoCommands::Exclude { source, git_ref } => {
+                exclude::exclude_repo(ctx, &source, git_ref)
+            }
         }
     }
 }

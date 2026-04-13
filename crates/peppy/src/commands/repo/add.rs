@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use core_node::encoding::RepoAddRequest;
+use core_node::encoding::{RepoAddRequest, RepoSource};
 use tracing::info;
 
 use crate::commands::CALLER_INSTANCE_ID;
@@ -16,40 +16,24 @@ pub(super) fn add_repo(
     source_str: &str,
     git_ref: Option<String>,
 ) -> Result<()> {
-    if !source::is_probably_remote_source(source_str) {
-        return Err(Error::ExecutionFailed(format!(
-            "'{source_str}' is not a valid repository URL. Expected a git URL \
-             (e.g. https://github.com/org/repo.git)."
-        )));
-    }
+    let repo_source = parse_repo_source(source_str, git_ref)?;
+    let label = repo_source_label(&repo_source);
+    info!("Adding repository {label}");
 
-    // Plain HTTP archives / URLs are not repository sources.
-    if let Ok(url) = url::Url::parse(source_str)
-        && matches!(url.scheme(), "http" | "https")
-        && !source::looks_like_git_url(source_str)
-    {
-        return Err(Error::ExecutionFailed(
-            "URL repositories are not supported yet. \
-             Please provide a git repository URL (e.g. https://github.com/org/repo.git)."
-                .to_string(),
-        ));
-    }
-
-    let (repo_url, _repo_path) = source::parse_git_repo_url_and_path(source_str)?;
-    let repo_url_str = repo_url.to_bstring().to_string();
-    info!("Adding repository {} (ref: {:?})", repo_url_str, git_ref);
-
-    crate::commands::block_on(add_repo_async(ctx, repo_url_str, git_ref))
+    crate::commands::block_on(add_repo_async(ctx, repo_source, label))
 }
 
 async fn add_repo_async(
     ctx: &Arc<AppContext>,
-    repo_url: String,
-    git_ref: Option<String>,
+    repo_source: RepoSource,
+    label: String,
 ) -> Result<()> {
     let conn = ctx.connect_to_daemon().await?;
 
-    let response = RepoAddRequest::new_git(repo_url.clone(), git_ref)
+    let request = RepoAddRequest {
+        source: repo_source,
+    };
+    let response = request
         .poll(
             conn.messenger,
             &conn.core_node_name,
@@ -61,12 +45,58 @@ async fn add_repo_async(
         .map_err(|e| Error::ExecutionFailed(format!("Failed to add repository: {}", e)))?;
 
     if response.success {
-        info!("Repository '{}' added successfully", repo_url);
+        info!("Repository '{label}' added successfully");
         Ok(())
     } else {
         Err(Error::ExecutionFailed(format!(
             "Failed to add repository: {}",
             response.error_message
         )))
+    }
+}
+
+/// Parse a user-supplied source string into a [`RepoSource`].
+///
+/// Accepts:
+/// - Local filesystem paths (absolute or relative)
+/// - Git URLs (contains `.git` or starts with `git@`/`ssh://`)
+/// - Plain HTTP/HTTPS URLs
+pub(crate) fn parse_repo_source(source_str: &str, git_ref: Option<String>) -> Result<RepoSource> {
+    if !source::is_probably_remote_source(source_str) {
+        // Local filesystem path
+        if git_ref.is_some() {
+            return Err(Error::ExecutionFailed(
+                "`--ref` is only supported for git sources".to_string(),
+            ));
+        }
+        return Ok(RepoSource::Fs(source_str.into()));
+    }
+
+    if source::looks_like_git_url(source_str) {
+        let (repo_url, _repo_path) = source::parse_git_repo_url_and_path(source_str)?;
+        let repo_url_str = repo_url.to_bstring().to_string();
+        return Ok(RepoSource::Git {
+            repo_url: repo_url_str,
+            repo_ref: git_ref,
+        });
+    }
+
+    // Plain URL
+    if git_ref.is_some() {
+        return Err(Error::ExecutionFailed(
+            "`--ref` is only supported for git sources".to_string(),
+        ));
+    }
+    Ok(RepoSource::Url(source_str.to_string()))
+}
+
+fn repo_source_label(source: &RepoSource) -> String {
+    match source {
+        RepoSource::Fs(path) => path.to_string_lossy().into_owned(),
+        RepoSource::Git { repo_url, repo_ref } => match repo_ref {
+            Some(r) => format!("{repo_url} (ref: {r})"),
+            None => repo_url.clone(),
+        },
+        RepoSource::Url(url) => url.clone(),
     }
 }
