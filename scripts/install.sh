@@ -188,21 +188,10 @@ EOF
         fi
     fi
 
-    # Detect existing installation (daemon may or may not be running)
-    EXISTING_INSTALL=false
-    if [ -d "$PEPPY_HOME" ]; then
-        EXISTING_INSTALL=true
-    fi
-
-    if $DAEMON_RUNNING || $EXISTING_INSTALL; then
+    if $DAEMON_RUNNING; then
         echo ""
-        if $DAEMON_RUNNING; then
-            echo "warning: The peppy daemon is currently running."
-            echo "         Installing will stop the daemon and wipe '${PEPPY_HOME}' before proceeding."
-        else
-            echo "warning: An existing installation was found at '${PEPPY_HOME}'."
-            echo "         Installing will wipe this directory before proceeding."
-        fi
+        echo "warning: The peppy daemon is currently running."
+        echo "         Installing will stop the daemon before proceeding."
         echo ""
 
         if [ -n "${PEPPY_FORCE_REINSTALL:-}" ]; then
@@ -223,16 +212,10 @@ EOF
             exit 1
         fi
 
-        if $DAEMON_RUNNING; then
-            echo "Stopping peppy daemon..."
-            if [ -x "$PEPPY_BIN_DIR/peppy" ]; then
-                "$PEPPY_BIN_DIR/peppy" service stop >/dev/null 2>&1 || true
-                "$PEPPY_BIN_DIR/peppy" service uninstall >/dev/null 2>&1 || true
-            fi
-        fi
-        if [ -d "$PEPPY_HOME" ]; then
-            echo "Removing '${PEPPY_HOME}'..."
-            mv "$PEPPY_HOME" "$(mktemp -d "${TMPDIR:-/tmp}/.peppy_old.XXXXXXXX")"
+        echo "Stopping peppy daemon..."
+        if [ -x "$PEPPY_BIN_DIR/peppy" ]; then
+            "$PEPPY_BIN_DIR/peppy" service stop >/dev/null 2>&1 || true
+            "$PEPPY_BIN_DIR/peppy" service uninstall >/dev/null 2>&1 || true
         fi
     fi
 
