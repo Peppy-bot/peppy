@@ -198,33 +198,35 @@ pub(crate) fn parse_repo_entry(entry: &Value) -> Option<RepoSource> {
     }
 }
 
-/// Builds the default repository list (user home directory) when no config file exists.
-pub(crate) fn default_repos() -> Vec<Value> {
-    let mut repos = Vec::new();
-    if let Some(home) = dirs::home_dir() {
-        let mut map = serde_json::Map::new();
-        map.insert("type".to_string(), Value::String("fs".to_string()));
-        map.insert(
-            "path".to_string(),
-            Value::String(home.to_string_lossy().into_owned()),
-        );
-        repos.push(Value::Object(map));
+const DEFAULT_REPOS_TEMPLATE: &str = include_str!("../../../assets/default_repositories.json5");
+
+/// Reads the repositories.json5 config file, creating it with defaults if it
+/// does not exist yet.
+pub(crate) fn read_or_create_repos(peppy_dirs: &PeppyDirs) -> Result<Vec<Value>> {
+    let conf_dir = peppy_dirs.conf_dir();
+    std::fs::create_dir_all(&conf_dir)?;
+    let repos_path = conf_dir.join("repositories.json5");
+
+    if repos_path.exists() {
+        let content = std::fs::read_to_string(&repos_path)?;
+        serde_json5::from_str(&content)
+            .map_err(|e| crate::Error::Decoding(format!("failed to parse repositories.json5: {e}")))
+    } else {
+        let home = dirs::home_dir()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
+        let content = DEFAULT_REPOS_TEMPLATE.replace("{home_dir}", &home);
+        std::fs::write(&repos_path, &content)?;
+        serde_json5::from_str(&content).map_err(|e| {
+            crate::Error::Decoding(format!("failed to parse default repositories: {e}"))
+        })
     }
-    repos
 }
 
 /// Main synchronous processing: reads repos, walks each source, returns discovered nodes.
 fn process_refresh(peppy_dirs: &PeppyDirs) -> Result<Vec<DiscoveredNode>> {
-    let repos_path = peppy_dirs.conf_dir().join("repositories.json5");
-
-    let repos: Vec<Value> = if repos_path.exists() {
-        let content = std::fs::read_to_string(&repos_path)?;
-        serde_json5::from_str(&content).map_err(|e| {
-            crate::Error::Decoding(format!("failed to parse repositories.json5: {e}"))
-        })?
-    } else {
-        default_repos()
-    };
+    let repos = read_or_create_repos(peppy_dirs)?;
 
     let mut seen: HashSet<(String, String)> = HashSet::new();
     let mut all_nodes: Vec<DiscoveredNode> = Vec::new();
@@ -403,4 +405,77 @@ fn write_cache(peppy_dirs: &PeppyDirs, nodes: &[DiscoveredNode]) -> Result<()> {
         .map_err(|e| crate::Error::Encoding(format!("failed to serialize cache: {e}")))?;
     std::fs::write(cache_dir.join("packages.json5"), content)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn read_or_create_repos_creates_file_when_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(tmp.path());
+
+        let repos_path = peppy_dirs.conf_dir().join("repositories.json5");
+        assert!(!repos_path.exists());
+
+        let repos = read_or_create_repos(&peppy_dirs).unwrap();
+        assert!(repos_path.exists(), "repositories.json5 should be created");
+
+        // Should contain 2 entries: home dir (fs) + nodes_hub (git)
+        assert_eq!(repos.len(), 2, "default repos should have 2 entries");
+
+        let fs_entry = &repos[0];
+        assert_eq!(fs_entry.get("type").unwrap().as_str().unwrap(), "fs");
+        let path_val = fs_entry.get("path").unwrap().as_str().unwrap();
+        let home = dirs::home_dir().unwrap();
+        assert_eq!(path_val, home.to_string_lossy().as_ref());
+
+        let git_entry = &repos[1];
+        assert_eq!(git_entry.get("type").unwrap().as_str().unwrap(), "git");
+        assert_eq!(
+            git_entry.get("url").unwrap().as_str().unwrap(),
+            "https://github.com/Peppy-bot/nodes_hub"
+        );
+        assert_eq!(git_entry.get("ref").unwrap().as_str().unwrap(), "main");
+    }
+
+    #[test]
+    fn read_or_create_repos_reads_existing_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(tmp.path());
+
+        let conf_dir = peppy_dirs.conf_dir();
+        std::fs::create_dir_all(&conf_dir).unwrap();
+        std::fs::write(
+            conf_dir.join("repositories.json5"),
+            r#"[{ "type": "fs", "path": "/custom/path" }]"#,
+        )
+        .unwrap();
+
+        let repos = read_or_create_repos(&peppy_dirs).unwrap();
+        assert_eq!(repos.len(), 1);
+        assert_eq!(
+            repos[0].get("path").unwrap().as_str().unwrap(),
+            "/custom/path"
+        );
+    }
+
+    #[test]
+    fn read_or_create_repos_subsequent_call_uses_existing_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(tmp.path());
+
+        // First call creates the file
+        let _ = read_or_create_repos(&peppy_dirs).unwrap();
+
+        // Overwrite with custom content
+        let repos_path = peppy_dirs.conf_dir().join("repositories.json5");
+        std::fs::write(&repos_path, r#"[{ "type": "fs", "path": "/other" }]"#).unwrap();
+
+        // Second call should read the overwritten file, not re-create defaults
+        let repos = read_or_create_repos(&peppy_dirs).unwrap();
+        assert_eq!(repos.len(), 1);
+        assert_eq!(repos[0].get("path").unwrap().as_str().unwrap(), "/other");
+    }
 }

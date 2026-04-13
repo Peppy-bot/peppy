@@ -1,7 +1,7 @@
 use crate::Result;
 use crate::encoding::{RepoListNodeEntry, RepoListRequest, RepoListResponse, RepoSource};
 use crate::names;
-use crate::services::repo::refresh::{default_repos, parse_repo_entry, walk_directory};
+use crate::services::repo::refresh::{parse_repo_entry, read_or_create_repos, walk_directory};
 use config::consts::PeppyDirs;
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::types::Payload;
@@ -57,16 +57,7 @@ fn handle_repo_list_request_inner(
     let payload = context.message().payload();
     let _request = RepoListRequest::decode(payload.as_ref())?;
 
-    let repos_path = peppy_dirs.conf_dir().join("repositories.json5");
-
-    let repos: Vec<Value> = if repos_path.exists() {
-        let content = std::fs::read_to_string(&repos_path)?;
-        serde_json5::from_str(&content).map_err(|e| {
-            crate::Error::Decoding(format!("failed to parse repositories.json5: {e}"))
-        })?
-    } else {
-        default_repos()
-    };
+    let repos = read_or_create_repos(peppy_dirs)?;
 
     // Read cached nodes for git/url repos
     let cached_nodes = read_cached_nodes(peppy_dirs);

@@ -69,12 +69,34 @@ async fn send_repo_list(started: &StartedCoreNode) -> RepoListResponse {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn list_default_repos_succeeds() {
+async fn list_default_repos_creates_repositories_file() {
     let started = start_core_node_with_mock_messenger().await;
+
+    let repos_path = started.peppy_dirs.conf_dir().join("repositories.json5");
+    assert!(
+        !repos_path.exists(),
+        "repositories.json5 should not exist before first repo command"
+    );
 
     let resp = send_repo_list(&started).await;
     assert!(resp.success, "repo_list should succeed");
     assert!(resp.error_message.is_none());
+
+    assert!(
+        repos_path.exists(),
+        "repositories.json5 should be created by repo list"
+    );
+
+    let content = std::fs::read_to_string(&repos_path).expect("read created file");
+    let repos: Vec<serde_json::Value> =
+        serde_json5::from_str(&content).expect("parse created file");
+    assert_eq!(repos.len(), 2, "default file should contain 2 entries");
+    assert_eq!(repos[0].get("type").unwrap().as_str().unwrap(), "fs");
+    assert_eq!(repos[1].get("type").unwrap().as_str().unwrap(), "git");
+    assert_eq!(
+        repos[1].get("url").unwrap().as_str().unwrap(),
+        "https://github.com/Peppy-bot/nodes_hub"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

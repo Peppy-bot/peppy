@@ -1,6 +1,7 @@
 use crate::Result;
 use crate::encoding::{RepoAddRequest, RepoAddResponse, RepoSource};
 use crate::names;
+use crate::services::repo::refresh::read_or_create_repos;
 use config::consts::PeppyDirs;
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::types::Payload;
@@ -95,15 +96,6 @@ fn json_entry_identity(entry: &Value) -> Option<&str> {
     }
 }
 
-/// Builds the default repository list (user home directory) when no config file exists.
-fn default_repos() -> Vec<Value> {
-    let mut repos = Vec::new();
-    if let Some(home) = dirs::home_dir() {
-        repos.push(repo_source_to_json(&RepoSource::Fs(home)));
-    }
-    repos
-}
-
 fn handle_repo_add_request_inner(
     context: &ServiceRequestContext,
     peppy_dirs: &PeppyDirs,
@@ -123,23 +115,9 @@ fn handle_repo_add_request_inner(
         return RepoAddResponse::failure("repository path/URL must not be empty").encode();
     }
 
-    // Ensure conf directory exists
-    let conf_dir = peppy_dirs.conf_dir();
-    if let Err(e) = std::fs::create_dir_all(&conf_dir) {
-        return RepoAddResponse::failure(format!("failed to create conf directory: {e}")).encode();
-    }
+    let repos_path = peppy_dirs.conf_dir().join("repositories.json5");
 
-    let repos_path = conf_dir.join("repositories.json5");
-
-    // Read existing repos, or seed with defaults (home dir first)
-    let mut repos: Vec<Value> = if repos_path.exists() {
-        let content = std::fs::read_to_string(&repos_path)?;
-        serde_json5::from_str(&content).map_err(|e| {
-            crate::Error::Decoding(format!("failed to parse repositories.json5: {e}"))
-        })?
-    } else {
-        default_repos()
-    };
+    let mut repos = read_or_create_repos(peppy_dirs)?;
 
     // Duplicate check
     let new_identity = identity.trim();
