@@ -301,6 +301,33 @@ def test_standard_install_container_setup(lima_vm: VMConfig) -> None:
     )
 
 
+def test_install_runs_repo_update(lima_vm: VMConfig) -> None:
+    """Full install (with service) runs 'peppy repo update' after daemon start."""
+    config = lima_vm
+    assert config.os == "linux", "repo update test only applies to Linux VMs"
+
+    home = setup_lima_guest(
+        config,
+        test_name=f"test_install_runs_repo_update_{config.pytest_id()}",
+    )
+
+    result = lima_shell(
+        install_cmd(config, home, skip_service_install=False),
+        instance=config.instance_name,
+        timeout=300,
+    )
+
+    assert result.returncode == 0, (
+        f"install.sh exited with {result.returncode} on {config.pytest_id()}"
+        f"{diagnostic(result)}"
+    )
+
+    output = result.stdout + result.stderr
+    assert "Refreshing repositories" in output or "Repository refresh complete" in output, (
+        f"Missing repo update output on {config.pytest_id()}{diagnostic(result)}"
+    )
+
+
 def test_reinstall_over_root_owned_files(lima_vm: VMConfig) -> None:
     """Reinstall succeeds even when previous install left files behind."""
     config = lima_vm

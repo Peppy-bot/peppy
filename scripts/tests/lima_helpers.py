@@ -239,9 +239,17 @@ def archive_guest_path(config: VMConfig) -> str:
     return f"/var/tmp/peppy-test/peppy-{config.target_triple}.tgz"
 
 
-def install_cmd(config: VMConfig, home: str, *, extra_env: str = "") -> str:
+def install_cmd(
+    config: VMConfig,
+    home: str,
+    *,
+    extra_env: str = "",
+    skip_service_install: bool = True,
+) -> str:
     """Build the install.sh invocation command for the guest."""
-    env_parts = f"TMPDIR=/var/tmp PEPPY_HOME={home} PEPPY_NO_SERVICE_INSTALL=1"
+    env_parts = f"TMPDIR=/var/tmp PEPPY_HOME={home}"
+    if skip_service_install:
+        env_parts = f"{env_parts} PEPPY_NO_SERVICE_INSTALL=1"
     if extra_env:
         env_parts = f"{env_parts} {extra_env}"
     return f"{env_parts} sh /var/tmp/peppy-test/install.sh {archive_guest_path(config)}"

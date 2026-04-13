@@ -656,6 +656,13 @@ EOF
             fi
             exit 1
         fi
+
+        # Refresh repository indexes so nodes are discoverable immediately
+        if ! "$PEPPY_BIN_DIR/peppy" repo update; then
+            echo "error: repository update failed." >&2
+            echo "       You can retry manually: $PEPPY_BIN_DIR/peppy repo update" >&2
+            exit 1
+        fi
     else
         flush_progress_line
         echo "No service install because PEPPY_NO_SERVICE_INSTALL is set"

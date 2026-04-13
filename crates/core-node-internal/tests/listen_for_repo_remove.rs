@@ -87,11 +87,11 @@ async fn remove_fs_repo_succeeds() {
         serde_json::from_str(&content).expect("parse repos as JSON");
     assert!(repos.is_empty(), "repos should be empty after removal");
 
-    // For fs repos, no cache should be written (refresh not triggered)
+    // Cache refresh is triggered for all repo types (including fs)
     let cache_path = started.peppy_dirs.cache_dir().join("packages.json5");
     assert!(
-        !cache_path.exists(),
-        "packages.json5 cache should not be created for fs repo removal"
+        cache_path.exists(),
+        "packages.json5 cache should exist after fs repo removal"
     );
 }
 
