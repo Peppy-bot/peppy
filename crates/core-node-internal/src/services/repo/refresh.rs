@@ -378,7 +378,6 @@ fn write_cache(peppy_dirs: &PeppyDirs, nodes: &[DiscoveredNode]) -> Result<()> {
 
     let cache_entries: Vec<Value> = nodes
         .iter()
-        .filter(|n| n.source_type != "fs")
         .map(|n| {
             let mut map = serde_json::Map::new();
             map.insert("node_name".to_string(), Value::String(n.node_name.clone()));
@@ -397,6 +396,6 @@ fn write_cache(peppy_dirs: &PeppyDirs, nodes: &[DiscoveredNode]) -> Result<()> {
 
     let content = serde_json::to_string_pretty(&cache_entries)
         .map_err(|e| crate::Error::Encoding(format!("failed to serialize cache: {e}")))?;
-    std::fs::write(cache_dir.join("repositories.json5"), content)?;
+    std::fs::write(cache_dir.join("packages.json5"), content)?;
     Ok(())
 }

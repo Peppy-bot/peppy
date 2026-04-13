@@ -309,14 +309,15 @@ async fn refresh_cache_written() {
     let result = send_refresh_and_wait(&started).await;
     assert!(result.result.success, "refresh should succeed");
 
-    let cache_path = started.peppy_dirs.cache_dir().join("repositories.json5");
+    let cache_path = started.peppy_dirs.cache_dir().join("packages.json5");
     assert!(cache_path.exists(), "cache file should exist");
 
     let content = std::fs::read_to_string(&cache_path).expect("read cache");
     let entries: Vec<serde_json::Value> = serde_json::from_str(&content).expect("parse cache JSON");
-    assert!(
-        entries.is_empty(),
-        "cache should be empty for FS-only repos"
+    assert_eq!(
+        entries.len(),
+        1,
+        "cache should contain the FS node"
     );
 }
 
