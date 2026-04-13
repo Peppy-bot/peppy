@@ -53,3 +53,24 @@ struct RepoRefreshResult {
     errorMessage @1 :Text;
     totalNodesFound @2 :UInt32;
 }
+
+# ── Repo List (request-response) ────────────────────────────────
+
+struct RepoListRequest {
+    # Empty — list all repositories and their nodes.
+}
+
+struct RepoListNodeEntry {
+    nodeName @0 :Text;
+    nodeTag @1 :Text;
+    # "fs", "git", or "url"
+    sourceType @2 :Text;
+    # Absolute path (fs) or relative path within repo (git)
+    path @3 :Text;
+}
+
+struct RepoListResponse {
+    success @0 :Bool;
+    errorMessage @1 :Text;
+    nodes @2 :List(RepoListNodeEntry);
+}

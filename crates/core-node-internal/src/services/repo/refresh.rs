@@ -22,7 +22,7 @@ use tracing::{debug, warn};
 
 /// Directory names that should never be descended into while searching for
 /// `peppy.json5` files.
-const PRUNED_DIR_NAMES: &[&str] = &[
+pub(crate) const PRUNED_DIR_NAMES: &[&str] = &[
     ".git",
     ".peppy",
     "target",
@@ -163,16 +163,16 @@ impl GoalHandler for RepoRefreshGoalHandler {
 }
 
 #[derive(Debug, Clone)]
-struct DiscoveredNode {
-    node_name: String,
-    node_tag: String,
-    source_type: String,
-    path: String,
-    source_uri: Option<String>,
+pub(crate) struct DiscoveredNode {
+    pub(crate) node_name: String,
+    pub(crate) node_tag: String,
+    pub(crate) source_type: String,
+    pub(crate) path: String,
+    pub(crate) source_uri: Option<String>,
 }
 
 /// Parse a JSON entry from repositories.json5 into a `RepoSource`.
-fn parse_repo_entry(entry: &Value) -> Option<RepoSource> {
+pub(crate) fn parse_repo_entry(entry: &Value) -> Option<RepoSource> {
     let typ = entry.get("type")?.as_str()?;
     match typ {
         "fs" => {
@@ -199,7 +199,7 @@ fn parse_repo_entry(entry: &Value) -> Option<RepoSource> {
 }
 
 /// Builds the default repository list (user home directory) when no config file exists.
-fn default_repos() -> Vec<Value> {
+pub(crate) fn default_repos() -> Vec<Value> {
     let mut repos = Vec::new();
     if let Some(home) = dirs::home_dir() {
         let mut map = serde_json::Map::new();
@@ -268,7 +268,7 @@ fn process_refresh(peppy_dirs: &PeppyDirs) -> Result<Vec<DiscoveredNode>> {
 }
 
 /// Walk a directory looking for `peppy.json5` files, collecting discovered nodes.
-fn walk_directory(
+pub(crate) fn walk_directory(
     root: &Path,
     source_type: &str,
     source_uri: Option<&str>,

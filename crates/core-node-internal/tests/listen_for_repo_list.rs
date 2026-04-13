@@ -1,1 +1,173 @@
+mod common;
 
+use common::{CALLER_INSTANCE_ID, StartedCoreNode, start_core_node_with_mock_messenger};
+use config::consts::NODE_CONFIG_FILE;
+use core_node::encoding::{RepoListRequest, RepoListResponse};
+use core_node::names;
+use peppylib::ServiceMessenger;
+use std::time::Duration;
+
+/// Minimal valid peppy.json5 content for a node with the given name and tag.
+fn minimal_peppy_json5(name: &str, tag: &str) -> String {
+    format!(
+        r#"{{
+  schema_version: 1,
+  manifest: {{
+    name: "{name}",
+    tag: "{tag}",
+  }},
+  interfaces: {{}},
+  execution: {{
+    language: "rust",
+    build_cmd: ["true"],
+    run_cmd: ["true"],
+  }},
+}}"#
+    )
+}
+
+/// Write a repositories.json5 file in the conf_dir of the started core node.
+fn write_repositories_json5(started: &StartedCoreNode, content: &str) {
+    let conf_dir = started.peppy_dirs.conf_dir();
+    std::fs::create_dir_all(&conf_dir).expect("create conf dir");
+    std::fs::write(conf_dir.join("repositories.json5"), content).expect("write repos file");
+}
+
+/// Write a packages.json5 cache file in the cache_dir of the started core node.
+fn write_packages_cache(started: &StartedCoreNode, content: &str) {
+    let cache_dir = started.peppy_dirs.cache_dir();
+    std::fs::create_dir_all(&cache_dir).expect("create cache dir");
+    std::fs::write(cache_dir.join("packages.json5"), content).expect("write cache file");
+}
+
+/// Create a directory with a valid peppy.json5 inside it.
+fn create_node_dir(base: &std::path::Path, name: &str, tag: &str) -> std::path::PathBuf {
+    let dir = base.join(format!("{name}_{tag}"));
+    std::fs::create_dir_all(&dir).expect("create node dir");
+    std::fs::write(dir.join(NODE_CONFIG_FILE), minimal_peppy_json5(name, tag))
+        .expect("write peppy.json5");
+    dir
+}
+
+async fn send_repo_list(started: &StartedCoreNode) -> RepoListResponse {
+    let request = RepoListRequest;
+    let payload = request.encode().expect("encode should succeed");
+    let response = ServiceMessenger::poll(
+        &started.caller_handle,
+        &started.core_node_name,
+        CALLER_INSTANCE_ID,
+        &started.core_node_name,
+        names::REPO_LIST,
+        Some(&started.core_node_name),
+        None,
+        payload,
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("repo_list poll should succeed");
+    RepoListResponse::decode(&response.payload()).expect("decode should succeed")
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn list_default_repos_succeeds() {
+    let started = start_core_node_with_mock_messenger().await;
+
+    let resp = send_repo_list(&started).await;
+    assert!(resp.success, "repo_list should succeed");
+    assert!(resp.error_message.is_none());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn list_finds_nodes_in_fs_repo() {
+    let started = start_core_node_with_mock_messenger().await;
+
+    let repo_dir = started.peppy_dirs.root().join("test_repo");
+    create_node_dir(&repo_dir, "my_sensor", "1.0.0");
+    create_node_dir(&repo_dir, "my_actuator", "2.0.0");
+
+    write_repositories_json5(
+        &started,
+        &format!(r#"[{{ "type": "fs", "path": "{}" }}]"#, repo_dir.display()),
+    );
+
+    let resp = send_repo_list(&started).await;
+    assert!(resp.success, "repo_list should succeed");
+    assert_eq!(resp.nodes.len(), 2, "should find 2 nodes");
+
+    let names: Vec<&str> = resp.nodes.iter().map(|n| n.node_name.as_str()).collect();
+    assert!(names.contains(&"my_sensor"), "should contain my_sensor");
+    assert!(names.contains(&"my_actuator"), "should contain my_actuator");
+
+    for node in &resp.nodes {
+        assert_eq!(node.source_type, "fs");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn list_reads_git_nodes_from_cache() {
+    let started = start_core_node_with_mock_messenger().await;
+
+    let git_url = "https://github.com/example/repo.git";
+
+    // Write a repositories.json5 with a git repo
+    write_repositories_json5(
+        &started,
+        &format!(r#"[{{ "type": "git", "url": "{git_url}", "ref": "main" }}]"#),
+    );
+
+    // Write a packages.json5 cache with nodes from that git repo
+    write_packages_cache(
+        &started,
+        &format!(
+            r#"[
+  {{
+    "node_name": "git_sensor",
+    "node_tag": "1.0.0",
+    "source_type": "git",
+    "source_uri": "{git_url}",
+    "path": "nodes/git_sensor"
+  }},
+  {{
+    "node_name": "git_actuator",
+    "node_tag": "2.0.0",
+    "source_type": "git",
+    "source_uri": "{git_url}",
+    "path": "nodes/git_actuator"
+  }}
+]"#
+        ),
+    );
+
+    let resp = send_repo_list(&started).await;
+    assert!(resp.success, "repo_list should succeed");
+    assert_eq!(resp.nodes.len(), 2, "should find 2 git nodes from cache");
+
+    let sensor = resp
+        .nodes
+        .iter()
+        .find(|n| n.node_name == "git_sensor")
+        .expect("should find git_sensor");
+    assert_eq!(sensor.node_tag, "1.0.0");
+    assert_eq!(sensor.source_type, "git");
+    assert_eq!(sensor.path, "nodes/git_sensor");
+
+    let actuator = resp
+        .nodes
+        .iter()
+        .find(|n| n.node_name == "git_actuator")
+        .expect("should find git_actuator");
+    assert_eq!(actuator.node_tag, "2.0.0");
+    assert_eq!(actuator.source_type, "git");
+    assert_eq!(actuator.path, "nodes/git_actuator");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn list_empty_repos_file() {
+    let started = start_core_node_with_mock_messenger().await;
+
+    write_repositories_json5(&started, "[]");
+
+    let resp = send_repo_list(&started).await;
+    assert!(resp.success, "repo_list should succeed");
+    assert!(resp.nodes.is_empty(), "should have no nodes");
+}

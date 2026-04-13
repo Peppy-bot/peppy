@@ -23,8 +23,8 @@ pub use node::{
 };
 pub use ping::{PingRequest, PingResponse};
 pub use repo::{
-    RepoAddRequest, RepoAddResponse, RepoRefreshFeedback, RepoRefreshGoal, RepoRefreshGoalResponse,
-    RepoRefreshResult, RepoSource,
+    RepoAddRequest, RepoAddResponse, RepoListNodeEntry, RepoListRequest, RepoListResponse,
+    RepoRefreshFeedback, RepoRefreshGoal, RepoRefreshGoalResponse, RepoRefreshResult, RepoSource,
 };
 pub use stack::launch::{
     LaunchFeedback, LaunchFeedbackStep, LaunchGoal, LaunchGoalResponse, LaunchResult,
