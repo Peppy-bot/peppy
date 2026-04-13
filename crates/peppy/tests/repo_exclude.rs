@@ -66,7 +66,12 @@ fn repo_exclude_fs_path_succeeds() {
 
     let result = RepoCommand {
         command: RepoCommands::Exclude {
-            source: "/tmp/my-local-repo".to_string(),
+            source: _work_dir
+                .path()
+                .join("my-local-repo")
+                .to_str()
+                .unwrap()
+                .to_string(),
             git_ref: None,
         },
     }
@@ -137,7 +142,12 @@ fn repo_exclude_fs_path_with_ref_fails() {
 
     let result = RepoCommand {
         command: RepoCommands::Exclude {
-            source: "/tmp/my-local-repo".to_string(),
+            source: _work_dir
+                .path()
+                .join("my-local-repo")
+                .to_str()
+                .unwrap()
+                .to_string(),
             git_ref: Some("main".to_string()),
         },
     }

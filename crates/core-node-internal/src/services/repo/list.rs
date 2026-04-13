@@ -160,7 +160,7 @@ fn handle_repo_list_request_inner(
                 }
             }
             RepoSource::Url(url) => {
-                debug!("Skipping URL repository (not yet implemented): {}", url);
+                warn!("Skipping URL repository (not yet supported): {}", url);
             }
         }
     }
@@ -175,7 +175,13 @@ fn read_cached_nodes(peppy_dirs: &PeppyDirs) -> Vec<Value> {
         return Vec::new();
     }
     match std::fs::read_to_string(&cache_path) {
-        Ok(content) => serde_json5::from_str(&content).unwrap_or_default(),
+        Ok(content) => serde_json5::from_str(&content).unwrap_or_else(|e| {
+            warn!(
+                "Failed to parse packages cache at {}: {e}",
+                cache_path.display()
+            );
+            Vec::new()
+        }),
         Err(_) => Vec::new(),
     }
 }

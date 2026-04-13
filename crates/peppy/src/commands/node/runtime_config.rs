@@ -63,7 +63,7 @@ async fn print_runtime_config_async(
             REQUEST_TIMEOUT,
         )
         .await
-        .map_err(|e| Error::ExecutionFailed(format!("Failed to call node_list service: {}", e)))?;
+        .map_err(|e| Error::ExecutionFailed(format!("Failed to call stack_list service: {}", e)))?;
 
     let graph: SerializedNodeGraph = serde_json::from_str(&response.graph_json)
         .map_err(|e| Error::ExecutionFailed(format!("Failed to parse graph JSON: {}", e)))?;

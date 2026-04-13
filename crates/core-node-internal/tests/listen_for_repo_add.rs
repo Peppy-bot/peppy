@@ -40,7 +40,7 @@ async fn listen_for_repo_add_url_succeed() {
     let repos_path = started.peppy_dirs.conf_dir().join("repositories.json5");
     let content = std::fs::read_to_string(&repos_path).expect("read repos file");
     let repos: Vec<serde_json::Value> =
-        serde_json::from_str(&content).expect("parse repos as JSON");
+        serde_json5::from_str(&content).expect("parse repos as JSON5");
 
     // First entry is the home dir default (fs type) with id 1
     assert_eq!(repos[0]["type"], "fs");
@@ -73,7 +73,7 @@ async fn listen_for_repo_add_git_succeed() {
     let repos_path = started.peppy_dirs.conf_dir().join("repositories.json5");
     let content = std::fs::read_to_string(&repos_path).expect("read repos file");
     let repos: Vec<serde_json::Value> =
-        serde_json::from_str(&content).expect("parse repos as JSON");
+        serde_json5::from_str(&content).expect("parse repos as JSON5");
 
     let last = repos.last().unwrap();
     assert_eq!(last["type"], "git");
@@ -95,7 +95,7 @@ async fn listen_for_repo_add_fs_succeed() {
     let repos_path = started.peppy_dirs.conf_dir().join("repositories.json5");
     let content = std::fs::read_to_string(&repos_path).expect("read repos file");
     let repos: Vec<serde_json::Value> =
-        serde_json::from_str(&content).expect("parse repos as JSON");
+        serde_json5::from_str(&content).expect("parse repos as JSON5");
 
     let last = repos.last().unwrap();
     assert_eq!(last["type"], "fs");
@@ -181,7 +181,7 @@ async fn listen_for_repo_add_assigns_id_after_manual_entry() {
     let repos_path = started.peppy_dirs.conf_dir().join("repositories.json5");
     let content = std::fs::read_to_string(&repos_path).expect("read repos file");
     let repos: Vec<serde_json::Value> =
-        serde_json::from_str(&content).expect("parse repos as JSON");
+        serde_json5::from_str(&content).expect("parse repos as JSON5");
 
     assert_eq!(repos.len(), 2);
 

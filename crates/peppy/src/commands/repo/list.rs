@@ -1,3 +1,4 @@
+use std::io::IsTerminal;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -48,7 +49,10 @@ async fn list_repos_async(ctx: &Arc<AppContext>) -> Result<()> {
             "fs" => local_nodes.push(node),
             "git" => git_nodes.push(node),
             "url" => http_nodes.push(node),
-            _ => local_nodes.push(node),
+            other => {
+                tracing::warn!("Unknown source type '{}', listing as local", other);
+                local_nodes.push(node);
+            }
         }
     }
 
@@ -86,7 +90,11 @@ fn print_nodes(nodes: &[&RepoListNodeEntry]) {
             suffix.push_str(&format!("  [variants: {}]", node.variants.join(", ")));
         }
         if node.duplicate {
-            suffix.push_str("  \x1b[38;5;208m(duplicate)\x1b[0m");
+            if std::io::stdout().is_terminal() {
+                suffix.push_str("  \x1b[38;5;208m(duplicate)\x1b[0m");
+            } else {
+                suffix.push_str("  (duplicate)");
+            }
         }
         println!(
             "  {:<name_w$}  {:<tag_w$}  {}{}",

@@ -9,7 +9,7 @@ use serde_json::Value;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use tokio::task::JoinHandle;
-use tracing::debug;
+use tracing::{debug, warn};
 
 pub async fn listen_for_repo_exclude(
     messenger: &MessengerHandle,
@@ -172,7 +172,10 @@ impl ExclusionSet {
     /// Load exclusions from `excluded_repositories.json5`.
     /// Returns an empty set if the file is missing or unreadable.
     pub(crate) fn load(peppy_dirs: &PeppyDirs) -> Self {
-        let raw = read_excluded_repos(peppy_dirs).unwrap_or_default();
+        let raw = read_excluded_repos(peppy_dirs).unwrap_or_else(|e| {
+            warn!("Failed to read excluded repositories: {e}");
+            Vec::new()
+        });
 
         let identities = raw
             .iter()
@@ -230,6 +233,8 @@ fn handle_repo_exclude_request_inner(
 
     let repos_path = peppy_dirs.conf_dir().join("excluded_repositories.json5");
 
+    let _guard = crate::services::repo::repos_file_lock().lock();
+
     let mut repos = match read_excluded_repos(peppy_dirs) {
         Ok(repos) => repos,
         Err(e) => return RepoExcludeResponse::failure(e.to_string()).encode(),
@@ -257,12 +262,15 @@ fn handle_repo_exclude_request_inner(
         .map(|max| max + 1)
         .unwrap_or(1);
 
-    // Append and write back (JSON is valid JSON5, use pretty for user readability)
+    // Append, sort by id, and write back (JSON is valid JSON5, use pretty for user readability)
     repos.push(repo_source_to_json(next_id, &request.source));
+    repos.sort_by_key(|e| e.get("id").and_then(|v| v.as_u64()).unwrap_or(0));
     let content = serde_json::to_string_pretty(&repos).map_err(|e| {
         crate::Error::Encoding(format!("failed to serialize excluded repositories: {e}"))
     })?;
     std::fs::write(&repos_path, content)?;
+
+    drop(_guard);
 
     RepoExcludeResponse::success().encode()
 }

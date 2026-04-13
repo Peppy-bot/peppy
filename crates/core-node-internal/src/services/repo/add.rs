@@ -114,6 +114,8 @@ fn handle_repo_add_request_inner(
 
     let repos_path = peppy_dirs.conf_dir().join("repositories.json5");
 
+    let _guard = crate::services::repo::repos_file_lock().lock();
+
     let mut repos = match read_or_create_repos(peppy_dirs) {
         Ok(repos) => repos,
         Err(e) => return RepoAddResponse::failure(e.to_string()).encode(),
@@ -143,6 +145,8 @@ fn handle_repo_add_request_inner(
     let content = serde_json::to_string_pretty(&repos)
         .map_err(|e| crate::Error::Encoding(format!("failed to serialize repositories: {e}")))?;
     std::fs::write(&repos_path, content)?;
+
+    drop(_guard);
 
     RepoAddResponse::success().encode()
 }

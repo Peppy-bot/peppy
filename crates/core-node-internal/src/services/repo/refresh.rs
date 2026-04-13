@@ -82,12 +82,12 @@ impl GoalHandler for RepoRefreshGoalHandler {
         state: Arc<Mutex<ActionState<RepoRefreshResult>>>,
     ) -> PeppyResult<Payload> {
         {
-            let current = state.lock().await;
+            let mut current = state.lock().await;
             if matches!(*current, ActionState::Running { .. }) {
                 let response = RepoRefreshGoalResponse::rejected(
                     "a repo refresh operation is already in progress",
                 );
-                *state.lock().await = ActionState::Rejected;
+                *current = ActionState::Rejected;
                 return response
                     .encode()
                     .map_err(|e| PeppyError::InvalidServiceRequest {
@@ -240,10 +240,17 @@ pub(crate) fn read_or_create_repos(peppy_dirs: &PeppyDirs) -> Result<Vec<Value>>
             crate::Error::Decoding(format!("failed to parse repositories.json5: {e}"))
         })?
     } else {
-        let home = dirs::home_dir()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .into_owned();
+        let home = match dirs::home_dir() {
+            Some(h) => h.to_string_lossy().into_owned(),
+            None => {
+                warn!(
+                    "Could not determine home directory for default repositories; using current directory"
+                );
+                std::env::current_dir()
+                    .map(|d| d.to_string_lossy().into_owned())
+                    .unwrap_or_else(|_| "/tmp".to_string())
+            }
+        };
         let content = DEFAULT_REPOS_TEMPLATE.replace("{home_dir}", &home);
         std::fs::write(&repos_path, &content)?;
         serde_json5::from_str(&content).map_err(|e| {
