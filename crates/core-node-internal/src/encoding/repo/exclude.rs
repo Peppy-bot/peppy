@@ -1,0 +1,151 @@
+use std::path::PathBuf;
+use std::time::Duration;
+
+use capnp::message::Builder;
+use peppylib::types::Payload;
+use peppylib::{MessengerHandle, ServiceMessenger};
+
+use crate::Result;
+use crate::names;
+use crate::repo_capnp;
+
+use crate::encoding::RepoSource;
+use crate::encoding::{decode_message, encode_message};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepoExcludeRequest {
+    pub source: RepoSource,
+}
+
+impl RepoExcludeRequest {
+    pub fn new_fs(path: impl Into<PathBuf>) -> Self {
+        Self {
+            source: RepoSource::Fs(path.into()),
+        }
+    }
+
+    pub fn new_git(repo_url: impl Into<String>, repo_ref: Option<String>) -> Self {
+        Self {
+            source: RepoSource::Git {
+                repo_url: repo_url.into(),
+                repo_ref,
+            },
+        }
+    }
+
+    pub fn new_url(url: impl Into<String>) -> Self {
+        Self {
+            source: RepoSource::Url(url.into()),
+        }
+    }
+
+    pub fn encode(&self) -> Result<Payload> {
+        let mut builder = Builder::new_default();
+        {
+            let mut request = builder.init_root::<repo_capnp::repo_exclude_request::Builder>();
+            let mut source = request.reborrow().init_source();
+            match &self.source {
+                RepoSource::Fs(path) => {
+                    source.set_fs(path.to_string_lossy().as_ref());
+                }
+                RepoSource::Git { repo_url, repo_ref } => {
+                    let mut git = source.init_git();
+                    git.set_repo_url(repo_url);
+                    git.set_repo_ref(repo_ref.as_deref().unwrap_or(""));
+                }
+                RepoSource::Url(url) => {
+                    source.set_url(url);
+                }
+            }
+        }
+        encode_message(&builder)
+    }
+
+    pub fn decode(data: &[u8]) -> Result<Self> {
+        use crate::repo_capnp::repo_exclude_request::source::Which;
+
+        let reader = decode_message(data)?;
+        let request = reader.get_root::<repo_capnp::repo_exclude_request::Reader>()?;
+        let source = match request.get_source().which()? {
+            Which::Fs(path) => RepoSource::Fs(PathBuf::from(path?.to_str()?)),
+            Which::Git(git) => {
+                let git = git?;
+                let repo_url = git.get_repo_url()?.to_str()?.to_owned();
+                let repo_ref_str = git.get_repo_ref()?.to_str()?.to_owned();
+                let repo_ref = if repo_ref_str.is_empty() {
+                    None
+                } else {
+                    Some(repo_ref_str)
+                };
+                RepoSource::Git { repo_url, repo_ref }
+            }
+            Which::Url(url) => RepoSource::Url(url?.to_str()?.to_owned()),
+        };
+        Ok(Self { source })
+    }
+
+    pub async fn poll(
+        &self,
+        messenger: &MessengerHandle,
+        bound_core_node: &str,
+        as_instance_id: &str,
+        target_core_node: &str,
+        response_timeout: Duration,
+    ) -> Result<RepoExcludeResponse> {
+        let request_payload = self.encode()?;
+        let response = ServiceMessenger::poll(
+            messenger,
+            bound_core_node,
+            as_instance_id,
+            target_core_node,
+            names::REPO_EXCLUDE,
+            Some(target_core_node),
+            None,
+            request_payload,
+            response_timeout,
+        )
+        .await?;
+        RepoExcludeResponse::decode(response.payload().as_ref())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepoExcludeResponse {
+    pub success: bool,
+    pub error_message: String,
+}
+
+impl RepoExcludeResponse {
+    pub fn success() -> Self {
+        Self {
+            success: true,
+            error_message: String::new(),
+        }
+    }
+
+    pub fn failure(message: impl Into<String>) -> Self {
+        Self {
+            success: false,
+            error_message: message.into(),
+        }
+    }
+
+    pub fn encode(&self) -> Result<Payload> {
+        let mut builder = Builder::new_default();
+        {
+            let mut response = builder.init_root::<repo_capnp::repo_exclude_response::Builder>();
+            response.set_success(self.success);
+            response.set_error_message(&self.error_message);
+        }
+        encode_message(&builder)
+    }
+
+    pub fn decode(data: &[u8]) -> Result<Self> {
+        let reader = decode_message(data)?;
+        let response = reader.get_root::<repo_capnp::repo_exclude_response::Reader>()?;
+        Ok(Self {
+            success: response.get_success(),
+            error_message: response.get_error_message()?.to_str()?.to_owned(),
+        })
+    }
+}

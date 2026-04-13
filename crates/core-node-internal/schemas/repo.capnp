@@ -94,3 +94,24 @@ struct RepoRemoveResponse {
     # Error message if failed (optional)
     errorMessage @1 :Text;
 }
+
+# ── Repo Exclude (request-response) ───────────────────────────
+
+struct RepoExcludeRequest {
+    # Source of the repository to exclude
+    source :union {
+        # Git repository source
+        git @0 :RepoAddGitSource;
+        # Plain URL source
+        url @1 :Text;
+        # Local filesystem path
+        fs @2 :Text;
+    }
+}
+
+struct RepoExcludeResponse {
+    # Whether the exclude was successful
+    success @0 :Bool;
+    # Error message if failed (optional)
+    errorMessage @1 :Text;
+}

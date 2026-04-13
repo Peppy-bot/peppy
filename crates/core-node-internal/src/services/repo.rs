@@ -1,9 +1,11 @@
 mod add;
+mod exclude;
 mod list;
 mod refresh;
 mod remove;
 
 pub use add::listen_for_repo_add;
+pub use exclude::listen_for_repo_exclude;
 pub use list::listen_for_repo_list;
 pub use refresh::listen_for_repo_refresh;
 pub use remove::listen_for_repo_remove;

@@ -1,9 +1,11 @@
 mod add;
+mod exclude;
 mod list;
 mod refresh;
 mod remove;
 
 pub use add::{RepoAddRequest, RepoAddResponse, RepoSource};
+pub use exclude::{RepoExcludeRequest, RepoExcludeResponse};
 pub use list::{RepoListNodeEntry, RepoListRequest, RepoListResponse};
 pub use refresh::{
     RepoRefreshFeedback, RepoRefreshGoal, RepoRefreshGoalResponse, RepoRefreshResult,
