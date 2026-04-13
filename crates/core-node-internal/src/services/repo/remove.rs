@@ -108,8 +108,6 @@ fn handle_repo_remove_request_inner(
         ));
     };
 
-    let is_fs = repos[pos].get("type").and_then(|v| v.as_str()) == Some("fs");
-
     repos.remove(pos);
 
     let content = serde_json::to_string_pretty(&repos)
@@ -119,5 +117,5 @@ fn handle_repo_remove_request_inner(
     drop(_guard);
 
     let payload = RepoRemoveResponse::success().encode()?;
-    Ok((payload, !is_fs))
+    Ok((payload, true))
 }

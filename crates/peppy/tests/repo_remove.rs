@@ -4,6 +4,34 @@ use peppy::context::AppContext;
 use peppy::test_support::ServeCommandEmulation;
 use std::sync::Arc;
 
+/// Read repositories.json5 and find the id of the entry whose "path" or "url"
+/// field matches `source`.  Panics if no match is found.
+fn find_repo_id(serve: &ServeCommandEmulation, source: &str) -> u32 {
+    let repos_path = serve.temp_dir().join("conf/repositories.json5");
+    let content = std::fs::read_to_string(&repos_path).expect("failed to read repositories.json5");
+    let repos: Vec<serde_json::Value> =
+        serde_json::from_str(&content).expect("failed to parse repositories.json5");
+    for entry in &repos {
+        let matches = entry
+            .get("path")
+            .and_then(|v| v.as_str())
+            .map(|p| p == source)
+            .unwrap_or(false)
+            || entry
+                .get("url")
+                .and_then(|v| v.as_str())
+                .map(|u| u == source)
+                .unwrap_or(false);
+        if matches {
+            return entry
+                .get("id")
+                .and_then(|v| v.as_u64())
+                .expect("repo entry missing id") as u32;
+        }
+    }
+    panic!("no repo entry found matching source '{source}'");
+}
+
 fn setup() -> (
     tokio::runtime::Runtime,
     ServeCommandEmulation,
@@ -26,19 +54,22 @@ fn setup() -> (
 fn repo_remove_after_add_succeeds() {
     let (_rt, _serve, ctx, _work_dir) = setup();
 
+    let source = "/tmp/my-local-repo";
+
     // First add a repo so there's something to remove
     RepoCommand {
         command: RepoCommands::Add {
-            source: "/tmp/my-local-repo".to_string(),
+            source: source.to_string(),
             git_ref: None,
         },
     }
     .execute(&ctx)
     .expect("repo add should succeed");
 
-    // Remove by id (first added repo gets id=1)
+    // Find the actual id assigned to the repo we just added
+    let id = find_repo_id(&_serve, source);
     let result = RepoCommand {
-        command: RepoCommands::Remove { id: 1 },
+        command: RepoCommands::Remove { id },
     }
     .execute(&ctx);
 
@@ -70,19 +101,22 @@ fn repo_remove_nonexistent_id_fails() {
 fn repo_remove_after_add_git_succeeds() {
     let (_rt, _serve, ctx, _work_dir) = setup();
 
+    let source = "https://github.com/org/repo.git";
+
     // Add a git repo
     RepoCommand {
         command: RepoCommands::Add {
-            source: "https://github.com/org/repo.git".to_string(),
+            source: source.to_string(),
             git_ref: None,
         },
     }
     .execute(&ctx)
     .expect("repo add git should succeed");
 
-    // Remove it by id
+    // Find the actual id assigned to the repo we just added
+    let id = find_repo_id(&_serve, source);
     let result = RepoCommand {
-        command: RepoCommands::Remove { id: 1 },
+        command: RepoCommands::Remove { id },
     }
     .execute(&ctx);
 

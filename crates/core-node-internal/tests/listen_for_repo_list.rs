@@ -109,10 +109,10 @@ async fn list_finds_nodes_in_fs_repo() {
 
     write_repositories_json5(
         &started,
-        &format!(
-            r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
-            repo_dir.display()
-        ),
+        &serde_json::to_string(&serde_json::json!([
+            { "id": 1, "type": "fs", "path": repo_dir.to_string_lossy() }
+        ]))
+        .unwrap(),
     );
 
     let resp = send_repo_list(&started).await;
@@ -137,30 +137,32 @@ async fn list_reads_git_nodes_from_cache() {
     // Write a repositories.json5 with a git repo
     write_repositories_json5(
         &started,
-        &format!(r#"[{{ "id": 1, "type": "git", "url": "{git_url}", "ref": "main" }}]"#),
+        &serde_json::to_string(&serde_json::json!([
+            { "id": 1, "type": "git", "url": git_url, "ref": "main" }
+        ]))
+        .unwrap(),
     );
 
     // Write a packages.json5 cache with nodes from that git repo
     write_packages_cache(
         &started,
-        &format!(
-            r#"[
-  {{
-    "node_name": "git_sensor",
-    "node_tag": "1.0.0",
-    "source_type": "git",
-    "source_uri": "{git_url}",
-    "path": "nodes/git_sensor"
-  }},
-  {{
-    "node_name": "git_actuator",
-    "node_tag": "2.0.0",
-    "source_type": "git",
-    "source_uri": "{git_url}",
-    "path": "nodes/git_actuator"
-  }}
-]"#
-        ),
+        &serde_json::to_string(&serde_json::json!([
+            {
+                "node_name": "git_sensor",
+                "node_tag": "1.0.0",
+                "source_type": "git",
+                "source_uri": git_url,
+                "path": "nodes/git_sensor"
+            },
+            {
+                "node_name": "git_actuator",
+                "node_tag": "2.0.0",
+                "source_type": "git",
+                "source_uri": git_url,
+                "path": "nodes/git_actuator"
+            }
+        ]))
+        .unwrap(),
     );
 
     let resp = send_repo_list(&started).await;
@@ -200,11 +202,11 @@ async fn list_marks_cross_repo_duplicates_fs() {
 
     write_repositories_json5(
         &started,
-        &format!(
-            r#"[{{ "id": 1, "type": "fs", "path": "{}" }}, {{ "id": 2, "type": "fs", "path": "{}" }}]"#,
-            repo_a.display(),
-            repo_b.display()
-        ),
+        &serde_json::to_string(&serde_json::json!([
+            { "id": 1, "type": "fs", "path": repo_a.to_string_lossy() },
+            { "id": 2, "type": "fs", "path": repo_b.to_string_lossy() }
+        ]))
+        .unwrap(),
     );
 
     let resp = send_repo_list(&started).await;
@@ -261,24 +263,24 @@ async fn list_marks_git_duplicate_of_fs() {
 
     write_repositories_json5(
         &started,
-        &format!(
-            r#"[{{ "id": 1, "type": "fs", "path": "{}" }}, {{ "id": 2, "type": "git", "url": "{git_url}" }}]"#,
-            repo_dir.display()
-        ),
+        &serde_json::to_string(&serde_json::json!([
+            { "id": 1, "type": "fs", "path": repo_dir.to_string_lossy() },
+            { "id": 2, "type": "git", "url": git_url }
+        ]))
+        .unwrap(),
     );
 
     // Cache has the same node from git
     write_packages_cache(
         &started,
-        &format!(
-            r#"[{{
-  "node_name": "overlapping",
-  "node_tag": "1.0.0",
-  "source_type": "git",
-  "source_uri": "{git_url}",
-  "path": "nodes/overlapping"
-}}]"#
-        ),
+        &serde_json::to_string(&serde_json::json!([{
+            "node_name": "overlapping",
+            "node_tag": "1.0.0",
+            "source_type": "git",
+            "source_uri": git_url,
+            "path": "nodes/overlapping"
+        }]))
+        .unwrap(),
     );
 
     let resp = send_repo_list(&started).await;
@@ -338,18 +340,18 @@ async fn list_excludes_fs_repo() {
 
     write_repositories_json5(
         &started,
-        &format!(
-            r#"[{{ "id": 1, "type": "fs", "path": "{}" }}, {{ "id": 2, "type": "fs", "path": "{}" }}]"#,
-            repo_a.display(),
-            repo_b.display()
-        ),
+        &serde_json::to_string(&serde_json::json!([
+            { "id": 1, "type": "fs", "path": repo_a.to_string_lossy() },
+            { "id": 2, "type": "fs", "path": repo_b.to_string_lossy() }
+        ]))
+        .unwrap(),
     );
     write_excluded_repositories_json5(
         &started,
-        &format!(
-            r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
-            repo_b.display()
-        ),
+        &serde_json::to_string(&serde_json::json!([
+            { "id": 1, "type": "fs", "path": repo_b.to_string_lossy() }
+        ]))
+        .unwrap(),
     );
 
     let resp = send_repo_list(&started).await;
@@ -369,17 +371,17 @@ async fn list_excludes_fs_subdirectory() {
 
     write_repositories_json5(
         &started,
-        &format!(
-            r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
-            repo.display()
-        ),
+        &serde_json::to_string(&serde_json::json!([
+            { "id": 1, "type": "fs", "path": repo.to_string_lossy() }
+        ]))
+        .unwrap(),
     );
     write_excluded_repositories_json5(
         &started,
-        &format!(
-            r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
-            repo.join("secret_node_1.0.0").display()
-        ),
+        &serde_json::to_string(&serde_json::json!([
+            { "id": 1, "type": "fs", "path": repo.join("secret_node_1.0.0").to_string_lossy() }
+        ]))
+        .unwrap(),
     );
 
     let resp = send_repo_list(&started).await;
@@ -400,20 +402,29 @@ async fn list_excludes_git_repo() {
 
     write_repositories_json5(
         &started,
-        &format!(
-            r#"[{{ "id": 1, "type": "fs", "path": "{}" }}, {{ "id": 2, "type": "git", "url": "{git_url}" }}]"#,
-            repo_dir.display()
-        ),
+        &serde_json::to_string(&serde_json::json!([
+            { "id": 1, "type": "fs", "path": repo_dir.to_string_lossy() },
+            { "id": 2, "type": "git", "url": git_url }
+        ]))
+        .unwrap(),
     );
     write_packages_cache(
         &started,
-        &format!(
-            r#"[{{ "node_name": "git_node", "node_tag": "1.0.0", "source_type": "git", "source_uri": "{git_url}", "path": "nodes/git_node" }}]"#
-        ),
+        &serde_json::to_string(&serde_json::json!([{
+            "node_name": "git_node",
+            "node_tag": "1.0.0",
+            "source_type": "git",
+            "source_uri": git_url,
+            "path": "nodes/git_node"
+        }]))
+        .unwrap(),
     );
     write_excluded_repositories_json5(
         &started,
-        &format!(r#"[{{ "id": 1, "type": "git", "url": "{git_url}" }}]"#),
+        &serde_json::to_string(&serde_json::json!([
+            { "id": 1, "type": "git", "url": git_url }
+        ]))
+        .unwrap(),
     );
 
     let resp = send_repo_list(&started).await;

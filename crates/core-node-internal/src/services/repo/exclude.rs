@@ -1,6 +1,7 @@
 use crate::Result;
 use crate::encoding::{RepoExcludeRequest, RepoExcludeResponse, RepoSourceKind};
 use crate::names;
+use crate::services::repo::refresh::{process_refresh, write_cache};
 use crate::services::repo::{json_entry_identity, normalize_repo_entries, repo_source_to_json};
 use config::consts::PeppyDirs;
 use peppylib::messaging::ServiceRequestContext;
@@ -45,12 +46,35 @@ async fn handle_repo_exclude_request(
     peppy_dirs: PeppyDirs,
 ) -> PeppyResult<Payload> {
     let sender_instance_id = context.message().instance_id();
-    handle_repo_exclude_request_inner(&context, &peppy_dirs).map_err(|e| {
-        PeppyError::InvalidServiceRequest {
+    let (payload, needs_refresh) = handle_repo_exclude_request_inner(&context, &peppy_dirs)
+        .map_err(|e| PeppyError::InvalidServiceRequest {
             identifier: sender_instance_id.to_string(),
             reason: e.to_string(),
+        })?;
+
+    if needs_refresh {
+        let dirs = peppy_dirs.clone();
+        match tokio::task::spawn_blocking(move || {
+            let refresh_result = process_refresh(&dirs);
+            (refresh_result, dirs)
+        })
+        .await
+        {
+            Ok((Ok((discovered, _excluded)), dirs)) => {
+                if let Err(e) = write_cache(&dirs, &discovered) {
+                    warn!("Failed to write cache after repo exclusion: {}", e);
+                }
+            }
+            Ok((Err(e), _dirs)) => {
+                warn!("Failed to refresh after repo exclusion: {}", e);
+            }
+            Err(e) => {
+                warn!("Refresh task panicked after repo exclusion: {}", e);
+            }
         }
-    })
+    }
+
+    Ok(payload)
 }
 
 /// Reads excluded repositories from `conf/excluded_repositories.json5`.
@@ -136,10 +160,11 @@ impl ExclusionSet {
     }
 }
 
+/// Returns `(payload, needs_refresh)`.
 fn handle_repo_exclude_request_inner(
     context: &ServiceRequestContext,
     peppy_dirs: &PeppyDirs,
-) -> Result<Payload> {
+) -> Result<(Payload, bool)> {
     let sender_instance_id = context.message().instance_id();
     let payload = context.message().payload();
 
@@ -152,7 +177,10 @@ fn handle_repo_exclude_request_inner(
 
     let identity = request.source.identity();
     if identity.trim().is_empty() {
-        return RepoExcludeResponse::failure("repository path/URL must not be empty").encode();
+        return Ok((
+            RepoExcludeResponse::failure("repository path/URL must not be empty").encode()?,
+            false,
+        ));
     }
 
     let repos_path = peppy_dirs.conf_dir().join("excluded_repositories.json5");
@@ -161,7 +189,7 @@ fn handle_repo_exclude_request_inner(
 
     let mut repos = match read_excluded_repos(peppy_dirs) {
         Ok(repos) => repos,
-        Err(e) => return RepoExcludeResponse::failure(e.to_string()).encode(),
+        Err(e) => return Ok((RepoExcludeResponse::failure(e.to_string()).encode()?, false)),
     };
 
     let new_identity = identity.trim();
@@ -170,11 +198,11 @@ fn handle_repo_exclude_request_inner(
         .any(|entry| json_entry_identity(entry).is_some_and(|existing| existing == new_identity));
 
     if is_duplicate {
-        return RepoExcludeResponse::failure(format!(
-            "repository '{}' already exists",
-            new_identity
-        ))
-        .encode();
+        return Ok((
+            RepoExcludeResponse::failure(format!("repository '{}' already exists", new_identity))
+                .encode()?,
+            false,
+        ));
     }
 
     let next_id = repos
@@ -193,5 +221,5 @@ fn handle_repo_exclude_request_inner(
 
     drop(_guard);
 
-    RepoExcludeResponse::success().encode()
+    Ok((RepoExcludeResponse::success().encode()?, true))
 }

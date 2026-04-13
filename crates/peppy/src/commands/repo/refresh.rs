@@ -123,7 +123,6 @@ async fn repo_refresh_async(ctx: &Arc<AppContext>) -> Result<()> {
                 }
             }
             Err(peppylib::PeppyError::ActionResultTimeout { .. }) => {
-                last_activity = tokio::time::Instant::now();
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
             Err(e) => {

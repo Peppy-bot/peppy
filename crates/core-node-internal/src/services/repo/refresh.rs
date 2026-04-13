@@ -275,9 +275,12 @@ pub(crate) fn read_or_create_repos(peppy_dirs: &PeppyDirs) -> Result<Vec<Value>>
 pub(crate) fn process_refresh(
     peppy_dirs: &PeppyDirs,
 ) -> Result<(Vec<DiscoveredNode>, Vec<ExcludedRepo>)> {
-    let repos = read_or_create_repos(peppy_dirs)?;
-
-    let exclusions = ExclusionSet::load(peppy_dirs);
+    let (repos, exclusions) = {
+        let _guard = crate::services::repo::repos_file_lock().lock();
+        let repos = read_or_create_repos(peppy_dirs)?;
+        let exclusions = ExclusionSet::load(peppy_dirs);
+        (repos, exclusions)
+    };
 
     let mut global_seen: HashSet<(String, String)> = HashSet::new();
     let mut all_nodes: Vec<DiscoveredNode> = Vec::new();
@@ -542,7 +545,7 @@ mod tests {
         assert_eq!(fs_entry.get("id").unwrap().as_u64().unwrap(), 1);
         assert_eq!(fs_entry.get("type").unwrap().as_str().unwrap(), "fs");
         let path_val = fs_entry.get("path").unwrap().as_str().unwrap();
-        let home = dirs::home_dir().unwrap();
+        let home = dirs::home_dir().unwrap_or_else(|| std::env::current_dir().unwrap());
         assert_eq!(path_val, home.to_string_lossy().as_ref());
 
         let git_entry = &repos[1];
