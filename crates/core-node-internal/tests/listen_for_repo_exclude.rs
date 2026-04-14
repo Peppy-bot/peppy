@@ -34,9 +34,20 @@ fn write_excluded_repositories_json5(started: &StartedCoreNode, content: &str) {
         .expect("write excluded repos file");
 }
 
+/// Pre-writes an empty `repositories.json5` so the exclude handler's
+/// post-response refresh step does not fall back to the default template,
+/// which points at the real user `$HOME` and would make `process_refresh`
+/// walk the entire home directory (causing 5s poll timeouts).
+fn write_empty_repositories_json5(started: &StartedCoreNode) {
+    let conf_dir = started.peppy_dirs.conf_dir();
+    std::fs::create_dir_all(&conf_dir).expect("create conf dir");
+    std::fs::write(conf_dir.join("repositories.json5"), "[]").expect("write repos file");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn exclude_url_succeed() {
     let started = start_core_node_with_mock_messenger().await;
+    write_empty_repositories_json5(&started);
 
     let resp = send_repo_exclude(
         &started,
@@ -65,6 +76,7 @@ async fn exclude_url_succeed() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn exclude_git_succeed() {
     let started = start_core_node_with_mock_messenger().await;
+    write_empty_repositories_json5(&started);
 
     let resp = send_repo_exclude(
         &started,
@@ -95,6 +107,7 @@ async fn exclude_git_succeed() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn exclude_fs_succeed() {
     let started = start_core_node_with_mock_messenger().await;
+    write_empty_repositories_json5(&started);
 
     let resp = send_repo_exclude(&started, &RepoExcludeRequest::new_fs("/tmp/my-local-repo")).await;
     assert!(resp.success, "repo_exclude should succeed");
@@ -117,6 +130,7 @@ async fn exclude_fs_succeed() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn exclude_duplicate_fails() {
     let started = start_core_node_with_mock_messenger().await;
+    write_empty_repositories_json5(&started);
 
     let request = RepoExcludeRequest::new_url("https://example.com/packages");
 
@@ -166,6 +180,7 @@ async fn exclude_fails_when_duplicate_ids_in_file() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn exclude_assigns_id_after_manual_entry() {
     let started = start_core_node_with_mock_messenger().await;
+    write_empty_repositories_json5(&started);
 
     // Pre-populate with a manually-added entry using a high id
     write_excluded_repositories_json5(
