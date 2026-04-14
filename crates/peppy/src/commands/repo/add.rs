@@ -70,7 +70,9 @@ pub(crate) fn parse_repo_source(source_str: &str, git_ref: Option<String>) -> Re
                 "`--ref` is only supported for git sources".to_string(),
             ));
         }
-        return Ok(RepoSource::Fs(source_str.into()));
+        let path = std::path::Path::new(source_str);
+        let resolved = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        return Ok(RepoSource::Fs(resolved));
     }
 
     if source::looks_like_git_url(source_str) {
@@ -82,11 +84,73 @@ pub(crate) fn parse_repo_source(source_str: &str, git_ref: Option<String>) -> Re
         });
     }
 
-    // Plain URL
+    // Plain URL — but if the user passed `--ref`, try to treat it as a git
+    // clone URL first (e.g. `https://github.com/org/repo` without `.git`).
     if git_ref.is_some() {
+        if let Ok((repo_url, _repo_path)) = source::parse_git_repo_url_and_path(source_str) {
+            return Ok(RepoSource::Git {
+                repo_url: repo_url.to_bstring().to_string(),
+                repo_ref: git_ref,
+            });
+        }
         return Err(Error::ExecutionFailed(
             "`--ref` is only supported for git sources".to_string(),
         ));
     }
     Ok(RepoSource::Url(source_str.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_repo_source_fs_canonicalizes_existing_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let canonical = std::fs::canonicalize(tmp.path()).unwrap();
+        let input = tmp.path().to_str().unwrap();
+
+        let parsed = parse_repo_source(input, None).unwrap();
+        let RepoSource::Fs(p) = parsed else {
+            panic!("expected Fs variant");
+        };
+        assert_eq!(p, canonical);
+    }
+
+    #[test]
+    fn parse_repo_source_fs_falls_back_on_nonexistent() {
+        // Must not error even if the path does not exist yet.
+        let parsed = parse_repo_source("/definitely/does/not/exist/xyz", None).unwrap();
+        let RepoSource::Fs(p) = parsed else {
+            panic!("expected Fs variant");
+        };
+        assert_eq!(p, std::path::Path::new("/definitely/does/not/exist/xyz"));
+    }
+
+    #[test]
+    fn parse_repo_source_https_without_git_suffix_with_ref_returns_git() {
+        let parsed =
+            parse_repo_source("https://github.com/org/repo", Some("main".to_string())).unwrap();
+        match parsed {
+            RepoSource::Git { repo_url, repo_ref } => {
+                assert!(repo_url.contains("github.com/org/repo"));
+                assert_eq!(repo_ref.as_deref(), Some("main"));
+            }
+            other => panic!("expected Git variant, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_repo_source_fs_path_with_ref_fails() {
+        // --ref on a local path is still rejected.
+        let tmp = tempfile::tempdir().unwrap();
+        let input = tmp.path().to_str().unwrap();
+        let result = parse_repo_source(input, Some("main".to_string()));
+        assert!(result.is_err(), "expected error for fs path with --ref");
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("--ref"),
+            "error should mention --ref, got: {msg}"
+        );
+    }
 }

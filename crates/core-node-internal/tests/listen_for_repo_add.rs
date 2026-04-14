@@ -199,3 +199,50 @@ async fn listen_for_repo_add_assigns_id_after_manual_entry() {
         "new entry should get max(existing ids) + 1"
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_repo_add_same_git_url_different_refs_are_distinct() {
+    // Regression for RepoSource::identity() collapsing git entries by url
+    // alone: adding the same clone URL with different refs must produce two
+    // distinct entries instead of rejecting the second as a duplicate.
+    let started = start_core_node_with_mock_messenger().await;
+
+    let resp_main = send_repo_add(
+        &started,
+        &RepoAddRequest::new_git("https://github.com/example/repo.git", Some("main".into())),
+    )
+    .await;
+    assert!(resp_main.success, "first add should succeed");
+
+    let resp_dev = send_repo_add(
+        &started,
+        &RepoAddRequest::new_git("https://github.com/example/repo.git", Some("dev".into())),
+    )
+    .await;
+    assert!(
+        resp_dev.success,
+        "second add with different ref should succeed, got error: {}",
+        resp_dev.error_message
+    );
+
+    let repos_path = started.peppy_dirs.conf_dir().join("repositories.json5");
+    let content = std::fs::read_to_string(&repos_path).expect("read repos file");
+    let repos: Vec<serde_json::Value> =
+        serde_json5::from_str(&content).expect("parse repos as JSON5");
+
+    let git_entries: Vec<&serde_json::Value> = repos
+        .iter()
+        .filter(|e| e["type"] == "git" && e["url"] == "https://github.com/example/repo.git")
+        .collect();
+    assert_eq!(
+        git_entries.len(),
+        2,
+        "both ref variants should be persisted"
+    );
+    let refs: Vec<&str> = git_entries
+        .iter()
+        .map(|e| e["ref"].as_str().unwrap_or(""))
+        .collect();
+    assert!(refs.contains(&"main"));
+    assert!(refs.contains(&"dev"));
+}

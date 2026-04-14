@@ -135,6 +135,7 @@ pub fn is_supported_http_archive(url: &url::Url) -> bool {
 /// (contains `.git` or uses `git@` / `ssh://` scheme).
 pub fn looks_like_git_url(source: &str) -> bool {
     source.ends_with(".git")
+        || source.contains(".git/")
         || source.starts_with("git@")
         || source.starts_with("ssh://")
         || source.starts_with("git://")
@@ -241,6 +242,21 @@ fn config_parse_error(dir: &Path) -> impl Fn(config::ConfigError) -> Error + '_ 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn looks_like_git_url_matches_variants() {
+        // Ends with .git
+        assert!(looks_like_git_url("https://github.com/org/repo.git"));
+        // .git followed by subpath
+        assert!(looks_like_git_url("https://host/org/repo.git/subpath"));
+        // SSH-style schemes
+        assert!(looks_like_git_url("git@github.com:org/repo.git"));
+        assert!(looks_like_git_url("ssh://git@host/org/repo"));
+        assert!(looks_like_git_url("git://host/org/repo"));
+        // Plain URLs without .git are not git
+        assert!(!looks_like_git_url("https://host/org/repo"));
+        assert!(!looks_like_git_url("https://example.com/packages"));
+    }
 
     #[test]
     fn parse_variant_source_name() {

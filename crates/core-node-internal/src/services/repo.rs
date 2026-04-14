@@ -50,12 +50,30 @@ pub(crate) fn repo_source_to_json(id: u64, source: &RepoSource) -> Value {
     Value::Object(map)
 }
 
-/// Returns the identity value from a persisted JSON entry (path for fs, url for git/url).
-pub(crate) fn json_entry_identity(entry: &Value) -> Option<&str> {
+/// Returns the canonical identity for a persisted JSON repo entry.
+///
+/// Must stay in sync with [`RepoSource::identity`]:
+/// - `fs`: canonicalized path when possible (falls back to raw string).
+/// - `git`: `url@ref` when a non-empty `ref` field is present, otherwise `url`.
+/// - other (`url`): the url as-is.
+pub(crate) fn json_entry_identity(entry: &Value) -> Option<String> {
     let typ = entry.get("type")?.as_str()?;
     match typ {
-        "fs" => entry.get("path")?.as_str(),
-        _ => entry.get("url")?.as_str(),
+        "fs" => {
+            let path = entry.get("path")?.as_str()?;
+            let canonical = std::fs::canonicalize(path)
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_else(|_| path.to_string());
+            Some(canonical)
+        }
+        "git" => {
+            let url = entry.get("url")?.as_str()?;
+            match entry.get("ref").and_then(|v| v.as_str()) {
+                Some(r) if !r.is_empty() => Some(format!("{url}@{r}")),
+                _ => Some(url.to_string()),
+            }
+        }
+        _ => entry.get("url")?.as_str().map(|s| s.to_string()),
     }
 }
 

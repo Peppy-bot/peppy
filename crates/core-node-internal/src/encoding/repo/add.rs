@@ -57,10 +57,23 @@ pub enum RepoSource {
 
 impl RepoSource {
     /// The canonical identity string used for duplicate detection and exclusion matching.
+    ///
+    /// - `Fs`: canonicalized (absolute, symlink-resolved) when possible, so that
+    ///   `./repo` and `/abs/path/to/repo` produce the same identity. Falls back
+    ///   to the raw string when the path does not exist.
+    /// - `Git`: `repo_url@repo_ref` when a ref is present, otherwise just the
+    ///   url — so that the same repo pinned to different refs is not collapsed
+    ///   into a single identity.
+    /// - `Url`: the url as-is.
     pub fn identity(&self) -> String {
         match self {
-            RepoSource::Fs(path) => path.to_string_lossy().into_owned(),
-            RepoSource::Git { repo_url, .. } => repo_url.clone(),
+            RepoSource::Fs(path) => std::fs::canonicalize(path)
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_else(|_| path.to_string_lossy().into_owned()),
+            RepoSource::Git { repo_url, repo_ref } => match repo_ref {
+                Some(r) if !r.is_empty() => format!("{repo_url}@{r}"),
+                _ => repo_url.clone(),
+            },
             RepoSource::Url(url) => url.clone(),
         }
     }
@@ -209,5 +222,79 @@ impl RepoAddResponse {
             success: response.get_success(),
             error_message: response.get_error_message()?.to_str()?.to_owned(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn identity_git_distinguishes_refs() {
+        let a = RepoSource::Git {
+            repo_url: "https://github.com/org/repo".to_string(),
+            repo_ref: Some("main".to_string()),
+        };
+        let b = RepoSource::Git {
+            repo_url: "https://github.com/org/repo".to_string(),
+            repo_ref: Some("dev".to_string()),
+        };
+        assert_ne!(a.identity(), b.identity());
+        assert!(a.identity().contains("main"));
+        assert!(b.identity().contains("dev"));
+    }
+
+    #[test]
+    fn identity_git_without_ref_matches_url() {
+        let src = RepoSource::Git {
+            repo_url: "https://github.com/org/repo".to_string(),
+            repo_ref: None,
+        };
+        assert_eq!(src.identity(), "https://github.com/org/repo");
+    }
+
+    #[test]
+    fn identity_git_empty_ref_matches_url() {
+        // Treat empty ref as "no ref" so it matches legacy entries without a ref.
+        let src = RepoSource::Git {
+            repo_url: "https://github.com/org/repo".to_string(),
+            repo_ref: Some(String::new()),
+        };
+        assert_eq!(src.identity(), "https://github.com/org/repo");
+    }
+
+    #[test]
+    fn identity_fs_canonicalizes_existing_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let canonical = std::fs::canonicalize(tmp.path()).unwrap();
+
+        // Build a non-canonical spelling via the symlink-prone /tmp or an
+        // equivalent relative path: construct `<canonical>/../<basename>`.
+        let parent = canonical.parent().unwrap();
+        let name = canonical.file_name().unwrap();
+        let roundabout = parent
+            .join("..")
+            .join(parent.file_name().unwrap())
+            .join(name);
+
+        let raw = RepoSource::Fs(roundabout.clone());
+        let canon = RepoSource::Fs(canonical.clone());
+        assert_eq!(
+            raw.identity(),
+            canon.identity(),
+            "canonicalization must collapse equivalent paths"
+        );
+    }
+
+    #[test]
+    fn identity_fs_nonexistent_falls_back_to_raw() {
+        let src = RepoSource::Fs(std::path::PathBuf::from("/definitely/does/not/exist/xyz"));
+        assert_eq!(src.identity(), "/definitely/does/not/exist/xyz");
+    }
+
+    #[test]
+    fn identity_url_is_unchanged() {
+        let src = RepoSource::Url("https://example.com/packages".to_string());
+        assert_eq!(src.identity(), "https://example.com/packages");
     }
 }

@@ -52,9 +52,10 @@ fn setup() -> (
 
 #[test]
 fn repo_remove_after_add_succeeds() {
-    let (_rt, _serve, ctx, _work_dir) = setup();
+    let (_rt, _serve, ctx, work_dir) = setup();
 
-    let source = "/tmp/my-local-repo";
+    let source_path = work_dir.path().join("my-local-repo");
+    let source = source_path.to_str().unwrap();
 
     // First add a repo so there's something to remove
     RepoCommand {

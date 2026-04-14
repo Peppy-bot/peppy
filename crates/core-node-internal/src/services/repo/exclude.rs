@@ -138,13 +138,13 @@ impl ExclusionSet {
                 continue;
             };
 
-            identities.insert(identity.to_owned());
             if kind == RepoSourceKind::Fs {
-                fs_paths.push(PathBuf::from(identity));
+                fs_paths.push(PathBuf::from(&identity));
             }
+            identities.insert(identity.clone());
             entries.push(ExcludedEntry {
                 source_type: kind,
-                identity: identity.to_owned(),
+                identity,
             });
         }
 

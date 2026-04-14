@@ -57,7 +57,7 @@ fn handle_node_list_request_inner(
 
     let request = StackListRequest::decode(payload.as_ref())?;
 
-    debug!("Received `node_list` request from {sender_instance_id}");
+    debug!("Received `stack_list` request from {sender_instance_id}");
 
     let dot_graph = if request.with_dot_graph() {
         Some(node_stack.to_dot())
