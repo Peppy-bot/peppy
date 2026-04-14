@@ -16,7 +16,7 @@ use config::consts::PeppyDirs;
 use git2::build::RepoBuilder;
 use parking_lot::Mutex;
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
@@ -88,6 +88,16 @@ fn lock_for(key: &str) -> Arc<Mutex<()>> {
         .clone()
 }
 
+/// Per-process set of cache keys that have already been clone-or-fetched
+/// during this daemon's lifetime. Used to skip redundant network fetches
+/// when the same `(url, ref)` is requested repeatedly (e.g. multiple
+/// nodes in one batch, or sequential batches) — the cache key pins the
+/// ref, so a once-refreshed checkout stays correct.
+fn refreshed_set() -> &'static Mutex<HashSet<String>> {
+    static SET: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    SET.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
 /// Ensures a checkout exists for `(repo_url, repo_ref)` and returns the
 /// working-tree directory. The checkout is populated on first call and
 /// refreshed (fetch + checkout) on subsequent calls so pinned refs that
@@ -116,7 +126,14 @@ pub fn ensure_checkout(
         })?;
     }
 
-    if is_populated(&dir) {
+    let result = if is_populated(&dir) {
+        if refreshed_set().lock().contains(&lock_key) {
+            on_feedback(&format!(
+                "Reusing cached checkout at {} (already refreshed this session)",
+                dir.display()
+            ));
+            return Ok(dir);
+        }
         on_feedback(&format!("Reusing cached checkout at {}", dir.display()));
         refresh_existing(&dir, repo_url, repo_ref, on_feedback)
     } else {
@@ -131,7 +148,12 @@ pub fn ensure_checkout(
             dir.display()
         ));
         fresh_clone(&dir, repo_url, repo_ref)
+    };
+
+    if result.is_ok() {
+        refreshed_set().lock().insert(lock_key);
     }
+    result
 }
 
 fn fresh_clone(

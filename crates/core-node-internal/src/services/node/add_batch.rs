@@ -15,6 +15,8 @@ use crate::encoding::{DepVariantOverride, NodeAddGoal, NodeAddResult, NodeSource
 use chrono::Local;
 use config::consts::{NODE_CONFIG_FILE, PeppyDirs};
 use config::node::{NodeConfigParser, ParsedNodeConfig};
+use futures::future::BoxFuture;
+use futures::stream::{FuturesUnordered, StreamExt};
 use node_stack::VirtualDeptree;
 use parking_lot::Mutex as StdMutex;
 use std::collections::{HashMap, HashSet};
@@ -283,14 +285,22 @@ struct Resolution {
     stack_skipped: Vec<(String, String)>,
 }
 
-async fn resolve_transitive_closure(
-    peppy_dirs: &PeppyDirs,
-    entries: &[PackageEntry],
+type MaterializeOutput = (
+    String,
+    String,
+    bool,
+    RepoSourceKind,
+    Result<(PathBuf, ParsedNodeConfig), String>,
+);
+
+async fn resolve_transitive_closure<'a>(
+    peppy_dirs: &'a PeppyDirs,
+    entries: &'a [PackageEntry],
     root_name: &str,
     root_tag: &str,
     dep_overrides: &[DepVariantOverride],
     action_context: &NodeAddActionContext,
-    feedback_tx: &mpsc::UnboundedSender<FeedbackLine>,
+    feedback_tx: &'a mpsc::UnboundedSender<FeedbackLine>,
 ) -> Result<Resolution, String> {
     let override_map: HashMap<(String, String), String> = dep_overrides
         .iter()
@@ -300,39 +310,40 @@ async fn resolve_transitive_closure(
     let mut to_add: Vec<ResolvedBatchNode> = Vec::new();
     let mut stack_skipped: Vec<(String, String)> = Vec::new();
     let mut seen: HashSet<(String, String)> = HashSet::new();
-    let mut stack: Vec<(String, String, bool)> =
-        vec![(root_name.to_owned(), root_tag.to_owned(), true)];
     let mut missing: Vec<(String, String)> = Vec::new();
+    let mut pending: Vec<(String, String, bool)> =
+        vec![(root_name.to_owned(), root_tag.to_owned(), true)];
+    let mut in_flight: FuturesUnordered<BoxFuture<'a, MaterializeOutput>> = FuturesUnordered::new();
 
-    while let Some((name, tag, is_root)) = stack.pop() {
-        let key = (name.clone(), tag.clone());
-        if !seen.insert(key.clone()) {
-            continue;
+    loop {
+        while let Some((name, tag, is_root)) = pending.pop() {
+            let key = (name.clone(), tag.clone());
+            if !seen.insert(key.clone()) {
+                continue;
+            }
+            // Deps already in the node stack → skip (but only for non-root;
+            // the root is the user's explicit target — we add/replace it).
+            if !is_root && action_context.node_stack.find(&name, &tag).is_some() {
+                stack_skipped.push(key);
+                continue;
+            }
+            let Some(entry) = cache::lookup(entries, &name, &tag) else {
+                missing.push(key);
+                continue;
+            };
+            let entry = entry.clone();
+            let source_kind = entry.source_type;
+            in_flight.push(Box::pin(async move {
+                let result = materialize_entry(&entry, peppy_dirs, feedback_tx).await;
+                (name, tag, is_root, source_kind, result)
+            }));
         }
 
-        // Deps already in the node stack → skip (but only for non-root;
-        // the root is the user's explicit target — we add/replace it).
-        if !is_root && action_context.node_stack.find(&name, &tag).is_some() {
-            stack_skipped.push(key);
-            continue;
-        }
-
-        let Some(entry) = cache::lookup(entries, &name, &tag) else {
-            missing.push((name.clone(), tag.clone()));
-            continue;
+        let Some((name, tag, is_root, source_kind, result)) = in_flight.next().await else {
+            break;
         };
 
-        // Determine which variant to use. Roots take their variant from
-        // goal.variant (handled later in run_single_batched_add); deps
-        // look at override_map. If no override is declared, the dep uses
-        // the "root variant" — no variant selection at all, i.e. None.
-        let variant_override = if is_root {
-            None
-        } else {
-            override_map.get(&(name.clone(), tag.clone())).cloned()
-        };
-
-        let (root_dir, parsed) = match materialize_entry(entry, peppy_dirs, feedback_tx).await {
+        let (root_dir, parsed) = match result {
             Ok(pair) => pair,
             Err(e) => {
                 return Err(format!(
@@ -340,6 +351,14 @@ async fn resolve_transitive_closure(
                     name, tag, e
                 ));
             }
+        };
+
+        // Roots take their variant from goal.variant (handled later in
+        // run_single_batched_add); deps look at override_map.
+        let variant_override = if is_root {
+            None
+        } else {
+            override_map.get(&(name.clone(), tag.clone())).cloned()
         };
 
         // Enforce that an override points at a variant declared by this
@@ -354,15 +373,14 @@ async fn resolve_transitive_closure(
             ));
         }
 
-        let depends_on = parsed.manifest().depends_on.as_ref();
-        if let Some(deps) = depends_on {
+        if let Some(deps) = parsed.manifest().depends_on.as_ref() {
             for dep in &deps.nodes {
                 let dep_name = dep.name.as_str().to_owned();
                 let dep_tag = dep.tag.clone();
                 if seen.contains(&(dep_name.clone(), dep_tag.clone())) {
                     continue;
                 }
-                stack.push((dep_name, dep_tag, false));
+                pending.push((dep_name, dep_tag, false));
             }
         }
 
@@ -378,7 +396,7 @@ async fn resolve_transitive_closure(
             tag,
             root_dir,
             config_resolved,
-            source_kind: entry.source_type,
+            source_kind,
             variant_override,
             is_root,
         });
