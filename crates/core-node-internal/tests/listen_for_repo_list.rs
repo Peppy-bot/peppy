@@ -90,11 +90,10 @@ async fn list_default_repos_creates_repositories_file() {
     let content = std::fs::read_to_string(&repos_path).expect("read created file");
     let repos: Vec<serde_json::Value> =
         serde_json5::from_str(&content).expect("parse created file");
-    assert_eq!(repos.len(), 2, "default file should contain 2 entries");
-    assert_eq!(repos[0].get("type").unwrap().as_str().unwrap(), "fs");
-    assert_eq!(repos[1].get("type").unwrap().as_str().unwrap(), "git");
+    assert_eq!(repos.len(), 1, "default file should contain 1 entry");
+    assert_eq!(repos[0].get("type").unwrap().as_str().unwrap(), "git");
     assert_eq!(
-        repos[1].get("url").unwrap().as_str().unwrap(),
+        repos[0].get("url").unwrap().as_str().unwrap(),
         "https://github.com/Peppy-bot/nodes_hub"
     );
 }

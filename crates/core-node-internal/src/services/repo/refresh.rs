@@ -228,17 +228,6 @@ pub(crate) fn parse_repo_entry(entry: &Value) -> Option<RepoSource> {
 
 const DEFAULT_REPOS_TEMPLATE: &str = include_str!("../../../assets/default_repositories.json5");
 
-/// Escape a string for safe embedding inside a JSON/JSON5 double-quoted string
-/// literal. Returns the escaped contents without the surrounding quotes.
-///
-/// Example: `path"with\quote` → `path\"with\\quote`.
-fn escape_for_json_string(value: &str) -> String {
-    let quoted =
-        serde_json::to_string(value).unwrap_or_else(|_| format!("\"{}\"", value.replace('"', "")));
-    // Strip the surrounding quotes added by serde_json::to_string.
-    quoted[1..quoted.len() - 1].to_string()
-}
-
 /// Reads the repositories.json5 config file, creating it with defaults if it
 /// does not exist yet.  Ensures every entry has an integer `id` field
 /// (auto-assigns missing ids) and returns entries sorted by `id`.
@@ -253,20 +242,8 @@ pub(crate) fn read_or_create_repos(peppy_dirs: &PeppyDirs) -> Result<Vec<Value>>
             crate::Error::Decoding(format!("failed to parse repositories.json5: {e}"))
         })?
     } else {
-        let home = match dirs::home_dir() {
-            Some(h) => h.to_string_lossy().into_owned(),
-            None => {
-                warn!(
-                    "Could not determine home directory for default repositories; using current directory"
-                );
-                std::env::current_dir()
-                    .map(|d| d.to_string_lossy().into_owned())
-                    .unwrap_or_else(|_| "/tmp".to_string())
-            }
-        };
-        let content = DEFAULT_REPOS_TEMPLATE.replace("{home_dir}", &escape_for_json_string(&home));
-        std::fs::write(&repos_path, &content)?;
-        serde_json5::from_str(&content).map_err(|e| {
+        std::fs::write(&repos_path, DEFAULT_REPOS_TEMPLATE)?;
+        serde_json5::from_str(DEFAULT_REPOS_TEMPLATE).map_err(|e| {
             crate::Error::Decoding(format!("failed to parse default repositories: {e}"))
         })?
     };
@@ -539,37 +516,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn escape_for_json_string_escapes_quotes_and_backslashes() {
-        assert_eq!(escape_for_json_string("simple"), "simple");
-        assert_eq!(
-            escape_for_json_string(r#"path"with"quotes"#),
-            r#"path\"with\"quotes"#
-        );
-        assert_eq!(escape_for_json_string(r"C:\Users\x"), r"C:\\Users\\x");
-    }
-
-    #[test]
-    fn read_or_create_repos_produces_valid_json5_with_special_home() {
-        let tmp = tempfile::tempdir().unwrap();
-        let peppy_dirs = PeppyDirs::new(tmp.path());
-        let conf_dir = peppy_dirs.conf_dir();
-        std::fs::create_dir_all(&conf_dir).unwrap();
-        let repos_path = conf_dir.join("repositories.json5");
-
-        // Simulate the default-template rendering with a home path containing
-        // a double-quote — without escaping, the produced JSON5 would be invalid.
-        let weird_home = r#"/home/u"ser"#;
-        let content =
-            DEFAULT_REPOS_TEMPLATE.replace("{home_dir}", &escape_for_json_string(weird_home));
-        std::fs::write(&repos_path, &content).unwrap();
-
-        // Parsing must succeed and round-trip back the unescaped path.
-        let parsed: Vec<serde_json::Value> =
-            serde_json5::from_str(&content).expect("escaped template must parse as JSON5");
-        assert_eq!(parsed[0].get("path").unwrap().as_str().unwrap(), weird_home);
-    }
-
-    #[test]
     fn read_or_create_repos_creates_file_when_missing() {
         let tmp = tempfile::tempdir().unwrap();
         let peppy_dirs = PeppyDirs::new(tmp.path());
@@ -580,18 +526,10 @@ mod tests {
         let repos = read_or_create_repos(&peppy_dirs).unwrap();
         assert!(repos_path.exists(), "repositories.json5 should be created");
 
-        // Should contain 2 entries: home dir (fs) + nodes_hub (git)
-        assert_eq!(repos.len(), 2, "default repos should have 2 entries");
+        assert_eq!(repos.len(), 1, "default repos should have 1 entry");
 
-        let fs_entry = &repos[0];
-        assert_eq!(fs_entry.get("id").unwrap().as_u64().unwrap(), 1);
-        assert_eq!(fs_entry.get("type").unwrap().as_str().unwrap(), "fs");
-        let path_val = fs_entry.get("path").unwrap().as_str().unwrap();
-        let home = dirs::home_dir().unwrap_or_else(|| std::env::current_dir().unwrap());
-        assert_eq!(path_val, home.to_string_lossy().as_ref());
-
-        let git_entry = &repos[1];
-        assert_eq!(git_entry.get("id").unwrap().as_u64().unwrap(), 2);
+        let git_entry = &repos[0];
+        assert_eq!(git_entry.get("id").unwrap().as_u64().unwrap(), 1000);
         assert_eq!(git_entry.get("type").unwrap().as_str().unwrap(), "git");
         assert_eq!(
             git_entry.get("url").unwrap().as_str().unwrap(),

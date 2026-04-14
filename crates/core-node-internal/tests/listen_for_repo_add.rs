@@ -36,22 +36,17 @@ async fn listen_for_repo_add_url_succeed() {
     assert!(resp.success, "repo_add should succeed");
     assert!(resp.error_message.is_empty());
 
-    // Verify the file was created with the home dir default + the new entry
     let repos_path = started.peppy_dirs.conf_dir().join("repositories.json5");
     let content = std::fs::read_to_string(&repos_path).expect("read repos file");
     let repos: Vec<serde_json::Value> =
         serde_json5::from_str(&content).expect("parse repos as JSON5");
-
-    // First entry is the home dir default (fs type) with id 1
-    assert_eq!(repos[0]["type"], "fs");
-    assert_eq!(repos[0]["id"], 1);
 
     // Last entry is the one we just added, with the next available id
     let last = repos.last().unwrap();
     assert_eq!(last["type"], "url");
     assert_eq!(last["url"], "https://example.com/packages");
     assert_eq!(
-        last["id"], 3,
+        last["id"], 1001,
         "added entry should get the next available id"
     );
 }
@@ -80,7 +75,7 @@ async fn listen_for_repo_add_git_succeed() {
     assert_eq!(last["url"], "https://github.com/example/repo.git");
     assert_eq!(last["ref"], "main");
     assert_eq!(
-        last["id"], 3,
+        last["id"], 1001,
         "added entry should get the next available id"
     );
 }
@@ -101,7 +96,7 @@ async fn listen_for_repo_add_fs_succeed() {
     assert_eq!(last["type"], "fs");
     assert_eq!(last["path"], "/tmp/my-local-repo");
     assert_eq!(
-        last["id"], 3,
+        last["id"], 1001,
         "added entry should get the next available id"
     );
 }
