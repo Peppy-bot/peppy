@@ -196,6 +196,202 @@ async fn listen_for_repo_add_assigns_id_after_manual_entry() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_repo_add_top_assigns_min_minus_one() {
+    let started = start_core_node_with_mock_messenger().await;
+
+    write_repositories_json5(
+        &started,
+        r#"[
+            { "id": 1000, "type": "fs", "path": "/a" },
+            { "id": 1001, "type": "fs", "path": "/b" }
+        ]"#,
+    );
+
+    let resp = send_repo_add(
+        &started,
+        &RepoAddRequest::new_url("https://example.com/packages").with_top(true),
+    )
+    .await;
+    assert!(resp.success, "repo_add with top should succeed");
+
+    let repos_path = started.peppy_dirs.conf_dir().join("repositories.json5");
+    let content = std::fs::read_to_string(&repos_path).expect("read repos file");
+    let repos: Vec<serde_json::Value> =
+        serde_json5::from_str(&content).expect("parse repos as JSON5");
+
+    let added = repos
+        .iter()
+        .find(|e| e["url"] == "https://example.com/packages")
+        .expect("added entry should be present");
+    assert_eq!(added["id"], 999, "top=true should assign min(existing)-1");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_repo_add_top_sorts_first() {
+    let started = start_core_node_with_mock_messenger().await;
+
+    write_repositories_json5(
+        &started,
+        r#"[
+            { "id": 1000, "type": "fs", "path": "/a" },
+            { "id": 1001, "type": "fs", "path": "/b" }
+        ]"#,
+    );
+
+    let resp = send_repo_add(
+        &started,
+        &RepoAddRequest::new_url("https://example.com/packages").with_top(true),
+    )
+    .await;
+    assert!(resp.success);
+
+    let repos_path = started.peppy_dirs.conf_dir().join("repositories.json5");
+    let content = std::fs::read_to_string(&repos_path).expect("read repos file");
+    let repos: Vec<serde_json::Value> =
+        serde_json5::from_str(&content).expect("parse repos as JSON5");
+
+    // Lower id = higher priority once the list is sorted on read.
+    let lowest = repos
+        .iter()
+        .min_by_key(|e| e["id"].as_u64().unwrap_or(u64::MAX))
+        .expect("file must not be empty");
+    assert_eq!(lowest["url"], "https://example.com/packages");
+    assert_eq!(lowest["id"], 999);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_repo_add_top_on_empty_uses_default_floor() {
+    let started = start_core_node_with_mock_messenger().await;
+    write_repositories_json5(&started, "[]");
+
+    let resp = send_repo_add(
+        &started,
+        &RepoAddRequest::new_url("https://example.com/x").with_top(true),
+    )
+    .await;
+    assert!(resp.success);
+
+    let repos_path = started.peppy_dirs.conf_dir().join("repositories.json5");
+    let content = std::fs::read_to_string(&repos_path).expect("read repos file");
+    let repos: Vec<serde_json::Value> =
+        serde_json5::from_str(&content).expect("parse repos as JSON5");
+
+    assert_eq!(repos.len(), 1);
+    assert_eq!(
+        repos[0]["id"], 1000,
+        "empty list + top=true should fall back to the 1000 floor"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_repo_add_no_top_on_empty_uses_default_floor() {
+    let started = start_core_node_with_mock_messenger().await;
+    write_repositories_json5(&started, "[]");
+
+    let resp = send_repo_add(&started, &RepoAddRequest::new_url("https://example.com/x")).await;
+    assert!(resp.success);
+
+    let repos_path = started.peppy_dirs.conf_dir().join("repositories.json5");
+    let content = std::fs::read_to_string(&repos_path).expect("read repos file");
+    let repos: Vec<serde_json::Value> =
+        serde_json5::from_str(&content).expect("parse repos as JSON5");
+
+    assert_eq!(repos.len(), 1);
+    assert_eq!(
+        repos[0]["id"], 1000,
+        "empty list + top=false should also fall back to the 1000 floor"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_repo_add_top_fails_when_min_is_zero() {
+    let started = start_core_node_with_mock_messenger().await;
+
+    write_repositories_json5(&started, r#"[{ "id": 0, "type": "fs", "path": "/a" }]"#);
+
+    let resp = send_repo_add(
+        &started,
+        &RepoAddRequest::new_url("https://example.com/x").with_top(true),
+    )
+    .await;
+    assert!(!resp.success, "top=true on min=0 must fail");
+    assert!(
+        resp.error_message.contains("underflow"),
+        "error should mention underflow, got: {}",
+        resp.error_message
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_repo_add_top_sequential_adds_keep_decreasing() {
+    let started = start_core_node_with_mock_messenger().await;
+
+    write_repositories_json5(&started, r#"[{ "id": 1000, "type": "fs", "path": "/a" }]"#);
+
+    let resp1 = send_repo_add(
+        &started,
+        &RepoAddRequest::new_url("https://example.com/first").with_top(true),
+    )
+    .await;
+    assert!(resp1.success);
+
+    let resp2 = send_repo_add(
+        &started,
+        &RepoAddRequest::new_url("https://example.com/second").with_top(true),
+    )
+    .await;
+    assert!(resp2.success);
+
+    let repos_path = started.peppy_dirs.conf_dir().join("repositories.json5");
+    let content = std::fs::read_to_string(&repos_path).expect("read repos file");
+    let repos: Vec<serde_json::Value> =
+        serde_json5::from_str(&content).expect("parse repos as JSON5");
+
+    let first = repos
+        .iter()
+        .find(|e| e["url"] == "https://example.com/first")
+        .unwrap();
+    let second = repos
+        .iter()
+        .find(|e| e["url"] == "https://example.com/second")
+        .unwrap();
+    assert_eq!(first["id"], 999);
+    assert_eq!(second["id"], 998);
+
+    // The second add should own the new minimum id.
+    let lowest = repos
+        .iter()
+        .min_by_key(|e| e["id"].as_u64().unwrap_or(u64::MAX))
+        .unwrap();
+    assert_eq!(lowest["url"], "https://example.com/second");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_repo_add_top_false_preserves_max_plus_one() {
+    let started = start_core_node_with_mock_messenger().await;
+
+    write_repositories_json5(&started, r#"[{ "id": 1000, "type": "fs", "path": "/a" }]"#);
+
+    let resp = send_repo_add(
+        &started,
+        &RepoAddRequest::new_url("https://example.com/x").with_top(false),
+    )
+    .await;
+    assert!(resp.success);
+
+    let repos_path = started.peppy_dirs.conf_dir().join("repositories.json5");
+    let content = std::fs::read_to_string(&repos_path).expect("read repos file");
+    let repos: Vec<serde_json::Value> =
+        serde_json5::from_str(&content).expect("parse repos as JSON5");
+
+    let added = repos
+        .iter()
+        .find(|e| e["url"] == "https://example.com/x")
+        .unwrap();
+    assert_eq!(added["id"], 1001, "top=false must keep max+1 behavior");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_repo_add_same_git_url_different_refs_are_distinct() {
     // Regression for RepoSource::identity() collapsing git entries by url
     // alone: adding the same clone URL with different refs must produce two

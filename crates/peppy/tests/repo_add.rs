@@ -30,6 +30,7 @@ fn repo_add_git_url_succeeds() {
         command: RepoCommands::Add {
             source: "https://github.com/org/repo.git".to_string(),
             git_ref: None,
+            top: false,
         },
     }
     .execute(&ctx);
@@ -49,6 +50,7 @@ fn repo_add_with_git_ref_succeeds() {
         command: RepoCommands::Add {
             source: "https://github.com/org/repo.git".to_string(),
             git_ref: Some("v1.0.0".to_string()),
+            top: false,
         },
     }
     .execute(&ctx);
@@ -73,6 +75,7 @@ fn repo_add_fs_path_succeeds() {
                 .unwrap()
                 .to_string(),
             git_ref: None,
+            top: false,
         },
     }
     .execute(&ctx);
@@ -92,6 +95,7 @@ fn repo_add_url_succeeds() {
         command: RepoCommands::Add {
             source: "https://example.com/packages".to_string(),
             git_ref: None,
+            top: false,
         },
     }
     .execute(&ctx);
@@ -114,6 +118,7 @@ fn repo_add_duplicate_fails() {
         command: RepoCommands::Add {
             source: source.clone(),
             git_ref: None,
+            top: false,
         },
     }
     .execute(&ctx)
@@ -124,6 +129,7 @@ fn repo_add_duplicate_fails() {
         command: RepoCommands::Add {
             source,
             git_ref: None,
+            top: false,
         },
     }
     .execute(&ctx);
@@ -149,6 +155,7 @@ fn repo_add_fs_path_with_ref_fails() {
                 .unwrap()
                 .to_string(),
             git_ref: Some("main".to_string()),
+            top: false,
         },
     }
     .execute(&ctx);
@@ -162,6 +169,52 @@ fn repo_add_fs_path_with_ref_fails() {
 }
 
 #[test]
+fn repo_add_top_assigns_id_below_current_min() {
+    let (_rt, serve, ctx, _work_dir) = setup();
+
+    // First add — empty file, lands at the default floor (1000).
+    RepoCommand {
+        command: RepoCommands::Add {
+            source: "https://example.com/first".to_string(),
+            git_ref: None,
+            top: false,
+        },
+    }
+    .execute(&ctx)
+    .expect("first add should succeed");
+
+    // Second add with --top should land below the current min.
+    RepoCommand {
+        command: RepoCommands::Add {
+            source: "https://example.com/second".to_string(),
+            git_ref: None,
+            top: true,
+        },
+    }
+    .execute(&ctx)
+    .expect("top add should succeed");
+
+    let repos_path = serve.temp_dir().join("conf/repositories.json5");
+    let content = std::fs::read_to_string(&repos_path).expect("read repos file");
+    let repos: Vec<serde_json::Value> = serde_json::from_str(&content).expect("parse repos");
+
+    let first = repos
+        .iter()
+        .find(|e| e["url"] == "https://example.com/first")
+        .expect("first entry missing");
+    let second = repos
+        .iter()
+        .find(|e| e["url"] == "https://example.com/second")
+        .expect("second (top) entry missing");
+
+    assert_eq!(first["id"], 1000, "first add lands at the 1000 floor");
+    assert_eq!(
+        second["id"], 999,
+        "--top should assign min(existing)-1 so the repo outranks all others"
+    );
+}
+
+#[test]
 fn repo_add_https_url_with_ref_treated_as_git() {
     // When --ref is provided, a parseable HTTPS URL (without `.git` suffix)
     // should be treated as a git clone URL rather than rejected.
@@ -171,6 +224,7 @@ fn repo_add_https_url_with_ref_treated_as_git() {
         command: RepoCommands::Add {
             source: "https://github.com/org/repo".to_string(),
             git_ref: Some("main".to_string()),
+            top: false,
         },
     }
     .execute(&ctx);

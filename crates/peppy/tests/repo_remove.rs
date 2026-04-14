@@ -62,6 +62,7 @@ fn repo_remove_after_add_succeeds() {
         command: RepoCommands::Add {
             source: source.to_string(),
             git_ref: None,
+            top: false,
         },
     }
     .execute(&ctx)
@@ -109,6 +110,7 @@ fn repo_remove_after_add_git_succeeds() {
         command: RepoCommands::Add {
             source: source.to_string(),
             git_ref: None,
+            top: false,
         },
     }
     .execute(&ctx)

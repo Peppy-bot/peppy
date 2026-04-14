@@ -87,12 +87,31 @@ fn handle_repo_add_request_inner(
             .encode();
     }
 
-    let next_id = repos
-        .iter()
-        .filter_map(|e| e.get("id").and_then(|v| v.as_u64()))
-        .max()
-        .map(|max| max + 1)
-        .unwrap_or(1);
+    let next_id = if request.top {
+        match repos
+            .iter()
+            .filter_map(|e| e.get("id").and_then(|v| v.as_u64()))
+            .min()
+        {
+            Some(min) => match min.checked_sub(1) {
+                Some(n) => n,
+                None => {
+                    return RepoAddResponse::failure(
+                        "cannot add repo with top priority: existing minimum id is 0 (would underflow)",
+                    )
+                    .encode();
+                }
+            },
+            None => 1000,
+        }
+    } else {
+        repos
+            .iter()
+            .filter_map(|e| e.get("id").and_then(|v| v.as_u64()))
+            .max()
+            .map(|max| max + 1)
+            .unwrap_or(1000)
+    };
 
     repos.push(repo_source_to_json(next_id, &request.source));
     let content = serde_json::to_string_pretty(&repos)

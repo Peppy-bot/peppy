@@ -19,6 +19,9 @@ struct RepoAddRequest {
         # Local filesystem path
         fs @2 :Text;
     }
+    # When true, assign the new repo an id below the current minimum so it
+    # takes top priority. Defaults to false (append with max+1).
+    top @3 :Bool;
 }
 
 struct RepoAddResponse {

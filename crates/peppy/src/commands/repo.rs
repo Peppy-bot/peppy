@@ -44,6 +44,9 @@ pub enum RepoCommands {
         /// Git ref (tag/branch/commit) to track (git sources only).
         #[arg(long = "ref")]
         git_ref: Option<String>,
+        /// Give the new repo top priority (assigns an id below the current min).
+        #[arg(long)]
+        top: bool,
     },
     /// Remove a repository
     Remove {
@@ -75,7 +78,11 @@ impl Command for RepoCommand {
         match self.command {
             RepoCommands::List => list::list_repos(ctx),
             RepoCommands::Refresh => refresh::repo_refresh(ctx),
-            RepoCommands::Add { source, git_ref } => add::add_repo(ctx, &source, git_ref),
+            RepoCommands::Add {
+                source,
+                git_ref,
+                top,
+            } => add::add_repo(ctx, &source, git_ref, top),
             RepoCommands::Remove { id } => remove::remove_repo(ctx, id),
             RepoCommands::Exclude { source, git_ref } => {
                 exclude::exclude_repo(ctx, &source, git_ref)

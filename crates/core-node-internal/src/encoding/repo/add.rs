@@ -90,12 +90,14 @@ impl RepoSource {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepoAddRequest {
     pub source: RepoSource,
+    pub top: bool,
 }
 
 impl RepoAddRequest {
     pub fn new_fs(path: impl Into<PathBuf>) -> Self {
         Self {
             source: RepoSource::Fs(path.into()),
+            top: false,
         }
     }
 
@@ -105,19 +107,27 @@ impl RepoAddRequest {
                 repo_url: repo_url.into(),
                 repo_ref,
             },
+            top: false,
         }
     }
 
     pub fn new_url(url: impl Into<String>) -> Self {
         Self {
             source: RepoSource::Url(url.into()),
+            top: false,
         }
+    }
+
+    pub fn with_top(mut self, top: bool) -> Self {
+        self.top = top;
+        self
     }
 
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
             let mut request = builder.init_root::<repo_capnp::repo_add_request::Builder>();
+            request.set_top(self.top);
             let mut source = request.reborrow().init_source();
             match &self.source {
                 RepoSource::Fs(path) => {
@@ -141,6 +151,7 @@ impl RepoAddRequest {
 
         let reader = decode_message(data)?;
         let request = reader.get_root::<repo_capnp::repo_add_request::Reader>()?;
+        let top = request.get_top();
         let source = match request.get_source().which()? {
             Which::Fs(path) => RepoSource::Fs(PathBuf::from(path?.to_str()?)),
             Which::Git(git) => {
@@ -156,7 +167,7 @@ impl RepoAddRequest {
             }
             Which::Url(url) => RepoSource::Url(url?.to_str()?.to_owned()),
         };
-        Ok(Self { source })
+        Ok(Self { source, top })
     }
 
     pub async fn poll(

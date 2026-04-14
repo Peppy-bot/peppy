@@ -16,23 +16,26 @@ pub(super) fn add_repo(
     ctx: &Arc<AppContext>,
     source_str: &str,
     git_ref: Option<String>,
+    top: bool,
 ) -> Result<()> {
     let repo_source = parse_repo_source(source_str, git_ref)?;
     let label = repo_source_label(&repo_source);
     info!("Adding repository {label}");
 
-    crate::commands::block_on(add_repo_async(ctx, repo_source, label))
+    crate::commands::block_on(add_repo_async(ctx, repo_source, label, top))
 }
 
 async fn add_repo_async(
     ctx: &Arc<AppContext>,
     repo_source: RepoSource,
     label: String,
+    top: bool,
 ) -> Result<()> {
     let conn = ctx.connect_to_daemon().await?;
 
     let request = RepoAddRequest {
         source: repo_source,
+        top,
     };
     let response = request
         .poll(
