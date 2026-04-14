@@ -11,50 +11,19 @@
 //! when the checksum changes for the same URL.
 
 use super::add::download_and_extract_http_source;
+use super::cache_key;
 use super::locate_node_root_dir;
 use config::consts::PeppyDirs;
 use parking_lot::Mutex;
-use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use url::Url;
 
-fn url_slug(url: &Url) -> String {
-    let raw = url.as_str();
-    let cleaned: String = raw
-        .chars()
-        .map(|c| match c {
-            'a'..='z' | 'A'..='Z' | '0'..='9' | '.' | '-' | '_' => c,
-            _ => '_',
-        })
-        .collect();
-    let trimmed = cleaned.trim_matches('_');
-    let truncated: String = trimmed.chars().take(40).collect();
-    if truncated.is_empty() {
-        "bundle".to_string()
-    } else {
-        truncated
-    }
-}
-
-fn cache_hash(url: &Url, sha256: Option<&str>) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(url.as_str().as_bytes());
-    hasher.update([0u8]);
-    hasher.update(sha256.unwrap_or("").as_bytes());
-    let digest = hasher.finalize();
-    let mut out = String::with_capacity(16);
-    for b in &digest[..8] {
-        out.push_str(&format!("{:02x}", b));
-    }
-    out
-}
-
 /// Returns the deterministic cache directory for `(url, sha256)`.
 pub fn extract_dir_for(peppy_dirs: &PeppyDirs, url: &Url, sha256: Option<&str>) -> PathBuf {
-    let slug = url_slug(url);
-    let hash = cache_hash(url, sha256);
+    let slug = cache_key::slug(url.as_str(), "bundle");
+    let hash = cache_key::short_hash(url.as_str(), sha256);
     peppy_dirs.http_bundles_dir().join(format!("{slug}-{hash}"))
 }
 
@@ -65,6 +34,10 @@ fn locks_map() -> &'static Mutex<HashMap<String, Arc<Mutex<()>>>> {
 
 fn lock_for(key: &str) -> Arc<Mutex<()>> {
     let mut map = locks_map().lock();
+    // GC entries not currently held by any caller. `strong_count == 1`
+    // means only the map still references the Arc, so no one can race on
+    // rebuilding the slot (the map lock serializes all access).
+    map.retain(|_, v| Arc::strong_count(v) > 1);
     map.entry(key.to_owned())
         .or_insert_with(|| Arc::new(Mutex::new(())))
         .clone()

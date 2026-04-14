@@ -11,59 +11,20 @@
 //! can't race on the same directory. Cross-process safety is not a
 //! concern yet — the daemon is the only writer.
 
+use super::cache_key;
 use super::checkout_repo_ref;
 use config::consts::PeppyDirs;
 use git2::build::RepoBuilder;
 use parking_lot::Mutex;
-use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
-/// Returns a short sanitized slug for a repo URL, useful for
-/// human-readable checkout dir names. Keeps `[a-zA-Z0-9._-]`,
-/// replaces everything else with `_`, and caps length.
-fn url_slug(repo_url: &str) -> String {
-    let cleaned: String = repo_url
-        .chars()
-        .map(|c| match c {
-            'a'..='z' | 'A'..='Z' | '0'..='9' | '.' | '-' | '_' => c,
-            _ => '_',
-        })
-        .collect();
-    let trimmed = cleaned.trim_matches('_');
-    let truncated: String = trimmed.chars().take(40).collect();
-    if truncated.is_empty() {
-        "repo".to_string()
-    } else {
-        truncated
-    }
-}
-
-/// 16-hex-char digest of `url || '\0' || ref`, used as the cache-key
-/// suffix to prevent different refs from colliding on the same slug.
-fn cache_hash(repo_url: &str, repo_ref: Option<&str>) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(repo_url.as_bytes());
-    hasher.update([0u8]);
-    hasher.update(repo_ref.unwrap_or("").as_bytes());
-    let digest = hasher.finalize();
-    hex_short(&digest[..8])
-}
-
-fn hex_short(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        out.push_str(&format!("{:02x}", b));
-    }
-    out
-}
-
 /// Path where the checkout for `(repo_url, repo_ref)` lives (whether or
 /// not it has been populated yet). Exposed for tests and diagnostics.
 pub fn checkout_dir_for(peppy_dirs: &PeppyDirs, repo_url: &str, repo_ref: Option<&str>) -> PathBuf {
-    let slug = url_slug(repo_url);
-    let hash = cache_hash(repo_url, repo_ref);
+    let slug = cache_key::slug(repo_url, "repo");
+    let hash = cache_key::short_hash(repo_url, repo_ref);
     peppy_dirs
         .git_checkouts_dir()
         .join(format!("{slug}-{hash}"))
@@ -83,6 +44,10 @@ fn locks_map() -> &'static Mutex<HashMap<String, Arc<Mutex<()>>>> {
 
 fn lock_for(key: &str) -> Arc<Mutex<()>> {
     let mut map = locks_map().lock();
+    // GC entries not currently held by any caller. `strong_count == 1`
+    // means only the map still references the Arc, so no one can race on
+    // rebuilding the slot (the map lock serializes all access).
+    map.retain(|_, v| Arc::strong_count(v) > 1);
     map.entry(key.to_owned())
         .or_insert_with(|| Arc::new(Mutex::new(())))
         .clone()
@@ -236,14 +201,5 @@ mod tests {
         let a = checkout_dir_for(&peppy_dirs, "https://example.com/repo.git", Some("main"));
         let b = checkout_dir_for(&peppy_dirs, "https://example.com/repo.git", Some("main"));
         assert_eq!(a, b);
-    }
-
-    #[test]
-    fn url_slug_rejects_dangerous_chars() {
-        assert_eq!(
-            url_slug("https://github.com/foo/bar.git"),
-            "https___github.com_foo_bar.git"
-        );
-        assert_eq!(url_slug(""), "repo");
     }
 }

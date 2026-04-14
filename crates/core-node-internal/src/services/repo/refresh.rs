@@ -182,22 +182,7 @@ impl GoalHandler for RepoRefreshGoalHandler {
     }
 }
 
-#[derive(Debug, Clone)]
-pub(crate) struct DiscoveredNode {
-    pub(crate) node_name: String,
-    pub(crate) node_tag: String,
-    pub(crate) source_type: RepoSourceKind,
-    pub(crate) path: String,
-    pub(crate) source_uri: Option<String>,
-    pub(crate) variants: Vec<String>,
-    /// `true` when another repository (with lower id) already provides this
-    /// `(name, tag)` pair. The node is still recorded so that `repo list` can
-    /// display all sources.
-    pub(crate) duplicate: bool,
-    /// For git-source nodes, the short ref name (branch/tag) actually checked
-    /// out after clone (e.g. `"main"`). `None` for fs/url sources.
-    pub(crate) resolved_ref: Option<String>,
-}
+pub(crate) use crate::services::repo::cache::PackageEntry as DiscoveredNode;
 
 /// A repository that was skipped during refresh because it appears in the
 /// `excluded_repositories.json5` configuration.
@@ -478,6 +463,7 @@ pub(crate) fn walk_directory(
             variants,
             duplicate: false,
             resolved_ref: resolved_ref.map(|s| s.to_string()),
+            repo_id: 0,
         });
     }
 }
@@ -587,48 +573,7 @@ fn format_bytes(bytes: usize) -> String {
     }
 }
 
-/// Write cached node information for git/url repositories.
-pub(crate) fn write_cache(peppy_dirs: &PeppyDirs, nodes: &[DiscoveredNode]) -> Result<()> {
-    let cache_dir = peppy_dirs.cache_dir();
-    std::fs::create_dir_all(&cache_dir)?;
-
-    let cache_entries: Vec<Value> = nodes
-        .iter()
-        .map(|n| {
-            let mut map = serde_json::Map::new();
-            map.insert("node_name".to_string(), Value::String(n.node_name.clone()));
-            map.insert("node_tag".to_string(), Value::String(n.node_tag.clone()));
-            map.insert(
-                "source_type".to_string(),
-                Value::String(n.source_type.as_str().to_string()),
-            );
-            if let Some(url) = &n.source_uri {
-                map.insert("source_uri".to_string(), Value::String(url.clone()));
-            }
-            if let Some(r) = &n.resolved_ref {
-                map.insert("resolved_ref".to_string(), Value::String(r.clone()));
-            }
-            map.insert("path".to_string(), Value::String(n.path.clone()));
-            if !n.variants.is_empty() {
-                let variant_values: Vec<Value> = n
-                    .variants
-                    .iter()
-                    .map(|v| Value::String(v.clone()))
-                    .collect();
-                map.insert("variants".to_string(), Value::Array(variant_values));
-            }
-            if n.duplicate {
-                map.insert("duplicate".to_string(), Value::Bool(true));
-            }
-            Value::Object(map)
-        })
-        .collect();
-
-    let content = serde_json::to_string_pretty(&cache_entries)
-        .map_err(|e| crate::Error::Encoding(format!("failed to serialize cache: {e}")))?;
-    std::fs::write(cache_dir.join("packages.json5"), content)?;
-    Ok(())
-}
+pub(crate) use crate::services::repo::cache::write_cache;
 
 #[cfg(test)]
 mod tests {

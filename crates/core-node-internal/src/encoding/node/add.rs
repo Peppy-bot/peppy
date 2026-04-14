@@ -58,28 +58,6 @@ impl NodeSource {
         }
     }
 
-    /// Appends a dep-level variant override to a `RepoNode` source.
-    /// No-op for every other source kind.
-    pub fn push_dep_variant_override(
-        mut self,
-        name: impl Into<String>,
-        tag: impl Into<String>,
-        variant: impl Into<String>,
-    ) -> Self {
-        if let Self::RepoNode {
-            ref mut dep_variant_overrides,
-            ..
-        } = self
-        {
-            dep_variant_overrides.push(DepVariantOverride {
-                name: name.into(),
-                tag: tag.into(),
-                variant: variant.into(),
-            });
-        }
-        self
-    }
-
     /// Replaces the dep-override list wholesale on a `RepoNode` source.
     /// No-op for every other source kind.
     pub fn with_dep_variant_overrides(mut self, overrides: Vec<DepVariantOverride>) -> Self {
@@ -520,9 +498,19 @@ mod tests {
 
     #[test]
     fn node_add_goal_dep_variant_overrides_roundtrip() {
-        let source = NodeSource::repo_node("target", "1.0.0")
-            .push_dep_variant_override("uvc_camera", "0.1.0", "mock-python")
-            .push_dep_variant_override("lidar", "2.0.0", "sim");
+        let overrides = vec![
+            DepVariantOverride {
+                name: "uvc_camera".to_owned(),
+                tag: "0.1.0".to_owned(),
+                variant: "mock-python".to_owned(),
+            },
+            DepVariantOverride {
+                name: "lidar".to_owned(),
+                tag: "2.0.0".to_owned(),
+                variant: "sim".to_owned(),
+            },
+        ];
+        let source = NodeSource::repo_node("target", "1.0.0").with_dep_variant_overrides(overrides);
         let encoded = NodeAddGoal::from_source(source, "hash", 42)
             .encode()
             .expect("encoding should succeed");
@@ -542,9 +530,13 @@ mod tests {
     }
 
     #[test]
-    fn push_dep_variant_override_is_noop_on_non_repo_source() {
-        let source =
-            NodeSource::Fs(PathBuf::from("/tmp/x")).push_dep_variant_override("a", "1.0", "v");
+    fn with_dep_variant_overrides_is_noop_on_non_repo_source() {
+        let overrides = vec![DepVariantOverride {
+            name: "a".to_owned(),
+            tag: "1.0".to_owned(),
+            variant: "v".to_owned(),
+        }];
+        let source = NodeSource::Fs(PathBuf::from("/tmp/x")).with_dep_variant_overrides(overrides);
         assert!(matches!(source, NodeSource::Fs(_)));
     }
 

@@ -2,6 +2,7 @@ mod add;
 mod add_batch;
 mod builder;
 mod bundle_cache;
+mod cache_key;
 mod gate;
 mod git_cache;
 mod info;

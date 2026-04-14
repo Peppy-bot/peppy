@@ -13,7 +13,8 @@ use crate::repo_capnp;
 use crate::encoding::{decode_message, encode_message};
 
 /// Discriminant for the type of repository source.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum RepoSourceKind {
     Fs,
     Git,
