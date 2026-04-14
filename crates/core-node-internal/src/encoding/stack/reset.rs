@@ -8,7 +8,7 @@ use crate::Result;
 use crate::names;
 use crate::node_capnp;
 
-use super::{decode_message, encode_message, optional_text};
+use crate::encoding::{decode_message, encode_message, optional_text};
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct NodeResetRequest;

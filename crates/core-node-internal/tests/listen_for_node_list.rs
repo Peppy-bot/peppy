@@ -4,7 +4,7 @@ use common::{
     CALLER_INSTANCE_ID, send_node_add_and_wait, start_core_node_with_mock_messenger,
     write_peppy_json5,
 };
-use core_node::encoding::NodeListRequest;
+use core_node::encoding::StackListRequest;
 use std::time::Duration;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -51,7 +51,7 @@ async fn listen_for_node_list_returns_succeeds() {
     assert!(node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG));
     assert_eq!(node_stack.len(), 2, "root + added node");
 
-    let response = NodeListRequest::new(false)
+    let response = StackListRequest::new(false)
         .poll(
             &started_core_node.caller_handle,
             &started_core_node.core_node_name,
@@ -143,7 +143,7 @@ async fn listen_for_node_list_returns_dot_graph() {
     assert!(node_stack.contains(TARGET_NODE_NAME, TARGET_NODE_TAG));
     assert_eq!(node_stack.len(), 2, "root + added node");
 
-    let response = NodeListRequest::new(true)
+    let response = StackListRequest::new(true)
         .poll(
             &started_core_node.caller_handle,
             &started_core_node.core_node_name,

@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use core_node::encoding::NodeListRequest;
+use core_node::encoding::StackListRequest;
 use node_stack::SerializedNodeGraph;
 use tracing::info;
 
@@ -24,7 +24,7 @@ async fn list_nodes_async(ctx: &Arc<AppContext>, dot_graph_path: Option<PathBuf>
         conn.core_node_name
     );
 
-    let response = NodeListRequest::new(dot_graph_path.is_some())
+    let response = StackListRequest::new(dot_graph_path.is_some())
         .poll(
             conn.messenger,
             &conn.core_node_name,
@@ -33,7 +33,7 @@ async fn list_nodes_async(ctx: &Arc<AppContext>, dot_graph_path: Option<PathBuf>
             REQUEST_TIMEOUT,
         )
         .await
-        .map_err(|e| Error::ExecutionFailed(format!("Failed to call node_list service: {}", e)))?;
+        .map_err(|e| Error::ExecutionFailed(format!("Failed to call stack_list service: {}", e)))?;
 
     let graph: SerializedNodeGraph = serde_json::from_str(&response.graph_json)
         .map_err(|e| Error::ExecutionFailed(format!("Failed to parse graph JSON: {}", e)))?;

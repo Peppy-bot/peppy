@@ -188,21 +188,10 @@ EOF
         fi
     fi
 
-    # Detect existing installation (daemon may or may not be running)
-    EXISTING_INSTALL=false
-    if [ -d "$PEPPY_HOME" ]; then
-        EXISTING_INSTALL=true
-    fi
-
-    if $DAEMON_RUNNING || $EXISTING_INSTALL; then
+    if $DAEMON_RUNNING; then
         echo ""
-        if $DAEMON_RUNNING; then
-            echo "warning: The peppy daemon is currently running."
-            echo "         Installing will stop the daemon and wipe '${PEPPY_HOME}' before proceeding."
-        else
-            echo "warning: An existing installation was found at '${PEPPY_HOME}'."
-            echo "         Installing will wipe this directory before proceeding."
-        fi
+        echo "warning: The peppy daemon is currently running."
+        echo "         Installing will stop the daemon before proceeding."
         echo ""
 
         if [ -n "${PEPPY_FORCE_REINSTALL:-}" ]; then
@@ -223,16 +212,10 @@ EOF
             exit 1
         fi
 
-        if $DAEMON_RUNNING; then
-            echo "Stopping peppy daemon..."
-            if [ -x "$PEPPY_BIN_DIR/peppy" ]; then
-                "$PEPPY_BIN_DIR/peppy" service stop >/dev/null 2>&1 || true
-                "$PEPPY_BIN_DIR/peppy" service uninstall >/dev/null 2>&1 || true
-            fi
-        fi
-        if [ -d "$PEPPY_HOME" ]; then
-            echo "Removing '${PEPPY_HOME}'..."
-            mv "$PEPPY_HOME" "$(mktemp -d "${TMPDIR:-/tmp}/.peppy_old.XXXXXXXX")"
+        echo "Stopping peppy daemon..."
+        if [ -x "$PEPPY_BIN_DIR/peppy" ]; then
+            "$PEPPY_BIN_DIR/peppy" service stop >/dev/null 2>&1 || true
+            "$PEPPY_BIN_DIR/peppy" service uninstall >/dev/null 2>&1 || true
         fi
     fi
 
@@ -656,6 +639,30 @@ EOF
             fi
             exit 1
         fi
+
+        # Refresh repository indexes so nodes are discoverable immediately.
+        # The service manager returns as soon as the daemon process is
+        # launched, so wait a bounded amount for it to bind its messaging
+        # listener and write its state file before giving up.
+        REPO_UPDATE_DEADLINE_SECS=120
+        REPO_UPDATE_ELAPSED_SECS=0
+        REPO_UPDATE_CAPTURED=""
+        while : ; do
+            if REPO_UPDATE_CAPTURED=$("$PEPPY_BIN_DIR/peppy" repo update 2>&1); then
+                printf '%s\n' "$REPO_UPDATE_CAPTURED"
+                break
+            fi
+            if [ "$REPO_UPDATE_ELAPSED_SECS" -ge "$REPO_UPDATE_DEADLINE_SECS" ]; then
+                if [ -n "$REPO_UPDATE_CAPTURED" ]; then
+                    printf '%s\n' "$REPO_UPDATE_CAPTURED" >&2
+                fi
+                echo "error: repository update failed." >&2
+                echo "       You can retry manually: $PEPPY_BIN_DIR/peppy repo update" >&2
+                exit 1
+            fi
+            sleep 2
+            REPO_UPDATE_ELAPSED_SECS=$((REPO_UPDATE_ELAPSED_SECS + 2))
+        done
     else
         flush_progress_line
         echo "No service install because PEPPY_NO_SERVICE_INSTALL is set"

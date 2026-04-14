@@ -1,5 +1,5 @@
 use config::node::Toolchain;
-use core_node::encoding::NodeListRequest;
+use core_node::encoding::StackListRequest;
 use node_stack::SerializedNodeGraph;
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands, NodeName};
@@ -90,14 +90,14 @@ fn node_remove_command_succeeds() {
         .expect("messenger handle should be available");
 
     let response = rt
-        .block_on(NodeListRequest::new(false).poll(
+        .block_on(StackListRequest::new(false).poll(
             messenger_handle,
             &core_node_name,
             CALLER_INSTANCE_ID,
             &core_node_name,
             Duration::from_secs(5),
         ))
-        .expect("node_list request should complete");
+        .expect("stack_list request should complete");
 
     let graph: SerializedNodeGraph =
         serde_json::from_str(&response.graph_json).expect("graph_json should parse");
@@ -131,14 +131,14 @@ fn node_remove_command_succeeds() {
         .expect("messenger handle should be available");
 
     let response = rt
-        .block_on(NodeListRequest::new(false).poll(
+        .block_on(StackListRequest::new(false).poll(
             messenger_handle,
             &core_node_name,
             CALLER_INSTANCE_ID,
             &core_node_name,
             Duration::from_secs(5),
         ))
-        .expect("node_list request should complete");
+        .expect("stack_list request should complete");
 
     let graph: SerializedNodeGraph =
         serde_json::from_str(&response.graph_json).expect("graph_json should parse");
@@ -273,14 +273,14 @@ fn node_remove_command_force_bypasses_prompt_and_stops_instances() {
         .expect("messenger handle should be available");
 
     let response = rt
-        .block_on(NodeListRequest::new(false).poll(
+        .block_on(StackListRequest::new(false).poll(
             messenger_handle,
             &core_node_name,
             CALLER_INSTANCE_ID,
             &core_node_name,
             Duration::from_secs(5),
         ))
-        .expect("node_list request should complete");
+        .expect("stack_list request should complete");
 
     let graph: SerializedNodeGraph =
         serde_json::from_str(&response.graph_json).expect("graph_json should parse");
@@ -423,14 +423,14 @@ fn node_remove_command_with_stop_instances_succeeds_and_stops_instances() {
         .expect("messenger handle should be available");
 
     let response = rt
-        .block_on(NodeListRequest::new(false).poll(
+        .block_on(StackListRequest::new(false).poll(
             messenger_handle,
             &core_node_name,
             CALLER_INSTANCE_ID,
             &core_node_name,
             Duration::from_secs(5),
         ))
-        .expect("node_list request should complete");
+        .expect("stack_list request should complete");
 
     let graph: SerializedNodeGraph =
         serde_json::from_str(&response.graph_json).expect("graph_json should parse");

@@ -141,6 +141,16 @@ impl ServeCommandEmulation {
         let shared_messenger = Arc::new(TokioMutex::new(messenger));
 
         let peppy_dirs = PeppyDirs::new(temp_dir.path());
+
+        // Pre-write an empty repositories.json5 to prevent the repo refresh
+        // step from falling back to the default template, which points at the
+        // real `$HOME` and triggers a full home-directory walk. Tests that
+        // need different contents can overwrite this file afterward.
+        let conf_dir = peppy_dirs.conf_dir();
+        std::fs::create_dir_all(&conf_dir).expect("failed to create conf dir");
+        std::fs::write(conf_dir.join("repositories.json5"), "[]")
+            .expect("failed to write repositories.json5");
+
         let core_node = CoreNode::new(
             Arc::clone(&shared_messenger),
             Some("test-core-node"),

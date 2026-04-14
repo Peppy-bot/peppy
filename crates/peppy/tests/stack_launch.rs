@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use config::consts::{NODE_CONFIG_FILE, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH};
-use core_node::encoding::NodeListRequest;
+use core_node::encoding::StackListRequest;
 use node_stack::SerializedNodeGraph;
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands};
@@ -151,7 +151,7 @@ async fn node_launch_command_succeed() {
         .messenger_handle()
         .expect("messenger handle should be available");
 
-    let response = NodeListRequest::new(false)
+    let response = StackListRequest::new(false)
         .poll(
             messenger_handle,
             &core_node_name,
@@ -160,7 +160,7 @@ async fn node_launch_command_succeed() {
             Duration::from_secs(5),
         )
         .await
-        .expect("node_list request should complete");
+        .expect("stack_list request should complete");
 
     let graph: SerializedNodeGraph =
         serde_json::from_str(&response.graph_json).expect("graph_json should parse");
@@ -215,7 +215,7 @@ async fn node_launch_command_succeed() {
     .execute(&ctx)
     .expect("launch command should succeed");
 
-    let response = NodeListRequest::new(false)
+    let response = StackListRequest::new(false)
         .poll(
             messenger_handle,
             &core_node_name,
@@ -224,7 +224,7 @@ async fn node_launch_command_succeed() {
             Duration::from_secs(5),
         )
         .await
-        .expect("node_list request should complete after launch");
+        .expect("stack_list request should complete after launch");
 
     let graph: SerializedNodeGraph =
         serde_json::from_str(&response.graph_json).expect("graph_json should parse after launch");
@@ -268,7 +268,7 @@ async fn node_launch_command_succeed() {
     .execute(&ctx)
     .expect("node stop command should succeed");
 
-    let response = NodeListRequest::new(false)
+    let response = StackListRequest::new(false)
         .poll(
             messenger_handle,
             &core_node_name,
@@ -277,7 +277,7 @@ async fn node_launch_command_succeed() {
             Duration::from_secs(5),
         )
         .await
-        .expect("node_list request should complete after stop");
+        .expect("stack_list request should complete after stop");
 
     let graph: SerializedNodeGraph =
         serde_json::from_str(&response.graph_json).expect("graph_json should parse after stop");
@@ -371,7 +371,7 @@ async fn node_launch_command_fails_when_node_never_becomes_healthy() {
         .messenger_handle()
         .expect("messenger handle should be available");
 
-    let response = NodeListRequest::new(false)
+    let response = StackListRequest::new(false)
         .poll(
             messenger_handle,
             &core_node_name,
@@ -380,7 +380,7 @@ async fn node_launch_command_fails_when_node_never_becomes_healthy() {
             Duration::from_secs(5),
         )
         .await
-        .expect("node_list request should complete");
+        .expect("stack_list request should complete");
 
     let graph: SerializedNodeGraph =
         serde_json::from_str(&response.graph_json).expect("graph_json should parse");
@@ -423,7 +423,7 @@ async fn node_launch_command_fails_when_node_never_becomes_healthy() {
         "launch command should fail because the launched node never becomes healthy"
     );
 
-    let response = NodeListRequest::new(false)
+    let response = StackListRequest::new(false)
         .poll(
             messenger_handle,
             &core_node_name,
@@ -432,7 +432,7 @@ async fn node_launch_command_fails_when_node_never_becomes_healthy() {
             Duration::from_secs(5),
         )
         .await
-        .expect("node_list request should complete after launch");
+        .expect("stack_list request should complete after launch");
 
     let graph: SerializedNodeGraph =
         serde_json::from_str(&response.graph_json).expect("graph_json should parse after launch");

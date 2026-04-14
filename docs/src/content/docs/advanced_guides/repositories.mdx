@@ -1,0 +1,126 @@
+---
+title: Repositories
+description: Manage where peppy discovers nodes
+sidebar:
+  order: 7
+---
+
+Repositories tell peppy where to look for nodes. When you run `peppy repo refresh`, peppy walks every configured repository, finds `peppy.json5` files, and builds an index of available nodes.
+
+Out of the box, two repositories are configured:
+
+1. **Your home directory** (`~/`) — any node you create locally is discovered automatically.
+2. **The community hub** (`https://github.com/Peppy-bot/nodes_hub`) — a curated collection of ready-to-use nodes.
+
+## Configuration files
+
+Repository configuration lives in `~/.peppy/conf/`:
+
+| File | Purpose |
+|------|---------|
+| `repositories.json5` | Repositories to scan |
+| `excluded_repositories.json5` | Repositories (or subdirectories) to skip |
+
+Both files are JSON5 arrays. Each entry has an `id` (auto-assigned if missing), a `type`, and source-specific fields:
+
+```json5
+// repositories.json5
+[
+  { id: 1, type: "fs",  path: "/home/user" },
+  { id: 2, type: "git", url: "https://github.com/Peppy-bot/nodes_hub", ref: "main" },
+  { id: 3, type: "url", url: "https://example.com/packages" },
+]
+```
+
+### Source types
+
+| Type | Fields | Description |
+|------|--------|-------------|
+| `fs` | `path` | A local directory. Peppy recursively walks it looking for `peppy.json5` files. |
+| `git` | `url`, `ref` (optional) | A git repository. Peppy shallow-clones it and scans for nodes. Use `ref` to pin a branch, tag, or commit. |
+| `url` | `url` | An HTTP endpoint (not yet implemented). |
+
+## Commands
+
+### List repositories
+
+```sh
+peppy repo list
+```
+
+Shows all discovered nodes grouped by source type (Local, Git, HTTP). Each entry displays the node name, tag, path, and any available variants. Duplicate nodes (same `name:tag` provided by multiple repositories) are flagged.
+
+### Refresh the index
+
+```sh
+peppy repo refresh
+```
+
+Re-scans all configured repositories and rebuilds the node index. This is an alias for `peppy repo update`. During refresh, peppy:
+
+- Reads `repositories.json5` (creates it with defaults on first run).
+- Skips any repository or path listed in `excluded_repositories.json5`.
+- Walks local directories and shallow-clones git repositories.
+- Reports each discovered node and excluded repository in real time.
+- Caches results in `~/.peppy/cache/packages.json5`.
+
+When multiple repositories provide the same `name:tag` pair, the repository with the lower `id` takes priority. The duplicate is still recorded and shown in `repo list` but does not override the primary source.
+
+### Add a repository
+
+```sh
+peppy repo add <source> [--ref <tag-or-branch>]
+```
+
+Adds a new repository to `repositories.json5`. The source format is auto-detected:
+
+```sh
+# Local directory
+peppy repo add /path/to/my/nodes
+
+# Git repository
+peppy repo add https://github.com/org/repo.git
+
+# Git repository pinned to a branch or tag
+peppy repo add https://github.com/org/repo.git --ref v2.0
+
+# Plain URL
+peppy repo add https://example.com/packages
+```
+
+The `--ref` flag is only valid for git sources.
+
+### Remove a repository
+
+```sh
+peppy repo remove <id>
+```
+
+Removes a repository by its numeric ID (shown by `peppy repo list`). The repository index is automatically refreshed after removal.
+
+### Exclude a repository
+
+```sh
+peppy repo exclude <source> [--ref <tag-or-branch>]
+```
+
+Adds a source to `excluded_repositories.json5`. Excluded repositories are skipped during `peppy repo refresh`. You can exclude an entire repository or a specific subdirectory within a local repository:
+
+```sh
+# Exclude a whole git repository
+peppy repo exclude https://github.com/org/repo.git
+
+# Exclude a subdirectory of a local repository
+peppy repo exclude /home/user/projects/private-nodes
+```
+
+## Directory pruning
+
+When scanning local and git repositories, peppy automatically skips the following directories:
+
+- `.git`
+- `.peppy`
+- `target`
+- `node_modules`
+- `.venv`
+- `__pycache__`

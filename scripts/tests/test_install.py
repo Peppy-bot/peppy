@@ -301,73 +301,81 @@ def test_standard_install_container_setup(lima_vm: VMConfig) -> None:
     )
 
 
-def test_reinstall_over_root_owned_files(lima_vm: VMConfig) -> None:
-    """Reinstall succeeds even when previous install left files behind."""
+def test_install_runs_repo_update(lima_vm: VMConfig) -> None:
+    """Full install (with service) runs 'peppy repo update' after daemon start."""
+    config = lima_vm
+    assert config.os == "linux", "repo update test only applies to Linux VMs"
+
+    home = setup_lima_guest(
+        config,
+        test_name=f"test_install_runs_repo_update_{config.pytest_id()}",
+    )
+
+    result = lima_shell(
+        install_cmd(config, home, skip_service_install=False),
+        instance=config.instance_name,
+        timeout=3600 if config.is_cross_arch else 300,
+    )
+
+    assert result.returncode == 0, (
+        f"install.sh exited with {result.returncode} on {config.pytest_id()}"
+        f"{diagnostic(result)}"
+    )
+
+    output = result.stdout + result.stderr
+    assert (
+        "Refreshing repositories" in output or "Repository refresh complete" in output
+    ), f"Missing repo update output on {config.pytest_id()}{diagnostic(result)}"
+
+
+def test_reinstall_over_existing(lima_vm: VMConfig) -> None:
+    """Reinstall succeeds over an existing installation."""
     config = lima_vm
     assert config.os == "linux", "reinstall test only applies to Linux VMs"
 
     home = setup_lima_guest(
-        config, test_name=f"test_reinstall_over_root_owned_{config.pytest_id()}"
+        config, test_name=f"test_reinstall_over_existing_{config.pytest_id()}"
     )
 
     # First install
     first = lima_shell(
-        install_cmd(config, home, extra_env="PEPPY_FORCE_REINSTALL=1"),
+        install_cmd(config, home),
         instance=config.instance_name,
     )
     assert first.returncode == 0, (
         f"first install failed on {config.pytest_id()}{diagnostic(first)}"
     )
 
-    # Verify apptainer files exist
-    check = lima_shell(
-        f"test -f {home}/bin/apptainer/etc/apptainer/apptainer.conf",
+    # Drop a marker file into PEPPY_HOME to verify it survives reinstall
+    lima_shell(
+        f"echo marker > {home}/test_marker.txt",
         instance=config.instance_name,
     )
-    assert check.returncode == 0, (
-        f"apptainer config should exist after first install on "
-        f"{config.pytest_id()}"
-    )
 
-    # Second install: must handle root-owned files without errors
+    # Second install: should overwrite binaries in-place
     second = lima_shell(
-        install_cmd(config, home, extra_env="PEPPY_FORCE_REINSTALL=1"),
+        install_cmd(config, home),
         instance=config.instance_name,
     )
     assert second.returncode == 0, (
         f"reinstall failed on {config.pytest_id()}{diagnostic(second)}"
-    )
-    assert "Permission denied" not in second.stderr, (
-        f"reinstall should not produce permission errors on {config.pytest_id()}"
-        f"{diagnostic(second)}"
     )
     assert "peppy installed to" in second.stdout, (
         f"Missing 'peppy installed to' after reinstall on {config.pytest_id()}"
         f"{diagnostic(second)}"
     )
 
-
-def test_existing_install_warning(lima_vm: VMConfig) -> None:
-    """When PEPPY_HOME exists but daemon is not running, show existing install warning."""
-    config = lima_vm
-    home = setup_lima_guest(
-        config, test_name=f"test_existing_install_warning_{config.pytest_id()}"
-    )
-
-    # Create PEPPY_HOME directory to simulate a previous install
-    lima_shell(f"mkdir -p {home}/bin", instance=config.instance_name)
-
-    # Run without PEPPY_FORCE_REINSTALL — non-interactive should fail with
-    # the "cannot prompt" error, proving the existing-install check triggered.
-    result = lima_shell(
-        install_cmd(config, home),
+    # Verify the marker file still exists (PEPPY_HOME was not wiped)
+    check = lima_shell(
+        f"cat {home}/test_marker.txt",
         instance=config.instance_name,
     )
-
-    output = result.stdout + result.stderr
-
-    assert "An existing installation was found" in output, (
-        f"Missing existing-install warning on {config.pytest_id()}{diagnostic(result)}"
+    assert check.returncode == 0, (
+        f"marker file should survive reinstall on {config.pytest_id()}"
+        f"{diagnostic(check)}"
+    )
+    assert "marker" in check.stdout, (
+        f"marker file content mismatch on {config.pytest_id()}{diagnostic(check)}"
     )
 
 
