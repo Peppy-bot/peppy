@@ -86,17 +86,21 @@ fn handle_repo_list_request_inner(
             continue;
         }
 
+        let repo_id = entry.get("id").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+
         match source {
             RepoSource::Fs(path) => {
                 if !path.exists() {
                     debug!("Skipping non-existent FS repository: {}", path.display());
                     continue;
                 }
+                let repo_label = path.to_string_lossy().into_owned();
                 let mut repo_seen = HashSet::new();
                 let mut discovered = Vec::new();
                 walk_directory(
                     &path,
                     RepoSourceKind::Fs,
+                    None,
                     None,
                     &mut repo_seen,
                     &mut discovered,
@@ -112,6 +116,8 @@ fn handle_repo_list_request_inner(
                         path: node.path,
                         variants: node.variants,
                         duplicate,
+                        repo_id,
+                        repo_label: repo_label.clone(),
                     });
                 }
             }
@@ -142,6 +148,11 @@ fn handle_repo_list_request_inner(
                                 .collect()
                         })
                         .unwrap_or_default();
+                    let resolved_ref = cached
+                        .get("resolved_ref")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("HEAD");
+                    let repo_label = format!("{repo_url} (ref: {resolved_ref})");
                     all_entries.push(RepoListNodeEntry {
                         node_name: name.to_string(),
                         node_tag: tag.to_string(),
@@ -153,6 +164,8 @@ fn handle_repo_list_request_inner(
                             .to_string(),
                         variants,
                         duplicate,
+                        repo_id,
+                        repo_label,
                     });
                 }
             }

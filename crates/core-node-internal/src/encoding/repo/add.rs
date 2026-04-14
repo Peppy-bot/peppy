@@ -85,6 +85,24 @@ impl RepoSource {
             RepoSource::Url(_) => RepoSourceKind::Url,
         }
     }
+
+    /// Human-readable label for CLI output.
+    ///
+    /// - `Fs`: path as-written
+    /// - `Git`: `"url (ref: r)"` when a ref is configured, else `"url"`. Code
+    ///   paths that have access to the actual checked-out ref (e.g. the
+    ///   packages cache) may prefer to build their own label.
+    /// - `Url`: the url as-is
+    pub fn display_label(&self) -> String {
+        match self {
+            RepoSource::Fs(path) => path.to_string_lossy().into_owned(),
+            RepoSource::Git { repo_url, repo_ref } => match repo_ref {
+                Some(r) if !r.is_empty() => format!("{repo_url} (ref: {r})"),
+                _ => repo_url.clone(),
+            },
+            RepoSource::Url(url) => url.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

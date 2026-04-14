@@ -81,6 +81,10 @@ struct RepoListNodeEntry {
     variants @4 :List(Text);
     # True when another repo with higher priority already provides this node
     duplicate @5 :Bool;
+    # Id of the owning repository (from repositories.json5)
+    repoId @6 :UInt32;
+    # Display label of the owning repository (path for fs, "url (ref: r)" for git)
+    repoLabel @7 :Text;
 }
 
 struct RepoListResponse {

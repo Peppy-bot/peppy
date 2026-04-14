@@ -122,8 +122,11 @@ async fn list_finds_nodes_in_fs_repo() {
     assert!(names.contains(&"my_sensor"), "should contain my_sensor");
     assert!(names.contains(&"my_actuator"), "should contain my_actuator");
 
+    let expected_label = repo_dir.to_string_lossy().into_owned();
     for node in &resp.nodes {
         assert_eq!(node.source_type, RepoSourceKind::Fs);
+        assert_eq!(node.repo_id, 1);
+        assert_eq!(node.repo_label, expected_label);
     }
 }
 
@@ -151,6 +154,7 @@ async fn list_reads_git_nodes_from_cache() {
                 "node_tag": "1.0.0",
                 "source_type": "git",
                 "source_uri": git_url,
+                "resolved_ref": "main",
                 "path": "nodes/git_sensor"
             },
             {
@@ -158,6 +162,7 @@ async fn list_reads_git_nodes_from_cache() {
                 "node_tag": "2.0.0",
                 "source_type": "git",
                 "source_uri": git_url,
+                "resolved_ref": "main",
                 "path": "nodes/git_actuator"
             }
         ]))
@@ -168,6 +173,8 @@ async fn list_reads_git_nodes_from_cache() {
     assert!(resp.success, "repo_list should succeed");
     assert_eq!(resp.nodes.len(), 2, "should find 2 git nodes from cache");
 
+    let expected_label = format!("{git_url} (ref: main)");
+
     let sensor = resp
         .nodes
         .iter()
@@ -176,6 +183,8 @@ async fn list_reads_git_nodes_from_cache() {
     assert_eq!(sensor.node_tag, "1.0.0");
     assert_eq!(sensor.source_type, RepoSourceKind::Git);
     assert_eq!(sensor.path, "nodes/git_sensor");
+    assert_eq!(sensor.repo_id, 1);
+    assert_eq!(sensor.repo_label, expected_label);
 
     let actuator = resp
         .nodes
@@ -185,6 +194,8 @@ async fn list_reads_git_nodes_from_cache() {
     assert_eq!(actuator.node_tag, "2.0.0");
     assert_eq!(actuator.source_type, RepoSourceKind::Git);
     assert_eq!(actuator.path, "nodes/git_actuator");
+    assert_eq!(actuator.repo_id, 1);
+    assert_eq!(actuator.repo_label, expected_label);
 }
 
 /// When two FS repositories provide the same node, the list should contain both
@@ -231,6 +242,8 @@ async fn list_marks_cross_repo_duplicates_fs() {
         primary.path.contains("list_dup_a"),
         "primary should come from repo_a"
     );
+    assert_eq!(primary.repo_id, 1);
+    assert_eq!(primary.repo_label, repo_a.to_string_lossy());
 
     let dup = shared_entries
         .iter()
@@ -240,6 +253,9 @@ async fn list_marks_cross_repo_duplicates_fs() {
         dup.path.contains("list_dup_b"),
         "duplicate should come from repo_b"
     );
+    assert_eq!(dup.repo_id, 2);
+    assert_eq!(dup.repo_label, repo_b.to_string_lossy());
+    assert_ne!(primary.repo_label, dup.repo_label);
 
     let unique = resp
         .nodes
@@ -277,6 +293,7 @@ async fn list_marks_git_duplicate_of_fs() {
             "node_tag": "1.0.0",
             "source_type": "git",
             "source_uri": git_url,
+            "resolved_ref": "main",
             "path": "nodes/overlapping"
         }]))
         .unwrap(),
@@ -296,6 +313,8 @@ async fn list_marks_git_duplicate_of_fs() {
         .find(|n| n.source_type == RepoSourceKind::Fs)
         .expect("fs entry");
     assert!(!fs_entry.duplicate, "fs entry should be primary");
+    assert_eq!(fs_entry.repo_id, 1);
+    assert_eq!(fs_entry.repo_label, repo_dir.to_string_lossy());
 
     let git_entry = resp
         .nodes
@@ -306,6 +325,8 @@ async fn list_marks_git_duplicate_of_fs() {
         git_entry.duplicate,
         "git entry should be marked as duplicate"
     );
+    assert_eq!(git_entry.repo_id, 2);
+    assert_eq!(git_entry.repo_label, format!("{git_url} (ref: main)"));
 }
 
 /// Write an excluded_repositories.json5 file in the conf_dir.

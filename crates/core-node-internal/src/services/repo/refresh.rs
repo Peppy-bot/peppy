@@ -188,6 +188,9 @@ pub(crate) struct DiscoveredNode {
     /// `(name, tag)` pair. The node is still recorded so that `repo list` can
     /// display all sources.
     pub(crate) duplicate: bool,
+    /// For git-source nodes, the short ref name (branch/tag) actually checked
+    /// out after clone (e.g. `"main"`). `None` for fs/url sources.
+    pub(crate) resolved_ref: Option<String>,
 }
 
 /// A repository that was skipped during refresh because it appears in the
@@ -320,6 +323,7 @@ pub(crate) fn process_refresh(
                     &path,
                     RepoSourceKind::Fs,
                     None,
+                    None,
                     &mut repo_seen,
                     &mut repo_nodes,
                     &exclusions.fs_paths,
@@ -393,6 +397,7 @@ pub(crate) fn walk_directory(
     root: &Path,
     source_type: RepoSourceKind,
     source_uri: Option<&str>,
+    resolved_ref: Option<&str>,
     seen: &mut HashSet<(String, String)>,
     nodes: &mut Vec<DiscoveredNode>,
     excluded_paths: &[PathBuf],
@@ -466,6 +471,7 @@ pub(crate) fn walk_directory(
             source_uri: source_uri.map(|s| s.to_string()),
             variants,
             duplicate: false,
+            resolved_ref: resolved_ref.map(|s| s.to_string()),
         });
     }
 }
@@ -540,7 +546,12 @@ fn clone_and_walk_git_repo(
     let tmp =
         tempfile::tempdir_in(&tmp_dir).map_err(|e| format!("failed to create temp dir: {}", e))?;
 
-    clone_shallow(repo_url, repo_ref, tmp.path(), on_feedback)?;
+    let repo = clone_shallow(repo_url, repo_ref, tmp.path(), on_feedback)?;
+    let resolved_ref = repo
+        .head()
+        .ok()
+        .and_then(|h| h.shorthand().map(str::to_string))
+        .unwrap_or_else(|| "HEAD".to_string());
 
     let mut seen = HashSet::new();
     let mut nodes = Vec::new();
@@ -548,6 +559,7 @@ fn clone_and_walk_git_repo(
         tmp.path(),
         RepoSourceKind::Git,
         Some(repo_url),
+        Some(&resolved_ref),
         &mut seen,
         &mut nodes,
         &[],
@@ -586,6 +598,9 @@ pub(crate) fn write_cache(peppy_dirs: &PeppyDirs, nodes: &[DiscoveredNode]) -> R
             );
             if let Some(url) = &n.source_uri {
                 map.insert("source_uri".to_string(), Value::String(url.clone()));
+            }
+            if let Some(r) = &n.resolved_ref {
+                map.insert("resolved_ref".to_string(), Value::String(r.clone()));
             }
             map.insert("path".to_string(), Value::String(n.path.clone()));
             if !n.variants.is_empty() {

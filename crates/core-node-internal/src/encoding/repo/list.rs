@@ -67,6 +67,10 @@ pub struct RepoListNodeEntry {
     /// `true` when another repository with higher priority already provides
     /// this `(name, tag)` pair.
     pub duplicate: bool,
+    /// Id of the owning repository (from `repositories.json5`).
+    pub repo_id: u32,
+    /// Display label of the owning repository (path for fs, `"url (ref: r)"` for git).
+    pub repo_label: String,
 }
 
 /// Response message for the RepoList service.
@@ -110,6 +114,8 @@ impl RepoListResponse {
                 entry.set_source_type(node.source_type.as_str());
                 entry.set_path(&node.path);
                 entry.reborrow().set_duplicate(node.duplicate);
+                entry.reborrow().set_repo_id(node.repo_id);
+                entry.reborrow().set_repo_label(&node.repo_label);
                 let mut variants_builder = entry.init_variants(node.variants.len() as u32);
                 for (j, v) in node.variants.iter().enumerate() {
                     variants_builder.set(j as u32, v);
@@ -142,6 +148,8 @@ impl RepoListResponse {
                 path: entry.get_path()?.to_str()?.to_owned(),
                 variants,
                 duplicate: entry.get_duplicate(),
+                repo_id: entry.get_repo_id(),
+                repo_label: entry.get_repo_label()?.to_str()?.to_owned(),
             });
         }
         Ok(Self {

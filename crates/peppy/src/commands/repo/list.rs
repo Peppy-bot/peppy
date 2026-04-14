@@ -2,7 +2,7 @@ use std::io::IsTerminal;
 use std::sync::Arc;
 use std::time::Duration;
 
-use core_node::encoding::{RepoListNodeEntry, RepoListRequest, RepoSourceKind};
+use core_node::encoding::{RepoListNodeEntry, RepoListRequest};
 
 use crate::commands::CALLER_INSTANCE_ID;
 use crate::context::AppContext;
@@ -40,37 +40,28 @@ async fn list_repos_async(ctx: &Arc<AppContext>) -> Result<()> {
         return Ok(());
     }
 
-    let mut local_nodes: Vec<&RepoListNodeEntry> = Vec::new();
-    let mut git_nodes: Vec<&RepoListNodeEntry> = Vec::new();
-    let mut http_nodes: Vec<&RepoListNodeEntry> = Vec::new();
-
-    for node in &response.nodes {
-        match node.source_type {
-            RepoSourceKind::Fs => local_nodes.push(node),
-            RepoSourceKind::Git => git_nodes.push(node),
-            RepoSourceKind::Url => http_nodes.push(node),
+    let mut first_section = true;
+    let mut start = 0;
+    while start < response.nodes.len() {
+        let repo_id = response.nodes[start].repo_id;
+        let mut end = start + 1;
+        while end < response.nodes.len() && response.nodes[end].repo_id == repo_id {
+            end += 1;
         }
-    }
-
-    if !local_nodes.is_empty() {
-        println!("Local ({}):", local_nodes.len());
-        print_nodes(&local_nodes);
-    }
-
-    if !git_nodes.is_empty() {
-        if !local_nodes.is_empty() {
+        let group: Vec<&RepoListNodeEntry> = response.nodes[start..end].iter().collect();
+        if !first_section {
             println!();
         }
-        println!("Git ({}):", git_nodes.len());
-        print_nodes(&git_nodes);
-    }
-
-    if !http_nodes.is_empty() {
-        if !local_nodes.is_empty() || !git_nodes.is_empty() {
-            println!();
-        }
-        println!("HTTP ({}):", http_nodes.len());
-        print_nodes(&http_nodes);
+        first_section = false;
+        let head = group[0];
+        println!(
+            "{} ({} {} nodes):",
+            head.repo_label,
+            group.len(),
+            head.source_type.as_str()
+        );
+        print_nodes(&group);
+        start = end;
     }
 
     Ok(())

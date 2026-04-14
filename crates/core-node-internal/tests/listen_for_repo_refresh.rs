@@ -567,11 +567,23 @@ async fn refresh_cache_written() {
 
     assert_eq!(fs_entry["node_name"], "cached_node");
     assert_eq!(fs_entry["node_tag"], "2.0.0");
+    assert!(
+        fs_entry.get("resolved_ref").is_none(),
+        "fs entries should not carry a resolved_ref in the cache"
+    );
 
     assert_eq!(git_entry["node_name"], "git_node");
     assert_eq!(git_entry["node_tag"], "1.0.0");
     assert_eq!(git_entry["path"], "nodes/git_node");
     assert_eq!(git_entry["source_uri"], git_repo_url);
+    let resolved_ref = git_entry
+        .get("resolved_ref")
+        .and_then(|v| v.as_str())
+        .expect("git entry should carry resolved_ref");
+    assert!(
+        !resolved_ref.is_empty(),
+        "resolved_ref should be a non-empty branch name"
+    );
 }
 
 /// Verify that the packages.json5 cache includes variant names for nodes that
