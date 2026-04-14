@@ -640,12 +640,29 @@ EOF
             exit 1
         fi
 
-        # Refresh repository indexes so nodes are discoverable immediately
-        if ! "$PEPPY_BIN_DIR/peppy" repo update; then
-            echo "error: repository update failed." >&2
-            echo "       You can retry manually: $PEPPY_BIN_DIR/peppy repo update" >&2
-            exit 1
-        fi
+        # Refresh repository indexes so nodes are discoverable immediately.
+        # The service manager returns as soon as the daemon process is
+        # launched, so wait a bounded amount for it to bind its messaging
+        # listener and write its state file before giving up.
+        REPO_UPDATE_DEADLINE_SECS=120
+        REPO_UPDATE_ELAPSED_SECS=0
+        REPO_UPDATE_CAPTURED=""
+        while : ; do
+            if REPO_UPDATE_CAPTURED=$("$PEPPY_BIN_DIR/peppy" repo update 2>&1); then
+                printf '%s\n' "$REPO_UPDATE_CAPTURED"
+                break
+            fi
+            if [ "$REPO_UPDATE_ELAPSED_SECS" -ge "$REPO_UPDATE_DEADLINE_SECS" ]; then
+                if [ -n "$REPO_UPDATE_CAPTURED" ]; then
+                    printf '%s\n' "$REPO_UPDATE_CAPTURED" >&2
+                fi
+                echo "error: repository update failed." >&2
+                echo "       You can retry manually: $PEPPY_BIN_DIR/peppy repo update" >&2
+                exit 1
+            fi
+            sleep 2
+            REPO_UPDATE_ELAPSED_SECS=$((REPO_UPDATE_ELAPSED_SECS + 2))
+        done
     else
         flush_progress_line
         echo "No service install because PEPPY_NO_SERVICE_INSTALL is set"

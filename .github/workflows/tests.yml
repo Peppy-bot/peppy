@@ -27,6 +27,16 @@ jobs:
       - name: Run documentation integration tests
         run: cargo test -p docs-integration-tests
 
+      - name: Detect scripts/ changes
+        id: scripts_changed
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            scripts:
+              - 'scripts/**'
+
       - name: Run release scripts tests
-        if: (github.event_name == 'pull_request' && github.base_ref == 'main') || (github.event_name == 'pull_request' && contains(github.event.pull_request.title, 'release'))
+        if: |
+          (github.event_name == 'pull_request' && github.base_ref == 'main')
+          || steps.scripts_changed.outputs.scripts == 'true'
         run: ./scripts/run_tests.sh --all
