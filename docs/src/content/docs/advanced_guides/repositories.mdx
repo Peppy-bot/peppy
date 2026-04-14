@@ -114,6 +114,23 @@ peppy repo exclude https://github.com/org/repo.git
 peppy repo exclude /home/user/projects/private-nodes
 ```
 
+## Using a repository-indexed node
+
+Once a node appears in `peppy repo list`, you can add it by its `name:tag` without supplying a path or URL — peppy resolves the source through the cached index at `~/.peppy/cache/packages.json5`:
+
+```sh
+peppy node add uvc_camera:0.1.0
+```
+
+This is the shortest form of `peppy node add`. It works for any node provided by any repository listed in `repositories.json5`, including the default [nodes_hub](https://github.com/Peppy-bot/nodes_hub) community repository. When several repositories provide the same `name:tag`, the [resolution rule from `repo refresh`](#refresh-the-index) applies — the repository with the lower `id` wins.
+
+Two constraints apply to this source shape:
+
+- `--ref` is rejected. The git ref (if any) is pinned once in `repositories.json5` when you register the repo, not per-add.
+- Dependency-level variant overrides with [`--variant <dep_name>:<dep_tag>@<variant_name>`](/advanced_guides/variants/#overriding-a-dependencys-variant) are only valid when the source is a `name:tag` reference. With a local path or a direct git/http URL, use the per-node `--variant` at the source level instead.
+
+If the node you want to add lives in a repository that is **not** in `repositories.json5`, keep using the full git URL or HTTP archive form shown in [Sharing nodes](/guides/sharing_nodes/).
+
 ## Directory pruning
 
 When scanning local and git repositories, peppy automatically skips the following directories:

@@ -127,10 +127,6 @@ pub async fn ensure_bundle(
     let extracted =
         download_and_extract_http_source(url, peppy_dirs.clone(), sha256.clone()).await?;
 
-    // `download_and_extract_http_source` returns the `source_path`
-    // (node root inside the extracted tree); `cleanup_dir` is the
-    // operation dir it stashed things in. We want to keep the node
-    // root contents under `target/`.
     let lock = lock_for(&lock_key);
     let target_final = target.clone();
     let sha_final = sha256.clone();
@@ -146,7 +142,6 @@ pub async fn ensure_bundle(
                 )
             })?;
         }
-        // `extracted.source_path` is the node root; move it into place.
         std::fs::rename(&extracted.source_path, &target_final).map_err(|e| {
             format!(
                 "Failed to promote extracted bundle into cache at {}: {}",
@@ -154,11 +149,9 @@ pub async fn ensure_bundle(
                 e
             )
         })?;
-        // Clean up any siblings in the operation directory.
         if let Some(op_dir) = extracted.cleanup_dir.as_ref() {
             let _ = std::fs::remove_dir_all(op_dir);
         }
-        // Record the sha256 marker for staleness detection.
         if let Some(sha) = sha_final.as_deref() {
             let marker = marker_path(&target_final);
             std::fs::write(&marker, sha).map_err(|e| {

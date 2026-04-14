@@ -109,14 +109,14 @@ impl GoalHandler for NodeAddGoalHandler {
     }
 }
 
-pub(crate) struct CleanupDir(Option<PathBuf>);
+pub(super) struct CleanupDir(Option<PathBuf>);
 
 impl CleanupDir {
-    pub(crate) fn new(dir: Option<PathBuf>) -> Self {
+    pub(super) fn new(dir: Option<PathBuf>) -> Self {
         Self(dir)
     }
 
-    pub(crate) fn take(&mut self) -> Option<PathBuf> {
+    pub(super) fn take(&mut self) -> Option<PathBuf> {
         self.0.take()
     }
 }
@@ -267,11 +267,11 @@ pub(crate) struct NodeAddActionContext {
     pub(crate) peppy_dirs: PeppyDirs,
 }
 
-pub(crate) struct ProcessNodeAddContext {
-    pub(crate) action: NodeAddActionContext,
-    pub(crate) feedback_tx: mpsc::UnboundedSender<FeedbackLine>,
-    pub(crate) log_file: Arc<StdMutex<File>>,
-    pub(crate) log_path: PathBuf,
+struct ProcessNodeAddContext {
+    action: NodeAddActionContext,
+    feedback_tx: mpsc::UnboundedSender<FeedbackLine>,
+    log_file: Arc<StdMutex<File>>,
+    log_path: PathBuf,
 }
 
 async fn resolve_git_source(
@@ -1246,7 +1246,7 @@ async fn shutdown_existing_instances(
     Ok(())
 }
 
-pub(crate) async fn process_node_add(
+async fn process_node_add(
     goal: NodeAddGoal,
     node_config: NodeConfig,
     source_path: PathBuf,

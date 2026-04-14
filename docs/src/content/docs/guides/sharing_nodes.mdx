@@ -9,6 +9,24 @@ import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 One of PeppyOS's key features is the ability to share nodes with other people.
 As an example, we'll try to pull the `uvc_camera` node from [this repo](https://github.com/Peppy-bot/nodes_hub.git) in a separate shell.
 
+Because `nodes_hub` ships as one of the default [repositories](/advanced_guides/repositories/), `uvc_camera` is already in the index — so you can add it by `name:tag` without referring to the git URL at all:
+
+<Tabs>
+  <TabItem label="Python">
+```sh
+peppy node add --variant mock-python uvc_camera:0.1.0
+```
+  </TabItem>
+  <TabItem label="Rust">
+```sh
+peppy node add --variant mock-rust uvc_camera:0.1.0
+```
+  </TabItem>
+</Tabs>
+
+### Adding a node from an unindexed repository
+
+If the node lives in a repository that isn't registered in your `repositories.json5`, you can still add it directly by URL:
 
 <Tabs>
   <TabItem label="Python">
@@ -32,7 +50,7 @@ peppy node add --variant mock-rust --ref main https://github.com/Peppy-bot/nodes
 </Tabs>
 
 :::note
-When `--ref` is used during `peppy node add`, it corresponds to the git tag/release or hash of the repo. On the other hand, the tag in `peppy node run uvc_camera:0.1.0` corresponds to the tag found in `peppy.json5`.
+When `--ref` is used during `peppy node add`, it corresponds to the git tag/release or hash of the repo. On the other hand, the tag in `peppy node run uvc_camera:0.1.0` corresponds to the tag found in `peppy.json5`. `--ref` is only accepted with a full git URL — for `name:tag` sources the ref is pinned once in `repositories.json5` when the repo is registered.
 :::
 
 :::note

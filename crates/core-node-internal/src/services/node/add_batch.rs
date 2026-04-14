@@ -1,30 +1,11 @@
 //! Batch-add pipeline for `NodeSource::RepoNode` goals.
 //!
-//! The regular `add.rs` flow handles a single source (FS path / Git clone /
-//! HTTP bundle). `RepoNode` goals instead name a node by `(name, tag)`
-//! and let the daemon walk `~/.peppy/cache/packages.json5` to find it and
-//! every transitive dependency, then add them as one atomic batch.
-//!
-//! Flow:
-//!
-//!  1. Load `packages.json5` (via [`super::super::repo::cache::load`]).
-//!  2. Materialize the root node on disk: FS entries use the local path,
-//!     Git entries go through [`super::git_cache::ensure_checkout`], HTTP
-//!     entries go through [`super::bundle_cache::ensure_bundle`].
-//!  3. Parse `peppy.json5` and walk `depends_on` recursively. Each dep is
-//!     either skipped (already in the node stack), overridden with a
-//!     caller-supplied variant, or materialized from the repo cache. Deps
-//!     not in the stack and not in the cache produce a `missing deps`
-//!     error listing every offender.
-//!  4. Build a [`VirtualDeptree`] and topologically sort the nodes.
-//!  5. For each node in order, call [`super::add::run_node_add`] with a
-//!     synthesized `NodeAddGoal` whose `git_hash` is the `STACK_LAUNCH`
-//!     sentinel (so git-hash verification and auto-sync are skipped — the
-//!     repo cache is the source of truth, not a local `.peppy/git.hash`).
-//!  6. Rollback on mid-batch failure via a drop guard that calls
-//!     [`NodeStack::remove_config`] for every entity added by this batch.
-//!     Entities that were already in the stack before the batch are left
-//!     untouched.
+//! Resolves a `(name, tag)` target against `~/.peppy/cache/packages.json5`,
+//! walks its transitive deps, materializes every node through the
+//! persistent git/http caches, topologically sorts them via
+//! [`VirtualDeptree`], then feeds each to [`super::add::run_node_add`].
+//! Mid-batch failure rolls back every node pushed during the batch via a
+//! drop guard.
 
 use super::super::repo::cache::{self, PackageEntry};
 use super::super::stack::STACK_LAUNCH_GIT_HASH;
@@ -75,7 +56,6 @@ pub(crate) async fn run_repo_node_add(
 
     let peppy_dirs = action_context.peppy_dirs.clone();
 
-    // Step 1: load packages.json5
     let entries = match cache::load(&peppy_dirs) {
         Ok(entries) => entries,
         Err(e) => {
@@ -97,7 +77,6 @@ pub(crate) async fn run_repo_node_add(
         );
     }
 
-    // Step 2+3: resolve the transitive closure starting from the root.
     let resolution = match resolve_transitive_closure(
         &peppy_dirs,
         &entries,
@@ -163,7 +142,6 @@ pub(crate) async fn run_repo_node_add(
         );
     }
 
-    // Step 4: topological sort via VirtualDeptree.
     let tree_input: Vec<(PathBuf, config::node::NodeConfig)> = resolution
         .to_add
         .iter()
@@ -203,8 +181,6 @@ pub(crate) async fn run_repo_node_add(
         ),
     );
 
-    // Step 5: topo add. Track every successfully-pushed (name, tag) so we
-    // can roll back the whole batch on any later failure.
     let mut rollback = RollbackGuard::new(Arc::clone(&action_context.node_stack));
 
     let mut last_sub_log_path: Option<PathBuf> = None;
@@ -236,11 +212,10 @@ pub(crate) async fn run_repo_node_add(
             match run_single_batched_add(node, &goal, &action_context, &feedback_tx).await {
                 Ok(r) => r,
                 Err(msg) => {
-                    return fail_with_rollback(
+                    return fail(
                         &log_file,
                         &log_path,
                         format!("Failed to add {}:{}: {}", node.name, node.tag, msg),
-                        &mut rollback,
                     );
                 }
             };
@@ -249,11 +224,10 @@ pub(crate) async fn run_repo_node_add(
             let msg = sub_result
                 .error_message
                 .unwrap_or_else(|| "unknown node-add failure".to_owned());
-            return fail_with_rollback(
+            return fail(
                 &log_file,
                 &log_path,
                 format!("Failed to add {}:{}: {}", node.name, node.tag, msg),
-                &mut rollback,
             );
         }
 
@@ -380,12 +354,14 @@ async fn resolve_transitive_closure(
             ));
         }
 
-        // Resolve the node's declared deps into a work queue.
         let depends_on = parsed.manifest().depends_on.as_ref();
         if let Some(deps) = depends_on {
             for dep in &deps.nodes {
                 let dep_name = dep.name.as_str().to_owned();
                 let dep_tag = dep.tag.clone();
+                if seen.contains(&(dep_name.clone(), dep_tag.clone())) {
+                    continue;
+                }
                 stack.push((dep_name, dep_tag, false));
             }
         }
@@ -584,18 +560,6 @@ impl Drop for RollbackGuard {
 
 fn fail(log_file: &Arc<StdMutex<File>>, log_path: &std::path::Path, msg: String) -> NodeAddResult {
     super::write_error_to_log(log_file, &msg);
-    NodeAddResult::failure(log_path, msg)
-}
-
-fn fail_with_rollback(
-    log_file: &Arc<StdMutex<File>>,
-    log_path: &std::path::Path,
-    msg: String,
-    rollback: &mut RollbackGuard,
-) -> NodeAddResult {
-    super::write_error_to_log(log_file, &msg);
-    // Drop will run rollback since we don't `disarm` here.
-    let _ = rollback;
     NodeAddResult::failure(log_path, msg)
 }
 
