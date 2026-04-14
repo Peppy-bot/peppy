@@ -234,6 +234,9 @@ async fn resolve_node_config_with_source_path(
         NodeSource::Http { url, sha256 } => {
             parse_node_config_from_http_with_path(url, sha256, peppy_dirs).await
         }
+        NodeSource::RepoNode { .. } => {
+            Err("node_info does not support repo-node sources".to_owned())
+        }
     }
 }
 

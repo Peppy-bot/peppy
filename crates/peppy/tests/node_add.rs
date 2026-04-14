@@ -78,7 +78,7 @@ fn node_add_command_succeeds() {
         command: NodeCommands::Add {
             source: Some(node_path.display().to_string()),
             git_ref: None,
-            variant: None,
+            variant: Vec::new(),
             sync: false,
             build: true,
             run: false,
@@ -235,7 +235,7 @@ fn node_add_command_with_run_arg_succeeds() {
         command: NodeCommands::Add {
             source: Some(node_path.display().to_string()),
             git_ref: None,
-            variant: None,
+            variant: Vec::new(),
             sync: false,
             build: true,
             run: true,
@@ -371,7 +371,7 @@ fn node_add_after_failed_sync_succeeds() {
         command: NodeCommands::Add {
             source: Some(node_path.display().to_string()),
             git_ref: None,
-            variant: None,
+            variant: Vec::new(),
             sync: false,
             build: true,
             run: false,
@@ -416,7 +416,7 @@ fn node_add_after_failed_sync_succeeds() {
         command: NodeCommands::Add {
             source: Some(node_path.display().to_string()),
             git_ref: None,
-            variant: None,
+            variant: Vec::new(),
             sync: false,
             build: true,
             run: false,
@@ -569,7 +569,7 @@ fn node_add_same_node_shutdown_existing_instances() {
         command: NodeCommands::Add {
             source: Some(node_path.display().to_string()),
             git_ref: None,
-            variant: None,
+            variant: Vec::new(),
             sync: false,
             build: true,
             run: true,
@@ -627,7 +627,7 @@ fn node_add_same_node_shutdown_existing_instances() {
         command: NodeCommands::Add {
             source: Some(node_path.display().to_string()),
             git_ref: None,
-            variant: None,
+            variant: Vec::new(),
             sync: false,
             build: true,
             run: false, // Don't run a new instance this time
@@ -770,7 +770,7 @@ fn node_add_command_with_variant_succeeds() {
         command: NodeCommands::Add {
             source: Some(root_path.display().to_string()),
             git_ref: None,
-            variant: Some("mock".to_string()),
+            variant: vec!["mock".to_string()],
             sync: false,
             build: true,
             run: false,
@@ -931,7 +931,7 @@ fn node_add_with_variant_uses_variant_in_preflight() {
         command: NodeCommands::Add {
             source: Some(root_path.display().to_string()),
             git_ref: None,
-            variant: Some("mock".to_string()),
+            variant: vec!["mock".to_string()],
             sync: false,
             build: true,
             run: true,
@@ -988,7 +988,7 @@ fn node_add_with_variant_uses_variant_in_preflight() {
         AddNodeParams {
             source: root_path.display().to_string(),
             git_ref: None,
-            variant: Some("mock".to_string()),
+            variant: vec!["mock".to_string()],
             run_options: None,
             timeouts: TimeoutConfig {
                 idle_secs: 60,
@@ -1116,7 +1116,7 @@ fn node_add_same_node_different_sources_show_overwrite_prompt() {
         command: NodeCommands::Add {
             source: Some(node_path.display().to_string()),
             git_ref: None,
-            variant: None,
+            variant: Vec::new(),
             sync: false,
             build: true,
             run: true,
@@ -1210,7 +1210,7 @@ fn node_add_same_node_different_sources_show_overwrite_prompt() {
         AddNodeParams {
             source: git_source,
             git_ref: None,
-            variant: None,
+            variant: Vec::new(),
             run_options: None,
             timeouts: TimeoutConfig {
                 idle_secs: 60,
@@ -1339,7 +1339,7 @@ fn node_add_auto_syncs_when_peppy_dir_missing() {
         command: NodeCommands::Add {
             source: Some(root_path.display().to_string()),
             git_ref: None,
-            variant: Some("mock".to_string()),
+            variant: vec!["mock".to_string()],
             sync: false,
             build: true,
             run: false,
@@ -1486,7 +1486,7 @@ fn node_add_with_sync_flag_refreshes_stale_git_hash() {
         command: NodeCommands::Add {
             source: Some(node_path.display().to_string()),
             git_ref: None,
-            variant: None,
+            variant: Vec::new(),
             sync: false,
             build: true,
             run: false,
@@ -1515,7 +1515,7 @@ fn node_add_with_sync_flag_refreshes_stale_git_hash() {
         command: NodeCommands::Add {
             source: Some(node_path.display().to_string()),
             git_ref: None,
-            variant: None,
+            variant: Vec::new(),
             sync: true,
             build: true,
             run: false,
@@ -1608,7 +1608,7 @@ fn node_add_with_sync_flag_rejects_remote_source() {
         command: NodeCommands::Add {
             source: Some("https://github.com/fake-org/fake-repo.git/node".to_string()),
             git_ref: None,
-            variant: None,
+            variant: Vec::new(),
             sync: true,
             build: false,
             run: false,

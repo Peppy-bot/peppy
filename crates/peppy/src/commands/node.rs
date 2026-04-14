@@ -107,14 +107,23 @@ pub enum NodeCommands {
         /// Git ref (tag/branch/commit) to checkout before reading `subpath` (git sources only).
         #[arg(long = "ref")]
         git_ref: Option<String>,
-        /// Optional variant to add instead of the root node.
+        /// Variant selection. Repeatable.
         ///
-        /// Supported formats:
-        /// - Variant name: `mock` (looked up in root manifest)
-        /// - Git URL: `https://github.com/org/repo.git/path`
-        /// - HTTP archive: `https://example.com/variant.tar.zst`
-        #[arg(long)]
-        variant: Option<String>,
+        /// Three shapes are accepted:
+        /// - Variant name for the *root* node: `mock-python`.
+        /// - Git or HTTP URL used directly as the root variant:
+        ///   `https://github.com/org/repo.git/path`,
+        ///   `https://example.com/variant.tar.zst`.
+        /// - `<dep_name>:<dep_tag>@<variant_name>` — override the
+        ///   variant used when resolving a transitive dependency of
+        ///   the target node (only meaningful when the source is
+        ///   `<name>:<tag>`). Repeatable.
+        ///
+        /// At most one *root* shape may appear per invocation; the
+        /// dep-override shape can appear any number of times with
+        /// distinct `name:tag` values.
+        #[arg(long = "variant")]
+        variant: Vec<String>,
         /// If set, runs `peppy node sync` on the source *before* adding. Forces
         /// peppygen interface code to be regenerated from the current
         /// `peppy.json5`, so the snapshot taken by `node add` is up-to-date.

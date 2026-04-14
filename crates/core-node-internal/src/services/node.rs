@@ -1,6 +1,9 @@
 mod add;
+mod add_batch;
 mod builder;
+mod bundle_cache;
 mod gate;
+mod git_cache;
 mod info;
 mod init;
 mod remove;

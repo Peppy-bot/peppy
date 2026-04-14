@@ -161,7 +161,7 @@ async fn node_list_command_succeeds() {
         command: NodeCommands::Add {
             source: Some(provider_path.display().to_string()),
             git_ref: None,
-            variant: None,
+            variant: Vec::new(),
             sync: false,
             build: true,
             run: false,
@@ -180,7 +180,7 @@ async fn node_list_command_succeeds() {
         command: NodeCommands::Add {
             source: Some(consumer_path.display().to_string()),
             git_ref: None,
-            variant: None,
+            variant: Vec::new(),
             sync: false,
             build: true,
             run: false,
@@ -318,7 +318,7 @@ async fn node_list_command_with_dot_representation_succeeds() {
         command: NodeCommands::Add {
             source: Some(provider_path.display().to_string()),
             git_ref: None,
-            variant: None,
+            variant: Vec::new(),
             sync: false,
             build: true,
             run: false,
@@ -336,7 +336,7 @@ async fn node_list_command_with_dot_representation_succeeds() {
         command: NodeCommands::Add {
             source: Some(consumer_path.display().to_string()),
             git_ref: None,
-            variant: None,
+            variant: Vec::new(),
             sync: false,
             build: true,
             run: false,

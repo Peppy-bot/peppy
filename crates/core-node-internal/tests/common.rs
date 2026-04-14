@@ -77,6 +77,9 @@ pub enum NodeAddSource<'a> {
         url: url::Url,
         sha256: Option<String>,
     },
+    /// Add a node by `(name, tag)` against the repo cache — the daemon
+    /// resolves transitive deps from `~/.peppy/cache/packages.json5`.
+    RepoNode { name: &'a str, tag: &'a str },
 }
 
 impl<'a> From<&'a Path> for NodeAddSource<'a> {
@@ -293,6 +296,7 @@ async fn send_node_add_and_wait_internal<'a>(
     core_node_name: &str,
     source: impl Into<NodeAddSource<'a>>,
     variant: Option<NodeSource>,
+    dep_variant_overrides: Vec<core_node::encoding::DepVariantOverride>,
     goal_timeout: Duration,
     result_timeout: Duration,
     feedback_tx: Option<UnboundedSender<NodeAddFeedback>>,
@@ -348,9 +352,22 @@ async fn send_node_add_and_wait_internal<'a>(
             TEST_GIT_HASH,
             result_timeout.as_secs(),
         ),
+        NodeAddSource::RepoNode { name, tag } => {
+            let mut src = NodeSource::repo_node((*name).to_owned(), (*tag).to_owned());
+            if !dep_variant_overrides.is_empty() {
+                src = src.with_dep_variant_overrides(dep_variant_overrides.clone());
+            }
+            NodeAddGoal::from_source(src, TEST_GIT_HASH, result_timeout.as_secs())
+        }
     }
     .with_env_vars(env_vars)
     .with_force(force);
+
+    // Dep-variant overrides are meaningful only for RepoNode sources
+    // (the encoding makes them unrepresentable elsewhere). For other
+    // source kinds, the helper silently drops them — matching the CLI,
+    // which rejects the combination at parse time.
+    let _ = dep_variant_overrides;
 
     if let Some(v) = variant {
         goal = goal.with_variant_source(v);
@@ -607,6 +624,7 @@ pub async fn send_node_add_and_wait<'a>(
         core_node_name,
         source,
         None,
+        Vec::new(),
         goal_timeout,
         result_timeout,
         feedback_tx,
@@ -630,6 +648,7 @@ pub async fn send_node_add_and_wait_with_env<'a>(
         core_node_name,
         source,
         None,
+        Vec::new(),
         goal_timeout,
         result_timeout,
         feedback_tx,
@@ -653,6 +672,7 @@ pub async fn send_node_add_and_wait_with_variant<'a>(
         core_node_name,
         source,
         Some(NodeSource::Fs(PathBuf::from(variant))),
+        Vec::new(),
         goal_timeout,
         result_timeout,
         feedback_tx,
@@ -660,6 +680,137 @@ pub async fn send_node_add_and_wait_with_variant<'a>(
         false,
     )
     .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn send_node_add_and_wait_with_dep_overrides<'a>(
+    messenger: &MessengerHandle,
+    core_node_name: &str,
+    source: impl Into<NodeAddSource<'a>>,
+    variant: Option<&str>,
+    dep_overrides: Vec<core_node::encoding::DepVariantOverride>,
+    goal_timeout: Duration,
+    result_timeout: Duration,
+    feedback_tx: Option<UnboundedSender<NodeAddFeedback>>,
+) -> Result<NodeAddResult, String> {
+    send_node_add_and_wait_internal(
+        messenger,
+        core_node_name,
+        source,
+        variant.map(|v| NodeSource::Fs(PathBuf::from(v))),
+        dep_overrides,
+        goal_timeout,
+        result_timeout,
+        feedback_tx,
+        Vec::new(),
+        false,
+    )
+    .await
+}
+
+/// Builder for a `packages.json5` cache fixture. Tests call
+/// [`TestPackagesCache::fs_entry`] / `git_entry` / `http_entry` to declare
+/// discovered nodes and then [`TestPackagesCache::write`] to serialize
+/// the file under `peppy_dirs.cache_dir()/packages.json5`.
+#[derive(Default)]
+pub struct TestPackagesCache {
+    entries: Vec<serde_json::Value>,
+}
+
+impl TestPackagesCache {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn fs_entry(
+        mut self,
+        name: &str,
+        tag: &str,
+        absolute_path: impl AsRef<Path>,
+        variants: &[&str],
+    ) -> Self {
+        let mut m = serde_json::Map::new();
+        m.insert("node_name".into(), serde_json::Value::String(name.into()));
+        m.insert("node_tag".into(), serde_json::Value::String(tag.into()));
+        m.insert("source_type".into(), serde_json::Value::String("fs".into()));
+        m.insert(
+            "path".into(),
+            serde_json::Value::String(absolute_path.as_ref().to_string_lossy().into_owned()),
+        );
+        if !variants.is_empty() {
+            m.insert(
+                "variants".into(),
+                serde_json::Value::Array(
+                    variants
+                        .iter()
+                        .map(|v| serde_json::Value::String((*v).into()))
+                        .collect(),
+                ),
+            );
+        }
+        self.entries.push(serde_json::Value::Object(m));
+        self
+    }
+
+    pub fn git_entry(
+        mut self,
+        name: &str,
+        tag: &str,
+        repo_url: &str,
+        resolved_ref: &str,
+        path_in_repo: &str,
+        variants: &[&str],
+    ) -> Self {
+        let mut m = serde_json::Map::new();
+        m.insert("node_name".into(), serde_json::Value::String(name.into()));
+        m.insert("node_tag".into(), serde_json::Value::String(tag.into()));
+        m.insert(
+            "source_type".into(),
+            serde_json::Value::String("git".into()),
+        );
+        m.insert(
+            "source_uri".into(),
+            serde_json::Value::String(repo_url.into()),
+        );
+        m.insert(
+            "resolved_ref".into(),
+            serde_json::Value::String(resolved_ref.into()),
+        );
+        m.insert(
+            "path".into(),
+            serde_json::Value::String(path_in_repo.into()),
+        );
+        if !variants.is_empty() {
+            m.insert(
+                "variants".into(),
+                serde_json::Value::Array(
+                    variants
+                        .iter()
+                        .map(|v| serde_json::Value::String((*v).into()))
+                        .collect(),
+                ),
+            );
+        }
+        self.entries.push(serde_json::Value::Object(m));
+        self
+    }
+
+    pub fn write(self, peppy_dirs: &config::consts::PeppyDirs) {
+        let cache_dir = peppy_dirs.cache_dir();
+        std::fs::create_dir_all(&cache_dir).expect("failed to create cache dir");
+        let content =
+            serde_json::to_string_pretty(&self.entries).expect("failed to serialize cache entries");
+        std::fs::write(cache_dir.join("packages.json5"), content)
+            .expect("failed to write packages.json5 fixture");
+    }
+}
+
+/// Convenience helper — writes `peppy.json5` under `dir` but skips the
+/// fingerprint generation (useful for packages-cache FS fixtures that
+/// aren't going through the fingerprint verification path).
+pub fn write_plain_peppy_json5(dir: &Path, content: &str) {
+    std::fs::create_dir_all(dir).expect("failed to create dir");
+    std::fs::write(dir.join(NODE_CONFIG_FILE), content).expect("failed to write peppy.json5");
 }
 
 /// Convenience helper for tests that staged a node via `send_node_add_and_wait`
@@ -700,6 +851,7 @@ pub async fn send_node_add_then_build<'a>(
         core_node_name,
         source,
         None,
+        Vec::new(),
         goal_timeout,
         result_timeout,
         None,
@@ -748,6 +900,7 @@ pub async fn send_node_add_and_wait_with_force<'a>(
         core_node_name,
         source,
         None,
+        Vec::new(),
         goal_timeout,
         result_timeout,
         feedback_tx,

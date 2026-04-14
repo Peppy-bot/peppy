@@ -109,14 +109,14 @@ impl GoalHandler for NodeAddGoalHandler {
     }
 }
 
-pub(super) struct CleanupDir(Option<PathBuf>);
+pub(crate) struct CleanupDir(Option<PathBuf>);
 
 impl CleanupDir {
-    pub(super) fn new(dir: Option<PathBuf>) -> Self {
+    pub(crate) fn new(dir: Option<PathBuf>) -> Self {
         Self(dir)
     }
 
-    pub(super) fn take(&mut self) -> Option<PathBuf> {
+    pub(crate) fn take(&mut self) -> Option<PathBuf> {
         self.0.take()
     }
 }
@@ -267,11 +267,11 @@ pub(crate) struct NodeAddActionContext {
     pub(crate) peppy_dirs: PeppyDirs,
 }
 
-struct ProcessNodeAddContext {
-    action: NodeAddActionContext,
-    feedback_tx: mpsc::UnboundedSender<FeedbackLine>,
-    log_file: Arc<StdMutex<File>>,
-    log_path: PathBuf,
+pub(crate) struct ProcessNodeAddContext {
+    pub(crate) action: NodeAddActionContext,
+    pub(crate) feedback_tx: mpsc::UnboundedSender<FeedbackLine>,
+    pub(crate) log_file: Arc<StdMutex<File>>,
+    pub(crate) log_path: PathBuf,
 }
 
 async fn resolve_git_source(
@@ -725,6 +725,7 @@ pub(crate) fn log_label_from_source(source: &NodeSource) -> String {
                 .to_string()
         }
         NodeSource::Git { .. } | NodeSource::Http { .. } => generate_random_id(),
+        NodeSource::RepoNode { name, tag, .. } => format!("{name}_{tag}"),
     }
 }
 
@@ -798,6 +799,12 @@ async fn resolve_node_add_source(
                 feedback_tx.clone(),
             )
             .await
+        }
+        NodeSource::RepoNode { .. } => {
+            // RepoNode goals are dispatched to `add_batch::run_repo_node_add`
+            // by `handle_goal_request` and never reach `run_node_add`, so this
+            // arm should be unreachable by construction.
+            Err("internal error: RepoNode reached the single-source add path".to_owned())
         }
     }
 }
@@ -1095,6 +1102,10 @@ async fn handle_goal_request(
             "Received `node_add` goal from {sender_instance_id}, source=http:{}",
             url
         ),
+        NodeSource::RepoNode { name, tag, .. } => debug!(
+            "Received `node_add` goal from {sender_instance_id}, source=repo:{}:{}",
+            name, tag
+        ),
     }
 
     // Create the log file *before* source resolution so that clone/download
@@ -1127,16 +1138,29 @@ async fn handle_goal_request(
                 NodeAddFeedback::from_stream(line.stream, &line.line).encode()
             });
 
+        let is_repo_node = matches!(&goal.source, NodeSource::RepoNode { .. });
         let result = tokio::select! {
             biased;
-            result = run_node_add(
-                goal,
-                action_context,
-                feedback_tx,
-                log_file,
-                log_path_clone,
-                timestamp,
-            ) => result,
+            result = async {
+                if is_repo_node {
+                    super::add_batch::run_repo_node_add(
+                        goal,
+                        action_context,
+                        feedback_tx,
+                        log_file,
+                        log_path_clone,
+                    ).await
+                } else {
+                    run_node_add(
+                        goal,
+                        action_context,
+                        feedback_tx,
+                        log_file,
+                        log_path_clone,
+                        timestamp,
+                    ).await
+                }
+            } => result,
             _ = cancel_token_clone.cancelled() => {
                 NodeAddResult::failure(
                     &log_path_for_cancel,
@@ -1222,7 +1246,7 @@ async fn shutdown_existing_instances(
     Ok(())
 }
 
-async fn process_node_add(
+pub(crate) async fn process_node_add(
     goal: NodeAddGoal,
     node_config: NodeConfig,
     source_path: PathBuf,

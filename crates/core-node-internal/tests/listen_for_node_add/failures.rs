@@ -1,4 +1,277 @@
 use super::*;
+use common::{
+    TestPackagesCache, send_node_add_and_wait_with_dep_overrides, write_plain_peppy_json5,
+};
+use core_node::encoding::DepVariantOverride;
+
+fn minimal_dep_config(name: &str, tag: &str, deps: &[(&str, &str)]) -> String {
+    let depends_on = if deps.is_empty() {
+        String::new()
+    } else {
+        let nodes = deps
+            .iter()
+            .map(|(n, t)| format!(r#"{{ name: "{n}", tag: "{t}", local_id: "{n}" }}"#))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!(r#"depends_on: {{ nodes: [{nodes}] }},"#)
+    };
+    format!(
+        r#"{{
+            schema_version: 1,
+            manifest: {{
+                name: "{name}",
+                tag: "{tag}",
+                {depends_on}
+            }},
+            execution: {{
+                language: "rust",
+                run_cmd: ["sleep", "10"]
+            }}
+        }}"#
+    )
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn repo_node_add_fails_when_packages_cache_missing() {
+    let started = start_core_node_with_mock_messenger().await;
+    let node_stack = started.node_stack.clone();
+
+    // No packages.json5 written at all.
+    let res = send_node_add_and_wait(
+        &started.caller_handle,
+        &started.core_node_name,
+        NodeAddSource::RepoNode {
+            name: "ghost",
+            tag: "0.1.0",
+        },
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        None,
+    )
+    .await
+    .expect("node_add should complete");
+
+    assert!(
+        !res.success,
+        "add should fail when packages cache is missing"
+    );
+    let err = res.error_message.unwrap_or_default();
+    assert!(
+        err.contains("peppy repo refresh"),
+        "expected cache-missing hint; got: {err}"
+    );
+    assert_eq!(node_stack.len(), 1, "only root entity should exist");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn repo_node_add_fails_when_root_node_unknown() {
+    let started = start_core_node_with_mock_messenger().await;
+    let node_stack = started.node_stack.clone();
+
+    let tmp = TempDir::new().unwrap();
+    let some_dir = tmp.path().join("other");
+    write_plain_peppy_json5(&some_dir, &minimal_dep_config("other", "0.1.0", &[]));
+
+    TestPackagesCache::new()
+        .fs_entry("other", "0.1.0", &some_dir, &[])
+        .write(&started.peppy_dirs);
+
+    let res = send_node_add_and_wait(
+        &started.caller_handle,
+        &started.core_node_name,
+        NodeAddSource::RepoNode {
+            name: "ghost",
+            tag: "0.1.0",
+        },
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        None,
+    )
+    .await
+    .expect("node_add should complete");
+
+    assert!(!res.success, "add should fail when root node unknown");
+    let err = res.error_message.unwrap_or_default();
+    assert!(
+        err.contains("ghost:0.1.0") && err.contains("missing"),
+        "error should list the missing root; got: {err}"
+    );
+    assert_eq!(node_stack.len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn repo_node_add_fails_when_dep_missing_in_cache() {
+    let started = start_core_node_with_mock_messenger().await;
+    let node_stack = started.node_stack.clone();
+
+    let tmp = TempDir::new().unwrap();
+    let target_dir = tmp.path().join("target");
+    write_plain_peppy_json5(
+        &target_dir,
+        &minimal_dep_config("target", "1.0.0", &[("missing_dep", "9.9.9")]),
+    );
+
+    // Target is in the cache, but missing_dep is not.
+    TestPackagesCache::new()
+        .fs_entry("target", "1.0.0", &target_dir, &[])
+        .write(&started.peppy_dirs);
+
+    let res = send_node_add_and_wait(
+        &started.caller_handle,
+        &started.core_node_name,
+        NodeAddSource::RepoNode {
+            name: "target",
+            tag: "1.0.0",
+        },
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        None,
+    )
+    .await
+    .expect("node_add should complete");
+
+    assert!(!res.success, "add should fail when dep missing");
+    let err = res.error_message.unwrap_or_default();
+    assert!(
+        err.contains("missing_dep:9.9.9"),
+        "error should mention missing dep; got: {err}"
+    );
+    assert_eq!(node_stack.len(), 1, "nothing should have been added");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn repo_node_add_fails_on_cycle() {
+    let started = start_core_node_with_mock_messenger().await;
+    let node_stack = started.node_stack.clone();
+
+    let tmp = TempDir::new().unwrap();
+    let a_dir = tmp.path().join("a");
+    let b_dir = tmp.path().join("b");
+    write_plain_peppy_json5(&a_dir, &minimal_dep_config("a", "0.1.0", &[("b", "0.1.0")]));
+    write_plain_peppy_json5(&b_dir, &minimal_dep_config("b", "0.1.0", &[("a", "0.1.0")]));
+
+    TestPackagesCache::new()
+        .fs_entry("a", "0.1.0", &a_dir, &[])
+        .fs_entry("b", "0.1.0", &b_dir, &[])
+        .write(&started.peppy_dirs);
+
+    let res = send_node_add_and_wait(
+        &started.caller_handle,
+        &started.core_node_name,
+        NodeAddSource::RepoNode {
+            name: "a",
+            tag: "0.1.0",
+        },
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        None,
+    )
+    .await
+    .expect("node_add should complete");
+
+    assert!(!res.success, "add should fail on cycle");
+    assert_eq!(node_stack.len(), 1, "nothing should have been added");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn repo_node_add_fails_on_unknown_dep_variant() {
+    let started = start_core_node_with_mock_messenger().await;
+    let node_stack = started.node_stack.clone();
+
+    let tmp = TempDir::new().unwrap();
+    let dep_dir = tmp.path().join("dep");
+    write_plain_peppy_json5(&dep_dir, &minimal_dep_config("dep", "0.1.0", &[]));
+    let target_dir = tmp.path().join("target");
+    write_plain_peppy_json5(
+        &target_dir,
+        &minimal_dep_config("target", "1.0.0", &[("dep", "0.1.0")]),
+    );
+
+    TestPackagesCache::new()
+        .fs_entry("dep", "0.1.0", &dep_dir, &[])
+        .fs_entry("target", "1.0.0", &target_dir, &[])
+        .write(&started.peppy_dirs);
+
+    let res = send_node_add_and_wait_with_dep_overrides(
+        &started.caller_handle,
+        &started.core_node_name,
+        NodeAddSource::RepoNode {
+            name: "target",
+            tag: "1.0.0",
+        },
+        None,
+        vec![DepVariantOverride {
+            name: "dep".into(),
+            tag: "0.1.0".into(),
+            variant: "nonexistent".into(),
+        }],
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        None,
+    )
+    .await
+    .expect("node_add should complete");
+
+    assert!(!res.success, "add should fail for unknown variant override");
+    let err = res.error_message.unwrap_or_default();
+    assert!(
+        err.contains("variant 'nonexistent'") && err.contains("dep:0.1.0"),
+        "expected unknown-variant error; got: {err}"
+    );
+    assert_eq!(node_stack.len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn repo_node_add_rolls_back_on_mid_batch_failure() {
+    let started = start_core_node_with_mock_messenger().await;
+    let node_stack = started.node_stack.clone();
+
+    let tmp = TempDir::new().unwrap();
+    let b_dir = tmp.path().join("b");
+    write_plain_peppy_json5(&b_dir, &minimal_dep_config("b", "0.1.0", &[]));
+
+    // C declares a dep on `ghost_dep` that is NOT in the cache. The
+    // resolver collects this as a "missing" dep and must fail cleanly
+    // before ANY node is pushed onto the stack.
+    let c_dir = tmp.path().join("c");
+    write_plain_peppy_json5(
+        &c_dir,
+        &minimal_dep_config("c", "0.1.0", &[("ghost_dep", "9.9.9")]),
+    );
+    let a_dir = tmp.path().join("a");
+    write_plain_peppy_json5(
+        &a_dir,
+        &minimal_dep_config("a", "0.1.0", &[("b", "0.1.0"), ("c", "0.1.0")]),
+    );
+
+    TestPackagesCache::new()
+        .fs_entry("a", "0.1.0", &a_dir, &[])
+        .fs_entry("b", "0.1.0", &b_dir, &[])
+        .fs_entry("c", "0.1.0", &c_dir, &[])
+        .write(&started.peppy_dirs);
+
+    let pre_len = node_stack.len();
+    let res = send_node_add_and_wait(
+        &started.caller_handle,
+        &started.core_node_name,
+        NodeAddSource::RepoNode {
+            name: "a",
+            tag: "0.1.0",
+        },
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        None,
+    )
+    .await
+    .expect("node_add should complete");
+
+    assert!(!res.success, "add should fail on missing transitive dep");
+    // Stack must be unchanged — no partial add.
+    assert_eq!(node_stack.len(), pre_len, "stack should be unchanged");
+    assert!(!node_stack.contains("a", "0.1.0"));
+    assert!(!node_stack.contains("b", "0.1.0"));
+    assert!(!node_stack.contains("c", "0.1.0"));
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_add_no_config_found() {

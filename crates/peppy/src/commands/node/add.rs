@@ -13,7 +13,7 @@ use tracing::info;
 use super::TimeoutConfig;
 use super::env::caller_env_overrides;
 use super::run::run_instance_async;
-use super::source::{parse_node_source, parse_variant_source};
+use super::source::{parse_node_source, split_variant_args};
 use crate::commands::{CALLER_INSTANCE_ID, GOAL_TIMEOUT};
 use crate::context::AppContext;
 use crate::error::{Error, Result};
@@ -28,7 +28,10 @@ pub struct RunAfterAddOptions {
 pub struct AddNodeParams {
     pub source: String,
     pub git_ref: Option<String>,
-    pub variant: Option<String>,
+    /// Raw `--variant` strings passed on the CLI — parsed by
+    /// [`super::source::split_variant_args`] into a root variant plus
+    /// an optional list of per-dependency overrides.
+    pub variant: Vec<String>,
     pub run_options: Option<RunAfterAddOptions>,
     pub timeouts: TimeoutConfig,
     pub force: bool,
@@ -72,7 +75,24 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
     } = params;
     // Validate git_ref and parse the source into a NodeSource
     let git_ref = validate_git_ref(git_ref.as_deref())?;
-    let node_source = parse_node_source(&source, git_ref)?;
+    let mut node_source = parse_node_source(&source, git_ref)?;
+
+    // Split the --variant list into (root_variant, dep_overrides). This also
+    // validates there's at most one root --variant and rejects duplicate
+    // dep entries.
+    let (variant_source, dep_overrides) = split_variant_args(&variant)?;
+
+    // Dep-level variant overrides are only representable inside a `RepoNode`
+    // source — bake them in here, or reject the combination if the source
+    // kind wouldn't carry them.
+    if !dep_overrides.is_empty() {
+        if !matches!(&node_source, NodeSource::RepoNode { .. }) {
+            return Err(Error::ExecutionFailed(
+                "`--variant <name>:<tag>@<variant>` dependency overrides are only valid when the source is `<name>:<tag>` (repo lookup)".to_owned(),
+            ));
+        }
+        node_source = node_source.with_dep_variant_overrides(dep_overrides);
+    }
 
     // `--sync` forces a `peppy node sync` *before* the add so the snapshot
     // taken by the daemon includes freshly regenerated peppygen output.
@@ -102,18 +122,26 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
         NodeSource::Fs(p) => p.display().to_string(),
         _ => source.clone(),
     };
-    if let Some(ref v) = variant {
-        info!(
-            "Adding node variant '{}' from root node {}...",
-            v, display_source
-        );
+    if variant_source.is_some() {
+        info!("Adding node (with root variant) from {}...", display_source);
     } else {
         info!("Adding node from {}...", display_source);
     }
-
-    // Parse variant source early so the preflight check uses the same merged config
-    // that the actual add will use.
-    let variant_source = variant.as_deref().map(parse_variant_source).transpose()?;
+    if let NodeSource::RepoNode {
+        dep_variant_overrides,
+        ..
+    } = &node_source
+        && !dep_variant_overrides.is_empty()
+    {
+        info!(
+            "Dependency variant overrides: {}",
+            dep_variant_overrides
+                .iter()
+                .map(|o| format!("{}:{}@{}", o.name, o.tag, o.variant))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
 
     let conn = ctx.connect_to_daemon().await?;
 

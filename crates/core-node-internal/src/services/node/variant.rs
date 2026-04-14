@@ -31,6 +31,7 @@ pub(crate) fn variant_label(variant: &NodeSource) -> String {
             ..
         } => format!("git:{}::{}", repo_url, repo_path),
         NodeSource::Http { url, .. } => url.to_string(),
+        NodeSource::RepoNode { name, tag, .. } => format!("{name}:{tag}"),
     }
 }
 
@@ -117,6 +118,9 @@ pub(crate) async fn resolve_variant(
                 }
             };
             (node_root_dir, variant_config, false, Some(checkout_dir))
+        }
+        NodeSource::RepoNode { .. } => {
+            return Err("repo-node sources are not valid variant selectors".to_owned());
         }
         // Direct HTTP source — skip manifest lookup.
         NodeSource::Http { url, sha256 } => {
