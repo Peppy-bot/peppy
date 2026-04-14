@@ -74,7 +74,11 @@ pub(crate) fn parse_repo_source(source_str: &str, git_ref: Option<String>) -> Re
             ));
         }
         let path = std::path::Path::new(source_str);
-        let resolved = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        let resolved = std::fs::canonicalize(path).unwrap_or_else(|_| {
+            std::env::current_dir()
+                .map(|cwd| cwd.join(path))
+                .unwrap_or_else(|_| path.to_path_buf())
+        });
         return Ok(RepoSource::Fs(resolved));
     }
 

@@ -86,7 +86,17 @@ fn handle_repo_list_request_inner(
             continue;
         }
 
-        let repo_id = entry.get("id").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+        let repo_id_u64 = entry.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
+        let repo_id = match u32::try_from(repo_id_u64) {
+            Ok(id) => id,
+            Err(_) => {
+                warn!(
+                    "Skipping repository entry with id {} (exceeds u32 wire-format limit)",
+                    repo_id_u64
+                );
+                continue;
+            }
+        };
 
         match source {
             RepoSource::Fs(path) => {

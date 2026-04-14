@@ -131,7 +131,7 @@ async fn service_reset_command_resets_node_stack() {
             Duration::from_secs(5),
         )
         .await
-        .expect("node_list request should complete");
+        .expect("stack_list request should complete");
 
     let graph: SerializedNodeGraph =
         serde_json::from_str(&response.graph_json).expect("graph_json should parse");
@@ -160,7 +160,7 @@ async fn service_reset_command_resets_node_stack() {
             Duration::from_secs(5),
         )
         .await
-        .expect("node_list request should complete after reset");
+        .expect("stack_list request should complete after reset");
 
     let graph: SerializedNodeGraph =
         serde_json::from_str(&response.graph_json).expect("graph_json should parse after reset");

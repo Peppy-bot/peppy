@@ -125,7 +125,7 @@ fn node_add_command_succeeds() {
             &core_node_name,
             Duration::from_secs(5),
         ))
-        .expect("node_list request should complete");
+        .expect("stack_list request should complete");
 
     let graph: SerializedNodeGraph =
         serde_json::from_str(&response.graph_json).expect("graph_json should parse");
@@ -275,7 +275,7 @@ fn node_add_command_with_run_arg_succeeds() {
             &core_node_name,
             Duration::from_secs(5),
         ))
-        .expect("node_list request should complete");
+        .expect("stack_list request should complete");
 
     let graph: SerializedNodeGraph =
         serde_json::from_str(&response.graph_json).expect("graph_json should parse");
@@ -451,7 +451,7 @@ fn node_add_after_failed_sync_succeeds() {
             &core_node_name,
             Duration::from_secs(5),
         ))
-        .expect("node_list request should complete");
+        .expect("stack_list request should complete");
 
     let graph: SerializedNodeGraph =
         serde_json::from_str(&response.graph_json).expect("graph_json should parse");
@@ -596,7 +596,7 @@ fn node_add_same_node_shutdown_existing_instances() {
             &core_node_name,
             Duration::from_secs(5),
         ))
-        .expect("node_list request should complete");
+        .expect("stack_list request should complete");
 
     let graph: SerializedNodeGraph =
         serde_json::from_str(&response.graph_json).expect("graph_json should parse");
@@ -650,7 +650,7 @@ fn node_add_same_node_shutdown_existing_instances() {
             &core_node_name,
             Duration::from_secs(5),
         ))
-        .expect("node_list request should complete after re-add");
+        .expect("stack_list request should complete after re-add");
 
     let graph: SerializedNodeGraph =
         serde_json::from_str(&response.graph_json).expect("graph_json should parse");
@@ -796,7 +796,7 @@ fn node_add_command_with_variant_succeeds() {
             &core_node_name,
             Duration::from_secs(5),
         ))
-        .expect("node_list request should complete");
+        .expect("stack_list request should complete");
 
     let graph: SerializedNodeGraph =
         serde_json::from_str(&response.graph_json).expect("graph_json should parse");
@@ -958,7 +958,7 @@ fn node_add_with_variant_uses_variant_in_preflight() {
             &core_node_name,
             Duration::from_secs(5),
         ))
-        .expect("node_list request should complete");
+        .expect("stack_list request should complete");
 
     let graph: SerializedNodeGraph =
         serde_json::from_str(&response.graph_json).expect("graph_json should parse");
@@ -1011,7 +1011,7 @@ fn node_add_with_variant_uses_variant_in_preflight() {
             &core_node_name,
             Duration::from_secs(5),
         ))
-        .expect("node_list request should complete after re-add");
+        .expect("stack_list request should complete after re-add");
 
     let graph: SerializedNodeGraph =
         serde_json::from_str(&response.graph_json).expect("graph_json should parse");
@@ -1143,7 +1143,7 @@ fn node_add_same_node_different_sources_show_overwrite_prompt() {
             &core_node_name,
             Duration::from_secs(5),
         ))
-        .expect("node_list request should complete");
+        .expect("stack_list request should complete");
 
     let graph: SerializedNodeGraph =
         serde_json::from_str(&response.graph_json).expect("graph_json should parse");
@@ -1233,7 +1233,7 @@ fn node_add_same_node_different_sources_show_overwrite_prompt() {
             &core_node_name,
             Duration::from_secs(5),
         ))
-        .expect("node_list request should complete after re-add from git");
+        .expect("stack_list request should complete after re-add from git");
 
     let graph: SerializedNodeGraph =
         serde_json::from_str(&response.graph_json).expect("graph_json should parse");
@@ -1372,7 +1372,7 @@ fn node_add_auto_syncs_when_peppy_dir_missing() {
             &core_node_name,
             Duration::from_secs(5),
         ))
-        .expect("node_list request should complete");
+        .expect("stack_list request should complete");
     let graph: SerializedNodeGraph =
         serde_json::from_str(&response.graph_json).expect("graph_json should parse");
     graph
@@ -1575,7 +1575,7 @@ fn node_add_with_sync_flag_refreshes_stale_git_hash() {
             &core_node_name,
             Duration::from_secs(5),
         ))
-        .expect("node_list request should complete");
+        .expect("stack_list request should complete");
     let graph: SerializedNodeGraph =
         serde_json::from_str(&response.graph_json).expect("graph_json should parse");
     graph

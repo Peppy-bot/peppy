@@ -314,7 +314,7 @@ def test_install_runs_repo_update(lima_vm: VMConfig) -> None:
     result = lima_shell(
         install_cmd(config, home, skip_service_install=False),
         instance=config.instance_name,
-        timeout=300,
+        timeout=3600 if config.is_cross_arch else 300,
     )
 
     assert result.returncode == 0, (

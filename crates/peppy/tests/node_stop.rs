@@ -122,7 +122,7 @@ async fn node_stop_command_succeeds() {
             Duration::from_secs(5),
         )
         .await
-        .expect("node_list request should complete");
+        .expect("stack_list request should complete");
 
     let graph: SerializedNodeGraph =
         serde_json::from_str(&response.graph_json).expect("graph_json should parse");
@@ -173,7 +173,7 @@ async fn node_stop_command_succeeds() {
             Duration::from_secs(5),
         )
         .await
-        .expect("node_list request should complete");
+        .expect("stack_list request should complete");
 
     let graph: SerializedNodeGraph =
         serde_json::from_str(&response.graph_json).expect("graph_json should parse");
@@ -223,7 +223,7 @@ async fn node_stop_command_succeeds() {
             Duration::from_secs(5),
         )
         .await
-        .expect("node_list request should complete");
+        .expect("stack_list request should complete");
 
     let graph: SerializedNodeGraph =
         serde_json::from_str(&response.graph_json).expect("graph_json should parse");

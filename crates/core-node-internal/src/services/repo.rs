@@ -22,6 +22,16 @@ pub(crate) fn repos_file_lock() -> &'static parking_lot::Mutex<()> {
     LOCK.get_or_init(|| parking_lot::Mutex::new(()))
 }
 
+/// Serializes `process_refresh` + `write_cache` so the user-facing repo_refresh
+/// action and the post-remove refresh in repo_remove cannot race on
+/// packages.json5. The ActionState single-flight inside repo_refresh rejects
+/// concurrent *user* refreshes with a friendly error; this mutex is the
+/// correctness backstop that also covers the remove-triggered path.
+pub(crate) fn refresh_lock() -> &'static parking_lot::Mutex<()> {
+    static LOCK: std::sync::OnceLock<parking_lot::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| parking_lot::Mutex::new(()))
+}
+
 /// Serialize a `RepoSource` with an assigned id into a JSON object for
 /// persisting in repositories.json5 / excluded_repositories.json5.
 pub(crate) fn repo_source_to_json(id: u64, source: &RepoSource) -> Value {

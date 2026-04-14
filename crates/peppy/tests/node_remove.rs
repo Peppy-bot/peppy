@@ -97,7 +97,7 @@ fn node_remove_command_succeeds() {
             &core_node_name,
             Duration::from_secs(5),
         ))
-        .expect("node_list request should complete");
+        .expect("stack_list request should complete");
 
     let graph: SerializedNodeGraph =
         serde_json::from_str(&response.graph_json).expect("graph_json should parse");
@@ -138,7 +138,7 @@ fn node_remove_command_succeeds() {
             &core_node_name,
             Duration::from_secs(5),
         ))
-        .expect("node_list request should complete");
+        .expect("stack_list request should complete");
 
     let graph: SerializedNodeGraph =
         serde_json::from_str(&response.graph_json).expect("graph_json should parse");
@@ -280,7 +280,7 @@ fn node_remove_command_force_bypasses_prompt_and_stops_instances() {
             &core_node_name,
             Duration::from_secs(5),
         ))
-        .expect("node_list request should complete");
+        .expect("stack_list request should complete");
 
     let graph: SerializedNodeGraph =
         serde_json::from_str(&response.graph_json).expect("graph_json should parse");
@@ -430,7 +430,7 @@ fn node_remove_command_with_stop_instances_succeeds_and_stops_instances() {
             &core_node_name,
             Duration::from_secs(5),
         ))
-        .expect("node_list request should complete");
+        .expect("stack_list request should complete");
 
     let graph: SerializedNodeGraph =
         serde_json::from_str(&response.graph_json).expect("graph_json should parse");

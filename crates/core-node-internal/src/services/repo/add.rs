@@ -105,12 +105,22 @@ fn handle_repo_add_request_inner(
             None => 1000,
         }
     } else {
-        repos
+        match repos
             .iter()
             .filter_map(|e| e.get("id").and_then(|v| v.as_u64()))
             .max()
-            .map(|max| max + 1)
-            .unwrap_or(1000)
+        {
+            Some(max) => match max.checked_add(1) {
+                Some(n) => n,
+                None => {
+                    return RepoAddResponse::failure(
+                        "cannot add repo: existing maximum id is u64::MAX (would overflow)",
+                    )
+                    .encode();
+                }
+            },
+            None => 1000,
+        }
     };
 
     repos.push(repo_source_to_json(next_id, &request.source));

@@ -160,7 +160,7 @@ async fn node_launch_command_succeed() {
             Duration::from_secs(5),
         )
         .await
-        .expect("node_list request should complete");
+        .expect("stack_list request should complete");
 
     let graph: SerializedNodeGraph =
         serde_json::from_str(&response.graph_json).expect("graph_json should parse");
@@ -224,7 +224,7 @@ async fn node_launch_command_succeed() {
             Duration::from_secs(5),
         )
         .await
-        .expect("node_list request should complete after launch");
+        .expect("stack_list request should complete after launch");
 
     let graph: SerializedNodeGraph =
         serde_json::from_str(&response.graph_json).expect("graph_json should parse after launch");
@@ -277,7 +277,7 @@ async fn node_launch_command_succeed() {
             Duration::from_secs(5),
         )
         .await
-        .expect("node_list request should complete after stop");
+        .expect("stack_list request should complete after stop");
 
     let graph: SerializedNodeGraph =
         serde_json::from_str(&response.graph_json).expect("graph_json should parse after stop");
@@ -380,7 +380,7 @@ async fn node_launch_command_fails_when_node_never_becomes_healthy() {
             Duration::from_secs(5),
         )
         .await
-        .expect("node_list request should complete");
+        .expect("stack_list request should complete");
 
     let graph: SerializedNodeGraph =
         serde_json::from_str(&response.graph_json).expect("graph_json should parse");
@@ -432,7 +432,7 @@ async fn node_launch_command_fails_when_node_never_becomes_healthy() {
             Duration::from_secs(5),
         )
         .await
-        .expect("node_list request should complete after launch");
+        .expect("stack_list request should complete after launch");
 
     let graph: SerializedNodeGraph =
         serde_json::from_str(&response.graph_json).expect("graph_json should parse after launch");

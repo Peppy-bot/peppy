@@ -49,17 +49,16 @@ async fn handle_repo_remove_request(
     if needs_refresh {
         let dirs = peppy_dirs.clone();
         match tokio::task::spawn_blocking(move || {
-            let refresh_result = process_refresh(&dirs, &mut |_| {});
-            (refresh_result, dirs)
+            let _guard = crate::services::repo::refresh_lock().lock();
+            match process_refresh(&dirs, &mut |_| {}) {
+                Ok((discovered, _excluded)) => write_cache(&dirs, &discovered),
+                Err(e) => Err(e),
+            }
         })
         .await
         {
-            Ok((Ok((discovered, _excluded)), dirs)) => {
-                if let Err(e) = write_cache(&dirs, &discovered) {
-                    warn!("Failed to write cache after repo removal: {}", e);
-                }
-            }
-            Ok((Err(e), _dirs)) => {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
                 warn!("Failed to refresh after repo removal: {}", e);
             }
             Err(e) => {

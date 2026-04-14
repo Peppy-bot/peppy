@@ -133,28 +133,34 @@ impl GoalHandler for RepoRefreshGoalHandler {
                 }
             });
 
-            let dirs = peppy_dirs.clone();
+            let dirs = peppy_dirs;
             let scan = tokio::task::spawn_blocking(move || {
+                let _guard = crate::services::repo::refresh_lock().lock();
                 let mut emit = |fb: RepoRefreshFeedback| {
                     let _ = tx.send(fb);
                 };
-                process_refresh(&dirs, &mut emit)
+                match process_refresh(&dirs, &mut emit) {
+                    Ok((discovered, excluded)) => {
+                        // Write cache for all nodes (including duplicates, so
+                        // `repo list` can display every source).
+                        let unique_count =
+                            discovered.iter().filter(|n| !n.duplicate).count() as u32;
+                        match write_cache(&dirs, &discovered) {
+                            Ok(()) => Ok((unique_count, excluded)),
+                            Err(e) => Err(e),
+                        }
+                    }
+                    Err(e) => Err(e),
+                }
             })
             .await;
 
             let result = match scan {
-                Ok(Ok((discovered, _excluded))) => {
-                    // Write cache for all nodes (including duplicates, so
-                    // `repo list` can display every source).
-                    let unique_count = discovered.iter().filter(|n| !n.duplicate).count() as u32;
-                    if let Err(e) = write_cache(&peppy_dirs, &discovered) {
-                        warn!("Failed to write repo refresh cache: {}", e);
-                        RepoRefreshResult::failure(format!("failed to write cache: {}", e))
-                    } else {
-                        RepoRefreshResult::success(unique_count)
-                    }
+                Ok(Ok((unique_count, _excluded))) => RepoRefreshResult::success(unique_count),
+                Ok(Err(e)) => {
+                    warn!("Repo refresh failed: {}", e);
+                    RepoRefreshResult::failure(e.to_string())
                 }
-                Ok(Err(e)) => RepoRefreshResult::failure(e.to_string()),
                 Err(e) => RepoRefreshResult::failure(format!("task panicked: {}", e)),
             };
 
