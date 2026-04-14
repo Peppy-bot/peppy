@@ -18,7 +18,7 @@ use serde_json::Value;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use tracing::{debug, warn};
@@ -123,32 +123,27 @@ impl GoalHandler for RepoRefreshGoalHandler {
         let state_clone = Arc::clone(&state);
 
         tokio::spawn(async move {
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<RepoRefreshFeedback>();
+
+            let drain = tokio::spawn(async move {
+                while let Some(feedback) = rx.recv().await {
+                    if let Ok(payload) = feedback.encode() {
+                        let _ = feedback_publisher.publish(payload).await;
+                    }
+                }
+            });
+
             let dirs = peppy_dirs.clone();
-            let result = match tokio::task::spawn_blocking(move || process_refresh(&dirs)).await {
-                Ok(Ok((discovered, excluded))) => {
-                    // Publish feedback for excluded repositories
-                    for repo in &excluded {
-                        let feedback =
-                            RepoRefreshFeedback::new_excluded(repo.source_type, &repo.identity);
-                        if let Ok(payload) = feedback.encode() {
-                            let _ = feedback_publisher.publish(payload).await;
-                        }
-                    }
+            let scan = tokio::task::spawn_blocking(move || {
+                let mut emit = |fb: RepoRefreshFeedback| {
+                    let _ = tx.send(fb);
+                };
+                process_refresh(&dirs, &mut emit)
+            })
+            .await;
 
-                    // Publish feedback only for non-duplicate nodes
-                    for node in discovered.iter().filter(|n| !n.duplicate) {
-                        let feedback = RepoRefreshFeedback::new(
-                            &node.node_name,
-                            &node.node_tag,
-                            node.source_type,
-                            &node.path,
-                            node.variants.clone(),
-                        );
-                        if let Ok(payload) = feedback.encode() {
-                            let _ = feedback_publisher.publish(payload).await;
-                        }
-                    }
-
+            let result = match scan {
+                Ok(Ok((discovered, _excluded))) => {
                     // Write cache for all nodes (including duplicates, so
                     // `repo list` can display every source).
                     let unique_count = discovered.iter().filter(|n| !n.duplicate).count() as u32;
@@ -162,6 +157,10 @@ impl GoalHandler for RepoRefreshGoalHandler {
                 Ok(Err(e)) => RepoRefreshResult::failure(e.to_string()),
                 Err(e) => RepoRefreshResult::failure(format!("task panicked: {}", e)),
             };
+
+            // Flush all pending feedbacks before marking the result ready —
+            // the CLI stops draining feedback once it sees a concrete result.
+            let _ = drain.await;
 
             let mut s = state_clone.lock().await;
             *s = ActionState::Completed { result };
@@ -262,6 +261,7 @@ pub(crate) fn read_or_create_repos(peppy_dirs: &PeppyDirs) -> Result<Vec<Value>>
 /// while still counting unique nodes correctly.
 pub(crate) fn process_refresh(
     peppy_dirs: &PeppyDirs,
+    on_feedback: &mut dyn FnMut(RepoRefreshFeedback),
 ) -> Result<(Vec<DiscoveredNode>, Vec<ExcludedRepo>)> {
     let (repos, exclusions) = {
         let _guard = crate::services::repo::repos_file_lock().lock();
@@ -280,6 +280,13 @@ pub(crate) fn process_refresh(
             identity: e.identity.clone(),
         })
         .collect();
+
+    for repo in &excluded_repos {
+        on_feedback(RepoRefreshFeedback::new_excluded(
+            repo.source_type,
+            &repo.identity,
+        ));
+    }
 
     for entry in &repos {
         let Some(source) = parse_repo_entry(entry) else {
@@ -303,6 +310,10 @@ pub(crate) fn process_refresh(
                     debug!("Skipping non-existent FS repository: {}", path.display());
                     continue;
                 }
+                on_feedback(RepoRefreshFeedback::new_progress(format!(
+                    "Scanning {}",
+                    path.display()
+                )));
                 let mut repo_seen = HashSet::new();
                 let mut repo_nodes = Vec::new();
                 walk_directory(
@@ -318,16 +329,47 @@ pub(crate) fn process_refresh(
                     if !global_seen.insert(key) {
                         node.duplicate = true;
                     }
+                    if !node.duplicate {
+                        on_feedback(RepoRefreshFeedback::new(
+                            &node.node_name,
+                            &node.node_tag,
+                            node.source_type,
+                            &node.path,
+                            node.variants.clone(),
+                        ));
+                    }
                     all_nodes.push(node);
                 }
             }
             RepoSource::Git { repo_url, repo_ref } => {
-                match clone_and_walk_git_repo(&repo_url, repo_ref.as_deref(), peppy_dirs) {
+                let ref_suffix = repo_ref
+                    .as_deref()
+                    .map(|r| format!(" (ref {})", r))
+                    .unwrap_or_default();
+                on_feedback(RepoRefreshFeedback::new_progress(format!(
+                    "Cloning {}{}",
+                    repo_url, ref_suffix
+                )));
+                match clone_and_walk_git_repo(
+                    &repo_url,
+                    repo_ref.as_deref(),
+                    peppy_dirs,
+                    on_feedback,
+                ) {
                     Ok(nodes) => {
                         for mut node in nodes {
                             let key = (node.node_name.clone(), node.node_tag.clone());
                             if !global_seen.insert(key) {
                                 node.duplicate = true;
+                            }
+                            if !node.duplicate {
+                                on_feedback(RepoRefreshFeedback::new(
+                                    &node.node_name,
+                                    &node.node_tag,
+                                    node.source_type,
+                                    &node.path,
+                                    node.variants.clone(),
+                                ));
                             }
                             all_nodes.push(node);
                         }
@@ -429,10 +471,15 @@ pub(crate) fn walk_directory(
 }
 
 /// Shallow-clone a git repository and walk it for peppy.json5 files.
+///
+/// While cloning, throttled transfer-progress feedback is emitted through
+/// `on_feedback` so the caller can surface real-time bytes/objects counts
+/// instead of sitting silent for the duration of the clone.
 fn clone_and_walk_git_repo(
     repo_url: &str,
     repo_ref: Option<&str>,
     peppy_dirs: &PeppyDirs,
+    on_feedback: &mut dyn FnMut(RepoRefreshFeedback),
 ) -> std::result::Result<Vec<DiscoveredNode>, String> {
     let tmp_dir = peppy_dirs.tmp_dir();
     std::fs::create_dir_all(&tmp_dir).map_err(|e| format!("failed to create tmp dir: {}", e))?;
@@ -441,10 +488,31 @@ fn clone_and_walk_git_repo(
 
     let is_local = repo_url.starts_with('/') || repo_url.starts_with("file://");
 
+    // Declared before `builder` so they outlive the builder's borrow of
+    // them via the `transfer_progress` callback (drop order is reverse of
+    // declaration order).
+    let mut last_report = Instant::now();
+    let repo_url_owned = repo_url.to_string();
     let mut builder = RepoBuilder::new();
     if !is_local {
+        let mut callbacks = git2::RemoteCallbacks::new();
+        callbacks.transfer_progress(|progress| {
+            if last_report.elapsed() >= Duration::from_millis(500) {
+                last_report = Instant::now();
+                on_feedback(RepoRefreshFeedback::new_progress(format!(
+                    "Cloning {}: received {}/{} objects ({})",
+                    repo_url_owned,
+                    progress.received_objects(),
+                    progress.total_objects(),
+                    format_bytes(progress.received_bytes()),
+                )));
+            }
+            true
+        });
+
         let mut fetch_opts = git2::FetchOptions::new();
         fetch_opts.depth(1);
+        fetch_opts.remote_callbacks(callbacks);
         builder.fetch_options(fetch_opts);
     }
 
@@ -469,6 +537,19 @@ fn clone_and_walk_git_repo(
     );
 
     Ok(nodes)
+}
+
+fn format_bytes(bytes: usize) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = 1024.0 * 1024.0;
+    let b = bytes as f64;
+    if b >= MB {
+        format!("{:.1} MB", b / MB)
+    } else if b >= KB {
+        format!("{:.0} KB", b / KB)
+    } else {
+        format!("{} B", bytes)
+    }
 }
 
 /// Write cached node information for git/url repositories.
@@ -692,7 +773,7 @@ mod tests {
             ),
         );
 
-        let (discovered, excluded) = process_refresh(&peppy_dirs).unwrap();
+        let (discovered, excluded) = process_refresh(&peppy_dirs, &mut |_| {}).unwrap();
         assert_eq!(discovered.len(), 1, "only non-excluded repo nodes returned");
         assert_eq!(discovered[0].node_name, "node_a");
         assert_eq!(excluded.len(), 1, "one repo should be excluded");
@@ -725,7 +806,7 @@ mod tests {
             ),
         );
 
-        let (discovered, excluded) = process_refresh(&peppy_dirs).unwrap();
+        let (discovered, excluded) = process_refresh(&peppy_dirs, &mut |_| {}).unwrap();
         assert_eq!(
             discovered.len(),
             1,
@@ -769,7 +850,7 @@ mod tests {
             r#"[{ "id": 1, "type": "git", "url": "https://example.com/repo.git" }]"#,
         );
 
-        let (discovered, excluded) = process_refresh(&peppy_dirs).unwrap();
+        let (discovered, excluded) = process_refresh(&peppy_dirs, &mut |_| {}).unwrap();
         assert_eq!(discovered.len(), 1, "FS node should still be found");
         assert_eq!(discovered[0].node_name, "node_a");
         assert_eq!(excluded.len(), 1, "git repo should be excluded");
@@ -794,7 +875,7 @@ mod tests {
         );
 
         // No excluded_repositories.json5 file
-        let (discovered, excluded) = process_refresh(&peppy_dirs).unwrap();
+        let (discovered, excluded) = process_refresh(&peppy_dirs, &mut |_| {}).unwrap();
         assert_eq!(discovered.len(), 1, "node should be found normally");
         assert!(excluded.is_empty(), "no repos should be excluded");
     }
@@ -822,10 +903,49 @@ mod tests {
             r#"[{ "id": 1, "type": "url", "url": "https://example.com/packages" }]"#,
         );
 
-        let (discovered, excluded) = process_refresh(&peppy_dirs).unwrap();
+        let (discovered, excluded) = process_refresh(&peppy_dirs, &mut |_| {}).unwrap();
         assert_eq!(discovered.len(), 1, "FS node should still be found");
         assert_eq!(excluded.len(), 1, "url repo should be excluded");
         assert_eq!(excluded[0].source_type, RepoSourceKind::Url);
+    }
+
+    #[test]
+    fn process_refresh_emits_progress_feedback() {
+        let tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(tmp.path());
+
+        let repo = tmp.path().join("repo");
+        write_peppy_json5(&repo.join("node_a"), "node_a", "1.0.0");
+
+        write_repos(
+            &peppy_dirs,
+            &format!(
+                r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
+                repo.display()
+            ),
+        );
+
+        let mut feedbacks: Vec<RepoRefreshFeedback> = Vec::new();
+        let _ = process_refresh(&peppy_dirs, &mut |fb| feedbacks.push(fb)).unwrap();
+
+        let progress: Vec<&RepoRefreshFeedback> = feedbacks
+            .iter()
+            .filter(|f| !f.status_message.is_empty())
+            .collect();
+        assert!(
+            progress
+                .iter()
+                .any(|f| f.status_message.starts_with("Scanning ")),
+            "expected a 'Scanning …' progress feedback, got: {:?}",
+            feedbacks
+        );
+
+        let discovered: Vec<&RepoRefreshFeedback> = feedbacks
+            .iter()
+            .filter(|f| !f.excluded && f.status_message.is_empty())
+            .collect();
+        assert_eq!(discovered.len(), 1);
+        assert_eq!(discovered[0].node_name, "node_a");
     }
 
     #[test]

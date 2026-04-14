@@ -266,12 +266,17 @@ async fn refresh_fs_discovers_nodes() {
         "should find exactly 1 node"
     );
 
-    assert_eq!(result.feedbacks.len(), 1, "should receive 1 feedback");
-    assert_eq!(result.feedbacks[0].node_name, "my_sensor");
-    assert_eq!(result.feedbacks[0].node_tag, "1.0.0");
-    assert_eq!(result.feedbacks[0].source_type, RepoSourceKind::Fs);
+    let discovered: Vec<&RepoRefreshFeedback> = result
+        .feedbacks
+        .iter()
+        .filter(|f| !f.excluded && f.status_message.is_empty())
+        .collect();
+    assert_eq!(discovered.len(), 1, "should receive 1 discovered feedback");
+    assert_eq!(discovered[0].node_name, "my_sensor");
+    assert_eq!(discovered[0].node_tag, "1.0.0");
+    assert_eq!(discovered[0].source_type, RepoSourceKind::Fs);
     assert!(
-        result.feedbacks[0].variants.is_empty(),
+        discovered[0].variants.is_empty(),
         "node without variants should have empty variants list"
     );
 }
@@ -300,12 +305,13 @@ async fn refresh_multiple_nodes() {
         "should find exactly 2 nodes"
     );
 
-    assert_eq!(result.feedbacks.len(), 2, "should receive 2 feedbacks");
-    let names: Vec<&str> = result
+    let discovered: Vec<&RepoRefreshFeedback> = result
         .feedbacks
         .iter()
-        .map(|f| f.node_name.as_str())
+        .filter(|f| !f.excluded && f.status_message.is_empty())
         .collect();
+    assert_eq!(discovered.len(), 2, "should receive 2 discovered feedbacks");
+    let names: Vec<&str> = discovered.iter().map(|f| f.node_name.as_str()).collect();
     assert!(names.contains(&"node_a"), "should contain node_a");
     assert!(names.contains(&"node_b"), "should contain node_b");
 }
@@ -341,17 +347,22 @@ async fn refresh_deduplication() {
         "dup_node:0.1.0 should appear exactly once"
     );
 
+    let discovered: Vec<&RepoRefreshFeedback> = result
+        .feedbacks
+        .iter()
+        .filter(|f| !f.excluded && f.status_message.is_empty())
+        .collect();
     assert_eq!(
-        result.feedbacks.len(),
+        discovered.len(),
         1,
         "should receive exactly 1 feedback for deduplicated node"
     );
-    assert_eq!(result.feedbacks[0].node_name, "dup_node");
-    assert_eq!(result.feedbacks[0].node_tag, "0.1.0");
+    assert_eq!(discovered[0].node_name, "dup_node");
+    assert_eq!(discovered[0].node_tag, "0.1.0");
     assert!(
-        result.feedbacks[0].path.contains("repo_a"),
+        discovered[0].path.contains("repo_a"),
         "first listed repo should take precedence, path was: {}",
-        result.feedbacks[0].path
+        discovered[0].path
     );
 }
 
@@ -383,15 +394,20 @@ async fn refresh_node_with_variants_counted_once() {
         "node with variants should be counted as 1 node, not 1 + variant count"
     );
 
+    let discovered: Vec<&RepoRefreshFeedback> = result
+        .feedbacks
+        .iter()
+        .filter(|f| !f.excluded && f.status_message.is_empty())
+        .collect();
     assert_eq!(
-        result.feedbacks.len(),
+        discovered.len(),
         1,
-        "should receive exactly 1 feedback"
+        "should receive exactly 1 discovered feedback"
     );
-    assert_eq!(result.feedbacks[0].node_name, "my_camera");
-    assert_eq!(result.feedbacks[0].node_tag, "0.1.0");
+    assert_eq!(discovered[0].node_name, "my_camera");
+    assert_eq!(discovered[0].node_tag, "0.1.0");
     assert_eq!(
-        result.feedbacks[0].variants,
+        discovered[0].variants,
         vec!["default", "mock", "gpu"],
         "feedback should include declared variant names"
     );
@@ -423,10 +439,14 @@ async fn refresh_mixed_plain_and_variant_nodes() {
         "should count 2 root nodes (plain + variant node)"
     );
 
-    assert_eq!(result.feedbacks.len(), 2, "should receive 2 feedbacks");
-
-    let plain = result
+    let discovered: Vec<&RepoRefreshFeedback> = result
         .feedbacks
+        .iter()
+        .filter(|f| !f.excluded && f.status_message.is_empty())
+        .collect();
+    assert_eq!(discovered.len(), 2, "should receive 2 discovered feedbacks");
+
+    let plain = discovered
         .iter()
         .find(|f| f.node_name == "plain_node")
         .expect("should have plain_node feedback");
@@ -435,8 +455,7 @@ async fn refresh_mixed_plain_and_variant_nodes() {
         "plain node should have no variants"
     );
 
-    let variant = result
-        .feedbacks
+    let variant = discovered
         .iter()
         .find(|f| f.node_name == "variant_node")
         .expect("should have variant_node feedback");
@@ -641,16 +660,17 @@ async fn refresh_cache_includes_duplicates() {
     );
 
     // Feedback should only contain non-duplicate entries
-    assert_eq!(
-        result.feedbacks.len(),
-        2,
-        "should receive 2 feedbacks (one per unique node)"
-    );
-    let feedback_names: Vec<&str> = result
+    let discovered: Vec<&RepoRefreshFeedback> = result
         .feedbacks
         .iter()
-        .map(|f| f.node_name.as_str())
+        .filter(|f| !f.excluded && f.status_message.is_empty())
         .collect();
+    assert_eq!(
+        discovered.len(),
+        2,
+        "should receive 2 discovered feedbacks (one per unique node)"
+    );
+    let feedback_names: Vec<&str> = discovered.iter().map(|f| f.node_name.as_str()).collect();
     assert!(feedback_names.contains(&"shared_node"));
     assert!(feedback_names.contains(&"unique_node"));
 
@@ -752,8 +772,11 @@ async fn refresh_excludes_fs_repo_with_feedback() {
 
     let excluded_feedbacks: Vec<&RepoRefreshFeedback> =
         result.feedbacks.iter().filter(|f| f.excluded).collect();
-    let discovered_feedbacks: Vec<&RepoRefreshFeedback> =
-        result.feedbacks.iter().filter(|f| !f.excluded).collect();
+    let discovered_feedbacks: Vec<&RepoRefreshFeedback> = result
+        .feedbacks
+        .iter()
+        .filter(|f| !f.excluded && f.status_message.is_empty())
+        .collect();
 
     assert_eq!(
         excluded_feedbacks.len(),
@@ -808,8 +831,11 @@ async fn refresh_excludes_fs_subdirectory_with_feedback() {
         "only keep_node should be found"
     );
 
-    let discovered_feedbacks: Vec<&RepoRefreshFeedback> =
-        result.feedbacks.iter().filter(|f| !f.excluded).collect();
+    let discovered_feedbacks: Vec<&RepoRefreshFeedback> = result
+        .feedbacks
+        .iter()
+        .filter(|f| !f.excluded && f.status_message.is_empty())
+        .collect();
     assert_eq!(discovered_feedbacks.len(), 1);
     assert_eq!(discovered_feedbacks[0].node_name, "keep_node");
 
@@ -873,8 +899,11 @@ async fn refresh_reports_both_repo_and_subdirectory_exclusions() {
         "should receive 2 excluded feedbacks (repo-level + subdirectory)"
     );
 
-    let discovered_feedbacks: Vec<&RepoRefreshFeedback> =
-        result.feedbacks.iter().filter(|f| !f.excluded).collect();
+    let discovered_feedbacks: Vec<&RepoRefreshFeedback> = result
+        .feedbacks
+        .iter()
+        .filter(|f| !f.excluded && f.status_message.is_empty())
+        .collect();
     assert_eq!(discovered_feedbacks.len(), 1);
     assert_eq!(discovered_feedbacks[0].node_name, "keep_node");
 }
@@ -951,8 +980,11 @@ async fn refresh_excludes_git_repo() {
     assert_eq!(excluded_feedbacks.len(), 1);
     assert_eq!(excluded_feedbacks[0].source_type, RepoSourceKind::Git);
 
-    let discovered_feedbacks: Vec<&RepoRefreshFeedback> =
-        result.feedbacks.iter().filter(|f| !f.excluded).collect();
+    let discovered_feedbacks: Vec<&RepoRefreshFeedback> = result
+        .feedbacks
+        .iter()
+        .filter(|f| !f.excluded && f.status_message.is_empty())
+        .collect();
     assert_eq!(discovered_feedbacks.len(), 1);
     assert_eq!(discovered_feedbacks[0].node_name, "fs_node");
 }

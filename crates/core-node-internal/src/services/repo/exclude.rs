@@ -55,7 +55,7 @@ async fn handle_repo_exclude_request(
     if needs_refresh {
         let dirs = peppy_dirs.clone();
         match tokio::task::spawn_blocking(move || {
-            let refresh_result = process_refresh(&dirs);
+            let refresh_result = process_refresh(&dirs, &mut |_| {});
             (refresh_result, dirs)
         })
         .await

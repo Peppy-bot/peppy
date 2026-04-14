@@ -1,19 +1,19 @@
 use std::sync::Arc;
-use std::time::Duration;
 
 use core_node::encoding::{
     RepoRefreshFeedback, RepoRefreshGoal, RepoRefreshGoalResponse, RepoRefreshResult,
 };
-use peppylib::ActionMessenger;
 use tracing::info;
 
-use crate::commands::{CALLER_INSTANCE_ID, GOAL_TIMEOUT};
+use crate::commands::action_poll::poll_action_to_completion;
+use crate::commands::node::TimeoutConfig;
+use crate::commands::{CALLER_INSTANCE_ID, GOAL_TIMEOUT, SCROLLING_OUTPUT_LINES};
 use crate::context::AppContext;
 use crate::error::{Error, Result};
+use crate::terminal::ScrollingOutput;
 
-const FEEDBACK_TIMEOUT: Duration = Duration::from_millis(100);
-const RESULT_POLL_TIMEOUT: Duration = Duration::from_millis(200);
-const IDLE_TIMEOUT: Duration = Duration::from_secs(120);
+const IDLE_TIMEOUT_SECS: u64 = 120;
+const MAX_TIMEOUT_SECS: u64 = 3600;
 
 pub(super) fn repo_refresh(ctx: &Arc<AppContext>) -> Result<()> {
     crate::commands::block_on(repo_refresh_async(ctx))
@@ -34,7 +34,6 @@ async fn repo_refresh_async(ctx: &Arc<AppContext>) -> Result<()> {
         .await
         .map_err(|e| Error::ExecutionFailed(format!("Failed to send repo refresh goal: {}", e)))?;
 
-    // Decode goal response
     let goal_response_payload = action_handle.goal_response().payload();
     let goal_response = RepoRefreshGoalResponse::decode(&goal_response_payload)
         .map_err(|e| Error::ExecutionFailed(format!("Failed to decode goal response: {}", e)))?;
@@ -50,87 +49,71 @@ async fn repo_refresh_async(ctx: &Arc<AppContext>) -> Result<()> {
 
     info!("Refreshing repositories...");
 
-    let mut last_activity = tokio::time::Instant::now();
+    let timeouts = TimeoutConfig {
+        idle_secs: IDLE_TIMEOUT_SECS,
+        max_secs: MAX_TIMEOUT_SECS,
+    };
+    let mut scrolling_output = ScrollingOutput::new(SCROLLING_OUTPUT_LINES);
 
-    loop {
-        // Drain feedback
-        loop {
-            if last_activity.elapsed() >= IDLE_TIMEOUT {
-                return Err(Error::ExecutionFailed(
-                    "Timeout: no activity during repo refresh".to_string(),
-                ));
+    let result = poll_action_to_completion::<RepoRefreshResult>(
+        conn.messenger,
+        &mut action_handle,
+        &timeouts,
+        &mut scrolling_output,
+        |payload, output| {
+            if let Ok(feedback) = RepoRefreshFeedback::decode(payload) {
+                output.add_line(&format_refresh_line(&feedback), false);
             }
-
-            match tokio::time::timeout(FEEDBACK_TIMEOUT, action_handle.on_next_feedback()).await {
-                Ok(Ok(msg)) => {
-                    last_activity = tokio::time::Instant::now();
-                    if let Ok(feedback) = RepoRefreshFeedback::decode(&msg.payload()) {
-                        if feedback.excluded {
-                            info!("  Excluded {} ({})", feedback.path, feedback.source_type,);
-                        } else if feedback.variants.is_empty() {
-                            info!(
-                                "  Found {}:{} ({}, {})",
-                                feedback.node_name,
-                                feedback.node_tag,
-                                feedback.source_type,
-                                feedback.path,
-                            );
-                        } else {
-                            info!(
-                                "  Found {}:{} ({}, {}) [variants: {}]",
-                                feedback.node_name,
-                                feedback.node_tag,
-                                feedback.source_type,
-                                feedback.path,
-                                feedback.variants.join(", "),
-                            );
-                        }
-                    }
-                }
-                Ok(Err(_)) => break, // channel closed
-                Err(_) => break,     // timeout — drain complete
-            }
-        }
-
-        // Check for result
-        match ActionMessenger::request_result(conn.messenger, &action_handle, RESULT_POLL_TIMEOUT)
-            .await
-        {
-            Ok(msg) => {
-                let payload = msg.payload();
-                if peppylib::encoding::is_result_pending(&payload) {
-                    last_activity = tokio::time::Instant::now();
-                    tokio::time::sleep(Duration::from_millis(50)).await;
-                    continue;
-                }
-                let result = RepoRefreshResult::decode(&payload).map_err(|e| {
-                    Error::ExecutionFailed(format!("Failed to decode refresh result: {}", e))
-                })?;
-
-                if result.success {
-                    info!(
-                        "Repository refresh complete. {} node(s) found.",
-                        result.total_nodes_found
-                    );
-                    return Ok(());
+        },
+        |payload| match RepoRefreshResult::decode(payload) {
+            Ok(result) => Ok(Some(result)),
+            Err(err) => {
+                if peppylib::encoding::is_result_pending(payload) {
+                    Ok(None)
                 } else {
-                    return Err(Error::ExecutionFailed(format!(
-                        "Repository refresh failed: {}",
-                        result
-                            .error_message
-                            .unwrap_or_else(|| "unknown error".to_string())
-                    )));
+                    Err(format!("Failed to decode repo refresh result: {err}"))
                 }
             }
-            Err(peppylib::PeppyError::ActionResultTimeout { .. }) => {
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            }
-            Err(e) => {
-                return Err(Error::ExecutionFailed(format!(
-                    "Failed to get refresh result: {}",
-                    e
-                )));
-            }
-        }
+        },
+    )
+    .await?;
+
+    scrolling_output.clear();
+
+    if !result.success {
+        return Err(Error::ExecutionFailed(format!(
+            "Repository refresh failed: {}",
+            result
+                .error_message
+                .unwrap_or_else(|| "unknown error".to_string())
+        )));
+    }
+
+    info!(
+        "Repository refresh complete. {} node(s) found.",
+        result.total_nodes_found
+    );
+    Ok(())
+}
+
+fn format_refresh_line(feedback: &RepoRefreshFeedback) -> String {
+    if !feedback.status_message.is_empty() {
+        feedback.status_message.clone()
+    } else if feedback.excluded {
+        format!("Excluded {} ({})", feedback.path, feedback.source_type)
+    } else if feedback.variants.is_empty() {
+        format!(
+            "Found {}:{} ({}, {})",
+            feedback.node_name, feedback.node_tag, feedback.source_type, feedback.path
+        )
+    } else {
+        format!(
+            "Found {}:{} ({}, {}) [variants: {}]",
+            feedback.node_name,
+            feedback.node_tag,
+            feedback.source_type,
+            feedback.path,
+            feedback.variants.join(", ")
+        )
     }
 }

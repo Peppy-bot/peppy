@@ -116,6 +116,10 @@ pub struct RepoRefreshFeedback {
     pub variants: Vec<String>,
     /// `true` when this feedback represents an excluded repository.
     pub excluded: bool,
+    /// Non-empty when this feedback is a progress/status update emitted
+    /// during the scan (e.g. "Cloning <url>"). When non-empty, the other
+    /// fields are meaningless.
+    pub status_message: String,
 }
 
 impl RepoRefreshFeedback {
@@ -133,6 +137,7 @@ impl RepoRefreshFeedback {
             path: path.into(),
             variants,
             excluded: false,
+            status_message: String::new(),
         }
     }
 
@@ -145,6 +150,20 @@ impl RepoRefreshFeedback {
             path: identity.into(),
             variants: Vec::new(),
             excluded: true,
+            status_message: String::new(),
+        }
+    }
+
+    /// Create a progress feedback carrying a free-form status message.
+    pub fn new_progress(message: impl Into<String>) -> Self {
+        Self {
+            node_name: String::new(),
+            node_tag: String::new(),
+            source_type: RepoSourceKind::Fs,
+            path: String::new(),
+            variants: Vec::new(),
+            excluded: false,
+            status_message: message.into(),
         }
     }
 
@@ -157,6 +176,7 @@ impl RepoRefreshFeedback {
             feedback.set_source_type(self.source_type.as_str());
             feedback.set_path(&self.path);
             feedback.set_excluded(self.excluded);
+            feedback.set_status_message(&self.status_message);
             let mut variants_builder = feedback.init_variants(self.variants.len() as u32);
             for (i, v) in self.variants.iter().enumerate() {
                 variants_builder.set(i as u32, v);
@@ -184,6 +204,7 @@ impl RepoRefreshFeedback {
             path: feedback.get_path()?.to_str()?.to_owned(),
             variants,
             excluded: feedback.get_excluded(),
+            status_message: feedback.get_status_message()?.to_str()?.to_owned(),
         })
     }
 }

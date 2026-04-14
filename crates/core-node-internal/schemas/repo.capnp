@@ -53,6 +53,9 @@ struct RepoRefreshFeedback {
     variants @4 :List(Text);
     # True when this feedback represents an excluded repository
     excluded @5 :Bool;
+    # Non-empty when this feedback is a progress/status update (e.g.
+    # "Cloning <url>"). When non-empty, the other fields are meaningless.
+    statusMessage @6 :Text;
 }
 
 struct RepoRefreshResult {
