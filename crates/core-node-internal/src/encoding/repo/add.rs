@@ -288,8 +288,14 @@ mod tests {
 
     #[test]
     fn identity_fs_nonexistent_falls_back_to_raw() {
-        let src = RepoSource::Fs(std::path::PathBuf::from("/definitely/does/not/exist/xyz"));
-        assert_eq!(src.identity(), "/definitely/does/not/exist/xyz");
+        let tmp = tempfile::tempdir().unwrap();
+        let missing = tmp
+            .path()
+            .join("definitely")
+            .join("does-not-exist")
+            .join("xyz");
+        let src = RepoSource::Fs(missing.clone());
+        assert_eq!(src.identity(), missing.to_string_lossy().into_owned());
     }
 
     #[test]
