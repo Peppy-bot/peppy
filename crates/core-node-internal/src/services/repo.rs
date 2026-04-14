@@ -107,13 +107,16 @@ pub(crate) fn normalize_repo_entries(
         if let Some(id) = entry.get("id").and_then(|v| v.as_u64())
             && !seen_ids.insert(id)
         {
-            return Err(crate::Error::DuplicateRepoId { id });
+            let file = file_path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| file_path.to_string_lossy().into_owned());
+            return Err(crate::Error::DuplicateRepoId { id, file });
         }
     }
 
-    repos.sort_by_key(|e| e.get("id").and_then(|v| v.as_u64()).unwrap_or(0));
-
     if needs_write {
+        repos.sort_by_key(|e| e.get("id").and_then(|v| v.as_u64()).unwrap_or(0));
         let content = serde_json::to_string_pretty(repos)
             .map_err(|e| crate::Error::Encoding(format!("failed to serialize {desc}: {e}")))?;
         std::fs::write(file_path, content)?;

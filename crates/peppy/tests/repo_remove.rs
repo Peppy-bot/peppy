@@ -1,12 +1,11 @@
+use super::common::setup;
 use peppy::commands::Command;
 use peppy::commands::repo::{RepoCommand, RepoCommands};
-use peppy::context::AppContext;
 use peppy::test_support::ServeCommandEmulation;
-use std::sync::Arc;
 
 /// Read repositories.json5 and find the id of the entry whose "path" or "url"
 /// field matches `source`.  Panics if no match is found.
-fn find_repo_id(serve: &ServeCommandEmulation, source: &str) -> u32 {
+fn find_repo_id(serve: &ServeCommandEmulation, source: &str) -> u64 {
     let repos_path = serve.temp_dir().join("conf/repositories.json5");
     let content = std::fs::read_to_string(&repos_path).expect("failed to read repositories.json5");
     let repos: Vec<serde_json::Value> =
@@ -26,33 +25,15 @@ fn find_repo_id(serve: &ServeCommandEmulation, source: &str) -> u32 {
             return entry
                 .get("id")
                 .and_then(|v| v.as_u64())
-                .expect("repo entry missing id") as u32;
+                .expect("repo entry missing id");
         }
     }
     panic!("no repo entry found matching source '{source}'");
 }
 
-fn setup() -> (
-    tokio::runtime::Runtime,
-    ServeCommandEmulation,
-    Arc<AppContext>,
-    tempfile::TempDir,
-) {
-    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
-    let serve = rt
-        .block_on(ServeCommandEmulation::with_mock())
-        .expect("failed to create serve emulation");
-    let work_dir = tempfile::tempdir().expect("failed to create temp work dir");
-    let ctx = Arc::new(
-        AppContext::with_messenger(work_dir.path(), serve.messenger())
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
-    (rt, serve, ctx, work_dir)
-}
-
 #[test]
 fn repo_remove_after_add_succeeds() {
-    let (_rt, _serve, ctx, work_dir) = setup();
+    let (_rt, serve, ctx, work_dir) = setup();
 
     let source_path = work_dir.path().join("my-local-repo");
     let source = source_path.to_str().unwrap();
@@ -69,7 +50,7 @@ fn repo_remove_after_add_succeeds() {
     .expect("repo add should succeed");
 
     // Find the actual id assigned to the repo we just added
-    let id = find_repo_id(&_serve, source);
+    let id = find_repo_id(&serve, source);
     let result = RepoCommand {
         command: RepoCommands::Remove { id },
     }
@@ -101,7 +82,7 @@ fn repo_remove_nonexistent_id_fails() {
 
 #[test]
 fn repo_remove_after_add_git_succeeds() {
-    let (_rt, _serve, ctx, _work_dir) = setup();
+    let (_rt, serve, ctx, _work_dir) = setup();
 
     let source = "https://github.com/org/repo.git";
 
@@ -117,7 +98,7 @@ fn repo_remove_after_add_git_succeeds() {
     .expect("repo add git should succeed");
 
     // Find the actual id assigned to the repo we just added
-    let id = find_repo_id(&_serve, source);
+    let id = find_repo_id(&serve, source);
     let result = RepoCommand {
         command: RepoCommands::Remove { id },
     }

@@ -49,8 +49,8 @@ pub enum Error {
     Template(#[from] askama::Error),
 
     // -- repository operations
-    #[error("duplicate repository id {id} in repositories.json5")]
-    DuplicateRepoId { id: u64 },
+    #[error("duplicate repository id {id} in {file}")]
+    DuplicateRepoId { id: u64, file: String },
 
     // -- node operations
     #[error("failed to shutdown node instance '{instance_id}': {reason}")]

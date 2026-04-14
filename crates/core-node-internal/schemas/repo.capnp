@@ -97,7 +97,7 @@ struct RepoListResponse {
 
 struct RepoRemoveRequest {
     # ID of the repository to remove
-    id @0 :UInt32;
+    id @0 :UInt64;
 }
 
 struct RepoRemoveResponse {

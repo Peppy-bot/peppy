@@ -10,13 +10,13 @@ use crate::error::{Error, Result};
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
-pub(super) fn remove_repo(ctx: &Arc<AppContext>, id: u32) -> Result<()> {
+pub(super) fn remove_repo(ctx: &Arc<AppContext>, id: u64) -> Result<()> {
     info!("Removing repository with id {id}");
 
     crate::commands::block_on(remove_repo_async(ctx, id))
 }
 
-async fn remove_repo_async(ctx: &Arc<AppContext>, id: u32) -> Result<()> {
+async fn remove_repo_async(ctx: &Arc<AppContext>, id: u64) -> Result<()> {
     let conn = ctx.connect_to_daemon().await?;
 
     let request = RepoRemoveRequest::new(id);

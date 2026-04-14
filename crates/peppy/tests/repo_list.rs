@@ -1,27 +1,7 @@
+use super::common::setup;
 use config::consts::{NODE_CONFIG_FILE, PeppyDirs};
 use peppy::commands::Command;
 use peppy::commands::repo::{RepoCommand, RepoCommands};
-use peppy::context::AppContext;
-use peppy::test_support::ServeCommandEmulation;
-use std::sync::Arc;
-
-fn setup() -> (
-    tokio::runtime::Runtime,
-    ServeCommandEmulation,
-    Arc<AppContext>,
-    tempfile::TempDir,
-) {
-    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
-    let serve = rt
-        .block_on(ServeCommandEmulation::with_mock())
-        .expect("failed to create serve emulation");
-    let work_dir = tempfile::tempdir().expect("failed to create temp work dir");
-    let ctx = Arc::new(
-        AppContext::with_messenger(work_dir.path(), serve.messenger())
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
-    (rt, serve, ctx, work_dir)
-}
 
 /// Minimal valid peppy.json5 content for a node with the given name and tag.
 fn minimal_peppy_json5(name: &str, tag: &str) -> String {
@@ -86,6 +66,13 @@ fn repo_list_finds_nodes_in_fs_repo() {
     )
     .expect("write repos file");
 
+    // Refresh so the node is discovered and persisted to the cache, then list.
+    RepoCommand {
+        command: RepoCommands::Refresh,
+    }
+    .execute(&ctx)
+    .expect("repo refresh should succeed");
+
     let result = RepoCommand {
         command: RepoCommands::List,
     }
@@ -95,6 +82,20 @@ fn repo_list_finds_nodes_in_fs_repo() {
         result.is_ok(),
         "repo list should succeed: {:?}",
         result.err()
+    );
+
+    // Verify discovery by inspecting the cache that refresh wrote.
+    let cache_path = peppy_dirs.cache_dir().join("packages.json5");
+    let cache_content =
+        std::fs::read_to_string(&cache_path).expect("packages.json5 should be written by refresh");
+    let cached: Vec<serde_json::Value> =
+        serde_json::from_str(&cache_content).expect("packages.json5 should parse as JSON");
+    assert!(
+        cached.iter().any(|n| {
+            n.get("node_name").and_then(|v| v.as_str()) == Some("my_sensor")
+                && n.get("node_tag").and_then(|v| v.as_str()) == Some("1.0.0")
+        }),
+        "cache should contain my_sensor/1.0.0, got: {cache_content}"
     );
 }
 

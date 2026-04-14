@@ -95,7 +95,7 @@ fn handle_repo_remove_request_inner(
         Err(e) => return Ok((RepoRemoveResponse::failure(e.to_string()).encode()?, false)),
     };
 
-    let target_id = request.id as u64;
+    let target_id = request.id;
     let position = repos
         .iter()
         .position(|entry| entry.get("id").and_then(|v| v.as_u64()) == Some(target_id));

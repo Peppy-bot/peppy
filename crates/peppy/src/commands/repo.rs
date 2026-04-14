@@ -44,7 +44,7 @@ pub enum RepoCommands {
     /// Remove a repository
     Remove {
         /// Repository ID to remove (shown by `peppy repo list`)
-        id: u32,
+        id: u64,
     },
     /// Exclude a repository
     Exclude {

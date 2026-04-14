@@ -121,12 +121,24 @@ fn handle_repo_list_request_inner(
                     });
                 }
             }
-            RepoSource::Git { repo_url, .. } => {
+            RepoSource::Git { repo_url, repo_ref } => {
                 for cached in &cached_nodes {
                     if cached.get("source_type").and_then(|v| v.as_str()) != Some("git") {
                         continue;
                     }
                     if cached.get("source_uri").and_then(|v| v.as_str()) != Some(&repo_url) {
+                        continue;
+                    }
+                    let resolved_ref = cached
+                        .get("resolved_ref")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("HEAD");
+                    // When the repo entry pins a specific ref, only match cached
+                    // nodes whose resolved_ref equals it. Otherwise match any ref.
+                    if let Some(pinned) = repo_ref.as_deref()
+                        && !pinned.is_empty()
+                        && pinned != resolved_ref
+                    {
                         continue;
                     }
                     let name = cached
@@ -148,10 +160,6 @@ fn handle_repo_list_request_inner(
                                 .collect()
                         })
                         .unwrap_or_default();
-                    let resolved_ref = cached
-                        .get("resolved_ref")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("HEAD");
                     let repo_label = format!("{repo_url} (ref: {resolved_ref})");
                     all_entries.push(RepoListNodeEntry {
                         node_name: name.to_string(),

@@ -12,11 +12,11 @@ use crate::encoding::{decode_message, encode_message};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepoRemoveRequest {
-    pub id: u32,
+    pub id: u64,
 }
 
 impl RepoRemoveRequest {
-    pub fn new(id: u32) -> Self {
+    pub fn new(id: u64) -> Self {
         Self { id }
     }
 
