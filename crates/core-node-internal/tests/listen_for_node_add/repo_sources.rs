@@ -244,6 +244,181 @@ async fn repo_node_add_partial_stack_coverage() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn repo_node_add_mixed_tree_stops_recursion_at_stack_dep() {
+    // Tree: a (cache) → b (cache) → c (stack) → d (cache, never visited).
+    //
+    // When we hit `c` during resolution, we find it already in the stack
+    // and skip it. Its declared dep `d` must therefore NOT be materialized:
+    // the stack entry for `c` is authoritative, so the rest of its subtree
+    // is opaque to this batch.
+    let started = start_core_node_with_mock_messenger().await;
+    let node_stack = started.node_stack.clone();
+    let peppy_dirs = started.peppy_dirs.clone();
+
+    let tmp = TempDir::new().unwrap();
+    let c_dir = tmp.path().join("c");
+    write_plain_peppy_json5(&c_dir, &minimal_node_config("c", "0.1.0", &[]));
+
+    // Pre-add c directly so it's already in the stack.
+    let pre = send_node_add_and_wait(
+        &started.caller_handle,
+        &started.core_node_name,
+        c_dir.as_path(),
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        None,
+    )
+    .await
+    .expect("pre-add for c should complete");
+    assert!(pre.success);
+    assert_eq!(node_stack.len(), 2, "root + c");
+
+    // `d` is declared in the cache but MUST NOT be looked at because `c`
+    // is in the stack. Deliberately *omit* `d` from the cache to prove
+    // the resolver short-circuits at stack deps rather than pursuing the
+    // rest of the declared tree.
+    let b_dir = tmp.path().join("b");
+    write_plain_peppy_json5(
+        &b_dir,
+        &minimal_node_config("b", "0.1.0", &[("c", "0.1.0")]),
+    );
+    let a_dir = tmp.path().join("a");
+    write_plain_peppy_json5(
+        &a_dir,
+        &minimal_node_config("a", "0.1.0", &[("b", "0.1.0")]),
+    );
+
+    TestPackagesCache::new()
+        .fs_entry("a", "0.1.0", &a_dir, &[])
+        .fs_entry("b", "0.1.0", &b_dir, &[])
+        // NB: intentionally no entry for `d` — a correct resolver must
+        // never ask for it because `c` in the stack cuts recursion short.
+        .fs_entry("c", "0.1.0", &c_dir, &[])
+        .write(&peppy_dirs);
+
+    let res = send_node_add_and_wait(
+        &started.caller_handle,
+        &started.core_node_name,
+        NodeAddSource::RepoNode {
+            name: "a",
+            tag: "0.1.0",
+        },
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        None,
+    )
+    .await
+    .expect("node_add should complete");
+
+    assert!(
+        res.success,
+        "add should succeed, err={:?}",
+        res.error_message
+    );
+    // Stack = root + c (pre-existing) + b (added) + a (added).
+    assert_eq!(node_stack.len(), 4);
+    assert!(node_stack.contains("a", "0.1.0"));
+    assert!(node_stack.contains("b", "0.1.0"));
+    assert!(node_stack.contains("c", "0.1.0"));
+    assert!(
+        !node_stack.contains("d", "0.1.0"),
+        "d must not be added — its parent c was served from the stack"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn repo_node_add_deep_mixed_tree_stack_and_cache_at_multiple_levels() {
+    // Tree (dependency direction = arrow points at provider):
+    //
+    //              a (cache, target)
+    //             /                \
+    //          b (stack)         c (cache)
+    //                            /       \
+    //                         d (cache)  e (stack)
+    //
+    // Expected outcome:
+    //   - b and e stay as-is (pre-populated stack entries, skipped).
+    //   - a, c, d get materialized from the cache and added in topo order.
+    //   - Stack size: root + b + e (pre) + d + c + a (added) = 6.
+    let started = start_core_node_with_mock_messenger().await;
+    let node_stack = started.node_stack.clone();
+    let peppy_dirs = started.peppy_dirs.clone();
+
+    let tmp = TempDir::new().unwrap();
+    let b_dir = tmp.path().join("b");
+    let e_dir = tmp.path().join("e");
+    write_plain_peppy_json5(&b_dir, &minimal_node_config("b", "0.1.0", &[]));
+    write_plain_peppy_json5(&e_dir, &minimal_node_config("e", "0.1.0", &[]));
+
+    // Pre-populate stack with b and e.
+    for dir in [&b_dir, &e_dir] {
+        send_node_add_and_wait(
+            &started.caller_handle,
+            &started.core_node_name,
+            dir.as_path(),
+            GOAL_TIMEOUT,
+            RESULT_TIMEOUT,
+            None,
+        )
+        .await
+        .expect("pre-add should complete")
+        .success
+        .then_some(())
+        .expect("pre-add should succeed");
+    }
+    assert_eq!(node_stack.len(), 3, "root + b + e");
+
+    let d_dir = tmp.path().join("d");
+    let c_dir = tmp.path().join("c");
+    let a_dir = tmp.path().join("a");
+    write_plain_peppy_json5(&d_dir, &minimal_node_config("d", "0.1.0", &[]));
+    write_plain_peppy_json5(
+        &c_dir,
+        &minimal_node_config("c", "0.1.0", &[("d", "0.1.0"), ("e", "0.1.0")]),
+    );
+    write_plain_peppy_json5(
+        &a_dir,
+        &minimal_node_config("a", "0.1.0", &[("b", "0.1.0"), ("c", "0.1.0")]),
+    );
+
+    TestPackagesCache::new()
+        .fs_entry("a", "0.1.0", &a_dir, &[])
+        .fs_entry("b", "0.1.0", &b_dir, &[])
+        .fs_entry("c", "0.1.0", &c_dir, &[])
+        .fs_entry("d", "0.1.0", &d_dir, &[])
+        .fs_entry("e", "0.1.0", &e_dir, &[])
+        .write(&peppy_dirs);
+
+    let res = send_node_add_and_wait(
+        &started.caller_handle,
+        &started.core_node_name,
+        NodeAddSource::RepoNode {
+            name: "a",
+            tag: "0.1.0",
+        },
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        None,
+    )
+    .await
+    .expect("node_add should complete");
+
+    assert!(
+        res.success,
+        "add should succeed, err={:?}",
+        res.error_message
+    );
+    assert_eq!(
+        node_stack.len(),
+        6,
+        "root + b + e (pre-populated) + d + c + a (newly added)"
+    );
+    for name in ["a", "b", "c", "d", "e"] {
+        assert!(node_stack.contains(name, "0.1.0"), "missing {name}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn repo_node_add_root_variant_only() {
     let started = start_core_node_with_mock_messenger().await;
     let node_stack = started.node_stack.clone();
