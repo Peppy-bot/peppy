@@ -115,8 +115,20 @@ pub(crate) fn normalize_repo_entries(
         }
     }
 
+    let ids_before: Vec<u64> = repos
+        .iter()
+        .map(|e| e.get("id").and_then(|v| v.as_u64()).unwrap_or(0))
+        .collect();
+    repos.sort_by_key(|e| e.get("id").and_then(|v| v.as_u64()).unwrap_or(0));
+    let ids_after: Vec<u64> = repos
+        .iter()
+        .map(|e| e.get("id").and_then(|v| v.as_u64()).unwrap_or(0))
+        .collect();
+    if ids_before != ids_after {
+        needs_write = true;
+    }
+
     if needs_write {
-        repos.sort_by_key(|e| e.get("id").and_then(|v| v.as_u64()).unwrap_or(0));
         let content = serde_json::to_string_pretty(repos)
             .map_err(|e| crate::Error::Encoding(format!("failed to serialize {desc}: {e}")))?;
         std::fs::write(file_path, content)?;
