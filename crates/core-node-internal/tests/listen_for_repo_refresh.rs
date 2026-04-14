@@ -536,7 +536,6 @@ async fn refresh_cache_written() {
     )
     .expect("commit");
 
-    // Use file:// protocol so git2 shallow clone works with local repos
     let git_repo_url = format!("file://{}", git_repo_path.display());
     write_repositories_json5(
         &started,

@@ -470,22 +470,23 @@ pub(crate) fn walk_directory(
     }
 }
 
-/// Shallow-clone a git repository and walk it for peppy.json5 files.
+/// Shallow-clone a git repository into `dst` and check out `repo_ref` if set.
 ///
 /// While cloning, throttled transfer-progress feedback is emitted through
 /// `on_feedback` so the caller can surface real-time bytes/objects counts
 /// instead of sitting silent for the duration of the clone.
-fn clone_and_walk_git_repo(
+///
+/// Shallow (`depth=1`) clones are only requested when the URL will be served
+/// through libgit2's smart transport. Raw filesystem paths and `file://`
+/// URLs both dispatch to libgit2's local transport, which rejects
+/// `depth(1)` with "shallow fetch is not supported by the local transport"
+/// — so for those inputs we fall back to a full clone.
+pub(crate) fn clone_shallow(
     repo_url: &str,
     repo_ref: Option<&str>,
-    peppy_dirs: &PeppyDirs,
+    dst: &Path,
     on_feedback: &mut dyn FnMut(RepoRefreshFeedback),
-) -> std::result::Result<Vec<DiscoveredNode>, String> {
-    let tmp_dir = peppy_dirs.tmp_dir();
-    std::fs::create_dir_all(&tmp_dir).map_err(|e| format!("failed to create tmp dir: {}", e))?;
-    let tmp =
-        tempfile::tempdir_in(&tmp_dir).map_err(|e| format!("failed to create temp dir: {}", e))?;
-
+) -> std::result::Result<git2::Repository, String> {
     let is_local = repo_url.starts_with('/') || repo_url.starts_with("file://");
 
     // Declared before `builder` so they outlive the builder's borrow of
@@ -517,13 +518,29 @@ fn clone_and_walk_git_repo(
     }
 
     let repo = builder
-        .clone(repo_url, tmp.path())
+        .clone(repo_url, dst)
         .map_err(|e| format!("failed to clone: {}", e))?;
 
     if let Some(r) = repo_ref {
         checkout_repo_ref(&repo, r)
             .map_err(|e| format!("failed to checkout ref '{}': {}", r, e))?;
     }
+
+    Ok(repo)
+}
+
+fn clone_and_walk_git_repo(
+    repo_url: &str,
+    repo_ref: Option<&str>,
+    peppy_dirs: &PeppyDirs,
+    on_feedback: &mut dyn FnMut(RepoRefreshFeedback),
+) -> std::result::Result<Vec<DiscoveredNode>, String> {
+    let tmp_dir = peppy_dirs.tmp_dir();
+    std::fs::create_dir_all(&tmp_dir).map_err(|e| format!("failed to create tmp dir: {}", e))?;
+    let tmp =
+        tempfile::tempdir_in(&tmp_dir).map_err(|e| format!("failed to create temp dir: {}", e))?;
+
+    clone_shallow(repo_url, repo_ref, tmp.path(), on_feedback)?;
 
     let mut seen = HashSet::new();
     let mut nodes = Vec::new();
@@ -969,5 +986,111 @@ mod tests {
         assert_eq!(repos[0].get("path").unwrap().as_str().unwrap(), "/first");
         assert_eq!(repos[1].get("path").unwrap().as_str().unwrap(), "/second");
         assert_eq!(repos[2].get("path").unwrap().as_str().unwrap(), "/third");
+    }
+
+    /// Create a local git repo at `path` with `commit_count` commits on the
+    /// current branch. Each commit adds a file `commit_N.txt`. Returns the
+    /// OIDs of the created commits in order (oldest first).
+    fn init_repo_with_commits(path: &Path, commit_count: usize) -> Vec<git2::Oid> {
+        let repo = git2::Repository::init(path).expect("init repo");
+        let signature =
+            git2::Signature::now("Peppy", "peppy@example.com").expect("create signature");
+        let mut commits: Vec<git2::Oid> = Vec::new();
+
+        for i in 0..commit_count {
+            let file_name = format!("commit_{i}.txt");
+            std::fs::write(path.join(&file_name), format!("content {i}")).expect("write file");
+            let mut index = repo.index().expect("open index");
+            index.add_path(Path::new(&file_name)).expect("add to index");
+            index.write().expect("write index");
+            let tree_id = index.write_tree().expect("write tree");
+            let tree = repo.find_tree(tree_id).expect("find tree");
+
+            let parent_commits: Vec<git2::Commit> = commits
+                .last()
+                .map(|oid| vec![repo.find_commit(*oid).expect("find parent")])
+                .unwrap_or_default();
+            let parent_refs: Vec<&git2::Commit> = parent_commits.iter().collect();
+
+            let oid = repo
+                .commit(
+                    Some("HEAD"),
+                    &signature,
+                    &signature,
+                    &format!("commit {i}"),
+                    &tree,
+                    &parent_refs,
+                )
+                .expect("commit");
+            commits.push(oid);
+        }
+
+        commits
+    }
+
+    fn count_commits(repo: &git2::Repository) -> usize {
+        let mut revwalk = repo.revwalk().expect("revwalk");
+        revwalk.push_head().expect("push head");
+        revwalk.count()
+    }
+
+    /// libgit2's local transport (used for both raw paths and `file://`
+    /// URLs) rejects `depth(1)` with "shallow fetch is not supported by the
+    /// local transport". The clone helper has to detect those URLs and skip
+    /// the shallow option, otherwise the clone fails outright. These two
+    /// tests lock in that fallback behavior so a regression that re-enables
+    /// `depth(1)` for local URLs would fail fast.
+    #[test]
+    fn clone_shallow_falls_back_to_full_clone_for_file_url() {
+        let src_tmp = tempfile::tempdir().unwrap();
+        init_repo_with_commits(src_tmp.path(), 3);
+
+        let dst_tmp = tempfile::tempdir().unwrap();
+        let dst = dst_tmp.path().join("clone");
+        let repo_url = format!("file://{}", src_tmp.path().display());
+
+        let repo = clone_shallow(&repo_url, None, &dst, &mut |_| {})
+            .expect("file:// clone should succeed (depth must be skipped)");
+
+        assert!(
+            !dst.join(".git/shallow").exists(),
+            "file:// goes through libgit2's local transport which rejects \
+             depth(1); .git/shallow should not exist"
+        );
+        assert_eq!(count_commits(&repo), 3);
+    }
+
+    #[test]
+    fn clone_shallow_falls_back_to_full_clone_for_raw_path() {
+        let src_tmp = tempfile::tempdir().unwrap();
+        init_repo_with_commits(src_tmp.path(), 3);
+
+        let dst_tmp = tempfile::tempdir().unwrap();
+        let dst = dst_tmp.path().join("clone");
+        let repo_url = src_tmp.path().display().to_string();
+
+        let repo = clone_shallow(&repo_url, None, &dst, &mut |_| {})
+            .expect("raw-path clone should succeed (depth must be skipped)");
+
+        assert!(!dst.join(".git/shallow").exists());
+        assert_eq!(count_commits(&repo), 3);
+    }
+
+    #[test]
+    fn clone_shallow_ref_checkout_works_on_local_clone() {
+        let src_tmp = tempfile::tempdir().unwrap();
+        let commits = init_repo_with_commits(src_tmp.path(), 3);
+        let target_sha = commits[1].to_string();
+
+        let dst_tmp = tempfile::tempdir().unwrap();
+        let dst = dst_tmp.path().join("clone");
+        let repo_url = format!("file://{}", src_tmp.path().display());
+
+        let repo = clone_shallow(&repo_url, Some(&target_sha), &dst, &mut |_| {})
+            .expect("clone_shallow with ref should succeed");
+
+        let head = repo.head().expect("head");
+        let head_oid = head.target().expect("head oid");
+        assert_eq!(head_oid.to_string(), target_sha);
     }
 }
