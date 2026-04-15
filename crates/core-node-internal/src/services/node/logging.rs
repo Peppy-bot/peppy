@@ -45,10 +45,16 @@ pub(crate) fn append_stack_log(peppy_dirs: &PeppyDirs, message: &str) {
 ///
 /// Creates the directory tree if it doesn't exist. Returns the log file
 /// handle (wrapped for concurrent access) and its path.
+///
+/// Rejects `log_filename` values that aren't a single path component so
+/// that a caller mistakenly splicing client-controlled input (e.g. a
+/// `RepoNode` name) into the filename cannot escape `log_dir`.
 pub(crate) fn create_action_log_file(
     log_dir: &Path,
     log_filename: &str,
 ) -> std::result::Result<(Arc<StdMutex<File>>, PathBuf), String> {
+    validate_log_filename(log_filename)?;
+
     std::fs::create_dir_all(log_dir)
         .map_err(|e| format!("Failed to create logs directory: {}", e))?;
 
@@ -56,4 +62,56 @@ pub(crate) fn create_action_log_file(
     let file = File::create(&log_path).map_err(|e| format!("Failed to create log file: {}", e))?;
 
     Ok((Arc::new(StdMutex::new(file)), log_path))
+}
+
+fn validate_log_filename(name: &str) -> std::result::Result<(), String> {
+    if name.is_empty() || name == "." || name == ".." {
+        return Err(format!("invalid log filename: {:?}", name));
+    }
+    if name.contains('/') || name.contains('\\') || name.contains('\0') {
+        return Err(format!("invalid log filename: {:?}", name));
+    }
+    // Belt-and-suspenders: `file_name()` on the parsed path should yield
+    // the same bytes for any safe, single-component filename.
+    if Path::new(name).file_name().and_then(|n| n.to_str()) != Some(name) {
+        return Err(format!("invalid log filename: {:?}", name));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validate_log_filename_accepts_safe_names() {
+        for name in [
+            "foo.log",
+            "camera_0.1.0_20260101_000000_000.log",
+            "a-b_c.log",
+        ] {
+            assert!(
+                validate_log_filename(name).is_ok(),
+                "should accept `{name}`"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_log_filename_rejects_traversal_and_separators() {
+        for name in [
+            "",
+            ".",
+            "..",
+            "../evil.log",
+            "a/b.log",
+            "a\\b.log",
+            "a\0b.log",
+        ] {
+            assert!(
+                validate_log_filename(name).is_err(),
+                "should reject `{name}`"
+            );
+        }
+    }
 }

@@ -4,7 +4,7 @@ use crate::Result;
 use crate::names;
 use crate::node_capnp;
 use capnp::message::Builder;
-use config::node::QoSProfile;
+use config::node::{Name, QoSProfile};
 use gix_url::Url as GitUrl;
 use peppylib::messaging::ActionGoalHandle;
 use peppylib::types::Payload;
@@ -117,11 +117,12 @@ impl NodeSource {
         tag: &str,
         dep_variant_overrides: Vec<DepVariantOverride>,
     ) -> Result<Self> {
-        if name.is_empty() {
-            return Err(crate::Error::Decoding("empty repo-node name".to_owned()));
-        }
-        if tag.is_empty() {
-            return Err(crate::Error::Decoding("empty repo-node tag".to_owned()));
+        validate_repo_node_name(name, "repo-node name")?;
+        validate_repo_node_tag(tag, "repo-node tag")?;
+        for ov in &dep_variant_overrides {
+            validate_repo_node_name(&ov.name, "repo-node dep override name")?;
+            validate_repo_node_tag(&ov.tag, "repo-node dep override tag")?;
+            validate_repo_node_name(&ov.variant, "repo-node dep override variant")?;
         }
         Ok(Self::RepoNode {
             name: name.to_owned(),
@@ -129,6 +130,43 @@ impl NodeSource {
             dep_variant_overrides,
         })
     }
+}
+
+/// Rejects a repo-node name that would be unsafe to splice into a log
+/// filename or to look up in the repo cache. Reuses the manifest `Name`
+/// character set (lowercase/uppercase ASCII letters, digits, `_`, `-`).
+fn validate_repo_node_name(value: &str, label: &str) -> Result<()> {
+    Name::try_from(value.to_owned())
+        .map(|_| ())
+        .map_err(|e| crate::Error::Decoding(format!("invalid {label}: {e}")))
+}
+
+/// Rejects a repo-node tag that would be unsafe to splice into a filename
+/// joined under the logs directory (e.g. `../etc/passwd`). Mirrors
+/// `node_stack::build_steps::validate_node_tag`.
+fn validate_repo_node_tag(tag: &str, label: &str) -> Result<()> {
+    if tag.is_empty() {
+        return Err(crate::Error::Decoding(format!("empty {label}")));
+    }
+    if tag == "." || tag == ".." || tag.starts_with('.') {
+        return Err(crate::Error::Decoding(format!(
+            "{label} must not start with '.': {tag}"
+        )));
+    }
+    if tag.contains("..") {
+        return Err(crate::Error::Decoding(format!(
+            "{label} must not contain '..': {tag}"
+        )));
+    }
+    for c in tag.chars() {
+        let ok = c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-';
+        if !ok {
+            return Err(crate::Error::Decoding(format!(
+                "{label} contains disallowed character {c:?}: {tag}"
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Goal message for the NodeAdd action.
@@ -307,9 +345,7 @@ impl NodeAddGoal {
                         }
                     }
                     NodeSource::RepoNode { .. } => {
-                        return Err(crate::Error::Encoding(
-                            "RepoNode is not a valid variant source".to_owned(),
-                        ));
+                        return Err(crate::Error::RepoNodeNotValidVariantSource);
                     }
                 }
             }
@@ -548,6 +584,52 @@ mod tests {
     #[test]
     fn decode_repo_node_rejects_empty_tag() {
         assert!(NodeSource::decode_repo_node("node", "", vec![]).is_err());
+    }
+
+    #[test]
+    fn decode_repo_node_rejects_path_traversal_in_name() {
+        for name in [
+            "../etc",
+            "a/b",
+            "a\\b",
+            "..",
+            ".hidden",
+            " leading",
+            "name with space",
+        ] {
+            assert!(
+                NodeSource::decode_repo_node(name, "0.1.0", vec![]).is_err(),
+                "name `{name}` should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn decode_repo_node_rejects_path_traversal_in_tag() {
+        for tag in [
+            "../etc",
+            "a/b",
+            "a\\b",
+            "..",
+            ".hidden",
+            "1..2",
+            "tag with space",
+        ] {
+            assert!(
+                NodeSource::decode_repo_node("node", tag, vec![]).is_err(),
+                "tag `{tag}` should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn decode_repo_node_rejects_unsafe_dep_override() {
+        let overrides = vec![DepVariantOverride {
+            name: "../evil".to_owned(),
+            tag: "0.1.0".to_owned(),
+            variant: "v".to_owned(),
+        }];
+        assert!(NodeSource::decode_repo_node("node", "0.1.0", overrides).is_err());
     }
 
     #[test]
