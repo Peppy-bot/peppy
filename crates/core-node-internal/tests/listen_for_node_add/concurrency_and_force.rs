@@ -85,6 +85,7 @@ async fn listen_for_node_add_rejects_second_goal_when_action_in_progress() {
         "error should suggest --force, got: {error_msg}"
     );
 }
+
 /// Tests that `--force` aborts an in-progress action and starts a new one.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_add_force_overrides_in_progress_action() {

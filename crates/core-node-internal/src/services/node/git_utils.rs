@@ -10,10 +10,24 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 pub(crate) fn sanitize_repo_path(repo_path: &str) -> std::result::Result<PathBuf, String> {
-    let trimmed = repo_path.trim_start_matches(['/', '\\']);
+    let trimmed = repo_path.trim().trim_start_matches(['/', '\\']);
+    if trimmed.is_empty() {
+        return Err("repo_path must not be empty".to_string());
+    }
     let path = PathBuf::from(trimmed);
-    if path.components().any(|c| matches!(c, Component::ParentDir)) {
-        return Err("repo_path must not contain '..'".to_string());
+    for component in path.components() {
+        match component {
+            Component::ParentDir => {
+                return Err("repo_path must not contain '..'".to_string());
+            }
+            Component::RootDir => {
+                return Err("repo_path must be relative".to_string());
+            }
+            Component::Prefix(_) => {
+                return Err("repo_path must not contain a drive or UNC prefix".to_string());
+            }
+            _ => {}
+        }
     }
     Ok(path)
 }

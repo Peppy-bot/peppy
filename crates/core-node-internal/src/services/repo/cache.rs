@@ -134,7 +134,7 @@ fn lookup_repo_id(
             RepoSourceKind::Fs if typ == "fs" => entry
                 .get("path")
                 .and_then(|v| v.as_str())
-                .is_some_and(|p| path.starts_with(p)),
+                .is_some_and(|p| Path::new(path).starts_with(Path::new(p))),
             RepoSourceKind::Git if typ == "git" => entry.get("url").and_then(|v| v.as_str()) == uri,
             RepoSourceKind::Url if typ == "url" => entry.get("url").and_then(|v| v.as_str()) == uri,
             _ => false,

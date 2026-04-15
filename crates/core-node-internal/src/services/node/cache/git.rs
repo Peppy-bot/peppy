@@ -95,14 +95,14 @@ pub fn ensure_checkout(
     }
 
     let result = if is_populated(&dir) {
-        if let Some(generation) = cache_generation {
-            if refreshed_generations().lock().get(&lock_key) == Some(&generation) {
-                on_feedback(&format!(
-                    "Reusing cached checkout at {} (already refreshed for this packages cache generation)",
-                    dir.display()
-                ));
-                return Ok(dir);
-            }
+        if let Some(generation) = cache_generation
+            && refreshed_generations().lock().get(&lock_key) == Some(&generation)
+        {
+            on_feedback(&format!(
+                "Reusing cached checkout at {} (already refreshed for this packages cache generation)",
+                dir.display()
+            ));
+            return Ok(dir);
         }
         on_feedback(&format!("Reusing cached checkout at {}", dir.display()));
         refresh_existing(&dir, repo_url, repo_ref, on_feedback)

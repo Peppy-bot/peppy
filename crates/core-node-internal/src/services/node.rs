@@ -279,6 +279,13 @@ mod tests {
     }
 
     #[test]
+    fn sanitize_repo_path_rejects_empty_input() {
+        assert!(sanitize_repo_path("").is_err());
+        assert!(sanitize_repo_path("   ").is_err());
+        assert!(sanitize_repo_path("///").is_err());
+    }
+
+    #[test]
     fn is_supported_http_archive_accepts_tar_zst() {
         let url = url::Url::parse("https://example.com/bundle.tar.zst").unwrap();
         assert!(is_supported_http_archive(&url));

@@ -11,7 +11,7 @@ use super::super::repo::cache::{self, PackageEntry};
 use super::super::stack::STACK_LAUNCH_GIT_HASH;
 use super::add::{NodeAddActionContext, run_node_add};
 use super::cache as node_cache;
-use super::{FeedbackLine, FeedbackStream, create_action_log_file};
+use super::{FeedbackLine, FeedbackStream, create_action_log_file, sanitize_repo_path};
 use crate::encoding::{DepVariantOverride, NodeAddGoal, NodeAddResult, NodeSource, RepoSourceKind};
 use chrono::Local;
 use config::consts::{NODE_CONFIG_FILE, PeppyDirs};
@@ -351,7 +351,6 @@ async fn resolve_transitive_closure<'a>(
             };
             let entry = entry.clone();
             let source_kind = entry.source_type;
-            let cache_generation = cache_generation.clone();
             in_flight.push(Box::pin(async move {
                 let result =
                     materialize_entry(&entry, peppy_dirs, cache_generation, feedback_tx).await;
@@ -475,7 +474,13 @@ async fn materialize_entry(
             })
             .await
             .map_err(|e| format!("git cache task failed: {}", e))??;
-            checkout.join(&entry.path)
+            let repo_relative_path = sanitize_repo_path(&entry.path).map_err(|e| {
+                format!(
+                    "Git cache entry for {}:{} has unsafe path {:?}: {}",
+                    entry.node_name, entry.node_tag, entry.path, e
+                )
+            })?;
+            checkout.join(repo_relative_path)
         }
         RepoSourceKind::Url => {
             let url_str = entry

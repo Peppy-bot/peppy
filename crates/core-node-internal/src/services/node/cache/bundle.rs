@@ -59,7 +59,9 @@ fn recorded_sha(dir: &Path) -> Option<String> {
 ///
 /// When a cached entry already matches the recorded sha256 (when one is
 /// supplied), the download is skipped. Entries whose recorded sha256
-/// differs from the one on record are treated as stale and wiped.
+/// differs from the one on record are treated as stale and wiped. When
+/// no sha256 is supplied the URL gives no integrity guarantee, so any
+/// cached entry at the same target is treated as stale and re-downloaded.
 pub async fn ensure_bundle(
     peppy_dirs: &PeppyDirs,
     url: &Url,
@@ -69,22 +71,25 @@ pub async fn ensure_bundle(
     let target = extract_dir_for(peppy_dirs, url, sha256.as_deref());
     let lock_key = target.to_string_lossy().into_owned();
 
-    // Serialize concurrent ensure_bundle calls for the same key.
-    let blocking_check = {
-        let lock = lock_for(&lock_key);
-        let target_clone = target.clone();
-        let sha256_clone = sha256.clone();
-        tokio::task::spawn_blocking(move || {
-            let _guard = lock.lock();
-            cached_node_root(&target_clone, sha256_clone.as_deref())
-        })
-        .await
-        .map_err(|e| format!("Bundle cache join error: {}", e))?
-    };
+    // Serialize concurrent ensure_bundle calls for the same key. With no
+    // sha256 we always re-download, so skip the cache fast-path.
+    if sha256.is_some() {
+        let blocking_check = {
+            let lock = lock_for(&lock_key);
+            let target_clone = target.clone();
+            let sha256_clone = sha256.clone();
+            tokio::task::spawn_blocking(move || {
+                let _guard = lock.lock();
+                cached_node_root(&target_clone, sha256_clone.as_deref())
+            })
+            .await
+            .map_err(|e| format!("Bundle cache join error: {}", e))?
+        };
 
-    if let Some(root) = blocking_check {
-        on_feedback(&format!("Reusing cached bundle at {}", root.display()));
-        return Ok(root);
+        if let Some(root) = blocking_check {
+            on_feedback(&format!("Reusing cached bundle at {}", root.display()));
+            return Ok(root);
+        }
     }
 
     // Cache miss — download into a temp dir, then atomically rename.
