@@ -12,9 +12,9 @@
 //! concern yet — the daemon is the only writer.
 
 use super::super::checkout_repo_ref;
+use super::super::git_utils::{clone_with_progress, fetch_with_progress};
 use super::key;
 use config::consts::PeppyDirs;
-use git2::build::RepoBuilder;
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -117,7 +117,7 @@ pub fn ensure_checkout(
             repo_url,
             dir.display()
         ));
-        fresh_clone(&dir, repo_url, repo_ref)
+        fresh_clone(&dir, repo_url, repo_ref, on_feedback)
     };
 
     if result.is_ok()
@@ -132,22 +132,9 @@ fn fresh_clone(
     dir: &Path,
     repo_url: &str,
     repo_ref: Option<&str>,
+    on_feedback: &dyn Fn(&str),
 ) -> std::result::Result<PathBuf, String> {
-    let is_local = repo_url.starts_with('/') || repo_url.starts_with("file://");
-    let mut builder = RepoBuilder::new();
-    if !is_local {
-        let mut fetch_opts = git2::FetchOptions::new();
-        fetch_opts.depth(1);
-        builder.fetch_options(fetch_opts);
-    }
-
-    let repo = builder
-        .clone(repo_url, dir)
-        .map_err(|e| format!("Failed to clone {}: {}", repo_url, e))?;
-    if let Some(r) = repo_ref {
-        checkout_repo_ref(&repo, r)
-            .map_err(|e| format!("Failed to checkout ref '{}': {}", r, e))?;
-    }
+    clone_with_progress(repo_url, repo_ref, dir, true, &mut |line| on_feedback(line))?;
     Ok(dir.to_path_buf())
 }
 
@@ -161,16 +148,13 @@ fn refresh_existing(
         .map_err(|e| format!("Failed to open cached checkout at {}: {}", dir.display(), e))?;
 
     // Attempt a shallow fetch of the current ref. Some transports reject
-    // depth(1) on refetch (local transport in particular), so local repos
-    // skip the shallow option.
+    // depth(1) on refetch (local transport in particular); the helper
+    // downgrades to a non-shallow fetch in that case.
     let refspec = repo_ref.unwrap_or("HEAD");
     let fetch_result = repo.find_remote("origin").and_then(|mut remote| {
-        let mut fetch_opts = git2::FetchOptions::new();
-        let is_local = repo_url.starts_with('/') || repo_url.starts_with("file://");
-        if !is_local {
-            fetch_opts.depth(1);
-        }
-        remote.fetch(&[refspec], Some(&mut fetch_opts), None)
+        fetch_with_progress(&mut remote, repo_url, refspec, true, &mut |line| {
+            on_feedback(line)
+        })
     });
 
     if let Err(e) = fetch_result {
@@ -190,7 +174,7 @@ fn refresh_existing(
             repo_url,
             dir.display()
         ));
-        return fresh_clone(dir, repo_url, repo_ref);
+        return fresh_clone(dir, repo_url, repo_ref, on_feedback);
     }
 
     checkout_repo_ref(&repo, "FETCH_HEAD")

@@ -6,9 +6,9 @@ use super::sync::{
     stack_resolver,
 };
 use super::{
-    checkout_repo_ref, extract_tar_zst, generate_random_id, is_supported_fs_archive,
-    is_supported_http_archive, locate_node_root_dir, resolve_local_archive_source,
-    sanitize_repo_path, write_error_to_log,
+    clone_with_progress, extract_tar_zst, format_bytes, generate_random_id,
+    is_supported_fs_archive, is_supported_http_archive, locate_node_root_dir,
+    resolve_local_archive_source, sanitize_repo_path, write_error_to_log,
 };
 use crate::Result;
 use crate::encoding::{
@@ -19,7 +19,6 @@ use chrono::Local;
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH, PeppyDirs};
 use config::node::{DEFAULT_VARIANT_NAME, NodeConfig, NodeConfigParser, ParsedNodeConfig};
 use futures::FutureExt;
-use git2::build::RepoBuilder;
 use node_stack::add_steps::{copy_node_to_temp_dir, verify_git_hash};
 use node_stack::{InstanceState, NodeStack, WorkingDirGuard, validate_dependency_specs};
 use parking_lot::Mutex as StdMutex;
@@ -327,39 +326,19 @@ async fn resolve_git_source(
     let clone_repo_url = repo_url_str.clone();
     let clone_repo_ref = repo_ref.map(str::to_owned);
     if let Err(err) = tokio::task::spawn_blocking(move || {
-        let mut last_report = Instant::now();
-        let mut callbacks = git2::RemoteCallbacks::new();
-        callbacks.transfer_progress(move |progress| {
-            if last_report.elapsed() >= Duration::from_millis(500) {
-                last_report = Instant::now();
-                let received = progress.received_objects();
-                let total = progress.total_objects();
-                let bytes = progress.received_bytes();
+        clone_with_progress(
+            &clone_repo_url,
+            clone_repo_ref.as_deref(),
+            &clone_checkout_dir,
+            false,
+            &mut |line| {
                 let _ = feedback_tx.send(FeedbackLine {
                     stream: FeedbackStream::Stdout,
-                    line: format!(
-                        "Cloning: received {}/{} objects ({})",
-                        received,
-                        total,
-                        format_bytes(bytes),
-                    ),
+                    line: line.to_owned(),
                 });
-            }
-            true
-        });
-
-        let mut fetch_opts = git2::FetchOptions::new();
-        fetch_opts.remote_callbacks(callbacks);
-
-        let repo = RepoBuilder::new()
-            .fetch_options(fetch_opts)
-            .clone(&clone_repo_url, &clone_checkout_dir)
-            .map_err(|e| format!("Failed to clone repository: {}", e))?;
-        if let Some(repo_ref) = clone_repo_ref.as_deref() {
-            checkout_repo_ref(&repo, repo_ref)
-                .map_err(|e| format!("Failed to checkout git ref '{}': {}", repo_ref, e))?;
-        }
-        Ok::<_, String>(())
+            },
+        )
+        .map(|_| ())
     })
     .await
     .map_err(|e| format!("Failed to join git clone task: {}", e))?
@@ -407,19 +386,6 @@ async fn resolve_git_source(
         node_config,
         cleanup_dir: Some(checkout_dir),
     })
-}
-
-fn format_bytes(bytes: usize) -> String {
-    const KB: f64 = 1024.0;
-    const MB: f64 = 1024.0 * 1024.0;
-    let b = bytes as f64;
-    if b >= MB {
-        format!("{:.1} MB", b / MB)
-    } else if b >= KB {
-        format!("{:.0} KB", b / KB)
-    } else {
-        format!("{} B", bytes)
-    }
 }
 
 fn sanitize_http_filename(name: &str) -> String {

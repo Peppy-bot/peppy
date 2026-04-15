@@ -5,12 +5,11 @@ use crate::encoding::{
 };
 use crate::names;
 use crate::services::action_loop::{ActionResult, ActionState, GoalHandler, run_action_loop};
-use crate::services::node::checkout_repo_ref;
+use crate::services::node::clone_with_progress;
 use crate::services::repo::exclude::ExclusionSet;
 use crate::services::repo::normalize_repo_entries;
 use config::consts::{NODE_CONFIG_FILE, PeppyDirs};
 use config::node::NodeConfigParser;
-use git2::build::RepoBuilder;
 use peppylib::messaging::{ServiceRequestContext, TopicPublisher};
 use peppylib::types::Payload;
 use peppylib::{ActionMessenger, MessengerHandle, PeppyError, PeppyResult};
@@ -18,7 +17,7 @@ use serde_json::Value;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use tracing::{debug, warn};
@@ -468,63 +467,17 @@ pub(crate) fn walk_directory(
     }
 }
 
-/// Shallow-clone a git repository into `dst` and check out `repo_ref` if set.
-///
-/// While cloning, throttled transfer-progress feedback is emitted through
-/// `on_feedback` so the caller can surface real-time bytes/objects counts
-/// instead of sitting silent for the duration of the clone.
-///
-/// Shallow (`depth=1`) clones are only requested when the URL will be served
-/// through libgit2's smart transport. Raw filesystem paths and `file://`
-/// URLs both dispatch to libgit2's local transport, which rejects
-/// `depth(1)` with "shallow fetch is not supported by the local transport"
-/// — so for those inputs we fall back to a full clone.
+/// Shallow-clone a git repository into `dst` and check out `repo_ref` if set,
+/// forwarding throttled transfer-progress lines into `on_feedback`.
 pub(crate) fn clone_shallow(
     repo_url: &str,
     repo_ref: Option<&str>,
     dst: &Path,
     on_feedback: &mut dyn FnMut(RepoRefreshFeedback),
 ) -> std::result::Result<git2::Repository, String> {
-    let is_local = repo_url.starts_with('/') || repo_url.starts_with("file://");
-
-    // Declared before `builder` so they outlive the builder's borrow of
-    // them via the `transfer_progress` callback (drop order is reverse of
-    // declaration order).
-    let mut last_report = Instant::now();
-    let repo_url_owned = repo_url.to_string();
-    let mut builder = RepoBuilder::new();
-    if !is_local {
-        let mut callbacks = git2::RemoteCallbacks::new();
-        callbacks.transfer_progress(|progress| {
-            if last_report.elapsed() >= Duration::from_millis(500) {
-                last_report = Instant::now();
-                on_feedback(RepoRefreshFeedback::new_progress(format!(
-                    "Cloning {}: received {}/{} objects ({})",
-                    repo_url_owned,
-                    progress.received_objects(),
-                    progress.total_objects(),
-                    format_bytes(progress.received_bytes()),
-                )));
-            }
-            true
-        });
-
-        let mut fetch_opts = git2::FetchOptions::new();
-        fetch_opts.depth(1);
-        fetch_opts.remote_callbacks(callbacks);
-        builder.fetch_options(fetch_opts);
-    }
-
-    let repo = builder
-        .clone(repo_url, dst)
-        .map_err(|e| format!("failed to clone: {}", e))?;
-
-    if let Some(r) = repo_ref {
-        checkout_repo_ref(&repo, r)
-            .map_err(|e| format!("failed to checkout ref '{}': {}", r, e))?;
-    }
-
-    Ok(repo)
+    clone_with_progress(repo_url, repo_ref, dst, true, &mut |line| {
+        on_feedback(RepoRefreshFeedback::new_progress(line.to_owned()));
+    })
 }
 
 fn clone_and_walk_git_repo(
@@ -558,19 +511,6 @@ fn clone_and_walk_git_repo(
     );
 
     Ok(nodes)
-}
-
-fn format_bytes(bytes: usize) -> String {
-    const KB: f64 = 1024.0;
-    const MB: f64 = 1024.0 * 1024.0;
-    let b = bytes as f64;
-    if b >= MB {
-        format!("{:.1} MB", b / MB)
-    } else if b >= KB {
-        format!("{:.0} KB", b / KB)
-    } else {
-        format!("{} B", bytes)
-    }
 }
 
 pub(crate) use crate::services::repo::cache::write_cache;

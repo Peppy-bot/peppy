@@ -120,8 +120,14 @@ async fn repo_node_add_fails_on_cycle() {
     let tmp = TempDir::new().unwrap();
     let a_dir = tmp.path().join("a");
     let b_dir = tmp.path().join("b");
-    write_plain_peppy_json5(&a_dir, &minimal_node_config("a", "0.1.0", &[("b", "0.1.0")]));
-    write_plain_peppy_json5(&b_dir, &minimal_node_config("b", "0.1.0", &[("a", "0.1.0")]));
+    write_plain_peppy_json5(
+        &a_dir,
+        &minimal_node_config("a", "0.1.0", &[("b", "0.1.0")]),
+    );
+    write_plain_peppy_json5(
+        &b_dir,
+        &minimal_node_config("b", "0.1.0", &[("a", "0.1.0")]),
+    );
 
     TestPackagesCache::new()
         .fs_entry("a", "0.1.0", &a_dir, &[])

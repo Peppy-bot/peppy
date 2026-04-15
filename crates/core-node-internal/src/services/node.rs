@@ -36,7 +36,7 @@ pub(crate) use add::{NodeAddActionContext, log_label_from_source, run_node_add};
 pub(crate) use builder::{NodeBuildActionContext, run_node_build_for_entity};
 pub use env::FORBIDDEN_ENV_KEYS;
 pub(crate) use feedback::{FeedbackLine, FeedbackStream};
-pub(crate) use git_utils::checkout_repo_ref;
+pub(crate) use git_utils::{checkout_repo_ref, clone_with_progress, format_bytes};
 pub(crate) use logging::{create_action_log_file, write_error_to_log};
 pub(crate) use run::{NodeRunActionContext, run_node_run};
 
