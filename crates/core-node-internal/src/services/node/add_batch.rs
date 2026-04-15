@@ -24,6 +24,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::SystemTime;
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 use url::Url;
@@ -59,8 +60,8 @@ pub(crate) async fn run_repo_node_add(
 
     let peppy_dirs = action_context.peppy_dirs.clone();
 
-    let entries = match cache::load(&peppy_dirs) {
-        Ok(entries) => entries,
+    let (entries, cache_generation) = match cache::load_with_generation(&peppy_dirs) {
+        Ok(loaded) => loaded,
         Err(e) => {
             return fail(
                 &log_file,
@@ -83,6 +84,7 @@ pub(crate) async fn run_repo_node_add(
     let resolution = match resolve_transitive_closure(
         &peppy_dirs,
         &entries,
+        cache_generation,
         &root_name,
         &root_tag,
         &dep_variant_overrides,
@@ -297,6 +299,7 @@ type MaterializeOutput = (
 async fn resolve_transitive_closure<'a>(
     peppy_dirs: &'a PeppyDirs,
     entries: &'a [PackageEntry],
+    cache_generation: Option<SystemTime>,
     root_name: &str,
     root_tag: &str,
     dep_overrides: &[DepVariantOverride],
@@ -334,8 +337,10 @@ async fn resolve_transitive_closure<'a>(
             };
             let entry = entry.clone();
             let source_kind = entry.source_type;
+            let cache_generation = cache_generation.clone();
             in_flight.push(Box::pin(async move {
-                let result = materialize_entry(&entry, peppy_dirs, feedback_tx).await;
+                let result =
+                    materialize_entry(&entry, peppy_dirs, cache_generation, feedback_tx).await;
                 (name, tag, is_root, source_kind, result)
             }));
         }
@@ -425,6 +430,7 @@ async fn resolve_transitive_closure<'a>(
 async fn materialize_entry(
     entry: &PackageEntry,
     peppy_dirs: &PeppyDirs,
+    cache_generation: Option<SystemTime>,
     feedback_tx: &mpsc::UnboundedSender<FeedbackLine>,
 ) -> Result<(PathBuf, ParsedNodeConfig), String> {
     let root_dir = match entry.source_type {
@@ -444,6 +450,7 @@ async fn materialize_entry(
                     &peppy_dirs,
                     &url_owned,
                     ref_owned.as_deref(),
+                    cache_generation,
                     &|line| {
                         let _ = fb.send(FeedbackLine {
                             stream: FeedbackStream::Stdout,

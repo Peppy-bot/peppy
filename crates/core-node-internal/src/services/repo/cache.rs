@@ -59,19 +59,27 @@ fn is_false(b: &bool) -> bool {
 /// vector — the orchestrator layer decides whether "no cache" is a
 /// user-facing error for a given call.
 pub fn load(peppy_dirs: &PeppyDirs) -> Result<Vec<PackageEntry>> {
+    load_with_generation(peppy_dirs).map(|(entries, _)| entries)
+}
+
+/// Reads the cache file plus the `packages.json5` generation used for
+/// the read.
+pub fn load_with_generation(
+    peppy_dirs: &PeppyDirs,
+) -> Result<(Vec<PackageEntry>, Option<SystemTime>)> {
     let path = cache_path(peppy_dirs);
-    let mtime = std::fs::metadata(&path)
+    let generation = std::fs::metadata(&path)
         .ok()
         .and_then(|m| m.modified().ok());
 
-    if let Some(mtime) = mtime
+    if let Some(mtime) = generation
         && let Some(cached) = memo_get(&path, mtime)
     {
-        return Ok((*cached).clone());
+        return Ok(((*cached).clone(), Some(mtime)));
     }
 
     if !path.exists() {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), None));
     }
 
     let content = std::fs::read_to_string(&path)?;
@@ -104,10 +112,10 @@ pub fn load(peppy_dirs: &PeppyDirs) -> Result<Vec<PackageEntry>> {
         ok
     });
 
-    if let Some(mtime) = mtime {
+    if let Some(mtime) = generation {
         memo_put(&path, mtime, entries.clone());
     }
-    Ok(entries)
+    Ok((entries, generation))
 }
 
 /// Write cached node information for git/url repositories.

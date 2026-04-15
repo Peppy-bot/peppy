@@ -16,9 +16,10 @@ use super::key;
 use config::consts::PeppyDirs;
 use git2::build::RepoBuilder;
 use parking_lot::Mutex;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
+use std::time::SystemTime;
 
 /// Path where the checkout for `(repo_url, repo_ref)` lives (whether or
 /// not it has been populated yet). Exposed for tests and diagnostics.
@@ -53,20 +54,21 @@ fn lock_for(key: &str) -> Arc<Mutex<()>> {
         .clone()
 }
 
-/// Per-process set of cache keys that have already been clone-or-fetched
-/// during this daemon's lifetime. Used to skip redundant network fetches
-/// when the same `(url, ref)` is requested repeatedly (e.g. multiple
-/// nodes in one batch, or sequential batches) — the cache key pins the
-/// ref, so a once-refreshed checkout stays correct.
-fn refreshed_set() -> &'static Mutex<HashSet<String>> {
-    static SET: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
-    SET.get_or_init(|| Mutex::new(HashSet::new()))
+/// Per-process map of cache keys to the repo-cache generation they were
+/// last refreshed against. This keeps repeated materializations within a
+/// single `packages.json5` snapshot fast without pinning moving refs for
+/// the full daemon lifetime.
+fn refreshed_generations() -> &'static Mutex<HashMap<String, SystemTime>> {
+    static MAP: OnceLock<Mutex<HashMap<String, SystemTime>>> = OnceLock::new();
+    MAP.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 /// Ensures a checkout exists for `(repo_url, repo_ref)` and returns the
 /// working-tree directory. The checkout is populated on first call and
 /// refreshed (fetch + checkout) on subsequent calls so pinned refs that
-/// moved upstream stay current.
+/// moved upstream stay current. Callers should pass the same
+/// `packages.json5` generation they resolved the repo entry from so the
+/// checkout stays consistent with that snapshot.
 ///
 /// Blocking — callers inside tokio should run this via
 /// [`tokio::task::spawn_blocking`].
@@ -74,6 +76,7 @@ pub fn ensure_checkout(
     peppy_dirs: &PeppyDirs,
     repo_url: &str,
     repo_ref: Option<&str>,
+    cache_generation: Option<SystemTime>,
     on_feedback: &dyn Fn(&str),
 ) -> std::result::Result<PathBuf, String> {
     let dir = checkout_dir_for(peppy_dirs, repo_url, repo_ref);
@@ -92,12 +95,14 @@ pub fn ensure_checkout(
     }
 
     let result = if is_populated(&dir) {
-        if refreshed_set().lock().contains(&lock_key) {
-            on_feedback(&format!(
-                "Reusing cached checkout at {} (already refreshed this session)",
-                dir.display()
-            ));
-            return Ok(dir);
+        if let Some(generation) = cache_generation {
+            if refreshed_generations().lock().get(&lock_key) == Some(&generation) {
+                on_feedback(&format!(
+                    "Reusing cached checkout at {} (already refreshed for this packages cache generation)",
+                    dir.display()
+                ));
+                return Ok(dir);
+            }
         }
         on_feedback(&format!("Reusing cached checkout at {}", dir.display()));
         refresh_existing(&dir, repo_url, repo_ref, on_feedback)
@@ -115,8 +120,10 @@ pub fn ensure_checkout(
         fresh_clone(&dir, repo_url, repo_ref)
     };
 
-    if result.is_ok() {
-        refreshed_set().lock().insert(lock_key);
+    if result.is_ok()
+        && let Some(generation) = cache_generation
+    {
+        refreshed_generations().lock().insert(lock_key, generation);
     }
     result
 }
@@ -181,6 +188,64 @@ fn refresh_existing(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
+    use std::time::{Duration, SystemTime};
+
+    fn commit_file(repo: &git2::Repository, repo_dir: &Path, contents: &str, message: &str) {
+        let file_name = Path::new("tracked.txt");
+        std::fs::write(repo_dir.join(file_name), contents).expect("write tracked file");
+
+        let mut index = repo.index().expect("open index");
+        index.add_path(file_name).expect("add tracked file");
+        index.write().expect("write index");
+        let tree_id = index.write_tree().expect("write tree");
+        let tree = repo.find_tree(tree_id).expect("find tree");
+
+        let parent_commits: Vec<git2::Commit> = repo
+            .head()
+            .ok()
+            .and_then(|head| head.target())
+            .map(|oid| vec![repo.find_commit(oid).expect("find parent commit")])
+            .unwrap_or_default();
+        let parent_refs: Vec<&git2::Commit> = parent_commits.iter().collect();
+        let signature =
+            git2::Signature::now("Peppy", "peppy@example.com").expect("create signature");
+
+        repo.commit(
+            Some("HEAD"),
+            &signature,
+            &signature,
+            message,
+            &tree,
+            &parent_refs,
+        )
+        .expect("commit tracked file");
+    }
+
+    fn write_packages_cache_generation(
+        peppy_dirs: &PeppyDirs,
+        marker: &str,
+        previous: Option<SystemTime>,
+    ) -> SystemTime {
+        let cache_path = peppy_dirs.cache_dir().join("packages.json5");
+        std::fs::create_dir_all(peppy_dirs.cache_dir()).expect("create cache dir");
+
+        for attempt in 0..20 {
+            let contents = format!(r#"[{{"marker":"{marker}-{attempt}"}}]"#);
+            std::fs::write(&cache_path, contents).expect("write packages cache");
+
+            let modified = std::fs::metadata(&cache_path)
+                .expect("read packages cache metadata")
+                .modified()
+                .expect("read packages cache mtime");
+            match previous {
+                Some(prev) if modified <= prev => std::thread::sleep(Duration::from_millis(100)),
+                _ => return modified,
+            }
+        }
+
+        panic!("failed to advance packages cache generation");
+    }
 
     #[test]
     fn checkout_dir_for_distinct_refs_distinct_dirs() {
@@ -201,5 +266,86 @@ mod tests {
         let a = checkout_dir_for(&peppy_dirs, "https://example.com/repo.git", Some("main"));
         let b = checkout_dir_for(&peppy_dirs, "https://example.com/repo.git", Some("main"));
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn ensure_checkout_refreshes_when_packages_cache_generation_changes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(tmp.path());
+        let first_generation = write_packages_cache_generation(&peppy_dirs, "initial", None);
+
+        let source_parent = tempfile::tempdir().unwrap();
+        let source_repo_dir = source_parent.path().join("source-repo");
+        std::fs::create_dir_all(&source_repo_dir).expect("create source repo dir");
+        let repo = git2::Repository::init(&source_repo_dir).expect("init source repo");
+        commit_file(&repo, &source_repo_dir, "first", "first commit");
+
+        let repo_url = source_repo_dir.display().to_string();
+        let repo_ref = repo
+            .head()
+            .expect("head")
+            .shorthand()
+            .expect("branch shorthand")
+            .to_owned();
+
+        let checkout = ensure_checkout(
+            &peppy_dirs,
+            &repo_url,
+            Some(&repo_ref),
+            Some(first_generation),
+            &|_| {},
+        )
+        .expect("initial checkout");
+        assert!(checkout.join("tracked.txt").exists());
+
+        drop(repo);
+        let moved_repo_dir = source_parent.path().join("moved-source-repo");
+        std::fs::rename(&source_repo_dir, &moved_repo_dir).expect("move source repo away");
+
+        let same_generation_feedback = RefCell::new(Vec::new());
+        let reused_checkout = ensure_checkout(
+            &peppy_dirs,
+            &repo_url,
+            Some(&repo_ref),
+            Some(first_generation),
+            &|line| same_generation_feedback.borrow_mut().push(line.to_owned()),
+        )
+        .expect("reuse checkout within same generation");
+        assert_eq!(checkout, reused_checkout);
+        assert_eq!(
+            same_generation_feedback.into_inner(),
+            vec![format!(
+                "Reusing cached checkout at {} (already refreshed for this packages cache generation)",
+                reused_checkout.display()
+            )],
+            "same packages cache generation should short-circuit before any refetch"
+        );
+
+        let second_generation =
+            write_packages_cache_generation(&peppy_dirs, "refreshed", Some(first_generation));
+        let refreshed_feedback = RefCell::new(Vec::new());
+        let refreshed_checkout = ensure_checkout(
+            &peppy_dirs,
+            &repo_url,
+            Some(&repo_ref),
+            Some(second_generation),
+            &|line| refreshed_feedback.borrow_mut().push(line.to_owned()),
+        )
+        .expect("refresh checkout after packages cache update");
+        let refreshed_feedback = refreshed_feedback.into_inner();
+        assert_eq!(checkout, refreshed_checkout);
+        assert_eq!(
+            refreshed_feedback[0],
+            format!(
+                "Reusing cached checkout at {}",
+                refreshed_checkout.display()
+            )
+        );
+        assert!(
+            refreshed_feedback
+                .iter()
+                .any(|line| line.contains("Fetch for cached checkout failed")),
+            "new packages cache generation should attempt a refetch instead of short-circuiting"
+        );
     }
 }
