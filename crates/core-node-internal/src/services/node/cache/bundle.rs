@@ -57,42 +57,48 @@ fn recorded_sha(dir: &Path) -> Option<String> {
 /// Ensures an extracted copy of the bundle at `url` exists on disk,
 /// returning the *node root* directory (ready to feed to `process_node_add`).
 ///
-/// When a cached entry already matches the recorded sha256 (when one is
-/// supplied), the download is skipped. Entries whose recorded sha256
-/// differs from the one on record are treated as stale and wiped. When
-/// no sha256 is supplied the URL gives no integrity guarantee, so any
-/// cached entry at the same target is treated as stale and re-downloaded.
+/// When a `sha256` is supplied the extraction is promoted into a shared,
+/// deterministic cache directory so subsequent calls with the same
+/// `(url, sha256)` can reuse it; entries whose recorded sha differs from
+/// the expected one are wiped.
+///
+/// When no `sha256` is supplied we cannot verify integrity, so there is
+/// nothing safe to reuse — every call downloads fresh into a unique
+/// per-call directory (courtesy of `download_and_extract_http_source`,
+/// which stages into `http_downloads_dir()/node_add_<ts>_<rand>/`) and
+/// returns that directory directly. This isolates concurrent callers
+/// from each other instead of racing to promote into the shared target.
 pub async fn ensure_bundle(
     peppy_dirs: &PeppyDirs,
     url: &Url,
     sha256: Option<String>,
     on_feedback: &(dyn Fn(&str) + Send + Sync),
 ) -> std::result::Result<PathBuf, String> {
-    let target = extract_dir_for(peppy_dirs, url, sha256.as_deref());
+    let Some(sha256) = sha256 else {
+        let extracted = download_and_extract_http_source(url, peppy_dirs.clone(), None).await?;
+        return Ok(extracted.source_path);
+    };
+
+    let target = extract_dir_for(peppy_dirs, url, Some(sha256.as_str()));
     let lock_key = target.to_string_lossy().into_owned();
 
-    // Serialize concurrent ensure_bundle calls for the same key. With no
-    // sha256 we always re-download, so skip the cache fast-path.
-    if sha256.is_some() {
-        let blocking_check = {
-            let lock = lock_for(&lock_key);
-            let target_clone = target.clone();
-            let sha256_clone = sha256.clone();
-            tokio::task::spawn_blocking(move || {
-                let _guard = lock.lock();
-                cached_node_root(&target_clone, sha256_clone.as_deref())
-            })
-            .await
-            .map_err(|e| format!("Bundle cache join error: {}", e))?
-        };
+    let blocking_check = {
+        let lock = lock_for(&lock_key);
+        let target_clone = target.clone();
+        let sha256_clone = sha256.clone();
+        tokio::task::spawn_blocking(move || {
+            let _guard = lock.lock();
+            cached_node_root(&target_clone, Some(sha256_clone.as_str()))
+        })
+        .await
+        .map_err(|e| format!("Bundle cache join error: {}", e))?
+    };
 
-        if let Some(root) = blocking_check {
-            on_feedback(&format!("Reusing cached bundle at {}", root.display()));
-            return Ok(root);
-        }
+    if let Some(root) = blocking_check {
+        on_feedback(&format!("Reusing cached bundle at {}", root.display()));
+        return Ok(root);
     }
 
-    // Cache miss — download into a temp dir, then atomically rename.
     if let Some(parent) = target.parent() {
         std::fs::create_dir_all(parent).map_err(|e| {
             format!(
@@ -103,7 +109,7 @@ pub async fn ensure_bundle(
         })?;
     }
     let extracted =
-        download_and_extract_http_source(url, peppy_dirs.clone(), sha256.clone()).await?;
+        download_and_extract_http_source(url, peppy_dirs.clone(), Some(sha256.clone())).await?;
 
     let lock = lock_for(&lock_key);
     let target_final = target.clone();
@@ -130,16 +136,14 @@ pub async fn ensure_bundle(
         if let Some(op_dir) = extracted.cleanup_dir.as_ref() {
             let _ = std::fs::remove_dir_all(op_dir);
         }
-        if let Some(sha) = sha_final.as_deref() {
-            let marker = marker_path(&target_final);
-            std::fs::write(&marker, sha).map_err(|e| {
-                format!(
-                    "Failed to write bundle sha marker {}: {}",
-                    marker.display(),
-                    e
-                )
-            })?;
-        }
+        let marker = marker_path(&target_final);
+        std::fs::write(&marker, &sha_final).map_err(|e| {
+            format!(
+                "Failed to write bundle sha marker {}: {}",
+                marker.display(),
+                e
+            )
+        })?;
         locate_node_root_dir(&target_final)
     })
     .await

@@ -111,12 +111,19 @@ pub fn load_with_generation(
 }
 
 /// Write cached node information for git/url repositories.
+///
+/// The write is performed via a sibling temp file + atomic rename so that
+/// concurrent readers (see [`load_with_generation`]) never observe a
+/// truncated or partially-written `packages.json5`.
 pub(crate) fn write_cache(peppy_dirs: &PeppyDirs, nodes: &[PackageEntry]) -> Result<()> {
     let cache_dir = peppy_dirs.cache_dir();
     std::fs::create_dir_all(&cache_dir)?;
     let content = serde_json::to_string_pretty(nodes)
         .map_err(|e| crate::Error::Encoding(format!("failed to serialize cache: {e}")))?;
-    std::fs::write(cache_dir.join("packages.json5"), content)?;
+    let final_path = cache_dir.join("packages.json5");
+    let tmp_path = cache_dir.join("packages.json5.tmp");
+    std::fs::write(&tmp_path, content)?;
+    std::fs::rename(&tmp_path, &final_path)?;
     Ok(())
 }
 
