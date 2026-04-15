@@ -392,8 +392,14 @@ pub(crate) fn walk_directory(
     nodes: &mut Vec<DiscoveredNode>,
     excluded_paths: &[PathBuf],
 ) {
+    // Canonicalize the root so that paths emitted by the walker share a
+    // common prefix representation with the excluded paths (which come from
+    // `ExclusionSet::load` already canonicalized). Without this, macOS
+    // `/var/...` symlinks break subdirectory exclusion: the walker emits
+    // `/var/...` while excluded paths resolve to `/private/var/...`.
+    let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
     let excluded = excluded_paths.to_vec();
-    let walker = ignore::WalkBuilder::new(root)
+    let walker = ignore::WalkBuilder::new(&root)
         .hidden(true)
         .filter_entry(move |entry| {
             if !entry.file_type().is_some_and(|ft| ft.is_dir()) {
@@ -442,7 +448,7 @@ pub(crate) fn walk_directory(
             // For git repos, store relative path from repo root
             config_path
                 .parent()
-                .and_then(|p| p.strip_prefix(root).ok())
+                .and_then(|p| p.strip_prefix(&root).ok())
                 .map(|p| p.to_string_lossy().into_owned())
                 .unwrap_or_default()
         } else {
@@ -701,7 +707,17 @@ mod tests {
         assert_eq!(discovered[0].node_name, "node_a");
         assert_eq!(excluded.len(), 1, "one repo should be excluded");
         assert_eq!(excluded[0].source_type, RepoSourceKind::Fs);
-        assert_eq!(excluded[0].identity, repo_b.display().to_string());
+        // `identity` is canonicalized by `json_entry_identity`; the test
+        // path is not, so compare against the canonical form to stay
+        // robust on platforms with symlinked tempdirs (e.g. macOS's
+        // `/var` → `/private/var`).
+        assert_eq!(
+            excluded[0].identity,
+            std::fs::canonicalize(&repo_b)
+                .unwrap()
+                .to_string_lossy()
+                .into_owned()
+        );
     }
 
     #[test]
