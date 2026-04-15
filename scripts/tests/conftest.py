@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import shutil
-import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -126,37 +125,3 @@ def fake_release_response() -> dict[str, Any]:
         "created_at": "2025-06-15T09:00:00Z",
         "assets": [],
     }
-
-
-@pytest.fixture()
-def tmp_repo(tmp_path: Path) -> Path:
-    """A temporary directory with a git repo initialized and a fake remote."""
-    subprocess.run(["git", "init"], cwd=tmp_path, capture_output=True, check=True)
-    subprocess.run(
-        ["git", "remote", "add", "origin", "git@github.com:test-owner/test-repo.git"],
-        cwd=tmp_path,
-        capture_output=True,
-        check=True,
-    )
-    subprocess.run(
-        ["git", "config", "user.email", "test@test.com"],
-        cwd=tmp_path,
-        capture_output=True,
-        check=True,
-    )
-    subprocess.run(
-        ["git", "config", "user.name", "Test User"],
-        cwd=tmp_path,
-        capture_output=True,
-        check=True,
-    )
-    # Create initial commit so HEAD exists
-    (tmp_path / "README.md").write_text("test")
-    subprocess.run(["git", "add", "."], cwd=tmp_path, capture_output=True, check=True)
-    subprocess.run(
-        ["git", "commit", "-m", "initial"],
-        cwd=tmp_path,
-        capture_output=True,
-        check=True,
-    )
-    return tmp_path

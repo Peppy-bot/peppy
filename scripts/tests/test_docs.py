@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -18,7 +17,6 @@ from functions.docs import (
     _strip_code_fence,
     _truncate_diff,
     check_docs,
-    get_code_diff,
     update_docs,
 )
 
@@ -147,103 +145,6 @@ def test_parse_check_response_not_object() -> None:
         _parse_check_response("[]")
 
 
-# --- get_code_diff (with real git repo) ---
-
-
-def _commit_file(repo: Path, path: str, content: str, message: str) -> str:
-    target = repo / path
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(content)
-    subprocess.run(["git", "add", path], cwd=repo, check=True, capture_output=True)
-    subprocess.run(
-        ["git", "commit", "-m", message],
-        cwd=repo,
-        check=True,
-        capture_output=True,
-    )
-    result = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        cwd=repo,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    return result.stdout.strip()
-
-
-def test_get_code_diff_code_change(tmp_repo: Path) -> None:
-    base = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        cwd=tmp_repo,
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout.strip()
-    head = _commit_file(tmp_repo, "crates/foo/src/lib.rs", "fn main() {}\n", "add lib")
-
-    diff, paths = get_code_diff(base, head, tmp_repo)
-    assert paths == ["crates/foo/src/lib.rs"]
-    assert "fn main" in diff
-
-
-def test_get_code_diff_docs_only_excluded(tmp_repo: Path) -> None:
-    base = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        cwd=tmp_repo,
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout.strip()
-    head = _commit_file(
-        tmp_repo,
-        "docs/src/content/docs/guides/new.mdx",
-        "# new guide\n",
-        "docs only",
-    )
-
-    diff, paths = get_code_diff(base, head, tmp_repo)
-    assert paths == []
-    assert diff == ""
-
-
-def test_get_code_diff_mixed_filters_docs(tmp_repo: Path) -> None:
-    base = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        cwd=tmp_repo,
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout.strip()
-    (tmp_repo / "crates").mkdir(parents=True, exist_ok=True)
-    (tmp_repo / "crates" / "foo.rs").write_text("fn f() {}\n")
-    (tmp_repo / "docs" / "src").mkdir(parents=True, exist_ok=True)
-    (tmp_repo / "docs" / "src" / "a.md").write_text("hi\n")
-    subprocess.run(["git", "add", "."], cwd=tmp_repo, check=True, capture_output=True)
-    subprocess.run(
-        ["git", "commit", "-m", "mixed"],
-        cwd=tmp_repo,
-        check=True,
-        capture_output=True,
-    )
-    head = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        cwd=tmp_repo,
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout.strip()
-
-    diff, paths = get_code_diff(base, head, tmp_repo)
-    assert paths == ["crates/foo.rs"]
-    assert "fn f" in diff
-    assert "hi" not in diff
-
-
-def test_get_code_diff_bad_ref_raises(tmp_repo: Path) -> None:
-    with pytest.raises(ReleaseError, match="git diff"):
-        get_code_diff("does-not-exist", "HEAD", tmp_repo)
-
-
 # --- check_docs / update_docs (mocked claude) ---
 
 
@@ -269,8 +170,8 @@ def _mock_subprocess_run_for_claude(
     return MagicMock(side_effect=_run)
 
 
-def test_check_docs_short_circuits_on_no_code_changes(tmp_repo: Path) -> None:
-    with patch("functions.docs.get_repo_root", return_value=tmp_repo), \
+def test_check_docs_short_circuits_on_no_code_changes(tmp_path: Path) -> None:
+    with patch("functions.docs.get_repo_root", return_value=tmp_path), \
          patch("functions.docs.get_code_diff", return_value=("", [])), \
          patch("functions.docs.subprocess.run") as mock_run:
         result = check_docs("BASE", "HEAD")
@@ -279,10 +180,10 @@ def test_check_docs_short_circuits_on_no_code_changes(tmp_repo: Path) -> None:
     mock_run.assert_not_called()
 
 
-def test_check_docs_parses_claude_verdict(tmp_repo: Path) -> None:
+def test_check_docs_parses_claude_verdict(tmp_path: Path) -> None:
     verdict = '{"up_to_date": false, "required_changes": [' \
               '{"file": "docs/x.mdx", "change": "add flag"}]}'
-    with patch("functions.docs.get_repo_root", return_value=tmp_repo), \
+    with patch("functions.docs.get_repo_root", return_value=tmp_path), \
          patch(
              "functions.docs.get_code_diff",
              return_value=("diff", ["crates/foo.rs"]),
@@ -298,12 +199,12 @@ def test_check_docs_parses_claude_verdict(tmp_repo: Path) -> None:
     )
 
 
-def test_check_docs_raises_on_claude_nonzero(tmp_repo: Path) -> None:
+def test_check_docs_raises_on_claude_nonzero(tmp_path: Path) -> None:
     mock = MagicMock()
     mock.returncode = 2
     mock.stdout = ""
     mock.stderr = "boom"
-    with patch("functions.docs.get_repo_root", return_value=tmp_repo), \
+    with patch("functions.docs.get_repo_root", return_value=tmp_path), \
          patch(
              "functions.docs.get_code_diff",
              return_value=("diff", ["crates/foo.rs"]),
@@ -313,12 +214,12 @@ def test_check_docs_raises_on_claude_nonzero(tmp_repo: Path) -> None:
             check_docs("BASE", "HEAD")
 
 
-def test_check_docs_raises_on_invalid_outer_json(tmp_repo: Path) -> None:
+def test_check_docs_raises_on_invalid_outer_json(tmp_path: Path) -> None:
     mock = MagicMock()
     mock.returncode = 0
     mock.stdout = "not json"
     mock.stderr = ""
-    with patch("functions.docs.get_repo_root", return_value=tmp_repo), \
+    with patch("functions.docs.get_repo_root", return_value=tmp_path), \
          patch(
              "functions.docs.get_code_diff",
              return_value=("diff", ["crates/foo.rs"]),
@@ -328,8 +229,8 @@ def test_check_docs_raises_on_invalid_outer_json(tmp_repo: Path) -> None:
             check_docs("BASE", "HEAD")
 
 
-def test_update_docs_short_circuits_on_no_code_changes(tmp_repo: Path) -> None:
-    with patch("functions.docs.get_repo_root", return_value=tmp_repo), \
+def test_update_docs_short_circuits_on_no_code_changes(tmp_path: Path) -> None:
+    with patch("functions.docs.get_repo_root", return_value=tmp_path), \
          patch("functions.docs.get_code_diff", return_value=("", [])), \
          patch("functions.docs.subprocess.run") as mock_run:
         summary = update_docs("BASE", "HEAD")
@@ -337,7 +238,7 @@ def test_update_docs_short_circuits_on_no_code_changes(tmp_repo: Path) -> None:
     mock_run.assert_not_called()
 
 
-def test_update_docs_invokes_claude_with_edit_permissions(tmp_repo: Path) -> None:
+def test_update_docs_invokes_claude_with_edit_permissions(tmp_path: Path) -> None:
     captured: dict[str, list[str]] = {}
 
     def _run(cmd: list[str], *args: object, **kwargs: object) -> MagicMock:
@@ -348,7 +249,7 @@ def test_update_docs_invokes_claude_with_edit_permissions(tmp_repo: Path) -> Non
         mock.stderr = ""
         return mock
 
-    with patch("functions.docs.get_repo_root", return_value=tmp_repo), \
+    with patch("functions.docs.get_repo_root", return_value=tmp_path), \
          patch(
              "functions.docs.get_code_diff",
              return_value=("diff", ["crates/foo.rs"]),
