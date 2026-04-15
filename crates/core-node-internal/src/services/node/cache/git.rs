@@ -144,8 +144,32 @@ fn refresh_existing(
     repo_ref: Option<&str>,
     on_feedback: &dyn Fn(&str),
 ) -> std::result::Result<PathBuf, String> {
-    let repo = git2::Repository::open(dir)
-        .map_err(|e| format!("Failed to open cached checkout at {}: {}", dir.display(), e))?;
+    let wipe_and_reclone = |reason: &str| -> std::result::Result<PathBuf, String> {
+        on_feedback(reason);
+        std::fs::remove_dir_all(dir).map_err(|remove_err| {
+            format!(
+                "Failed to remove stale cached checkout at {}: {}",
+                dir.display(),
+                remove_err
+            )
+        })?;
+        on_feedback(&format!(
+            "Recloning {} into cache at {}",
+            repo_url,
+            dir.display()
+        ));
+        fresh_clone(dir, repo_url, repo_ref, on_feedback)
+    };
+
+    let repo = match git2::Repository::open(dir) {
+        Ok(repo) => repo,
+        Err(e) => {
+            return wipe_and_reclone(&format!(
+                "Failed to open cached checkout at {} ({e}); removing stale checkout and recloning",
+                dir.display()
+            ));
+        }
+    };
 
     // Attempt a shallow fetch of the current ref. Some transports reject
     // depth(1) on refetch (local transport in particular); the helper
@@ -158,23 +182,10 @@ fn refresh_existing(
     });
 
     if let Err(e) = fetch_result {
-        on_feedback(&format!(
+        drop(repo);
+        return wipe_and_reclone(&format!(
             "Fetch for cached checkout failed ({e}); removing stale checkout and recloning"
         ));
-        drop(repo);
-        std::fs::remove_dir_all(dir).map_err(|remove_err| {
-            format!(
-                "Failed to remove stale cached checkout at {} after fetch failure: {}",
-                dir.display(),
-                remove_err
-            )
-        })?;
-        on_feedback(&format!(
-            "Recloning {} into cache at {}",
-            repo_url,
-            dir.display()
-        ));
-        return fresh_clone(dir, repo_url, repo_ref, on_feedback);
     }
 
     checkout_repo_ref(&repo, "FETCH_HEAD")
@@ -349,6 +360,82 @@ mod tests {
                     refreshed_checkout.display()
                 )),
             "new packages cache generation should refresh the cached checkout"
+        );
+    }
+
+    #[test]
+    fn ensure_checkout_reclones_when_cached_repo_is_corrupted() {
+        let tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(tmp.path());
+        let first_generation = write_packages_cache_generation(&peppy_dirs, "initial", None);
+
+        let source_parent = tempfile::tempdir().unwrap();
+        let source_repo_dir = source_parent.path().join("source-repo");
+        std::fs::create_dir_all(&source_repo_dir).expect("create source repo dir");
+        let repo = git2::Repository::init(&source_repo_dir).expect("init source repo");
+        commit_file(&repo, &source_repo_dir, "first", "first commit");
+
+        let repo_url = source_repo_dir.display().to_string();
+        let repo_ref = repo
+            .head()
+            .expect("head")
+            .shorthand()
+            .expect("branch shorthand")
+            .to_owned();
+
+        let checkout = ensure_checkout(
+            &peppy_dirs,
+            &repo_url,
+            Some(&repo_ref),
+            Some(first_generation),
+            &|_| {},
+        )
+        .expect("initial checkout");
+
+        commit_file(&repo, &source_repo_dir, "second", "second commit");
+
+        // Corrupt the cached checkout so `Repository::open` fails but
+        // `is_populated` still returns true: replace the `.git` directory
+        // with a regular file containing an invalid gitlink, which libgit2
+        // rejects at open time.
+        std::fs::remove_dir_all(checkout.join(".git")).expect("remove .git dir");
+        std::fs::write(checkout.join(".git"), "not a valid gitlink")
+            .expect("write corrupt .git file");
+
+        let second_generation =
+            write_packages_cache_generation(&peppy_dirs, "refreshed", Some(first_generation));
+        let refreshed_feedback = RefCell::new(Vec::new());
+        let refreshed_checkout = ensure_checkout(
+            &peppy_dirs,
+            &repo_url,
+            Some(&repo_ref),
+            Some(second_generation),
+            &|line| refreshed_feedback.borrow_mut().push(line.to_owned()),
+        )
+        .expect("corrupted cached checkout should be wiped and recloned");
+        let refreshed_feedback = refreshed_feedback.into_inner();
+
+        assert_eq!(checkout, refreshed_checkout);
+        assert_eq!(
+            std::fs::read_to_string(refreshed_checkout.join("tracked.txt")).unwrap(),
+            "second",
+            "reclone after corruption must produce a working tree at the latest ref"
+        );
+        assert!(
+            refreshed_feedback
+                .iter()
+                .any(|line| line.contains("Failed to open cached checkout")),
+            "expected feedback about the failed open, got: {refreshed_feedback:?}"
+        );
+        assert!(
+            refreshed_feedback.iter().any(|line| {
+                line == &format!(
+                    "Recloning {} into cache at {}",
+                    repo_url,
+                    refreshed_checkout.display()
+                )
+            }),
+            "expected fallback reclone feedback, got: {refreshed_feedback:?}"
         );
     }
 
