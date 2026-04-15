@@ -81,7 +81,9 @@ fn apply_dep_variant_overrides(
         )));
     }
 
-    Ok(node_source.with_dep_variant_overrides(dep_overrides))
+    node_source
+        .with_dep_variant_overrides(dep_overrides)
+        .map_err(|e| Error::ExecutionFailed(e.to_string()))
 }
 
 pub fn add_node(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<()> {
@@ -166,27 +168,46 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
         source, conn.core_node_name
     );
 
-    // Preflight conflict check: if the *root* source is local, we can read
-    // `(name, tag)` from its `peppy.json5` without touching the network and
-    // ask the daemon whether that node is already in the stack with active
-    // instances.
+    // Preflight conflict check: if we can cheaply determine the root
+    // `(name, tag)` without network I/O, ask the daemon whether that node
+    // is already in the stack with active instances.
+    //
+    // - `NodeSource::Fs`: read `(name, tag)` from the local `peppy.json5`.
+    // - `NodeSource::RepoNode`: use the user-supplied `(name, tag)`
+    //   directly — no parsing needed. (Validated at parse time by
+    //   `NodeSource::repo_node`.)
     //
     // The variant source (if any) doesn't affect the effective `(name, tag)`:
     // `resolve_variant` always merges the root manifest over the variant
     // (see crates/core-node-internal/src/services/node/variant.rs), so any
     // variant we'd eventually pick shares the root's identity.
     //
-    // Remote root sources still skip the preflight since we'd need to fetch
-    // them to read the manifest; the daemon's add action stops existing
-    // instances transparently in that path.
-    if !force && let NodeSource::Fs(ref path) = node_source {
-        let active_instances = fetch_active_instances_for_local_source(
-            conn.messenger,
-            &conn.core_node_name,
-            path,
-            Duration::from_secs(timeouts.max_secs),
-        )
-        .await?;
+    // `Git`/`Http` root sources still skip the preflight since we'd need to
+    // fetch them to read the manifest; the daemon's add action stops
+    // existing instances transparently in that path.
+    if !force {
+        let active_instances = match &node_source {
+            NodeSource::Fs(path) => {
+                fetch_active_instances_for_local_source(
+                    conn.messenger,
+                    &conn.core_node_name,
+                    path,
+                    Duration::from_secs(timeouts.max_secs),
+                )
+                .await?
+            }
+            NodeSource::RepoNode { name, tag, .. } => {
+                fetch_active_instances_for_name_tag(
+                    conn.messenger,
+                    &conn.core_node_name,
+                    name.clone(),
+                    tag.clone(),
+                    Duration::from_secs(timeouts.max_secs),
+                )
+                .await?
+            }
+            NodeSource::Git { .. } | NodeSource::Http { .. } => None,
+        };
 
         if let Some((node_name, node_tag, instance_ids)) = active_instances {
             let confirm =
@@ -304,7 +325,21 @@ async fn fetch_active_instances_for_local_source(
     };
     let node_name = parsed.manifest_name().to_owned();
     let node_tag = parsed.manifest_tag().to_owned();
+    fetch_active_instances_for_name_tag(messenger, core_node_name, node_name, node_tag, timeout)
+        .await
+}
 
+/// Queries the daemon for the `(name, tag)` entity in the stack and returns
+/// its active (`running`/`starting`) instance ids when present. Used by the
+/// `RepoNode` preflight, which already has `(name, tag)` in hand, and by
+/// the `Fs` wrapper above after it reads them from `peppy.json5`.
+async fn fetch_active_instances_for_name_tag(
+    messenger: &MessengerHandle,
+    core_node_name: &str,
+    node_name: String,
+    node_tag: String,
+    timeout: Duration,
+) -> Result<Option<(String, String, Vec<String>)>> {
     let response = NodeInfoRequest::new(node_name.clone(), node_tag.clone())
         .poll(
             messenger,
@@ -500,7 +535,7 @@ mod tests {
     #[test]
     fn apply_dep_variant_overrides_rejects_root_target_override() {
         let err = apply_dep_variant_overrides(
-            NodeSource::repo_node("camera", "1.0"),
+            NodeSource::repo_node("camera", "1.0").expect("valid repo-node"),
             vec![core_node::encoding::DepVariantOverride {
                 name: "camera".to_owned(),
                 tag: "1.0".to_owned(),
@@ -517,7 +552,7 @@ mod tests {
     #[test]
     fn apply_dep_variant_overrides_accepts_non_root_override() {
         let source = apply_dep_variant_overrides(
-            NodeSource::repo_node("camera", "1.0"),
+            NodeSource::repo_node("camera", "1.0").expect("valid repo-node"),
             vec![core_node::encoding::DepVariantOverride {
                 name: "dep".to_owned(),
                 tag: "0.2".to_owned(),

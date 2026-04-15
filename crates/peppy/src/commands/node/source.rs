@@ -81,7 +81,7 @@ pub fn parse_node_source(source: &str, git_ref: Option<String>) -> Result<NodeSo
         let (name, tag) = source
             .split_once(':')
             .expect("looks_like_repo_node_ref guarantees a ':'");
-        return Ok(NodeSource::repo_node(name, tag));
+        return NodeSource::repo_node(name, tag).map_err(|e| Error::ExecutionFailed(e.to_string()));
     }
 
     if git_ref.is_some() {

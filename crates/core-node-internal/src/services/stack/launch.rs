@@ -945,9 +945,8 @@ async fn add_nodes_to_stack(
                 STACK_LAUNCH_GIT_HASH,
                 goal_timeout_secs,
             ),
-            NodeSource::RepoNode { name, tag, .. } => NodeAddGoal::new_repo_node(
-                name.clone(),
-                tag.clone(),
+            NodeSource::RepoNode { .. } => NodeAddGoal::from_source(
+                item.source.clone(),
                 STACK_LAUNCH_GIT_HASH,
                 goal_timeout_secs,
             ),

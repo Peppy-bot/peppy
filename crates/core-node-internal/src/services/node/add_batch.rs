@@ -95,15 +95,18 @@ pub(crate) async fn run_repo_node_add(
         );
     }
 
-    let resolution = match resolve_transitive_closure(
-        &peppy_dirs,
-        &entries,
+    let resolution_ctx = BatchResolutionCtx {
+        peppy_dirs: &peppy_dirs,
+        entries: &entries,
         cache_generation,
+        feedback_tx: &feedback_tx,
+    };
+    let resolution = match resolve_transitive_closure(
+        resolution_ctx,
         &root_name,
         &root_tag,
         &dep_variant_overrides,
         &action_context,
-        &feedback_tx,
     )
     .await
     {
@@ -310,16 +313,29 @@ type MaterializeOutput = (
     Result<(PathBuf, ParsedNodeConfig), String>,
 );
 
-async fn resolve_transitive_closure<'a>(
+/// Bundles the cache/IO dependencies threaded through the batch-resolution
+/// pipeline so callers don't juggle half a dozen parallel borrows.
+#[derive(Clone, Copy)]
+struct BatchResolutionCtx<'a> {
     peppy_dirs: &'a PeppyDirs,
     entries: &'a [PackageEntry],
     cache_generation: Option<SystemTime>,
+    feedback_tx: &'a mpsc::UnboundedSender<FeedbackLine>,
+}
+
+async fn resolve_transitive_closure<'a>(
+    ctx: BatchResolutionCtx<'a>,
     root_name: &str,
     root_tag: &str,
     dep_overrides: &[DepVariantOverride],
     action_context: &NodeAddActionContext,
-    feedback_tx: &'a mpsc::UnboundedSender<FeedbackLine>,
 ) -> Result<Resolution, String> {
+    let BatchResolutionCtx {
+        peppy_dirs,
+        entries,
+        cache_generation,
+        feedback_tx,
+    } = ctx;
     let override_map: HashMap<(String, String), String> = dep_overrides
         .iter()
         .map(|o| ((o.name.clone(), o.tag.clone()), o.variant.clone()))

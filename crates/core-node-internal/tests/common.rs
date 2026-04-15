@@ -353,9 +353,12 @@ async fn send_node_add_and_wait_internal<'a>(
             result_timeout.as_secs(),
         ),
         NodeAddSource::RepoNode { name, tag } => {
-            let mut src = NodeSource::repo_node((*name).to_owned(), (*tag).to_owned());
+            let mut src = NodeSource::repo_node(*name, *tag)
+                .map_err(|e| format!("invalid repo-node source in test: {e}"))?;
             if !dep_variant_overrides.is_empty() {
-                src = src.with_dep_variant_overrides(dep_variant_overrides.clone());
+                src = src
+                    .with_dep_variant_overrides(dep_variant_overrides.clone())
+                    .map_err(|e| format!("invalid dep-variant override in test: {e}"))?;
             }
             NodeAddGoal::from_source(src, TEST_GIT_HASH, result_timeout.as_secs())
         }
