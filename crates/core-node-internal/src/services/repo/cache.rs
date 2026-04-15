@@ -54,14 +54,6 @@ fn is_false(b: &bool) -> bool {
     !*b
 }
 
-/// Reads the cache file and returns every entry, tagged with its
-/// originating `repo_id`. Missing or malformed files yield an empty
-/// vector — the orchestrator layer decides whether "no cache" is a
-/// user-facing error for a given call.
-pub fn load(peppy_dirs: &PeppyDirs) -> Result<Vec<PackageEntry>> {
-    load_with_generation(peppy_dirs).map(|(entries, _)| entries)
-}
-
 /// Reads the cache file plus the `packages.json5` generation used for
 /// the read.
 pub fn load_with_generation(
@@ -245,8 +237,9 @@ mod tests {
     fn load_returns_empty_when_file_missing() {
         let tmp = tempfile::tempdir().unwrap();
         let peppy_dirs = PeppyDirs::new(tmp.path());
-        let entries = load(&peppy_dirs).unwrap();
+        let (entries, generation) = load_with_generation(&peppy_dirs).unwrap();
         assert!(entries.is_empty());
+        assert!(generation.is_none());
     }
 
     #[test]
@@ -278,7 +271,8 @@ mod tests {
             },
         ];
         write_cache(&peppy_dirs, &input).unwrap();
-        let loaded = load(&peppy_dirs).unwrap();
+        let (loaded, generation) = load_with_generation(&peppy_dirs).unwrap();
+        assert!(generation.is_some());
         assert_eq!(loaded.len(), 2);
         assert_eq!(loaded[0].node_name, "a");
         assert_eq!(loaded[0].variants, vec!["sim".to_owned()]);

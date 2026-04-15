@@ -52,6 +52,20 @@ pub(crate) async fn run_repo_node_add(
         }
     };
 
+    if let Some(root_override) = dep_variant_overrides
+        .iter()
+        .find(|ov| ov.name == root_name && ov.tag == root_tag)
+    {
+        return fail(
+            &log_file,
+            &log_path,
+            format!(
+                "Dependency variant override {}:{}@{} targets the root repo node; use the root variant field instead",
+                root_override.name, root_override.tag, root_override.variant
+            ),
+        );
+    }
+
     emit(
         &feedback_tx,
         FeedbackStream::Stdout,

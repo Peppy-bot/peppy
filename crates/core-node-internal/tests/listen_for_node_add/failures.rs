@@ -222,6 +222,48 @@ async fn repo_node_add_fails_on_unknown_dep_variant() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn repo_node_add_rejects_root_target_dep_variant_override() {
+    let started = start_core_node_with_mock_messenger().await;
+    let node_stack = started.node_stack.clone();
+
+    let tmp = TempDir::new().unwrap();
+    let target_dir = tmp.path().join("target");
+    write_plain_peppy_json5(&target_dir, &minimal_dep_config("target", "1.0.0", &[]));
+
+    TestPackagesCache::new()
+        .fs_entry("target", "1.0.0", &target_dir, &[])
+        .write(&started.peppy_dirs);
+
+    let res = send_node_add_and_wait_with_dep_overrides(
+        &started.caller_handle,
+        &started.core_node_name,
+        NodeAddSource::RepoNode {
+            name: "target",
+            tag: "1.0.0",
+        },
+        None,
+        vec![DepVariantOverride {
+            name: "target".into(),
+            tag: "1.0.0".into(),
+            variant: "sim".into(),
+        }],
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        None,
+    )
+    .await
+    .expect("node_add should complete");
+
+    assert!(!res.success, "root-target dep override should be rejected");
+    let err = res.error_message.unwrap_or_default();
+    assert!(
+        err.contains("targets the root repo node") && err.contains("target:1.0.0@sim"),
+        "expected root-target override error; got: {err}"
+    );
+    assert_eq!(node_stack.len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn repo_node_add_rolls_back_on_mid_batch_failure() {
     let started = start_core_node_with_mock_messenger().await;
     let node_stack = started.node_stack.clone();

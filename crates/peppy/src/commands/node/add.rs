@@ -57,6 +57,33 @@ fn validate_git_ref(git_ref: Option<&str>) -> Result<Option<String>> {
     Ok(git_ref.map(str::to_owned))
 }
 
+fn apply_dep_variant_overrides(
+    node_source: NodeSource,
+    dep_overrides: Vec<core_node::encoding::DepVariantOverride>,
+) -> Result<NodeSource> {
+    if dep_overrides.is_empty() {
+        return Ok(node_source);
+    }
+
+    let NodeSource::RepoNode { name, tag, .. } = &node_source else {
+        return Err(Error::ExecutionFailed(
+            "`--variant <name>:<tag>@<variant>` dependency overrides are only valid when the source is `<name>:<tag>` (repo lookup)".to_owned(),
+        ));
+    };
+
+    if let Some(root_override) = dep_overrides
+        .iter()
+        .find(|ov| ov.name == *name && ov.tag == *tag)
+    {
+        return Err(Error::ExecutionFailed(format!(
+            "`--variant {}:{}@{}` targets the root repo-node source; use `--variant {}` to select the root variant",
+            root_override.name, root_override.tag, root_override.variant, root_override.variant
+        )));
+    }
+
+    Ok(node_source.with_dep_variant_overrides(dep_overrides))
+}
+
 pub fn add_node(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<()> {
     crate::commands::block_on(add_node_async(ctx, params))
 }
@@ -81,18 +108,7 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
     // validates there's at most one root --variant and rejects duplicate
     // dep entries.
     let (variant_source, dep_overrides) = split_variant_args(&variant)?;
-
-    // Dep-level variant overrides are only representable inside a `RepoNode`
-    // source — bake them in here, or reject the combination if the source
-    // kind wouldn't carry them.
-    if !dep_overrides.is_empty() {
-        if !matches!(&node_source, NodeSource::RepoNode { .. }) {
-            return Err(Error::ExecutionFailed(
-                "`--variant <name>:<tag>@<variant>` dependency overrides are only valid when the source is `<name>:<tag>` (repo lookup)".to_owned(),
-            ));
-        }
-        node_source = node_source.with_dep_variant_overrides(dep_overrides);
-    }
+    node_source = apply_dep_variant_overrides(node_source, dep_overrides)?;
 
     // `--sync` forces a `peppy node sync` *before* the add so the snapshot
     // taken by the daemon includes freshly regenerated peppygen output.
@@ -461,5 +477,66 @@ mod tests {
         let result = validate_git_ref(None).expect("should accept None");
 
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn apply_dep_variant_overrides_rejects_non_repo_source() {
+        let err = apply_dep_variant_overrides(
+            NodeSource::Fs(Path::new("/tmp/example").to_path_buf()),
+            vec![core_node::encoding::DepVariantOverride {
+                name: "camera".to_owned(),
+                tag: "1.0".to_owned(),
+                variant: "sim".to_owned(),
+            }],
+        )
+        .expect_err("non-repo source should reject dep overrides");
+
+        assert!(
+            err.to_string()
+                .contains("only valid when the source is `<name>:<tag>`")
+        );
+    }
+
+    #[test]
+    fn apply_dep_variant_overrides_rejects_root_target_override() {
+        let err = apply_dep_variant_overrides(
+            NodeSource::repo_node("camera", "1.0"),
+            vec![core_node::encoding::DepVariantOverride {
+                name: "camera".to_owned(),
+                tag: "1.0".to_owned(),
+                variant: "sim".to_owned(),
+            }],
+        )
+        .expect_err("root-target dep override should be rejected");
+
+        let msg = err.to_string();
+        assert!(msg.contains("targets the root repo-node source"));
+        assert!(msg.contains("use `--variant sim`"));
+    }
+
+    #[test]
+    fn apply_dep_variant_overrides_accepts_non_root_override() {
+        let source = apply_dep_variant_overrides(
+            NodeSource::repo_node("camera", "1.0"),
+            vec![core_node::encoding::DepVariantOverride {
+                name: "dep".to_owned(),
+                tag: "0.2".to_owned(),
+                variant: "sim".to_owned(),
+            }],
+        )
+        .expect("non-root override should be accepted");
+
+        match source {
+            NodeSource::RepoNode {
+                dep_variant_overrides,
+                ..
+            } => {
+                assert_eq!(dep_variant_overrides.len(), 1);
+                assert_eq!(dep_variant_overrides[0].name, "dep");
+                assert_eq!(dep_variant_overrides[0].tag, "0.2");
+                assert_eq!(dep_variant_overrides[0].variant, "sim");
+            }
+            other => panic!("expected repo-node source, got {other:?}"),
+        }
     }
 }

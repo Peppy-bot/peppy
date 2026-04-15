@@ -161,8 +161,8 @@ fn refresh_existing(
         .map_err(|e| format!("Failed to open cached checkout at {}: {}", dir.display(), e))?;
 
     // Attempt a shallow fetch of the current ref. Some transports reject
-    // depth(1) on refetch (local transport in particular); if that fails we
-    // just proceed with what's on disk.
+    // depth(1) on refetch (local transport in particular), so local repos
+    // skip the shallow option.
     let refspec = repo_ref.unwrap_or("HEAD");
     let fetch_result = repo.find_remote("origin").and_then(|mut remote| {
         let mut fetch_opts = git2::FetchOptions::new();
@@ -172,16 +172,29 @@ fn refresh_existing(
         }
         remote.fetch(&[refspec], Some(&mut fetch_opts), None)
     });
+
     if let Err(e) = fetch_result {
         on_feedback(&format!(
-            "Fetch for cached checkout failed ({e}); using existing working tree"
+            "Fetch for cached checkout failed ({e}); removing stale checkout and recloning"
         ));
+        drop(repo);
+        std::fs::remove_dir_all(dir).map_err(|remove_err| {
+            format!(
+                "Failed to remove stale cached checkout at {} after fetch failure: {}",
+                dir.display(),
+                remove_err
+            )
+        })?;
+        on_feedback(&format!(
+            "Recloning {} into cache at {}",
+            repo_url,
+            dir.display()
+        ));
+        return fresh_clone(dir, repo_url, repo_ref);
     }
 
-    if let Some(r) = repo_ref {
-        checkout_repo_ref(&repo, r)
-            .map_err(|e| format!("Failed to checkout ref '{}': {}", r, e))?;
-    }
+    checkout_repo_ref(&repo, "FETCH_HEAD")
+        .map_err(|e| format!("Failed to checkout fetched ref for '{}': {}", refspec, e))?;
     Ok(dir.to_path_buf())
 }
 
@@ -296,11 +309,12 @@ mod tests {
             &|_| {},
         )
         .expect("initial checkout");
-        assert!(checkout.join("tracked.txt").exists());
+        assert_eq!(
+            std::fs::read_to_string(checkout.join("tracked.txt")).unwrap(),
+            "first"
+        );
 
-        drop(repo);
-        let moved_repo_dir = source_parent.path().join("moved-source-repo");
-        std::fs::rename(&source_repo_dir, &moved_repo_dir).expect("move source repo away");
+        commit_file(&repo, &source_repo_dir, "second", "second commit");
 
         let same_generation_feedback = RefCell::new(Vec::new());
         let reused_checkout = ensure_checkout(
@@ -312,6 +326,11 @@ mod tests {
         )
         .expect("reuse checkout within same generation");
         assert_eq!(checkout, reused_checkout);
+        assert_eq!(
+            std::fs::read_to_string(reused_checkout.join("tracked.txt")).unwrap(),
+            "first",
+            "same packages cache generation should keep using the previously refreshed checkout"
+        );
         assert_eq!(
             same_generation_feedback.into_inner(),
             vec![format!(
@@ -335,17 +354,95 @@ mod tests {
         let refreshed_feedback = refreshed_feedback.into_inner();
         assert_eq!(checkout, refreshed_checkout);
         assert_eq!(
-            refreshed_feedback[0],
-            format!(
-                "Reusing cached checkout at {}",
-                refreshed_checkout.display()
-            )
+            std::fs::read_to_string(refreshed_checkout.join("tracked.txt")).unwrap(),
+            "second",
+            "new packages cache generation should refresh moving refs"
+        );
+        assert!(
+            refreshed_feedback.iter().any(|line| line
+                == &format!(
+                    "Reusing cached checkout at {}",
+                    refreshed_checkout.display()
+                )),
+            "new packages cache generation should refresh the cached checkout"
+        );
+    }
+
+    #[test]
+    fn ensure_checkout_reclones_after_failed_refetch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(tmp.path());
+        let first_generation = write_packages_cache_generation(&peppy_dirs, "initial", None);
+
+        let source_parent = tempfile::tempdir().unwrap();
+        let source_repo_dir = source_parent.path().join("source-repo");
+        std::fs::create_dir_all(&source_repo_dir).expect("create source repo dir");
+        let repo = git2::Repository::init(&source_repo_dir).expect("init source repo");
+        commit_file(&repo, &source_repo_dir, "first", "first commit");
+
+        let repo_url = source_repo_dir.display().to_string();
+        let repo_ref = repo
+            .head()
+            .expect("head")
+            .shorthand()
+            .expect("branch shorthand")
+            .to_owned();
+
+        let checkout = ensure_checkout(
+            &peppy_dirs,
+            &repo_url,
+            Some(&repo_ref),
+            Some(first_generation),
+            &|_| {},
+        )
+        .expect("initial checkout");
+        assert_eq!(
+            std::fs::read_to_string(checkout.join("tracked.txt")).unwrap(),
+            "first"
+        );
+
+        commit_file(&repo, &source_repo_dir, "second", "second commit");
+
+        let checkout_repo = git2::Repository::open(&checkout).expect("open cached checkout");
+        checkout_repo
+            .remote_set_url("origin", "/definitely/missing/remote")
+            .expect("corrupt cached origin URL");
+        drop(checkout_repo);
+
+        let second_generation =
+            write_packages_cache_generation(&peppy_dirs, "refreshed", Some(first_generation));
+        let refreshed_feedback = RefCell::new(Vec::new());
+        let refreshed_checkout = ensure_checkout(
+            &peppy_dirs,
+            &repo_url,
+            Some(&repo_ref),
+            Some(second_generation),
+            &|line| refreshed_feedback.borrow_mut().push(line.to_owned()),
+        )
+        .expect("refresh after failed fetch should recover via reclone");
+        let refreshed_feedback = refreshed_feedback.into_inner();
+
+        assert_eq!(checkout, refreshed_checkout);
+        assert_eq!(
+            std::fs::read_to_string(refreshed_checkout.join("tracked.txt")).unwrap(),
+            "second",
+            "failed refetch must not reuse the stale checkout contents"
         );
         assert!(
             refreshed_feedback
                 .iter()
                 .any(|line| line.contains("Fetch for cached checkout failed")),
-            "new packages cache generation should attempt a refetch instead of short-circuiting"
+            "expected feedback about the failed refetch"
+        );
+        assert!(
+            refreshed_feedback.iter().any(|line| {
+                line == &format!(
+                    "Recloning {} into cache at {}",
+                    repo_url,
+                    refreshed_checkout.display()
+                )
+            }),
+            "expected fallback reclone feedback, got: {refreshed_feedback:?}"
         );
     }
 }
