@@ -6,12 +6,10 @@ mod validation;
 
 pub use entity::{
     BuildContext, DependencySpec, InstanceState, NodeEntity, NodeStage, OutputSinks,
-    SerializedInstance, SerializedNodeGraph, StartContext, StartedInstanceCtx, TrackedNodeInstance,
-    WorkingDirGuard,
+    SerializedEdge, SerializedInstance, SerializedNode, SerializedNodeGraph, StartContext,
+    StartedInstanceCtx, TrackedNodeInstance, WorkingDirGuard,
 };
 pub use validation::{collect_dependency_specs, validate_dependency_specs};
-
-use entity::{SerializedEdge, SerializedNode};
 
 use crate::error::{Error, Result};
 use config::node::{Name, NodeConfig};
