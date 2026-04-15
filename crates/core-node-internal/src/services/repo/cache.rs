@@ -34,6 +34,11 @@ pub struct PackageEntry {
     /// refresh. `None` for FS and HTTP entries.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolved_ref: Option<String>,
+    /// Recorded SHA-256 for URL-kind entries, when the repository entry
+    /// pinned one at registration time. `None` for FS and Git entries,
+    /// and for URL entries whose repository did not declare a checksum.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checksum: Option<String>,
     /// Absolute path for FS entries; path-within-repo for Git entries.
     pub path: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -63,9 +68,14 @@ pub fn load_with_generation(
     let generation = std::fs::metadata(&path)
         .ok()
         .and_then(|m| m.modified().ok());
+    // `repo_id` on each cached entry is derived from `repositories.json5`,
+    // so the memo must invalidate when that file changes too (not just
+    // when packages.json5 is rewritten). Missing file → UNIX_EPOCH so any
+    // future appearance counts as a change.
+    let repos_mtime = repositories_mtime(peppy_dirs);
 
     if let Some(mtime) = generation
-        && let Some(cached) = memo_get(&path, mtime)
+        && let Some(cached) = memo_get(&path, mtime, repos_mtime)
     {
         return Ok(((*cached).clone(), Some(mtime)));
     }
@@ -105,9 +115,17 @@ pub fn load_with_generation(
     });
 
     if let Some(mtime) = generation {
-        memo_put(&path, mtime, entries.clone());
+        memo_put(&path, mtime, repos_mtime, entries.clone());
     }
     Ok((entries, generation))
+}
+
+fn repositories_mtime(peppy_dirs: &PeppyDirs) -> SystemTime {
+    let path = peppy_dirs.conf_dir().join("repositories.json5");
+    std::fs::metadata(&path)
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .unwrap_or(SystemTime::UNIX_EPOCH)
 }
 
 /// Write cached node information for git/url repositories.
@@ -170,6 +188,7 @@ pub fn cache_path(peppy_dirs: &PeppyDirs) -> PathBuf {
 
 struct MemoEntry {
     mtime: SystemTime,
+    repos_mtime: SystemTime,
     entries: Arc<Vec<PackageEntry>>,
 }
 
@@ -178,18 +197,23 @@ fn memo_map() -> &'static Mutex<HashMap<PathBuf, MemoEntry>> {
     MAP.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn memo_get(path: &Path, mtime: SystemTime) -> Option<Arc<Vec<PackageEntry>>> {
+fn memo_get(
+    path: &Path,
+    mtime: SystemTime,
+    repos_mtime: SystemTime,
+) -> Option<Arc<Vec<PackageEntry>>> {
     let map = memo_map().lock();
     map.get(path)
-        .filter(|e| e.mtime == mtime)
+        .filter(|e| e.mtime == mtime && e.repos_mtime == repos_mtime)
         .map(|e| Arc::clone(&e.entries))
 }
 
-fn memo_put(path: &Path, mtime: SystemTime, entries: Vec<PackageEntry>) {
+fn memo_put(path: &Path, mtime: SystemTime, repos_mtime: SystemTime, entries: Vec<PackageEntry>) {
     memo_map().lock().insert(
         path.to_path_buf(),
         MemoEntry {
             mtime,
+            repos_mtime,
             entries: Arc::new(entries),
         },
     );
@@ -206,6 +230,7 @@ mod tests {
             source_type: RepoSourceKind::Fs,
             source_uri: None,
             resolved_ref: None,
+            checksum: None,
             path: "/tmp/foo".to_owned(),
             variants: vec![],
             duplicate,
@@ -260,6 +285,7 @@ mod tests {
                 source_type: RepoSourceKind::Git,
                 source_uri: Some("https://example.com/repo.git".to_owned()),
                 resolved_ref: Some("main".to_owned()),
+                checksum: None,
                 path: "nodes/a".to_owned(),
                 variants: vec!["sim".to_owned()],
                 duplicate: false,
@@ -271,6 +297,7 @@ mod tests {
                 source_type: RepoSourceKind::Fs,
                 source_uri: None,
                 resolved_ref: None,
+                checksum: None,
                 path: "/tmp/b".to_owned(),
                 variants: vec![],
                 duplicate: true,

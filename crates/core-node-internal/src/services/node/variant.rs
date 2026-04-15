@@ -358,6 +358,40 @@ mod tests {
         assert!(err.contains("does not exist"), "unexpected error: {err}");
     }
 
+    #[tokio::test]
+    async fn repo_node_rejected_as_variant_selector() {
+        // Build a minimal root peppy.json5 so the test can construct a
+        // ParsedNodeConfig; its contents don't matter because the
+        // RepoNode arm returns `Err` before the root config is touched.
+        let tmp = tempdir().unwrap();
+        let root = tmp.path();
+        fs::write(
+            root.join(NODE_CONFIG_FILE),
+            r#"{
+                schema_version: 1,
+                manifest: {
+                    name: "host",
+                    tag: "0.0.0",
+                    variants: [
+                        { name: "default", source: { local: "./" } }
+                    ]
+                },
+                interfaces: {}
+            }"#,
+        )
+        .unwrap();
+        let root_config =
+            config::node::NodeConfigParser::from_path(root.join(NODE_CONFIG_FILE)).unwrap();
+
+        let variant = NodeSource::repo_node("some_dep", "1.2.3").unwrap();
+        let peppy_dirs = PeppyDirs::default();
+
+        match resolve_variant(&variant, &root_config, root, &peppy_dirs, None).await {
+            Err(msg) => assert_eq!(msg, "repo-node sources are not valid variant selectors"),
+            Ok(_) => panic!("expected RepoNode variant selector to be rejected"),
+        }
+    }
+
     #[cfg(unix)]
     #[test]
     fn validate_local_source_path_rejects_symlink_escape() {

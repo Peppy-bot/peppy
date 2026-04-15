@@ -977,18 +977,35 @@ async fn listen_for_node_add_variant_manifest_ignored_warning() {
         add_result.error_message
     );
 
-    // Collect feedback and verify the manifest-ignored warning was emitted
+    // The manifest-ignored warning is emitted asynchronously after the
+    // goal result, so drain `feedback_rx` with a bounded wait rather
+    // than a non-blocking `try_recv` that would race the publisher.
     let mut feedback = Vec::new();
-    while let Ok(entry) = feedback_rx.try_recv() {
-        feedback.push(entry);
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    let is_manifest_warning = |entry: &NodeAddFeedback| {
+        entry.is_stderr()
+            && entry.line.contains("manifest")
+            && entry.line.contains("ignored")
+            && entry.line.contains("custom")
+    };
+    let mut has_manifest_warning = false;
+    while std::time::Instant::now() < deadline {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        let poll = Duration::from_millis(500).min(remaining);
+        match tokio::time::timeout(poll, feedback_rx.recv()).await {
+            Ok(Some(entry)) => {
+                if is_manifest_warning(&entry) {
+                    has_manifest_warning = true;
+                    feedback.push(entry);
+                    break;
+                }
+                feedback.push(entry);
+            }
+            Ok(None) => break, // channel closed
+            Err(_) => {}       // timeout tick — keep polling until deadline
+        }
     }
 
-    let has_manifest_warning = feedback.iter().any(|f| {
-        f.is_stderr()
-            && f.line.contains("manifest")
-            && f.line.contains("ignored")
-            && f.line.contains("custom")
-    });
     assert!(
         has_manifest_warning,
         "should emit a warning about variant manifest being ignored, got feedback: {:?}",

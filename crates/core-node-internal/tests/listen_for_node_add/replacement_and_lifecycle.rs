@@ -725,8 +725,28 @@ async fn node_add_same_node_shutdown_existing_instances() {
         }
     }));
 
-    // Ensure shutdown services are fully registered before starting the overwrite.
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // Wait until both shutdown services are reachable through the broker.
+    // Replaces a fixed sleep that races against messenger registration.
+    super::wait_until_service_reachable(
+        &instance_messenger,
+        &started_core_node.core_node_name,
+        NODE_NAME,
+        SHUTDOWN_SERVICE,
+        &started_core_node.core_node_name,
+        INSTANCE_1,
+        Duration::from_secs(5),
+    )
+    .await;
+    super::wait_until_service_reachable(
+        &instance_messenger,
+        &started_core_node.core_node_name,
+        NODE_NAME,
+        SHUTDOWN_SERVICE,
+        &started_core_node.core_node_name,
+        INSTANCE_2,
+        Duration::from_secs(5),
+    )
+    .await;
 
     let source_dir_v2 = tempfile::tempdir().expect("failed to create temp source dir");
     let peppy_json5_v2 = r#"{
@@ -773,23 +793,21 @@ async fn node_add_same_node_shutdown_existing_instances() {
         .await
     });
 
-    // Wait for the first shutdown request: the overwrite must wait on the
-    // running instance to be shut down before it can replace the staged
-    // working directory.
-    tokio::time::timeout(Duration::from_secs(5), called_rx_1)
-        .await
-        .expect("shutdown request for instance 1 should arrive within timeout")
+    // Wait for both shutdown requests in parallel — the overwrite shuts
+    // both instances down concurrently, so awaiting them in sequence
+    // (with a notify between) makes the assertion order-dependent and
+    // racy.
+    let (rx_1, rx_2) = tokio::join!(
+        tokio::time::timeout(Duration::from_secs(5), called_rx_1),
+        tokio::time::timeout(Duration::from_secs(5), called_rx_2),
+    );
+    rx_1.expect("shutdown request for instance 1 should arrive within timeout")
         .expect("shutdown channel for instance 1 should not be dropped");
-
-    // Allow instance 1 shutdown response, then wait for instance 2 shutdown request.
-    allow_shutdown_1.notify_one();
-
-    tokio::time::timeout(Duration::from_secs(5), called_rx_2)
-        .await
-        .expect("shutdown request for instance 2 should arrive within timeout")
+    rx_2.expect("shutdown request for instance 2 should arrive within timeout")
         .expect("shutdown channel for instance 2 should not be dropped");
 
-    // Allow instance 2 shutdown response so the overwrite can proceed.
+    // Release both shutdown handlers so the overwrite can proceed.
+    allow_shutdown_1.notify_one();
     allow_shutdown_2.notify_one();
 
     let add_v2 = add_task
@@ -983,7 +1001,16 @@ async fn node_add_same_node_with_running_instance_and_dependents_succeeds() {
         }
     }));
 
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    super::wait_until_service_reachable(
+        &instance_messenger,
+        &started_core_node.core_node_name,
+        DEPENDENCY_NODE_NAME,
+        SHUTDOWN_SERVICE,
+        &started_core_node.core_node_name,
+        INSTANCE_ID,
+        Duration::from_secs(5),
+    )
+    .await;
 
     // Re-add the dependency with the same interface
     write_peppy_json5(dependency_source_dir_v2.path(), &dependency_peppy_json5);
@@ -1173,7 +1200,16 @@ async fn node_add_same_node_changing_interface_with_running_instance_and_depende
             .await
     }));
 
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    super::wait_until_service_reachable(
+        &instance_messenger,
+        &started_core_node.core_node_name,
+        DEPENDENCY_NODE_NAME,
+        SHUTDOWN_SERVICE,
+        &started_core_node.core_node_name,
+        INSTANCE_ID,
+        Duration::from_secs(5),
+    )
+    .await;
 
     // Try to overwrite with a different interface (new_service instead of reset_sensor).
     let dependency_peppy_json5_v2 = r#"{
@@ -1400,7 +1436,16 @@ async fn node_add_same_node_with_running_instance_and_dependents_fails_on_stoppe
             .await
     }));
 
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    super::wait_until_service_reachable(
+        &instance_messenger,
+        &started_core_node.core_node_name,
+        DEPENDENCY_NODE_NAME,
+        SHUTDOWN_SERVICE,
+        &started_core_node.core_node_name,
+        INSTANCE_ID,
+        Duration::from_secs(5),
+    )
+    .await;
 
     // Re-add with the same interface. The shutdown poll will time out after SHUTDOWN_TIMEOUT (5 s).
     write_peppy_json5(dependency_source_dir_v2.path(), &dependency_peppy_json5);

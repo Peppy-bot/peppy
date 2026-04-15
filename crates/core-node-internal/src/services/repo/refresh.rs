@@ -468,6 +468,7 @@ pub(crate) fn walk_directory(
             variants,
             duplicate: false,
             resolved_ref: resolved_ref.map(|s| s.to_string()),
+            checksum: None,
             repo_id: 0,
         });
     }

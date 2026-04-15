@@ -47,6 +47,46 @@ impl<T> Drop for AbortOnDrop<T> {
     }
 }
 
+/// Polls `ServiceMessenger::is_reachable` until the named service responds or
+/// `deadline` expires. Replaces fixed sleeps used as broker-propagation
+/// barriers in tests that spawn a `handle_requests` task and then need to
+/// be sure callers can route to it.
+pub async fn wait_until_service_reachable(
+    messenger: &MessengerHandle,
+    bound_core_node: &str,
+    target_node_name: &str,
+    target_service_name: &str,
+    target_core_node: &str,
+    target_instance_id: &str,
+    timeout: Duration,
+) {
+    use peppylib::messaging::ServiceMessenger;
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if let Ok(true) = ServiceMessenger::is_reachable(
+            messenger,
+            bound_core_node,
+            "ready_probe",
+            target_node_name,
+            target_service_name,
+            Some(target_core_node),
+            Some(target_instance_id),
+        )
+        .await
+        {
+            return;
+        }
+        if std::time::Instant::now() >= deadline {
+            panic!(
+                "service {target_node_name}/{target_service_name} on \
+                 {target_core_node}/{target_instance_id} did not become \
+                 reachable within {timeout:?}"
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
 fn init_test_data_dir() -> (TempDir, PeppyDirs) {
     // Place test data under $HOME so paths are visible inside the Lima VM on macOS.
     // Lima 2.0+ only mounts ~ into the guest; system temp (/var/folders/...) is inaccessible.
@@ -63,6 +103,7 @@ pub const TEST_GIT_HASH: &str = "test-hash";
 
 /// Source for a node to be added. Used by `send_node_add_and_wait` to support
 /// filesystem paths, git repositories, and HTTP URLs.
+#[derive(Debug)]
 pub enum NodeAddSource<'a> {
     /// Add from a local filesystem path.
     Path(&'a Path),
@@ -305,6 +346,17 @@ async fn send_node_add_and_wait_internal<'a>(
 ) -> Result<NodeAddResult, String> {
     let source = source.into();
 
+    // Dep-variant overrides are only representable on RepoNode sources.
+    // If a test supplies them with any other source kind, that is a bug in
+    // the test — fail loudly instead of silently dropping them and
+    // running down the wrong code path.
+    if !dep_variant_overrides.is_empty() && !matches!(source, NodeAddSource::RepoNode { .. }) {
+        return Err(format!(
+            "dep_variant_overrides only allowed with RepoNode sources, got {:?}",
+            source
+        ));
+    }
+
     let mut goal = match &source {
         NodeAddSource::Path(path) => {
             // For directory sources, ensure the git hash file exists. Archive sources must
@@ -365,12 +417,6 @@ async fn send_node_add_and_wait_internal<'a>(
     }
     .with_env_vars(env_vars)
     .with_force(force);
-
-    // Dep-variant overrides are meaningful only for RepoNode sources
-    // (the encoding makes them unrepresentable elsewhere). For other
-    // source kinds, the helper silently drops them — matching the CLI,
-    // which rejects the combination at parse time.
-    let _ = dep_variant_overrides;
 
     if let Some(v) = variant {
         goal = goal.with_variant_source(v);

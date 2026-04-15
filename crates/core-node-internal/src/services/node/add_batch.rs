@@ -25,9 +25,16 @@ use std::fs::File;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::SystemTime;
-use tokio::sync::mpsc;
+use tokio::sync::{Semaphore, mpsc};
 use tracing::{debug, warn};
 use url::Url;
+
+/// Upper bound on concurrently-running `materialize_entry` tasks inside a
+/// single batch. Bundles are materialized through git clones and HTTP
+/// downloads; spawning an unbounded number of them at once thrashes disk
+/// and network. 8 is empirical — enough to overlap IO latency, low
+/// enough to avoid saturating a developer laptop.
+const MATERIALIZE_CONCURRENCY: usize = 8;
 
 /// Entry point called from `handle_goal_request` when
 /// `goal.source` is `NodeSource::RepoNode`.
@@ -196,6 +203,22 @@ pub(crate) async fn run_repo_node_add(
             ),
         );
 
+        // Snapshot any pre-existing config before the sub-add replaces it
+        // in place. On rollback we re-install this config instead of
+        // removing the slot, so an in-place replacement that later fails
+        // elsewhere in the batch does not wipe the user's prior state.
+        let previous = action_context
+            .node_stack
+            .find(&node.name, &node.tag)
+            .map(|handle| {
+                let guard = handle.read();
+                PreviousConfig {
+                    config: guard.config().clone(),
+                    config_path: guard.config_path().to_path_buf(),
+                    variant_name: guard.variant_name().map(ToString::to_string),
+                }
+            });
+
         let sub_result =
             match run_single_batched_add(node, &goal, &action_context, &feedback_tx).await {
                 Ok(r) => r,
@@ -220,7 +243,11 @@ pub(crate) async fn run_repo_node_add(
         }
 
         last_sub_log_path = Some(sub_result.log_path.clone());
-        rollback.added.push((node.name.clone(), node.tag.clone()));
+        rollback.added.push(RollbackEntry {
+            name: node.name.clone(),
+            tag: node.tag.clone(),
+            previous,
+        });
     }
 
     // Batch succeeded — defuse rollback and report.
@@ -309,6 +336,7 @@ async fn resolve_transitive_closure<'a>(
     let mut pending: Vec<(String, String, bool)> =
         vec![(root_name.to_owned(), root_tag.to_owned(), true)];
     let mut in_flight: FuturesUnordered<BoxFuture<'a, MaterializeOutput>> = FuturesUnordered::new();
+    let semaphore = Arc::new(Semaphore::new(MATERIALIZE_CONCURRENCY));
 
     loop {
         while let Some((name, tag, is_root)) = pending.pop() {
@@ -326,7 +354,12 @@ async fn resolve_transitive_closure<'a>(
             };
             let entry = entry.clone();
             let source_kind = entry.source_type;
+            let permit_source = Arc::clone(&semaphore);
             in_flight.push(Box::pin(async move {
+                let _permit = permit_source
+                    .acquire_owned()
+                    .await
+                    .expect("materialize semaphore is never closed");
                 let result =
                     materialize_entry(&entry, peppy_dirs, cache_generation, feedback_tx).await;
                 (name, tag, is_root, source_kind, result)
@@ -462,7 +495,7 @@ async fn materialize_entry(
             let url = Url::parse(url_str)
                 .map_err(|e| format!("Http cache entry has invalid URL '{url_str}': {e}"))?;
             let fb = feedback_tx.clone();
-            node_cache::ensure_bundle(peppy_dirs, &url, None, &move |line| {
+            node_cache::ensure_bundle(peppy_dirs, &url, entry.checksum.clone(), &move |line| {
                 let _ = fb.send(FeedbackLine {
                     stream: FeedbackStream::Stdout,
                     line: line.to_owned(),
@@ -541,13 +574,31 @@ async fn run_single_batched_add(
     Ok(result)
 }
 
-/// Drop-based rollback: if the guard is dropped armed, every
-/// `(name, tag)` in `added` is removed from the node stack in reverse
-/// order (so dependants go first, then deps). On success, call
-/// [`RollbackGuard::disarm`].
+/// Snapshot of a stack entity captured before the batch replaced it, so
+/// rollback can re-install the prior config instead of removing the slot.
+/// Artifact/stage state is intentionally omitted — a successful rollback
+/// returns the entity to `Added` (pending build); any previously built
+/// artifact remains on disk and a follow-up `node build` rewires it.
+struct PreviousConfig {
+    config: config::node::NodeConfig,
+    config_path: PathBuf,
+    variant_name: Option<String>,
+}
+
+struct RollbackEntry {
+    name: String,
+    tag: String,
+    previous: Option<PreviousConfig>,
+}
+
+/// Drop-based rollback: if the guard is dropped armed, every entry in
+/// `added` is undone in reverse order (so dependants go first, then
+/// deps). Entries that replaced an existing config restore the previous
+/// state via `push_config_with_variant`; entries that introduced a new
+/// slot are removed. On success, call [`RollbackGuard::disarm`].
 struct RollbackGuard {
     node_stack: Arc<node_stack::NodeStack>,
-    added: Vec<(String, String)>,
+    added: Vec<RollbackEntry>,
     armed: bool,
 }
 
@@ -570,11 +621,29 @@ impl Drop for RollbackGuard {
         if !self.armed {
             return;
         }
-        for (name, tag) in self.added.drain(..).rev() {
-            if let Err(e) = self.node_stack.remove_config(&name, &tag) {
-                warn!("Batch-add rollback failed for {}:{} — {}", name, tag, e);
-            } else {
-                debug!("Rolled back batched add of {}:{}", name, tag);
+        for entry in self.added.drain(..).rev() {
+            let RollbackEntry {
+                name,
+                tag,
+                previous,
+            } = entry;
+            match previous {
+                Some(prev) => match self.node_stack.push_config_with_variant(
+                    prev.config,
+                    false,
+                    prev.config_path,
+                    prev.variant_name,
+                ) {
+                    Ok(()) => debug!("Rolled back batched replacement of {}:{}", name, tag),
+                    Err(e) => warn!(
+                        "Batch-add rollback (restore previous) failed for {}:{} — {}",
+                        name, tag, e
+                    ),
+                },
+                None => match self.node_stack.remove_config(&name, &tag) {
+                    Ok(_) => debug!("Rolled back batched add of {}:{}", name, tag),
+                    Err(e) => warn!("Batch-add rollback failed for {}:{} — {}", name, tag, e),
+                },
             }
         }
     }

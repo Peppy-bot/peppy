@@ -42,11 +42,30 @@ pub(crate) fn validate_goal_env_vars(
 ) -> Result<Vec<(String, String)>> {
     let mut result = Vec::with_capacity(env_vars.len());
     for (key, value) in env_vars {
-        let normalized = key.trim().to_ascii_uppercase();
+        let trimmed = key.trim();
+        if trimmed.is_empty() {
+            return Err(Error::InvalidEnvVar("empty key".to_string()));
+        }
+        if trimmed.contains('=') {
+            return Err(Error::InvalidEnvVar(format!(
+                "key '{trimmed}' contains '='"
+            )));
+        }
+        if trimmed.as_bytes().contains(&0) {
+            return Err(Error::InvalidEnvVar(format!(
+                "key '{trimmed}' contains a NUL byte"
+            )));
+        }
+        if value.as_bytes().contains(&0) {
+            return Err(Error::InvalidEnvVar(format!(
+                "value for key '{trimmed}' contains a NUL byte"
+            )));
+        }
+        let normalized = trimmed.to_ascii_uppercase();
         if FORBIDDEN_ENV_KEYS.contains(&normalized.as_str()) {
             return Err(Error::ForbiddenEnvVar(normalized));
         }
-        result.push((key.trim().to_string(), value.clone()));
+        result.push((trimmed.to_string(), value.clone()));
     }
     Ok(result)
 }

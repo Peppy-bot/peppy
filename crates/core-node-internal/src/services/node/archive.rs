@@ -61,15 +61,16 @@ pub(crate) fn locate_node_root_dir(extracted_dir: &Path) -> std::result::Result<
         }
     }
 
-    if candidate_dirs.len() == 1 {
-        let candidate = candidate_dirs.pop().expect("candidate dir should exist");
-        if candidate.join(NODE_CONFIG_FILE).is_file() {
-            return Ok(candidate);
-        }
+    let mut matching_dirs: Vec<PathBuf> = candidate_dirs
+        .into_iter()
+        .filter(|candidate| candidate.join(NODE_CONFIG_FILE).is_file())
+        .collect();
+    if matching_dirs.len() == 1 {
+        return Ok(matching_dirs.pop().expect("matching dir should exist"));
     }
 
     Err(format!(
-        "Bundle does not contain {} at the root (or single top-level folder)",
+        "Bundle does not contain {} at the root (or exactly one top-level folder)",
         NODE_CONFIG_FILE
     ))
 }

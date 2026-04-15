@@ -116,6 +116,20 @@ pub async fn ensure_bundle(
     let sha_final = sha256.clone();
     tokio::task::spawn_blocking(move || {
         let _guard = lock.lock();
+        // Another caller may have promoted the bundle while we were
+        // downloading/extracting. If the cache is already populated with
+        // a matching sha, discard our extraction instead of wiping it.
+        if let Some(root) = cached_node_root(&target_final, Some(sha_final.as_str())) {
+            if let Some(src_parent) = extracted.source_path.parent() {
+                let _ = std::fs::remove_dir_all(src_parent);
+            } else {
+                let _ = std::fs::remove_dir_all(&extracted.source_path);
+            }
+            if let Some(op_dir) = extracted.cleanup_dir.as_ref() {
+                let _ = std::fs::remove_dir_all(op_dir);
+            }
+            return Ok(root);
+        }
         let _ = std::fs::remove_dir_all(&target_final);
         if let Some(parent) = target_final.parent() {
             std::fs::create_dir_all(parent).map_err(|e| {

@@ -233,7 +233,13 @@ pub fn parse_variant_arg(arg: &str) -> Result<VariantArg> {
 /// - `left` must not look like a git URL (no `.git`, no scheme) —
 ///   otherwise the `@` is a ref marker for [`parse_variant_source`].
 fn looks_like_dep_override_shape(left: &str, right: &str, original: &str) -> bool {
-    if !left.contains(':') {
+    // Exactly one `:` (the name:tag separator) — `a:b:c` is malformed.
+    if left.matches(':').count() != 1 {
+        return false;
+    }
+    // `rsplit_once('@')` already peeled off the variant; any remaining `@`
+    // in `left` means the original had multiple `@`s (e.g. `a:b@c@v`).
+    if left.contains('@') {
         return false;
     }
     // A URL (http://…) will contain `://` — and that colon must not be
@@ -512,6 +518,33 @@ mod tests {
         assert!(parse_variant_arg("foo:tag@").is_err());
         // Empty name before ':'
         assert!(parse_variant_arg(":tag@variant").is_err());
+    }
+
+    #[test]
+    fn parse_variant_arg_rejects_extra_colons_in_dep_shape() {
+        // `a:b:c@v` has two `:` in the left — it is not a well-formed
+        // dep override and must not produce `VariantArg::Dep`. It should
+        // fall through to `parse_variant_source` and be treated as a
+        // (malformed but non-dep) plain-name root variant.
+        let got = parse_variant_arg("a:b:c@v").unwrap();
+        assert!(
+            !matches!(got, VariantArg::Dep(_)),
+            "expected non-Dep parse for 'a:b:c@v', got {:?}",
+            got
+        );
+    }
+
+    #[test]
+    fn parse_variant_arg_rejects_extra_at_in_dep_shape() {
+        // `a:b@c@v` — after peeling the last `@`, `left = "a:b@c"` still
+        // contains `@`, which means the string has too many `@` markers
+        // for a dep override.
+        let got = parse_variant_arg("a:b@c@v").unwrap();
+        assert!(
+            !matches!(got, VariantArg::Dep(_)),
+            "expected non-Dep parse for 'a:b@c@v', got {:?}",
+            got
+        );
     }
 
     #[test]
