@@ -7,6 +7,8 @@ dependencies = ["httpx", "rich"]
 [project.scripts]
 build-release = "functions.build_release:main"
 build-base-images = "functions.docker:main"
+is-doc-up-to-date = "functions.docs:check_main"
+update-docs = "functions.docs:update_main"
 
 [build-system]
 requires = ["hatchling"]
