@@ -54,6 +54,35 @@ fn entity_instance_count(node_stack: &node_stack::NodeStack, name: &str, tag: &s
         .len()
 }
 
+/// Builds a minimal `peppy.json5` document string for a node with the given
+/// name, tag, and optional `(name, tag)` dependencies.
+fn minimal_node_config(name: &str, tag: &str, deps: &[(&str, &str)]) -> String {
+    let depends_on = if deps.is_empty() {
+        String::new()
+    } else {
+        let nodes = deps
+            .iter()
+            .map(|(n, t)| format!(r#"{{ name: "{n}", tag: "{t}", local_id: "{n}" }}"#))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!(r#"depends_on: {{ nodes: [{nodes}] }},"#)
+    };
+    format!(
+        r#"{{
+            schema_version: 1,
+            manifest: {{
+                name: "{name}",
+                tag: "{tag}",
+                {depends_on}
+            }},
+            execution: {{
+                language: "rust",
+                run_cmd: ["sleep", "10"]
+            }}
+        }}"#
+    )
+}
+
 /// Creates a minimal node bundle (peppy.json5 + tar.zst) suitable for HTTP source tests.
 /// Returns the temp directory (must be kept alive) and the compressed bundle bytes.
 fn create_minimal_http_bundle(node_name: &str, node_tag: &str) -> (TempDir, Vec<u8>) {

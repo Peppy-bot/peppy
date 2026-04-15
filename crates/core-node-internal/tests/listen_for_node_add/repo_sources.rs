@@ -4,33 +4,6 @@ use common::{
 };
 use core_node::encoding::DepVariantOverride;
 
-fn minimal_node_config(name: &str, tag: &str, deps: &[(&str, &str)]) -> String {
-    let depends_on = if deps.is_empty() {
-        String::new()
-    } else {
-        let nodes = deps
-            .iter()
-            .map(|(n, t)| format!(r#"{{ name: "{n}", tag: "{t}", local_id: "{n}" }}"#))
-            .collect::<Vec<_>>()
-            .join(", ");
-        format!(r#"depends_on: {{ nodes: [{nodes}] }},"#)
-    };
-    format!(
-        r#"{{
-            schema_version: 1,
-            manifest: {{
-                name: "{name}",
-                tag: "{tag}",
-                {depends_on}
-            }},
-            execution: {{
-                language: "rust",
-                run_cmd: ["sleep", "10"]
-            }}
-        }}"#
-    )
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn repo_node_add_single_no_deps_fs_source() {
     let started = start_core_node_with_mock_messenger().await;

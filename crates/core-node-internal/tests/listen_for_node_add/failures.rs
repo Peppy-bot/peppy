@@ -4,33 +4,6 @@ use common::{
 };
 use core_node::encoding::DepVariantOverride;
 
-fn minimal_dep_config(name: &str, tag: &str, deps: &[(&str, &str)]) -> String {
-    let depends_on = if deps.is_empty() {
-        String::new()
-    } else {
-        let nodes = deps
-            .iter()
-            .map(|(n, t)| format!(r#"{{ name: "{n}", tag: "{t}", local_id: "{n}" }}"#))
-            .collect::<Vec<_>>()
-            .join(", ");
-        format!(r#"depends_on: {{ nodes: [{nodes}] }},"#)
-    };
-    format!(
-        r#"{{
-            schema_version: 1,
-            manifest: {{
-                name: "{name}",
-                tag: "{tag}",
-                {depends_on}
-            }},
-            execution: {{
-                language: "rust",
-                run_cmd: ["sleep", "10"]
-            }}
-        }}"#
-    )
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn repo_node_add_fails_when_packages_cache_missing() {
     let started = start_core_node_with_mock_messenger().await;
@@ -70,7 +43,7 @@ async fn repo_node_add_fails_when_root_node_unknown() {
 
     let tmp = TempDir::new().unwrap();
     let some_dir = tmp.path().join("other");
-    write_plain_peppy_json5(&some_dir, &minimal_dep_config("other", "0.1.0", &[]));
+    write_plain_peppy_json5(&some_dir, &minimal_node_config("other", "0.1.0", &[]));
 
     TestPackagesCache::new()
         .fs_entry("other", "0.1.0", &some_dir, &[])
@@ -108,7 +81,7 @@ async fn repo_node_add_fails_when_dep_missing_in_cache() {
     let target_dir = tmp.path().join("target");
     write_plain_peppy_json5(
         &target_dir,
-        &minimal_dep_config("target", "1.0.0", &[("missing_dep", "9.9.9")]),
+        &minimal_node_config("target", "1.0.0", &[("missing_dep", "9.9.9")]),
     );
 
     // Target is in the cache, but missing_dep is not.
@@ -147,8 +120,8 @@ async fn repo_node_add_fails_on_cycle() {
     let tmp = TempDir::new().unwrap();
     let a_dir = tmp.path().join("a");
     let b_dir = tmp.path().join("b");
-    write_plain_peppy_json5(&a_dir, &minimal_dep_config("a", "0.1.0", &[("b", "0.1.0")]));
-    write_plain_peppy_json5(&b_dir, &minimal_dep_config("b", "0.1.0", &[("a", "0.1.0")]));
+    write_plain_peppy_json5(&a_dir, &minimal_node_config("a", "0.1.0", &[("b", "0.1.0")]));
+    write_plain_peppy_json5(&b_dir, &minimal_node_config("b", "0.1.0", &[("a", "0.1.0")]));
 
     TestPackagesCache::new()
         .fs_entry("a", "0.1.0", &a_dir, &[])
@@ -180,11 +153,11 @@ async fn repo_node_add_fails_on_unknown_dep_variant() {
 
     let tmp = TempDir::new().unwrap();
     let dep_dir = tmp.path().join("dep");
-    write_plain_peppy_json5(&dep_dir, &minimal_dep_config("dep", "0.1.0", &[]));
+    write_plain_peppy_json5(&dep_dir, &minimal_node_config("dep", "0.1.0", &[]));
     let target_dir = tmp.path().join("target");
     write_plain_peppy_json5(
         &target_dir,
-        &minimal_dep_config("target", "1.0.0", &[("dep", "0.1.0")]),
+        &minimal_node_config("target", "1.0.0", &[("dep", "0.1.0")]),
     );
 
     TestPackagesCache::new()
@@ -228,7 +201,7 @@ async fn repo_node_add_rejects_root_target_dep_variant_override() {
 
     let tmp = TempDir::new().unwrap();
     let target_dir = tmp.path().join("target");
-    write_plain_peppy_json5(&target_dir, &minimal_dep_config("target", "1.0.0", &[]));
+    write_plain_peppy_json5(&target_dir, &minimal_node_config("target", "1.0.0", &[]));
 
     TestPackagesCache::new()
         .fs_entry("target", "1.0.0", &target_dir, &[])
@@ -270,7 +243,7 @@ async fn repo_node_add_rolls_back_on_mid_batch_failure() {
 
     let tmp = TempDir::new().unwrap();
     let b_dir = tmp.path().join("b");
-    write_plain_peppy_json5(&b_dir, &minimal_dep_config("b", "0.1.0", &[]));
+    write_plain_peppy_json5(&b_dir, &minimal_node_config("b", "0.1.0", &[]));
 
     // C declares a dep on `ghost_dep` that is NOT in the cache. The
     // resolver collects this as a "missing" dep and must fail cleanly
@@ -278,12 +251,12 @@ async fn repo_node_add_rolls_back_on_mid_batch_failure() {
     let c_dir = tmp.path().join("c");
     write_plain_peppy_json5(
         &c_dir,
-        &minimal_dep_config("c", "0.1.0", &[("ghost_dep", "9.9.9")]),
+        &minimal_node_config("c", "0.1.0", &[("ghost_dep", "9.9.9")]),
     );
     let a_dir = tmp.path().join("a");
     write_plain_peppy_json5(
         &a_dir,
-        &minimal_dep_config("a", "0.1.0", &[("b", "0.1.0"), ("c", "0.1.0")]),
+        &minimal_node_config("a", "0.1.0", &[("b", "0.1.0"), ("c", "0.1.0")]),
     );
 
     TestPackagesCache::new()

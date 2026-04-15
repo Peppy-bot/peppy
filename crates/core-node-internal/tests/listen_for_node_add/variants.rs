@@ -583,7 +583,7 @@ async fn listen_for_node_add_variant_not_found() {
             name: "test_node",
             tag: "0.1.0",
             variants: [
-                { name: "real", source: { local: "real_variant2" } }
+                { name: "real", source: { local: "real_variant" } }
             ]
         },
         execution: {
@@ -1342,7 +1342,10 @@ async fn listen_for_node_add_git_variant_verifies_git_hash_at_root() {
     }"#
     .replace("ROOT_NODE_NAME", ROOT_NODE_NAME)
     .replace("ROOT_NODE_TAG", ROOT_NODE_TAG)
-    .replace("REPO_PATH", &git_repo_path.display().to_string());
+    .replace(
+        "REPO_PATH",
+        &git_repo_path.to_string_lossy().replace('\\', "/"),
+    );
     write_peppy_json5(&root_dir, &root_config);
 
     // The test helper (send_node_add_and_wait_with_variant) auto-provisions
