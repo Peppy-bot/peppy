@@ -5,12 +5,11 @@ use crate::encoding::{
 };
 use crate::names;
 use crate::services::action_loop::{ActionResult, ActionState, GoalHandler, run_action_loop};
-use crate::services::node::checkout_repo_ref;
+use crate::services::node::clone_with_progress;
 use crate::services::repo::exclude::ExclusionSet;
 use crate::services::repo::normalize_repo_entries;
 use config::consts::{NODE_CONFIG_FILE, PeppyDirs};
 use config::node::NodeConfigParser;
-use git2::build::RepoBuilder;
 use peppylib::messaging::{ServiceRequestContext, TopicPublisher};
 use peppylib::types::Payload;
 use peppylib::{ActionMessenger, MessengerHandle, PeppyError, PeppyResult};
@@ -18,7 +17,7 @@ use serde_json::Value;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use tracing::{debug, warn};
@@ -182,22 +181,7 @@ impl GoalHandler for RepoRefreshGoalHandler {
     }
 }
 
-#[derive(Debug, Clone)]
-pub(crate) struct DiscoveredNode {
-    pub(crate) node_name: String,
-    pub(crate) node_tag: String,
-    pub(crate) source_type: RepoSourceKind,
-    pub(crate) path: String,
-    pub(crate) source_uri: Option<String>,
-    pub(crate) variants: Vec<String>,
-    /// `true` when another repository (with lower id) already provides this
-    /// `(name, tag)` pair. The node is still recorded so that `repo list` can
-    /// display all sources.
-    pub(crate) duplicate: bool,
-    /// For git-source nodes, the short ref name (branch/tag) actually checked
-    /// out after clone (e.g. `"main"`). `None` for fs/url sources.
-    pub(crate) resolved_ref: Option<String>,
-}
+pub(crate) use crate::services::repo::cache::PackageEntry as DiscoveredNode;
 
 /// A repository that was skipped during refresh because it appears in the
 /// `excluded_repositories.json5` configuration.
@@ -408,8 +392,14 @@ pub(crate) fn walk_directory(
     nodes: &mut Vec<DiscoveredNode>,
     excluded_paths: &[PathBuf],
 ) {
+    // Canonicalize the root so that paths emitted by the walker share a
+    // common prefix representation with the excluded paths (which come from
+    // `ExclusionSet::load` already canonicalized). Without this, macOS
+    // `/var/...` symlinks break subdirectory exclusion: the walker emits
+    // `/var/...` while excluded paths resolve to `/private/var/...`.
+    let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
     let excluded = excluded_paths.to_vec();
-    let walker = ignore::WalkBuilder::new(root)
+    let walker = ignore::WalkBuilder::new(&root)
         .hidden(true)
         .filter_entry(move |entry| {
             if !entry.file_type().is_some_and(|ft| ft.is_dir()) {
@@ -458,7 +448,7 @@ pub(crate) fn walk_directory(
             // For git repos, store relative path from repo root
             config_path
                 .parent()
-                .and_then(|p| p.strip_prefix(root).ok())
+                .and_then(|p| p.strip_prefix(&root).ok())
                 .map(|p| p.to_string_lossy().into_owned())
                 .unwrap_or_default()
         } else {
@@ -478,67 +468,23 @@ pub(crate) fn walk_directory(
             variants,
             duplicate: false,
             resolved_ref: resolved_ref.map(|s| s.to_string()),
+            checksum: None,
+            repo_id: 0,
         });
     }
 }
 
-/// Shallow-clone a git repository into `dst` and check out `repo_ref` if set.
-///
-/// While cloning, throttled transfer-progress feedback is emitted through
-/// `on_feedback` so the caller can surface real-time bytes/objects counts
-/// instead of sitting silent for the duration of the clone.
-///
-/// Shallow (`depth=1`) clones are only requested when the URL will be served
-/// through libgit2's smart transport. Raw filesystem paths and `file://`
-/// URLs both dispatch to libgit2's local transport, which rejects
-/// `depth(1)` with "shallow fetch is not supported by the local transport"
-/// — so for those inputs we fall back to a full clone.
+/// Shallow-clone a git repository into `dst` and check out `repo_ref` if set,
+/// forwarding throttled transfer-progress lines into `on_feedback`.
 pub(crate) fn clone_shallow(
     repo_url: &str,
     repo_ref: Option<&str>,
     dst: &Path,
     on_feedback: &mut dyn FnMut(RepoRefreshFeedback),
 ) -> std::result::Result<git2::Repository, String> {
-    let is_local = repo_url.starts_with('/') || repo_url.starts_with("file://");
-
-    // Declared before `builder` so they outlive the builder's borrow of
-    // them via the `transfer_progress` callback (drop order is reverse of
-    // declaration order).
-    let mut last_report = Instant::now();
-    let repo_url_owned = repo_url.to_string();
-    let mut builder = RepoBuilder::new();
-    if !is_local {
-        let mut callbacks = git2::RemoteCallbacks::new();
-        callbacks.transfer_progress(|progress| {
-            if last_report.elapsed() >= Duration::from_millis(500) {
-                last_report = Instant::now();
-                on_feedback(RepoRefreshFeedback::new_progress(format!(
-                    "Cloning {}: received {}/{} objects ({})",
-                    repo_url_owned,
-                    progress.received_objects(),
-                    progress.total_objects(),
-                    format_bytes(progress.received_bytes()),
-                )));
-            }
-            true
-        });
-
-        let mut fetch_opts = git2::FetchOptions::new();
-        fetch_opts.depth(1);
-        fetch_opts.remote_callbacks(callbacks);
-        builder.fetch_options(fetch_opts);
-    }
-
-    let repo = builder
-        .clone(repo_url, dst)
-        .map_err(|e| format!("failed to clone: {}", e))?;
-
-    if let Some(r) = repo_ref {
-        checkout_repo_ref(&repo, r)
-            .map_err(|e| format!("failed to checkout ref '{}': {}", r, e))?;
-    }
-
-    Ok(repo)
+    clone_with_progress(repo_url, repo_ref, dst, true, &mut |line| {
+        on_feedback(RepoRefreshFeedback::new_progress(line.to_owned()));
+    })
 }
 
 fn clone_and_walk_git_repo(
@@ -574,61 +520,7 @@ fn clone_and_walk_git_repo(
     Ok(nodes)
 }
 
-fn format_bytes(bytes: usize) -> String {
-    const KB: f64 = 1024.0;
-    const MB: f64 = 1024.0 * 1024.0;
-    let b = bytes as f64;
-    if b >= MB {
-        format!("{:.1} MB", b / MB)
-    } else if b >= KB {
-        format!("{:.0} KB", b / KB)
-    } else {
-        format!("{} B", bytes)
-    }
-}
-
-/// Write cached node information for git/url repositories.
-pub(crate) fn write_cache(peppy_dirs: &PeppyDirs, nodes: &[DiscoveredNode]) -> Result<()> {
-    let cache_dir = peppy_dirs.cache_dir();
-    std::fs::create_dir_all(&cache_dir)?;
-
-    let cache_entries: Vec<Value> = nodes
-        .iter()
-        .map(|n| {
-            let mut map = serde_json::Map::new();
-            map.insert("node_name".to_string(), Value::String(n.node_name.clone()));
-            map.insert("node_tag".to_string(), Value::String(n.node_tag.clone()));
-            map.insert(
-                "source_type".to_string(),
-                Value::String(n.source_type.as_str().to_string()),
-            );
-            if let Some(url) = &n.source_uri {
-                map.insert("source_uri".to_string(), Value::String(url.clone()));
-            }
-            if let Some(r) = &n.resolved_ref {
-                map.insert("resolved_ref".to_string(), Value::String(r.clone()));
-            }
-            map.insert("path".to_string(), Value::String(n.path.clone()));
-            if !n.variants.is_empty() {
-                let variant_values: Vec<Value> = n
-                    .variants
-                    .iter()
-                    .map(|v| Value::String(v.clone()))
-                    .collect();
-                map.insert("variants".to_string(), Value::Array(variant_values));
-            }
-            if n.duplicate {
-                map.insert("duplicate".to_string(), Value::Bool(true));
-            }
-            Value::Object(map)
-        })
-        .collect();
-
-    let content = serde_json::to_string_pretty(&cache_entries)
-        .map_err(|e| crate::Error::Encoding(format!("failed to serialize cache: {e}")))?;
-    std::fs::write(cache_dir.join("packages.json5"), content)?;
-    Ok(())
-}
+pub(crate) use crate::services::repo::cache::write_cache;
 
 #[cfg(test)]
 mod tests {
@@ -816,7 +708,17 @@ mod tests {
         assert_eq!(discovered[0].node_name, "node_a");
         assert_eq!(excluded.len(), 1, "one repo should be excluded");
         assert_eq!(excluded[0].source_type, RepoSourceKind::Fs);
-        assert_eq!(excluded[0].identity, repo_b.display().to_string());
+        // `identity` is canonicalized by `json_entry_identity`; the test
+        // path is not, so compare against the canonical form to stay
+        // robust on platforms with symlinked tempdirs (e.g. macOS's
+        // `/var` → `/private/var`).
+        assert_eq!(
+            excluded[0].identity,
+            std::fs::canonicalize(&repo_b)
+                .unwrap()
+                .to_string_lossy()
+                .into_owned()
+        );
     }
 
     #[test]

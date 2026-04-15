@@ -6,9 +6,9 @@ use super::sync::{
     stack_resolver,
 };
 use super::{
-    checkout_repo_ref, extract_tar_zst, generate_random_id, is_supported_fs_archive,
-    is_supported_http_archive, locate_node_root_dir, resolve_local_archive_source,
-    sanitize_repo_path, write_error_to_log,
+    clone_with_progress, extract_tar_zst, format_bytes, generate_random_id,
+    is_supported_fs_archive, is_supported_http_archive, locate_node_root_dir,
+    resolve_local_archive_source, sanitize_repo_path, write_error_to_log,
 };
 use crate::Result;
 use crate::encoding::{
@@ -19,7 +19,6 @@ use chrono::Local;
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH, PeppyDirs};
 use config::node::{DEFAULT_VARIANT_NAME, NodeConfig, NodeConfigParser, ParsedNodeConfig};
 use futures::FutureExt;
-use git2::build::RepoBuilder;
 use node_stack::add_steps::{copy_node_to_temp_dir, verify_git_hash};
 use node_stack::{InstanceState, NodeStack, WorkingDirGuard, validate_dependency_specs};
 use parking_lot::Mutex as StdMutex;
@@ -327,39 +326,19 @@ async fn resolve_git_source(
     let clone_repo_url = repo_url_str.clone();
     let clone_repo_ref = repo_ref.map(str::to_owned);
     if let Err(err) = tokio::task::spawn_blocking(move || {
-        let mut last_report = Instant::now();
-        let mut callbacks = git2::RemoteCallbacks::new();
-        callbacks.transfer_progress(move |progress| {
-            if last_report.elapsed() >= Duration::from_millis(500) {
-                last_report = Instant::now();
-                let received = progress.received_objects();
-                let total = progress.total_objects();
-                let bytes = progress.received_bytes();
+        clone_with_progress(
+            &clone_repo_url,
+            clone_repo_ref.as_deref(),
+            &clone_checkout_dir,
+            false,
+            &mut |line| {
                 let _ = feedback_tx.send(FeedbackLine {
                     stream: FeedbackStream::Stdout,
-                    line: format!(
-                        "Cloning: received {}/{} objects ({})",
-                        received,
-                        total,
-                        format_bytes(bytes),
-                    ),
+                    line: line.to_owned(),
                 });
-            }
-            true
-        });
-
-        let mut fetch_opts = git2::FetchOptions::new();
-        fetch_opts.remote_callbacks(callbacks);
-
-        let repo = RepoBuilder::new()
-            .fetch_options(fetch_opts)
-            .clone(&clone_repo_url, &clone_checkout_dir)
-            .map_err(|e| format!("Failed to clone repository: {}", e))?;
-        if let Some(repo_ref) = clone_repo_ref.as_deref() {
-            checkout_repo_ref(&repo, repo_ref)
-                .map_err(|e| format!("Failed to checkout git ref '{}': {}", repo_ref, e))?;
-        }
-        Ok::<_, String>(())
+            },
+        )
+        .map(|_| ())
     })
     .await
     .map_err(|e| format!("Failed to join git clone task: {}", e))?
@@ -407,19 +386,6 @@ async fn resolve_git_source(
         node_config,
         cleanup_dir: Some(checkout_dir),
     })
-}
-
-fn format_bytes(bytes: usize) -> String {
-    const KB: f64 = 1024.0;
-    const MB: f64 = 1024.0 * 1024.0;
-    let b = bytes as f64;
-    if b >= MB {
-        format!("{:.1} MB", b / MB)
-    } else if b >= KB {
-        format!("{:.0} KB", b / KB)
-    } else {
-        format!("{} B", bytes)
-    }
 }
 
 fn sanitize_http_filename(name: &str) -> String {
@@ -725,6 +691,7 @@ pub(crate) fn log_label_from_source(source: &NodeSource) -> String {
                 .to_string()
         }
         NodeSource::Git { .. } | NodeSource::Http { .. } => generate_random_id(),
+        NodeSource::RepoNode { name, tag, .. } => format!("{name}_{tag}"),
     }
 }
 
@@ -799,6 +766,12 @@ async fn resolve_node_add_source(
             )
             .await
         }
+        NodeSource::RepoNode { .. } => {
+            // RepoNode goals are dispatched to `add_batch::run_repo_node_add`
+            // by `handle_goal_request` and never reach `run_node_add`, so this
+            // arm should be unreachable by construction.
+            Err("internal error: RepoNode reached the single-source add path".to_owned())
+        }
     }
 }
 
@@ -855,6 +828,11 @@ pub(crate) async fn run_node_add(
             }
             None => None,
         };
+
+        // Capture the variant label alongside `effective_variant` so it can
+        // be persisted on the `NodeEntity` after `push_config` — the daemon
+        // reads it back out of the entity when answering `node_info`.
+        let variant_name: Option<String> = effective_variant.as_ref().map(variant_label);
 
         // Capture the root source path before variant resolution may overwrite it.
         // The .peppy/git.hash file is written by `peppy node sync` at the root
@@ -1028,6 +1006,7 @@ pub(crate) async fn run_node_add(
             source_path,
             verify_codegen_fingerprint,
             cleanup_dir,
+            variant_name,
             ctx,
         )
         .await
@@ -1095,6 +1074,10 @@ async fn handle_goal_request(
             "Received `node_add` goal from {sender_instance_id}, source=http:{}",
             url
         ),
+        NodeSource::RepoNode { name, tag, .. } => debug!(
+            "Received `node_add` goal from {sender_instance_id}, source=repo:{}:{}",
+            name, tag
+        ),
     }
 
     // Create the log file *before* source resolution so that clone/download
@@ -1127,16 +1110,29 @@ async fn handle_goal_request(
                 NodeAddFeedback::from_stream(line.stream, &line.line).encode()
             });
 
+        let is_repo_node = matches!(&goal.source, NodeSource::RepoNode { .. });
         let result = tokio::select! {
             biased;
-            result = run_node_add(
-                goal,
-                action_context,
-                feedback_tx,
-                log_file,
-                log_path_clone,
-                timestamp,
-            ) => result,
+            result = async {
+                if is_repo_node {
+                    super::add_batch::run_repo_node_add(
+                        goal,
+                        action_context,
+                        feedback_tx,
+                        log_file,
+                        log_path_clone,
+                    ).await
+                } else {
+                    run_node_add(
+                        goal,
+                        action_context,
+                        feedback_tx,
+                        log_file,
+                        log_path_clone,
+                        timestamp,
+                    ).await
+                }
+            } => result,
             _ = cancel_token_clone.cancelled() => {
                 NodeAddResult::failure(
                     &log_path_for_cancel,
@@ -1228,6 +1224,7 @@ async fn process_node_add(
     source_path: PathBuf,
     verify_codegen_fingerprint: bool,
     cleanup_dir: Option<PathBuf>,
+    variant_name: Option<String>,
     ctx: ProcessNodeAddContext,
 ) -> NodeAddResult {
     // Reject any forbidden env vars early so the user gets a fast failure;
@@ -1390,11 +1387,12 @@ async fn process_node_add(
     // clone) that is cleaned up after this function returns. The
     // working_dir persists as long as the entity exists via WorkingDirGuard.
     let config_path_for_stack = working_dir.join(NODE_CONFIG_FILE);
-    if let Err(e) =
-        ctx.action
-            .node_stack
-            .push_config(node_config.clone(), false, &config_path_for_stack)
-    {
+    if let Err(e) = ctx.action.node_stack.push_config_with_variant(
+        node_config.clone(),
+        false,
+        &config_path_for_stack,
+        variant_name.clone(),
+    ) {
         let msg = format!("Failed to add node config: {}", e);
         write_error_to_log(&ctx.log_file, &msg);
         return NodeAddResult::failure(&ctx.log_path, msg);

@@ -4,7 +4,7 @@ use crate::Result;
 use crate::names;
 use crate::node_capnp;
 use capnp::message::Builder;
-use config::node::QoSProfile;
+use config::node::{Name, QoSProfile};
 use gix_url::Url as GitUrl;
 use peppylib::messaging::ActionGoalHandle;
 use peppylib::types::Payload;
@@ -27,6 +27,57 @@ pub enum NodeSource {
         url: url::Url,
         sha256: Option<String>,
     },
+    /// Reference a node by `(name, tag)`; the daemon resolves it and
+    /// its transitive dependencies against the repo cache
+    /// (`~/.peppy/cache/packages.json5`) and adds them as one batch.
+    ///
+    /// Dep-level variant overrides travel with the source so they're
+    /// unrepresentable on non-repo sources.
+    RepoNode {
+        name: String,
+        tag: String,
+        dep_variant_overrides: Vec<DepVariantOverride>,
+    },
+}
+
+/// Per-dependency variant override for `RepoNode` batch adds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DepVariantOverride {
+    pub name: String,
+    pub tag: String,
+    pub variant: String,
+}
+
+impl NodeSource {
+    /// Validated convenience constructor for a `RepoNode` with no dep
+    /// overrides. Applies the same name/tag validation as
+    /// [`Self::decode_repo_node`] so callers cannot build an unsafe
+    /// source that would later be rejected on the wire.
+    pub fn repo_node(name: impl AsRef<str>, tag: impl AsRef<str>) -> Result<Self> {
+        Self::decode_repo_node(name.as_ref(), tag.as_ref(), Vec::new())
+    }
+
+    /// Replaces the dep-override list wholesale on a `RepoNode` source,
+    /// validating each override with the same rules as
+    /// [`Self::decode_repo_node`]. No-op for every other source kind.
+    pub fn with_dep_variant_overrides(
+        mut self,
+        overrides: Vec<DepVariantOverride>,
+    ) -> Result<Self> {
+        if let Self::RepoNode {
+            ref mut dep_variant_overrides,
+            ..
+        } = self
+        {
+            for ov in &overrides {
+                validate_repo_node_name(&ov.name, "repo-node dep override name")?;
+                validate_repo_node_tag(&ov.tag, "repo-node dep override tag")?;
+                validate_repo_node_name(&ov.variant, "repo-node dep override variant")?;
+            }
+            *dep_variant_overrides = overrides;
+        }
+        Ok(self)
+    }
 }
 
 impl NodeSource {
@@ -68,6 +119,62 @@ impl NodeSource {
             sha256: Self::normalize_http_sha256(sha256),
         })
     }
+
+    pub fn decode_repo_node(
+        name: &str,
+        tag: &str,
+        dep_variant_overrides: Vec<DepVariantOverride>,
+    ) -> Result<Self> {
+        validate_repo_node_name(name, "repo-node name")?;
+        validate_repo_node_tag(tag, "repo-node tag")?;
+        for ov in &dep_variant_overrides {
+            validate_repo_node_name(&ov.name, "repo-node dep override name")?;
+            validate_repo_node_tag(&ov.tag, "repo-node dep override tag")?;
+            validate_repo_node_name(&ov.variant, "repo-node dep override variant")?;
+        }
+        Ok(Self::RepoNode {
+            name: name.to_owned(),
+            tag: tag.to_owned(),
+            dep_variant_overrides,
+        })
+    }
+}
+
+/// Rejects a repo-node name that would be unsafe to splice into a log
+/// filename or to look up in the repo cache. Reuses the manifest `Name`
+/// character set (lowercase/uppercase ASCII letters, digits, `_`, `-`).
+fn validate_repo_node_name(value: &str, label: &str) -> Result<()> {
+    Name::try_from(value.to_owned())
+        .map(|_| ())
+        .map_err(|e| crate::Error::Decoding(format!("invalid {label}: {e}")))
+}
+
+/// Rejects a repo-node tag that would be unsafe to splice into a filename
+/// joined under the logs directory (e.g. `../etc/passwd`). Mirrors
+/// `node_stack::build_steps::validate_node_tag`.
+fn validate_repo_node_tag(tag: &str, label: &str) -> Result<()> {
+    if tag.is_empty() {
+        return Err(crate::Error::Decoding(format!("empty {label}")));
+    }
+    if tag == "." || tag == ".." || tag.starts_with('.') {
+        return Err(crate::Error::Decoding(format!(
+            "{label} must not start with '.': {tag}"
+        )));
+    }
+    if tag.contains("..") {
+        return Err(crate::Error::Decoding(format!(
+            "{label} must not contain '..': {tag}"
+        )));
+    }
+    for c in tag.chars() {
+        let ok = c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-';
+        if !ok {
+            return Err(crate::Error::Decoding(format!(
+                "{label} contains disallowed character {c:?}: {tag}"
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Goal message for the NodeAdd action.
@@ -95,14 +202,7 @@ impl NodeAddGoal {
 
     /// Creates a new NodeAddGoal from a filesystem path.
     pub fn new(path: impl Into<PathBuf>, git_hash: impl Into<String>, timeout_secs: u64) -> Self {
-        Self {
-            source: NodeSource::Fs(path.into()),
-            git_hash: git_hash.into(),
-            env_vars: Vec::new(),
-            timeout_secs,
-            variant: None,
-            force: false,
-        }
+        Self::from_source(NodeSource::Fs(path.into()), git_hash, timeout_secs)
     }
 
     /// Creates a new NodeAddGoal from a Git repository with an optional ref (tag/branch/commit).
@@ -113,18 +213,15 @@ impl NodeAddGoal {
         git_hash: impl Into<String>,
         timeout_secs: u64,
     ) -> Self {
-        Self {
-            source: NodeSource::Git {
+        Self::from_source(
+            NodeSource::Git {
                 repo_url,
                 repo_path: repo_path.into(),
                 repo_ref,
             },
-            git_hash: git_hash.into(),
-            env_vars: Vec::new(),
+            git_hash,
             timeout_secs,
-            variant: None,
-            force: false,
-        }
+        )
     }
 
     /// Creates a new NodeAddGoal from an HTTP URL (for .tzst archives).
@@ -134,14 +231,23 @@ impl NodeAddGoal {
         git_hash: impl Into<String>,
         timeout_secs: u64,
     ) -> Self {
-        Self {
-            source: NodeSource::Http { url, sha256 },
-            git_hash: git_hash.into(),
-            env_vars: Vec::new(),
+        Self::from_source(NodeSource::Http { url, sha256 }, git_hash, timeout_secs)
+    }
+
+    /// Creates a new NodeAddGoal that targets a node by `(name, tag)`
+    /// against the daemon's repo cache (no dep overrides). Returns an
+    /// error when the name or tag fails the repo-node validation rules.
+    pub fn new_repo_node(
+        name: impl AsRef<str>,
+        tag: impl AsRef<str>,
+        git_hash: impl Into<String>,
+        timeout_secs: u64,
+    ) -> Result<Self> {
+        Ok(Self::from_source(
+            NodeSource::repo_node(name, tag)?,
+            git_hash,
             timeout_secs,
-            variant: None,
-            force: false,
-        }
+        ))
     }
 
     pub fn with_env_vars(mut self, env_vars: Vec<(String, String)>) -> Self {
@@ -168,7 +274,7 @@ impl NodeAddGoal {
     pub fn fs_path(&self) -> Option<&PathBuf> {
         match &self.source {
             NodeSource::Fs(path) => Some(path),
-            NodeSource::Git { .. } | NodeSource::Http { .. } => None,
+            NodeSource::Git { .. } | NodeSource::Http { .. } | NodeSource::RepoNode { .. } => None,
         }
     }
 
@@ -196,6 +302,24 @@ impl NodeAddGoal {
                     source.set_http(url.as_str());
                     if let Some(digest) = NodeSource::normalize_http_sha256(sha256.as_deref()) {
                         goal.reborrow().set_http_sha256(&digest);
+                    }
+                }
+                NodeSource::RepoNode {
+                    name,
+                    tag,
+                    dep_variant_overrides,
+                } => {
+                    let mut repo = source.init_repo_node();
+                    repo.set_name(name);
+                    repo.set_tag(tag);
+                    let mut overrides = repo
+                        .reborrow()
+                        .init_dep_variant_overrides(dep_variant_overrides.len() as u32);
+                    for (idx, ov) in dep_variant_overrides.iter().enumerate() {
+                        let mut entry = overrides.reborrow().get(idx as u32);
+                        entry.set_name(&ov.name);
+                        entry.set_tag(&ov.tag);
+                        entry.set_variant(&ov.variant);
                     }
                 }
             }
@@ -233,6 +357,9 @@ impl NodeAddGoal {
                             variant_builder.set_http_sha256(&digest);
                         }
                     }
+                    NodeSource::RepoNode { .. } => {
+                        return Err(crate::Error::RepoNodeNotValidVariantSource);
+                    }
                 }
             }
         }
@@ -255,6 +382,24 @@ impl NodeAddGoal {
             }
             Which::Http(http) => {
                 NodeSource::decode_http(http?.to_str()?, Some(goal.get_http_sha256()?.to_str()?))?
+            }
+            Which::RepoNode(repo) => {
+                let repo = repo?;
+                let overrides_reader = repo.get_dep_variant_overrides()?;
+                let mut overrides = Vec::with_capacity(overrides_reader.len() as usize);
+                for idx in 0..overrides_reader.len() {
+                    let entry = overrides_reader.get(idx);
+                    overrides.push(DepVariantOverride {
+                        name: entry.get_name()?.to_str()?.to_owned(),
+                        tag: entry.get_tag()?.to_str()?.to_owned(),
+                        variant: entry.get_variant()?.to_str()?.to_owned(),
+                    });
+                }
+                NodeSource::decode_repo_node(
+                    repo.get_name()?.to_str()?,
+                    repo.get_tag()?.to_str()?,
+                    overrides,
+                )?
             }
         };
 
@@ -382,6 +527,151 @@ mod tests {
                 sha256: Some(sha256)
             }
         );
+    }
+
+    #[test]
+    fn node_add_goal_repo_node_source_roundtrips() {
+        let encoded = NodeAddGoal::new_repo_node("camera", "0.1.0", "hash", 42)
+            .expect("repo_node constructor should accept valid inputs")
+            .encode()
+            .expect("encoding should succeed");
+        let decoded = NodeAddGoal::decode(&encoded).expect("decoding should succeed");
+        assert_eq!(
+            decoded.source,
+            NodeSource::RepoNode {
+                name: "camera".to_owned(),
+                tag: "0.1.0".to_owned(),
+                dep_variant_overrides: vec![],
+            }
+        );
+    }
+
+    #[test]
+    fn node_add_goal_dep_variant_overrides_roundtrip() {
+        let overrides = vec![
+            DepVariantOverride {
+                name: "uvc_camera".to_owned(),
+                tag: "0.1.0".to_owned(),
+                variant: "mock-python".to_owned(),
+            },
+            DepVariantOverride {
+                name: "lidar".to_owned(),
+                tag: "2.0.0".to_owned(),
+                variant: "sim".to_owned(),
+            },
+        ];
+        let source = NodeSource::repo_node("target", "1.0.0")
+            .expect("repo_node constructor should accept valid inputs")
+            .with_dep_variant_overrides(overrides)
+            .expect("with_dep_variant_overrides should accept valid overrides");
+        let encoded = NodeAddGoal::from_source(source, "hash", 42)
+            .encode()
+            .expect("encoding should succeed");
+        let decoded = NodeAddGoal::decode(&encoded).expect("decoding should succeed");
+        let NodeSource::RepoNode {
+            ref dep_variant_overrides,
+            ..
+        } = decoded.source
+        else {
+            panic!("expected RepoNode source, got {:?}", decoded.source);
+        };
+        assert_eq!(dep_variant_overrides.len(), 2);
+        assert_eq!(dep_variant_overrides[0].name, "uvc_camera");
+        assert_eq!(dep_variant_overrides[0].tag, "0.1.0");
+        assert_eq!(dep_variant_overrides[0].variant, "mock-python");
+        assert_eq!(dep_variant_overrides[1].variant, "sim");
+    }
+
+    #[test]
+    fn with_dep_variant_overrides_is_noop_on_non_repo_source() {
+        let overrides = vec![DepVariantOverride {
+            name: "a".to_owned(),
+            tag: "1.0".to_owned(),
+            variant: "v".to_owned(),
+        }];
+        let source = NodeSource::Fs(PathBuf::from("/tmp/x"))
+            .with_dep_variant_overrides(overrides)
+            .expect("non-repo sources skip override validation");
+        assert!(matches!(source, NodeSource::Fs(_)));
+    }
+
+    #[test]
+    fn repo_node_rejects_invalid_name() {
+        assert!(NodeSource::repo_node("../etc", "1.0").is_err());
+        assert!(NodeSource::repo_node("bad name", "1.0").is_err());
+    }
+
+    #[test]
+    fn repo_node_rejects_invalid_tag() {
+        assert!(NodeSource::repo_node("node", "").is_err());
+        assert!(NodeSource::repo_node("node", "..").is_err());
+    }
+
+    #[test]
+    fn with_dep_variant_overrides_rejects_invalid_override() {
+        let base = NodeSource::repo_node("node", "1.0").expect("valid");
+        let bad = vec![DepVariantOverride {
+            name: "../evil".to_owned(),
+            tag: "0.1.0".to_owned(),
+            variant: "v".to_owned(),
+        }];
+        assert!(base.with_dep_variant_overrides(bad).is_err());
+    }
+
+    #[test]
+    fn decode_repo_node_rejects_empty_name() {
+        assert!(NodeSource::decode_repo_node("", "0.1.0", vec![]).is_err());
+    }
+
+    #[test]
+    fn decode_repo_node_rejects_empty_tag() {
+        assert!(NodeSource::decode_repo_node("node", "", vec![]).is_err());
+    }
+
+    #[test]
+    fn decode_repo_node_rejects_path_traversal_in_name() {
+        for name in [
+            "../etc",
+            "a/b",
+            "a\\b",
+            "..",
+            ".hidden",
+            " leading",
+            "name with space",
+        ] {
+            assert!(
+                NodeSource::decode_repo_node(name, "0.1.0", vec![]).is_err(),
+                "name `{name}` should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn decode_repo_node_rejects_path_traversal_in_tag() {
+        for tag in [
+            "../etc",
+            "a/b",
+            "a\\b",
+            "..",
+            ".hidden",
+            "1..2",
+            "tag with space",
+        ] {
+            assert!(
+                NodeSource::decode_repo_node("node", tag, vec![]).is_err(),
+                "tag `{tag}` should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn decode_repo_node_rejects_unsafe_dep_override() {
+        let overrides = vec![DepVariantOverride {
+            name: "../evil".to_owned(),
+            tag: "0.1.0".to_owned(),
+            variant: "v".to_owned(),
+        }];
+        assert!(NodeSource::decode_repo_node("node", "0.1.0", overrides).is_err());
     }
 
     #[test]

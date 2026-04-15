@@ -36,6 +36,12 @@ pub enum Error {
     #[error("forbidden environment variable '{0}' is not allowed")]
     ForbiddenEnvVar(String),
 
+    #[error("invalid environment variable: {0}")]
+    InvalidEnvVar(String),
+
+    #[error("RepoNode is not a valid variant source")]
+    RepoNodeNotValidVariantSource,
+
     // -- generator-internal
     #[error(transparent)]
     GeneratorError(#[from] generator::GeneratorError),

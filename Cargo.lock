@@ -672,6 +672,7 @@ dependencies = [
  "pmi",
  "rand 0.10.1",
  "rust-embed",
+ "serde",
  "serde_json",
  "serde_json5",
  "sha2 0.11.0",

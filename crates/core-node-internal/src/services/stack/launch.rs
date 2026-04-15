@@ -945,6 +945,11 @@ async fn add_nodes_to_stack(
                 STACK_LAUNCH_GIT_HASH,
                 goal_timeout_secs,
             ),
+            NodeSource::RepoNode { .. } => NodeAddGoal::from_source(
+                item.source.clone(),
+                STACK_LAUNCH_GIT_HASH,
+                goal_timeout_secs,
+            ),
         }
         .with_env_vars(ctx.env_vars.clone());
 

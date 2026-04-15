@@ -3,8 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use core_node::encoding::StackListRequest;
-use node_stack::SerializedNodeGraph;
-use tracing::info;
+use node_stack::{SerializedEdge, SerializedNode, SerializedNodeGraph};
 
 use crate::commands::CALLER_INSTANCE_ID;
 use crate::context::AppContext;
@@ -13,16 +12,19 @@ use crate::error::{Error, Result};
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub fn list_nodes(ctx: &Arc<AppContext>, dot_graph_path: Option<PathBuf>) -> Result<()> {
-    crate::commands::block_on(list_nodes_async(ctx, dot_graph_path))
+    let output = crate::commands::block_on(list_nodes_collecting(ctx, dot_graph_path))?;
+    print!("{}", output);
+    Ok(())
 }
 
-async fn list_nodes_async(ctx: &Arc<AppContext>, dot_graph_path: Option<PathBuf>) -> Result<()> {
+/// Like [`list_nodes`] but returns the rendered output as a `String` instead
+/// of printing it. Used by integration tests so they can assert against the
+/// exact bytes the CLI would print without having to capture stdout.
+pub async fn list_nodes_collecting(
+    ctx: &Arc<AppContext>,
+    dot_graph_path: Option<PathBuf>,
+) -> Result<String> {
     let conn = ctx.connect_to_daemon().await?;
-
-    info!(
-        "Requesting node stack graph from core '{}'...",
-        conn.core_node_name
-    );
 
     let response = StackListRequest::new(dot_graph_path.is_some())
         .poll(
@@ -38,7 +40,7 @@ async fn list_nodes_async(ctx: &Arc<AppContext>, dot_graph_path: Option<PathBuf>
     let graph: SerializedNodeGraph = serde_json::from_str(&response.graph_json)
         .map_err(|e| Error::ExecutionFailed(format!("Failed to parse graph JSON: {}", e)))?;
 
-    // Sort nodes by label for consistent output, with core node first
+    // Sort nodes by label for consistent output, with the daemon root first.
     let mut nodes = graph.nodes.clone();
     nodes.sort_by(|a, b| {
         let a_is_daemon = a.label().starts_with(&conn.core_node_name);
@@ -50,19 +52,7 @@ async fn list_nodes_async(ctx: &Arc<AppContext>, dot_graph_path: Option<PathBuf>
         }
     });
 
-    info!("Node stack:");
-    for node in &nodes {
-        let path_str = node.artifact_path.as_deref().unwrap_or(&node.config_path);
-        info!(
-            "  - {} [{}] ({}) ({})",
-            node.label(),
-            node.stage_label(),
-            path_str,
-            node.instance_info()
-        );
-    }
-
-    // Sort edges by (from_label, to_label) for consistent output
+    // Sort edges by (from_label, to_label) for consistent output.
     let mut edges = graph.edges.clone();
     edges.sort_by(|a, b| {
         let a_key = (a.from.label(), a.to.label());
@@ -70,14 +60,7 @@ async fn list_nodes_async(ctx: &Arc<AppContext>, dot_graph_path: Option<PathBuf>
         a_key.cmp(&b_key)
     });
 
-    info!("Dependencies:");
-    if edges.is_empty() {
-        info!("  (none)");
-    } else {
-        for edge in &edges {
-            info!("  - {} -> {}", edge.from.label(), edge.to.label());
-        }
-    }
+    let mut out = format_stack_list(&nodes, &edges);
 
     if let (Some(path), Some(dot_graph)) = (dot_graph_path, response.dot_graph) {
         std::fs::write(&path, dot_graph).map_err(|e| {
@@ -87,7 +70,258 @@ async fn list_nodes_async(ctx: &Arc<AppContext>, dot_graph_path: Option<PathBuf>
                 e
             ))
         })?;
-        info!("DOT graph saved to {}", path.display());
+        use std::fmt::Write as _;
+        let _ = writeln!(out, "DOT graph saved to {}", path.display());
     }
-    Ok(())
+
+    Ok(out)
+}
+
+/// Pure formatter for the `peppy stack list` output — kept free of any IO so
+/// it can be unit-tested directly.
+pub fn format_stack_list(nodes: &[SerializedNode], edges: &[SerializedEdge]) -> String {
+    use std::fmt::Write as _;
+
+    let mut out = String::new();
+    let _ = writeln!(out, "Node stack");
+    let _ = writeln!(out);
+
+    if nodes.is_empty() {
+        let _ = writeln!(out, "  (empty)");
+    } else {
+        render_nodes_table(&mut out, nodes);
+    }
+
+    let _ = writeln!(out);
+    let _ = writeln!(out, "Dependencies");
+    if edges.is_empty() {
+        let _ = writeln!(out, "  (none)");
+    } else {
+        for edge in edges {
+            let _ = writeln!(out, "  {} -> {}", edge.from.label(), edge.to.label());
+        }
+    }
+
+    out
+}
+
+/// Column headers kept in one place so widths stay consistent between the
+/// separator and data rows.
+const HEADERS: [&str; 5] = ["NODE", "STAGE", "VARIANT", "INSTANCES", "PATH"];
+
+fn render_nodes_table(out: &mut String, nodes: &[SerializedNode]) {
+    use std::fmt::Write as _;
+
+    let rows: Vec<[String; 5]> = nodes
+        .iter()
+        .map(|n| {
+            [
+                n.label(),
+                n.stage_label().to_string(),
+                variant_label(n).to_string(),
+                format_instances_compact(n),
+                display_path(n),
+            ]
+        })
+        .collect();
+
+    let mut widths: [usize; 5] = HEADERS.map(|h| h.len());
+    for row in &rows {
+        for (i, cell) in row.iter().enumerate() {
+            if cell.len() > widths[i] {
+                widths[i] = cell.len();
+            }
+        }
+    }
+
+    write_border(out, &widths, '┌', '┬', '┐');
+    let header_row: [String; 5] = HEADERS.map(|h| h.to_string());
+    write_row(out, &header_row, &widths);
+    write_border(out, &widths, '├', '┼', '┤');
+    for row in &rows {
+        write_row(out, row, &widths);
+    }
+    write_border(out, &widths, '└', '┴', '┘');
+    let _ = writeln!(out);
+}
+
+fn write_border(out: &mut String, widths: &[usize; 5], left: char, sep: char, right: char) {
+    use std::fmt::Write as _;
+    let _ = write!(out, "{}", left);
+    for (i, w) in widths.iter().enumerate() {
+        for _ in 0..(w + 2) {
+            let _ = write!(out, "─");
+        }
+        let _ = write!(out, "{}", if i + 1 == widths.len() { right } else { sep });
+    }
+    let _ = writeln!(out);
+}
+
+fn write_row(out: &mut String, cells: &[String; 5], widths: &[usize; 5]) {
+    use std::fmt::Write as _;
+    let _ = write!(out, "│");
+    for (cell, w) in cells.iter().zip(widths.iter()) {
+        let _ = write!(out, " {:<width$} │", cell, width = w);
+    }
+    let _ = writeln!(out);
+}
+
+fn variant_label(node: &SerializedNode) -> &str {
+    node.variant_name.as_deref().unwrap_or("default")
+}
+
+/// Compact per-node instance summary. Detailed per-instance info is
+/// intentionally deferred to `peppy node info` — the list view is meant to
+/// fit one node per row.
+fn format_instances_compact(node: &SerializedNode) -> String {
+    if node.instances.is_empty() {
+        return "0".to_string();
+    }
+    let running = node
+        .instances
+        .iter()
+        .filter(|i| i.state == "running")
+        .count();
+    let starting = node
+        .instances
+        .iter()
+        .filter(|i| i.state == "starting")
+        .count();
+    match (running, starting) {
+        (r, 0) => format!("{} running", r),
+        (0, s) => format!("{} starting", s),
+        (r, s) => format!("{} ({} running, {} starting)", r + s, r, s),
+    }
+}
+
+/// For nodes that have been built, the artifact path is the most useful
+/// locator; otherwise fall back to the source config path.
+fn display_path(node: &SerializedNode) -> String {
+    node.artifact_path
+        .clone()
+        .unwrap_or_else(|| node.config_path.clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use node_stack::SerializedInstance;
+
+    fn node(
+        name: &str,
+        tag: &str,
+        stage: &str,
+        variant: Option<&str>,
+        instances: Vec<(&str, &str)>,
+    ) -> SerializedNode {
+        SerializedNode {
+            name: name.to_string(),
+            tag: tag.to_string(),
+            config_path: format!("/tmp/{}.json5", name),
+            artifact_path: None,
+            instance_ids: instances
+                .iter()
+                .filter(|(_, s)| *s == "running")
+                .map(|(id, _)| id.to_string())
+                .collect(),
+            stage: Some(stage.to_string()),
+            instances: instances
+                .into_iter()
+                .map(|(id, state)| SerializedInstance {
+                    instance_id: id.to_string(),
+                    state: state.to_string(),
+                })
+                .collect(),
+            variant_name: variant.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn table_renders_headers_and_rows() {
+        let nodes = vec![
+            node("sensor", "0.1.0", "Added", Some("default"), vec![]),
+            node(
+                "brain",
+                "0.1.0",
+                "Ready",
+                Some("macos"),
+                vec![("i1", "running")],
+            ),
+        ];
+        let out = format_stack_list(&nodes, &[]);
+
+        for header in HEADERS {
+            assert!(out.contains(header), "missing header {}:\n{}", header, out);
+        }
+        assert!(out.contains("sensor:0.1.0"), "missing sensor row:\n{}", out);
+        assert!(out.contains("brain:0.1.0"), "missing brain row:\n{}", out);
+        assert!(out.contains("macos"), "variant column missing:\n{}", out);
+        assert!(
+            out.contains("1 running"),
+            "instances column missing:\n{}",
+            out
+        );
+        // Never prefix table output with [INFO].
+        assert!(
+            !out.contains("[INFO]"),
+            "output must not contain [INFO]:\n{}",
+            out
+        );
+    }
+
+    #[test]
+    fn variant_falls_back_to_default_when_none() {
+        let nodes = vec![node("sensor", "0.1.0", "Added", None, vec![])];
+        let out = format_stack_list(&nodes, &[]);
+        assert!(
+            out.contains("default"),
+            "variant should render as 'default' when None:\n{}",
+            out
+        );
+    }
+
+    #[test]
+    fn mixed_running_and_starting_instances_render_with_breakdown() {
+        let nodes = vec![node(
+            "brain",
+            "0.1.0",
+            "Ready",
+            Some("default"),
+            vec![("r1", "running"), ("s1", "starting")],
+        )];
+        let out = format_stack_list(&nodes, &[]);
+        assert!(
+            out.contains("2 (1 running, 1 starting)"),
+            "mixed breakdown missing:\n{}",
+            out
+        );
+    }
+
+    #[test]
+    fn empty_stack_renders_empty_marker() {
+        let out = format_stack_list(&[], &[]);
+        assert!(out.contains("(empty)"), "empty marker missing:\n{}", out);
+        assert!(
+            out.contains("Dependencies"),
+            "deps heading missing:\n{}",
+            out
+        );
+        assert!(out.contains("(none)"), "deps none marker missing:\n{}", out);
+    }
+
+    #[test]
+    fn edges_render_as_arrows() {
+        let from = node("brain", "0.1.0", "Ready", None, vec![]);
+        let to = node("sensor", "0.1.0", "Ready", None, vec![]);
+        let edges = vec![SerializedEdge {
+            from: from.clone(),
+            to: to.clone(),
+        }];
+        let out = format_stack_list(&[from, to], &edges);
+        assert!(
+            out.contains("brain:0.1.0 -> sensor:0.1.0"),
+            "edge line missing:\n{}",
+            out
+        );
+    }
 }

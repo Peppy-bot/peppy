@@ -75,7 +75,7 @@ async fn node_run_command_succeeds() {
         command: NodeCommands::Add {
             source: Some(node_path.display().to_string()),
             git_ref: None,
-            variant: None,
+            variant: Vec::new(),
             sync: false,
             build: true,
             run: false,
@@ -296,7 +296,7 @@ async fn node_run_command_with_args_succeeds() {
         command: NodeCommands::Add {
             source: Some(node_path.display().to_string()),
             git_ref: None,
-            variant: None,
+            variant: Vec::new(),
             sync: false,
             build: true,
             run: false,
@@ -492,7 +492,7 @@ async fn node_run_command_with_custom_instance_id_succeeds() {
         command: NodeCommands::Add {
             source: Some(node_path.display().to_string()),
             git_ref: None,
-            variant: None,
+            variant: Vec::new(),
             sync: false,
             build: true,
             run: false,
@@ -682,7 +682,7 @@ async fn node_run_with_build_flag_on_unbuilt_node_builds_then_runs() {
         command: NodeCommands::Add {
             source: Some(node_path.display().to_string()),
             git_ref: None,
-            variant: None,
+            variant: Vec::new(),
             sync: false,
             build: false,
             run: false,
@@ -844,7 +844,7 @@ async fn node_run_with_build_flag_on_already_built_node_skips_build() {
         command: NodeCommands::Add {
             source: Some(node_path.display().to_string()),
             git_ref: None,
-            variant: None,
+            variant: Vec::new(),
             sync: false,
             build: true,
             run: false,

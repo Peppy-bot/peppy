@@ -152,6 +152,20 @@ impl PeppyDirs {
     pub fn cache_dir(&self) -> PathBuf {
         self.root.join("cache")
     }
+
+    /// Persistent Git checkouts shared across `node add` batches.
+    /// Directories are keyed by `<slug>-<hash>` where the hash covers
+    /// repo_url + ref so distinct refs coexist.
+    pub fn git_checkouts_dir(&self) -> PathBuf {
+        self.cache_dir().join("git_checkouts")
+    }
+
+    /// Persistent HTTP bundle extractions shared across `node add`
+    /// batches. Directories are keyed by `<slug>-<hash>` over the URL
+    /// + optional SHA256.
+    pub fn http_bundles_dir(&self) -> PathBuf {
+        self.cache_dir().join("http_bundles")
+    }
 }
 
 /// Uses the standard application data directory.

@@ -46,6 +46,10 @@ pub struct SerializedNode {
     /// in-flight `Starting` instances not yet in `instance_ids`.
     #[serde(default)]
     pub instances: Vec<SerializedInstance>,
+    /// Variant label selected at `node add` time, if any. `None` for the
+    /// synthetic root node and for non-variant add paths.
+    #[serde(default)]
+    pub variant_name: Option<String>,
 }
 
 impl SerializedNode {
@@ -141,6 +145,7 @@ impl From<&NodeEntity> for SerializedNode {
                     },
                 })
                 .collect(),
+            variant_name: entity.variant_name().map(str::to_owned),
         }
     }
 }
@@ -367,13 +372,22 @@ pub struct NodeEntity {
     /// `take_pending_working_dir` clears the entity-side slot. Never
     /// persisted.
     pending_working_dir: Option<Arc<WorkingDirGuard>>,
+    /// Variant label captured at `node add` time. `None` for nodes added
+    /// without a variant (no default variant, no `--variant` flag) and for
+    /// the synthetic root entity.
+    variant_name: Option<String>,
 }
 
 impl NodeEntity {
     /// Creates a new `NodeEntity` in the [`NodeStage::Added`] stage. The
     /// `config_path` should point at the `peppy.json5` file that supplied
-    /// `config`.
-    pub fn new<P: Into<PathBuf>>(config: NodeConfig, config_path: P) -> Self {
+    /// `config`. `variant_name` is the variant label selected at add time
+    /// (or `None` if no variant applies).
+    pub fn new<P: Into<PathBuf>>(
+        config: NodeConfig,
+        config_path: P,
+        variant_name: Option<String>,
+    ) -> Self {
         Self {
             config,
             stage: NodeStage::Added {
@@ -381,6 +395,7 @@ impl NodeEntity {
             },
             generation: next_entity_generation(),
             pending_working_dir: None,
+            variant_name,
         }
     }
 
@@ -432,6 +447,12 @@ impl NodeEntity {
 
     pub fn stage(&self) -> &NodeStage {
         &self.stage
+    }
+
+    /// Returns the variant label captured at `node add` time, if any. `None`
+    /// for the synthetic root entity and for nodes added without a variant.
+    pub fn variant_name(&self) -> Option<&str> {
+        self.variant_name.as_deref()
     }
 
     /// Returns the `peppy.json5` path that registered this entity. Always
@@ -1054,6 +1075,7 @@ impl NodeEntity {
             },
             generation: next_entity_generation(),
             pending_working_dir: None,
+            variant_name: None,
         }
     }
 
@@ -1077,6 +1099,7 @@ impl NodeEntity {
         config_path: PathBuf,
         artifact_path: Option<PathBuf>,
         instances: Vec<TrackedNodeInstance>,
+        variant_name: Option<String>,
     ) -> Self {
         let stage = match (artifact_path, instances.is_empty()) {
             (None, true) => NodeStage::Added { config_path },
@@ -1095,6 +1118,7 @@ impl NodeEntity {
             stage,
             generation: next_entity_generation(),
             pending_working_dir: None,
+            variant_name,
         }
     }
 

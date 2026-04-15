@@ -1,4 +1,5 @@
 mod add;
+pub(crate) mod cache;
 mod exclude;
 mod list;
 mod refresh;

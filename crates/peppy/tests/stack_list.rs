@@ -9,7 +9,6 @@ use config::node::{
 };
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands, NodeName};
-use peppy::commands::stack::{StackCommand, StackCommands};
 use peppy::context::AppContext;
 
 fn make_consumer_depend_on_provider(
@@ -161,7 +160,7 @@ async fn node_list_command_succeeds() {
         command: NodeCommands::Add {
             source: Some(provider_path.display().to_string()),
             git_ref: None,
-            variant: None,
+            variant: Vec::new(),
             sync: false,
             build: true,
             run: false,
@@ -180,7 +179,7 @@ async fn node_list_command_succeeds() {
         command: NodeCommands::Add {
             source: Some(consumer_path.display().to_string()),
             git_ref: None,
-            variant: None,
+            variant: Vec::new(),
             sync: false,
             build: true,
             run: false,
@@ -194,51 +193,69 @@ async fn node_list_command_succeeds() {
     .execute(&node_ctx)
     .expect("consumer node add command should succeed");
 
-    // Now run the node list command and assert it prints nodes and dependencies
-    StackCommand {
-        command: StackCommands::List {
-            dot_graph_path: None,
-        },
-    }
-    .execute(&node_ctx)
-    .expect("node list command should succeed");
+    // Run the list command via the testable collecting variant so we can
+    // assert on the exact text the CLI would print without capturing stdout.
+    let output = peppy::commands::stack::list_nodes_collecting(&node_ctx, None)
+        .await
+        .expect("node list command should succeed");
 
-    let logs = log_capture.logs();
     let provider_label = format!("{provider_name}:0.1.0");
     let consumer_label = format!("{consumer_name}:0.1.0");
-    let provider_line = logs
+
+    // [INFO] prefixes are a side-effect of the tracing formatter; the table
+    // output must not include them.
+    assert!(
+        !output.contains("[INFO]"),
+        "stack list output should not include [INFO] prefixes:\n{output}"
+    );
+    assert!(
+        output.contains("NODE")
+            && output.contains("STAGE")
+            && output.contains("VARIANT")
+            && output.contains("INSTANCES")
+            && output.contains("PATH"),
+        "table headers missing:\n{output}"
+    );
+
+    let provider_line = output
         .lines()
-        .find(|line| line.contains(&provider_label) && line.contains("instances:"))
-        .expect("logs should contain the provider node");
+        .find(|line| line.contains(&provider_label))
+        .expect("output should contain the provider node");
     assert!(
-        provider_line.contains("0 instances:"),
-        "logs should contain the provider node and instance count. Logs:\n{}",
-        logs
+        provider_line.contains("Ready"),
+        "provider row should be in Ready stage:\n{output}"
     );
     assert!(
-        provider_line.contains("[Ready]"),
-        "logs should contain the stage for the provider node. Logs:\n{}",
-        logs
+        provider_line.contains("default"),
+        "provider row should report the default variant:\n{output}"
     );
-    let consumer_line = logs
+    // No instances were started, so the INSTANCES column must render as "0".
+    assert!(
+        provider_line.contains(" 0 "),
+        "provider row should report zero instances:\n{output}"
+    );
+
+    let consumer_line = output
         .lines()
-        .find(|line| line.contains(&consumer_label) && line.contains("instances:"))
-        .expect("logs should contain the consumer node");
+        .find(|line| line.contains(&consumer_label))
+        .expect("output should contain the consumer node");
     assert!(
-        consumer_line.contains("0 instances:"),
-        "logs should contain the consumer node and instance count. Logs:\n{}",
-        logs
+        consumer_line.contains("Ready"),
+        "consumer row should be in Ready stage:\n{output}"
     );
     assert!(
-        consumer_line.contains("[Ready]"),
-        "logs should contain the stage for the consumer node. Logs:\n{}",
-        logs
+        consumer_line.contains("default"),
+        "consumer row should report the default variant:\n{output}"
     );
+
     assert!(
-        logs.contains(&format!("{consumer_label} -> {provider_label}")),
-        "logs should contain the dependency edge consumer -> provider. Logs:\n{}",
-        logs
+        output.contains(&format!("{consumer_label} -> {provider_label}")),
+        "output should contain the dependency edge consumer -> provider:\n{output}"
     );
+
+    // Silence unused variable when LogCapture is only constructed for
+    // log-side effects in sibling tests.
+    let _ = log_capture;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -318,7 +335,7 @@ async fn node_list_command_with_dot_representation_succeeds() {
         command: NodeCommands::Add {
             source: Some(provider_path.display().to_string()),
             git_ref: None,
-            variant: None,
+            variant: Vec::new(),
             sync: false,
             build: true,
             run: false,
@@ -336,7 +353,7 @@ async fn node_list_command_with_dot_representation_succeeds() {
         command: NodeCommands::Add {
             source: Some(consumer_path.display().to_string()),
             git_ref: None,
-            variant: None,
+            variant: Vec::new(),
             sync: false,
             build: true,
             run: false,
@@ -352,13 +369,10 @@ async fn node_list_command_with_dot_representation_succeeds() {
 
     let dot_graph_path = node_dir.path().join("node_stack.dot");
 
-    StackCommand {
-        command: StackCommands::List {
-            dot_graph_path: Some(dot_graph_path.clone()),
-        },
-    }
-    .execute(&node_ctx)
-    .expect("node list command should succeed");
+    let output =
+        peppy::commands::stack::list_nodes_collecting(&node_ctx, Some(dot_graph_path.clone()))
+            .await
+            .expect("node list command should succeed");
 
     assert!(
         dot_graph_path.exists(),
@@ -450,10 +464,12 @@ async fn node_list_command_with_dot_representation_succeeds() {
         consumer_id, provider_id, dot_graph
     );
 
-    let logs = log_capture.logs();
     assert!(
-        logs.contains("DOT graph saved to"),
-        "logs should mention DOT graph output path. Logs:\n{}",
-        logs
+        output.contains("DOT graph saved to"),
+        "output should mention DOT graph output path:\n{output}"
     );
+
+    // LogCapture is still wired up for other tests in this file; keep it
+    // referenced so the compiler doesn't complain about unused vars.
+    let _ = log_capture;
 }
