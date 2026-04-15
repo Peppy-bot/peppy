@@ -11,8 +11,8 @@
 //! can't race on the same directory. Cross-process safety is not a
 //! concern yet — the daemon is the only writer.
 
-use super::cache_key;
-use super::checkout_repo_ref;
+use super::super::checkout_repo_ref;
+use super::key;
 use config::consts::PeppyDirs;
 use git2::build::RepoBuilder;
 use parking_lot::Mutex;
@@ -23,8 +23,8 @@ use std::sync::{Arc, OnceLock};
 /// Path where the checkout for `(repo_url, repo_ref)` lives (whether or
 /// not it has been populated yet). Exposed for tests and diagnostics.
 pub fn checkout_dir_for(peppy_dirs: &PeppyDirs, repo_url: &str, repo_ref: Option<&str>) -> PathBuf {
-    let slug = cache_key::slug(repo_url, "repo");
-    let hash = cache_key::short_hash(repo_url, repo_ref);
+    let slug = key::slug(repo_url, "repo");
+    let hash = key::short_hash(repo_url, repo_ref);
     peppy_dirs
         .git_checkouts_dir()
         .join(format!("{slug}-{hash}"))

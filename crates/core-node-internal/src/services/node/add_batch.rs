@@ -10,7 +10,8 @@
 use super::super::repo::cache::{self, PackageEntry};
 use super::super::stack::STACK_LAUNCH_GIT_HASH;
 use super::add::{NodeAddActionContext, run_node_add};
-use super::{FeedbackLine, FeedbackStream, bundle_cache, create_action_log_file, git_cache};
+use super::cache as node_cache;
+use super::{FeedbackLine, FeedbackStream, create_action_log_file};
 use crate::encoding::{DepVariantOverride, NodeAddGoal, NodeAddResult, NodeSource, RepoSourceKind};
 use chrono::Local;
 use config::consts::{NODE_CONFIG_FILE, PeppyDirs};
@@ -439,15 +440,20 @@ async fn materialize_entry(
             let url_owned = url.to_owned();
             let ref_owned = reference.map(|s| s.to_owned());
             let checkout = tokio::task::spawn_blocking(move || {
-                git_cache::ensure_checkout(&peppy_dirs, &url_owned, ref_owned.as_deref(), &|line| {
-                    let _ = fb.send(FeedbackLine {
-                        stream: FeedbackStream::Stdout,
-                        line: line.to_owned(),
-                    });
-                })
+                node_cache::ensure_checkout(
+                    &peppy_dirs,
+                    &url_owned,
+                    ref_owned.as_deref(),
+                    &|line| {
+                        let _ = fb.send(FeedbackLine {
+                            stream: FeedbackStream::Stdout,
+                            line: line.to_owned(),
+                        });
+                    },
+                )
             })
             .await
-            .map_err(|e| format!("git_cache task failed: {}", e))??;
+            .map_err(|e| format!("git cache task failed: {}", e))??;
             checkout.join(&entry.path)
         }
         RepoSourceKind::Url => {
@@ -458,7 +464,7 @@ async fn materialize_entry(
             let url = Url::parse(url_str)
                 .map_err(|e| format!("Http cache entry has invalid URL '{url_str}': {e}"))?;
             let fb = feedback_tx.clone();
-            bundle_cache::ensure_bundle(peppy_dirs, &url, None, &move |line| {
+            node_cache::ensure_bundle(peppy_dirs, &url, None, &move |line| {
                 let _ = fb.send(FeedbackLine {
                     stream: FeedbackStream::Stdout,
                     line: line.to_owned(),

@@ -1,6 +1,6 @@
 //! Persistent HTTP bundle cache shared across `node add` batches.
 //!
-//! Mirrors [`super::git_cache`] but keyed by `(url, sha256)` — a given
+//! Mirrors [`super::git`] but keyed by `(url, sha256)` — a given
 //! URL + checksum can only ever refer to one archive, so once we've
 //! downloaded and extracted it we reuse the extraction indefinitely.
 //!
@@ -10,9 +10,9 @@
 //! file records the recorded checksum so stale entries can be detected
 //! when the checksum changes for the same URL.
 
-use super::add::download_and_extract_http_source;
-use super::cache_key;
-use super::locate_node_root_dir;
+use super::super::add::download_and_extract_http_source;
+use super::super::locate_node_root_dir;
+use super::key;
 use config::consts::PeppyDirs;
 use parking_lot::Mutex;
 use std::collections::HashMap;
@@ -22,8 +22,8 @@ use url::Url;
 
 /// Returns the deterministic cache directory for `(url, sha256)`.
 pub fn extract_dir_for(peppy_dirs: &PeppyDirs, url: &Url, sha256: Option<&str>) -> PathBuf {
-    let slug = cache_key::slug(url.as_str(), "bundle");
-    let hash = cache_key::short_hash(url.as_str(), sha256);
+    let slug = key::slug(url.as_str(), "bundle");
+    let hash = key::short_hash(url.as_str(), sha256);
     peppy_dirs.http_bundles_dir().join(format!("{slug}-{hash}"))
 }
 

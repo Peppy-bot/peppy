@@ -1,432 +1,74 @@
 mod add;
 mod add_batch;
+mod archive;
 mod builder;
-mod bundle_cache;
-mod cache_key;
+mod cache;
+mod common;
+mod env;
+mod feedback;
 mod gate;
-mod git_cache;
+mod git_utils;
 mod info;
 mod init;
+mod logging;
 mod remove;
 mod run;
 mod stop;
 mod sync;
-mod templates;
 pub(crate) mod variant;
 
 use crate::encoding::NodeSource;
-use crate::{Error, Result};
+use config::consts::PeppyDirs;
+use config::node::NodeConfig;
+
+// Crate-external re-exports (paths that other crates / other `services::`
+// submodules reference as `crate::services::node::X`).
 pub use add::listen_for_node_add;
-pub(crate) use add::{NodeAddActionContext, log_label_from_source, run_node_add};
 pub use builder::listen_for_node_build;
-pub(crate) use builder::{NodeBuildActionContext, run_node_build_for_entity};
-use chrono::Local;
-use config::consts::{NODE_CONFIG_FILE, PeppyDirs};
-use config::node::{NodeConfig, NodeConfigParser, ParsedNodeConfig, PeppygenLanguage};
-use git2::{Repository, build::CheckoutBuilder, build::RepoBuilder};
 pub use info::listen_for_node_info;
 pub use init::listen_for_node_init;
-use parking_lot::Mutex as StdMutex;
-use rand::RngExt;
 pub use remove::listen_for_node_remove;
-pub(crate) use run::{NodeRunActionContext, run_node_run};
 pub use run::{NodeRunServiceConfig, listen_for_node_run};
-use std::fs::File;
-use std::io::Write;
-use std::path::{Component, Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, OnceLock};
-use std::time::Instant;
 pub use stop::listen_for_node_stop;
 pub use sync::listen_for_node_sync;
 
-// Feedback streaming primitives have moved to `node-stack-internal::build_io`
-// so that `NodeEntity::build` can stream apptainer output without depending on
-// core-node-internal. The re-exports below keep the existing call sites in
-// `start.rs`, `info.rs`, etc. compiling unchanged.
-pub(crate) use node_stack::{FeedbackLine, FeedbackStream};
+pub(crate) use add::{NodeAddActionContext, log_label_from_source, run_node_add};
+pub(crate) use builder::{NodeBuildActionContext, run_node_build_for_entity};
+pub use env::FORBIDDEN_ENV_KEYS;
+pub(crate) use feedback::{FeedbackLine, FeedbackStream};
+pub(crate) use git_utils::checkout_repo_ref;
+pub(crate) use logging::{create_action_log_file, write_error_to_log};
+pub(crate) use run::{NodeRunActionContext, run_node_run};
 
-/// Extract a human-readable message from a panic payload.
-/// Used by spawned task handlers to convert panics into failure results.
-fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
-    if let Some(s) = payload.downcast_ref::<&str>() {
-        (*s).to_string()
-    } else if let Some(s) = payload.downcast_ref::<String>() {
-        s.clone()
-    } else {
-        "unknown panic payload".to_string()
-    }
-}
+// Intra-`services::node::` re-imports — bring helper names back into the
+// module root so sibling command files can reach them via `super::X`.
+// Private on purpose: nothing outside this module needs these paths.
+use archive::{
+    extract_tar_zst, is_supported_fs_archive, is_supported_http_archive, locate_node_root_dir,
+    resolve_local_archive_source,
+};
+use common::{encode_response_or_err, generate_random_id, panic_message};
+use env::{inject_node_runtime_env, inject_rust_build_env, validate_goal_env_vars};
+use feedback::spawn_feedback_forwarder;
+use git_utils::{clone_repo_with_deadline, sanitize_repo_path};
+use logging::append_stack_log;
 
-/// Blocklist of dangerous env vars that could be used for code injection or process manipulation.
-/// Used by both the core node (to reject requests) and CLI (to filter before sending).
-pub const FORBIDDEN_ENV_KEYS: [&str; 16] = [
-    // Linux dynamic linker injection
-    "LD_PRELOAD",
-    "LD_LIBRARY_PATH",
-    "LD_AUDIT",
-    "LD_DEBUG",
-    // macOS dynamic linker injection
-    "DYLD_INSERT_LIBRARIES",
-    "DYLD_LIBRARY_PATH",
-    "DYLD_FRAMEWORK_PATH",
-    // Shell injection vectors
-    "BASH_ENV",
-    "ENV",
-    "CDPATH",
-    "IFS",
-    "SHELLOPTS",
-    "BASHOPTS",
-    "PS4",
-    "PROMPT_COMMAND",
-    "GLOBIGNORE",
-];
-
-const PEPPY_APPTAINER_BIN_ENV_VAR: &str = "PEPPY_APPTAINER_BIN";
-const PEPPY_NODE_NAME_ENV_VAR: &str = "PEPPY_NODE_NAME";
-const PEPPY_NODE_TAG_ENV_VAR: &str = "PEPPY_NODE_TAG";
-
-/// Validates environment variables, rejecting any that are in the forbidden list.
-/// Returns an error if any forbidden env var is found.
-fn validate_goal_env_vars(env_vars: &[(String, String)]) -> Result<Vec<(String, String)>> {
-    let mut result = Vec::with_capacity(env_vars.len());
-    for (key, value) in env_vars {
-        let normalized = key.trim().to_ascii_uppercase();
-        if FORBIDDEN_ENV_KEYS.contains(&normalized.as_str()) {
-            return Err(Error::ForbiddenEnvVar(normalized));
-        }
-        result.push((key.trim().to_string(), value.clone()));
-    }
-    Ok(result)
-}
-
-/// Maps an encoding `Result` to a `PeppyResult`, wrapping the error as an
-/// `InternalEncodingError` so it can be returned directly from a goal handler.
-/// Used in place of open-coding the same `map_err` at every rejection and
-/// accepted-response encoding site in the add/build/start handlers.
-pub(crate) fn encode_response_or_err(
-    identifier: &'static str,
-    result: crate::Result<peppylib::types::Payload>,
-) -> peppylib::PeppyResult<peppylib::types::Payload> {
-    result.map_err(|e| peppylib::PeppyError::InternalEncodingError {
-        identifier: identifier.to_string(),
-        reason: format!("Failed to encode response: {}", e),
-    })
-}
-
-/// Spawns a task that consumes `FeedbackLine` values from `feedback_rx`,
-/// converts each one via `encode` and publishes the resulting payload. Shared
-/// by the add/build/start goal handlers, which all run the same
-/// consumer-side forwarder over differently-typed feedback encoders.
-pub(crate) fn spawn_feedback_forwarder<F>(
-    mut feedback_rx: tokio::sync::mpsc::UnboundedReceiver<FeedbackLine>,
-    publisher: peppylib::messaging::TopicPublisher,
-    encode: F,
-) -> tokio::task::JoinHandle<()>
-where
-    F: Fn(FeedbackLine) -> crate::Result<peppylib::types::Payload> + Send + 'static,
-{
-    tokio::spawn(async move {
-        while let Some(line) = feedback_rx.recv().await {
-            if let Ok(payload) = encode(line) {
-                let _ = publisher.publish(payload).await;
-            }
-        }
-    })
-}
-
-/// Write an error message to the node's log file with a timestamp.
-///
-/// Best-effort: silently ignores lock/write failures since the error is also
-/// returned in the result encoding.
-pub(crate) fn write_error_to_log(log_file: &Arc<StdMutex<File>>, error_msg: &str) {
-    let mut file = log_file.lock();
-    let timestamp = Local::now().format("%Y-%m-%dT%H:%M:%S%.3f");
-    let _ = writeln!(file, "[{}] [error] {}", timestamp, error_msg);
-    let _ = file.flush();
-}
-
-/// Appends a timestamped entry to the stack operations log.
-///
-/// Best-effort: silently ignores I/O failures since the operation it
-/// describes has already completed.
-pub(crate) fn append_stack_log(peppy_dirs: &PeppyDirs, message: &str) {
-    let path = peppy_dirs.stack_log_path();
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let Ok(mut file) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-    else {
-        return;
-    };
-    let timestamp = Local::now().format("%Y-%m-%dT%H:%M:%S%.3f");
-    let _ = writeln!(file, "[{}] {}", timestamp, message);
-}
-
-/// Creates a log file inside `log_dir` with the given filename.
-///
-/// Creates the directory tree if it doesn't exist. Returns the log file
-/// handle (wrapped for concurrent access) and its path.
-pub(crate) fn create_action_log_file(
-    log_dir: &Path,
-    log_filename: &str,
-) -> std::result::Result<(Arc<StdMutex<File>>, PathBuf), String> {
-    std::fs::create_dir_all(log_dir)
-        .map_err(|e| format!("Failed to create logs directory: {}", e))?;
-
-    let log_path = log_dir.join(log_filename);
-    let file = File::create(&log_path).map_err(|e| format!("Failed to create log file: {}", e))?;
-
-    Ok((Arc::new(StdMutex::new(file)), log_path))
-}
-
-static SCCACHE_AVAILABLE: OnceLock<bool> = OnceLock::new();
-
-/// Checks whether `sccache` is available on the system PATH.
-/// The result is cached for the lifetime of the process.
-fn is_sccache_available() -> bool {
-    *SCCACHE_AVAILABLE.get_or_init(|| {
-        let available = std::process::Command::new("sccache")
-            .arg("--version")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
-        if available {
-            tracing::debug!("sccache detected, will set RUSTC_WRAPPER=sccache for Rust nodes");
-        }
-        available
-    })
-}
-
-/// Injects `RUSTC_WRAPPER=sccache` for Rust nodes when sccache is available
-/// on the system PATH and the user has not already provided a `RUSTC_WRAPPER`
-/// value.
-///
-/// User-provided values are never overwritten.
-///
-/// Returns `true` if `RUSTC_WRAPPER=sccache` was injected.
-fn inject_rust_build_env(env_vars: &mut Vec<(String, String)>, language: PeppygenLanguage) -> bool {
-    if language != PeppygenLanguage::Rust {
-        return false;
-    }
-    let sccache_injected = !has_env_key(env_vars, "RUSTC_WRAPPER") && is_sccache_available();
-    if sccache_injected {
-        env_vars.push(("RUSTC_WRAPPER".to_string(), "sccache".to_string()));
-    }
-    sccache_injected
-}
-
-fn has_env_key(env_vars: &[(String, String)], key: &str) -> bool {
-    env_vars.iter().any(|(k, _)| k == key)
-}
-
-fn push_env_if_missing(env_vars: &mut Vec<(String, String)>, key: &str, value: String) {
-    if !has_env_key(env_vars, key) {
-        env_vars.push((key.to_string(), value));
-    }
-}
-
-fn resolve_apptainer_bin() -> String {
-    if let Ok(value) = std::env::var(PEPPY_APPTAINER_BIN_ENV_VAR) {
-        let trimmed = value.trim();
-        if !trimmed.is_empty() {
-            return trimmed.to_string();
-        }
-    }
-
-    if let Ok(current_exe) = std::env::current_exe()
-        && let Some(exe_dir) = current_exe.parent()
-    {
-        let bundled_apptainer = exe_dir.join("apptainer").join("bin").join("apptainer");
-        if bundled_apptainer.is_file() {
-            return bundled_apptainer.to_string_lossy().into_owned();
-        }
-    }
-
-    "apptainer".to_string()
-}
-
-fn inject_node_runtime_env(env_vars: &mut Vec<(String, String)>, node_name: &str, node_tag: &str) {
-    push_env_if_missing(
-        env_vars,
-        PEPPY_APPTAINER_BIN_ENV_VAR,
-        resolve_apptainer_bin(),
-    );
-    push_env_if_missing(env_vars, PEPPY_NODE_NAME_ENV_VAR, node_name.to_string());
-    push_env_if_missing(env_vars, PEPPY_NODE_TAG_ENV_VAR, node_tag.to_string());
-}
-
-pub(crate) fn generate_random_id() -> String {
-    let mut rng = rand::rng();
-    let bytes: [u8; 6] = rng.random();
-    bytes.iter().map(|b| format!("{:02x}", b)).collect()
-}
-
-pub(crate) struct ResolvedLocalArchiveSource {
-    pub(crate) node_config: ParsedNodeConfig,
-    pub(crate) source_path: PathBuf,
-    pub(crate) temp_dir: tempfile::TempDir,
-}
-
-pub(crate) use node_stack::extract_tar_zst;
-
-pub(crate) fn sanitize_repo_path(repo_path: &str) -> std::result::Result<PathBuf, String> {
-    let trimmed = repo_path.trim_start_matches(['/', '\\']);
-    let path = PathBuf::from(trimmed);
-    if path.components().any(|c| matches!(c, Component::ParentDir)) {
-        return Err("repo_path must not contain '..'".to_string());
-    }
-    Ok(path)
-}
-
-pub(crate) fn checkout_repo_ref(
-    repo: &Repository,
-    repo_ref: &str,
-) -> std::result::Result<(), git2::Error> {
-    let repo_ref = repo_ref.trim();
-    if repo_ref.is_empty() {
-        return Ok(());
-    }
-    let object = repo
-        .revparse_single(repo_ref)
-        .or_else(|_| repo.revparse_single(&format!("refs/tags/{repo_ref}")))
-        .or_else(|_| repo.revparse_single(&format!("refs/heads/{repo_ref}")))
-        .or_else(|_| repo.revparse_single(&format!("refs/remotes/origin/{repo_ref}")))?;
-    let commit = object.peel_to_commit()?;
-    repo.set_head_detached(commit.id())?;
-    let mut checkout = CheckoutBuilder::new();
-    checkout.force();
-    repo.checkout_head(Some(&mut checkout))?;
-    Ok(())
-}
-
-/// Clones a git repository, aborting the network transfer if `deadline` is
-/// exceeded.  When `deadline` is `None` the clone runs without any time limit.
-pub(crate) fn clone_repo_with_deadline(
-    repo_url: &str,
-    dest: &Path,
-    deadline: Option<Instant>,
-) -> std::result::Result<Repository, String> {
-    let deadline_triggered = Arc::new(AtomicBool::new(false));
-
-    let mut callbacks = git2::RemoteCallbacks::new();
-    if let Some(deadline) = deadline {
-        let flag = Arc::clone(&deadline_triggered);
-        callbacks.transfer_progress(move |_progress| {
-            if Instant::now() >= deadline {
-                flag.store(true, Ordering::SeqCst);
-                return false;
-            }
-            true
-        });
-    }
-
-    let mut fetch_opts = git2::FetchOptions::new();
-    fetch_opts.remote_callbacks(callbacks);
-
-    RepoBuilder::new()
-        .fetch_options(fetch_opts)
-        .clone(repo_url, dest)
-        .map_err(|e| {
-            if deadline_triggered.load(Ordering::SeqCst) {
-                format!("Git clone timed out for {}", repo_url)
-            } else {
-                format!("Failed to clone repository: {}", e)
-            }
-        })
-}
-
-fn is_supported_archive_path(path: &str) -> bool {
-    let path = path.to_ascii_lowercase();
-    path.ends_with(".tar.zst") || path.ends_with(".tar.zstd") || path.ends_with(".tzst")
-}
-
-pub(crate) fn is_supported_fs_archive(path: &Path) -> bool {
-    is_supported_archive_path(path.to_string_lossy().as_ref())
-}
-
-pub(crate) fn locate_node_root_dir(extracted_dir: &Path) -> std::result::Result<PathBuf, String> {
-    let direct = extracted_dir.join(NODE_CONFIG_FILE);
-    if direct.is_file() {
-        return Ok(extracted_dir.to_path_buf());
-    }
-
-    let mut candidate_dirs = Vec::new();
-    for entry in std::fs::read_dir(extracted_dir).map_err(|e| {
-        format!(
-            "Failed to list extracted bundle directory {}: {}",
-            extracted_dir.display(),
-            e
-        )
-    })? {
-        let entry = entry.map_err(|e| {
-            format!(
-                "Failed to read extracted bundle directory entry in {}: {}",
-                extracted_dir.display(),
-                e
-            )
-        })?;
-        let file_type = entry.file_type().map_err(|e| {
-            format!(
-                "Failed to read file type for extracted bundle entry {}: {}",
-                entry.path().display(),
-                e
-            )
-        })?;
-        if file_type.is_dir() {
-            candidate_dirs.push(entry.path());
-        }
-    }
-
-    if candidate_dirs.len() == 1 {
-        let candidate = candidate_dirs.pop().expect("candidate dir should exist");
-        if candidate.join(NODE_CONFIG_FILE).is_file() {
-            return Ok(candidate);
-        }
-    }
-
-    Err(format!(
-        "Bundle does not contain {} at the root (or single top-level folder)",
-        NODE_CONFIG_FILE
-    ))
-}
-
-pub(crate) fn resolve_local_archive_source(
-    archive_path: &Path,
-) -> std::result::Result<ResolvedLocalArchiveSource, String> {
-    let temp_dir =
-        tempfile::tempdir().map_err(|e| format!("Failed to create temporary directory: {}", e))?;
-
-    extract_tar_zst(archive_path, temp_dir.path())?;
-    let source_path = locate_node_root_dir(temp_dir.path())?;
-    let config_path = source_path.join(NODE_CONFIG_FILE);
-    let node_config = NodeConfigParser::from_path(&config_path).map_err(|e| {
-        format!(
-            "Failed to parse node config at {}: {}",
-            config_path.display(),
-            e
-        )
-    })?;
-
-    Ok(ResolvedLocalArchiveSource {
-        node_config,
-        source_path,
-        temp_dir,
-    })
-}
-
-pub(crate) fn is_supported_http_archive(url: &url::Url) -> bool {
-    is_supported_archive_path(url.path())
-}
+// Test-only re-imports (referenced exclusively from the `tests` module below).
+#[cfg(test)]
+use config::consts::NODE_CONFIG_FILE;
+#[cfg(test)]
+use config::node::PeppygenLanguage;
+#[cfg(test)]
+use env::{
+    PEPPY_APPTAINER_BIN_ENV_VAR, PEPPY_NODE_NAME_ENV_VAR, PEPPY_NODE_TAG_ENV_VAR,
+    is_sccache_available,
+};
+#[cfg(test)]
+use std::path::{Path, PathBuf};
 
 pub(crate) async fn resolve_node_config(
     source: NodeSource,
-    peppy_dirs: &config::consts::PeppyDirs,
+    peppy_dirs: &PeppyDirs,
 ) -> std::result::Result<NodeConfig, String> {
     info::resolve_node_config(source, peppy_dirs).await
 }

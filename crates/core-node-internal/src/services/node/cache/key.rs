@@ -1,8 +1,8 @@
 //! Shared helpers for building deterministic on-disk cache keys used by
-//! [`super::git_cache`] and [`super::bundle_cache`]. Both caches key their
-//! directories as `<slug>-<hash>`: the slug is a human-readable prefix
-//! derived from the source URL, the hash disambiguates different
-//! refs/checksums for the same URL.
+//! [`super::git`] and [`super::bundle`]. Both caches key their directories
+//! as `<slug>-<hash>`: the slug is a human-readable prefix derived from
+//! the source URL, the hash disambiguates different refs/checksums for
+//! the same URL.
 
 use sha2::{Digest, Sha256};
 
