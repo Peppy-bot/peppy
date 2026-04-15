@@ -317,6 +317,9 @@ struct NodeInfoResponse {
             addLogPath @5 :Text;
             # Per-instance run log paths, aligned with `instances` (same order).
             runLogPaths @6 :List(Text);
+            # Variant label selected at `node add` time. Empty string when
+            # no variant applies (non-variant add paths).
+            variantName @7 :Text;
         }
     }
 }

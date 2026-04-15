@@ -133,10 +133,11 @@ async fn handle_node_info_request_inner(
             .map_err(|e| InfoError::Internal(format!("failed to encode NodeInfoResponse: {}", e)));
     };
 
-    let (node_config, stage, instances, run_log_paths) = {
+    let (node_config, stage, instances, run_log_paths, variant_name) = {
         let guard = entity.read();
         let stage = guard.stage().name().to_string();
         let node_config = guard.config().clone();
+        let variant_name = guard.variant_name().map(str::to_owned);
         let tracked = guard.instances();
         let run_log_dir = peppy_dirs.logs_dir_run();
         let mut instances: Vec<NodeInstanceInfo> = Vec::with_capacity(tracked.len());
@@ -153,7 +154,7 @@ async fn handle_node_info_request_inner(
             });
             run_log_paths.push(run_log_dir.join(format!("{}.log", id)));
         }
-        (node_config, stage, instances, run_log_paths)
+        (node_config, stage, instances, run_log_paths, variant_name)
     };
 
     let add_log_path = node_stack.add_log_path(&request.node_name, &request.node_tag);
@@ -169,6 +170,7 @@ async fn handle_node_info_request_inner(
         instances,
         add_log_path,
         run_log_paths,
+        variant_name,
     }))
     .encode()
     .map_err(|e| InfoError::Internal(format!("failed to encode NodeInfoResponse: {}", e)))

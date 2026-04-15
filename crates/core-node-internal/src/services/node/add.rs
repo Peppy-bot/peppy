@@ -829,6 +829,11 @@ pub(crate) async fn run_node_add(
             None => None,
         };
 
+        // Capture the variant label alongside `effective_variant` so it can
+        // be persisted on the `NodeEntity` after `push_config` — the daemon
+        // reads it back out of the entity when answering `node_info`.
+        let variant_name: Option<String> = effective_variant.as_ref().map(variant_label);
+
         // Capture the root source path before variant resolution may overwrite it.
         // The .peppy/git.hash file is written by `peppy node sync` at the root
         // level; non-local variant directories (Git/Http clones) won't have it.
@@ -1001,6 +1006,7 @@ pub(crate) async fn run_node_add(
             source_path,
             verify_codegen_fingerprint,
             cleanup_dir,
+            variant_name,
             ctx,
         )
         .await
@@ -1218,6 +1224,7 @@ async fn process_node_add(
     source_path: PathBuf,
     verify_codegen_fingerprint: bool,
     cleanup_dir: Option<PathBuf>,
+    variant_name: Option<String>,
     ctx: ProcessNodeAddContext,
 ) -> NodeAddResult {
     // Reject any forbidden env vars early so the user gets a fast failure;
@@ -1380,11 +1387,12 @@ async fn process_node_add(
     // clone) that is cleaned up after this function returns. The
     // working_dir persists as long as the entity exists via WorkingDirGuard.
     let config_path_for_stack = working_dir.join(NODE_CONFIG_FILE);
-    if let Err(e) =
-        ctx.action
-            .node_stack
-            .push_config(node_config.clone(), false, &config_path_for_stack)
-    {
+    if let Err(e) = ctx.action.node_stack.push_config_with_variant(
+        node_config.clone(),
+        false,
+        &config_path_for_stack,
+        variant_name.clone(),
+    ) {
         let msg = format!("Failed to add node config: {}", e);
         write_error_to_log(&ctx.log_file, &msg);
         return NodeAddResult::failure(&ctx.log_path, msg);
