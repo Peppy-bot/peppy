@@ -106,7 +106,6 @@ pub(crate) async fn run_repo_node_add(
         &root_name,
         &root_tag,
         &dep_variant_overrides,
-        &action_context,
     )
     .await
     {
@@ -119,11 +118,7 @@ pub(crate) async fn run_repo_node_add(
         let in_tree = resolution
             .to_add
             .iter()
-            .any(|n| n.name == ov.name && n.tag == ov.tag)
-            || resolution
-                .stack_skipped
-                .iter()
-                .any(|(n, t)| n == &ov.name && t == &ov.tag);
+            .any(|n| n.name == ov.name && n.tag == ov.tag);
         if !in_tree {
             emit(
                 &feedback_tx,
@@ -134,34 +129,6 @@ pub(crate) async fn run_repo_node_add(
                 ),
             );
         }
-    }
-
-    // Warn about overrides clashing with already-in-stack deps.
-    for (n, t) in &resolution.stack_skipped {
-        if let Some(ov) = dep_variant_overrides
-            .iter()
-            .find(|o| &o.name == n && &o.tag == t)
-        {
-            emit(
-                &feedback_tx,
-                FeedbackStream::Warning,
-                format!(
-                    "Dependency variant override for {}:{} ignored — node already in stack (requested variant: {})",
-                    ov.name, ov.tag, ov.variant
-                ),
-            );
-        }
-    }
-
-    if resolution.to_add.is_empty() {
-        return fail(
-            &log_file,
-            &log_path,
-            format!(
-                "{}:{} has no materializable nodes — it may already be in the stack and have no new deps",
-                root_name, root_tag
-            ),
-        );
     }
 
     let tree_input: Vec<(PathBuf, config::node::NodeConfig)> = resolution
@@ -191,9 +158,8 @@ pub(crate) async fn run_repo_node_add(
         &feedback_tx,
         FeedbackStream::Stdout,
         format!(
-            "Batch resolved — {} node(s) to add ({} already in stack): {}",
+            "Batch resolved — {} node(s) to add: {}",
             resolution.to_add.len(),
-            resolution.stack_skipped.len(),
             resolution
                 .to_add
                 .iter()
@@ -300,9 +266,6 @@ struct Resolution {
     /// Every node we need to push onto the stack, in discovery order.
     /// Topological order is applied later via VirtualDeptree.
     to_add: Vec<ResolvedBatchNode>,
-    /// Deps that were already in the stack when we started — we skip
-    /// these and rely on the existing entity.
-    stack_skipped: Vec<(String, String)>,
 }
 
 type MaterializeOutput = (
@@ -328,7 +291,6 @@ async fn resolve_transitive_closure<'a>(
     root_name: &str,
     root_tag: &str,
     dep_overrides: &[DepVariantOverride],
-    action_context: &NodeAddActionContext,
 ) -> Result<Resolution, String> {
     let BatchResolutionCtx {
         peppy_dirs,
@@ -342,7 +304,6 @@ async fn resolve_transitive_closure<'a>(
         .collect();
 
     let mut to_add: Vec<ResolvedBatchNode> = Vec::new();
-    let mut stack_skipped: Vec<(String, String)> = Vec::new();
     let mut seen: HashSet<(String, String)> = HashSet::new();
     let mut missing: Vec<(String, String)> = Vec::new();
     let mut pending: Vec<(String, String, bool)> =
@@ -355,12 +316,10 @@ async fn resolve_transitive_closure<'a>(
             if !seen.insert(key.clone()) {
                 continue;
             }
-            // Deps already in the node stack → skip (but only for non-root;
-            // the root is the user's explicit target — we add/replace it).
-            if !is_root && action_context.node_stack.find(&name, &tag).is_some() {
-                stack_skipped.push(key);
-                continue;
-            }
+            // Every resolved node (root and deps alike) is materialized and
+            // pushed. `push_config_impl` handles in-place replacement for
+            // keys already in the stack, including the live-instance and
+            // dependents safety gates.
             let Some(entry) = cache::lookup(entries, &name, &tag) else {
                 missing.push(key);
                 continue;
@@ -448,10 +407,7 @@ async fn resolve_transitive_closure<'a>(
         ));
     }
 
-    Ok(Resolution {
-        to_add,
-        stack_skipped,
-    })
+    Ok(Resolution { to_add })
 }
 
 /// Materialize one package cache entry to a `(root_dir, parsed config)`

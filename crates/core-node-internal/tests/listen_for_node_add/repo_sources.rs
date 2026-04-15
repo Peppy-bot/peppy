@@ -208,8 +208,9 @@ async fn repo_node_add_partial_stack_coverage() {
         "add should succeed, err={:?}",
         res.error_message
     );
-    // Stack now has: root + b (pre-existing) + c (added) + a (added) = 4.
-    // B should still be there (reused), C and A should be newly added.
+    // Stack: root + b + c + a = 4. B's stack entry is replaced in-place
+    // by the fresh materialization (same key, same count), and c + a are
+    // added as new entries.
     assert!(node_stack.contains("a", "0.1.0"));
     assert!(node_stack.contains("b", "0.1.0"));
     assert!(node_stack.contains("c", "0.1.0"));
@@ -217,13 +218,13 @@ async fn repo_node_add_partial_stack_coverage() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn repo_node_add_mixed_tree_stops_recursion_at_stack_dep() {
-    // Tree: a (cache) → b (cache) → c (stack) → d (cache, never visited).
+async fn repo_node_add_does_not_materialize_nodes_outside_declared_tree() {
+    // Tree: a (cache) → b (cache) → c (pre-existing in stack, no deps).
     //
-    // When we hit `c` during resolution, we find it already in the stack
-    // and skip it. Its declared dep `d` must therefore NOT be materialized:
-    // the stack entry for `c` is authoritative, so the rest of its subtree
-    // is opaque to this batch.
+    // `c`'s manifest declares no dependencies, so the resolver must not
+    // fetch any unrelated node from the cache. The test omits a fictional
+    // `d` from the cache to prove the resolver only walks what manifests
+    // declare, rather than speculatively pulling entries.
     let started = start_core_node_with_mock_messenger().await;
     let node_stack = started.node_stack.clone();
     let peppy_dirs = started.peppy_dirs.clone();
@@ -246,10 +247,9 @@ async fn repo_node_add_mixed_tree_stops_recursion_at_stack_dep() {
     assert!(pre.success);
     assert_eq!(node_stack.len(), 2, "root + c");
 
-    // `d` is declared in the cache but MUST NOT be looked at because `c`
-    // is in the stack. Deliberately *omit* `d` from the cache to prove
-    // the resolver short-circuits at stack deps rather than pursuing the
-    // rest of the declared tree.
+    // Deliberately omit a hypothetical `d` from the cache: no manifest
+    // references `d`, so the resolver must never look it up. If it did,
+    // the batch would fail with "Dependencies missing from packages cache".
     let b_dir = tmp.path().join("b");
     write_plain_peppy_json5(
         &b_dir,
@@ -264,8 +264,9 @@ async fn repo_node_add_mixed_tree_stops_recursion_at_stack_dep() {
     TestPackagesCache::new()
         .fs_entry("a", "0.1.0", &a_dir, &[])
         .fs_entry("b", "0.1.0", &b_dir, &[])
-        // NB: intentionally no entry for `d` — a correct resolver must
-        // never ask for it because `c` in the stack cuts recursion short.
+        // NB: intentionally no entry for `d` — a correct resolver only
+        // walks deps declared by the resolved manifests, and none of them
+        // mention `d`.
         .fs_entry("c", "0.1.0", &c_dir, &[])
         .write(&peppy_dirs);
 
@@ -288,14 +289,15 @@ async fn repo_node_add_mixed_tree_stops_recursion_at_stack_dep() {
         "add should succeed, err={:?}",
         res.error_message
     );
-    // Stack = root + c (pre-existing) + b (added) + a (added).
+    // Stack = root + c + b + a = 4. c is replaced in-place when re-
+    // materialized; b and a are new.
     assert_eq!(node_stack.len(), 4);
     assert!(node_stack.contains("a", "0.1.0"));
     assert!(node_stack.contains("b", "0.1.0"));
     assert!(node_stack.contains("c", "0.1.0"));
     assert!(
         !node_stack.contains("d", "0.1.0"),
-        "d must not be added — its parent c was served from the stack"
+        "d must never be added — no manifest in the tree declares it"
     );
 }
 
@@ -310,9 +312,10 @@ async fn repo_node_add_deep_mixed_tree_stack_and_cache_at_multiple_levels() {
     //                         d (cache)  e (stack)
     //
     // Expected outcome:
-    //   - b and e stay as-is (pre-populated stack entries, skipped).
-    //   - a, c, d get materialized from the cache and added in topo order.
-    //   - Stack size: root + b + e (pre) + d + c + a (added) = 6.
+    //   - b and e keep their keys but are replaced in-place by fresh
+    //     materializations (push_config_impl's same-key update path).
+    //   - a, c, d are materialized from the cache and pushed in topo order.
+    //   - Stack size: root + b + e + d + c + a = 6.
     let started = start_core_node_with_mock_messenger().await;
     let node_stack = started.node_stack.clone();
     let peppy_dirs = started.peppy_dirs.clone();
@@ -598,44 +601,66 @@ async fn repo_node_add_dep_override_on_unrelated_node_warns() {
     );
 }
 
+/// Re-running `node add` for the same root with a different dep variant
+/// override must swap the dep's `variant_name` on the stack. This is the
+/// regression test for the bug where the second override was silently
+/// dropped because the dep was already in the stack.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn repo_node_add_dep_already_in_stack_keeps_its_variant() {
+async fn repo_node_add_re_add_swaps_dep_variant() {
     let started = start_core_node_with_mock_messenger().await;
     let node_stack = started.node_stack.clone();
     let peppy_dirs = started.peppy_dirs.clone();
 
+    // Dep with two selectable variants (plus a required default).
     let tmp = TempDir::new().unwrap();
-    let dep_dir = tmp.path().join("dep");
-    write_plain_peppy_json5(&dep_dir, &minimal_node_config("dep", "0.1.0", &[]));
-
-    // Pre-add dep directly (no variant).
-    send_node_add_and_wait(
-        &started.caller_handle,
-        &started.core_node_name,
-        dep_dir.as_path(),
-        GOAL_TIMEOUT,
-        RESULT_TIMEOUT,
-        None,
-    )
-    .await
-    .expect("pre-add of dep should complete")
-    .success
-    .then_some(())
-    .expect("pre-add of dep should succeed");
+    let dep_dir = tmp.path().join("dep_with_variant");
+    let default_dir = dep_dir.join("default");
+    let mock_a_dir = dep_dir.join("mock-a");
+    let mock_b_dir = dep_dir.join("mock-b");
+    for d in [&default_dir, &mock_a_dir, &mock_b_dir] {
+        std::fs::create_dir_all(d).unwrap();
+        std::fs::write(
+            d.join(NODE_CONFIG_FILE),
+            r#"{
+                schema_version: 1,
+                execution: {
+                    language: "rust",
+                    run_cmd: ["sleep", "10"]
+                }
+            }"#,
+        )
+        .unwrap();
+    }
+    write_plain_peppy_json5(
+        &dep_dir,
+        r#"{
+            schema_version: 1,
+            manifest: {
+                name: "dep_with_variant",
+                tag: "0.1.0",
+                variants: [
+                    { name: "default", source: { local: "./default" } },
+                    { name: "mock-a",  source: { local: "./mock-a"  } },
+                    { name: "mock-b",  source: { local: "./mock-b"  } }
+                ]
+            },
+            interfaces: {}
+        }"#,
+    );
 
     let target_dir = tmp.path().join("target");
     write_plain_peppy_json5(
         &target_dir,
-        &minimal_node_config("target", "1.0.0", &[("dep", "0.1.0")]),
+        &minimal_node_config("target", "1.0.0", &[("dep_with_variant", "0.1.0")]),
     );
 
     TestPackagesCache::new()
-        .fs_entry("dep", "0.1.0", &dep_dir, &["mock"])
+        .fs_entry("dep_with_variant", "0.1.0", &dep_dir, &["mock-a", "mock-b"])
         .fs_entry("target", "1.0.0", &target_dir, &[])
         .write(&peppy_dirs);
 
-    let (fb_tx, mut fb_rx) = tokio::sync::mpsc::unbounded_channel::<NodeAddFeedback>();
-    let res = send_node_add_and_wait_with_dep_overrides(
+    // First add pins the dep to `mock-a`.
+    let res_a = send_node_add_and_wait_with_dep_overrides(
         &started.caller_handle,
         &started.core_node_name,
         NodeAddSource::RepoNode {
@@ -644,35 +669,62 @@ async fn repo_node_add_dep_already_in_stack_keeps_its_variant() {
         },
         None,
         vec![DepVariantOverride {
-            name: "dep".into(),
+            name: "dep_with_variant".into(),
             tag: "0.1.0".into(),
-            variant: "mock".into(),
+            variant: "mock-a".into(),
         }],
         GOAL_TIMEOUT,
         RESULT_TIMEOUT,
-        Some(fb_tx),
+        None,
     )
     .await
-    .expect("node_add should complete");
-
+    .expect("first node_add should complete");
     assert!(
-        res.success,
-        "add should succeed, err={:?}",
-        res.error_message
+        res_a.success,
+        "first add should succeed, err={:?}",
+        res_a.error_message
     );
-    // Stack still contains the pre-existing dep (unchanged) + target.
-    assert!(node_stack.contains("dep", "0.1.0"));
+    assert_eq!(
+        read_variant(&node_stack, "dep_with_variant", "0.1.0"),
+        Some("mock-a".to_owned()),
+        "dep should land on stack with the first requested variant"
+    );
+
+    // Second add requests a different variant for the same dep — the
+    // stack entry must reflect the new variant, not the stale one.
+    let res_b = send_node_add_and_wait_with_dep_overrides(
+        &started.caller_handle,
+        &started.core_node_name,
+        NodeAddSource::RepoNode {
+            name: "target",
+            tag: "1.0.0",
+        },
+        None,
+        vec![DepVariantOverride {
+            name: "dep_with_variant".into(),
+            tag: "0.1.0".into(),
+            variant: "mock-b".into(),
+        }],
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        None,
+    )
+    .await
+    .expect("second node_add should complete");
+    assert!(
+        res_b.success,
+        "second add should succeed, err={:?}",
+        res_b.error_message
+    );
+    assert_eq!(
+        read_variant(&node_stack, "dep_with_variant", "0.1.0"),
+        Some("mock-b".to_owned()),
+        "dep variant should be swapped by the second add"
+    );
     assert!(node_stack.contains("target", "1.0.0"));
+}
 
-    let mut feedback = Vec::new();
-    while let Ok(f) = fb_rx.try_recv() {
-        feedback.push(f);
-    }
-    let warned = feedback.iter().any(|f| {
-        f.is_warning() && f.line.contains("dep:0.1.0") && f.line.contains("already in stack")
-    });
-    assert!(
-        warned,
-        "expected a warning about override ignored for already-in-stack dep; got: {feedback:?}"
-    );
+fn read_variant(node_stack: &node_stack::NodeStack, name: &str, tag: &str) -> Option<String> {
+    let handle = node_stack.find(name, tag)?;
+    handle.read().variant_name().map(str::to_owned)
 }
