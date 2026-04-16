@@ -30,10 +30,11 @@ In the root directory, you'll find a [`peppy_launcher.json5`](https://github.com
  1. All deployments are defined in the `deployments` array
  2. Each deployment requires a `source` and `instances` attribute
 
-The `source` attribute supports three formats:
+The `source` attribute supports four formats:
  - **URL**: A link to a `.tar.zst` archive, requiring both `url` and `sha256` attributes
  - **Git repository**: Requires `repo`, `path` (location within the repo), and `ref` attributes
  - **Local path**: Specified via the `local` key, pointing to a directory on your filesystem. The path can be either absolute or relative to the `peppy_launcher.json5` file
+ - **Repository**: Reference a node that is already registered in your user repositories. Specify `name` and `tag`, or use the combined `name: "<name>:<tag>"` shorthand. The node (and its dependencies) is resolved against your local packages cache at `~/.peppy/cache/packages.json5`, so be sure to run `peppy repo refresh` beforehand.
 
 ### Variants
 
@@ -91,6 +92,33 @@ Examples:
   },
   instances: [
     { instance_id: "my_node_1" }
+  ]
+}
+```
+
+```json5
+// Repository source (long form)
+{
+  source: {
+    name: "openarm01_controller",
+    tag: "0.1.0",
+    variant: { name: "mock-python" }
+  },
+  instances: [
+    { instance_id: "the_nervous_system" }
+  ]
+}
+```
+
+```json5
+// Repository source (combined shorthand — equivalent to the example above)
+{
+  source: {
+    name: "openarm01_controller:0.1.0",
+    variant: { name: "mock-python" }
+  },
+  instances: [
+    { instance_id: "the_nervous_system" }
   ]
 }
 ```

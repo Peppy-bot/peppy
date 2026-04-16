@@ -12,6 +12,7 @@ mod internal {
     pub mod fingerprint;
     pub mod launcher;
     pub mod node;
+    pub mod repo_node_id;
     pub mod runtime;
     pub mod source;
 }
@@ -83,18 +84,23 @@ pub mod runtime {
 pub mod launcher {
     pub use crate::internal::launcher::{
         CURRENT_SCHEMA_VERSION, Deployment, DeploymentGitSource, DeploymentInstance,
-        DeploymentLocalSource, DeploymentSource, DeploymentUrlSource, Name, PeppyLauncher,
-        PeppyLauncherParser, SchemaVersion, VariantGitSource, VariantNameSource, VariantSource,
-        VariantUrlSource,
+        DeploymentLocalSource, DeploymentRepoSource, DeploymentSource, DeploymentUrlSource, Name,
+        PeppyLauncher, PeppyLauncherParser, SchemaVersion, VariantGitSource, VariantNameSource,
+        VariantSource, VariantUrlSource,
     };
 }
 
 // -- source --
 pub mod source {
     pub use crate::internal::source::{
-        DeploymentGitSource, DeploymentLocalSource, DeploymentSource, DeploymentUrlSource,
-        VariantGitSource, VariantNameSource, VariantSource, VariantUrlSource,
+        DeploymentGitSource, DeploymentLocalSource, DeploymentRepoSource, DeploymentSource,
+        DeploymentUrlSource, VariantGitSource, VariantNameSource, VariantSource, VariantUrlSource,
     };
+}
+
+// -- repo node id --
+pub mod repo_node_id {
+    pub use crate::internal::repo_node_id::{validate_repo_node_name, validate_repo_node_tag};
 }
 
 #[cfg(feature = "test_helpers")]

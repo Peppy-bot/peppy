@@ -5,6 +5,7 @@ use super::{
 use crate::Result;
 use crate::encoding::{NodeInfo, NodeInfoRequest, NodeInfoResponse, NodeInstanceInfo, NodeSource};
 use crate::names;
+use crate::services::repo::cache as repo_cache;
 use config::consts::{NODE_CONFIG_FILE, PeppyDirs};
 use config::fingerprint::fingerprint_for_bytes;
 use config::node::{DEFAULT_VARIANT_NAME, NodeConfig, NodeConfigParser, ParsedNodeConfig};
@@ -236,8 +237,12 @@ async fn resolve_node_config_with_source_path(
         NodeSource::Http { url, sha256 } => {
             parse_node_config_from_http_with_path(url, sha256, peppy_dirs).await
         }
-        NodeSource::RepoNode { .. } => {
-            Err("node_info does not support repo-node sources".to_owned())
+        NodeSource::RepoNode { name, tag, .. } => {
+            let resolved = repo_cache::resolve_repo_node_source(&name, &tag, peppy_dirs)?;
+            Box::pin(resolve_node_config_with_source_path(
+                resolved, peppy_dirs, deadline,
+            ))
+            .await
         }
     }
 }

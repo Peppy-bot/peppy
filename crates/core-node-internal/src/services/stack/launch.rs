@@ -159,6 +159,7 @@ fn deployment_label(deployment: &Deployment) -> String {
         DeploymentSource::Local(spec) => format!("local:{}", spec.local.display()),
         DeploymentSource::Git(spec) => format!("git:{}@{}:{}", spec.repo, spec.ref_, spec.path),
         DeploymentSource::Url(spec) => format!("url:{}", spec.url),
+        DeploymentSource::Repo(spec) => format!("repo:{}:{}", spec.name, spec.tag),
     };
     match deployment.source.variant() {
         Some(VariantSource::Name(v)) => format!("{base} [variant:{name}]", name = v.name),
@@ -177,6 +178,7 @@ fn git_url_from_repo(repo: &str) -> std::result::Result<gix_url::Url, String> {
 fn node_source_from_deployment_source(
     deployment: &Deployment,
     nodes_directory: &std::path::Path,
+    peppy_dirs: &PeppyDirs,
 ) -> std::result::Result<(NodeSource, Option<NodeSource>), String> {
     let source = match &deployment.source {
         DeploymentSource::Local(spec) => {
@@ -203,6 +205,13 @@ fn node_source_from_deployment_source(
                 sha256: Some(spec.sha256.clone()),
             }
         }
+        // Repo-backed sources are flattened to their concrete FS/Git/Http
+        // counterpart at planning time by consulting the user's packages
+        // cache. Downstream add/build/run steps never see `RepoNode` under
+        // a stack launch.
+        DeploymentSource::Repo(spec) => crate::services::repo::cache::resolve_repo_node_source(
+            &spec.name, &spec.tag, peppy_dirs,
+        )?,
     };
 
     let variant = deployment
@@ -616,7 +625,8 @@ async fn resolve_deployments(
         }
 
         let (source, variant) =
-            match node_source_from_deployment_source(&deployment, nodes_directory) {
+            match node_source_from_deployment_source(&deployment, nodes_directory, &ctx.peppy_dirs)
+            {
                 Ok(result) => result,
                 Err(err) => {
                     planning_errors.push(format!(

@@ -11,7 +11,7 @@
 //! re-parse the cache file on every request.
 
 use crate::Result;
-use crate::encoding::RepoSourceKind;
+use crate::encoding::{NodeSource, RepoSourceKind};
 use crate::services::repo::refresh::read_or_create_repos;
 use config::consts::PeppyDirs;
 use parking_lot::Mutex;
@@ -184,6 +184,53 @@ pub fn lookup<'a>(entries: &'a [PackageEntry], name: &str, tag: &str) -> Option<
 /// Path to the cache file. Used for user-facing error messages.
 pub fn cache_path(peppy_dirs: &PeppyDirs) -> PathBuf {
     peppy_dirs.cache_dir().join("packages.json5")
+}
+
+/// Looks up `(name, tag)` in the packages cache and translates the matched
+/// entry into a concrete `NodeSource` (Fs / Git / Http) that downstream
+/// resolution can handle directly. Used both by `node_info` and by
+/// `stack_launch` planning to flatten `NodeSource::RepoNode` into its
+/// underlying source kind.
+pub fn resolve_repo_node_source(
+    name: &str,
+    tag: &str,
+    peppy_dirs: &PeppyDirs,
+) -> std::result::Result<NodeSource, String> {
+    let (entries, _) = load_with_generation(peppy_dirs)
+        .map_err(|e| format!("failed to load packages cache: {e}"))?;
+    let entry = lookup(&entries, name, tag).ok_or_else(|| {
+        format!(
+            "repo-node `{name}:{tag}` not found in {}",
+            cache_path(peppy_dirs).display()
+        )
+    })?;
+
+    match entry.source_type {
+        RepoSourceKind::Fs => Ok(NodeSource::Fs(PathBuf::from(&entry.path))),
+        RepoSourceKind::Git => {
+            let repo_url_str = entry.source_uri.as_deref().ok_or_else(|| {
+                format!("cache entry for `{name}:{tag}` is git but has no source_uri")
+            })?;
+            let repo_url = gix_url::Url::try_from(repo_url_str)
+                .map_err(|e| format!("invalid git URL in cache entry for `{name}:{tag}`: {e}"))?;
+            Ok(NodeSource::Git {
+                repo_url,
+                repo_path: entry.path.clone(),
+                repo_ref: entry.resolved_ref.clone(),
+            })
+        }
+        RepoSourceKind::Url => {
+            let url_str = entry.source_uri.as_deref().ok_or_else(|| {
+                format!("cache entry for `{name}:{tag}` is url but has no source_uri")
+            })?;
+            let url = url::Url::parse(url_str)
+                .map_err(|e| format!("invalid url in cache entry for `{name}:{tag}`: {e}"))?;
+            Ok(NodeSource::Http {
+                url,
+                sha256: entry.checksum.clone(),
+            })
+        }
+    }
 }
 
 struct MemoEntry {
