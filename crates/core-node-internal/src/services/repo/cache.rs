@@ -213,10 +213,14 @@ pub(crate) fn resolve_repo_node_source(
                 .ok_or_else(|| format!("cache entry for `{id}` is git but has no source_uri"))?;
             let repo_url = gix_url::Url::try_from(repo_url_str)
                 .map_err(|e| format!("invalid git URL in cache entry for `{id}`: {e}"))?;
+            let repo_ref = entry
+                .resolved_ref
+                .clone()
+                .ok_or_else(|| format!("cache entry for `{id}` is git but has no resolved_ref"))?;
             Ok(NodeSource::Git {
                 repo_url,
                 repo_path: entry.path.clone(),
-                repo_ref: entry.resolved_ref.clone(),
+                repo_ref: Some(repo_ref),
             })
         }
         RepoSourceKind::Url => {
@@ -283,6 +287,61 @@ mod tests {
             variants: vec![],
             duplicate,
             repo_id,
+        }
+    }
+
+    fn mk_fs_entry(name: &str, tag: &str, path: &str) -> PackageEntry {
+        PackageEntry {
+            node_name: name.to_owned(),
+            node_tag: tag.to_owned(),
+            source_type: RepoSourceKind::Fs,
+            source_uri: None,
+            resolved_ref: None,
+            checksum: None,
+            path: path.to_owned(),
+            variants: vec![],
+            duplicate: false,
+            repo_id: 0,
+        }
+    }
+
+    fn mk_git_entry(
+        name: &str,
+        tag: &str,
+        uri: Option<&str>,
+        resolved_ref: Option<&str>,
+    ) -> PackageEntry {
+        PackageEntry {
+            node_name: name.to_owned(),
+            node_tag: tag.to_owned(),
+            source_type: RepoSourceKind::Git,
+            source_uri: uri.map(str::to_owned),
+            resolved_ref: resolved_ref.map(str::to_owned),
+            checksum: None,
+            path: "nodes/example".to_owned(),
+            variants: vec![],
+            duplicate: false,
+            repo_id: 0,
+        }
+    }
+
+    fn mk_url_entry(
+        name: &str,
+        tag: &str,
+        uri: Option<&str>,
+        checksum: Option<&str>,
+    ) -> PackageEntry {
+        PackageEntry {
+            node_name: name.to_owned(),
+            node_tag: tag.to_owned(),
+            source_type: RepoSourceKind::Url,
+            source_uri: uri.map(str::to_owned),
+            resolved_ref: None,
+            checksum: checksum.map(str::to_owned),
+            path: "nodes/example".to_owned(),
+            variants: vec![],
+            duplicate: false,
+            repo_id: 0,
         }
     }
 
@@ -361,5 +420,143 @@ mod tests {
         assert_eq!(loaded[0].resolved_ref.as_deref(), Some("main"));
         assert_eq!(loaded[1].node_name, "b");
         assert!(loaded[1].duplicate);
+    }
+
+    // -- resolve_repo_node_source tests --
+
+    #[test]
+    fn resolve_fs_success() {
+        let tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(tmp.path());
+        let entries = vec![mk_fs_entry("mynode", "1.0", "/tmp/mynode")];
+        write_cache(&peppy_dirs, &entries).unwrap();
+
+        let src = resolve_repo_node_source("mynode", "1.0", &peppy_dirs).unwrap();
+        assert_eq!(src, NodeSource::Fs(PathBuf::from("/tmp/mynode")));
+    }
+
+    #[test]
+    fn resolve_git_success() {
+        let tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(tmp.path());
+        let entries = vec![mk_git_entry(
+            "g",
+            "1.0",
+            Some("https://example.com/repo.git"),
+            Some("main"),
+        )];
+        write_cache(&peppy_dirs, &entries).unwrap();
+
+        let src = resolve_repo_node_source("g", "1.0", &peppy_dirs).unwrap();
+        match src {
+            NodeSource::Git {
+                repo_url,
+                repo_path,
+                repo_ref,
+            } => {
+                assert!(
+                    repo_url
+                        .to_bstring()
+                        .to_string()
+                        .contains("example.com/repo.git"),
+                    "unexpected repo_url: {repo_url:?}",
+                );
+                assert_eq!(repo_path, "nodes/example");
+                assert_eq!(repo_ref.as_deref(), Some("main"));
+            }
+            other => panic!("expected NodeSource::Git, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_url_success() {
+        let tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(tmp.path());
+        let entries = vec![mk_url_entry(
+            "u",
+            "2.0",
+            Some("https://example.com/archive.tzst"),
+            Some("abc123"),
+        )];
+        write_cache(&peppy_dirs, &entries).unwrap();
+
+        let src = resolve_repo_node_source("u", "2.0", &peppy_dirs).unwrap();
+        match src {
+            NodeSource::Http { url, sha256 } => {
+                assert_eq!(url.as_str(), "https://example.com/archive.tzst");
+                assert_eq!(sha256.as_deref(), Some("abc123"));
+            }
+            other => panic!("expected NodeSource::Http, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_git_missing_source_uri() {
+        let tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(tmp.path());
+        let entries = vec![mk_git_entry("g", "1.0", None, Some("main"))];
+        write_cache(&peppy_dirs, &entries).unwrap();
+
+        let err = resolve_repo_node_source("g", "1.0", &peppy_dirs).unwrap_err();
+        assert!(err.contains("no source_uri"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn resolve_git_invalid_source_uri() {
+        let tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(tmp.path());
+        let entries = vec![mk_git_entry("g", "1.0", Some(""), Some("main"))];
+        write_cache(&peppy_dirs, &entries).unwrap();
+
+        let err = resolve_repo_node_source("g", "1.0", &peppy_dirs).unwrap_err();
+        assert!(err.contains("invalid git URL"), "unexpected error: {err}",);
+    }
+
+    #[test]
+    fn resolve_git_missing_resolved_ref() {
+        let tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(tmp.path());
+        let entries = vec![mk_git_entry(
+            "g",
+            "1.0",
+            Some("https://example.com/repo.git"),
+            None,
+        )];
+        write_cache(&peppy_dirs, &entries).unwrap();
+
+        let err = resolve_repo_node_source("g", "1.0", &peppy_dirs).unwrap_err();
+        assert!(err.contains("no resolved_ref"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn resolve_url_missing_source_uri() {
+        let tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(tmp.path());
+        let entries = vec![mk_url_entry("u", "1.0", None, None)];
+        write_cache(&peppy_dirs, &entries).unwrap();
+
+        let err = resolve_repo_node_source("u", "1.0", &peppy_dirs).unwrap_err();
+        assert!(err.contains("no source_uri"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn resolve_url_invalid_source_uri() {
+        let tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(tmp.path());
+        let entries = vec![mk_url_entry("u", "1.0", Some("not://[invalid"), None)];
+        write_cache(&peppy_dirs, &entries).unwrap();
+
+        let err = resolve_repo_node_source("u", "1.0", &peppy_dirs).unwrap_err();
+        assert!(err.contains("invalid url"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn resolve_not_found() {
+        let tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(tmp.path());
+        write_cache(&peppy_dirs, &[]).unwrap();
+
+        let err = resolve_repo_node_source("missing", "0.0", &peppy_dirs).unwrap_err();
+        assert!(err.contains("not found"), "unexpected error: {err}");
     }
 }
