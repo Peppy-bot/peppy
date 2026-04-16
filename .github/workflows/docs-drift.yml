@@ -45,6 +45,7 @@ jobs:
         if: steps.check.outcome == 'failure'
         uses: peter-evans/create-pull-request@v8
         with:
+          token: ${{ secrets.PEPPY_BOT_TOKEN }}
           branch: auto/docs-update-${{ github.event.pull_request.number }}
           base: ${{ github.event.pull_request.head.ref }}
           title: "docs: sync with PR #${{ github.event.pull_request.number }}"
