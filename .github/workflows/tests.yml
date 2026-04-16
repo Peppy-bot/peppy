@@ -16,6 +16,8 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+    env:
+      GIT_CONFIG_GLOBAL: /dev/null
     outputs:
       docs-outdated: ${{ steps.check.outcome == 'failure' }}
 
