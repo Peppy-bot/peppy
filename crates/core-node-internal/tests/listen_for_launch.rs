@@ -16,7 +16,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tempfile::tempdir;
 
-use crate::common::start_core_node_with_mock_messenger;
+use crate::common::{TestPackagesCache, start_core_node_with_mock_messenger};
 
 struct NodeConfigOptions<'a> {
     build_cmd: &'a [&'a str],
@@ -804,6 +804,152 @@ async fn listen_for_launch_configuration_succeed() {
             .map(|e| &e.instance_id)
             .collect::<Vec<_>>()
     );
+}
+
+/// Launch file references nodes by `{ name, tag }` (long form) and
+/// `{ name: "foo:tag" }` (combined form). Both shapes resolve through the
+/// user's packages cache, which we pre-populate with local filesystem
+/// entries so the test needs no network access.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_launch_configuration_succeeds_with_repo_sources() {
+    const BRAIN_NODE: &str = "repo_brain";
+    const ARM_NODE: &str = "repo_arm";
+    const NODE_TAG: &str = "0.1.0";
+
+    let started_core_node = start_core_node_with_mock_messenger().await;
+    let node_stack = started_core_node.node_stack.clone();
+    let peppy_dirs = started_core_node.peppy_dirs.clone();
+    let node_messenger =
+        MessengerHandle::from_shared(Arc::clone(&started_core_node.shared_messenger));
+
+    // On-disk node configs referenced by the packages cache.
+    let nodes_dir = tempdir().expect("failed to create temp nodes directory");
+    let brain_dir = write_node_config(
+        nodes_dir.path(),
+        BRAIN_NODE,
+        NODE_TAG,
+        "test-hash",
+        &["sleep", "60"],
+        false,
+        false,
+    );
+    let arm_dir = write_node_config(
+        nodes_dir.path(),
+        ARM_NODE,
+        NODE_TAG,
+        "test-hash",
+        &["sleep", "60"],
+        false,
+        false,
+    );
+
+    // Map both nodes into the user-repo cache. This is what the
+    // `{ name, tag }` launcher shape resolves against.
+    TestPackagesCache::new()
+        .fs_entry(BRAIN_NODE, NODE_TAG, &brain_dir, &[])
+        .fs_entry(ARM_NODE, NODE_TAG, &arm_dir, &[])
+        .write(&peppy_dirs);
+
+    let _ready_brain = AbortOnDrop(
+        listen_for_node_ready(
+            &node_messenger,
+            &started_core_node.core_node_name,
+            "the_brain",
+            BRAIN_NODE,
+        )
+        .await
+        .expect("ready service should start"),
+    );
+    let _health_brain = AbortOnDrop(
+        listen_for_node_health(
+            &node_messenger,
+            &started_core_node.core_node_name,
+            "the_brain",
+            BRAIN_NODE,
+        )
+        .await
+        .expect("health service should start"),
+    );
+    let _ready_arm = AbortOnDrop(
+        listen_for_node_ready(
+            &node_messenger,
+            &started_core_node.core_node_name,
+            "the_arm",
+            ARM_NODE,
+        )
+        .await
+        .expect("ready service should start"),
+    );
+    let _health_arm = AbortOnDrop(
+        listen_for_node_health(
+            &node_messenger,
+            &started_core_node.core_node_name,
+            "the_arm",
+            ARM_NODE,
+        )
+        .await
+        .expect("health service should start"),
+    );
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Real peppy_launcher.json5 file exercising both the long-form and the
+    // `name:tag` shorthand.
+    let launcher_json5 = format!(
+        r#"{{
+  deployments: [
+    {{
+      source: {{ name: "{BRAIN_NODE}", tag: "{NODE_TAG}" }},
+      instances: [
+        {{ instance_id: "the_brain" }}
+      ]
+    }},
+    {{
+      source: {{ name: "{ARM_NODE}:{NODE_TAG}" }},
+      instances: [
+        {{ instance_id: "the_arm" }}
+      ]
+    }}
+  ]
+}}"#
+    );
+    let launch_file_path = nodes_dir.path().join("peppy_launcher.json5");
+    fs::write(&launch_file_path, &launcher_json5).expect("failed to write launch file");
+
+    let (_goal_response, result) = send_node_launch_and_wait(
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        &launch_file_path,
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+    )
+    .await
+    .expect("launch should complete");
+
+    assert!(
+        result.success,
+        "launch should succeed, got error: {:?}",
+        result.error_message
+    );
+
+    assert!(
+        node_stack.contains(BRAIN_NODE, NODE_TAG),
+        "brain should be in stack"
+    );
+    assert!(
+        node_stack.contains(ARM_NODE, NODE_TAG),
+        "arm should be in stack"
+    );
+    assert_eq!(node_stack.len(), 3, "root + 2 repo-sourced nodes");
+
+    let brain = node_stack
+        .find(BRAIN_NODE, NODE_TAG)
+        .expect("brain should be in stack");
+    assert_eq!(brain.read().instances().len(), 1);
+
+    let arm = node_stack
+        .find(ARM_NODE, NODE_TAG)
+        .expect("arm should be in stack");
+    assert_eq!(arm.read().instances().len(), 1);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

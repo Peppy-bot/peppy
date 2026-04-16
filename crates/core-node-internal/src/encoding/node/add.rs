@@ -4,7 +4,7 @@ use crate::Result;
 use crate::names;
 use crate::node_capnp;
 use capnp::message::Builder;
-use config::node::{Name, QoSProfile};
+use config::node::QoSProfile;
 use gix_url::Url as GitUrl;
 use peppylib::messaging::ActionGoalHandle;
 use peppylib::types::Payload;
@@ -140,41 +140,12 @@ impl NodeSource {
     }
 }
 
-/// Rejects a repo-node name that would be unsafe to splice into a log
-/// filename or to look up in the repo cache. Reuses the manifest `Name`
-/// character set (lowercase/uppercase ASCII letters, digits, `_`, `-`).
 fn validate_repo_node_name(value: &str, label: &str) -> Result<()> {
-    Name::try_from(value.to_owned())
-        .map(|_| ())
-        .map_err(|e| crate::Error::Decoding(format!("invalid {label}: {e}")))
+    config::repo_node_id::validate_repo_node_name(value, label).map_err(crate::Error::Decoding)
 }
 
-/// Rejects a repo-node tag that would be unsafe to splice into a filename
-/// joined under the logs directory (e.g. `../etc/passwd`). Mirrors
-/// `node_stack::build_steps::validate_node_tag`.
 fn validate_repo_node_tag(tag: &str, label: &str) -> Result<()> {
-    if tag.is_empty() {
-        return Err(crate::Error::Decoding(format!("empty {label}")));
-    }
-    if tag == "." || tag == ".." || tag.starts_with('.') {
-        return Err(crate::Error::Decoding(format!(
-            "{label} must not start with '.': {tag}"
-        )));
-    }
-    if tag.contains("..") {
-        return Err(crate::Error::Decoding(format!(
-            "{label} must not contain '..': {tag}"
-        )));
-    }
-    for c in tag.chars() {
-        let ok = c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-';
-        if !ok {
-            return Err(crate::Error::Decoding(format!(
-                "{label} contains disallowed character {c:?}: {tag}"
-            )));
-        }
-    }
-    Ok(())
+    config::repo_node_id::validate_repo_node_tag(tag, label).map_err(crate::Error::Decoding)
 }
 
 /// Goal message for the NodeAdd action.

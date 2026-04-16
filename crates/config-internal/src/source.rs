@@ -10,6 +10,7 @@ pub enum DeploymentSource {
     Local(DeploymentLocalSource),
     Git(DeploymentGitSource),
     Url(DeploymentUrlSource),
+    Repo(DeploymentRepoSource),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -33,6 +34,17 @@ pub struct DeploymentGitSource {
 pub struct DeploymentUrlSource {
     pub url: String,
     pub sha256: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub variant: Option<VariantSource>,
+}
+
+/// Deployment source that resolves a node through the user's repo cache
+/// (`~/.peppy/cache/packages.json5`). Accepts `{ name, tag }` or the
+/// combined `{ name: "<name>:<tag>" }` shorthand.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DeploymentRepoSource {
+    pub name: String,
+    pub tag: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub variant: Option<VariantSource>,
 }
@@ -76,6 +88,7 @@ impl DeploymentSource {
             DeploymentSource::Local(s) => s.variant.as_ref(),
             DeploymentSource::Git(s) => s.variant.as_ref(),
             DeploymentSource::Url(s) => s.variant.as_ref(),
+            DeploymentSource::Repo(s) => s.variant.as_ref(),
         }
     }
 }
@@ -180,6 +193,50 @@ where
     Ok(trimmed.to_ascii_lowercase())
 }
 
+fn split_repo_name_and_tag<E>(
+    raw_name: String,
+    raw_tag: Option<&str>,
+) -> Result<(String, String), E>
+where
+    E: de::Error,
+{
+    let name_trimmed = raw_name.trim();
+    if name_trimmed.is_empty() {
+        return Err(invalid_deployment_source::<E>(
+            "repo source name cannot be empty",
+        ));
+    }
+
+    let (name, tag) = if let Some((n, t)) = name_trimmed.split_once(':') {
+        if raw_tag.is_some() {
+            return Err(invalid_deployment_source::<E>(
+                "repo source cannot combine `name: \"<name>:<tag>\"` with a separate `tag` field",
+            ));
+        }
+        if t.contains(':') {
+            return Err(invalid_deployment_source::<E>(
+                "repo source `name` must contain at most one ':' separating name and tag",
+            ));
+        }
+        (n.trim().to_owned(), t.trim().to_owned())
+    } else {
+        let tag = raw_tag.map(str::trim).unwrap_or("");
+        if tag.is_empty() {
+            return Err(invalid_deployment_source::<E>(
+                "repo source requires a non-empty `tag` (or the combined `name: \"<name>:<tag>\"` form)",
+            ));
+        }
+        (name_trimmed.to_owned(), tag.to_owned())
+    };
+
+    crate::internal::repo_node_id::validate_repo_node_name(&name, "repo source name")
+        .map_err(invalid_deployment_source::<E>)?;
+    crate::internal::repo_node_id::validate_repo_node_tag(&tag, "repo source tag")
+        .map_err(invalid_deployment_source::<E>)?;
+
+    Ok((name, tag))
+}
+
 impl<'de> Deserialize<'de> for VariantSource {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -268,6 +325,10 @@ impl<'de> Deserialize<'de> for DeploymentSource {
             #[serde(default)]
             sha256: Option<String>,
             #[serde(default)]
+            name: Option<String>,
+            #[serde(default)]
+            tag: Option<String>,
+            #[serde(default)]
             variant: Option<VariantSource>,
         }
 
@@ -275,9 +336,22 @@ impl<'de> Deserialize<'de> for DeploymentSource {
         let has_local = raw.local.is_some();
         let has_git = raw.repo.is_some() || raw.path.is_some() || raw.ref_.is_some();
         let has_url = raw.url.is_some() || raw.sha256.is_some();
+        let has_repo = raw.name.is_some() || raw.tag.is_some();
 
-        match (has_local, has_git, has_url) {
-            (true, false, false) => {
+        match (has_local, has_git, has_url, has_repo) {
+            (false, false, false, true) => {
+                let name_raw = raw.name.ok_or_else(|| {
+                    invalid_deployment_source::<D::Error>("repo source requires `name`")
+                })?;
+                let (name, tag) =
+                    split_repo_name_and_tag::<D::Error>(name_raw, raw.tag.as_deref())?;
+                Ok(DeploymentSource::Repo(DeploymentRepoSource {
+                    name,
+                    tag,
+                    variant: raw.variant,
+                }))
+            }
+            (true, false, false, false) => {
                 let local = trim_non_empty::<D::Error>(
                     raw.local.expect("local is present"),
                     "local path cannot be empty",
@@ -291,7 +365,7 @@ impl<'de> Deserialize<'de> for DeploymentSource {
                     variant: raw.variant,
                 }))
             }
-            (false, true, false) => {
+            (false, true, false, false) => {
                 let repo = raw.repo.ok_or_else(|| {
                     invalid_deployment_source::<D::Error>("git source requires `repo`")
                 })?;
@@ -313,7 +387,7 @@ impl<'de> Deserialize<'de> for DeploymentSource {
                     variant: raw.variant,
                 }))
             }
-            (false, false, true) => {
+            (false, false, true, false) => {
                 let url = raw.url.ok_or_else(|| {
                     invalid_deployment_source::<D::Error>("url source requires `url`")
                 })?;
@@ -330,9 +404,17 @@ impl<'de> Deserialize<'de> for DeploymentSource {
                     variant: raw.variant,
                 }))
             }
-            _ => Err(invalid_deployment_source::<D::Error>(
-                "source must be one of: { local }, { repo, path, ref }, { url, sha256 }",
-            )),
+            _ => {
+                if has_git && has_repo {
+                    Err(invalid_deployment_source::<D::Error>(
+                        "cannot mix git fields (`repo`, `path`, `ref`) with repo-source fields (`name`, `tag`); use one source type per deployment",
+                    ))
+                } else {
+                    Err(invalid_deployment_source::<D::Error>(
+                        "source must be one of: { local }, { repo, path, ref }, { url, sha256 }, { name, tag }",
+                    ))
+                }
+            }
         }
     }
 }
@@ -668,6 +750,137 @@ mod tests {
     fn deployment_source_without_variant_is_none() {
         let src: DeploymentSource = serde_json5::from_str("{ local: \"./uvc_camera\" }").unwrap();
         assert!(src.variant().is_none());
+    }
+
+    // -- DeploymentRepoSource tests --
+
+    #[test]
+    fn repo_source_parses_name_and_tag_fields() {
+        let src: DeploymentSource =
+            serde_json5::from_str("{ name: \"robot_brain\", tag: \"0.1.0\" }").unwrap();
+        let DeploymentSource::Repo(repo) = src else {
+            panic!("expected repo source");
+        };
+        assert_eq!(repo.name, "robot_brain");
+        assert_eq!(repo.tag, "0.1.0");
+        assert!(repo.variant.is_none());
+    }
+
+    #[test]
+    fn repo_source_parses_combined_name_tag() {
+        let src: DeploymentSource =
+            serde_json5::from_str("{ name: \"robot_brain:0.1.0\" }").unwrap();
+        let DeploymentSource::Repo(repo) = src else {
+            panic!("expected repo source");
+        };
+        assert_eq!(repo.name, "robot_brain");
+        assert_eq!(repo.tag, "0.1.0");
+    }
+
+    #[test]
+    fn repo_source_parses_with_name_variant() {
+        let src: DeploymentSource = serde_json5::from_str(
+            "{ name: \"robot_brain\", tag: \"0.1.0\", variant: { name: \"mock-python\" } }",
+        )
+        .unwrap();
+        let DeploymentSource::Repo(repo) = src else {
+            panic!("expected repo source");
+        };
+        let Some(VariantSource::Name(v)) = repo.variant else {
+            panic!("expected name variant");
+        };
+        assert_eq!(v.name, "mock-python");
+    }
+
+    #[test]
+    fn repo_source_rejects_name_without_tag() {
+        let err: serde_json5::Error =
+            serde_json5::from_str::<DeploymentSource>("{ name: \"foo\" }").unwrap_err();
+        let ParsingError::InvalidDeploymentSource(msg) = err.into() else {
+            panic!("expected InvalidDeploymentSource");
+        };
+        assert!(msg.contains("non-empty `tag`"), "unexpected: {msg}");
+    }
+
+    #[test]
+    fn repo_source_rejects_empty_name() {
+        let err: serde_json5::Error =
+            serde_json5::from_str::<DeploymentSource>("{ name: \"\", tag: \"0.1.0\" }")
+                .unwrap_err();
+        let ParsingError::InvalidDeploymentSource(msg) = err.into() else {
+            panic!("expected InvalidDeploymentSource");
+        };
+        assert_eq!(msg, "repo source name cannot be empty");
+    }
+
+    #[test]
+    fn repo_source_rejects_combined_with_separate_tag() {
+        let err: serde_json5::Error =
+            serde_json5::from_str::<DeploymentSource>("{ name: \"foo:0.1.0\", tag: \"0.1.0\" }")
+                .unwrap_err();
+        let ParsingError::InvalidDeploymentSource(msg) = err.into() else {
+            panic!("expected InvalidDeploymentSource");
+        };
+        assert!(msg.contains("cannot combine"), "unexpected: {msg}");
+    }
+
+    #[test]
+    fn repo_source_rejects_multiple_colons() {
+        let err: serde_json5::Error =
+            serde_json5::from_str::<DeploymentSource>("{ name: \"foo:0.1:extra\" }").unwrap_err();
+        let ParsingError::InvalidDeploymentSource(msg) = err.into() else {
+            panic!("expected InvalidDeploymentSource");
+        };
+        assert!(msg.contains("at most one ':'"), "unexpected: {msg}");
+    }
+
+    #[test]
+    fn repo_source_rejects_traversal_tag() {
+        let err: serde_json5::Error =
+            serde_json5::from_str::<DeploymentSource>("{ name: \"foo\", tag: \"..\" }")
+                .unwrap_err();
+        let ParsingError::InvalidDeploymentSource(msg) = err.into() else {
+            panic!("expected InvalidDeploymentSource");
+        };
+        assert!(msg.contains("must not start with '.'"), "unexpected: {msg}");
+    }
+
+    #[test]
+    fn repo_source_rejects_invalid_name_char() {
+        let err: serde_json5::Error =
+            serde_json5::from_str::<DeploymentSource>("{ name: \"foo/bar\", tag: \"0.1.0\" }")
+                .unwrap_err();
+        let ParsingError::InvalidDeploymentSource(msg) = err.into() else {
+            panic!("expected InvalidDeploymentSource");
+        };
+        assert!(
+            msg.contains("invalid repo source name"),
+            "unexpected: {msg}"
+        );
+    }
+
+    #[test]
+    fn repo_source_rejects_mixed_with_local() {
+        let err: serde_json5::Error = serde_json5::from_str::<DeploymentSource>(
+            "{ name: \"foo\", tag: \"0.1.0\", local: \"./x\" }",
+        )
+        .unwrap_err();
+        let ParsingError::InvalidDeploymentSource(msg) = err.into() else {
+            panic!("expected InvalidDeploymentSource");
+        };
+        assert!(msg.contains("source must be one of"), "unexpected: {msg}");
+    }
+
+    #[test]
+    fn repo_source_rejects_mixed_with_git_fields() {
+        let err: serde_json5::Error = serde_json5::from_str::<DeploymentSource>(
+            "{ repo: \"https://github.com/org/repo.git\", name: \"foo\", tag: \"0.1.0\" }",
+        )
+        .unwrap_err();
+        let ParsingError::InvalidDeploymentSource(msg) = err.into() else {
+            panic!("expected InvalidDeploymentSource");
+        };
+        assert!(msg.contains("cannot mix git fields"), "unexpected: {msg}");
     }
 
     #[test]

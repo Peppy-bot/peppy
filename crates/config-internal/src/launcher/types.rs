@@ -9,8 +9,8 @@ use std::{
 };
 
 pub use crate::source::{
-    DeploymentGitSource, DeploymentLocalSource, DeploymentSource, DeploymentUrlSource,
-    VariantGitSource, VariantNameSource, VariantSource, VariantUrlSource,
+    DeploymentGitSource, DeploymentLocalSource, DeploymentRepoSource, DeploymentSource,
+    DeploymentUrlSource, VariantGitSource, VariantNameSource, VariantSource, VariantUrlSource,
 };
 
 /// Version identifier embedded in node `peppy.json5` manifests.

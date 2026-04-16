@@ -305,6 +305,9 @@ async fn resolve_variant_deployment_source(
                 extracted.cleanup_dir,
             ))
         }
+        DeploymentSource::Repo(_) => Err(format!(
+            "variant '{label}' uses a repo-backed source, which is not supported inside manifest variant entries; use a git, url, or name variant source instead"
+        )),
     }
 }
 

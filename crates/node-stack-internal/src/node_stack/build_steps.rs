@@ -55,42 +55,12 @@ where
 }
 
 /// Validates that `node_tag` is safe to splice into a filename joined under
-/// the storage directory. Manifest names are constrained by `Name`'s parser,
-/// but `Manifest::tag` is a raw `String` — so we re-validate it here before
+/// the storage directory. Re-validates the raw `Manifest::tag` string before
 /// it ever reaches `storage_dir.join(...)` to prevent path traversal or
 /// absolute-path injection (e.g. a tag like `../etc/passwd`).
 pub(super) fn validate_node_tag(node_tag: &str) -> std::io::Result<()> {
-    if node_tag.is_empty() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "node tag must not be empty",
-        ));
-    }
-    if node_tag == "." || node_tag == ".." || node_tag.starts_with('.') {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            format!("node tag must not start with '.': {}", node_tag),
-        ));
-    }
-    if node_tag.contains("..") {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            format!("node tag must not contain '..': {}", node_tag),
-        ));
-    }
-    for c in node_tag.chars() {
-        let ok = c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-';
-        if !ok {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                format!(
-                    "node tag contains disallowed character {:?}: {}",
-                    c, node_tag
-                ),
-            ));
-        }
-    }
-    Ok(())
+    config::repo_node_id::validate_repo_node_tag(node_tag, "node tag")
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))
 }
 
 /// Archives the contents of `source_dir` into a `.tar.zst` file in the
