@@ -205,10 +205,6 @@ fn node_source_from_deployment_source(
                 sha256: Some(spec.sha256.clone()),
             }
         }
-        // Repo-backed sources are flattened to their concrete FS/Git/Http
-        // counterpart at planning time by consulting the user's packages
-        // cache. Downstream add/build/run steps never see `RepoNode` under
-        // a stack launch.
         DeploymentSource::Repo(spec) => crate::services::repo::cache::resolve_repo_node_source(
             &spec.name, &spec.tag, peppy_dirs,
         )?,

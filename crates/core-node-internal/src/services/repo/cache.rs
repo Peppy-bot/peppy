@@ -188,19 +188,18 @@ pub fn cache_path(peppy_dirs: &PeppyDirs) -> PathBuf {
 
 /// Looks up `(name, tag)` in the packages cache and translates the matched
 /// entry into a concrete `NodeSource` (Fs / Git / Http) that downstream
-/// resolution can handle directly. Used both by `node_info` and by
-/// `stack_launch` planning to flatten `NodeSource::RepoNode` into its
-/// underlying source kind.
-pub fn resolve_repo_node_source(
+/// resolution can handle directly.
+pub(crate) fn resolve_repo_node_source(
     name: &str,
     tag: &str,
     peppy_dirs: &PeppyDirs,
 ) -> std::result::Result<NodeSource, String> {
     let (entries, _) = load_with_generation(peppy_dirs)
         .map_err(|e| format!("failed to load packages cache: {e}"))?;
+    let id = format!("{name}:{tag}");
     let entry = lookup(&entries, name, tag).ok_or_else(|| {
         format!(
-            "repo-node `{name}:{tag}` not found in {}",
+            "repo-node `{id}` not found in {}",
             cache_path(peppy_dirs).display()
         )
     })?;
@@ -208,11 +207,12 @@ pub fn resolve_repo_node_source(
     match entry.source_type {
         RepoSourceKind::Fs => Ok(NodeSource::Fs(PathBuf::from(&entry.path))),
         RepoSourceKind::Git => {
-            let repo_url_str = entry.source_uri.as_deref().ok_or_else(|| {
-                format!("cache entry for `{name}:{tag}` is git but has no source_uri")
-            })?;
+            let repo_url_str = entry
+                .source_uri
+                .as_deref()
+                .ok_or_else(|| format!("cache entry for `{id}` is git but has no source_uri"))?;
             let repo_url = gix_url::Url::try_from(repo_url_str)
-                .map_err(|e| format!("invalid git URL in cache entry for `{name}:{tag}`: {e}"))?;
+                .map_err(|e| format!("invalid git URL in cache entry for `{id}`: {e}"))?;
             Ok(NodeSource::Git {
                 repo_url,
                 repo_path: entry.path.clone(),
@@ -220,11 +220,12 @@ pub fn resolve_repo_node_source(
             })
         }
         RepoSourceKind::Url => {
-            let url_str = entry.source_uri.as_deref().ok_or_else(|| {
-                format!("cache entry for `{name}:{tag}` is url but has no source_uri")
-            })?;
+            let url_str = entry
+                .source_uri
+                .as_deref()
+                .ok_or_else(|| format!("cache entry for `{id}` is url but has no source_uri"))?;
             let url = url::Url::parse(url_str)
-                .map_err(|e| format!("invalid url in cache entry for `{name}:{tag}`: {e}"))?;
+                .map_err(|e| format!("invalid url in cache entry for `{id}`: {e}"))?;
             Ok(NodeSource::Http {
                 url,
                 sha256: entry.checksum.clone(),

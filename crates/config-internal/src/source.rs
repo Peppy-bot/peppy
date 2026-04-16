@@ -193,12 +193,6 @@ where
     Ok(trimmed.to_ascii_lowercase())
 }
 
-/// Resolves a repo-source `name` field into a validated `(name, tag)` pair.
-///
-/// Accepts either a bare name combined with an explicit `tag` field, or the
-/// shorthand `"<name>:<tag>"` (in which case no separate `tag` field may be
-/// supplied). Both components run through
-/// [`crate::repo_node_id`] so invalid characters are rejected at parse time.
 fn split_repo_name_and_tag<E>(
     raw_name: String,
     raw_tag: Option<&str>,
@@ -213,19 +207,18 @@ where
         ));
     }
 
-    let (name, tag) = if name_trimmed.contains(':') {
+    let (name, tag) = if let Some((n, t)) = name_trimmed.split_once(':') {
         if raw_tag.is_some() {
             return Err(invalid_deployment_source::<E>(
                 "repo source cannot combine `name: \"<name>:<tag>\"` with a separate `tag` field",
             ));
         }
-        let parts: Vec<&str> = name_trimmed.split(':').collect();
-        if parts.len() != 2 {
+        if t.contains(':') {
             return Err(invalid_deployment_source::<E>(
                 "repo source `name` must contain at most one ':' separating name and tag",
             ));
         }
-        (parts[0].trim().to_owned(), parts[1].trim().to_owned())
+        (n.trim().to_owned(), t.trim().to_owned())
     } else {
         let tag = raw_tag.map(str::trim).unwrap_or("");
         if tag.is_empty() {
@@ -412,7 +405,7 @@ impl<'de> Deserialize<'de> for DeploymentSource {
                 }))
             }
             _ => Err(invalid_deployment_source::<D::Error>(
-                "source must be one of: { local }, { repo, path, ref }, { url, sha256 }, { name, tag }",
+                "source must be one of: { local }, { repo, path, ref }, { url [, sha256] }, { name, tag }",
             )),
         }
     }

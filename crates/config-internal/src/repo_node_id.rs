@@ -1,9 +1,7 @@
 //! Shared name/tag validation for repo-backed node identifiers.
 //!
-//! Used both by the launch-file parser (where a deployment source can be
-//! `{ name, tag }`) and by the node-add encoding (where `NodeSource::RepoNode`
-//! carries the same identifiers). Returning `Result<(), String>` lets each
-//! caller wrap the detail into its own error type.
+//! Returning `Result<(), String>` lets each caller wrap the detail into its
+//! own error type.
 
 use crate::internal::node::Name;
 
