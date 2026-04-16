@@ -67,7 +67,7 @@ pub enum Error {
         from: &'static str,
         to: &'static str,
     },
-    #[error("Failed to build node `{node_name}`:{node_tag}: {reason}")]
+    #[error("Failed to build node `{node_name}:{node_tag}`: {reason}")]
     BuildFailed {
         node_name: String,
         node_tag: String,
