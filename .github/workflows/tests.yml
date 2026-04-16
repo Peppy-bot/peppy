@@ -16,12 +16,15 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
-    env:
-      GIT_CONFIG_GLOBAL: /dev/null
     outputs:
       docs-outdated: ${{ steps.check.outcome == 'failure' }}
 
     steps:
+      - name: Isolate git global config from runner user
+        run: |
+          : > "$RUNNER_TEMP/peppy-gitconfig"
+          echo "GIT_CONFIG_GLOBAL=$RUNNER_TEMP/peppy-gitconfig" >> "$GITHUB_ENV"
+
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
