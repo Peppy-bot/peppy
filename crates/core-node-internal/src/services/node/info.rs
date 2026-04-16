@@ -239,6 +239,14 @@ async fn resolve_node_config_with_source_path(
         }
         NodeSource::RepoNode { name, tag, .. } => {
             let resolved = repo_cache::resolve_repo_node_source(&name, &tag, peppy_dirs)?;
+            // The packages cache only stores Fs/Git/Http entries, so the
+            // resolved source should never be another RepoNode. Guard against
+            // infinite recursion in case that invariant is ever broken.
+            if matches!(resolved, NodeSource::RepoNode { .. }) {
+                return Err(format!(
+                    "repo-node `{name}:{tag}` resolved to another repo-node source; this is a bug in the packages cache"
+                ));
+            }
             Box::pin(resolve_node_config_with_source_path(
                 resolved, peppy_dirs, deadline,
             ))

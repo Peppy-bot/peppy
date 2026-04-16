@@ -34,7 +34,11 @@ The `source` attribute supports four formats:
  - **URL**: A link to a `.tar.zst` archive, requiring both `url` and `sha256` attributes
  - **Git repository**: Requires `repo`, `path` (location within the repo), and `ref` attributes
  - **Local path**: Specified via the `local` key, pointing to a directory on your filesystem. The path can be either absolute or relative to the `peppy_launcher.json5` file
- - **Repository**: Reference a node that is already registered in your user repositories. Specify `name` and `tag`, or use the combined `name: "<name>:<tag>"` shorthand. The node (and its dependencies) is resolved against your local packages cache at `~/.peppy/cache/packages.json5`, so be sure to run `peppy repo refresh` beforehand.
+ - **Repository**: Reference a node that is already registered in your user repositories. Specify `name` and `tag`, or use the combined `name: "<name>:<tag>"` shorthand. The node is resolved against your local packages cache at `~/.peppy/cache/packages.json5`.
+
+:::note
+The repository source resolves nodes from a locally cached index. Run `peppy repo refresh` before launching to ensure the cache is up to date. If a node or tag is missing from the cache, the launch will fail with a "not found" error.
+:::
 
 ### Variants
 

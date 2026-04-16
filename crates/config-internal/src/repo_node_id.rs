@@ -15,7 +15,7 @@ pub fn validate_repo_node_tag(tag: &str, label: &str) -> Result<(), String> {
     if tag.is_empty() {
         return Err(format!("empty {label}"));
     }
-    if tag == "." || tag == ".." || tag.starts_with('.') {
+    if tag.starts_with('.') {
         return Err(format!("{label} must not start with '.': {tag}"));
     }
     if tag.contains("..") {

@@ -404,9 +404,17 @@ impl<'de> Deserialize<'de> for DeploymentSource {
                     variant: raw.variant,
                 }))
             }
-            _ => Err(invalid_deployment_source::<D::Error>(
-                "source must be one of: { local }, { repo, path, ref }, { url, sha256 }, { name, tag }",
-            )),
+            _ => {
+                if has_git && has_repo {
+                    Err(invalid_deployment_source::<D::Error>(
+                        "cannot mix git fields (`repo`, `path`, `ref`) with repo-source fields (`name`, `tag`); use one source type per deployment",
+                    ))
+                } else {
+                    Err(invalid_deployment_source::<D::Error>(
+                        "source must be one of: { local }, { repo, path, ref }, { url, sha256 }, { name, tag }",
+                    ))
+                }
+            }
         }
     }
 }
@@ -861,6 +869,18 @@ mod tests {
             panic!("expected InvalidDeploymentSource");
         };
         assert!(msg.contains("source must be one of"), "unexpected: {msg}");
+    }
+
+    #[test]
+    fn repo_source_rejects_mixed_with_git_fields() {
+        let err: serde_json5::Error = serde_json5::from_str::<DeploymentSource>(
+            "{ repo: \"https://github.com/org/repo.git\", name: \"foo\", tag: \"0.1.0\" }",
+        )
+        .unwrap_err();
+        let ParsingError::InvalidDeploymentSource(msg) = err.into() else {
+            panic!("expected InvalidDeploymentSource");
+        };
+        assert!(msg.contains("cannot mix git fields"), "unexpected: {msg}");
     }
 
     #[test]
