@@ -38,8 +38,6 @@ provision:
         useradd -m -s /bin/bash ubuntu
       fi
 
-      usermod -aG sudo ubuntu
-
       mkdir -p /home/ubuntu/.ssh
       if [ -f /home/lima/.ssh/authorized_keys ]; then
         cp -a /home/lima/.ssh/authorized_keys /home/ubuntu/.ssh/authorized_keys
@@ -50,8 +48,11 @@ provision:
         chmod 600 /home/ubuntu/.ssh/authorized_keys
       fi
 
-      echo 'ubuntu ALL=(ALL) NOPASSWD:ALL' >/etc/sudoers.d/99-ubuntu
-      chmod 440 /etc/sudoers.d/99-ubuntu
+      sudoers_tmp="$(mktemp)"
+      printf 'ubuntu ALL=(ALL:ALL) NOPASSWD:ALL\n' >"$sudoers_tmp"
+      visudo -cf "$sudoers_tmp"
+      install -o root -g root -m 0440 "$sudoers_tmp" /etc/sudoers.d/99-ubuntu
+      rm -f "$sudoers_tmp"
 EOF
 
 limactl start -y --name="$INSTANCE_NAME" "$LIMA_FILE"
