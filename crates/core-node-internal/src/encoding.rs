@@ -3,31 +3,37 @@
 //! This module provides utilities for encoding and decoding Cap'n Proto messages
 //! used in the core-node services.
 mod info;
-mod launch;
 mod node;
 mod ping;
-mod reset;
+mod repo;
+mod stack;
 
 // Note: there used to be a top-level `builder` module here. Build encoding
 // now lives at `node::builder` alongside `node::add`.
 
 pub use info::{ContainerInfo, InfoRequest, InfoResponse};
-pub use launch::{
+pub use node::{
+    add::DepVariantOverride, add::NodeAddFeedback, add::NodeAddGoal, add::NodeAddGoalResponse,
+    add::NodeAddResult, add::NodeSource, builder::NodeBuildFeedback, builder::NodeBuildGoal,
+    builder::NodeBuildGoalResponse, builder::NodeBuildResult, info::NodeInfo,
+    info::NodeInfoRequest, info::NodeInfoResponse, info::NodeInstanceInfo, init::NodeInitRequest,
+    init::NodeInitResponse, remove::NodeRemoveRequest, remove::NodeRemoveResponse,
+    run::NodeRunFeedback, run::NodeRunGoal, run::NodeRunGoalResponse, run::NodeRunResult,
+    stop::NodeStopRequest, stop::NodeStopResponse, sync::NodeSyncRequest, sync::NodeSyncResponse,
+};
+pub use ping::{PingRequest, PingResponse};
+pub use repo::{
+    RepoAddRequest, RepoAddResponse, RepoExcludeRequest, RepoExcludeResponse, RepoListNodeEntry,
+    RepoListRequest, RepoListResponse, RepoRefreshFeedback, RepoRefreshGoal,
+    RepoRefreshGoalResponse, RepoRefreshResult, RepoRemoveRequest, RepoRemoveResponse, RepoSource,
+    RepoSourceKind,
+};
+pub use stack::launch::{
     LaunchFeedback, LaunchFeedbackStep, LaunchGoal, LaunchGoalResponse, LaunchResult,
     NodeAddLogEntry, NodeBuildLogEntry, NodeRunLogEntry,
 };
-pub use node::{
-    add::NodeAddFeedback, add::NodeAddGoal, add::NodeAddGoalResponse, add::NodeAddResult,
-    add::NodeSource, builder::NodeBuildFeedback, builder::NodeBuildGoal,
-    builder::NodeBuildGoalResponse, builder::NodeBuildResult, info::NodeInfo,
-    info::NodeInfoRequest, info::NodeInfoResponse, info::NodeInstanceInfo, init::NodeInitRequest,
-    init::NodeInitResponse, list::NodeListRequest, list::NodeListResponse,
-    remove::NodeRemoveRequest, remove::NodeRemoveResponse, run::NodeRunFeedback, run::NodeRunGoal,
-    run::NodeRunGoalResponse, run::NodeRunResult, stop::NodeStopRequest, stop::NodeStopResponse,
-    sync::NodeSyncRequest, sync::NodeSyncResponse,
-};
-pub use ping::{PingRequest, PingResponse};
-pub use reset::{NodeResetRequest, NodeResetResponse};
+pub use stack::list::{StackListRequest, StackListResponse};
+pub use stack::reset::{NodeResetRequest, NodeResetResponse};
 
 use capnp::message::{Builder, HeapAllocator, ReaderOptions};
 use capnp::serialize;

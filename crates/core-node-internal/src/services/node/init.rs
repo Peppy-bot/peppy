@@ -1,4 +1,6 @@
-use super::templates::{apply_python_templates, apply_rust_templates};
+mod templates;
+
+use self::templates::{apply_python_templates, apply_rust_templates};
 use crate::Result;
 use crate::encoding::{NodeInitRequest, NodeInitResponse};
 use crate::names;

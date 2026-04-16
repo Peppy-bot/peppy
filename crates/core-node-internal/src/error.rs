@@ -36,6 +36,12 @@ pub enum Error {
     #[error("forbidden environment variable '{0}' is not allowed")]
     ForbiddenEnvVar(String),
 
+    #[error("invalid environment variable: {0}")]
+    InvalidEnvVar(String),
+
+    #[error("RepoNode is not a valid variant source")]
+    RepoNodeNotValidVariantSource,
+
     // -- generator-internal
     #[error(transparent)]
     GeneratorError(#[from] generator::GeneratorError),
@@ -47,6 +53,10 @@ pub enum Error {
     // -- templates
     #[error("template rendering error: {0}")]
     Template(#[from] askama::Error),
+
+    // -- repository operations
+    #[error("duplicate repository id {id} in {file}")]
+    DuplicateRepoId { id: u64, file: String },
 
     // -- node operations
     #[error("failed to shutdown node instance '{instance_id}': {reason}")]

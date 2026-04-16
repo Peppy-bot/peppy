@@ -239,9 +239,17 @@ def archive_guest_path(config: VMConfig) -> str:
     return f"/var/tmp/peppy-test/peppy-{config.target_triple}.tgz"
 
 
-def install_cmd(config: VMConfig, home: str, *, extra_env: str = "") -> str:
+def install_cmd(
+    config: VMConfig,
+    home: str,
+    *,
+    extra_env: str = "",
+    skip_service_install: bool = True,
+) -> str:
     """Build the install.sh invocation command for the guest."""
-    env_parts = f"TMPDIR=/var/tmp PEPPY_HOME={home} PEPPY_NO_SERVICE_INSTALL=1"
+    env_parts = f"TMPDIR=/var/tmp PEPPY_HOME={home}"
+    if skip_service_install:
+        env_parts = f"{env_parts} PEPPY_NO_SERVICE_INSTALL=1"
     if extra_env:
         env_parts = f"{env_parts} {extra_env}"
     return f"{env_parts} sh /var/tmp/peppy-test/install.sh {archive_guest_path(config)}"
@@ -256,10 +264,34 @@ def setup_lima_guest(config: VMConfig, *, test_name: str) -> str:
     home = guest_home(test_name)
     instance = config.instance_name
 
+    # Stop and remove any peppy daemon left over from a previous test.
+    # An earlier service install would otherwise race with install.sh's
+    # running-daemon detection and block the non-interactive install.
     # Use /var/tmp (disk-backed) instead of /tmp to avoid tmpfs size
     # limits on Fedora and Arch Linux where /tmp is RAM-backed.
     lima_shell(
-        "rm -rf /var/tmp/peppy-test-home && mkdir -p /var/tmp/peppy-test",
+        """
+        # Only touch systemd when a peppy unit is actually present. Running
+        # `systemctl --user` on a pristine VM would spawn a user DBus session
+        # as a side effect, which can race with install.sh's later DBus setup.
+        if [ -f "$HOME/.config/systemd/user/peppy.service" ] \\
+           && command -v systemctl >/dev/null 2>&1; then
+            systemctl --user stop peppy.service 2>/dev/null || true
+            systemctl --user disable peppy.service 2>/dev/null || true
+            rm -f "$HOME/.config/systemd/user/peppy.service"
+            systemctl --user daemon-reload 2>/dev/null || true
+        fi
+        # Use `-x` (exact comm-field match) so the pattern never matches the
+        # bash process running this script (whose cmdline contains 'peppy').
+        pkill -x peppy 2>/dev/null || true
+        pkill -x zenohd 2>/dev/null || true
+        for _ in 1 2 3 4 5; do
+            pgrep -x peppy >/dev/null 2>&1 || break
+            sleep 1
+        done
+        rm -rf /var/tmp/peppy-test-home
+        mkdir -p /var/tmp/peppy-test
+        """,
         instance=instance,
     )
     copy_to_lima(INSTALL_SCRIPT, "/var/tmp/peppy-test/install.sh", instance=instance)

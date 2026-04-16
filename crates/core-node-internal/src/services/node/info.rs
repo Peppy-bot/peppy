@@ -5,6 +5,7 @@ use super::{
 use crate::Result;
 use crate::encoding::{NodeInfo, NodeInfoRequest, NodeInfoResponse, NodeInstanceInfo, NodeSource};
 use crate::names;
+use crate::services::repo::cache as repo_cache;
 use config::consts::{NODE_CONFIG_FILE, PeppyDirs};
 use config::fingerprint::fingerprint_for_bytes;
 use config::node::{DEFAULT_VARIANT_NAME, NodeConfig, NodeConfigParser, ParsedNodeConfig};
@@ -133,10 +134,11 @@ async fn handle_node_info_request_inner(
             .map_err(|e| InfoError::Internal(format!("failed to encode NodeInfoResponse: {}", e)));
     };
 
-    let (node_config, stage, instances, run_log_paths) = {
+    let (node_config, stage, instances, run_log_paths, variant_name) = {
         let guard = entity.read();
         let stage = guard.stage().name().to_string();
         let node_config = guard.config().clone();
+        let variant_name = guard.variant_name().map(str::to_owned);
         let tracked = guard.instances();
         let run_log_dir = peppy_dirs.logs_dir_run();
         let mut instances: Vec<NodeInstanceInfo> = Vec::with_capacity(tracked.len());
@@ -153,7 +155,7 @@ async fn handle_node_info_request_inner(
             });
             run_log_paths.push(run_log_dir.join(format!("{}.log", id)));
         }
-        (node_config, stage, instances, run_log_paths)
+        (node_config, stage, instances, run_log_paths, variant_name)
     };
 
     let add_log_path = node_stack.add_log_path(&request.node_name, &request.node_tag);
@@ -169,6 +171,7 @@ async fn handle_node_info_request_inner(
         instances,
         add_log_path,
         run_log_paths,
+        variant_name,
     }))
     .encode()
     .map_err(|e| InfoError::Internal(format!("failed to encode NodeInfoResponse: {}", e)))
@@ -233,6 +236,21 @@ async fn resolve_node_config_with_source_path(
         } => parse_node_config_from_git_with_path(repo_url, repo_path, repo_ref, deadline).await,
         NodeSource::Http { url, sha256 } => {
             parse_node_config_from_http_with_path(url, sha256, peppy_dirs).await
+        }
+        NodeSource::RepoNode { name, tag, .. } => {
+            let resolved = repo_cache::resolve_repo_node_source(&name, &tag, peppy_dirs)?;
+            // The packages cache only stores Fs/Git/Http entries, so the
+            // resolved source should never be another RepoNode. Guard against
+            // infinite recursion in case that invariant is ever broken.
+            if matches!(resolved, NodeSource::RepoNode { .. }) {
+                return Err(format!(
+                    "repo-node `{name}:{tag}` resolved to another repo-node source; this is a bug in the packages cache"
+                ));
+            }
+            Box::pin(resolve_node_config_with_source_path(
+                resolved, peppy_dirs, deadline,
+            ))
+            .await
         }
     }
 }

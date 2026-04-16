@@ -101,6 +101,9 @@ pub struct NodeInfo {
     pub add_log_path: Option<PathBuf>,
     /// Per-instance run log paths, aligned with `instances` (same order).
     pub run_log_paths: Vec<PathBuf>,
+    /// Variant label captured at `node add` time, if any. `None` for
+    /// the synthetic root entity and for non-variant add paths.
+    pub variant_name: Option<String>,
 }
 
 /// Response payload for the `node_info` service.
@@ -161,6 +164,7 @@ impl NodeInfoResponse {
                             paths_builder.set(i as u32, path.to_string_lossy().as_ref());
                         }
                     }
+                    found.set_variant_name(info.variant_name.as_deref().unwrap_or(""));
                 }
             }
         }
@@ -197,6 +201,7 @@ impl NodeInfoResponse {
                 for i in 0..run_log_paths_reader.len() {
                     run_log_paths.push(PathBuf::from(run_log_paths_reader.get(i)?.to_str()?));
                 }
+                let variant_name = optional_text(found.get_variant_name()?.to_str()?);
                 Ok(NodeInfoResponse::Found(Box::new(NodeInfo {
                     config,
                     config_integrity,
@@ -204,6 +209,7 @@ impl NodeInfoResponse {
                     instances,
                     add_log_path,
                     run_log_paths,
+                    variant_name,
                 })))
             }
         }
@@ -213,6 +219,7 @@ impl NodeInfoResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use config::node::NodeConfigParser;
 
     #[test]
     fn node_info_request_roundtrips_name_tag() {
@@ -223,5 +230,64 @@ mod tests {
 
         assert_eq!(decoded.node_name, "sensor_node");
         assert_eq!(decoded.node_tag, "0.1.0");
+    }
+
+    fn sample_config_for_roundtrip() -> NodeConfig {
+        let config_json5 = r#"{
+            schema_version: 1,
+            manifest: { name: "sensor_node", tag: "0.1.0" },
+            execution: { language: "rust", run_cmd: ["sleep", "10"] }
+        }"#;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("peppy.json5");
+        std::fs::write(&path, config_json5).expect("write config");
+        NodeConfigParser::from_path(&path)
+            .expect("parse config")
+            .into_resolved()
+            .expect("resolve config")
+    }
+
+    fn info_with_variant(variant_name: Option<String>) -> NodeInfo {
+        NodeInfo {
+            config: sample_config_for_roundtrip(),
+            config_integrity: "0".repeat(64),
+            stage: "Added".to_string(),
+            instances: vec![],
+            add_log_path: None,
+            run_log_paths: vec![],
+            variant_name,
+        }
+    }
+
+    #[test]
+    fn node_info_response_roundtrips_variant_name_some() {
+        let info = info_with_variant(Some("macos".to_string()));
+        let encoded = NodeInfoResponse::Found(Box::new(info))
+            .encode()
+            .expect("encoding should succeed");
+        let decoded = NodeInfoResponse::decode(&encoded).expect("decoding should succeed");
+
+        match decoded {
+            NodeInfoResponse::Found(info) => {
+                assert_eq!(info.variant_name.as_deref(), Some("macos"));
+            }
+            NodeInfoResponse::NotInStack => panic!("expected Found"),
+        }
+    }
+
+    #[test]
+    fn node_info_response_roundtrips_variant_name_none() {
+        let info = info_with_variant(None);
+        let encoded = NodeInfoResponse::Found(Box::new(info))
+            .encode()
+            .expect("encoding should succeed");
+        let decoded = NodeInfoResponse::decode(&encoded).expect("decoding should succeed");
+
+        match decoded {
+            NodeInfoResponse::Found(info) => {
+                assert!(info.variant_name.is_none());
+            }
+            NodeInfoResponse::NotInStack => panic!("expected Found"),
+        }
     }
 }

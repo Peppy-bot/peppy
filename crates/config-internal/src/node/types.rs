@@ -179,6 +179,21 @@ impl ParsedNodeConfig {
             .and_then(|variants| variants.iter().find(|v| v.name.as_str() == name))
     }
 
+    /// Returns the names of all variants declared in the manifest.
+    pub fn variant_names(&self) -> Vec<String> {
+        self.0
+            .manifest
+            .variants
+            .as_ref()
+            .map(|variants| {
+                variants
+                    .iter()
+                    .map(|v| v.name.as_str().to_owned())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     /// Returns a reference to the node's manifest.
     pub fn manifest(&self) -> &Manifest {
         &self.0.manifest

@@ -1,6 +1,8 @@
 mod launch;
 mod list;
 
+pub use list::list_nodes_collecting;
+
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -41,10 +43,7 @@ pub struct StackCommand {
 impl Command for StackCommand {
     fn execute(self, ctx: &Arc<AppContext>) -> Result<(), CommandError> {
         match self.command {
-            StackCommands::List { dot_graph_path } => {
-                info!("Listing nodes...");
-                list::list_nodes(ctx, dot_graph_path)
-            }
+            StackCommands::List { dot_graph_path } => list::list_nodes(ctx, dot_graph_path),
             StackCommands::Launch {
                 launcher_config_path,
                 node_add_idle_timeout_secs,

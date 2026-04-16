@@ -26,5 +26,10 @@ pub(crate) mod node_capnp {
     include!(concat!(env!("OUT_DIR"), "/node_capnp.rs"));
 }
 
+#[allow(clippy::all)]
+pub(crate) mod repo_capnp {
+    include!(concat!(env!("OUT_DIR"), "/repo_capnp.rs"));
+}
+
 pub use error::{Error, Result};
 pub use services::{CoreNode, CoreNodeArguments, FORBIDDEN_ENV_KEYS};

@@ -2,6 +2,7 @@ mod action_loop;
 mod info;
 mod node;
 mod ping;
+mod repo;
 mod stack;
 
 pub use node::FORBIDDEN_ENV_KEYS;
@@ -342,6 +343,46 @@ impl CoreNode {
                 self.instance_id(),
                 self.node_name(),
                 Arc::clone(&self.node_stack),
+                self.peppy_dirs.clone(),
+            )
+            .await?,
+            repo::listen_for_repo_add(
+                &self.messenger,
+                core_node_name,
+                self.instance_id(),
+                self.node_name(),
+                self.peppy_dirs.clone(),
+            )
+            .await?,
+            repo::listen_for_repo_refresh(
+                &self.messenger,
+                core_node_name,
+                self.instance_id(),
+                self.node_name(),
+                self.peppy_dirs.clone(),
+            )
+            .await?,
+            repo::listen_for_repo_list(
+                &self.messenger,
+                core_node_name,
+                self.instance_id(),
+                self.node_name(),
+                self.peppy_dirs.clone(),
+            )
+            .await?,
+            repo::listen_for_repo_remove(
+                &self.messenger,
+                core_node_name,
+                self.instance_id(),
+                self.node_name(),
+                self.peppy_dirs.clone(),
+            )
+            .await?,
+            repo::listen_for_repo_exclude(
+                &self.messenger,
+                core_node_name,
+                self.instance_id(),
+                self.node_name(),
                 self.peppy_dirs.clone(),
             )
             .await?,

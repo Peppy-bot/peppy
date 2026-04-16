@@ -1,5 +1,5 @@
 use crate::Result;
-use crate::encoding::{NodeListRequest, NodeListResponse};
+use crate::encoding::{StackListRequest, StackListResponse};
 use crate::names;
 use node_stack::NodeStack;
 use peppylib::messaging::ServiceRequestContext;
@@ -55,9 +55,9 @@ fn handle_node_list_request_inner(
     let sender_instance_id = context.message().instance_id();
     let payload = context.message().payload();
 
-    let request = NodeListRequest::decode(payload.as_ref())?;
+    let request = StackListRequest::decode(payload.as_ref())?;
 
-    debug!("Received `node_list` request from {sender_instance_id}");
+    debug!("Received `stack_list` request from {sender_instance_id}");
 
     let dot_graph = if request.with_dot_graph() {
         Some(node_stack.to_dot())
@@ -66,5 +66,5 @@ fn handle_node_list_request_inner(
     };
     let serialized_graph = node_stack.to_serialized_graph();
     let graph_json = serde_json::to_string(&serialized_graph).unwrap_or_else(|_| "{}".to_string());
-    NodeListResponse::new(dot_graph, graph_json).encode()
+    StackListResponse::new(dot_graph, graph_json).encode()
 }

@@ -147,8 +147,8 @@ Run cmd:   uv run hello_world
 
 Node Stack Status
 --------------------------------------------------
-Status:    In node stack
 Stage:     Ready
+Variant:   default
 Instances: 2 tracked
            - inst-abc  [running]
            - inst-def  [starting]
@@ -163,6 +163,8 @@ hello_world:0.1.0
 ```
 
 This is usually the fastest way to answer "is my node built yet?" and "where is the log for this specific instance?". The `Add log` path is what `peppy node add` writes to; per-instance run logs are what `peppy node run` writes to. Build logs live under `~/.peppy/logs/build/` and are surfaced by `peppy node build` directly when it runs.
+
+The `Variant:` line shows the variant that was selected when the node was added. It prints `default` both when no variant override was passed (auto-resolved default variant) and when the node declares no variants at all (the root's own `execution` section is the default).
 
 ## Stopping your node
 

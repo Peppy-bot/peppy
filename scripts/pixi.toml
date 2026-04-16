@@ -21,6 +21,8 @@ respx = "*"
 [tasks]
 build-release = "build-release"
 build-base-images = "build-base-images"
+is-doc-up-to-date = "is-doc-up-to-date"
+update-docs = "update-docs"
 test = "pytest tests/ -v"
 test-all = "pytest tests/ -v --cross-arch"
 test-one = "pytest tests/ -v -k"

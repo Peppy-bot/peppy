@@ -1,6 +1,6 @@
 use config::consts::{PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH};
 use config::node::Toolchain;
-use core_node::encoding::NodeListRequest;
+use core_node::encoding::StackListRequest;
 use node_stack::SerializedNodeGraph;
 use peppy::commands::Command;
 use peppy::commands::node::{
@@ -78,7 +78,7 @@ fn node_add_command_succeeds() {
         command: NodeCommands::Add {
             source: Some(node_path.display().to_string()),
             git_ref: None,
-            variant: None,
+            variant: Vec::new(),
             sync: false,
             build: true,
             run: false,
@@ -118,14 +118,14 @@ fn node_add_command_succeeds() {
         .expect("messenger handle should be available");
 
     let response = rt
-        .block_on(NodeListRequest::new(false).poll(
+        .block_on(StackListRequest::new(false).poll(
             messenger_handle,
             &core_node_name,
             CALLER_INSTANCE_ID,
             &core_node_name,
             Duration::from_secs(5),
         ))
-        .expect("node_list request should complete");
+        .expect("stack_list request should complete");
 
     let graph: SerializedNodeGraph =
         serde_json::from_str(&response.graph_json).expect("graph_json should parse");
@@ -235,7 +235,7 @@ fn node_add_command_with_run_arg_succeeds() {
         command: NodeCommands::Add {
             source: Some(node_path.display().to_string()),
             git_ref: None,
-            variant: None,
+            variant: Vec::new(),
             sync: false,
             build: true,
             run: true,
@@ -268,14 +268,14 @@ fn node_add_command_with_run_arg_succeeds() {
         .expect("messenger handle should be available");
 
     let response = rt
-        .block_on(NodeListRequest::new(false).poll(
+        .block_on(StackListRequest::new(false).poll(
             messenger_handle,
             &core_node_name,
             CALLER_INSTANCE_ID,
             &core_node_name,
             Duration::from_secs(5),
         ))
-        .expect("node_list request should complete");
+        .expect("stack_list request should complete");
 
     let graph: SerializedNodeGraph =
         serde_json::from_str(&response.graph_json).expect("graph_json should parse");
@@ -371,7 +371,7 @@ fn node_add_after_failed_sync_succeeds() {
         command: NodeCommands::Add {
             source: Some(node_path.display().to_string()),
             git_ref: None,
-            variant: None,
+            variant: Vec::new(),
             sync: false,
             build: true,
             run: false,
@@ -416,7 +416,7 @@ fn node_add_after_failed_sync_succeeds() {
         command: NodeCommands::Add {
             source: Some(node_path.display().to_string()),
             git_ref: None,
-            variant: None,
+            variant: Vec::new(),
             sync: false,
             build: true,
             run: false,
@@ -444,14 +444,14 @@ fn node_add_after_failed_sync_succeeds() {
         .expect("messenger handle should be available");
 
     let response = rt
-        .block_on(NodeListRequest::new(false).poll(
+        .block_on(StackListRequest::new(false).poll(
             messenger_handle,
             &core_node_name,
             CALLER_INSTANCE_ID,
             &core_node_name,
             Duration::from_secs(5),
         ))
-        .expect("node_list request should complete");
+        .expect("stack_list request should complete");
 
     let graph: SerializedNodeGraph =
         serde_json::from_str(&response.graph_json).expect("graph_json should parse");
@@ -569,7 +569,7 @@ fn node_add_same_node_shutdown_existing_instances() {
         command: NodeCommands::Add {
             source: Some(node_path.display().to_string()),
             git_ref: None,
-            variant: None,
+            variant: Vec::new(),
             sync: false,
             build: true,
             run: true,
@@ -589,14 +589,14 @@ fn node_add_same_node_shutdown_existing_instances() {
         .expect("messenger handle should be available");
 
     let response = rt
-        .block_on(NodeListRequest::new(false).poll(
+        .block_on(StackListRequest::new(false).poll(
             messenger_handle,
             &core_node_name,
             CALLER_INSTANCE_ID,
             &core_node_name,
             Duration::from_secs(5),
         ))
-        .expect("node_list request should complete");
+        .expect("stack_list request should complete");
 
     let graph: SerializedNodeGraph =
         serde_json::from_str(&response.graph_json).expect("graph_json should parse");
@@ -627,7 +627,7 @@ fn node_add_same_node_shutdown_existing_instances() {
         command: NodeCommands::Add {
             source: Some(node_path.display().to_string()),
             git_ref: None,
-            variant: None,
+            variant: Vec::new(),
             sync: false,
             build: true,
             run: false, // Don't run a new instance this time
@@ -643,14 +643,14 @@ fn node_add_same_node_shutdown_existing_instances() {
 
     // Verify the instance was stopped and node was re-added with 0 instances
     let response = rt
-        .block_on(NodeListRequest::new(false).poll(
+        .block_on(StackListRequest::new(false).poll(
             messenger_handle,
             &core_node_name,
             CALLER_INSTANCE_ID,
             &core_node_name,
             Duration::from_secs(5),
         ))
-        .expect("node_list request should complete after re-add");
+        .expect("stack_list request should complete after re-add");
 
     let graph: SerializedNodeGraph =
         serde_json::from_str(&response.graph_json).expect("graph_json should parse");
@@ -770,7 +770,7 @@ fn node_add_command_with_variant_succeeds() {
         command: NodeCommands::Add {
             source: Some(root_path.display().to_string()),
             git_ref: None,
-            variant: Some("mock".to_string()),
+            variant: vec!["mock".to_string()],
             sync: false,
             build: true,
             run: false,
@@ -789,14 +789,14 @@ fn node_add_command_with_variant_succeeds() {
         .messenger_handle()
         .expect("messenger handle should be available");
     let response = rt
-        .block_on(NodeListRequest::new(false).poll(
+        .block_on(StackListRequest::new(false).poll(
             messenger_handle,
             &core_node_name,
             CALLER_INSTANCE_ID,
             &core_node_name,
             Duration::from_secs(5),
         ))
-        .expect("node_list request should complete");
+        .expect("stack_list request should complete");
 
     let graph: SerializedNodeGraph =
         serde_json::from_str(&response.graph_json).expect("graph_json should parse");
@@ -931,7 +931,7 @@ fn node_add_with_variant_uses_variant_in_preflight() {
         command: NodeCommands::Add {
             source: Some(root_path.display().to_string()),
             git_ref: None,
-            variant: Some("mock".to_string()),
+            variant: vec!["mock".to_string()],
             sync: false,
             build: true,
             run: true,
@@ -951,14 +951,14 @@ fn node_add_with_variant_uses_variant_in_preflight() {
         .expect("messenger handle should be available");
 
     let response = rt
-        .block_on(NodeListRequest::new(false).poll(
+        .block_on(StackListRequest::new(false).poll(
             messenger_handle,
             &core_node_name,
             CALLER_INSTANCE_ID,
             &core_node_name,
             Duration::from_secs(5),
         ))
-        .expect("node_list request should complete");
+        .expect("stack_list request should complete");
 
     let graph: SerializedNodeGraph =
         serde_json::from_str(&response.graph_json).expect("graph_json should parse");
@@ -988,7 +988,7 @@ fn node_add_with_variant_uses_variant_in_preflight() {
         AddNodeParams {
             source: root_path.display().to_string(),
             git_ref: None,
-            variant: Some("mock".to_string()),
+            variant: vec!["mock".to_string()],
             run_options: None,
             timeouts: TimeoutConfig {
                 idle_secs: 60,
@@ -1004,14 +1004,14 @@ fn node_add_with_variant_uses_variant_in_preflight() {
 
     // Verify existing instance was stopped and node was re-added
     let response = rt
-        .block_on(NodeListRequest::new(false).poll(
+        .block_on(StackListRequest::new(false).poll(
             messenger_handle,
             &core_node_name,
             CALLER_INSTANCE_ID,
             &core_node_name,
             Duration::from_secs(5),
         ))
-        .expect("node_list request should complete after re-add");
+        .expect("stack_list request should complete after re-add");
 
     let graph: SerializedNodeGraph =
         serde_json::from_str(&response.graph_json).expect("graph_json should parse");
@@ -1116,7 +1116,7 @@ fn node_add_same_node_different_sources_show_overwrite_prompt() {
         command: NodeCommands::Add {
             source: Some(node_path.display().to_string()),
             git_ref: None,
-            variant: None,
+            variant: Vec::new(),
             sync: false,
             build: true,
             run: true,
@@ -1136,14 +1136,14 @@ fn node_add_same_node_different_sources_show_overwrite_prompt() {
         .expect("messenger handle should be available");
 
     let response = rt
-        .block_on(NodeListRequest::new(false).poll(
+        .block_on(StackListRequest::new(false).poll(
             messenger_handle,
             &core_node_name,
             CALLER_INSTANCE_ID,
             &core_node_name,
             Duration::from_secs(5),
         ))
-        .expect("node_list request should complete");
+        .expect("stack_list request should complete");
 
     let graph: SerializedNodeGraph =
         serde_json::from_str(&response.graph_json).expect("graph_json should parse");
@@ -1210,7 +1210,7 @@ fn node_add_same_node_different_sources_show_overwrite_prompt() {
         AddNodeParams {
             source: git_source,
             git_ref: None,
-            variant: None,
+            variant: Vec::new(),
             run_options: None,
             timeouts: TimeoutConfig {
                 idle_secs: 60,
@@ -1226,14 +1226,14 @@ fn node_add_same_node_different_sources_show_overwrite_prompt() {
 
     // Step 5: Verify the existing instance was stopped and node was re-added
     let response = rt
-        .block_on(NodeListRequest::new(false).poll(
+        .block_on(StackListRequest::new(false).poll(
             messenger_handle,
             &core_node_name,
             CALLER_INSTANCE_ID,
             &core_node_name,
             Duration::from_secs(5),
         ))
-        .expect("node_list request should complete after re-add from git");
+        .expect("stack_list request should complete after re-add from git");
 
     let graph: SerializedNodeGraph =
         serde_json::from_str(&response.graph_json).expect("graph_json should parse");
@@ -1339,7 +1339,7 @@ fn node_add_auto_syncs_when_peppy_dir_missing() {
         command: NodeCommands::Add {
             source: Some(root_path.display().to_string()),
             git_ref: None,
-            variant: Some("mock".to_string()),
+            variant: vec!["mock".to_string()],
             sync: false,
             build: true,
             run: false,
@@ -1365,14 +1365,14 @@ fn node_add_auto_syncs_when_peppy_dir_missing() {
         .messenger_handle()
         .expect("messenger handle should be available");
     let response = rt
-        .block_on(NodeListRequest::new(false).poll(
+        .block_on(StackListRequest::new(false).poll(
             messenger_handle,
             &core_node_name,
             CALLER_INSTANCE_ID,
             &core_node_name,
             Duration::from_secs(5),
         ))
-        .expect("node_list request should complete");
+        .expect("stack_list request should complete");
     let graph: SerializedNodeGraph =
         serde_json::from_str(&response.graph_json).expect("graph_json should parse");
     graph
@@ -1486,7 +1486,7 @@ fn node_add_with_sync_flag_refreshes_stale_git_hash() {
         command: NodeCommands::Add {
             source: Some(node_path.display().to_string()),
             git_ref: None,
-            variant: None,
+            variant: Vec::new(),
             sync: false,
             build: true,
             run: false,
@@ -1515,7 +1515,7 @@ fn node_add_with_sync_flag_refreshes_stale_git_hash() {
         command: NodeCommands::Add {
             source: Some(node_path.display().to_string()),
             git_ref: None,
-            variant: None,
+            variant: Vec::new(),
             sync: true,
             build: true,
             run: false,
@@ -1568,14 +1568,14 @@ fn node_add_with_sync_flag_refreshes_stale_git_hash() {
         .messenger_handle()
         .expect("messenger handle should be available");
     let response = rt
-        .block_on(NodeListRequest::new(false).poll(
+        .block_on(StackListRequest::new(false).poll(
             messenger_handle,
             &core_node_name,
             CALLER_INSTANCE_ID,
             &core_node_name,
             Duration::from_secs(5),
         ))
-        .expect("node_list request should complete");
+        .expect("stack_list request should complete");
     let graph: SerializedNodeGraph =
         serde_json::from_str(&response.graph_json).expect("graph_json should parse");
     graph
@@ -1608,7 +1608,7 @@ fn node_add_with_sync_flag_rejects_remote_source() {
         command: NodeCommands::Add {
             source: Some("https://github.com/fake-org/fake-repo.git/node".to_string()),
             git_ref: None,
-            variant: None,
+            variant: Vec::new(),
             sync: true,
             build: false,
             run: false,

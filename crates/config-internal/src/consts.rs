@@ -142,6 +142,30 @@ impl PeppyDirs {
     pub fn python_libs_cache_dir(&self, cache_key: &str) -> PathBuf {
         self.root.join("libs").join("python").join(cache_key)
     }
+
+    /// Configuration directory for user-editable config files (e.g. repositories.json5).
+    pub fn conf_dir(&self) -> PathBuf {
+        self.root.join("conf")
+    }
+
+    /// Cache directory for repo refresh results and other cached data.
+    pub fn cache_dir(&self) -> PathBuf {
+        self.root.join("cache")
+    }
+
+    /// Persistent Git checkouts shared across `node add` batches.
+    /// Directories are keyed by `<slug>-<hash>` where the hash covers
+    /// repo_url + ref so distinct refs coexist.
+    pub fn git_checkouts_dir(&self) -> PathBuf {
+        self.cache_dir().join("git_checkouts")
+    }
+
+    /// Persistent HTTP bundle extractions shared across `node add`
+    /// batches. Directories are keyed by `<slug>-<hash>` over the URL
+    /// + optional SHA256.
+    pub fn http_bundles_dir(&self) -> PathBuf {
+        self.cache_dir().join("http_bundles")
+    }
 }
 
 /// Uses the standard application data directory.

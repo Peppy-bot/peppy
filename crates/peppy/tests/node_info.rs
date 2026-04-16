@@ -81,7 +81,7 @@ fn add_nodes_to_stack(dependencies: &[&str], peppy_json5: &str) -> AddedNode {
             command: NodeCommands::Add {
                 source: Some(dep_dir.path().display().to_string()),
                 git_ref: None,
-                variant: None,
+                variant: Vec::new(),
                 sync: false,
                 build: false,
                 run: false,
@@ -104,7 +104,7 @@ fn add_nodes_to_stack(dependencies: &[&str], peppy_json5: &str) -> AddedNode {
         command: NodeCommands::Add {
             source: Some(node_dir.path().display().to_string()),
             git_ref: None,
-            variant: None,
+            variant: Vec::new(),
             sync: false,
             build: false,
             run: false,

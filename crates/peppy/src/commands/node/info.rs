@@ -107,6 +107,13 @@ fn format_node_info(out: &mut String, response: &NodeInfo) {
     let _ = writeln!(out, "Node Stack Status");
     let _ = writeln!(out, "{}", "-".repeat(50));
     let _ = writeln!(out, "Stage:     {}", response.stage);
+    // Always show the selected variant. A node without an explicit
+    // variant is conceptually running the "default" variant — either
+    // literally (auto-resolved from the root manifest's `variants[]`)
+    // or effectively (no variants defined, so the root's own execution
+    // section IS the default).
+    let variant = response.variant_name.as_deref().unwrap_or("default");
+    let _ = writeln!(out, "Variant:   {}", variant);
     if response.instances.is_empty() {
         let _ = writeln!(out, "Instances: None tracked");
     } else {
@@ -526,6 +533,7 @@ mod tests {
                 PathBuf::from("/tmp/peppy/logs/run/inst-abc.log"),
                 PathBuf::from("/tmp/peppy/logs/run/inst-def.log"),
             ],
+            variant_name: None,
         }
     }
 
@@ -573,6 +581,43 @@ mod tests {
         assert!(
             out.contains("    - inst-def: /tmp/peppy/logs/run/inst-def.log"),
             "inst-def run log line missing:\n{out}"
+        );
+    }
+
+    #[test]
+    fn print_node_info_renders_variant_line_as_default_when_none() {
+        let response = sample_response();
+        assert!(response.variant_name.is_none(), "precondition");
+
+        let mut out = String::new();
+        format_node_info(&mut out, &response);
+
+        assert!(
+            out.contains("Variant:   default"),
+            "Variant line should fall back to 'default' when variant_name is None:\n{out}"
+        );
+    }
+
+    #[test]
+    fn print_node_info_renders_variant_line_when_present() {
+        let mut response = sample_response();
+        response.variant_name = Some("macos".to_string());
+
+        let mut out = String::new();
+        format_node_info(&mut out, &response);
+
+        assert!(
+            out.contains("Variant:   macos"),
+            "Variant line missing when variant_name is Some:\n{out}"
+        );
+        // Variant must appear inside the Node Stack Status section, between
+        // the Stage line and the Instances line.
+        let stage_idx = out.find("Stage:").expect("stage line missing");
+        let variant_idx = out.find("Variant:").expect("variant line missing");
+        let instances_idx = out.find("Instances:").expect("instances line missing");
+        assert!(
+            stage_idx < variant_idx && variant_idx < instances_idx,
+            "Variant line should sit between Stage and Instances:\n{out}"
         );
     }
 
