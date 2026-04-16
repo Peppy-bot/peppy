@@ -69,7 +69,7 @@ When multiple repositories provide the same `name:tag` pair, the repository with
 ### Add a repository
 
 ```sh
-peppy repo add <source> [--ref <tag-or-branch>]
+peppy repo add <source> [--ref <tag-or-branch>] [--top]
 ```
 
 Adds a new repository to `repositories.json5`. The source format is auto-detected:
@@ -86,9 +86,12 @@ peppy repo add https://github.com/org/repo.git --ref v2.0
 
 # Plain URL
 peppy repo add https://example.com/packages
+
+# Give the new repo top priority (lower `id` than every existing entry)
+peppy repo add /path/to/my/nodes --top
 ```
 
-The `--ref` flag is only valid for git sources.
+The `--ref` flag is only valid for git sources. By default the new repository is appended with `id = max(existing ids) + 1`, so it has the lowest priority among configured repositories; pass `--top` to assign it an `id` just below the current minimum, giving it the highest priority. The priority `id` decides which repository wins when several of them provide the same `name:tag` (see [Refresh the index](#refresh-the-index)).
 
 ### Remove a repository
 
