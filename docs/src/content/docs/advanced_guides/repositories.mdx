@@ -7,10 +7,11 @@ sidebar:
 
 Repositories tell peppy where to look for nodes. When you run `peppy repo refresh`, peppy walks every configured repository, finds `peppy.json5` files, and builds an index of available nodes.
 
-Out of the box, two repositories are configured:
+Out of the box, one repository is configured:
 
-1. **Your home directory** (`~/`) — any node you create locally is discovered automatically.
-2. **The community hub** (`https://github.com/Peppy-bot/nodes_hub`) — a curated collection of ready-to-use nodes.
+- **The community hub** (`https://github.com/Peppy-bot/nodes_hub`, tracked on `main`) — a curated collection of ready-to-use nodes.
+
+Add your own local directory with `peppy repo add /path/to/my/nodes` so peppy can discover nodes you create locally.
 
 ## Configuration files
 
