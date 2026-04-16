@@ -53,6 +53,8 @@ jobs:
 
   test:
     runs-on: self-hosted
+    needs: docs-drift
+    if: ${{ !cancelled() && (needs.docs-drift.result == 'success' || needs.docs-drift.result == 'skipped') }}
     permissions:
       contents: read
       pull-requests: read
