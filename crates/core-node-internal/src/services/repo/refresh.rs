@@ -487,6 +487,36 @@ pub(crate) fn clone_shallow(
     })
 }
 
+/// Pick the ref string to persist in the cache so later batch installs can
+/// re-fetch and re-check-out the same state.
+///
+/// `checkout_repo_ref` always detaches HEAD, which leaves `head().shorthand()`
+/// equal to `"HEAD"` whenever the repo config pinned a ref — storing that
+/// makes `add_batch` install the remote's default branch tip instead of the
+/// pinned ref. Prefer the explicit config ref, then the cloned repo's
+/// symbolic HEAD (for repos without a pin), and finally the commit OID.
+fn resolve_ref_for_cache(repo: &git2::Repository, repo_ref: Option<&str>) -> String {
+    if let Some(r) = repo_ref {
+        let trimmed = r.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_owned();
+        }
+    }
+
+    if let Ok(head) = repo.head() {
+        if let Some(short) = head.shorthand()
+            && short != "HEAD"
+        {
+            return short.to_owned();
+        }
+        if let Some(oid) = head.target() {
+            return oid.to_string();
+        }
+    }
+
+    "HEAD".to_owned()
+}
+
 fn clone_and_walk_git_repo(
     repo_url: &str,
     repo_ref: Option<&str>,
@@ -499,11 +529,7 @@ fn clone_and_walk_git_repo(
         tempfile::tempdir_in(&tmp_dir).map_err(|e| format!("failed to create temp dir: {}", e))?;
 
     let repo = clone_shallow(repo_url, repo_ref, tmp.path(), on_feedback)?;
-    let resolved_ref = repo
-        .head()
-        .ok()
-        .and_then(|h| h.shorthand().map(str::to_string))
-        .unwrap_or_else(|| "HEAD".to_string());
+    let resolved_ref = resolve_ref_for_cache(&repo, repo_ref);
 
     let mut seen = HashSet::new();
     let mut nodes = Vec::new();
@@ -1015,5 +1041,96 @@ mod tests {
         let head = repo.head().expect("head");
         let head_oid = head.target().expect("head oid");
         assert_eq!(head_oid.to_string(), target_sha);
+    }
+
+    /// `checkout_repo_ref` detaches HEAD for every pinned ref, so
+    /// `head().shorthand()` of the cloned repo is always `"HEAD"`. Guard
+    /// against falling back to that literal — batch installs reuse
+    /// `resolved_ref` as the fetch/checkout ref, so storing `"HEAD"`
+    /// silently resolves to the remote's default branch instead of the
+    /// pinned ref.
+    #[test]
+    fn resolve_ref_prefers_config_ref_over_detached_head() {
+        let src_tmp = tempfile::tempdir().unwrap();
+        let commits = init_repo_with_commits(src_tmp.path(), 2);
+        let target_sha = commits[0].to_string();
+
+        let dst_tmp = tempfile::tempdir().unwrap();
+        let dst = dst_tmp.path().join("clone");
+        let repo_url = format!("file://{}", src_tmp.path().display());
+
+        let repo = clone_shallow(&repo_url, Some(&target_sha), &dst, &mut |_| {})
+            .expect("clone_shallow with pinned commit should succeed");
+
+        assert_eq!(
+            repo.head().unwrap().shorthand(),
+            Some("HEAD"),
+            "precondition: checkout_repo_ref always detaches HEAD"
+        );
+
+        let resolved = resolve_ref_for_cache(&repo, Some(&target_sha));
+        assert_eq!(
+            resolved, target_sha,
+            "pinned commit ref must be preserved so batch installs fetch it back"
+        );
+    }
+
+    #[test]
+    fn resolve_ref_trims_and_rejects_empty_config_ref() {
+        let src_tmp = tempfile::tempdir().unwrap();
+        init_repo_with_commits(src_tmp.path(), 1);
+
+        let dst_tmp = tempfile::tempdir().unwrap();
+        let dst = dst_tmp.path().join("clone");
+        let repo_url = format!("file://{}", src_tmp.path().display());
+
+        let repo = clone_shallow(&repo_url, None, &dst, &mut |_| {})
+            .expect("clone_shallow without ref should succeed");
+
+        let short = repo
+            .head()
+            .unwrap()
+            .shorthand()
+            .expect("default branch shorthand")
+            .to_owned();
+        assert_ne!(short, "HEAD", "fresh clone without ref must stay attached");
+
+        assert_eq!(
+            resolve_ref_for_cache(&repo, Some("  v1.0  ")),
+            "v1.0",
+            "config ref should be trimmed"
+        );
+        assert_eq!(
+            resolve_ref_for_cache(&repo, Some("")),
+            short,
+            "empty config ref should fall through to the attached branch name"
+        );
+        assert_eq!(
+            resolve_ref_for_cache(&repo, None),
+            short,
+            "absent config ref should fall through to the attached branch name"
+        );
+    }
+
+    #[test]
+    fn resolve_ref_falls_back_to_commit_oid_when_detached_without_config_ref() {
+        let src_tmp = tempfile::tempdir().unwrap();
+        let commits = init_repo_with_commits(src_tmp.path(), 1);
+
+        let dst_tmp = tempfile::tempdir().unwrap();
+        let dst = dst_tmp.path().join("clone");
+        let repo_url = format!("file://{}", src_tmp.path().display());
+
+        let repo = clone_shallow(&repo_url, None, &dst, &mut |_| {})
+            .expect("clone_shallow should succeed");
+        repo.set_head_detached(commits[0])
+            .expect("detach head for test");
+        assert_eq!(repo.head().unwrap().shorthand(), Some("HEAD"));
+
+        assert_eq!(
+            resolve_ref_for_cache(&repo, None),
+            commits[0].to_string(),
+            "detached HEAD with no config ref should record the commit OID"
+        );
     }
 }

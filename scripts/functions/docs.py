@@ -154,10 +154,12 @@ def _run_claude(
     cwd: Path,
 ) -> str:
     """Run ``claude -p`` and return the final assistant text."""
+    # Prompt is piped via stdin rather than passed as an argv element:
+    # diffs can approach _MAX_DIFF_BYTES (400KB), which exceeds ARG_MAX
+    # on Linux (~128KB) and triggers E2BIG.
     cmd = [
         "claude",
         "-p",
-        prompt,
         "--output-format",
         "json",
         "--permission-mode",
@@ -165,7 +167,9 @@ def _run_claude(
         "--allowed-tools",
         allowed_tools,
     ]
-    result = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
+    result = subprocess.run(
+        cmd, cwd=cwd, input=prompt, capture_output=True, text=True
+    )
     if result.returncode != 0:
         raise ReleaseError(
             f"claude CLI failed (exit {result.returncode}): "
