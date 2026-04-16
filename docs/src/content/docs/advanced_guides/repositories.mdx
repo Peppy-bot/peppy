@@ -49,7 +49,7 @@ Both files are JSON5 arrays. Each entry has an `id` (auto-assigned if missing), 
 peppy repo list
 ```
 
-Shows all discovered nodes grouped by source type (Local, Git, HTTP). Each entry displays the node name, tag, path, and any available variants. Duplicate nodes (same `name:tag` provided by multiple repositories) are flagged.
+Shows all discovered nodes grouped by the repository that provides them. Each group is headed by the repository's display label (path for `fs`, `url (ref: r)` for `git`) followed by the node count and source kind, then lists each node's name, tag, path, and available variants. Duplicate nodes (same `name:tag` provided by multiple repositories) are flagged so you can see which repository currently wins resolution.
 
 ### Refresh the index
 
@@ -57,7 +57,7 @@ Shows all discovered nodes grouped by source type (Local, Git, HTTP). Each entry
 peppy repo refresh
 ```
 
-Re-scans all configured repositories and rebuilds the node index. This is an alias for `peppy repo update`. During refresh, peppy:
+Re-scans all configured repositories and rebuilds the node index. `peppy repo update` is accepted as an alias. During refresh, peppy:
 
 - Reads `repositories.json5` (creates it with defaults on first run).
 - Skips any repository or path listed in `excluded_repositories.json5`.
