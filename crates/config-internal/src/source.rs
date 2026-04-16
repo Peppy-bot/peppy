@@ -405,7 +405,7 @@ impl<'de> Deserialize<'de> for DeploymentSource {
                 }))
             }
             _ => Err(invalid_deployment_source::<D::Error>(
-                "source must be one of: { local }, { repo, path, ref }, { url [, sha256] }, { name, tag }",
+                "source must be one of: { local }, { repo, path, ref }, { url, sha256 }, { name, tag }",
             )),
         }
     }
