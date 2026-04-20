@@ -26,9 +26,28 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::{Mutex, Notify, mpsc};
 use tokio::task::JoinHandle;
+use tokio::time::Instant;
 use tracing::debug;
+
+/// Watches for an idle period: returns when no `notify_one()` arrives for `idle_timeout`.
+/// Each call to `notify_one()` on `notify` resets the clock.
+async fn watch_idle(notify: Arc<Notify>, idle_timeout: Duration) {
+    loop {
+        match tokio::time::timeout(idle_timeout, notify.notified()).await {
+            Ok(()) => continue,
+            Err(_) => return,
+        }
+    }
+}
+
+/// Outcome of a per-phase operation wrapped with idle + (optional) launch-deadline enforcement.
+enum PhaseOutcome<T> {
+    Completed(T),
+    IdleTimeout,
+    MaxTimeout,
+}
 
 #[derive(Clone, Copy)]
 pub struct StackLaunchTimeouts {
@@ -112,7 +131,12 @@ struct ProcessLaunchContext {
     log_path: PathBuf,
     env_vars: Vec<(String, String)>,
     timeouts: StackLaunchTimeouts,
-    max_timeout_secs: u64,
+    /// Whole-launch deadline. `None` means the user did not opt into a max — only idle timeouts
+    /// are enforced.
+    launch_deadline: Option<Instant>,
+    node_add_idle_timeout: Duration,
+    node_build_idle_timeout: Duration,
+    node_run_idle_timeout: Duration,
 }
 
 #[derive(Clone)]
@@ -284,6 +308,13 @@ async fn publish_stderr(
 /// Spawns a feedback forwarding task that reads `FeedbackLine` values from the
 /// channel and publishes them as `LaunchFeedback` to the launch feedback topic.
 ///
+/// Each line received also pings `activity_notify` (if provided), which the per-phase idle
+/// watcher uses to reset its idle clock. The notify is the single seam where real subprocess /
+/// git2 / http-downloader output (which all flow through this mpsc) gets observed; launcher
+/// orchestration messages (`publish_stdout` / `publish_stderr`) bypass this channel and so do
+/// NOT reset the idle clock — which is the right behavior, since they're operator narration,
+/// not subprocess liveness.
+///
 /// Returns the sender end (to pass into the process context) and a join handle
 /// for the consumer task. Drop the sender to signal completion, then await the
 /// handle to drain remaining messages.
@@ -291,12 +322,17 @@ fn spawn_feedback_forwarder(
     feedback_publisher: &TopicPublisher,
     step: LaunchFeedbackStep,
     log_file: &Arc<StdMutex<File>>,
+    activity_notify: Option<Arc<Notify>>,
 ) -> (mpsc::UnboundedSender<FeedbackLine>, JoinHandle<()>) {
     let (feedback_tx, mut feedback_rx) = mpsc::unbounded_channel::<FeedbackLine>();
     let publisher = feedback_publisher.clone();
     let log_file = Arc::clone(log_file);
     let handle = tokio::spawn(async move {
         while let Some(line) = feedback_rx.recv().await {
+            if let Some(notify) = &activity_notify {
+                notify.notify_one();
+            }
+
             node_stack::build_io::write_feedback_log_line(&log_file, line.stream, &line.line);
 
             let launch_feedback = match line.stream {
@@ -317,6 +353,48 @@ fn spawn_feedback_forwarder(
     (feedback_tx, handle)
 }
 
+/// Wraps a phase future with idle-timeout enforcement and an optional whole-launch deadline.
+///
+/// The idle watcher always runs (idle protection is always on); the deadline only wraps when
+/// `launch_deadline` is `Some`. Returns:
+/// - `Completed(T)` if the phase finished within both bounds
+/// - `IdleTimeout` if `idle_timeout` elapsed without subprocess activity
+/// - `MaxTimeout` if the launch deadline fired
+///
+/// Cancellation safety: when the phase future is dropped, `stream_child_output`'s `KillGuard`
+/// (in node-stack-internal/src/build_io.rs) sends SIGKILL to the child on Drop — no zombies.
+/// For the add phase's git2 clone (synchronous inside its callback callsite), the next
+/// progress callback returns the cancellation status and git2 aborts.
+async fn run_phase_with_timeouts<F, T>(
+    phase: F,
+    activity_notify: Arc<Notify>,
+    idle_timeout: Duration,
+    launch_deadline: Option<Instant>,
+) -> PhaseOutcome<T>
+where
+    F: std::future::Future<Output = T>,
+{
+    let inner = async {
+        tokio::select! {
+            biased;
+            _ = watch_idle(activity_notify, idle_timeout) => None,
+            result = phase => Some(result),
+        }
+    };
+
+    match launch_deadline {
+        Some(deadline) => match tokio::time::timeout_at(deadline, inner).await {
+            Ok(Some(value)) => PhaseOutcome::Completed(value),
+            Ok(None) => PhaseOutcome::IdleTimeout,
+            Err(_) => PhaseOutcome::MaxTimeout,
+        },
+        None => match inner.await {
+            Some(value) => PhaseOutcome::Completed(value),
+            None => PhaseOutcome::IdleTimeout,
+        },
+    }
+}
+
 async fn add_node_directly(
     ctx: &ProcessLaunchContext,
     node_add_goal: NodeAddGoal,
@@ -331,10 +409,12 @@ async fn add_node_directly(
         Err(e) => return (Err(e), None),
     };
 
+    let activity_notify = Arc::new(Notify::new());
     let (feedback_tx, forwarder_handle) = spawn_feedback_forwarder(
         &ctx.feedback_publisher,
         LaunchFeedbackStep::AddingNode,
         &ctx.log_file,
+        Some(Arc::clone(&activity_notify)),
     );
 
     let action_context = NodeAddActionContext {
@@ -347,10 +427,9 @@ async fn add_node_directly(
 
     let log_file_for_timeout = log_file.clone();
     let log_path_for_timeout = log_path.clone();
-    let max_timeout = Duration::from_secs(ctx.max_timeout_secs);
+    let idle_secs = ctx.node_add_idle_timeout.as_secs();
 
-    let result = match tokio::time::timeout(
-        max_timeout,
+    let result = match run_phase_with_timeouts(
         run_node_add(
             node_add_goal,
             action_context,
@@ -359,13 +438,24 @@ async fn add_node_directly(
             log_path,
             timestamp,
         ),
+        activity_notify,
+        ctx.node_add_idle_timeout,
+        ctx.launch_deadline,
     )
     .await
     {
-        Ok(result) => result,
-        Err(_) => {
-            write_error_to_log(&log_file_for_timeout, "max timeout exceeded");
-            NodeAddResult::failure(&log_path_for_timeout, "timeout: max timeout exceeded")
+        PhaseOutcome::Completed(result) => result,
+        PhaseOutcome::IdleTimeout => {
+            let msg = format!("add idle timeout exceeded ({idle_secs}s without output)");
+            write_error_to_log(&log_file_for_timeout, &format!("timeout: {msg}"));
+            NodeAddResult::failure(&log_path_for_timeout, format!("timeout: {msg}"))
+        }
+        PhaseOutcome::MaxTimeout => {
+            write_error_to_log(&log_file_for_timeout, "max launch timeout exceeded");
+            NodeAddResult::failure(
+                &log_path_for_timeout,
+                "timeout: max launch timeout exceeded",
+            )
         }
     };
 
@@ -400,10 +490,12 @@ async fn build_node_directly(
 
     let final_log_path = log_path.clone();
 
+    let activity_notify = Arc::new(Notify::new());
     let (feedback_tx, forwarder_handle) = spawn_feedback_forwarder(
         &ctx.feedback_publisher,
         LaunchFeedbackStep::BuildingNode,
         &ctx.log_file,
+        Some(Arc::clone(&activity_notify)),
     );
 
     let action_context = NodeBuildActionContext {
@@ -411,12 +503,11 @@ async fn build_node_directly(
         peppy_dirs: ctx.peppy_dirs.clone(),
     };
 
-    let max_timeout = Duration::from_secs(ctx.max_timeout_secs);
     let log_file_for_timeout = log_file.clone();
     let log_path_for_timeout = log_path.clone();
+    let idle_secs = ctx.node_build_idle_timeout.as_secs();
 
-    let result = match tokio::time::timeout(
-        max_timeout,
+    let result = match run_phase_with_timeouts(
         run_node_build_for_entity(
             node_name.clone(),
             node_tag.clone(),
@@ -426,15 +517,26 @@ async fn build_node_directly(
             log_file,
             log_path,
         ),
+        activity_notify,
+        ctx.node_build_idle_timeout,
+        ctx.launch_deadline,
     )
     .await
     {
-        Ok(result) => result,
-        Err(_) => {
-            write_error_to_log(&log_file_for_timeout, "max timeout exceeded");
+        PhaseOutcome::Completed(result) => result,
+        PhaseOutcome::IdleTimeout => {
+            let msg = format!("build idle timeout exceeded ({idle_secs}s without output)");
+            write_error_to_log(&log_file_for_timeout, &format!("timeout: {msg}"));
             crate::encoding::NodeBuildResult::failure(
                 &log_path_for_timeout,
-                "timeout: max timeout exceeded",
+                format!("timeout: {msg}"),
+            )
+        }
+        PhaseOutcome::MaxTimeout => {
+            write_error_to_log(&log_file_for_timeout, "max launch timeout exceeded");
+            crate::encoding::NodeBuildResult::failure(
+                &log_path_for_timeout,
+                "timeout: max launch timeout exceeded",
             )
         }
     };
@@ -460,10 +562,12 @@ async fn start_node_directly(
     log_path: PathBuf,
     log_file: Arc<StdMutex<File>>,
 ) -> (std::result::Result<NodeRunResult, String>, Option<PathBuf>) {
+    let activity_notify = Arc::new(Notify::new());
     let (feedback_tx, _forwarder_handle) = spawn_feedback_forwarder(
         &ctx.feedback_publisher,
         LaunchFeedbackStep::RunningNode,
         &ctx.log_file,
+        Some(Arc::clone(&activity_notify)),
     );
 
     let action_context = NodeRunActionContext {
@@ -480,10 +584,9 @@ async fn start_node_directly(
     };
 
     let log_file_for_timeout = log_file.clone();
-    let max_timeout = Duration::from_secs(ctx.max_timeout_secs);
+    let idle_secs = ctx.node_run_idle_timeout.as_secs();
 
-    let result = match tokio::time::timeout(
-        max_timeout,
+    let result = match run_phase_with_timeouts(
         run_node_run(
             node_run_goal,
             runtime_config,
@@ -492,13 +595,21 @@ async fn start_node_directly(
             log_file,
             ctx.core_instance_id.clone(),
         ),
+        activity_notify,
+        ctx.node_run_idle_timeout,
+        ctx.launch_deadline,
     )
     .await
     {
-        Ok(result) => result,
-        Err(_) => {
-            write_error_to_log(&log_file_for_timeout, "max timeout exceeded");
-            NodeRunResult::failure("timeout: max timeout exceeded")
+        PhaseOutcome::Completed(result) => result,
+        PhaseOutcome::IdleTimeout => {
+            let msg = format!("run idle timeout exceeded ({idle_secs}s without output)");
+            write_error_to_log(&log_file_for_timeout, &format!("timeout: {msg}"));
+            NodeRunResult::failure(format!("timeout: {msg}"))
+        }
+        PhaseOutcome::MaxTimeout => {
+            write_error_to_log(&log_file_for_timeout, "max launch timeout exceeded");
+            NodeRunResult::failure("timeout: max launch timeout exceeded")
         }
     };
 
@@ -921,6 +1032,20 @@ async fn add_nodes_to_stack(
             continue;
         };
 
+        // Short-circuit between iterations if the launch deadline has passed. Catches the case
+        // where many fast adds collectively blow the budget without any single one tripping
+        // `timeout_at` mid-flight.
+        if let Some(deadline) = ctx.launch_deadline
+            && Instant::now() >= deadline
+        {
+            return Err(restore_stack(
+                ctx,
+                backup_stack,
+                "timeout: max launch timeout exceeded".to_string(),
+            )
+            .await);
+        }
+
         publish_stdout(
             ctx,
             format!("Adding {}", key.label()),
@@ -928,8 +1053,10 @@ async fn add_nodes_to_stack(
         )
         .await;
 
-        // Pass max_timeout_secs to the goal for daemon-side busy reporting
-        let goal_timeout_secs = ctx.max_timeout_secs;
+        // The goal's `timeout_secs` field is used by the action-loop gate elsewhere; in the
+        // stack-launch path `add_node_directly` skips the gate entirely, so this value is
+        // effectively unused. Pass 0 to make that explicit.
+        let goal_timeout_secs = 0;
         let node_add_goal = match &item.source {
             NodeSource::Fs(path) => {
                 NodeAddGoal::new(path.clone(), STACK_LAUNCH_GIT_HASH, goal_timeout_secs)
@@ -1078,12 +1205,13 @@ async fn start_node_instances(
                 }
             };
 
-            // Pass max_timeout_secs to the goal for daemon-side busy reporting
+            // The goal's `timeout_secs` field is unused on the stack-launch path
+            // (start_node_directly skips the action-loop gate). Pass 0 to make that explicit.
             let node_run_goal = NodeRunGoal::new(
                 &runtime_config_json5,
                 item.node_name.as_str(),
                 item.node_tag.as_str(),
-                ctx.max_timeout_secs,
+                0,
             )
             .with_env_vars(ctx.env_vars.clone());
 
@@ -1164,7 +1292,7 @@ async fn handle_goal_request(
         }
     }
 
-    // Decode the goal before marking as Running so we can use max_timeout_secs
+    // Decode the goal before marking as Running so we can capture the user-supplied timeouts
     let goal = match LaunchGoal::decode(payload.as_ref()) {
         Ok(g) => g,
         Err(e) => {
@@ -1180,12 +1308,13 @@ async fn handle_goal_request(
         }
     };
 
-    // Now mark as Running with the actual timeout from the goal
+    // Now mark as Running. `timeout_secs` is gate-reporting only; 0 indicates "no enforced
+    // budget" (when --max-timeout-secs is unset).
     {
         let mut state_guard = state.lock().await;
         *state_guard = ActionState::Running {
             started_at: std::time::Instant::now(),
-            timeout_secs: goal.max_timeout_secs,
+            timeout_secs: goal.max_timeout_secs.unwrap_or(0),
         };
     }
 
@@ -1242,7 +1371,10 @@ async fn handle_goal_request(
             timeouts,
         } = action_context;
         let env_vars = goal.env_vars.clone();
-        let max_timeout_secs = goal.max_timeout_secs;
+        // Compute the launch deadline once. `None` => no overall deadline (idle-only).
+        let launch_deadline = goal
+            .max_timeout_secs
+            .map(|n| Instant::now() + Duration::from_secs(n));
         let ctx = ProcessLaunchContext {
             messenger,
             bound_core_node,
@@ -1254,7 +1386,10 @@ async fn handle_goal_request(
             log_path: log_path_clone.clone(),
             env_vars,
             timeouts,
-            max_timeout_secs,
+            launch_deadline,
+            node_add_idle_timeout: Duration::from_secs(goal.node_add_idle_timeout_secs),
+            node_build_idle_timeout: Duration::from_secs(goal.node_build_idle_timeout_secs),
+            node_run_idle_timeout: Duration::from_secs(goal.node_run_idle_timeout_secs),
         };
         let result = process_launch(goal, ctx).await;
         let mut state_guard = state_clone.lock().await;

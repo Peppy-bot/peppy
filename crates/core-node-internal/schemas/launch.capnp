@@ -12,12 +12,14 @@ struct LaunchGoal {
     peppyLaunchFilePath @0 :Text;
     # Environment variables to apply when executing build_cmd and run_cmd (e.g. PATH)
     envVars @1 :List(EnvVar);
-    # Idle timeout in seconds for each node add operation (resets on feedback)
+    # Idle timeout in seconds for the node add phase (resets on git/http progress or sub-process output)
     nodeAddIdleTimeoutSecs @2 :UInt64;
-    # Idle timeout in seconds for each node run operation (resets on feedback)
+    # Idle timeout in seconds for the node run-startup phase (resets on subprocess output until the node signals ready)
     nodeRunIdleTimeoutSecs @3 :UInt64;
-    # Absolute max timeout in seconds per operation (0 = default 3600s)
+    # Absolute max timeout in seconds for the entire launch; 0 = unset, no overall deadline (idle timeouts still apply)
     maxTimeoutSecs @4 :UInt64;
+    # Idle timeout in seconds for the node build phase (resets on build_cmd output)
+    nodeBuildIdleTimeoutSecs @5 :UInt64;
 }
 
 struct LaunchGoalResponse {

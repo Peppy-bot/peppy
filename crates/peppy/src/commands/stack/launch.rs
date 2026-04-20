@@ -16,10 +16,13 @@ use crate::context::AppContext;
 use crate::error::{Error, Result};
 use crate::terminal::ScrollingOutput;
 
-// Idle timeout for the overall launch result (resets on feedback from daemon)
+// CLI-side liveness timeout: how long we wait without any feedback from the daemon before giving
+// up on it as hung. Independent of the daemon's own per-phase idle timeouts.
 const IDLE_TIMEOUT: Duration = Duration::from_secs(DEFAULT_IDLE_TIMEOUT_SECS);
-// Absolute max timeout for the entire launch operation (2x per-operation max to allow for multi-node sequential processing)
-const MAX_TIMEOUT: Duration = Duration::from_secs(7200);
+// CLI-side floor for the overall safety net when the user does not pass `--max-timeout-secs`.
+// When they do pass it, we use `max_timeout_secs + 60` (or this floor, whichever is greater) so
+// the daemon's own deadline always fires first and surfaces a clean error before this fallback.
+const CLI_MAX_TIMEOUT_FLOOR: Duration = Duration::from_secs(7200);
 const FEEDBACK_DRAIN_TIMEOUT: Duration = Duration::from_millis(50);
 const RESULT_POLL_TIMEOUT: Duration = Duration::from_millis(200);
 
@@ -115,13 +118,15 @@ pub fn launch(
     ctx: &Arc<AppContext>,
     launcher_config_path: PathBuf,
     node_add_idle_timeout_secs: u64,
+    node_build_idle_timeout_secs: u64,
     node_run_idle_timeout_secs: u64,
-    max_timeout_secs: u64,
+    max_timeout_secs: Option<u64>,
 ) -> Result<()> {
     crate::commands::block_on(launch_async(
         ctx,
         launcher_config_path,
         node_add_idle_timeout_secs,
+        node_build_idle_timeout_secs,
         node_run_idle_timeout_secs,
         max_timeout_secs,
     ))
@@ -131,8 +136,9 @@ async fn launch_async(
     ctx: &Arc<AppContext>,
     launcher_config_path: PathBuf,
     node_add_idle_timeout_secs: u64,
+    node_build_idle_timeout_secs: u64,
     node_run_idle_timeout_secs: u64,
-    max_timeout_secs: u64,
+    max_timeout_secs: Option<u64>,
 ) -> Result<()> {
     // Canonicalize the path so the core node can find the file regardless of its working directory
     let launcher_config_path = launcher_config_path.canonicalize().map_err(|e| {
@@ -156,10 +162,19 @@ async fn launch_async(
     let goal = LaunchGoal::new(
         &launcher_config_path,
         node_add_idle_timeout_secs,
+        node_build_idle_timeout_secs,
         node_run_idle_timeout_secs,
         max_timeout_secs,
     )
     .with_env_vars(caller_env_overrides());
+
+    // CLI fallback ceiling: when the user opts into a max we give the daemon `max + 60s` to
+    // surface its own error first, but never less than the absolute floor in case the daemon
+    // hangs entirely.
+    let cli_max_timeout = match max_timeout_secs {
+        Some(n) => Duration::from_secs(n.saturating_add(60)).max(CLI_MAX_TIMEOUT_FLOOR),
+        None => CLI_MAX_TIMEOUT_FLOOR,
+    };
 
     let mut action_handle = goal
         .send_goal(
@@ -191,7 +206,7 @@ async fn launch_async(
         goal_response.log_path.display()
     );
 
-    let absolute_deadline = tokio::time::Instant::now() + MAX_TIMEOUT;
+    let absolute_deadline = tokio::time::Instant::now() + cli_max_timeout;
     let mut last_activity = tokio::time::Instant::now();
     let mut scrolling_output: Option<ScrollingOutput> = None;
     let mut current_scrolling_step: Option<LaunchFeedbackStep> = None;

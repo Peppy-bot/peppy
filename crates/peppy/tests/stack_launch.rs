@@ -1,9 +1,11 @@
 use config::node::Toolchain;
-use peppy::test_support::{LogCapture, ServeCommandEmulation};
+use peppy::test_support::{
+    LogCapture, ServeCommandEmulation, override_build_cmd, override_run_cmd_silent,
+};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use config::consts::{NODE_CONFIG_FILE, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH};
 use core_node::encoding::StackListRequest;
@@ -208,8 +210,9 @@ async fn node_launch_command_succeed() {
         command: StackCommands::Launch {
             launcher_config_path: launcher_path,
             node_add_idle_timeout_secs: 60,
+            node_build_idle_timeout_secs: 60,
             node_run_idle_timeout_secs: 60,
-            max_timeout_secs: 3600,
+            max_timeout_secs: Some(3600),
         },
     }
     .execute(&ctx)
@@ -412,8 +415,9 @@ async fn node_launch_command_fails_when_node_never_becomes_healthy() {
         command: StackCommands::Launch {
             launcher_config_path: launcher_path,
             node_add_idle_timeout_secs: 60,
+            node_build_idle_timeout_secs: 60,
             node_run_idle_timeout_secs: 60,
-            max_timeout_secs: 3600,
+            max_timeout_secs: Some(3600),
         },
     }
     .execute(&ctx);
@@ -453,5 +457,180 @@ async fn node_launch_command_fails_when_node_never_becomes_healthy() {
             .any(|n| n.label().contains(&format!("{node_b_name}:{node_tag}"))),
         "graph should not contain node_b after failed launch. Got: {:?}",
         graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+    );
+}
+
+/// Common setup for the timeout-firing tests. Returns the launcher path and the temp node
+/// peppy.json5, with node_b initialized via `node init` so the caller can `override_*_cmd`
+/// before launch. The error message bubbles up via the returned `Result` from
+/// `StackCommand::execute`, so we don't need a `LogCapture` here.
+struct TimeoutTestHarness {
+    ctx: Arc<AppContext>,
+    launcher_path: PathBuf,
+    node_b_peppy_json5: PathBuf,
+    _serve: ServeCommandEmulation,
+}
+
+async fn setup_timeout_test(node_b_name: &'static str) -> TimeoutTestHarness {
+    let serve = ServeCommandEmulation::with_mock()
+        .await
+        .expect("failed to create serve emulation");
+    let shared_messenger = serve.messenger();
+    let nodes_dir = tempfile::tempdir().expect("failed to create temp nodes directory");
+    // Leak the tempdir so it survives for the duration of the test (the harness holds the
+    // serve emulation, which already owns its own tempdir; we keep this one alive via the
+    // launcher path it contains).
+    let nodes_dir_path = nodes_dir.keep();
+
+    let ctx = Arc::new(
+        AppContext::with_messenger(&nodes_dir_path, Arc::clone(&shared_messenger))
+            .with_daemon_state_file(serve.daemon_state_path()),
+    );
+
+    NodeCommand {
+        command: NodeCommands::Init {
+            node_name: peppy::commands::node::NodeName::new(node_b_name).expect("valid node name"),
+            to_dir: None,
+            toolchain: Toolchain::Cargo,
+            with_container: false,
+        },
+    }
+    .execute(&ctx)
+    .expect("node init command should succeed");
+
+    let node_b_path = nodes_dir_path.join(node_b_name);
+    let node_b_peppy_json5 = node_b_path.join(NODE_CONFIG_FILE);
+    let launcher_path = nodes_dir_path.join("peppy_launcher.json5");
+    let launcher_json5 = format!(
+        r#"{{
+            deployments: [
+                {{
+                    source: {{ local: "{}" }},
+                    instances: [{{ instance_id: "node_b_instance" }}]
+                }}
+            ]
+        }}"#,
+        node_b_path.display()
+    );
+    fs::write(&launcher_path, launcher_json5).expect("launcher config should be writable");
+
+    TimeoutTestHarness {
+        ctx,
+        launcher_path,
+        node_b_peppy_json5,
+        _serve: serve,
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn node_launch_fails_when_node_build_idle_timeout_is_hit() {
+    let harness = setup_timeout_test("build_idle_node_b").await;
+
+    // Silent build that produces no output. Use direct binary form so the SIGKILL from
+    // KillGuard targets `sleep` directly — wrapping in `sh -c` would orphan a child `sleep`
+    // process that keeps the daemon's stdout/stderr pipes open for the full sleep duration,
+    // causing forwarder_handle.await to block.
+    override_build_cmd(
+        &harness.node_b_peppy_json5,
+        vec!["sleep".to_string(), "30".to_string()],
+    );
+
+    let started = Instant::now();
+    let result = StackCommand {
+        command: StackCommands::Launch {
+            launcher_config_path: harness.launcher_path.clone(),
+            node_add_idle_timeout_secs: 60,
+            node_build_idle_timeout_secs: 1,
+            node_run_idle_timeout_secs: 60,
+            max_timeout_secs: None,
+        },
+    }
+    .execute(&harness.ctx);
+
+    let err_msg = result
+        .expect_err("launch should fail when build idle timeout fires")
+        .to_string();
+    assert!(
+        started.elapsed() < Duration::from_secs(20),
+        "launch should fail in well under 30s; took {:?}",
+        started.elapsed()
+    );
+    assert!(
+        err_msg.contains("timeout") && err_msg.contains("build"),
+        "error message should mention 'timeout' and 'build' on build idle failure. Got: {err_msg}",
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn node_launch_fails_when_node_run_idle_timeout_is_hit() {
+    let harness = setup_timeout_test("run_idle_node_b").await;
+
+    // Silent run command that never produces output and never becomes ready.
+    override_run_cmd_silent(&harness.node_b_peppy_json5);
+
+    let started = Instant::now();
+    let result = StackCommand {
+        command: StackCommands::Launch {
+            launcher_config_path: harness.launcher_path.clone(),
+            node_add_idle_timeout_secs: 60,
+            node_build_idle_timeout_secs: 60,
+            node_run_idle_timeout_secs: 1,
+            max_timeout_secs: None,
+        },
+    }
+    .execute(&harness.ctx);
+
+    let err_msg = result
+        .expect_err("launch should fail when run idle timeout fires")
+        .to_string();
+    assert!(
+        started.elapsed() < Duration::from_secs(20),
+        "launch should fail in well under 30s; took {:?}",
+        started.elapsed()
+    );
+    assert!(
+        err_msg.contains("timeout") && err_msg.contains("run"),
+        "error message should mention 'timeout' and 'run' on run idle failure. Got: {err_msg}",
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn node_launch_fails_when_max_timeout_is_hit() {
+    let harness = setup_timeout_test("max_timeout_node_b").await;
+
+    // Continuous output for ~10s so idle never fires, but `max_timeout_secs=2` does.
+    // POSIX-portable shell loop (`seq` is bash-only).
+    override_build_cmd(
+        &harness.node_b_peppy_json5,
+        vec![
+            "sh".to_string(),
+            "-c".to_string(),
+            "i=0; while [ $i -lt 50 ]; do echo step-$i; i=$((i+1)); sleep 0.2; done".to_string(),
+        ],
+    );
+
+    let started = Instant::now();
+    let result = StackCommand {
+        command: StackCommands::Launch {
+            launcher_config_path: harness.launcher_path.clone(),
+            node_add_idle_timeout_secs: 60,
+            node_build_idle_timeout_secs: 60,
+            node_run_idle_timeout_secs: 60,
+            max_timeout_secs: Some(2),
+        },
+    }
+    .execute(&harness.ctx);
+
+    let err_msg = result
+        .expect_err("launch should fail when max launch timeout fires")
+        .to_string();
+    assert!(
+        started.elapsed() < Duration::from_secs(20),
+        "launch should fail in well under 30s; took {:?}",
+        started.elapsed()
+    );
+    assert!(
+        err_msg.contains("timeout") && err_msg.contains("max"),
+        "error message should mention 'timeout' and 'max' on max launch failure. Got: {err_msg}",
     );
 }
