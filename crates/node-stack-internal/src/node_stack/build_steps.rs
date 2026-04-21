@@ -11,7 +11,9 @@ use tokio::sync::mpsc;
 use tracing::debug;
 use zstd::stream::write::Encoder as ZstdEncoder;
 
-use crate::build_io::{FeedbackLine, FeedbackStream, stream_child_output};
+use crate::build_io::{
+    CommandWrap, FeedbackLine, FeedbackStream, ProcessGroup, stream_child_output,
+};
 
 /// Per-process counter used to make build-staging tmp filenames unique so
 /// concurrent builds for the same node:tag cannot clobber each other.
@@ -195,7 +197,12 @@ pub(super) async fn build_container_image(
     cmd.stderr(Stdio::piped());
     cmd.stdin(Stdio::null());
 
-    let child = cmd
+    // Spawn as a process-group leader so a cancelled build can SIGKILL the
+    // whole subprocess tree (apptainer shells out to `lima` / nested commands
+    // — a single-pid kill would orphan them and stall the daemon's pipes).
+    let mut wrap = CommandWrap::from(cmd);
+    wrap.wrap(ProcessGroup::leader());
+    let child = wrap
         .spawn()
         .map_err(|e| format!("Failed to spawn apptainer build: {}", e))?;
 
@@ -324,7 +331,14 @@ pub(super) async fn run_build_cmd(
     for (key, value) in env_vars {
         command.env(key, value);
     }
-    let child = command
+    // Spawn as a process-group leader so cancellation (idle/max timeout, future
+    // --force) can SIGKILL the whole subprocess tree. A user `build_cmd` like
+    // `sh -c "make all"` spawns shell descendants that would otherwise be
+    // orphaned by a single-pid kill and would keep the daemon's stdio pipes
+    // open until they exit naturally.
+    let mut wrap = CommandWrap::from(command);
+    wrap.wrap(ProcessGroup::leader());
+    let child = wrap
         .spawn()
         .map_err(|e| format!("failed to execute build_cmd `{}`: {}", full_cmd_display, e))?;
 

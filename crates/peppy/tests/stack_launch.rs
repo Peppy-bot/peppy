@@ -526,13 +526,14 @@ async fn setup_timeout_test(node_b_name: &'static str) -> TimeoutTestHarness {
 async fn node_launch_fails_when_node_build_idle_timeout_is_hit() {
     let harness = setup_timeout_test("build_idle_node_b").await;
 
-    // Silent build that produces no output. Use direct binary form so the SIGKILL from
-    // KillGuard targets `sleep` directly — wrapping in `sh -c` would orphan a child `sleep`
-    // process that keeps the daemon's stdout/stderr pipes open for the full sleep duration,
-    // causing forwarder_handle.await to block.
+    // Silent shell-wrapped build. The `sh -c "sleep 30"` form is the regression-test shape:
+    // before the process-group fix, KillGuard's SIGKILL only targeted `sh`, leaving an
+    // orphaned `sleep` holding the daemon's stdio pipes open for the full 30s. With
+    // `spawn_in_process_group` + group-kill, SIGKILL hits the entire group and cancellation
+    // returns in milliseconds.
     override_build_cmd(
         &harness.node_b_peppy_json5,
-        vec!["sleep".to_string(), "30".to_string()],
+        vec!["sh".to_string(), "-c".to_string(), "sleep 30".to_string()],
     );
 
     let started = Instant::now();
