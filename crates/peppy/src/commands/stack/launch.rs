@@ -20,9 +20,14 @@ use crate::terminal::ScrollingOutput;
 // up on it as hung. Independent of the daemon's own per-phase idle timeouts.
 const IDLE_TIMEOUT: Duration = Duration::from_secs(DEFAULT_IDLE_TIMEOUT_SECS);
 // CLI-side floor for the overall safety net when the user does not pass `--max-timeout-secs`.
-// When they do pass it, we use `max_timeout_secs + 60` (or this floor, whichever is greater) so
-// the daemon's own deadline always fires first and surfaces a clean error before this fallback.
+// When they do pass it, we use `max_timeout_secs + DAEMON_RESPONSE_GRACE` (or this floor,
+// whichever is greater) so the daemon's own deadline always fires first and surfaces a clean
+// error before this fallback.
 const CLI_MAX_TIMEOUT_FLOOR: Duration = Duration::from_secs(7200);
+// Headroom granted to the daemon to surface its own timeout error before the CLI's fallback
+// ceiling fires. Keeps the error the user sees specific ("build idle timeout exceeded...") rather
+// than a generic CLI-side "daemon hung" message.
+const DAEMON_RESPONSE_GRACE: Duration = Duration::from_secs(60);
 const FEEDBACK_DRAIN_TIMEOUT: Duration = Duration::from_millis(50);
 const RESULT_POLL_TIMEOUT: Duration = Duration::from_millis(200);
 
@@ -168,11 +173,13 @@ async fn launch_async(
     )
     .with_env_vars(caller_env_overrides());
 
-    // CLI fallback ceiling: when the user opts into a max we give the daemon `max + 60s` to
-    // surface its own error first, but never less than the absolute floor in case the daemon
-    // hangs entirely.
+    // CLI fallback ceiling: when the user opts into a max we grant the daemon a response-grace
+    // window to surface its own error first, but never less than the absolute floor in case the
+    // daemon hangs entirely.
     let cli_max_timeout = match max_timeout_secs {
-        Some(n) => Duration::from_secs(n.saturating_add(60)).max(CLI_MAX_TIMEOUT_FLOOR),
+        Some(n) => Duration::from_secs(n)
+            .saturating_add(DAEMON_RESPONSE_GRACE)
+            .max(CLI_MAX_TIMEOUT_FLOOR),
         None => CLI_MAX_TIMEOUT_FLOOR,
     };
 

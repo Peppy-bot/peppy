@@ -1032,20 +1032,6 @@ async fn add_nodes_to_stack(
             continue;
         };
 
-        // Short-circuit between iterations if the launch deadline has passed. Catches the case
-        // where many fast adds collectively blow the budget without any single one tripping
-        // `timeout_at` mid-flight.
-        if let Some(deadline) = ctx.launch_deadline
-            && Instant::now() >= deadline
-        {
-            return Err(restore_stack(
-                ctx,
-                backup_stack,
-                "timeout: max launch timeout exceeded".to_string(),
-            )
-            .await);
-        }
-
         publish_stdout(
             ctx,
             format!("Adding {}", key.label()),
@@ -1053,9 +1039,7 @@ async fn add_nodes_to_stack(
         )
         .await;
 
-        // The goal's `timeout_secs` field is used by the action-loop gate elsewhere; in the
-        // stack-launch path `add_node_directly` skips the gate entirely, so this value is
-        // effectively unused. Pass 0 to make that explicit.
+        // `timeout_secs` drives the action-loop gate, which `add_node_directly` bypasses.
         let goal_timeout_secs = 0;
         let node_add_goal = match &item.source {
             NodeSource::Fs(path) => {
@@ -1205,8 +1189,7 @@ async fn start_node_instances(
                 }
             };
 
-            // The goal's `timeout_secs` field is unused on the stack-launch path
-            // (start_node_directly skips the action-loop gate). Pass 0 to make that explicit.
+            // `timeout_secs` drives the action-loop gate, which `start_node_directly` bypasses.
             let node_run_goal = NodeRunGoal::new(
                 &runtime_config_json5,
                 item.node_name.as_str(),

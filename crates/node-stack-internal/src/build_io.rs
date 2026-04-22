@@ -133,21 +133,24 @@ pub fn push_stderr_line(buffer: &Arc<StdMutex<VecDeque<String>>>, line: &str) {
     guard.push_back(line.to_string());
 }
 
-/// Re-exports of the [`process_wrap`] tokio API used by the build path.
+pub use process_wrap::tokio::ChildWrapper;
+use process_wrap::tokio::{CommandWrap, ProcessGroup};
+
+/// Spawns `cmd` as a process-group leader so [`stream_child_output`]'s
+/// `KillGuard` can signal the entire subprocess tree on cancellation.
 ///
-/// **Why callers must use these:** if the daemon forcibly cancels a child
-/// (e.g. an idle/max timeout fires inside [`stream_child_output`]'s
-/// `KillGuard`), a single-pid kill would only reach the immediate child. Any
-/// descendants — e.g. `sleep` spawned by a `sh -c "..."` wrapper, or `cargo`
-/// spawned by a `make` target — would be orphaned and keep the daemon's
-/// stdout/stderr pipes open until they exit naturally, stalling the
-/// cancellation.
-///
-/// Wrapping the spawn with [`ProcessGroup::leader()`] makes the child its own
-/// process-group leader (PGID == its PID); the `KillGuard`'s
-/// `start_kill()` then signals the entire group, killing the whole subprocess
-/// tree atomically.
-pub use process_wrap::tokio::{ChildWrapper, CommandWrap, ProcessGroup};
+/// A single-pid kill would only reach the immediate child; descendants — e.g.
+/// `sleep` inside a `sh -c "..."` wrapper, or `cargo` under a `make` target —
+/// would be orphaned and keep the daemon's stdio pipes open until they exit
+/// naturally, stalling cancellation. Making the child its own process-group
+/// leader (PGID == its PID) lets `start_kill()` signal the whole group.
+pub fn spawn_in_process_group(
+    cmd: tokio::process::Command,
+) -> std::io::Result<Box<dyn ChildWrapper>> {
+    let mut wrap = CommandWrap::from(cmd);
+    wrap.wrap(ProcessGroup::leader());
+    wrap.spawn()
+}
 
 /// Streams stdout/stderr from a spawned child process to both the feedback
 /// publisher and the log file. Optionally collects the last [`STDERR_TAIL_LINES`]
@@ -156,12 +159,10 @@ pub use process_wrap::tokio::{ChildWrapper, CommandWrap, ProcessGroup};
 /// Returns the process exit status and (if `collect_stderr_tail` is true) the
 /// collected stderr tail lines.
 ///
-/// **Cancellation contract:** the child must be spawned via a [`CommandWrap`]
-/// wrapped with [`ProcessGroup::leader()`] (i.e. as a process-group leader),
-/// so that if this future is dropped before the child exits, the internal
-/// `KillGuard` can SIGKILL the entire subprocess tree. Without group spawning,
-/// descendants would be orphaned and keep the daemon's pipes open until they
-/// exit naturally.
+/// **Cancellation contract:** the child must have been spawned via
+/// [`spawn_in_process_group`] so that if this future is dropped before the
+/// child exits, the internal `KillGuard` can SIGKILL the entire subprocess
+/// tree.
 pub async fn stream_child_output(
     mut child: Box<dyn ChildWrapper>,
     feedback_tx: &mpsc::UnboundedSender<FeedbackLine>,
@@ -209,13 +210,9 @@ pub async fn stream_child_output(
     }
 
     // Cancellation safety: if this future is dropped before `child.wait()`
-    // returns (e.g. the task is cancelled), `KillGuard::drop` calls
-    // `ChildWrapper::start_kill`, which (when wrapped with `ProcessGroup`)
-    // signals the entire process group. Targeting the group (not just the
-    // immediate child) is what makes `sh -c "..."` wrappers cancellable —
-    // otherwise the shell dies but its descendants keep the stdio pipes open
-    // until they exit naturally. Requires the child to have been spawned via
-    // a `CommandWrap` wrapped with `ProcessGroup::leader()`.
+    // returns, `KillGuard::drop` calls `start_kill`, which targets the whole
+    // process group (see `spawn_in_process_group`) so `sh -c "..."` wrappers
+    // and their descendants all die together.
     struct KillGuard<'a> {
         child: &'a mut dyn ChildWrapper,
         completed: bool,
