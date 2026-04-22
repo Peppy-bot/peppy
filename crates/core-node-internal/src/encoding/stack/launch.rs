@@ -197,12 +197,25 @@ impl LaunchGoalResponse {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LaunchFeedbackStep {
     LauncherStep,
     AddingNode,
     RunningNode,
     BuildingNode,
+}
+
+impl LaunchFeedbackStep {
+    /// Short user-facing label for the phase this step represents. Used by timeout error
+    /// messages so the surfaced string stays aligned with the feedback stream.
+    pub fn phase_label(self) -> &'static str {
+        match self {
+            Self::LauncherStep => "launch",
+            Self::AddingNode => "add",
+            Self::BuildingNode => "build",
+            Self::RunningNode => "run",
+        }
+    }
 }
 /// Feedback message for the Launch action.
 /// Represents a single line of output from the launch process.

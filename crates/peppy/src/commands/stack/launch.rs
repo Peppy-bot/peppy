@@ -98,7 +98,7 @@ fn handle_feedback(
             output.clear();
             *scrolling_output = None;
         }
-        *current_scrolling_step = Some(feedback.step.clone());
+        *current_scrolling_step = Some(feedback.step);
     }
 
     match &feedback.step {

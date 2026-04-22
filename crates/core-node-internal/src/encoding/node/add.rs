@@ -221,6 +221,14 @@ impl NodeAddGoal {
         ))
     }
 
+    /// Builds a goal for in-process execution that bypasses the action-loop
+    /// gate (see `services::stack::launch::add_node_directly`). The
+    /// `timeout_secs` field feeds the gate's busy-reporting and is unread on
+    /// this path, so it is zero by construction.
+    pub fn for_internal_execution(source: NodeSource, git_hash: impl Into<String>) -> Self {
+        Self::from_source(source, git_hash, 0)
+    }
+
     pub fn with_env_vars(mut self, env_vars: Vec<(String, String)>) -> Self {
         self.env_vars = env_vars;
         self
