@@ -65,7 +65,11 @@ fn handle_repo_add_request_inner(
 
     let identity = request.source.identity();
     if identity.trim().is_empty() {
-        return RepoAddResponse::failure("repository path/URL must not be empty").encode();
+        return Ok(
+            RepoAddResponse::failure("repository path/URL must not be empty")
+                .encode()?
+                .into(),
+        );
     }
 
     let repos_path = peppy_dirs.conf_dir().join("repositories.json5");
@@ -74,7 +78,7 @@ fn handle_repo_add_request_inner(
 
     let mut repos = match read_or_create_repos(peppy_dirs) {
         Ok(repos) => repos,
-        Err(e) => return RepoAddResponse::failure(e.to_string()).encode(),
+        Err(e) => return Ok(RepoAddResponse::failure(e.to_string()).encode()?.into()),
     };
 
     let new_identity = identity.trim();
@@ -83,8 +87,12 @@ fn handle_repo_add_request_inner(
         .any(|entry| json_entry_identity(entry).is_some_and(|existing| existing == new_identity));
 
     if is_duplicate {
-        return RepoAddResponse::failure(format!("repository '{}' already exists", new_identity))
-            .encode();
+        return Ok(RepoAddResponse::failure(format!(
+            "repository '{}' already exists",
+            new_identity
+        ))
+        .encode()?
+        .into());
     }
 
     let next_id = if request.top {
@@ -96,10 +104,11 @@ fn handle_repo_add_request_inner(
             Some(min) => match min.checked_sub(1) {
                 Some(n) => n,
                 None => {
-                    return RepoAddResponse::failure(
+                    return Ok(RepoAddResponse::failure(
                         "cannot add repo with top priority: existing minimum id is 0 (would underflow)",
                     )
-                    .encode();
+                    .encode()?
+                    .into());
                 }
             },
             None => 1000,
@@ -113,10 +122,11 @@ fn handle_repo_add_request_inner(
             Some(max) => match max.checked_add(1) {
                 Some(n) => n,
                 None => {
-                    return RepoAddResponse::failure(
+                    return Ok(RepoAddResponse::failure(
                         "cannot add repo: existing maximum id is u64::MAX (would overflow)",
                     )
-                    .encode();
+                    .encode()?
+                    .into());
                 }
             },
             None => 1000,
@@ -130,5 +140,5 @@ fn handle_repo_add_request_inner(
 
     drop(_guard);
 
-    RepoAddResponse::success().encode()
+    Ok(RepoAddResponse::success().encode()?.into())
 }

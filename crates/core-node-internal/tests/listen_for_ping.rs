@@ -23,7 +23,7 @@ async fn listen_for_ping_roundtrip_succeed() {
         names::PING,
         Some(&started.core_node_name),
         None,
-        request_payload,
+        request_payload.into(),
         Duration::from_secs(5),
     )
     .await

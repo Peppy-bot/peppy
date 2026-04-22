@@ -1,5 +1,6 @@
 use config::node::NodeConfigParser;
-use core_node::encoding::{
+use core_node::encoding::prelude::*;
+use core_node_api::encoding::{
     NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAddResult, NodeInfoRequest,
     NodeInfoResponse, NodeSource,
 };
@@ -59,7 +60,7 @@ fn validate_git_ref(git_ref: Option<&str>) -> Result<Option<String>> {
 
 fn apply_dep_variant_overrides(
     node_source: NodeSource,
-    dep_overrides: Vec<core_node::encoding::DepVariantOverride>,
+    dep_overrides: Vec<core_node_api::encoding::DepVariantOverride>,
 ) -> Result<NodeSource> {
     if dep_overrides.is_empty() {
         return Ok(node_source);
@@ -518,7 +519,7 @@ mod tests {
     fn apply_dep_variant_overrides_rejects_non_repo_source() {
         let err = apply_dep_variant_overrides(
             NodeSource::Fs(Path::new("/tmp/example").to_path_buf()),
-            vec![core_node::encoding::DepVariantOverride {
+            vec![core_node_api::encoding::DepVariantOverride {
                 name: "camera".to_owned(),
                 tag: "1.0".to_owned(),
                 variant: "sim".to_owned(),
@@ -536,7 +537,7 @@ mod tests {
     fn apply_dep_variant_overrides_rejects_root_target_override() {
         let err = apply_dep_variant_overrides(
             NodeSource::repo_node("camera", "1.0").expect("valid repo-node"),
-            vec![core_node::encoding::DepVariantOverride {
+            vec![core_node_api::encoding::DepVariantOverride {
                 name: "camera".to_owned(),
                 tag: "1.0".to_owned(),
                 variant: "sim".to_owned(),
@@ -553,7 +554,7 @@ mod tests {
     fn apply_dep_variant_overrides_accepts_non_root_override() {
         let source = apply_dep_variant_overrides(
             NodeSource::repo_node("camera", "1.0").expect("valid repo-node"),
-            vec![core_node::encoding::DepVariantOverride {
+            vec![core_node_api::encoding::DepVariantOverride {
                 name: "dep".to_owned(),
                 tag: "0.2".to_owned(),
                 variant: "sim".to_owned(),

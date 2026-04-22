@@ -113,7 +113,7 @@ impl ActionResult for LaunchResult {
     }
 
     fn encode_result(&self) -> crate::Result<Payload> {
-        self.encode()
+        Ok(self.encode()?.into())
     }
 }
 
@@ -298,7 +298,7 @@ async fn publish_feedback(ctx: &ProcessLaunchContext, feedback: LaunchFeedback) 
     }
 
     if let Ok(payload) = feedback.encode() {
-        let _ = ctx.feedback_publisher.publish(payload).await;
+        let _ = ctx.feedback_publisher.publish(payload.into()).await;
     }
 }
 
@@ -359,7 +359,7 @@ fn spawn_feedback_forwarder(
                 }
             };
             if let Ok(payload) = launch_feedback.encode() {
-                let _ = publisher.publish(payload).await;
+                let _ = publisher.publish(payload.into()).await;
             }
         }
     });
@@ -1351,6 +1351,7 @@ async fn handle_goal_request(
             let response = LaunchGoalResponse::rejected("action already in progress");
             return response
                 .encode()
+                .map(peppylib::types::Payload::from)
                 .map_err(|e| peppylib::PeppyError::InvalidServiceRequest {
                     identifier: "launch_goal".to_string(),
                     reason: format!("Failed to encode response: {}", e),
@@ -1367,6 +1368,7 @@ async fn handle_goal_request(
             let response = LaunchGoalResponse::rejected(format!("invalid payload: {}", e));
             return response
                 .encode()
+                .map(peppylib::types::Payload::from)
                 .map_err(|e| peppylib::PeppyError::InvalidServiceRequest {
                     identifier: "launch_goal".to_string(),
                     reason: format!("Failed to encode response: {}", e),
@@ -1396,6 +1398,7 @@ async fn handle_goal_request(
         let response = LaunchGoalResponse::rejected(&error_msg);
         return response
             .encode()
+            .map(peppylib::types::Payload::from)
             .map_err(|e| peppylib::PeppyError::InvalidServiceRequest {
                 identifier: "launch_goal".to_string(),
                 reason: format!("Failed to encode response: {}", e),
@@ -1415,6 +1418,7 @@ async fn handle_goal_request(
             let response = LaunchGoalResponse::rejected(&error_msg);
             return response
                 .encode()
+                .map(peppylib::types::Payload::from)
                 .map_err(|e| peppylib::PeppyError::InvalidServiceRequest {
                     identifier: "launch_goal".to_string(),
                     reason: format!("Failed to encode response: {}", e),
@@ -1467,6 +1471,7 @@ async fn handle_goal_request(
     let response = LaunchGoalResponse::accepted(&log_path);
     response
         .encode()
+        .map(peppylib::types::Payload::from)
         .map_err(|e| peppylib::PeppyError::InvalidServiceRequest {
             identifier: "launch_goal".to_string(),
             reason: format!("Failed to encode response: {}", e),

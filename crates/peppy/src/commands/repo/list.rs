@@ -2,11 +2,12 @@ use std::io::IsTerminal;
 use std::sync::Arc;
 use std::time::Duration;
 
-use core_node::encoding::{RepoListNodeEntry, RepoListRequest};
+use core_node_api::encoding::{RepoListNodeEntry, RepoListRequest};
 
 use crate::commands::CALLER_INSTANCE_ID;
 use crate::context::AppContext;
 use crate::error::{Error, Result};
+use core_node::encoding::prelude::*;
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 

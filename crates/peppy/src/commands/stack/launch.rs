@@ -3,7 +3,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use config::launcher::PeppyLauncherParser;
-use core_node::encoding::{
+use core_node::encoding::prelude::*;
+use core_node_api::encoding::{
     LaunchFeedback, LaunchFeedbackStep, LaunchGoal, LaunchGoalResponse, LaunchResult,
     NodeAddLogEntry, NodeBuildLogEntry, NodeRunLogEntry,
 };

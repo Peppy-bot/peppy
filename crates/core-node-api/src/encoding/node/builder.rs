@@ -2,16 +2,10 @@
 
 use crate::Result;
 use crate::encoding::{decode_message, encode_message, optional_text};
-use crate::names;
 use crate::node_capnp;
 use capnp::message::Builder;
-use config::node::QoSProfile;
 use node_stack::FeedbackStream;
-use peppylib::messaging::ActionGoalHandle;
-use peppylib::types::Payload;
-use peppylib::{ActionMessenger, MessengerHandle};
 use std::path::PathBuf;
-use std::time::Duration;
 
 /// Goal message for the NodeBuild action.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -48,7 +42,7 @@ impl NodeBuildGoal {
         self
     }
 
-    pub fn encode(&self) -> Result<Payload> {
+    pub fn encode(&self) -> Result<Vec<u8>> {
         let mut builder = Builder::new_default();
         {
             let mut goal = builder.init_root::<node_capnp::node_build_goal::Builder>();
@@ -90,32 +84,6 @@ impl NodeBuildGoal {
             force: goal.get_force(),
         })
     }
-
-    pub async fn send_goal(
-        &self,
-        messenger: &MessengerHandle,
-        as_core_node: &str,
-        as_instance_id: &str,
-        target_core_node: Option<&str>,
-        target_instance_id: Option<&str>,
-        goal_timeout: Duration,
-    ) -> Result<ActionGoalHandle> {
-        let goal_payload = self.encode()?;
-        let handle = ActionMessenger::send_goal(
-            messenger,
-            as_core_node,
-            as_instance_id,
-            as_core_node,
-            names::NODE_BUILD_ACTION,
-            target_core_node,
-            target_instance_id,
-            goal_payload,
-            QoSProfile::default(),
-            goal_timeout,
-        )
-        .await?;
-        Ok(handle)
-    }
 }
 
 /// Response to the NodeBuild goal request.
@@ -143,7 +111,7 @@ impl NodeBuildGoalResponse {
         }
     }
 
-    pub fn encode(&self) -> Result<Payload> {
+    pub fn encode(&self) -> Result<Vec<u8>> {
         let mut builder = Builder::new_default();
         {
             let mut response = builder.init_root::<node_capnp::node_build_goal_response::Builder>();
@@ -206,7 +174,7 @@ impl NodeBuildFeedback {
         self.stream == FeedbackStream::Warning
     }
 
-    pub fn encode(&self) -> Result<Payload> {
+    pub fn encode(&self) -> Result<Vec<u8>> {
         let mut builder = Builder::new_default();
         {
             let mut feedback = builder.init_root::<node_capnp::node_build_feedback::Builder>();
@@ -266,7 +234,7 @@ impl NodeBuildResult {
         }
     }
 
-    pub fn encode(&self) -> Result<Payload> {
+    pub fn encode(&self) -> Result<Vec<u8>> {
         let mut builder = Builder::new_default();
         {
             let mut result = builder.init_root::<node_capnp::node_build_result::Builder>();
@@ -289,15 +257,5 @@ impl NodeBuildResult {
             success: result.get_success(),
             error_message: optional_text(result.get_error_message()?.to_str()?),
         })
-    }
-
-    pub async fn request_result(
-        messenger: &MessengerHandle,
-        action_handle: &ActionGoalHandle,
-        result_timeout: Duration,
-    ) -> Result<Self> {
-        let response =
-            ActionMessenger::request_result(messenger, action_handle, result_timeout).await?;
-        Self::decode(response.payload().as_ref())
     }
 }

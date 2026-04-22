@@ -6,6 +6,7 @@ use common::{
     write_peppy_json5,
 };
 use config::node::Name;
+use core_node::encoding::prelude::*;
 use core_node::encoding::{NodeInfo, NodeInfoRequest, NodeInfoResponse};
 use peppylib::messaging::MessengerHandle;
 use peppylib::services::health::listen_for_node_health;

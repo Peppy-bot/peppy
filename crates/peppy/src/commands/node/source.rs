@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use config::consts::NODE_CONFIG_FILE;
 use config::node::{NodeConfigParser, find_root_node_dir};
-use core_node::encoding::{DepVariantOverride, NodeSource};
+use core_node_api::encoding::{DepVariantOverride, NodeSource};
 use gix_url::Url as GitUrl;
 
 use crate::error::{Error, Result};

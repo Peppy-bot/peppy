@@ -1,15 +1,8 @@
-use std::time::Duration;
-
 use capnp::message::Builder;
-use config::node::QoSProfile;
-use peppylib::messaging::ActionGoalHandle;
-use peppylib::types::Payload;
-use peppylib::{ActionMessenger, MessengerHandle};
 
 use crate::Result;
 use crate::encoding::repo::add::RepoSourceKind;
 use crate::encoding::{decode_message, encode_message, optional_text};
-use crate::names;
 use crate::repo_capnp;
 
 /// Goal message for the RepoRefresh action (empty — refresh all repos).
@@ -17,7 +10,7 @@ use crate::repo_capnp;
 pub struct RepoRefreshGoal;
 
 impl RepoRefreshGoal {
-    pub fn encode(&self) -> Result<Payload> {
+    pub fn encode(&self) -> Result<Vec<u8>> {
         let mut builder = Builder::new_default();
         {
             let _goal = builder.init_root::<repo_capnp::repo_refresh_goal::Builder>();
@@ -29,32 +22,6 @@ impl RepoRefreshGoal {
         let reader = decode_message(data)?;
         let _goal = reader.get_root::<repo_capnp::repo_refresh_goal::Reader>()?;
         Ok(Self)
-    }
-
-    pub async fn send_goal(
-        &self,
-        messenger: &MessengerHandle,
-        as_core_node: &str,
-        as_instance_id: &str,
-        target_core_node: Option<&str>,
-        target_instance_id: Option<&str>,
-        goal_timeout: Duration,
-    ) -> Result<ActionGoalHandle> {
-        let goal_payload = self.encode()?;
-        let handle = ActionMessenger::send_goal(
-            messenger,
-            as_core_node,
-            as_instance_id,
-            as_core_node,
-            names::REPO_REFRESH_ACTION,
-            target_core_node,
-            target_instance_id,
-            goal_payload,
-            QoSProfile::default(),
-            goal_timeout,
-        )
-        .await?;
-        Ok(handle)
     }
 }
 
@@ -80,7 +47,7 @@ impl RepoRefreshGoalResponse {
         }
     }
 
-    pub fn encode(&self) -> Result<Payload> {
+    pub fn encode(&self) -> Result<Vec<u8>> {
         let mut builder = Builder::new_default();
         {
             let mut response =
@@ -167,7 +134,7 @@ impl RepoRefreshFeedback {
         }
     }
 
-    pub fn encode(&self) -> Result<Payload> {
+    pub fn encode(&self) -> Result<Vec<u8>> {
         let mut builder = Builder::new_default();
         {
             let mut feedback = builder.init_root::<repo_capnp::repo_refresh_feedback::Builder>();
@@ -234,7 +201,7 @@ impl RepoRefreshResult {
         }
     }
 
-    pub fn encode(&self) -> Result<Payload> {
+    pub fn encode(&self) -> Result<Vec<u8>> {
         let mut builder = Builder::new_default();
         {
             let mut result = builder.init_root::<repo_capnp::repo_refresh_result::Builder>();

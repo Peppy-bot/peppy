@@ -6,6 +6,7 @@ use common::{
 };
 use config::node::Name;
 use core_node::encoding::NodeResetRequest;
+use core_node::encoding::prelude::*;
 use std::time::Duration;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

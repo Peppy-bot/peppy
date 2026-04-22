@@ -64,7 +64,7 @@ impl ActionResult for RepoRefreshResult {
     }
 
     fn encode_result(&self) -> crate::Result<Payload> {
-        self.encode()
+        Ok(self.encode()?.into())
     }
 }
 
@@ -90,6 +90,7 @@ impl GoalHandler for RepoRefreshGoalHandler {
                 );
                 return response
                     .encode()
+                    .map(peppylib::types::Payload::from)
                     .map_err(|e| PeppyError::InvalidServiceRequest {
                         identifier: "repo_refresh".to_string(),
                         reason: e.to_string(),
@@ -104,6 +105,7 @@ impl GoalHandler for RepoRefreshGoalHandler {
             *state.lock().await = ActionState::Rejected;
             return response
                 .encode()
+                .map(peppylib::types::Payload::from)
                 .map_err(|e| PeppyError::InvalidServiceRequest {
                     identifier: "repo_refresh".to_string(),
                     reason: e.to_string(),
@@ -127,7 +129,7 @@ impl GoalHandler for RepoRefreshGoalHandler {
             let drain = tokio::spawn(async move {
                 while let Some(feedback) = rx.recv().await {
                     if let Ok(payload) = feedback.encode() {
-                        let _ = feedback_publisher.publish(payload).await;
+                        let _ = feedback_publisher.publish(payload.into()).await;
                     }
                 }
             });
@@ -174,6 +176,7 @@ impl GoalHandler for RepoRefreshGoalHandler {
         let response = RepoRefreshGoalResponse::accepted();
         response
             .encode()
+            .map(peppylib::types::Payload::from)
             .map_err(|e| PeppyError::InvalidServiceRequest {
                 identifier: "repo_refresh".to_string(),
                 reason: e.to_string(),

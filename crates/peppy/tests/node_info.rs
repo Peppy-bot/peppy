@@ -1,4 +1,5 @@
-use core_node::encoding::{NodeInfoRequest, NodeInfoResponse};
+use core_node::encoding::prelude::*;
+use core_node_api::encoding::{NodeInfoRequest, NodeInfoResponse};
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands, TimeoutConfig};
 use peppy::context::AppContext;
@@ -130,7 +131,11 @@ fn add_nodes_to_stack(dependencies: &[&str], peppy_json5: &str) -> AddedNode {
     }
 }
 
-fn fetch_info(added: &AddedNode, node_name: &str, node_tag: &str) -> core_node::encoding::NodeInfo {
+fn fetch_info(
+    added: &AddedNode,
+    node_name: &str,
+    node_tag: &str,
+) -> core_node_api::encoding::NodeInfo {
     let messenger_handle = added
         .node_ctx
         .messenger_handle()
@@ -146,8 +151,8 @@ fn fetch_info(added: &AddedNode, node_name: &str, node_tag: &str) -> core_node::
         ))
         .expect("node_info request should succeed");
     match response {
-        core_node::encoding::NodeInfoResponse::Found(info) => *info,
-        core_node::encoding::NodeInfoResponse::NotInStack => panic!(
+        core_node_api::encoding::NodeInfoResponse::Found(info) => *info,
+        core_node_api::encoding::NodeInfoResponse::NotInStack => panic!(
             "node_info unexpectedly reported `{}:{}` as not in the stack",
             node_name, node_tag
         ),

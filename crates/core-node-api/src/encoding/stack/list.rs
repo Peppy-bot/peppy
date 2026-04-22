@@ -1,11 +1,6 @@
-use std::time::Duration;
-
 use capnp::message::Builder;
-use peppylib::types::Payload;
-use peppylib::{MessengerHandle, ServiceMessenger};
 
 use crate::Result;
-use crate::names;
 use crate::node_capnp;
 
 use crate::encoding::{decode_message, encode_message};
@@ -24,7 +19,7 @@ impl StackListRequest {
         self.with_dot_graph
     }
 
-    fn encode(&self) -> Result<Payload> {
+    pub fn encode(&self) -> Result<Vec<u8>> {
         let mut builder = Builder::new_default();
         {
             let mut request = builder.init_root::<node_capnp::node_list_request::Builder>();
@@ -39,30 +34,6 @@ impl StackListRequest {
         Ok(Self {
             with_dot_graph: request.get_with_dot_graph(),
         })
-    }
-
-    pub async fn poll(
-        &self,
-        messenger: &MessengerHandle,
-        bound_core_node: &str,
-        as_instance_id: &str,
-        target_core_node: &str,
-        response_timeout: Duration,
-    ) -> Result<StackListResponse> {
-        let request_payload = self.encode()?;
-        let response = ServiceMessenger::poll(
-            messenger,
-            bound_core_node,
-            as_instance_id,
-            target_core_node,
-            names::STACK_LIST,
-            Some(target_core_node),
-            None,
-            request_payload,
-            response_timeout,
-        )
-        .await?;
-        StackListResponse::decode(response.payload().as_ref())
     }
 }
 
@@ -86,7 +57,7 @@ impl StackListResponse {
         }
     }
 
-    pub fn encode(&self) -> Result<Payload> {
+    pub fn encode(&self) -> Result<Vec<u8>> {
         let mut builder = Builder::new_default();
         {
             let mut response = builder.init_root::<node_capnp::node_list_response::Builder>();
@@ -112,4 +83,22 @@ impl StackListResponse {
             graph_json: response.get_graph_json()?.to_str()?.to_owned(),
         })
     }
+
+    /// Parse the raw `graph_json` payload into a typed `SerializedNodeGraph`.
+    pub fn parse(self) -> Result<ParsedStackList> {
+        let graph = serde_json::from_str(&self.graph_json)?;
+        Ok(ParsedStackList {
+            dot_graph: self.dot_graph,
+            graph,
+        })
+    }
+}
+
+/// Fully decoded response from the `stack_list` service — the capnp-level
+/// `StackListResponse` with the `graph_json` field parsed into a typed
+/// `node_stack::SerializedNodeGraph`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParsedStackList {
+    pub dot_graph: Option<String>,
+    pub graph: node_stack::SerializedNodeGraph,
 }

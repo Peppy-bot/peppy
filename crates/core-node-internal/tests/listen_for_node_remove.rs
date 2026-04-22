@@ -6,6 +6,7 @@ use common::{
 };
 use config::node::Name;
 use core_node::encoding::NodeRemoveRequest;
+use core_node::encoding::prelude::*;
 use peppylib::messaging::MessengerHandle;
 use peppylib::services::shutdown::listen_for_shutdown;
 use std::sync::Arc;

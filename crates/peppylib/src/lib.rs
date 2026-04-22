@@ -1,5 +1,6 @@
 mod error;
 
+pub mod core_node;
 pub mod encoding;
 pub mod messaging;
 pub mod runtime;

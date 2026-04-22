@@ -1,16 +1,10 @@
 //! Encoding types for the NodeAdd action (streaming version with feedback).
 
 use crate::Result;
-use crate::names;
 use crate::node_capnp;
 use capnp::message::Builder;
-use config::node::QoSProfile;
 use gix_url::Url as GitUrl;
-use peppylib::messaging::ActionGoalHandle;
-use peppylib::types::Payload;
-use peppylib::{ActionMessenger, MessengerHandle};
 use std::path::PathBuf;
-use std::time::Duration;
 
 use crate::encoding::{decode_message, encode_message, optional_text};
 
@@ -257,7 +251,7 @@ impl NodeAddGoal {
         }
     }
 
-    pub fn encode(&self) -> Result<Payload> {
+    pub fn encode(&self) -> Result<Vec<u8>> {
         let mut builder = Builder::new_default();
         {
             let mut goal = builder.init_root::<node_capnp::node_add_goal::Builder>();
@@ -422,33 +416,6 @@ impl NodeAddGoal {
             variant,
             force: goal.get_force(),
         })
-    }
-
-    /// Sends the goal to start the NodeAdd action and returns a handle for receiving feedback.
-    pub async fn send_goal(
-        &self,
-        messenger: &MessengerHandle,
-        as_core_node: &str,
-        as_instance_id: &str,
-        target_core_node: Option<&str>,
-        target_instance_id: Option<&str>,
-        goal_timeout: Duration,
-    ) -> Result<ActionGoalHandle> {
-        let goal_payload = self.encode()?;
-        let handle = ActionMessenger::send_goal(
-            messenger,
-            as_core_node,
-            as_instance_id,
-            as_core_node, // node_name is the core node for this action
-            names::NODE_ADD_ACTION,
-            target_core_node,
-            target_instance_id,
-            goal_payload,
-            QoSProfile::default(),
-            goal_timeout,
-        )
-        .await?;
-        Ok(handle)
     }
 }
 
@@ -702,7 +669,7 @@ impl NodeAddGoalResponse {
         }
     }
 
-    pub fn encode(&self) -> Result<Payload> {
+    pub fn encode(&self) -> Result<Vec<u8>> {
         let mut builder = Builder::new_default();
         {
             let mut response = builder.init_root::<node_capnp::node_add_goal_response::Builder>();
@@ -777,7 +744,7 @@ impl NodeAddFeedback {
         self.stream == "warning"
     }
 
-    pub fn encode(&self) -> Result<Payload> {
+    pub fn encode(&self) -> Result<Vec<u8>> {
         let mut builder = Builder::new_default();
         {
             let mut feedback = builder.init_root::<node_capnp::node_add_feedback::Builder>();
@@ -836,7 +803,7 @@ impl NodeAddResult {
         }
     }
 
-    pub fn encode(&self) -> Result<Payload> {
+    pub fn encode(&self) -> Result<Vec<u8>> {
         let mut builder = Builder::new_default();
         {
             let mut result = builder.init_root::<node_capnp::node_add_result::Builder>();
@@ -866,16 +833,5 @@ impl NodeAddResult {
             node_name: optional_text(result.get_node_name()?.to_str()?),
             node_tag: optional_text(result.get_node_tag()?.to_str()?),
         })
-    }
-
-    /// Request the result from a completed action.
-    pub async fn request_result(
-        messenger: &MessengerHandle,
-        action_handle: &ActionGoalHandle,
-        result_timeout: Duration,
-    ) -> Result<Self> {
-        let response =
-            ActionMessenger::request_result(messenger, action_handle, result_timeout).await?;
-        Self::decode(response.payload().as_ref())
     }
 }

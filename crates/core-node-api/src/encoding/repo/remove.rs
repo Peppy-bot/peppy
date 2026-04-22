@@ -1,11 +1,6 @@
-use std::time::Duration;
-
 use capnp::message::Builder;
-use peppylib::types::Payload;
-use peppylib::{MessengerHandle, ServiceMessenger};
 
 use crate::Result;
-use crate::names;
 use crate::repo_capnp;
 
 use crate::encoding::{decode_message, encode_message};
@@ -20,7 +15,7 @@ impl RepoRemoveRequest {
         Self { id }
     }
 
-    pub fn encode(&self) -> Result<Payload> {
+    pub fn encode(&self) -> Result<Vec<u8>> {
         let mut builder = Builder::new_default();
         {
             let mut request = builder.init_root::<repo_capnp::repo_remove_request::Builder>();
@@ -35,30 +30,6 @@ impl RepoRemoveRequest {
         Ok(Self {
             id: request.get_id(),
         })
-    }
-
-    pub async fn poll(
-        &self,
-        messenger: &MessengerHandle,
-        bound_core_node: &str,
-        as_instance_id: &str,
-        target_core_node: &str,
-        response_timeout: Duration,
-    ) -> Result<RepoRemoveResponse> {
-        let request_payload = self.encode()?;
-        let response = ServiceMessenger::poll(
-            messenger,
-            bound_core_node,
-            as_instance_id,
-            target_core_node,
-            names::REPO_REMOVE,
-            Some(target_core_node),
-            None,
-            request_payload,
-            response_timeout,
-        )
-        .await?;
-        RepoRemoveResponse::decode(response.payload().as_ref())
     }
 }
 
@@ -83,7 +54,7 @@ impl RepoRemoveResponse {
         }
     }
 
-    pub fn encode(&self) -> Result<Payload> {
+    pub fn encode(&self) -> Result<Vec<u8>> {
         let mut builder = Builder::new_default();
         {
             let mut response = builder.init_root::<repo_capnp::repo_remove_response::Builder>();

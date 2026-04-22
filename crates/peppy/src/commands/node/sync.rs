@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use config::consts::NODE_CONFIG_FILE;
 use config::node::NodeConfigParser;
-use core_node::encoding::NodeSyncRequest;
+use core_node_api::encoding::NodeSyncRequest;
 use node_stack::VirtualDeptree;
 use tracing::{info, warn};
 use walkdir::WalkDir;
@@ -14,6 +14,7 @@ use super::source::resolve_node_root_dir;
 use crate::commands::CALLER_INSTANCE_ID;
 use crate::context::AppContext;
 use crate::error::{Error, Result};
+use core_node::encoding::prelude::*;
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 

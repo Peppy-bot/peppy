@@ -1,14 +1,9 @@
 //! Cap'n Proto encoding utilities for info messages.
 
-use std::time::Duration;
-
 use capnp::message::Builder;
-use peppylib::types::Payload;
-use peppylib::{MessengerHandle, ServiceMessenger};
 
 use crate::Result;
 use crate::info_capnp;
-use crate::names;
 
 use super::{decode_message, encode_message};
 
@@ -20,7 +15,7 @@ impl InfoRequest {
         Self
     }
 
-    pub fn encode(&self) -> Result<Payload> {
+    pub fn encode(&self) -> Result<Vec<u8>> {
         let mut builder = Builder::new_default();
         {
             builder.init_root::<info_capnp::info_request::Builder>();
@@ -32,30 +27,6 @@ impl InfoRequest {
         let reader = decode_message(data)?;
         reader.get_root::<info_capnp::info_request::Reader>()?;
         Ok(Self)
-    }
-
-    pub async fn poll(
-        &self,
-        messenger: &MessengerHandle,
-        bound_core_node: &str,
-        as_instance_id: &str,
-        target_core_node: &str,
-        response_timeout: Duration,
-    ) -> Result<InfoResponse> {
-        let request_payload = self.encode()?;
-        let response = ServiceMessenger::poll(
-            messenger,
-            bound_core_node,
-            as_instance_id,
-            target_core_node,
-            names::INFO,
-            Some(target_core_node),
-            None,
-            request_payload,
-            response_timeout,
-        )
-        .await?;
-        InfoResponse::decode(response.payload().as_ref())
     }
 }
 
@@ -97,7 +68,7 @@ impl InfoResponse {
         }
     }
 
-    pub fn encode(&self) -> Result<Payload> {
+    pub fn encode(&self) -> Result<Vec<u8>> {
         let mut builder = Builder::new_default();
         {
             let mut response = builder.init_root::<info_capnp::info_response::Builder>();

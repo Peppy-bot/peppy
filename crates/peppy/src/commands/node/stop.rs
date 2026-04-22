@@ -1,4 +1,4 @@
-use core_node::encoding::NodeStopRequest;
+use core_node_api::encoding::NodeStopRequest;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::info;
@@ -6,6 +6,7 @@ use tracing::info;
 use crate::commands::CALLER_INSTANCE_ID;
 use crate::context::AppContext;
 use crate::error::{Error, Result};
+use core_node::encoding::prelude::*;
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 

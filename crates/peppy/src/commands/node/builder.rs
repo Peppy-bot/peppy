@@ -1,4 +1,5 @@
-use core_node::encoding::{
+use core_node::encoding::prelude::*;
+use core_node_api::encoding::{
     NodeBuildFeedback, NodeBuildGoal, NodeBuildGoalResponse, NodeBuildResult,
 };
 use peppylib::MessengerHandle;

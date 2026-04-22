@@ -3,7 +3,8 @@ use peppy::test_support::{LogCapture, ServeCommandEmulation};
 use std::sync::Arc;
 use std::time::Duration;
 
-use core_node::encoding::{NodeInfoRequest, NodeInfoResponse, StackListRequest};
+use core_node::encoding::prelude::*;
+use core_node_api::encoding::{NodeInfoRequest, NodeInfoResponse, StackListRequest};
 use node_stack::SerializedNodeGraph;
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands, NodeName};

@@ -59,5 +59,5 @@ async fn handle_node_reset_request_inner(
 
     debug!("Received `node_reset` request from {sender_instance_id}");
     node_stack.reset();
-    NodeResetResponse::success().encode()
+    Ok(NodeResetResponse::success().encode()?.into())
 }

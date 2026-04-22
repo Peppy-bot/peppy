@@ -1,15 +1,11 @@
 //! Cap'n Proto encoding utilities for node info messages.
 
 use std::path::PathBuf;
-use std::time::Duration;
 
 use capnp::message::Builder;
 use config::node::NodeConfig;
-use peppylib::types::Payload;
-use peppylib::{MessengerHandle, ServiceMessenger};
 
 use crate::Result;
-use crate::names;
 use crate::node_capnp;
 
 use crate::encoding::{decode_message, encode_message, optional_text};
@@ -33,7 +29,7 @@ impl NodeInfoRequest {
         }
     }
 
-    pub fn encode(&self) -> Result<Payload> {
+    pub fn encode(&self) -> Result<Vec<u8>> {
         let mut builder = Builder::new_default();
         {
             let mut request = builder.init_root::<node_capnp::node_info_request::Builder>();
@@ -50,30 +46,6 @@ impl NodeInfoRequest {
             node_name: request.get_node_name()?.to_str()?.to_owned(),
             node_tag: request.get_node_tag()?.to_str()?.to_owned(),
         })
-    }
-
-    pub async fn poll(
-        &self,
-        messenger: &MessengerHandle,
-        bound_core_node: &str,
-        as_instance_id: &str,
-        target_core_node: &str,
-        response_timeout: Duration,
-    ) -> Result<NodeInfoResponse> {
-        let request_payload = self.encode()?;
-        let response = ServiceMessenger::poll(
-            messenger,
-            bound_core_node,
-            as_instance_id,
-            target_core_node,
-            names::NODE_INFO,
-            Some(target_core_node),
-            None,
-            request_payload,
-            response_timeout,
-        )
-        .await?;
-        NodeInfoResponse::decode(response.payload().as_ref())
     }
 }
 
@@ -122,7 +94,7 @@ pub enum NodeInfoResponse {
 }
 
 impl NodeInfoResponse {
-    pub fn encode(&self) -> Result<Payload> {
+    pub fn encode(&self) -> Result<Vec<u8>> {
         let mut builder = Builder::new_default();
         {
             let response = builder.init_root::<node_capnp::node_info_response::Builder>();

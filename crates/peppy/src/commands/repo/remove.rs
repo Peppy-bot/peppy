@@ -1,12 +1,13 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use core_node::encoding::RepoRemoveRequest;
+use core_node_api::encoding::RepoRemoveRequest;
 use tracing::info;
 
 use crate::commands::CALLER_INSTANCE_ID;
 use crate::context::AppContext;
 use crate::error::{Error, Result};
+use core_node::encoding::prelude::*;
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 

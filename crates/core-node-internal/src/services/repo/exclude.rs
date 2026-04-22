@@ -178,7 +178,9 @@ fn handle_repo_exclude_request_inner(
     let identity = request.source.identity();
     if identity.trim().is_empty() {
         return Ok((
-            RepoExcludeResponse::failure("repository path/URL must not be empty").encode()?,
+            RepoExcludeResponse::failure("repository path/URL must not be empty")
+                .encode()?
+                .into(),
             false,
         ));
     }
@@ -189,7 +191,12 @@ fn handle_repo_exclude_request_inner(
 
     let mut repos = match read_excluded_repos(peppy_dirs) {
         Ok(repos) => repos,
-        Err(e) => return Ok((RepoExcludeResponse::failure(e.to_string()).encode()?, false)),
+        Err(e) => {
+            return Ok((
+                RepoExcludeResponse::failure(e.to_string()).encode()?.into(),
+                false,
+            ));
+        }
     };
 
     let new_identity = identity.trim();
@@ -200,7 +207,8 @@ fn handle_repo_exclude_request_inner(
     if is_duplicate {
         return Ok((
             RepoExcludeResponse::failure(format!("repository '{}' already exists", new_identity))
-                .encode()?,
+                .encode()?
+                .into(),
             false,
         ));
     }
@@ -221,5 +229,5 @@ fn handle_repo_exclude_request_inner(
 
     drop(_guard);
 
-    Ok((RepoExcludeResponse::success().encode()?, true))
+    Ok((RepoExcludeResponse::success().encode()?.into(), true))
 }

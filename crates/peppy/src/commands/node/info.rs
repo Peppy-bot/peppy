@@ -1,5 +1,5 @@
 use config::AnyType;
-use core_node::encoding::{NodeInfo, NodeInfoRequest, NodeInfoResponse};
+use core_node_api::encoding::{NodeInfo, NodeInfoRequest, NodeInfoResponse};
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Duration;
@@ -7,6 +7,7 @@ use std::time::Duration;
 use crate::commands::CALLER_INSTANCE_ID;
 use crate::context::AppContext;
 use crate::error::{Error, Result};
+use core_node::encoding::prelude::*;
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -484,7 +485,7 @@ fn write_any_type(out: &mut String, key: &str, value: &AnyType, indent: usize) {
 mod tests {
     use super::*;
     use config::node::NodeConfigParser;
-    use core_node::encoding::NodeInstanceInfo;
+    use core_node_api::encoding::NodeInstanceInfo;
     use std::path::PathBuf;
 
     fn sample_response() -> NodeInfo {

@@ -1,12 +1,8 @@
 use std::path::PathBuf;
-use std::time::Duration;
 
 use capnp::message::Builder;
-use peppylib::types::Payload;
-use peppylib::{MessengerHandle, ServiceMessenger};
 
 use crate::Result;
-use crate::names;
 use crate::node_capnp;
 
 use crate::encoding::{decode_message, encode_message};
@@ -35,7 +31,7 @@ impl NodeSyncRequest {
         }
     }
 
-    pub fn encode(&self) -> Result<Payload> {
+    pub fn encode(&self) -> Result<Vec<u8>> {
         let mut builder = Builder::new_default();
         {
             let mut request = builder.init_root::<node_capnp::node_generate_request::Builder>();
@@ -71,30 +67,6 @@ impl NodeSyncRequest {
             local_peers,
         })
     }
-
-    pub async fn poll(
-        &self,
-        messenger: &MessengerHandle,
-        bound_core_node: &str,
-        as_instance_id: &str,
-        target_core_node: &str,
-        response_timeout: Duration,
-    ) -> Result<NodeSyncResponse> {
-        let request_payload = self.encode()?;
-        let response = ServiceMessenger::poll(
-            messenger,
-            bound_core_node,
-            as_instance_id,
-            target_core_node,
-            names::NODE_SYNC,
-            Some(target_core_node),
-            None,
-            request_payload,
-            response_timeout,
-        )
-        .await?;
-        NodeSyncResponse::decode(response.payload().as_ref())
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -119,7 +91,7 @@ impl NodeSyncResponse {
         Self::new(false, error_message)
     }
 
-    pub fn encode(&self) -> Result<Payload> {
+    pub fn encode(&self) -> Result<Vec<u8>> {
         let mut builder = Builder::new_default();
         {
             let mut response = builder.init_root::<node_capnp::node_sync_response::Builder>();

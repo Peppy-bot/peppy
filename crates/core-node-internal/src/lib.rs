@@ -5,31 +5,5 @@ pub mod names;
 mod error;
 mod services;
 
-// Generated Cap'n Proto types - must be at crate root for correct path resolution
-#[allow(clippy::all)]
-pub(crate) mod ping_capnp {
-    include!(concat!(env!("OUT_DIR"), "/ping_capnp.rs"));
-}
-
-#[allow(clippy::all)]
-pub(crate) mod info_capnp {
-    include!(concat!(env!("OUT_DIR"), "/info_capnp.rs"));
-}
-
-#[allow(clippy::all)]
-pub(crate) mod launch_capnp {
-    include!(concat!(env!("OUT_DIR"), "/launch_capnp.rs"));
-}
-
-#[allow(clippy::all)]
-pub(crate) mod node_capnp {
-    include!(concat!(env!("OUT_DIR"), "/node_capnp.rs"));
-}
-
-#[allow(clippy::all)]
-pub(crate) mod repo_capnp {
-    include!(concat!(env!("OUT_DIR"), "/repo_capnp.rs"));
-}
-
 pub use error::{Error, Result};
 pub use services::{CoreNode, CoreNodeArguments, FORBIDDEN_ENV_KEYS};

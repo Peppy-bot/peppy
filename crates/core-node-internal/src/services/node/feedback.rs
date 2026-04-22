@@ -18,12 +18,12 @@ pub(crate) fn spawn_feedback_forwarder<F>(
     encode: F,
 ) -> tokio::task::JoinHandle<()>
 where
-    F: Fn(FeedbackLine) -> crate::Result<peppylib::types::Payload> + Send + 'static,
+    F: Fn(FeedbackLine) -> core_node_api::Result<Vec<u8>> + Send + 'static,
 {
     tokio::spawn(async move {
         while let Some(line) = feedback_rx.recv().await {
             if let Ok(payload) = encode(line) {
-                let _ = publisher.publish(payload).await;
+                let _ = publisher.publish(payload.into()).await;
             }
         }
     })

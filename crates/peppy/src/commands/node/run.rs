@@ -1,7 +1,8 @@
 use config::AnyType;
 use config::launcher::Name;
 use config::runtime::{NodeInstanceConfig, RuntimeConfig};
-use core_node::encoding::{
+use core_node::encoding::prelude::*;
+use core_node_api::encoding::{
     NodeInfoRequest, NodeInfoResponse, NodeRunFeedback, NodeRunGoal, NodeRunGoalResponse,
     NodeRunResult,
 };
@@ -84,7 +85,7 @@ fn remaining_timeouts(
 ///
 /// This is split out as a pure function so the stage-matching logic can be
 /// unit-tested directly. Documented stage values come from
-/// `core_node::encoding::NodeInfo::stage`: `Added | Building | Ready | Root`.
+/// `core_node_api::encoding::NodeInfo::stage`: `Added | Building | Ready | Root`.
 fn classify_stage(stage: &str, node_name: &str, tag: &str) -> Result<BuildDecision> {
     match stage {
         "Ready" => Ok(BuildDecision::Skip),

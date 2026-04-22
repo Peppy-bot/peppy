@@ -57,7 +57,7 @@ impl ActionResult for NodeBuildResult {
     }
 
     fn encode_result(&self) -> Result<Payload> {
-        self.encode()
+        Ok(self.encode()?.into())
     }
 }
 

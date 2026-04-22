@@ -10,6 +10,7 @@ config = { path = "../config-internal" }
 containers = { path = "../containers-internal" }
 peppylib = { path = "../peppylib" }
 core-node = { path = "../core-node-internal" }
+core-node-api = { path = "../core-node-api" }
 node-stack = { path = "../node-stack-internal" }
 bytes = "1"
 serde = { version = "1", features = ["derive"] }

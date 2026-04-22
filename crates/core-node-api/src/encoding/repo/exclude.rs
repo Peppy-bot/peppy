@@ -1,12 +1,8 @@
 use std::path::PathBuf;
-use std::time::Duration;
 
 use capnp::message::Builder;
-use peppylib::types::Payload;
-use peppylib::{MessengerHandle, ServiceMessenger};
 
 use crate::Result;
-use crate::names;
 use crate::repo_capnp;
 
 use crate::encoding::RepoSource;
@@ -39,7 +35,7 @@ impl RepoExcludeRequest {
         }
     }
 
-    pub fn encode(&self) -> Result<Payload> {
+    pub fn encode(&self) -> Result<Vec<u8>> {
         let mut builder = Builder::new_default();
         {
             let mut request = builder.init_root::<repo_capnp::repo_exclude_request::Builder>();
@@ -83,30 +79,6 @@ impl RepoExcludeRequest {
         };
         Ok(Self { source })
     }
-
-    pub async fn poll(
-        &self,
-        messenger: &MessengerHandle,
-        bound_core_node: &str,
-        as_instance_id: &str,
-        target_core_node: &str,
-        response_timeout: Duration,
-    ) -> Result<RepoExcludeResponse> {
-        let request_payload = self.encode()?;
-        let response = ServiceMessenger::poll(
-            messenger,
-            bound_core_node,
-            as_instance_id,
-            target_core_node,
-            names::REPO_EXCLUDE,
-            Some(target_core_node),
-            None,
-            request_payload,
-            response_timeout,
-        )
-        .await?;
-        RepoExcludeResponse::decode(response.payload().as_ref())
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -130,7 +102,7 @@ impl RepoExcludeResponse {
         }
     }
 
-    pub fn encode(&self) -> Result<Payload> {
+    pub fn encode(&self) -> Result<Vec<u8>> {
         let mut builder = Builder::new_default();
         {
             let mut response = builder.init_root::<repo_capnp::repo_exclude_response::Builder>();

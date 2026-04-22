@@ -1,6 +1,7 @@
 #[cfg(feature = "container_e2e")]
 #[path = "."]
 mod container_e2e_tests {
+    use core_node::encoding::prelude::*;
     mod common;
 
     use common::{

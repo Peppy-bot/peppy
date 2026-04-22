@@ -111,7 +111,7 @@ impl ActionResult for NodeRunResult {
     }
 
     fn encode_result(&self) -> crate::Result<Payload> {
-        self.encode()
+        Ok(self.encode()?.into())
     }
 }
 

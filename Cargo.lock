@@ -651,11 +651,10 @@ dependencies = [
  "askama",
  "build-helpers",
  "bytes",
- "capnp",
- "capnpc",
  "chrono",
  "config",
  "containers",
+ "core-node-api",
  "dirs 6.0.0",
  "futures",
  "generator",
@@ -687,6 +686,26 @@ dependencies = [
  "ureq",
  "url",
  "zstd",
+]
+
+[[package]]
+name = "core-node-api"
+version = "0.0.1"
+dependencies = [
+ "build-helpers",
+ "bytes",
+ "capnp",
+ "capnpc",
+ "chrono",
+ "config",
+ "gix-url",
+ "node-stack",
+ "serde",
+ "serde_json",
+ "serde_json5",
+ "tempfile",
+ "thiserror 2.0.18",
+ "url",
 ]
 
 [[package]]
@@ -2799,6 +2818,7 @@ dependencies = [
  "config",
  "containers",
  "core-node",
+ "core-node-api",
  "crossterm",
  "derive_more",
  "dirs 6.0.0",

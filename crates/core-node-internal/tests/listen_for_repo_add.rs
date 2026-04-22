@@ -16,7 +16,7 @@ async fn send_repo_add(started: &StartedCoreNode, request: &RepoAddRequest) -> R
         names::REPO_ADD,
         Some(&started.core_node_name),
         None,
-        payload,
+        payload.into(),
         Duration::from_secs(5),
     )
     .await

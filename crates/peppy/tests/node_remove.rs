@@ -1,5 +1,6 @@
 use config::node::Toolchain;
-use core_node::encoding::StackListRequest;
+use core_node::encoding::prelude::*;
+use core_node_api::encoding::StackListRequest;
 use node_stack::SerializedNodeGraph;
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands, NodeName};
