@@ -227,7 +227,7 @@ async fn launch_async(
     );
 
     let absolute_deadline: Option<tokio::time::Instant> =
-        cli_max_timeout.map(|d| tokio::time::Instant::now() + d);
+        cli_max_timeout.and_then(|d| tokio::time::Instant::now().checked_add(d));
     let mut last_activity = tokio::time::Instant::now();
     let mut scrolling_output: Option<ScrollingOutput> = None;
     let mut current_scrolling_step: Option<LaunchFeedbackStep> = None;
