@@ -172,7 +172,7 @@ peppy stack launch ./peppy_launcher.json5 \
   --max-timeout-secs 1800
 ```
 
-When a per-phase idle timeout fires, the error message identifies which phase timed out (e.g. `"timeout: build idle timeout exceeded"`). When the overall deadline fires, the error reports `"timeout: max launch timeout exceeded"`.
+When a per-phase idle timeout fires, the error message identifies which phase timed out (e.g. `"timeout: build idle timeout exceeded"`). When the overall deadline fires, the error reports `"Launch timed out: max timeout exceeded. Log file: ..."`.
 
 Verify that the node stack was configured correctly:
 ```
