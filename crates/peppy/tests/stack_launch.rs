@@ -543,13 +543,17 @@ async fn node_launch_fails_when_node_build_idle_timeout_is_hit() {
     }
     .execute(&harness.ctx);
 
+    let elapsed = started.elapsed();
     let err_msg = result
         .expect_err("launch should fail when build idle timeout fires")
         .to_string();
     assert!(
-        started.elapsed() < Duration::from_secs(20),
-        "launch should fail in well under 30s; took {:?}",
-        started.elapsed()
+        elapsed >= Duration::from_secs(1),
+        "build idle timeout (1s) cannot fire earlier than its configured duration; took {elapsed:?}",
+    );
+    assert!(
+        elapsed < Duration::from_secs(20),
+        "launch should fail in well under 30s; took {elapsed:?}",
     );
     assert!(
         err_msg.contains("timeout") && err_msg.contains("build"),
@@ -576,13 +580,17 @@ async fn node_launch_fails_when_node_run_idle_timeout_is_hit() {
     }
     .execute(&harness.ctx);
 
+    let elapsed = started.elapsed();
     let err_msg = result
         .expect_err("launch should fail when run idle timeout fires")
         .to_string();
     assert!(
-        started.elapsed() < Duration::from_secs(20),
-        "launch should fail in well under 30s; took {:?}",
-        started.elapsed()
+        elapsed >= Duration::from_secs(1),
+        "run idle timeout (1s) cannot fire earlier than its configured duration; took {elapsed:?}",
+    );
+    assert!(
+        elapsed < Duration::from_secs(20),
+        "launch should fail in well under 30s; took {elapsed:?}",
     );
     assert!(
         err_msg.contains("timeout") && err_msg.contains("run"),
@@ -617,13 +625,17 @@ async fn node_launch_fails_when_max_timeout_is_hit() {
     }
     .execute(&harness.ctx);
 
+    let elapsed = started.elapsed();
     let err_msg = result
         .expect_err("launch should fail when max launch timeout fires")
         .to_string();
     assert!(
-        started.elapsed() < Duration::from_secs(20),
-        "launch should fail in well under 30s; took {:?}",
-        started.elapsed()
+        elapsed >= Duration::from_secs(2),
+        "max timeout (2s) cannot fire earlier than its configured duration; took {elapsed:?}",
+    );
+    assert!(
+        elapsed < Duration::from_secs(20),
+        "launch should fail in well under 30s; took {elapsed:?}",
     );
     assert!(
         err_msg.contains("timeout") && err_msg.contains("max"),
