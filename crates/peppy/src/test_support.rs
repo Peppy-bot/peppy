@@ -54,8 +54,10 @@ pub fn override_build_cmd(peppy_json5: &Path, cmd: Vec<String>) {
 /// Overrides the node `run_cmd` to a long, silent binary (`sleep 30`) and clears `build_cmd`.
 /// Used by the run-idle timeout test: the process never produces output and never registers
 /// itself with the messaging layer, so it never becomes "ready". Direct-binary form is used
-/// so SIGKILL from KillGuard targets `sleep` directly — `sh -c "sleep N"` would orphan the
-/// child `sleep` process and keep the daemon's stdio pipes open for the full sleep duration.
+/// so the cancellation SIGKILL (sent via `abort_started → kill_child` when the run-phase
+/// idle timeout trips the cancel token) targets `sleep` directly — `sh -c "sleep N"` would
+/// orphan the grandchild `sleep` and keep the daemon's stdio pipes open for the full sleep
+/// duration.
 pub fn override_run_cmd_silent(peppy_json5: &Path) {
     modify_node_config(peppy_json5, |cfg| {
         cfg.execution.run_cmd = Some(vec!["sleep".to_string(), "30".to_string()]);
