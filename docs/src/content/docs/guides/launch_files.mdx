@@ -153,6 +153,27 @@ PeppyOS automatically inspects the `name` and `tag` of each node, verifies that 
 Running the `peppy stack launch` command clears the existing node stack and stops all running instances
 :::
 
+### Timeout Configuration
+
+`peppy stack launch` supports per-phase idle timeouts that reset whenever the corresponding phase produces output, plus an optional absolute deadline for the entire launch:
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--node-add-idle-timeout-secs` | 600 | Idle timeout for the **add** phase. Resets on git/http progress or sub-process output. |
+| `--node-build-idle-timeout-secs` | 600 | Idle timeout for the **build** phase. Resets on `build_cmd` output. |
+| `--node-run-idle-timeout-secs` | 600 | Idle timeout for the **run-startup** phase. Resets on subprocess output until the node signals ready. |
+| `--max-timeout-secs` | *(unset)* | Optional absolute max timeout in seconds for the entire launch. If omitted, only idle timeouts apply. |
+
+For example, to launch with a short build idle timeout and an overall 30-minute deadline:
+
+```sh
+peppy stack launch ./peppy_launcher.json5 \
+  --node-build-idle-timeout-secs 120 \
+  --max-timeout-secs 1800
+```
+
+When a per-phase idle timeout fires, the error message identifies which phase timed out (e.g. `"timeout: build idle timeout exceeded"`). When the overall deadline fires, the error reports `"timeout: max launch timeout exceeded"`.
+
 Verify that the node stack was configured correctly:
 ```
 $ peppy stack list
