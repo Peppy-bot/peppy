@@ -10,15 +10,12 @@ use core_node::encoding::{
 use peppylib::{ActionMessenger, PeppyError};
 use tracing::info;
 
-use crate::commands::node::{DEFAULT_IDLE_TIMEOUT_SECS, caller_env_overrides};
+use crate::commands::node::caller_env_overrides;
 use crate::commands::{CALLER_INSTANCE_ID, GOAL_TIMEOUT, SCROLLING_OUTPUT_LINES};
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 use crate::terminal::ScrollingOutput;
 
-// CLI-side liveness timeout: how long we wait without any feedback from the daemon before giving
-// up on it as hung. Independent of the daemon's own per-phase idle timeouts.
-const IDLE_TIMEOUT: Duration = Duration::from_secs(DEFAULT_IDLE_TIMEOUT_SECS);
 // CLI-side floor for the overall safety net when the user does not pass `--max-timeout-secs`.
 // When they do pass it, we use `max_timeout_secs + DAEMON_RESPONSE_GRACE` (or this floor,
 // whichever is greater) so the daemon's own deadline always fires first and surfaces a clean
@@ -183,6 +180,16 @@ async fn launch_async(
         None => CLI_MAX_TIMEOUT_FLOOR,
     };
 
+    // CLI-side liveness watchdog: trips if no feedback arrives from any phase. Must cover the
+    // longest per-phase idle budget (only one phase runs at a time) plus a grace window so the
+    // daemon's phase-specific timeout always fires first and surfaces a precise error.
+    let cli_idle_timeout = Duration::from_secs(
+        node_add_idle_timeout_secs
+            .max(node_build_idle_timeout_secs)
+            .max(node_run_idle_timeout_secs),
+    )
+    .saturating_add(DAEMON_RESPONSE_GRACE);
+
     let mut action_handle = goal
         .send_goal(
             conn.messenger,
@@ -231,13 +238,13 @@ async fn launch_async(
                     goal_response.log_path.display()
                 )));
             }
-            if now.duration_since(last_activity) >= IDLE_TIMEOUT {
+            if now.duration_since(last_activity) >= cli_idle_timeout {
                 if let Some(output) = scrolling_output.as_mut() {
                     output.clear();
                 }
                 return Err(Error::ExecutionFailed(format!(
                     "Launch timed out: no output received for {}s. Log file: {}",
-                    IDLE_TIMEOUT.as_secs(),
+                    cli_idle_timeout.as_secs(),
                     goal_response.log_path.display()
                 )));
             }
@@ -268,10 +275,10 @@ async fn launch_async(
                 goal_response.log_path.display()
             )));
         }
-        if now.duration_since(last_activity) >= IDLE_TIMEOUT {
+        if now.duration_since(last_activity) >= cli_idle_timeout {
             return Err(Error::ExecutionFailed(format!(
                 "Launch timed out: no output received for {}s. Log file: {}",
-                IDLE_TIMEOUT.as_secs(),
+                cli_idle_timeout.as_secs(),
                 goal_response.log_path.display()
             )));
         }
