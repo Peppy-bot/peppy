@@ -43,6 +43,28 @@ pub fn disable_build_cmd(peppy_json5: &Path) {
     });
 }
 
+/// Overrides the node `build_cmd` to the given command, used by timeout tests that need a
+/// long/quiet/loud build subprocess.
+pub fn override_build_cmd(peppy_json5: &Path, cmd: Vec<String>) {
+    modify_node_config(peppy_json5, |cfg| {
+        cfg.execution.build_cmd = Some(cmd);
+    });
+}
+
+/// Overrides the node `run_cmd` to a long, silent binary (`sleep 30`) and clears `build_cmd`.
+/// Used by the run-idle timeout test: the process never produces output and never registers
+/// itself with the messaging layer, so it never becomes "ready". Direct-binary form is used
+/// so the cancellation SIGKILL (sent via `abort_started → kill_child` when the run-phase
+/// idle timeout trips the cancel token) targets `sleep` directly — `sh -c "sleep N"` would
+/// orphan the grandchild `sleep` and keep the daemon's stdio pipes open for the full sleep
+/// duration.
+pub fn override_run_cmd_silent(peppy_json5: &Path) {
+    modify_node_config(peppy_json5, |cfg| {
+        cfg.execution.run_cmd = Some(vec!["sleep".to_string(), "30".to_string()]);
+        cfg.execution.build_cmd = None;
+    });
+}
+
 #[derive(Clone, Default)]
 pub struct LogCapture {
     buffer: Arc<parking_lot::Mutex<Vec<u8>>>,

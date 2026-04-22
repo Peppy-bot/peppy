@@ -10,7 +10,7 @@ use clap::Subcommand;
 use tracing::info;
 
 use super::Command;
-use super::node::{DEFAULT_IDLE_TIMEOUT_SECS, DEFAULT_MAX_TIMEOUT_SECS};
+use super::node::DEFAULT_IDLE_TIMEOUT_SECS;
 use crate::{context::AppContext, error::Error as CommandError};
 
 #[derive(Subcommand)]
@@ -19,15 +19,18 @@ pub enum StackCommands {
     Launch {
         /// Path to the peppy launcher configuration file
         launcher_config_path: PathBuf,
-        /// Idle timeout in seconds for each node add operation (resets on output)
+        /// Idle timeout in seconds for the node add phase (resets on git/http progress or sub-process output)
         #[arg(long, default_value_t = DEFAULT_IDLE_TIMEOUT_SECS)]
         node_add_idle_timeout_secs: u64,
-        /// Idle timeout in seconds for each node run operation (resets on output)
+        /// Idle timeout in seconds for the node build phase (resets on build_cmd output)
+        #[arg(long, default_value_t = DEFAULT_IDLE_TIMEOUT_SECS)]
+        node_build_idle_timeout_secs: u64,
+        /// Idle timeout in seconds for the node run-startup phase (resets on subprocess output until the node signals ready)
         #[arg(long, default_value_t = DEFAULT_IDLE_TIMEOUT_SECS)]
         node_run_idle_timeout_secs: u64,
-        /// Absolute max timeout in seconds per operation (safety net)
-        #[arg(long, default_value_t = DEFAULT_MAX_TIMEOUT_SECS)]
-        max_timeout_secs: u64,
+        /// Optional absolute max timeout in seconds for the entire launch. If unset, only idle timeouts apply.
+        #[arg(long)]
+        max_timeout_secs: Option<u64>,
     },
     /// List the nodes in the current node stack
     List {
@@ -47,6 +50,7 @@ impl Command for StackCommand {
             StackCommands::Launch {
                 launcher_config_path,
                 node_add_idle_timeout_secs,
+                node_build_idle_timeout_secs,
                 node_run_idle_timeout_secs,
                 max_timeout_secs,
             } => {
@@ -55,6 +59,7 @@ impl Command for StackCommand {
                     ctx,
                     launcher_config_path,
                     node_add_idle_timeout_secs,
+                    node_build_idle_timeout_secs,
                     node_run_idle_timeout_secs,
                     max_timeout_secs,
                 )

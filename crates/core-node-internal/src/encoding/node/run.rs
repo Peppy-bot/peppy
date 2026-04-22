@@ -46,6 +46,18 @@ impl NodeRunGoal {
         self
     }
 
+    /// Builds a goal for in-process execution that bypasses the action-loop
+    /// gate (see `services::stack::launch::start_node_directly`). The
+    /// `timeout_secs` field feeds the gate's busy-reporting and is unread on
+    /// this path, so it is zero by construction.
+    pub fn for_internal_execution(
+        runtime_config_json5: impl Into<String>,
+        node_name: impl Into<String>,
+        tag: impl Into<String>,
+    ) -> Self {
+        Self::new(runtime_config_json5, node_name, tag, 0)
+    }
+
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {

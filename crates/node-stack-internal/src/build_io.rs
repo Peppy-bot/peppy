@@ -133,14 +133,38 @@ pub fn push_stderr_line(buffer: &Arc<StdMutex<VecDeque<String>>>, line: &str) {
     guard.push_back(line.to_string());
 }
 
+pub use process_wrap::tokio::ChildWrapper;
+use process_wrap::tokio::{CommandWrap, ProcessGroup};
+
+/// Spawns `cmd` as a process-group leader so [`stream_child_output`]'s
+/// `KillGuard` can signal the entire subprocess tree on cancellation.
+///
+/// A single-pid kill would only reach the immediate child; descendants — e.g.
+/// `sleep` inside a `sh -c "..."` wrapper, or `cargo` under a `make` target —
+/// would be orphaned and keep the daemon's stdio pipes open until they exit
+/// naturally, stalling cancellation. Making the child its own process-group
+/// leader (PGID == its PID) lets `start_kill()` signal the whole group.
+pub fn spawn_in_process_group(
+    cmd: tokio::process::Command,
+) -> std::io::Result<Box<dyn ChildWrapper>> {
+    let mut wrap = CommandWrap::from(cmd);
+    wrap.wrap(ProcessGroup::leader());
+    wrap.spawn()
+}
+
 /// Streams stdout/stderr from a spawned child process to both the feedback
 /// publisher and the log file. Optionally collects the last [`STDERR_TAIL_LINES`]
 /// lines of stderr for error diagnostics.
 ///
 /// Returns the process exit status and (if `collect_stderr_tail` is true) the
 /// collected stderr tail lines.
+///
+/// **Cancellation contract:** the child must have been spawned via
+/// [`spawn_in_process_group`] so that if this future is dropped before the
+/// child exits, the internal `KillGuard` can SIGKILL the entire subprocess
+/// tree.
 pub async fn stream_child_output(
-    mut child: tokio::process::Child,
+    mut child: Box<dyn ChildWrapper>,
     feedback_tx: &mpsc::UnboundedSender<FeedbackLine>,
     log_file: Arc<StdMutex<File>>,
     collect_stderr_tail: bool,
@@ -161,7 +185,7 @@ pub async fn stream_child_output(
     // build path has no quiescence tracking and no publish gate.
     let publish_enabled = Arc::new(AtomicBool::new(true));
     let hooks: Arc<dyn OutputReaderHooks> = Arc::new(NoOpHooks);
-    if let Some(stdout) = child.stdout.take() {
+    if let Some(stdout) = child.stdout().take() {
         reader_handles.push(spawn_output_reader_async(
             stdout,
             feedback_tx.clone(),
@@ -173,7 +197,7 @@ pub async fn stream_child_output(
         ));
     }
 
-    if let Some(stderr) = child.stderr.take() {
+    if let Some(stderr) = child.stderr().take() {
         reader_handles.push(spawn_output_reader_async(
             stderr,
             feedback_tx.clone(),
@@ -186,11 +210,11 @@ pub async fn stream_child_output(
     }
 
     // Cancellation safety: if this future is dropped before `child.wait()`
-    // returns (e.g. the task is cancelled), kill the child synchronously
-    // from the Drop impl so the OS process does not orphan. tokio::process
-    // does not enable kill_on_drop by default.
+    // returns, `KillGuard::drop` calls `start_kill`, which targets the whole
+    // process group (see `spawn_in_process_group`) so `sh -c "..."` wrappers
+    // and their descendants all die together.
     struct KillGuard<'a> {
-        child: &'a mut tokio::process::Child,
+        child: &'a mut dyn ChildWrapper,
         completed: bool,
     }
     impl Drop for KillGuard<'_> {
@@ -201,7 +225,7 @@ pub async fn stream_child_output(
         }
     }
     let mut guard = KillGuard {
-        child: &mut child,
+        child: child.as_mut(),
         completed: false,
     };
     let status = guard
