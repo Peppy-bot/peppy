@@ -10,18 +10,34 @@ use core_node::encoding::{
 use peppylib::{ActionMessenger, PeppyError};
 use tracing::info;
 
-use crate::commands::node::{DEFAULT_IDLE_TIMEOUT_SECS, caller_env_overrides};
+use crate::commands::node::caller_env_overrides;
 use crate::commands::{CALLER_INSTANCE_ID, GOAL_TIMEOUT, SCROLLING_OUTPUT_LINES};
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 use crate::terminal::ScrollingOutput;
 
-// Idle timeout for the overall launch result (resets on feedback from daemon)
-const IDLE_TIMEOUT: Duration = Duration::from_secs(DEFAULT_IDLE_TIMEOUT_SECS);
-// Absolute max timeout for the entire launch operation (2x per-operation max to allow for multi-node sequential processing)
-const MAX_TIMEOUT: Duration = Duration::from_secs(7200);
+// Minimum CLI fallback ceiling when the user opts into `--max-timeout-secs`. Ensures the CLI's
+// safety net never fires before the daemon's own per-phase timeout, so users see a precise
+// daemon-side error rather than a generic CLI fallback. When the user omits the flag, no CLI
+// ceiling is installed — the contract is idle-only (daemon-side `max_timeout_secs = None`).
+const CLI_MAX_TIMEOUT_FLOOR: Duration = Duration::from_secs(7200);
+// Headroom granted to the daemon to surface its own timeout error before the CLI's fallback
+// ceiling fires. Keeps the error the user sees specific ("build idle timeout exceeded...") rather
+// than a generic CLI-side "daemon hung" message.
+const DAEMON_RESPONSE_GRACE: Duration = Duration::from_secs(60);
 const FEEDBACK_DRAIN_TIMEOUT: Duration = Duration::from_millis(50);
 const RESULT_POLL_TIMEOUT: Duration = Duration::from_millis(200);
+
+// CLI wall-clock fallback ceiling. `None` means idle-only (daemon-side contract honored).
+// When the user opts into `--max-timeout-secs`, add DAEMON_RESPONSE_GRACE and enforce
+// CLI_MAX_TIMEOUT_FLOOR so the daemon's per-phase error fires first.
+fn compute_cli_max_timeout(max_timeout_secs: Option<u64>) -> Option<Duration> {
+    max_timeout_secs.map(|n| {
+        Duration::from_secs(n)
+            .saturating_add(DAEMON_RESPONSE_GRACE)
+            .max(CLI_MAX_TIMEOUT_FLOOR)
+    })
+}
 
 fn display_node_log_files(
     add_logs: &[NodeAddLogEntry],
@@ -90,7 +106,7 @@ fn handle_feedback(
             output.clear();
             *scrolling_output = None;
         }
-        *current_scrolling_step = Some(feedback.step.clone());
+        *current_scrolling_step = Some(feedback.step);
     }
 
     match &feedback.step {
@@ -115,13 +131,15 @@ pub fn launch(
     ctx: &Arc<AppContext>,
     launcher_config_path: PathBuf,
     node_add_idle_timeout_secs: u64,
+    node_build_idle_timeout_secs: u64,
     node_run_idle_timeout_secs: u64,
-    max_timeout_secs: u64,
+    max_timeout_secs: Option<u64>,
 ) -> Result<()> {
     crate::commands::block_on(launch_async(
         ctx,
         launcher_config_path,
         node_add_idle_timeout_secs,
+        node_build_idle_timeout_secs,
         node_run_idle_timeout_secs,
         max_timeout_secs,
     ))
@@ -131,8 +149,9 @@ async fn launch_async(
     ctx: &Arc<AppContext>,
     launcher_config_path: PathBuf,
     node_add_idle_timeout_secs: u64,
+    node_build_idle_timeout_secs: u64,
     node_run_idle_timeout_secs: u64,
-    max_timeout_secs: u64,
+    max_timeout_secs: Option<u64>,
 ) -> Result<()> {
     // Canonicalize the path so the core node can find the file regardless of its working directory
     let launcher_config_path = launcher_config_path.canonicalize().map_err(|e| {
@@ -156,10 +175,26 @@ async fn launch_async(
     let goal = LaunchGoal::new(
         &launcher_config_path,
         node_add_idle_timeout_secs,
+        node_build_idle_timeout_secs,
         node_run_idle_timeout_secs,
         max_timeout_secs,
     )
     .with_env_vars(caller_env_overrides());
+
+    // CLI fallback ceiling: when the user opts into a max we grant the daemon a response-grace
+    // window to surface its own error first, but never less than the absolute floor in case the
+    // daemon hangs entirely. `None` honors the daemon's idle-only contract — no CLI ceiling.
+    let cli_max_timeout: Option<Duration> = compute_cli_max_timeout(max_timeout_secs);
+
+    // CLI-side liveness watchdog: trips if no feedback arrives from any phase. Must cover the
+    // longest per-phase idle budget (only one phase runs at a time) plus a grace window so the
+    // daemon's phase-specific timeout always fires first and surfaces a precise error.
+    let cli_idle_timeout = Duration::from_secs(
+        node_add_idle_timeout_secs
+            .max(node_build_idle_timeout_secs)
+            .max(node_run_idle_timeout_secs),
+    )
+    .saturating_add(DAEMON_RESPONSE_GRACE);
 
     let mut action_handle = goal
         .send_goal(
@@ -191,7 +226,8 @@ async fn launch_async(
         goal_response.log_path.display()
     );
 
-    let absolute_deadline = tokio::time::Instant::now() + MAX_TIMEOUT;
+    let absolute_deadline: Option<tokio::time::Instant> =
+        cli_max_timeout.and_then(|d| tokio::time::Instant::now().checked_add(d));
     let mut last_activity = tokio::time::Instant::now();
     let mut scrolling_output: Option<ScrollingOutput> = None;
     let mut current_scrolling_step: Option<LaunchFeedbackStep> = None;
@@ -200,7 +236,9 @@ async fn launch_async(
         // Drain feedback so the subscriber channel doesn't fill up and block publication.
         loop {
             let now = tokio::time::Instant::now();
-            if now >= absolute_deadline {
+            if let Some(deadline) = absolute_deadline
+                && now >= deadline
+            {
                 if let Some(output) = scrolling_output.as_mut() {
                     output.clear();
                 }
@@ -209,13 +247,13 @@ async fn launch_async(
                     goal_response.log_path.display()
                 )));
             }
-            if now.duration_since(last_activity) >= IDLE_TIMEOUT {
+            if now.duration_since(last_activity) >= cli_idle_timeout {
                 if let Some(output) = scrolling_output.as_mut() {
                     output.clear();
                 }
                 return Err(Error::ExecutionFailed(format!(
                     "Launch timed out: no output received for {}s. Log file: {}",
-                    IDLE_TIMEOUT.as_secs(),
+                    cli_idle_timeout.as_secs(),
                     goal_response.log_path.display()
                 )));
             }
@@ -240,16 +278,18 @@ async fn launch_async(
         }
 
         let now = tokio::time::Instant::now();
-        if now >= absolute_deadline {
+        if let Some(deadline) = absolute_deadline
+            && now >= deadline
+        {
             return Err(Error::ExecutionFailed(format!(
                 "Launch timed out: max timeout exceeded. Log file: {}",
                 goal_response.log_path.display()
             )));
         }
-        if now.duration_since(last_activity) >= IDLE_TIMEOUT {
+        if now.duration_since(last_activity) >= cli_idle_timeout {
             return Err(Error::ExecutionFailed(format!(
                 "Launch timed out: no output received for {}s. Log file: {}",
-                IDLE_TIMEOUT.as_secs(),
+                cli_idle_timeout.as_secs(),
                 goal_response.log_path.display()
             )));
         }
@@ -321,5 +361,34 @@ async fn launch_async(
         }
 
         tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn none_preserves_idle_only_contract() {
+        assert_eq!(compute_cli_max_timeout(None), None);
+    }
+
+    #[test]
+    fn small_value_hits_the_floor() {
+        let got = compute_cli_max_timeout(Some(60)).expect("some");
+        assert_eq!(got, CLI_MAX_TIMEOUT_FLOOR);
+    }
+
+    #[test]
+    fn large_value_dominates_the_floor() {
+        let n = CLI_MAX_TIMEOUT_FLOOR.as_secs() * 2;
+        let got = compute_cli_max_timeout(Some(n)).expect("some");
+        assert_eq!(got, Duration::from_secs(n) + DAEMON_RESPONSE_GRACE);
+    }
+
+    #[test]
+    fn saturating_add_does_not_panic_at_u64_max() {
+        let got = compute_cli_max_timeout(Some(u64::MAX)).expect("some");
+        assert_eq!(got, Duration::MAX);
     }
 }

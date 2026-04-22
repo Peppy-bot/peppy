@@ -11,7 +11,7 @@ use tokio::sync::mpsc;
 use tracing::debug;
 use zstd::stream::write::Encoder as ZstdEncoder;
 
-use crate::build_io::{FeedbackLine, FeedbackStream, stream_child_output};
+use crate::build_io::{FeedbackLine, FeedbackStream, spawn_in_process_group, stream_child_output};
 
 /// Per-process counter used to make build-staging tmp filenames unique so
 /// concurrent builds for the same node:tag cannot clobber each other.
@@ -195,8 +195,7 @@ pub(super) async fn build_container_image(
     cmd.stderr(Stdio::piped());
     cmd.stdin(Stdio::null());
 
-    let child = cmd
-        .spawn()
+    let child = spawn_in_process_group(cmd)
         .map_err(|e| format!("Failed to spawn apptainer build: {}", e))?;
 
     let (status, stderr_tail) =
@@ -324,8 +323,7 @@ pub(super) async fn run_build_cmd(
     for (key, value) in env_vars {
         command.env(key, value);
     }
-    let child = command
-        .spawn()
+    let child = spawn_in_process_group(command)
         .map_err(|e| format!("failed to execute build_cmd `{}`: {}", full_cmd_display, e))?;
 
     let (status, _) = stream_child_output(child, feedback_tx, log_file, false).await?;

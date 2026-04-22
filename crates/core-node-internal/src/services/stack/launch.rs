@@ -26,9 +26,43 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::{Mutex, Notify, mpsc};
 use tokio::task::JoinHandle;
+use tokio::time::Instant;
+use tokio_util::sync::CancellationToken;
 use tracing::debug;
+
+/// Upper bound on how long a run-phase future may spend in its cancellation
+/// cleanup (SIGKILL the child + unregister the `Starting` instance + clear
+/// temp files). Keeps a misbehaving cleanup from stalling the launch failure.
+const RUN_PHASE_CANCEL_CLEANUP_BUDGET: Duration = Duration::from_secs(30);
+
+/// Watches for an idle period: returns when no `notify_one()` arrives for `idle_timeout`.
+/// Each call to `notify_one()` on `notify` resets the clock.
+async fn watch_idle(notify: Arc<Notify>, idle_timeout: Duration) {
+    loop {
+        match tokio::time::timeout(idle_timeout, notify.notified()).await {
+            Ok(()) => continue,
+            Err(_) => return,
+        }
+    }
+}
+
+/// Outcome of a per-phase operation wrapped with idle + (optional) launch-deadline enforcement.
+enum PhaseOutcome<T> {
+    Completed(T),
+    IdleTimeout,
+    MaxTimeout,
+}
+
+/// Per-phase idle timeouts, sourced from the `LaunchGoal` payload. Each phase's clock resets
+/// only on genuine subprocess/git/http activity (see `spawn_feedback_forwarder`).
+#[derive(Clone, Copy)]
+struct IdleTimeouts {
+    add: Duration,
+    build: Duration,
+    run: Duration,
+}
 
 #[derive(Clone, Copy)]
 pub struct StackLaunchTimeouts {
@@ -112,7 +146,10 @@ struct ProcessLaunchContext {
     log_path: PathBuf,
     env_vars: Vec<(String, String)>,
     timeouts: StackLaunchTimeouts,
-    max_timeout_secs: u64,
+    /// Whole-launch deadline. `None` means the user did not opt into a max — only idle timeouts
+    /// are enforced.
+    launch_deadline: Option<Instant>,
+    idle_timeouts: IdleTimeouts,
 }
 
 #[derive(Clone)]
@@ -284,6 +321,13 @@ async fn publish_stderr(
 /// Spawns a feedback forwarding task that reads `FeedbackLine` values from the
 /// channel and publishes them as `LaunchFeedback` to the launch feedback topic.
 ///
+/// Each line received also pings `activity_notify` (if provided), which the per-phase idle
+/// watcher uses to reset its idle clock. The notify is the single seam where real subprocess /
+/// git2 / http-downloader output (which all flow through this mpsc) gets observed; launcher
+/// orchestration messages (`publish_stdout` / `publish_stderr`) bypass this channel and so do
+/// NOT reset the idle clock — which is the right behavior, since they're operator narration,
+/// not subprocess liveness.
+///
 /// Returns the sender end (to pass into the process context) and a join handle
 /// for the consumer task. Drop the sender to signal completion, then await the
 /// handle to drain remaining messages.
@@ -291,17 +335,22 @@ fn spawn_feedback_forwarder(
     feedback_publisher: &TopicPublisher,
     step: LaunchFeedbackStep,
     log_file: &Arc<StdMutex<File>>,
+    activity_notify: Option<Arc<Notify>>,
 ) -> (mpsc::UnboundedSender<FeedbackLine>, JoinHandle<()>) {
     let (feedback_tx, mut feedback_rx) = mpsc::unbounded_channel::<FeedbackLine>();
     let publisher = feedback_publisher.clone();
     let log_file = Arc::clone(log_file);
     let handle = tokio::spawn(async move {
         while let Some(line) = feedback_rx.recv().await {
+            if let Some(notify) = &activity_notify {
+                notify.notify_one();
+            }
+
             node_stack::build_io::write_feedback_log_line(&log_file, line.stream, &line.line);
 
             let launch_feedback = match line.stream {
-                FeedbackStream::Stdout => LaunchFeedback::stdout(&line.line, step.clone()),
-                FeedbackStream::Stderr => LaunchFeedback::stderr(&line.line, step.clone()),
+                FeedbackStream::Stdout => LaunchFeedback::stdout(&line.line, step),
+                FeedbackStream::Stderr => LaunchFeedback::stderr(&line.line, step),
                 // Warnings bypass the per-node scrolling step and surface as
                 // persistent LauncherStep stderr lines so the operator sees
                 // them even after the step buffer scrolls past.
@@ -315,6 +364,177 @@ fn spawn_feedback_forwarder(
         }
     });
     (feedback_tx, handle)
+}
+
+/// Wraps a phase future with idle-timeout enforcement and an optional whole-launch deadline.
+///
+/// The idle watcher always runs (idle protection is always on); the deadline only wraps when
+/// `launch_deadline` is `Some`. Returns:
+/// - `Completed(T)` if the phase finished within both bounds
+/// - `IdleTimeout` if `idle_timeout` elapsed without subprocess activity
+/// - `MaxTimeout` if the launch deadline fired
+///
+/// Cancellation semantics differ per phase:
+/// - **add** relies on git2's progress callback returning the cancellation status when the
+///   future is dropped, and on the http downloader's drop-safe streaming reader.
+/// - **build** relies on `stream_child_output`'s `KillGuard` (in
+///   `node-stack-internal/src/build_io.rs`), which SIGKILLs the child process group on drop.
+/// - **run** cannot rely on drop alone: `prepare_and_spawn` returns a raw
+///   `tokio::process::Child` held on the phase future's stack with no `kill_on_drop`, so
+///   dropping it leaves the OS process and its `Starting` stack entry behind. Callers that
+///   need run-phase cancellation pass `cancel_and_drain = Some(token)`; on timeout the
+///   runner signals the token and awaits the phase future's cooperative cleanup (bounded by
+///   `RUN_PHASE_CANCEL_CLEANUP_BUDGET`) instead of dropping it.
+async fn run_phase_with_timeouts<F, T>(
+    phase: F,
+    activity_notify: Arc<Notify>,
+    idle_timeout: Duration,
+    launch_deadline: Option<Instant>,
+    cancel_and_drain: Option<CancellationToken>,
+) -> PhaseOutcome<T>
+where
+    F: std::future::Future<Output = T>,
+{
+    match cancel_and_drain {
+        None => {
+            run_phase_drop_on_timeout(phase, activity_notify, idle_timeout, launch_deadline).await
+        }
+        Some(token) => {
+            run_phase_cancel_on_timeout(
+                phase,
+                activity_notify,
+                idle_timeout,
+                launch_deadline,
+                token,
+            )
+            .await
+        }
+    }
+}
+
+/// Timeout behavior for phases whose futures are cancellation-safe via `Drop`
+/// (currently: add, build).
+async fn run_phase_drop_on_timeout<F, T>(
+    phase: F,
+    activity_notify: Arc<Notify>,
+    idle_timeout: Duration,
+    launch_deadline: Option<Instant>,
+) -> PhaseOutcome<T>
+where
+    F: std::future::Future<Output = T>,
+{
+    let inner = async {
+        tokio::select! {
+            biased;
+            _ = watch_idle(activity_notify, idle_timeout) => None,
+            result = phase => Some(result),
+        }
+    };
+
+    match launch_deadline {
+        Some(deadline) => match tokio::time::timeout_at(deadline, inner).await {
+            Ok(Some(value)) => PhaseOutcome::Completed(value),
+            Ok(None) => PhaseOutcome::IdleTimeout,
+            Err(_) => PhaseOutcome::MaxTimeout,
+        },
+        None => match inner.await {
+            Some(value) => PhaseOutcome::Completed(value),
+            None => PhaseOutcome::IdleTimeout,
+        },
+    }
+}
+
+/// Timeout behavior for phases that own resources (e.g. a spawned child
+/// process) not reaped by `Drop`. On timeout, signals `cancel_token` and
+/// awaits the phase future for up to `RUN_PHASE_CANCEL_CLEANUP_BUDGET` so it
+/// can run its own teardown (SIGKILL the child, unregister the `Starting`
+/// instance, remove temp files) before we return the timeout outcome.
+async fn run_phase_cancel_on_timeout<F, T>(
+    phase: F,
+    activity_notify: Arc<Notify>,
+    idle_timeout: Duration,
+    launch_deadline: Option<Instant>,
+    cancel_token: CancellationToken,
+) -> PhaseOutcome<T>
+where
+    F: std::future::Future<Output = T>,
+{
+    tokio::pin!(phase);
+
+    // `sleep_until(past-instant)` resolves immediately, so we model "no
+    // deadline" as a far-future sleep and let idle/phase race win.
+    let deadline_sleep = async {
+        match launch_deadline {
+            Some(deadline) => tokio::time::sleep_until(deadline).await,
+            None => std::future::pending::<()>().await,
+        }
+    };
+    tokio::pin!(deadline_sleep);
+
+    let timeout_kind = tokio::select! {
+        biased;
+        result = &mut phase => return PhaseOutcome::Completed(result),
+        _ = watch_idle(activity_notify, idle_timeout) => PhaseOutcome::IdleTimeout,
+        _ = &mut deadline_sleep => PhaseOutcome::MaxTimeout,
+    };
+
+    // Timeout fired. Ask the phase to tear itself down, then drive it to
+    // completion so its cleanup (kill child, remove `Starting` entry, delete
+    // instance dir) actually runs. If cleanup stalls past the budget we drop
+    // the future as a last resort — still strictly better than today, since
+    // the run phase would have been dropped immediately in that branch.
+    cancel_token.cancel();
+    let _ = tokio::time::timeout(RUN_PHASE_CANCEL_CLEANUP_BUDGET, phase.as_mut()).await;
+
+    timeout_kind
+}
+
+/// Runs a phase future under idle + (optional) deadline bounds and, on timeout, writes the
+/// reason to `log_file` and builds a caller-specified failure result. `build_failure`
+/// receives the same string that was logged so phase-specific failure types (differing in
+/// whether they carry a `log_path`) can embed it verbatim.
+///
+/// `cancel_and_drain` controls what happens to the phase future on timeout — see
+/// [`run_phase_with_timeouts`] for the per-phase rationale.
+#[allow(clippy::too_many_arguments)] // All args serve distinct, unrelated roles; grouping them adds noise.
+async fn run_phase<F, T>(
+    phase: F,
+    activity_notify: Arc<Notify>,
+    idle_timeout: Duration,
+    launch_deadline: Option<Instant>,
+    log_file: &Arc<StdMutex<File>>,
+    step: LaunchFeedbackStep,
+    build_failure: impl FnOnce(String) -> T,
+    cancel_and_drain: Option<CancellationToken>,
+) -> T
+where
+    F: std::future::Future<Output = T>,
+{
+    match run_phase_with_timeouts(
+        phase,
+        activity_notify,
+        idle_timeout,
+        launch_deadline,
+        cancel_and_drain,
+    )
+    .await
+    {
+        PhaseOutcome::Completed(result) => result,
+        PhaseOutcome::IdleTimeout => {
+            let reason = format!(
+                "timeout: {} idle timeout exceeded ({}s without output)",
+                step.phase_label(),
+                idle_timeout.as_secs()
+            );
+            write_error_to_log(log_file, &reason);
+            build_failure(reason)
+        }
+        PhaseOutcome::MaxTimeout => {
+            let reason = "timeout: max launch timeout exceeded".to_string();
+            write_error_to_log(log_file, &reason);
+            build_failure(reason)
+        }
+    }
 }
 
 async fn add_node_directly(
@@ -331,10 +551,12 @@ async fn add_node_directly(
         Err(e) => return (Err(e), None),
     };
 
+    let activity_notify = Arc::new(Notify::new());
     let (feedback_tx, forwarder_handle) = spawn_feedback_forwarder(
         &ctx.feedback_publisher,
         LaunchFeedbackStep::AddingNode,
         &ctx.log_file,
+        Some(Arc::clone(&activity_notify)),
     );
 
     let action_context = NodeAddActionContext {
@@ -347,10 +569,8 @@ async fn add_node_directly(
 
     let log_file_for_timeout = log_file.clone();
     let log_path_for_timeout = log_path.clone();
-    let max_timeout = Duration::from_secs(ctx.max_timeout_secs);
 
-    let result = match tokio::time::timeout(
-        max_timeout,
+    let result = run_phase(
         run_node_add(
             node_add_goal,
             action_context,
@@ -359,15 +579,15 @@ async fn add_node_directly(
             log_path,
             timestamp,
         ),
+        activity_notify,
+        ctx.idle_timeouts.add,
+        ctx.launch_deadline,
+        &log_file_for_timeout,
+        LaunchFeedbackStep::AddingNode,
+        |reason| NodeAddResult::failure(&log_path_for_timeout, reason),
+        None,
     )
-    .await
-    {
-        Ok(result) => result,
-        Err(_) => {
-            write_error_to_log(&log_file_for_timeout, "max timeout exceeded");
-            NodeAddResult::failure(&log_path_for_timeout, "timeout: max timeout exceeded")
-        }
-    };
+    .await;
 
     // Wait for feedback forwarder to drain.
     let _ = forwarder_handle.await;
@@ -400,10 +620,12 @@ async fn build_node_directly(
 
     let final_log_path = log_path.clone();
 
+    let activity_notify = Arc::new(Notify::new());
     let (feedback_tx, forwarder_handle) = spawn_feedback_forwarder(
         &ctx.feedback_publisher,
         LaunchFeedbackStep::BuildingNode,
         &ctx.log_file,
+        Some(Arc::clone(&activity_notify)),
     );
 
     let action_context = NodeBuildActionContext {
@@ -411,12 +633,10 @@ async fn build_node_directly(
         peppy_dirs: ctx.peppy_dirs.clone(),
     };
 
-    let max_timeout = Duration::from_secs(ctx.max_timeout_secs);
     let log_file_for_timeout = log_file.clone();
     let log_path_for_timeout = log_path.clone();
 
-    let result = match tokio::time::timeout(
-        max_timeout,
+    let result = run_phase(
         run_node_build_for_entity(
             node_name.clone(),
             node_tag.clone(),
@@ -426,18 +646,15 @@ async fn build_node_directly(
             log_file,
             log_path,
         ),
+        activity_notify,
+        ctx.idle_timeouts.build,
+        ctx.launch_deadline,
+        &log_file_for_timeout,
+        LaunchFeedbackStep::BuildingNode,
+        |reason| crate::encoding::NodeBuildResult::failure(&log_path_for_timeout, reason),
+        None,
     )
-    .await
-    {
-        Ok(result) => result,
-        Err(_) => {
-            write_error_to_log(&log_file_for_timeout, "max timeout exceeded");
-            crate::encoding::NodeBuildResult::failure(
-                &log_path_for_timeout,
-                "timeout: max timeout exceeded",
-            )
-        }
-    };
+    .await;
 
     let _ = forwarder_handle.await;
 
@@ -460,10 +677,12 @@ async fn start_node_directly(
     log_path: PathBuf,
     log_file: Arc<StdMutex<File>>,
 ) -> (std::result::Result<NodeRunResult, String>, Option<PathBuf>) {
+    let activity_notify = Arc::new(Notify::new());
     let (feedback_tx, _forwarder_handle) = spawn_feedback_forwarder(
         &ctx.feedback_publisher,
         LaunchFeedbackStep::RunningNode,
         &ctx.log_file,
+        Some(Arc::clone(&activity_notify)),
     );
 
     let action_context = NodeRunActionContext {
@@ -480,10 +699,13 @@ async fn start_node_directly(
     };
 
     let log_file_for_timeout = log_file.clone();
-    let max_timeout = Duration::from_secs(ctx.max_timeout_secs);
 
-    let result = match tokio::time::timeout(
-        max_timeout,
+    // Token triggered by `run_phase_with_timeouts` on idle/max timeout; observed
+    // inside `run_node_run` to abort a half-spawned node instance (SIGKILL the
+    // child + unregister its `Starting` entry) before we return the failure.
+    let run_cancel_token = CancellationToken::new();
+
+    let result = run_phase(
         run_node_run(
             node_run_goal,
             runtime_config,
@@ -491,16 +713,17 @@ async fn start_node_directly(
             feedback_tx,
             log_file,
             ctx.core_instance_id.clone(),
+            run_cancel_token.clone(),
         ),
+        activity_notify,
+        ctx.idle_timeouts.run,
+        ctx.launch_deadline,
+        &log_file_for_timeout,
+        LaunchFeedbackStep::RunningNode,
+        NodeRunResult::failure,
+        Some(run_cancel_token),
     )
-    .await
-    {
-        Ok(result) => result,
-        Err(_) => {
-            write_error_to_log(&log_file_for_timeout, "max timeout exceeded");
-            NodeRunResult::failure("timeout: max timeout exceeded")
-        }
-    };
+    .await;
 
     // Don't await _forwarder_handle — the node process is still running and
     // output readers keep the internal channel alive.
@@ -928,36 +1151,9 @@ async fn add_nodes_to_stack(
         )
         .await;
 
-        // Pass max_timeout_secs to the goal for daemon-side busy reporting
-        let goal_timeout_secs = ctx.max_timeout_secs;
-        let node_add_goal = match &item.source {
-            NodeSource::Fs(path) => {
-                NodeAddGoal::new(path.clone(), STACK_LAUNCH_GIT_HASH, goal_timeout_secs)
-            }
-            NodeSource::Git {
-                repo_url,
-                repo_path,
-                repo_ref,
-            } => NodeAddGoal::new_git(
-                repo_url.clone(),
-                repo_path.clone(),
-                repo_ref.clone(),
-                STACK_LAUNCH_GIT_HASH,
-                goal_timeout_secs,
-            ),
-            NodeSource::Http { url, sha256 } => NodeAddGoal::new_http(
-                url.clone(),
-                sha256.clone(),
-                STACK_LAUNCH_GIT_HASH,
-                goal_timeout_secs,
-            ),
-            NodeSource::RepoNode { .. } => NodeAddGoal::from_source(
-                item.source.clone(),
-                STACK_LAUNCH_GIT_HASH,
-                goal_timeout_secs,
-            ),
-        }
-        .with_env_vars(ctx.env_vars.clone());
+        let node_add_goal =
+            NodeAddGoal::for_internal_execution(item.source.clone(), STACK_LAUNCH_GIT_HASH)
+                .with_env_vars(ctx.env_vars.clone());
 
         let node_add_goal = match item.variant {
             Some(ref variant) => node_add_goal.with_variant_source(variant.clone()),
@@ -1078,12 +1274,10 @@ async fn start_node_instances(
                 }
             };
 
-            // Pass max_timeout_secs to the goal for daemon-side busy reporting
-            let node_run_goal = NodeRunGoal::new(
+            let node_run_goal = NodeRunGoal::for_internal_execution(
                 &runtime_config_json5,
                 item.node_name.as_str(),
                 item.node_tag.as_str(),
-                ctx.max_timeout_secs,
             )
             .with_env_vars(ctx.env_vars.clone());
 
@@ -1164,7 +1358,7 @@ async fn handle_goal_request(
         }
     }
 
-    // Decode the goal before marking as Running so we can use max_timeout_secs
+    // Decode the goal before marking as Running so we can capture the user-supplied timeouts
     let goal = match LaunchGoal::decode(payload.as_ref()) {
         Ok(g) => g,
         Err(e) => {
@@ -1180,12 +1374,13 @@ async fn handle_goal_request(
         }
     };
 
-    // Now mark as Running with the actual timeout from the goal
+    // Now mark as Running. `timeout_secs` is gate-reporting only; 0 indicates "no enforced
+    // budget" (when --max-timeout-secs is unset).
     {
         let mut state_guard = state.lock().await;
         *state_guard = ActionState::Running {
             started_at: std::time::Instant::now(),
-            timeout_secs: goal.max_timeout_secs,
+            timeout_secs: goal.max_timeout_secs.unwrap_or(0),
         };
     }
 
@@ -1242,7 +1437,10 @@ async fn handle_goal_request(
             timeouts,
         } = action_context;
         let env_vars = goal.env_vars.clone();
-        let max_timeout_secs = goal.max_timeout_secs;
+        // Compute the launch deadline once. `None` => no overall deadline (idle-only).
+        let launch_deadline = goal
+            .max_timeout_secs
+            .map(|n| Instant::now() + Duration::from_secs(n));
         let ctx = ProcessLaunchContext {
             messenger,
             bound_core_node,
@@ -1254,7 +1452,12 @@ async fn handle_goal_request(
             log_path: log_path_clone.clone(),
             env_vars,
             timeouts,
-            max_timeout_secs,
+            launch_deadline,
+            idle_timeouts: IdleTimeouts {
+                add: Duration::from_secs(goal.node_add_idle_timeout_secs),
+                build: Duration::from_secs(goal.node_build_idle_timeout_secs),
+                run: Duration::from_secs(goal.node_run_idle_timeout_secs),
+            },
         };
         let result = process_launch(goal, ctx).await;
         let mut state_guard = state_clone.lock().await;
@@ -1360,4 +1563,120 @@ async fn process_launch(goal: LaunchGoal, ctx: ProcessLaunchContext) -> LaunchRe
         build_log_paths,
         run_log_paths,
     )
+}
+
+/// Regression tests for the run-phase cancel-and-drain contract.
+///
+/// The invariant under test: when a run-phase timeout fires,
+/// `run_phase_cancel_on_timeout` must signal the cancel token *and* drive the
+/// phase future to completion so its cleanup runs — not drop it. Using
+/// `tokio::time::pause()` + manual advancement so these tests are
+/// deterministic (no wall-clock dependency, no risk of CI flake).
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    /// Builds a phase future that signals `cleanup_ran` iff it observes the
+    /// cancel token — simulating `run_node_run`'s `abort_started` branch.
+    /// If instead the outer runner drops this future, the flag stays false
+    /// and the test fails, matching the real-world orphan bug.
+    async fn cancellable_phase(
+        cancel: CancellationToken,
+        cleanup_ran: Arc<AtomicBool>,
+    ) -> &'static str {
+        tokio::select! {
+            _ = cancel.cancelled() => {
+                cleanup_ran.store(true, Ordering::SeqCst);
+                "cleaned_up"
+            }
+            _ = std::future::pending::<()>() => unreachable!("phase should never complete on its own in these tests"),
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cancel_on_timeout_awaits_cleanup_on_idle_timeout() {
+        let notify = Arc::new(Notify::new());
+        let token = CancellationToken::new();
+        let cleanup_ran = Arc::new(AtomicBool::new(false));
+
+        let outcome = run_phase_cancel_on_timeout(
+            cancellable_phase(token.clone(), Arc::clone(&cleanup_ran)),
+            Arc::clone(&notify),
+            Duration::from_millis(100),
+            None,
+            token,
+        )
+        .await;
+
+        assert!(
+            matches!(outcome, PhaseOutcome::IdleTimeout),
+            "idle timeout branch expected",
+        );
+        assert!(
+            cleanup_ran.load(Ordering::SeqCst),
+            "phase future must be awaited after cancel so cleanup runs; \
+             dropping it would leave this flag false (the orphan-process bug)",
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cancel_on_timeout_awaits_cleanup_on_max_deadline() {
+        let notify = Arc::new(Notify::new());
+        let token = CancellationToken::new();
+        let cleanup_ran = Arc::new(AtomicBool::new(false));
+
+        let deadline = Instant::now() + Duration::from_millis(50);
+        let outcome = run_phase_cancel_on_timeout(
+            cancellable_phase(token.clone(), Arc::clone(&cleanup_ran)),
+            Arc::clone(&notify),
+            // Idle much larger than max so only the deadline branch can fire.
+            Duration::from_secs(600),
+            Some(deadline),
+            token,
+        )
+        .await;
+
+        assert!(
+            matches!(outcome, PhaseOutcome::MaxTimeout),
+            "max timeout branch expected",
+        );
+        assert!(
+            cleanup_ran.load(Ordering::SeqCst),
+            "phase future must be awaited after max-deadline cancel so cleanup runs",
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cancel_on_timeout_returns_value_when_phase_completes_first() {
+        let notify = Arc::new(Notify::new());
+        let token = CancellationToken::new();
+        let cleanup_ran = Arc::new(AtomicBool::new(false));
+        let cleanup_ran_for_phase = Arc::clone(&cleanup_ran);
+
+        // Phase completes immediately with a value — no timeout should fire.
+        let phase = async move {
+            // Reset-like ping proves we keep the happy-path contract (no cancel signal).
+            let _ = cleanup_ran_for_phase;
+            "ok"
+        };
+
+        let outcome = run_phase_cancel_on_timeout(
+            phase,
+            Arc::clone(&notify),
+            Duration::from_millis(100),
+            Some(Instant::now() + Duration::from_millis(100)),
+            token.clone(),
+        )
+        .await;
+
+        match outcome {
+            PhaseOutcome::Completed(v) => assert_eq!(v, "ok"),
+            _ => panic!("phase should complete before any timeout fires"),
+        }
+        assert!(
+            !token.is_cancelled(),
+            "happy path must not cancel the token",
+        );
+    }
 }

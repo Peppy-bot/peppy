@@ -27,6 +27,7 @@ use std::time::{Duration, Instant};
 use tokio::process::Child;
 use tokio::sync::{Mutex, Notify, mpsc};
 use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
 const STARTUP_OUTPUT_MAX_WAIT: Duration = Duration::from_millis(100);
@@ -329,6 +330,14 @@ impl node_stack::OutputReaderHooks for FeedbackSync {
 ///
 /// This is the shared implementation used by both the action-server path
 /// ([`handle_goal_request`]) and the direct-call path from `stack_launch`.
+///
+/// `cancel_token` lets an outer orchestrator (currently `stack_launch`'s
+/// idle/max-timeout watchdog) request an in-flight abort. When cancelled after
+/// the child process has been spawned but before the `Starting → Started`
+/// commit, the pipeline explicitly calls `abort_started` to SIGKILL the child
+/// and tear down its `Starting` entry; if cancelled before the spawn, it
+/// returns without starting anything. Callers that don't need cancellation
+/// pass `CancellationToken::new()` and never trigger it.
 pub(crate) async fn run_node_run(
     goal: NodeRunGoal,
     runtime_config: RuntimeConfig,
@@ -336,6 +345,7 @@ pub(crate) async fn run_node_run(
     feedback_tx: mpsc::UnboundedSender<FeedbackLine>,
     log_file: Arc<StdMutex<File>>,
     sender_instance_id: String,
+    cancel_token: CancellationToken,
 ) -> NodeRunResult {
     let log_file_for_panic = log_file.clone();
 
@@ -345,9 +355,14 @@ pub(crate) async fn run_node_run(
         log_file,
         sender_instance_id,
     };
-    match AssertUnwindSafe(process_node_run(goal, runtime_config, process_context))
-        .catch_unwind()
-        .await
+    match AssertUnwindSafe(process_node_run(
+        goal,
+        runtime_config,
+        process_context,
+        cancel_token,
+    ))
+    .catch_unwind()
+    .await
     {
         Ok(result) => result,
         Err(panic_payload) => {
@@ -437,6 +452,8 @@ async fn handle_goal_request(
                 NodeRunFeedback::from_stream(line.stream, &line.line).encode()
             });
 
+        // Action-server path has no outer cancellation source; the internal
+        // per-step timeouts inside `run_node_run` remain the only way out.
         let result = run_node_run(
             goal,
             runtime_config,
@@ -444,6 +461,7 @@ async fn handle_goal_request(
             feedback_tx,
             log_file,
             sender_instance_id,
+            CancellationToken::new(),
         )
         .await;
 
@@ -468,6 +486,7 @@ async fn process_node_run(
     goal: NodeRunGoal,
     runtime_config: RuntimeConfig,
     ctx: ProcessNodeRunContext,
+    cancel_token: CancellationToken,
 ) -> NodeRunResult {
     let sender_instance_id = ctx.sender_instance_id.as_str();
     let NodeRunGoal {
@@ -636,6 +655,16 @@ async fn process_node_run(
             hooks: Arc::new(feedback_sync.clone()),
         },
     };
+    // Reject early if an outer orchestrator already cancelled us — avoids
+    // spawning a child process we're only going to tear down on the next line.
+    if cancel_token.is_cancelled() {
+        let msg = "cancelled before node process spawn".to_string();
+        write_error_to_log(&ctx.log_file, &msg);
+        feedback_sync.flush_or_warn(instance_id_str).await;
+        publish_enabled.store(false, Ordering::Release);
+        return NodeRunResult::failure(msg);
+    }
+
     let (mut child, started_ctx) =
         match node_stack::NodeEntity::prepare_and_spawn(&entity_handle, start_ctx).await {
             Ok(t) => t,
@@ -663,19 +692,31 @@ async fn process_node_run(
         ctx.action.node_startup_timeout.as_secs()
     );
 
-    let ready_result =
-        wait_for_ready_signal(&signal_target, ctx.action.node_startup_timeout, &mut child).await;
+    // Race the ready-signal wait against external cancellation. If the outer
+    // idle/max-timeout watchdog cancels while the node is quietly starting,
+    // we must SIGKILL the child and unregister the `Starting` instance —
+    // otherwise the OS process outlives the launch failure.
+    let ready_outcome = tokio::select! {
+        biased;
+        _ = cancel_token.cancelled() => StartupOutcome::Cancelled,
+        res = wait_for_ready_signal(&signal_target, ctx.action.node_startup_timeout, &mut child) => {
+            match res {
+                Ok(()) => StartupOutcome::Ok,
+                Err(e) => StartupOutcome::Failed(e),
+            }
+        }
+    };
 
-    if let Err(e) = ready_result {
+    if let Some(reason) = startup_abort_reason(&ready_outcome) {
         debug!(
-            "Ready signal failed for node instance '{}': {}, killing process",
-            instance_id_str, e
+            "Aborting node instance '{}' during ready wait: {}",
+            instance_id_str, reason
         );
         let msg = node_stack::NodeEntity::abort_started(
             &entity_handle,
             child,
             started_ctx,
-            e,
+            reason.to_string(),
             &instance_id,
         )
         .await;
@@ -689,19 +730,44 @@ async fn process_node_run(
         instance_id_str
     );
 
-    let health_result = perform_health_check(
-        &signal_target,
-        ctx.action.node_start_health_timeout,
-        &mut child,
-    )
-    .await;
+    let health_outcome = tokio::select! {
+        biased;
+        _ = cancel_token.cancelled() => StartupOutcome::Cancelled,
+        res = perform_health_check(&signal_target, ctx.action.node_start_health_timeout, &mut child) => {
+            match res {
+                Ok(()) => StartupOutcome::Ok,
+                Err(e) => StartupOutcome::Failed(e),
+            }
+        }
+    };
 
-    match health_result {
-        Ok(()) => {
+    match health_outcome {
+        StartupOutcome::Ok => {
             debug!(
                 "Health check passed for node instance '{}'",
                 instance_id_str
             );
+            // Last chance to bail out cleanly — once `commit_started` succeeds
+            // the child is owned by the stack and a late cancel would have to
+            // go through the normal stop path instead of abort_started.
+            if cancel_token.is_cancelled() {
+                let reason = "cancelled before commit".to_string();
+                debug!(
+                    "Aborting node instance '{}' after health check: {}",
+                    instance_id_str, reason
+                );
+                let msg = node_stack::NodeEntity::abort_started(
+                    &entity_handle,
+                    child,
+                    started_ctx,
+                    reason,
+                    &instance_id,
+                )
+                .await;
+                feedback_sync.flush_or_warn(instance_id_str).await;
+                publish_enabled.store(false, Ordering::Release);
+                return NodeRunResult::failure(msg);
+            }
             let pid = child.id().unwrap_or(0);
             let commit_result = node_stack::NodeEntity::commit_started(
                 &entity_handle,
@@ -752,16 +818,21 @@ async fn process_node_run(
                 }
             }
         }
-        Err(e) => {
+        StartupOutcome::Cancelled | StartupOutcome::Failed(_) => {
+            let reason = match health_outcome {
+                StartupOutcome::Cancelled => "cancelled during health check".to_string(),
+                StartupOutcome::Failed(e) => e,
+                StartupOutcome::Ok => unreachable!(),
+            };
             debug!(
-                "Health check failed for node instance '{}': {}, killing process",
-                instance_id_str, e
+                "Aborting node instance '{}' during health check: {}",
+                instance_id_str, reason
             );
             let msg = node_stack::NodeEntity::abort_started(
                 &entity_handle,
                 child,
                 started_ctx,
-                e,
+                reason,
                 &instance_id,
             )
             .await;
@@ -769,6 +840,22 @@ async fn process_node_run(
             publish_enabled.store(false, Ordering::Release);
             NodeRunResult::failure(msg)
         }
+    }
+}
+
+/// Outcome of a startup step (ready-signal wait or health check) racing
+/// against external cancellation.
+enum StartupOutcome {
+    Ok,
+    Cancelled,
+    Failed(String),
+}
+
+fn startup_abort_reason(outcome: &StartupOutcome) -> Option<&str> {
+    match outcome {
+        StartupOutcome::Ok => None,
+        StartupOutcome::Cancelled => Some("cancelled during ready-signal wait"),
+        StartupOutcome::Failed(msg) => Some(msg.as_str()),
     }
 }
 

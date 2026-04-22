@@ -15,10 +15,9 @@ use crate::names;
 
 use crate::encoding::{decode_message, encode_message, optional_text};
 
-/// Default idle timeout in seconds for operations (used as fallback when 0 is received on the wire).
+/// Default idle timeout in seconds for the add/build/run phases (used as fallback when 0 is
+/// received on the wire — Cap'n Proto defaults unset `UInt64` to 0).
 const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 600;
-/// Default max timeout in seconds for operations (used as fallback when 0 is received on the wire).
-const DEFAULT_MAX_TIMEOUT_SECS: u64 = 3600;
 
 /// Applies a default value when a timeout field is 0 (Cap'n Proto defaults unset UInt64 to 0).
 fn with_timeout_default(value: u64, default: u64) -> u64 {
@@ -31,21 +30,26 @@ pub struct LaunchGoal {
     pub peppy_launch_file_path: PathBuf,
     pub env_vars: Vec<(String, String)>,
     pub node_add_idle_timeout_secs: u64,
+    pub node_build_idle_timeout_secs: u64,
     pub node_run_idle_timeout_secs: u64,
-    pub max_timeout_secs: u64,
+    /// Whole-launch deadline. `None` means no overall deadline is enforced (only idle timeouts
+    /// apply). Wire encoding uses 0 as the sentinel for `None`.
+    pub max_timeout_secs: Option<u64>,
 }
 
 impl LaunchGoal {
     pub fn new(
         peppy_launch_file_path: impl Into<PathBuf>,
         node_add_idle_timeout_secs: u64,
+        node_build_idle_timeout_secs: u64,
         node_run_idle_timeout_secs: u64,
-        max_timeout_secs: u64,
+        max_timeout_secs: Option<u64>,
     ) -> Self {
         Self {
             peppy_launch_file_path: peppy_launch_file_path.into(),
             env_vars: Vec::new(),
             node_add_idle_timeout_secs,
+            node_build_idle_timeout_secs,
             node_run_idle_timeout_secs,
             max_timeout_secs,
         }
@@ -72,8 +76,12 @@ impl LaunchGoal {
             goal.reborrow()
                 .set_node_add_idle_timeout_secs(self.node_add_idle_timeout_secs);
             goal.reborrow()
+                .set_node_build_idle_timeout_secs(self.node_build_idle_timeout_secs);
+            goal.reborrow()
                 .set_node_run_idle_timeout_secs(self.node_run_idle_timeout_secs);
-            goal.reborrow().set_max_timeout_secs(self.max_timeout_secs);
+            // 0 on the wire means "unset" (no overall deadline).
+            goal.reborrow()
+                .set_max_timeout_secs(self.max_timeout_secs.unwrap_or(0));
         }
         encode_message(&builder)
     }
@@ -92,6 +100,7 @@ impl LaunchGoal {
             ));
         }
 
+        let raw_max = goal.get_max_timeout_secs();
         Ok(Self {
             peppy_launch_file_path: PathBuf::from(goal.get_peppy_launch_file_path()?.to_str()?),
             env_vars,
@@ -99,14 +108,15 @@ impl LaunchGoal {
                 goal.get_node_add_idle_timeout_secs(),
                 DEFAULT_IDLE_TIMEOUT_SECS,
             ),
+            node_build_idle_timeout_secs: with_timeout_default(
+                goal.get_node_build_idle_timeout_secs(),
+                DEFAULT_IDLE_TIMEOUT_SECS,
+            ),
             node_run_idle_timeout_secs: with_timeout_default(
                 goal.get_node_run_idle_timeout_secs(),
                 DEFAULT_IDLE_TIMEOUT_SECS,
             ),
-            max_timeout_secs: with_timeout_default(
-                goal.get_max_timeout_secs(),
-                DEFAULT_MAX_TIMEOUT_SECS,
-            ),
+            max_timeout_secs: if raw_max == 0 { None } else { Some(raw_max) },
         })
     }
 
@@ -187,12 +197,25 @@ impl LaunchGoalResponse {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LaunchFeedbackStep {
     LauncherStep,
     AddingNode,
     RunningNode,
     BuildingNode,
+}
+
+impl LaunchFeedbackStep {
+    /// Short user-facing label for the phase this step represents. Used by timeout error
+    /// messages so the surfaced string stays aligned with the feedback stream.
+    pub fn phase_label(self) -> &'static str {
+        match self {
+            Self::LauncherStep => "launch",
+            Self::AddingNode => "add",
+            Self::BuildingNode => "build",
+            Self::RunningNode => "run",
+        }
+    }
 }
 /// Feedback message for the Launch action.
 /// Represents a single line of output from the launch process.
