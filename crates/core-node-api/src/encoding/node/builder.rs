@@ -23,20 +23,20 @@ impl FeedbackStream {
             FeedbackStream::Warning => "warning",
         }
     }
-}
 
-impl std::str::FromStr for FeedbackStream {
-    type Err = crate::Error;
+    pub(crate) fn to_capnp(self) -> node_capnp::FeedbackStream {
+        match self {
+            FeedbackStream::Stdout => node_capnp::FeedbackStream::Stdout,
+            FeedbackStream::Stderr => node_capnp::FeedbackStream::Stderr,
+            FeedbackStream::Warning => node_capnp::FeedbackStream::Warning,
+        }
+    }
 
-    fn from_str(s: &str) -> Result<Self> {
-        match s {
-            "stdout" => Ok(Self::Stdout),
-            "stderr" => Ok(Self::Stderr),
-            "warning" => Ok(Self::Warning),
-            other => Err(crate::Error::Decoding(format!(
-                "unknown FeedbackStream: {}",
-                other
-            ))),
+    pub(crate) fn from_capnp(value: node_capnp::FeedbackStream) -> Self {
+        match value {
+            node_capnp::FeedbackStream::Stdout => FeedbackStream::Stdout,
+            node_capnp::FeedbackStream::Stderr => FeedbackStream::Stderr,
+            node_capnp::FeedbackStream::Warning => FeedbackStream::Warning,
         }
     }
 }
@@ -212,7 +212,7 @@ impl NodeBuildFeedback {
         let mut builder = Builder::new_default();
         {
             let mut feedback = builder.init_root::<node_capnp::node_build_feedback::Builder>();
-            feedback.set_stream(self.stream.as_str());
+            feedback.set_stream(self.stream.to_capnp());
             feedback.set_line(&self.line);
         }
         encode_message(&builder)
@@ -222,7 +222,7 @@ impl NodeBuildFeedback {
         let reader = decode_message(data)?;
         let feedback = reader.get_root::<node_capnp::node_build_feedback::Reader>()?;
         Ok(Self {
-            stream: feedback.get_stream()?.to_str()?.parse()?,
+            stream: FeedbackStream::from_capnp(feedback.get_stream()?),
             line: feedback.get_line()?.to_str()?.to_owned(),
         })
     }

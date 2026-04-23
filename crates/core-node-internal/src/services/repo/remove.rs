@@ -111,8 +111,9 @@ fn handle_repo_remove_request_inner(
 
     repos.remove(pos);
 
-    let content = serde_json::to_string_pretty(&repos)
-        .map_err(|e| crate::Error::Encoding(format!("failed to serialize repositories: {e}")))?;
+    let content = serde_json::to_string_pretty(&repos).map_err(|e| {
+        core_node_api::Error::Encoding(format!("failed to serialize repositories: {e}"))
+    })?;
     std::fs::write(&repos_path, content)?;
 
     drop(_guard);

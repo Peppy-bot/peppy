@@ -2,6 +2,14 @@
 
 # Node message structures for core-node services
 
+# Feedback stream tag carried by NodeAdd/NodeBuild/NodeRun feedback messages.
+enum FeedbackStream {
+    stdout @0;
+    stderr @1;
+    # Out-of-band warning emitted by the daemon itself.
+    warning @2;
+}
+
 # Node List service
 struct NodeListRequest {
     # If true, include DOT graph representation in the response
@@ -106,8 +114,7 @@ struct NodeAddGoalResponse {
 }
 
 struct NodeAddFeedback {
-    # Type of output: "stdout" or "stderr"
-    stream @0 :Text;
+    stream @0 :FeedbackStream;
     # The line of output
     line @1 :Text;
 }
@@ -141,7 +148,7 @@ struct NodeBuildGoalResponse {
 }
 
 struct NodeBuildFeedback {
-    stream @0 :Text;
+    stream @0 :FeedbackStream;
     line @1 :Text;
 }
 
@@ -218,8 +225,7 @@ struct NodeRunGoalResponse {
 }
 
 struct NodeRunFeedback {
-    # Type of output: "stdout" or "stderr"
-    stream @0 :Text;
+    stream @0 :FeedbackStream;
     # The line of output
     line @1 :Text;
 }

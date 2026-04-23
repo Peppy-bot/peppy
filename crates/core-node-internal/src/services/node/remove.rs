@@ -209,13 +209,12 @@ async fn handle_node_remove_request_inner(
             .first()
             .or_else(|| unreachable_targets.first())
             .expect("one of the lists is non-empty");
-        return NodeRemoveResponse::failure(format!(
+        return Ok(NodeRemoveResponse::failure(format!(
             "Node '{}' has running instances (e.g. '{}'); set stop_instances=true to stop them before removing",
             request.node_name,
             example.instance_id.as_str(),
         ))
-        .encode()
-        .map_err(Into::into);
+        .encode()?);
     }
 
     // With `stop_instances=true`, we proceed despite unreachable instances —
@@ -310,5 +309,5 @@ async fn handle_node_remove_request_inner(
         }
     }
 
-    NodeRemoveResponse::success().encode().map_err(Into::into)
+    Ok(NodeRemoveResponse::success().encode()?)
 }

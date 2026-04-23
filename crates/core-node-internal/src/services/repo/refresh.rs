@@ -231,12 +231,12 @@ pub(crate) fn read_or_create_repos(peppy_dirs: &PeppyDirs) -> Result<Vec<Value>>
     let mut repos: Vec<Value> = if repos_path.exists() {
         let content = std::fs::read_to_string(&repos_path)?;
         serde_json5::from_str(&content).map_err(|e| {
-            crate::Error::Decoding(format!("failed to parse repositories.json5: {e}"))
+            core_node_api::Error::Decoding(format!("failed to parse repositories.json5: {e}"))
         })?
     } else {
         std::fs::write(&repos_path, DEFAULT_REPOS_TEMPLATE)?;
         serde_json5::from_str(DEFAULT_REPOS_TEMPLATE).map_err(|e| {
-            crate::Error::Decoding(format!("failed to parse default repositories: {e}"))
+            core_node_api::Error::Decoding(format!("failed to parse default repositories: {e}"))
         })?
     };
 

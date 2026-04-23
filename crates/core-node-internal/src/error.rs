@@ -21,31 +21,15 @@ pub enum Error {
     #[error("task join failed: {0}")]
     Join(#[from] tokio::task::JoinError),
 
-    #[error("invalid UTF-8 in message: {0}")]
-    Utf8(#[from] std::str::Utf8Error),
-
-    #[error("decoding error: {0}")]
-    Decoding(String),
-
-    #[error("encoding error: {0}")]
-    Encoding(String),
-
     #[error("forbidden environment variable '{0}' is not allowed")]
     ForbiddenEnvVar(String),
 
     #[error("invalid environment variable: {0}")]
     InvalidEnvVar(String),
 
-    #[error("RepoNode is not a valid variant source")]
-    RepoNodeNotValidVariantSource,
-
     // -- generator-internal
     #[error(transparent)]
     GeneratorError(#[from] generator::GeneratorError),
-
-    // -- config parsing
-    #[error(transparent)]
-    ParsingError(#[from] config::ParsingError),
 
     // -- templates
     #[error("template rendering error: {0}")]

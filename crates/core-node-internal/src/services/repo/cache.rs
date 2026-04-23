@@ -86,7 +86,7 @@ pub fn load_with_generation(
 
     let content = std::fs::read_to_string(&path)?;
     let raw: Vec<PackageEntry> = serde_json5::from_str(&content).map_err(|e| {
-        crate::Error::Decoding(format!(
+        core_node_api::Error::Decoding(format!(
             "failed to parse packages cache at {}: {e}",
             path.display()
         ))
@@ -137,7 +137,7 @@ pub(crate) fn write_cache(peppy_dirs: &PeppyDirs, nodes: &[PackageEntry]) -> Res
     let cache_dir = peppy_dirs.cache_dir();
     std::fs::create_dir_all(&cache_dir)?;
     let content = serde_json::to_string_pretty(nodes)
-        .map_err(|e| crate::Error::Encoding(format!("failed to serialize cache: {e}")))?;
+        .map_err(|e| core_node_api::Error::Encoding(format!("failed to serialize cache: {e}")))?;
     let final_path = cache_dir.join("packages.json5");
     let tmp_path = cache_dir.join("packages.json5.tmp");
     std::fs::write(&tmp_path, content)?;

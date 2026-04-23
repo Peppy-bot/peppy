@@ -140,8 +140,9 @@ pub(crate) fn normalize_repo_entries(
     }
 
     if needs_write {
-        let content = serde_json::to_string_pretty(repos)
-            .map_err(|e| crate::Error::Encoding(format!("failed to serialize {desc}: {e}")))?;
+        let content = serde_json::to_string_pretty(repos).map_err(|e| {
+            core_node_api::Error::Encoding(format!("failed to serialize {desc}: {e}"))
+        })?;
         std::fs::write(file_path, content)?;
     }
 

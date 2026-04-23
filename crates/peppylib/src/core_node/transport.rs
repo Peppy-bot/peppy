@@ -20,7 +20,7 @@ pub async fn poll_info(
     bound_core_node: &str,
     as_instance_id: &str,
     target_core_node: &str,
-    response_timeout: Duration,
+    response_timeout: impl Into<Option<Duration>> + Send,
 ) -> Result<InfoResponse> {
     let request_payload = request.encode()?;
     let response = ServiceMessenger::poll(
@@ -44,7 +44,7 @@ pub async fn poll_stack_list(
     bound_core_node: &str,
     as_instance_id: &str,
     target_core_node: &str,
-    response_timeout: Duration,
+    response_timeout: impl Into<Option<Duration>> + Send,
 ) -> Result<StackListResponse> {
     let request_payload = request.encode()?;
     let response = ServiceMessenger::poll(
@@ -68,7 +68,7 @@ pub async fn poll_node_reset(
     bound_core_node: &str,
     as_instance_id: &str,
     target_core_node: &str,
-    response_timeout: Duration,
+    response_timeout: impl Into<Option<Duration>> + Send,
 ) -> Result<NodeResetResponse> {
     let request_payload = request.encode()?;
     let response = ServiceMessenger::poll(
@@ -142,7 +142,7 @@ pub async fn poll_node_remove(
     bound_core_node: &str,
     as_instance_id: &str,
     target_core_node: &str,
-    response_timeout: Duration,
+    response_timeout: impl Into<Option<Duration>> + Send,
 ) -> Result<NodeRemoveResponse> {
     let request_payload = request.encode()?;
     let response = ServiceMessenger::poll(
@@ -167,7 +167,7 @@ pub async fn poll_node_stop(
     as_instance_id: &str,
     target_node_name: &str,
     target_core_node: &str,
-    response_timeout: Duration,
+    response_timeout: impl Into<Option<Duration>> + Send,
 ) -> Result<NodeStopResponse> {
     let request_payload = request.encode()?;
     let response = ServiceMessenger::poll(
@@ -191,7 +191,7 @@ pub async fn poll_node_sync(
     bound_core_node: &str,
     as_instance_id: &str,
     target_core_node: &str,
-    response_timeout: Duration,
+    response_timeout: impl Into<Option<Duration>> + Send,
 ) -> Result<NodeSyncResponse> {
     let request_payload = request.encode()?;
     let response = ServiceMessenger::poll(
@@ -215,7 +215,7 @@ pub async fn poll_node_info(
     bound_core_node: &str,
     as_instance_id: &str,
     target_core_node: &str,
-    response_timeout: Duration,
+    response_timeout: impl Into<Option<Duration>> + Send,
 ) -> Result<NodeInfoResponse> {
     let request_payload = request.encode()?;
     let response = ServiceMessenger::poll(
@@ -317,7 +317,7 @@ pub async fn poll_repo_list(
     bound_core_node: &str,
     as_instance_id: &str,
     target_core_node: &str,
-    response_timeout: Duration,
+    response_timeout: impl Into<Option<Duration>> + Send,
 ) -> Result<RepoListResponse> {
     let request_payload = request.encode()?;
     let response = ServiceMessenger::poll(
@@ -341,7 +341,7 @@ pub async fn poll_repo_add(
     bound_core_node: &str,
     as_instance_id: &str,
     target_core_node: &str,
-    response_timeout: Duration,
+    response_timeout: impl Into<Option<Duration>> + Send,
 ) -> Result<RepoAddResponse> {
     let request_payload = request.encode()?;
     let response = ServiceMessenger::poll(
@@ -365,7 +365,7 @@ pub async fn poll_repo_exclude(
     bound_core_node: &str,
     as_instance_id: &str,
     target_core_node: &str,
-    response_timeout: Duration,
+    response_timeout: impl Into<Option<Duration>> + Send,
 ) -> Result<RepoExcludeResponse> {
     let request_payload = request.encode()?;
     let response = ServiceMessenger::poll(
@@ -389,7 +389,7 @@ pub async fn poll_repo_remove(
     bound_core_node: &str,
     as_instance_id: &str,
     target_core_node: &str,
-    response_timeout: Duration,
+    response_timeout: impl Into<Option<Duration>> + Send,
 ) -> Result<RepoRemoveResponse> {
     let request_payload = request.encode()?;
     let response = ServiceMessenger::poll(

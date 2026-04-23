@@ -191,7 +191,7 @@ impl NodeRunFeedback {
         let mut builder = Builder::new_default();
         {
             let mut feedback = builder.init_root::<node_capnp::node_run_feedback::Builder>();
-            feedback.set_stream(self.stream.as_str());
+            feedback.set_stream(self.stream.to_capnp());
             feedback.set_line(&self.line);
         }
         encode_message(&builder)
@@ -201,7 +201,7 @@ impl NodeRunFeedback {
         let reader = decode_message(data)?;
         let feedback = reader.get_root::<node_capnp::node_run_feedback::Reader>()?;
         Ok(Self {
-            stream: feedback.get_stream()?.to_str()?.parse()?,
+            stream: FeedbackStream::from_capnp(feedback.get_stream()?),
             line: feedback.get_line()?.to_str()?.to_owned(),
         })
     }

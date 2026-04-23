@@ -588,7 +588,7 @@ async fn handle_node_sync_request_inner(
         }
     }
 
-    NodeSyncResponse::success().encode().map_err(Into::into)
+    Ok(NodeSyncResponse::success().encode()?)
 }
 
 /// Builds a lookup from `local_id` → `(dep_name, dep_tag)` using the node's `depends_on.nodes`.
