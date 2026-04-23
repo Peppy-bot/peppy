@@ -9,7 +9,7 @@ use crate::commands::repo::add::parse_repo_source;
 use crate::commands::repo::repo_source_label;
 use crate::context::AppContext;
 use crate::error::{Error, Result};
-use core_node::transport::RepoExcludeRequestPollExt;
+use core_node::transport::poll_repo_exclude;
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -35,16 +35,16 @@ async fn exclude_repo_async(
     let request = RepoExcludeRequest {
         source: repo_source,
     };
-    let response = request
-        .poll(
-            conn.messenger,
-            &conn.core_node_name,
-            CALLER_INSTANCE_ID,
-            &conn.core_node_name,
-            REQUEST_TIMEOUT,
-        )
-        .await
-        .map_err(|e| Error::ExecutionFailed(format!("Failed to exclude repository: {}", e)))?;
+    let response = poll_repo_exclude(
+        &request,
+        conn.messenger,
+        &conn.core_node_name,
+        CALLER_INSTANCE_ID,
+        &conn.core_node_name,
+        REQUEST_TIMEOUT,
+    )
+    .await
+    .map_err(|e| Error::ExecutionFailed(format!("Failed to exclude repository: {}", e)))?;
 
     if response.success {
         info!("Repository '{label}' excluded successfully");

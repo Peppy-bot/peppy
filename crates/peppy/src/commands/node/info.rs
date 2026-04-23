@@ -8,7 +8,7 @@ use crate::commands::CALLER_INSTANCE_ID;
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 
-use core_node::transport::NodeInfoRequestPollExt;
+use core_node::transport::poll_node_info;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub fn node_info(ctx: &Arc<AppContext>, node_name: String, node_tag: String) -> Result<()> {
@@ -18,16 +18,16 @@ pub fn node_info(ctx: &Arc<AppContext>, node_name: String, node_tag: String) -> 
 async fn node_info_async(ctx: &Arc<AppContext>, node_name: String, node_tag: String) -> Result<()> {
     let conn = ctx.connect_to_daemon().await?;
 
-    let response = NodeInfoRequest::new(node_name.clone(), node_tag.clone())
-        .poll(
-            conn.messenger,
-            &conn.core_node_name,
-            CALLER_INSTANCE_ID,
-            &conn.core_node_name,
-            REQUEST_TIMEOUT,
-        )
-        .await
-        .map_err(|e| Error::ExecutionFailed(format!("Failed to get node info: {}", e)))?;
+    let response = poll_node_info(
+        &NodeInfoRequest::new(node_name.clone(), node_tag.clone()),
+        conn.messenger,
+        &conn.core_node_name,
+        CALLER_INSTANCE_ID,
+        &conn.core_node_name,
+        REQUEST_TIMEOUT,
+    )
+    .await
+    .map_err(|e| Error::ExecutionFailed(format!("Failed to get node info: {}", e)))?;
 
     // "Not in stack" is now a first-class successful outcome of the lookup
     // rather than a daemon-side error. Surface it to the user as a clean

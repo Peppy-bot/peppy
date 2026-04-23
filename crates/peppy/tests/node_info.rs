@@ -8,7 +8,7 @@ use std::io::Write;
 use std::sync::Arc;
 use std::time::Duration;
 
-use core_node::transport::NodeInfoRequestPollExt;
+use core_node::transport::poll_node_info;
 const CALLER_INSTANCE_ID: &str = "peppy-test";
 const DEFAULTS: TimeoutConfig = TimeoutConfig {
     idle_secs: 60,
@@ -142,7 +142,8 @@ fn fetch_info(
         .expect("messenger handle should be available");
     let response = added
         .rt
-        .block_on(NodeInfoRequest::new(node_name, node_tag).poll(
+        .block_on(poll_node_info(
+            &NodeInfoRequest::new(node_name, node_tag),
             messenger_handle,
             &added.core_node_name,
             CALLER_INSTANCE_ID,
@@ -417,7 +418,8 @@ fn node_info_returns_not_in_stack_when_node_not_in_stack() {
     let _guard = tracing::subscriber::set_default(subscriber);
 
     let response = rt
-        .block_on(NodeInfoRequest::new("ghost_node", "9.9.9").poll(
+        .block_on(poll_node_info(
+            &NodeInfoRequest::new("ghost_node", "9.9.9"),
             &caller_handle,
             &core_node_name,
             CALLER_INSTANCE_ID,

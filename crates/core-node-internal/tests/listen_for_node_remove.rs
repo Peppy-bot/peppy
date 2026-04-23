@@ -5,7 +5,7 @@ use common::{
     spawn_real_running_instance, start_core_node_with_mock_messenger, write_peppy_json5,
 };
 use config::node::Name;
-use core_node::transport::NodeRemoveRequestPollExt;
+use core_node::transport::poll_node_remove;
 use core_node_api::encoding::NodeRemoveRequest;
 use peppylib::messaging::MessengerHandle;
 use peppylib::services::shutdown::listen_for_shutdown;
@@ -65,16 +65,16 @@ async fn listen_for_node_remove_success() {
         "node should have no instances"
     );
 
-    let response = NodeRemoveRequest::new(TARGET_NODE_NAME, TARGET_NODE_TAG)
-        .poll(
-            &started_core_node.caller_handle,
-            &started_core_node.core_node_name,
-            CALLER_INSTANCE_ID,
-            &started_core_node.core_node_name,
-            Duration::from_secs(5),
-        )
-        .await
-        .expect("node_remove request should complete");
+    let response = poll_node_remove(
+        &NodeRemoveRequest::new(TARGET_NODE_NAME, TARGET_NODE_TAG),
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        CALLER_INSTANCE_ID,
+        &started_core_node.core_node_name,
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("node_remove request should complete");
 
     assert!(
         response.success,
@@ -103,16 +103,16 @@ async fn listen_for_node_remove_node_name_not_found_fails() {
     let node_stack = started_core_node.node_stack.clone();
     let before_len = node_stack.len();
 
-    let response = NodeRemoveRequest::new(MISSING_NODE_NAME, MISSING_NODE_TAG)
-        .poll(
-            &started_core_node.caller_handle,
-            &started_core_node.core_node_name,
-            CALLER_INSTANCE_ID,
-            &started_core_node.core_node_name,
-            Duration::from_secs(5),
-        )
-        .await
-        .expect("node_remove request should complete");
+    let response = poll_node_remove(
+        &NodeRemoveRequest::new(MISSING_NODE_NAME, MISSING_NODE_TAG),
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        CALLER_INSTANCE_ID,
+        &started_core_node.core_node_name,
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("node_remove request should complete");
 
     assert!(!response.success, "node_remove should fail");
     let error_message = response
@@ -202,17 +202,16 @@ async fn listen_for_node_remove_stop_running_instances_first() {
     // Allow the shutdown service to fully establish its listener
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    let response = NodeRemoveRequest::new(TARGET_NODE_NAME, TARGET_NODE_TAG)
-        .with_stop_instances(true)
-        .poll(
-            &started_core_node.caller_handle,
-            &started_core_node.core_node_name,
-            CALLER_INSTANCE_ID,
-            &started_core_node.core_node_name,
-            Duration::from_secs(10),
-        )
-        .await
-        .expect("node_remove request should complete");
+    let response = poll_node_remove(
+        &NodeRemoveRequest::new(TARGET_NODE_NAME, TARGET_NODE_TAG).with_stop_instances(true),
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        CALLER_INSTANCE_ID,
+        &started_core_node.core_node_name,
+        Duration::from_secs(10),
+    )
+    .await
+    .expect("node_remove request should complete");
 
     assert!(
         response.success,
@@ -303,16 +302,16 @@ async fn listen_for_node_fails_when_stop_instances_parameter_not_set_and_instanc
 
     let before_len = node_stack.len();
 
-    let response = NodeRemoveRequest::new(TARGET_NODE_NAME, TARGET_NODE_TAG)
-        .poll(
-            &started_core_node.caller_handle,
-            &started_core_node.core_node_name,
-            CALLER_INSTANCE_ID,
-            &started_core_node.core_node_name,
-            Duration::from_secs(5),
-        )
-        .await
-        .expect("node_remove request should complete");
+    let response = poll_node_remove(
+        &NodeRemoveRequest::new(TARGET_NODE_NAME, TARGET_NODE_TAG),
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        CALLER_INSTANCE_ID,
+        &started_core_node.core_node_name,
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("node_remove request should complete");
 
     assert!(
         !response.success,

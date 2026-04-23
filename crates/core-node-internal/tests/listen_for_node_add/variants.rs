@@ -1,6 +1,6 @@
 use super::*;
 
-use core_node::transport::NodeSyncRequestPollExt;
+use core_node::transport::poll_node_sync;
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_add_variant_local_source() {
     const ROOT_NODE_NAME: &str = "robot_brain";
@@ -145,16 +145,16 @@ async fn listen_for_node_add_variant_local_source_after_sync() {
     std::fs::write(&variant_config_path, variant_config).expect("failed to write variant config");
 
     // Step 1: Run node sync — this generates peppygen + fingerprint for root and variant.
-    let sync_response = NodeSyncRequest::new(&root_dir, TEST_GIT_HASH, vec![])
-        .poll(
-            &started_core_node.caller_handle,
-            &started_core_node.core_node_name,
-            CALLER_INSTANCE_ID,
-            &started_core_node.core_node_name,
-            Duration::from_secs(10),
-        )
-        .await
-        .expect("node_sync request should complete");
+    let sync_response = poll_node_sync(
+        &NodeSyncRequest::new(&root_dir, TEST_GIT_HASH, vec![]),
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        CALLER_INSTANCE_ID,
+        &started_core_node.core_node_name,
+        Duration::from_secs(10),
+    )
+    .await
+    .expect("node_sync request should complete");
 
     assert!(
         sync_response.success,
@@ -277,16 +277,16 @@ async fn listen_for_node_add_variant_only_node_after_sync() {
 
     // Step 1: Run node sync — generates peppygen only for the variant (not root,
     // since root has no execution block).
-    let sync_response = NodeSyncRequest::new(&root_dir, TEST_GIT_HASH, vec![])
-        .poll(
-            &started_core_node.caller_handle,
-            &started_core_node.core_node_name,
-            CALLER_INSTANCE_ID,
-            &started_core_node.core_node_name,
-            Duration::from_secs(10),
-        )
-        .await
-        .expect("node_sync request should complete");
+    let sync_response = poll_node_sync(
+        &NodeSyncRequest::new(&root_dir, TEST_GIT_HASH, vec![]),
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        CALLER_INSTANCE_ID,
+        &started_core_node.core_node_name,
+        Duration::from_secs(10),
+    )
+    .await
+    .expect("node_sync request should complete");
 
     assert!(
         sync_response.success,
@@ -406,16 +406,16 @@ async fn listen_for_node_add_variant_fingerprint_mismatch_after_sync() {
         .expect("failed to write variant config");
 
     // Step 1: Sync — generates peppygen and fingerprint for both root and variant.
-    let sync_response = NodeSyncRequest::new(&root_dir, TEST_GIT_HASH, vec![])
-        .poll(
-            &started_core_node.caller_handle,
-            &started_core_node.core_node_name,
-            CALLER_INSTANCE_ID,
-            &started_core_node.core_node_name,
-            Duration::from_secs(10),
-        )
-        .await
-        .expect("node_sync request should complete");
+    let sync_response = poll_node_sync(
+        &NodeSyncRequest::new(&root_dir, TEST_GIT_HASH, vec![]),
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        CALLER_INSTANCE_ID,
+        &started_core_node.core_node_name,
+        Duration::from_secs(10),
+    )
+    .await
+    .expect("node_sync request should complete");
 
     assert!(
         sync_response.success,

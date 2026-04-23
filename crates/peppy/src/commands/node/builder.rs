@@ -10,7 +10,7 @@ use super::env::caller_env_overrides;
 use crate::commands::{CALLER_INSTANCE_ID, GOAL_TIMEOUT};
 use crate::context::AppContext;
 use crate::error::{Error, Result};
-use core_node::transport::NodeBuildGoalSendGoalExt;
+use core_node::transport::send_node_build;
 
 pub struct BuildNodeParams {
     pub node_name: String,
@@ -57,17 +57,17 @@ pub async fn build_node_async(
         goal = goal.with_force(true);
     }
 
-    let mut action_handle = goal
-        .send_goal(
-            messenger,
-            core_node_name,
-            CALLER_INSTANCE_ID,
-            Some(core_node_name),
-            None,
-            GOAL_TIMEOUT,
-        )
-        .await
-        .map_err(|e| Error::ExecutionFailed(format!("Failed to send node_build goal: {}", e)))?;
+    let mut action_handle = send_node_build(
+        &goal,
+        messenger,
+        core_node_name,
+        CALLER_INSTANCE_ID,
+        Some(core_node_name),
+        None,
+        GOAL_TIMEOUT,
+    )
+    .await
+    .map_err(|e| Error::ExecutionFailed(format!("Failed to send node_build goal: {}", e)))?;
 
     let build_result = crate::commands::action_poll::run_action_with_feedback::<
         NodeBuildGoalResponse,

@@ -7,7 +7,7 @@ use tracing::info;
 use crate::commands::CALLER_INSTANCE_ID;
 use crate::context::AppContext;
 use crate::error::{Error, Result};
-use core_node::transport::RepoRemoveRequestPollExt;
+use core_node::transport::poll_repo_remove;
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -21,16 +21,16 @@ async fn remove_repo_async(ctx: &Arc<AppContext>, id: u64) -> Result<()> {
     let conn = ctx.connect_to_daemon().await?;
 
     let request = RepoRemoveRequest::new(id);
-    let response = request
-        .poll(
-            conn.messenger,
-            &conn.core_node_name,
-            CALLER_INSTANCE_ID,
-            &conn.core_node_name,
-            REQUEST_TIMEOUT,
-        )
-        .await
-        .map_err(|e| Error::ExecutionFailed(format!("Failed to remove repository: {}", e)))?;
+    let response = poll_repo_remove(
+        &request,
+        conn.messenger,
+        &conn.core_node_name,
+        CALLER_INSTANCE_ID,
+        &conn.core_node_name,
+        REQUEST_TIMEOUT,
+    )
+    .await
+    .map_err(|e| Error::ExecutionFailed(format!("Failed to remove repository: {}", e)))?;
 
     if response.success {
         info!("Repository with id {id} removed successfully");

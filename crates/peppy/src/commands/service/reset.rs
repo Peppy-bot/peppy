@@ -7,7 +7,7 @@ use tracing::info;
 use crate::commands::{CALLER_INSTANCE_ID, Command};
 use crate::context::AppContext;
 use crate::error::{Error, Result};
-use core_node::transport::NodeResetRequestPollExt;
+use core_node::transport::poll_node_reset;
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -27,16 +27,16 @@ async fn reset_async(ctx: &Arc<AppContext>) -> Result<()> {
         conn.core_node_name
     );
 
-    let response = NodeResetRequest::new()
-        .poll(
-            conn.messenger,
-            &conn.core_node_name,
-            CALLER_INSTANCE_ID,
-            &conn.core_node_name,
-            REQUEST_TIMEOUT,
-        )
-        .await
-        .map_err(|e| Error::ExecutionFailed(format!("Failed to call node_reset service: {}", e)))?;
+    let response = poll_node_reset(
+        &NodeResetRequest::new(),
+        conn.messenger,
+        &conn.core_node_name,
+        CALLER_INSTANCE_ID,
+        &conn.core_node_name,
+        REQUEST_TIMEOUT,
+    )
+    .await
+    .map_err(|e| Error::ExecutionFailed(format!("Failed to call node_reset service: {}", e)))?;
 
     if !response.success {
         return Err(Error::ExecutionFailed(

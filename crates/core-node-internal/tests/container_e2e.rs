@@ -9,7 +9,7 @@ mod container_e2e_tests {
     };
     use config::node::Name as NodeName;
     use config::node::Toolchain;
-    use core_node::transport::NodeInitRequestPollExt;
+    use core_node::transport::poll_node_init;
     use core_node_api::encoding::NodeInitRequest;
     use std::time::Duration;
     use tempfile::tempdir;
@@ -57,14 +57,14 @@ mod container_e2e_tests {
         // Step 1: Init the node with container support
         let nodes_root = tempdir().expect("failed to create temp nodes root directory");
 
-        let init_response = NodeInitRequest::new(
-            nodes_root.path(),
-            NODE_NAME,
-            "test-hash",
-            true,
-            Toolchain::Cargo,
-        )
-        .poll(
+        let init_response = poll_node_init(
+            &NodeInitRequest::new(
+                nodes_root.path(),
+                NODE_NAME,
+                "test-hash",
+                true,
+                Toolchain::Cargo,
+            ),
             &started.caller_handle,
             &started.core_node_name,
             CALLER_INSTANCE_ID,
@@ -226,14 +226,14 @@ mod container_e2e_tests {
         // Step 1: Init the node with container support
         let nodes_root = tempdir().expect("failed to create temp nodes root directory");
 
-        let init_response = NodeInitRequest::new(
-            nodes_root.path(),
-            NODE_NAME,
-            "test-hash",
-            true,
-            Toolchain::Uv,
-        )
-        .poll(
+        let init_response = poll_node_init(
+            &NodeInitRequest::new(
+                nodes_root.path(),
+                NODE_NAME,
+                "test-hash",
+                true,
+                Toolchain::Uv,
+            ),
             &started.caller_handle,
             &started.core_node_name,
             CALLER_INSTANCE_ID,

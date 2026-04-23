@@ -7,7 +7,7 @@ use core_node_api::encoding::{RepoListNodeEntry, RepoListRequest};
 use crate::commands::CALLER_INSTANCE_ID;
 use crate::context::AppContext;
 use crate::error::{Error, Result};
-use core_node::transport::RepoListRequestPollExt;
+use core_node::transport::poll_repo_list;
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -18,16 +18,16 @@ pub(super) fn list_repos(ctx: &Arc<AppContext>) -> Result<()> {
 async fn list_repos_async(ctx: &Arc<AppContext>) -> Result<()> {
     let conn = ctx.connect_to_daemon().await?;
 
-    let response = RepoListRequest
-        .poll(
-            conn.messenger,
-            &conn.core_node_name,
-            CALLER_INSTANCE_ID,
-            &conn.core_node_name,
-            REQUEST_TIMEOUT,
-        )
-        .await
-        .map_err(|e| Error::ExecutionFailed(format!("Failed to list repositories: {}", e)))?;
+    let response = poll_repo_list(
+        &RepoListRequest,
+        conn.messenger,
+        &conn.core_node_name,
+        CALLER_INSTANCE_ID,
+        &conn.core_node_name,
+        REQUEST_TIMEOUT,
+    )
+    .await
+    .map_err(|e| Error::ExecutionFailed(format!("Failed to list repositories: {}", e)))?;
 
     if !response.success {
         return Err(Error::ExecutionFailed(format!(

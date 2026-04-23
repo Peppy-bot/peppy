@@ -5,7 +5,7 @@ use common::{
     start_core_node_with_mock_messenger, write_peppy_json5,
 };
 use config::node::Name;
-use core_node::transport::NodeResetRequestPollExt;
+use core_node::transport::poll_node_reset;
 use core_node_api::encoding::NodeResetRequest;
 use std::time::Duration;
 
@@ -120,16 +120,16 @@ async fn listen_for_node_reset_clears_node_stack() {
         "node A should have one instance"
     );
 
-    let reset_response = NodeResetRequest::new()
-        .poll(
-            &started_core_node.caller_handle,
-            &started_core_node.core_node_name,
-            CALLER_INSTANCE_ID,
-            &started_core_node.core_node_name,
-            Duration::from_secs(5),
-        )
-        .await
-        .expect("node_reset request should complete");
+    let reset_response = poll_node_reset(
+        &NodeResetRequest::new(),
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        CALLER_INSTANCE_ID,
+        &started_core_node.core_node_name,
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("node_reset request should complete");
 
     assert!(
         reset_response.success,
@@ -194,16 +194,16 @@ async fn listen_for_node_reset_is_idempotent() {
         .as_str()
         .to_owned();
 
-    let response = NodeResetRequest::new()
-        .poll(
-            &started_core_node.caller_handle,
-            &started_core_node.core_node_name,
-            CALLER_INSTANCE_ID,
-            &started_core_node.core_node_name,
-            Duration::from_secs(5),
-        )
-        .await
-        .expect("node_reset request should complete");
+    let response = poll_node_reset(
+        &NodeResetRequest::new(),
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        CALLER_INSTANCE_ID,
+        &started_core_node.core_node_name,
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("node_reset request should complete");
 
     assert!(response.success, "node_reset should succeed");
     assert_eq!(node_stack.len(), 1, "only root should remain after reset");

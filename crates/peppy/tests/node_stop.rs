@@ -13,7 +13,7 @@ use peppylib::services::health::listen_for_node_health;
 use peppylib::services::ready::listen_for_node_ready;
 use peppylib::services::shutdown::listen_for_shutdown;
 
-use core_node::transport::StackListRequestPollExt;
+use core_node::transport::poll_stack_list;
 const CALLER_INSTANCE_ID: &str = "peppy-test";
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -114,16 +114,16 @@ async fn node_stop_command_succeeds() {
             .expect("node shutdown service should start");
 
     // Verify the node was added with 0 instances
-    let response = StackListRequest::new(false)
-        .poll(
-            messenger_handle,
-            &core_node_name,
-            CALLER_INSTANCE_ID,
-            &core_node_name,
-            Duration::from_secs(5),
-        )
-        .await
-        .expect("stack_list request should complete");
+    let response = poll_stack_list(
+        &StackListRequest::new(false),
+        messenger_handle,
+        &core_node_name,
+        CALLER_INSTANCE_ID,
+        &core_node_name,
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("stack_list request should complete");
 
     let graph: SerializedNodeGraph =
         serde_json::from_str(&response.graph_json).expect("graph_json should parse");
@@ -165,16 +165,16 @@ async fn node_stop_command_succeeds() {
     .expect("node run command should succeed");
 
     // Verify the node now has 1 instance
-    let response = StackListRequest::new(false)
-        .poll(
-            messenger_handle,
-            &core_node_name,
-            CALLER_INSTANCE_ID,
-            &core_node_name,
-            Duration::from_secs(5),
-        )
-        .await
-        .expect("stack_list request should complete");
+    let response = poll_stack_list(
+        &StackListRequest::new(false),
+        messenger_handle,
+        &core_node_name,
+        CALLER_INSTANCE_ID,
+        &core_node_name,
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("stack_list request should complete");
 
     let graph: SerializedNodeGraph =
         serde_json::from_str(&response.graph_json).expect("graph_json should parse");
@@ -215,16 +215,16 @@ async fn node_stop_command_succeeds() {
         .expect("shutdown signal should be delivered");
 
     // Verify the node now has 0 instances again
-    let response = StackListRequest::new(false)
-        .poll(
-            messenger_handle,
-            &core_node_name,
-            CALLER_INSTANCE_ID,
-            &core_node_name,
-            Duration::from_secs(5),
-        )
-        .await
-        .expect("stack_list request should complete");
+    let response = poll_stack_list(
+        &StackListRequest::new(false),
+        messenger_handle,
+        &core_node_name,
+        CALLER_INSTANCE_ID,
+        &core_node_name,
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("stack_list request should complete");
 
     let graph: SerializedNodeGraph =
         serde_json::from_str(&response.graph_json).expect("graph_json should parse");

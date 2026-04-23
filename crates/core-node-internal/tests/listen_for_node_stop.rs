@@ -5,7 +5,7 @@ use common::{
     spawn_real_running_instance, start_core_node_with_mock_messenger, write_peppy_json5,
 };
 use config::node::Name;
-use core_node::transport::NodeStopRequestPollExt;
+use core_node::transport::poll_node_stop;
 use core_node_api::encoding::NodeStopRequest;
 use peppylib::messaging::MessengerHandle;
 use peppylib::services::shutdown::listen_for_shutdown;
@@ -122,17 +122,17 @@ async fn listen_for_node_stop_success() {
             .status();
     });
 
-    let response = NodeStopRequest::new(TARGET_INSTANCE_ID)
-        .poll(
-            &started_core_node.caller_handle,
-            &started_core_node.core_node_name,
-            CALLER_INSTANCE_ID,
-            &started_core_node.core_node_name,
-            &started_core_node.core_node_name,
-            Duration::from_secs(10),
-        )
-        .await
-        .expect("node_stop request should complete");
+    let response = poll_node_stop(
+        &NodeStopRequest::new(TARGET_INSTANCE_ID),
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        CALLER_INSTANCE_ID,
+        &started_core_node.core_node_name,
+        &started_core_node.core_node_name,
+        Duration::from_secs(10),
+    )
+    .await
+    .expect("node_stop request should complete");
 
     assert!(response.success, "node_stop should succeed");
     assert!(
@@ -161,17 +161,17 @@ async fn listen_for_node_stop_fails_when_instance_id_not_found() {
 
     let started_core_node = start_core_node_with_mock_messenger().await;
 
-    let response = NodeStopRequest::new(MISSING_INSTANCE_ID)
-        .poll(
-            &started_core_node.caller_handle,
-            &started_core_node.core_node_name,
-            CALLER_INSTANCE_ID,
-            &started_core_node.core_node_name,
-            &started_core_node.core_node_name,
-            Duration::from_secs(5),
-        )
-        .await
-        .expect("node_stop request should complete");
+    let response = poll_node_stop(
+        &NodeStopRequest::new(MISSING_INSTANCE_ID),
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        CALLER_INSTANCE_ID,
+        &started_core_node.core_node_name,
+        &started_core_node.core_node_name,
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("node_stop request should complete");
 
     assert!(!response.success, "node_stop should fail");
     let error_message = response

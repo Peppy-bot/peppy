@@ -6,7 +6,7 @@ use core_node_api::encoding::InfoRequest;
 use super::{CALLER_INSTANCE_ID, Command};
 use crate::context::AppContext;
 use crate::error::Result;
-use core_node::transport::InfoRequestPollExt;
+use core_node::transport::poll_info;
 
 #[cfg(target_os = "linux")]
 fn print_container_setup_status() {
@@ -55,15 +55,15 @@ async fn info_async(ctx: &Arc<AppContext>) -> Result<()> {
     let conn = ctx.connect_to_daemon().await?;
 
     let request = InfoRequest::new();
-    match request
-        .poll(
-            conn.messenger,
-            &conn.core_node_name,
-            CALLER_INSTANCE_ID,
-            &conn.core_node_name,
-            REQUEST_TIMEOUT,
-        )
-        .await
+    match poll_info(
+        &request,
+        conn.messenger,
+        &conn.core_node_name,
+        CALLER_INSTANCE_ID,
+        &conn.core_node_name,
+        REQUEST_TIMEOUT,
+    )
+    .await
     {
         Ok(response) => {
             println!();

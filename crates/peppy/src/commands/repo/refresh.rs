@@ -11,7 +11,7 @@ use crate::commands::{CALLER_INSTANCE_ID, GOAL_TIMEOUT, SCROLLING_OUTPUT_LINES};
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 use crate::terminal::ScrollingOutput;
-use core_node::transport::RepoRefreshGoalSendGoalExt;
+use core_node::transport::send_repo_refresh;
 
 const IDLE_TIMEOUT_SECS: u64 = 120;
 const MAX_TIMEOUT_SECS: u64 = 3600;
@@ -23,17 +23,17 @@ pub(super) fn repo_refresh(ctx: &Arc<AppContext>) -> Result<()> {
 async fn repo_refresh_async(ctx: &Arc<AppContext>) -> Result<()> {
     let conn = ctx.connect_to_daemon().await?;
 
-    let mut action_handle = RepoRefreshGoal
-        .send_goal(
-            conn.messenger,
-            &conn.core_node_name,
-            CALLER_INSTANCE_ID,
-            Some(&conn.core_node_name),
-            None,
-            GOAL_TIMEOUT,
-        )
-        .await
-        .map_err(|e| Error::ExecutionFailed(format!("Failed to send repo refresh goal: {}", e)))?;
+    let mut action_handle = send_repo_refresh(
+        &RepoRefreshGoal,
+        conn.messenger,
+        &conn.core_node_name,
+        CALLER_INSTANCE_ID,
+        Some(&conn.core_node_name),
+        None,
+        GOAL_TIMEOUT,
+    )
+    .await
+    .map_err(|e| Error::ExecutionFailed(format!("Failed to send repo refresh goal: {}", e)))?;
 
     let goal_response_payload = action_handle.goal_response().payload();
     let goal_response = RepoRefreshGoalResponse::decode(&goal_response_payload)

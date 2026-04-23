@@ -10,7 +10,7 @@ use crate::commands::repo::repo_source_label;
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 
-use core_node::transport::RepoAddRequestPollExt;
+use core_node::transport::poll_repo_add;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub(super) fn add_repo(
@@ -38,16 +38,16 @@ async fn add_repo_async(
         source: repo_source,
         top,
     };
-    let response = request
-        .poll(
-            conn.messenger,
-            &conn.core_node_name,
-            CALLER_INSTANCE_ID,
-            &conn.core_node_name,
-            REQUEST_TIMEOUT,
-        )
-        .await
-        .map_err(|e| Error::ExecutionFailed(format!("Failed to add repository: {}", e)))?;
+    let response = poll_repo_add(
+        &request,
+        conn.messenger,
+        &conn.core_node_name,
+        CALLER_INSTANCE_ID,
+        &conn.core_node_name,
+        REQUEST_TIMEOUT,
+    )
+    .await
+    .map_err(|e| Error::ExecutionFailed(format!("Failed to add repository: {}", e)))?;
 
     if response.success {
         info!("Repository '{label}' added successfully");

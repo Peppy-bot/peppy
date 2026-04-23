@@ -18,7 +18,7 @@ use crate::commands::{CALLER_INSTANCE_ID, GOAL_TIMEOUT};
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 
-use core_node::transport::{NodeAddGoalSendGoalExt, NodeInfoRequestPollExt};
+use core_node::transport::{poll_node_info, send_node_add};
 /// Options for running a node instance immediately after adding it.
 pub struct RunAfterAddOptions {
     pub args: Vec<(String, String)>,
@@ -229,17 +229,17 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
     if let Some(variant_source) = variant_source {
         add_goal = add_goal.with_variant_source(variant_source);
     }
-    let mut action_handle = add_goal
-        .send_goal(
-            conn.messenger,
-            &conn.core_node_name,
-            CALLER_INSTANCE_ID,
-            Some(&conn.core_node_name),
-            None,
-            GOAL_TIMEOUT,
-        )
-        .await
-        .map_err(|e| Error::ExecutionFailed(format!("Failed to send node_add goal: {}", e)))?;
+    let mut action_handle = send_node_add(
+        &add_goal,
+        conn.messenger,
+        &conn.core_node_name,
+        CALLER_INSTANCE_ID,
+        Some(&conn.core_node_name),
+        None,
+        GOAL_TIMEOUT,
+    )
+    .await
+    .map_err(|e| Error::ExecutionFailed(format!("Failed to send node_add goal: {}", e)))?;
 
     let add_result = crate::commands::action_poll::run_action_with_feedback::<
         NodeAddGoalResponse,
@@ -341,18 +341,18 @@ async fn fetch_active_instances_for_name_tag(
     node_tag: String,
     timeout: Duration,
 ) -> Result<Option<(String, String, Vec<String>)>> {
-    let response = NodeInfoRequest::new(node_name.clone(), node_tag.clone())
-        .poll(
-            messenger,
-            core_node_name,
-            CALLER_INSTANCE_ID,
-            core_node_name,
-            timeout,
-        )
-        .await
-        .map_err(|e| {
-            Error::ExecutionFailed(format!("Failed to check node info before adding: {}", e))
-        })?;
+    let response = poll_node_info(
+        &NodeInfoRequest::new(node_name.clone(), node_tag.clone()),
+        messenger,
+        core_node_name,
+        CALLER_INSTANCE_ID,
+        core_node_name,
+        timeout,
+    )
+    .await
+    .map_err(|e| {
+        Error::ExecutionFailed(format!("Failed to check node info before adding: {}", e))
+    })?;
 
     // `NotInStack` is a normal first-time-add case; there is nothing to
     // confirm. The daemon no longer reports this as an error, so we match

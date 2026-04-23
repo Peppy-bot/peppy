@@ -9,7 +9,7 @@ use crate::commands::CALLER_INSTANCE_ID;
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 
-use core_node::transport::{NodeRemoveRequestPollExt, StackListRequestPollExt};
+use core_node::transport::{poll_node_remove, poll_stack_list};
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub fn remove_node(
@@ -63,18 +63,16 @@ async fn remove_node_async(
 
     let remove_request =
         NodeRemoveRequest::new(&node_name, &tag).with_stop_instances(stop_instances);
-    let remove_response = remove_request
-        .poll(
-            conn.messenger,
-            &conn.core_node_name,
-            CALLER_INSTANCE_ID,
-            &conn.core_node_name,
-            REQUEST_TIMEOUT,
-        )
-        .await
-        .map_err(|e| {
-            Error::ExecutionFailed(format!("Failed to call node_remove service: {}", e))
-        })?;
+    let remove_response = poll_node_remove(
+        &remove_request,
+        conn.messenger,
+        &conn.core_node_name,
+        CALLER_INSTANCE_ID,
+        &conn.core_node_name,
+        REQUEST_TIMEOUT,
+    )
+    .await
+    .map_err(|e| Error::ExecutionFailed(format!("Failed to call node_remove service: {}", e)))?;
 
     if !remove_response.success {
         return Err(Error::ExecutionFailed(
@@ -94,21 +92,21 @@ async fn fetch_instance_ids(
     node_name: &str,
     tag: &str,
 ) -> Result<Vec<String>> {
-    let response = StackListRequest::new(false)
-        .poll(
-            messenger,
-            core_node_name,
-            CALLER_INSTANCE_ID,
-            core_node_name,
-            REQUEST_TIMEOUT,
-        )
-        .await
-        .map_err(|e| {
-            Error::ExecutionFailed(format!(
-                "Failed to check running instances before removal: {}",
-                e
-            ))
-        })?;
+    let response = poll_stack_list(
+        &StackListRequest::new(false),
+        messenger,
+        core_node_name,
+        CALLER_INSTANCE_ID,
+        core_node_name,
+        REQUEST_TIMEOUT,
+    )
+    .await
+    .map_err(|e| {
+        Error::ExecutionFailed(format!(
+            "Failed to check running instances before removal: {}",
+            e
+        ))
+    })?;
 
     let graph: SerializedNodeGraph = serde_json::from_str(&response.graph_json)
         .map_err(|e| Error::ExecutionFailed(format!("Failed to parse graph JSON: {}", e)))?;

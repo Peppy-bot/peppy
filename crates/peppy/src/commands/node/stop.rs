@@ -6,7 +6,7 @@ use tracing::info;
 use crate::commands::CALLER_INSTANCE_ID;
 use crate::context::AppContext;
 use crate::error::{Error, Result};
-use core_node::transport::NodeStopRequestPollExt;
+use core_node::transport::poll_node_stop;
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -23,17 +23,17 @@ async fn stop_node_async(ctx: &Arc<AppContext>, instance_id: String) -> Result<(
     );
 
     let stop_request = NodeStopRequest::new(instance_id.clone());
-    let stop_response = stop_request
-        .poll(
-            conn.messenger,
-            &conn.core_node_name,
-            CALLER_INSTANCE_ID,
-            &conn.core_node_name,
-            &conn.core_node_name,
-            REQUEST_TIMEOUT,
-        )
-        .await
-        .map_err(|e| Error::ExecutionFailed(format!("Failed to call node_stop service: {}", e)))?;
+    let stop_response = poll_node_stop(
+        &stop_request,
+        conn.messenger,
+        &conn.core_node_name,
+        CALLER_INSTANCE_ID,
+        &conn.core_node_name,
+        &conn.core_node_name,
+        REQUEST_TIMEOUT,
+    )
+    .await
+    .map_err(|e| Error::ExecutionFailed(format!("Failed to call node_stop service: {}", e)))?;
 
     if !stop_response.success {
         return Err(Error::ExecutionFailed(
