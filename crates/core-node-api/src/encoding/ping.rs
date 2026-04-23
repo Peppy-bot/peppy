@@ -1,10 +1,9 @@
 //! Cap'n Proto encoding utilities for ping messages.
 
 use capnp::message::Builder;
-use peppylib::types::Payload;
 
-use crate::Result;
 use crate::ping_capnp;
+use crate::{Payload, Result};
 
 use super::{decode_message, encode_message};
 

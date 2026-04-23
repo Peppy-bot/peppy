@@ -1,12 +1,7 @@
-use std::time::Duration;
-
 use capnp::message::Builder;
-use peppylib::types::Payload;
-use peppylib::{MessengerHandle, ServiceMessenger};
 
-use crate::Result;
-use crate::names;
 use crate::node_capnp;
+use crate::{Payload, Result};
 
 use crate::encoding::{decode_message, encode_message, optional_text};
 
@@ -22,7 +17,7 @@ impl NodeStopRequest {
         }
     }
 
-    fn encode(&self) -> Result<Payload> {
+    pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
             let mut request = builder.init_root::<node_capnp::node_stop_request::Builder>();
@@ -37,31 +32,6 @@ impl NodeStopRequest {
         Ok(Self {
             instance_id: request.get_instance_id()?.to_str()?.to_owned(),
         })
-    }
-
-    pub async fn poll(
-        &self,
-        messenger: &MessengerHandle,
-        bound_core_node: &str,
-        as_instance_id: &str,
-        target_node_name: &str,
-        target_core_node: &str,
-        response_timeout: Duration,
-    ) -> Result<NodeStopResponse> {
-        let request_payload = self.encode()?;
-        let response = ServiceMessenger::poll(
-            messenger,
-            bound_core_node,
-            as_instance_id,
-            target_node_name,
-            names::NODE_STOP,
-            Some(target_core_node),
-            None,
-            request_payload,
-            response_timeout,
-        )
-        .await?;
-        NodeStopResponse::decode(response.payload().as_ref())
     }
 }
 

@@ -1,17 +1,11 @@
 //! Encoding types for the Launch action (streaming version with feedback).
 
 use std::path::PathBuf;
-use std::time::Duration;
 
 use capnp::message::Builder;
-use config::node::QoSProfile;
-use peppylib::messaging::ActionGoalHandle;
-use peppylib::types::Payload;
-use peppylib::{ActionMessenger, MessengerHandle};
 
-use crate::Result;
 use crate::launch_capnp;
-use crate::names;
+use crate::{Payload, Result};
 
 use crate::encoding::{decode_message, encode_message, optional_text};
 
@@ -118,33 +112,6 @@ impl LaunchGoal {
             ),
             max_timeout_secs: if raw_max == 0 { None } else { Some(raw_max) },
         })
-    }
-
-    /// Sends the goal to start the Launch action and returns a handle for receiving feedback.
-    pub async fn send_goal(
-        &self,
-        messenger: &MessengerHandle,
-        as_core_node: &str,
-        as_instance_id: &str,
-        target_core_node: Option<&str>,
-        target_instance_id: Option<&str>,
-        goal_timeout: Duration,
-    ) -> Result<ActionGoalHandle> {
-        let goal_payload = self.encode()?;
-        let handle = ActionMessenger::send_goal(
-            messenger,
-            as_core_node,
-            as_instance_id,
-            as_core_node, // node_name is the core node for this action
-            names::STACK_LAUNCH_ACTION,
-            target_core_node,
-            target_instance_id,
-            goal_payload,
-            QoSProfile::default(),
-            goal_timeout,
-        )
-        .await?;
-        Ok(handle)
     }
 }
 
@@ -450,16 +417,5 @@ impl LaunchResult {
             node_build_logs,
             node_run_logs,
         })
-    }
-
-    /// Request the result from a completed action.
-    pub async fn request_result(
-        messenger: &MessengerHandle,
-        action_handle: &ActionGoalHandle,
-        result_timeout: Duration,
-    ) -> Result<Self> {
-        let response =
-            ActionMessenger::request_result(messenger, action_handle, result_timeout).await?;
-        Self::decode(response.payload().as_ref())
     }
 }

@@ -1,14 +1,9 @@
-use std::time::Duration;
-
 use capnp::message::Builder;
-use peppylib::types::Payload;
-use peppylib::{MessengerHandle, ServiceMessenger};
 
-use crate::Result;
 use crate::encoding::repo::add::RepoSourceKind;
 use crate::encoding::{decode_message, encode_message, optional_text};
-use crate::names;
 use crate::repo_capnp;
+use crate::{Payload, Result};
 
 /// Request message for the RepoList service (empty — list all).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -27,30 +22,6 @@ impl RepoListRequest {
         let reader = decode_message(data)?;
         let _req = reader.get_root::<repo_capnp::repo_list_request::Reader>()?;
         Ok(Self)
-    }
-
-    pub async fn poll(
-        &self,
-        messenger: &MessengerHandle,
-        bound_core_node: &str,
-        as_instance_id: &str,
-        target_core_node: &str,
-        response_timeout: Duration,
-    ) -> Result<RepoListResponse> {
-        let request_payload = self.encode()?;
-        let response = ServiceMessenger::poll(
-            messenger,
-            bound_core_node,
-            as_instance_id,
-            target_core_node,
-            names::REPO_LIST,
-            Some(target_core_node),
-            None,
-            request_payload,
-            response_timeout,
-        )
-        .await?;
-        RepoListResponse::decode(response.payload().as_ref())
     }
 }
 

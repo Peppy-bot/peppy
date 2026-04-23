@@ -2,7 +2,7 @@ use super::*;
 use common::{
     TestPackagesCache, send_node_add_and_wait_with_dep_overrides, write_plain_peppy_json5,
 };
-use core_node::encoding::DepVariantOverride;
+use core_node_api::encoding::DepVariantOverride;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn repo_node_add_fails_when_packages_cache_missing() {

@@ -2,13 +2,14 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use core_node::encoding::StackListRequest;
+use core_node_api::encoding::StackListRequest;
 use node_stack::{SerializedEdge, SerializedNode, SerializedNodeGraph};
 
 use crate::commands::CALLER_INSTANCE_ID;
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 
+use peppylib::core_node::transport::poll_stack_list;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub fn list_nodes(ctx: &Arc<AppContext>, dot_graph_path: Option<PathBuf>) -> Result<()> {
@@ -26,16 +27,16 @@ pub async fn list_nodes_collecting(
 ) -> Result<String> {
     let conn = ctx.connect_to_daemon().await?;
 
-    let response = StackListRequest::new(dot_graph_path.is_some())
-        .poll(
-            conn.messenger,
-            &conn.core_node_name,
-            CALLER_INSTANCE_ID,
-            &conn.core_node_name,
-            REQUEST_TIMEOUT,
-        )
-        .await
-        .map_err(|e| Error::ExecutionFailed(format!("Failed to call stack_list service: {}", e)))?;
+    let response = poll_stack_list(
+        &StackListRequest::new(dot_graph_path.is_some()),
+        conn.messenger,
+        &conn.core_node_name,
+        CALLER_INSTANCE_ID,
+        &conn.core_node_name,
+        REQUEST_TIMEOUT,
+    )
+    .await
+    .map_err(|e| Error::ExecutionFailed(format!("Failed to call stack_list service: {}", e)))?;
 
     let graph: SerializedNodeGraph = serde_json::from_str(&response.graph_json)
         .map_err(|e| Error::ExecutionFailed(format!("Failed to parse graph JSON: {}", e)))?;

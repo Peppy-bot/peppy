@@ -11,13 +11,13 @@ use super::{
     resolve_local_archive_source, sanitize_repo_path, write_error_to_log,
 };
 use crate::Result;
-use crate::encoding::{
-    NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAddResult, NodeSource,
-};
 use crate::names;
 use chrono::Local;
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH, PeppyDirs};
 use config::node::{DEFAULT_VARIANT_NAME, NodeConfig, NodeConfigParser, ParsedNodeConfig};
+use core_node_api::encoding::{
+    NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAddResult, NodeSource,
+};
 use futures::FutureExt;
 use node_stack::add_steps::{copy_node_to_temp_dir, verify_git_hash};
 use node_stack::{InstanceState, NodeStack, WorkingDirGuard, validate_dependency_specs};
@@ -78,7 +78,7 @@ impl ActionResult for NodeAddResult {
     }
 
     fn encode_result(&self) -> crate::Result<Payload> {
-        self.encode()
+        self.encode().map_err(Into::into)
     }
 }
 
@@ -1107,7 +1107,11 @@ async fn handle_goal_request(
         let (feedback_tx, feedback_rx) = mpsc::unbounded_channel::<FeedbackLine>();
         let consumer_handle =
             super::spawn_feedback_forwarder(feedback_rx, feedback_publisher.clone(), |line| {
-                NodeAddFeedback::from_stream(line.stream, &line.line).encode()
+                NodeAddFeedback::from_stream(
+                    super::feedback::stream_to_api(line.stream),
+                    &line.line,
+                )
+                .encode()
             });
 
         let is_repo_node = matches!(&goal.source, NodeSource::RepoNode { .. });

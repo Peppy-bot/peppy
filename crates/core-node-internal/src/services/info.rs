@@ -1,6 +1,6 @@
 use crate::Result;
-use crate::encoding::{ContainerInfo, InfoRequest, InfoResponse};
 use crate::names;
+use core_node_api::encoding::{ContainerInfo, InfoRequest, InfoResponse};
 use node_stack::NodeStack;
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::types::Payload;
@@ -102,7 +102,7 @@ fn handle_info_request_inner(
         lima_version: containers::LIMA_VERSION.to_owned(),
     };
 
-    InfoResponse::new(
+    Ok(InfoResponse::new(
         uptime_secs,
         core_node_name,
         instance_id,
@@ -111,5 +111,5 @@ fn handle_info_request_inner(
         git_version,
         container_info,
     )
-    .encode()
+    .encode()?)
 }

@@ -12,10 +12,12 @@ use super::super::stack::STACK_LAUNCH_GIT_HASH;
 use super::add::{NodeAddActionContext, run_node_add};
 use super::cache as node_cache;
 use super::{FeedbackLine, FeedbackStream, create_action_log_file, sanitize_repo_path};
-use crate::encoding::{DepVariantOverride, NodeAddGoal, NodeAddResult, NodeSource, RepoSourceKind};
 use chrono::Local;
 use config::consts::{NODE_CONFIG_FILE, PeppyDirs};
 use config::node::{NodeConfigParser, ParsedNodeConfig};
+use core_node_api::encoding::{
+    DepVariantOverride, NodeAddGoal, NodeAddResult, NodeSource, RepoSourceKind,
+};
 use futures::future::BoxFuture;
 use futures::stream::{FuturesUnordered, StreamExt};
 use node_stack::VirtualDeptree;

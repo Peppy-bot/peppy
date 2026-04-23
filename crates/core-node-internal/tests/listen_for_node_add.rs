@@ -11,8 +11,8 @@ use common::{
 use config::consts::{NODE_CONFIG_FILE, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH};
 use config::node::QoSProfile;
 use config::test_helpers;
-use core_node::encoding::{NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse};
 use core_node::names;
+use core_node_api::encoding::{NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse};
 use git2::{Repository, Signature};
 use gix_url::Url as GitUrl;
 use peppylib::ActionMessenger;

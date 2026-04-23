@@ -1,7 +1,7 @@
 use config::AnyType;
 use config::launcher::Name;
 use config::runtime::{NodeInstanceConfig, RuntimeConfig};
-use core_node::encoding::{
+use core_node_api::encoding::{
     NodeInfoRequest, NodeInfoResponse, NodeRunFeedback, NodeRunGoal, NodeRunGoalResponse,
     NodeRunResult,
 };
@@ -21,6 +21,7 @@ use crate::error::{Error, Result};
 use super::TimeoutConfig;
 use super::env::caller_env_overrides;
 
+use peppylib::core_node::transport::{poll_node_info, send_node_run};
 /// Timeout for the quick `NodeInfoRequest` preflight in the `run -b` flow.
 /// Matches `node info`'s request timeout — this is a metadata lookup,
 /// not a long-running action, so it must fail fast if the daemon is down
@@ -84,7 +85,7 @@ fn remaining_timeouts(
 ///
 /// This is split out as a pure function so the stage-matching logic can be
 /// unit-tested directly. Documented stage values come from
-/// `core_node::encoding::NodeInfo::stage`: `Added | Building | Ready | Root`.
+/// `core_node_api::encoding::NodeInfo::stage`: `Added | Building | Ready | Root`.
 fn classify_stage(stage: &str, node_name: &str, tag: &str) -> Result<BuildDecision> {
     match stage {
         "Ready" => Ok(BuildDecision::Skip),
@@ -120,21 +121,21 @@ async fn wait_for_build_to_finish(
     let deadline = Instant::now() + Duration::from_secs(timeouts.max_secs);
 
     loop {
-        let response = NodeInfoRequest::new(node_name.to_string(), tag.to_string())
-            .poll(
-                messenger,
-                core_node_name,
-                CALLER_INSTANCE_ID,
-                core_node_name,
-                NODE_INFO_PREFLIGHT_TIMEOUT,
-            )
-            .await
-            .map_err(|e| {
-                Error::ExecutionFailed(format!(
-                    "Failed to poll node info while waiting for build: {}",
-                    e
-                ))
-            })?;
+        let response = poll_node_info(
+            &NodeInfoRequest::new(node_name.to_string(), tag.to_string()),
+            messenger,
+            core_node_name,
+            CALLER_INSTANCE_ID,
+            core_node_name,
+            NODE_INFO_PREFLIGHT_TIMEOUT,
+        )
+        .await
+        .map_err(|e| {
+            Error::ExecutionFailed(format!(
+                "Failed to poll node info while waiting for build: {}",
+                e
+            ))
+        })?;
 
         match response {
             NodeInfoResponse::NotInStack => {
@@ -326,17 +327,17 @@ pub async fn run_instance_async(
         timeouts.max_secs,
     )
     .with_env_vars(caller_env_overrides());
-    let mut action_handle = start_goal
-        .send_goal(
-            messenger_handle,
-            core_node_name,
-            CALLER_INSTANCE_ID,
-            Some(core_node_name),
-            None,
-            GOAL_TIMEOUT,
-        )
-        .await
-        .map_err(|e| Error::ExecutionFailed(format!("Failed to send node_run goal: {}", e)))?;
+    let mut action_handle = send_node_run(
+        &start_goal,
+        messenger_handle,
+        core_node_name,
+        CALLER_INSTANCE_ID,
+        Some(core_node_name),
+        None,
+        GOAL_TIMEOUT,
+    )
+    .await
+    .map_err(|e| Error::ExecutionFailed(format!("Failed to send node_run goal: {}", e)))?;
 
     let start_result = crate::commands::action_poll::run_action_with_feedback::<
         NodeRunGoalResponse,
@@ -396,18 +397,18 @@ async fn run_node_async(
         // Look up the node's current lifecycle stage so we only trigger a
         // build when the node is not yet built. The same `NodeInfoRequest`
         // is used by the `node add` preflight (see add.rs).
-        let response = NodeInfoRequest::new(node_name.clone(), tag.clone())
-            .poll(
-                conn.messenger,
-                &conn.core_node_name,
-                CALLER_INSTANCE_ID,
-                &conn.core_node_name,
-                NODE_INFO_PREFLIGHT_TIMEOUT,
-            )
-            .await
-            .map_err(|e| {
-                Error::ExecutionFailed(format!("Failed to check node info before run: {}", e))
-            })?;
+        let response = poll_node_info(
+            &NodeInfoRequest::new(node_name.clone(), tag.clone()),
+            conn.messenger,
+            &conn.core_node_name,
+            CALLER_INSTANCE_ID,
+            &conn.core_node_name,
+            NODE_INFO_PREFLIGHT_TIMEOUT,
+        )
+        .await
+        .map_err(|e| {
+            Error::ExecutionFailed(format!("Failed to check node info before run: {}", e))
+        })?;
 
         let info = match response {
             NodeInfoResponse::NotInStack => {

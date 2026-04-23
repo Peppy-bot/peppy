@@ -3,10 +3,12 @@ use super::gate::ConcurrencyGate;
 use super::write_error_to_log;
 use super::{FeedbackLine, FeedbackStream, create_action_log_file};
 use crate::Result;
-use crate::encoding::{NodeBuildFeedback, NodeBuildGoal, NodeBuildGoalResponse, NodeBuildResult};
 use crate::names;
 use chrono::Local;
 use config::consts::PeppyDirs;
+use core_node_api::encoding::{
+    NodeBuildFeedback, NodeBuildGoal, NodeBuildGoalResponse, NodeBuildResult,
+};
 use futures::FutureExt;
 use node_stack::{BuildContext, NodeStack};
 use parking_lot::Mutex as StdMutex;
@@ -57,7 +59,7 @@ impl ActionResult for NodeBuildResult {
     }
 
     fn encode_result(&self) -> Result<Payload> {
-        self.encode()
+        self.encode().map_err(Into::into)
     }
 }
 
@@ -282,7 +284,11 @@ impl NodeBuildGoalHandler {
             let (feedback_tx, feedback_rx) = mpsc::unbounded_channel::<FeedbackLine>();
             let consumer_handle =
                 super::spawn_feedback_forwarder(feedback_rx, feedback_publisher.clone(), |line| {
-                    NodeBuildFeedback::from_stream(line.stream, &line.line).encode()
+                    NodeBuildFeedback::from_stream(
+                        super::feedback::stream_to_api(line.stream),
+                        &line.line,
+                    )
+                    .encode()
                 });
 
             let result = tokio::select! {

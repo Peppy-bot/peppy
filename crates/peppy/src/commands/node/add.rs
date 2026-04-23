@@ -1,5 +1,5 @@
 use config::node::NodeConfigParser;
-use core_node::encoding::{
+use core_node_api::encoding::{
     NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAddResult, NodeInfoRequest,
     NodeInfoResponse, NodeSource,
 };
@@ -18,6 +18,7 @@ use crate::commands::{CALLER_INSTANCE_ID, GOAL_TIMEOUT};
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 
+use peppylib::core_node::transport::{poll_node_info, send_node_add};
 /// Options for running a node instance immediately after adding it.
 pub struct RunAfterAddOptions {
     pub args: Vec<(String, String)>,
@@ -59,7 +60,7 @@ fn validate_git_ref(git_ref: Option<&str>) -> Result<Option<String>> {
 
 fn apply_dep_variant_overrides(
     node_source: NodeSource,
-    dep_overrides: Vec<core_node::encoding::DepVariantOverride>,
+    dep_overrides: Vec<core_node_api::encoding::DepVariantOverride>,
 ) -> Result<NodeSource> {
     if dep_overrides.is_empty() {
         return Ok(node_source);
@@ -228,17 +229,17 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
     if let Some(variant_source) = variant_source {
         add_goal = add_goal.with_variant_source(variant_source);
     }
-    let mut action_handle = add_goal
-        .send_goal(
-            conn.messenger,
-            &conn.core_node_name,
-            CALLER_INSTANCE_ID,
-            Some(&conn.core_node_name),
-            None,
-            GOAL_TIMEOUT,
-        )
-        .await
-        .map_err(|e| Error::ExecutionFailed(format!("Failed to send node_add goal: {}", e)))?;
+    let mut action_handle = send_node_add(
+        &add_goal,
+        conn.messenger,
+        &conn.core_node_name,
+        CALLER_INSTANCE_ID,
+        Some(&conn.core_node_name),
+        None,
+        GOAL_TIMEOUT,
+    )
+    .await
+    .map_err(|e| Error::ExecutionFailed(format!("Failed to send node_add goal: {}", e)))?;
 
     let add_result = crate::commands::action_poll::run_action_with_feedback::<
         NodeAddGoalResponse,
@@ -340,18 +341,18 @@ async fn fetch_active_instances_for_name_tag(
     node_tag: String,
     timeout: Duration,
 ) -> Result<Option<(String, String, Vec<String>)>> {
-    let response = NodeInfoRequest::new(node_name.clone(), node_tag.clone())
-        .poll(
-            messenger,
-            core_node_name,
-            CALLER_INSTANCE_ID,
-            core_node_name,
-            timeout,
-        )
-        .await
-        .map_err(|e| {
-            Error::ExecutionFailed(format!("Failed to check node info before adding: {}", e))
-        })?;
+    let response = poll_node_info(
+        &NodeInfoRequest::new(node_name.clone(), node_tag.clone()),
+        messenger,
+        core_node_name,
+        CALLER_INSTANCE_ID,
+        core_node_name,
+        timeout,
+    )
+    .await
+    .map_err(|e| {
+        Error::ExecutionFailed(format!("Failed to check node info before adding: {}", e))
+    })?;
 
     // `NotInStack` is a normal first-time-add case; there is nothing to
     // confirm. The daemon no longer reports this as an error, so we match
@@ -518,7 +519,7 @@ mod tests {
     fn apply_dep_variant_overrides_rejects_non_repo_source() {
         let err = apply_dep_variant_overrides(
             NodeSource::Fs(Path::new("/tmp/example").to_path_buf()),
-            vec![core_node::encoding::DepVariantOverride {
+            vec![core_node_api::encoding::DepVariantOverride {
                 name: "camera".to_owned(),
                 tag: "1.0".to_owned(),
                 variant: "sim".to_owned(),
@@ -536,7 +537,7 @@ mod tests {
     fn apply_dep_variant_overrides_rejects_root_target_override() {
         let err = apply_dep_variant_overrides(
             NodeSource::repo_node("camera", "1.0").expect("valid repo-node"),
-            vec![core_node::encoding::DepVariantOverride {
+            vec![core_node_api::encoding::DepVariantOverride {
                 name: "camera".to_owned(),
                 tag: "1.0".to_owned(),
                 variant: "sim".to_owned(),
@@ -553,7 +554,7 @@ mod tests {
     fn apply_dep_variant_overrides_accepts_non_root_override() {
         let source = apply_dep_variant_overrides(
             NodeSource::repo_node("camera", "1.0").expect("valid repo-node"),
-            vec![core_node::encoding::DepVariantOverride {
+            vec![core_node_api::encoding::DepVariantOverride {
                 name: "dep".to_owned(),
                 tag: "0.2".to_owned(),
                 variant: "sim".to_owned(),

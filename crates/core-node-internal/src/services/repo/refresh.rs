@@ -1,8 +1,4 @@
 use crate::Result;
-use crate::encoding::{
-    RepoRefreshFeedback, RepoRefreshGoal, RepoRefreshGoalResponse, RepoRefreshResult, RepoSource,
-    RepoSourceKind,
-};
 use crate::names;
 use crate::services::action_loop::{ActionResult, ActionState, GoalHandler, run_action_loop};
 use crate::services::node::clone_with_progress;
@@ -10,6 +6,10 @@ use crate::services::repo::exclude::ExclusionSet;
 use crate::services::repo::normalize_repo_entries;
 use config::consts::{NODE_CONFIG_FILE, PeppyDirs};
 use config::node::NodeConfigParser;
+use core_node_api::encoding::{
+    RepoRefreshFeedback, RepoRefreshGoal, RepoRefreshGoalResponse, RepoRefreshResult, RepoSource,
+    RepoSourceKind,
+};
 use peppylib::messaging::{ServiceRequestContext, TopicPublisher};
 use peppylib::types::Payload;
 use peppylib::{ActionMessenger, MessengerHandle, PeppyError, PeppyResult};
@@ -64,7 +64,7 @@ impl ActionResult for RepoRefreshResult {
     }
 
     fn encode_result(&self) -> crate::Result<Payload> {
-        self.encode()
+        self.encode().map_err(Into::into)
     }
 }
 
@@ -231,12 +231,12 @@ pub(crate) fn read_or_create_repos(peppy_dirs: &PeppyDirs) -> Result<Vec<Value>>
     let mut repos: Vec<Value> = if repos_path.exists() {
         let content = std::fs::read_to_string(&repos_path)?;
         serde_json5::from_str(&content).map_err(|e| {
-            crate::Error::Decoding(format!("failed to parse repositories.json5: {e}"))
+            core_node_api::Error::Decoding(format!("failed to parse repositories.json5: {e}"))
         })?
     } else {
         std::fs::write(&repos_path, DEFAULT_REPOS_TEMPLATE)?;
         serde_json5::from_str(DEFAULT_REPOS_TEMPLATE).map_err(|e| {
-            crate::Error::Decoding(format!("failed to parse default repositories: {e}"))
+            core_node_api::Error::Decoding(format!("failed to parse default repositories: {e}"))
         })?
     };
 

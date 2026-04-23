@@ -1,12 +1,7 @@
-use std::time::Duration;
-
 use capnp::message::Builder;
-use peppylib::types::Payload;
-use peppylib::{MessengerHandle, ServiceMessenger};
 
-use crate::Result;
-use crate::names;
 use crate::node_capnp;
+use crate::{Payload, Result};
 
 use crate::encoding::{decode_message, encode_message, optional_text};
 
@@ -31,7 +26,7 @@ impl NodeRemoveRequest {
         self
     }
 
-    fn encode(&self) -> Result<Payload> {
+    pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
             let mut request = builder.init_root::<node_capnp::node_remove_request::Builder>();
@@ -50,30 +45,6 @@ impl NodeRemoveRequest {
             tag: request.get_tag()?.to_str()?.to_owned(),
             stop_instances: request.get_stop_instances(),
         })
-    }
-
-    pub async fn poll(
-        &self,
-        messenger: &MessengerHandle,
-        bound_core_node: &str,
-        as_instance_id: &str,
-        target_core_node: &str,
-        response_timeout: Duration,
-    ) -> Result<NodeRemoveResponse> {
-        let request_payload = self.encode()?;
-        let response = ServiceMessenger::poll(
-            messenger,
-            bound_core_node,
-            as_instance_id,
-            target_core_node,
-            names::NODE_REMOVE,
-            Some(target_core_node),
-            None,
-            request_payload,
-            response_timeout,
-        )
-        .await?;
-        NodeRemoveResponse::decode(response.payload().as_ref())
     }
 }
 

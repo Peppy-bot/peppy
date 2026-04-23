@@ -1,6 +1,6 @@
 use crate::Result;
-use crate::encoding::{NodeResetRequest, NodeResetResponse};
 use crate::names;
+use core_node_api::encoding::{NodeResetRequest, NodeResetResponse};
 use node_stack::NodeStack;
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::types::Payload;
@@ -59,5 +59,5 @@ async fn handle_node_reset_request_inner(
 
     debug!("Received `node_reset` request from {sender_instance_id}");
     node_stack.reset();
-    NodeResetResponse::success().encode()
+    NodeResetResponse::success().encode().map_err(Into::into)
 }

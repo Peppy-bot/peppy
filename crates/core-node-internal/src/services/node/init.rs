@@ -2,10 +2,10 @@ mod templates;
 
 use self::templates::{apply_python_templates, apply_rust_templates};
 use crate::Result;
-use crate::encoding::{NodeInitRequest, NodeInitResponse};
 use crate::names;
 use config::consts::PeppyDirs;
 use config::node::Toolchain;
+use core_node_api::encoding::{NodeInitRequest, NodeInitResponse};
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::types::Payload;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
@@ -71,16 +71,18 @@ fn handle_node_init_request_inner(
     let node_dir = request.node_root_dir.join(&request.node_name);
 
     if node_dir.exists() {
-        return NodeInitResponse::failure(format!(
+        return Ok(NodeInitResponse::failure(format!(
             "Node directory already exists: {}",
             node_dir.display()
         ))
-        .encode();
+        .encode()?);
     }
 
     if let Err(e) = std::fs::create_dir_all(&node_dir) {
-        return NodeInitResponse::failure(format!("Failed to create node directory: {}", e))
-            .encode();
+        return Ok(
+            NodeInitResponse::failure(format!("Failed to create node directory: {}", e))
+                .encode()?,
+        );
     }
 
     // Create language-specific configuration (must be done before peppygen generation
@@ -90,22 +92,22 @@ fn handle_node_init_request_inner(
             if let Err(e) =
                 apply_rust_templates(&request.node_name, &node_dir, request.with_container)
             {
-                return NodeInitResponse::failure(format!(
+                return Ok(NodeInitResponse::failure(format!(
                     "Failed to create Rust configuration: {}",
                     e
                 ))
-                .encode();
+                .encode()?);
             }
         }
         Toolchain::Uv => {
             if let Err(e) =
                 apply_python_templates(&request.node_name, &node_dir, request.with_container)
             {
-                return NodeInitResponse::failure(format!(
+                return Ok(NodeInitResponse::failure(format!(
                     "Failed to create Python configuration: {}",
                     e
                 ))
-                .encode();
+                .encode()?);
             }
         }
     }
@@ -121,15 +123,19 @@ fn handle_node_init_request_inner(
         generator::CrateDeployMode::default(),
         None,
     ) {
-        return NodeInitResponse::failure(format!("Failed to generate peppygen: {}", e)).encode();
+        return Ok(
+            NodeInitResponse::failure(format!("Failed to generate peppygen: {}", e)).encode()?,
+        );
     }
 
     // Create .gitignore
     if let Err(e) = create_gitignore(&node_dir, toolchain) {
-        return NodeInitResponse::failure(format!("Failed to create .gitignore: {}", e)).encode();
+        return NodeInitResponse::failure(format!("Failed to create .gitignore: {}", e))
+            .encode()
+            .map_err(Into::into);
     }
 
-    NodeInitResponse::success().encode()
+    NodeInitResponse::success().encode().map_err(Into::into)
 }
 
 fn create_gitignore(node_dir: &std::path::Path, build_system: Toolchain) -> std::io::Result<()> {

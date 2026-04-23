@@ -185,7 +185,7 @@ pub(crate) async fn poll_action_to_completion<R>(
 
 mod impls {
     use super::{ActionFeedbackLike, ActionGoalResponseLike, ActionResultLike};
-    use core_node::encoding::{
+    use core_node_api::encoding::{
         NodeAddFeedback, NodeAddGoalResponse, NodeAddResult, NodeBuildFeedback,
         NodeBuildGoalResponse, NodeBuildResult, NodeRunFeedback, NodeRunGoalResponse,
         NodeRunResult,

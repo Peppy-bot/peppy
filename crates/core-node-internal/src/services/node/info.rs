@@ -3,12 +3,14 @@ use super::{
     checkout_repo_ref, is_supported_fs_archive, resolve_local_archive_source, sanitize_repo_path,
 };
 use crate::Result;
-use crate::encoding::{NodeInfo, NodeInfoRequest, NodeInfoResponse, NodeInstanceInfo, NodeSource};
 use crate::names;
 use crate::services::repo::cache as repo_cache;
 use config::consts::{NODE_CONFIG_FILE, PeppyDirs};
 use config::fingerprint::fingerprint_for_bytes;
 use config::node::{DEFAULT_VARIANT_NAME, NodeConfig, NodeConfigParser, ParsedNodeConfig};
+use core_node_api::encoding::{
+    NodeInfo, NodeInfoRequest, NodeInfoResponse, NodeInstanceInfo, NodeSource,
+};
 use node_stack::InstanceState;
 use node_stack::NodeStack;
 use peppylib::messaging::ServiceRequestContext;

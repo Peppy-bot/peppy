@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use config::launcher::PeppyLauncherParser;
-use core_node::encoding::{
+use core_node_api::encoding::{
     LaunchFeedback, LaunchFeedbackStep, LaunchGoal, LaunchGoalResponse, LaunchResult,
     NodeAddLogEntry, NodeBuildLogEntry, NodeRunLogEntry,
 };
@@ -16,6 +16,7 @@ use crate::context::AppContext;
 use crate::error::{Error, Result};
 use crate::terminal::ScrollingOutput;
 
+use peppylib::core_node::transport::send_launch;
 // Minimum CLI fallback ceiling when the user opts into `--max-timeout-secs`. Ensures the CLI's
 // safety net never fires before the daemon's own per-phase timeout, so users see a precise
 // daemon-side error rather than a generic CLI fallback. When the user omits the flag, no CLI
@@ -196,17 +197,17 @@ async fn launch_async(
     )
     .saturating_add(DAEMON_RESPONSE_GRACE);
 
-    let mut action_handle = goal
-        .send_goal(
-            conn.messenger,
-            &conn.core_node_name,
-            CALLER_INSTANCE_ID,
-            None,
-            None,
-            GOAL_TIMEOUT,
-        )
-        .await
-        .map_err(|e| Error::ExecutionFailed(format!("Failed to send launch goal: {}", e)))?;
+    let mut action_handle = send_launch(
+        &goal,
+        conn.messenger,
+        &conn.core_node_name,
+        CALLER_INSTANCE_ID,
+        None,
+        None,
+        GOAL_TIMEOUT,
+    )
+    .await
+    .map_err(|e| Error::ExecutionFailed(format!("Failed to send launch goal: {}", e)))?;
 
     let goal_response = LaunchGoalResponse::decode(&action_handle.goal_response().payload())
         .map_err(|e| Error::ExecutionFailed(format!("Failed to decode goal response: {}", e)))?;

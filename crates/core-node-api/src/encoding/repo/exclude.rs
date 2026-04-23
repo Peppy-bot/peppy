@@ -1,16 +1,12 @@
 use std::path::PathBuf;
-use std::time::Duration;
 
 use capnp::message::Builder;
-use peppylib::types::Payload;
-use peppylib::{MessengerHandle, ServiceMessenger};
 
-use crate::Result;
-use crate::names;
 use crate::repo_capnp;
+use crate::{Payload, Result};
 
 use crate::encoding::RepoSource;
-use crate::encoding::{decode_message, encode_message};
+use crate::encoding::{decode_message, encode_message, optional_text};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepoExcludeRequest {
@@ -71,41 +67,12 @@ impl RepoExcludeRequest {
             Which::Git(git) => {
                 let git = git?;
                 let repo_url = git.get_repo_url()?.to_str()?.to_owned();
-                let repo_ref_str = git.get_repo_ref()?.to_str()?.to_owned();
-                let repo_ref = if repo_ref_str.is_empty() {
-                    None
-                } else {
-                    Some(repo_ref_str)
-                };
+                let repo_ref = optional_text(git.get_repo_ref()?.to_str()?);
                 RepoSource::Git { repo_url, repo_ref }
             }
             Which::Url(url) => RepoSource::Url(url?.to_str()?.to_owned()),
         };
         Ok(Self { source })
-    }
-
-    pub async fn poll(
-        &self,
-        messenger: &MessengerHandle,
-        bound_core_node: &str,
-        as_instance_id: &str,
-        target_core_node: &str,
-        response_timeout: Duration,
-    ) -> Result<RepoExcludeResponse> {
-        let request_payload = self.encode()?;
-        let response = ServiceMessenger::poll(
-            messenger,
-            bound_core_node,
-            as_instance_id,
-            target_core_node,
-            names::REPO_EXCLUDE,
-            Some(target_core_node),
-            None,
-            request_payload,
-            response_timeout,
-        )
-        .await?;
-        RepoExcludeResponse::decode(response.payload().as_ref())
     }
 }
 

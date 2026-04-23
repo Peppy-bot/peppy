@@ -1,9 +1,9 @@
 use crate::Result;
-use crate::encoding::{RepoExcludeRequest, RepoExcludeResponse, RepoSourceKind};
 use crate::names;
 use crate::services::repo::refresh::{process_refresh, write_cache};
 use crate::services::repo::{json_entry_identity, normalize_repo_entries, repo_source_to_json};
 use config::consts::PeppyDirs;
+use core_node_api::encoding::{RepoExcludeRequest, RepoExcludeResponse, RepoSourceKind};
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::types::Payload;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
@@ -87,7 +87,9 @@ pub(crate) fn read_excluded_repos(peppy_dirs: &PeppyDirs) -> Result<Vec<Value>> 
     let mut repos: Vec<Value> = if repos_path.exists() {
         let content = std::fs::read_to_string(&repos_path)?;
         serde_json5::from_str(&content).map_err(|e| {
-            crate::Error::Decoding(format!("failed to parse excluded_repositories.json5: {e}"))
+            core_node_api::Error::Decoding(format!(
+                "failed to parse excluded_repositories.json5: {e}"
+            ))
         })?
     } else {
         Vec::new()
@@ -189,7 +191,9 @@ fn handle_repo_exclude_request_inner(
 
     let mut repos = match read_excluded_repos(peppy_dirs) {
         Ok(repos) => repos,
-        Err(e) => return Ok((RepoExcludeResponse::failure(e.to_string()).encode()?, false)),
+        Err(e) => {
+            return Ok((RepoExcludeResponse::failure(e.to_string()).encode()?, false));
+        }
     };
 
     let new_identity = identity.trim();
@@ -215,7 +219,7 @@ fn handle_repo_exclude_request_inner(
     repos.push(repo_source_to_json(next_id, &request.source));
     repos.sort_by_key(|e| e.get("id").and_then(|v| v.as_u64()).unwrap_or(0));
     let content = serde_json::to_string_pretty(&repos).map_err(|e| {
-        crate::Error::Encoding(format!("failed to serialize excluded repositories: {e}"))
+        core_node_api::Error::Encoding(format!("failed to serialize excluded repositories: {e}"))
     })?;
     std::fs::write(&repos_path, content)?;
 

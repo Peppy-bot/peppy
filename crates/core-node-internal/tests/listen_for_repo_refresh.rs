@@ -6,11 +6,11 @@ use common::{
 };
 use config::consts::NODE_CONFIG_FILE;
 use config::node::QoSProfile;
-use core_node::encoding::{
+use core_node::names;
+use core_node_api::encoding::{
     RepoRefreshFeedback, RepoRefreshGoal, RepoRefreshGoalResponse, RepoRefreshResult,
     RepoSourceKind,
 };
-use core_node::names;
 use git2::{Repository, Signature};
 use peppylib::ActionMessenger;
 use std::path::Path;

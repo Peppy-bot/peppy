@@ -1,5 +1,6 @@
 use super::*;
 
+use peppylib::core_node::transport::poll_node_sync;
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_add_variant_local_source() {
     const ROOT_NODE_NAME: &str = "robot_brain";
@@ -91,7 +92,7 @@ async fn listen_for_node_add_variant_local_source() {
 /// not the temporary merged config, so that `node add` verification passes.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_add_variant_local_source_after_sync() {
-    use core_node::encoding::NodeSyncRequest;
+    use core_node_api::encoding::NodeSyncRequest;
 
     const ROOT_NODE_NAME: &str = "synced_robot";
     const ROOT_NODE_TAG: &str = "0.1.0";
@@ -144,16 +145,16 @@ async fn listen_for_node_add_variant_local_source_after_sync() {
     std::fs::write(&variant_config_path, variant_config).expect("failed to write variant config");
 
     // Step 1: Run node sync — this generates peppygen + fingerprint for root and variant.
-    let sync_response = NodeSyncRequest::new(&root_dir, TEST_GIT_HASH, vec![])
-        .poll(
-            &started_core_node.caller_handle,
-            &started_core_node.core_node_name,
-            CALLER_INSTANCE_ID,
-            &started_core_node.core_node_name,
-            Duration::from_secs(10),
-        )
-        .await
-        .expect("node_sync request should complete");
+    let sync_response = poll_node_sync(
+        &NodeSyncRequest::new(&root_dir, TEST_GIT_HASH, vec![]),
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        CALLER_INSTANCE_ID,
+        &started_core_node.core_node_name,
+        Duration::from_secs(10),
+    )
+    .await
+    .expect("node_sync request should complete");
 
     assert!(
         sync_response.success,
@@ -223,7 +224,7 @@ async fn listen_for_node_add_variant_local_source_after_sync() {
 /// path, not the root.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_add_variant_only_node_after_sync() {
-    use core_node::encoding::NodeSyncRequest;
+    use core_node_api::encoding::NodeSyncRequest;
 
     const ROOT_NODE_NAME: &str = "variant_only_robot";
     const ROOT_NODE_TAG: &str = "0.1.0";
@@ -276,16 +277,16 @@ async fn listen_for_node_add_variant_only_node_after_sync() {
 
     // Step 1: Run node sync — generates peppygen only for the variant (not root,
     // since root has no execution block).
-    let sync_response = NodeSyncRequest::new(&root_dir, TEST_GIT_HASH, vec![])
-        .poll(
-            &started_core_node.caller_handle,
-            &started_core_node.core_node_name,
-            CALLER_INSTANCE_ID,
-            &started_core_node.core_node_name,
-            Duration::from_secs(10),
-        )
-        .await
-        .expect("node_sync request should complete");
+    let sync_response = poll_node_sync(
+        &NodeSyncRequest::new(&root_dir, TEST_GIT_HASH, vec![]),
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        CALLER_INSTANCE_ID,
+        &started_core_node.core_node_name,
+        Duration::from_secs(10),
+    )
+    .await
+    .expect("node_sync request should complete");
 
     assert!(
         sync_response.success,
@@ -356,7 +357,7 @@ async fn listen_for_node_add_variant_only_node_after_sync() {
 /// mismatch on the next `node add`, blocking the stale variant from being added.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_add_variant_fingerprint_mismatch_after_sync() {
-    use core_node::encoding::NodeSyncRequest;
+    use core_node_api::encoding::NodeSyncRequest;
 
     const ROOT_NODE_NAME: &str = "stale_variant_robot";
     const ROOT_NODE_TAG: &str = "0.1.0";
@@ -405,16 +406,16 @@ async fn listen_for_node_add_variant_fingerprint_mismatch_after_sync() {
         .expect("failed to write variant config");
 
     // Step 1: Sync — generates peppygen and fingerprint for both root and variant.
-    let sync_response = NodeSyncRequest::new(&root_dir, TEST_GIT_HASH, vec![])
-        .poll(
-            &started_core_node.caller_handle,
-            &started_core_node.core_node_name,
-            CALLER_INSTANCE_ID,
-            &started_core_node.core_node_name,
-            Duration::from_secs(10),
-        )
-        .await
-        .expect("node_sync request should complete");
+    let sync_response = poll_node_sync(
+        &NodeSyncRequest::new(&root_dir, TEST_GIT_HASH, vec![]),
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        CALLER_INSTANCE_ID,
+        &started_core_node.core_node_name,
+        Duration::from_secs(10),
+    )
+    .await
+    .expect("node_sync request should complete");
 
     assert!(
         sync_response.success,
@@ -852,7 +853,7 @@ async fn listen_for_node_add_variant_no_interfaces() {
 /// or as a variant, as well as the case where no variant is set.
 #[test]
 fn listen_for_node_add_variant_encoding_roundtrip() {
-    use core_node::encoding::NodeSource;
+    use core_node_api::encoding::NodeSource;
 
     // Name-based variant (Fs)
     let goal = NodeAddGoal::new("/some/path", "test-hash", 60).with_variant_name("mock");

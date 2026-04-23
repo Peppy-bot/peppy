@@ -1,9 +1,9 @@
 use super::add::{CleanupDir, download_and_extract_http_source};
 use super::{checkout_repo_ref, sanitize_repo_path};
-use crate::encoding::NodeSource;
 use config::consts::{NODE_CONFIG_FILE, PeppyDirs};
 use config::node::{NodeConfig, ParsedNodeConfig, VariantConfigParser};
 use config::source::DeploymentSource;
+use core_node_api::encoding::NodeSource;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;

@@ -1,17 +1,12 @@
 //! Encoding types for the NodeAdd action (streaming version with feedback).
 
-use crate::Result;
-use crate::names;
 use crate::node_capnp;
+use crate::{Payload, Result};
 use capnp::message::Builder;
-use config::node::QoSProfile;
 use gix_url::Url as GitUrl;
-use peppylib::messaging::ActionGoalHandle;
-use peppylib::types::Payload;
-use peppylib::{ActionMessenger, MessengerHandle};
 use std::path::PathBuf;
-use std::time::Duration;
 
+use super::builder::FeedbackStream;
 use crate::encoding::{decode_message, encode_message, optional_text};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -91,16 +86,10 @@ impl NodeSource {
     pub fn decode_git(repo_url_str: &str, repo_path: &str, repo_ref: &str) -> Result<Self> {
         let repo_url = GitUrl::try_from(repo_url_str)
             .map_err(|e| crate::Error::Decoding(format!("invalid git URL: {}", e)))?;
-        let repo_ref = repo_ref.trim().to_owned();
-        let repo_ref = if repo_ref.is_empty() {
-            None
-        } else {
-            Some(repo_ref)
-        };
         Ok(Self::Git {
             repo_url,
             repo_path: repo_path.to_owned(),
-            repo_ref,
+            repo_ref: optional_text(repo_ref.trim()),
         })
     }
 
@@ -423,33 +412,6 @@ impl NodeAddGoal {
             force: goal.get_force(),
         })
     }
-
-    /// Sends the goal to start the NodeAdd action and returns a handle for receiving feedback.
-    pub async fn send_goal(
-        &self,
-        messenger: &MessengerHandle,
-        as_core_node: &str,
-        as_instance_id: &str,
-        target_core_node: Option<&str>,
-        target_instance_id: Option<&str>,
-        goal_timeout: Duration,
-    ) -> Result<ActionGoalHandle> {
-        let goal_payload = self.encode()?;
-        let handle = ActionMessenger::send_goal(
-            messenger,
-            as_core_node,
-            as_instance_id,
-            as_core_node, // node_name is the core node for this action
-            names::NODE_ADD_ACTION,
-            target_core_node,
-            target_instance_id,
-            goal_payload,
-            QoSProfile::default(),
-            goal_timeout,
-        )
-        .await?;
-        Ok(handle)
-    }
 }
 
 #[cfg(test)]
@@ -730,58 +692,48 @@ impl NodeAddGoalResponse {
 /// Represents a single line of output from the build_cmd process.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeAddFeedback {
-    /// The stream type: "stdout", "stderr" or "warning"
-    pub stream: String,
+    pub stream: FeedbackStream,
     /// The line of output
     pub line: String,
 }
 
 impl NodeAddFeedback {
-    pub fn from_stream(stream: node_stack::FeedbackStream, line: impl Into<String>) -> Self {
+    pub fn from_stream(stream: FeedbackStream, line: impl Into<String>) -> Self {
         Self {
-            stream: stream.as_str().to_string(),
+            stream,
             line: line.into(),
         }
     }
 
     pub fn stdout(line: impl Into<String>) -> Self {
-        Self {
-            stream: "stdout".to_string(),
-            line: line.into(),
-        }
+        Self::from_stream(FeedbackStream::Stdout, line)
     }
 
     pub fn stderr(line: impl Into<String>) -> Self {
-        Self {
-            stream: "stderr".to_string(),
-            line: line.into(),
-        }
+        Self::from_stream(FeedbackStream::Stderr, line)
     }
 
     pub fn warning(line: impl Into<String>) -> Self {
-        Self {
-            stream: "warning".to_string(),
-            line: line.into(),
-        }
+        Self::from_stream(FeedbackStream::Warning, line)
     }
 
     pub fn is_stdout(&self) -> bool {
-        self.stream == "stdout"
+        self.stream == FeedbackStream::Stdout
     }
 
     pub fn is_stderr(&self) -> bool {
-        self.stream == "stderr"
+        self.stream == FeedbackStream::Stderr
     }
 
     pub fn is_warning(&self) -> bool {
-        self.stream == "warning"
+        self.stream == FeedbackStream::Warning
     }
 
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
             let mut feedback = builder.init_root::<node_capnp::node_add_feedback::Builder>();
-            feedback.set_stream(&self.stream);
+            feedback.set_stream(self.stream.to_capnp());
             feedback.set_line(&self.line);
         }
         encode_message(&builder)
@@ -791,7 +743,7 @@ impl NodeAddFeedback {
         let reader = decode_message(data)?;
         let feedback = reader.get_root::<node_capnp::node_add_feedback::Reader>()?;
         Ok(Self {
-            stream: feedback.get_stream()?.to_str()?.to_owned(),
+            stream: FeedbackStream::from_capnp(feedback.get_stream()?),
             line: feedback.get_line()?.to_str()?.to_owned(),
         })
     }
@@ -866,16 +818,5 @@ impl NodeAddResult {
             node_name: optional_text(result.get_node_name()?.to_str()?),
             node_tag: optional_text(result.get_node_tag()?.to_str()?),
         })
-    }
-
-    /// Request the result from a completed action.
-    pub async fn request_result(
-        messenger: &MessengerHandle,
-        action_handle: &ActionGoalHandle,
-        result_timeout: Duration,
-    ) -> Result<Self> {
-        let response =
-            ActionMessenger::request_result(messenger, action_handle, result_timeout).await?;
-        Self::decode(response.payload().as_ref())
     }
 }

@@ -651,11 +651,10 @@ dependencies = [
  "askama",
  "build-helpers",
  "bytes",
- "capnp",
- "capnpc",
  "chrono",
  "config",
  "containers",
+ "core-node-api",
  "dirs 6.0.0",
  "futures",
  "generator",
@@ -687,6 +686,25 @@ dependencies = [
  "ureq",
  "url",
  "zstd",
+]
+
+[[package]]
+name = "core-node-api"
+version = "0.0.1"
+dependencies = [
+ "build-helpers",
+ "bytes",
+ "capnp",
+ "capnpc",
+ "chrono",
+ "config",
+ "gix-url",
+ "serde",
+ "serde_json",
+ "serde_json5",
+ "tempfile",
+ "thiserror 2.0.18",
+ "url",
 ]
 
 [[package]]
@@ -2799,6 +2817,7 @@ dependencies = [
  "config",
  "containers",
  "core-node",
+ "core-node-api",
  "crossterm",
  "derive_more",
  "dirs 6.0.0",
@@ -2835,6 +2854,7 @@ dependencies = [
  "capnp",
  "capnpc",
  "config",
+ "core-node-api",
  "futures",
  "jsonschema",
  "pmi",
@@ -3720,9 +3740,9 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.23.38"
+version = "0.23.39"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "69f9466fb2c14ea04357e91413efb882e2a6d4a406e625449bc0a5d360d53a21"
+checksum = "7c2c118cb077cca2822033836dfb1b975355dfb784b5e8da48f7b6c5db74e60e"
 dependencies = [
  "aws-lc-rs",
  "log",

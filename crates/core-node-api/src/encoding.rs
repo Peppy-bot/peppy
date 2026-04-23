@@ -12,6 +12,7 @@ mod stack;
 // now lives at `node::builder` alongside `node::add`.
 
 pub use info::{ContainerInfo, InfoRequest, InfoResponse};
+pub use node::builder::FeedbackStream;
 pub use node::{
     add::DepVariantOverride, add::NodeAddFeedback, add::NodeAddGoal, add::NodeAddGoalResponse,
     add::NodeAddResult, add::NodeSource, builder::NodeBuildFeedback, builder::NodeBuildGoal,
@@ -38,9 +39,7 @@ pub use stack::reset::{NodeResetRequest, NodeResetResponse};
 use capnp::message::{Builder, HeapAllocator, ReaderOptions};
 use capnp::serialize;
 
-use crate::Result;
-
-use peppylib::types::Payload;
+use crate::{Payload, Result};
 
 /// Converts an empty Cap'n Proto text field to `None`, non-empty to `Some(String)`.
 pub(crate) fn optional_text(s: &str) -> Option<String> {
@@ -51,7 +50,7 @@ pub(crate) fn optional_text(s: &str) -> Option<String> {
     }
 }
 
-/// Encode a Cap'n Proto message builder into bytes.
+/// Encode a Cap'n Proto message builder into a `Payload`.
 pub(crate) fn encode_message(message: &Builder<HeapAllocator>) -> Result<Payload> {
     let mut buffer = Vec::new();
     serialize::write_message(&mut buffer, message)?;

@@ -1,14 +1,9 @@
-use std::time::Duration;
-
 use capnp::message::Builder;
-use peppylib::types::Payload;
-use peppylib::{MessengerHandle, ServiceMessenger};
 
-use crate::Result;
-use crate::names;
 use crate::node_capnp;
+use crate::{Payload, Result};
 
-use crate::encoding::{decode_message, encode_message};
+use crate::encoding::{decode_message, encode_message, optional_text};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StackListRequest {
@@ -24,7 +19,7 @@ impl StackListRequest {
         self.with_dot_graph
     }
 
-    fn encode(&self) -> Result<Payload> {
+    pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
             let mut request = builder.init_root::<node_capnp::node_list_request::Builder>();
@@ -39,30 +34,6 @@ impl StackListRequest {
         Ok(Self {
             with_dot_graph: request.get_with_dot_graph(),
         })
-    }
-
-    pub async fn poll(
-        &self,
-        messenger: &MessengerHandle,
-        bound_core_node: &str,
-        as_instance_id: &str,
-        target_core_node: &str,
-        response_timeout: Duration,
-    ) -> Result<StackListResponse> {
-        let request_payload = self.encode()?;
-        let response = ServiceMessenger::poll(
-            messenger,
-            bound_core_node,
-            as_instance_id,
-            target_core_node,
-            names::STACK_LIST,
-            Some(target_core_node),
-            None,
-            request_payload,
-            response_timeout,
-        )
-        .await?;
-        StackListResponse::decode(response.payload().as_ref())
     }
 }
 
@@ -101,14 +72,8 @@ impl StackListResponse {
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
         let response = reader.get_root::<node_capnp::node_list_response::Reader>()?;
-        let dot_graph_str = response.get_dot_graph()?.to_str()?.to_owned();
-        let dot_graph = if dot_graph_str.is_empty() {
-            None
-        } else {
-            Some(dot_graph_str)
-        };
         Ok(Self {
-            dot_graph,
+            dot_graph: optional_text(response.get_dot_graph()?.to_str()?),
             graph_json: response.get_graph_json()?.to_str()?.to_owned(),
         })
     }

@@ -2,12 +2,12 @@ use super::super::action_loop::{ActionResult, ActionState, GoalHandler, run_acti
 use super::gate::ConcurrencyGate;
 use super::{FeedbackLine, FeedbackStream, create_action_log_file, write_error_to_log};
 use crate::Result;
-use crate::encoding::{NodeRunFeedback, NodeRunGoal, NodeRunGoalResponse, NodeRunResult};
 use crate::names;
 use config::consts::PeppyDirs;
 use config::node::Name;
 use config::runtime::RuntimeConfig;
 use config::{AnyType, resolve_parameter_path};
+use core_node_api::encoding::{NodeRunFeedback, NodeRunGoal, NodeRunGoalResponse, NodeRunResult};
 use futures::FutureExt;
 use node_stack::{self, NodeStack};
 use parking_lot::Mutex as StdMutex;
@@ -111,7 +111,7 @@ impl ActionResult for NodeRunResult {
     }
 
     fn encode_result(&self) -> crate::Result<Payload> {
-        self.encode()
+        self.encode().map_err(Into::into)
     }
 }
 
@@ -449,7 +449,11 @@ async fn handle_goal_request(
         let (feedback_tx, feedback_rx) = mpsc::unbounded_channel::<FeedbackLine>();
         let _consumer_handle =
             super::spawn_feedback_forwarder(feedback_rx, feedback_publisher.clone(), |line| {
-                NodeRunFeedback::from_stream(line.stream, &line.line).encode()
+                NodeRunFeedback::from_stream(
+                    super::feedback::stream_to_api(line.stream),
+                    &line.line,
+                )
+                .encode()
             });
 
         // Action-server path has no outer cancellation source; the internal
