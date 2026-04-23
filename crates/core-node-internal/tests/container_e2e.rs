@@ -14,25 +14,6 @@ mod container_e2e_tests {
     use std::time::Duration;
     use tempfile::tempdir;
 
-    /// Returns `true` if the Apptainer runtime is available and operational.
-    /// Used to gracefully skip tests on hosts without Lima/Apptainer.
-    fn apptainer_available() -> bool {
-        let facade = match containers::Apptainer::new() {
-            Ok(f) => f,
-            Err(e) => {
-                eprintln!("SKIPPING: Apptainer runtime not available: {e}");
-                return false;
-            }
-        };
-
-        if let Err(e) = facade.version() {
-            eprintln!("SKIPPING: Apptainer runtime not operational: {e}");
-            return false;
-        }
-
-        true
-    }
-
     /// End-to-end test: init a Rust container node, build the container image,
     /// and start it using the real Apptainer runtime.
     ///
@@ -40,10 +21,6 @@ mod container_e2e_tests {
     /// node_add (apptainer build) -> node_run (apptainer run).
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn container_e2e_rust_init_add_start() {
-        if !apptainer_available() {
-            return;
-        }
-
         const NODE_NAME: &str = "rust_e2e_node";
         const NODE_TAG: &str = "0.1.0";
         const INSTANCE_ID: &str = "rust_e2e_instance";
@@ -209,10 +186,6 @@ mod container_e2e_tests {
     /// node_add (apptainer build) -> node_run (apptainer run).
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn container_e2e_python_init_add_start() {
-        if !apptainer_available() {
-            return;
-        }
-
         const NODE_NAME: &str = "python_e2e_node";
         const NODE_TAG: &str = "0.1.0";
         const INSTANCE_ID: &str = "python_e2e_instance";
