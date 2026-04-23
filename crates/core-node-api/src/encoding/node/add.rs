@@ -86,16 +86,10 @@ impl NodeSource {
     pub fn decode_git(repo_url_str: &str, repo_path: &str, repo_ref: &str) -> Result<Self> {
         let repo_url = GitUrl::try_from(repo_url_str)
             .map_err(|e| crate::Error::Decoding(format!("invalid git URL: {}", e)))?;
-        let repo_ref = repo_ref.trim().to_owned();
-        let repo_ref = if repo_ref.is_empty() {
-            None
-        } else {
-            Some(repo_ref)
-        };
         Ok(Self::Git {
             repo_url,
             repo_path: repo_path.to_owned(),
-            repo_ref,
+            repo_ref: optional_text(repo_ref.trim()),
         })
     }
 

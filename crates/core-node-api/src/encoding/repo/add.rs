@@ -6,7 +6,7 @@ use capnp::message::Builder;
 use crate::repo_capnp;
 use crate::{Payload, Result};
 
-use crate::encoding::{decode_message, encode_message};
+use crate::encoding::{decode_message, encode_message, optional_text};
 
 /// Discriminant for the type of repository source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -172,12 +172,7 @@ impl RepoAddRequest {
             Which::Git(git) => {
                 let git = git?;
                 let repo_url = git.get_repo_url()?.to_str()?.to_owned();
-                let repo_ref_str = git.get_repo_ref()?.to_str()?.to_owned();
-                let repo_ref = if repo_ref_str.is_empty() {
-                    None
-                } else {
-                    Some(repo_ref_str)
-                };
+                let repo_ref = optional_text(git.get_repo_ref()?.to_str()?);
                 RepoSource::Git { repo_url, repo_ref }
             }
             Which::Url(url) => RepoSource::Url(url?.to_str()?.to_owned()),

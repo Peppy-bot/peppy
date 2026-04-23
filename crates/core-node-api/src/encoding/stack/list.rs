@@ -3,7 +3,7 @@ use capnp::message::Builder;
 use crate::node_capnp;
 use crate::{Payload, Result};
 
-use crate::encoding::{decode_message, encode_message};
+use crate::encoding::{decode_message, encode_message, optional_text};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StackListRequest {
@@ -72,14 +72,8 @@ impl StackListResponse {
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
         let response = reader.get_root::<node_capnp::node_list_response::Reader>()?;
-        let dot_graph_str = response.get_dot_graph()?.to_str()?.to_owned();
-        let dot_graph = if dot_graph_str.is_empty() {
-            None
-        } else {
-            Some(dot_graph_str)
-        };
         Ok(Self {
-            dot_graph,
+            dot_graph: optional_text(response.get_dot_graph()?.to_str()?),
             graph_json: response.get_graph_json()?.to_str()?.to_owned(),
         })
     }
