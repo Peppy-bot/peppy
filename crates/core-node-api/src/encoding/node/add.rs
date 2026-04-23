@@ -6,6 +6,7 @@ use capnp::message::Builder;
 use gix_url::Url as GitUrl;
 use std::path::PathBuf;
 
+use super::builder::FeedbackStream;
 use crate::encoding::{decode_message, encode_message, optional_text};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -697,58 +698,48 @@ impl NodeAddGoalResponse {
 /// Represents a single line of output from the build_cmd process.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeAddFeedback {
-    /// The stream type: "stdout", "stderr" or "warning"
-    pub stream: String,
+    pub stream: FeedbackStream,
     /// The line of output
     pub line: String,
 }
 
 impl NodeAddFeedback {
-    pub fn from_stream(stream: impl Into<String>, line: impl Into<String>) -> Self {
+    pub fn from_stream(stream: FeedbackStream, line: impl Into<String>) -> Self {
         Self {
-            stream: stream.into(),
+            stream,
             line: line.into(),
         }
     }
 
     pub fn stdout(line: impl Into<String>) -> Self {
-        Self {
-            stream: "stdout".to_string(),
-            line: line.into(),
-        }
+        Self::from_stream(FeedbackStream::Stdout, line)
     }
 
     pub fn stderr(line: impl Into<String>) -> Self {
-        Self {
-            stream: "stderr".to_string(),
-            line: line.into(),
-        }
+        Self::from_stream(FeedbackStream::Stderr, line)
     }
 
     pub fn warning(line: impl Into<String>) -> Self {
-        Self {
-            stream: "warning".to_string(),
-            line: line.into(),
-        }
+        Self::from_stream(FeedbackStream::Warning, line)
     }
 
     pub fn is_stdout(&self) -> bool {
-        self.stream == "stdout"
+        self.stream == FeedbackStream::Stdout
     }
 
     pub fn is_stderr(&self) -> bool {
-        self.stream == "stderr"
+        self.stream == FeedbackStream::Stderr
     }
 
     pub fn is_warning(&self) -> bool {
-        self.stream == "warning"
+        self.stream == FeedbackStream::Warning
     }
 
     pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
             let mut feedback = builder.init_root::<node_capnp::node_add_feedback::Builder>();
-            feedback.set_stream(&self.stream);
+            feedback.set_stream(self.stream.as_str());
             feedback.set_line(&self.line);
         }
         encode_message(&builder)
@@ -758,7 +749,7 @@ impl NodeAddFeedback {
         let reader = decode_message(data)?;
         let feedback = reader.get_root::<node_capnp::node_add_feedback::Reader>()?;
         Ok(Self {
-            stream: feedback.get_stream()?.to_str()?.to_owned(),
+            stream: feedback.get_stream()?.to_str()?.parse()?,
             line: feedback.get_line()?.to_str()?.to_owned(),
         })
     }

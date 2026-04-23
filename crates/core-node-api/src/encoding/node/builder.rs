@@ -25,6 +25,22 @@ impl FeedbackStream {
     }
 }
 
+impl std::str::FromStr for FeedbackStream {
+    type Err = crate::Error;
+
+    fn from_str(s: &str) -> Result<Self> {
+        match s {
+            "stdout" => Ok(Self::Stdout),
+            "stderr" => Ok(Self::Stderr),
+            "warning" => Ok(Self::Warning),
+            other => Err(crate::Error::Decoding(format!(
+                "unknown FeedbackStream: {}",
+                other
+            ))),
+        }
+    }
+}
+
 /// Goal message for the NodeBuild action.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeBuildGoal {
@@ -205,20 +221,8 @@ impl NodeBuildFeedback {
     pub fn decode(data: &[u8]) -> Result<Self> {
         let reader = decode_message(data)?;
         let feedback = reader.get_root::<node_capnp::node_build_feedback::Reader>()?;
-        let stream_str = feedback.get_stream()?.to_str()?;
-        let stream = match stream_str {
-            "stdout" => FeedbackStream::Stdout,
-            "stderr" => FeedbackStream::Stderr,
-            "warning" => FeedbackStream::Warning,
-            other => {
-                return Err(crate::Error::Decoding(format!(
-                    "unknown NodeBuildFeedback stream: {}",
-                    other
-                )));
-            }
-        };
         Ok(Self {
-            stream,
+            stream: feedback.get_stream()?.to_str()?.parse()?,
             line: feedback.get_line()?.to_str()?.to_owned(),
         })
     }

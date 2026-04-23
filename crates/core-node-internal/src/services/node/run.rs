@@ -449,7 +449,11 @@ async fn handle_goal_request(
         let (feedback_tx, feedback_rx) = mpsc::unbounded_channel::<FeedbackLine>();
         let _consumer_handle =
             super::spawn_feedback_forwarder(feedback_rx, feedback_publisher.clone(), |line| {
-                NodeRunFeedback::from_stream(line.stream.as_str(), &line.line).encode()
+                NodeRunFeedback::from_stream(
+                    super::feedback::stream_to_api(line.stream),
+                    &line.line,
+                )
+                .encode()
             });
 
         // Action-server path has no outer cancellation source; the internal
