@@ -245,7 +245,7 @@ async fn listen_for_node_init_python_success() {
         &started_core_node.core_node_name,
         CALLER_INSTANCE_ID,
         &started_core_node.core_node_name,
-        None::<Duration>,
+        Duration::from_secs(10),
     )
     .await
     .expect("node_init request should complete");
@@ -347,7 +347,7 @@ async fn listen_for_node_init_python_container_success() {
         &started_core_node.core_node_name,
         CALLER_INSTANCE_ID,
         &started_core_node.core_node_name,
-        None::<Duration>,
+        Duration::from_secs(10),
     )
     .await
     .expect("node_init request should complete");
