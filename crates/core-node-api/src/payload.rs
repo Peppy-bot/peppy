@@ -6,7 +6,11 @@
 
 use bytes::Bytes;
 
-/// A wrapper around `bytes::Bytes` to avoid exposing the `bytes` crate in the public API.
+/// A wrapper around `bytes::Bytes`.
+///
+/// `Bytes` is intentionally exposed through [`Payload::into_inner`],
+/// [`From<Bytes>`], and the `PartialEq<Bytes>` / `PartialEq<Payload> for Bytes`
+/// impls so callers can interop with the `bytes` crate without an extra copy.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Payload(Bytes);
 
