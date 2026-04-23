@@ -4,8 +4,8 @@ use std::path::PathBuf;
 
 use capnp::message::Builder;
 
-use crate::Result;
 use crate::launch_capnp;
+use crate::{Payload, Result};
 
 use crate::encoding::{decode_message, encode_message, optional_text};
 
@@ -54,7 +54,7 @@ impl LaunchGoal {
         self
     }
 
-    pub fn encode(&self) -> Result<Vec<u8>> {
+    pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
             let mut goal = builder.init_root::<launch_capnp::launch_goal::Builder>();
@@ -140,7 +140,7 @@ impl LaunchGoalResponse {
         }
     }
 
-    pub fn encode(&self) -> Result<Vec<u8>> {
+    pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
             let mut response = builder.init_root::<launch_capnp::launch_goal_response::Builder>();
@@ -221,7 +221,7 @@ impl LaunchFeedback {
         self.stream == "stderr"
     }
 
-    pub fn encode(&self) -> Result<Vec<u8>> {
+    pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
             let mut feedback = builder.init_root::<launch_capnp::launch_feedback::Builder>();
@@ -325,7 +325,7 @@ impl LaunchResult {
         self
     }
 
-    pub fn encode(&self) -> Result<Vec<u8>> {
+    pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
             let mut result = builder.init_root::<launch_capnp::launch_result::Builder>();

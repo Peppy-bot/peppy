@@ -1,16 +1,16 @@
 use capnp::message::Builder;
 
-use crate::Result;
 use crate::encoding::repo::add::RepoSourceKind;
 use crate::encoding::{decode_message, encode_message, optional_text};
 use crate::repo_capnp;
+use crate::{Payload, Result};
 
 /// Request message for the RepoList service (empty — list all).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepoListRequest;
 
 impl RepoListRequest {
-    pub fn encode(&self) -> Result<Vec<u8>> {
+    pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
             let _req = builder.init_root::<repo_capnp::repo_list_request::Builder>();
@@ -69,7 +69,7 @@ impl RepoListResponse {
         }
     }
 
-    pub fn encode(&self) -> Result<Vec<u8>> {
+    pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
             let mut response = builder.init_root::<repo_capnp::repo_list_response::Builder>();

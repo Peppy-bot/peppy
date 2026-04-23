@@ -101,8 +101,7 @@ async fn handle_node_remove_request_inner(
     if request.node_name == root_node_name && request.tag == root_node_tag {
         return Ok(
             NodeRemoveResponse::failure("Cannot remove the core node from the node stack")
-                .encode()?
-                .into(),
+                .encode()?,
         );
     }
 
@@ -116,8 +115,7 @@ async fn handle_node_remove_request_inner(
             "Node '{}:{}' not found in node stack",
             request.node_name, request.tag
         ))
-        .encode()?
-        .into());
+        .encode()?);
     };
 
     let matching_entities = vec![matching_entity];
@@ -192,8 +190,7 @@ async fn handle_node_remove_request_inner(
                     target.instance_id.as_str(),
                     e
                 ))
-                .encode()?
-                .into());
+                .encode()?);
             }
         };
         if reachable {
@@ -212,12 +209,13 @@ async fn handle_node_remove_request_inner(
             .first()
             .or_else(|| unreachable_targets.first())
             .expect("one of the lists is non-empty");
-        return Ok(NodeRemoveResponse::failure(format!(
+        return NodeRemoveResponse::failure(format!(
             "Node '{}' has running instances (e.g. '{}'); set stop_instances=true to stop them before removing",
             request.node_name,
             example.instance_id.as_str(),
         ))
-        .encode()?.into());
+        .encode()
+        .map_err(Into::into);
     }
 
     // With `stop_instances=true`, we proceed despite unreachable instances —
@@ -267,8 +265,7 @@ async fn handle_node_remove_request_inner(
                     target.instance_id.as_str(),
                     e
                 ))
-                .encode()?
-                .into());
+                .encode()?);
             }
         }
     }
@@ -308,11 +305,10 @@ async fn handle_node_remove_request_inner(
                     "Failed to remove node config '{}:{}': {}",
                     target.node_name, target.node_tag, e
                 ))
-                .encode()?
-                .into());
+                .encode()?);
             }
         }
     }
 
-    Ok(NodeRemoveResponse::success().encode()?.into())
+    NodeRemoveResponse::success().encode().map_err(Into::into)
 }

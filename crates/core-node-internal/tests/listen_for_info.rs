@@ -22,7 +22,7 @@ async fn listen_for_info_success() {
         names::INFO,
         Some(&started.core_node_name),
         None,
-        request_payload.into(),
+        request_payload,
         Duration::from_secs(5),
     )
     .await

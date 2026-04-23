@@ -5,8 +5,8 @@ use std::path::PathBuf;
 use capnp::message::Builder;
 use config::node::NodeConfig;
 
-use crate::Result;
 use crate::node_capnp;
+use crate::{Payload, Result};
 
 use crate::encoding::{decode_message, encode_message, optional_text};
 
@@ -29,7 +29,7 @@ impl NodeInfoRequest {
         }
     }
 
-    pub fn encode(&self) -> Result<Vec<u8>> {
+    pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
             let mut request = builder.init_root::<node_capnp::node_info_request::Builder>();
@@ -94,7 +94,7 @@ pub enum NodeInfoResponse {
 }
 
 impl NodeInfoResponse {
-    pub fn encode(&self) -> Result<Vec<u8>> {
+    pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
             let response = builder.init_root::<node_capnp::node_info_response::Builder>();

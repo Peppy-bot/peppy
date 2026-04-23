@@ -131,7 +131,6 @@ async fn handle_node_info_request_inner(
     let Some(entity) = node_stack.find(&request.node_name, &request.node_tag) else {
         return NodeInfoResponse::NotInStack
             .encode()
-            .map(peppylib::types::Payload::from)
             .map_err(|e| InfoError::Internal(format!("failed to encode NodeInfoResponse: {}", e)));
     };
 
@@ -175,7 +174,6 @@ async fn handle_node_info_request_inner(
         variant_name,
     }))
     .encode()
-    .map(peppylib::types::Payload::from)
     .map_err(|e| InfoError::Internal(format!("failed to encode NodeInfoResponse: {}", e)))
 }
 

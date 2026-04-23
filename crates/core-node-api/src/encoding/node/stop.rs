@@ -1,7 +1,7 @@
 use capnp::message::Builder;
 
-use crate::Result;
 use crate::node_capnp;
+use crate::{Payload, Result};
 
 use crate::encoding::{decode_message, encode_message, optional_text};
 
@@ -17,7 +17,7 @@ impl NodeStopRequest {
         }
     }
 
-    pub fn encode(&self) -> Result<Vec<u8>> {
+    pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
             let mut request = builder.init_root::<node_capnp::node_stop_request::Builder>();
@@ -57,7 +57,7 @@ impl NodeStopResponse {
         Self::new(false, Some(error_message.into()))
     }
 
-    pub fn encode(&self) -> Result<Vec<u8>> {
+    pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
             let mut response = builder.init_root::<node_capnp::node_stop_response::Builder>();

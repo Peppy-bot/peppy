@@ -62,7 +62,11 @@ fn handle_repo_list_request_inner(
 
     let repos = match read_or_create_repos(peppy_dirs) {
         Ok(repos) => repos,
-        Err(e) => return Ok(RepoListResponse::failure(e.to_string()).encode()?.into()),
+        Err(e) => {
+            return RepoListResponse::failure(e.to_string())
+                .encode()
+                .map_err(Into::into);
+        }
     };
 
     let exclusions = ExclusionSet::load(peppy_dirs);
@@ -193,7 +197,9 @@ fn handle_repo_list_request_inner(
         }
     }
 
-    Ok(RepoListResponse::success(all_entries).encode()?.into())
+    RepoListResponse::success(all_entries)
+        .encode()
+        .map_err(Into::into)
 }
 
 /// Read cached node entries from packages.json5 in the cache directory.

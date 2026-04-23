@@ -149,6 +149,16 @@ pub(crate) struct EmbeddedConfigInternal;
 #[exclude = "target/*"]
 pub(crate) struct EmbeddedBuildHelpers;
 
+#[derive(Embed)]
+#[folder = "../core-node-api/"]
+#[include = "*.rs"]
+#[include = "*.toml"]
+#[include = "*.capnp"]
+#[exclude = "target/*"]
+#[exclude = "tests/*"]
+#[exclude = "examples/*"]
+pub(crate) struct EmbeddedCoreNodeApi;
+
 /// Recursively copies a directory and all of its contents.
 pub(crate) fn copy_dir_recursive(src: &Path, dst: &Path) -> io::Result<()> {
     fs::create_dir_all(dst)?;

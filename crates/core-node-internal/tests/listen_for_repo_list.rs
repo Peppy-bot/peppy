@@ -60,7 +60,7 @@ async fn send_repo_list(started: &StartedCoreNode) -> RepoListResponse {
         names::REPO_LIST,
         Some(&started.core_node_name),
         None,
-        payload.into(),
+        payload,
         Duration::from_secs(5),
     )
     .await

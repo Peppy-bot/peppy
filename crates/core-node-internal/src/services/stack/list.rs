@@ -66,7 +66,5 @@ fn handle_node_list_request_inner(
     };
     let serialized_graph = node_stack.to_serialized_graph();
     let graph_json = serde_json::to_string(&serialized_graph).unwrap_or_else(|_| "{}".to_string());
-    Ok(StackListResponse::new(dot_graph, graph_json)
-        .encode()?
-        .into())
+    Ok(StackListResponse::new(dot_graph, graph_json).encode()?)
 }

@@ -65,11 +65,7 @@ fn handle_repo_add_request_inner(
 
     let identity = request.source.identity();
     if identity.trim().is_empty() {
-        return Ok(
-            RepoAddResponse::failure("repository path/URL must not be empty")
-                .encode()?
-                .into(),
-        );
+        return Ok(RepoAddResponse::failure("repository path/URL must not be empty").encode()?);
     }
 
     let repos_path = peppy_dirs.conf_dir().join("repositories.json5");
@@ -78,7 +74,11 @@ fn handle_repo_add_request_inner(
 
     let mut repos = match read_or_create_repos(peppy_dirs) {
         Ok(repos) => repos,
-        Err(e) => return Ok(RepoAddResponse::failure(e.to_string()).encode()?.into()),
+        Err(e) => {
+            return RepoAddResponse::failure(e.to_string())
+                .encode()
+                .map_err(Into::into);
+        }
     };
 
     let new_identity = identity.trim();
@@ -91,8 +91,7 @@ fn handle_repo_add_request_inner(
             "repository '{}' already exists",
             new_identity
         ))
-        .encode()?
-        .into());
+        .encode()?);
     }
 
     let next_id = if request.top {
@@ -107,8 +106,7 @@ fn handle_repo_add_request_inner(
                     return Ok(RepoAddResponse::failure(
                         "cannot add repo with top priority: existing minimum id is 0 (would underflow)",
                     )
-                    .encode()?
-                    .into());
+                    .encode()?);
                 }
             },
             None => 1000,
@@ -125,8 +123,7 @@ fn handle_repo_add_request_inner(
                     return Ok(RepoAddResponse::failure(
                         "cannot add repo: existing maximum id is u64::MAX (would overflow)",
                     )
-                    .encode()?
-                    .into());
+                    .encode()?);
                 }
             },
             None => 1000,
@@ -140,5 +137,5 @@ fn handle_repo_add_request_inner(
 
     drop(_guard);
 
-    Ok(RepoAddResponse::success().encode()?.into())
+    RepoAddResponse::success().encode().map_err(Into::into)
 }

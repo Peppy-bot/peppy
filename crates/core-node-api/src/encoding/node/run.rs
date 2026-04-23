@@ -4,8 +4,8 @@ use std::path::PathBuf;
 
 use capnp::message::Builder;
 
-use crate::Result;
 use crate::node_capnp;
+use crate::{Payload, Result};
 
 use crate::encoding::{decode_message, encode_message, optional_text};
 
@@ -52,7 +52,7 @@ impl NodeRunGoal {
         Self::new(runtime_config_json5, node_name, tag, 0)
     }
 
-    pub fn encode(&self) -> Result<Vec<u8>> {
+    pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
             let mut goal = builder.init_root::<node_capnp::node_run_goal::Builder>();
@@ -121,7 +121,7 @@ impl NodeRunGoalResponse {
         }
     }
 
-    pub fn encode(&self) -> Result<Vec<u8>> {
+    pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
             let mut response = builder.init_root::<node_capnp::node_run_goal_response::Builder>();
@@ -156,9 +156,9 @@ pub struct NodeRunFeedback {
 }
 
 impl NodeRunFeedback {
-    pub fn from_stream(stream: node_stack::FeedbackStream, line: impl Into<String>) -> Self {
+    pub fn from_stream(stream: impl Into<String>, line: impl Into<String>) -> Self {
         Self {
-            stream: stream.as_str().to_string(),
+            stream: stream.into(),
             line: line.into(),
         }
     }
@@ -196,7 +196,7 @@ impl NodeRunFeedback {
         self.stream == "warning"
     }
 
-    pub fn encode(&self) -> Result<Vec<u8>> {
+    pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
             let mut feedback = builder.init_root::<node_capnp::node_run_feedback::Builder>();
@@ -242,7 +242,7 @@ impl NodeRunResult {
         Self::new(false, Some(error_message.into()), None)
     }
 
-    pub fn encode(&self) -> Result<Vec<u8>> {
+    pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
             let mut result = builder.init_root::<node_capnp::node_run_result::Builder>();

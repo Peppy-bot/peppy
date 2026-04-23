@@ -78,7 +78,7 @@ impl ActionResult for NodeAddResult {
     }
 
     fn encode_result(&self) -> crate::Result<Payload> {
-        Ok(self.encode()?.into())
+        self.encode().map_err(Into::into)
     }
 }
 
@@ -1107,7 +1107,7 @@ async fn handle_goal_request(
         let (feedback_tx, feedback_rx) = mpsc::unbounded_channel::<FeedbackLine>();
         let consumer_handle =
             super::spawn_feedback_forwarder(feedback_rx, feedback_publisher.clone(), |line| {
-                NodeAddFeedback::from_stream(line.stream, &line.line).encode()
+                NodeAddFeedback::from_stream(line.stream.as_str(), &line.line).encode()
             });
 
         let is_repo_node = matches!(&goal.source, NodeSource::RepoNode { .. });

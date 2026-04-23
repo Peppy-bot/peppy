@@ -92,10 +92,7 @@ fn handle_repo_remove_request_inner(
     let mut repos = match read_or_create_repos(peppy_dirs) {
         Ok(repos) => repos,
         Err(e) => {
-            return Ok((
-                RepoRemoveResponse::failure(e.to_string()).encode()?.into(),
-                false,
-            ));
+            return Ok((RepoRemoveResponse::failure(e.to_string()).encode()?, false));
         }
     };
 
@@ -107,8 +104,7 @@ fn handle_repo_remove_request_inner(
     let Some(pos) = position else {
         return Ok((
             RepoRemoveResponse::failure(format!("repository with id {} not found", request.id))
-                .encode()?
-                .into(),
+                .encode()?,
             false,
         ));
     };
@@ -122,5 +118,5 @@ fn handle_repo_remove_request_inner(
     drop(_guard);
 
     let payload = RepoRemoveResponse::success().encode()?;
-    Ok((payload.into(), true))
+    Ok((payload, true))
 }

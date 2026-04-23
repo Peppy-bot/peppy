@@ -111,6 +111,5 @@ fn handle_info_request_inner(
         git_version,
         container_info,
     )
-    .encode()?
-    .into())
+    .encode()?)
 }

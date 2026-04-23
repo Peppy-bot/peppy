@@ -39,7 +39,7 @@ impl InfoRequestPollExt for InfoRequest {
         target_core_node: &str,
         response_timeout: Duration,
     ) -> Result<InfoResponse> {
-        let request_payload = peppylib::types::Payload::from(self.encode()?);
+        let request_payload = self.encode()?;
         let response = ServiceMessenger::poll(
             messenger,
             bound_core_node,
@@ -76,7 +76,7 @@ impl StackListRequestPollExt for StackListRequest {
         target_core_node: &str,
         response_timeout: Duration,
     ) -> Result<StackListResponse> {
-        let request_payload = peppylib::types::Payload::from(self.encode()?);
+        let request_payload = self.encode()?;
         let response = ServiceMessenger::poll(
             messenger,
             bound_core_node,
@@ -113,7 +113,7 @@ impl NodeResetRequestPollExt for NodeResetRequest {
         target_core_node: &str,
         response_timeout: Duration,
     ) -> Result<NodeResetResponse> {
-        let request_payload = peppylib::types::Payload::from(self.encode()?);
+        let request_payload = self.encode()?;
         let response = ServiceMessenger::poll(
             messenger,
             bound_core_node,
@@ -152,7 +152,7 @@ impl LaunchGoalSendGoalExt for LaunchGoal {
         target_instance_id: Option<&str>,
         goal_timeout: Duration,
     ) -> Result<ActionGoalHandle> {
-        let goal_payload = peppylib::types::Payload::from(self.encode()?);
+        let goal_payload = self.encode()?;
         let handle = ActionMessenger::send_goal(
             messenger,
             as_core_node,
@@ -190,7 +190,7 @@ impl NodeInitRequestPollExt for NodeInitRequest {
         target_core_node: &str,
         response_timeout: impl Into<Option<Duration>> + Send,
     ) -> Result<NodeInitResponse> {
-        let request_payload = peppylib::types::Payload::from(self.encode()?);
+        let request_payload = self.encode()?;
         let response = ServiceMessenger::poll(
             messenger,
             bound_core_node,
@@ -227,7 +227,7 @@ impl NodeRemoveRequestPollExt for NodeRemoveRequest {
         target_core_node: &str,
         response_timeout: Duration,
     ) -> Result<NodeRemoveResponse> {
-        let request_payload = peppylib::types::Payload::from(self.encode()?);
+        let request_payload = self.encode()?;
         let response = ServiceMessenger::poll(
             messenger,
             bound_core_node,
@@ -266,7 +266,7 @@ impl NodeStopRequestPollExt for NodeStopRequest {
         target_core_node: &str,
         response_timeout: Duration,
     ) -> Result<NodeStopResponse> {
-        let request_payload = peppylib::types::Payload::from(self.encode()?);
+        let request_payload = self.encode()?;
         let response = ServiceMessenger::poll(
             messenger,
             bound_core_node,
@@ -303,7 +303,7 @@ impl NodeSyncRequestPollExt for NodeSyncRequest {
         target_core_node: &str,
         response_timeout: Duration,
     ) -> Result<NodeSyncResponse> {
-        let request_payload = peppylib::types::Payload::from(self.encode()?);
+        let request_payload = self.encode()?;
         let response = ServiceMessenger::poll(
             messenger,
             bound_core_node,
@@ -340,7 +340,7 @@ impl NodeInfoRequestPollExt for NodeInfoRequest {
         target_core_node: &str,
         response_timeout: Duration,
     ) -> Result<NodeInfoResponse> {
-        let request_payload = peppylib::types::Payload::from(self.encode()?);
+        let request_payload = self.encode()?;
         let response = ServiceMessenger::poll(
             messenger,
             bound_core_node,
@@ -379,7 +379,7 @@ impl NodeAddGoalSendGoalExt for NodeAddGoal {
         target_instance_id: Option<&str>,
         goal_timeout: Duration,
     ) -> Result<ActionGoalHandle> {
-        let goal_payload = peppylib::types::Payload::from(self.encode()?);
+        let goal_payload = self.encode()?;
         let handle = ActionMessenger::send_goal(
             messenger,
             as_core_node,
@@ -419,7 +419,7 @@ impl NodeRunGoalSendGoalExt for NodeRunGoal {
         target_instance_id: Option<&str>,
         goal_timeout: Duration,
     ) -> Result<ActionGoalHandle> {
-        let goal_payload = peppylib::types::Payload::from(self.encode()?);
+        let goal_payload = self.encode()?;
         let handle = ActionMessenger::send_goal(
             messenger,
             as_core_node,
@@ -459,7 +459,7 @@ impl NodeBuildGoalSendGoalExt for NodeBuildGoal {
         target_instance_id: Option<&str>,
         goal_timeout: Duration,
     ) -> Result<ActionGoalHandle> {
-        let goal_payload = peppylib::types::Payload::from(self.encode()?);
+        let goal_payload = self.encode()?;
         let handle = ActionMessenger::send_goal(
             messenger,
             as_core_node,
@@ -497,7 +497,7 @@ impl RepoListRequestPollExt for RepoListRequest {
         target_core_node: &str,
         response_timeout: Duration,
     ) -> Result<RepoListResponse> {
-        let request_payload = peppylib::types::Payload::from(self.encode()?);
+        let request_payload = self.encode()?;
         let response = ServiceMessenger::poll(
             messenger,
             bound_core_node,
@@ -534,7 +534,7 @@ impl RepoAddRequestPollExt for RepoAddRequest {
         target_core_node: &str,
         response_timeout: Duration,
     ) -> Result<RepoAddResponse> {
-        let request_payload = peppylib::types::Payload::from(self.encode()?);
+        let request_payload = self.encode()?;
         let response = ServiceMessenger::poll(
             messenger,
             bound_core_node,
@@ -571,7 +571,7 @@ impl RepoExcludeRequestPollExt for RepoExcludeRequest {
         target_core_node: &str,
         response_timeout: Duration,
     ) -> Result<RepoExcludeResponse> {
-        let request_payload = peppylib::types::Payload::from(self.encode()?);
+        let request_payload = self.encode()?;
         let response = ServiceMessenger::poll(
             messenger,
             bound_core_node,
@@ -608,7 +608,7 @@ impl RepoRemoveRequestPollExt for RepoRemoveRequest {
         target_core_node: &str,
         response_timeout: Duration,
     ) -> Result<RepoRemoveResponse> {
-        let request_payload = peppylib::types::Payload::from(self.encode()?);
+        let request_payload = self.encode()?;
         let response = ServiceMessenger::poll(
             messenger,
             bound_core_node,
@@ -647,7 +647,7 @@ impl RepoRefreshGoalSendGoalExt for RepoRefreshGoal {
         target_instance_id: Option<&str>,
         goal_timeout: Duration,
     ) -> Result<ActionGoalHandle> {
-        let goal_payload = peppylib::types::Payload::from(self.encode()?);
+        let goal_payload = self.encode()?;
         let handle = ActionMessenger::send_goal(
             messenger,
             as_core_node,

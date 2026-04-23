@@ -96,11 +96,7 @@ async fn handle_node_stop_request_inner(
     let instance_id = match Name::new(&request.instance_id) {
         Ok(name) => name,
         Err(e) => {
-            return Ok(
-                NodeStopResponse::failure(format!("Invalid instance_id: {}", e))
-                    .encode()?
-                    .into(),
-            );
+            return Ok(NodeStopResponse::failure(format!("Invalid instance_id: {}", e)).encode()?);
         }
     };
 
@@ -118,15 +114,13 @@ async fn handle_node_stop_request_inner(
                     "Node instance '{}' is in Starting state; retry after the start completes",
                     request.instance_id
                 ))
-                .encode()?
-                .into());
+                .encode()?);
             }
             return Ok(NodeStopResponse::failure(format!(
                 "Node instance '{}' not found in node stack",
                 request.instance_id
             ))
-            .encode()?
-            .into());
+            .encode()?);
         }
     };
 
@@ -138,15 +132,13 @@ async fn handle_node_stop_request_inner(
                     "Node instance '{}' is in Starting state; retry after the start completes",
                     request.instance_id
                 ))
-                .encode()?
-                .into());
+                .encode()?);
             }
             return Ok(NodeStopResponse::failure(format!(
                 "Node instance '{}' not found in node stack",
                 request.instance_id
             ))
-            .encode()?
-            .into());
+            .encode()?);
         }
     };
 
@@ -170,9 +162,7 @@ async fn handle_node_stop_request_inner(
     };
 
     if node_name == root_node_name && node_tag == root_node_tag {
-        return Ok(NodeStopResponse::failure("Cannot stop the core node")
-            .encode()?
-            .into());
+        return Ok(NodeStopResponse::failure("Cannot stop the core node").encode()?);
     }
 
     // Step 1: send the shutdown signal — but do NOT remove the instance from
@@ -192,7 +182,7 @@ async fn handle_node_stop_request_inner(
             "Failed to shutdown node instance '{}': {}",
             request.instance_id, e
         );
-        return Ok(NodeStopResponse::failure(e).encode()?.into());
+        return NodeStopResponse::failure(e).encode().map_err(Into::into);
     }
 
     // Step 2: verify the process has actually terminated (if we have a PID).
@@ -204,8 +194,7 @@ async fn handle_node_stop_request_inner(
                 "Process {} for node instance '{}' did not terminate within timeout",
                 pid, request.instance_id
             ))
-            .encode()?
-            .into());
+            .encode()?);
         }
         debug!(
             "Process {} for node instance '{}' has terminated",
@@ -216,10 +205,10 @@ async fn handle_node_stop_request_inner(
     // Step 3: confirmed termination — now finalize the registry removal.
     if let Err(e) = remove_instance_from_registry(&node_stack, &node_name, &node_tag, &instance_id)
     {
-        return Ok(NodeStopResponse::failure(e).encode()?.into());
+        return NodeStopResponse::failure(e).encode().map_err(Into::into);
     }
 
-    Ok(NodeStopResponse::success().encode()?.into())
+    NodeStopResponse::success().encode().map_err(Into::into)
 }
 
 /// Returns `true` if any tracked entity contains an instance with the

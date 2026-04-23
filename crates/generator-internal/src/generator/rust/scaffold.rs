@@ -1,7 +1,8 @@
 use super::identifiers::is_rust_keyword;
 use crate::generator::common::{
-    CrateDeployMode, EmbeddedBuildHelpers, EmbeddedConfigInternal, EmbeddedPeppylib,
-    EmbeddedPmiInternal, WorkspacePackageMetadata, cache_sibling_path, copy_dir_recursive,
+    CrateDeployMode, EmbeddedBuildHelpers, EmbeddedConfigInternal, EmbeddedCoreNodeApi,
+    EmbeddedPeppylib, EmbeddedPmiInternal, WorkspacePackageMetadata, cache_sibling_path,
+    copy_dir_recursive,
 };
 use crate::{
     error::{Error, Result},
@@ -249,6 +250,7 @@ fn deploy_rust_crates_to_shared_cache(
         copy_embedded_crate::<EmbeddedPeppylib>("peppylib", &staging_dir, &metadata)?;
         copy_embedded_crate::<EmbeddedPmiInternal>("pmi-internal", &staging_dir, &metadata)?;
         copy_embedded_crate::<EmbeddedConfigInternal>("config-internal", &staging_dir, &metadata)?;
+        copy_embedded_crate::<EmbeddedCoreNodeApi>("core-node-api", &staging_dir, &metadata)?;
         copy_embedded_crate::<EmbeddedBuildHelpers>(
             "build-helpers-internal",
             &staging_dir,
@@ -272,6 +274,7 @@ fn deploy_rust_crates_to_shared_cache(
         "peppylib",
         "pmi-internal",
         "config-internal",
+        "core-node-api",
         "build-helpers-internal",
     ] {
         let dest = node_libs_dir.join(crate_name);

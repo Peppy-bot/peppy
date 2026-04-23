@@ -3,8 +3,8 @@ use std::path::PathBuf;
 
 use capnp::message::Builder;
 
-use crate::Result;
 use crate::repo_capnp;
+use crate::{Payload, Result};
 
 use crate::encoding::{decode_message, encode_message};
 
@@ -138,7 +138,7 @@ impl RepoAddRequest {
         self
     }
 
-    pub fn encode(&self) -> Result<Vec<u8>> {
+    pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
             let mut request = builder.init_root::<repo_capnp::repo_add_request::Builder>();
@@ -207,7 +207,7 @@ impl RepoAddResponse {
         }
     }
 
-    pub fn encode(&self) -> Result<Vec<u8>> {
+    pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
             let mut response = builder.init_root::<repo_capnp::repo_add_response::Builder>();

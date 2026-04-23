@@ -2,8 +2,8 @@
 
 use capnp::message::Builder;
 
-use crate::Result;
 use crate::info_capnp;
+use crate::{Payload, Result};
 
 use super::{decode_message, encode_message};
 
@@ -15,7 +15,7 @@ impl InfoRequest {
         Self
     }
 
-    pub fn encode(&self) -> Result<Vec<u8>> {
+    pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
             builder.init_root::<info_capnp::info_request::Builder>();
@@ -68,7 +68,7 @@ impl InfoResponse {
         }
     }
 
-    pub fn encode(&self) -> Result<Vec<u8>> {
+    pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
             let mut response = builder.init_root::<info_capnp::info_response::Builder>();

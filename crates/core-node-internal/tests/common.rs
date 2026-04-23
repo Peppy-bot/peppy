@@ -244,7 +244,7 @@ async fn send_node_run_and_wait_internal(
         names::NODE_RUN_ACTION,
         Some(core_node_name),
         None,
-        goal_payload.into(),
+        goal_payload,
         QoSProfile::default(),
         timeouts.goal,
     )
@@ -439,7 +439,7 @@ async fn send_node_add_and_wait_internal<'a>(
         names::NODE_ADD_ACTION,
         Some(core_node_name),
         None,
-        goal_payload.into(),
+        goal_payload,
         QoSProfile::default(),
         goal_timeout,
     )
@@ -564,7 +564,7 @@ pub async fn send_node_build_and_wait(
         names::NODE_BUILD_ACTION,
         Some(core_node_name),
         None,
-        goal_payload.into(),
+        goal_payload,
         QoSProfile::default(),
         goal_timeout,
     )

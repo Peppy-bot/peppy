@@ -2,8 +2,8 @@
 
 use capnp::message::Builder;
 
-use crate::Result;
 use crate::ping_capnp;
+use crate::{Payload, Result};
 
 use super::{decode_message, encode_message};
 
@@ -17,7 +17,7 @@ impl PingRequest {
         Self { timestamp }
     }
 
-    pub fn encode(&self) -> Result<Vec<u8>> {
+    pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
             let mut request = builder.init_root::<ping_capnp::ping_request::Builder>();
@@ -49,7 +49,7 @@ impl PingResponse {
         }
     }
 
-    pub fn encode(&self) -> Result<Vec<u8>> {
+    pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
             let mut response = builder.init_root::<ping_capnp::ping_response::Builder>();

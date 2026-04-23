@@ -1,11 +1,29 @@
 //! Encoding types for the NodeBuild action (streaming version with feedback).
 
-use crate::Result;
 use crate::encoding::{decode_message, encode_message, optional_text};
 use crate::node_capnp;
+use crate::{Payload, Result};
 use capnp::message::Builder;
-use node_stack::FeedbackStream;
 use std::path::PathBuf;
+
+/// Which output stream a feedback line came from.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FeedbackStream {
+    Stdout,
+    Stderr,
+    /// Out-of-band warning emitted by the daemon itself.
+    Warning,
+}
+
+impl FeedbackStream {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            FeedbackStream::Stdout => "stdout",
+            FeedbackStream::Stderr => "stderr",
+            FeedbackStream::Warning => "warning",
+        }
+    }
+}
 
 /// Goal message for the NodeBuild action.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -42,7 +60,7 @@ impl NodeBuildGoal {
         self
     }
 
-    pub fn encode(&self) -> Result<Vec<u8>> {
+    pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
             let mut goal = builder.init_root::<node_capnp::node_build_goal::Builder>();
@@ -111,7 +129,7 @@ impl NodeBuildGoalResponse {
         }
     }
 
-    pub fn encode(&self) -> Result<Vec<u8>> {
+    pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
             let mut response = builder.init_root::<node_capnp::node_build_goal_response::Builder>();
@@ -174,7 +192,7 @@ impl NodeBuildFeedback {
         self.stream == FeedbackStream::Warning
     }
 
-    pub fn encode(&self) -> Result<Vec<u8>> {
+    pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
             let mut feedback = builder.init_root::<node_capnp::node_build_feedback::Builder>();
@@ -234,7 +252,7 @@ impl NodeBuildResult {
         }
     }
 
-    pub fn encode(&self) -> Result<Vec<u8>> {
+    pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
             let mut result = builder.init_root::<node_capnp::node_build_result::Builder>();

@@ -332,7 +332,7 @@ async fn send_node_launch_and_wait_with_env(
         names::STACK_LAUNCH_ACTION,
         None,
         None,
-        goal_payload.into(),
+        goal_payload,
         config::node::QoSProfile::default(),
         goal_timeout,
     )

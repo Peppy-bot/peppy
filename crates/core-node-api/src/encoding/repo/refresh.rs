@@ -1,16 +1,16 @@
 use capnp::message::Builder;
 
-use crate::Result;
 use crate::encoding::repo::add::RepoSourceKind;
 use crate::encoding::{decode_message, encode_message, optional_text};
 use crate::repo_capnp;
+use crate::{Payload, Result};
 
 /// Goal message for the RepoRefresh action (empty — refresh all repos).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepoRefreshGoal;
 
 impl RepoRefreshGoal {
-    pub fn encode(&self) -> Result<Vec<u8>> {
+    pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
             let _goal = builder.init_root::<repo_capnp::repo_refresh_goal::Builder>();
@@ -47,7 +47,7 @@ impl RepoRefreshGoalResponse {
         }
     }
 
-    pub fn encode(&self) -> Result<Vec<u8>> {
+    pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
             let mut response =
@@ -134,7 +134,7 @@ impl RepoRefreshFeedback {
         }
     }
 
-    pub fn encode(&self) -> Result<Vec<u8>> {
+    pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
             let mut feedback = builder.init_root::<repo_capnp::repo_refresh_feedback::Builder>();
@@ -201,7 +201,7 @@ impl RepoRefreshResult {
         }
     }
 
-    pub fn encode(&self) -> Result<Vec<u8>> {
+    pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
             let mut result = builder.init_root::<repo_capnp::repo_refresh_result::Builder>();

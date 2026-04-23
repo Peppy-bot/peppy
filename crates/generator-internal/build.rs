@@ -716,6 +716,7 @@ mod rust_crates_build {
             ("../peppylib", false),
             ("../pmi-internal", false),
             ("../config-internal", true),
+            ("../core-node-api", false),
             ("../build-helpers-internal", false),
         ];
 

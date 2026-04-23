@@ -4,7 +4,16 @@ use std::path::PathBuf;
 fn main() {
     println!("cargo:rerun-if-changed=schemas/");
 
-    let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
+    // Canonicalize the manifest directory to handle symlinked source trees.
+    // When core-node-api is deployed via symlink (e.g. node/.peppy/libs/core-node-api
+    // → shared cache), Cargo sets CARGO_MANIFEST_DIR to the symlink path but CWD
+    // to the resolved path. The capnp compiler resolves --src-prefix relative to
+    // CWD, so schema file paths must also be canonical to ensure the prefix is
+    // stripped correctly.
+    let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap())
+        .canonicalize()
+        .expect("Failed to canonicalize CARGO_MANIFEST_DIR");
+
     let tools_dir = manifest_dir
         .parent()
         .unwrap()

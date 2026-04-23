@@ -19,7 +19,7 @@ async fn send_repo_exclude(
         names::REPO_EXCLUDE,
         Some(&started.core_node_name),
         None,
-        payload.into(),
+        payload,
         Duration::from_secs(5),
     )
     .await

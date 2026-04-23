@@ -1,7 +1,7 @@
 //! Encoding types for the NodeAdd action (streaming version with feedback).
 
-use crate::Result;
 use crate::node_capnp;
+use crate::{Payload, Result};
 use capnp::message::Builder;
 use gix_url::Url as GitUrl;
 use std::path::PathBuf;
@@ -251,7 +251,7 @@ impl NodeAddGoal {
         }
     }
 
-    pub fn encode(&self) -> Result<Vec<u8>> {
+    pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
             let mut goal = builder.init_root::<node_capnp::node_add_goal::Builder>();
@@ -669,7 +669,7 @@ impl NodeAddGoalResponse {
         }
     }
 
-    pub fn encode(&self) -> Result<Vec<u8>> {
+    pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
             let mut response = builder.init_root::<node_capnp::node_add_goal_response::Builder>();
@@ -704,9 +704,9 @@ pub struct NodeAddFeedback {
 }
 
 impl NodeAddFeedback {
-    pub fn from_stream(stream: node_stack::FeedbackStream, line: impl Into<String>) -> Self {
+    pub fn from_stream(stream: impl Into<String>, line: impl Into<String>) -> Self {
         Self {
-            stream: stream.as_str().to_string(),
+            stream: stream.into(),
             line: line.into(),
         }
     }
@@ -744,7 +744,7 @@ impl NodeAddFeedback {
         self.stream == "warning"
     }
 
-    pub fn encode(&self) -> Result<Vec<u8>> {
+    pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
             let mut feedback = builder.init_root::<node_capnp::node_add_feedback::Builder>();
@@ -803,7 +803,7 @@ impl NodeAddResult {
         }
     }
 
-    pub fn encode(&self) -> Result<Vec<u8>> {
+    pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
             let mut result = builder.init_root::<node_capnp::node_add_result::Builder>();

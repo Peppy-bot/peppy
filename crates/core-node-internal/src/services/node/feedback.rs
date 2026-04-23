@@ -8,6 +8,17 @@
 
 pub(crate) use node_stack::{FeedbackLine, FeedbackStream};
 
+/// Convert the node-stack `FeedbackStream` to the wire-level copy that lives
+/// in `core-node-api` — they're structurally identical, but core-node-api
+/// cannot depend on node-stack.
+pub(crate) fn stream_to_api(stream: FeedbackStream) -> core_node_api::encoding::FeedbackStream {
+    match stream {
+        FeedbackStream::Stdout => core_node_api::encoding::FeedbackStream::Stdout,
+        FeedbackStream::Stderr => core_node_api::encoding::FeedbackStream::Stderr,
+        FeedbackStream::Warning => core_node_api::encoding::FeedbackStream::Warning,
+    }
+}
+
 /// Spawns a task that consumes `FeedbackLine` values from `feedback_rx`,
 /// converts each one via `encode` and publishes the resulting payload. Shared
 /// by the add/build/start goal handlers, which all run the same
@@ -18,12 +29,12 @@ pub(crate) fn spawn_feedback_forwarder<F>(
     encode: F,
 ) -> tokio::task::JoinHandle<()>
 where
-    F: Fn(FeedbackLine) -> core_node_api::Result<Vec<u8>> + Send + 'static,
+    F: Fn(FeedbackLine) -> core_node_api::Result<peppylib::types::Payload> + Send + 'static,
 {
     tokio::spawn(async move {
         while let Some(line) = feedback_rx.recv().await {
             if let Ok(payload) = encode(line) {
-                let _ = publisher.publish(payload.into()).await;
+                let _ = publisher.publish(payload).await;
             }
         }
     })

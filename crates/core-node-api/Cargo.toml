@@ -6,7 +6,6 @@ edition.workspace = true
 
 [dependencies]
 config = { path = "../config-internal" }
-node-stack = { path = "../node-stack-internal" }
 capnp = "0.25"
 bytes = "1.10"
 chrono = "0.4"

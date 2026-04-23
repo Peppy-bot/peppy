@@ -75,15 +75,13 @@ fn handle_node_init_request_inner(
             "Node directory already exists: {}",
             node_dir.display()
         ))
-        .encode()?
-        .into());
+        .encode()?);
     }
 
     if let Err(e) = std::fs::create_dir_all(&node_dir) {
         return Ok(
             NodeInitResponse::failure(format!("Failed to create node directory: {}", e))
-                .encode()?
-                .into(),
+                .encode()?,
         );
     }
 
@@ -98,8 +96,7 @@ fn handle_node_init_request_inner(
                     "Failed to create Rust configuration: {}",
                     e
                 ))
-                .encode()?
-                .into());
+                .encode()?);
             }
         }
         Toolchain::Uv => {
@@ -110,8 +107,7 @@ fn handle_node_init_request_inner(
                     "Failed to create Python configuration: {}",
                     e
                 ))
-                .encode()?
-                .into());
+                .encode()?);
             }
         }
     }
@@ -128,22 +124,18 @@ fn handle_node_init_request_inner(
         None,
     ) {
         return Ok(
-            NodeInitResponse::failure(format!("Failed to generate peppygen: {}", e))
-                .encode()?
-                .into(),
+            NodeInitResponse::failure(format!("Failed to generate peppygen: {}", e)).encode()?,
         );
     }
 
     // Create .gitignore
     if let Err(e) = create_gitignore(&node_dir, toolchain) {
-        return Ok(
-            NodeInitResponse::failure(format!("Failed to create .gitignore: {}", e))
-                .encode()?
-                .into(),
-        );
+        return NodeInitResponse::failure(format!("Failed to create .gitignore: {}", e))
+            .encode()
+            .map_err(Into::into);
     }
 
-    Ok(NodeInitResponse::success().encode()?.into())
+    NodeInitResponse::success().encode().map_err(Into::into)
 }
 
 fn create_gitignore(node_dir: &std::path::Path, build_system: Toolchain) -> std::io::Result<()> {

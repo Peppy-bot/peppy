@@ -7,8 +7,10 @@
 pub mod encoding;
 pub mod error;
 pub mod names;
+mod payload;
 
 pub use error::{Error, Result};
+pub use payload::Payload;
 
 // Generated Cap'n Proto types - must be at crate root for correct path resolution
 #[allow(clippy::all)]

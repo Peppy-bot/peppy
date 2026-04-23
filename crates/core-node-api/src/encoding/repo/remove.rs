@@ -1,7 +1,7 @@
 use capnp::message::Builder;
 
-use crate::Result;
 use crate::repo_capnp;
+use crate::{Payload, Result};
 
 use crate::encoding::{decode_message, encode_message};
 
@@ -15,7 +15,7 @@ impl RepoRemoveRequest {
         Self { id }
     }
 
-    pub fn encode(&self) -> Result<Vec<u8>> {
+    pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
             let mut request = builder.init_root::<repo_capnp::repo_remove_request::Builder>();
@@ -54,7 +54,7 @@ impl RepoRemoveResponse {
         }
     }
 
-    pub fn encode(&self) -> Result<Vec<u8>> {
+    pub fn encode(&self) -> Result<Payload> {
         let mut builder = Builder::new_default();
         {
             let mut response = builder.init_root::<repo_capnp::repo_remove_response::Builder>();
