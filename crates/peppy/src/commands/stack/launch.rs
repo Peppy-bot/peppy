@@ -16,7 +16,7 @@ use crate::context::AppContext;
 use crate::error::{Error, Result};
 use crate::terminal::ScrollingOutput;
 
-use core_node::transport::send_launch;
+use peppylib::core_node::transport::send_launch;
 // Minimum CLI fallback ceiling when the user opts into `--max-timeout-secs`. Ensures the CLI's
 // safety net never fires before the daemon's own per-phase timeout, so users see a precise
 // daemon-side error rather than a generic CLI fallback. When the user omits the flag, no CLI

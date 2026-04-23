@@ -6,8 +6,8 @@ use common::{
     write_peppy_json5,
 };
 use config::node::Name;
-use core_node::transport::poll_node_info as transport_poll_node_info;
 use core_node_api::encoding::{NodeInfo, NodeInfoRequest, NodeInfoResponse};
+use peppylib::core_node::transport::poll_node_info as transport_poll_node_info;
 use peppylib::messaging::MessengerHandle;
 use peppylib::services::health::listen_for_node_health;
 use peppylib::services::ready::listen_for_node_ready;
@@ -22,7 +22,7 @@ async fn poll_node_info_raw(
     started_core_node: &common::StartedCoreNode,
     request: &NodeInfoRequest,
     timeout: Duration,
-) -> core_node::Result<NodeInfoResponse> {
+) -> peppylib::PeppyResult<NodeInfoResponse> {
     transport_poll_node_info(
         request,
         &started_core_node.caller_handle,
@@ -41,7 +41,7 @@ async fn poll_node_info(
     started_core_node: &common::StartedCoreNode,
     request: &NodeInfoRequest,
     timeout: Duration,
-) -> core_node::Result<NodeInfo> {
+) -> peppylib::PeppyResult<NodeInfo> {
     match poll_node_info_raw(started_core_node, request, timeout).await? {
         NodeInfoResponse::Found(info) => Ok(*info),
         NodeInfoResponse::NotInStack => panic!(

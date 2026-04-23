@@ -11,7 +11,7 @@ use crate::commands::{CALLER_INSTANCE_ID, GOAL_TIMEOUT, SCROLLING_OUTPUT_LINES};
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 use crate::terminal::ScrollingOutput;
-use core_node::transport::send_repo_refresh;
+use peppylib::core_node::transport::send_repo_refresh;
 
 const IDLE_TIMEOUT_SECS: u64 = 120;
 const MAX_TIMEOUT_SECS: u64 = 3600;

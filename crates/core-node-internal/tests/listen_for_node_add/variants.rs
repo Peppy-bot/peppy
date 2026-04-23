@@ -1,6 +1,6 @@
 use super::*;
 
-use core_node::transport::poll_node_sync;
+use peppylib::core_node::transport::poll_node_sync;
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_add_variant_local_source() {
     const ROOT_NODE_NAME: &str = "robot_brain";

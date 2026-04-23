@@ -8,7 +8,7 @@ use crate::commands::CALLER_INSTANCE_ID;
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 
-use core_node::transport::poll_node_info;
+use peppylib::core_node::transport::poll_node_info;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub fn node_info(ctx: &Arc<AppContext>, node_name: String, node_tag: String) -> Result<()> {

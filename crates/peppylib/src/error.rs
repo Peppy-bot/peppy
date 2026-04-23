@@ -89,6 +89,10 @@ pub enum Error {
     #[error(transparent)]
     PeppyMessagingInterface(#[from] pmi::PeppyMessagingInterfaceError),
 
+    // -- core-node-api
+    #[error(transparent)]
+    CoreNodeApi(#[from] core_node_api::Error),
+
     #[error("invalid service request '{identifier}': {reason}")]
     InvalidServiceRequest { identifier: String, reason: String },
 

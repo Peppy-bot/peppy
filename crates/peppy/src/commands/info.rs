@@ -6,7 +6,7 @@ use core_node_api::encoding::InfoRequest;
 use super::{CALLER_INSTANCE_ID, Command};
 use crate::context::AppContext;
 use crate::error::Result;
-use core_node::transport::poll_info;
+use peppylib::core_node::transport::poll_info;
 
 #[cfg(target_os = "linux")]
 fn print_container_setup_status() {

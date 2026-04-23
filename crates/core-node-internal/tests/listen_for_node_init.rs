@@ -7,8 +7,8 @@ use config::consts::{
 };
 use config::node::Toolchain;
 use config::test_helpers::assert_contains_all;
-use core_node::transport::poll_node_init;
 use core_node_api::encoding::NodeInitRequest;
+use peppylib::core_node::transport::poll_node_init;
 use std::fs;
 use std::time::Duration;
 use tempfile::tempdir;

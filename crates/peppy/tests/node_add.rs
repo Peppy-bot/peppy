@@ -15,7 +15,7 @@ use peppylib::services::shutdown::listen_for_shutdown;
 use std::sync::Arc;
 use std::time::Duration;
 
-use core_node::transport::poll_stack_list;
+use peppylib::core_node::transport::poll_stack_list;
 const CALLER_INSTANCE_ID: &str = "peppy-test";
 
 #[test]

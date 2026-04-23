@@ -1,8 +1,8 @@
 mod common;
 
 use common::{CALLER_INSTANCE_ID, StartedCoreNode, start_core_node_with_mock_messenger};
-use core_node::transport::poll_repo_add;
 use core_node_api::encoding::{RepoAddRequest, RepoAddResponse};
+use peppylib::core_node::transport::poll_repo_add;
 use std::time::Duration;
 
 async fn send_repo_add(started: &StartedCoreNode, request: &RepoAddRequest) -> RepoAddResponse {

@@ -10,7 +10,7 @@ use super::types::NodeName;
 use crate::commands::CALLER_INSTANCE_ID;
 use crate::context::AppContext;
 use crate::error::{Error, Result};
-use core_node::transport::poll_node_init;
+use peppylib::core_node::transport::poll_node_init;
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 

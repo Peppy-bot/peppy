@@ -9,7 +9,7 @@ use crate::commands::repo::add::parse_repo_source;
 use crate::commands::repo::repo_source_label;
 use crate::context::AppContext;
 use crate::error::{Error, Result};
-use core_node::transport::poll_repo_exclude;
+use peppylib::core_node::transport::poll_repo_exclude;
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 

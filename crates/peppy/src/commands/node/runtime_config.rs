@@ -16,7 +16,7 @@ use crate::context::AppContext;
 use crate::error::{Error, Result};
 
 use super::run::args_to_node_arguments;
-use core_node::transport::poll_stack_list;
+use peppylib::core_node::transport::poll_stack_list;
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 

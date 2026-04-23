@@ -1,6 +1,5 @@
 /// The core node is a special kind of node that has access to the whole context of the peppy daemon and runs as part of the same process
 pub mod names;
-pub mod transport;
 
 mod error;
 mod services;

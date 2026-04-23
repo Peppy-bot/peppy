@@ -21,7 +21,7 @@ use crate::error::{Error, Result};
 use super::TimeoutConfig;
 use super::env::caller_env_overrides;
 
-use core_node::transport::{poll_node_info, send_node_run};
+use peppylib::core_node::transport::{poll_node_info, send_node_run};
 /// Timeout for the quick `NodeInfoRequest` preflight in the `run -b` flow.
 /// Matches `node info`'s request timeout — this is a metadata lookup,
 /// not a long-running action, so it must fail fast if the daemon is down

@@ -10,7 +10,7 @@ use crate::commands::repo::repo_source_label;
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 
-use core_node::transport::poll_repo_add;
+use peppylib::core_node::transport::poll_repo_add;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub(super) fn add_repo(

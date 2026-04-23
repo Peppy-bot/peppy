@@ -4,8 +4,8 @@ use common::{
     CALLER_INSTANCE_ID, send_node_add_and_wait, start_core_node_with_mock_messenger,
     write_peppy_json5,
 };
-use core_node::transport::poll_stack_list;
 use core_node_api::encoding::StackListRequest;
+use peppylib::core_node::transport::poll_stack_list;
 use std::time::Duration;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

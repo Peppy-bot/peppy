@@ -2,8 +2,8 @@ mod common;
 
 use common::{CALLER_INSTANCE_ID, StartedCoreNode, start_core_node_with_mock_messenger};
 use config::consts::NODE_CONFIG_FILE;
-use core_node::transport::poll_repo_remove;
 use core_node_api::encoding::{RepoRemoveRequest, RepoRemoveResponse};
+use peppylib::core_node::transport::poll_repo_remove;
 use std::time::Duration;
 
 async fn send_repo_remove(

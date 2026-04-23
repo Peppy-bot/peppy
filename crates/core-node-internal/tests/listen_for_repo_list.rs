@@ -2,8 +2,8 @@ mod common;
 
 use common::{CALLER_INSTANCE_ID, StartedCoreNode, start_core_node_with_mock_messenger};
 use config::consts::NODE_CONFIG_FILE;
-use core_node::transport::poll_repo_list;
 use core_node_api::encoding::{RepoListRequest, RepoListResponse, RepoSourceKind};
+use peppylib::core_node::transport::poll_repo_list;
 use std::time::Duration;
 
 /// Minimal valid peppy.json5 content for a node with the given name and tag.

@@ -7,7 +7,7 @@ use tracing::info;
 use crate::commands::{CALLER_INSTANCE_ID, Command};
 use crate::context::AppContext;
 use crate::error::{Error, Result};
-use core_node::transport::poll_node_reset;
+use peppylib::core_node::transport::poll_node_reset;
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 

@@ -9,8 +9,8 @@ mod container_e2e_tests {
     };
     use config::node::Name as NodeName;
     use config::node::Toolchain;
-    use core_node::transport::poll_node_init;
     use core_node_api::encoding::NodeInitRequest;
+    use peppylib::core_node::transport::poll_node_init;
     use std::time::Duration;
     use tempfile::tempdir;
 

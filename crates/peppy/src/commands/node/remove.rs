@@ -9,7 +9,7 @@ use crate::commands::CALLER_INSTANCE_ID;
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 
-use core_node::transport::{poll_node_remove, poll_stack_list};
+use peppylib::core_node::transport::{poll_node_remove, poll_stack_list};
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub fn remove_node(

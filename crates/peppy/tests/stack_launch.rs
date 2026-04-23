@@ -19,7 +19,7 @@ use peppylib::services::health::listen_for_node_health;
 use peppylib::services::ready::listen_for_node_ready;
 use peppylib::services::shutdown::listen_for_shutdown;
 
-use core_node::transport::poll_stack_list;
+use peppylib::core_node::transport::poll_stack_list;
 const CALLER_INSTANCE_ID: &str = "peppy-test";
 
 fn write_node_config(

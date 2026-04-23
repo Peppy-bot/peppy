@@ -12,7 +12,7 @@ use peppy::commands::node::{NodeCommand, NodeCommands};
 use peppy::commands::service::{ServiceCommand, ServiceCommands};
 use peppy::context::AppContext;
 
-use core_node::transport::poll_stack_list;
+use peppylib::core_node::transport::poll_stack_list;
 const CALLER_INSTANCE_ID: &str = "peppy-test";
 
 fn write_node_config(

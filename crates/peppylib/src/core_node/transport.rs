@@ -6,15 +6,13 @@
 
 use std::time::Duration;
 
-use peppylib::messaging::ActionGoalHandle;
-use peppylib::{ActionMessenger, MessengerHandle, ServiceMessenger};
-
 use config::node::QoSProfile;
-
 use core_node_api::encoding::*;
 use core_node_api::names;
 
-use crate::Result;
+use crate::error::Result;
+use crate::messaging::ActionGoalHandle;
+use crate::{ActionMessenger, MessengerHandle, ServiceMessenger};
 
 pub async fn poll_info(
     request: &InfoRequest,

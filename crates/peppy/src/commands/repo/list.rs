@@ -7,7 +7,7 @@ use core_node_api::encoding::{RepoListNodeEntry, RepoListRequest};
 use crate::commands::CALLER_INSTANCE_ID;
 use crate::context::AppContext;
 use crate::error::{Error, Result};
-use core_node::transport::poll_repo_list;
+use peppylib::core_node::transport::poll_repo_list;
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 

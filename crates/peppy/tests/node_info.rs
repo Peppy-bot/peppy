@@ -8,7 +8,7 @@ use std::io::Write;
 use std::sync::Arc;
 use std::time::Duration;
 
-use core_node::transport::poll_node_info;
+use peppylib::core_node::transport::poll_node_info;
 const CALLER_INSTANCE_ID: &str = "peppy-test";
 const DEFAULTS: TimeoutConfig = TimeoutConfig {
     idle_secs: 60,
