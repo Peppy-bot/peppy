@@ -2,30 +2,24 @@ mod common;
 
 use common::{CALLER_INSTANCE_ID, StartedCoreNode, start_core_node_with_mock_messenger};
 use config::consts::NODE_CONFIG_FILE;
-use core_node::names;
+use core_node::transport::poll_repo_remove;
 use core_node_api::encoding::{RepoRemoveRequest, RepoRemoveResponse};
-use peppylib::ServiceMessenger;
 use std::time::Duration;
 
 async fn send_repo_remove(
     started: &StartedCoreNode,
     request: &RepoRemoveRequest,
 ) -> RepoRemoveResponse {
-    let payload = request.encode().expect("encode should succeed");
-    let response = ServiceMessenger::poll(
+    poll_repo_remove(
+        request,
         &started.caller_handle,
         &started.core_node_name,
         CALLER_INSTANCE_ID,
         &started.core_node_name,
-        names::REPO_REMOVE,
-        Some(&started.core_node_name),
-        None,
-        payload,
         Duration::from_secs(5),
     )
     .await
-    .expect("repo_remove poll should succeed");
-    RepoRemoveResponse::decode(&response.payload()).expect("decode should succeed")
+    .expect("repo_remove poll should succeed")
 }
 
 fn write_repositories_json5(started: &StartedCoreNode, content: &str) {
