@@ -1,7 +1,6 @@
 use config::AnyType;
 use config::launcher::Name;
 use config::runtime::{NodeInstanceConfig, RuntimeConfig};
-use core_node::encoding::prelude::*;
 use core_node_api::encoding::{
     NodeInfoRequest, NodeInfoResponse, NodeRunFeedback, NodeRunGoal, NodeRunGoalResponse,
     NodeRunResult,
@@ -22,6 +21,7 @@ use crate::error::{Error, Result};
 use super::TimeoutConfig;
 use super::env::caller_env_overrides;
 
+use core_node::transport::{NodeInfoRequestPollExt, NodeRunGoalSendGoalExt};
 /// Timeout for the quick `NodeInfoRequest` preflight in the `run -b` flow.
 /// Matches `node info`'s request timeout — this is a metadata lookup,
 /// not a long-running action, so it must fail fast if the daemon is down

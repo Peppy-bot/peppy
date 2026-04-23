@@ -5,8 +5,8 @@ use common::{
     spawn_real_running_instance, start_core_node_with_mock_messenger, write_peppy_json5,
 };
 use config::node::Name;
-use core_node::encoding::NodeStopRequest;
-use core_node::encoding::prelude::*;
+use core_node::transport::NodeStopRequestPollExt;
+use core_node_api::encoding::NodeStopRequest;
 use peppylib::messaging::MessengerHandle;
 use peppylib::services::shutdown::listen_for_shutdown;
 use std::sync::Arc;

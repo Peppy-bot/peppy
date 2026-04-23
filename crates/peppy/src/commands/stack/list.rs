@@ -8,8 +8,8 @@ use node_stack::{SerializedEdge, SerializedNode, SerializedNodeGraph};
 use crate::commands::CALLER_INSTANCE_ID;
 use crate::context::AppContext;
 use crate::error::{Error, Result};
-use core_node::encoding::prelude::*;
 
+use core_node::transport::StackListRequestPollExt;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub fn list_nodes(ctx: &Arc<AppContext>, dot_graph_path: Option<PathBuf>) -> Result<()> {

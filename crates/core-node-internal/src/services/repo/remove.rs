@@ -1,8 +1,8 @@
 use crate::Result;
-use crate::encoding::{RepoRemoveRequest, RepoRemoveResponse};
 use crate::names;
 use crate::services::repo::refresh::{process_refresh, read_or_create_repos, write_cache};
 use config::consts::PeppyDirs;
+use core_node_api::encoding::{RepoRemoveRequest, RepoRemoveResponse};
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::types::Payload;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};

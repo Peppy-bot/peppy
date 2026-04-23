@@ -1,7 +1,6 @@
 #[cfg(feature = "container_e2e")]
 #[path = "."]
 mod container_e2e_tests {
-    use core_node::encoding::prelude::*;
     mod common;
 
     use common::{
@@ -10,7 +9,8 @@ mod container_e2e_tests {
     };
     use config::node::Name as NodeName;
     use config::node::Toolchain;
-    use core_node::encoding::NodeInitRequest;
+    use core_node::transport::NodeInitRequestPollExt;
+    use core_node_api::encoding::NodeInitRequest;
     use std::time::Duration;
     use tempfile::tempdir;
 

@@ -3,7 +3,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use config::launcher::PeppyLauncherParser;
-use core_node::encoding::prelude::*;
 use core_node_api::encoding::{
     LaunchFeedback, LaunchFeedbackStep, LaunchGoal, LaunchGoalResponse, LaunchResult,
     NodeAddLogEntry, NodeBuildLogEntry, NodeRunLogEntry,
@@ -17,6 +16,7 @@ use crate::context::AppContext;
 use crate::error::{Error, Result};
 use crate::terminal::ScrollingOutput;
 
+use core_node::transport::LaunchGoalSendGoalExt;
 // Minimum CLI fallback ceiling when the user opts into `--max-timeout-secs`. Ensures the CLI's
 // safety net never fires before the daemon's own per-phase timeout, so users see a precise
 // daemon-side error rather than a generic CLI fallback. When the user omits the flag, no CLI

@@ -1,11 +1,9 @@
 //! Transport shims that bridge the capnp wire types in
 //! [`core_node_api::encoding`] to the peppylib messenger.
 //!
-//! These `poll` / `send_goal` methods used to live on the encoding types
-//! before they moved to `core-node-api` (which must not depend on
-//! peppylib). Each is re-exposed here as an extension trait so callers
-//! that `use core_node::encoding::prelude::*;` keep the same
-//! `.poll(…)` / `.send_goal(…)` call shape.
+//! `core-node-api` holds the pure wire types (no peppylib dep). This
+//! module re-exposes `.poll(…)` / `.send_goal(…)` on those types as
+//! extension traits; import the specific trait you need.
 
 use std::time::Duration;
 
@@ -663,25 +661,4 @@ impl RepoRefreshGoalSendGoalExt for RepoRefreshGoal {
         .await?;
         Ok(handle)
     }
-}
-
-/// Glob-import to bring every transport extension trait into scope.
-pub mod prelude {
-    pub use super::InfoRequestPollExt;
-    pub use super::LaunchGoalSendGoalExt;
-    pub use super::NodeAddGoalSendGoalExt;
-    pub use super::NodeBuildGoalSendGoalExt;
-    pub use super::NodeInfoRequestPollExt;
-    pub use super::NodeInitRequestPollExt;
-    pub use super::NodeRemoveRequestPollExt;
-    pub use super::NodeResetRequestPollExt;
-    pub use super::NodeRunGoalSendGoalExt;
-    pub use super::NodeStopRequestPollExt;
-    pub use super::NodeSyncRequestPollExt;
-    pub use super::RepoAddRequestPollExt;
-    pub use super::RepoExcludeRequestPollExt;
-    pub use super::RepoListRequestPollExt;
-    pub use super::RepoRefreshGoalSendGoalExt;
-    pub use super::RepoRemoveRequestPollExt;
-    pub use super::StackListRequestPollExt;
 }

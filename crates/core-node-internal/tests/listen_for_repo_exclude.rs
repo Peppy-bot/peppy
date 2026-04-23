@@ -1,8 +1,8 @@
 mod common;
 
 use common::{CALLER_INSTANCE_ID, StartedCoreNode, start_core_node_with_mock_messenger};
-use core_node::encoding::{RepoExcludeRequest, RepoExcludeResponse};
 use core_node::names;
+use core_node_api::encoding::{RepoExcludeRequest, RepoExcludeResponse};
 use peppylib::ServiceMessenger;
 use std::time::Duration;
 

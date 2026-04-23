@@ -3,7 +3,6 @@ use peppy::test_support::{LogCapture, ServeCommandEmulation};
 use std::sync::Arc;
 use std::time::Duration;
 
-use core_node::encoding::prelude::*;
 use core_node_api::encoding::{NodeInfoRequest, NodeInfoResponse, StackListRequest};
 use node_stack::SerializedNodeGraph;
 use peppy::commands::Command;
@@ -13,6 +12,7 @@ use peppylib::MessengerHandle;
 use peppylib::services::health::listen_for_node_health;
 use peppylib::services::ready::listen_for_node_ready;
 
+use core_node::transport::{NodeInfoRequestPollExt, StackListRequestPollExt};
 const CALLER_INSTANCE_ID: &str = "peppy-test";
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

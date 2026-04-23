@@ -4,13 +4,13 @@ use config::consts::{
     DEFAULT_MESSAGING_HOST, NODE_CONFIG_FILE, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH, PeppyDirs,
 };
 use config::node::{PeppygenLanguage, QoSProfile};
-use core_node::encoding::{
+use core_node::names;
+use core_node::{CoreNode, CoreNodeArguments};
+use core_node_api::encoding::{
     NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAddResult, NodeBuildFeedback,
     NodeBuildGoal, NodeBuildGoalResponse, NodeBuildResult, NodeRunFeedback, NodeRunGoal,
     NodeRunGoalResponse, NodeRunResult, NodeSource,
 };
-use core_node::names;
-use core_node::{CoreNode, CoreNodeArguments};
 use gix_url::Url as GitUrl;
 use node_stack::NodeStack;
 use peppylib::messaging::MessengerHandle;
@@ -337,7 +337,7 @@ async fn send_node_add_and_wait_internal<'a>(
     core_node_name: &str,
     source: impl Into<NodeAddSource<'a>>,
     variant: Option<NodeSource>,
-    dep_variant_overrides: Vec<core_node::encoding::DepVariantOverride>,
+    dep_variant_overrides: Vec<core_node_api::encoding::DepVariantOverride>,
     goal_timeout: Duration,
     result_timeout: Duration,
     feedback_tx: Option<UnboundedSender<NodeAddFeedback>>,
@@ -737,7 +737,7 @@ pub async fn send_node_add_and_wait_with_dep_overrides<'a>(
     core_node_name: &str,
     source: impl Into<NodeAddSource<'a>>,
     variant: Option<&str>,
-    dep_overrides: Vec<core_node::encoding::DepVariantOverride>,
+    dep_overrides: Vec<core_node_api::encoding::DepVariantOverride>,
     goal_timeout: Duration,
     result_timeout: Duration,
     feedback_tx: Option<UnboundedSender<NodeAddFeedback>>,

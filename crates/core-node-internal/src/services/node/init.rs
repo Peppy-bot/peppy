@@ -2,10 +2,10 @@ mod templates;
 
 use self::templates::{apply_python_templates, apply_rust_templates};
 use crate::Result;
-use crate::encoding::{NodeInitRequest, NodeInitResponse};
 use crate::names;
 use config::consts::PeppyDirs;
 use config::node::Toolchain;
+use core_node_api::encoding::{NodeInitRequest, NodeInitResponse};
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::types::Payload;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};

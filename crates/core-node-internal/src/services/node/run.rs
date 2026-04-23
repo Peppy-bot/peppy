@@ -2,12 +2,12 @@ use super::super::action_loop::{ActionResult, ActionState, GoalHandler, run_acti
 use super::gate::ConcurrencyGate;
 use super::{FeedbackLine, FeedbackStream, create_action_log_file, write_error_to_log};
 use crate::Result;
-use crate::encoding::{NodeRunFeedback, NodeRunGoal, NodeRunGoalResponse, NodeRunResult};
 use crate::names;
 use config::consts::PeppyDirs;
 use config::node::Name;
 use config::runtime::RuntimeConfig;
 use config::{AnyType, resolve_parameter_path};
+use core_node_api::encoding::{NodeRunFeedback, NodeRunGoal, NodeRunGoalResponse, NodeRunResult};
 use futures::FutureExt;
 use node_stack::{self, NodeStack};
 use parking_lot::Mutex as StdMutex;

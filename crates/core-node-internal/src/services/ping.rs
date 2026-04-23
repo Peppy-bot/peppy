@@ -1,6 +1,6 @@
 use crate::Result;
-use crate::encoding::{PingRequest, PingResponse};
 use crate::names;
+use core_node_api::encoding::{PingRequest, PingResponse};
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::types::Payload;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};

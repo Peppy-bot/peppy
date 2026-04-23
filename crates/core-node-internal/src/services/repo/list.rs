@@ -1,11 +1,11 @@
 use crate::Result;
-use crate::encoding::{
-    RepoListNodeEntry, RepoListRequest, RepoListResponse, RepoSource, RepoSourceKind,
-};
 use crate::names;
 use crate::services::repo::exclude::ExclusionSet;
 use crate::services::repo::refresh::{parse_repo_entry, read_or_create_repos, walk_directory};
 use config::consts::PeppyDirs;
+use core_node_api::encoding::{
+    RepoListNodeEntry, RepoListRequest, RepoListResponse, RepoSource, RepoSourceKind,
+};
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::types::Payload;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};

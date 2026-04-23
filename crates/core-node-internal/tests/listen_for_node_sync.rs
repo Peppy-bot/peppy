@@ -2,8 +2,8 @@ mod common;
 
 use common::{CALLER_INSTANCE_ID, start_core_node_with_mock_messenger};
 use config::consts::{NODE_CONFIG_FILE, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH};
-use core_node::encoding::NodeSyncRequest;
-use core_node::encoding::prelude::*;
+use core_node::transport::NodeSyncRequestPollExt;
+use core_node_api::encoding::NodeSyncRequest;
 use std::fs;
 use std::path::Path;
 use std::time::Duration;

@@ -7,8 +7,8 @@ use config::consts::{
 };
 use config::node::Toolchain;
 use config::test_helpers::assert_contains_all;
-use core_node::encoding::NodeInitRequest;
-use core_node::encoding::prelude::*;
+use core_node::transport::NodeInitRequestPollExt;
+use core_node_api::encoding::NodeInitRequest;
 use std::fs;
 use std::time::Duration;
 use tempfile::tempdir;

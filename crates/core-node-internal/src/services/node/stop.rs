@@ -1,7 +1,7 @@
 use crate::Result;
-use crate::encoding::{NodeStopRequest, NodeStopResponse};
 use crate::names;
 use config::node::Name;
+use core_node_api::encoding::{NodeStopRequest, NodeStopResponse};
 use node_stack::NodeStack;
 use peppylib::messaging::{SHUTDOWN_SERVICE, ServiceMessenger, ServiceRequestContext};
 use peppylib::types::Payload;

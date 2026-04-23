@@ -1,8 +1,4 @@
 use crate::Result;
-use crate::encoding::{
-    RepoRefreshFeedback, RepoRefreshGoal, RepoRefreshGoalResponse, RepoRefreshResult, RepoSource,
-    RepoSourceKind,
-};
 use crate::names;
 use crate::services::action_loop::{ActionResult, ActionState, GoalHandler, run_action_loop};
 use crate::services::node::clone_with_progress;
@@ -10,6 +6,10 @@ use crate::services::repo::exclude::ExclusionSet;
 use crate::services::repo::normalize_repo_entries;
 use config::consts::{NODE_CONFIG_FILE, PeppyDirs};
 use config::node::NodeConfigParser;
+use core_node_api::encoding::{
+    RepoRefreshFeedback, RepoRefreshGoal, RepoRefreshGoalResponse, RepoRefreshResult, RepoSource,
+    RepoSourceKind,
+};
 use peppylib::messaging::{ServiceRequestContext, TopicPublisher};
 use peppylib::types::Payload;
 use peppylib::{ActionMessenger, MessengerHandle, PeppyError, PeppyResult};

@@ -11,13 +11,13 @@ use super::{
     resolve_local_archive_source, sanitize_repo_path, write_error_to_log,
 };
 use crate::Result;
-use crate::encoding::{
-    NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAddResult, NodeSource,
-};
 use crate::names;
 use chrono::Local;
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH, PeppyDirs};
 use config::node::{DEFAULT_VARIANT_NAME, NodeConfig, NodeConfigParser, ParsedNodeConfig};
+use core_node_api::encoding::{
+    NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAddResult, NodeSource,
+};
 use futures::FutureExt;
 use node_stack::add_steps::{copy_node_to_temp_dir, verify_git_hash};
 use node_stack::{InstanceState, NodeStack, WorkingDirGuard, validate_dependency_specs};

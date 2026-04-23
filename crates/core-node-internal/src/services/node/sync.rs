@@ -1,9 +1,9 @@
 use crate::Result;
-use crate::encoding::{NodeSyncRequest, NodeSyncResponse};
 use crate::names;
 use config::consts::PeppyDirs;
 use config::node::{NodeConfigParser, VariantConfigParser};
 use config::source::DeploymentSource;
+use core_node_api::encoding::{NodeSyncRequest, NodeSyncResponse};
 use generator::{ConsumedActionMessage, DeploymentInterface, InterfaceVariant};
 use node_stack::NodeStack;
 use peppylib::messaging::ServiceRequestContext;

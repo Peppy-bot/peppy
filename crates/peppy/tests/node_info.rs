@@ -1,4 +1,3 @@
-use core_node::encoding::prelude::*;
 use core_node_api::encoding::{NodeInfoRequest, NodeInfoResponse};
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands, TimeoutConfig};
@@ -9,6 +8,7 @@ use std::io::Write;
 use std::sync::Arc;
 use std::time::Duration;
 
+use core_node::transport::NodeInfoRequestPollExt;
 const CALLER_INSTANCE_ID: &str = "peppy-test";
 const DEFAULTS: TimeoutConfig = TimeoutConfig {
     idle_secs: 60,

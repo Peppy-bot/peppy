@@ -5,8 +5,8 @@ use common::{
     start_core_node_with_mock_messenger, write_peppy_json5,
 };
 use config::node::Name;
-use core_node::encoding::NodeResetRequest;
-use core_node::encoding::prelude::*;
+use core_node::transport::NodeResetRequestPollExt;
+use core_node_api::encoding::NodeResetRequest;
 use std::time::Duration;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

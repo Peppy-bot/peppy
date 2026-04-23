@@ -1,6 +1,5 @@
 use config::consts::{PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH};
 use config::node::Toolchain;
-use core_node::encoding::prelude::*;
 use core_node_api::encoding::StackListRequest;
 use node_stack::SerializedNodeGraph;
 use peppy::commands::Command;
@@ -16,6 +15,7 @@ use peppylib::services::shutdown::listen_for_shutdown;
 use std::sync::Arc;
 use std::time::Duration;
 
+use core_node::transport::StackListRequestPollExt;
 const CALLER_INSTANCE_ID: &str = "peppy-test";
 
 #[test]

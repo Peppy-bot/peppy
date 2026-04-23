@@ -1,6 +1,6 @@
 use super::*;
-use core_node::encoding::prelude::*;
 
+use core_node::transport::NodeSyncRequestPollExt;
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_add_variant_local_source() {
     const ROOT_NODE_NAME: &str = "robot_brain";
@@ -92,7 +92,7 @@ async fn listen_for_node_add_variant_local_source() {
 /// not the temporary merged config, so that `node add` verification passes.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_add_variant_local_source_after_sync() {
-    use core_node::encoding::NodeSyncRequest;
+    use core_node_api::encoding::NodeSyncRequest;
 
     const ROOT_NODE_NAME: &str = "synced_robot";
     const ROOT_NODE_TAG: &str = "0.1.0";
@@ -224,7 +224,7 @@ async fn listen_for_node_add_variant_local_source_after_sync() {
 /// path, not the root.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_add_variant_only_node_after_sync() {
-    use core_node::encoding::NodeSyncRequest;
+    use core_node_api::encoding::NodeSyncRequest;
 
     const ROOT_NODE_NAME: &str = "variant_only_robot";
     const ROOT_NODE_TAG: &str = "0.1.0";
@@ -357,7 +357,7 @@ async fn listen_for_node_add_variant_only_node_after_sync() {
 /// mismatch on the next `node add`, blocking the stale variant from being added.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_node_add_variant_fingerprint_mismatch_after_sync() {
-    use core_node::encoding::NodeSyncRequest;
+    use core_node_api::encoding::NodeSyncRequest;
 
     const ROOT_NODE_NAME: &str = "stale_variant_robot";
     const ROOT_NODE_TAG: &str = "0.1.0";
@@ -853,7 +853,7 @@ async fn listen_for_node_add_variant_no_interfaces() {
 /// or as a variant, as well as the case where no variant is set.
 #[test]
 fn listen_for_node_add_variant_encoding_roundtrip() {
-    use core_node::encoding::NodeSource;
+    use core_node_api::encoding::NodeSource;
 
     // Name-based variant (Fs)
     let goal = NodeAddGoal::new("/some/path", "test-hash", 60).with_variant_name("mock");

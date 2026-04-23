@@ -1,5 +1,4 @@
 use config::node::NodeConfigParser;
-use core_node::encoding::prelude::*;
 use core_node_api::encoding::{
     NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAddResult, NodeInfoRequest,
     NodeInfoResponse, NodeSource,
@@ -19,6 +18,7 @@ use crate::commands::{CALLER_INSTANCE_ID, GOAL_TIMEOUT};
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 
+use core_node::transport::{NodeAddGoalSendGoalExt, NodeInfoRequestPollExt};
 /// Options for running a node instance immediately after adding it.
 pub struct RunAfterAddOptions {
     pub args: Vec<(String, String)>,

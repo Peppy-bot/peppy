@@ -1,6 +1,6 @@
 use crate::Result;
-use crate::encoding::{ContainerInfo, InfoRequest, InfoResponse};
 use crate::names;
+use core_node_api::encoding::{ContainerInfo, InfoRequest, InfoResponse};
 use node_stack::NodeStack;
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::types::Payload;

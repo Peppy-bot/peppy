@@ -1,9 +1,4 @@
 use crate::Result;
-use crate::encoding::{
-    LaunchFeedback, LaunchFeedbackStep, LaunchGoal, LaunchGoalResponse, LaunchResult, NodeAddGoal,
-    NodeAddLogEntry, NodeAddResult, NodeBuildLogEntry, NodeRunGoal, NodeRunLogEntry, NodeRunResult,
-    NodeSource,
-};
 use crate::names;
 use crate::services::action_loop::{ActionResult, ActionState, GoalHandler, run_action_loop};
 use crate::services::node::{
@@ -15,6 +10,11 @@ use chrono::Local;
 use config::consts::{DEFAULT_MESSAGING_HOST, DEFAULT_MESSAGING_PORT, PeppyDirs};
 use config::launcher::{Deployment, DeploymentSource, PeppyLauncherParser, VariantSource};
 use config::runtime::RuntimeConfig;
+use core_node_api::encoding::{
+    LaunchFeedback, LaunchFeedbackStep, LaunchGoal, LaunchGoalResponse, LaunchResult, NodeAddGoal,
+    NodeAddLogEntry, NodeAddResult, NodeBuildLogEntry, NodeRunGoal, NodeRunLogEntry, NodeRunResult,
+    NodeSource,
+};
 use node_stack::NodeStack;
 use parking_lot::Mutex as StdMutex;
 use peppylib::messaging::{ServiceRequestContext, TopicPublisher};
@@ -651,7 +651,7 @@ async fn build_node_directly(
         ctx.launch_deadline,
         &log_file_for_timeout,
         LaunchFeedbackStep::BuildingNode,
-        |reason| crate::encoding::NodeBuildResult::failure(&log_path_for_timeout, reason),
+        |reason| core_node_api::encoding::NodeBuildResult::failure(&log_path_for_timeout, reason),
         None,
     )
     .await;

@@ -16,7 +16,7 @@ use crate::context::AppContext;
 use crate::error::{Error, Result};
 
 use super::run::args_to_node_arguments;
-use core_node::encoding::prelude::*;
+use core_node::transport::StackListRequestPollExt;
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 

@@ -11,7 +11,7 @@ pub use list::listen_for_repo_list;
 pub use refresh::listen_for_repo_refresh;
 pub use remove::listen_for_repo_remove;
 
-use crate::encoding::RepoSource;
+use core_node_api::encoding::RepoSource;
 use serde_json::Value;
 use std::collections::HashSet;
 use std::path::Path;

@@ -11,9 +11,9 @@
 //! re-parse the cache file on every request.
 
 use crate::Result;
-use crate::encoding::{NodeSource, RepoSourceKind};
 use crate::services::repo::refresh::read_or_create_repos;
 use config::consts::PeppyDirs;
+use core_node_api::encoding::{NodeSource, RepoSourceKind};
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

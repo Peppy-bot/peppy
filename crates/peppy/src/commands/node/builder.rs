@@ -1,4 +1,3 @@
-use core_node::encoding::prelude::*;
 use core_node_api::encoding::{
     NodeBuildFeedback, NodeBuildGoal, NodeBuildGoalResponse, NodeBuildResult,
 };
@@ -11,6 +10,7 @@ use super::env::caller_env_overrides;
 use crate::commands::{CALLER_INSTANCE_ID, GOAL_TIMEOUT};
 use crate::context::AppContext;
 use crate::error::{Error, Result};
+use core_node::transport::NodeBuildGoalSendGoalExt;
 
 pub struct BuildNodeParams {
     pub node_name: String,

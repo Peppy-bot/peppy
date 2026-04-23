@@ -5,7 +5,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use config::consts::{NODE_CONFIG_FILE, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH};
-use core_node::encoding::prelude::*;
 use core_node_api::encoding::StackListRequest;
 use node_stack::SerializedNodeGraph;
 use peppy::commands::Command;
@@ -13,6 +12,7 @@ use peppy::commands::node::{NodeCommand, NodeCommands};
 use peppy::commands::service::{ServiceCommand, ServiceCommands};
 use peppy::context::AppContext;
 
+use core_node::transport::StackListRequestPollExt;
 const CALLER_INSTANCE_ID: &str = "peppy-test";
 
 fn write_node_config(
