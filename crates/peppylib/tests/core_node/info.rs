@@ -53,6 +53,7 @@ async fn info_returns_typed_response_fields() {
             apptainer_version: "1.3.0".to_string(),
             lima_version: "0.20.0".to_string(),
         },
+        7447,
     );
 
     let (_router, _temp_dir, node_runner) = setup_stub(response.clone()).await;
@@ -70,4 +71,5 @@ async fn info_returns_typed_response_fields() {
     assert_eq!(result.git_version, "v0.9.9");
     assert_eq!(result.container_info.apptainer_version, "1.3.0");
     assert_eq!(result.container_info.lima_version, "0.20.0");
+    assert_eq!(result.messaging_port, 7447);
 }

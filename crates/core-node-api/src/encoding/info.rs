@@ -45,9 +45,11 @@ pub struct InfoResponse {
     pub node_count: u32,
     pub git_version: String,
     pub container_info: ContainerInfo,
+    pub messaging_port: u16,
 }
 
 impl InfoResponse {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         uptime_secs: u64,
         core_node_name: impl Into<String>,
@@ -56,6 +58,7 @@ impl InfoResponse {
         node_count: u32,
         git_version: impl Into<String>,
         container_info: ContainerInfo,
+        messaging_port: u16,
     ) -> Self {
         Self {
             uptime_secs,
@@ -65,6 +68,7 @@ impl InfoResponse {
             node_count,
             git_version: git_version.into(),
             container_info,
+            messaging_port,
         }
     }
 
@@ -78,6 +82,7 @@ impl InfoResponse {
             response.set_host_name(&self.host_name);
             response.set_node_count(self.node_count);
             response.set_git_version(&self.git_version);
+            response.set_messaging_port(self.messaging_port);
             let mut container = response.init_container_info();
             container.set_apptainer_version(&self.container_info.apptainer_version);
             container.set_lima_version(&self.container_info.lima_version);
@@ -100,6 +105,7 @@ impl InfoResponse {
                 apptainer_version: container.get_apptainer_version()?.to_str()?.to_owned(),
                 lima_version: container.get_lima_version()?.to_str()?.to_owned(),
             },
+            messaging_port: response.get_messaging_port(),
         })
     }
 }

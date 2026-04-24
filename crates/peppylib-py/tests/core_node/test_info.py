@@ -22,6 +22,7 @@ async def test_info_returns_typed_response_fields(tmp_path):
         7,
         "v0.9.9",
         ContainerInfo("1.3.0", "0.20.0"),
+        7447,
     )
 
     router, node_runner, server_handle = await start_router_and_runner(tmp_path)
@@ -43,3 +44,4 @@ async def test_info_returns_typed_response_fields(tmp_path):
     assert result.git_version == "v0.9.9"
     assert result.container_info.apptainer_version == "1.3.0"
     assert result.container_info.lima_version == "0.20.0"
+    assert result.messaging_port == 7447

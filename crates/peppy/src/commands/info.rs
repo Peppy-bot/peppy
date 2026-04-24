@@ -73,6 +73,7 @@ async fn info_async(ctx: &Arc<AppContext>) -> Result<()> {
             println!("Core node name: {}", response.core_node_name);
             println!("Core node instance ID: {}", response.core_node_instance_id);
             println!("Host name: {}", response.host_name);
+            println!("Messaging port: {}", response.messaging_port);
             println!("Uptime: {}s", response.uptime_secs);
             println!("Node count: {}", response.node_count);
             println!();

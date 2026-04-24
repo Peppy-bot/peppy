@@ -18,6 +18,8 @@ pub async fn listen_for_info(
     node_stack: Arc<NodeStack>,
     start_time: Instant,
 ) -> Result<JoinHandle<Result<()>>> {
+    let messaging_port = messenger.messaging_port().await;
+
     let mut endpoint = ServiceMessenger::listen(
         messenger,
         core_node_name,
@@ -43,6 +45,7 @@ pub async fn listen_for_info(
                         &instance_id,
                         start_time,
                         &node_stack,
+                        messaging_port,
                     )
                     .await
                 }
@@ -60,6 +63,7 @@ async fn handle_info_request(
     instance_id: &str,
     start_time: Instant,
     node_stack: &NodeStack,
+    messaging_port: u16,
 ) -> PeppyResult<Payload> {
     let sender_instance_id = context.message().instance_id();
     handle_info_request_inner(
@@ -68,6 +72,7 @@ async fn handle_info_request(
         instance_id,
         start_time,
         node_stack,
+        messaging_port,
     )
     .map_err(|e| PeppyError::InvalidServiceRequest {
         identifier: sender_instance_id.to_string(),
@@ -81,6 +86,7 @@ fn handle_info_request_inner(
     instance_id: &str,
     start_time: Instant,
     node_stack: &NodeStack,
+    messaging_port: u16,
 ) -> Result<Payload> {
     let sender_instance_id = context.message().instance_id();
     let payload = context.message().payload();
@@ -110,6 +116,7 @@ fn handle_info_request_inner(
         node_count,
         git_version,
         container_info,
+        messaging_port,
     )
     .encode()
     .map_err(Into::into)

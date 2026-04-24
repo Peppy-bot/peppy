@@ -1,6 +1,7 @@
 mod common;
 
 use common::{CALLER_INSTANCE_ID, start_core_node_with_mock_messenger};
+use config::consts::DEFAULT_MESSAGING_PORT;
 use core_node::names;
 use core_node_api::encoding::{InfoRequest, InfoResponse};
 use peppylib::ServiceMessenger;
@@ -55,5 +56,9 @@ async fn listen_for_info_success() {
     assert!(
         !info_response.container_info.lima_version.is_empty(),
         "lima_version should not be empty"
+    );
+    assert_eq!(
+        info_response.messaging_port, DEFAULT_MESSAGING_PORT,
+        "messaging_port should match the mock adapter's default"
     );
 }

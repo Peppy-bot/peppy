@@ -74,6 +74,7 @@ impl From<InfoResponse> for PyInfoResponse {
 #[pymethods]
 impl PyInfoResponse {
     #[new]
+    #[allow(clippy::too_many_arguments)]
     fn new(
         uptime_secs: u64,
         core_node_name: String,
@@ -82,6 +83,7 @@ impl PyInfoResponse {
         node_count: u32,
         git_version: String,
         container_info: PyContainerInfo,
+        messaging_port: u16,
     ) -> Self {
         Self {
             inner: InfoResponse {
@@ -92,6 +94,7 @@ impl PyInfoResponse {
                 node_count,
                 git_version,
                 container_info: container_info.inner,
+                messaging_port,
             },
         }
     }
@@ -131,6 +134,11 @@ impl PyInfoResponse {
         PyContainerInfo {
             inner: self.inner.container_info.clone(),
         }
+    }
+
+    #[getter]
+    fn messaging_port(&self) -> u16 {
+        self.inner.messaging_port
     }
 
     /// Capnp-encode this response into bytes suitable for replying from a stub

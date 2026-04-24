@@ -18,4 +18,5 @@ struct InfoResponse {
     nodeCount @4 :UInt32;
     gitVersion @5 :Text;
     containerInfo @6 :ContainerInfo;
+    messagingPort @7 :UInt16;
 }
