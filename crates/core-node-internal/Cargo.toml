@@ -24,7 +24,7 @@ serde_json = "1.0"
 serde_json5 = "0.2"
 sysinfo = "0.38"
 thiserror = "2.0"
-tokio = { version = "1.47", features = [
+tokio = { version = "1", features = [
     "io-util",
     "macros",
     "process",
@@ -56,7 +56,7 @@ libc = "0.2"
 node-stack = { path = "../node-stack-internal" }
 config = { path = "../config-internal", features = ["test_helpers"] }
 tempfile = "3.10"
-tokio = { version = "1.47", features = ["full", "test-util"] }
+tokio = { version = "1", features = ["full", "test-util"] }
 httptest = "0.16.3"
 
 [features]

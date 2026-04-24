@@ -2,22 +2,13 @@
 //!
 //! `FeedbackLine`/`FeedbackStream` are re-exported from
 //! `node-stack-internal::build_io` so that `NodeEntity::build` can stream
-//! apptainer output without depending on core-node-internal. The
-//! forwarder consumes those lines from an in-process mpsc channel and
+//! apptainer output without depending on core-node-internal. `FeedbackStream`
+//! itself is owned by `core-node-api` and re-exported through node-stack — so
+//! producers, transports, and the wire types all share one enum.
+//! The forwarder consumes those lines from an in-process mpsc channel and
 //! republishes each one onto a peppylib topic.
 
 pub(crate) use node_stack::{FeedbackLine, FeedbackStream};
-
-/// Convert the node-stack `FeedbackStream` to the wire-level copy that lives
-/// in `core-node-api` — they're structurally identical, but core-node-api
-/// cannot depend on node-stack.
-pub(crate) fn stream_to_api(stream: FeedbackStream) -> core_node_api::encoding::FeedbackStream {
-    match stream {
-        FeedbackStream::Stdout => core_node_api::encoding::FeedbackStream::Stdout,
-        FeedbackStream::Stderr => core_node_api::encoding::FeedbackStream::Stderr,
-        FeedbackStream::Warning => core_node_api::encoding::FeedbackStream::Warning,
-    }
-}
 
 /// Spawns a task that consumes `FeedbackLine` values from `feedback_rx`,
 /// converts each one via `encode` and publishes the resulting payload. Shared

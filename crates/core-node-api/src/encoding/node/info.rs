@@ -1,14 +1,16 @@
 //! Cap'n Proto encoding utilities for node info messages.
 
 use std::path::PathBuf;
+use std::str::FromStr;
 
 use capnp::message::Builder;
 use config::node::NodeConfig;
 
+use crate::graph::{InstanceState, NodeStage};
 use crate::node_capnp;
 use crate::{Payload, Result};
 
-use crate::encoding::{decode_message, encode_message, optional_text};
+use crate::encoding::{capnp_list_len, decode_message, encode_message, optional_text};
 
 /// Request payload for the `node_info` service.
 ///
@@ -52,8 +54,7 @@ impl NodeInfoRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeInstanceInfo {
     pub instance_id: String,
-    /// Per-instance lifecycle state, as a lowercase string ("starting" or "running").
-    pub state: String,
+    pub state: InstanceState,
 }
 
 /// Body of a successful `node_info` lookup — carries all metadata about a
@@ -64,8 +65,7 @@ pub struct NodeInfo {
     pub config: NodeConfig,
     /// SHA256 of the serialized NodeConfig at the time of the response.
     pub config_integrity: String,
-    /// Lifecycle stage of the entity ("Added"/"Building"/"Ready"/"Root").
-    pub stage: String,
+    pub stage: NodeStage,
     /// All tracked instances of this entity, including in-flight `Starting`
     /// ones, with their per-instance state.
     pub instances: Vec<NodeInstanceInfo>,
@@ -111,14 +111,15 @@ impl NodeInfoResponse {
                     })?;
                     found.set_config_json5(&config_json5);
                     found.set_config_sha256(&info.config_integrity);
-                    found.set_stage(&info.stage);
+                    found.set_stage(info.stage.as_str());
                     {
-                        let mut instances_builder =
-                            found.reborrow().init_instances(info.instances.len() as u32);
+                        let instance_count =
+                            capnp_list_len(info.instances.len(), "NodeInfo.instances")?;
+                        let mut instances_builder = found.reborrow().init_instances(instance_count);
                         for (i, inst) in info.instances.iter().enumerate() {
                             let mut entry = instances_builder.reborrow().get(i as u32);
                             entry.set_instance_id(&inst.instance_id);
-                            entry.set_state(&inst.state);
+                            entry.set_state(inst.state.as_str());
                         }
                     }
                     found.set_add_log_path(
@@ -129,9 +130,10 @@ impl NodeInfoResponse {
                             .as_str(),
                     );
                     {
-                        let mut paths_builder = found
-                            .reborrow()
-                            .init_run_log_paths(info.run_log_paths.len() as u32);
+                        let run_log_path_count =
+                            capnp_list_len(info.run_log_paths.len(), "NodeInfo.run_log_paths")?;
+                        let mut paths_builder =
+                            found.reborrow().init_run_log_paths(run_log_path_count);
                         for (i, path) in info.run_log_paths.iter().enumerate() {
                             paths_builder.set(i as u32, path.to_string_lossy().as_ref());
                         }
@@ -156,14 +158,19 @@ impl NodeInfoResponse {
                     crate::Error::Decoding(format!("failed to deserialize config: {}", e))
                 })?;
                 let config_integrity = found.get_config_sha256()?.to_str()?.to_owned();
-                let stage = found.get_stage()?.to_str()?.to_owned();
+                let stage_str = found.get_stage()?.to_str()?;
+                let stage = NodeStage::from_str(stage_str)
+                    .map_err(|e| crate::Error::Decoding(e.to_string()))?;
                 let instances_reader = found.get_instances()?;
                 let mut instances = Vec::with_capacity(instances_reader.len() as usize);
                 for i in 0..instances_reader.len() {
                     let entry = instances_reader.get(i);
+                    let state_str = entry.get_state()?.to_str()?;
+                    let state = InstanceState::from_str(state_str)
+                        .map_err(|e| crate::Error::Decoding(e.to_string()))?;
                     instances.push(NodeInstanceInfo {
                         instance_id: entry.get_instance_id()?.to_str()?.to_owned(),
-                        state: entry.get_state()?.to_str()?.to_owned(),
+                        state,
                     });
                 }
                 let add_log_path =
@@ -223,7 +230,7 @@ mod tests {
         NodeInfo {
             config: sample_config_for_roundtrip(),
             config_integrity: "0".repeat(64),
-            stage: "Added".to_string(),
+            stage: NodeStage::Added,
             instances: vec![],
             add_log_path: None,
             run_log_paths: vec![],

@@ -284,11 +284,7 @@ impl NodeBuildGoalHandler {
             let (feedback_tx, feedback_rx) = mpsc::unbounded_channel::<FeedbackLine>();
             let consumer_handle =
                 super::spawn_feedback_forwarder(feedback_rx, feedback_publisher.clone(), |line| {
-                    NodeBuildFeedback::from_stream(
-                        super::feedback::stream_to_api(line.stream),
-                        &line.line,
-                    )
-                    .encode()
+                    NodeBuildFeedback::from_stream(line.stream, &line.line).encode()
                 });
 
             let result = tokio::select! {

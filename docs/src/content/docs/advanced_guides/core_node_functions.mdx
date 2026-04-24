@@ -1,0 +1,174 @@
+---
+title: Core node functions
+description: Inspect a running peppy stack from your own code — uptime, host, and the live node graph.
+sidebar:
+  order: 8
+---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+Every peppy stack has a **core node** that tracks which nodes have been added, which instances are running, and a few facts about the host it is running on.
+`peppylib` exposes two helpers that let any node query the core node at runtime:
+
+- `info` — a typed snapshot of the core node (uptime, hostname, node count, git version, container runtimes).
+- `stack_list` — the live node graph, with every node's stage and running instances, and optionally a Graphviz DOT rendering.
+
+Both are available from Rust as `peppylib::info`, `peppylib::stack_list`, and `peppylib::StackList`, and from Python as `from peppylib import info, stack_list, StackList`. They are not re-exported by `peppygen` — import them from `peppylib` directly.
+
+Both take a `NodeRunner` — the same handle your node receives from `NodeBuilder::new().run(...)` (see the [services guide](/advanced_guides/services/) for a typical setup).
+
+## When to use these
+
+- **Runtime introspection of instances.** A node can call `stack_list` to discover, at runtime, how many instances of a given dependency are currently up and what their instance IDs are. A router or load-balancer node, for example, can iterate `graph.nodes`, find the entry whose `name` matches its target, and read `instances` (keeping only those whose `state` is `"running"`) to decide where to dispatch work.
+- **Health checks and dashboards.** `info` returns uptime, hostname, node count, git version, and container runtime versions — enough to drive a status page or a liveness probe without scraping logs.
+- **Graph visualisation.** `stack_list` with `with_dot_graph: true` returns a Graphviz DOT string you can pipe straight into `dot -Tsvg` or any renderer that accepts DOT.
+- **Tests and tooling.** Integration tests or CLI utilities that need to assert "node X is up with N instances" or "edge A→B exists in the graph" can use the same helpers production code does.
+
+## `info`
+
+`info` polls the core node's `INFO` service and returns a typed response.
+
+The response carries:
+
+- `uptime_secs` — how long the core node has been up, in seconds.
+- `core_node_name`, `core_node_instance_id` — identity of the core node.
+- `host_name` — the machine hosting the core node.
+- `node_count` — how many nodes are currently in the stack.
+- `git_version` — the peppy build the core node was compiled from.
+- `container_info.apptainer_version`, `container_info.lima_version` — container runtime versions.
+
+The second argument is a timeout. Rust accepts anything that converts to `Option<Duration>`; Python accepts a `float` in seconds. Pass `None` (or omit it in Python) to use the default of 10 seconds.
+
+<Tabs>
+  <TabItem label="Python">
+    ```python title="src/my_node/__main__.py"
+    from peppygen import NodeBuilder, NodeRunner
+    from peppygen.parameters import Parameters
+    from peppylib import info
+
+
+    async def setup(_params: Parameters, node_runner: NodeRunner) -> None:
+        response = await info(node_runner, 3.0)
+        print(
+            f"{response.core_node_name} on {response.host_name} — "
+            f"{response.node_count} nodes, up {response.uptime_secs}s"
+        )
+
+
+    def main():
+        NodeBuilder().run(setup)
+
+
+    if __name__ == "__main__":
+        main()
+    ```
+  </TabItem>
+  <TabItem label="Rust">
+    ```rust title="src/main.rs"
+    use std::time::Duration;
+
+    use peppygen::{NodeBuilder, Parameters, Result};
+    use peppylib::info;
+
+    fn main() -> Result<()> {
+        NodeBuilder::new().run(|_args: Parameters, node_runner| async move {
+            let response = info(&node_runner, Duration::from_secs(3)).await?;
+            println!(
+                "{} on {} — {} nodes, up {}s",
+                response.core_node_name,
+                response.host_name,
+                response.node_count,
+                response.uptime_secs,
+            );
+            Ok(())
+        })
+    }
+    ```
+  </TabItem>
+</Tabs>
+
+## `stack_list`
+
+`stack_list` returns a `StackList` with two fields:
+
+- `graph` — the node graph, with every node's metadata and its running instances.
+- `dot_graph` — an optional Graphviz DOT rendering, populated only when the second argument (`with_dot_graph`) is `true`. Pass `false` to skip the rendering when you only need the structured graph.
+
+Each node entry carries its `name`, `tag`, `config_path`, optional `artifact_path`, `stage` (`Added`, `Building`, `Ready`, or `Root`), optional `variant_name`, and its `instances`.
+Each instance has an `instance_id` and a `state` (`starting` or `running`).
+The graph's `edges` list the dependency relationships, with each edge pointing from one node entry to another.
+
+Rust and Python expose the graph differently:
+
+- In Rust, `result.graph` is a typed `SerializedNodeGraph` with `nodes: Vec<SerializedNode>` and `edges: Vec<SerializedEdge>`. Field access is direct (`node.name`, `node.instances`).
+- In Python, `result.graph` is a plain `dict` of the same shape — `{"nodes": [...], "edges": [...]}`. Access fields by key (`node["name"]`, `node["instances"][0]["state"]`).
+
+The example below uses `stack_list` to count the running instances of each node and print their IDs — a typical pattern for a router or load-balancer node that needs to dispatch work across instances of a dependency.
+
+<Tabs>
+  <TabItem label="Python">
+    ```python title="src/my_node/__main__.py"
+    from peppygen import NodeBuilder, NodeRunner
+    from peppygen.parameters import Parameters
+    from peppylib import stack_list
+
+
+    async def setup(_params: Parameters, node_runner: NodeRunner) -> None:
+        result = await stack_list(node_runner, True, 3.0)
+
+        for node in result.graph["nodes"]:
+            running = [i for i in node["instances"] if i["state"] == "running"]
+            print(f"{node['name']} ({node['stage']}) — {len(running)} running instance(s)")
+            for instance in running:
+                print(f"  - {instance['instance_id']}")
+
+        if result.dot_graph is not None:
+            print(result.dot_graph)
+
+
+    def main():
+        NodeBuilder().run(setup)
+
+
+    if __name__ == "__main__":
+        main()
+    ```
+  </TabItem>
+  <TabItem label="Rust">
+    ```rust title="src/main.rs"
+    use std::time::Duration;
+
+    use peppygen::{NodeBuilder, Parameters, Result};
+    use peppylib::stack_list;
+
+    fn main() -> Result<()> {
+        NodeBuilder::new().run(|_args: Parameters, node_runner| async move {
+            let result = stack_list(&node_runner, true, Duration::from_secs(3)).await?;
+
+            for node in &result.graph.nodes {
+                println!(
+                    "{} ({:?}) — {} instance(s)",
+                    node.name,
+                    node.stage,
+                    node.instances.len(),
+                );
+                for instance in &node.instances {
+                    // `state` displays as "starting" or "running".
+                    println!("  - {} ({})", instance.instance_id, instance.state);
+                }
+            }
+
+            if let Some(dot) = result.dot_graph {
+                println!("{dot}");
+            }
+
+            Ok(())
+        })
+    }
+    ```
+  </TabItem>
+</Tabs>
+
+:::note
+Both `info` and `stack_list` default to a 10-second timeout. Pass an explicit timeout when calling from a latency-sensitive path so a slow or unreachable core node does not stall your node.
+:::

@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use core_node_api::encoding::{NodeInfoRequest, NodeInfoResponse, StackListRequest};
-use node_stack::SerializedNodeGraph;
+use core_node_api::{NodeStage, SerializedNodeGraph};
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands, NodeName};
 use peppy::context::AppContext;
@@ -716,7 +716,8 @@ async fn node_run_with_build_flag_on_unbuilt_node_builds_then_runs() {
     match info_response {
         NodeInfoResponse::Found(info) => {
             assert_eq!(
-                info.stage, "Added",
+                info.stage,
+                NodeStage::Added,
                 "node should be in Added stage before `run -b`, got {:?}",
                 info.stage
             );
@@ -877,7 +878,8 @@ async fn node_run_with_build_flag_on_already_built_node_skips_build() {
     match info_response {
         NodeInfoResponse::Found(info) => {
             assert_eq!(
-                info.stage, "Ready",
+                info.stage,
+                NodeStage::Ready,
                 "node should be in Ready stage before `run -b`, got {:?}",
                 info.stage
             );

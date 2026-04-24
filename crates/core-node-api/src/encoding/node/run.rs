@@ -8,7 +8,7 @@ use crate::node_capnp;
 use crate::{Payload, Result};
 
 use super::builder::FeedbackStream;
-use crate::encoding::{decode_message, encode_message, optional_text};
+use crate::encoding::{capnp_list_len, decode_message, encode_message, optional_text};
 
 /// Goal message for the NodeRun action.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,7 +61,8 @@ impl NodeRunGoal {
             goal.set_node_name(&self.node_name);
             goal.set_tag(&self.tag);
 
-            let mut env_vars = goal.reborrow().init_env_vars(self.env_vars.len() as u32);
+            let env_var_count = capnp_list_len(self.env_vars.len(), "NodeRunGoal.env_vars")?;
+            let mut env_vars = goal.reborrow().init_env_vars(env_var_count);
             for (idx, (key, value)) in self.env_vars.iter().enumerate() {
                 let mut env_var = env_vars.reborrow().get(idx as u32);
                 env_var.set_key(key);

@@ -1,6 +1,6 @@
 //! Encoding types for the NodeBuild action (streaming version with feedback).
 
-use crate::encoding::{decode_message, encode_message, optional_text};
+use crate::encoding::{capnp_list_len, decode_message, encode_message, optional_text};
 use crate::node_capnp;
 use crate::{Payload, Result};
 use capnp::message::Builder;
@@ -83,7 +83,8 @@ impl NodeBuildGoal {
             goal.set_node_name(&self.node_name);
             goal.set_node_tag(&self.node_tag);
 
-            let mut env_vars = goal.reborrow().init_env_vars(self.env_vars.len() as u32);
+            let env_var_count = capnp_list_len(self.env_vars.len(), "NodeBuildGoal.env_vars")?;
+            let mut env_vars = goal.reborrow().init_env_vars(env_var_count);
             for (idx, (key, value)) in self.env_vars.iter().enumerate() {
                 let mut env_var = env_vars.reborrow().get(idx as u32);
                 env_var.set_key(key);

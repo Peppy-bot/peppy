@@ -51,5 +51,7 @@ fn handle_ping_request_inner(context: &ServiceRequestContext) -> Result<Payload>
         request.timestamp
     );
 
-    Ok(PingResponse::new(request.timestamp, "pong").encode()?)
+    PingResponse::new(request.timestamp, "pong")
+        .encode()
+        .map_err(Into::into)
 }

@@ -7,7 +7,7 @@ use gix_url::Url as GitUrl;
 use std::path::PathBuf;
 
 use super::builder::FeedbackStream;
-use crate::encoding::{decode_message, encode_message, optional_text};
+use crate::encoding::{capnp_list_len, decode_message, encode_message, optional_text};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NodeSource {
@@ -280,9 +280,11 @@ impl NodeAddGoal {
                     let mut repo = source.init_repo_node();
                     repo.set_name(name);
                     repo.set_tag(tag);
-                    let mut overrides = repo
-                        .reborrow()
-                        .init_dep_variant_overrides(dep_variant_overrides.len() as u32);
+                    let override_count = capnp_list_len(
+                        dep_variant_overrides.len(),
+                        "NodeAddGoal.dep_variant_overrides",
+                    )?;
+                    let mut overrides = repo.reborrow().init_dep_variant_overrides(override_count);
                     for (idx, ov) in dep_variant_overrides.iter().enumerate() {
                         let mut entry = overrides.reborrow().get(idx as u32);
                         entry.set_name(&ov.name);
@@ -292,7 +294,8 @@ impl NodeAddGoal {
                 }
             }
 
-            let mut env_vars = goal.reborrow().init_env_vars(self.env_vars.len() as u32);
+            let env_var_count = capnp_list_len(self.env_vars.len(), "NodeAddGoal.env_vars")?;
+            let mut env_vars = goal.reborrow().init_env_vars(env_var_count);
             for (idx, (key, value)) in self.env_vars.iter().enumerate() {
                 let mut env_var = env_vars.reborrow().get(idx as u32);
                 env_var.set_key(key);

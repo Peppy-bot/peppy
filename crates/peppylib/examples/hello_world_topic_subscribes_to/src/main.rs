@@ -48,7 +48,7 @@ async fn main() {
             maybe_msg = subscription.on_next_message() => {
                 match maybe_msg {
                     Some(received) => {
-                        let payload_bytes = received.payload().as_bytes();
+                        let payload_bytes = received.payload();
                         let payload = String::from_utf8_lossy(payload_bytes.as_ref());
                         let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
                         println!(

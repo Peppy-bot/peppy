@@ -11,7 +11,6 @@ use config::node::{DEFAULT_VARIANT_NAME, NodeConfig, NodeConfigParser, ParsedNod
 use core_node_api::encoding::{
     NodeInfo, NodeInfoRequest, NodeInfoResponse, NodeInstanceInfo, NodeSource,
 };
-use node_stack::InstanceState;
 use node_stack::NodeStack;
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::types::Payload;
@@ -138,7 +137,7 @@ async fn handle_node_info_request_inner(
 
     let (node_config, stage, instances, run_log_paths, variant_name) = {
         let guard = entity.read();
-        let stage = guard.stage().name().to_string();
+        let stage = guard.stage().to_serialized();
         let node_config = guard.config().clone();
         let variant_name = guard.variant_name().map(str::to_owned);
         let tracked = guard.instances();
@@ -147,13 +146,9 @@ async fn handle_node_info_request_inner(
         let mut run_log_paths: Vec<PathBuf> = Vec::with_capacity(tracked.len());
         for instance in tracked.iter() {
             let id = instance.instance_id().as_str();
-            let state = instance.state();
             instances.push(NodeInstanceInfo {
                 instance_id: id.to_owned(),
-                state: match state {
-                    InstanceState::Starting => "starting".to_string(),
-                    InstanceState::Running => "running".to_string(),
-                },
+                state: instance.state(),
             });
             run_log_paths.push(run_log_dir.join(format!("{}.log", id)));
         }

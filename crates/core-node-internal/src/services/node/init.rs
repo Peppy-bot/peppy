@@ -71,18 +71,18 @@ fn handle_node_init_request_inner(
     let node_dir = request.node_root_dir.join(&request.node_name);
 
     if node_dir.exists() {
-        return Ok(NodeInitResponse::failure(format!(
+        return NodeInitResponse::failure(format!(
             "Node directory already exists: {}",
             node_dir.display()
         ))
-        .encode()?);
+        .encode()
+        .map_err(Into::into);
     }
 
     if let Err(e) = std::fs::create_dir_all(&node_dir) {
-        return Ok(
-            NodeInitResponse::failure(format!("Failed to create node directory: {}", e))
-                .encode()?,
-        );
+        return NodeInitResponse::failure(format!("Failed to create node directory: {}", e))
+            .encode()
+            .map_err(Into::into);
     }
 
     // Create language-specific configuration (must be done before peppygen generation
@@ -92,22 +92,24 @@ fn handle_node_init_request_inner(
             if let Err(e) =
                 apply_rust_templates(&request.node_name, &node_dir, request.with_container)
             {
-                return Ok(NodeInitResponse::failure(format!(
+                return NodeInitResponse::failure(format!(
                     "Failed to create Rust configuration: {}",
                     e
                 ))
-                .encode()?);
+                .encode()
+                .map_err(Into::into);
             }
         }
         Toolchain::Uv => {
             if let Err(e) =
                 apply_python_templates(&request.node_name, &node_dir, request.with_container)
             {
-                return Ok(NodeInitResponse::failure(format!(
+                return NodeInitResponse::failure(format!(
                     "Failed to create Python configuration: {}",
                     e
                 ))
-                .encode()?);
+                .encode()
+                .map_err(Into::into);
             }
         }
     }
@@ -123,9 +125,9 @@ fn handle_node_init_request_inner(
         generator::CrateDeployMode::default(),
         None,
     ) {
-        return Ok(
-            NodeInitResponse::failure(format!("Failed to generate peppygen: {}", e)).encode()?,
-        );
+        return NodeInitResponse::failure(format!("Failed to generate peppygen: {}", e))
+            .encode()
+            .map_err(Into::into);
     }
 
     // Create .gitignore

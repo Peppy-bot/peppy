@@ -96,7 +96,9 @@ async fn handle_node_stop_request_inner(
     let instance_id = match Name::new(&request.instance_id) {
         Ok(name) => name,
         Err(e) => {
-            return Ok(NodeStopResponse::failure(format!("Invalid instance_id: {}", e)).encode()?);
+            return NodeStopResponse::failure(format!("Invalid instance_id: {}", e))
+                .encode()
+                .map_err(Into::into);
         }
     };
 
@@ -110,17 +112,19 @@ async fn handle_node_stop_request_inner(
         Some(instance) => instance,
         None => {
             if instance_is_in_starting(&node_stack, &instance_id) {
-                return Ok(NodeStopResponse::failure(format!(
+                return NodeStopResponse::failure(format!(
                     "Node instance '{}' is in Starting state; retry after the start completes",
                     request.instance_id
                 ))
-                .encode()?);
+                .encode()
+                .map_err(Into::into);
             }
-            return Ok(NodeStopResponse::failure(format!(
+            return NodeStopResponse::failure(format!(
                 "Node instance '{}' not found in node stack",
                 request.instance_id
             ))
-            .encode()?);
+            .encode()
+            .map_err(Into::into);
         }
     };
 
@@ -128,17 +132,19 @@ async fn handle_node_stop_request_inner(
         Some(entity) => entity,
         None => {
             if instance_is_in_starting(&node_stack, &instance_id) {
-                return Ok(NodeStopResponse::failure(format!(
+                return NodeStopResponse::failure(format!(
                     "Node instance '{}' is in Starting state; retry after the start completes",
                     request.instance_id
                 ))
-                .encode()?);
+                .encode()
+                .map_err(Into::into);
             }
-            return Ok(NodeStopResponse::failure(format!(
+            return NodeStopResponse::failure(format!(
                 "Node instance '{}' not found in node stack",
                 request.instance_id
             ))
-            .encode()?);
+            .encode()
+            .map_err(Into::into);
         }
     };
 
@@ -162,7 +168,9 @@ async fn handle_node_stop_request_inner(
     };
 
     if node_name == root_node_name && node_tag == root_node_tag {
-        return Ok(NodeStopResponse::failure("Cannot stop the core node").encode()?);
+        return NodeStopResponse::failure("Cannot stop the core node")
+            .encode()
+            .map_err(Into::into);
     }
 
     // Step 1: send the shutdown signal — but do NOT remove the instance from
@@ -190,11 +198,12 @@ async fn handle_node_stop_request_inner(
     // registry, so a timeout/failure leaves the entry in place for retries.
     if let Some(pid) = pid {
         if !wait_for_process_termination(pid).await {
-            return Ok(NodeStopResponse::failure(format!(
+            return NodeStopResponse::failure(format!(
                 "Process {} for node instance '{}' did not terminate within timeout",
                 pid, request.instance_id
             ))
-            .encode()?);
+            .encode()
+            .map_err(Into::into);
         }
         debug!(
             "Process {} for node instance '{}' has terminated",

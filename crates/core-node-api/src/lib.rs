@@ -6,10 +6,15 @@
 
 pub mod encoding;
 pub mod error;
+pub mod graph;
 pub mod names;
 mod payload;
 
 pub use error::{Error, Result};
+pub use graph::{
+    InstanceState, NodeStage, SerializedEdge, SerializedInstance, SerializedNode,
+    SerializedNodeGraph,
+};
 pub use payload::Payload;
 
 // Generated Cap'n Proto types - must be at crate root for correct path resolution

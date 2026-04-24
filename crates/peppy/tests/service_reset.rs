@@ -5,8 +5,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use config::consts::{NODE_CONFIG_FILE, PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH};
+use core_node_api::SerializedNodeGraph;
 use core_node_api::encoding::StackListRequest;
-use node_stack::SerializedNodeGraph;
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands};
 use peppy::commands::service::{ServiceCommand, ServiceCommands};

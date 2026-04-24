@@ -486,6 +486,7 @@ mod tests {
     use super::*;
     use config::node::NodeConfigParser;
     use core_node_api::encoding::NodeInstanceInfo;
+    use core_node_api::{InstanceState, NodeStage};
     use std::path::PathBuf;
 
     fn sample_response() -> NodeInfo {
@@ -518,15 +519,15 @@ mod tests {
         NodeInfo {
             config,
             config_integrity: "0".repeat(64),
-            stage: "Ready".to_string(),
+            stage: NodeStage::Ready,
             instances: vec![
                 NodeInstanceInfo {
                     instance_id: "inst-abc".to_string(),
-                    state: "running".to_string(),
+                    state: InstanceState::Running,
                 },
                 NodeInstanceInfo {
                     instance_id: "inst-def".to_string(),
-                    state: "starting".to_string(),
+                    state: InstanceState::Starting,
                 },
             ],
             add_log_path: Some(PathBuf::from("/tmp/peppy/logs/add/sensor_node.log")),

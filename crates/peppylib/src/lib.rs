@@ -13,6 +13,12 @@ pub use messaging::{ActionMessenger, MessengerHandle, ServiceMessenger, TopicMes
 pub mod config;
 pub mod types;
 
+// Core node functions
+pub use core_node::{
+    info::info,
+    stack::{StackList, stack_list},
+};
+
 pub use types::{Message, Payload};
 
 pub mod serialization;

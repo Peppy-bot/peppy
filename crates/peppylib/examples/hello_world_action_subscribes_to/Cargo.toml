@@ -6,8 +6,7 @@ edition = "2024"
 [dependencies]
 peppylib = { path = "../.." }
 config = { path = "../../../config-internal" }
-tokio = { version = "1.47.0", features = ["rt-multi-thread", "macros"] }
-bytes = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 colored = "3"
 rand = "0.10"
 names-generator2 = "0.2.1"

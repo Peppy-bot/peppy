@@ -1,8 +1,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use core_node_api::SerializedNodeGraph;
 use core_node_api::encoding::{NodeRemoveRequest, StackListRequest};
-use node_stack::SerializedNodeGraph;
 use tracing::info;
 
 use crate::commands::CALLER_INSTANCE_ID;
@@ -100,22 +100,21 @@ async fn fetch_instance_ids(
         core_node_name,
         REQUEST_TIMEOUT,
     )
-    .await
-    .map_err(|e| {
-        Error::ExecutionFailed(format!(
-            "Failed to check running instances before removal: {}",
-            e
-        ))
-    })?;
+    .await?;
 
     let graph: SerializedNodeGraph = serde_json::from_str(&response.graph_json)
-        .map_err(|e| Error::ExecutionFailed(format!("Failed to parse graph JSON: {}", e)))?;
+        .map_err(|e| Error::ExecutionFailed(format!("failed to parse stack graph JSON: {e}")))?;
 
     Ok(graph
         .nodes
-        .into_iter()
+        .iter()
         .find(|node| node.name == node_name && node.tag == tag)
-        .map(|node| node.instance_ids)
+        .map(|node| {
+            node.running_instance_ids()
+                .into_iter()
+                .map(str::to_owned)
+                .collect()
+        })
         .unwrap_or_default())
 }
 

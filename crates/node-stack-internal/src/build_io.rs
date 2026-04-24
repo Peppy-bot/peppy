@@ -36,25 +36,7 @@ use tokio::task::JoinHandle;
 /// Used by both the build (apptainer/archive) path and the start (node run) path.
 pub const STDERR_TAIL_LINES: usize = 20;
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum FeedbackStream {
-    Stdout,
-    Stderr,
-    /// Out-of-band warning emitted by the daemon itself (not by the spawned
-    /// child). Routed by feedback forwarders to a high-visibility sink so it
-    /// is not buried under per-step scrolling output.
-    Warning,
-}
-
-impl FeedbackStream {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            FeedbackStream::Stdout => "stdout",
-            FeedbackStream::Stderr => "stderr",
-            FeedbackStream::Warning => "warning",
-        }
-    }
-}
+pub use core_node_api::encoding::FeedbackStream;
 
 /// Writes a single feedback line to the log file in the canonical
 /// `[timestamp] [stream] line` format. Errors are swallowed — log writes are

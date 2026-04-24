@@ -163,25 +163,27 @@ async fn handle_node_sync_request_inner(
     debug!("Received `node_sync` request from {sender_instance_id}");
 
     if request.node_root_dir.as_os_str().is_empty() {
-        return Ok(
-            NodeSyncResponse::failure("Missing `node_root_dir` in node_sync request").encode()?,
-        );
+        return NodeSyncResponse::failure("Missing `node_root_dir` in node_sync request")
+            .encode()
+            .map_err(Into::into);
     }
 
     if !request.node_root_dir.exists() {
-        return Ok(NodeSyncResponse::failure(format!(
+        return NodeSyncResponse::failure(format!(
             "`node_root_dir` does not exist: {}",
             request.node_root_dir.display()
         ))
-        .encode()?);
+        .encode()
+        .map_err(Into::into);
     }
 
     if !request.node_root_dir.is_dir() {
-        return Ok(NodeSyncResponse::failure(format!(
+        return NodeSyncResponse::failure(format!(
             "`node_root_dir` is not a directory: {}",
             request.node_root_dir.display()
         ))
-        .encode()?);
+        .encode()
+        .map_err(Into::into);
     }
 
     // Parse any local peer node configs supplied by the caller (`node sync -a`).
@@ -192,11 +194,12 @@ async fn handle_node_sync_request_inner(
     for peer_dir in &request.local_peers {
         let peer_config_path = peer_dir.join(config::consts::NODE_CONFIG_FILE);
         if !peer_config_path.is_file() {
-            return Ok(NodeSyncResponse::failure(format!(
+            return NodeSyncResponse::failure(format!(
                 "Local peer config does not exist: {}",
                 peer_config_path.display()
             ))
-            .encode()?);
+            .encode()
+            .map_err(Into::into);
         }
         match NodeConfigParser::from_path(&peer_config_path) {
             Ok(parsed) => {
@@ -210,12 +213,13 @@ async fn handle_node_sync_request_inner(
                 local_peers.insert((peer_name, peer_tag), cfg);
             }
             Err(e) => {
-                return Ok(NodeSyncResponse::failure(format!(
+                return NodeSyncResponse::failure(format!(
                     "Failed to parse local peer config at {}: {}",
                     peer_config_path.display(),
                     e
                 ))
-                .encode()?);
+                .encode()
+                .map_err(Into::into);
             }
         }
     }
@@ -242,11 +246,12 @@ async fn handle_node_sync_request_inner(
         root_interfaces,
         root_schema_version,
     ) = if !node_config_path.exists() {
-        return Ok(NodeSyncResponse::failure(format!(
+        return NodeSyncResponse::failure(format!(
             "Node config file does not exist: {}",
             node_config_path.display()
         ))
-        .encode()?);
+        .encode()
+        .map_err(Into::into);
     } else {
         match NodeConfigParser::from_path(&node_config_path) {
             Ok(node_config) => {
@@ -323,13 +328,14 @@ async fn handle_node_sync_request_inner(
                         errors.push(iface_error);
                     }
 
-                    return Ok(NodeSyncResponse::failure(format!(
+                    return NodeSyncResponse::failure(format!(
                         "`{}:{} {}",
                         node_config.manifest_name(),
                         node_config.manifest_tag(),
                         errors.join("; ")
                     ))
-                    .encode()?);
+                    .encode()
+                    .map_err(Into::into);
                 }
 
                 // Collect consumed interfaces with resolved message formats
@@ -340,11 +346,12 @@ async fn handle_node_sync_request_inner(
                 ) {
                     Ok(v) => v,
                     Err(reason) => {
-                        return Ok(NodeSyncResponse::failure(format!(
+                        return NodeSyncResponse::failure(format!(
                             "Failed to resolve consumed interfaces: {}",
                             reason
                         ))
-                        .encode()?);
+                        .encode()
+                        .map_err(Into::into);
                     }
                 };
                 let language = node_config.execution_language();
@@ -362,11 +369,9 @@ async fn handle_node_sync_request_inner(
                 )
             }
             Err(e) => {
-                return Ok(NodeSyncResponse::failure(format!(
-                    "Failed to parse node config: {}",
-                    e
-                ))
-                .encode()?);
+                return NodeSyncResponse::failure(format!("Failed to parse node config: {}", e))
+                    .encode()
+                    .map_err(Into::into);
             }
         }
     };
@@ -400,30 +405,27 @@ async fn handle_node_sync_request_inner(
         {
             Ok(Ok(())) => {}
             Ok(Err(crate::Error::GeneratorError(e))) => {
-                return Ok(NodeSyncResponse::failure(format!(
-                    "Failed to generate peppygen: {}",
-                    e
-                ))
-                .encode()?);
+                return NodeSyncResponse::failure(format!("Failed to generate peppygen: {}", e))
+                    .encode()
+                    .map_err(Into::into);
             }
             Ok(Err(crate::Error::Io(e))) => {
-                return Ok(NodeSyncResponse::failure(format!(
-                    "Failed to write git hash file: {}",
-                    e
-                ))
-                .encode()?);
+                return NodeSyncResponse::failure(format!("Failed to write git hash file: {}", e))
+                    .encode()
+                    .map_err(Into::into);
             }
             Ok(Err(e)) => {
-                return Ok(
-                    NodeSyncResponse::failure(format!("Failed to sync node: {}", e)).encode()?,
-                );
+                return NodeSyncResponse::failure(format!("Failed to sync node: {}", e))
+                    .encode()
+                    .map_err(Into::into);
             }
             Err(e) => {
-                return Ok(NodeSyncResponse::failure(format!(
+                return NodeSyncResponse::failure(format!(
                     "Failed to generate peppygen (generate task failed): {}",
                     e
                 ))
-                .encode()?);
+                .encode()
+                .map_err(Into::into);
             }
         };
     } else {
@@ -435,11 +437,12 @@ async fn handle_node_sync_request_inner(
         if let Err(e) = std::fs::create_dir_all(&peppy_dir)
             .and_then(|()| std::fs::write(peppy_dir.join("git.hash"), git_hash.as_bytes()))
         {
-            return Ok(NodeSyncResponse::failure(format!(
+            return NodeSyncResponse::failure(format!(
                 "Failed to write git hash at root for variant-only node: {}",
                 e
             ))
-            .encode()?);
+            .encode()
+            .map_err(Into::into);
         }
     }
 
@@ -462,24 +465,26 @@ async fn handle_node_sync_request_inner(
             let variant_dir = variant_dir.canonicalize().unwrap_or(variant_dir);
 
             if !variant_dir.exists() {
-                return Ok(NodeSyncResponse::failure(format!(
+                return NodeSyncResponse::failure(format!(
                     "Variant '{}' source directory does not exist: {}",
                     variant.name.as_str(),
                     variant_dir.display()
                 ))
-                .encode()?);
+                .encode()
+                .map_err(Into::into);
             }
 
             let variant_config_path = variant_dir.join(config::consts::NODE_CONFIG_FILE);
             let variant_config = match VariantConfigParser::from_path(&variant_config_path) {
                 Ok(vc) => vc,
                 Err(e) => {
-                    return Ok(NodeSyncResponse::failure(format!(
+                    return NodeSyncResponse::failure(format!(
                         "Failed to parse variant '{}' config: {}",
                         variant.name.as_str(),
                         e
                     ))
-                    .encode()?);
+                    .encode()
+                    .map_err(Into::into);
                 }
             };
 
@@ -500,12 +505,13 @@ async fn handle_node_sync_request_inner(
             let merged_json5 = match serde_json5::to_string(&merged_config) {
                 Ok(json) => json,
                 Err(e) => {
-                    return Ok(NodeSyncResponse::failure(format!(
+                    return NodeSyncResponse::failure(format!(
                         "Failed to serialize merged config for variant '{}': {}",
                         variant.name.as_str(),
                         e
                     ))
-                    .encode()?);
+                    .encode()
+                    .map_err(Into::into);
                 }
             };
             // Write the merged config to a temporary file so the generator can
@@ -517,22 +523,24 @@ async fn handle_node_sync_request_inner(
             {
                 Ok(mut f) => {
                     if let Err(e) = std::io::Write::write_all(&mut f, merged_json5.as_bytes()) {
-                        return Ok(NodeSyncResponse::failure(format!(
+                        return NodeSyncResponse::failure(format!(
                             "Failed to write merged config for variant '{}': {}",
                             variant.name.as_str(),
                             e
                         ))
-                        .encode()?);
+                        .encode()
+                        .map_err(Into::into);
                     }
                     f
                 }
                 Err(e) => {
-                    return Ok(NodeSyncResponse::failure(format!(
+                    return NodeSyncResponse::failure(format!(
                         "Failed to create temp file for variant '{}': {}",
                         variant.name.as_str(),
                         e
                     ))
-                    .encode()?);
+                    .encode()
+                    .map_err(Into::into);
                 }
             };
             let variant_merged_config_path = variant_merged_config_file.path().to_path_buf();
@@ -569,26 +577,28 @@ async fn handle_node_sync_request_inner(
             {
                 Ok(Ok(())) => {}
                 Ok(Err(e)) => {
-                    return Ok(NodeSyncResponse::failure(format!(
+                    return NodeSyncResponse::failure(format!(
                         "Failed to generate peppygen for variant '{}': {}",
                         variant.name.as_str(),
                         e
                     ))
-                    .encode()?);
+                    .encode()
+                    .map_err(Into::into);
                 }
                 Err(e) => {
-                    return Ok(NodeSyncResponse::failure(format!(
+                    return NodeSyncResponse::failure(format!(
                         "Failed to generate peppygen for variant '{}' (task failed): {}",
                         variant.name.as_str(),
                         e
                     ))
-                    .encode()?);
+                    .encode()
+                    .map_err(Into::into);
                 }
             }
         }
     }
 
-    Ok(NodeSyncResponse::success().encode()?)
+    NodeSyncResponse::success().encode().map_err(Into::into)
 }
 
 /// Builds a lookup from `local_id` → `(dep_name, dep_tag)` using the node's `depends_on.nodes`.

@@ -1,7 +1,7 @@
 use config::consts::{PEPPY_OUTPUT_DIR, PEPPYGEN_OUTPUT_PATH};
 use config::node::Toolchain;
+use core_node_api::SerializedNodeGraph;
 use core_node_api::encoding::StackListRequest;
-use node_stack::SerializedNodeGraph;
 use peppy::commands::Command;
 use peppy::commands::node::{
     AddNodeParams, NodeCommand, NodeCommands, NodeName, TimeoutConfig, add_node,
@@ -622,7 +622,7 @@ fn node_add_same_node_shutdown_existing_instances() {
         "should have 1 instance running after first add"
     );
     assert!(
-        node_before.instance_ids.contains(&instance_id.to_string()),
+        node_before.running_instance_ids().contains(&instance_id),
         "instance ID should match"
     );
 

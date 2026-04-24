@@ -19,8 +19,8 @@ askama = "0.15"
 gix-url = "0.35"
 url = "2"
 # https://docs.rs/quote/latest/quote/
-clap = { version = "4.5.42", features = ["derive"] }
-tokio = { version = "1.47", features = ["signal"] }
+clap = { version = "4.5", features = ["derive"] }
+tokio = { version = "1", features = ["signal"] }
 tokio-util = "0.7"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

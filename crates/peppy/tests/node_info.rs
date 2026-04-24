@@ -1,3 +1,4 @@
+use core_node_api::NodeStage;
 use core_node_api::encoding::{NodeInfoRequest, NodeInfoResponse};
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands, TimeoutConfig};
@@ -257,7 +258,8 @@ fn node_info_shows_dependencies_from_consumed_interfaces() {
     assert_eq!(info_response.config.manifest.name.as_str(), NODE_NAME);
     assert_eq!(info_response.config.manifest.tag, NODE_TAG);
     assert_eq!(
-        info_response.stage, "Added",
+        info_response.stage,
+        NodeStage::Added,
         "node added with build=false should be in Added stage, got {:?}",
         info_response.stage
     );

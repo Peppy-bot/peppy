@@ -10,11 +10,11 @@ pub use error::Error as NodeStackError;
 
 pub use archive::extract_tar_zst;
 pub use build_io::{FeedbackLine, FeedbackStream, OutputReaderHooks};
+pub use core_node_api::InstanceState;
 pub use node_stack::add_steps;
 pub use node_stack::{
-    BuildContext, DependencySpec, EntityHandle, EntitySnapshot, InstanceState, NodeEntity,
-    NodeStack, NodeStage, OutputSinks, RestoreTarget, SerializedEdge, SerializedInstance,
-    SerializedNode, SerializedNodeGraph, StartContext, StartedInstanceCtx, TrackedNodeInstance,
+    BuildContext, DependencySpec, EntityHandle, EntitySnapshot, NodeEntity, NodeStack, NodeStage,
+    OutputSinks, RestoreTarget, StartContext, StartedInstanceCtx, TrackedNodeInstance,
     WorkingDirGuard, collect_dependency_specs, validate_dependency_specs,
 };
 pub use virtual_deptree::{NodeKey, VirtualDeptree, VirtualNodeInfo};
