@@ -105,9 +105,14 @@ async fn fetch_instance_ids(
     Ok(list
         .graph
         .nodes
-        .into_iter()
+        .iter()
         .find(|node| node.name == node_name && node.tag == tag)
-        .map(|node| node.instance_ids)
+        .map(|node| {
+            node.running_instance_ids()
+                .into_iter()
+                .map(str::to_owned)
+                .collect()
+        })
         .unwrap_or_default())
 }
 

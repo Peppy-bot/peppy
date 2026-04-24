@@ -1,8 +1,11 @@
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use core_node_api::encoding::{StackListRequest, StackListResponse};
 use core_node_api::names;
-use core_node_api::{SerializedEdge, SerializedInstance, SerializedNode, SerializedNodeGraph};
+use core_node_api::{
+    InstanceState, NodeStage, SerializedEdge, SerializedInstance, SerializedNode,
+    SerializedNodeGraph,
+};
 use peppylib::core_node::stack::stack_list;
 use peppylib::messaging::{MessengerHandle, ServiceMessenger};
 use pmi::{ZenohAdapter, ZenohdInstance};
@@ -17,11 +20,10 @@ fn fixture_graph() -> SerializedNodeGraph {
         tag: "0.1.0".to_string(),
         config_path: "/tmp/brain.json5".to_string(),
         artifact_path: None,
-        instance_ids: vec!["i1".to_string()],
-        stage: Some("Ready".to_string()),
+        stage: Some(NodeStage::Ready),
         instances: vec![SerializedInstance {
             instance_id: "i1".to_string(),
-            state: "running".to_string(),
+            state: InstanceState::Running,
         }],
         variant_name: Some("default".to_string()),
     };
@@ -30,8 +32,7 @@ fn fixture_graph() -> SerializedNodeGraph {
         tag: "0.1.0".to_string(),
         config_path: "/tmp/sensor.json5".to_string(),
         artifact_path: None,
-        instance_ids: vec![],
-        stage: Some("Added".to_string()),
+        stage: Some(NodeStage::Added),
         instances: vec![],
         variant_name: None,
     };
@@ -78,14 +79,39 @@ async fn spawn_stub_listener(server: MessengerHandle, graph: SerializedNodeGraph
             .await
             .expect("handle_next_request should succeed");
     });
-
-    // Allow the listener to propagate before the client polls.
-    tokio::time::sleep(Duration::from_millis(50)).await;
 }
 
-/// Starts a router, spawns the stub listener, and returns the client handle
-/// and the fixture graph. The router is returned so callers hold it for the
-/// duration of the test — dropping it tears down the messaging fabric.
+/// Polls `is_reachable` until the stub listener responds, bounded by a
+/// deadline. Replaces a fixed sleep: fast when zenoh discovery completes
+/// quickly, and fails loudly with a clear panic if it never does.
+async fn wait_until_reachable(client: &MessengerHandle) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if ServiceMessenger::is_reachable(
+            client,
+            CORE_NODE,
+            CLIENT_INSTANCE,
+            CORE_NODE,
+            names::STACK_LIST,
+            Some(CORE_NODE),
+            None,
+        )
+        .await
+        .expect("reachability check should succeed")
+        {
+            return;
+        }
+        if Instant::now() >= deadline {
+            panic!("stack_list stub did not become reachable within 5s");
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+/// Starts a router, spawns the stub listener, waits for it to become
+/// reachable, and returns the client handle and the fixture graph. The
+/// router is returned so callers hold it for the duration of the test —
+/// dropping it tears down the messaging fabric.
 async fn setup_stub(dot_graph: &str) -> (ZenohdInstance, MessengerHandle, SerializedNodeGraph) {
     let router = ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
         .await
@@ -99,6 +125,7 @@ async fn setup_stub(dot_graph: &str) -> (ZenohdInstance, MessengerHandle, Serial
 
     let graph = fixture_graph();
     spawn_stub_listener(server, graph.clone(), dot_graph).await;
+    wait_until_reachable(&client).await;
     (router, client, graph)
 }
 

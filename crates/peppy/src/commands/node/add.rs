@@ -365,7 +365,6 @@ async fn fetch_active_instances_for_name_tag(
     let active: Vec<String> = info
         .instances
         .iter()
-        .filter(|inst| matches!(inst.state.as_str(), "running" | "starting"))
         .map(|inst| inst.instance_id.clone())
         .collect();
 

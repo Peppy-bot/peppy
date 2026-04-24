@@ -622,7 +622,7 @@ fn node_add_same_node_shutdown_existing_instances() {
         "should have 1 instance running after first add"
     );
     assert!(
-        node_before.instance_ids.contains(&instance_id.to_string()),
+        node_before.running_instance_ids().contains(&instance_id),
         "instance ID should match"
     );
 

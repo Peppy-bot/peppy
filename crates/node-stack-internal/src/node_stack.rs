@@ -5,14 +5,14 @@ mod run_steps;
 mod validation;
 
 pub use entity::{
-    BuildContext, DependencySpec, InstanceState, NodeEntity, NodeStage, OutputSinks, StartContext,
+    BuildContext, DependencySpec, NodeEntity, NodeStage, OutputSinks, StartContext,
     StartedInstanceCtx, TrackedNodeInstance, WorkingDirGuard,
 };
 pub use validation::{collect_dependency_specs, validate_dependency_specs};
 
 use crate::error::{Error, Result};
 use config::node::{Name, NodeConfig};
-use core_node_api::{SerializedEdge, SerializedNode, SerializedNodeGraph};
+use core_node_api::{InstanceState, SerializedEdge, SerializedNode, SerializedNodeGraph};
 use names_generator2::get_random;
 use parking_lot::RwLock;
 use petgraph::{

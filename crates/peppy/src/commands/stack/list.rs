@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use core_node_api::encoding::StackListRequest;
-use core_node_api::{SerializedEdge, SerializedNode};
+use core_node_api::{InstanceState, SerializedEdge, SerializedNode};
 
 use crate::commands::CALLER_INSTANCE_ID;
 use crate::context::AppContext;
@@ -177,12 +177,12 @@ fn format_instances_compact(node: &SerializedNode) -> String {
     let running = node
         .instances
         .iter()
-        .filter(|i| i.state == "running")
+        .filter(|i| i.state == InstanceState::Running)
         .count();
     let starting = node
         .instances
         .iter()
-        .filter(|i| i.state == "starting")
+        .filter(|i| i.state == InstanceState::Starting)
         .count();
     match (running, starting) {
         (r, 0) => format!("{} running", r),
@@ -202,31 +202,26 @@ fn display_path(node: &SerializedNode) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core_node_api::SerializedInstance;
+    use core_node_api::{NodeStage, SerializedInstance};
 
     fn node(
         name: &str,
         tag: &str,
-        stage: &str,
+        stage: NodeStage,
         variant: Option<&str>,
-        instances: Vec<(&str, &str)>,
+        instances: Vec<(&str, InstanceState)>,
     ) -> SerializedNode {
         SerializedNode {
             name: name.to_string(),
             tag: tag.to_string(),
             config_path: format!("/tmp/{}.json5", name),
             artifact_path: None,
-            instance_ids: instances
-                .iter()
-                .filter(|(_, s)| *s == "running")
-                .map(|(id, _)| id.to_string())
-                .collect(),
-            stage: Some(stage.to_string()),
+            stage: Some(stage),
             instances: instances
                 .into_iter()
                 .map(|(id, state)| SerializedInstance {
                     instance_id: id.to_string(),
-                    state: state.to_string(),
+                    state,
                 })
                 .collect(),
             variant_name: variant.map(str::to_owned),
@@ -236,13 +231,13 @@ mod tests {
     #[test]
     fn table_renders_headers_and_rows() {
         let nodes = vec![
-            node("sensor", "0.1.0", "Added", Some("default"), vec![]),
+            node("sensor", "0.1.0", NodeStage::Added, Some("default"), vec![]),
             node(
                 "brain",
                 "0.1.0",
-                "Ready",
+                NodeStage::Ready,
                 Some("macos"),
-                vec![("i1", "running")],
+                vec![("i1", InstanceState::Running)],
             ),
         ];
         let out = format_stack_list(&nodes, &[]);
@@ -268,7 +263,7 @@ mod tests {
 
     #[test]
     fn variant_falls_back_to_default_when_none() {
-        let nodes = vec![node("sensor", "0.1.0", "Added", None, vec![])];
+        let nodes = vec![node("sensor", "0.1.0", NodeStage::Added, None, vec![])];
         let out = format_stack_list(&nodes, &[]);
         assert!(
             out.contains("default"),
@@ -282,9 +277,12 @@ mod tests {
         let nodes = vec![node(
             "brain",
             "0.1.0",
-            "Ready",
+            NodeStage::Ready,
             Some("default"),
-            vec![("r1", "running"), ("s1", "starting")],
+            vec![
+                ("r1", InstanceState::Running),
+                ("s1", InstanceState::Starting),
+            ],
         )];
         let out = format_stack_list(&nodes, &[]);
         assert!(
@@ -308,8 +306,8 @@ mod tests {
 
     #[test]
     fn edges_render_as_arrows() {
-        let from = node("brain", "0.1.0", "Ready", None, vec![]);
-        let to = node("sensor", "0.1.0", "Ready", None, vec![]);
+        let from = node("brain", "0.1.0", NodeStage::Ready, None, vec![]);
+        let to = node("sensor", "0.1.0", NodeStage::Ready, None, vec![]);
         let edges = vec![SerializedEdge {
             from: from.clone(),
             to: to.clone(),

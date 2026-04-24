@@ -7,7 +7,9 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use config::consts::PeppyDirs;
 use config::node::{Name, NodeConfig};
-use core_node_api::{SerializedInstance, SerializedNode};
+use core_node_api::{
+    InstanceState, NodeStage as SerializedNodeStage, SerializedInstance, SerializedNode,
+};
 use tokio::process::Child;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -32,27 +34,12 @@ impl From<&NodeEntity> for SerializedNode {
             tag: entity.config().manifest.tag.clone(),
             config_path: entity.config_path().display().to_string(),
             artifact_path: entity.artifact_path().map(|p| p.display().to_string()),
-            // Externally visible instance ids — only `Running` instances.
-            // In-flight `Starting` instances are intentionally hidden from
-            // CLI/dashboard consumers because the externally-visible meaning
-            // of "instance_ids" is "what's currently running and reachable".
-            // Exposing Starting instances here would let external observers
-            // try to interact with something that hasn't subscribed to
-            // messenger services yet.
-            instance_ids: all_instances
-                .iter()
-                .filter(|i| i.state() == InstanceState::Running)
-                .map(|i| i.instance_id().as_str().to_string())
-                .collect(),
-            stage: Some(entity.stage().name().to_string()),
+            stage: Some(entity.stage().to_serialized()),
             instances: all_instances
                 .iter()
                 .map(|i| SerializedInstance {
                     instance_id: i.instance_id().as_str().to_string(),
-                    state: match i.state() {
-                        InstanceState::Starting => "starting".to_string(),
-                        InstanceState::Running => "running".to_string(),
-                    },
+                    state: i.state(),
                 })
                 .collect(),
             variant_name: entity.variant_name().map(str::to_owned),
@@ -101,11 +88,17 @@ pub enum NodeStage {
 
 impl NodeStage {
     pub fn name(&self) -> &'static str {
+        self.to_serialized().as_str()
+    }
+
+    /// Strips the rich per-stage data and returns the label-only view used on
+    /// the wire (in `SerializedNode::stage` and `NodeInfo::stage`).
+    pub fn to_serialized(&self) -> SerializedNodeStage {
         match self {
-            NodeStage::Added { .. } => "Added",
-            NodeStage::Building { .. } => "Building",
-            NodeStage::Ready { .. } => "Ready",
-            NodeStage::Root { .. } => "Root",
+            NodeStage::Added { .. } => SerializedNodeStage::Added,
+            NodeStage::Building { .. } => SerializedNodeStage::Building,
+            NodeStage::Ready { .. } => SerializedNodeStage::Ready,
+            NodeStage::Root { .. } => SerializedNodeStage::Root,
         }
     }
 
@@ -1061,27 +1054,6 @@ impl NodeEntity {
         }
         true
     }
-}
-
-/// Per-instance state. Lives on `TrackedNodeInstance` rather than on
-/// `NodeStage` because each instance manages its own lifecycle: starting and
-/// running are properties of *this particular spawn*, not of the parent entity.
-///
-/// The entity-level [`NodeStage`] only describes artifact readiness; once an
-/// entity is in [`NodeStage::Ready`], it can have any combination of
-/// `Starting` and `Running` instances in its instances list.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum InstanceState {
-    /// `prepare_and_spawn` has registered the instance and the child process
-    /// is running, but `commit_started` has not yet been called (the daemon
-    /// is still running its messenger-bound ready/health checks). Visible to
-    /// observers via `entity.instances()` so they can see "this instance is
-    /// currently starting" — but `find_by_instance_id` skips it because
-    /// messenger services like `SHUTDOWN_SERVICE` haven't subscribed yet.
-    Starting,
-    /// `commit_started` has flipped the state. The instance is fully
-    /// registered and reachable through messenger services.
-    Running,
 }
 
 #[derive(Debug, Clone)]
