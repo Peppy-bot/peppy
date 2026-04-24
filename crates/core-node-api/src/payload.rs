@@ -3,14 +3,14 @@
 //! `encode()` helpers can return it directly without a `Vec<u8>` boundary
 //! hop, and so that `peppylib` and other crates can share the same type
 //! without depending on each other.
+//!
+//! The construction surface is deliberately narrow: `from_static` for byte
+//! literals, `From<Bytes>` / `From<Vec<u8>>` for owned buffers,
+//! `AsRef<[u8]>` / `Deref<Target = [u8]>` for read-only access. Anything
+//! beyond that goes through `Bytes` explicitly.
 
 use bytes::Bytes;
 
-/// A wrapper around `bytes::Bytes`.
-///
-/// `Bytes` is intentionally exposed through [`Payload::into_inner`],
-/// [`From<Bytes>`], and the `PartialEq<Bytes>` / `PartialEq<Payload> for Bytes`
-/// impls so callers can interop with the `bytes` crate without an extra copy.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Payload(Bytes);
 
@@ -49,24 +49,6 @@ impl From<Vec<u8>> for Payload {
     }
 }
 
-impl From<&'static [u8]> for Payload {
-    fn from(slice: &'static [u8]) -> Self {
-        Self(Bytes::from_static(slice))
-    }
-}
-
-impl From<String> for Payload {
-    fn from(s: String) -> Self {
-        Self(Bytes::from(s))
-    }
-}
-
-impl From<&'static str> for Payload {
-    fn from(s: &'static str) -> Self {
-        Self(Bytes::from_static(s.as_bytes()))
-    }
-}
-
 impl AsRef<[u8]> for Payload {
     fn as_ref(&self) -> &[u8] {
         self.0.as_ref()
@@ -81,36 +63,8 @@ impl std::ops::Deref for Payload {
     }
 }
 
-impl PartialEq<Bytes> for Payload {
-    fn eq(&self, other: &Bytes) -> bool {
-        self.0 == other
-    }
-}
-
-impl PartialEq<Payload> for Bytes {
-    fn eq(&self, other: &Payload) -> bool {
-        self == &other.0
-    }
-}
-
-impl PartialEq<&[u8]> for Payload {
-    fn eq(&self, other: &&[u8]) -> bool {
-        self.0.as_ref() == *other
-    }
-}
-
-impl PartialEq<Payload> for &[u8] {
-    fn eq(&self, other: &Payload) -> bool {
-        *self == other.0.as_ref()
-    }
-}
-
-impl PartialEq<Vec<u8>> for Payload {
-    fn eq(&self, other: &Vec<u8>) -> bool {
-        self.0.as_ref() == other.as_slice()
-    }
-}
-
+// `assert_eq!(payload, &expected_payload)` — compares a `Payload` returned by
+// value against a borrowed `Payload` held by the test.
 impl PartialEq<&Payload> for Payload {
     fn eq(&self, other: &&Payload) -> bool {
         self.0 == other.0

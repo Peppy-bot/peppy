@@ -65,7 +65,9 @@ fn handle_repo_add_request_inner(
 
     let identity = request.source.identity();
     if identity.trim().is_empty() {
-        return Ok(RepoAddResponse::failure("repository path/URL must not be empty").encode()?);
+        return RepoAddResponse::failure("repository path/URL must not be empty")
+            .encode()
+            .map_err(Into::into);
     }
 
     let repos_path = peppy_dirs.conf_dir().join("repositories.json5");
@@ -87,11 +89,9 @@ fn handle_repo_add_request_inner(
         .any(|entry| json_entry_identity(entry).is_some_and(|existing| existing == new_identity));
 
     if is_duplicate {
-        return Ok(RepoAddResponse::failure(format!(
-            "repository '{}' already exists",
-            new_identity
-        ))
-        .encode()?);
+        return RepoAddResponse::failure(format!("repository '{}' already exists", new_identity))
+            .encode()
+            .map_err(Into::into);
     }
 
     let next_id = if request.top {
@@ -103,10 +103,10 @@ fn handle_repo_add_request_inner(
             Some(min) => match min.checked_sub(1) {
                 Some(n) => n,
                 None => {
-                    return Ok(RepoAddResponse::failure(
+                    return RepoAddResponse::failure(
                         "cannot add repo with top priority: existing minimum id is 0 (would underflow)",
                     )
-                    .encode()?);
+                    .encode().map_err(Into::into);
                 }
             },
             None => 1000,
@@ -120,10 +120,11 @@ fn handle_repo_add_request_inner(
             Some(max) => match max.checked_add(1) {
                 Some(n) => n,
                 None => {
-                    return Ok(RepoAddResponse::failure(
+                    return RepoAddResponse::failure(
                         "cannot add repo: existing maximum id is u64::MAX (would overflow)",
                     )
-                    .encode()?);
+                    .encode()
+                    .map_err(Into::into);
                 }
             },
             None => 1000,

@@ -102,7 +102,7 @@ fn handle_info_request_inner(
         lima_version: containers::LIMA_VERSION.to_owned(),
     };
 
-    Ok(InfoResponse::new(
+    InfoResponse::new(
         uptime_secs,
         core_node_name,
         instance_id,
@@ -111,5 +111,6 @@ fn handle_info_request_inner(
         git_version,
         container_info,
     )
-    .encode()?)
+    .encode()
+    .map_err(Into::into)
 }
